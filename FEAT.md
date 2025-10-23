@@ -22,6 +22,7 @@ Got it — here’s a pragmatic path to a “minimal app engine” that runs wel
 * [x] Phase 3 – Ingress & TLS automation: Added Caddy templating/reload hooks, persisted ingress host metadata, and surfaced replica/ingress status via CLI.
 * [x] Phase 4 – Rollouts & rollbacks: Revision-aware reconciler/runtime, revision history + CLI rollback/list commands, and health-gated status tracking.
 * [x] Phase 5 – Secrets & registry auth: SOPS-backed secret manager with env injection, registry credential loading, and CLI wiring.
+* [x] Phase 6 – Observability baseline: Metrics snapshot CLI, event logging in SQLite, and registry/secret guidance updated.
 
 ## 0) Bootstrap (1–2 hrs)
 

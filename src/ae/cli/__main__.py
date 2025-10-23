@@ -11,8 +11,8 @@ from ae.controller.health import HealthManager
 from ae.controller.reconciler import ReconcileReport, Reconciler
 from ae.controller.state import AppStatus, SQLiteStateStore, RevisionInfo
 from ae.ingress import CaddyIngressManager, IngressService
-from ae.runtime import DockerRuntime, RuntimeAdapter, StubRuntime
-from ae.runtime.registry import RegistryAuthProvider
+from ae.observability import MetricsService
+from ae.runtime import DockerRuntime, RegistryAuthProvider, RuntimeAdapter, StubRuntime
 from ae.secrets import SecretManager
 
 
@@ -49,6 +49,13 @@ def build_parser() -> argparse.ArgumentParser:
     registry_parser = subparsers.add_parser("registry", help="Manage registry credentials")
     registry_parser.add_argument("action", choices=["list"], help="Action to perform")
 
+    metrics_parser = subparsers.add_parser("metrics", help="Show aggregated metrics")
+    metrics_parser.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    events_parser = subparsers.add_parser("events", help="Show recent events")
+    events_parser.add_argument("name", help="Application name")
+    events_parser.add_argument("--limit", type=int, default=20)
+
     return parser
 
 
@@ -58,11 +65,11 @@ def state_store_from_env() -> SQLiteStateStore:
     return SQLiteStateStore(db_path)
 
 
-def runtime_factory() -> RuntimeAdapter:
+def runtime_factory(registry_auth: RegistryAuthProvider | None = None) -> RuntimeAdapter:
     backend = os.getenv("AE_RUNTIME_BACKEND", "docker").lower()
     if backend == "stub":
         return StubRuntime()
-    return DockerRuntime()
+    return DockerRuntime(registry_auth=registry_auth)
 
 
 def health_manager_factory() -> HealthManager:
@@ -117,7 +124,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     store = state_store_from_env()
-    runtime = runtime_factory()
+    registry_auth = registry_auth_factory()
+    runtime = runtime_factory(registry_auth=registry_auth)
     health_manager = health_manager_factory()
     ingress_service = ingress_service_factory()
     secret_manager = secret_manager_factory()
@@ -135,7 +143,9 @@ def main(argv: list[str] | None = None) -> int:
         "logs": lambda ns: handle_logs(ns),
         "rollback": lambda ns: handle_rollback(ns, store, reconciler),
         "revisions": lambda ns: handle_revisions(ns, store),
-        "registry": lambda ns: handle_registry(ns),
+        "registry": lambda ns: handle_registry(ns, registry_auth),
+        "metrics": lambda ns: handle_metrics(ns, store),
+        "events": lambda ns: handle_events(ns, store),
     }
 
     handler = command_handlers.get(args.command)
@@ -236,8 +246,7 @@ def handle_revisions(args: argparse.Namespace, store: SQLiteStateStore) -> int:
     return 0
 
 
-def handle_registry(args: argparse.Namespace) -> int:
-    provider = registry_auth_factory()
+def handle_registry(args: argparse.Namespace, provider: RegistryAuthProvider) -> int:
     if args.action == "list":
         registries = provider.list_registries()
         if not registries:
@@ -249,6 +258,59 @@ def handle_registry(args: argparse.Namespace) -> int:
         return 0
     print(f"Unsupported registry action: {args.action}")
     return 1
+
+
+def handle_metrics(args: argparse.Namespace, store: SQLiteStateStore) -> int:
+    service = MetricsService(store)
+    snapshot = service.snapshot()
+    if args.json:
+        import json
+
+        print(
+            json.dumps(
+                {
+                    "total_apps": snapshot.total_apps,
+                    "ready_apps": snapshot.ready_apps,
+                    "progressing_apps": snapshot.progressing_apps,
+                    "degraded_apps": snapshot.degraded_apps,
+                    "total_replicas": snapshot.total_replicas,
+                    "ready_replicas": snapshot.ready_replicas,
+                    "live_replicas": snapshot.live_replicas,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    print(
+        "apps total={total} ready={ready} progressing={progressing} degraded={degraded}".format(
+            total=snapshot.total_apps,
+            ready=snapshot.ready_apps,
+            progressing=snapshot.progressing_apps,
+            degraded=snapshot.degraded_apps,
+        )
+    )
+    print(
+        "replicas total={total} ready={ready} live={live}".format(
+            total=snapshot.total_replicas,
+            ready=snapshot.ready_replicas,
+            live=snapshot.live_replicas,
+        )
+    )
+    return 0
+
+
+def handle_events(args: argparse.Namespace, store: SQLiteStateStore) -> int:
+    events = store.list_events(args.name, limit=args.limit)
+    if not events:
+        print(f"No events recorded for {args.name}.")
+        return 0
+    for event in events:
+        timestamp = event.created_at.strftime("%Y-%m-%d %H:%M:%S")
+        print(
+            f"{timestamp} rev={event.revision} {event.event_type}: {event.message}"
+        )
+    return 0
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point

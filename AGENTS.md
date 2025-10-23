@@ -13,6 +13,8 @@
 - `python -m ae.cli apply -f specs/examples/echo.yaml` applies a manifest for fast smoke tests.
 - `pytest` runs unit suites; add `--maxfail=1 --disable-warnings` before opening PRs.
 - `docker compose -f ops/dev/docker-compose.yaml up` starts Caddy and Prometheus fixtures; shut down with `docker compose ... down`.
+- `python -m ae.cli metrics` summarizes ready/live replica totals; add `--json` for machine-readable output.
+- `python -m ae.cli events <app>` lists recent reconciliation events; default limit is 20.
 
 ## Coding Style & Naming Conventions
 - Run `ruff format` and `ruff check`; both are wired into pre-commit. YAML/JSON files use two-space indentation.
@@ -38,3 +40,4 @@
 - Use `python -m ae.cli status --verbose` to audit Docker access and record TLS host mappings in `docs/ingress.md`.
 - Configure registry credentials in `~/.config/ae/registries.yaml` (username/password) and list them via `ae registry list`; prefer short-lived tokens.
 - Set `AE_ALLOW_PLAINTEXT_SECRETS=1` only for local development to bypass SOPS; ensure CI leaves it unset.
+- Prefer `ae events <app>` for deployment audit trails and persist important findings in `docs/runbook.md`.

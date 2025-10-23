@@ -66,6 +66,21 @@ ghcr.io:
     assert "history" in history_out
     assert "readiness" in history_out
 
+    exit_code = main(["metrics"])
+    assert exit_code == 0
+    metrics_out = capsys.readouterr().out
+    assert "apps total" in metrics_out
+
+    exit_code = main(["metrics", "--json"])
+    assert exit_code == 0
+    metrics_json = capsys.readouterr().out
+    assert "total_apps" in metrics_json
+
+    exit_code = main(["events", "echo", "--limit", "5"])
+    assert exit_code == 0
+    events_out = capsys.readouterr().out
+    assert "ApplyCompleted" in events_out
+
     exit_code = main(["registry", "list"])
     assert exit_code == 0
     registry_out = capsys.readouterr().out

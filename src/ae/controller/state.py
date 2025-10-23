@@ -30,8 +30,6 @@ class AppStatus:
     removed: int
     ingress_host: str | None = None
     ingress_path: str | None = None
-    ingress_host: str | None
-    ingress_path: str | None
 
 
 @dataclass(slots=True)
@@ -56,6 +54,17 @@ class ProbeHistoryEntry:
     live: bool
     readiness_message: str
     liveness_message: str
+
+
+@dataclass(slots=True)
+class AppEvent:
+    """Event emitted during reconciliation or runtime changes."""
+
+    app_name: str
+    revision: int
+    event_type: str
+    message: str
+    created_at: datetime
 
 
 @dataclass(slots=True)
@@ -167,6 +176,18 @@ class SQLiteStateStore:
                     created_at TEXT NOT NULL,
                     status TEXT NOT NULL,
                     PRIMARY KEY (app_name, revision)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    app_name TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    created_at TEXT NOT NULL
                 )
                 """
             )
@@ -488,3 +509,41 @@ class SQLiteStateStore:
             RevisionInfo(revision=row[0], spec_hash=row[1], status=row[2], image=row[3])
             for row in rows
         ]
+
+    def record_event(self, app_name: str, revision: int, event_type: str, message: str) -> None:
+        created_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO app_events(app_name, revision, event_type, message, created_at)
+                VALUES(?,?,?,?,?)
+                """,
+                (app_name, revision, event_type, message, created_at),
+            )
+            conn.commit()
+
+    def list_events(self, app_name: str, limit: int = 20) -> list[AppEvent]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT revision, event_type, message, created_at
+                FROM app_events
+                WHERE app_name = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (app_name, limit),
+            ).fetchall()
+        events: list[AppEvent] = []
+        for row in rows:
+            created = datetime.fromisoformat(row[3])
+            events.append(
+                AppEvent(
+                    app_name=app_name,
+                    revision=row[0],
+                    event_type=row[1],
+                    message=row[2],
+                    created_at=created,
+                )
+            )
+        return events

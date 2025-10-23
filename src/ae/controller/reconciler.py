@@ -59,6 +59,13 @@ class Reconciler:
         spec_hash = self._compute_spec_hash(manifest)
         revision, _ = self._state_store.prepare_revision(manifest, spec_hash)
 
+        self._state_store.record_event(
+            manifest.metadata.name,
+            revision,
+            "ApplyStarted",
+            f"Reconciling revision {revision}",
+        )
+
         manifest_with_secrets = self._apply_secrets(manifest)
 
         result = self._runtime.ensure_app(manifest_with_secrets, revision)
@@ -68,9 +75,21 @@ class Reconciler:
             if upstream:
                 self._ingress_service.apply(manifest, upstream)
                 self._ingress_service.reload()
+                self._state_store.record_event(
+                    manifest.metadata.name,
+                    revision,
+                    "IngressConfigured",
+                    f"Ingress upstream set to {upstream}",
+                )
         elif self._ingress_service and not manifest.spec.ingress:
             self._ingress_service.remove(manifest.metadata.name)
             self._ingress_service.reload()
+            self._state_store.record_event(
+                manifest.metadata.name,
+                revision,
+                "IngressRemoved",
+                "Ingress configuration removed",
+            )
         revision_status = self._calculate_revision_status(manifest, health_report)
 
         self._state_store.record_snapshot(
@@ -79,6 +98,12 @@ class Reconciler:
             health_report=health_report,
             revision=revision,
             revision_status=revision_status,
+        )
+        self._state_store.record_event(
+            manifest.metadata.name,
+            revision,
+            "ApplyCompleted",
+            f"Revision {revision} status {revision_status}",
         )
         return ReconcileReport(
             app_name=manifest.metadata.name,

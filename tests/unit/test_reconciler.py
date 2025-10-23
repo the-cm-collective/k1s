@@ -80,6 +80,8 @@ def test_reconciler_updates_state(tmp_path: Path) -> None:
     replicas = state.list_replicas("demo")
     assert len(replicas) == 1
     assert replicas[0].live is True
+    events = state.list_events("demo", limit=5)
+    assert any(event.event_type == "ApplyCompleted" for event in events)
 
 
 def test_reconciler_with_ingress(tmp_path: Path) -> None:
@@ -106,6 +108,8 @@ def test_reconciler_with_ingress(tmp_path: Path) -> None:
     assert status is not None
     assert status.ingress_host == "demo.local"
     assert status.revision >= 1
+    events = state.list_events("demo", limit=5)
+    assert any(event.event_type == "IngressConfigured" for event in events)
 
 
 def test_reconciler_applies_secrets(tmp_path: Path) -> None:
