@@ -1,5 +1,9 @@
 # Operations Runbook
 
+## Bootstrap Demo Environment
+- Run `scripts/init_demo.sh` on Ubuntu (requires sudo). The script installs Python dependencies, starts the Caddy/Prometheus stack, builds the demo Docker images, and applies `blue.home.arpa` / `green.home.arpa` manifests.
+- Verify ingress locally with `curl http://blue.home.arpa/` and `curl http://green.home.arpa/`.
+
 ## Deploying a Revision
 1. Update the manifest under `specs/` and apply with `python -m ae.cli apply -f <path>`.
 2. Watch progress with `python -m ae.cli status <app> --events --history 5`; ready state should show `rev=<n>(ready)` and recent `ApplyCompleted` events.
