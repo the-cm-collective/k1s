@@ -54,9 +54,19 @@ install_sops || {
 log "Ensuring Docker service is running"
 $SUDO systemctl enable --now docker
 
-log "Installing Python dependencies"
-python3 -m pip install --upgrade pip
-python3 -m pip install -e .[dev]
+VENV_DIR=${VENV_DIR:-.venv-demo}
+
+if [[ ! -d "$VENV_DIR" ]]; then
+  log "Creating Python virtual environment at $VENV_DIR"
+  python3 -m venv "$VENV_DIR"
+fi
+
+PY_BIN="$VENV_DIR/bin/python"
+PIP_BIN="$VENV_DIR/bin/pip"
+
+log "Installing Python dependencies inside virtualenv"
+"$PY_BIN" -m pip install --upgrade pip
+"$PIP_BIN" install -e .[dev]
 
 log "Building demo Docker images"
 docker build -t demo-blue:latest samples/servers/blue
@@ -78,10 +88,10 @@ export AE_STATE_DB=${AE_STATE_DB:-state/controller.db}
 mkdir -p "${AE_CADDY_SITES}"
 
 log "Applying demo manifests"
-python3 -m ae.cli apply -f specs/examples/blue.yaml
-python3 -m ae.cli apply -f specs/examples/green.yaml
+"$PY_BIN" -m ae.cli apply -f specs/examples/blue.yaml
+"$PY_BIN" -m ae.cli apply -f specs/examples/green.yaml
 
 log "Current status"
-python3 -m ae.cli status
+"$PY_BIN" -m ae.cli status
 
 log "Demo setup complete. Test with: curl http://blue.home.arpa/"
