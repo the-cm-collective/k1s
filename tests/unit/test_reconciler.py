@@ -43,5 +43,9 @@ def test_reconciler_updates_state(tmp_path: Path) -> None:
     status = state.get_status("demo")
     assert status is not None
     assert status.ready_replicas == 1
+    assert status.live_replicas == 1
     assert status.image == "alpine:3.20"
     assert status.created == 1
+    replicas = state.list_replicas("demo")
+    assert len(replicas) == 1
+    assert replicas[0].live is True

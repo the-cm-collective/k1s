@@ -10,7 +10,7 @@ from typing import Callable
 from ae.controller.health import HealthManager
 from ae.controller.reconciler import ReconcileReport, Reconciler
 from ae.controller.state import AppStatus, SQLiteStateStore
-from ae.runtime import DockerRuntime
+from ae.runtime import DockerRuntime, RuntimeAdapter, StubRuntime
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,6 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     status_parser = subparsers.add_parser("status", help="Show application status")
     status_parser.add_argument("name", nargs="?", help="Application name (omit to list all)")
+    status_parser.add_argument(
+        "--history", type=int, default=0, help="Show the most recent N probe evaluations"
+    )
 
     logs_parser = subparsers.add_parser("logs", help="Tail application logs (stub)")
     logs_parser.add_argument("name", help="Application name")
@@ -36,7 +39,10 @@ def state_store_from_env() -> SQLiteStateStore:
     return SQLiteStateStore(db_path)
 
 
-def runtime_factory() -> DockerRuntime:
+def runtime_factory() -> RuntimeAdapter:
+    backend = os.getenv("AE_RUNTIME_BACKEND", "docker").lower()
+    if backend == "stub":
+        return StubRuntime()
     return DockerRuntime()
 
 
@@ -47,14 +53,14 @@ def health_manager_factory() -> HealthManager:
 def format_report(report: ReconcileReport) -> str:
     return (
         f"Applied {report.app_name}: +{report.created}/~{report.updated}/-{report.removed}, "
-        f"ready={report.ready_replicas}"
+        f"ready={report.ready_replicas}, live={report.live_replicas}"
     )
 
 
 def format_status(status: AppStatus) -> str:
     return (
         f"{status.app_name}: desired={status.desired_replicas}, "
-        f"ready={status.ready_replicas}, image={status.image}, "
+        f"ready={status.ready_replicas}, live={status.live_replicas}, image={status.image}, "
         f"ops=+{status.created}/~{status.updated}/-{status.removed}"
     )
 
@@ -94,6 +100,23 @@ def handle_status(args: argparse.Namespace, store: SQLiteStateStore) -> int:
             print(f"No status recorded for {args.name}")
             return 1
         print(format_status(status))
+        replicas = store.list_replicas(args.name)
+        for replica in replicas:
+            print(
+                f"  - {replica.replica_id}: ready={replica.ready} "
+                f"live={replica.live} status={replica.status} | "
+                f"readiness={replica.readiness_message}; "
+                f"liveness={replica.liveness_message}"
+            )
+        if args.history and args.history > 0:
+            history = store.get_probe_history(args.name, args.history)
+            for entry in history:
+                timestamp = entry.check_time.strftime("%Y-%m-%d %H:%M:%S")
+                print(
+                    f"    history {timestamp} {entry.replica_id}: ready={entry.ready} "
+                    f"live={entry.live} | readiness={entry.readiness_message}; "
+                    f"liveness={entry.liveness_message}"
+                )
         return 0
 
     statuses = store.list_status()

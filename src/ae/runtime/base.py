@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from ae.controller.spec import AppManifest
@@ -16,6 +17,7 @@ class ReplicaState:
     ready: bool
     status: str = "running"
     endpoint: str | None = None
+    started_at: datetime | None = None
 
 
 @dataclass(slots=True)

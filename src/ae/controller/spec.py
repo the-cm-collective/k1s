@@ -32,6 +32,9 @@ class ProbeSpec(BaseModel):
     http_get: Optional[HTTPGetProbe] = Field(default=None, alias="httpGet")
     initial_delay_seconds: int = Field(default=0, alias="initialDelaySeconds")
     timeout_seconds: int = Field(default=1, alias="timeoutSeconds")
+    period_seconds: int = Field(default=10, alias="periodSeconds")
+    success_threshold: int = Field(default=1, alias="successThreshold")
+    failure_threshold: int = Field(default=3, alias="failureThreshold")
 
     model_config = {"populate_by_name": True}
 

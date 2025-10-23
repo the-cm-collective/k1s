@@ -21,6 +21,7 @@ class ReconcileReport:
     updated: int
     removed: int
     ready_replicas: int
+    live_replicas: int
 
 
 class Reconciler:
@@ -58,4 +59,5 @@ class Reconciler:
             updated=result.updated,
             removed=result.removed,
             ready_replicas=health_report.ready_replicas,
+            live_replicas=health_report.live_replicas,
         )

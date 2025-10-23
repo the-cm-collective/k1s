@@ -1,8 +1,4 @@
-"""Placeholder implementation of the runtime adapter using docker-py.
-
-This module intentionally keeps logic minimal for Phase 1. Future phases will
-replace stubbed operations with real docker/client interactions.
-"""
+"""Stub runtime adapter for tests and offline development."""
 
 from __future__ import annotations
 
@@ -11,8 +7,8 @@ from ae.controller.spec import AppManifest
 from .base import ReplicaState, RuntimeAdapter, RuntimeResult
 
 
-class DockerRuntime(RuntimeAdapter):
-    """Stubbed Docker runtime; records intended operations."""
+class StubRuntime(RuntimeAdapter):
+    """Stubbed runtime; returns ready replicas without touching Docker."""
 
     def ensure_app(self, manifest: AppManifest) -> RuntimeResult:  # noqa: D401
         # Phase 1 stub: pretend one replica is ready. Later we will
