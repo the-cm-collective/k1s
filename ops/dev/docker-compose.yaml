@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  caddy:
+    image: caddy:2.8
+    ports:
+      - "8080:80"
+      - "8443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    # Placeholder until controller writes per-app config.
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    # Configure scrape targets after observability endpoints exist.

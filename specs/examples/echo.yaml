@@ -1,0 +1,20 @@
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: echo
+spec:
+  image: alpine:3.20
+  command:
+    - sh
+    - -c
+    - "while true; do printf 'ready\n'; sleep 5; done"
+  replicas: 1
+  ports:
+    - name: http
+      containerPort: 8080
+  health:
+    readiness:
+      httpGet:
+        path: /
+        port: 8080
+      initialDelaySeconds: 5

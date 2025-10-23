@@ -1,0 +1,8 @@
+# Basic scrape config for local development.
+server:
+  http_listen_port: 9090
+
+scrape_configs:
+  - job_name: "placeholder"
+    static_configs:
+      - targets: ["localhost:9999"]
