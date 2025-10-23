@@ -15,6 +15,7 @@ def test_health_manager_counts_ready():
     )
 
     result = RuntimeResult(
+        revision=1,
         created=2,
         updated=0,
         removed=0,
@@ -53,6 +54,7 @@ def test_health_manager_http_probe(monkeypatch):
     )
 
     result = RuntimeResult(
+        revision=1,
         created=1,
         updated=0,
         removed=0,
@@ -102,6 +104,7 @@ def test_health_manager_initial_delay(monkeypatch):
 
     start_time = datetime.now(timezone.utc) - timedelta(seconds=5)
     result = RuntimeResult(
+        revision=2,
         created=1,
         updated=0,
         removed=0,

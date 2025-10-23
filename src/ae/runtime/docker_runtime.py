@@ -22,6 +22,7 @@ class DockerRuntime(RuntimeAdapter):
 
     APP_LABEL = "ae.app"
     REPLICA_LABEL = "ae.replica_id"
+    REVISION_LABEL = "ae.revision"
 
     def __init__(self, client: Optional[docker.DockerClient] = None) -> None:
         try:
@@ -29,9 +30,9 @@ class DockerRuntime(RuntimeAdapter):
         except Exception as exc:  # pragma: no cover - defensive guard, validated in tests
             raise RuntimeError(f"Failed to initialize Docker client: {exc}") from exc
 
-    def ensure_app(self, manifest: AppManifest) -> RuntimeResult:
+    def ensure_app(self, manifest: AppManifest, revision: int) -> RuntimeResult:
         app_name = manifest.metadata.name
-        desired_replica_ids = self._desired_replica_ids(manifest)
+        desired_replica_ids = self._desired_replica_ids(manifest, revision)
 
         try:
             existing_containers = self._client.containers.list(
@@ -40,11 +41,16 @@ class DockerRuntime(RuntimeAdapter):
         except APIError as exc:  # pragma: no cover - network failure path hard to trigger in tests
             raise RuntimeError(f"Failed to list containers for {app_name}: {exc}") from exc
 
-        containers_by_replica = {
-            container.labels.get(self.REPLICA_LABEL): container
-            for container in existing_containers
-            if container.labels.get(self.REPLICA_LABEL)
-        }
+        containers_by_replica: Dict[str, Container] = {}
+        old_revision_containers: List[Container] = []
+        for container in existing_containers:
+            replica_label = container.labels.get(self.REPLICA_LABEL)
+            if not replica_label:
+                continue
+            if container.labels.get(self.REVISION_LABEL) == str(revision):
+                containers_by_replica[replica_label] = container
+            else:
+                old_revision_containers.append(container)
 
         created = updated = removed = 0
 
@@ -54,7 +60,7 @@ class DockerRuntime(RuntimeAdapter):
         for replica_id in desired_replica_ids:
             container = containers_by_replica.get(replica_id)
             if container is None:
-                container = self._create_container(manifest, replica_id)
+                container = self._create_container(manifest, replica_id, revision)
                 containers_by_replica[replica_id] = container
                 created += 1
             else:
@@ -66,11 +72,9 @@ class DockerRuntime(RuntimeAdapter):
                     except APIError as exc:
                         raise RuntimeError(f"Failed to start container {container.name}: {exc}") from exc
 
-        for replica_id, container in list(containers_by_replica.items()):
-            if replica_id not in desired_replica_ids:
-                self._stop_and_remove(container)
-                containers_by_replica.pop(replica_id, None)
-                removed += 1
+        for container in old_revision_containers:
+            self._stop_and_remove(container)
+            removed += 1
 
         final_containers = self._client.containers.list(
             all=True, filters={"label": f"{self.APP_LABEL}={app_name}"}
@@ -79,9 +83,11 @@ class DockerRuntime(RuntimeAdapter):
             self._build_state(manifest, container)
             for container in final_containers
             if container.labels.get(self.REPLICA_LABEL)
+            and container.labels.get(self.REVISION_LABEL) == str(revision)
         ]
 
         return RuntimeResult(
+            revision=revision,
             created=created,
             updated=updated,
             removed=removed,
@@ -90,8 +96,11 @@ class DockerRuntime(RuntimeAdapter):
 
     # Internal helpers -------------------------------------------------
 
-    def _desired_replica_ids(self, manifest: AppManifest) -> List[str]:
-        return [f"{manifest.metadata.name}-{replica}" for replica in range(manifest.spec.replicas)]
+    def _desired_replica_ids(self, manifest: AppManifest, revision: int) -> List[str]:
+        return [
+            f"{manifest.metadata.name}-rev{revision}-{replica}"
+            for replica in range(manifest.spec.replicas)
+        ]
 
     def _pull_image(self, manifest: AppManifest) -> None:
         try:
@@ -100,9 +109,11 @@ class DockerRuntime(RuntimeAdapter):
         except APIError as exc:
             raise RuntimeError(f"Failed to pull image {manifest.spec.image}: {exc}") from exc
 
-    def _create_container(self, manifest: AppManifest, replica_id: str) -> Container:
-        app_name, replica_suffix = replica_id.rsplit("-", maxsplit=1)
-        name = f"ae-{app_name}-{replica_suffix}"
+    def _create_container(self, manifest: AppManifest, replica_id: str, revision: int) -> Container:
+        # replica_id pattern: <app>-rev<revision>-<index>
+        app_name = manifest.metadata.name
+        replica_suffix = replica_id.split("-")[-1]
+        name = f"ae-{app_name}-rev{revision}-{replica_suffix}"
         env = self._manifest_env(manifest)
         ports = self._port_mapping(manifest.spec.ports)
 
@@ -116,6 +127,7 @@ class DockerRuntime(RuntimeAdapter):
                 labels={
                     self.APP_LABEL: manifest.metadata.name,
                     self.REPLICA_LABEL: replica_id,
+                    self.REVISION_LABEL: str(revision),
                 },
                 ports=ports if ports else None,
                 restart_policy={"Name": "unless-stopped"},

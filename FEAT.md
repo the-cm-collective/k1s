@@ -20,6 +20,8 @@ Got it — here’s a pragmatic path to a “minimal app engine” that runs wel
 * [x] Phase 1 – Core spec and reconcile skeleton landed: Pydantic manifest loader, runtime stub, SQLite snapshot store, and CLI commands (`apply`, `status`, `logs`) with unit coverage.
 * [x] Phase 2 – Docker runtime + health loops: Real Docker adapter with create/start/cleanup flow, readiness/liveness evaluator with initial-delay semantics, probe history persisted for CLI inspection.
 * [x] Phase 3 – Ingress & TLS automation: Added Caddy templating/reload hooks, persisted ingress host metadata, and surfaced replica/ingress status via CLI.
+* [x] Phase 4 – Rollouts & rollbacks: Revision-aware reconciler/runtime, revision history + CLI rollback/list commands, and health-gated status tracking.
+* [ ] Phase 5 – Secrets & registry auth: integrate SOPS decryption, registry credentials, and secure env injection.
 
 ## 0) Bootstrap (1–2 hrs)
 

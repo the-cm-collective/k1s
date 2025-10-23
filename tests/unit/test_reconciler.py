@@ -9,14 +9,15 @@ from ae.runtime.base import ReplicaState, RuntimeAdapter, RuntimeResult
 
 
 class StubRuntime(RuntimeAdapter):
-    def ensure_app(self, manifest: AppManifest) -> RuntimeResult:
+    def ensure_app(self, manifest: AppManifest, revision: int) -> RuntimeResult:
         return RuntimeResult(
+            revision=revision,
             created=1,
             updated=0,
             removed=0,
             replica_states=[
                 ReplicaState(
-                    replica_id=f"{manifest.metadata.name}-0",
+                    replica_id=f"{manifest.metadata.name}-rev{revision}-0",
                     ready=True,
                     status="running",
                     endpoint="127.0.0.1:32000",
@@ -61,6 +62,8 @@ def test_reconciler_updates_state(tmp_path: Path) -> None:
     assert status is not None
     assert status.ready_replicas == 1
     assert status.live_replicas == 1
+    assert status.revision == 1
+    assert status.revision_status in {"ready", "progressing"}
     assert status.image == "alpine:3.20"
     assert status.created == 1
     replicas = state.list_replicas("demo")
@@ -91,3 +94,4 @@ def test_reconciler_with_ingress(tmp_path: Path) -> None:
     status = state.get_status("demo")
     assert status is not None
     assert status.ingress_host == "demo.local"
+    assert status.revision >= 1

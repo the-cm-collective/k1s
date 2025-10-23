@@ -12,12 +12,12 @@ from .base import ReplicaState, RuntimeAdapter, RuntimeResult
 class StubRuntime(RuntimeAdapter):
     """Stubbed runtime; returns ready replicas without touching Docker."""
 
-    def ensure_app(self, manifest: AppManifest) -> RuntimeResult:
+    def ensure_app(self, manifest: AppManifest, revision: int) -> RuntimeResult:
         desired = manifest.spec.replicas
         now = datetime.now(timezone.utc)
         replica_states = [
             ReplicaState(
-                replica_id=f"{manifest.metadata.name}-{idx}",
+                replica_id=f"{manifest.metadata.name}-rev{revision}-{idx}",
                 ready=True,
                 status="running",
                 endpoint=f"127.0.0.1:{9000 + idx}",
@@ -26,6 +26,7 @@ class StubRuntime(RuntimeAdapter):
             for idx in range(desired)
         ]
         return RuntimeResult(
+            revision=revision,
             created=desired,
             updated=0,
             removed=0,

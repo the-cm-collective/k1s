@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from ae.controller.health import HealthReport
 from ae.controller.spec import AppManifest
@@ -20,6 +22,8 @@ class AppStatus:
     desired_replicas: int
     ready_replicas: int
     live_replicas: int
+    revision: int
+    revision_status: str
     image: str
     created: int
     updated: int
@@ -54,6 +58,16 @@ class ProbeHistoryEntry:
     liveness_message: str
 
 
+@dataclass(slots=True)
+class RevisionInfo:
+    """Information about a stored application revision."""
+
+    revision: int
+    spec_hash: str
+    status: str
+    image: str
+
+
 class SQLiteStateStore:
     """Minimal SQLite-backed store for reconcile snapshots."""
 
@@ -71,6 +85,8 @@ class SQLiteStateStore:
                     "desired_replicas",
                     "ready_replicas",
                     "live_replicas",
+                    "revision",
+                    "revision_status",
                     "image",
                     "created",
                     "updated",
@@ -101,6 +117,8 @@ class SQLiteStateStore:
                     desired_replicas INTEGER NOT NULL,
                     ready_replicas INTEGER NOT NULL,
                     live_replicas INTEGER NOT NULL,
+                    revision INTEGER NOT NULL,
+                    revision_status TEXT NOT NULL,
                     image TEXT NOT NULL,
                     created INTEGER NOT NULL,
                     updated INTEGER NOT NULL,
@@ -138,6 +156,20 @@ class SQLiteStateStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_revisions (
+                    app_name TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    spec_hash TEXT NOT NULL,
+                    spec_json TEXT NOT NULL,
+                    image TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    PRIMARY KEY (app_name, revision)
+                )
+                """
+            )
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -160,18 +192,22 @@ class SQLiteStateStore:
         manifest: AppManifest,
         runtime_result: RuntimeResult,
         health_report: HealthReport,
+        revision: int,
+        revision_status: str,
     ) -> None:
         state_by_id = {state.replica_id: state for state in runtime_result.replica_states}
 
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO app_status(app_name, desired_replicas, ready_replicas, live_replicas, image, created, updated, removed, ingress_host, ingress_path)
-                VALUES(?,?,?,?,?,?,?,?,?,?)
+                INSERT INTO app_status(app_name, desired_replicas, ready_replicas, live_replicas, revision, revision_status, image, created, updated, removed, ingress_host, ingress_path)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(app_name) DO UPDATE SET
                     desired_replicas=excluded.desired_replicas,
                     ready_replicas=excluded.ready_replicas,
                     live_replicas=excluded.live_replicas,
+                    revision=excluded.revision,
+                    revision_status=excluded.revision_status,
                     image=excluded.image,
                     created=excluded.created,
                     updated=excluded.updated,
@@ -184,6 +220,8 @@ class SQLiteStateStore:
                     manifest.spec.replicas,
                     health_report.ready_replicas,
                     health_report.live_replicas,
+                    revision,
+                    revision_status,
                     manifest.spec.image,
                     runtime_result.created,
                     runtime_result.updated,
@@ -255,13 +293,21 @@ class SQLiteStateStore:
                         """,
                         (manifest.metadata.name, replica.replica_id),
                     )
+            conn.execute(
+                """
+                UPDATE app_revisions
+                SET status = ?, image = ?, spec_hash = spec_hash
+                WHERE app_name = ? AND revision = ?
+                """,
+                (revision_status, manifest.spec.image, manifest.metadata.name, revision),
+            )
             conn.commit()
 
     def get_status(self, app_name: str) -> AppStatus | None:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT app_name, desired_replicas, ready_replicas, live_replicas, image, created, updated, removed, ingress_host, ingress_path
+                SELECT app_name, desired_replicas, ready_replicas, live_replicas, revision, revision_status, image, created, updated, removed, ingress_host, ingress_path
                 FROM app_status WHERE app_name = ?
                 """,
                 (app_name,),
@@ -273,19 +319,21 @@ class SQLiteStateStore:
                 desired_replicas=row[1],
                 ready_replicas=row[2],
                 live_replicas=row[3],
-                image=row[4],
-                created=row[5],
-                updated=row[6],
-                removed=row[7],
-                ingress_host=row[8],
-                ingress_path=row[9],
+                revision=row[4],
+                revision_status=row[5],
+                image=row[6],
+                created=row[7],
+                updated=row[8],
+                removed=row[9],
+                ingress_host=row[10],
+                ingress_path=row[11],
             )
 
     def list_status(self) -> list[AppStatus]:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT app_name, desired_replicas, ready_replicas, live_replicas, image, created, updated, removed, ingress_host, ingress_path
+                SELECT app_name, desired_replicas, ready_replicas, live_replicas, revision, revision_status, image, created, updated, removed, ingress_host, ingress_path
                 FROM app_status ORDER BY app_name
                 """
             ).fetchall()
@@ -295,12 +343,14 @@ class SQLiteStateStore:
                 desired_replicas=row[1],
                 ready_replicas=row[2],
                 live_replicas=row[3],
-                image=row[4],
-                created=row[5],
-                updated=row[6],
-                removed=row[7],
-                ingress_host=row[8],
-                ingress_path=row[9],
+                revision=row[4],
+                revision_status=row[5],
+                image=row[6],
+                created=row[7],
+                updated=row[8],
+                removed=row[9],
+                ingress_host=row[10],
+                ingress_path=row[11],
             )
             for row in rows
         ]
@@ -357,3 +407,84 @@ class SQLiteStateStore:
                 )
             )
         return entries
+
+    def prepare_revision(self, manifest: AppManifest, spec_hash: str) -> tuple[int, bool]:
+        latest = self._get_latest_revision(manifest.metadata.name)
+        if latest and latest.spec_hash == spec_hash:
+            return latest.revision, False
+
+        next_revision = (latest.revision if latest else 0) + 1 if latest else 1
+        spec_json = json.dumps(manifest.model_dump(by_alias=True), sort_keys=True)
+        created_at = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO app_revisions(app_name, revision, spec_hash, spec_json, image, created_at, status)
+                VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(app_name, revision) DO NOTHING
+                """,
+                (
+                    manifest.metadata.name,
+                    next_revision,
+                    spec_hash,
+                    spec_json,
+                    manifest.spec.image,
+                    created_at,
+                    "pending",
+                ),
+            )
+            conn.commit()
+        return next_revision, True
+
+    def _get_latest_revision(self, app_name: str) -> Optional[RevisionInfo]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT revision, spec_hash, status, image
+                FROM app_revisions
+                WHERE app_name = ?
+                ORDER BY revision DESC
+                LIMIT 1
+                """,
+                (app_name,),
+            ).fetchone()
+        if row is None:
+            return None
+        return RevisionInfo(
+            revision=row[0],
+            spec_hash=row[1],
+            status=row[2],
+            image=row[3],
+        )
+
+    def get_revision_manifest(self, app_name: str, revision: int) -> AppManifest:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT spec_json
+                FROM app_revisions
+                WHERE app_name = ? AND revision = ?
+                """,
+                (app_name, revision),
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"No revision {revision} recorded for {app_name}")
+        return AppManifest.model_validate_json(row[0])
+
+    def list_revisions(self, app_name: str, limit: int = 10) -> list[RevisionInfo]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT revision, spec_hash, status, image
+                FROM app_revisions
+                WHERE app_name = ?
+                ORDER BY revision DESC
+                LIMIT ?
+                """,
+                (app_name, limit),
+            ).fetchall()
+        return [
+            RevisionInfo(revision=row[0], spec_hash=row[1], status=row[2], image=row[3])
+            for row in rows
+        ]

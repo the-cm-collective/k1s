@@ -24,6 +24,7 @@ class ReplicaState:
 class RuntimeResult:
     """Result of reconciling containers for an application."""
 
+    revision: int
     created: int
     updated: int
     removed: int
@@ -33,5 +34,5 @@ class RuntimeResult:
 class RuntimeAdapter(Protocol):
     """Adapter that drives container runtime operations."""
 
-    def ensure_app(self, manifest: AppManifest) -> RuntimeResult:
+    def ensure_app(self, manifest: AppManifest, revision: int) -> RuntimeResult:
         """Ensure the runtime matches the manifest."""

@@ -9,7 +9,7 @@ from typing import Callable
 
 from ae.controller.health import HealthManager
 from ae.controller.reconciler import ReconcileReport, Reconciler
-from ae.controller.state import AppStatus, SQLiteStateStore
+from ae.controller.state import AppStatus, SQLiteStateStore, RevisionInfo
 from ae.ingress import CaddyIngressManager, IngressService
 from ae.runtime import DockerRuntime, RuntimeAdapter, StubRuntime
 
@@ -30,6 +30,19 @@ def build_parser() -> argparse.ArgumentParser:
     logs_parser = subparsers.add_parser("logs", help="Tail application logs (stub)")
     logs_parser.add_argument("name", help="Application name")
     logs_parser.add_argument("--follow", action="store_true", help="Stream logs continuously")
+
+    rollback_parser = subparsers.add_parser("rollback", help="Rollback an application revision")
+    rollback_parser.add_argument("name", help="Application name")
+    rollback_parser.add_argument(
+        "--to",
+        type=int,
+        default=None,
+        help="Target revision number (default: previous revision)",
+    )
+
+    revisions_parser = subparsers.add_parser("revisions", help="List stored revisions")
+    revisions_parser.add_argument("name", help="Application name")
+    revisions_parser.add_argument("--limit", type=int, default=10)
 
     return parser
 
@@ -65,7 +78,8 @@ def ingress_service_factory() -> IngressService | None:
 def format_report(report: ReconcileReport) -> str:
     return (
         f"Applied {report.app_name}: +{report.created}/~{report.updated}/-{report.removed}, "
-        f"ready={report.ready_replicas}, live={report.live_replicas}"
+        f"ready={report.ready_replicas}, live={report.live_replicas}, "
+        f"rev={report.revision}({report.revision_status})"
     )
 
 
@@ -74,6 +88,7 @@ def format_status(status: AppStatus) -> str:
         f"{status.app_name}: desired={status.desired_replicas}",
         f"ready={status.ready_replicas}",
         f"live={status.live_replicas}",
+        f"rev={status.revision}({status.revision_status})",
         f"image={status.image}",
         f"ops=+{status.created}/~{status.updated}/-{status.removed}",
     ]
@@ -102,6 +117,8 @@ def main(argv: list[str] | None = None) -> int:
         "apply": lambda ns: handle_apply(ns, reconciler),
         "status": lambda ns: handle_status(ns, store),
         "logs": lambda ns: handle_logs(ns),
+        "rollback": lambda ns: handle_rollback(ns, store, reconciler),
+        "revisions": lambda ns: handle_revisions(ns, store),
     }
 
     handler = command_handlers.get(args.command)
@@ -159,6 +176,46 @@ def handle_logs(args: argparse.Namespace) -> int:
         parts.append("streaming")
     parts.append("are not implemented yet.")
     print(" ".join(parts))
+    return 0
+
+
+def handle_rollback(
+    args: argparse.Namespace,
+    store: SQLiteStateStore,
+    reconciler: Reconciler,
+) -> int:
+    target_rev: int | None = args.to
+    if target_rev is None:
+        revisions = store.list_revisions(args.name, limit=2)
+        if len(revisions) < 2:
+            print("No previous revision to roll back to.")
+            return 1
+        target_rev = revisions[1].revision
+
+    try:
+        manifest = store.get_revision_manifest(args.name, target_rev)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+
+    report = reconciler.reconcile(manifest)
+    print(
+        f"Rolled back {args.name} to revision {report.revision} "
+        f"({report.revision_status})"
+    )
+    return 0
+
+
+def handle_revisions(args: argparse.Namespace, store: SQLiteStateStore) -> int:
+    revisions = store.list_revisions(args.name, limit=args.limit)
+    if not revisions:
+        print(f"No revisions recorded for {args.name}.")
+        return 0
+    for info in revisions:
+        print(
+            f"rev {info.revision}: status={info.status}, image={info.image}, "
+            f"hash={info.spec_hash[:8]}"
+        )
     return 0
 
 

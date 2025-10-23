@@ -39,14 +39,16 @@ def test_apply_and_status_commands(tmp_path, monkeypatch, capsys):
     assert "desired=1" in status_out
     assert "ready=1" in status_out
     assert "live=1" in status_out
+    assert "rev=1" in status_out
     assert "ops=+1" in status_out
-    assert "  - echo-0" in status_out
+    assert "  - echo-rev1-0" in status_out
 
     exit_code = main(["status"])
     assert exit_code == 0
     list_out = capsys.readouterr().out
     assert "echo" in list_out
     assert "live=1" in list_out
+    assert "rev=1" in list_out
     assert "ops=+1" in list_out
 
     exit_code = main(["status", "echo", "--history", "3"])
@@ -54,6 +56,14 @@ def test_apply_and_status_commands(tmp_path, monkeypatch, capsys):
     history_out = capsys.readouterr().out
     assert "history" in history_out
     assert "readiness" in history_out
+
+    exit_code = main(["revisions", "echo"])
+    assert exit_code == 0
+    revisions_out = capsys.readouterr().out
+    assert "rev 1" in revisions_out
+
+    exit_code = main(["rollback", "echo"])
+    assert exit_code == 1  # no previous revision yet
 
 
 def test_logs_command(tmp_path, monkeypatch, capsys):
@@ -66,3 +76,36 @@ def test_logs_command(tmp_path, monkeypatch, capsys):
     assert exit_code == 0
     output = capsys.readouterr().out
     assert "Logs for ghost" in output
+
+
+def test_rollback_command(tmp_path, monkeypatch, capsys):
+    manifest_v1 = tmp_path / "echo.yaml"
+    write_manifest(manifest_v1)
+
+    manifest_v2 = tmp_path / "echo-v2.yaml"
+    manifest_v2.write_text(
+        """
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: echo
+spec:
+  image: alpine:3.21
+  replicas: 1
+        """.strip()
+    )
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setenv("AE_STATE_DB", str(db_path))
+    monkeypatch.setenv("AE_RUNTIME_BACKEND", "stub")
+    monkeypatch.setenv("AE_CADDY_SITES", "")
+
+    assert main(["apply", "-f", str(manifest_v1)]) == 0
+    capsys.readouterr()
+    assert main(["apply", "-f", str(manifest_v2)]) == 0
+    capsys.readouterr()
+
+    exit_code = main(["rollback", "echo", "--to", "1"])
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Rolled back echo" in output

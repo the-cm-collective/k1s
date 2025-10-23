@@ -109,14 +109,15 @@ class FakeDockerClient:
         self.containers_by_replica.pop(replica_id, None)
 
     # helper for tests
-    def seed_container(self, app_name: str, replica_suffix: int) -> None:
-        replica_id = f"{app_name}-{replica_suffix}"
+    def seed_container(self, app_name: str, replica_suffix: int, revision: int) -> None:
+        replica_id = f"{app_name}-rev{revision}-{replica_suffix}"
         container = FakeContainer(
             client=self,
-            name=f"ae-{app_name}-{replica_suffix}",
+            name=f"ae-{app_name}-rev{revision}-{replica_suffix}",
             labels={
                 "ae.app": app_name,
                 "ae.replica_id": replica_id,
+                "ae.revision": str(revision),
             },
             host_port=self.allocate_port(),
         )
@@ -141,8 +142,9 @@ def test_docker_runtime_creates_missing_replicas():
     runtime = DockerRuntime(client=client)
 
     manifest = make_manifest(replica_count=2)
-    result = runtime.ensure_app(manifest)
+    result = runtime.ensure_app(manifest, revision=1)
 
+    assert result.revision == 1
     assert result.created == 2
     assert result.removed == 0
     assert len(result.replica_states) == 2
@@ -154,15 +156,16 @@ def test_docker_runtime_creates_missing_replicas():
 
 def test_docker_runtime_removes_extra_replicas():
     client = FakeDockerClient()
-    client.seed_container("demo", 0)
-    client.seed_container("demo", 1)
+    client.seed_container("demo", 0, revision=0)
+    client.seed_container("demo", 1, revision=0)
 
     runtime = DockerRuntime(client=client)
     manifest = make_manifest(replica_count=1)
 
-    result = runtime.ensure_app(manifest)
+    result = runtime.ensure_app(manifest, revision=1)
 
-    assert result.removed == 1
-    assert result.created == 0
+    assert result.removed == 2
+    assert result.created == 1
     assert len(result.replica_states) == 1
-    assert "demo-1" not in client.containers_by_replica
+    assert "demo-rev1-0" in client.containers_by_replica
+    assert "demo-rev0-1" not in client.containers_by_replica
