@@ -26,6 +26,7 @@ def test_apply_and_status_commands(tmp_path, monkeypatch, capsys):
     db_path = tmp_path / "state.db"
     monkeypatch.setenv("AE_STATE_DB", str(db_path))
     monkeypatch.setenv("AE_RUNTIME_BACKEND", "stub")
+    monkeypatch.setenv("AE_CADDY_SITES", "")
 
     exit_code = main(["apply", "-f", str(manifest_path)])
     assert exit_code == 0
@@ -59,6 +60,7 @@ def test_logs_command(tmp_path, monkeypatch, capsys):
     db_path = tmp_path / "state.db"
     monkeypatch.setenv("AE_STATE_DB", str(db_path))
     monkeypatch.setenv("AE_RUNTIME_BACKEND", "stub")
+    monkeypatch.setenv("AE_CADDY_SITES", "")
 
     exit_code = main(["logs", "ghost"])
     assert exit_code == 0

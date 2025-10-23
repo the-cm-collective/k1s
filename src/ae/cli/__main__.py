@@ -10,6 +10,7 @@ from typing import Callable
 from ae.controller.health import HealthManager
 from ae.controller.reconciler import ReconcileReport, Reconciler
 from ae.controller.state import AppStatus, SQLiteStateStore
+from ae.ingress import CaddyIngressManager, IngressService
 from ae.runtime import DockerRuntime, RuntimeAdapter, StubRuntime
 
 
@@ -50,6 +51,17 @@ def health_manager_factory() -> HealthManager:
     return HealthManager()
 
 
+def ingress_service_factory() -> IngressService | None:
+    root = os.getenv("AE_CADDY_SITES")
+    if root is not None and root.strip() == "":
+        return None
+    config_root = Path(root) if root else Path("ops/dev/caddy/sites")
+    config_root.mkdir(parents=True, exist_ok=True)
+    binary = os.getenv("AE_CADDY_BIN", "caddy")
+    manager = CaddyIngressManager(config_root=config_root, caddy_binary=binary)
+    return IngressService(manager)
+
+
 def format_report(report: ReconcileReport) -> str:
     return (
         f"Applied {report.app_name}: +{report.created}/~{report.updated}/-{report.removed}, "
@@ -58,11 +70,17 @@ def format_report(report: ReconcileReport) -> str:
 
 
 def format_status(status: AppStatus) -> str:
-    return (
-        f"{status.app_name}: desired={status.desired_replicas}, "
-        f"ready={status.ready_replicas}, live={status.live_replicas}, image={status.image}, "
-        f"ops=+{status.created}/~{status.updated}/-{status.removed}"
-    )
+    parts = [
+        f"{status.app_name}: desired={status.desired_replicas}",
+        f"ready={status.ready_replicas}",
+        f"live={status.live_replicas}",
+        f"image={status.image}",
+        f"ops=+{status.created}/~{status.updated}/-{status.removed}",
+    ]
+    if status.ingress_host:
+        path = status.ingress_path or "/"
+        parts.append(f"ingress={status.ingress_host}{path}")
+    return ", ".join(parts)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -72,7 +90,13 @@ def main(argv: list[str] | None = None) -> int:
     store = state_store_from_env()
     runtime = runtime_factory()
     health_manager = health_manager_factory()
-    reconciler = Reconciler(runtime=runtime, state_store=store, health_manager=health_manager)
+    ingress_service = ingress_service_factory()
+    reconciler = Reconciler(
+        runtime=runtime,
+        state_store=store,
+        health_manager=health_manager,
+        ingress_service=ingress_service,
+    )
 
     command_handlers: dict[str, Callable[[argparse.Namespace], int]] = {
         "apply": lambda ns: handle_apply(ns, reconciler),

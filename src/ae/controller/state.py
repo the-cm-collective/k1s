@@ -24,6 +24,10 @@ class AppStatus:
     created: int
     updated: int
     removed: int
+    ingress_host: str | None = None
+    ingress_path: str | None = None
+    ingress_host: str | None
+    ingress_path: str | None
 
 
 @dataclass(slots=True)
@@ -71,6 +75,8 @@ class SQLiteStateStore:
                     "created",
                     "updated",
                     "removed",
+                    "ingress_host",
+                    "ingress_path",
                 ],
             ) or not self._schema_matches(
                 conn,
@@ -98,7 +104,9 @@ class SQLiteStateStore:
                     image TEXT NOT NULL,
                     created INTEGER NOT NULL,
                     updated INTEGER NOT NULL,
-                    removed INTEGER NOT NULL
+                    removed INTEGER NOT NULL,
+                    ingress_host TEXT,
+                    ingress_path TEXT
                 )
                 """
             )
@@ -158,8 +166,8 @@ class SQLiteStateStore:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO app_status(app_name, desired_replicas, ready_replicas, live_replicas, image, created, updated, removed)
-                VALUES(?,?,?,?,?,?,?,?)
+                INSERT INTO app_status(app_name, desired_replicas, ready_replicas, live_replicas, image, created, updated, removed, ingress_host, ingress_path)
+                VALUES(?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(app_name) DO UPDATE SET
                     desired_replicas=excluded.desired_replicas,
                     ready_replicas=excluded.ready_replicas,
@@ -167,7 +175,9 @@ class SQLiteStateStore:
                     image=excluded.image,
                     created=excluded.created,
                     updated=excluded.updated,
-                    removed=excluded.removed
+                    removed=excluded.removed,
+                    ingress_host=excluded.ingress_host,
+                    ingress_path=excluded.ingress_path
                 """,
                 (
                     manifest.metadata.name,
@@ -178,6 +188,8 @@ class SQLiteStateStore:
                     runtime_result.created,
                     runtime_result.updated,
                     runtime_result.removed,
+                    manifest.spec.ingress.host if manifest.spec.ingress else None,
+                    manifest.spec.ingress.path if manifest.spec.ingress else None,
                 ),
             )
 
@@ -249,7 +261,7 @@ class SQLiteStateStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT app_name, desired_replicas, ready_replicas, live_replicas, image, created, updated, removed
+                SELECT app_name, desired_replicas, ready_replicas, live_replicas, image, created, updated, removed, ingress_host, ingress_path
                 FROM app_status WHERE app_name = ?
                 """,
                 (app_name,),
@@ -265,13 +277,15 @@ class SQLiteStateStore:
                 created=row[5],
                 updated=row[6],
                 removed=row[7],
+                ingress_host=row[8],
+                ingress_path=row[9],
             )
 
     def list_status(self) -> list[AppStatus]:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT app_name, desired_replicas, ready_replicas, live_replicas, image, created, updated, removed
+                SELECT app_name, desired_replicas, ready_replicas, live_replicas, image, created, updated, removed, ingress_host, ingress_path
                 FROM app_status ORDER BY app_name
                 """
             ).fetchall()
@@ -285,6 +299,8 @@ class SQLiteStateStore:
                 created=row[5],
                 updated=row[6],
                 removed=row[7],
+                ingress_host=row[8],
+                ingress_path=row[9],
             )
             for row in rows
         ]

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from ae.controller.reconciler import ReconcileReport, Reconciler
-from ae.controller.spec import AppManifest, AppSpec, Metadata
+from ae.controller.spec import AppManifest, AppSpec, IngressSpec, Metadata
 from ae.controller.state import SQLiteStateStore
 from ae.runtime.base import ReplicaState, RuntimeAdapter, RuntimeResult
 
@@ -19,9 +19,26 @@ class StubRuntime(RuntimeAdapter):
                     replica_id=f"{manifest.metadata.name}-0",
                     ready=True,
                     status="running",
+                    endpoint="127.0.0.1:32000",
                 )
             ],
         )
+
+
+class StubIngressService:
+    def __init__(self) -> None:
+        self.applied: list[tuple[str, str]] = []
+        self.removed: list[str] = []
+        self.reload_count = 0
+
+    def apply(self, manifest: AppManifest, upstream: str):  # noqa: ANN001 - match service signature
+        self.applied.append((manifest.metadata.name, upstream))
+
+    def remove(self, app_name: str) -> None:
+        self.removed.append(app_name)
+
+    def reload(self) -> None:
+        self.reload_count += 1
 
 
 def test_reconciler_updates_state(tmp_path: Path) -> None:
@@ -49,3 +66,28 @@ def test_reconciler_updates_state(tmp_path: Path) -> None:
     replicas = state.list_replicas("demo")
     assert len(replicas) == 1
     assert replicas[0].live is True
+
+
+def test_reconciler_with_ingress(tmp_path: Path) -> None:
+    runtime = StubRuntime()
+    state = SQLiteStateStore(tmp_path / "state.db")
+    ingress_service = StubIngressService()
+    reconciler = Reconciler(runtime=runtime, state_store=state, ingress_service=ingress_service)
+
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            ingress=IngressSpec(host="demo.local", path="/"),
+        ),
+    )
+
+    reconciler.reconcile(manifest)
+
+    assert ingress_service.applied == [("demo", "127.0.0.1:32000")]
+    assert ingress_service.reload_count == 1
+    status = state.get_status("demo")
+    assert status is not None
+    assert status.ingress_host == "demo.local"
