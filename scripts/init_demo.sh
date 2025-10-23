@@ -20,14 +20,36 @@ APT_PACKAGES=(
   python3-venv
   python3-pip
   sqlite3
-  caddy
   age
-  sops
 )
 
 log "Installing system packages"
 $SUDO apt-get update -y
 $SUDO apt-get install -y "${APT_PACKAGES[@]}"
+
+install_sops() {
+  if $SUDO apt-get install -y sops; then
+    return 0
+  fi
+
+  log "apt did not provide sops; downloading release binary"
+  tmp_dir=$(mktemp -d)
+  SOPS_VERSION=${SOPS_VERSION:-v3.8.1}
+  arch=$(uname -m)
+  case "$arch" in
+    x86_64|amd64) sops_arch="amd64" ;;
+    aarch64|arm64) sops_arch="arm64" ;;
+    *) log "Unsupported architecture for sops: $arch" && return 1 ;;
+  esac
+  curl -fsSL -o "$tmp_dir/sops.deb" "https://github.com/mozilla/sops/releases/download/${SOPS_VERSION}/sops_${SOPS_VERSION#v}_${sops_arch}.deb"
+  $SUDO dpkg -i "$tmp_dir/sops.deb"
+  rm -rf "$tmp_dir"
+}
+
+install_sops || {
+  log "Failed to install sops automatically; please install it and re-run."
+  exit 1
+}
 
 log "Ensuring Docker service is running"
 $SUDO systemctl enable --now docker
