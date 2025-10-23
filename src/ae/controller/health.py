@@ -55,7 +55,7 @@ class HealthManager:
             try:
                 response = get(url, timeout=max(readiness.timeout_seconds, 1))
             except RequestException as exc:  # pragma: no cover - exception message path simple
-                return False, f"http probe error: {exc}"  # type: ignore[str-format]
+                return False, f"http probe error: {exc}"
             if 200 <= response.status_code < 300:
                 return True, f"http {response.status_code}"
             return False, f"http {response.status_code}"
