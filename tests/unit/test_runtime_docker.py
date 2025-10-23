@@ -96,6 +96,7 @@ class FakeDockerClient:
         self.containers = FakeContainerManager(self)
         self.containers_by_replica: Dict[str, FakeContainer] = {}
         self._next_port = 32000
+        self.logins: list[tuple[str, str, str]] = []
 
     def allocate_port(self) -> int:
         port = self._next_port
@@ -107,6 +108,9 @@ class FakeDockerClient:
 
     def remove_container(self, replica_id: str) -> None:
         self.containers_by_replica.pop(replica_id, None)
+
+    def login(self, registry: str, username: str | None, password: str | None) -> None:
+        self.logins.append((registry, username or "", password or ""))
 
     # helper for tests
     def seed_container(self, app_name: str, replica_suffix: int, revision: int) -> None:
@@ -139,7 +143,8 @@ def make_manifest(replica_count: int = 1) -> AppManifest:
 
 def test_docker_runtime_creates_missing_replicas():
     client = FakeDockerClient()
-    runtime = DockerRuntime(client=client)
+    config = tmp_registry_config(client)
+    runtime = DockerRuntime(client=client, registry_auth=config)
 
     manifest = make_manifest(replica_count=2)
     result = runtime.ensure_app(manifest, revision=1)
@@ -149,6 +154,7 @@ def test_docker_runtime_creates_missing_replicas():
     assert result.removed == 0
     assert len(result.replica_states) == 2
     assert client.images.pulled == ["alpine:3.20"]
+    assert client.logins == [("ghcr.io", "user", "pass")]
     for state in result.replica_states:
         assert state.ready is True
         assert state.endpoint is not None
@@ -169,3 +175,14 @@ def test_docker_runtime_removes_extra_replicas():
     assert len(result.replica_states) == 1
     assert "demo-rev1-0" in client.containers_by_replica
     assert "demo-rev0-1" not in client.containers_by_replica
+
+
+def tmp_registry_config(client: FakeDockerClient):  # noqa: ANN001
+    class StubAuth:
+        def ensure_login(self, docker_client, image: str) -> None:  # noqa: ANN001
+            docker_client.login(registry="ghcr.io", username="user", password="pass")
+
+        def list_registries(self):  # noqa: D401
+            return {"ghcr.io": {"username": "user", "password": "pass"}}
+
+    return StubAuth()

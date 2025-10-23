@@ -1,0 +1,62 @@
+"""Registry authentication helpers."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Dict, Optional
+
+import yaml
+
+
+def _default_config_path() -> Path:
+    override = os.getenv("AE_REGISTRY_CONFIG")
+    if override:
+        return Path(override)
+    return Path.home() / ".config" / "ae" / "registries.yaml"
+
+
+class RegistryAuthProvider:
+    """Loads registry credentials and logs into docker clients as needed."""
+
+    def __init__(self, config_path: Optional[Path] = None) -> None:
+        self._config_path = config_path or _default_config_path()
+        self._credentials = self._load_config()
+
+    def ensure_login(self, client, image: str) -> None:
+        registry = self._extract_registry(image)
+        if registry is None:
+            return
+        creds = self._credentials.get(registry)
+        if not creds:
+            return
+        client.login(registry=registry, username=creds.get("username"), password=creds.get("password"))
+
+    def list_registries(self) -> Dict[str, Dict[str, str]]:
+        return self._credentials
+
+    def _load_config(self) -> Dict[str, Dict[str, str]]:
+        if not self._config_path.exists():
+            return {}
+        data = yaml.safe_load(self._config_path.read_text())
+        if not data:
+            return {}
+        if not isinstance(data, dict):
+            raise ValueError("registry config must be a mapping")
+        creds: Dict[str, Dict[str, str]] = {}
+        for host, values in data.items():
+            if not isinstance(values, dict):
+                continue
+            username = values.get("username")
+            password = values.get("password")
+            if username and password:
+                creds[str(host)] = {"username": str(username), "password": str(password)}
+        return creds
+
+    def _extract_registry(self, image: str) -> Optional[str]:
+        if "/" not in image:
+            return None
+        host = image.split("/", 1)[0]
+        if "." not in host and ":" not in host:
+            return None
+        return host

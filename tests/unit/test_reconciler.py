@@ -3,13 +3,24 @@
 from pathlib import Path
 
 from ae.controller.reconciler import ReconcileReport, Reconciler
-from ae.controller.spec import AppManifest, AppSpec, IngressSpec, Metadata
+from ae.controller.spec import (
+    AppManifest,
+    AppSpec,
+    IngressSpec,
+    Metadata,
+    SecretEnvMapping,
+    SecretRef,
+)
 from ae.controller.state import SQLiteStateStore
 from ae.runtime.base import ReplicaState, RuntimeAdapter, RuntimeResult
 
 
 class StubRuntime(RuntimeAdapter):
+    def __init__(self) -> None:
+        self.last_manifest: AppManifest | None = None
+
     def ensure_app(self, manifest: AppManifest, revision: int) -> RuntimeResult:
+        self.last_manifest = manifest
         return RuntimeResult(
             revision=revision,
             created=1,
@@ -95,3 +106,40 @@ def test_reconciler_with_ingress(tmp_path: Path) -> None:
     assert status is not None
     assert status.ingress_host == "demo.local"
     assert status.revision >= 1
+
+
+def test_reconciler_applies_secrets(tmp_path: Path) -> None:
+    runtime = StubRuntime()
+    state = SQLiteStateStore(tmp_path / "state.db")
+
+    class StubSecrets:
+        def load_env(self, refs):  # noqa: ANN001
+            return {"SECRET_VALUE": "hunter2"}
+
+    reconciler = Reconciler(
+        runtime=runtime,
+        state_store=state,
+        secret_manager=StubSecrets(),
+    )
+
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            secret_refs=[
+                SecretRef(
+                    name="demo-secret",
+                    path="irrelevant",
+                    env=[SecretEnvMapping(name="SECRET_VALUE", key="SECRET_VALUE")],
+                )
+            ],
+        ),
+    )
+
+    reconciler.reconcile(manifest)
+
+    assert runtime.last_manifest is not None
+    env_map = {item["name"]: item["value"] for item in runtime.last_manifest.spec.env}
+    assert env_map["SECRET_VALUE"] == "hunter2"

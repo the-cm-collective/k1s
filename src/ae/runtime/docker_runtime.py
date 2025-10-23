@@ -13,6 +13,7 @@ from docker.models.containers import Container
 from ae.controller.spec import AppManifest, PortSpec
 
 from .base import ReplicaState, RuntimeAdapter, RuntimeResult
+from .registry import RegistryAuthProvider
 
 LOGGER = logging.getLogger(__name__)
 
@@ -24,11 +25,16 @@ class DockerRuntime(RuntimeAdapter):
     REPLICA_LABEL = "ae.replica_id"
     REVISION_LABEL = "ae.revision"
 
-    def __init__(self, client: Optional[docker.DockerClient] = None) -> None:
+    def __init__(
+        self,
+        client: Optional[docker.DockerClient] = None,
+        registry_auth: Optional[RegistryAuthProvider] = None,
+    ) -> None:
         try:
             self._client = client or docker.from_env()
         except Exception as exc:  # pragma: no cover - defensive guard, validated in tests
             raise RuntimeError(f"Failed to initialize Docker client: {exc}") from exc
+        self._registry = registry_auth or RegistryAuthProvider()
 
     def ensure_app(self, manifest: AppManifest, revision: int) -> RuntimeResult:
         app_name = manifest.metadata.name
@@ -55,6 +61,7 @@ class DockerRuntime(RuntimeAdapter):
         created = updated = removed = 0
 
         if any(replica_id not in containers_by_replica for replica_id in desired_replica_ids):
+            self._registry.ensure_login(self._client, manifest.spec.image)
             self._pull_image(manifest)
 
         for replica_id in desired_replica_ids:

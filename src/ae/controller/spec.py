@@ -63,6 +63,21 @@ class IngressSpec(BaseModel):
     tls: bool = Field(default=True)
 
 
+class SecretEnvMapping(BaseModel):
+    """Mapping from decrypted secret key to environment variable."""
+
+    name: str
+    key: str
+
+
+class SecretRef(BaseModel):
+    """Reference to a sealed secret file decrypted at apply time."""
+
+    name: str
+    path: str
+    env: List[SecretEnvMapping] = Field(default_factory=list)
+
+
 class AppSpec(BaseModel):
     """Workload specification."""
 
@@ -74,8 +89,10 @@ class AppSpec(BaseModel):
     health: Optional[HealthSpec] = None
     ingress: Optional[IngressSpec] = None
     registry_auth_ref: Optional[str] = Field(default=None, alias="registryAuthRef")
+    secret_refs: List[SecretRef] = Field(default_factory=list, alias="secretRefs")
 
     model_config = {"populate_by_name": True}
+
 
 
 class AppManifest(BaseModel):

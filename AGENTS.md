@@ -36,3 +36,5 @@
 - Commit only sealed secrets (`*.sops.yaml`) and verify `sops --decrypt specs/<name>-secret.sops.yaml` before deployment.
 - Store age keys under `~/.config/ae/keys.txt` (gitignored) and document required tool versions inside `scripts/bootstrap.sh`.
 - Use `python -m ae.cli status --verbose` to audit Docker access and record TLS host mappings in `docs/ingress.md`.
+- Configure registry credentials in `~/.config/ae/registries.yaml` (username/password) and list them via `ae registry list`; prefer short-lived tokens.
+- Set `AE_ALLOW_PLAINTEXT_SECRETS=1` only for local development to bypass SOPS; ensure CI leaves it unset.

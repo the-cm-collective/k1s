@@ -3,5 +3,13 @@
 from .base import ReplicaState, RuntimeAdapter, RuntimeResult
 from .docker_runtime import DockerRuntime
 from .docker_stub import StubRuntime
+from .registry import RegistryAuthProvider
 
-__all__ = ["RuntimeAdapter", "RuntimeResult", "ReplicaState", "DockerRuntime", "StubRuntime"]
+__all__ = [
+    "RuntimeAdapter",
+    "RuntimeResult",
+    "ReplicaState",
+    "DockerRuntime",
+    "StubRuntime",
+    "RegistryAuthProvider",
+]

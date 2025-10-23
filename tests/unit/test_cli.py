@@ -27,6 +27,15 @@ def test_apply_and_status_commands(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("AE_STATE_DB", str(db_path))
     monkeypatch.setenv("AE_RUNTIME_BACKEND", "stub")
     monkeypatch.setenv("AE_CADDY_SITES", "")
+    registry_config = tmp_path / "registries.yaml"
+    registry_config.write_text(
+        """
+ghcr.io:
+  username: demo
+  password: token
+        """.strip()
+    )
+    monkeypatch.setenv("AE_REGISTRY_CONFIG", str(registry_config))
 
     exit_code = main(["apply", "-f", str(manifest_path)])
     assert exit_code == 0
@@ -56,6 +65,11 @@ def test_apply_and_status_commands(tmp_path, monkeypatch, capsys):
     history_out = capsys.readouterr().out
     assert "history" in history_out
     assert "readiness" in history_out
+
+    exit_code = main(["registry", "list"])
+    assert exit_code == 0
+    registry_out = capsys.readouterr().out
+    assert "ghcr.io" in registry_out
 
     exit_code = main(["revisions", "echo"])
     assert exit_code == 0

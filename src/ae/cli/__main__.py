@@ -12,6 +12,8 @@ from ae.controller.reconciler import ReconcileReport, Reconciler
 from ae.controller.state import AppStatus, SQLiteStateStore, RevisionInfo
 from ae.ingress import CaddyIngressManager, IngressService
 from ae.runtime import DockerRuntime, RuntimeAdapter, StubRuntime
+from ae.runtime.registry import RegistryAuthProvider
+from ae.secrets import SecretManager
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -44,6 +46,9 @@ def build_parser() -> argparse.ArgumentParser:
     revisions_parser.add_argument("name", help="Application name")
     revisions_parser.add_argument("--limit", type=int, default=10)
 
+    registry_parser = subparsers.add_parser("registry", help="Manage registry credentials")
+    registry_parser.add_argument("action", choices=["list"], help="Action to perform")
+
     return parser
 
 
@@ -73,6 +78,15 @@ def ingress_service_factory() -> IngressService | None:
     binary = os.getenv("AE_CADDY_BIN", "caddy")
     manager = CaddyIngressManager(config_root=config_root, caddy_binary=binary)
     return IngressService(manager)
+
+
+def secret_manager_factory() -> SecretManager:
+    allow_plaintext = os.getenv("AE_ALLOW_PLAINTEXT_SECRETS") == "1"
+    return SecretManager(allow_plaintext=allow_plaintext)
+
+
+def registry_auth_factory() -> RegistryAuthProvider:
+    return RegistryAuthProvider()
 
 
 def format_report(report: ReconcileReport) -> str:
@@ -106,11 +120,13 @@ def main(argv: list[str] | None = None) -> int:
     runtime = runtime_factory()
     health_manager = health_manager_factory()
     ingress_service = ingress_service_factory()
+    secret_manager = secret_manager_factory()
     reconciler = Reconciler(
         runtime=runtime,
         state_store=store,
         health_manager=health_manager,
         ingress_service=ingress_service,
+        secret_manager=secret_manager,
     )
 
     command_handlers: dict[str, Callable[[argparse.Namespace], int]] = {
@@ -119,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         "logs": lambda ns: handle_logs(ns),
         "rollback": lambda ns: handle_rollback(ns, store, reconciler),
         "revisions": lambda ns: handle_revisions(ns, store),
+        "registry": lambda ns: handle_registry(ns),
     }
 
     handler = command_handlers.get(args.command)
@@ -217,6 +234,21 @@ def handle_revisions(args: argparse.Namespace, store: SQLiteStateStore) -> int:
             f"hash={info.spec_hash[:8]}"
         )
     return 0
+
+
+def handle_registry(args: argparse.Namespace) -> int:
+    provider = registry_auth_factory()
+    if args.action == "list":
+        registries = provider.list_registries()
+        if not registries:
+            print("No registry credentials configured.")
+            return 0
+        for host, creds in registries.items():
+            user = creds.get("username", "")
+            print(f"{host}: username={user}")
+        return 0
+    print(f"Unsupported registry action: {args.action}")
+    return 1
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
