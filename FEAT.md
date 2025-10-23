@@ -19,7 +19,7 @@ Got it — here’s a pragmatic path to a “minimal app engine” that runs wel
 * [x] Phase 0 – Environment & scaffolding complete: Python package layout (`src/ae/...`), tooling (`pytest`, `ruff`, `mypy`, pre-commit), bootstrap script, and dev assets committed.
 * [x] Phase 1 – Core spec and reconcile skeleton landed: Pydantic manifest loader, runtime stub, SQLite snapshot store, and CLI commands (`apply`, `status`, `logs`) with unit coverage.
 * [x] Phase 2 – Docker runtime + health loops: Real Docker adapter with create/start/cleanup flow, readiness/liveness evaluator with initial-delay semantics, probe history persisted for CLI inspection.
-* [ ] Phase 3 – Ingress & TLS automation: build Caddy templating, integrate readiness gating with host routing, and expose CLI status for ingress endpoints.
+* [x] Phase 3 – Ingress & TLS automation: Added Caddy templating/reload hooks, persisted ingress host metadata, and surfaced replica/ingress status via CLI.
 
 ## 0) Bootstrap (1–2 hrs)
 
