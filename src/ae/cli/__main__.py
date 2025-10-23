@@ -28,6 +28,9 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser.add_argument(
         "--history", type=int, default=0, help="Show the most recent N probe evaluations"
     )
+    status_parser.add_argument(
+        "--events", action="store_true", help="Show recent events alongside status"
+    )
 
     logs_parser = subparsers.add_parser("logs", help="Tail application logs (stub)")
     logs_parser.add_argument("name", help="Application name")
@@ -185,6 +188,17 @@ def handle_status(args: argparse.Namespace, store: SQLiteStateStore) -> int:
                     f"live={entry.live} | readiness={entry.readiness_message}; "
                     f"liveness={entry.liveness_message}"
                 )
+        if args.events:
+            events = store.list_events(args.name, limit=10)
+            if not events:
+                print("    no events recorded")
+            else:
+                for event in events:
+                    timestamp = event.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                    print(
+                        f"    event {timestamp} rev={event.revision} "
+                        f"{event.event_type}: {event.message}"
+                    )
         return 0
 
     statuses = store.list_status()

@@ -5,7 +5,7 @@
 - `src/ae/controller/`, `src/ae/runtime/`, and `src/ae/ingress/` implement reconcile logic, container adapters, and ingress writers with explicit interfaces.
 - `src/ae/observability/` exposes logging, metrics, and event sinks; treat it as a leaf module.
 - `specs/` tracks declarative manifests and sealed secrets; keep runnable samples in `specs/examples/`.
-- `state/` holds the SQLite DB and other runtime artifacts (git-ignored) while `docs/` hosts references such as `FEAT.md`, ADRs, and diagrams.
+- `state/` holds the SQLite DB and other runtime artifacts (git-ignored) while `docs/` hosts references such as `FEAT.md`, the operations runbook (`docs/runbook.md`), ADRs, and diagrams.
 
 ## Build, Test, and Development Commands
 - `python -m pip install -e .[dev]` installs the package with console scripts and tooling.

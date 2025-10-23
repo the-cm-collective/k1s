@@ -66,6 +66,11 @@ ghcr.io:
     assert "history" in history_out
     assert "readiness" in history_out
 
+    exit_code = main(["status", "echo", "--events"])
+    assert exit_code == 0
+    events_status_out = capsys.readouterr().out
+    assert "event" in events_status_out
+
     exit_code = main(["metrics"])
     assert exit_code == 0
     metrics_out = capsys.readouterr().out
