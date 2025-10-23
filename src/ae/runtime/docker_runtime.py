@@ -110,11 +110,18 @@ class DockerRuntime(RuntimeAdapter):
         ]
 
     def _pull_image(self, manifest: AppManifest) -> None:
+        image_ref = manifest.spec.image
         try:
-            LOGGER.debug("Pulling image %s", manifest.spec.image)
-            self._client.images.pull(manifest.spec.image)
+            self._client.images.get(image_ref)
+            LOGGER.debug("Image %s already present locally; skipping pull", image_ref)
+            return
+        except NotFound:
+            LOGGER.debug("Image %s not found locally; attempting pull", image_ref)
+        try:
+            LOGGER.debug("Pulling image %s", image_ref)
+            self._client.images.pull(image_ref)
         except APIError as exc:
-            raise RuntimeError(f"Failed to pull image {manifest.spec.image}: {exc}") from exc
+            raise RuntimeError(f"Failed to pull image {image_ref}: {exc}") from exc
 
     def _create_container(self, manifest: AppManifest, replica_id: str, revision: int) -> Container:
         # replica_id pattern: <app>-rev<revision>-<index>

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from docker.errors import NotFound
+
 from ae.controller.spec import AppManifest, AppSpec, Metadata, PortSpec
 from ae.runtime.docker_runtime import DockerRuntime
 
@@ -83,16 +85,24 @@ class FakeContainerManager:
 
 
 class FakeImages:
-    def __init__(self) -> None:
+    def __init__(self, client: "FakeDockerClient") -> None:
+        self._client = client
         self.pulled: List[str] = []
+        self._local: Dict[str, str] = {}
+
+    def get(self, image: str):  # noqa: ANN001 - mimic docker
+        if image not in self._local:
+            raise NotFound(f"{image} not found")
+        return self._local[image]
 
     def pull(self, image: str) -> None:
         self.pulled.append(image)
+        self._local[image] = image
 
 
 class FakeDockerClient:
     def __init__(self) -> None:
-        self.images = FakeImages()
+        self.images = FakeImages(self)
         self.containers = FakeContainerManager(self)
         self.containers_by_replica: Dict[str, FakeContainer] = {}
         self._next_port = 32000
@@ -128,13 +138,13 @@ class FakeDockerClient:
         self.register_container(replica_id, container)
 
 
-def make_manifest(replica_count: int = 1) -> AppManifest:
+def make_manifest(replica_count: int = 1, image: str = "alpine:3.20") -> AppManifest:
     return AppManifest(
         apiVersion="ae.dev/v1alpha1",
         kind="App",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
-            image="alpine:3.20",
+            image=image,
             replicas=replica_count,
             ports=[PortSpec(name="http", containerPort=8080)],
         ),
@@ -175,6 +185,17 @@ def test_docker_runtime_removes_extra_replicas():
     assert len(result.replica_states) == 1
     assert "demo-rev1-0" in client.containers_by_replica
     assert "demo-rev0-1" not in client.containers_by_replica
+
+
+def test_docker_runtime_skips_pull_when_image_local():
+    client = FakeDockerClient()
+    client.images._local["demo-blue:latest"] = "demo-blue:latest"
+    runtime = DockerRuntime(client=client)
+    manifest = make_manifest(replica_count=1, image="demo-blue:latest")
+
+    runtime.ensure_app(manifest, revision=1)
+
+    assert client.images.pulled == []
 
 
 def tmp_registry_config(client: FakeDockerClient):  # noqa: ANN001
