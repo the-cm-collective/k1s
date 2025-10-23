@@ -35,11 +35,13 @@ def test_apply_and_status_commands(tmp_path, monkeypatch, capsys):
     assert exit_code == 0
     status_out = capsys.readouterr().out
     assert "desired=1" in status_out
+    assert "ops=+1" in status_out
 
     exit_code = main(["status"])
     assert exit_code == 0
     list_out = capsys.readouterr().out
     assert "echo" in list_out
+    assert "ops=+1" in list_out
 
 
 def test_logs_command(tmp_path, monkeypatch, capsys):

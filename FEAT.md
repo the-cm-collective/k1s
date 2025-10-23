@@ -14,6 +14,12 @@ Got it — here’s a pragmatic path to a “minimal app engine” that runs wel
 
 # Milestones (build order)
 
+# Progress Log (2025-10-23)
+
+* [x] Phase 0 – Environment & scaffolding complete: Python package layout (`src/ae/...`), tooling (`pytest`, `ruff`, `mypy`, pre-commit), bootstrap script, and dev assets committed.
+* [x] Phase 1 – Core spec and reconcile skeleton landed: Pydantic manifest loader, runtime stub, SQLite snapshot store, and CLI commands (`apply`, `status`, `logs`) with unit coverage.
+* [ ] Phase 2 – Health management underway: Introduced health manager with HTTP readiness probing stubs and normalized SQLite schema (`app_status`, `replica_status`). Next up: wire Docker runtime operations and richer probe-driven gating.
+
 ## 0) Bootstrap (1–2 hrs)
 
 * Install Docker (or containerd+nerdctl), Caddy, SQLite.
@@ -338,4 +344,3 @@ Keep these as thin Python protocols/interfaces so you can reimplement them in Go
 Given your comfort in Python and the project’s scope, **Python is the right base**. You’ll move fastest, the ops footprint is acceptable on a 2 GB VPS, and you can keep a clean seam to port the controller to **Go** later if/when you need a single static binary and even smaller memory.
 
 If you want, I can sketch a minimal repo scaffold (folders, `pyproject.toml`, and stubbed interfaces) that you can `git clone` and start filling in.
-

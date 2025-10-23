@@ -5,7 +5,7 @@ from pathlib import Path
 from ae.controller.reconciler import ReconcileReport, Reconciler
 from ae.controller.spec import AppManifest, AppSpec, Metadata
 from ae.controller.state import SQLiteStateStore
-from ae.runtime.base import RuntimeAdapter, RuntimeResult
+from ae.runtime.base import ReplicaState, RuntimeAdapter, RuntimeResult
 
 
 class StubRuntime(RuntimeAdapter):
@@ -14,8 +14,13 @@ class StubRuntime(RuntimeAdapter):
             created=1,
             updated=0,
             removed=0,
-            ready_replicas=1,
-            replica_ids=[f"{manifest.metadata.name}-0"],
+            replica_states=[
+                ReplicaState(
+                    replica_id=f"{manifest.metadata.name}-0",
+                    ready=True,
+                    status="running",
+                )
+            ],
         )
 
 
@@ -39,3 +44,4 @@ def test_reconciler_updates_state(tmp_path: Path) -> None:
     assert status is not None
     assert status.ready_replicas == 1
     assert status.image == "alpine:3.20"
+    assert status.created == 1

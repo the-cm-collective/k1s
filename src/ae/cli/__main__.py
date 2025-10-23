@@ -7,8 +7,9 @@ import os
 from pathlib import Path
 from typing import Callable
 
+from ae.controller.health import HealthManager
 from ae.controller.reconciler import ReconcileReport, Reconciler
-from ae.controller.state import SQLiteStateStore
+from ae.controller.state import AppStatus, SQLiteStateStore
 from ae.runtime import DockerRuntime
 
 
@@ -39,10 +40,22 @@ def runtime_factory() -> DockerRuntime:
     return DockerRuntime()
 
 
+def health_manager_factory() -> HealthManager:
+    return HealthManager()
+
+
 def format_report(report: ReconcileReport) -> str:
     return (
         f"Applied {report.app_name}: +{report.created}/~{report.updated}/-{report.removed}, "
         f"ready={report.ready_replicas}"
+    )
+
+
+def format_status(status: AppStatus) -> str:
+    return (
+        f"{status.app_name}: desired={status.desired_replicas}, "
+        f"ready={status.ready_replicas}, image={status.image}, "
+        f"ops=+{status.created}/~{status.updated}/-{status.removed}"
     )
 
 
@@ -52,7 +65,8 @@ def main(argv: list[str] | None = None) -> int:
 
     store = state_store_from_env()
     runtime = runtime_factory()
-    reconciler = Reconciler(runtime=runtime, state_store=store)
+    health_manager = health_manager_factory()
+    reconciler = Reconciler(runtime=runtime, state_store=store, health_manager=health_manager)
 
     command_handlers: dict[str, Callable[[argparse.Namespace], int]] = {
         "apply": lambda ns: handle_apply(ns, reconciler),
@@ -79,10 +93,7 @@ def handle_status(args: argparse.Namespace, store: SQLiteStateStore) -> int:
         if status is None:
             print(f"No status recorded for {args.name}")
             return 1
-        print(
-            f"{status.app_name}: desired={status.desired_replicas}, "
-            f"ready={status.ready_replicas}, image={status.image}"
-        )
+        print(format_status(status))
         return 0
 
     statuses = store.list_status()
@@ -91,10 +102,7 @@ def handle_status(args: argparse.Namespace, store: SQLiteStateStore) -> int:
         return 0
 
     for status in statuses:
-        print(
-            f"{status.app_name}: desired={status.desired_replicas}, "
-            f"ready={status.ready_replicas}, image={status.image}"
-        )
+        print(format_status(status))
     return 0
 
 
