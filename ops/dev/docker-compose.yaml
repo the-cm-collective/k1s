@@ -8,6 +8,7 @@ services:
       - "8443:443"
     volumes:
       - ./caddy:/etc/caddy:ro
+      - ../../state/caddy:/etc/caddy/dynsites:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Placeholder until controller writes per-app config.

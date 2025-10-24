@@ -1,5 +1,5 @@
 # Development Caddyfile. The controller writes site snippets into
-# /etc/caddy/sites/*.caddy which are imported below.
+# /etc/caddy/sites/*.caddy and /etc/caddy/dynsites/*.caddy which are imported below.
 
 {
     # For local testing, don't redirect HTTP->HTTPS
@@ -7,3 +7,4 @@
 }
 
 import sites/*
+import dynsites/*

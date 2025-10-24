@@ -547,3 +547,17 @@ class SQLiteStateStore:
                 )
             )
         return events
+
+    # --- Admin / maintenance helpers ---
+    def delete_app_state(self, app_name: str, *, purge_history: bool = False) -> None:
+        """Remove status and replica rows for an app. Optionally purge events and revisions.
+
+        Does not affect running containers; the runtime is responsible for removing them.
+        """
+        with self._connect() as conn:
+            conn.execute("DELETE FROM replica_status WHERE app_name = ?", (app_name,))
+            conn.execute("DELETE FROM app_status WHERE app_name = ?", (app_name,))
+            if purge_history:
+                conn.execute("DELETE FROM app_events WHERE app_name = ?", (app_name,))
+                conn.execute("DELETE FROM app_revisions WHERE app_name = ?", (app_name,))
+            conn.commit()

@@ -247,7 +247,7 @@ else
   log "Skipping hosts entries; use direct addresses instead"
 fi
 
-export AE_CADDY_SITES=${AE_CADDY_SITES:-ops/dev/caddy/sites}
+export AE_CADDY_SITES=${AE_CADDY_SITES:-state/caddy}
 export AE_CADDY_FILE=${AE_CADDY_FILE:-/etc/caddy/Caddyfile}
 # When using the dev docker-compose stack, reload Caddy inside the container.
 export AE_CADDY_CONTAINER=${AE_CADDY_CONTAINER:-dev-caddy-1}

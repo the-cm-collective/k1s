@@ -125,6 +125,20 @@ class DockerRuntime(RuntimeAdapter):
         except APIError as exc:
             raise RuntimeError(f"Failed to read logs for {replica_id}: {exc}") from exc
 
+    def remove_app(self, app_name: str) -> int:
+        """Stop and remove all containers for a given app label."""
+        try:
+            containers = self._client.containers.list(
+                all=True, filters={"label": f"{self.APP_LABEL}={app_name}"}
+            )
+        except APIError as exc:
+            raise RuntimeError(f"Failed to list containers for {app_name}: {exc}") from exc
+        removed = 0
+        for c in containers:
+            self._stop_and_remove(c)
+            removed += 1
+        return removed
+
     # Internal helpers -------------------------------------------------
 
     def _desired_replica_ids(self, manifest: AppManifest, revision: int) -> List[str]:

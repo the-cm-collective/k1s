@@ -84,6 +84,16 @@ def build_parser() -> argparse.ArgumentParser:
     events_parser.add_argument("name", help="Application name")
     events_parser.add_argument("--limit", type=int, default=20)
 
+    # delete <name> [--purge]
+    delete_parser = subparsers.add_parser("delete", help="Delete an application (containers + status)")
+    delete_parser.add_argument("name", help="Application name")
+    delete_parser.add_argument("--purge", action="store_true", help="Also purge events and revisions history")
+
+    # scale <name> --replicas N
+    scale_parser = subparsers.add_parser("scale", help="Scale an application by reconciling replicas")
+    scale_parser.add_argument("name", help="Application name")
+    scale_parser.add_argument("--replicas", type=int, required=True)
+
     # backup/restore
     backup_parser = subparsers.add_parser("backup", help="Backup and restore state/specs")
     backup_sub = backup_parser.add_subparsers(dest="backup_cmd", required=True)
@@ -226,6 +236,8 @@ def main(argv: list[str] | None = None) -> int:
         "registry": lambda ns: handle_registry(ns, registry_auth),
         "metrics": lambda ns: handle_metrics(ns, store),
         "events": lambda ns: handle_events(ns, store),
+        "delete": lambda ns: handle_delete(ns, store, runtime, ingress_service),
+        "scale": lambda ns: handle_scale(ns, store, reconciler),
         "backup": lambda ns: handle_backup(ns),
         "version": lambda ns: handle_version(),
     }
@@ -240,6 +252,42 @@ def main(argv: list[str] | None = None) -> int:
 def handle_apply(args: argparse.Namespace, reconciler: Reconciler) -> int:
     report = reconciler.reconcile_manifest_path(args.file)
     print(format_report(report))
+    return 0
+
+
+def handle_delete(
+    args: argparse.Namespace,
+    store: SQLiteStateStore,
+    runtime: RuntimeAdapter,
+    ingress_service: IngressService | None,
+) -> int:
+    name = args.name
+    removed = runtime.remove_app(name)
+    if ingress_service:
+        try:
+            ingress_service.remove(name)
+            ingress_service.reload()
+        except Exception:
+            pass
+    store.delete_app_state(name, purge_history=bool(args.purge))
+    print(f"deleted {name}: removed={removed} containers{' (purged history)' if args.purge else ''}")
+    return 0
+
+
+def handle_scale(args: argparse.Namespace, store: SQLiteStateStore, reconciler: Reconciler) -> int:
+    name = args.name
+    latest = store.list_revisions(name, limit=1)
+    if not latest:
+        print(f"No revisions recorded for {name}. Try 'ae apply -f <manifest>'.")
+        return 1
+    manifest = store.get_revision_manifest(name, latest[0].revision)
+    updated_spec = manifest.spec.model_copy(update={"replicas": int(args.replicas)})
+    new_manifest = manifest.model_copy(update={"spec": updated_spec})
+    report = reconciler.reconcile(new_manifest)
+    print(
+        f"scaled {name} to replicas={args.replicas}: rev={report.revision}({report.revision_status}) "
+        f"ops=+{report.created}/~{report.updated}/-{report.removed} ready={report.ready_replicas}/{report.live_replicas}"
+    )
     return 0
 
 

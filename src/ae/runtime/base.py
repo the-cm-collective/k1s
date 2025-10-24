@@ -50,3 +50,9 @@ class RuntimeAdapter(Protocol):
         Implementations should locate the container by the `replica_id` label and
         yield decoded UTF-8 lines. If `follow` is True, continue streaming.
         """
+
+    def remove_app(self, app_name: str) -> int:
+        """Stop and remove all containers belonging to an app.
+
+        Returns the number of containers removed.
+        """

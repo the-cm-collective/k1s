@@ -26,6 +26,7 @@ from ae.cli.__main__ import (
 from ae.observability.logging import configure_logging
 from ae.controller.reconciler import Reconciler
 from ae.controller.state import SQLiteStateStore
+from ae.ingress.service import IngressService
 
 
 # ----------------------------
@@ -114,6 +115,16 @@ def build_parser() -> argparse.ArgumentParser:
     events_p = sub.add_parser("events", help="Show recent events for an app")
     events_p.add_argument("ref", help="Resource ref: app/NAME or NAME")
     events_p.add_argument("--limit", type=int, default=20)
+
+    # k1s delete app/<name>
+    del_p = sub.add_parser("delete", help="Delete an app (containers + status)")
+    del_p.add_argument("ref", help="Resource ref: app/NAME or NAME")
+    del_p.add_argument("--purge", action="store_true", help="Also purge events and revisions")
+
+    # k1s scale app/<name> --replicas N
+    sc_p = sub.add_parser("scale", help="Scale an app by reconciling replicas")
+    sc_p.add_argument("ref", help="Resource ref: app/NAME or NAME")
+    sc_p.add_argument("--replicas", type=int, required=True)
 
     return p
 
@@ -257,6 +268,42 @@ def handle_events_k1s(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
     return 0
 
 
+def handle_delete_k1s(
+    ns: argparse.Namespace,
+    store: SQLiteStateStore,
+    reconciler: Reconciler,
+    runtime,
+) -> int:
+    ref = parse_ref(ns.ref, ("app",))
+    removed = runtime.remove_app(ref.name)
+    ingress: IngressService | None = reconciler._ingress_service  # type: ignore[attr-defined]
+    if ingress is not None:
+        try:
+            ingress.remove(ref.name)
+            ingress.reload()
+        except Exception:
+            pass
+    store.delete_app_state(ref.name, purge_history=bool(getattr(ns, "purge", False)))
+    print(f"deleted {ref.name}: removed={removed} containers")
+    return 0
+
+
+def handle_scale_k1s(ns: argparse.Namespace, store: SQLiteStateStore, reconciler: Reconciler) -> int:
+    ref = parse_ref(ns.ref, ("app",))
+    revs = store.list_revisions(ref.name, limit=1)
+    if not revs:
+        print(f"No revisions recorded for {ref.name}. Try 'k1s apply -f <manifest>'.")
+        return 1
+    manifest = store.get_revision_manifest(ref.name, revs[0].revision)
+    new_spec = manifest.spec.model_copy(update={"replicas": int(ns.replicas)})
+    updated = manifest.model_copy(update={"spec": new_spec})
+    report = reconciler.reconcile(updated)
+    print(
+        f"scaled {ref.name} to replicas={ns.replicas}: rev={report.revision}({report.revision_status})"
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - exercised via tests
     parser = build_parser()
     ns = parser.parse_args(argv)
@@ -278,6 +325,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - exercised 
         "rollout": lambda a: handle_rollout(a, store, reconciler),
         "logs": lambda a: handle_logs_k1s(a, store, runtime),
         "events": lambda a: handle_events_k1s(a, store),
+        "delete": lambda a: handle_delete_k1s(a, store, reconciler, runtime),
+        "scale": lambda a: handle_scale_k1s(a, store, reconciler),
     }
 
     handler = handlers.get(ns.cmd)
