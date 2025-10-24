@@ -32,6 +32,22 @@
 
 The loop performs a full reconcile on a fixed interval. It handles SIGINT/SIGTERM for clean shutdown and closes the HTTP API server gracefully.
 
+## Networking and Ingress
+
+- Shared Docker network: App containers and the dev Caddy container are attached to the same user-defined network (default `dev_default`). This allows Caddy to reach app replicas by container DNS names directly without publishing host ports when running multi-replica apps.
+- Service discovery (basic): Each replica connects to the shared network with the following DNS aliases:
+  - Container name (unique): `ae-<app>-rev<revision>-<index>`
+  - App group alias (round‑robin across replicas): `app-<app>`
+  - Revision group alias (round‑robin across replicas of the revision): `app-<app>-rev<revision>`
+- Ingress upstreams:
+  - Single replica with `spec.service.port`: Caddy proxies to the stable host port (`127.0.0.1:<port>`; rewritten to `host.docker.internal:<port>` inside the container).
+  - Multi-replica without `spec.service`: Caddy balances across replica DNS endpoints on the shared network.
+- Health checks: If a readiness HTTP probe is defined, Caddy emits active `health_checks` against that path to keep upstreams healthy.
+
+Environment variables:
+- `AE_DOCKER_NETWORK` (default `dev_default`) — network name to attach new containers and from which Caddy resolves upstreams.
+- `AE_CADDY_SITES` (default `state/caddy`) — directory where dynamic site snippets are written (mounted into `/etc/caddy/dynsites`).
+
 ## HTTP API
 
 When `--metrics-port` is set, a lightweight HTTP API is exposed:
