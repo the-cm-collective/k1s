@@ -71,6 +71,12 @@ ghcr.io:
     events_status_out = capsys.readouterr().out
     assert "event" in events_status_out
 
+    # status json
+    exit_code = main(["status", "echo", "--json", "--wide"])
+    assert exit_code == 0
+    status_json = capsys.readouterr().out
+    assert '"app_name": "echo"' in status_json
+
     exit_code = main(["metrics"])
     assert exit_code == 0
     metrics_out = capsys.readouterr().out
@@ -106,10 +112,21 @@ def test_logs_command(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("AE_RUNTIME_BACKEND", "stub")
     monkeypatch.setenv("AE_CADDY_SITES", "")
 
+    # Non-existent app
     exit_code = main(["logs", "ghost"])
+    assert exit_code == 1
+    output = capsys.readouterr().out
+    assert "No status recorded for ghost" in output
+
+    # After apply, logs should print stub line
+    manifest_path = tmp_path / "echo.yaml"
+    write_manifest(manifest_path)
+    assert main(["apply", "-f", str(manifest_path)]) == 0
+    capsys.readouterr()
+    exit_code = main(["logs", "echo"]) 
     assert exit_code == 0
     output = capsys.readouterr().out
-    assert "Logs for ghost" in output
+    assert "echo-rev1-0" in output
 
 
 def test_rollback_command(tmp_path, monkeypatch, capsys):

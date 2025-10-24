@@ -1,0 +1,28 @@
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: echo
+spec:
+  image: alpine:3.20
+  replicas: 1
+  command: ["sh", "-c", "while true; do echo hello; sleep 2; done"]
+  ports:
+    - name: http
+      containerPort: 8080
+  health:
+    readiness:
+      httpGet: { path: /, port: 8080 }
+      initialDelaySeconds: 5
+      timeoutSeconds: 2
+  resources:
+    limits:
+      cpu: 0.25
+      memory: 256Mi
+  volumes:
+    - hostPath: /tmp
+      mountPath: /host-tmp
+      readOnly: false
+  ingress:
+    host: echo.localtest.me
+    path: /
+    tls: false

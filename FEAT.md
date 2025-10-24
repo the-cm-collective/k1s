@@ -24,6 +24,42 @@ Got it — here’s a pragmatic path to a “minimal app engine” that runs wel
 * [x] Phase 5 – Secrets & registry auth: SOPS-backed secret manager with env injection, registry credential loading, and CLI wiring.
 * [x] Phase 6 – Observability baseline: Metrics snapshot CLI, event logging in SQLite, and registry/secret guidance updated.
 
+---
+
+## Known Gaps (not implemented yet)
+
+- HTTP API writes: read-only API (metrics/status/events) only; no mutate endpoints.
+- Advanced probes: only HTTP-get; no TCP/exec probes, no per-probe backoff limits.
+- Resources/volumes: initial limits and bind mounts only; no requests enforcement or cgroups beyond Docker flags.
+- Rollout options: only rolling-replace with implicit surge=1; no pause/resume or canary.
+- Ingress extras: no TLS options beyond Caddy defaults; no multi-path or headers.
+- Auth ergonomics: no helper to fetch short-lived registry tokens.
+- Multi-node: intentionally out of scope.
+
+## Next Steps (near-term plan)
+
+1) Controller daemon + polling watch
+- Add `python -m ae.controller` with `--once | --loop --interval N` and `--specs DIR`.
+- Poll the specs directory for `*.y(a)ml` and reconcile all apps.
+
+2) Minimal metrics exporter
+- Optional `--metrics-port PORT` serving Prometheus text with basic app/replica gauges.
+
+3) Logs implementation (basic)
+- `ae logs <app> [-f]` using Docker SDK; default to current revision’s first container.
+
+4) Resource flags
+- Map `spec.resources.limits` to Docker `--cpus`/`--memory` on create.
+
+5) Volumes (starter)
+- Support simple hostPath → container mount mappings in spec.
+
+6) HTTP API (starter)
+- Tiny read-only endpoints: `/status`, `/events`, `/metrics` for CLI parity.
+
+Stretch (after the above)
+- TCP/exec probes, pause/resume rollouts, richer ingress, backup/restore command.
+
 ## 0) Bootstrap (1–2 hrs)
 
 * Install Docker (or containerd+nerdctl), Caddy, SQLite.

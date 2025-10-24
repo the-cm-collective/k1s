@@ -1,0 +1,87 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Http Api</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.55; }
+      code, pre { background: #f6f8fa; }
+      pre { padding: 12px; overflow-x: auto; }
+      h1, h2, h3 { margin-top: 1.5em; }
+      nav a { margin-right: 1rem; }
+      .container { max-width: 920px; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({ startOnLoad: true });</script>
+  </head>
+  <body>
+    <nav>
+      <a href="index.html">Home</a>
+      <a href="overview.html">Overview</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="http-api.html">HTTP API</a>
+      <a href="concepts.html">Concepts</a>
+    </nav>
+    <div class="container">
+    <h1>HTTP API Reference</h1>
+<p>The controller exposes a read-only HTTP API when started with <code>--metrics-port PORT</code>.</p>
+<p>Base URL: <code>http://&amp;lt;host&amp;gt;:&amp;lt;port&amp;gt;</code></p>
+<ul>
+<li>GET <code>/metrics</code></li>
+<li>Content-Type: <code>text/plain; version=0.0.4</code></li>
+<li>Prometheus text format gauges:</li>
+<li><code>ae_apps_total</code>, <code>ae_apps_ready</code>, <code>ae_apps_progressing</code>, <code>ae_apps_degraded</code></li>
+<li><code>ae_replicas_total</code>, <code>ae_replicas_ready</code>, <code>ae_replicas_live</code></li>
+</ul>
+<ul>
+<li>GET <code>/status</code></li>
+<li>Content-Type: <code>application/json</code></li>
+<li>200 OK: JSON array of app status objects</li>
+<li>Example item:</li>
+<pre><code>
+    {
+      &quot;app_name&quot;: &quot;echo&quot;,
+      &quot;desired_replicas&quot;: 1,
+      &quot;ready_replicas&quot;: 1,
+      &quot;live_replicas&quot;: 1,
+      &quot;revision&quot;: 3,
+      &quot;revision_status&quot;: &quot;ready&quot;,
+      &quot;image&quot;: &quot;alpine:3.20&quot;,
+      &quot;ingress_host&quot;: &quot;echo.localtest.me&quot;,
+      &quot;ingress_path&quot;: &quot;/&quot;
+    }
+</code></pre>
+</ul>
+<ul>
+<li>GET <code>/status/&amp;lt;app&amp;gt;</code></li>
+<li>200 OK: JSON object (same shape as items in <code>/status</code>)</li>
+<li>404 Not Found: when no status exists</li>
+</ul>
+<ul>
+<li>GET <code>/events/&amp;lt;app&amp;gt;?limit=N</code></li>
+<li>200 OK: JSON array of recent events for <code>&amp;lt;app&amp;gt;</code></li>
+<li>Example item:</li>
+<pre><code>
+    {
+      &quot;app_name&quot;: &quot;echo&quot;,
+      &quot;revision&quot;: 3,
+      &quot;event_type&quot;: &quot;ApplyCompleted&quot;,
+      &quot;message&quot;: &quot;Revision 3 status ready&quot;,
+      &quot;created_at&quot;: &quot;2025-10-23T12:34:56+00:00&quot;
+    }
+</code></pre>
+</ul>
+<p>Notes</p>
+<ul>
+<li>This API is read-only by design; mutating operations happen via the CLI.</li>
+<li>The API shares the controller’s SQLite store; results are eventually consistent with reconcile intervals.</li>
+</ul>
+<p>Extras</p>
+<ul>
+<li>GET <code>/openapi.json</code> — Minimal OpenAPI 3 document for the read-only endpoints.</li>
+<li>GET <code>/docs</code> — Lightweight HTML that lists available paths by fetching <code>/openapi.json</code>.</li>
+</ul>
+    </div>
+  </body>
+</html>

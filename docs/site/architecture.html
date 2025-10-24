@@ -1,0 +1,285 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Architecture</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.55; }
+      code, pre { background: #f6f8fa; }
+      pre { padding: 12px; overflow-x: auto; }
+      h1, h2, h3 { margin-top: 1.5em; }
+      nav a { margin-right: 1rem; }
+      .container { max-width: 920px; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({ startOnLoad: true });</script>
+  </head>
+  <body>
+    <nav>
+      <a href="index.html">Home</a>
+      <a href="overview.html">Overview</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="http-api.html">HTTP API</a>
+      <a href="concepts.html">Concepts</a>
+    </nav>
+    <div class="container">
+    <h1>k1s Architecture and Technical Reference</h1>
+<p>This document describes k1s in depth: components, data model, reconcile algorithms, interfaces, and operational behavior. It is intentionally verbose.</p>
+<h2>Scope and Principles</h2>
+<ul>
+<li>Single node. All containers run on one host via Docker.</li>
+<li>Declarative spec → idempotent reconcile. The controller continuously applies desired state and converges.</li>
+<li>Small surface. Prefer composition over features; leave seams to extend later.</li>
+<li>Fail well. A crash restarts cleanly; reconcile rebuilds reality from Docker + SQLite.</li>
+</ul>
+<h2>Components</h2>
+<ul>
+<li>Controller (src/ae/controller): orchestrates reconcile, writes state, emits events.</li>
+<li>Runtime (src/ae/runtime): pluggable adapters; Docker is primary.</li>
+<li>Ingress (src/ae/ingress): writes Caddy site fragments and triggers reloads.</li>
+<li>Health (src/ae/controller/health.py): readiness/liveness evaluation.</li>
+<li>State store (src/ae/controller/state.py): SQLite schema and queries.</li>
+<li>Secrets (src/ae/secrets): SOPS/age integration, env projection.</li>
+<li>Observability (src/ae/observability): metrics snapshot, HTTP API, logging helpers.</li>
+<li>CLI (src/ae/cli) + kubectl‑like wrapper (src/ae/kctl).</li>
+</ul>
+<h2>Reconcile Loop</h2>
+<p>Triggers</p>
+<ul>
+<li>Periodic polling (<code>--interval</code> seconds)</li>
+<li>Optional file watching (<code>--watch</code>) via watchdog; changes are debounced (<code>--debounce-ms</code>).</li>
+<li>Manual apply (<code>ae apply -f ...</code>), which directly runs a reconcile for the manifest.</li>
+</ul>
+<p>Ordering</p>
+<ul>
+<li>Load manifests (YAML → Pydantic models).</li>
+<li>Compute revision: hash the spec; reuse the latest revision if hash unchanged; otherwise increment.</li>
+<li>Runtime ensure: create/update/remove containers to match replicas.</li>
+<li>Health gate: evaluate readiness/liveness; decide revision status ready/progressing/degraded.</li>
+<li>Ingress: pick a healthy upstream (if any) and write/reload Caddy; remove ingress when omitted.</li>
+<li>Persist: write app status, replicas, probe history, and revision record; emit events.</li>
+</ul>
+<p>Idempotency &amp; Diff</p>
+<ul>
+<li>Spec hash drives revisions; reconciler tracks created/updated/removed per pass.</li>
+<li>Docker containers are labeled with app/replica/revision; runtime lists by labels.</li>
+<li>Old revision containers are removed when the new revision becomes live.</li>
+</ul>
+<p>Pseudocode (as implemented in src/ae/controller/reconciler.py)</p>
+<pre><code>
+for manifest in manifests:
+  rev = store.prepare_revision(spec_hash)
+  result = runtime.ensure_app(manifest, rev)
+  health = health.evaluate(manifest, result)
+  ingress.apply/remove based on health/spec
+  store.record_snapshot(manifest, result, health, rev, status)
+  events.emit(ApplyCompleted)
+</code></pre>
+<p>Sequence Diagram</p>
+<pre class="mermaid">
+sequenceDiagram
+  participant CLI as ae CLI
+  participant C as Controller
+  participant R as Docker Runtime
+  participant H as Health
+  participant I as Ingress
+  participant S as SQLite
+
+  CLI-&gt;&gt;C: apply(manifest)
+  C-&gt;&gt;R: ensure_app(manifest, rev)
+  R--&gt;&gt;C: RuntimeResult(replica states)
+  C-&gt;&gt;H: evaluate(manifest, result)
+  H--&gt;&gt;C: HealthReport(ready/live)
+  alt ingress configured
+    C-&gt;&gt;I: apply(upstream), reload()
+  else no ingress
+    C-&gt;&gt;I: remove(app), reload()
+  end
+  C-&gt;&gt;S: record_snapshot + events
+  C--&gt;&gt;CLI: report(created/updated/removed, status)
+</pre>
+<h2>Spec (ae.dev/v1alpha1)</h2>
+<p>Top‑level</p>
+<ul>
+<li><code>apiVersion: ae.dev/v1alpha1</code></li>
+<li><code>kind: App</code></li>
+<li><code>metadata: { name }</code></li>
+<li><code>spec</code>: see below</li>
+</ul>
+<p>Spec fields (src/ae/controller/spec.py)</p>
+<ul>
+<li><code>image: str</code></li>
+<li><code>command: [str]?</code></li>
+<li><code>env: [{name, value}]</code> (merged with secrets)</li>
+<li><code>replicas: int&amp;gt;=1</code></li>
+<li><code>ports: [{name, containerPort}]</code></li>
+<li><code>health.readiness|liveness</code> HTTP probes with <code>initialDelaySeconds</code>, <code>timeoutSeconds</code> etc.</li>
+<li><code>ingress: { host, path: &amp;#x27;/&amp;#x27;, tls: bool }</code></li>
+<li><code>secretRefs: [{ name, path, env: [{name, key}] }]</code> (SOPS‑decrypted)</li>
+<li><code>registryAuthRef: str?</code> (reserved, not yet used directly)</li>
+<li><code>resources: { requests?, limits?: { cpu: float cores, memory: str (e.g., 256Mi) } }</code></li>
+<li><code>volumes: [{ hostPath, mountPath, readOnly? }]</code></li>
+</ul>
+<p>Notes</p>
+<ul>
+<li>CPU limits map to Docker <code>nano_cpus</code>; memory to <code>mem_limit</code> (K/M/G, KiB/MiB/GiB supported).</li>
+<li>Volumes map to bind mounts with ro/rw.</li>
+</ul>
+<p>Example</p>
+<pre><code>
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata: { name: echo }
+spec:
+  image: alpine:3.20
+  replicas: 1
+  ports: [{ name: http, containerPort: 8080 }]
+  health:
+    readiness: { httpGet: { path: /, port: 8080 }, initialDelaySeconds: 5 }
+  ingress: { host: echo.localtest.me, path: /, tls: false }
+  resources: { limits: { cpu: 0.25, memory: 256Mi } }
+  volumes: [{ hostPath: /tmp, mountPath: /host-tmp, readOnly: false }]
+</code></pre>
+<h2>State Model (SQLite)</h2>
+<p>Tables (created in src/ae/controller/state.py)</p>
+<ul>
+<li>app_status(app_name PK, desired_replicas, ready_replicas, live_replicas, revision, revision_status, image, created, updated, removed, ingress_host, ingress_path)</li>
+<li>replica_status(app_name, replica_id, ready, live, status, readiness_message, liveness_message)</li>
+<li>probe_history(id, app_name, replica_id, check_time, ready, live, readiness_message, liveness_message) [kept to 50 per replica]</li>
+<li>app_revisions(app_name, revision, spec_hash, spec_json, image, created_at, status)</li>
+<li>app_events(id, app_name, revision, event_type, message, created_at)</li>
+</ul>
+<p>Query surfaces</p>
+<ul>
+<li><code>list_status()</code>, <code>get_status(app)</code></li>
+<li><code>list_replicas(app)</code>, <code>get_probe_history(app, N)</code></li>
+<li><code>list_revisions(app)</code>, <code>get_revision_manifest(app, rev)</code></li>
+<li><code>list_events(app, limit)</code></li>
+</ul>
+<h2>Runtime: Docker</h2>
+<p>Labels</p>
+<ul>
+<li><code>ae.app=&amp;lt;name&amp;gt;</code></li>
+<li><code>ae.replica_id=&amp;lt;name&amp;gt;-rev&amp;lt;rev&amp;gt;-&amp;lt;index&amp;gt;</code></li>
+<li><code>ae.revision=&amp;lt;rev&amp;gt;</code></li>
+</ul>
+<p>Ensure flow (src/ae/runtime/docker_runtime.py)</p>
+<ul>
+<li>List existing containers by <code>ae.app</code> label.</li>
+<li>Partition by current revision vs old.</li>
+<li>Pull image only when a new replica is needed and image is missing.</li>
+<li>Create missing replicas with labels, env, ports, restart policy; then reload and start as needed.</li>
+<li>Remove old revision containers.</li>
+<li>Build <code>ReplicaState</code> by reloading container attributes (status, startedAt) and mapping published ports to endpoints.</li>
+</ul>
+<p>Resources/Volumes</p>
+<ul>
+<li><code>limits.cpu</code> → <code>nano_cpus=int(cpu*1e9)</code>, <code>limits.memory</code> → bytes (K/M/G, KiB/MiB/GiB).</li>
+<li>Volumes: <code>{ hostPath: { bind: mountPath, mode: ro|rw } }</code> in container run call.</li>
+</ul>
+<p>Logs</p>
+<ul>
+<li><code>read_logs(replica_id, follow, tail, since)</code> adapts to Docker SDK parameters.</li>
+</ul>
+<p>Auth</p>
+<ul>
+<li><code>RegistryAuthProvider</code> reads <code>~/.config/ae/registries.yaml</code> and calls <code>client.login(...)</code> before pulls.</li>
+</ul>
+<h2>Ingress: Caddy</h2>
+<ul>
+<li>Each app with <code>spec.ingress</code> gets a small site block written to <code>ops/dev/caddy/sites/&amp;lt;app&amp;gt;.caddy</code> (or configured root).</li>
+<li>Reloads via <code>caddy reload --config &amp;lt;file|dir&amp;gt;</code>, optionally inside a container via <code>docker exec</code>.</li>
+<li>When Caddy runs in a container, upstreams with 127.0.0.1 are rewritten to <code>host.docker.internal</code>.</li>
+</ul>
+<h2>Health</h2>
+<ul>
+<li>HTTP probe: GET <code>http://&amp;lt;replica.endpoint&amp;gt;&amp;lt;path&amp;gt;</code>; success is 2xx.</li>
+<li>Initial delay honored using container <code>StartedAt</code>.</li>
+<li>Liveness defaults to true when unspecified; readiness defaults to container state when unspecified.</li>
+<li><code>HealthReport</code> aggregates per‑replica <code>ready/live</code> and messages.</li>
+</ul>
+<p>Revision status</p>
+<ul>
+<li>ready: <code>ready_replicas &amp;gt;= desired</code></li>
+<li>progressing: <code>live_replicas &amp;gt;= desired</code> but not all ready</li>
+<li>degraded: otherwise</li>
+</ul>
+<h2>Rollouts and Rollback</h2>
+<ul>
+<li>spec hash (SHA‑256 of normalized JSON) creates a new revision when changed.</li>
+<li>Rolling replace with <code>maxUnavailable=0, maxSurge=1</code> semantics at single‑app scale.</li>
+<li><code>ae rollback &amp;lt;app&amp;gt; [--to &amp;lt;rev&amp;gt;]</code> fetches stored manifest and reconciles.</li>
+</ul>
+<h2>Events</h2>
+<ul>
+<li>Types: ApplyStarted, ApplyCompleted, IngressConfigured, IngressRemoved, plus future failure types.</li>
+<li>Indexed by app and descending id; surfaced in CLI and HTTP API.</li>
+</ul>
+<h2>Metrics and API</h2>
+<ul>
+<li>CLI snapshot: aggregated counts (apps ready/progressing/degraded, replicas).</li>
+<li>HTTP <code>/metrics</code>: includes app/replica gauges, last reconcile timestamp/duration, per‑app reconcile sum/count, rollout operation counters.</li>
+<li>HTTP <code>/status</code>, <code>/status/&amp;lt;app&amp;gt;</code>, <code>/events/&amp;lt;app&amp;gt;</code> return JSON; <code>/openapi.json</code> documents the surface; <code>/docs</code> lists endpoints.</li>
+</ul>
+<h2>Secrets</h2>
+<ul>
+<li>Decrypts via <code>sops --decrypt</code> (external process); falls back to plaintext when <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code>.</li>
+<li>Merges referenced keys into env map with stable ordering.</li>
+<li>Errors on missing secret keys referenced by <code>env</code> mappings.</li>
+</ul>
+<h2>File Watch</h2>
+<ul>
+<li>Uses watchdog when <code>--watch</code> is set; falls back to interval polling when watchdog is unavailable.</li>
+<li>Debounce controlled by <code>--debounce-ms</code> (default 200 ms).</li>
+</ul>
+<h2>Backup and Restore</h2>
+<ul>
+<li><code>ae backup create --output backup.tar.gz</code> writes <code>state/controller.db</code> and <code>specs/</code>.</li>
+<li><code>ae backup list|verify|restore</code> list entries, check presence/integrity, and extract safely (guards against absolute paths and <code>..</code>).</li>
+</ul>
+<h2>Security &amp; Ops Notes</h2>
+<ul>
+<li>Local admin tool; not multi‑tenant.</li>
+<li>Store SOPS keys outside the repo; never commit plaintext secrets.</li>
+<li>Prefer TLS via Caddy/ACME for public hosts; development can use <code>localtest.me</code> and plain HTTP.</li>
+<li>Keep Docker resource limits conservative to protect the node.</li>
+</ul>
+<h2>Extensibility Seams</h2>
+<ul>
+<li>RuntimeAdapter protocol: implement <code>ensure_app</code> and <code>read_logs</code> for alternate engines.</li>
+<li>IngressManager: implement <code>apply/remove/reload</code> for nginx or other proxies.</li>
+<li>SecretManager: swap SOPS shell calls with a native decryptor if desired.</li>
+<li>Store: SQLite is default; could be swapped for another lightweight store with the same interface.</li>
+</ul>
+<h2>Environment Variables</h2>
+<ul>
+<li>AE_STATE_DB, AE_SPECS_DIR</li>
+<li>AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER</li>
+<li>AE_REGISTRY_CONFIG</li>
+<li>AE_SOPS_BIN, AE_ALLOW_PLAINTEXT_SECRETS</li>
+<li>AE_RUNTIME_BACKEND (&quot;docker&quot;|&quot;stub&quot;)</li>
+<li>AE_LOG_LEVEL</li>
+</ul>
+<h2>Testing Strategy</h2>
+<ul>
+<li>Unit tests for CLI surface, state store, Docker runtime (via fakes), reconciler health decisions.</li>
+<li>Integration tests can run against a local Docker daemon for end‑to‑end validation.</li>
+</ul>
+<h2>Performance &amp; Footprint</h2>
+<ul>
+<li>Controller + API + metrics: ~40–80 MiB resident in Python.</li>
+<li>Caddy: ~20–40 MiB.</li>
+<li>Docker daemon: ~100–150 MiB.</li>
+<li>Suitable for 1–3 small services with sane limits on a 2 GB VPS.</li>
+</ul>
+<h2>Future Work</h2>
+<ul>
+<li>TCP/exec probes; richer rollout strategies (pause/canary).</li>
+<li>Resource requests and automatic cgroups beyond Docker flags.</li>
+<li>More ingress features (headers, multiple paths, TLS config surface).</li>
+<li>Multi‑node scheduling (out of scope for now).</li>
+</ul>
+    </div>
+  </body>
+</html>

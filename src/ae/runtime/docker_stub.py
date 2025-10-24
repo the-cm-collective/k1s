@@ -32,3 +32,12 @@ class StubRuntime(RuntimeAdapter):
             removed=0,
             replica_states=replica_states,
         )
+
+    def read_logs(self, replica_id: str, *, follow: bool = False, tail: int | None = None, since: int | None = None):
+        # Deterministic, small output for tests
+        if follow:
+            # emit a finite small stream for tests
+            for i in range(3):
+                yield f"{replica_id}: log line {i}"
+        else:
+            yield f"{replica_id}: recent log line"

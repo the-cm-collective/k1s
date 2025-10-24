@@ -19,9 +19,13 @@ dev = [
     "ruff>=0.6",
     "pre-commit>=3.8",
 ]
+watch = [
+    "watchdog>=3.0",
+]
 
 [project.scripts]
 ae = "ae.cli.__main__:main"
+k1s = "ae.kctl.__main__:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

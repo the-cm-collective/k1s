@@ -1,0 +1,96 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Concepts</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.55; }
+      code, pre { background: #f6f8fa; }
+      pre { padding: 12px; overflow-x: auto; }
+      h1, h2, h3 { margin-top: 1.5em; }
+      nav a { margin-right: 1rem; }
+      .container { max-width: 920px; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({ startOnLoad: true });</script>
+  </head>
+  <body>
+    <nav>
+      <a href="index.html">Home</a>
+      <a href="overview.html">Overview</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="http-api.html">HTTP API</a>
+      <a href="concepts.html">Concepts</a>
+    </nav>
+    <div class="container">
+    <h1>k1s Concepts</h1>
+<p>This guide explains core concepts used throughout k1s.</p>
+<h2>App</h2>
+<p>The primary unit of deployment. Defined by an <code>App</code> manifest with a desired image, replicas, ports, health checks, and optional ingress/secrets/resources.</p>
+<h2>Replica</h2>
+<p>An individual container instance belonging to an app revision. Replica IDs follow the pattern <code>&amp;lt;app&amp;gt;-rev&amp;lt;revision&amp;gt;-&amp;lt;index&amp;gt;</code> (e.g., <code>echo-rev3-0</code>).</p>
+<h2>Revision</h2>
+<p>An immutable snapshot of desired state computed from the manifest spec hash. A new revision is created when the manifest content changes.</p>
+<ul>
+<li>Stored in SQLite with its normalized JSON and status.</li>
+<li>Used for rollbacks: <code>ae rollback &amp;lt;app&amp;gt; [--to &amp;lt;rev&amp;gt;]</code>.</li>
+</ul>
+<h2>Reconcile</h2>
+<p>The controller compares the desired state from specs to the observed state (Docker + SQLite) and performs the operations needed to converge.</p>
+<ul>
+<li>Creates missing replicas (pulling images as needed).</li>
+<li>Removes containers from older revisions after the new revision is live.</li>
+<li>Updates ingress to a healthy upstream once readiness passes.</li>
+</ul>
+<h2>Health</h2>
+<ul>
+<li>Readiness: Determines whether a replica should receive traffic (2xx HTTP implies success).</li>
+<li>Liveness: Indicates the replica is still alive (defaults to true if not specified).</li>
+<li>Initial delay: Allows the app to boot before probes start.</li>
+</ul>
+<h2>Status</h2>
+<p>Per‑app aggregate status is one of:</p>
+<ul>
+<li>ready: all desired replicas are ready</li>
+<li>progressing: desired count is live but not yet all ready</li>
+<li>degraded: fewer than desired live replicas</li>
+</ul>
+<p>CLI examples:</p>
+<pre><code>
+ae status myapp --wide --events
+</code></pre>
+<h2>Events</h2>
+<p>Lightweight audit trail for changes and noteworthy events:</p>
+<ul>
+<li>ApplyStarted, ApplyCompleted</li>
+<li>IngressConfigured, IngressRemoved</li>
+<li>(future) ReadinessFailed, RolloutFailed</li>
+</ul>
+<p>Inspect with:</p>
+<pre><code>
+ae events myapp --limit 20
+</code></pre>
+<h2>Rollouts</h2>
+<p>Single‑node rolling replace with <code>maxUnavailable=0, maxSurge=1</code> semantics:</p>
+<p>1. Start a new replica for the next revision. 2. Wait for readiness. 3. Switch ingress to the new endpoint. 4. Stop and remove old revision containers.</p>
+<p>Rollback uses the recorded manifest for the target revision:</p>
+<pre><code>
+ae rollback myapp --to 3
+</code></pre>
+<h2>Resources &amp; Volumes</h2>
+<ul>
+<li>CPU/memory limits map to Docker <code>nano_cpus</code> and <code>mem_limit</code>.</li>
+<li>Volumes map to hostPath → bind mount (ro/rw).</li>
+</ul>
+<h2>Ingress</h2>
+<p>For apps with <code>spec.ingress</code>, the controller writes a Caddy site snippet and reloads the proxy. When Caddy runs in a container, upstreams pointing to 127.0.0.1 are rewritten to <code>host.docker.internal</code>.</p>
+<h2>HTTP API</h2>
+<p>Read‑only status/metrics/events published at:</p>
+<ul>
+<li><code>/metrics</code>, <code>/status</code>, <code>/status/&amp;lt;app&amp;gt;</code>, <code>/events/&amp;lt;app&amp;gt;</code></li>
+<li><code>/openapi.json</code> and a tiny docs page at <code>/docs</code></li>
+</ul>
+    </div>
+  </body>
+</html>

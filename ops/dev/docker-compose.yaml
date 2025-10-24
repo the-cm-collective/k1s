@@ -7,7 +7,9 @@ services:
       - "8080:80"
       - "8443:443"
     volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy:/etc/caddy:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # Placeholder until controller writes per-app config.
   prometheus:
     image: prom/prometheus:v2.53.0

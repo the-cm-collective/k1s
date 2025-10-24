@@ -1,0 +1,121 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Overview</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.55; }
+      code, pre { background: #f6f8fa; }
+      pre { padding: 12px; overflow-x: auto; }
+      h1, h2, h3 { margin-top: 1.5em; }
+      nav a { margin-right: 1rem; }
+      .container { max-width: 920px; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({ startOnLoad: true });</script>
+  </head>
+  <body>
+    <nav>
+      <a href="index.html">Home</a>
+      <a href="overview.html">Overview</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="http-api.html">HTTP API</a>
+      <a href="concepts.html">Concepts</a>
+    </nav>
+    <div class="container">
+    <h1>k1s Overview</h1>
+<p>k1s is a tiny, single‑node application engine that lets you declare apps in YAML, run them in Docker, and expose them via Caddy. It aims to give you the everyday ergonomics of a small Kubernetes subset without the operational weight.</p>
+<ul>
+<li>Goal: simple, predictable rollouts for 1–3 services on a small VPS.</li>
+<li>Non‑goals: multi‑node scheduling, CRDs, complex RBAC, full Kubernetes API.</li>
+</ul>
+<h2>Features (High‑Level)</h2>
+<ul>
+<li>Declarative specs: <code>apiVersion: ae.dev/v1alpha1</code>, <code>kind: App</code>.</li>
+<li>Rolling deploys and rollback with health gates.</li>
+<li>Readiness/Liveness probes (HTTP) with initial delay.</li>
+<li>Ingress via Caddy site fragments + <code>caddy reload</code>.</li>
+<li>Secrets via SOPS/age; env injection at apply time.</li>
+<li>Registry auth from <code>~/.config/ae/registries.yaml</code>.</li>
+<li>Events and metrics; CLI snapshot and Prometheus text endpoint.</li>
+<li>CLIs: <code>ae</code> (native) and <code>k1s</code> (kubectl‑like wrapper).</li>
+<li>HTTP API (read‑only): <code>/metrics</code>, <code>/status</code>, <code>/status/&amp;lt;app&amp;gt;</code>, <code>/events/&amp;lt;app&amp;gt;</code>, <code>/openapi.json</code>, <code>/docs</code>.</li>
+</ul>
+<h3>Architecture at a Glance (Diagram)</h3>
+<pre class="mermaid">
+flowchart LR
+  A[Specs/*.yaml] --&gt;|load| C[Controller]
+  C --&gt;|ensure| D[(Docker Engine)]
+  C --&gt;|health| H[HTTP Probes]
+  C --&gt;|write| S[(SQLite State)]
+  C --&gt;|render+reload| I[Caddy Ingress]
+  C --&gt;|expose| API[HTTP API: /status /metrics]
+  CLI[ae / k1s CLI] --&gt;|reads| S
+  CLI --&gt;|apply/rollback| C
+</pre>
+<h2>Requirements</h2>
+<ul>
+<li>Python 3.11+</li>
+<li>Docker Engine</li>
+<li>Optional: Caddy (for ingress), SOPS/age (for secrets), watchdog (for live file watch)</li>
+</ul>
+<h2>Install</h2>
+<ul>
+<li>Dev install: <code>python -m pip install -e .[dev]</code></li>
+<li>Optional file watching: <code>python -m pip install -e .[watch]</code></li>
+</ul>
+<h2>Getting Started</h2>
+<p>1) Start the controller loop</p>
+<ul>
+<li>Polling only: <code>python -m ae.controller --loop --specs specs/ --metrics-port 9108</code></li>
+<li>With file watch (if <code>watchdog</code> installed): <code>python -m ae.controller --loop --watch --specs specs/ --metrics-port 9108</code></li>
+</ul>
+<p>2) Apply a sample app</p>
+<ul>
+<li><code>python -m ae.cli apply -f specs/examples/echo.yaml</code></li>
+</ul>
+<p>3) Inspect status, events, logs</p>
+<ul>
+<li><code>python -m ae.cli status echo --wide --events</code></li>
+<li><code>python -m ae.cli logs echo --tail 50</code></li>
+</ul>
+<p>4) Kubectl‑like aliases</p>
+<ul>
+<li><code>k1s get apps</code></li>
+<li><code>k1s describe app/echo</code></li>
+<li><code>k1s logs app/echo --follow --tail 100</code></li>
+</ul>
+<p>5) API and metrics</p>
+<ul>
+<li>JSON and metrics: <code>curl :9108/status</code>, <code>curl :9108/metrics</code></li>
+<li>OpenAPI and docs: <code>curl :9108/openapi.json</code>, open <code>http://localhost:9108/docs</code></li>
+</ul>
+<h2>Configuration (Quick Reference)</h2>
+<ul>
+<li>AE_STATE_DB: path to SQLite DB (default <code>state/controller.db</code>)</li>
+<li>AE_SPECS_DIR: specs directory (default <code>specs</code>)</li>
+<li>AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER: ingress tuning</li>
+<li>AE_REGISTRY_CONFIG: registry credentials file (default <code>~/.config/ae/registries.yaml</code>)</li>
+<li>AE_ALLOW_PLAINTEXT_SECRETS=1: allow bypassing SOPS (dev only)</li>
+<li>AE_LOG_LEVEL: logging level (DEBUG/INFO/…)</li>
+</ul>
+<h2>Project Layout</h2>
+<ul>
+<li>src/ae/controller: reconcile loop, state, health, spec models</li>
+<li>src/ae/runtime: Docker adapter, registry auth, stub runtime</li>
+<li>src/ae/ingress: Caddy templating + reload</li>
+<li>src/ae/cli and src/ae/kctl: CLIs (<code>ae</code>, <code>k1s</code>)</li>
+<li>src/ae/observability: metrics, HTTP API, logging</li>
+<li>specs/: example manifests and secrets</li>
+<li>docs/: runbook, HTTP API, testing, this overview</li>
+</ul>
+<h2>Further Reading</h2>
+<ul>
+<li>Runbook: <code>docs/runbook.md</code></li>
+<li>HTTP API: <code>docs/http-api.md</code></li>
+<li>Architecture (detailed): <code>docs/architecture.md</code></li>
+</ul>
+    </div>
+  </body>
+</html>

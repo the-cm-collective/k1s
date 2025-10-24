@@ -101,6 +101,30 @@ class DockerRuntime(RuntimeAdapter):
             replica_states=replica_states,
         )
 
+    def read_logs(self, replica_id: str, *, follow: bool = False, tail: int | None = None, since: int | None = None):
+        """Stream logs for a container labeled with the replica id."""
+        try:
+            containers = self._client.containers.list(
+                all=True,
+                filters={"label": f"{self.REPLICA_LABEL}={replica_id}"},
+            )
+        except APIError as exc:
+            raise RuntimeError(f"Failed to query logs for {replica_id}: {exc}") from exc
+        if not containers:
+            return iter(())
+        container = containers[0]
+        try:
+            if follow:
+                for chunk in container.logs(stdout=True, stderr=True, stream=True, follow=True, tail=tail or "all", since=since):
+                    yield chunk.decode("utf-8", "replace").rstrip("\n")
+            else:
+                output = container.logs(stdout=True, stderr=True, stream=False, tail=tail or 200, since=since)
+                text = output.decode("utf-8", "replace")
+                for line in text.splitlines():
+                    yield line
+        except APIError as exc:
+            raise RuntimeError(f"Failed to read logs for {replica_id}: {exc}") from exc
+
     # Internal helpers -------------------------------------------------
 
     def _desired_replica_ids(self, manifest: AppManifest, revision: int) -> List[str]:
@@ -131,20 +155,56 @@ class DockerRuntime(RuntimeAdapter):
         env = self._manifest_env(manifest)
         ports = self._port_mapping(manifest.spec.ports)
 
+        # resource limits
+        nano_cpus = None
+        mem_limit = None
+        if manifest.spec.resources and manifest.spec.resources.limits:
+            limits = manifest.spec.resources.limits
+            if limits.cpu is not None:
+                try:
+                    nano_cpus = int(float(limits.cpu) * 1_000_000_000)
+                except ValueError:
+                    nano_cpus = None
+            if limits.memory is not None:
+                mem_limit = self._parse_memory_bytes(str(limits.memory))
+
+        # volumes
+        volumes = None
+        if manifest.spec.volumes:
+            volumes = {}
+            for v in manifest.spec.volumes:
+                mode = "ro" if v.read_only else "rw"
+                volumes[v.host_path] = {"bind": v.mount_path, "mode": mode}
+
         try:
-            container = self._client.containers.run(
-                manifest.spec.image,
-                command=manifest.spec.command or None,
-                name=name,
-                detach=True,
-                environment=env if env else None,
-                labels={
+            run_fn = self._client.containers.run
+            # filter kwargs by signature for compatibility with fakes
+            from inspect import signature
+
+            params = set(signature(run_fn).parameters.keys())
+            kwargs = {
+                "command": manifest.spec.command or None,
+                "name": name,
+                "detach": True,
+                "environment": env if env else None,
+                "labels": {
                     self.APP_LABEL: manifest.metadata.name,
                     self.REPLICA_LABEL: replica_id,
                     self.REVISION_LABEL: str(revision),
                 },
-                ports=ports if ports else None,
-                restart_policy={"Name": "unless-stopped"},
+                "ports": ports if ports else None,
+                "restart_policy": {"Name": "unless-stopped"},
+            }
+            if "nano_cpus" in params and nano_cpus is not None:
+                kwargs["nano_cpus"] = nano_cpus
+            if "mem_limit" in params and mem_limit is not None:
+                kwargs["mem_limit"] = mem_limit
+            if "volumes" in params and volumes is not None:
+                kwargs["volumes"] = volumes
+
+            container = run_fn(
+                manifest.spec.image,
+                **{k: v for k, v in kwargs.items() if k in params}
             )
             self._reload(container)
             return container
@@ -225,6 +285,38 @@ class DockerRuntime(RuntimeAdapter):
 
     def _parse_datetime(self, raw: Optional[str]) -> Optional[datetime]:
         if not raw or raw == "0001-01-01T00:00:00Z":
+            return None
+
+    def _parse_memory_bytes(self, raw: str) -> Optional[int]:
+        try:
+            s = raw.strip()
+            suffixes = {
+                "b": 1,
+                "k": 1024,
+                "kb": 1024,
+                "m": 1024**2,
+                "mb": 1024**2,
+                "mi": 1024**2,
+                "g": 1024**3,
+                "gb": 1024**3,
+                "gi": 1024**3,
+            }
+            # numeric only
+            if s.isdigit():
+                return int(s)
+            # split number and unit
+            num = ""
+            unit = ""
+            for ch in s:
+                if ch.isdigit() or ch == ".":
+                    num += ch
+                else:
+                    unit += ch
+            factor = suffixes.get(unit.strip().lower())
+            if factor is None:
+                return None
+            return int(float(num) * factor)
+        except Exception:  # pragma: no cover - forgiving
             return None
         cleaned = raw
         if cleaned.endswith("Z"):

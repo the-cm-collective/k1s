@@ -1,4 +1,4 @@
-# Development placeholder, controller will render app-specific sites.
-:80 {
-  respond "Caddy placeholder" 200
-}
+# Development Caddyfile. The controller writes site snippets into
+# /etc/caddy/sites/*.caddy which are imported below.
+
+import sites/*

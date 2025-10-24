@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 
 class ManifestError(RuntimeError):
@@ -63,6 +63,57 @@ class IngressSpec(BaseModel):
     tls: bool = Field(default=True)
 
 
+class ResourceQuantities(BaseModel):
+    """CPU and memory quantities.
+
+    cpu: float in cores (e.g., 0.5 for half a core)
+    memory: string with unit (e.g., "256Mi", "1Gi", "512M")
+    """
+
+    cpu: Optional[float] = None
+    memory: Optional[str] = None
+
+    @field_validator("cpu")
+    @classmethod
+    def _cpu_positive(cls, v: Optional[float]):  # noqa: D401 - simple guard
+        if v is None:
+            return v
+        if v <= 0:
+            raise ValueError("cpu must be > 0 (cores)")
+        return v
+
+    @field_validator("memory")
+    @classmethod
+    def _mem_format(cls, v: Optional[str]):  # noqa: D401 - simple guard
+        if v is None:
+            return v
+        s = str(v).strip()
+        # accept digits only or digits+unit (K/M/G with optional iB/B)
+        import re
+
+        pattern = re.compile(r"^\d+(?:\.\d+)?\s*(?:[KMG](?:i?B)?|[kKmMgG]|)$")
+        if not pattern.match(s):
+            raise ValueError("memory must be a number optionally suffixed by K/M/G or KiB/MiB/GiB")
+        return s
+
+
+class ResourcesSpec(BaseModel):
+    """Resource requests and limits (limits used for Docker flags)."""
+
+    requests: Optional[ResourceQuantities] = None
+    limits: Optional[ResourceQuantities] = None
+
+
+class VolumeSpec(BaseModel):
+    """HostPath volume mapping."""
+
+    host_path: str = Field(alias="hostPath")
+    mount_path: str = Field(alias="mountPath")
+    read_only: bool = Field(default=False, alias="readOnly")
+
+    model_config = {"populate_by_name": True}
+
+
 class SecretEnvMapping(BaseModel):
     """Mapping from decrypted secret key to environment variable."""
 
@@ -90,6 +141,8 @@ class AppSpec(BaseModel):
     ingress: Optional[IngressSpec] = None
     registry_auth_ref: Optional[str] = Field(default=None, alias="registryAuthRef")
     secret_refs: List[SecretRef] = Field(default_factory=list, alias="secretRefs")
+    resources: Optional[ResourcesSpec] = None
+    volumes: List[VolumeSpec] = Field(default_factory=list)
 
     model_config = {"populate_by_name": True}
 

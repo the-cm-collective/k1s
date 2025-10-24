@@ -36,3 +36,17 @@ class RuntimeAdapter(Protocol):
 
     def ensure_app(self, manifest: AppManifest, revision: int) -> RuntimeResult:
         """Ensure the runtime matches the manifest."""
+
+    def read_logs(
+        self,
+        replica_id: str,
+        *,
+        follow: bool = False,
+        tail: int | None = None,
+        since: int | None = None,
+    ):
+        """Yield log lines for a given replica identifier.
+
+        Implementations should locate the container by the `replica_id` label and
+        yield decoded UTF-8 lines. If `follow` is True, continue streaming.
+        """
