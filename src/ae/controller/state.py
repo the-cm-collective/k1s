@@ -548,6 +548,36 @@ class SQLiteStateStore:
             )
         return events
 
+    def list_events_paginated(self, app_name: str, limit: int, offset: int) -> tuple[list[AppEvent], int]:
+        with self._connect() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM app_events WHERE app_name = ?",
+                (app_name,),
+            ).fetchone()[0]
+            rows = conn.execute(
+                """
+                SELECT revision, event_type, message, created_at
+                FROM app_events
+                WHERE app_name = ?
+                ORDER BY id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (app_name, limit, offset),
+            ).fetchall()
+        events: list[AppEvent] = []
+        for row in rows:
+            created = datetime.fromisoformat(row[3])
+            events.append(
+                AppEvent(
+                    app_name=app_name,
+                    revision=row[0],
+                    event_type=row[1],
+                    message=row[2],
+                    created_at=created,
+                )
+            )
+        return events, total
+
     # --- Admin / maintenance helpers ---
     def delete_app_state(self, app_name: str, *, purge_history: bool = False) -> None:
         """Remove status and replica rows for an app. Optionally purge events and revisions.

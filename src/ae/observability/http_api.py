@@ -50,8 +50,17 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     delete_fn = None  # type: ignore[var-annotated]
 
     def do_GET(self):  # type: ignore[override]
+        # Metrics allowed without auth
         if self.path.startswith("/metrics"):
             self._handle_metrics()
+            return
+        # Enforce read auth if configured
+        try:
+            check = self._require_role  # type: ignore[attr-defined]
+        except Exception:
+            check = None
+        if check and not self._require_role("read"):
+            self._deny(401 if not self.headers.get("Authorization") else 403)
             return
         if self.path == "/openapi.json":
             self._handle_openapi()
@@ -85,15 +94,17 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        # Optional bearer token
-        required = os.getenv("AE_API_TOKEN")
-        if required:
-            auth = self.headers.get("Authorization", "")
-            token = auth.split(" ", 1)[1] if auth.startswith("Bearer ") else ""
-            if token != required:
-                self.send_response(401)
-                self.send_header("WWW-Authenticate", "Bearer")
-                self.end_headers()
+        # Role checks (if configured)
+        try:
+            check = self._require_role  # type: ignore[attr-defined]
+        except Exception:
+            check = None
+        if check:
+            if self.path.startswith("/scale/") and not self._require_role("scale"):
+                self._deny(401 if not self.headers.get("Authorization") else 403)
+                return
+            if self.path.startswith("/delete/") and not self._require_role("admin"):
+                self._deny(401 if not self.headers.get("Authorization") else 403)
                 return
 
         if self.path.startswith("/scale/") and self.scale_fn is not None:
@@ -262,22 +273,44 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _handle_status_list(self) -> None:
+        import urllib.parse as _up
         statuses = self.store.list_status()
-        data = [
-            {
-                "app_name": s.app_name,
-                "desired_replicas": s.desired_replicas,
-                "ready_replicas": s.ready_replicas,
-                "live_replicas": s.live_replicas,
-                "revision": s.revision,
-                "revision_status": s.revision_status,
-                "image": s.image,
-                "ingress_host": s.ingress_host,
-                "ingress_path": s.ingress_path,
-            }
-            for s in statuses
-        ]
-        self._json_ok(data)
+        path, _, query = self.path.partition("?")
+        params = _up.parse_qs(query)
+        app_filter = params.get("app", [None])[0]
+        wildcard = params.get("wildcard", [None])[0]
+        limit = int(params.get("limit", [50])[0])
+        try:
+            offset = int(params.get("cursor", [0])[0] or 0)
+        except ValueError:
+            offset = 0
+        items = statuses
+        if app_filter:
+            items = [s for s in items if s.app_name == app_filter]
+        elif wildcard:
+            import fnmatch
+            items = [s for s in items if fnmatch.fnmatch(s.app_name, wildcard)]
+        total = len(items)
+        page = items[offset: offset + limit]
+        next_cursor = offset + limit if (offset + limit) < total else None
+        payload = {
+            "items": [
+                {
+                    "app_name": s.app_name,
+                    "desired_replicas": s.desired_replicas,
+                    "ready_replicas": s.ready_replicas,
+                    "live_replicas": s.live_replicas,
+                    "revision": s.revision,
+                    "revision_status": s.revision_status,
+                    "image": s.image,
+                    "ingress_host": s.ingress_host,
+                    "ingress_path": s.ingress_path,
+                }
+                for s in page
+            ],
+            "next": str(next_cursor) if next_cursor is not None else None,
+        }
+        self._json_ok(payload)
 
     def _handle_status_single(self, app: str) -> None:
         s = self.store.get_status(app)

@@ -49,9 +49,14 @@ logs (Ctrl-C to exit).
 - `make demo-down` — tear down demo
 - `make integ-test` — run integration tests (set `AE_DOCKER_TEST=1`)
 
+### Rollout Demo
+
+- Ordered rollout for `echo` with default bias-first routing:
+  - `./scripts/init_demo.sh --demo-rollout -y -d`
+  - Optional: `AE_ROLLOUT_FIRST_WEIGHT=3` to increase bias toward the newest upstream.
+
 ### Notes
 
 - Caddy HTTP: `:8888`, HTTPS: `:8443`.
 - Hosts entries (added with `-y`): `blue|green|echo-mr|docs|api.home.arpa` → `127.0.0.1`.
 - Health checks are disabled by default for compatibility; enable with `AE_CADDY_ACTIVE_HEALTH=1` if your Caddy supports the directive.
-

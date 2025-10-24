@@ -137,6 +137,14 @@ class CaddyIngressManager:
                 target = f"{target} {ingress.path}"
             targets.append(target)
 
+        # Optional weighting: duplicate the first upstream N times to bias selection
+        if prefer_first:
+            try:
+                first_weight = int(os.getenv("AE_ROLLOUT_FIRST_WEIGHT", "1"))
+            except ValueError:
+                first_weight = 1
+            if first_weight > 1 and targets:
+                targets = [targets[0]] * int(first_weight) + targets[1:]
         upstreams_str = " ".join(targets)
         health_block = ""
         if readiness_path and os.getenv("AE_CADDY_ACTIVE_HEALTH") == "1":
