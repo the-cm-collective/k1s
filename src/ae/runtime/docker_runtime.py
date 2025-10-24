@@ -167,7 +167,13 @@ class DockerRuntime(RuntimeAdapter):
         replica_suffix = replica_id.split("-")[-1]
         name = f"ae-{app_name}-rev{revision}-{replica_suffix}"
         env = self._manifest_env(manifest)
-        ports = self._port_mapping(manifest.spec.ports)
+        # Build port mapping; if a Service is specified and replicas==1, publish a stable host port
+        svc_port = None
+        svc_target = None
+        if getattr(manifest.spec, "service", None) and manifest.spec.replicas == 1:
+            svc_port = manifest.spec.service.port
+            svc_target = manifest.spec.service.target_port
+        ports = self._port_mapping(manifest.spec.ports, service_port=svc_port, service_target=svc_target)
 
         # resource limits
         nano_cpus = None
@@ -259,11 +265,25 @@ class DockerRuntime(RuntimeAdapter):
             started_at=started_at,
         )
 
-    def _port_mapping(self, ports: Iterable[PortSpec]) -> Dict[str, Optional[int]]:
+    def _port_mapping(
+        self,
+        ports: Iterable[PortSpec],
+        *,
+        service_port: Optional[int] = None,
+        service_target: Optional[int] = None,
+    ) -> Dict[str, Optional[int]]:
         mapping: Dict[str, Optional[int]] = {}
+        first_port = None
         for port in ports:
+            if first_port is None:
+                first_port = port.container_port
             key = f"{port.container_port}/tcp"
-            mapping[key] = None
+            host_port: Optional[int] = None
+            if service_port is not None:
+                target = service_target if service_target is not None else first_port
+                if port.container_port == target:
+                    host_port = int(service_port)
+            mapping[key] = host_port
         return mapping
 
     def _endpoint_from_ports(self, ports: Iterable[PortSpec], container: Container) -> Optional[str]:

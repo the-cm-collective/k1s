@@ -62,6 +62,19 @@ class IngressSpec(BaseModel):
     path: str = Field(default="/")
     tls: bool = Field(default=True)
 
+class ServiceSpec(BaseModel):
+    """Service abstraction (single-host) providing a stable published port.
+
+    Note: In this initial implementation, `service.port` is only supported when
+    replicas == 1. For multi-replica services, the controller will fall back to
+    per-replica ephemeral host ports and ingress load-balances to one endpoint.
+    """
+
+    port: int = Field(description="Host port to publish (stable)")
+    target_port: Optional[int] = Field(default=None, alias="targetPort", description="Container port to expose; defaults to first port")
+
+    model_config = {"populate_by_name": True}
+
 
 class ResourceQuantities(BaseModel):
     """CPU and memory quantities.
@@ -139,6 +152,7 @@ class AppSpec(BaseModel):
     ports: List[PortSpec] = Field(default_factory=list)
     health: Optional[HealthSpec] = None
     ingress: Optional[IngressSpec] = None
+    service: Optional[ServiceSpec] = None
     registry_auth_ref: Optional[str] = Field(default=None, alias="registryAuthRef")
     secret_refs: List[SecretRef] = Field(default_factory=list, alias="secretRefs")
     resources: Optional[ResourcesSpec] = None

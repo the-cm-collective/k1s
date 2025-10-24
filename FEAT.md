@@ -402,8 +402,9 @@ This document tracks the current capabilities of k1s and outlines gaps to close 
 
 ### High‑Value Next Steps
 1) Service model and networking
-   - Introduce a Service abstraction (stable virtual IP/hostname per app) on single host
-   - Optional sidecar reverse proxy for mTLS/rate‑limit per app; basic service discovery
+   - [done: minimal] Add Service spec with stable host port for single‑replica apps; publish fixed port via Docker and use it in ingress.
+   - [next] Multi‑replica load balancing via Caddy with per‑replica upstreams on a shared Docker network (no host ports).
+   - [next] Basic service discovery naming on single host.
 2) Multi‑replica rollout controls
    - Parallel vs ordered startup; surge/unavailable knobs; pre/post hooks
 3) Secrets and config
