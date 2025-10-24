@@ -1,0 +1,150 @@
+<!doctype html>
+<html data-theme="dark">
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Demo Modes</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.55; }
+      code, pre { background: #f6f8fa; }
+      pre { padding: 12px; overflow-x: auto; }
+      h1, h2, h3 { margin-top: 1.5em; }
+      nav a { margin-right: 1rem; }
+      .container { max-width: 920px; }
+    </style>
+    <style>
+      :root {
+        --bg: #0b0f15;
+        --fg: #e6edf3;
+        --muted: #161b22;
+        --link: #79c0ff;
+        --code-bg: #0f1623;
+        --border: #263040;
+      }
+      html[data-theme="light"] {
+        --bg: #ffffff;
+        --fg: #0b0f15;
+        --muted: #f6f8fa;
+        --link: #0969da;
+        --code-bg: #f6f8fa;
+        --border: #e5e7eb;
+      }
+      body { background: var(--bg); color: var(--fg); }
+      a { color: var(--link); }
+      code, pre { background: var(--code-bg); border: 1px solid var(--border); }
+      nav { display: flex; align-items: center; gap: .75rem; margin-bottom: 1.25rem; }
+      nav a { margin-right: 1rem; }
+      .spacer { flex: 1 1 auto; }
+      button#theme-toggle { background: var(--muted); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+      /* Improve Mermaid readability in dark mode by inverting SVG colors */
+      html[data-theme="dark"] .mermaid svg { filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }
+      html[data-theme="dark"] .mermaid { background: var(--bg); }
+    </style>
+    <script>
+      (function() {
+        const key = 'k1s-theme';
+        const saved = localStorage.getItem(key);
+        const initial = saved || 'dark';
+        document.documentElement.setAttribute('data-theme', initial);
+        function setLabel(btn) {
+          var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+          btn.textContent = (cur === 'dark') ? 'Light Mode' : 'Dark Mode';
+        }
+        function ensureButton() {
+          var nav = document.querySelector('nav');
+          if (!nav) return;
+          var btn = document.getElementById('theme-toggle');
+          if (!btn) {
+            var spacer = document.createElement('span');
+            spacer.className = 'spacer';
+            btn = document.createElement('button');
+            btn.id = 'theme-toggle';
+            btn.addEventListener('click', function() {
+              var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+              var next = (cur === 'dark') ? 'light' : 'dark';
+              document.documentElement.setAttribute('data-theme', next);
+              localStorage.setItem(key, next);
+              setLabel(btn);
+            });
+            nav.appendChild(spacer);
+            nav.appendChild(btn);
+          }
+          setLabel(btn);
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', ensureButton);
+        } else {
+          ensureButton();
+        }
+      })();
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({ startOnLoad: true });</script>
+  </head>
+  <body>
+    <nav>
+      <a href="index.html">Home</a>
+      <a href="overview.html">Overview</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="http-api.html">HTTP API</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="http://127.0.0.1:9108/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="http://127.0.0.1:9108/redoc" target="_blank" rel="noopener">ReDoc</a>
+    </nav>
+    <div class="container">
+    <h2>Demo Modes</h2>
+<p>The init script can stand up different demo combinations. Use the flags below to control which apps are applied. Add <code>-y</code> to auto-add hosts and <code>-d</code> to attach logs (Ctrl-C to exit).</p>
+<h3>Standard Demo (blue/green)</h3>
+<ul>
+<li>Apps: blue and green services behind TLS via Caddy</li>
+<li>Command:</li>
+<li><code>./scripts/init_demo.sh --demo-standard -y</code></li>
+<li><code>make demo ARGS=&quot;--demo-standard -y -d&quot;</code></li>
+<li>Endpoints:</li>
+<li><code>https://blue.home.arpa:8443/</code></li>
+<li><code>https://green.home.arpa:8443/</code></li>
+</ul>
+<h3>Configs &amp; Secrets Demo (echo)</h3>
+<ul>
+<li>Shows <code>configRefs</code> and <code>secretRefs</code> → env and file projections.</li>
+<li>Projections (host): <code>state/projections/echo-revN/{config,secret}/...</code></li>
+<li>Mounted RO (container): <code>/var/run/ae/config/echo</code></li>
+<li>Command:</li>
+<li><code>./scripts/init_demo.sh --demo-configs -y</code></li>
+<li><code>make demo</code> (defaults to <code>-y --demo-configs</code>)</li>
+</ul>
+<h3>Multi-Replica Echo (echo-mr)</h3>
+<ul>
+<li>Shows Caddy load-balancing across multiple replicas on a shared Docker network.</li>
+<li>Command:</li>
+<li><code>./scripts/init_demo.sh --demo-echo-mr -y</code></li>
+<li><code>make demo ARGS=&quot;--demo-echo-mr -y -d&quot;</code></li>
+<li>Endpoint: <code>https://echo-mr.home.arpa:8443/</code></li>
+</ul>
+<h3>Docs Only</h3>
+<ul>
+<li>Starts the docs server and API; does not apply any apps.</li>
+<li>Command:</li>
+<li><code>./scripts/init_demo.sh --docs-only -y</code></li>
+<li><code>make demo ARGS=&quot;--docs-only -y -d&quot;</code></li>
+<li>Endpoints:</li>
+<li>Docs: <code>https://docs.home.arpa:8443/</code> and <code>http://127.0.0.1:9109/</code></li>
+<li>API:  <code>https://api.home.arpa:8443/swagger</code> and <code>http://127.0.0.1:9108/swagger</code></li>
+</ul>
+<h3>Helpful Flags &amp; Targets</h3>
+<ul>
+<li><code>-d, --debug</code> — attach logs for controller, caddy, prometheus, and site changes.</li>
+<li><code>--down -y</code> — tear down: <code>./scripts/init_demo.sh --down -y</code></li>
+<li><code>make demo-help</code> — print demo script usage</li>
+<li><code>make demo-down</code> — tear down demo</li>
+<li><code>make integ-test</code> — run integration tests (set <code>AE_DOCKER_TEST=1</code>)</li>
+</ul>
+<h3>Notes</h3>
+<ul>
+<li>Caddy HTTP: <code>:8888</code>, HTTPS: <code>:8443</code>.</li>
+<li>Hosts entries (added with <code>-y</code>): <code>blue|green|echo-mr|docs|api.home.arpa</code> → <code>127.0.0.1</code>.</li>
+<li>Health checks are disabled by default for compatibility; enable with <code>AE_CADDY_ACTIVE_HEALTH=1</code> if your Caddy supports the directive.</li>
+</ul>
+    </div>
+  </body>
+</html>
