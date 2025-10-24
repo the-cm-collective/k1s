@@ -71,3 +71,10 @@ class RuntimeAdapter(Protocol):
 
         Returns the number of volumes removed.
         """
+
+    def list_storage_volumes(self, app_name: str | None = None) -> list[dict]:
+        """List storage volumes known to the runtime.
+
+        Returns a list of dicts with at least: { name, labels }.
+        Implementations may include mountpoints and driver details when available.
+        """

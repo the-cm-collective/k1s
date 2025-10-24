@@ -139,6 +139,12 @@ def build_parser() -> argparse.ArgumentParser:
     # version
     subparsers.add_parser("version", help="Show version and build info")
 
+    # volumes list
+    vols = subparsers.add_parser("volumes", help="Inspect storage volumes")
+    vols_sub = vols.add_subparsers(dest="vol_cmd", required=True)
+    vols_list = vols_sub.add_parser("list", help="List storage volumes (PV-lite)")
+    vols_list.add_argument("--app", default=None, help="Filter by app name")
+
     return parser
 
 
@@ -271,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
         "version": lambda ns: handle_version(),
         "config": lambda ns: handle_config(ns),
         "secret": lambda ns: handle_secret(ns),
+        "volumes": lambda ns: handle_volumes(ns, runtime),
     }
 
     handler = command_handlers.get(args.command)
@@ -1006,6 +1013,29 @@ def handle_events(args: argparse.Namespace, store: SQLiteStateStore, global_args
         )
     return 0
 
+
+
+
+def handle_volumes(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
+    if args.vol_cmd == "list":
+        try:
+            vols = runtime.list_storage_volumes(getattr(args, "app", None))  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001
+            print(f"volume listing not available: {exc}")
+            return 1
+        if not vols:
+            print("No storage volumes found.")
+            return 0
+        for v in vols:
+            name = v.get("name", "")
+            labels = v.get("labels", {})
+            drv = v.get("driver", "")
+            mnt = v.get("mountpoint", "")
+            app = labels.get("ae.app", "")
+            print(f"{name} driver={drv} mount={mnt} app={app}")
+        return 0
+    print(f"Unsupported volumes command: {args.vol_cmd}")
+    return 1
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
     raise SystemExit(main())
