@@ -264,6 +264,7 @@ def main() -> None:
         "architecture.md": "architecture.html",
         "http-api.md": "http-api.html",
         "concepts.md": "concepts.html",
+        "configs-secrets.md": "configs-secrets.html",
     }
     # index
     index = """
@@ -273,6 +274,7 @@ def main() -> None:
   <li><a href="architecture.html">Architecture</a></li>
   <li><a href="http-api.html">HTTP API</a></li>
   <li><a href="concepts.html">Concepts</a></li>
+  <li><a href="configs-secrets.html">Configs &amp; Secrets</a></li>
 </ul>
 """
     (OUT / "index.html").write_text(TEMPLATE.format(title="k1s Docs", body=index, api_base=API_BASE), encoding="utf-8")
