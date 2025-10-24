@@ -6,6 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
+import os
 
 from ae.controller.health import HealthManager, HealthReport
 from ae.controller.spec import AppManifest, load_manifest
@@ -70,8 +71,21 @@ class Reconciler:
         )
 
         manifest_with_env = self._apply_configs_and_secrets(manifest)
+        # Prepare file projections and add a read-only volume mount if any files were written
+        projection_root = self._prepare_file_projections(manifest, revision)
+        manifest_for_runtime = manifest_with_env
+        if projection_root is not None:
+            vols = list(manifest_for_runtime.spec.volumes)
+            mount_root = f"/var/run/ae/config/{manifest.metadata.name}"
+            vols.append({
+                "hostPath": str(projection_root),
+                "mountPath": mount_root,
+                "readOnly": True,
+            })
+            updated_spec = manifest_for_runtime.spec.model_copy(update={"volumes": vols})
+            manifest_for_runtime = manifest_for_runtime.model_copy(update={"spec": updated_spec})
 
-        result = self._runtime.ensure_app(manifest_with_env, revision)
+        result = self._runtime.ensure_app(manifest_for_runtime, revision)
         health_report = self._health_manager.evaluate(manifest, result)
         if manifest.spec.ingress and self._ingress_service:
             upstreams = self._select_upstreams(manifest, result, health_report)
@@ -96,7 +110,7 @@ class Reconciler:
         revision_status = self._calculate_revision_status(manifest, health_report)
 
         self._state_store.record_snapshot(
-            manifest=manifest_with_env,
+            manifest=manifest_for_runtime,
             runtime_result=result,
             health_report=health_report,
             revision=revision,
@@ -187,3 +201,48 @@ class Reconciler:
         merged_env = [{"name": k, "value": v} for k, v in sorted(env_map.items())]
         updated_spec = manifest.spec.model_copy(update={"env": merged_env})
         return manifest.model_copy(update={"spec": updated_spec})
+
+    def _prepare_file_projections(self, manifest: AppManifest, revision: int) -> Path | None:
+        """Write config and secret key/value pairs into files for the app.
+
+        Writes two folders under state/projections/<app>-rev<rev>/{config,secret} with one
+        file per key containing the string value. Returns the projection root if any files
+        were written, else None.
+        """
+        app = manifest.metadata.name
+        root = Path("state/projections") / f"{app}-rev{revision}"
+        wrote = False
+
+        # Config files
+        if getattr(manifest.spec, "config_refs", None):
+            cfg_dir = root / "config"
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            for ref in manifest.spec.config_refs:
+                try:
+                    data = self._config_manager._load(Path(ref.path))  # type: ignore[arg-type]
+                except Exception:
+                    continue
+                for k, v in data.items():
+                    try:
+                        (cfg_dir / str(k)).write_text(str(v), encoding="utf-8")
+                        wrote = True
+                    except Exception:
+                        pass
+
+        # Secret files
+        if manifest.spec.secret_refs and self._secret_manager:
+            sec_dir = root / "secret"
+            sec_dir.mkdir(parents=True, exist_ok=True)
+            for ref in manifest.spec.secret_refs:
+                try:
+                    data = self._secret_manager._decrypt(Path(ref.path))  # type: ignore[arg-type]
+                except Exception:
+                    continue
+                for k, v in data.items():
+                    try:
+                        (sec_dir / str(k)).write_text(str(v), encoding="utf-8")
+                        wrote = True
+                    except Exception:
+                        pass
+
+        return root if wrote else None
