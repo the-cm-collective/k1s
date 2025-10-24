@@ -406,7 +406,7 @@ This document tracks the current capabilities of k1s and outlines gaps to close 
    - [done] Multi‑replica load balancing via Caddy with per‑replica upstreams on a shared Docker network (no host ports).
    - [done] Active health checks in Caddy using readiness probe path.
    - [done] Pre‑flight port conflict detection for `service.port`.
-   - [next] Basic service discovery naming on single host.
+   - [done] Basic service discovery naming on single host.
 2) Multi‑replica rollout controls
    - Parallel vs ordered startup; surge/unavailable knobs; pre/post hooks
 3) Secrets and config
@@ -425,6 +425,11 @@ This document tracks the current capabilities of k1s and outlines gaps to close 
    - TLS everywhere by default via Caddy; token‑based CLI→API auth; least‑privileged Docker access; audit logging
 10) Packaging and distribution
    - pip/pipx install; systemd units; dockerized controller; remote CLI mode to talk to controller API
+
+### Current Focus
+
+- Next up: Secrets and Config (ConfigMap/Secret-like resources)
+  - Goals: define resource schemas, implement decryption and mounting/env injections, add CLI commands, update docs and examples.
 
 ### CLI Installation and Aliases
 - `pipx install .` provides `ae` and `k1s` console scripts (see pyproject).
