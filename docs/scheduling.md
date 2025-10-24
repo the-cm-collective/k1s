@@ -8,9 +8,8 @@ Use the `plan` command to dry-run an apply and check for placement conflicts.
 ae plan -f specs/examples/echo.yaml
 ```
 
-Output includes replica count, rollout strategy, and a simple host port conflict
-check for `spec.service.port` (single-replica apps). The planner attempts to bind
-the host port to detect if it is already in use.
+Output includes replica count, rollout strategy, and host port conflict checks for `spec.service.port` (single-replica apps) using the runtime’s published ports.
+Use `--verbose` for a replica placement plan (replica IDs, storage mounts, and network hints).
 
 ### Notes
 

@@ -1143,6 +1143,17 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
         if svc and desired != 1:
             print("  - note: service.port is only applied for single-replica apps in this version")
 
+    # Affinity warnings
+    try:
+        infos = runtime.list_containers_info()  # type: ignore[attr-defined]
+    except Exception:
+        infos = []
+    running_same = [i for i in infos if (i.get("labels") or {}).get("ae.app") == manifest.metadata.name]
+    if running_same:
+        print(f"  - note: found {len(running_same)} running container(s) for app '{manifest.metadata.name}' (rollout surge may temporarily increase count)")
+    if desired > 1 and not os.getenv("AE_DOCKER_NETWORK"):
+        print("  - note: AE_DOCKER_NETWORK is not set; multi-replica ingress may require host ports")
+
     print("  - actions: create or reconcile containers; update ingress as needed")
     print("Plan OK.")
     return 0
