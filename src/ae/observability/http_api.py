@@ -49,6 +49,52 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     scale_fn = None  # type: ignore[var-annotated]
     delete_fn = None  # type: ignore[var-annotated]
 
+    # --- Auth helpers -------------------------------------------------
+    def _require_role(self, role: str) -> bool:
+        """Return True if the presented bearer token satisfies the required role.
+
+        Roles (lowest to highest): read (1), scale (2), admin (3).
+        If no tokens are configured in the environment, read access is allowed
+        by default and mutations remain gated by AE_API_MUTATIONS.
+        """
+        import os
+
+        # Extract presented token
+        auth = self.headers.get("Authorization", "")
+        token = auth.split(" ", 1)[1] if auth.startswith("Bearer ") else ""
+
+        # Configured tokens
+        admin = os.getenv("AE_API_ADMIN_TOKEN")
+        scaler = os.getenv("AE_API_SCALER_TOKEN")
+        reader = os.getenv("AE_API_READ_TOKEN")
+
+        have_any = any([admin, scaler, reader])
+        if not have_any:
+            # No tokens configured: allow reads; other methods are handled separately
+            return role in {"read", ""}
+
+        # Determine presented level
+        level = 0
+        if token and reader and token == reader:
+            level = 1
+        if token and scaler and token == scaler:
+            level = max(level, 2)
+        if token and admin and token == admin:
+            level = max(level, 3)
+
+        required = {"": 0, "read": 1, "scale": 2, "admin": 3}.get(role, 0)
+        return level >= required
+
+    def _deny(self, code: int, message: str = "unauthorized") -> None:
+        payload = json.dumps({"error": message}).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        if code == 401:
+            self.send_header("WWW-Authenticate", "Bearer")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def do_GET(self):  # type: ignore[override]
         # Metrics allowed without auth
         if self.path.startswith("/metrics"):
@@ -254,15 +300,34 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _handle_openapi(self) -> None:
-        # Minimal static document describing read-only endpoints
+        # Minimal static document describing endpoints with bearer auth
         doc = {
             "openapi": "3.0.0",
             "info": {"title": "k1s Controller API", "version": "0.1.0"},
+            "components": {
+                "securitySchemes": {
+                    "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}
+                }
+            },
             "paths": {
                 "/metrics": {"get": {"summary": "Prometheus metrics", "responses": {"200": {"description": "Prometheus text"}}}},
-                "/status": {"get": {"summary": "List app statuses", "responses": {"200": {"description": "OK"}}}},
-                "/status/{app}": {"get": {"summary": "Get a single app status", "parameters": [{"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "OK"}, "404": {"description": "Not Found"}}}},
-                "/events/{app}": {"get": {"summary": "List app events", "parameters": [{"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}, {"name": "limit", "in": "query", "required": False, "schema": {"type": "integer", "default": 20}}], "responses": {"200": {"description": "OK"}}}},
+                "/status": {"get": {"summary": "List app statuses (paginated)", "parameters": [
+                    {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50}},
+                    {"name": "cursor", "in": "query", "schema": {"type": "string"}},
+                    {"name": "app", "in": "query", "schema": {"type": "string"}},
+                    {"name": "wildcard", "in": "query", "schema": {"type": "string"}}
+                ], "responses": {"200": {"description": "OK"}}, "security": [{"bearerAuth": []}]}},
+                "/status/{app}": {"get": {"summary": "Get a single app status", "parameters": [{"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "OK"}, "404": {"description": "Not Found"}}, "security": [{"bearerAuth": []}]}},
+                "/events/{app}": {"get": {"summary": "List app events (paginated)", "parameters": [
+                    {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
+                    {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 20}},
+                    {"name": "cursor", "in": "query", "schema": {"type": "string"}}
+                ], "responses": {"200": {"description": "OK"}}, "security": [{"bearerAuth": []}]}},
+                "/scale/{app}": {"post": {"summary": "Scale an app", "parameters": [{"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "OK"}}, "security": [{"bearerAuth": []}]}},
+                "/delete/{app}": {"post": {"summary": "Delete an app", "parameters": [
+                    {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
+                    {"name": "purge", "in": "query", "schema": {"type": "boolean"}}
+                ], "responses": {"200": {"description": "OK"}}, "security": [{"bearerAuth": []}]}}
             },
         }
         payload = json.dumps(doc).encode("utf-8")
