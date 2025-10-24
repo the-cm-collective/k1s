@@ -98,6 +98,12 @@ def build_parser() -> argparse.ArgumentParser:
     sec_val = sec_sub.add_parser("validate", help="Validate and show keys from a secret (SOPS) file")
     sec_val.add_argument("--file", "-f", type=Path, required=True)
     sec_val.add_argument("--json", action="store_true", help="Emit JSON with keys")
+    sec_enc = sec_sub.add_parser("encrypt", help="Encrypt a JSON/YAML file with sops (wrapper)")
+    sec_enc.add_argument("--input", "-i", type=Path, required=True)
+    sec_enc.add_argument("--output", "-o", type=Path, required=True)
+    sec_dec = sec_sub.add_parser("decrypt", help="Decrypt a sops file (wrapper)")
+    sec_dec.add_argument("--input", "-i", type=Path, required=True)
+    sec_dec.add_argument("--output", "-o", type=Path, required=True)
 
     # delete <name> [--purge]
     delete_parser = subparsers.add_parser("delete", help="Delete an application (containers + status)")
@@ -318,6 +324,35 @@ def handle_secret(ns: argparse.Namespace) -> int:
             for k in keys:
                 print(f"  - {k}")
         return 0
+    if ns.secret_cmd == "encrypt":
+        # pass-through to sops -e -o
+        from shutil import which
+        sops = which("sops")
+        if not sops:
+            print("sops binary not found; install sops to use this wrapper")
+            return 1
+        import subprocess as sp
+        try:
+            sp.run([sops, "-e", "-o", str(ns.output), str(ns.input)], check=True)
+            print(f"encrypted → {ns.output}")
+            return 0
+        except sp.CalledProcessError as exc:
+            print(f"sops encrypt failed: {exc}")
+            return 1
+    if ns.secret_cmd == "decrypt":
+        from shutil import which
+        sops = which("sops")
+        if not sops:
+            print("sops binary not found; install sops to use this wrapper")
+            return 1
+        import subprocess as sp
+        try:
+            sp.run([sops, "-d", "-o", str(ns.output), str(ns.input)], check=True)
+            print(f"decrypted → {ns.output}")
+            return 0
+        except sp.CalledProcessError as exc:
+            print(f"sops decrypt failed: {exc}")
+            return 1
     print(f"Unsupported secret command: {ns.secret_cmd}")
     return 1
 

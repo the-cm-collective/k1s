@@ -48,6 +48,30 @@ Environment variables:
 - `AE_DOCKER_NETWORK` (default `dev_default`) — network name to attach new containers and from which Caddy resolves upstreams.
 - `AE_CADDY_SITES` (default `state/caddy`) — directory where dynamic site snippets are written (mounted into `/etc/caddy/dynsites`).
 
+## Configs/Secrets Verification
+
+Projection locations:
+- Host: `state/projections/<app>-rev<revision>/{config,secret}/...`
+- Container (RO): `/var/run/ae/config/<app>`
+
+Quick checks (for the `echo` example):
+
+```
+# List files projected into the container
+docker ps --filter "label=ae.app=echo" --format '{{.ID}}' | head -n1 \
+  | xargs -I{} docker exec {} sh -lc 'ls -R /var/run/ae/config/echo || true'
+
+# Show selected values
+docker ps --filter "label=ae.app=echo" --format '{{.ID}}' | head -n1 \
+  | xargs -I{} docker exec {} sh -lc 'echo mode=$(cat /var/run/ae/config/echo/config/mode)'
+docker ps --filter "label=ae.app=echo" --format '{{.ID}}' | head -n1 \
+  | xargs -I{} docker exec {} sh -lc 'echo token=$(cat /var/run/ae/config/echo/secret/token)'
+```
+
+CLI helpers:
+- `ae config validate -f configs/app-config.yaml`
+- `AE_ALLOW_PLAINTEXT_SECRETS=1 ae secret validate -f specs/examples/demo-secret.sops.yaml`
+
 ## HTTP API
 
 When `--metrics-port` is set, a lightweight HTTP API is exposed:
