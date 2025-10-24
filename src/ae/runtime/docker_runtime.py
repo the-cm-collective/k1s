@@ -212,12 +212,16 @@ class DockerRuntime(RuntimeAdapter):
                 mem_limit = self._parse_memory_bytes(str(limits.memory))
 
         # volumes
-        volumes = None
+        volumes = {}
         if manifest.spec.volumes:
-            volumes = {}
             for v in manifest.spec.volumes:
                 mode = "ro" if v.read_only else "rw"
                 volumes[v.host_path] = {"bind": v.mount_path, "mode": mode}
+        if getattr(manifest.spec, "storage", None):
+            self.ensure_storage_volumes(manifest.metadata.name, [s.model_dump() for s in manifest.spec.storage])
+            for s in manifest.spec.storage:
+                vol_name = self._storage_volume_name(manifest.metadata.name, s.name)
+                volumes[vol_name] = {"bind": s.mount_path, "mode": "rw"}
 
         try:
             run_fn = self._client.containers.run
@@ -240,7 +244,7 @@ class DockerRuntime(RuntimeAdapter):
                 kwargs["nano_cpus"] = nano_cpus
             if mem_limit is not None:
                 kwargs["mem_limit"] = mem_limit
-            if volumes is not None:
+            if volumes:
                 kwargs["volumes"] = volumes
 
             container = run_fn(

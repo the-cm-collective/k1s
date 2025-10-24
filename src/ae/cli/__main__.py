@@ -386,6 +386,20 @@ def handle_delete(
             ingress_service.reload()
         except Exception:
             pass
+    # If we have a manifest for the latest revision and purge requested, remove storage volumes with retention Delete
+    if bool(args.purge):
+        try:
+            latest = store.list_revisions(name, limit=1)
+            if latest:
+                manifest = store.get_revision_manifest(name, latest[0].revision)
+                deletes = [s.name for s in getattr(manifest.spec, "storage", []) if str(getattr(s, "retention", "Retain")) == "Delete"]
+                if deletes:
+                    try:
+                        runtime.remove_storage_volumes(name, deletes)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
     store.delete_app_state(name, purge_history=bool(args.purge))
     print(f"deleted {name}: removed={removed} containers{' (purged history)' if args.purge else ''}")
     return 0

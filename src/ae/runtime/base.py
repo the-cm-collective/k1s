@@ -59,3 +59,15 @@ class RuntimeAdapter(Protocol):
 
     def remove_old_revisions(self, app_name: str, keep_revision: int) -> int:
         """Remove containers of older revisions for a given app, keeping the specified revision."""
+
+    def ensure_storage_volumes(self, app_name: str, volumes: list[dict]) -> None:
+        """Ensure named storage volumes exist for the app.
+
+        volumes: list of dicts with keys { name }
+        """
+
+    def remove_storage_volumes(self, app_name: str, names: list[str]) -> int:
+        """Remove named storage volumes for the app when retention=Delete.
+
+        Returns the number of volumes removed.
+        """

@@ -127,6 +127,26 @@ class VolumeSpec(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class StorageRetention(str):
+    Retain = "Retain"
+    Delete = "Delete"
+
+
+class StorageSpec(BaseModel):
+    """Named persistent storage volume (PV-lite).
+
+    The controller creates a Docker named volume per entry and mounts it at
+    the specified path. Retention controls removal on app deletion.
+    """
+
+    name: str
+    mount_path: str = Field(alias="mountPath")
+    retention: str = Field(default=StorageRetention.Retain)
+    size: str | None = None  # reserved for future use
+
+    model_config = {"populate_by_name": True}
+
+
 class SecretEnvMapping(BaseModel):
     """Mapping from decrypted secret key to environment variable."""
 
@@ -178,6 +198,7 @@ class AppSpec(BaseModel):
     config_refs: List[ConfigRef] = Field(default_factory=list, alias="configRefs")
     resources: Optional[ResourcesSpec] = None
     volumes: List[VolumeSpec] = Field(default_factory=list)
+    storage: List[StorageSpec] = Field(default_factory=list)
 
     model_config = {"populate_by_name": True}
 
