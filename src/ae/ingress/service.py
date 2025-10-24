@@ -29,7 +29,10 @@ class IngressService:
                 host=None,
                 config_path=None,
             )
-        site_path = self._manager.apply(manifest, upstreams)
+        readiness_path = None
+        if manifest.spec.health and manifest.spec.health.readiness and manifest.spec.health.readiness.http_get:
+            readiness_path = manifest.spec.health.readiness.http_get.path or "/"
+        site_path = self._manager.apply(manifest, upstreams, readiness_path)
         return IngressResult(
             app_name=manifest.metadata.name,
             host=manifest.spec.ingress.host,

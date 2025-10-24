@@ -21,7 +21,9 @@ SITE_TEMPLATE = Template(
     }
     # Ensure upstream HSTS does not stick during dev
     header -Strict-Transport-Security
-    reverse_proxy $upstreams
+    reverse_proxy $upstreams {
+        $health_block
+    }
 }
 """
 )
@@ -45,12 +47,12 @@ class CaddyIngressManager:
         self._reload_timeout = reload_timeout
         self._config_root.mkdir(parents=True, exist_ok=True)
 
-    def apply(self, manifest: AppManifest, upstreams: Union[str, Sequence[str]]) -> Path:
+    def apply(self, manifest: AppManifest, upstreams: Union[str, Sequence[str]], readiness_path: Optional[str] = None) -> Path:
         ingress = manifest.spec.ingress
         if ingress is None:
             raise ValueError("Manifest lacks ingress configuration")
 
-        site_config = self._render_site(ingress, upstreams)
+        site_config = self._render_site(ingress, upstreams, readiness_path)
         site_path = self._site_path(manifest.metadata.name)
         site_path.write_text(site_config)
         LOGGER.debug("Wrote Caddy site config to %s", site_path)
@@ -96,7 +98,7 @@ class CaddyIngressManager:
             LOGGER.error("Caddy reload failed: %s", exc.stderr.decode("utf-8", "ignore"))
             raise RuntimeError("Caddy reload failed") from exc
 
-    def _render_site(self, ingress: IngressSpec, upstreams: Union[str, Sequence[str]]) -> str:
+    def _render_site(self, ingress: IngressSpec, upstreams: Union[str, Sequence[str]], readiness_path: Optional[str]) -> str:
         host = ingress.host
         if isinstance(upstreams, str):
             ups_list = [upstreams]
@@ -120,7 +122,11 @@ class CaddyIngressManager:
             targets.append(target)
 
         upstreams_str = " ".join(targets)
-        return SITE_TEMPLATE.substitute(host=host, upstreams=upstreams_str)
+        health_block = ""
+        if readiness_path:
+            # Caddy health checks (active). Keep conservative intervals.
+            health_block = f"health_checks {{\n            path {readiness_path}\n            interval 10s\n            timeout 2s\n        }}"
+        return SITE_TEMPLATE.substitute(host=host, upstreams=upstreams_str, health_block=health_block)
 
     def _site_path(self, app_name: str) -> Path:
         return self._config_root / f"{app_name}.caddy"

@@ -403,7 +403,9 @@ This document tracks the current capabilities of k1s and outlines gaps to close 
 ### High‑Value Next Steps
 1) Service model and networking
    - [done: minimal] Add Service spec with stable host port for single‑replica apps; publish fixed port via Docker and use it in ingress.
-   - [next] Multi‑replica load balancing via Caddy with per‑replica upstreams on a shared Docker network (no host ports).
+   - [done] Multi‑replica load balancing via Caddy with per‑replica upstreams on a shared Docker network (no host ports).
+   - [done] Active health checks in Caddy using readiness probe path.
+   - [done] Pre‑flight port conflict detection for `service.port`.
    - [next] Basic service discovery naming on single host.
 2) Multi‑replica rollout controls
    - Parallel vs ordered startup; surge/unavailable knobs; pre/post hooks

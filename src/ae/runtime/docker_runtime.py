@@ -177,6 +177,9 @@ class DockerRuntime(RuntimeAdapter):
             svc_port = manifest.spec.service.port
             svc_target = manifest.spec.service.target_port
         ports = self._port_mapping(manifest.spec.ports, service_port=svc_port, service_target=svc_target)
+        # Pre-flight conflict check for service stable port
+        if svc_port is not None:
+            self._ensure_host_port_free(app_name, int(svc_port))
 
         # resource limits
         nano_cpus = None
@@ -238,6 +241,28 @@ class DockerRuntime(RuntimeAdapter):
             return container
         except APIError as exc:
             raise RuntimeError(f"Failed to create container {name}: {exc}") from exc
+
+    def _ensure_host_port_free(self, app_name: str, host_port: int) -> None:
+        try:
+            all_containers = self._client.containers.list(all=True)
+        except APIError as exc:  # pragma: no cover
+            LOGGER.warning("Port check skipped; failed to list containers: %s", exc)
+            return
+        for c in all_containers:
+            try:
+                ports = (c.attrs or {}).get("NetworkSettings", {}).get("Ports", {}) or {}
+            except Exception:  # pragma: no cover
+                ports = {}
+            for bindings in ports.values():
+                if not bindings:
+                    continue
+                for b in bindings:
+                    if b and str(b.get("HostPort")) == str(host_port):
+                        other_app = (c.labels or {}).get(self.APP_LABEL, "")
+                        if other_app != app_name:
+                            raise RuntimeError(
+                                f"service.port {host_port} is already in use by container {c.name} (app '{other_app}')"
+                            )
 
     def _stop_and_remove(self, container: Container) -> None:
         try:
