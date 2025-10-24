@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -12,6 +12,72 @@
       nav a { margin-right: 1rem; }
       .container { max-width: 920px; }
     </style>
+    <style>
+      :root {
+        --bg: #0b0f15;
+        --fg: #e6edf3;
+        --muted: #161b22;
+        --link: #79c0ff;
+        --code-bg: #0f1623;
+        --border: #263040;
+      }
+      html[data-theme="light"] {
+        --bg: #ffffff;
+        --fg: #0b0f15;
+        --muted: #f6f8fa;
+        --link: #0969da;
+        --code-bg: #f6f8fa;
+        --border: #e5e7eb;
+      }
+      body { background: var(--bg); color: var(--fg); }
+      a { color: var(--link); }
+      code, pre { background: var(--code-bg); border: 1px solid var(--border); }
+      nav { display: flex; align-items: center; gap: .75rem; margin-bottom: 1.25rem; }
+      nav a { margin-right: 1rem; }
+      .spacer { flex: 1 1 auto; }
+      button#theme-toggle { background: var(--muted); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+      /* Improve Mermaid readability in dark mode by inverting SVG colors */
+      html[data-theme="dark"] .mermaid svg { filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }
+      html[data-theme="dark"] .mermaid { background: var(--bg); }
+    </style>
+    <script>
+      (function() {
+        const key = 'k1s-theme';
+        const saved = localStorage.getItem(key);
+        const initial = saved || 'dark';
+        document.documentElement.setAttribute('data-theme', initial);
+        function setLabel(btn) {
+          var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+          btn.textContent = (cur === 'dark') ? 'Light Mode' : 'Dark Mode';
+        }
+        function ensureButton() {
+          var nav = document.querySelector('nav');
+          if (!nav) return;
+          var btn = document.getElementById('theme-toggle');
+          if (!btn) {
+            var spacer = document.createElement('span');
+            spacer.className = 'spacer';
+            btn = document.createElement('button');
+            btn.id = 'theme-toggle';
+            btn.addEventListener('click', function() {
+              var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+              var next = (cur === 'dark') ? 'light' : 'dark';
+              document.documentElement.setAttribute('data-theme', next);
+              localStorage.setItem(key, next);
+              setLabel(btn);
+            });
+            nav.appendChild(spacer);
+            nav.appendChild(btn);
+          }
+          setLabel(btn);
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', ensureButton);
+        } else {
+          ensureButton();
+        }
+      })();
+    </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
   </head>
@@ -22,6 +88,8 @@
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
       <a href="concepts.html">Concepts</a>
+      <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="https://api.home.arpa:8443/redoc" target="_blank" rel="noopener">ReDoc</a>
     </nav>
     <div class="container">
     <h1>k1s Architecture and Technical Reference</h1>
@@ -112,10 +180,10 @@ sequenceDiagram
 <li><code>image: str</code></li>
 <li><code>command: [str]?</code></li>
 <li><code>env: [{name, value}]</code> (merged with secrets)</li>
-<li><code>replicas: int&amp;gt;=1</code></li>
+<li><code>replicas: int&gt;=1</code></li>
 <li><code>ports: [{name, containerPort}]</code></li>
 <li><code>health.readiness|liveness</code> HTTP probes with <code>initialDelaySeconds</code>, <code>timeoutSeconds</code> etc.</li>
-<li><code>ingress: { host, path: &amp;#x27;/&amp;#x27;, tls: bool }</code></li>
+<li><code>ingress: { host, path: &#x27;/&#x27;, tls: bool }</code></li>
 <li><code>secretRefs: [{ name, path, env: [{name, key}] }]</code> (SOPS‑decrypted)</li>
 <li><code>registryAuthRef: str?</code> (reserved, not yet used directly)</li>
 <li><code>resources: { requests?, limits?: { cpu: float cores, memory: str (e.g., 256Mi) } }</code></li>
@@ -160,9 +228,9 @@ spec:
 <h2>Runtime: Docker</h2>
 <p>Labels</p>
 <ul>
-<li><code>ae.app=&amp;lt;name&amp;gt;</code></li>
-<li><code>ae.replica_id=&amp;lt;name&amp;gt;-rev&amp;lt;rev&amp;gt;-&amp;lt;index&amp;gt;</code></li>
-<li><code>ae.revision=&amp;lt;rev&amp;gt;</code></li>
+<li><code>ae.app=&lt;name&gt;</code></li>
+<li><code>ae.replica_id=&lt;name&gt;-rev&lt;rev&gt;-&lt;index&gt;</code></li>
+<li><code>ae.revision=&lt;rev&gt;</code></li>
 </ul>
 <p>Ensure flow (src/ae/runtime/docker_runtime.py)</p>
 <ul>
@@ -188,28 +256,28 @@ spec:
 </ul>
 <h2>Ingress: Caddy</h2>
 <ul>
-<li>Each app with <code>spec.ingress</code> gets a small site block written to <code>ops/dev/caddy/sites/&amp;lt;app&amp;gt;.caddy</code> (or configured root).</li>
-<li>Reloads via <code>caddy reload --config &amp;lt;file|dir&amp;gt;</code>, optionally inside a container via <code>docker exec</code>.</li>
+<li>Each app with <code>spec.ingress</code> gets a small site block written to <code>ops/dev/caddy/sites/&lt;app&gt;.caddy</code> (or configured root).</li>
+<li>Reloads via <code>caddy reload --config &lt;file|dir&gt;</code>, optionally inside a container via <code>docker exec</code>.</li>
 <li>When Caddy runs in a container, upstreams with 127.0.0.1 are rewritten to <code>host.docker.internal</code>.</li>
 </ul>
 <h2>Health</h2>
 <ul>
-<li>HTTP probe: GET <code>http://&amp;lt;replica.endpoint&amp;gt;&amp;lt;path&amp;gt;</code>; success is 2xx.</li>
+<li>HTTP probe: GET <code>http://&lt;replica.endpoint&gt;&lt;path&gt;</code>; success is 2xx.</li>
 <li>Initial delay honored using container <code>StartedAt</code>.</li>
 <li>Liveness defaults to true when unspecified; readiness defaults to container state when unspecified.</li>
 <li><code>HealthReport</code> aggregates per‑replica <code>ready/live</code> and messages.</li>
 </ul>
 <p>Revision status</p>
 <ul>
-<li>ready: <code>ready_replicas &amp;gt;= desired</code></li>
-<li>progressing: <code>live_replicas &amp;gt;= desired</code> but not all ready</li>
+<li>ready: <code>ready_replicas &gt;= desired</code></li>
+<li>progressing: <code>live_replicas &gt;= desired</code> but not all ready</li>
 <li>degraded: otherwise</li>
 </ul>
 <h2>Rollouts and Rollback</h2>
 <ul>
 <li>spec hash (SHA‑256 of normalized JSON) creates a new revision when changed.</li>
 <li>Rolling replace with <code>maxUnavailable=0, maxSurge=1</code> semantics at single‑app scale.</li>
-<li><code>ae rollback &amp;lt;app&amp;gt; [--to &amp;lt;rev&amp;gt;]</code> fetches stored manifest and reconciles.</li>
+<li><code>ae rollback &lt;app&gt; [--to &lt;rev&gt;]</code> fetches stored manifest and reconciles.</li>
 </ul>
 <h2>Events</h2>
 <ul>
@@ -220,7 +288,7 @@ spec:
 <ul>
 <li>CLI snapshot: aggregated counts (apps ready/progressing/degraded, replicas).</li>
 <li>HTTP <code>/metrics</code>: includes app/replica gauges, last reconcile timestamp/duration, per‑app reconcile sum/count, rollout operation counters.</li>
-<li>HTTP <code>/status</code>, <code>/status/&amp;lt;app&amp;gt;</code>, <code>/events/&amp;lt;app&amp;gt;</code> return JSON; <code>/openapi.json</code> documents the surface; <code>/docs</code> lists endpoints.</li>
+<li>HTTP <code>/status</code>, <code>/status/&lt;app&gt;</code>, <code>/events/&lt;app&gt;</code> return JSON; <code>/openapi.json</code> documents the surface; <code>/docs</code> lists endpoints.</li>
 </ul>
 <h2>Secrets</h2>
 <ul>

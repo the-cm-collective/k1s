@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -12,6 +12,72 @@
       nav a { margin-right: 1rem; }
       .container { max-width: 920px; }
     </style>
+    <style>
+      :root {
+        --bg: #0b0f15;
+        --fg: #e6edf3;
+        --muted: #161b22;
+        --link: #79c0ff;
+        --code-bg: #0f1623;
+        --border: #263040;
+      }
+      html[data-theme="light"] {
+        --bg: #ffffff;
+        --fg: #0b0f15;
+        --muted: #f6f8fa;
+        --link: #0969da;
+        --code-bg: #f6f8fa;
+        --border: #e5e7eb;
+      }
+      body { background: var(--bg); color: var(--fg); }
+      a { color: var(--link); }
+      code, pre { background: var(--code-bg); border: 1px solid var(--border); }
+      nav { display: flex; align-items: center; gap: .75rem; margin-bottom: 1.25rem; }
+      nav a { margin-right: 1rem; }
+      .spacer { flex: 1 1 auto; }
+      button#theme-toggle { background: var(--muted); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+      /* Improve Mermaid readability in dark mode by inverting SVG colors */
+      html[data-theme="dark"] .mermaid svg { filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }
+      html[data-theme="dark"] .mermaid { background: var(--bg); }
+    </style>
+    <script>
+      (function() {
+        const key = 'k1s-theme';
+        const saved = localStorage.getItem(key);
+        const initial = saved || 'dark';
+        document.documentElement.setAttribute('data-theme', initial);
+        function setLabel(btn) {
+          var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+          btn.textContent = (cur === 'dark') ? 'Light Mode' : 'Dark Mode';
+        }
+        function ensureButton() {
+          var nav = document.querySelector('nav');
+          if (!nav) return;
+          var btn = document.getElementById('theme-toggle');
+          if (!btn) {
+            var spacer = document.createElement('span');
+            spacer.className = 'spacer';
+            btn = document.createElement('button');
+            btn.id = 'theme-toggle';
+            btn.addEventListener('click', function() {
+              var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+              var next = (cur === 'dark') ? 'light' : 'dark';
+              document.documentElement.setAttribute('data-theme', next);
+              localStorage.setItem(key, next);
+              setLabel(btn);
+            });
+            nav.appendChild(spacer);
+            nav.appendChild(btn);
+          }
+          setLabel(btn);
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', ensureButton);
+        } else {
+          ensureButton();
+        }
+      })();
+    </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
   </head>
@@ -22,6 +88,8 @@
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
       <a href="concepts.html">Concepts</a>
+      <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="https://api.home.arpa:8443/redoc" target="_blank" rel="noopener">ReDoc</a>
     </nav>
     <div class="container">
     <h1>k1s Concepts</h1>
@@ -29,12 +97,12 @@
 <h2>App</h2>
 <p>The primary unit of deployment. Defined by an <code>App</code> manifest with a desired image, replicas, ports, health checks, and optional ingress/secrets/resources.</p>
 <h2>Replica</h2>
-<p>An individual container instance belonging to an app revision. Replica IDs follow the pattern <code>&amp;lt;app&amp;gt;-rev&amp;lt;revision&amp;gt;-&amp;lt;index&amp;gt;</code> (e.g., <code>echo-rev3-0</code>).</p>
+<p>An individual container instance belonging to an app revision. Replica IDs follow the pattern <code>&lt;app&gt;-rev&lt;revision&gt;-&lt;index&gt;</code> (e.g., <code>echo-rev3-0</code>).</p>
 <h2>Revision</h2>
 <p>An immutable snapshot of desired state computed from the manifest spec hash. A new revision is created when the manifest content changes.</p>
 <ul>
 <li>Stored in SQLite with its normalized JSON and status.</li>
-<li>Used for rollbacks: <code>ae rollback &amp;lt;app&amp;gt; [--to &amp;lt;rev&amp;gt;]</code>.</li>
+<li>Used for rollbacks: <code>ae rollback &lt;app&gt; [--to &lt;rev&gt;]</code>.</li>
 </ul>
 <h2>Reconcile</h2>
 <p>The controller compares the desired state from specs to the observed state (Docker + SQLite) and performs the operations needed to converge.</p>
@@ -88,7 +156,7 @@ ae rollback myapp --to 3
 <h2>HTTP API</h2>
 <p>Read‑only status/metrics/events published at:</p>
 <ul>
-<li><code>/metrics</code>, <code>/status</code>, <code>/status/&amp;lt;app&amp;gt;</code>, <code>/events/&amp;lt;app&amp;gt;</code></li>
+<li><code>/metrics</code>, <code>/status</code>, <code>/status/&lt;app&gt;</code>, <code>/events/&lt;app&gt;</code></li>
 <li><code>/openapi.json</code> and a tiny docs page at <code>/docs</code></li>
 </ul>
     </div>

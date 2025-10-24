@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -12,6 +12,72 @@
       nav a { margin-right: 1rem; }
       .container { max-width: 920px; }
     </style>
+    <style>
+      :root {
+        --bg: #0b0f15;
+        --fg: #e6edf3;
+        --muted: #161b22;
+        --link: #79c0ff;
+        --code-bg: #0f1623;
+        --border: #263040;
+      }
+      html[data-theme="light"] {
+        --bg: #ffffff;
+        --fg: #0b0f15;
+        --muted: #f6f8fa;
+        --link: #0969da;
+        --code-bg: #f6f8fa;
+        --border: #e5e7eb;
+      }
+      body { background: var(--bg); color: var(--fg); }
+      a { color: var(--link); }
+      code, pre { background: var(--code-bg); border: 1px solid var(--border); }
+      nav { display: flex; align-items: center; gap: .75rem; margin-bottom: 1.25rem; }
+      nav a { margin-right: 1rem; }
+      .spacer { flex: 1 1 auto; }
+      button#theme-toggle { background: var(--muted); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+      /* Improve Mermaid readability in dark mode by inverting SVG colors */
+      html[data-theme="dark"] .mermaid svg { filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }
+      html[data-theme="dark"] .mermaid { background: var(--bg); }
+    </style>
+    <script>
+      (function() {
+        const key = 'k1s-theme';
+        const saved = localStorage.getItem(key);
+        const initial = saved || 'dark';
+        document.documentElement.setAttribute('data-theme', initial);
+        function setLabel(btn) {
+          var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+          btn.textContent = (cur === 'dark') ? 'Light Mode' : 'Dark Mode';
+        }
+        function ensureButton() {
+          var nav = document.querySelector('nav');
+          if (!nav) return;
+          var btn = document.getElementById('theme-toggle');
+          if (!btn) {
+            var spacer = document.createElement('span');
+            spacer.className = 'spacer';
+            btn = document.createElement('button');
+            btn.id = 'theme-toggle';
+            btn.addEventListener('click', function() {
+              var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+              var next = (cur === 'dark') ? 'light' : 'dark';
+              document.documentElement.setAttribute('data-theme', next);
+              localStorage.setItem(key, next);
+              setLabel(btn);
+            });
+            nav.appendChild(spacer);
+            nav.appendChild(btn);
+          }
+          setLabel(btn);
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', ensureButton);
+        } else {
+          ensureButton();
+        }
+      })();
+    </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
   </head>
@@ -22,11 +88,13 @@
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
       <a href="concepts.html">Concepts</a>
+      <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="https://api.home.arpa:8443/redoc" target="_blank" rel="noopener">ReDoc</a>
     </nav>
     <div class="container">
     <h1>HTTP API Reference</h1>
 <p>The controller exposes a read-only HTTP API when started with <code>--metrics-port PORT</code>.</p>
-<p>Base URL: <code>http://&amp;lt;host&amp;gt;:&amp;lt;port&amp;gt;</code></p>
+<p>Base URL: <code>http://&lt;host&gt;:&lt;port&gt;</code></p>
 <ul>
 <li>GET <code>/metrics</code></li>
 <li>Content-Type: <code>text/plain; version=0.0.4</code></li>
@@ -54,13 +122,13 @@
 </code></pre>
 </ul>
 <ul>
-<li>GET <code>/status/&amp;lt;app&amp;gt;</code></li>
+<li>GET <code>/status/&lt;app&gt;</code></li>
 <li>200 OK: JSON object (same shape as items in <code>/status</code>)</li>
 <li>404 Not Found: when no status exists</li>
 </ul>
 <ul>
-<li>GET <code>/events/&amp;lt;app&amp;gt;?limit=N</code></li>
-<li>200 OK: JSON array of recent events for <code>&amp;lt;app&amp;gt;</code></li>
+<li>GET <code>/events/&lt;app&gt;?limit=N</code></li>
+<li>200 OK: JSON array of recent events for <code>&lt;app&gt;</code></li>
 <li>Example item:</li>
 <pre><code>
     {

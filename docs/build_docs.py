@@ -23,8 +23,23 @@ ROOT = Path(__file__).resolve().parent
 SRC = ROOT
 OUT = ROOT / "site"
 
+# Decide API base for Swagger/ReDoc links.
+def detect_api_base() -> str:
+    env = os.getenv("DOCS_API_BASE")
+    if env:
+        return env.rstrip("/")
+    try:
+        hosts = Path("/etc/hosts").read_text(encoding="utf-8", errors="ignore")
+        if "api.home.arpa" in hosts:
+            return "https://api.home.arpa:8443"
+    except Exception:
+        pass
+    return "http://127.0.0.1:9108"
+
+API_BASE = detect_api_base()
+
 TEMPLATE = """<!doctype html>
-<html>
+<html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -37,6 +52,72 @@ TEMPLATE = """<!doctype html>
       nav a {{ margin-right: 1rem; }}
       .container {{ max-width: 920px; }}
     </style>
+    <style>
+      :root {{
+        --bg: #0b0f15;
+        --fg: #e6edf3;
+        --muted: #161b22;
+        --link: #79c0ff;
+        --code-bg: #0f1623;
+        --border: #263040;
+      }}
+      html[data-theme="light"] {{
+        --bg: #ffffff;
+        --fg: #0b0f15;
+        --muted: #f6f8fa;
+        --link: #0969da;
+        --code-bg: #f6f8fa;
+        --border: #e5e7eb;
+      }}
+      body {{ background: var(--bg); color: var(--fg); }}
+      a {{ color: var(--link); }}
+      code, pre {{ background: var(--code-bg); border: 1px solid var(--border); }}
+      nav {{ display: flex; align-items: center; gap: .75rem; margin-bottom: 1.25rem; }}
+      nav a {{ margin-right: 1rem; }}
+      .spacer {{ flex: 1 1 auto; }}
+      button#theme-toggle {{ background: var(--muted); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; cursor: pointer; }}
+      /* Improve Mermaid readability in dark mode by inverting SVG colors */
+      html[data-theme="dark"] .mermaid svg {{ filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }}
+      html[data-theme="dark"] .mermaid {{ background: var(--bg); }}
+    </style>
+    <script>
+      (function() {{
+        const key = 'k1s-theme';
+        const saved = localStorage.getItem(key);
+        const initial = saved || 'dark';
+        document.documentElement.setAttribute('data-theme', initial);
+        function setLabel(btn) {{
+          var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+          btn.textContent = (cur === 'dark') ? 'Light Mode' : 'Dark Mode';
+        }}
+        function ensureButton() {{
+          var nav = document.querySelector('nav');
+          if (!nav) return;
+          var btn = document.getElementById('theme-toggle');
+          if (!btn) {{
+            var spacer = document.createElement('span');
+            spacer.className = 'spacer';
+            btn = document.createElement('button');
+            btn.id = 'theme-toggle';
+            btn.addEventListener('click', function() {{
+              var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+              var next = (cur === 'dark') ? 'light' : 'dark';
+              document.documentElement.setAttribute('data-theme', next);
+              localStorage.setItem(key, next);
+              setLabel(btn);
+            }});
+            nav.appendChild(spacer);
+            nav.appendChild(btn);
+          }}
+          setLabel(btn);
+        }}
+        if (document.readyState === 'loading') {{
+          document.addEventListener('DOMContentLoaded', ensureButton);
+        }} else {{
+          ensureButton();
+        }}
+      }})();
+    </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({{ startOnLoad: true }});</script>
   </head>
@@ -47,6 +128,8 @@ TEMPLATE = """<!doctype html>
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
       <a href="concepts.html">Concepts</a>
+      <a href="{api_base}/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="{api_base}/redoc" target="_blank" rel="noopener">ReDoc</a>
     </nav>
     <div class="container">
     {body}
@@ -54,6 +137,22 @@ TEMPLATE = """<!doctype html>
   </body>
 </html>
 """
+
+
+def format_inline(text: str) -> str:
+    """Escape HTML, then render inline code and links.
+    Code spans are not escaped further to preserve characters like < and >.
+    """
+    text = html.escape(text)
+    # inline code (text already escaped; keep raw contents inside <code>)
+    text = re.sub(r"`([^`]+)`", lambda m: f"<code>{m.group(1)}</code>", text)
+    # links [text](url) — escape URL attribute
+    text = re.sub(
+        r"\[([^\]]+)\]\(([^)]+)\)",
+        lambda m: f'<a href="{html.escape(m.group(2), quote=True)}">{m.group(1)}</a>',
+        text,
+    )
+    return text
 
 
 def md_to_html(md: str) -> str:
@@ -66,12 +165,7 @@ def md_to_html(md: str) -> str:
     def flush_paragraph(buf: list[str]):
         if not buf:
             return
-        text = " ".join(buf)
-        text = html.escape(text)
-        # inline code
-        text = re.sub(r"`([^`]+)`", lambda m: f"<code>{html.escape(m.group(1))}</code>", text)
-        # links
-        text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"<a href=\"\2\">\1</a>", text)
+        text = format_inline(" ".join(buf))
         out.append(f"<p>{text}</p>")
         buf.clear()
 
@@ -115,27 +209,27 @@ def md_to_html(md: str) -> str:
         # headings
         if line.startswith("###### "):
             flush_paragraph(para_buf)
-            out.append(f"<h6>{html.escape(line[7:])}</h6>")
+            out.append(f"<h6>{format_inline(line[7:])}</h6>")
             continue
         if line.startswith("##### "):
             flush_paragraph(para_buf)
-            out.append(f"<h5>{html.escape(line[6:])}</h5>")
+            out.append(f"<h5>{format_inline(line[6:])}</h5>")
             continue
         if line.startswith("#### "):
             flush_paragraph(para_buf)
-            out.append(f"<h4>{html.escape(line[5:])}</h4>")
+            out.append(f"<h4>{format_inline(line[5:])}</h4>")
             continue
         if line.startswith("### "):
             flush_paragraph(para_buf)
-            out.append(f"<h3>{html.escape(line[4:])}</h3>")
+            out.append(f"<h3>{format_inline(line[4:])}</h3>")
             continue
         if line.startswith("## "):
             flush_paragraph(para_buf)
-            out.append(f"<h2>{html.escape(line[3:])}</h2>")
+            out.append(f"<h2>{format_inline(line[3:])}</h2>")
             continue
         if line.startswith("# "):
             flush_paragraph(para_buf)
-            out.append(f"<h1>{html.escape(line[2:])}</h1>")
+            out.append(f"<h1>{format_inline(line[2:])}</h1>")
             continue
 
         # lists
@@ -144,11 +238,7 @@ def md_to_html(md: str) -> str:
             if not in_list:
                 out.append("<ul>")
                 in_list = True
-            item = line.strip()[2:]
-            item = html.escape(item)
-            # inline code/links in list items
-            item = re.sub(r"`([^`]+)`", lambda m: f"<code>{html.escape(m.group(1))}</code>", item)
-            item = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"<a href=\"\2\">\1</a>", item)
+            item = format_inline(line.strip()[2:])
             out.append(f"<li>{item}</li>")
             continue
 
@@ -164,7 +254,7 @@ def md_to_html(md: str) -> str:
 def build_one(md_path: Path, out_path: Path) -> None:
     html_body = md_to_html(md_path.read_text(encoding="utf-8"))
     title = md_path.stem.replace("-", " ").title()
-    out_path.write_text(TEMPLATE.format(title=title, body=html_body), encoding="utf-8")
+    out_path.write_text(TEMPLATE.format(title=title, body=html_body, api_base=API_BASE), encoding="utf-8")
 
 
 def main() -> None:
@@ -185,7 +275,7 @@ def main() -> None:
   <li><a href="concepts.html">Concepts</a></li>
 </ul>
 """
-    (OUT / "index.html").write_text(TEMPLATE.format(title="k1s Docs", body=index), encoding="utf-8")
+    (OUT / "index.html").write_text(TEMPLATE.format(title="k1s Docs", body=index, api_base=API_BASE), encoding="utf-8")
 
     for src_name, out_name in mapping.items():
         build_one(SRC / src_name, OUT / out_name)
@@ -193,4 +283,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
