@@ -198,8 +198,21 @@ export AE_STATE_DB=${AE_STATE_DB:-state/controller.db}
 mkdir -p "${AE_CADDY_SITES}"
 
 log "Applying demo manifests"
-"$PY_BIN" -m ae.cli apply -f specs/examples/blue.yaml
-"$PY_BIN" -m ae.cli apply -f specs/examples/green.yaml
+APPLY_TIMEOUT=${APPLY_TIMEOUT:-120}
+if ! timeout "$APPLY_TIMEOUT" "$PY_BIN" -m ae.cli apply -f specs/examples/blue.yaml; then
+  log "Apply for blue timed out or failed. Diagnostics:"
+  docker ps || true
+  log "Try: docker logs dev-caddy-1; docker exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
+  log "Or re-run with more verbosity: $PY_BIN -m ae.cli --verbose apply -f specs/examples/blue.yaml"
+  exit 1
+fi
+if ! timeout "$APPLY_TIMEOUT" "$PY_BIN" -m ae.cli apply -f specs/examples/green.yaml; then
+  log "Apply for green timed out or failed. Diagnostics:"
+  docker ps || true
+  log "Try: docker logs dev-caddy-1; docker exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
+  log "Or re-run with more verbosity: $PY_BIN -m ae.cli --verbose apply -f specs/examples/green.yaml"
+  exit 1
+fi
 
 # Build and serve docs locally
 DOCS_PORT=${DOCS_PORT:-9109}
