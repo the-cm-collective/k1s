@@ -12,22 +12,24 @@ from .base import ReplicaState, RuntimeAdapter, RuntimeResult
 class StubRuntime(RuntimeAdapter):
     """Stubbed runtime; returns ready replicas without touching Docker."""
 
-    def ensure_app(self, manifest: AppManifest, revision: int) -> RuntimeResult:
+    def ensure_app(self, manifest: AppManifest, revision: int, *, keep_old: bool = False, limit_create: int | None = None) -> RuntimeResult:
         desired = manifest.spec.replicas
         now = datetime.now(timezone.utc)
-        replica_states = [
-            ReplicaState(
-                replica_id=f"{manifest.metadata.name}-rev{revision}-{idx}",
-                ready=True,
-                status="running",
-                endpoint=f"127.0.0.1:{9000 + idx}",
-                started_at=now,
+        count = desired if limit_create is None else max(0, min(desired, limit_create))
+        replica_states = []
+        for idx in range(count):
+            replica_states.append(
+                ReplicaState(
+                    replica_id=f"{manifest.metadata.name}-rev{revision}-{idx}",
+                    ready=True,
+                    status="running",
+                    endpoint=f"127.0.0.1:{9000 + idx}",
+                    started_at=now,
+                )
             )
-            for idx in range(desired)
-        ]
         return RuntimeResult(
             revision=revision,
-            created=desired,
+            created=count,
             updated=0,
             removed=0,
             replica_states=replica_states,
@@ -41,3 +43,9 @@ class StubRuntime(RuntimeAdapter):
                 yield f"{replica_id}: log line {i}"
         else:
             yield f"{replica_id}: recent log line"
+
+    def remove_app(self, app_name: str) -> int:  # type: ignore[override]
+        return 0
+
+    def remove_old_revisions(self, app_name: str, keep_revision: int) -> int:  # type: ignore[override]
+        return 0

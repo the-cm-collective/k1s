@@ -40,7 +40,11 @@ docs:
 
 .PHONY: demo demo-down integ-test
 demo:
-	./scripts/init_demo.sh -y --demo-configs
+	./scripts/init_demo.sh $(if $(ARGS),$(ARGS),-y --demo-configs)
+
+.PHONY: demo-help
+demo-help:
+	./scripts/init_demo.sh --help
 
 demo-down:
 	./scripts/init_demo.sh --down -y

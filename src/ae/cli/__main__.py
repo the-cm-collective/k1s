@@ -283,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
         "config": lambda ns: handle_config(ns),
         "secret": lambda ns: handle_secret(ns),
         "volumes": lambda ns: handle_volumes(ns, runtime),
+        "plan": lambda ns: handle_plan(ns, runtime),
     }
 
     handler = command_handlers.get(args.command)
@@ -1104,7 +1105,7 @@ def handle_logs_remote(args: argparse.Namespace, global_args: argparse.Namespace
 
 
 
-def handle_plan(args: argparse.Namespace) -> int:
+def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
     from ae.controller.spec import load_manifest
     try:
         manifest = load_manifest(args.file)
@@ -1123,25 +1124,19 @@ def handle_plan(args: argparse.Namespace) -> int:
     if svc and desired == 1:
         port = int(svc.port)
         print(f"  - checking service.port={port} for conflicts...")
-        import socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(0.2)
-        conflict = False
+        conflicts: list[str] = []
         try:
-            sock.bind(("127.0.0.1", port))
+            infos = runtime.list_containers_info()  # type: ignore[attr-defined]
+            for info in infos:
+                if port in (info.get("host_ports") or []):
+                    conflicts.append(str(info.get("name", "")))
         except Exception:
-            conflict = True
-        finally:
-            try:
-                sock.close()
-            except Exception:
-                pass
-        if conflict:
-            print(f"  ! conflict: host port {port} appears to be in use")
+            conflicts = []
+        if conflicts:
+            print(f"  ! conflict: host port {port} is already published by: {', '.join(conflicts)}")
             print("    Resolve by stopping the conflicting service or changing spec.service.port")
             return 2
-        else:
-            print(f"    OK: host port {port} available")
+        print(f"    OK: host port {port} available")
     else:
         if svc and desired != 1:
             print("  - note: service.port is only applied for single-replica apps in this version")

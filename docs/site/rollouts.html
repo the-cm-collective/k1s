@@ -124,12 +124,17 @@ spec:
 </ul>
 <h3>Routing Bias</h3>
 <p>Ingress uses a “first available upstream” policy by default. The controller writes the new revision endpoints first, so traffic prefers the new revision as soon as it becomes ready; old replicas are removed once readiness satisfies the policy.</p>
+<p>Weighting (intra-revision bias): set <code>AE_ROLLOUT_FIRST_WEIGHT</code> (default <code>1</code>) to duplicate the first upstream N times in the Caddy config, biasing selection toward it. This is a simple approximation and currently applies within the active upstream set.</p>
 <h3>Demo</h3>
 <p>Apply a two-step ordered rollout for <code>echo</code>:</p>
 <pre><code>
 ./scripts/init_demo.sh --demo-rollout -y -d
 </code></pre>
 <p>This applies <code>specs/examples/echo.yaml</code> then <code>specs/examples/echo-rollout.yaml</code> with rollout <code>{ strategy: ordered, maxSurge: 1, maxUnavailable: 0 }</code>.</p>
+<p>Optional bias:</p>
+<pre><code>
+AE_ROLLOUT_FIRST_WEIGHT=3 ./scripts/init_demo.sh --demo-rollout -y
+</code></pre>
     </div>
   </body>
 </html>

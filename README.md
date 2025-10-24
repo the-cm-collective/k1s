@@ -50,3 +50,34 @@ API endpoints (when started with `--metrics-port`): see `docs/http-api.md`.
 
 - High-level overview and getting started: `docs/overview.md`
 - Technical architecture and reference: `docs/architecture.md`
+- HTTP API reference and UI docs: `docs/http-api.md`
+- Configs & Secrets: `docs/configs-secrets.md`
+- Demo Modes (flags for init script and Make): `docs/demo-modes.md`
+
+## Remote CLI (over LAN)
+
+You can point the CLI at a controller running on another machine.
+
+Controller (on the host):
+
+```
+export AE_API_MUTATIONS=1
+export AE_API_READ_TOKEN=readtoken
+export AE_API_SCALER_TOKEN=scaletoken
+export AE_API_ADMIN_TOKEN=admintoken
+python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch
+```
+
+Client (from another machine):
+
+```
+# Reads
+ae --server http://<controller-ip>:9108 --token readtoken status
+ae --server http://<controller-ip>:9108 --token readtoken events echo --limit 20
+
+# Mutations
+ae --server http://<controller-ip>:9108 --token scaletoken scale echo --replicas 2
+ae --server http://<controller-ip>:9108 --token admintoken delete echo --purge
+```
+
+See `docs/runbook.md` → “Remote CLI over LAN” for details and curl examples.

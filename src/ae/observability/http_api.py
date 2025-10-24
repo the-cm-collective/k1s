@@ -215,7 +215,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "# TYPE ae_replicas_live gauge",
             f"ae_replicas_live {snap.live_replicas}",
 
-        # Per-app labeled gauges
+        ]
+        # Per-app and per-replica labeled gauges
         try:
             statuses = self.store.list_status()
             for s0 in statuses:
@@ -230,7 +231,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     lines.append(f'ae_replica_ready{{app="{s0.app_name}",replica="{r.replica_id}"}} {val}')
         except Exception:
             pass
-        ]
         # Optional loop metrics
         if _LAST_RECONCILE_TS is not None:
             lines.append("# HELP ae_reconcile_last_timestamp_seconds Unix timestamp of last reconcile")

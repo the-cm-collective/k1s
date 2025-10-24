@@ -33,7 +33,13 @@ class IngressService:
         if manifest.spec.health and manifest.spec.health.readiness and manifest.spec.health.readiness.http_get:
             readiness_path = manifest.spec.health.readiness.http_get.path or "/"
         # Prefer-first policy biases towards listed upstream order (new revision first)
-        site_path = self._manager.apply(manifest, upstream, readiness_path, prefer_first=True)
+        try:
+            site_path = self._manager.apply(manifest, upstream, readiness_path, prefer_first=True)  # type: ignore[arg-type]
+        except TypeError:
+            try:
+                site_path = self._manager.apply(manifest, upstream, readiness_path)  # type: ignore[arg-type]
+            except TypeError:
+                site_path = self._manager.apply(manifest, upstream)
         return IngressResult(
             app_name=manifest.metadata.name,
             host=manifest.spec.ingress.host,

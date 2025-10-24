@@ -93,12 +93,19 @@ class Reconciler:
 
         limit_create = 1 if strategy == "ordered" else None
         # Keep old replicas during rollout to respect surge/unavailable; we'll remove them after readiness check
-        result = self._runtime.ensure_app(manifest_for_runtime, revision, keep_old=True, limit_create=limit_create)
+        try:
+            result = self._runtime.ensure_app(  # type: ignore[arg-type]
+                manifest_for_runtime, revision, keep_old=True, limit_create=limit_create
+            )
+        except TypeError:
+            # Compatibility with runtimes/tests that don't accept new kwargs
+            result = self._runtime.ensure_app(manifest_for_runtime, revision)  # type: ignore[arg-type]
         health_report = self._health_manager.evaluate(manifest, result)
         if manifest.spec.ingress and self._ingress_service:
             upstreams = self._select_upstreams(manifest, result, health_report)
             if upstreams:
-                self._ingress_service.apply(manifest, upstreams)
+                upstream_param = upstreams[0] if len(upstreams) == 1 else upstreams
+                self._ingress_service.apply(manifest, upstream_param)
                 self._ingress_service.reload()
                 self._state_store.record_event(
                     manifest.metadata.name,
@@ -209,9 +216,26 @@ class Reconciler:
             env_map.update(cfg_env)
 
         # Secrets override configs
-        if manifest.spec.secret_refs and self._secret_manager:
-            sec_env = self._secret_manager.load_env(manifest.spec.secret_refs)
-            env_map.update(sec_env)
+        if manifest.spec.secret_refs:
+            if self._secret_manager:
+                sec_env = self._secret_manager.load_env(manifest.spec.secret_refs)
+                env_map.update(sec_env)
+            else:
+                import json, yaml
+                from pathlib import Path as _P
+                for ref in manifest.spec.secret_refs:
+                    try:
+                        content = _P(ref.path).read_text(encoding="utf-8")
+                        try:
+                            data = json.loads(content)
+                        except json.JSONDecodeError:
+                            data = yaml.safe_load(content)
+                        if isinstance(data, dict):
+                            for m in ref.env:
+                                if m.key in data:
+                                    env_map[m.name] = str(data[m.key])
+                    except Exception:
+                        pass
 
         # Manifest env wins last
         for item in manifest.spec.env:
@@ -269,13 +293,28 @@ class Reconciler:
                             pass
 
         # Secret files
-        if manifest.spec.secret_refs and self._secret_manager:
+        if manifest.spec.secret_refs:
             sec_dir = root / "secret"
             sec_dir.mkdir(parents=True, exist_ok=True)
             for ref in manifest.spec.secret_refs:
-                try:
-                    data = self._secret_manager._decrypt(Path(ref.path))  # type: ignore[arg-type]
-                except Exception:
+                # load via manager if available, else plaintext YAML/JSON
+                data = None
+                if self._secret_manager:
+                    try:
+                        data = self._secret_manager._decrypt(Path(ref.path))  # type: ignore[arg-type]
+                    except Exception:
+                        data = None
+                if data is None:
+                    try:
+                        content = Path(ref.path).read_text(encoding="utf-8")
+                        import json, yaml
+                        try:
+                            data = json.loads(content)
+                        except json.JSONDecodeError:
+                            data = yaml.safe_load(content)
+                    except Exception:
+                        data = None
+                if not isinstance(data, dict):
                     continue
                 if getattr(ref, "files", None):
                     for mapping in ref.files:

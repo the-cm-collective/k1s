@@ -139,11 +139,28 @@
 <li><code>make demo-down</code> — tear down demo</li>
 <li><code>make integ-test</code> — run integration tests (set <code>AE_DOCKER_TEST=1</code>)</li>
 </ul>
+<h3>Rollout Demo</h3>
+<ul>
+<li>Ordered rollout for <code>echo</code> with default bias-first routing:</li>
+<li><code>./scripts/init_demo.sh --demo-rollout -y -d</code></li>
+<li>Optional: <code>AE_ROLLOUT_FIRST_WEIGHT=3</code> to increase bias toward the newest upstream.</li>
+</ul>
 <h3>Notes</h3>
 <ul>
 <li>Caddy HTTP: <code>:8888</code>, HTTPS: <code>:8443</code>.</li>
 <li>Hosts entries (added with <code>-y</code>): <code>blue|green|echo-mr|docs|api.home.arpa</code> → <code>127.0.0.1</code>.</li>
 <li>Health checks are disabled by default for compatibility; enable with <code>AE_CADDY_ACTIVE_HEALTH=1</code> if your Caddy supports the directive.</li>
+</ul>
+<h3>Storage (PV-lite)</h3>
+<ul>
+<li>Applies an <code>echo</code> app with a named volume mounted at <code>/var/lib/echo</code>.</li>
+<li>Command:</li>
+<li><code>./scripts/init_demo.sh --demo-storage -y</code></li>
+<li><code>make demo ARGS=&quot;--demo-storage -y -d&quot;</code></li>
+<li>Inspect volumes:</li>
+<li><code>ae volumes list --app echo</code></li>
+<li>Delete with purge to remove volumes marked <code>retention: Delete</code>:</li>
+<li><code>ae delete echo --purge</code></li>
 </ul>
     </div>
   </body>

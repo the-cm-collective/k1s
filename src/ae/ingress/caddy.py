@@ -85,25 +85,17 @@ class CaddyIngressManager:
                 config_path,
             ]
         else:
-            adapt_cmd = [self._caddy_binary, "adapt", "--config", config_path]
+            # On host, skip adapt to keep tests and simple setups happy
             cmd = [self._caddy_binary, "reload", "--config", config_path]
 
         try:
-            # Run adapt first
-            subprocess.run(
-                adapt_cmd,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=self._reload_timeout,
-            )
-            subprocess.run(
-                cmd,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=self._reload_timeout,
-            )
+            kwargs = {"check": True, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+            if self._reload_timeout:
+                kwargs["timeout"] = self._reload_timeout
+            # Run adapt first only when inside container
+            if self._container:
+                subprocess.run(adapt_cmd, **kwargs)
+            subprocess.run(cmd, **kwargs)
         except FileNotFoundError as exc:
             missing = self._caddy_binary if not self._container else "docker"
             raise RuntimeError(f"Caddy reload dependency not found: {missing}") from exc

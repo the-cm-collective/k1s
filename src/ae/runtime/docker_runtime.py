@@ -423,3 +423,33 @@ class DockerRuntime(RuntimeAdapter):
             return datetime.fromisoformat(cleaned)
         except ValueError:  # pragma: no cover - best effort parsing
             return None
+
+    def list_containers_info(self) -> list[dict]:  # type: ignore[override]
+        """List running containers with published host ports for conflict checks."""
+        out: list[dict] = []
+        try:
+            containers = self._client.containers.list(all=True)
+        except APIError:
+            return out
+        for c in containers:
+            try:
+                ports: list[int] = []
+                pmap = (c.attrs or {}).get("NetworkSettings", {}).get("Ports", {}) or {}
+                for binds in pmap.values():
+                    if not binds:
+                        continue
+                    for b in binds:
+                        hp = b.get("HostPort")
+                        if hp:
+                            try:
+                                ports.append(int(hp))
+                            except ValueError:
+                                continue
+                out.append({
+                    "name": c.name,
+                    "labels": c.labels or {},
+                    "host_ports": ports,
+                })
+            except Exception:
+                out.append({"name": getattr(c, 'name', ''), "labels": {}, "host_ports": []})
+        return out
