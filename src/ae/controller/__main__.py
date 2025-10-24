@@ -156,8 +156,23 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             store.delete_app_state(app, purge_history=bool(purge))
             return {"app": app, "removed": removed, "purged": bool(purge)}
 
+        def _logs(app: str, container: str | None, tail: int | None, since: int | None, follow: bool):
+            reps = store.list_replicas(app)
+            target = None
+            if container:
+                sel = str(container)
+                for r in reps:
+                    if r.replica_id == sel or sel in r.replica_id:
+                        target = r
+                        break
+            if not target and reps:
+                target = next((r for r in reps if r.ready), reps[0])
+            if not target:
+                return []
+            return reconciler._runtime.read_logs(target.replica_id, follow=follow, tail=tail, since=since)
+
         api_server, assigned, _ = start_http_api(
-            args.metrics_port, store, scale_fn=_scale, delete_fn=_delete
+            args.metrics_port, store, scale_fn=_scale, delete_fn=_delete, logs_fn=_logs
         )
         import logging
         logging.getLogger(__name__).info("http api listening on port %s", assigned)

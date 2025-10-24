@@ -214,6 +214,22 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "# HELP ae_replicas_live Live replicas",
             "# TYPE ae_replicas_live gauge",
             f"ae_replicas_live {snap.live_replicas}",
+
+        # Per-app labeled gauges
+        try:
+            statuses = self.store.list_status()
+            for s0 in statuses:
+                app = s0.app_name
+                lines.append(f'ae_app_desired_replicas{{app="{app}"}} {s0.desired_replicas}')
+                lines.append(f'ae_app_ready_replicas{{app="{app}"}} {s0.ready_replicas}')
+                lines.append(f'ae_app_live_replicas{{app="{app}"}} {s0.live_replicas}')
+            for s0 in statuses:
+                reps = self.store.list_replicas(s0.app_name)
+                for r in reps:
+                    val = 1 if r.ready else 0
+                    lines.append(f'ae_replica_ready{{app="{s0.app_name}",replica="{r.replica_id}"}} {val}')
+        except Exception:
+            pass
         ]
         # Optional loop metrics
         if _LAST_RECONCILE_TS is not None:
@@ -491,6 +507,7 @@ def start_http_api(
     *,
     scale_fn=None,
     delete_fn=None,
+    logs_fn=None,
 ) -> Tuple[socketserver.TCPServer, int, threading.Thread]:
     """Start the HTTP API on the given port.
 
@@ -502,6 +519,7 @@ def start_http_api(
     handler_cls.metrics = MetricsService(store)
     handler_cls.scale_fn = scale_fn
     handler_cls.delete_fn = delete_fn
+    handler_cls.logs_fn = logs_fn
     httpd = socketserver.TCPServer(("0.0.0.0", port), handler_cls)
     assigned = httpd.server_address[1]
     thread = threading.Thread(target=httpd.serve_forever, name="ae-http-api", daemon=True)
