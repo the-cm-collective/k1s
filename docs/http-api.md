@@ -64,3 +64,26 @@ Mutations (opt-in; dev only)
 - POST `/delete/<app>?purge=1`
   - 200 OK: `{ app, removed, purged }`
   - Deletes runtime containers and ingress; `purge=1` also deletes events and revisions for the app.
+
+
+AuthN/AuthZ (optional)
+
+- Set tokens in the controller environment to enable role-based access:
+  - `AE_API_READ_TOKEN` — read-only access
+  - `AE_API_SCALER_TOKEN` — can scale
+  - `AE_API_ADMIN_TOKEN` — can delete
+- When any token is configured, GETs require at least the READ token.
+- Mutations require tokens and `AE_API_MUTATIONS=1`.
+
+Endpoints
+- GET `/health` — Controller health summary (uptime, last reconcile, app/replica counts)
+- GET `/status` — Paginated list of app statuses
+  - Query: `limit`, `cursor`, `app`, `wildcard` (glob)
+  - Response: `{ items: [...], next: "cursor" | null }`
+- GET `/status/<app>` — JSON status object
+- GET `/events/<app>?limit=N&cursor=...` — Paginated recent events
+  - Response: `{ items: [...], next: "cursor" | null }`
+- POST `/scale/<app>` — Body: `{ "replicas": <int> }` (requires scaler/admin)
+- POST `/delete/<app>?purge=1` — Delete app (requires admin)
+- Logs: GET `/logs/<app>?container=&tail=&since=&follow=` (requires READ)
+  - When `follow=1`, streams plain text lines; otherwise JSON: `{ lines: [...] }`

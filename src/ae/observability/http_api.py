@@ -327,6 +327,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             },
             "paths": {
                 "/metrics": {"get": {"summary": "Prometheus metrics", "responses": {"200": {"description": "Prometheus text"}}}},
+                "/health": {"get": {"summary": "Controller health", "responses": {"200": {"description": "OK"}}}},
                 "/status": {"get": {"summary": "List app statuses (paginated)", "parameters": [
                     {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50}},
                     {"name": "cursor", "in": "query", "schema": {"type": "string"}},
@@ -343,7 +344,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 "/delete/{app}": {"post": {"summary": "Delete an app", "parameters": [
                     {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
                     {"name": "purge", "in": "query", "schema": {"type": "boolean"}}
-                ], "responses": {"200": {"description": "OK"}}, "security": [{"bearerAuth": []}]}}
+                ], "responses": {"200": {"description": "OK"}}, "security": [{"bearerAuth": []}]}},
+                "/logs/{app}": {"get": {"summary": "Tail application logs",
+                    "parameters": [
+                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {"name": "container", "in": "query", "schema": {"type": "string"}},
+                        {"name": "tail", "in": "query", "schema": {"type": "integer"}},
+                        {"name": "since", "in": "query", "schema": {"type": "integer"}},
+                        {"name": "follow", "in": "query", "schema": {"type": "boolean"}}
+                    ], "responses": {"200": {"description": "OK"}}, "security": [{"bearerAuth": []}]}}
             },
         }
         payload = json.dumps(doc).encode("utf-8")
