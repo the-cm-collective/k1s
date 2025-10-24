@@ -71,15 +71,15 @@ class Reconciler:
         result = self._runtime.ensure_app(manifest_with_secrets, revision)
         health_report = self._health_manager.evaluate(manifest, result)
         if manifest.spec.ingress and self._ingress_service:
-            upstream = self._select_upstream(manifest, result, health_report)
-            if upstream:
-                self._ingress_service.apply(manifest, upstream)
+            upstreams = self._select_upstreams(manifest, result, health_report)
+            if upstreams:
+                self._ingress_service.apply(manifest, upstreams)
                 self._ingress_service.reload()
                 self._state_store.record_event(
                     manifest.metadata.name,
                     revision,
                     "IngressConfigured",
-                    f"Ingress upstream set to {upstream}",
+                    f"Ingress upstreams set to {', '.join(upstreams)}",
                 )
         elif self._ingress_service and not manifest.spec.ingress:
             self._ingress_service.remove(manifest.metadata.name)
@@ -116,30 +116,34 @@ class Reconciler:
             revision_status=revision_status,
         )
 
-    def _select_upstream(
+    def _select_upstreams(
         self,
         manifest: AppManifest,
         result: RuntimeResult,
         health_report: HealthReport,
-    ) -> str | None:
+    ) -> list[str]:
         states_by_id = {state.replica_id: state for state in result.replica_states}
 
+        ready_eps: list[str] = []
         for replica in health_report.replicas:
             if not replica.ready:
                 continue
             state = states_by_id.get(replica.replica_id)
             if state and state.endpoint:
-                return state.endpoint
+                ready_eps.append(state.endpoint)
+        if ready_eps:
+            return ready_eps
 
-        for state in result.replica_states:
-            if state.endpoint:
-                return state.endpoint
+        # fall back to any endpoints we have
+        any_eps = [s.endpoint for s in result.replica_states if s.endpoint]
+        if any_eps:
+            return any_eps  # type: ignore[return-value]
 
+        # final fallback: first declared port on loopback
         if manifest.spec.ports:
             port = manifest.spec.ports[0].container_port
-            return f"127.0.0.1:{port}"
-
-        return None
+            return [f"127.0.0.1:{port}"]
+        return []
 
     def _compute_spec_hash(self, manifest: AppManifest) -> str:
         payload = json.dumps(

@@ -22,14 +22,14 @@ class IngressService:
     def __init__(self, manager: CaddyIngressManager) -> None:
         self._manager = manager
 
-    def apply(self, manifest: AppManifest, upstream: str) -> IngressResult:
+    def apply(self, manifest: AppManifest, upstreams) -> IngressResult:
         if manifest.spec.ingress is None:
             return IngressResult(
                 app_name=manifest.metadata.name,
                 host=None,
                 config_path=None,
             )
-        site_path = self._manager.apply(manifest, upstream)
+        site_path = self._manager.apply(manifest, upstreams)
         return IngressResult(
             app_name=manifest.metadata.name,
             host=manifest.spec.ingress.host,

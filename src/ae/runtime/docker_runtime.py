@@ -35,6 +35,9 @@ class DockerRuntime(RuntimeAdapter):
         except Exception as exc:  # pragma: no cover - defensive guard, validated in tests
             raise RuntimeError(f"Failed to initialize Docker client: {exc}") from exc
         self._registry = registry_auth or RegistryAuthProvider()
+        # Optional shared network so that ingress (Caddy) can reach containers by name
+        import os as _os
+        self._network_name = _os.getenv("AE_DOCKER_NETWORK")
 
     def ensure_app(self, manifest: AppManifest, revision: int) -> RuntimeResult:
         app_name = manifest.metadata.name
@@ -224,6 +227,13 @@ class DockerRuntime(RuntimeAdapter):
                 manifest.spec.image,
                 **{k: v for k, v in kwargs.items() if v is not None}
             )
+            # Attach to shared network if configured
+            if self._network_name:
+                try:
+                    net = self._client.networks.get(self._network_name)
+                    net.connect(container)
+                except Exception as _exc:  # pragma: no cover - optional path
+                    LOGGER.warning("Failed to connect %s to network %s: %s", name, self._network_name, _exc)
             self._reload(container)
             return container
         except APIError as exc:
@@ -300,6 +310,11 @@ class DockerRuntime(RuntimeAdapter):
             host_port = binding.get("HostPort")
             if host_port:
                 return f"{host_ip}:{host_port}"
+        # If no host port was published but we are on a shared network, use container DNS name
+        if self._network_name:
+            first = next(iter(ports), None)
+            if first is not None:
+                return f"{container.name}:{first.container_port}"
         return None
 
     def _manifest_env(self, manifest: AppManifest) -> Dict[str, str]:

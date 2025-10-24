@@ -6,7 +6,7 @@ import logging
 import subprocess
 from pathlib import Path
 from string import Template
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Sequence, Union
 
 from ae.controller.spec import AppManifest, IngressSpec
 
@@ -21,7 +21,7 @@ SITE_TEMPLATE = Template(
     }
     # Ensure upstream HSTS does not stick during dev
     header -Strict-Transport-Security
-    reverse_proxy $upstream
+    reverse_proxy $upstreams
 }
 """
 )
@@ -45,12 +45,12 @@ class CaddyIngressManager:
         self._reload_timeout = reload_timeout
         self._config_root.mkdir(parents=True, exist_ok=True)
 
-    def apply(self, manifest: AppManifest, upstream: str) -> Path:
+    def apply(self, manifest: AppManifest, upstreams: Union[str, Sequence[str]]) -> Path:
         ingress = manifest.spec.ingress
         if ingress is None:
             raise ValueError("Manifest lacks ingress configuration")
 
-        site_config = self._render_site(ingress, upstream)
+        site_config = self._render_site(ingress, upstreams)
         site_path = self._site_path(manifest.metadata.name)
         site_path.write_text(site_config)
         LOGGER.debug("Wrote Caddy site config to %s", site_path)
@@ -96,21 +96,31 @@ class CaddyIngressManager:
             LOGGER.error("Caddy reload failed: %s", exc.stderr.decode("utf-8", "ignore"))
             raise RuntimeError("Caddy reload failed") from exc
 
-    def _render_site(self, ingress: IngressSpec, upstream: str) -> str:
+    def _render_site(self, ingress: IngressSpec, upstreams: Union[str, Sequence[str]]) -> str:
         host = ingress.host
-        upstream_target = upstream
-        # If we're reloading Caddy inside a container, route via the host
-        # gateway so the container can reach Docker-published ports.
-        if self._container:
-            try:
-                host_part, port_part = upstream.split(":", 1)
-                if host_part in {"127.0.0.1", "0.0.0.0"}:
-                    upstream_target = f"host.docker.internal:{port_part}"
-            except ValueError:
-                pass
-        if ingress.path and ingress.path != "/":
-            upstream_target = f"{upstream} {ingress.path}"
-        return SITE_TEMPLATE.substitute(host=host, upstream=upstream_target)
+        if isinstance(upstreams, str):
+            ups_list = [upstreams]
+        else:
+            ups_list = list(upstreams)
+
+        targets: list[str] = []
+        for up in ups_list:
+            target = up
+            # If Caddy is running in a container and target refers to host loopback,
+            # route via the host gateway name so the container can reach it.
+            if self._container:
+                try:
+                    host_part, port_part = up.split(":", 1)
+                except ValueError:
+                    host_part, port_part = up, ""
+                if host_part in {"127.0.0.1", "0.0.0.0"} and port_part:
+                    target = f"host.docker.internal:{port_part}"
+            if ingress.path and ingress.path != "/":
+                target = f"{target} {ingress.path}"
+            targets.append(target)
+
+        upstreams_str = " ".join(targets)
+        return SITE_TEMPLATE.substitute(host=host, upstreams=upstreams_str)
 
     def _site_path(self, app_name: str) -> Path:
         return self._config_root / f"{app_name}.caddy"

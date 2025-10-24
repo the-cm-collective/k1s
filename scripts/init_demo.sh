@@ -256,6 +256,9 @@ export AE_STATE_DB=${AE_STATE_DB:-state/controller.db}
 export AE_CADDY_RELOAD_TIMEOUT=${AE_CADDY_RELOAD_TIMEOUT:-10}
 mkdir -p "${AE_CADDY_SITES}"
 
+# Ensure app containers join the dev compose network so Caddy can resolve them by name
+export AE_DOCKER_NETWORK=${AE_DOCKER_NETWORK:-dev_default}
+
 # Auto-start the controller daemon unless disabled
 if [[ $NO_CONTROLLER -eq 0 ]]; then
   if [[ -f state/controller.pid ]]; then
