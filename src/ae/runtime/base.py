@@ -78,3 +78,10 @@ class RuntimeAdapter(Protocol):
         Returns a list of dicts with at least: { name, labels }.
         Implementations may include mountpoints and driver details when available.
         """
+
+    def list_containers_info(self) -> list[dict]:
+        """List running containers info for planning/conflict checks.
+
+        Returns a list of dicts with at least: { name, labels, host_ports: [int] }.
+        """
+        return []
