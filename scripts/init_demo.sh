@@ -31,6 +31,7 @@ Options:
   --no-controller  Do not auto-start the controller daemon
   --no-supervisor  Start controller once (no restart loop)
   -d, --debug  Attach logs to console for troubleshooting (blocks; Ctrl-C to exit)
+  --demo-configs   Apply the configs/secrets demo (echo) and enable plaintext secrets for local run
 
 What this does (setup):
   1) Ensures required system packages (python3, venv, pip, sqlite3, age, sops) are present
@@ -72,6 +73,7 @@ NO_CONTROLLER=0
 API_PORT=${API_PORT:-9108}
 NO_SUPERVISOR=0
 DEBUG_ATTACH=0
+DEMO_CONFIGS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h|help)
@@ -88,6 +90,8 @@ while [[ $# -gt 0 ]]; do
       NO_SUPERVISOR=1 ;;
     -d|--debug)
       DEBUG_ATTACH=1 ;;
+    --demo-configs)
+      DEMO_CONFIGS=1 ;;
     *)
       echo "Unknown option: $1" >&2
       usage
@@ -355,6 +359,23 @@ if ! timeout --kill-after=5 "$APPLY_TIMEOUT" "$PY_BIN" -m ae.cli --verbose apply
   log "Try: docker logs dev-caddy-1; docker exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
   log "Or re-run with more verbosity: $PY_BIN -m ae.cli --verbose apply -f specs/examples/green.yaml"
   exit 1
+fi
+
+# Optional configs/secrets demo
+if [[ $DEMO_CONFIGS -eq 1 ]]; then
+  export AE_ALLOW_PLAINTEXT_SECRETS=1
+  log "Applying configs/secrets demo (echo) with plaintext secrets enabled"
+  if "$PY_BIN" -m ae.cli apply -f specs/examples/echo.yaml; then
+    "$PY_BIN" -m ae.cli status echo --wide || true
+    # Print projection location and sample values if present
+    APP_ROOT="state/projections/echo-rev1"; for d in "$APP_ROOT"*; do APP_ROOT="$d"; break; done
+    if [[ -d "$APP_ROOT" ]]; then
+      log "Projection files under $APP_ROOT (mounted at /var/run/ae/config/echo)"
+      find "$APP_ROOT" -maxdepth 2 -type f | sed 's/^/[proj] /'
+    fi
+  else
+    log "Echo demo apply failed"
+  fi
 fi
 
 # Build and serve docs locally
