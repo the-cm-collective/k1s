@@ -1,3 +1,8 @@
-green.home.arpa {
-    reverse_proxy 0.0.0.0:32769
+https://green.home.arpa {
+    log {
+        output stdout
+        format console
+    }
+    header -Strict-Transport-Security
+    reverse_proxy host.docker.internal:32783
 }

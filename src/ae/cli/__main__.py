@@ -138,11 +138,19 @@ def ingress_service_factory() -> IngressService | None:
     config_file = Path(config_file_env) if config_file_env else None
     container = os.getenv("AE_CADDY_CONTAINER") or None
 
+    # Optional reload timeout to avoid hangs if docker exec blocks
+    timeout_env = os.getenv("AE_CADDY_RELOAD_TIMEOUT", "10")
+    try:
+        reload_timeout = float(timeout_env) if timeout_env else None
+    except ValueError:
+        reload_timeout = 10.0
+
     manager = CaddyIngressManager(
         config_root=config_root,
         caddy_binary=binary,
         config_file=config_file,
         container=container,
+        reload_timeout=reload_timeout,
     )
     return IngressService(manager)
 

@@ -1,3 +1,8 @@
-docs.home.arpa {
+https://docs.home.arpa {
+    log {
+        output stdout
+        format console
+    }
+    header -Strict-Transport-Security
     reverse_proxy host.docker.internal:9109
 }

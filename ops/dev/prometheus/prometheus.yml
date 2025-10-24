@@ -1,6 +1,11 @@
 # Basic scrape config for local development.
-server:
-  http_listen_port: 9090
+# Note: Prometheus doesn't support a "server" block in YAML; web
+# settings like listen address are configured via CLI flags. We keep
+# the default 9090 from the Docker image and just define scrapes.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
 
 scrape_configs:
   - job_name: "placeholder"

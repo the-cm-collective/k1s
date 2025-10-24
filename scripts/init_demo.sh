@@ -179,7 +179,7 @@ docker build -t demo-green:latest samples/servers/green
 log "Starting local Caddy and Prometheus stack"
 docker compose -f ops/dev/docker-compose.yaml up -d
 
-if prompt_yes_no "Add hosts entries for ${HOSTS[*]} to /etc/hosts?" Y; then
+if prompt_yes_no "Add hosts entries for ${HOSTS[*]} to /etc/hosts?" N; then
   log "Configuring hosts entries"
   for host in "${HOSTS[@]}"; do
     if ! grep -q "$host" /etc/hosts; then
@@ -195,18 +195,29 @@ export AE_CADDY_FILE=${AE_CADDY_FILE:-/etc/caddy/Caddyfile}
 # When using the dev docker-compose stack, reload Caddy inside the container.
 export AE_CADDY_CONTAINER=${AE_CADDY_CONTAINER:-dev-caddy-1}
 export AE_STATE_DB=${AE_STATE_DB:-state/controller.db}
+# Avoid indefinite hangs on Caddy reload inside docker exec
+export AE_CADDY_RELOAD_TIMEOUT=${AE_CADDY_RELOAD_TIMEOUT:-10}
 mkdir -p "${AE_CADDY_SITES}"
 
 log "Applying demo manifests"
 APPLY_TIMEOUT=${APPLY_TIMEOUT:-120}
-if ! timeout "$APPLY_TIMEOUT" "$PY_BIN" -m ae.cli apply -f specs/examples/blue.yaml; then
+
+# Wait briefly for Caddy container to accept execs
+for i in {1..20}; do
+  if docker exec "$AE_CADDY_CONTAINER" caddy version >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.5
+done
+
+if ! timeout --kill-after=5 "$APPLY_TIMEOUT" "$PY_BIN" -m ae.cli --verbose apply -f specs/examples/blue.yaml; then
   log "Apply for blue timed out or failed. Diagnostics:"
   docker ps || true
   log "Try: docker logs dev-caddy-1; docker exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
   log "Or re-run with more verbosity: $PY_BIN -m ae.cli --verbose apply -f specs/examples/blue.yaml"
   exit 1
 fi
-if ! timeout "$APPLY_TIMEOUT" "$PY_BIN" -m ae.cli apply -f specs/examples/green.yaml; then
+if ! timeout --kill-after=5 "$APPLY_TIMEOUT" "$PY_BIN" -m ae.cli --verbose apply -f specs/examples/green.yaml; then
   log "Apply for green timed out or failed. Diagnostics:"
   docker ps || true
   log "Try: docker logs dev-caddy-1; docker exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"

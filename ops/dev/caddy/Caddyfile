@@ -1,4 +1,9 @@
 # Development Caddyfile. The controller writes site snippets into
 # /etc/caddy/sites/*.caddy which are imported below.
 
+{
+    # For local testing, don't redirect HTTP->HTTPS
+    auto_https disable_redirects
+}
+
 import sites/*

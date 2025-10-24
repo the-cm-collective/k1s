@@ -14,9 +14,16 @@ LOGGER = logging.getLogger(__name__)
 
 
 SITE_TEMPLATE = Template(
-    """$host {
+    """https://$host {
+    log {
+        output stdout
+        format console
+    }
+    # Ensure upstream HSTS does not stick during dev
+    header -Strict-Transport-Security
     reverse_proxy $upstream
-}"""
+}
+"""
 )
 
 
@@ -29,11 +36,13 @@ class CaddyIngressManager:
         caddy_binary: str = "caddy",
         config_file: Path | None = None,
         container: str | None = None,
+        reload_timeout: float | None = None,
     ) -> None:
         self._config_root = config_root
         self._caddy_binary = caddy_binary
         self._config_file = config_file
         self._container = container
+        self._reload_timeout = reload_timeout
         self._config_root.mkdir(parents=True, exist_ok=True)
 
     def apply(self, manifest: AppManifest, upstream: str) -> Path:
@@ -75,10 +84,14 @@ class CaddyIngressManager:
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                timeout=self._reload_timeout,
             )
         except FileNotFoundError as exc:
             missing = self._caddy_binary if not self._container else "docker"
             raise RuntimeError(f"Caddy reload dependency not found: {missing}") from exc
+        except subprocess.TimeoutExpired as exc:
+            LOGGER.error("Caddy reload timed out after %.1fs", (self._reload_timeout or 0))
+            raise RuntimeError("Caddy reload timed out") from exc
         except subprocess.CalledProcessError as exc:
             LOGGER.error("Caddy reload failed: %s", exc.stderr.decode("utf-8", "ignore"))
             raise RuntimeError("Caddy reload failed") from exc

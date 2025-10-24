@@ -178,10 +178,8 @@ class DockerRuntime(RuntimeAdapter):
 
         try:
             run_fn = self._client.containers.run
-            # filter kwargs by signature for compatibility with fakes
-            from inspect import signature
-
-            params = set(signature(run_fn).parameters.keys())
+            # Build standard kwargs. Do NOT filter by signature; docker-py forwards **kwargs.
+            # Filtering here accidentally dropped 'ports', preventing host port publishing.
             kwargs = {
                 "command": manifest.spec.command or None,
                 "name": name,
@@ -195,16 +193,16 @@ class DockerRuntime(RuntimeAdapter):
                 "ports": ports if ports else None,
                 "restart_policy": {"Name": "unless-stopped"},
             }
-            if "nano_cpus" in params and nano_cpus is not None:
+            if nano_cpus is not None:
                 kwargs["nano_cpus"] = nano_cpus
-            if "mem_limit" in params and mem_limit is not None:
+            if mem_limit is not None:
                 kwargs["mem_limit"] = mem_limit
-            if "volumes" in params and volumes is not None:
+            if volumes is not None:
                 kwargs["volumes"] = volumes
 
             container = run_fn(
                 manifest.spec.image,
-                **{k: v for k, v in kwargs.items() if k in params}
+                **{k: v for k, v in kwargs.items() if v is not None}
             )
             self._reload(container)
             return container
