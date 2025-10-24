@@ -141,6 +141,20 @@ class SecretRef(BaseModel):
     path: str
     env: List[SecretEnvMapping] = Field(default_factory=list)
 
+class ConfigEnvMapping(BaseModel):
+    """Mapping from config key to environment variable."""
+
+    name: str
+    key: str
+
+
+class ConfigRef(BaseModel):
+    """Reference to a config file (YAML/JSON) projected into env vars."""
+
+    name: str
+    path: str
+    env: List[ConfigEnvMapping] = Field(default_factory=list)
+
 
 class AppSpec(BaseModel):
     """Workload specification."""
@@ -155,6 +169,7 @@ class AppSpec(BaseModel):
     service: Optional[ServiceSpec] = None
     registry_auth_ref: Optional[str] = Field(default=None, alias="registryAuthRef")
     secret_refs: List[SecretRef] = Field(default_factory=list, alias="secretRefs")
+    config_refs: List[ConfigRef] = Field(default_factory=list, alias="configRefs")
     resources: Optional[ResourcesSpec] = None
     volumes: List[VolumeSpec] = Field(default_factory=list)
 

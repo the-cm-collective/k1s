@@ -14,6 +14,7 @@ from ae.runtime import RuntimeAdapter, RuntimeResult
 from .state import SQLiteStateStore
 from ae.ingress.service import IngressService
 from ae.secrets import SecretManager
+from ae.config.manager import ConfigManager
 
 
 @dataclass(slots=True)
@@ -40,12 +41,14 @@ class Reconciler:
         health_manager: HealthManager | None = None,
         ingress_service: IngressService | None = None,
         secret_manager: SecretManager | None = None,
+        config_manager: ConfigManager | None = None,
     ) -> None:
         self._runtime = runtime
         self._state_store = state_store
         self._health_manager = health_manager or HealthManager()
         self._ingress_service = ingress_service
         self._secret_manager = secret_manager
+        self._config_manager = config_manager or ConfigManager()
 
     def reconcile_manifest_path(self, path: Path) -> ReconcileReport:
         """Load a manifest from disk and reconcile it."""
@@ -66,9 +69,9 @@ class Reconciler:
             f"Reconciling revision {revision}",
         )
 
-        manifest_with_secrets = self._apply_secrets(manifest)
+        manifest_with_env = self._apply_configs_and_secrets(manifest)
 
-        result = self._runtime.ensure_app(manifest_with_secrets, revision)
+        result = self._runtime.ensure_app(manifest_with_env, revision)
         health_report = self._health_manager.evaluate(manifest, result)
         if manifest.spec.ingress and self._ingress_service:
             upstreams = self._select_upstreams(manifest, result, health_report)
@@ -93,7 +96,7 @@ class Reconciler:
         revision_status = self._calculate_revision_status(manifest, health_report)
 
         self._state_store.record_snapshot(
-            manifest=manifest_with_secrets,
+            manifest=manifest_with_env,
             runtime_result=result,
             health_report=health_report,
             revision=revision,
@@ -160,16 +163,27 @@ class Reconciler:
             return "progressing"
         return "degraded"
 
-    def _apply_secrets(self, manifest: AppManifest) -> AppManifest:
-        if not manifest.spec.secret_refs or not self._secret_manager:
+    def _apply_configs_and_secrets(self, manifest: AppManifest) -> AppManifest:
+        env_map: dict[str, str] = {}
+
+        # Configs first
+        if getattr(manifest.spec, "config_refs", None):
+            cfg_env = self._config_manager.load_env(manifest.spec.config_refs)
+            env_map.update(cfg_env)
+
+        # Secrets override configs
+        if manifest.spec.secret_refs and self._secret_manager:
+            sec_env = self._secret_manager.load_env(manifest.spec.secret_refs)
+            env_map.update(sec_env)
+
+        # Manifest env wins last
+        for item in manifest.spec.env:
+            if "name" in item and "value" in item:
+                env_map[item["name"]] = item["value"]
+
+        if not env_map:
             return manifest
 
-        secret_env = self._secret_manager.load_env(manifest.spec.secret_refs)
-
-        env_map = {item["name"]: item["value"] for item in manifest.spec.env}
-        env_map.update(secret_env)
-
-        merged_env = [{"name": key, "value": value} for key, value in sorted(env_map.items())]
-
+        merged_env = [{"name": k, "value": v} for k, v in sorted(env_map.items())]
         updated_spec = manifest.spec.model_copy(update={"env": merged_env})
         return manifest.model_copy(update={"spec": updated_spec})

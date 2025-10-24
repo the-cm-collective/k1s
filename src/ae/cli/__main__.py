@@ -15,6 +15,7 @@ from ae.observability import MetricsService
 from ae.observability.logging import configure_logging
 from ae.runtime import DockerRuntime, RegistryAuthProvider, RuntimeAdapter, StubRuntime
 from ae.secrets import SecretManager
+from ae.config.manager import ConfigManager
 from ae import __version__ as AE_VERSION
 from ae import build_info as AE_BUILD_INFO
 
@@ -170,6 +171,10 @@ def secret_manager_factory() -> SecretManager:
     return SecretManager(allow_plaintext=allow_plaintext)
 
 
+def config_manager_factory() -> ConfigManager:
+    return ConfigManager()
+
+
 def registry_auth_factory() -> RegistryAuthProvider:
     return RegistryAuthProvider()
 
@@ -219,12 +224,14 @@ def main(argv: list[str] | None = None) -> int:
     health_manager = health_manager_factory()
     ingress_service = ingress_service_factory()
     secret_manager = secret_manager_factory()
+    config_manager = config_manager_factory()
     reconciler = Reconciler(
         runtime=runtime,
         state_store=store,
         health_manager=health_manager,
         ingress_service=ingress_service,
         secret_manager=secret_manager,
+        config_manager=config_manager,
     )
 
     command_handlers: dict[str, Callable[[argparse.Namespace], int]] = {

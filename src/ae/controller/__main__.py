@@ -28,6 +28,7 @@ from ae.cli.__main__ import (
     health_manager_factory,
     ingress_service_factory,
     secret_manager_factory,
+    config_manager_factory,
     registry_auth_factory,
     format_report,
 )
@@ -80,7 +81,8 @@ def _make_reconciler() -> Reconciler:
     health = health_manager_factory()
     ingress = ingress_service_factory()
     secrets = secret_manager_factory()
-    return Reconciler(runtime, store, health_manager=health, ingress_service=ingress, secret_manager=secrets)
+    configs = config_manager_factory()
+    return Reconciler(runtime, store, health_manager=health, ingress_service=ingress, secret_manager=secrets, config_manager=configs)
 
 
 def _reconcile_all(reconciler: Reconciler, manifests: Iterable[AppManifest]) -> None:
