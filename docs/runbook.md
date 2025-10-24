@@ -2,7 +2,7 @@
 
 ## Bootstrap Demo Environment
 - Run `scripts/init_demo.sh` on Ubuntu (requires sudo). The script installs Python dependencies, starts the Caddy/Prometheus stack, builds the demo Docker images, and applies `blue.home.arpa` / `green.home.arpa` manifests.
-- Verify ingress locally with `curl http://blue.home.arpa/` and `curl http://green.home.arpa/`.
+- Verify ingress locally over HTTPS: `curl -k https://blue.home.arpa:8443/` and `curl -k https://green.home.arpa:8443/`.
 
 ## Deploying a Revision
 1. Update the manifest under `specs/` and apply with `python -m ae.cli apply -f <path>`.
@@ -107,7 +107,8 @@ After restore, repoint `AE_STATE_DB` and `AE_SPECS_DIR` (or run from the restore
   - Installs Python deps in a venv (`.venv-demo`) and brings up Caddy/Prometheus via docker-compose.
   - Builds demo app images and applies the blue/green example manifests.
   - Builds static docs and starts a docs web server at `http://127.0.0.1:9109`.
-  - Adds `docs.home.arpa` hosts mapping and fronts the docs via Caddy at `http://docs.home.arpa:8080` alongside blue/green.
+  - Adds `docs.home.arpa` hosts mapping and fronts the docs via Caddy at `https://docs.home.arpa:8443` alongside blue/green.
+  - Note: Dev proxy serves HTTPS only on host port 8443. Use `-k` with curl to skip local CA trust, or import Caddy's local root cert.
   - Prints convenient URLs for blue/green apps and docs.
 
 Environment overrides:

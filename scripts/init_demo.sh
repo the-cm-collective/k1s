@@ -50,9 +50,9 @@ Environment variables you can override:
   - AE_STATE_DB, AE_SPECS_DIR, AE_CADDY_* (see docs/runbook.md)
 
 Endpoints after setup:
-  - Apps via Caddy: http://blue.home.arpa:8080/ and http://green.home.arpa:8080/
-  - Docs via Caddy: http://docs.home.arpa:8080/
-  - Docs direct:   http://127.0.0.1:9109/
+  - Apps via Caddy: https://blue.home.arpa:8443/ and https://green.home.arpa:8443/
+  - Docs via Caddy: https://docs.home.arpa:8443/
+  - Docs direct:    http://127.0.0.1:9109/
 
 USAGE
 }
@@ -241,14 +241,14 @@ cat <<EOF
 
 Demo setup complete.
 
-- Blue app:   http://blue.home.arpa:8080/  (or http://127.0.0.1:8080 for Caddy)
-- Green app:  http://green.home.arpa:8080/ (or http://127.0.0.1:8080)
-- Docs site:  http://docs.home.arpa:8080/ (via Caddy) and http://127.0.0.1:${DOCS_PORT}/ (direct)
+- Blue app:   https://blue.home.arpa:8443/
+- Green app:  https://green.home.arpa:8443/
+- Docs site:  https://docs.home.arpa:8443/ (via Caddy) and http://127.0.0.1:${DOCS_PORT}/ (direct)
 
 If hosts mapping was added, you can also visit:
-  - curl http://blue.home.arpa:8080/
-  - curl http://green.home.arpa:8080/
-  - curl http://docs.home.arpa:8080/
+  - curl -k https://blue.home.arpa:8443/
+  - curl -k https://green.home.arpa:8443/
+  - curl -k https://docs.home.arpa:8443/
 
 To tear everything down when finished:
   $ ./scripts/init_demo.sh --down

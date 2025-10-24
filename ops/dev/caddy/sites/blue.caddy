@@ -3,6 +3,7 @@ https://blue.home.arpa {
         output stdout
         format console
     }
+    # Ensure upstream HSTS does not stick during dev
     header -Strict-Transport-Security
-    reverse_proxy host.docker.internal:32782
+    reverse_proxy host.docker.internal:32784
 }
