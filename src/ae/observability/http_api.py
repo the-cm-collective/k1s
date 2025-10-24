@@ -53,6 +53,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if self.path == "/openapi.json":
             self._handle_openapi()
             return
+        if self.path in ("/swagger", "/swagger/"):
+            self._handle_swagger()
+            return
+        if self.path in ("/redoc", "/redoc/"):
+            self._handle_redoc()
+            return
         if self.path in ("/", "/docs"):
             self._handle_docs()
             return
@@ -120,6 +126,59 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         payload = "\n".join(lines).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _handle_swagger(self) -> None:
+        html = """
+<!doctype html>
+<html>
+  <head>
+    <meta charset=\"utf-8\" />
+    <title>k1s Swagger UI</title>
+    <link rel=\"stylesheet\" href=\"https://unpkg.com/swagger-ui-dist@5/swagger-ui.css\" />
+    <style>body { margin: 0; } .swagger-ui { max-width: 1100px; margin: 20px auto; }</style>
+  </head>
+  <body>
+    <div id=\"swagger-ui\"></div>
+    <script src=\"https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js\"></script>
+    <script>
+      window.ui = SwaggerUIBundle({ url: '/openapi.json', dom_id: '#swagger-ui' });
+    </script>
+  </body>
+</html>
+"""
+        payload = html.encode('utf-8')
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _handle_redoc(self) -> None:
+        html = """
+<!doctype html>
+<html>
+  <head>
+    <meta charset=\"utf-8\" />
+    <title>k1s ReDoc</title>
+    <style>body { margin: 0; } #redoc { width: 100vw; height: 100vh; }</style>
+    <script src=\"https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js\"></script>
+  </head>
+  <body>
+    <div id=\"redoc\"></div>
+    <script>
+      document.addEventListener('DOMContentLoaded', function () {
+        Redoc.init('/openapi.json', {}, document.getElementById('redoc'));
+      });
+    </script>
+  </body>
+</html>
+"""
+        payload = html.encode('utf-8')
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
