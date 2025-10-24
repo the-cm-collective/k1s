@@ -88,8 +88,8 @@
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
       <a href="concepts.html">Concepts</a>
-      <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
-      <a href="https://api.home.arpa:8443/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <a href="http://127.0.0.1:9108/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="http://127.0.0.1:9108/redoc" target="_blank" rel="noopener">ReDoc</a>
     </nav>
     <div class="container">
     <h1>k1s Architecture and Technical Reference</h1>
@@ -348,6 +348,25 @@ spec:
 <li>More ingress features (headers, multiple paths, TLS config surface).</li>
 <li>Multi‑node scheduling (out of scope for now).</li>
 </ul>
+<h3>Configs and Secrets → Environment</h3>
+<p>Apps can project values from config files and sealed secrets into environment variables. The merge order is: configRefs &lt; secretRefs &lt; spec.env (manifest wins last).</p>
+<p>Example:</p>
+<pre><code>
+spec:
+  configRefs:
+    - name: app-config
+      path: configs/app-config.yaml   # YAML or JSON
+      env:
+        - { name: APP_MODE,  key: mode }
+        - { name: APP_COLOR, key: color }
+  secretRefs:
+    - name: demo-secret
+      path: specs/demo-secret.sops.yaml
+      env:
+        - { name: API_TOKEN, key: token }
+  env:
+    - { name: APP_MODE, value: demo-override }  # overrides config/secret
+</code></pre>
     </div>
   </body>
 </html>

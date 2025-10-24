@@ -249,3 +249,28 @@ Revision status
 - Resource requests and automatic cgroups beyond Docker flags.
 - More ingress features (headers, multiple paths, TLS config surface).
 - Multi‑node scheduling (out of scope for now).
+
+
+### Configs and Secrets → Environment
+
+Apps can project values from config files and sealed secrets into environment variables.
+The merge order is: configRefs < secretRefs < spec.env (manifest wins last).
+
+Example:
+
+```
+spec:
+  configRefs:
+    - name: app-config
+      path: configs/app-config.yaml   # YAML or JSON
+      env:
+        - { name: APP_MODE,  key: mode }
+        - { name: APP_COLOR, key: color }
+  secretRefs:
+    - name: demo-secret
+      path: specs/demo-secret.sops.yaml
+      env:
+        - { name: API_TOKEN, key: token }
+  env:
+    - { name: APP_MODE, value: demo-override }  # overrides config/secret
+```

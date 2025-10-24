@@ -18,3 +18,16 @@ spec:
         path: /
         port: 8080
       initialDelaySeconds: 5
+  # Demonstrate configRefs projecting keys into env
+  configRefs:
+    - name: app-config
+      path: configs/app-config.yaml
+      env:
+        - name: APP_MODE
+          key: mode
+        - name: APP_COLOR
+          key: color
+  # Manifest env overrides config/secret values if same key is present
+  env:
+    - name: APP_MODE
+      value: demo-override
