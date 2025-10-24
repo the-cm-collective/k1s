@@ -246,3 +246,10 @@ docker ps --filter "label=ae.app=echo" --format '{{.ID}}' | head -n1 \
 ```
 ae delete echo --purge
 ```
+
+## Using Swagger with Bearer
+
+1) Open the Swagger UI: `http://127.0.0.1:9108/swagger` (or via Caddy: `https://api.home.arpa:8443/swagger`).
+2) Click the "Authorize" button (lock icon) at the top right.
+3) Enter your token (e.g., `readtoken`) and click "Authorize".
+4) Try `/status` and `/events/{app}`; for mutations, use `scaletoken` or `admintoken` as appropriate.
