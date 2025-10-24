@@ -60,3 +60,16 @@ logs (Ctrl-C to exit).
 - Caddy HTTP: `:8888`, HTTPS: `:8443`.
 - Hosts entries (added with `-y`): `blue|green|echo-mr|docs|api.home.arpa` → `127.0.0.1`.
 - Health checks are disabled by default for compatibility; enable with `AE_CADDY_ACTIVE_HEALTH=1` if your Caddy supports the directive.
+
+
+### Storage (PV-lite)
+
+- Applies an `echo` app with a named volume mounted at `/var/lib/echo`.
+- Command:
+  - `./scripts/init_demo.sh --demo-storage -y`
+  - `make demo ARGS="--demo-storage -y -d"`
+- Inspect volumes:
+  - `ae volumes list --app echo`
+- Delete with purge to remove volumes marked `retention: Delete`:
+  - `ae delete echo --purge`
+

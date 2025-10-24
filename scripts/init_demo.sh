@@ -36,6 +36,7 @@ Options:
   --demo-echo-mr   Apply the multi-replica echo demo (echo-mr)
   --docs-only      Start docs + API only (no apps)
   --demo-rollout   Apply a two-step ordered rollout for echo
+  --demo-storage   Apply a storage (PV-lite) demo for echo and list volumes
 
 What this does (setup):
   1) Ensures required system packages (python3, venv, pip, sqlite3, age, sops) are present
@@ -82,6 +83,7 @@ DEMO_STANDARD=0
 DEMO_ECHO_MR=0
 DOCS_ONLY=0
 DEMO_ROLLOUT=0
+DEMO_STORAGE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h|help)
@@ -108,6 +110,8 @@ while [[ $# -gt 0 ]]; do
       DOCS_ONLY=1 ;;
     --demo-rollout)
       DEMO_ROLLOUT=1 ;;
+    --demo-storage)
+      DEMO_STORAGE=1 ;;
     *)
       echo "Unknown option: $1" >&2
       usage
@@ -419,6 +423,14 @@ if [[ $DEMO_ROLLOUT -eq 1 && $DOCS_ONLY -ne 1 ]]; then
   sleep 2
   "$PY_BIN" -m ae.cli apply -f specs/examples/echo-rollout.yaml || true
   "$PY_BIN" -m ae.cli status echo --events --history 5 || true
+fi
+
+# Optional storage demo
+if [[ $DEMO_STORAGE -eq 1 && $DOCS_ONLY -ne 1 ]]; then
+  log "Applying storage demo (echo with PV-lite)"
+  "$PY_BIN" -m ae.cli apply -f specs/examples/echo-storage.yaml || true
+  log "Listing storage volumes"
+  "$PY_BIN" -m ae.cli volumes list --app echo || true
 fi
 
 # Build and serve docs locally

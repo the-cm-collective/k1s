@@ -216,3 +216,33 @@ Tear down the demo:
 ```
 
 You will be prompted to remove the hosts entries for `blue.home.arpa`, `green.home.arpa`, and `docs.home.arpa`.
+
+
+## Storage Verification
+
+PV-lite volumes are created as Docker named volumes with labels `ae.app=<app>` and `ae.storage=1`.
+
+1) Apply the storage demo:
+
+```
+./scripts/init_demo.sh --demo-storage -y
+```
+
+2) List volumes:
+
+```
+ae volumes list --app echo
+```
+
+3) Verify in container:
+
+```
+docker ps --filter "label=ae.app=echo" --format '{{.ID}}' | head -n1 \
+  | xargs -I{} docker exec {} sh -lc 'ls -R /var/lib/echo || true'
+```
+
+4) Purge delete to remove volumes with `retention: Delete`:
+
+```
+ae delete echo --purge
+```
