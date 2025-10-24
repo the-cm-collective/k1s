@@ -40,4 +40,9 @@ class IngressService:
         self._manager.remove(app_name)
 
     def reload(self) -> None:
-        self._manager.reload()
+        try:
+            self._manager.reload()
+        except Exception as exc:  # pragma: no cover - defensive path
+            # Do not crash the controller if Caddy reload is unavailable in dev.
+            import logging
+            logging.getLogger(__name__).warning("ingress reload skipped: %s", exc)
