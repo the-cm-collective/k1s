@@ -144,6 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     vols_sub = vols.add_subparsers(dest="vol_cmd", required=True)
     vols_list = vols_sub.add_parser("list", help="List storage volumes (PV-lite)")
     vols_list.add_argument("--app", default=None, help="Filter by app name")
+    vols_list.add_argument("--json", action="store_true", help="Emit JSON output")
 
     return parser
 
@@ -1034,13 +1035,17 @@ def handle_volumes(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
         if not vols:
             print("No storage volumes found.")
             return 0
-        for v in vols:
-            name = v.get("name", "")
-            labels = v.get("labels", {})
-            drv = v.get("driver", "")
-            mnt = v.get("mountpoint", "")
-            app = labels.get("ae.app", "")
-            print(f"{name} driver={drv} mount={mnt} app={app}")
+        if getattr(args, "json", False):
+            import json as _json
+            print(_json.dumps(vols, indent=2))
+        else:
+            for v in vols:
+                name = v.get("name", "")
+                labels = v.get("labels", {})
+                drv = v.get("driver", "")
+                mnt = v.get("mountpoint", "")
+                app = labels.get("ae.app", "")
+                print(f"{name} driver={drv} mount={mnt} app={app}")
         return 0
     print(f"Unsupported volumes command: {args.vol_cmd}")
     return 1
