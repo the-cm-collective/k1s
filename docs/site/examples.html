@@ -1,0 +1,139 @@
+<!doctype html>
+<html data-theme="dark">
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Examples</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.55; }
+      code, pre { background: #f6f8fa; }
+      pre { padding: 12px; overflow-x: auto; }
+      h1, h2, h3 { margin-top: 1.5em; }
+      nav a { margin-right: 1rem; }
+      .container { max-width: 920px; }
+    </style>
+    <style>
+      :root {
+        --bg: #0b0f15;
+        --fg: #e6edf3;
+        --muted: #161b22;
+        --link: #79c0ff;
+        --code-bg: #0f1623;
+        --border: #263040;
+      }
+      html[data-theme="light"] {
+        --bg: #ffffff;
+        --fg: #0b0f15;
+        --muted: #f6f8fa;
+        --link: #0969da;
+        --code-bg: #f6f8fa;
+        --border: #e5e7eb;
+      }
+      body { background: var(--bg); color: var(--fg); }
+      a { color: var(--link); }
+      code, pre { background: var(--code-bg); border: 1px solid var(--border); }
+      nav { display: flex; align-items: center; gap: .75rem; margin-bottom: 1.25rem; }
+      nav a { margin-right: 1rem; }
+      .spacer { flex: 1 1 auto; }
+      button#theme-toggle { background: var(--muted); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+      /* Improve Mermaid readability in dark mode by inverting SVG colors */
+      html[data-theme="dark"] .mermaid svg { filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }
+      html[data-theme="dark"] .mermaid { background: var(--bg); }
+    </style>
+    <script>
+      (function() {
+        const key = 'k1s-theme';
+        const saved = localStorage.getItem(key);
+        const initial = saved || 'dark';
+        document.documentElement.setAttribute('data-theme', initial);
+        function setLabel(btn) {
+          var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+          btn.textContent = (cur === 'dark') ? 'Light Mode' : 'Dark Mode';
+        }
+        function ensureButton() {
+          var nav = document.querySelector('nav');
+          if (!nav) return;
+          var btn = document.getElementById('theme-toggle');
+          if (!btn) {
+            var spacer = document.createElement('span');
+            spacer.className = 'spacer';
+            btn = document.createElement('button');
+            btn.id = 'theme-toggle';
+            btn.addEventListener('click', function() {
+              var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+              var next = (cur === 'dark') ? 'light' : 'dark';
+              document.documentElement.setAttribute('data-theme', next);
+              localStorage.setItem(key, next);
+              setLabel(btn);
+            });
+            nav.appendChild(spacer);
+            nav.appendChild(btn);
+          }
+          setLabel(btn);
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', ensureButton);
+        } else {
+          ensureButton();
+        }
+      })();
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({ startOnLoad: true });</script>
+  </head>
+  <body>
+    <nav>
+      <a href="index.html">Home</a>
+      <a href="overview.html">Overview</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="http-api.html">HTTP API</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="http://127.0.0.1:9108/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="http://127.0.0.1:9108/redoc" target="_blank" rel="noopener">ReDoc</a>
+    </nav>
+    <div class="container">
+    <h2>Examples</h2>
+<p>This page summarizes the example manifests and demo modes available.</p>
+<h3>Standard Demo (blue/green)</h3>
+<ul>
+<li>Apps: blue and green services behind TLS via Caddy.</li>
+<li>Command:</li>
+<li><code>./scripts/init_demo.sh --demo-standard -y</code></li>
+<li><code>make demo ARGS=&quot;--demo-standard -y -d&quot;</code></li>
+</ul>
+<h3>Configs &amp; Secrets (echo)</h3>
+<ul>
+<li>Demonstrates <code>configRefs</code> and <code>secretRefs</code> → env and file projections.</li>
+<li>Files: <code>configs/app-config.yaml</code>, <code>specs/examples/demo-secret.sops.yaml</code></li>
+<li>Command:</li>
+<li><code>./scripts/init_demo.sh --demo-configs -y</code></li>
+<li><code>make demo</code> (defaults to <code>-y --demo-configs</code>)</li>
+</ul>
+<h3>Multi-Replica Echo (echo-mr)</h3>
+<ul>
+<li>Shows Caddy load-balancing across replicas on a shared Docker network.</li>
+<li>File: <code>specs/examples/multi-replica-echo.yaml</code></li>
+<li>Command:</li>
+<li><code>./scripts/init_demo.sh --demo-echo-mr -y</code></li>
+<li><code>make demo ARGS=&quot;--demo-echo-mr -y -d&quot;</code></li>
+</ul>
+<h3>Rollout (ordered)</h3>
+<ul>
+<li>Two-step apply for <code>echo</code> with rollout <code>{ strategy: ordered }</code>.</li>
+<li>Files: <code>specs/examples/echo.yaml</code>, <code>specs/examples/echo-rollout.yaml</code></li>
+<li>Command:</li>
+<li><code>./scripts/init_demo.sh --demo-rollout -y</code></li>
+<li>Optional bias: <code>AE_ROLLOUT_FIRST_WEIGHT=3 ./scripts/init_demo.sh --demo-rollout -y</code></li>
+</ul>
+<h3>Storage (PV-lite)</h3>
+<ul>
+<li>Named Docker volume mounted at <code>/var/lib/echo</code>.</li>
+<li>Files: <code>specs/examples/echo-storage.yaml</code> and <code>echo-storage-delete.yaml</code> (Delete retention)</li>
+<li>Command:</li>
+<li><code>./scripts/init_demo.sh --demo-storage -y</code></li>
+<li><code>ae volumes list --app echo</code> (use <code>--json</code> for machine-readable output)</li>
+<li><code>ae delete echo-del --purge</code> to remove volumes marked <code>retention: Delete</code></li>
+</ul>
+    </div>
+  </body>
+</html>

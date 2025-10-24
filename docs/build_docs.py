@@ -269,6 +269,7 @@ def main() -> None:
         "rollouts.md": "rollouts.html",
         "storage.md": "storage.html",
         "observability.md": "observability.html",
+        "examples.md": "examples.html",
         "scheduling.md": "scheduling.html",
     }
     # index
@@ -284,6 +285,7 @@ def main() -> None:
   <li><a href="rollouts.html">Rollouts</a></li>
   <li><a href="storage.html">Storage</a></li>
   <li><a href="observability.html">Observability</a></li>
+  <li><a href="examples.html">Examples</a></li>
   <li><a href="scheduling.html">Scheduling</a></li>
 </ul>
 """
