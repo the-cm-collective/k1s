@@ -98,7 +98,7 @@
 <pre><code>
 ae plan -f specs/examples/echo.yaml
 </code></pre>
-<p>Output includes replica count, rollout strategy, and a simple host port conflict check for <code>spec.service.port</code> (single-replica apps). The planner attempts to bind the host port to detect if it is already in use.</p>
+<p>Output includes replica count, rollout strategy, and host port conflict checks for <code>spec.service.port</code> (single-replica apps) using the runtime’s published ports. Use <code>--verbose</code> for a replica placement plan (replica IDs, storage mounts, and network hints).</p>
 <h3>Notes</h3>
 <ul>
 <li>Current checks are limited to service port availability. Future versions will</li>

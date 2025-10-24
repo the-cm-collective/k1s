@@ -143,6 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan = subparsers.add_parser("plan", help="Dry-run planner for manifest apply")
     plan.add_argument("-f", "--file", type=Path, required=True)
     plan.add_argument("--verbose", action="store_true", help="Show replica placement details")
+    plan.add_argument("--strict", action="store_true", help="Treat warnings as errors")
     plan.add_argument("--verbose", action="store_true", help="Show replica placement details")
 
     # volumes list
@@ -1122,6 +1123,8 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
     print(f"  - replicas: {desired}")
     print(f"  - rollout: strategy={strategy} maxSurge={rollout.get('maxSurge', 1)} maxUnavailable={rollout.get('maxUnavailable', 0)}")
 
+    warnings = []
+
     svc = getattr(manifest.spec, "service", None)
     if svc and desired == 1:
         port = int(svc.port)
@@ -1154,6 +1157,27 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
     if desired > 1 and not os.getenv("AE_DOCKER_NETWORK"):
         print("  - note: AE_DOCKER_NETWORK is not set; multi-replica ingress may require host ports")
 
+
+    # Affinity warnings
+    try:
+        infos = runtime.list_containers_info()  # type: ignore[attr-defined]
+    except Exception:
+        infos = []
+    running_same = [i for i in infos if (i.get("labels") or {}).get("ae.app") == manifest.metadata.name]
+    if running_same:
+        warnings.append(f"found {len(running_same)} running container(s) for app "{manifest.metadata.name}" (surge may increase count)")
+    import os as _os
+    if desired > 1 and not _os.getenv("AE_DOCKER_NETWORK"):
+        warnings.append("AE_DOCKER_NETWORK is not set; multi-replica ingress may require host ports")
+    vols = getattr(manifest.spec, "volumes", []) or []
+    for v in vols:
+        if not getattr(v, "read_only", True):
+            warnings.append(f"hostPath bind at {getattr(v, 'mount_path', '')} is RW; consider spec.storage PV-lite for persistence")
+    for w in warnings:
+        print(f"  ! warning: {w}")
+    if getattr(args, "strict", False) and warnings:
+        print("  ! Planner strict mode: warnings treated as errors")
+        return 3
     print("  - actions: create or reconcile containers; update ingress as needed")
     print("Plan OK.")
     return 0
