@@ -7,6 +7,10 @@ build/
 dist/
 *.egg-info/
 state/
+.venv-demo/
+# Generated dev Caddy site snippets (ports are ephemeral)
+ops/dev/caddy/sites/blue.caddy
+ops/dev/caddy/sites/green.caddy
 .pytest_cache/
 .mypy_cache/
 coverage.xml
