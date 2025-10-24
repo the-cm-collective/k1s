@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 37,
+  "title": "k1s Controller Health",
+  "timezone": "",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Ready Apps",
+      "datasource": { "type": "prometheus", "uid": "PROM" },
+      "targets": [ { "expr": "ae_apps_ready", "refId": "A" } ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "Total Apps",
+      "datasource": { "type": "prometheus", "uid": "PROM" },
+      "targets": [ { "expr": "ae_apps_total", "refId": "A" } ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Replicas (ready vs total)",
+      "datasource": { "type": "prometheus", "uid": "PROM" },
+      "targets": [
+        { "expr": "ae_replicas_ready", "refId": "A" },
+        { "expr": "ae_replicas_total", "refId": "B" }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 }
+    }
+  ]
+}

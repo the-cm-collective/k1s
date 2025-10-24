@@ -120,6 +120,27 @@ GET /logs/&lt;app&gt;?container=&lt;id|idx&gt;&amp;tail=N&amp;since=&lt;seconds&
 ae --server http://&lt;ip&gt;:9108 --token readtoken logs echo --tail 100
 </code></pre>
 <p>See <code>docs/runbook.md</code> for the “Remote CLI over LAN” section and auth token setup.</p>
+<h3>Grafana Examples</h3>
+<ul>
+<li>Import the example dashboards/panels using a Prometheus data source (uid <code>PROM</code> in examples):</li>
+<li><code>docs/grafana/controller-health.json</code> — stat + timeseries for controller health</li>
+<li><code>docs/grafana/apps-overview.json</code> — per-app readiness time series and status table</li>
+</ul>
+<p>You can also embed a single panel JSON (e.g., stat showing ready apps):</p>
+<pre><code>
+{
+  &quot;type&quot;: &quot;stat&quot;,
+  &quot;title&quot;: &quot;Ready Apps&quot;,
+  &quot;datasource&quot;: { &quot;type&quot;: &quot;prometheus&quot;, &quot;uid&quot;: &quot;PROM&quot; },
+  &quot;targets&quot;: [ { &quot;expr&quot;: &quot;ae_apps_ready&quot;, &quot;refId&quot;: &quot;A&quot; } ],
+  &quot;options&quot;: {
+    &quot;reduceOptions&quot;: { &quot;calcs&quot;: [&quot;lastNotNull&quot;], &quot;fields&quot;: &quot;&quot;, &quot;values&quot;: false },
+    &quot;colorMode&quot;: &quot;value&quot;,
+    &quot;graphMode&quot;: &quot;none&quot;
+  },
+  &quot;gridPos&quot;: { &quot;h&quot;: 4, &quot;w&quot;: 6, &quot;x&quot;: 0, &quot;y&quot;: 0 }
+}
+</code></pre>
     </div>
   </body>
 </html>

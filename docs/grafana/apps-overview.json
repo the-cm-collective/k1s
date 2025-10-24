@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 37,
+  "title": "k1s Apps Overview",
+  "timezone": "",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "App Ready Replicas by App",
+      "datasource": { "type": "prometheus", "uid": "PROM" },
+      "targets": [ { "expr": "ae_app_ready_replicas", "legendFormat": "{{app}}", "refId": "A" } ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "type": "table",
+      "title": "App Status (one-hot)",
+      "datasource": { "type": "prometheus", "uid": "PROM" },
+      "targets": [ { "expr": "ae_app_status", "refId": "A" } ],
+      "transformations": [ { "id": "organize" } ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    }
+  ]
+}
