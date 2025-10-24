@@ -269,6 +269,7 @@ def main() -> None:
         "rollouts.md": "rollouts.html",
         "storage.md": "storage.html",
         "observability.md": "observability.html",
+        "scheduling.md": "scheduling.html",
     }
     # index
     index = """
@@ -283,6 +284,7 @@ def main() -> None:
   <li><a href="rollouts.html">Rollouts</a></li>
   <li><a href="storage.html">Storage</a></li>
   <li><a href="observability.html">Observability</a></li>
+  <li><a href="scheduling.html">Scheduling</a></li>
 </ul>
 """
     (OUT / "index.html").write_text(TEMPLATE.format(title="k1s Docs", body=index, api_base=API_BASE), encoding="utf-8")

@@ -1,0 +1,109 @@
+<!doctype html>
+<html data-theme="dark">
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Scheduling</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.55; }
+      code, pre { background: #f6f8fa; }
+      pre { padding: 12px; overflow-x: auto; }
+      h1, h2, h3 { margin-top: 1.5em; }
+      nav a { margin-right: 1rem; }
+      .container { max-width: 920px; }
+    </style>
+    <style>
+      :root {
+        --bg: #0b0f15;
+        --fg: #e6edf3;
+        --muted: #161b22;
+        --link: #79c0ff;
+        --code-bg: #0f1623;
+        --border: #263040;
+      }
+      html[data-theme="light"] {
+        --bg: #ffffff;
+        --fg: #0b0f15;
+        --muted: #f6f8fa;
+        --link: #0969da;
+        --code-bg: #f6f8fa;
+        --border: #e5e7eb;
+      }
+      body { background: var(--bg); color: var(--fg); }
+      a { color: var(--link); }
+      code, pre { background: var(--code-bg); border: 1px solid var(--border); }
+      nav { display: flex; align-items: center; gap: .75rem; margin-bottom: 1.25rem; }
+      nav a { margin-right: 1rem; }
+      .spacer { flex: 1 1 auto; }
+      button#theme-toggle { background: var(--muted); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+      /* Improve Mermaid readability in dark mode by inverting SVG colors */
+      html[data-theme="dark"] .mermaid svg { filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }
+      html[data-theme="dark"] .mermaid { background: var(--bg); }
+    </style>
+    <script>
+      (function() {
+        const key = 'k1s-theme';
+        const saved = localStorage.getItem(key);
+        const initial = saved || 'dark';
+        document.documentElement.setAttribute('data-theme', initial);
+        function setLabel(btn) {
+          var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+          btn.textContent = (cur === 'dark') ? 'Light Mode' : 'Dark Mode';
+        }
+        function ensureButton() {
+          var nav = document.querySelector('nav');
+          if (!nav) return;
+          var btn = document.getElementById('theme-toggle');
+          if (!btn) {
+            var spacer = document.createElement('span');
+            spacer.className = 'spacer';
+            btn = document.createElement('button');
+            btn.id = 'theme-toggle';
+            btn.addEventListener('click', function() {
+              var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+              var next = (cur === 'dark') ? 'light' : 'dark';
+              document.documentElement.setAttribute('data-theme', next);
+              localStorage.setItem(key, next);
+              setLabel(btn);
+            });
+            nav.appendChild(spacer);
+            nav.appendChild(btn);
+          }
+          setLabel(btn);
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', ensureButton);
+        } else {
+          ensureButton();
+        }
+      })();
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({ startOnLoad: true });</script>
+  </head>
+  <body>
+    <nav>
+      <a href="index.html">Home</a>
+      <a href="overview.html">Overview</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="http-api.html">HTTP API</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="http://127.0.0.1:9108/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="http://127.0.0.1:9108/redoc" target="_blank" rel="noopener">ReDoc</a>
+    </nav>
+    <div class="container">
+    <h2>Scheduling &amp; Placement (Planner)</h2>
+<p>Use the <code>plan</code> command to dry-run an apply and check for placement conflicts.</p>
+<h3>Dry Run</h3>
+<pre><code>
+ae plan -f specs/examples/echo.yaml
+</code></pre>
+<p>Output includes replica count, rollout strategy, and a simple host port conflict check for <code>spec.service.port</code> (single-replica apps). The planner attempts to bind the host port to detect if it is already in use.</p>
+<h3>Notes</h3>
+<ul>
+<li>Current checks are limited to service port availability. Future versions will</li>
+<p>  add cross-app conflict checks and affinity hints.</p>
+</ul>
+    </div>
+  </body>
+</html>

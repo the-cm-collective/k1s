@@ -139,6 +139,10 @@ def build_parser() -> argparse.ArgumentParser:
     # version
     subparsers.add_parser("version", help="Show version and build info")
 
+    # plan (dry-run scheduling/placement)
+    plan = subparsers.add_parser("plan", help="Dry-run planner for manifest apply")
+    plan.add_argument("-f", "--file", type=Path, required=True)
+
     # volumes list
     vols = subparsers.add_parser("volumes", help="Inspect storage volumes")
     vols_sub = vols.add_subparsers(dest="vol_cmd", required=True)
@@ -1097,6 +1101,54 @@ def handle_logs_remote(args: argparse.Namespace, global_args: argparse.Namespace
     except Exception as exc:  # noqa: BLE001
         print(f"remote logs failed: {exc}")
         return 1
+
+
+
+def handle_plan(args: argparse.Namespace) -> int:
+    from ae.controller.spec import load_manifest
+    try:
+        manifest = load_manifest(args.file)
+    except Exception as exc:  # noqa: BLE001
+        print(f"failed to load manifest: {exc}")
+        return 1
+
+    print(f"Plan for {manifest.metadata.name}:")
+    desired = int(manifest.spec.replicas)
+    rollout = getattr(manifest.spec, "rollout", {}) or {}
+    strategy = str(rollout.get("strategy", "parallel"))
+    print(f"  - replicas: {desired}")
+    print(f"  - rollout: strategy={strategy} maxSurge={rollout.get('maxSurge', 1)} maxUnavailable={rollout.get('maxUnavailable', 0)}")
+
+    svc = getattr(manifest.spec, "service", None)
+    if svc and desired == 1:
+        port = int(svc.port)
+        print(f"  - checking service.port={port} for conflicts...")
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(0.2)
+        conflict = False
+        try:
+            sock.bind(("127.0.0.1", port))
+        except Exception:
+            conflict = True
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+        if conflict:
+            print(f"  ! conflict: host port {port} appears to be in use")
+            print("    Resolve by stopping the conflicting service or changing spec.service.port")
+            return 2
+        else:
+            print(f"    OK: host port {port} available")
+    else:
+        if svc and desired != 1:
+            print("  - note: service.port is only applied for single-replica apps in this version")
+
+    print("  - actions: create or reconcile containers; update ingress as needed")
+    print("Plan OK.")
+    return 0
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
     raise SystemExit(main())
