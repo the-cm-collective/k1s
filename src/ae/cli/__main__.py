@@ -142,6 +142,8 @@ def build_parser() -> argparse.ArgumentParser:
     # plan (dry-run scheduling/placement)
     plan = subparsers.add_parser("plan", help="Dry-run planner for manifest apply")
     plan.add_argument("-f", "--file", type=Path, required=True)
+    plan.add_argument("--verbose", action="store_true", help="Show replica placement details")
+    plan.add_argument("--verbose", action="store_true", help="Show replica placement details")
 
     # volumes list
     vols = subparsers.add_parser("volumes", help="Inspect storage volumes")
