@@ -316,13 +316,41 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _handle_openapi(self) -> None:
-        # Minimal static document describing endpoints with bearer auth
+        # OpenAPI document with bearer auth and basic schemas
         doc = {
             "openapi": "3.0.0",
             "info": {"title": "k1s Controller API", "version": "0.1.0"},
             "components": {
                 "securitySchemes": {
                     "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}
+                },
+                "schemas": {
+                    "AppStatus": {
+                        "type": "object",
+                        "properties": {
+                            "app_name": {"type": "string"},
+                            "desired_replicas": {"type": "integer"},
+                            "ready_replicas": {"type": "integer"},
+                            "live_replicas": {"type": "integer"},
+                            "revision": {"type": "integer"},
+                            "revision_status": {"type": "string"},
+                            "image": {"type": "string"},
+                            "ingress_host": {"type": "string", "nullable": True},
+                            "ingress_path": {"type": "string", "nullable": True}
+                        },
+                        "required": ["app_name", "desired_replicas", "ready_replicas", "live_replicas", "revision", "revision_status", "image"]
+                    },
+                    "Event": {
+                        "type": "object",
+                        "properties": {
+                            "app_name": {"type": "string"},
+                            "revision": {"type": "integer"},
+                            "event_type": {"type": "string"},
+                            "message": {"type": "string"},
+                            "created_at": {"type": "string", "format": "date-time"}
+                        },
+                        "required": ["app_name", "revision", "event_type", "message", "created_at"]
+                    }
                 }
             },
             "paths": {
