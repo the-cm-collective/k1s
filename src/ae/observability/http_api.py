@@ -45,6 +45,9 @@ def record_app_reconcile(app: str, duration_seconds: float, *, created: int, upd
 class _ApiHandler(http.server.BaseHTTPRequestHandler):
     store: SQLiteStateStore  # injected
     metrics: MetricsService  # injected
+    # Optional mutators injected by controller when enabled
+    scale_fn = None  # type: ignore[var-annotated]
+    delete_fn = None  # type: ignore[var-annotated]
 
     def do_GET(self):  # type: ignore[override]
         if self.path.startswith("/metrics"):
@@ -71,6 +74,62 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if self.path.startswith("/events/"):
             self._handle_events(self.path.split("/", 2)[2])
             return
+        self.send_response(404)
+        self.end_headers()
+
+    def do_POST(self):  # type: ignore[override]
+        # Mutations are optional and gated by env
+        import os
+        if os.getenv("AE_API_MUTATIONS") != "1":
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        # Optional bearer token
+        required = os.getenv("AE_API_TOKEN")
+        if required:
+            auth = self.headers.get("Authorization", "")
+            token = auth.split(" ", 1)[1] if auth.startswith("Bearer ") else ""
+            if token != required:
+                self.send_response(401)
+                self.send_header("WWW-Authenticate", "Bearer")
+                self.end_headers()
+                return
+
+        if self.path.startswith("/scale/") and self.scale_fn is not None:
+            app = self.path.split("/", 2)[2]
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            try:
+                body = self.rfile.read(length) if length > 0 else b"{}"
+                payload = json.loads(body.decode("utf-8"))
+                replicas = int(payload.get("replicas"))
+            except Exception:
+                self._json_error(400, "invalid JSON body; expected { 'replicas': <int> }")
+                return
+            try:
+                report = self.scale_fn(app, replicas)  # type: ignore[misc]
+                self._json_ok(report)
+            except Exception as exc:  # pragma: no cover - defensive
+                self._json_error(500, str(exc))
+            return
+
+        if self.path.startswith("/delete/") and self.delete_fn is not None:
+            # optional ?purge=1
+            frag = self.path.split("/", 2)[2]
+            app, _, query = frag.partition("?")
+            purge = False
+            if query:
+                for part in query.split("&"):
+                    if part.startswith("purge="):
+                        purge = part.split("=", 1)[1] in {"1", "true", "True"}
+                        break
+            try:
+                result = self.delete_fn(app, purge)  # type: ignore[misc]
+                self._json_ok(result)
+            except Exception as exc:  # pragma: no cover
+                self._json_error(500, str(exc))
+            return
+
         self.send_response(404)
         self.end_headers()
 
@@ -275,6 +334,14 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _json_error(self, code: int, message: str) -> None:
+        payload = json.dumps({"error": message}).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def log_message(self, fmt: str, *args):  # quiet
         return
 
@@ -320,7 +387,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
-def start_http_api(port: int, store: SQLiteStateStore) -> Tuple[socketserver.TCPServer, int, threading.Thread]:
+def start_http_api(
+    port: int,
+    store: SQLiteStateStore,
+    *,
+    scale_fn=None,
+    delete_fn=None,
+) -> Tuple[socketserver.TCPServer, int, threading.Thread]:
     """Start the HTTP API on the given port.
 
     If port == 0, the OS selects a free port. Returns (server, assigned_port, thread).
@@ -329,6 +402,8 @@ def start_http_api(port: int, store: SQLiteStateStore) -> Tuple[socketserver.TCP
     handler_cls = type("Handler", (_ApiHandler,), {})
     handler_cls.store = store
     handler_cls.metrics = MetricsService(store)
+    handler_cls.scale_fn = scale_fn
+    handler_cls.delete_fn = delete_fn
     httpd = socketserver.TCPServer(("0.0.0.0", port), handler_cls)
     assigned = httpd.server_address[1]
     thread = threading.Thread(target=httpd.serve_forever, name="ae-http-api", daemon=True)

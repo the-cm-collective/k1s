@@ -1,6 +1,7 @@
 # HTTP API Reference
 
-The controller exposes a read-only HTTP API when started with `--metrics-port PORT`.
+The controller exposes an HTTP API when started with `--metrics-port PORT`.
+By default, endpoints are read-only. Mutating endpoints can be enabled for dev/testing.
 
 Base URL: `http://<host>:<port>`
 
@@ -52,3 +53,14 @@ Notes
 Extras
 - GET `/openapi.json` — Minimal OpenAPI 3 document for the read-only endpoints.
 - GET `/docs` — Lightweight HTML that lists available paths by fetching `/openapi.json`.
+Mutations (opt-in; dev only)
+
+- Enable by setting env `AE_API_MUTATIONS=1` on the controller process. Optionally set `AE_API_TOKEN` and send `Authorization: Bearer <token>` on requests.
+
+- POST `/scale/<app>`
+  - Body: `{ "replicas": <int> }`
+  - 200 OK: `{ app, replicas, revision, status, created, updated, removed }`
+
+- POST `/delete/<app>?purge=1`
+  - 200 OK: `{ app, removed, purged }`
+  - Deletes runtime containers and ingress; `purge=1` also deletes events and revisions for the app.

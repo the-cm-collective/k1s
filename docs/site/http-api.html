@@ -88,12 +88,12 @@
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
       <a href="concepts.html">Concepts</a>
-      <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
-      <a href="https://api.home.arpa:8443/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <a href="http://127.0.0.1:9108/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="http://127.0.0.1:9108/redoc" target="_blank" rel="noopener">ReDoc</a>
     </nav>
     <div class="container">
     <h1>HTTP API Reference</h1>
-<p>The controller exposes a read-only HTTP API when started with <code>--metrics-port PORT</code>.</p>
+<p>The controller exposes an HTTP API when started with <code>--metrics-port PORT</code>. By default, endpoints are read-only. Mutating endpoints can be enabled for dev/testing.</p>
 <p>Base URL: <code>http://&lt;host&gt;:&lt;port&gt;</code></p>
 <ul>
 <li>GET <code>/metrics</code></li>
@@ -149,6 +149,20 @@
 <ul>
 <li>GET <code>/openapi.json</code> — Minimal OpenAPI 3 document for the read-only endpoints.</li>
 <li>GET <code>/docs</code> — Lightweight HTML that lists available paths by fetching <code>/openapi.json</code>.</li>
+<p>Mutations (opt-in; dev only)</p>
+</ul>
+<ul>
+<li>Enable by setting env <code>AE_API_MUTATIONS=1</code> on the controller process. Optionally set <code>AE_API_TOKEN</code> and send <code>Authorization: Bearer &lt;token&gt;</code> on requests.</li>
+</ul>
+<ul>
+<li>POST <code>/scale/&lt;app&gt;</code></li>
+<li>Body: <code>{ &quot;replicas&quot;: &lt;int&gt; }</code></li>
+<li>200 OK: <code>{ app, replicas, revision, status, created, updated, removed }</code></li>
+</ul>
+<ul>
+<li>POST <code>/delete/&lt;app&gt;?purge=1</code></li>
+<li>200 OK: <code>{ app, removed, purged }</code></li>
+<li>Deletes runtime containers and ingress; <code>purge=1</code> also deletes events and revisions for the app.</li>
 </ul>
     </div>
   </body>

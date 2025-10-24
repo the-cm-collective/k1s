@@ -112,15 +112,53 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     else:
         configure_logging(None)
 
-    # Initialize HTTP API server (metrics/status/events) if requested
+    # Build reconciler (runtime, ingress, secrets, store)
+    reconciler = _make_reconciler()
+
+    # Initialize HTTP API server (metrics/status/events) and optional mutators if requested
     api_server = None
     if args.metrics_port and args.metrics_port > 0:
         store = state_store_from_env()
-        api_server, assigned, _ = start_http_api(args.metrics_port, store)
+
+        # Optional mutators wired via closures and gated at handler level
+        def _scale(app: str, replicas: int):  # noqa: ANN001
+            revs = store.list_revisions(app, limit=1)
+            if not revs:
+                raise RuntimeError(f"no revisions recorded for {app}")
+            manifest = store.get_revision_manifest(app, revs[0].revision)
+            new_spec = manifest.spec.model_copy(update={"replicas": int(replicas)})
+            updated = manifest.model_copy(update={"spec": new_spec})
+            report = reconciler.reconcile(updated)
+            return {
+                "app": app,
+                "replicas": int(replicas),
+                "revision": report.revision,
+                "status": report.revision_status,
+                "created": report.created,
+                "updated": report.updated,
+                "removed": report.removed,
+            }
+
+        def _delete(app: str, purge: bool):  # noqa: ANN001
+            # Remove runtime containers
+            runtime = reconciler._runtime  # type: ignore[attr-defined]
+            removed = runtime.remove_app(app)
+            # Remove ingress if present
+            ingress = reconciler._ingress_service  # type: ignore[attr-defined]
+            if ingress is not None:
+                try:
+                    ingress.remove(app)
+                    ingress.reload()
+                except Exception:
+                    pass
+            store.delete_app_state(app, purge_history=bool(purge))
+            return {"app": app, "removed": removed, "purged": bool(purge)}
+
+        api_server, assigned, _ = start_http_api(
+            args.metrics_port, store, scale_fn=_scale, delete_fn=_delete
+        )
         import logging
         logging.getLogger(__name__).info("http api listening on port %s", assigned)
-
-    reconciler = _make_reconciler()
 
     if args.once:
         manifests = _load_all(_find_manifests(specs_dir))
