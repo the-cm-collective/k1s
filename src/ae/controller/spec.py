@@ -140,6 +140,8 @@ class SecretRef(BaseModel):
     name: str
     path: str
     env: List[SecretEnvMapping] = Field(default_factory=list)
+    # Optional file projections: project selected keys into files under the mount root
+    files: List[dict] = Field(default_factory=list)
 
 class ConfigEnvMapping(BaseModel):
     """Mapping from config key to environment variable."""
@@ -154,6 +156,8 @@ class ConfigRef(BaseModel):
     name: str
     path: str
     env: List[ConfigEnvMapping] = Field(default_factory=list)
+    # Optional file projections: project selected keys into files under the mount root
+    files: List[dict] = Field(default_factory=list)
 
 
 class AppSpec(BaseModel):
@@ -167,6 +171,8 @@ class AppSpec(BaseModel):
     health: Optional[HealthSpec] = None
     ingress: Optional[IngressSpec] = None
     service: Optional[ServiceSpec] = None
+    # Rollout policy
+    rollout: Optional[dict] = Field(default_factory=lambda: {"strategy": "parallel", "maxSurge": 1, "maxUnavailable": 0})
     registry_auth_ref: Optional[str] = Field(default=None, alias="registryAuthRef")
     secret_refs: List[SecretRef] = Field(default_factory=list, alias="secretRefs")
     config_refs: List[ConfigRef] = Field(default_factory=list, alias="configRefs")

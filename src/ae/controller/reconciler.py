@@ -85,7 +85,15 @@ class Reconciler:
             updated_spec = manifest_for_runtime.spec.model_copy(update={"volumes": vols})
             manifest_for_runtime = manifest_for_runtime.model_copy(update={"spec": updated_spec})
 
-        result = self._runtime.ensure_app(manifest_for_runtime, revision)
+        # Rollout policy
+        rollout = getattr(manifest.spec, "rollout", {}) or {}
+        strategy = str(rollout.get("strategy", "parallel")).lower()
+        max_surge = int(rollout.get("maxSurge", 1))
+        max_unavail = int(rollout.get("maxUnavailable", 0))
+
+        limit_create = 1 if strategy == "ordered" else None
+        # Keep old replicas during rollout to respect surge/unavailable; we'll remove them after readiness check
+        result = self._runtime.ensure_app(manifest_for_runtime, revision, keep_old=True, limit_create=limit_create)
         health_report = self._health_manager.evaluate(manifest, result)
         if manifest.spec.ingress and self._ingress_service:
             upstreams = self._select_upstreams(manifest, result, health_report)
@@ -108,6 +116,21 @@ class Reconciler:
                 "Ingress configuration removed",
             )
         revision_status = self._calculate_revision_status(manifest, health_report)
+
+        # Remove old revisions if availability is satisfied
+        desired = manifest.spec.replicas
+        if health_report.ready_replicas >= max(0, desired - max_unavail):
+            try:
+                removed_old = self._runtime.remove_old_revisions(manifest.metadata.name, revision)
+                if removed_old > 0:
+                    self._state_store.record_event(
+                        manifest.metadata.name,
+                        revision,
+                        "RolloutOldRemoved",
+                        f"Removed {removed_old} old revision container(s)",
+                    )
+            except Exception:
+                pass
 
         self._state_store.record_snapshot(
             manifest=manifest_for_runtime,
@@ -222,12 +245,28 @@ class Reconciler:
                     data = self._config_manager._load(Path(ref.path))  # type: ignore[arg-type]
                 except Exception:
                     continue
-                for k, v in data.items():
-                    try:
-                        (cfg_dir / str(k)).write_text(str(v), encoding="utf-8")
-                        wrote = True
-                    except Exception:
-                        pass
+                if getattr(ref, "files", None):
+                    for mapping in ref.files:
+                        k = str(mapping.get("key", ""))
+                        fn = str(mapping.get("file", ""))
+                        if not k or not fn:
+                            continue
+                        if k not in data:
+                            continue
+                        path = (root / fn) if fn.startswith("/") else (cfg_dir / fn)
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            path.write_text(str(data[k]), encoding="utf-8")
+                            wrote = True
+                        except Exception:
+                            pass
+                else:
+                    for k, v in data.items():
+                        try:
+                            (cfg_dir / str(k)).write_text(str(v), encoding="utf-8")
+                            wrote = True
+                        except Exception:
+                            pass
 
         # Secret files
         if manifest.spec.secret_refs and self._secret_manager:
@@ -238,11 +277,27 @@ class Reconciler:
                     data = self._secret_manager._decrypt(Path(ref.path))  # type: ignore[arg-type]
                 except Exception:
                     continue
-                for k, v in data.items():
-                    try:
-                        (sec_dir / str(k)).write_text(str(v), encoding="utf-8")
-                        wrote = True
-                    except Exception:
-                        pass
+                if getattr(ref, "files", None):
+                    for mapping in ref.files:
+                        k = str(mapping.get("key", ""))
+                        fn = str(mapping.get("file", ""))
+                        if not k or not fn:
+                            continue
+                        if k not in data:
+                            continue
+                        path = (root / fn) if fn.startswith("/") else (sec_dir / fn)
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            path.write_text(str(data[k]), encoding="utf-8")
+                            wrote = True
+                        except Exception:
+                            pass
+                else:
+                    for k, v in data.items():
+                        try:
+                            (sec_dir / str(k)).write_text(str(v), encoding="utf-8")
+                            wrote = True
+                        except Exception:
+                            pass
 
         return root if wrote else None

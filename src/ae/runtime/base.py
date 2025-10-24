@@ -34,7 +34,7 @@ class RuntimeResult:
 class RuntimeAdapter(Protocol):
     """Adapter that drives container runtime operations."""
 
-    def ensure_app(self, manifest: AppManifest, revision: int) -> RuntimeResult:
+    def ensure_app(self, manifest: AppManifest, revision: int, *, keep_old: bool = False, limit_create: int | None = None) -> RuntimeResult:
         """Ensure the runtime matches the manifest."""
 
     def read_logs(
@@ -56,3 +56,6 @@ class RuntimeAdapter(Protocol):
 
         Returns the number of containers removed.
         """
+
+    def remove_old_revisions(self, app_name: str, keep_revision: int) -> int:
+        """Remove containers of older revisions for a given app, keeping the specified revision."""

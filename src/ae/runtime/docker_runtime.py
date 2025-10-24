@@ -39,7 +39,7 @@ class DockerRuntime(RuntimeAdapter):
         import os as _os
         self._network_name = _os.getenv("AE_DOCKER_NETWORK")
 
-    def ensure_app(self, manifest: AppManifest, revision: int) -> RuntimeResult:
+    def ensure_app(self, manifest: AppManifest, revision: int, *, keep_old: bool = False, limit_create: int | None = None) -> RuntimeResult:
         app_name = manifest.metadata.name
         desired_replica_ids = self._desired_replica_ids(manifest, revision)
 
@@ -70,6 +70,8 @@ class DockerRuntime(RuntimeAdapter):
         for replica_id in desired_replica_ids:
             container = containers_by_replica.get(replica_id)
             if container is None:
+                if limit_create is not None and created >= int(limit_create):
+                    continue
                 container = self._create_container(manifest, replica_id, revision)
                 containers_by_replica[replica_id] = container
                 created += 1
@@ -82,9 +84,10 @@ class DockerRuntime(RuntimeAdapter):
                     except APIError as exc:
                         raise RuntimeError(f"Failed to start container {container.name}: {exc}") from exc
 
-        for container in old_revision_containers:
-            self._stop_and_remove(container)
-            removed += 1
+        if not keep_old:
+            for container in old_revision_containers:
+                self._stop_and_remove(container)
+                removed += 1
 
         final_containers = self._client.containers.list(
             all=True, filters={"label": f"{self.APP_LABEL}={app_name}"}
@@ -140,6 +143,20 @@ class DockerRuntime(RuntimeAdapter):
         for c in containers:
             self._stop_and_remove(c)
             removed += 1
+        return removed
+
+    def remove_old_revisions(self, app_name: str, keep_revision: int) -> int:
+        try:
+            containers = self._client.containers.list(
+                all=True, filters={"label": f"{self.APP_LABEL}={app_name}"}
+            )
+        except APIError as exc:
+            raise RuntimeError(f"Failed to list containers for {app_name}: {exc}") from exc
+        removed = 0
+        for c in containers:
+            if c.labels.get(self.REVISION_LABEL) != str(keep_revision):
+                self._stop_and_remove(c)
+                removed += 1
         return removed
 
     # Internal helpers -------------------------------------------------
