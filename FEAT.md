@@ -384,3 +384,60 @@ Keep these as thin Python protocols/interfaces so you can reimplement them in Go
 Given your comfort in Python and the project’s scope, **Python is the right base**. You’ll move fastest, the ops footprint is acceptable on a 2 GB VPS, and you can keep a clean seam to port the controller to **Go** later if/when you need a single static binary and even smaller memory.
 
 If you want, I can sketch a minimal repo scaffold (folders, `pyproject.toml`, and stubbed interfaces) that you can `git clone` and start filling in.
+## Roadmap and Gaps to Close
+
+This document tracks the current capabilities of k1s and outlines gaps to close as we evolve from a dev/demo orchestrator into a small, production‑ready system.
+
+### Implemented Today
+- Single‑node controller with file‑based specs and reconcile loop
+- Docker runtime adapter; immutable revisions; rolling replace semantics
+- Health probes (HTTP), initialDelay, readiness‑gated ingress switch
+- Caddy ingress management with dev container reload
+- State in SQLite; events and probe history; metrics snapshot
+- HTTP API: `/status`, `/status/<app>`, `/events/<app>`, `/metrics`, `/openapi.json`, `/docs`, `/swagger`, `/redoc`
+- CLI tools:
+  - `ae apply|status|logs|revisions|rollback|events|metrics|backup`
+  - `ae delete <app> [--purge]`, `ae scale <app> --replicas N`
+  - `k1s` kubectl‑like front: `get`, `describe`, `apply`, `rollout history|undo`, `logs`, `events`, `delete`, `scale`
+
+### High‑Value Next Steps
+1) Service model and networking
+   - Introduce a Service abstraction (stable virtual IP/hostname per app) on single host
+   - Optional sidecar reverse proxy for mTLS/rate‑limit per app; basic service discovery
+2) Multi‑replica rollout controls
+   - Parallel vs ordered startup; surge/unavailable knobs; pre/post hooks
+3) Secrets and config
+   - First‑class Config and Secret resources; SOPS decryption; mount/env wiring; audits
+4) Resource enforcement and resiliency
+   - Enforce CPU/memory limits; restart policies; backoff; replica restart counters
+5) Scheduling and placement (single host first)
+   - Soft/Hard affinities; port conflicts detection; stub scheduler groundwork
+6) API maturity
+   - Mutating API for apply/scale/delete behind an auth gate; pagination; richer OpenAPI schemas
+7) Storage
+   - Local PV/PVC‑like semantics; named volumes; retention and backup policies
+8) Observability
+   - Per‑replica logs/events over API; metrics labels for per‑app series; structured event reasons
+9) Security hardening
+   - TLS everywhere by default via Caddy; token‑based CLI→API auth; least‑privileged Docker access; audit logging
+10) Packaging and distribution
+   - pip/pipx install; systemd units; dockerized controller; remote CLI mode to talk to controller API
+
+### CLI Installation and Aliases
+- `pipx install .` provides `ae` and `k1s` console scripts (see pyproject).
+- For quick aliasing in a shell session: `alias k1s='ae kctl'` or use the provided `k1s` entrypoint.
+- Option: add a small installer that writes systemd units and exposes the API on LAN with Caddy TLS.
+
+### Remote Use over LAN
+- Controller binds `0.0.0.0` on `--metrics-port`; fronted by Caddy at `https://api.home.arpa:8443`.
+- From another host on the LAN:
+  - Access read‑only API: `curl https://api.home.arpa:8443/status -k` (dev)
+  - Future: CLI `k1s --server https://api.home.arpa:8443` for mutating ops via API (not yet implemented).
+
+### Hardening Plan (initial)
+- Network/TLS: Issue local CA (step‑ca) and have Caddy terminate TLS with client auth for API UIs.
+- AuthZ: Introduce controller token with scoped roles for mutating endpoints (apply/scale/delete).
+- Docker: drop broad privileges; restrict to a dedicated user/group; consider rootless Docker.
+- Secrets: enforce SOPS in CI; disallow AE_ALLOW_PLAINTEXT_SECRETS outside dev; key rotation.
+- Backups: scheduled state DB + specs archives; integrity checks; restore drills.
+- Supply chain: pin base images; enable image trust policy; registry credentials scoped and short‑lived.
