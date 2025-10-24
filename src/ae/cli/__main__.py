@@ -85,6 +85,20 @@ def build_parser() -> argparse.ArgumentParser:
     events_parser.add_argument("name", help="Application name")
     events_parser.add_argument("--limit", type=int, default=20)
 
+    # config validate
+    cfg_parser = subparsers.add_parser("config", help="Manage config resources")
+    cfg_sub = cfg_parser.add_subparsers(dest="config_cmd", required=True)
+    cfg_val = cfg_sub.add_parser("validate", help="Validate and show keys from a config file")
+    cfg_val.add_argument("--file", "-f", type=Path, required=True)
+    cfg_val.add_argument("--json", action="store_true", help="Emit JSON with keys")
+
+    # secret validate
+    sec_parser = subparsers.add_parser("secret", help="Manage secret resources")
+    sec_sub = sec_parser.add_subparsers(dest="secret_cmd", required=True)
+    sec_val = sec_sub.add_parser("validate", help="Validate and show keys from a secret (SOPS) file")
+    sec_val.add_argument("--file", "-f", type=Path, required=True)
+    sec_val.add_argument("--json", action="store_true", help="Emit JSON with keys")
+
     # delete <name> [--purge]
     delete_parser = subparsers.add_parser("delete", help="Delete an application (containers + status)")
     delete_parser.add_argument("name", help="Application name")
@@ -247,6 +261,8 @@ def main(argv: list[str] | None = None) -> int:
         "scale": lambda ns: handle_scale(ns, store, reconciler),
         "backup": lambda ns: handle_backup(ns),
         "version": lambda ns: handle_version(),
+        "config": lambda ns: handle_config(ns),
+        "secret": lambda ns: handle_secret(ns),
     }
 
     handler = command_handlers.get(args.command)
@@ -260,6 +276,50 @@ def handle_apply(args: argparse.Namespace, reconciler: Reconciler) -> int:
     report = reconciler.reconcile_manifest_path(args.file)
     print(format_report(report))
     return 0
+
+
+def handle_config(ns: argparse.Namespace) -> int:
+    if ns.config_cmd == "validate":
+        from ae.config.manager import ConfigManager
+        mgr = ConfigManager()
+        data = mgr._load(ns.file)  # internal, safe for CLI
+        keys = sorted(list(data.keys()))
+        if ns.json:
+            import json as _json
+            print(_json.dumps({"file": str(ns.file), "keys": keys}, indent=2))
+        else:
+            print(f"config keys in {ns.file}:")
+            for k in keys:
+                print(f"  - {k}")
+        return 0
+    print(f"Unsupported config command: {ns.config_cmd}")
+    return 1
+
+
+def handle_secret(ns: argparse.Namespace) -> int:
+    if ns.secret_cmd == "validate":
+        from ae.secrets.manager import SecretManager
+        mgr = SecretManager()
+        # Use SecretRef adapter to reuse decrypt
+        from ae.controller.spec import SecretRef, SecretEnvMapping
+        dummy = SecretRef(name="cli", path=str(ns.file), env=[SecretEnvMapping(name="_", key="_")])
+        # Call decrypt privately to get mapping
+        try:
+            data = mgr._decrypt(ns.file)  # type: ignore[arg-type]
+        except Exception as exc:  # noqa: BLE001
+            print(f"decrypt failed: {exc}")
+            return 1
+        keys = sorted(list(map(str, data.keys())))
+        if ns.json:
+            import json as _json
+            print(_json.dumps({"file": str(ns.file), "keys": keys}, indent=2))
+        else:
+            print(f"secret keys in {ns.file}:")
+            for k in keys:
+                print(f"  - {k}")
+        return 0
+    print(f"Unsupported secret command: {ns.secret_cmd}")
+    return 1
 
 
 def handle_delete(

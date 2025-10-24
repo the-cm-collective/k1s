@@ -31,3 +31,9 @@ spec:
   env:
     - name: APP_MODE
       value: demo-override
+  secretRefs:
+    - name: demo-secret
+      path: specs/examples/demo-secret.sops.yaml
+      env:
+        - name: API_TOKEN
+          key: token
