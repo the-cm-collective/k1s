@@ -36,7 +36,7 @@ What this does (setup):
   1) Ensures required system packages (python3, venv, pip, sqlite3, age, sops) are present
   2) Creates a Python virtualenv (.venv-demo) and installs project deps
   3) Builds demo Docker images (blue/green) under samples/servers/
-  4) Starts the dev stack (Caddy on :8080 and Prometheus on :9090)
+  4) Starts the dev stack (Caddy on :8888 and Prometheus on :9090)
   5) Optionally appends hosts entries for: ${HOSTS[*]}
   6) Applies example manifests (blue, green) via the ae CLI
   7) Builds static docs and serves them locally on DOCS_PORT (default 9109)

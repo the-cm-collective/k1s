@@ -4,7 +4,7 @@ services:
   caddy:
     image: caddy:2.8
     ports:
-      - "8080:80"
+      - "8888:80"
       - "8443:443"
     volumes:
       - ./caddy:/etc/caddy:ro
