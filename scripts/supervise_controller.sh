@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Simple supervisor for the controller daemon. Restarts on exit with backoff.
+# Usage: supervise_controller.sh <python_bin> <specs_dir> <metrics_port>
+
+log() { printf '\033[1;36m[controller-supervisor]\033[0m %s\n' "$1"; }
+
+PY_BIN=${1:?python path required}
+SPECS_DIR=${2:-specs}
+PORT=${3:-9108}
+
+STATE_DIR=state
+LOG_FILE=${STATE_DIR}/controller.log
+PID_FILE=${STATE_DIR}/controller.pid
+SUP_PID_FILE=${STATE_DIR}/controller_supervisor.pid
+STATUS_JSON=${STATE_DIR}/controller_status.json
+RESTARTS_FILE=${STATE_DIR}/controller_restart_count
+LAST_EXIT_FILE=${STATE_DIR}/controller_last_exit
+
+mkdir -p "$STATE_DIR"
+echo $$ > "$SUP_PID_FILE"
+
+child_pid=""
+term() {
+  log "Stopping (signal)"
+  if [[ -n "$child_pid" ]] && kill -0 "$child_pid" 2>/dev/null; then
+    kill "$child_pid" || true
+    wait "$child_pid" || true
+  fi
+  rm -f "$PID_FILE" "$SUP_PID_FILE"
+  exit 0
+}
+trap term INT TERM
+
+backoff=1
+max_backoff=30
+restart_count=0
+echo 0 > "$RESTARTS_FILE"
+echo 0 > "$LAST_EXIT_FILE"
+printf '{"restart_count": %s, "last_exit_code": %s}\n' "0" "0" > "$STATUS_JSON"
+
+log "Supervising controller on :$PORT (specs=$SPECS_DIR)"
+while true; do
+  nohup "$PY_BIN" -m ae.controller --loop --specs "$SPECS_DIR" --metrics-port "$PORT" --watch \
+    >>"$LOG_FILE" 2>&1 &
+  child_pid=$!
+  echo "$child_pid" > "$PID_FILE"
+  log "Started controller pid=$child_pid"
+  wait "$child_pid" || true
+  rc=$?
+  restart_count=$(( restart_count + 1 ))
+  echo "$restart_count" > "$RESTARTS_FILE"
+  echo "$rc" > "$LAST_EXIT_FILE"
+  printf '{"restart_count": %s, "last_exit_code": %s}\n' "$restart_count" "$rc" > "$STATUS_JSON"
+  log "Controller exited (rc=$rc); restarting in ${backoff}s"
+  sleep "$backoff"
+  if (( backoff < max_backoff )); then backoff=$(( backoff * 2 )); fi
+done

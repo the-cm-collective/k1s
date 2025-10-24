@@ -15,14 +15,21 @@ require_root_or_sudo() {
 
 SUDO=$(require_root_or_sudo)
 
-HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa)
+HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa api.home.arpa)
+AUTO_HOSTS=""  # set by -y/--yes or -n/--no to auto answer host prompts
 
 usage() {
   cat <<USAGE
 Usage:
-  ./scripts/init_demo.sh           # Set up the demo environment
-  ./scripts/init_demo.sh --down    # Tear the demo down and optionally clean hosts
-  ./scripts/init_demo.sh --help    # Show this help
+  ./scripts/init_demo.sh [OPTIONS]      # Set up the demo environment
+  ./scripts/init_demo.sh --down [OPTS]  # Tear the demo down (and optionally clean hosts)
+  ./scripts/init_demo.sh --help         # Show this help
+
+Options:
+  -y, --yes    Automatically accept /etc/hosts modification prompts (setup/teardown)
+  -n, --no     Automatically decline /etc/hosts modification prompts (setup/teardown)
+  --no-controller  Do not auto-start the controller daemon
+  --no-supervisor  Start controller once (no restart loop)
 
 What this does (setup):
   1) Ensures required system packages (python3, venv, pip, sqlite3, age, sops) are present
@@ -52,15 +59,38 @@ Environment variables you can override:
 Endpoints after setup:
   - Apps via Caddy: https://blue.home.arpa:8443/ and https://green.home.arpa:8443/
   - Docs via Caddy: https://docs.home.arpa:8443/
+  - API via Caddy:  https://api.home.arpa:8443/ (Swagger at /swagger, ReDoc at /redoc)
   - Docs direct:    http://127.0.0.1:9109/
 
 USAGE
 }
 
-if [[ "${1:-}" == "--help" || "${1:-}" == "-h" || "${1:-}" == "help" ]]; then
-  usage
-  exit 0
-fi
+# Parse flags (supports combining with --down)
+DOWN_FLAG=0
+NO_CONTROLLER=0
+API_PORT=${API_PORT:-9108}
+NO_SUPERVISOR=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help|-h|help)
+      usage; exit 0 ;;
+    --down|down)
+      DOWN_FLAG=1 ;;
+    -y|--yes)
+      AUTO_HOSTS=Y ;;
+    -n|--no)
+      AUTO_HOSTS=N ;;
+    --no-controller)
+      NO_CONTROLLER=1 ;;
+    --no-supervisor)
+      NO_SUPERVISOR=1 ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage
+      exit 2 ;;
+  esac
+  shift
+done
 
 prompt_yes_no() {
   # $1 = prompt message, $2 = default (Y/N)
@@ -82,9 +112,36 @@ prompt_yes_no() {
   esac
 }
 
-DOWN_MODE=${1:-}
-if [[ "$DOWN_MODE" == "--down" || "$DOWN_MODE" == "down" ]]; then
+# Wrapper for hosts prompts that honors AUTO_HOSTS override
+prompt_yes_no_hosts() {
+  # $1 = prompt message, $2 = default (Y/N)
+  if [[ -n "$AUTO_HOSTS" ]]; then
+    [[ "$AUTO_HOSTS" == "Y" || "$AUTO_HOSTS" == "y" ]]
+    return
+  fi
+  prompt_yes_no "$1" "${2:-Y}"
+}
+
+if [[ $DOWN_FLAG -eq 1 ]]; then
   log "Tearing down demo environment"
+  # Stop controller if running
+  if [[ -f state/controller.pid ]]; then
+    CTRL_PID=$(cat state/controller.pid || true)
+    if [[ -n "${CTRL_PID}" ]] && kill -0 "$CTRL_PID" 2>/dev/null; then
+      log "Stopping controller (pid ${CTRL_PID})"
+      kill "$CTRL_PID" || true
+    fi
+    rm -f state/controller.pid
+  fi
+  # Stop supervisor if running
+  if [[ -f state/controller_supervisor.pid ]]; then
+    SUP_PID=$(cat state/controller_supervisor.pid || true)
+    if [[ -n "${SUP_PID}" ]] && kill -0 "$SUP_PID" 2>/dev/null; then
+      log "Stopping controller supervisor (pid ${SUP_PID})"
+      kill "$SUP_PID" || true
+    fi
+    rm -f state/controller_supervisor.pid
+  fi
   # Stop docs server if running
   if [[ -f state/docs_server.pid ]]; then
     DOCS_PID=$(cat state/docs_server.pid || true)
@@ -106,7 +163,7 @@ if [[ "$DOWN_MODE" == "--down" || "$DOWN_MODE" == "down" ]]; then
     fi
   fi
   # Optionally remove hosts entries
-  if prompt_yes_no "Remove hosts entries for ${HOSTS[*]} from /etc/hosts?" N; then
+  if prompt_yes_no_hosts "Remove hosts entries for ${HOSTS[*]} from /etc/hosts?" N; then
     for host in "${HOSTS[@]}"; do
       $SUDO sed -i.bak "/[[:space:]]$host\$/d" /etc/hosts || true
     done
@@ -179,7 +236,7 @@ docker build -t demo-green:latest samples/servers/green
 log "Starting local Caddy and Prometheus stack"
 docker compose -f ops/dev/docker-compose.yaml up -d
 
-if prompt_yes_no "Add hosts entries for ${HOSTS[*]} to /etc/hosts?" N; then
+if prompt_yes_no_hosts "Add hosts entries for ${HOSTS[*]} to /etc/hosts?" N; then
   log "Configuring hosts entries"
   for host in "${HOSTS[@]}"; do
     if ! grep -q "$host" /etc/hosts; then
@@ -198,6 +255,32 @@ export AE_STATE_DB=${AE_STATE_DB:-state/controller.db}
 # Avoid indefinite hangs on Caddy reload inside docker exec
 export AE_CADDY_RELOAD_TIMEOUT=${AE_CADDY_RELOAD_TIMEOUT:-10}
 mkdir -p "${AE_CADDY_SITES}"
+
+# Auto-start the controller daemon unless disabled
+if [[ $NO_CONTROLLER -eq 0 ]]; then
+  if [[ -f state/controller.pid ]]; then
+    CTRL_PID=$(cat state/controller.pid || true)
+  else
+    CTRL_PID=""
+  fi
+  if [[ -n "${CTRL_PID}" ]] && kill -0 "$CTRL_PID" 2>/dev/null; then
+    log "Controller already running (pid ${CTRL_PID})"
+  else
+    if [[ $NO_SUPERVISOR -eq 0 ]]; then
+      log "Starting controller supervisor (port ${API_PORT})"
+      nohup bash scripts/supervise_controller.sh "$PY_BIN" specs "${API_PORT}" >/dev/null 2>&1 &
+      echo $! > state/controller_supervisor.pid
+    else
+      log "Starting controller once on :${API_PORT} (background)"
+      nohup "$PY_BIN" -m ae.controller --loop --specs specs/ --metrics-port "${API_PORT}" --watch \
+        >/dev/null 2>&1 &
+      echo $! > state/controller.pid
+    fi
+  fi
+else
+  log "Skipping controller auto-start (--no-controller)"
+fi
+ls -1 ops/dev/caddy/sites | sed 's/^/  - /' | xargs -r -I{} true >/dev/null 2>&1 || true
 
 log "Applying demo manifests"
 APPLY_TIMEOUT=${APPLY_TIMEOUT:-120}
@@ -237,6 +320,54 @@ echo $! > state/docs_server.pid
 log "Current status"
 "$PY_BIN" -m ae.cli status
 
+# Report reachability of the controller HTTP API and UIs.
+check_api_reachability() {
+  API_PORT=${API_PORT:-9108}
+  CADDY_HTTPS_PORT=${CADDY_HTTPS_PORT:-8443}
+  echo
+  log "API reachability checks (expected after you start the controller)"
+
+  # Direct API JSON
+  if curl -fsS "http://127.0.0.1:${API_PORT}/openapi.json" >/dev/null 2>&1; then
+    log "Direct API OK: http://127.0.0.1:${API_PORT}/openapi.json"
+    for path in /swagger /redoc; do
+      code=$(curl -fsS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${API_PORT}${path}" || true)
+      if [[ "$code" == "200" ]]; then
+        log "Direct ${path} OK: http://127.0.0.1:${API_PORT}${path}"
+      else
+        log "Direct ${path} not reachable (HTTP ${code:-fail})"
+      fi
+    done
+  else
+    log "Direct API NOT reachable on :${API_PORT}. The controller API is likely not running."
+    echo "Next steps:"
+    echo "  $ $PY_BIN -m ae.controller --loop --specs specs/ --metrics-port ${API_PORT} --watch"
+    echo "  # then visit http://127.0.0.1:${API_PORT}/swagger or /redoc"
+  fi
+
+  # Caddy (ingress) reachability — use --resolve to avoid requiring /etc/hosts
+  code_api=$(curl -ksS --resolve "api.home.arpa:${CADDY_HTTPS_PORT}:127.0.0.1" -o /dev/null -w '%{http_code}' \
+             "https://api.home.arpa:${CADDY_HTTPS_PORT}/openapi.json" || true)
+  if [[ "$code_api" == "200" ]]; then
+    log "Caddy API OK: https://api.home.arpa:${CADDY_HTTPS_PORT}/openapi.json"
+  else
+    log "Caddy API not reachable (HTTP ${code_api:-fail})."
+    echo "If direct API works, try reloading Caddy:"
+    echo "  $ docker exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
+  fi
+
+  # Supervisor status
+  if [[ -f state/controller_supervisor.pid ]] && kill -0 "$(cat state/controller_supervisor.pid 2>/dev/null)" 2>/dev/null; then
+    restarts=$(cat state/controller_restart_count 2>/dev/null || echo 0)
+    last_rc=$(cat state/controller_last_exit 2>/dev/null || echo 0)
+    log "Controller supervisor running; restarts=${restarts}, last_exit=${last_rc}"
+  else
+    log "Controller supervisor not running"
+  fi
+}
+
+check_api_reachability || true
+
 cat <<EOF
 
 Demo setup complete.
@@ -244,6 +375,8 @@ Demo setup complete.
 - Blue app:   https://blue.home.arpa:8443/
 - Green app:  https://green.home.arpa:8443/
 - Docs site:  https://docs.home.arpa:8443/ (via Caddy) and http://127.0.0.1:${DOCS_PORT}/ (direct)
+  API UIs:    https://api.home.arpa:8443/swagger (Swagger), https://api.home.arpa:8443/redoc (ReDoc)
+  API direct: http://127.0.0.1:9108/swagger and http://127.0.0.1:9108/redoc
 
 If hosts mapping was added, you can also visit:
   - curl -k https://blue.home.arpa:8443/
@@ -254,6 +387,12 @@ To tear everything down when finished:
   $ ./scripts/init_demo.sh --down
 
 Controller status above shows ready/live replicas. To run the controller loop with API:
-  $ "$PY_BIN" -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch
+  $ $PY_BIN -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch
+
+After starting the controller with --metrics-port 9108, view the API docs:
+  - Docs UI:   http://127.0.0.1:9108/docs
+  - OpenAPI:   http://127.0.0.1:9108/openapi.json
+  - Swagger:   http://127.0.0.1:9108/swagger
+  - ReDoc:     http://127.0.0.1:9108/redoc
 
 EOF
