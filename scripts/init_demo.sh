@@ -373,6 +373,13 @@ if [[ $DEMO_CONFIGS -eq 1 ]]; then
       log "Projection files under $APP_ROOT (mounted at /var/run/ae/config/echo)"
       find "$APP_ROOT" -maxdepth 2 -type f | sed 's/^/[proj] /'
     fi
+    # Quick endpoint verification
+    echo
+    log "Demo endpoint verification (HTTPS via Caddy 8443)"
+    for host in blue.home.arpa green.home.arpa echo-mr.home.arpa docs.home.arpa api.home.arpa; do
+      code=$(curl -ksS -o /dev/null -w '%{http_code}' "https://$host:8443/" || true)
+      printf '[verify] %-20s -> %s\n' "$host" "${code:-fail}"
+    done
   else
     log "Echo demo apply failed"
   fi

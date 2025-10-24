@@ -37,3 +37,13 @@ logs-sample:
 .PHONY: docs
 docs:
 	python docs/build_docs.py
+
+.PHONY: demo demo-down integ-test
+demo:
+	./scripts/init_demo.sh -y --demo-configs
+
+demo-down:
+	./scripts/init_demo.sh --down -y
+
+integ-test:
+	AE_DOCKER_TEST=1 pytest -q tests/integration/

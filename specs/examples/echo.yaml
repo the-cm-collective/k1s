@@ -37,3 +37,13 @@ spec:
       env:
         - name: API_TOKEN
           key: token
+      files:
+        - key: token
+          file: secret/token
+  # Also project selected config keys to files
+  configRefs:
+    - name: app-config
+      path: configs/app-config.yaml
+      files:
+        - key: mode
+          file: config/app_mode.txt
