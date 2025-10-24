@@ -25,6 +25,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     parser.add_argument("--verbose", action="store_true", help="Enable DEBUG logging")
     parser.add_argument("--log-level", default=None, help="Override log level (DEBUG/INFO/WARNING/ERROR)")
+    parser.add_argument("--server", default=None, help="Remote API base URL (e.g. http://127.0.0.1:9108)")
+    parser.add_argument("--token", default=None, help="Bearer token for remote API auth")
 
     apply_parser = subparsers.add_parser("apply", help="Apply a manifest")
     apply_parser.add_argument("-f", "--file", type=Path, required=True, help="Path to manifest")
@@ -256,15 +258,15 @@ def main(argv: list[str] | None = None) -> int:
 
     command_handlers: dict[str, Callable[[argparse.Namespace], int]] = {
         "apply": lambda ns: handle_apply(ns, reconciler),
-        "status": lambda ns: handle_status(ns, store),
+        "status": lambda ns: handle_status(ns, store, args),
         "logs": lambda ns: handle_logs(ns, store, runtime),
         "rollback": lambda ns: handle_rollback(ns, store, reconciler),
         "revisions": lambda ns: handle_revisions(ns, store),
         "registry": lambda ns: handle_registry(ns, registry_auth),
         "metrics": lambda ns: handle_metrics(ns, store),
-        "events": lambda ns: handle_events(ns, store),
-        "delete": lambda ns: handle_delete(ns, store, runtime, ingress_service),
-        "scale": lambda ns: handle_scale(ns, store, reconciler),
+        "events": lambda ns: handle_events(ns, store, args),
+        "delete": lambda ns: handle_delete(ns, store, runtime, ingress_service, args),
+        "scale": lambda ns: handle_scale(ns, store, reconciler, args),
         "backup": lambda ns: handle_backup(ns),
         "version": lambda ns: handle_version(),
         "config": lambda ns: handle_config(ns),
@@ -362,7 +364,20 @@ def handle_delete(
     store: SQLiteStateStore,
     runtime: RuntimeAdapter,
     ingress_service: IngressService | None,
+    global_args: argparse.Namespace | None = None,
 ) -> int:
+    if global_args and getattr(global_args, "server", None):
+        base = str(global_args.server)
+        tok = getattr(global_args, "token", None)
+        try:
+            resp = _http_post_json(base, f"/delete/{args.name}?purge={'1' if args.purge else '0'}", {}, tok)
+            print(
+                f"deleted {args.name}: removed={resp.get('removed', 0)} containers{' (purged history)' if resp.get('purged') else ''}"
+            )
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            print(f"remote delete failed: {exc}")
+            return 1
     name = args.name
     removed = runtime.remove_app(name)
     if ingress_service:
@@ -376,7 +391,19 @@ def handle_delete(
     return 0
 
 
-def handle_scale(args: argparse.Namespace, store: SQLiteStateStore, reconciler: Reconciler) -> int:
+def handle_scale(args: argparse.Namespace, store: SQLiteStateStore, reconciler: Reconciler, global_args: argparse.Namespace | None = None) -> int:
+    if global_args and getattr(global_args, "server", None):
+        base = str(global_args.server)
+        tok = getattr(global_args, "token", None)
+        try:
+            resp = _http_post_json(base, f"/scale/{args.name}", {"replicas": int(args.replicas)}, tok)
+            print(
+                f"scaled {args.name} to replicas={resp.get('replicas')} rev={resp.get('revision')}({resp.get('status')}) "
+            )
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            print(f"remote scale failed: {exc}")
+            return 1
     name = args.name
     latest = store.list_revisions(name, limit=1)
     if not latest:
@@ -478,7 +505,149 @@ def handle_backup(args: argparse.Namespace) -> int:
     return 1
 
 
-def handle_status(args: argparse.Namespace, store: SQLiteStateStore) -> int:
+def _http_get_json(base: str, path: str, token: str | None = None):
+    import requests
+    url = base.rstrip("/") + path
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    r = requests.get(url, headers=headers, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
+def _http_post_json(base: str, path: str, body: dict, token: str | None = None):
+    import requests
+    url = base.rstrip("/") + path
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    r = requests.post(url, headers=headers, json=body, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
+def handle_status(args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace) -> int:
+    if getattr(global_args, "server", None):
+        base = str(global_args.server)
+        tok = getattr(global_args, "token", None)
+        try:
+            if args.name:
+                data = _http_get_json(base, f"/status/{args.name}", tok)
+                print(
+                    ", ".join(
+                        [
+                            f"{data['app_name']}: desired={data['desired_replicas']}",
+                            f"ready={data['ready_replicas']}",
+                            f"live={data['live_replicas']}",
+                            f"rev={data['revision']}({data['revision_status']})",
+                            f"image={data['image']}",
+                        ]
+                        + (
+                            [f"ingress={data['ingress_host']}{data.get('ingress_path') or '/'}"]
+                            if data.get("ingress_host")
+                            else []
+                        )
+                    )
+                )
+                return 0
+            page = _http_get_json(base, "/status?limit=100", tok)
+            for s0 in page.get("items", []):
+                line = ", ".join(
+                    [
+                        f"{s0['app_name']}: desired={s0['desired_replicas']}",
+                        f"ready={s0['ready_replicas']}",
+                        f"live={s0['live_replicas']}",
+                        f"rev={s0['revision']}({s0['revision_status']})",
+                        f"image={s0['image']}",
+                    ]
+                    + ([f"ingress={s0['ingress_host']}{s0.get('ingress_path') or '/'}"] if s0.get("ingress_host") else [])
+                )
+                print(line)
+            if page.get("next"):
+                print(f"... next cursor: {page['next']}")
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            print(f"remote status failed: {exc}")
+            return 1
+    # local path
+    if args.name:
+        status = store.get_status(args.name)
+        if status is None:
+            print(f"No status recorded for {args.name}")
+            return 1
+        if args.json:
+            print(_status_to_json(status, store, include_details=args.wide))
+            return 0
+        print(format_status(status))
+        if args.wide:
+            try:
+                manifest = store.get_revision_manifest(args.name, status.revision)
+                res = manifest.spec.resources
+                vols = manifest.spec.volumes
+                if res and res.limits:
+                    cpu = res.limits.cpu if res.limits.cpu is not None else "-"
+                    mem = res.limits.memory if res.limits.memory is not None else "-"
+                    print(f"    resources: limits cpu={cpu}, memory={mem}")
+                if vols:
+                    print(f"    volumes: {len(vols)} mounts")
+            except Exception:
+                pass
+        replicas = store.list_replicas(args.name)
+        for replica in replicas:
+            print(
+                f"  - {replica.replica_id}: ready={replica.ready} "
+                f"live={replica.live} status={replica.status} | "
+                f"readiness={replica.readiness_message}; "
+                f"liveness={replica.liveness_message}"
+            )
+        if args.history and args.history > 0:
+            history = store.get_probe_history(args.name, args.history)
+            for entry in history:
+                timestamp = entry.check_time.strftime("%Y-%m-%d %H:%M:%S")
+                print(
+                    f"    history {timestamp} {entry.replica_id}: ready={entry.ready} "
+                    f"live={entry.live} | readiness={entry.readiness_message}; "
+                    f"liveness={entry.liveness_message}"
+                )
+        if args.events:
+            events = store.list_events(args.name, limit=10)
+            if not events:
+                print("    no events recorded")
+            else:
+                for event in events:
+                    timestamp = event.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                    print(
+                        f"    event {timestamp} rev={event.revision} "
+                        f"{event.event_type}: {event.message}"
+                    )
+        return 0
+    statuses = store.list_status()
+    if not statuses:
+        print("No applications recorded.")
+        return 0
+    if args.json:
+        import json
+
+        def as_dict(s: AppStatus) -> dict:
+            d = {
+                "app_name": s.app_name,
+                "desired_replicas": s.desired_replicas,
+                "ready_replicas": s.ready_replicas,
+                "live_replicas": s.live_replicas,
+                "revision": s.revision,
+                "revision_status": s.revision_status,
+                "image": s.image,
+                "ingress_host": s.ingress_host,
+                "ingress_path": s.ingress_path,
+            }
+            return d
+
+        print(json.dumps([as_dict(s) for s in statuses], indent=2))
+        return 0
+    for status in statuses:
+        print(format_status(status))
+    return 0
     if args.name:
         status = store.get_status(args.name)
         if status is None:
@@ -792,7 +961,26 @@ def handle_metrics(args: argparse.Namespace, store: SQLiteStateStore) -> int:
     return 0
 
 
-def handle_events(args: argparse.Namespace, store: SQLiteStateStore) -> int:
+def handle_events(args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace) -> int:
+    if getattr(global_args, "server", None):
+        base = str(global_args.server)
+        tok = getattr(global_args, "token", None)
+        limit = getattr(args, "limit", 20)
+        try:
+            page = _http_get_json(base, f"/events/{args.name}?limit={int(limit)}", tok)
+            items = page.get("items", []) if isinstance(page, dict) else page
+            if not items:
+                print(f"No events recorded for {args.name}.")
+                return 0
+            for e in items:
+                ts = e.get("created_at", "")
+                print(f"{ts} rev={e.get('revision')} {e.get('event_type')}: {e.get('message')}")
+            if isinstance(page, dict) and page.get("next"):
+                print(f"... next cursor: {page['next']}")
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            print(f"remote events failed: {exc}")
+            return 1
     events = store.list_events(args.name, limit=args.limit)
     if not events:
         print(f"No events recorded for {args.name}.")

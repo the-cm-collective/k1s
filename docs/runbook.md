@@ -86,6 +86,52 @@ Example: `curl http://127.0.0.1:9108/status | jq .`
 Notes
 - When `--watch` is enabled, the controller triggers fast reconciles on YAML changes (debounced via `--debounce-ms`, default 200ms). It still performs periodic full reconciles per `--interval`.
 
+## Remote CLI over LAN
+
+You can point the CLI at a remote controller API running on your LAN.
+
+1) Start the controller with mutations and tokens (on the host running the controller):
+
+```
+export AE_API_MUTATIONS=1
+export AE_API_READ_TOKEN=readtoken
+export AE_API_SCALER_TOKEN=scaletoken
+export AE_API_ADMIN_TOKEN=admintoken
+python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch
+```
+
+2) From another machine on the LAN, use the CLI:
+
+```
+# Status (list + single app)
+ae --server http://<controller-ip>:9108 --token readtoken status
+ae --server http://<controller-ip>:9108 --token readtoken status echo
+
+# Events (paginated)
+ae --server http://<controller-ip>:9108 --token readtoken events echo --limit 20
+
+# Scale (requires scaler/admin token)
+ae --server http://<controller-ip>:9108 --token scaletoken scale echo --replicas 2
+
+# Delete (requires admin token)
+ae --server http://<controller-ip>:9108 --token admintoken delete echo --purge
+```
+
+3) Curls (for troubleshooting):
+
+```
+curl -H 'Authorization: Bearer readtoken' http://<ip>:9108/status
+curl -H 'Authorization: Bearer readtoken' http://<ip>:9108/status/echo
+curl -H 'Authorization: Bearer readtoken' http://<ip>:9108/events/echo?limit=20
+curl -X POST -H 'Authorization: Bearer scaletoken' -H 'Content-Type: application/json' \
+     -d '{"replicas":2}' http://<ip>:9108/scale/echo
+curl -X POST -H 'Authorization: Bearer admintoken' http://<ip>:9108/delete/echo?purge=1
+```
+
+Notes
+- If no tokens are configured, read-only GETs are open; POST endpoints remain gated by AE_API_MUTATIONS=1.
+- /status and /events return paginated JSON with a `next` cursor.
+
 ## CLI Cheatsheet
 
 - Apply: `python -m ae.cli apply -f specs/examples/echo.yaml`
@@ -150,6 +196,15 @@ After restore, repoint `AE_STATE_DB` and `AE_SPECS_DIR` (or run from the restore
   - Adds `docs.home.arpa` hosts mapping and fronts the docs via Caddy at `https://docs.home.arpa:8443` alongside blue/green.
   - Note: Dev proxy serves HTTPS only on host port 8443. Use `-k` with curl to skip local CA trust, or import Caddy's local root cert.
   - Prints convenient URLs for blue/green apps and docs.
+
+### Demo Modes
+
+See `docs/demo-modes.md` for common combinations and flags:
+
+- `--demo-standard` — blue/green demo
+- `--demo-echo-mr` — multi-replica echo
+- `--demo-configs` — configs & secrets demo (echo)
+- `--docs-only` — docs + API only
 
 Environment overrides:
 - `DOCS_PORT` to change the docs server port (default 9109)
