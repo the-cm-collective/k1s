@@ -1,0 +1,125 @@
+<!doctype html>
+<html data-theme="dark">
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Observability</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.55; }
+      code, pre { background: #f6f8fa; }
+      pre { padding: 12px; overflow-x: auto; }
+      h1, h2, h3 { margin-top: 1.5em; }
+      nav a { margin-right: 1rem; }
+      .container { max-width: 920px; }
+    </style>
+    <style>
+      :root {
+        --bg: #0b0f15;
+        --fg: #e6edf3;
+        --muted: #161b22;
+        --link: #79c0ff;
+        --code-bg: #0f1623;
+        --border: #263040;
+      }
+      html[data-theme="light"] {
+        --bg: #ffffff;
+        --fg: #0b0f15;
+        --muted: #f6f8fa;
+        --link: #0969da;
+        --code-bg: #f6f8fa;
+        --border: #e5e7eb;
+      }
+      body { background: var(--bg); color: var(--fg); }
+      a { color: var(--link); }
+      code, pre { background: var(--code-bg); border: 1px solid var(--border); }
+      nav { display: flex; align-items: center; gap: .75rem; margin-bottom: 1.25rem; }
+      nav a { margin-right: 1rem; }
+      .spacer { flex: 1 1 auto; }
+      button#theme-toggle { background: var(--muted); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+      /* Improve Mermaid readability in dark mode by inverting SVG colors */
+      html[data-theme="dark"] .mermaid svg { filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }
+      html[data-theme="dark"] .mermaid { background: var(--bg); }
+    </style>
+    <script>
+      (function() {
+        const key = 'k1s-theme';
+        const saved = localStorage.getItem(key);
+        const initial = saved || 'dark';
+        document.documentElement.setAttribute('data-theme', initial);
+        function setLabel(btn) {
+          var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+          btn.textContent = (cur === 'dark') ? 'Light Mode' : 'Dark Mode';
+        }
+        function ensureButton() {
+          var nav = document.querySelector('nav');
+          if (!nav) return;
+          var btn = document.getElementById('theme-toggle');
+          if (!btn) {
+            var spacer = document.createElement('span');
+            spacer.className = 'spacer';
+            btn = document.createElement('button');
+            btn.id = 'theme-toggle';
+            btn.addEventListener('click', function() {
+              var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+              var next = (cur === 'dark') ? 'light' : 'dark';
+              document.documentElement.setAttribute('data-theme', next);
+              localStorage.setItem(key, next);
+              setLabel(btn);
+            });
+            nav.appendChild(spacer);
+            nav.appendChild(btn);
+          }
+          setLabel(btn);
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', ensureButton);
+        } else {
+          ensureButton();
+        }
+      })();
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({ startOnLoad: true });</script>
+  </head>
+  <body>
+    <nav>
+      <a href="index.html">Home</a>
+      <a href="overview.html">Overview</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="http-api.html">HTTP API</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="http://127.0.0.1:9108/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="http://127.0.0.1:9108/redoc" target="_blank" rel="noopener">ReDoc</a>
+    </nav>
+    <div class="container">
+    <h2>Observability</h2>
+<h3>Metrics</h3>
+<p>Prometheus-style text at <code>/metrics</code> includes aggregated gauges and labeled series:</p>
+<ul>
+<li>Aggregated:</li>
+<li><code>ae_apps_total</code>, <code>ae_apps_ready</code>, <code>ae_apps_progressing</code>, <code>ae_apps_degraded</code></li>
+<li><code>ae_replicas_total</code>, <code>ae_replicas_ready</code>, <code>ae_replicas_live</code></li>
+<li>Per-app:</li>
+<li><code>ae_app_desired_replicas{app=&quot;&lt;name&gt;&quot;}</code></li>
+<li><code>ae_app_ready_replicas{app=&quot;&lt;name&gt;&quot;}</code></li>
+<li><code>ae_app_live_replicas{app=&quot;&lt;name&gt;&quot;}</code></li>
+<li>Per-replica:</li>
+<li><code>ae_replica_ready{app=&quot;&lt;name&gt;&quot;,replica=&quot;&lt;id&gt;&quot;}</code> 0/1</li>
+</ul>
+<h3>Logs Endpoint</h3>
+<p>Tail logs over HTTP (READ role if tokens configured):</p>
+<pre><code>
+GET /logs/&lt;app&gt;?container=&lt;id|idx&gt;&amp;tail=N&amp;since=&lt;seconds&gt;&amp;follow=1
+</code></pre>
+<ul>
+<li>When <code>follow=1</code>, the response streams plain text lines.</li>
+<li>Without follow, the response is JSON: <code>{ &quot;lines&quot;: [ ... ] }</code>.</li>
+</ul>
+<p>Remote CLI example:</p>
+<pre><code>
+ae --server http://&lt;ip&gt;:9108 --token readtoken logs echo --tail 100
+</code></pre>
+<p>See <code>docs/runbook.md</code> for the “Remote CLI over LAN” section and auth token setup.</p>
+    </div>
+  </body>
+</html>

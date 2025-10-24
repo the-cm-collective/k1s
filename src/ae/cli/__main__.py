@@ -750,6 +750,14 @@ def handle_status(args: argparse.Namespace, store: SQLiteStateStore, global_args
 
 
 def handle_logs(args: argparse.Namespace, store: SQLiteStateStore, runtime: RuntimeAdapter) -> int:
+    # Remote mode
+    import inspect as _inspect
+    frame = _inspect.currentframe()
+    if frame is not None:
+        outer_locals = frame.f_back.f_locals if frame.f_back else {}
+        gargs = outer_locals.get('global_args') or outer_locals.get('args')
+        if gargs is not None and getattr(gargs, 'server', None):
+            return handle_logs_remote(args, gargs)
     status = store.get_status(args.name)
     if status is None:
         print(f"No status recorded for {args.name}")
@@ -1036,6 +1044,54 @@ def handle_volumes(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
         return 0
     print(f"Unsupported volumes command: {args.vol_cmd}")
     return 1
+
+
+
+def handle_logs_remote(args: argparse.Namespace, global_args: argparse.Namespace) -> int:
+    base = str(global_args.server)
+    tok = getattr(global_args, "token", None)
+    params = []
+    if args.container:
+        params.append(("container", str(args.container)))
+    if args.tail is not None:
+        params.append(("tail", str(int(args.tail))))
+    if args.since is not None:
+        since_secs = _parse_since_secs(args.since)
+        if since_secs is not None:
+            params.append(("since", str(int(since_secs))))
+    if args.since_time:
+        secs = _parse_rfc3339_to_epoch(args.since_time)
+        if secs is not None:
+            params.append(("since", str(int(secs))))
+    if args.follow:
+        params.append(("follow", "1"))
+    from urllib.parse import urlencode
+    path = f"/logs/{args.name}"
+    if params:
+        path += "?" + urlencode(params)
+    import requests
+    url = base.rstrip("/") + path
+    headers = {"Accept": "text/plain" if args.follow else "application/json"}
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+    try:
+        if args.follow:
+            with requests.get(url, headers=headers, stream=True, timeout=10) as r:  # type: ignore
+                r.raise_for_status()
+                for chunk in r.iter_lines(decode_unicode=True):
+                    if chunk is None:
+                        continue
+                    print(chunk)
+        else:
+            resp = requests.get(url, headers=headers, timeout=10)  # type: ignore
+            resp.raise_for_status()
+            data = resp.json()
+            for line in data.get("lines", []):
+                print(line)
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        print(f"remote logs failed: {exc}")
+        return 1
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
     raise SystemExit(main())
