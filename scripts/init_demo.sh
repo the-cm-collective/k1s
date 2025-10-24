@@ -32,6 +32,10 @@ Options:
   --no-supervisor  Start controller once (no restart loop)
   -d, --debug  Attach logs to console for troubleshooting (blocks; Ctrl-C to exit)
   --demo-configs   Apply the configs/secrets demo (echo) and enable plaintext secrets for local run
+  --demo-standard  Apply the standard demo (blue, green)
+  --demo-echo-mr   Apply the multi-replica echo demo (echo-mr)
+  --docs-only      Start docs + API only (no apps)
+  --demo-rollout   Apply a two-step ordered rollout for echo
 
 What this does (setup):
   1) Ensures required system packages (python3, venv, pip, sqlite3, age, sops) are present
@@ -74,6 +78,10 @@ API_PORT=${API_PORT:-9108}
 NO_SUPERVISOR=0
 DEBUG_ATTACH=0
 DEMO_CONFIGS=0
+DEMO_STANDARD=0
+DEMO_ECHO_MR=0
+DOCS_ONLY=0
+DEMO_ROLLOUT=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h|help)
@@ -92,6 +100,14 @@ while [[ $# -gt 0 ]]; do
       DEBUG_ATTACH=1 ;;
     --demo-configs)
       DEMO_CONFIGS=1 ;;
+    --demo-standard)
+      DEMO_STANDARD=1 ;;
+    --demo-echo-mr)
+      DEMO_ECHO_MR=1 ;;
+    --docs-only)
+      DOCS_ONLY=1 ;;
+    --demo-rollout)
+      DEMO_ROLLOUT=1 ;;
     *)
       echo "Unknown option: $1" >&2
       usage
@@ -346,19 +362,24 @@ for i in {1..20}; do
   sleep 0.5
 done
 
-if ! timeout --kill-after=5 "$APPLY_TIMEOUT" "$PY_BIN" -m ae.cli --verbose apply -f specs/examples/blue.yaml; then
-  log "Apply for blue timed out or failed. Diagnostics:"
-  docker ps || true
-  log "Try: docker logs dev-caddy-1; docker exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
-  log "Or re-run with more verbosity: $PY_BIN -m ae.cli --verbose apply -f specs/examples/blue.yaml"
-  exit 1
-fi
-if ! timeout --kill-after=5 "$APPLY_TIMEOUT" "$PY_BIN" -m ae.cli --verbose apply -f specs/examples/green.yaml; then
-  log "Apply for green timed out or failed. Diagnostics:"
-  docker ps || true
-  log "Try: docker logs dev-caddy-1; docker exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
-  log "Or re-run with more verbosity: $PY_BIN -m ae.cli --verbose apply -f specs/examples/green.yaml"
-  exit 1
+if [[ $DOCS_ONLY -ne 1 ]]; then
+  # Default: apply standard demo unless explicitly disabled. If no flags specified, treat as standard.
+  if [[ $DEMO_STANDARD -eq 1 ]] || { [[ $DEMO_STANDARD -eq 0 && $DEMO_ECHO_MR -eq 0 && $DEMO_CONFIGS -eq 0 ]]; }; then
+    if ! timeout --kill-after=5 "$APPLY_TIMEOUT" "$PY_BIN" -m ae.cli --verbose apply -f specs/examples/blue.yaml; then
+      log "Apply for blue timed out or failed. Diagnostics:"
+      docker ps || true
+      log "Try: docker logs dev-caddy-1; docker exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
+      log "Or re-run with more verbosity: $PY_BIN -m ae.cli --verbose apply -f specs/examples/blue.yaml"
+      exit 1
+    fi
+    if ! timeout --kill-after=5 "$APPLY_TIMEOUT" "$PY_BIN" -m ae.cli --verbose apply -f specs/examples/green.yaml; then
+      log "Apply for green timed out or failed. Diagnostics:"
+      docker ps || true
+      log "Try: docker logs dev-caddy-1; docker exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
+      log "Or re-run with more verbosity: $PY_BIN -m ae.cli --verbose apply -f specs/examples/green.yaml"
+      exit 1
+    fi
+  fi
 fi
 
 # Optional configs/secrets demo
@@ -383,6 +404,21 @@ if [[ $DEMO_CONFIGS -eq 1 ]]; then
   else
     log "Echo demo apply failed"
   fi
+fi
+
+# Optional multi-replica echo demo
+if [[ $DEMO_ECHO_MR -eq 1 && $DOCS_ONLY -ne 1 ]]; then
+  log "Applying multi-replica echo demo (echo-mr)"
+  "$PY_BIN" -m ae.cli apply -f specs/examples/multi-replica-echo.yaml || true
+fi
+
+# Optional rollout demo: apply echo, then echo-rollout
+if [[ $DEMO_ROLLOUT -eq 1 && $DOCS_ONLY -ne 1 ]]; then
+  log "Applying rollout demo (echo → echo-rollout)"
+  "$PY_BIN" -m ae.cli apply -f specs/examples/echo.yaml || true
+  sleep 2
+  "$PY_BIN" -m ae.cli apply -f specs/examples/echo-rollout.yaml || true
+  "$PY_BIN" -m ae.cli status echo --events --history 5 || true
 fi
 
 # Build and serve docs locally

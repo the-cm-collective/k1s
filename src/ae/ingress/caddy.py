@@ -24,6 +24,7 @@ SITE_TEMPLATE = Template(
     header -Strict-Transport-Security
     reverse_proxy $upstreams {
         $health_block
+        $policy_block
     }
 }
 """
@@ -48,12 +49,12 @@ class CaddyIngressManager:
         self._reload_timeout = reload_timeout
         self._config_root.mkdir(parents=True, exist_ok=True)
 
-    def apply(self, manifest: AppManifest, upstream: Union[str, Sequence[str]], readiness_path: Optional[str] = None) -> Path:
+    def apply(self, manifest: AppManifest, upstream: Union[str, Sequence[str]], readiness_path: Optional[str] = None, prefer_first: bool = True) -> Path:
         ingress = manifest.spec.ingress
         if ingress is None:
             raise ValueError("Manifest lacks ingress configuration")
 
-        site_config = self._render_site(ingress, upstream, readiness_path)
+        site_config = self._render_site(ingress, upstream, readiness_path, prefer_first)
         site_path = self._site_path(manifest.metadata.name)
         site_path.write_text(site_config)
         LOGGER.debug("Wrote Caddy site config to %s", site_path)
@@ -113,7 +114,7 @@ class CaddyIngressManager:
             LOGGER.error("Caddy reload failed: %s", exc.stderr.decode("utf-8", "ignore"))
             raise RuntimeError("Caddy reload failed") from exc
 
-    def _render_site(self, ingress: IngressSpec, upstreams: Union[str, Sequence[str]], readiness_path: Optional[str]) -> str:
+    def _render_site(self, ingress: IngressSpec, upstreams: Union[str, Sequence[str]], readiness_path: Optional[str], prefer_first: bool) -> str:
         host = ingress.host
         if isinstance(upstreams, str):
             ups_list = [upstreams]
@@ -147,7 +148,8 @@ class CaddyIngressManager:
                 "            timeout 2s\n"
                 "        }"
             )
-        return SITE_TEMPLATE.substitute(host=host, upstreams=upstreams_str, health_block=health_block)
+        policy_block = "lb_policy first" if prefer_first else ""
+        return SITE_TEMPLATE.substitute(host=host, upstreams=upstreams_str, health_block=health_block, policy_block=policy_block)
 
     def _site_path(self, app_name: str) -> Path:
         return self._config_root / f"{app_name}.caddy"

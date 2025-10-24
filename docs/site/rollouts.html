@@ -1,0 +1,135 @@
+<!doctype html>
+<html data-theme="dark">
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Rollouts</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.55; }
+      code, pre { background: #f6f8fa; }
+      pre { padding: 12px; overflow-x: auto; }
+      h1, h2, h3 { margin-top: 1.5em; }
+      nav a { margin-right: 1rem; }
+      .container { max-width: 920px; }
+    </style>
+    <style>
+      :root {
+        --bg: #0b0f15;
+        --fg: #e6edf3;
+        --muted: #161b22;
+        --link: #79c0ff;
+        --code-bg: #0f1623;
+        --border: #263040;
+      }
+      html[data-theme="light"] {
+        --bg: #ffffff;
+        --fg: #0b0f15;
+        --muted: #f6f8fa;
+        --link: #0969da;
+        --code-bg: #f6f8fa;
+        --border: #e5e7eb;
+      }
+      body { background: var(--bg); color: var(--fg); }
+      a { color: var(--link); }
+      code, pre { background: var(--code-bg); border: 1px solid var(--border); }
+      nav { display: flex; align-items: center; gap: .75rem; margin-bottom: 1.25rem; }
+      nav a { margin-right: 1rem; }
+      .spacer { flex: 1 1 auto; }
+      button#theme-toggle { background: var(--muted); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+      /* Improve Mermaid readability in dark mode by inverting SVG colors */
+      html[data-theme="dark"] .mermaid svg { filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }
+      html[data-theme="dark"] .mermaid { background: var(--bg); }
+    </style>
+    <script>
+      (function() {
+        const key = 'k1s-theme';
+        const saved = localStorage.getItem(key);
+        const initial = saved || 'dark';
+        document.documentElement.setAttribute('data-theme', initial);
+        function setLabel(btn) {
+          var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+          btn.textContent = (cur === 'dark') ? 'Light Mode' : 'Dark Mode';
+        }
+        function ensureButton() {
+          var nav = document.querySelector('nav');
+          if (!nav) return;
+          var btn = document.getElementById('theme-toggle');
+          if (!btn) {
+            var spacer = document.createElement('span');
+            spacer.className = 'spacer';
+            btn = document.createElement('button');
+            btn.id = 'theme-toggle';
+            btn.addEventListener('click', function() {
+              var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+              var next = (cur === 'dark') ? 'light' : 'dark';
+              document.documentElement.setAttribute('data-theme', next);
+              localStorage.setItem(key, next);
+              setLabel(btn);
+            });
+            nav.appendChild(spacer);
+            nav.appendChild(btn);
+          }
+          setLabel(btn);
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', ensureButton);
+        } else {
+          ensureButton();
+        }
+      })();
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({ startOnLoad: true });</script>
+  </head>
+  <body>
+    <nav>
+      <a href="index.html">Home</a>
+      <a href="overview.html">Overview</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="http-api.html">HTTP API</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="http://127.0.0.1:9108/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="http://127.0.0.1:9108/redoc" target="_blank" rel="noopener">ReDoc</a>
+    </nav>
+    <div class="container">
+    <h2>Rollout Policy</h2>
+<p>Apps can specify a rollout policy to influence how replicas are created and how old revisions are removed during an update.</p>
+<h3>Fields</h3>
+<pre><code>
+spec:
+  rollout:
+    strategy: ordered | parallel   # default: parallel
+    maxSurge: 1                    # keep old replicas temporarily (default: 1)
+    maxUnavailable: 0              # allow up to N replicas unavailable (default: 0)
+</code></pre>
+<h3>Semantics</h3>
+<ul>
+<li>strategy=ordered:</li>
+<li>Creates at most one new replica per reconcile until desired is met.</li>
+<li>Leaves old revision replicas running during rollout (surge).</li>
+<li>Removes old replicas when readiness satisfies desired - maxUnavailable.</li>
+</ul>
+<ul>
+<li>strategy=parallel:</li>
+<li>Creates all missing new replicas in one reconcile.</li>
+<li>Leaves old running during rollout (surge), then removes when readiness target is met.</li>
+</ul>
+<ul>
+<li>maxSurge (current behavior):</li>
+<li>Old revision containers are kept until new replicas are ready enough per maxUnavailable.</li>
+</ul>
+<ul>
+<li>maxUnavailable:</li>
+<li>Old replicas are removed only when <code>ready_replicas &gt;= desired - maxUnavailable</code>.</li>
+</ul>
+<h3>Routing Bias</h3>
+<p>Ingress uses a “first available upstream” policy by default. The controller writes the new revision endpoints first, so traffic prefers the new revision as soon as it becomes ready; old replicas are removed once readiness satisfies the policy.</p>
+<h3>Demo</h3>
+<p>Apply a two-step ordered rollout for <code>echo</code>:</p>
+<pre><code>
+./scripts/init_demo.sh --demo-rollout -y -d
+</code></pre>
+<p>This applies <code>specs/examples/echo.yaml</code> then <code>specs/examples/echo-rollout.yaml</code> with rollout <code>{ strategy: ordered, maxSurge: 1, maxUnavailable: 0 }</code>.</p>
+    </div>
+  </body>
+</html>
