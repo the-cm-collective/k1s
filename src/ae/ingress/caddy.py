@@ -6,6 +6,7 @@ import logging
 import subprocess
 from pathlib import Path
 from string import Template
+import os
 from typing import Iterable, List, Optional, Sequence, Union
 
 from ae.controller.spec import AppManifest, IngressSpec
@@ -47,12 +48,12 @@ class CaddyIngressManager:
         self._reload_timeout = reload_timeout
         self._config_root.mkdir(parents=True, exist_ok=True)
 
-    def apply(self, manifest: AppManifest, upstreams: Union[str, Sequence[str]], readiness_path: Optional[str] = None) -> Path:
+    def apply(self, manifest: AppManifest, upstream: Union[str, Sequence[str]], readiness_path: Optional[str] = None) -> Path:
         ingress = manifest.spec.ingress
         if ingress is None:
             raise ValueError("Manifest lacks ingress configuration")
 
-        site_config = self._render_site(ingress, upstreams, readiness_path)
+        site_config = self._render_site(ingress, upstream, readiness_path)
         site_path = self._site_path(manifest.metadata.name)
         site_path.write_text(site_config)
         LOGGER.debug("Wrote Caddy site config to %s", site_path)
@@ -67,7 +68,12 @@ class CaddyIngressManager:
     def reload(self) -> None:
         config_path = str(self._config_file or self._config_root)
         cmd: List[str]
+        # Validate Caddyfile via 'caddy adapt' before reloading to avoid crashing/restarting container
+        adapt_cmd: List[str]
         if self._container:
+            adapt_cmd = [
+                "docker", "exec", self._container, self._caddy_binary, "adapt", "--config", config_path
+            ]
             cmd = [
                 "docker",
                 "exec",
@@ -78,9 +84,18 @@ class CaddyIngressManager:
                 config_path,
             ]
         else:
+            adapt_cmd = [self._caddy_binary, "adapt", "--config", config_path]
             cmd = [self._caddy_binary, "reload", "--config", config_path]
 
         try:
+            # Run adapt first
+            subprocess.run(
+                adapt_cmd,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=self._reload_timeout,
+            )
             subprocess.run(
                 cmd,
                 check=True,
@@ -123,9 +138,15 @@ class CaddyIngressManager:
 
         upstreams_str = " ".join(targets)
         health_block = ""
-        if readiness_path:
-            # Caddy health checks (active). Keep conservative intervals.
-            health_block = f"health_checks {{\n            path {readiness_path}\n            interval 10s\n            timeout 2s\n        }}"
+        if readiness_path and os.getenv("AE_CADDY_ACTIVE_HEALTH") == "1":
+            # Opt-in active health checks
+            health_block = (
+                "health_checks {\n"
+                f"            path {readiness_path}\n"
+                "            interval 10s\n"
+                "            timeout 2s\n"
+                "        }"
+            )
         return SITE_TEMPLATE.substitute(host=host, upstreams=upstreams_str, health_block=health_block)
 
     def _site_path(self, app_name: str) -> Path:

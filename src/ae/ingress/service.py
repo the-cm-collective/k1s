@@ -22,7 +22,7 @@ class IngressService:
     def __init__(self, manager: CaddyIngressManager) -> None:
         self._manager = manager
 
-    def apply(self, manifest: AppManifest, upstreams) -> IngressResult:
+    def apply(self, manifest: AppManifest, upstream) -> IngressResult:
         if manifest.spec.ingress is None:
             return IngressResult(
                 app_name=manifest.metadata.name,
@@ -32,7 +32,7 @@ class IngressService:
         readiness_path = None
         if manifest.spec.health and manifest.spec.health.readiness and manifest.spec.health.readiness.http_get:
             readiness_path = manifest.spec.health.readiness.http_get.path or "/"
-        site_path = self._manager.apply(manifest, upstreams, readiness_path)
+        site_path = self._manager.apply(manifest, upstream, readiness_path)
         return IngressResult(
             app_name=manifest.metadata.name,
             host=manifest.spec.ingress.host,

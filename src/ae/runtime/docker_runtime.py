@@ -234,7 +234,12 @@ class DockerRuntime(RuntimeAdapter):
             if self._network_name:
                 try:
                     net = self._client.networks.get(self._network_name)
-                    net.connect(container)
+                    aliases = [
+                        container.name,
+                        f"app-{app_name}",
+                        f"app-{app_name}-rev{revision}",
+                    ]
+                    net.connect(container, aliases=aliases)
                 except Exception as _exc:  # pragma: no cover - optional path
                     LOGGER.warning("Failed to connect %s to network %s: %s", name, self._network_name, _exc)
             self._reload(container)

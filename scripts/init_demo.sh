@@ -15,7 +15,7 @@ require_root_or_sudo() {
 
 SUDO=$(require_root_or_sudo)
 
-HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa api.home.arpa)
+HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa api.home.arpa echo-mr.home.arpa)
 AUTO_HOSTS=""  # set by -y/--yes or -n/--no to auto answer host prompts
 
 usage() {
@@ -30,6 +30,7 @@ Options:
   -n, --no     Automatically decline /etc/hosts modification prompts (setup/teardown)
   --no-controller  Do not auto-start the controller daemon
   --no-supervisor  Start controller once (no restart loop)
+  -d, --debug  Attach logs to console for troubleshooting (blocks; Ctrl-C to exit)
 
 What this does (setup):
   1) Ensures required system packages (python3, venv, pip, sqlite3, age, sops) are present
@@ -70,6 +71,7 @@ DOWN_FLAG=0
 NO_CONTROLLER=0
 API_PORT=${API_PORT:-9108}
 NO_SUPERVISOR=0
+DEBUG_ATTACH=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h|help)
@@ -84,6 +86,8 @@ while [[ $# -gt 0 ]]; do
       NO_CONTROLLER=1 ;;
     --no-supervisor)
       NO_SUPERVISOR=1 ;;
+    -d|--debug)
+      DEBUG_ATTACH=1 ;;
     *)
       echo "Unknown option: $1" >&2
       usage
@@ -234,6 +238,11 @@ docker build -t demo-blue:latest samples/servers/blue
 docker build -t demo-green:latest samples/servers/green
 
 log "Starting local Caddy and Prometheus stack"
+# Clean stale static site snippets (keep docs/api)
+mkdir -p ops/dev/caddy/sites
+find ops/dev/caddy/sites -maxdepth 1 -type f -name '*.caddy' \
+  ! -name 'docs.caddy' ! -name 'api.caddy' -print -delete 2>/dev/null || true
+# Controller writes dynamic sites under state/caddy (mounted as /etc/caddy/dynsites)
 docker compose -f ops/dev/docker-compose.yaml up -d
 
 if prompt_yes_no_hosts "Add hosts entries for ${HOSTS[*]} to /etc/hosts?" N; then
@@ -255,9 +264,46 @@ export AE_STATE_DB=${AE_STATE_DB:-state/controller.db}
 # Avoid indefinite hangs on Caddy reload inside docker exec
 export AE_CADDY_RELOAD_TIMEOUT=${AE_CADDY_RELOAD_TIMEOUT:-10}
 mkdir -p "${AE_CADDY_SITES}"
+if [[ ! -w "${AE_CADDY_SITES}" ]]; then
+  log "Adjusting permissions on ${AE_CADDY_SITES} (may require sudo)"
+  $SUDO chown -R "$(id -u):$(id -g)" "${AE_CADDY_SITES}" || true
+fi
 
 # Ensure app containers join the dev compose network so Caddy can resolve them by name
 export AE_DOCKER_NETWORK=${AE_DOCKER_NETWORK:-dev_default}
+
+# Write env helper for manual shells (after exports)
+mkdir -p state
+cat > state/env.sh <<ENV
+export AE_CADDY_SITES=${AE_CADDY_SITES}
+export AE_CADDY_FILE=${AE_CADDY_FILE}
+export AE_CADDY_CONTAINER=${AE_CADDY_CONTAINER}
+export AE_DOCKER_NETWORK=${AE_DOCKER_NETWORK}
+ENV
+
+# Seed dynsites for docs and API so they are always available
+DOCS_PORT=${DOCS_PORT:-9109}
+cat > "${AE_CADDY_SITES}/docs.caddy" <<DOCS
+https://docs.home.arpa {
+    log {
+        output stdout
+        format console
+    }
+    header -Strict-Transport-Security
+    reverse_proxy host.docker.internal:${DOCS_PORT}
+}
+DOCS
+
+cat > "${AE_CADDY_SITES}/api.caddy" <<API
+https://api.home.arpa {
+    log {
+        output stdout
+        format console
+    }
+    header -Strict-Transport-Security
+    reverse_proxy host.docker.internal:${API_PORT}
+}
+API
 
 # Auto-start the controller daemon unless disabled
 if [[ $NO_CONTROLLER -eq 0 ]]; then
@@ -370,6 +416,86 @@ check_api_reachability() {
 }
 
 check_api_reachability || true
+
+# Validate caddy upstream reachability and network DNS
+check_network_sanity() {
+  echo
+  log "Ingress/network sanity checks"
+  local sites_dir="$AE_CADDY_SITES"
+  if [[ ! -d "$sites_dir" ]]; then
+    log "No dynamic sites directory at $sites_dir; skipping"
+    return 0
+  fi
+
+  shopt -s nullglob
+  for site in "$sites_dir"/*.caddy; do
+    app=$(basename "$site" .caddy)
+    # Extract upstream list from reverse_proxy line
+    ups_line=$(grep -E "^[[:space:]]*reverse_proxy[[:space:]]+" "$site" | head -n1 || true)
+    if [[ -z "$ups_line" ]]; then
+      log "[$app] no reverse_proxy line found"
+      continue
+    fi
+    # Remove leading 'reverse_proxy ' and trailing '{'
+    ups_line=${ups_line#*reverse_proxy }
+    ups_line=${ups_line%%\{}
+    # Iterate upstreams (space-separated)
+    ok_count=0
+    total=0
+    for up in $ups_line; do
+      total=$((total+1))
+      host=${up%%:*}
+      port=${up##*:}
+      if [[ "$host" == "127.0.0.1" || "$host" == "0.0.0.0" ]]; then
+        code=$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 3 "http://$up" || true)
+        if [[ -n "$code" ]]; then ok_count=$((ok_count+1)); else log "[$app] upstream http://$up not reachable"; fi
+      elif [[ "$host" == "host.docker.internal" ]]; then
+        # Validate inside caddy container where host.docker.internal is mapped
+        if docker exec "$AE_CADDY_CONTAINER" getent hosts host.docker.internal >/dev/null 2>&1; then
+          ok_count=$((ok_count+1))
+        else
+          log "[$app] caddy cannot resolve host.docker.internal"
+        fi
+      else
+        # Check DNS from inside caddy container
+        if docker exec "$AE_CADDY_CONTAINER" getent hosts "$host" >/dev/null 2>&1; then
+          ok_count=$((ok_count+1))
+        else
+          log "[$app] caddy cannot resolve $host on network $AE_DOCKER_NETWORK"
+        fi
+      fi
+    done
+    log "[$app] upstream targets detected: $total, basic checks passed: $ok_count"
+  done
+  shopt -u nullglob
+}
+
+check_network_sanity || true
+
+# If debugging requested, attach logs and block
+attach_debug_logs() {
+  echo
+  log "Attaching logs (Ctrl-C to exit)"
+  # Tail controller log if present
+  touch state/controller.log
+  tail -n 50 -F state/controller.log | sed -u 's/^/[controller] /' &
+  T1=$!
+  # Docker logs for dev services
+  docker logs -f dev-caddy-1 2>&1 | sed -u 's/^/[caddy] /' &
+  T2=$!
+  docker logs -f dev-prometheus-1 2>&1 | sed -u 's/^/[prometheus] /' &
+  T3=$!
+  # Stream site changes
+  tail -n 0 -F "$AE_CADDY_SITES"/*.caddy 2>/dev/null | sed -u 's/^/[sites] /' &
+  T4=$!
+  # Clean up on exit
+  trap 'kill $T1 $T2 $T3 $T4 2>/dev/null || true; exit 0' INT TERM
+  wait
+}
+
+if [[ $DEBUG_ATTACH -eq 1 ]]; then
+  attach_debug_logs
+fi
 
 cat <<EOF
 
