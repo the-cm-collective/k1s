@@ -36,3 +36,22 @@ ae delete echo --purge
 
 - HostPath binds under `spec.volumes` still work for simple dev paths.
 - Future: `size` is reserved for advisory/validation.
+
+
+### Retention & Purge
+
+- `retention: Retain` (default) keeps data even if you delete the app:
+  - `ae delete <app>` will stop and remove containers but keep the Docker volume(s).
+- `retention: Delete` removes data only when you purge:
+  - `ae delete <app> --purge`
+
+Example with `retention: Delete` (see `specs/examples/echo-storage-delete.yaml`):
+
+```
+spec:
+  storage:
+    - name: data
+      mountPath: /var/lib/echo
+      retention: Delete
+```
+
