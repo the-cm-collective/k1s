@@ -37,4 +37,3 @@ class ConfigManager:
         if not isinstance(data, dict):
             raise ValueError(f"Config {path} must produce a mapping")
         return data
-

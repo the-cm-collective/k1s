@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parent
 SRC = ROOT
 OUT = ROOT / "site"
 
+
 # Decide API base for Swagger/ReDoc links.
 def detect_api_base() -> str:
     env = os.getenv("DOCS_API_BASE")
@@ -35,6 +36,7 @@ def detect_api_base() -> str:
     except Exception:
         pass
     return "http://127.0.0.1:9108"
+
 
 API_BASE = detect_api_base()
 
@@ -196,7 +198,7 @@ def md_to_html(md: str) -> str:
             if lang == "mermaid":
                 out.append('<pre class="mermaid">')
             else:
-                out.append('<pre><code>')
+                out.append("<pre><code>")
             in_code = True
             continue
 
@@ -255,7 +257,9 @@ def md_to_html(md: str) -> str:
 def build_one(md_path: Path, out_path: Path) -> None:
     html_body = md_to_html(md_path.read_text(encoding="utf-8"))
     title = md_path.stem.replace("-", " ").title()
-    out_path.write_text(TEMPLATE.format(title=title, body=html_body, api_base=API_BASE), encoding="utf-8")
+    out_path.write_text(
+        TEMPLATE.format(title=title, body=html_body, api_base=API_BASE), encoding="utf-8"
+    )
 
 
 def main() -> None:
@@ -291,7 +295,9 @@ def main() -> None:
   <li><a href="{API_BASE}/dashboard" target="_blank" rel="noopener">Live Demo Dashboard</a></li>
 </ul>
 """
-    (OUT / "index.html").write_text(TEMPLATE.format(title="k1s Docs", body=index, api_base=API_BASE), encoding="utf-8")
+    (OUT / "index.html").write_text(
+        TEMPLATE.format(title="k1s Docs", body=index, api_base=API_BASE), encoding="utf-8"
+    )
 
     for src_name, out_name in mapping.items():
         build_one(SRC / src_name, OUT / out_name)

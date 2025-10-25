@@ -32,7 +32,11 @@ class IngressService:
                 config_path=None,
             )
         readiness_path = None
-        if manifest.spec.health and manifest.spec.health.readiness and manifest.spec.health.readiness.http_get:
+        if (
+            manifest.spec.health
+            and manifest.spec.health.readiness
+            and manifest.spec.health.readiness.http_get
+        ):
             readiness_path = manifest.spec.health.readiness.http_get.path or "/"
         # Compute a simple signature to avoid redundant reloads
         if isinstance(upstream, (list, tuple)):
@@ -46,7 +50,9 @@ class IngressService:
         if self._last_sig.get(app) != sig:
             # Prefer-first policy biases towards listed upstream order (new revision first)
             try:
-                site_path = self._manager.apply(manifest, upstream, readiness_path, prefer_first=True)  # type: ignore[arg-type]
+                site_path = self._manager.apply(
+                    manifest, upstream, readiness_path, prefer_first=True
+                )  # type: ignore[arg-type]
             except TypeError:
                 try:
                     site_path = self._manager.apply(manifest, upstream, readiness_path)  # type: ignore[arg-type]
@@ -77,6 +83,7 @@ class IngressService:
         except Exception as exc:  # pragma: no cover - defensive path
             # Do not crash the controller if Caddy reload is unavailable in dev.
             import logging
+
             logging.getLogger(__name__).warning("ingress reload skipped: %s", exc)
         finally:
             self._dirty = False

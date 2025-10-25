@@ -28,9 +28,7 @@ class MetricsService:
         statuses = self._store.list_status()
         total_apps = len(statuses)
         ready_apps = sum(1 for status in statuses if status.revision_status == "ready")
-        progressing_apps = sum(
-            1 for status in statuses if status.revision_status == "progressing"
-        )
+        progressing_apps = sum(1 for status in statuses if status.revision_status == "progressing")
         degraded_apps = total_apps - ready_apps - progressing_apps
         total_replicas = sum(status.desired_replicas for status in statuses)
         ready_replicas = sum(status.ready_replicas for status in statuses)

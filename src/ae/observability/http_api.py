@@ -33,7 +33,9 @@ def set_reconcile_metrics(ts_seconds: float, duration_seconds: float) -> None:
     _LAST_RECONCILE_DURATION = duration_seconds
 
 
-def record_app_reconcile(app: str, duration_seconds: float, *, created: int, updated: int, removed: int) -> None:
+def record_app_reconcile(
+    app: str, duration_seconds: float, *, created: int, updated: int, removed: int
+) -> None:
     """Record per-app reconcile duration and rollout operation counters."""
     _APP_RECONCILE_SUM[app] = _APP_RECONCILE_SUM.get(app, 0.0) + float(duration_seconds)
     _APP_RECONCILE_COUNT[app] = _APP_RECONCILE_COUNT.get(app, 0) + 1
@@ -49,6 +51,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     # Optional mutators injected by controller when enabled
     scale_fn = None  # type: ignore[var-annotated]
     delete_fn = None  # type: ignore[var-annotated]
+    # Optional system info provider injected by controller
+    system_info_fn = None  # type: ignore[var-annotated]
 
     # --- Auth helpers -------------------------------------------------
     def _require_role(self, role: str) -> bool:
@@ -97,7 +101,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self):  # type: ignore[override]
-        path_only = self.path.split('?', 1)[0]
+        path_only = self.path.split("?", 1)[0]
         # Metrics allowed without auth
         if path_only.startswith("/metrics"):
             self._handle_metrics()
@@ -116,6 +120,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if path_only in ("/health", "/health/"):
             self._handle_health()
             return
+        if path_only in ("/system", "/system/"):
+            self._handle_system()
+            return
         if path_only in ("/swagger", "/swagger/"):
             self._handle_swagger()
             return
@@ -130,7 +137,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             return
         if path_only.startswith("/dashboard/partials/"):
             # server-rendered fragments for HTMX-enhanced dashboard
-            subpath = path_only[len("/dashboard/partials/"):]
+            subpath = path_only[len("/dashboard/partials/") :]
             if subpath == "logs":
                 self._handle_dashboard_partial_logs()
                 return
@@ -153,7 +160,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 if len(parts) >= 4:
                     self._handle_logs_stream(parts[2])
                 else:
-                    self.send_response(400); self.end_headers()
+                    self.send_response(400)
+                    self.end_headers()
                 return
             self._handle_logs(self.path.split("/", 2)[2])
             return
@@ -163,6 +171,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):  # type: ignore[override]
         # Mutations are optional and gated by env
         import os
+
         if os.getenv("AE_API_MUTATIONS") != "1":
             self.send_response(404)
             self.end_headers()
@@ -242,7 +251,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "# HELP ae_replicas_live Live replicas",
             "# TYPE ae_replicas_live gauge",
             f"ae_replicas_live {snap.live_replicas}",
-
         ]
         # Per-app and per-replica labeled gauges
         try:
@@ -252,20 +260,31 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 lines.append(f'ae_app_desired_replicas{{app="{app}"}} {s0.desired_replicas}')
                 lines.append(f'ae_app_ready_replicas{{app="{app}"}} {s0.ready_replicas}')
                 lines.append(f'ae_app_live_replicas{{app="{app}"}} {s0.live_replicas}')
+                # one-hot app status metric
+                st = (s0.revision_status or "").strip().lower()
+                for name in ("ready", "progressing", "degraded"):
+                    val = 1 if st == name else 0
+                    lines.append(f'ae_app_status{{app="{app}",status="{name}"}} {val}')
             for s0 in statuses:
                 reps = self.store.list_replicas(s0.app_name)
                 for r in reps:
                     val = 1 if r.ready else 0
-                    lines.append(f'ae_replica_ready{{app="{s0.app_name}",replica="{r.replica_id}"}} {val}')
+                    lines.append(
+                        f'ae_replica_ready{{app="{s0.app_name}",replica="{r.replica_id}"}} {val}'
+                    )
         except Exception:
             pass
         # Optional loop metrics
         if _LAST_RECONCILE_TS is not None:
-            lines.append("# HELP ae_reconcile_last_timestamp_seconds Unix timestamp of last reconcile")
+            lines.append(
+                "# HELP ae_reconcile_last_timestamp_seconds Unix timestamp of last reconcile"
+            )
             lines.append("# TYPE ae_reconcile_last_timestamp_seconds gauge")
             lines.append(f"ae_reconcile_last_timestamp_seconds {_LAST_RECONCILE_TS}")
         if _LAST_RECONCILE_DURATION is not None:
-            lines.append("# HELP ae_reconcile_last_duration_seconds Duration of last reconcile in seconds")
+            lines.append(
+                "# HELP ae_reconcile_last_duration_seconds Duration of last reconcile in seconds"
+            )
             lines.append("# TYPE ae_reconcile_last_duration_seconds gauge")
             lines.append(f"ae_reconcile_last_duration_seconds {_LAST_RECONCILE_DURATION}")
         # Per-app histograms (as sum/count pairs) and ops counters
@@ -279,7 +298,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             lines.append(f'ae_reconcile_duration_seconds_count{{app="{app}"}} {c}')
         for app, od in _APP_ROLLOUT_OPS.items():
             for op, val in od.items():
-                lines.append("# HELP ae_rollout_operations_total Rollout operations aggregated by op type")
+                lines.append(
+                    "# HELP ae_rollout_operations_total Rollout operations aggregated by op type"
+                )
                 lines.append("# TYPE ae_rollout_operations_total counter")
                 lines.append(f'ae_rollout_operations_total{{app="{app}",op="{op}"}} {val}')
         lines.append("")
@@ -289,6 +310,50 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def _handle_system(self) -> None:
+        """Return system-wide info for the demo dashboard.
+
+        Combines controller loop stats, RBAC configuration flags, and optional
+        runtime/ingress snapshots when a provider function is injected.
+        """
+        import os
+
+        # Base controller stats from in-module globals
+        ctrl = {
+            "last_reconcile_timestamp": _LAST_RECONCILE_TS,
+            "last_reconcile_duration": _LAST_RECONCILE_DURATION,
+            "apps": {
+                app: {
+                    "reconciles": int(_APP_RECONCILE_COUNT.get(app, 0)),
+                    "duration_sum": float(_APP_RECONCILE_SUM.get(app, 0.0)),
+                    "ops": {k: int(v) for k, v in (_APP_ROLLOUT_OPS.get(app, {}) or {}).items()},
+                }
+                for app in set(
+                    list(_APP_RECONCILE_COUNT.keys())
+                    + list(_APP_RECONCILE_SUM.keys())
+                    + list(_APP_ROLLOUT_OPS.keys())
+                )
+            },
+        }
+        # RBAC/mutations flags (never echo secrets)
+        rbac = {
+            "mutations_enabled": os.getenv("AE_API_MUTATIONS") == "1",
+            "read_token_configured": bool(os.getenv("AE_API_READ_TOKEN")),
+            "scaler_token_configured": bool(os.getenv("AE_API_SCALER_TOKEN")),
+            "admin_token_configured": bool(os.getenv("AE_API_ADMIN_TOKEN")),
+        }
+        # Optional provider for runtime/ingress/services/storage snapshots
+        extra: dict = {}
+        fn = getattr(self, "system_info_fn", None)
+        if fn is not None:
+            try:
+                extra = dict(fn())  # type: ignore[misc]
+            except Exception:
+                extra = {}
+
+        payload = {"controller": ctrl, "rbac": rbac, **(extra or {})}
+        self._json_ok(payload)
 
     def _handle_swagger(self) -> None:
         html = """
@@ -309,7 +374,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
   </body>
 </html>
 """
-        payload = html.encode('utf-8')
+        payload = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
@@ -336,7 +401,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
   </body>
 </html>
 """
-        payload = html.encode('utf-8')
+        payload = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
@@ -364,9 +429,17 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             "revision_status": {"type": "string"},
                             "image": {"type": "string"},
                             "ingress_host": {"type": "string", "nullable": True},
-                            "ingress_path": {"type": "string", "nullable": True}
+                            "ingress_path": {"type": "string", "nullable": True},
                         },
-                        "required": ["app_name", "desired_replicas", "ready_replicas", "live_replicas", "revision", "revision_status", "image"]
+                        "required": [
+                            "app_name",
+                            "desired_replicas",
+                            "ready_replicas",
+                            "live_replicas",
+                            "revision",
+                            "revision_status",
+                            "image",
+                        ],
                     },
                     "Event": {
                         "type": "object",
@@ -375,40 +448,131 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             "revision": {"type": "integer"},
                             "event_type": {"type": "string"},
                             "message": {"type": "string"},
-                            "created_at": {"type": "string", "format": "date-time"}
+                            "created_at": {"type": "string", "format": "date-time"},
                         },
-                        "required": ["app_name", "revision", "event_type", "message", "created_at"]
-                    }
-                }
+                        "required": ["app_name", "revision", "event_type", "message", "created_at"],
+                    },
+                },
             },
             "paths": {
-                "/metrics": {"get": {"summary": "Prometheus metrics", "responses": {"200": {"description": "Prometheus text"}}}},
-                "/health": {"get": {"summary": "Controller health", "responses": {"200": {"description": "OK"}}}},
-                "/status": {"get": {"summary": "List app statuses (paginated)", "parameters": [
-                    {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50}},
-                    {"name": "cursor", "in": "query", "schema": {"type": "string"}},
-                    {"name": "app", "in": "query", "schema": {"type": "string"}},
-                    {"name": "wildcard", "in": "query", "schema": {"type": "string"}}
-                ], "responses": {"200": {"description": "OK"}}, "security": [{"bearerAuth": []}]}},
-                "/status/{app}": {"get": {"summary": "Get a single app status", "parameters": [{"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "OK"}, "404": {"description": "Not Found"}}, "security": [{"bearerAuth": []}]}},
-                "/events/{app}": {"get": {"summary": "List app events (paginated)", "parameters": [
-                    {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
-                    {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 20}},
-                    {"name": "cursor", "in": "query", "schema": {"type": "string"}}
-                ], "responses": {"200": {"description": "OK"}}, "security": [{"bearerAuth": []}]}},
-                "/scale/{app}": {"post": {"summary": "Scale an app", "parameters": [{"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "OK"}}, "security": [{"bearerAuth": []}]}},
-                "/delete/{app}": {"post": {"summary": "Delete an app", "parameters": [
-                    {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
-                    {"name": "purge", "in": "query", "schema": {"type": "boolean"}}
-                ], "responses": {"200": {"description": "OK"}}, "security": [{"bearerAuth": []}]}},
-                "/logs/{app}": {"get": {"summary": "Tail application logs",
-                    "parameters": [
-                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
-                        {"name": "container", "in": "query", "schema": {"type": "string"}},
-                        {"name": "tail", "in": "query", "schema": {"type": "integer"}},
-                        {"name": "since", "in": "query", "schema": {"type": "integer"}},
-                        {"name": "follow", "in": "query", "schema": {"type": "boolean"}}
-                    ], "responses": {"200": {"description": "OK"}}, "security": [{"bearerAuth": []}]}}
+                "/metrics": {
+                    "get": {
+                        "summary": "Prometheus metrics",
+                        "responses": {"200": {"description": "Prometheus text"}},
+                    }
+                },
+                "/health": {
+                    "get": {
+                        "summary": "Controller health",
+                        "responses": {"200": {"description": "OK"}},
+                    }
+                },
+                "/status": {
+                    "get": {
+                        "summary": "List app statuses (paginated)",
+                        "parameters": [
+                            {
+                                "name": "limit",
+                                "in": "query",
+                                "schema": {"type": "integer", "default": 50},
+                            },
+                            {"name": "cursor", "in": "query", "schema": {"type": "string"}},
+                            {"name": "app", "in": "query", "schema": {"type": "string"}},
+                            {"name": "wildcard", "in": "query", "schema": {"type": "string"}},
+                        ],
+                        "responses": {"200": {"description": "OK"}},
+                        "security": [{"bearerAuth": []}],
+                    }
+                },
+                "/status/{app}": {
+                    "get": {
+                        "summary": "Get a single app status",
+                        "parameters": [
+                            {
+                                "name": "app",
+                                "in": "path",
+                                "required": True,
+                                "schema": {"type": "string"},
+                            }
+                        ],
+                        "responses": {
+                            "200": {"description": "OK"},
+                            "404": {"description": "Not Found"},
+                        },
+                        "security": [{"bearerAuth": []}],
+                    }
+                },
+                "/events/{app}": {
+                    "get": {
+                        "summary": "List app events (paginated)",
+                        "parameters": [
+                            {
+                                "name": "app",
+                                "in": "path",
+                                "required": True,
+                                "schema": {"type": "string"},
+                            },
+                            {
+                                "name": "limit",
+                                "in": "query",
+                                "schema": {"type": "integer", "default": 20},
+                            },
+                            {"name": "cursor", "in": "query", "schema": {"type": "string"}},
+                        ],
+                        "responses": {"200": {"description": "OK"}},
+                        "security": [{"bearerAuth": []}],
+                    }
+                },
+                "/scale/{app}": {
+                    "post": {
+                        "summary": "Scale an app",
+                        "parameters": [
+                            {
+                                "name": "app",
+                                "in": "path",
+                                "required": True,
+                                "schema": {"type": "string"},
+                            }
+                        ],
+                        "responses": {"200": {"description": "OK"}},
+                        "security": [{"bearerAuth": []}],
+                    }
+                },
+                "/delete/{app}": {
+                    "post": {
+                        "summary": "Delete an app",
+                        "parameters": [
+                            {
+                                "name": "app",
+                                "in": "path",
+                                "required": True,
+                                "schema": {"type": "string"},
+                            },
+                            {"name": "purge", "in": "query", "schema": {"type": "boolean"}},
+                        ],
+                        "responses": {"200": {"description": "OK"}},
+                        "security": [{"bearerAuth": []}],
+                    }
+                },
+                "/logs/{app}": {
+                    "get": {
+                        "summary": "Tail application logs",
+                        "parameters": [
+                            {
+                                "name": "app",
+                                "in": "path",
+                                "required": True,
+                                "schema": {"type": "string"},
+                            },
+                            {"name": "container", "in": "query", "schema": {"type": "string"}},
+                            {"name": "tail", "in": "query", "schema": {"type": "integer"}},
+                            {"name": "since", "in": "query", "schema": {"type": "integer"}},
+                            {"name": "follow", "in": "query", "schema": {"type": "boolean"}},
+                        ],
+                        "responses": {"200": {"description": "OK"}},
+                        "security": [{"bearerAuth": []}],
+                    }
+                },
             },
         }
         payload = json.dumps(doc).encode("utf-8")
@@ -420,6 +584,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
     def _handle_status_list(self) -> None:
         import urllib.parse as _up
+
         statuses = self.store.list_status()
         path, _, query = self.path.partition("?")
         params = _up.parse_qs(query)
@@ -435,9 +600,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             items = [s for s in items if s.app_name == app_filter]
         elif wildcard:
             import fnmatch
+
             items = [s for s in items if fnmatch.fnmatch(s.app_name, wildcard)]
         total = len(items)
-        page = items[offset: offset + limit]
+        page = items[offset : offset + limit]
         next_cursor = offset + limit if (offset + limit) < total else None
         payload = {
             "items": [
@@ -461,6 +627,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     def _handle_status_single(self, app: str) -> None:
         # Support optional query on the path segment (e.g., "<app>?details=1")
         import urllib.parse as _up
+
         if "?" in app:
             app, query = app.split("?", 1)
             params = _up.parse_qs(query)
@@ -583,7 +750,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
   </body>
 </html>
 """
-        payload = html.encode('utf-8')
+        payload = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
@@ -628,9 +795,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       .warn { background:#f59e0b33; color:#b45309; }
       .bad { background:#ef444433; color:#b91c1c; }
       .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+      .row.stretch { align-items: stretch; }
+      .row.stretch { align-items: stretch; }
       .card { border:1px solid #8884; border-radius:8px; padding:8px 10px; }
       .detail-card { flex: 0 0 320px; }
       .logbox { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; width:100%; box-sizing:border-box; height:420px; overflow:auto; background:#0001; padding:8px; border-radius:6px; }
+      .scrollcap { max-height:180px; overflow:auto; }
       .log-entry { white-space: pre-wrap; }
       .log-entry code { opacity:0.8; margin-right:6px; }
       #controls { gap:8px; }
@@ -639,6 +809,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       table { border-collapse:collapse; width:100%; }
       th, td { border-bottom:1px solid #8884; padding:6px; text-align:left; font-size:13px; }
       code { background:#0001; padding:2px 4px; border-radius:4px; }
+      h2 { font-size:14px; margin: 14px 4px 6px; opacity:0.9; }
+      .divider { border-top:1px solid #8884; margin:16px 0; }
+      h2 { font-size:14px; margin: 14px 4px 6px; opacity:0.9; }
+      .divider { border-top:1px solid #8884; margin:16px 0; }
     </style>
   </head>
   <body>
@@ -658,18 +832,28 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     <main>
       <section id=\"apps\"></section>
       <section id=\"detail\">
-        <div class=\"row\">
-          <div class=\"card detail-card\">
+        <h2>Application</h2>
+        <div class=\"row stretch\">
+          <div class=\"card detail-card\" style=\"display:flex; flex-direction:column;\">
+            <div id=\"desc\" class=\"scrollcap\">
             <div><strong>App:</strong> <span id=\"d-app\">-</span></div>
             <div><strong>Image:</strong> <span id=\"d-image\">-</span></div>
             <div><strong>Ingress:</strong> <span id=\"d-ingress\">-</span></div>
             <div><strong>Replicas:</strong> <span id=\"d-replicas\">-</span></div>
             <div><strong>Revision:</strong> <span id=\"d-rev\">-</span> (<span id=\"d-rev-status\">-</span>)</div>
+            <div><strong>Service:</strong> <span id=\"d-service\">-</span></div>
+            <div><strong>Secrets:</strong> <span id=\"d-secrets\">-</span></div>
+            <div><strong>Storage:</strong> <span id=\"d-storage\">-</span></div>
+            </div>
           </div>
-          <div class=\"card\" style=\"flex:1;\">
+          <div class=\"card\" style=\"flex:1; display:flex; flex-direction:column;\">
             <strong>Events</strong>
-            <div style=\"max-height:180px; overflow:auto;\" id=\"events\"></div>
+            <div class=\"scrollcap\" id=\"events\"></div>
           </div>
+        </div>
+        <div class=\"card\" style=\"margin-top:12px;\">
+          <strong>System</strong>
+          <div class=\"row\" id=\"sys-counters\" style=\"gap:10px; margin-top:6px; flex-wrap:wrap;\"></div>
         </div>
         <div class=\"card\" style=\"margin-top:12px;\">
           <strong>Logs</strong>
@@ -683,6 +867,22 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             hx-on::after-settle=\"this.scrollTop=this.scrollHeight\"
           ></div>
         </div>
+        <div class=\"divider\"></div>
+        <h2>Ingress, Services & Storage</h2>
+        <div class=\"row stretch\" style=\"margin-top:12px;\">
+          <div class=\"card\" style=\"flex:1;\">
+            <strong>Services</strong>
+            <table id=\"tbl-services\"><thead><tr><th>App</th><th>Port</th><th>Target</th><th>Replicas</th></tr></thead><tbody></tbody></table>
+          </div>
+          <div class=\"card\" style=\"flex:1;\">
+            <strong>Ingress</strong>
+            <table id=\"tbl-ingress\"><thead><tr><th>App</th><th>Host</th><th>Config Path</th><th>Exists</th></tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+        <div class=\"card\" style=\"margin-top:12px;\">
+          <strong>Storage Volumes</strong>
+          <table id=\"tbl-vols\"><thead><tr><th>Name</th><th>App</th><th>Driver</th><th>Mountpoint</th></tr></thead><tbody></tbody></table>
+        </div>
       </section>
     </main>
     <script>
@@ -695,6 +895,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       var pollTimer = null;
       var pauseLogs = false;
       var logSource = null;
+      var lastSystem = null;
 
       pauseBtn.addEventListener('click', function () {
         pauseLogs = !pauseLogs;
@@ -747,6 +948,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           document.getElementById('d-replicas').textContent = s.ready_replicas + '/' + s.desired_replicas + ' (live ' + s.live_replicas + ')';
           document.getElementById('d-rev').textContent = s.revision;
           document.getElementById('d-rev-status').textContent = s.revision_status;
+          try {
+            var man = (s.manifest || {});
+            var svc = (man.spec || {}).service || null;
+            var svcText = svc ? (String(svc.port) + (svc.target_port ? (' -> ' + String(svc.target_port)) : '')) : '-';
+            document.getElementById('d-service').textContent = svcText;
+            var secRefs = ((man.spec || {}).secret_refs || []).length;
+            document.getElementById('d-secrets').textContent = secRefs ? (secRefs + ' ref' + (secRefs>1?'s':'')) : '-';
+            var storage = ((man.spec || {}).storage || []).map(function(v){ return v.name || ''; }).filter(Boolean);
+            document.getElementById('d-storage').textContent = storage.length ? storage.join(', ') : '-';
+          } catch(e) { }
           return fetchJSON('/events/' + encodeURIComponent(current) + '?limit=50').then(function(ev){
             elEvents.innerHTML = ev.map(function(e){ return '<div><code>' + e.created_at + '</code> ' + e.event_type + ' - ' + escapeHtml(e.message) + '</div>'; }).join('');
           }).then(function(){ updateLogsHTMX(); });
@@ -756,7 +967,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       function schedulePoll(){
         if(pollTimer) { clearInterval(pollTimer); pollTimer = null; }
         var ms = parseInt(pollSel.value, 10) || 0;
-        if(ms > 0){ pollTimer = setInterval(function(){ refreshApps().then(refreshDetail).catch(console.error); }, ms); }
+        if(ms > 0){ pollTimer = setInterval(function(){ Promise.all([refreshApps(), refreshDetail(), refreshSystem()]).catch(console.error); }, ms); }
       }
 
       function selectApp(name){
@@ -818,13 +1029,52 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         } catch (e) { console.error('EventSource failed', e); }
       }
 
-      refreshApps().then(function(){ updateLogsHTMX(); updateLogStreaming(); return refreshDetail(); }).catch(console.error);
+      function renderCounters(sys){
+        var el = document.getElementById('sys-counters');
+        if(!el) return;
+        var lastTs = sys.controller && sys.controller.last_reconcile_timestamp ? new Date(sys.controller.last_reconcile_timestamp*1000).toISOString() : '-';
+        var lastDur = sys.controller && sys.controller.last_reconcile_duration != null ? (Number(sys.controller.last_reconcile_duration).toFixed(3) + 's') : '-';
+        var ingressSites = (sys.ingress && sys.ingress.sites) ? sys.ingress.sites.length : 0;
+        var services = (sys.services || []).length;
+        var volumes = (sys.volumes || []).length;
+        var pills = [
+          {k:'Last Reconcile', v:lastTs},
+          {k:'Duration', v:lastDur},
+          {k:'Ingress Sites', v:String(ingressSites)},
+          {k:'Services', v:String(services)},
+          {k:'Volumes', v:String(volumes)},
+          {k:'Mutations', v: (sys.rbac && sys.rbac.mutations_enabled) ? 'enabled' : 'disabled'},
+        ];
+        el.innerHTML = pills.map(function(p){ return '<div class="pill" style="background:#0001">'+escapeHtml(p.k)+': <strong>'+escapeHtml(p.v)+'</strong></div>'; }).join('');
+      }
+
+      function refreshSystem(){
+        return fetchJSON('/system').then(function(sys){
+          lastSystem = sys;
+          renderCounters(sys);
+          var sbody = document.querySelector('#tbl-services tbody');
+          if(sbody){ sbody.innerHTML = (sys.services||[]).map(function(s){
+            return '<tr><td>'+escapeHtml(s.app||'')+'</td><td>'+(s.port!=null?escapeHtml(String(s.port)):'-')+'</td><td>'+(s.target_port!=null?escapeHtml(String(s.target_port)):'-')+'</td><td>'+(s.replicas!=null?escapeHtml(String(s.replicas)):'-')+'</td></tr>';
+          }).join(''); }
+          var ibody = document.querySelector('#tbl-ingress tbody');
+          if(ibody){ ibody.innerHTML = ((sys.ingress&&sys.ingress.sites)||[]).map(function(r){
+            return '<tr><td>'+escapeHtml(r.app||'')+'</td><td>'+escapeHtml((r.host||'')||'-')+'</td><td>'+escapeHtml(String(r.path||''))+'</td><td>'+(r.exists?'yes':'no')+'</td></tr>';
+          }).join(''); }
+          var vbody = document.querySelector('#tbl-vols tbody');
+          if(vbody){ vbody.innerHTML = (sys.volumes||[]).map(function(v){
+            var app = (v.labels&&v.labels['ae.app'])||'';
+            return '<tr><td>'+escapeHtml(v.name||'')+'</td><td>'+escapeHtml(app)+'</td><td>'+escapeHtml(v.driver||'')+'</td><td>'+escapeHtml(v.mountpoint||'')+'</td></tr>';
+          }).join(''); }
+        });
+      }
+
+      refreshApps().then(function(){ updateLogsHTMX(); updateLogStreaming(); return Promise.all([refreshDetail(), refreshSystem()]); }).catch(console.error);
       schedulePoll();
     </script>
   </body>
 </html>
 """
-        payload = html.encode('utf-8')
+        payload = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
@@ -834,6 +1084,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     def _handle_dashboard_partial_logs(self) -> None:
         # Render logs as an HTML fragment suitable for hx-swap=innerHTML
         import urllib.parse as _up
+
         frag, _, query = self.path.partition("?")
         params = _up.parse_qs(query)
         app = (params.get("app", [""])[0] or "").strip()
@@ -846,7 +1097,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
         fn = getattr(self, "logs_fn", None)
         if not app or fn is None:
-            html = "<div class=\"log-entry\">No logs</div>"
+            html = '<div class="log-entry">No logs</div>'
             payload = html.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -857,7 +1108,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         try:
             lines = list(fn(app, container, tail, None, False))  # type: ignore[misc]
         except Exception as exc:
-            html = f"<div class=\"log-entry\"><code>error</code> {self._escape_html(str(exc))}</div>"
+            html = f'<div class="log-entry"><code>error</code> {self._escape_html(str(exc))}</div>'
             payload = html.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -868,12 +1119,14 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
         out: list[str] = []
         for l in lines:
-            s = l.decode('utf-8', 'replace') if isinstance(l, (bytes, bytearray)) else str(l)
+            s = l.decode("utf-8", "replace") if isinstance(l, (bytes, bytearray)) else str(l)
             if filt and (filt not in s.lower()):
                 continue
             ts, msg = self._split_ts(s)
-            out.append(f"<div class=\"log-entry\"><code>{self._escape_html(ts)}</code> {self._escape_html(msg)}</div>")
-        html = "\n".join(out) if out else "<div class=\"log-entry\">No recent log lines</div>"
+            out.append(
+                f'<div class="log-entry"><code>{self._escape_html(ts)}</code> {self._escape_html(msg)}</div>'
+            )
+        html = "\n".join(out) if out else '<div class="log-entry">No recent log lines</div>'
         payload = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -884,6 +1137,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     def _handle_logs_stream(self, app: str) -> None:
         """Stream logs as Server-Sent Events (SSE): one log entry per event."""
         import urllib.parse as _up
+
         _path, _, query = self.path.partition("?")
         params = _up.parse_qs(query)
         container = params.get("container", [None])[0]
@@ -913,10 +1167,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.flush()
             for line in fn(app, container, tail, since, True):  # type: ignore[misc]
                 if isinstance(line, (bytes, bytearray)):
-                    s = line.decode('utf-8', 'replace').rstrip('\n')
+                    s = line.decode("utf-8", "replace").rstrip("\n")
                 else:
-                    s = str(line).rstrip('\n')
-                out = ("data: " + s + "\n\n").encode('utf-8', 'replace')
+                    s = str(line).rstrip("\n")
+                out = ("data: " + s + "\n\n").encode("utf-8", "replace")
                 self.wfile.write(out)
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
@@ -931,21 +1185,23 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     def _split_ts(self, line: str) -> tuple[str, str]:
         # Best-effort split: Docker timestamps are RFC3339 then a space
         try:
-            if len(line) >= 20 and line[4] == '-' and 'T' in line[:25]:
-                ts, msg = line.split(' ', 1)
+            if len(line) >= 20 and line[4] == "-" and "T" in line[:25]:
+                ts, msg = line.split(" ", 1)
                 return ts, msg
         except Exception:
             pass
-        return '-', line
+        return "-", line
 
     @staticmethod
     def _escape_html(s: str) -> str:
         import html as _html
+
         return _html.escape(s, quote=False)
 
     def _handle_logs(self, app_and_query: str) -> None:
         # Return logs as JSON {app, lines:[...]}. Prefer polling over streaming for demo simplicity.
         import urllib.parse as _up
+
         frag, _, query = app_and_query.partition("?")
         params = _up.parse_qs(query)
         app = frag
@@ -973,13 +1229,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         except Exception as exc:
             self._json_error(500, str(exc))
             return
-        self._json_ok({
-            "app": app,
-            "lines": [
-                (l.decode('utf-8', 'replace') if isinstance(l, (bytes, bytearray)) else str(l))
-                for l in lines
-            ]
-        })
+        self._json_ok(
+            {
+                "app": app,
+                "lines": [
+                    (l.decode("utf-8", "replace") if isinstance(l, (bytes, bytearray)) else str(l))
+                    for l in lines
+                ],
+            }
+        )
 
 
 def start_http_api(
@@ -989,6 +1247,7 @@ def start_http_api(
     scale_fn=None,
     delete_fn=None,
     logs_fn=None,
+    system_info_fn=None,
 ) -> Tuple[socketserver.TCPServer, int, threading.Thread]:
     """Start the HTTP API on the given port.
 
@@ -1002,6 +1261,10 @@ def start_http_api(
     handler_cls.scale_fn = staticmethod(scale_fn) if scale_fn is not None else None
     handler_cls.delete_fn = staticmethod(delete_fn) if delete_fn is not None else None
     handler_cls.logs_fn = staticmethod(logs_fn) if logs_fn is not None else None
+    handler_cls.system_info_fn = (
+        staticmethod(system_info_fn) if system_info_fn is not None else None
+    )
+
     # Allow quick restarts by enabling SO_REUSEADDR to avoid TIME_WAIT bind errors
     class ReusableTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         allow_reuse_address = True

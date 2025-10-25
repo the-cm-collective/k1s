@@ -12,7 +12,14 @@ from .base import ReplicaState, RuntimeAdapter, RuntimeResult
 class StubRuntime(RuntimeAdapter):
     """Stubbed runtime; returns ready replicas without touching Docker."""
 
-    def ensure_app(self, manifest: AppManifest, revision: int, *, keep_old: bool = False, limit_create: int | None = None) -> RuntimeResult:
+    def ensure_app(
+        self,
+        manifest: AppManifest,
+        revision: int,
+        *,
+        keep_old: bool = False,
+        limit_create: int | None = None,
+    ) -> RuntimeResult:
         desired = manifest.spec.replicas
         now = datetime.now(timezone.utc)
         count = desired if limit_create is None else max(0, min(desired, limit_create))
@@ -35,7 +42,14 @@ class StubRuntime(RuntimeAdapter):
             replica_states=replica_states,
         )
 
-    def read_logs(self, replica_id: str, *, follow: bool = False, tail: int | None = None, since: int | None = None):
+    def read_logs(
+        self,
+        replica_id: str,
+        *,
+        follow: bool = False,
+        tail: int | None = None,
+        since: int | None = None,
+    ):
         # Deterministic, small output for tests
         if follow:
             # emit a finite small stream for tests

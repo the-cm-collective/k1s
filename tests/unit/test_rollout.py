@@ -13,6 +13,7 @@ class DummyRuntime:
     def ensure_app(self, manifest, revision, *, keep_old=False, limit_create=None):  # noqa: ANN001
         self.calls.append((keep_old, limit_create))
         from ae.runtime.base import RuntimeResult, ReplicaState
+
         states = []
         if limit_create is None or limit_create > 0:
             states = [
@@ -24,7 +25,9 @@ class DummyRuntime:
                     started_at=None,
                 )
             ]
-        return RuntimeResult(revision=revision, created=1, updated=0, removed=0, replica_states=states)
+        return RuntimeResult(
+            revision=revision, created=1, updated=0, removed=0, replica_states=states
+        )
 
     def remove_old_revisions(self, app_name: str, keep_revision: int) -> int:
         self.calls.append(("remove_old", app_name, keep_revision))

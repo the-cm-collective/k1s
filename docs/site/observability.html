@@ -142,6 +142,30 @@ ae --server http://&lt;ip&gt;:9108 --token readtoken logs echo --tail 100
   &quot;gridPos&quot;: { &quot;h&quot;: 4, &quot;w&quot;: 6, &quot;x&quot;: 0, &quot;y&quot;: 0 }
 }
 </code></pre>
+<h3>Demo Dashboard (/dashboard)</h3>
+<ul>
+<li>Adds a System snapshot sourced from <code>GET /system</code>:</li>
+<li>Controller: last reconcile timestamp and duration</li>
+<li>Ingress: configured site blocks and existence flag</li>
+<li>Services: declared <code>service.port</code>/<code>targetPort</code> per app</li>
+<li>Storage: Docker named volumes created for apps (PV-lite)</li>
+<li>RBAC: shows whether mutations are enabled and tokens are configured (never reveals secrets)</li>
+</ul>
+<ul>
+<li>Per‑app details now include:</li>
+<li>Service mapping, count of secret refs, and declared storage volumes (from the manifest)</li>
+</ul>
+<h3>System API</h3>
+<p><code>GET /system</code> returns a JSON object combining controller stats and optional runtime/ingress snapshots, for example:</p>
+<pre><code>
+{
+  &quot;controller&quot;: { &quot;last_reconcile_timestamp&quot;: 1698000000.0, &quot;last_reconcile_duration&quot;: 0.245, &quot;apps&quot;: { &quot;echo&quot;: {&quot;reconciles&quot;: 12, &quot;duration_sum&quot;: 2.3, &quot;ops&quot;: {&quot;created&quot;: 1}}}},
+  &quot;rbac&quot;: { &quot;mutations_enabled&quot;: false, &quot;read_token_configured&quot;: false, &quot;scaler_token_configured&quot;: false, &quot;admin_token_configured&quot;: false },
+  &quot;ingress&quot;: { &quot;dirty&quot;: false, &quot;sites&quot;: [{&quot;app&quot;: &quot;echo&quot;, &quot;host&quot;: &quot;echo.local&quot;, &quot;path&quot;: &quot;/path/to/echo.caddy&quot;, &quot;exists&quot;: true}] },
+  &quot;services&quot;: [{ &quot;app&quot;: &quot;echo&quot;, &quot;port&quot;: 8080, &quot;target_port&quot;: 8080, &quot;replicas&quot;: 1 }],
+  &quot;volumes&quot;: [{ &quot;name&quot;: &quot;ae-echo-data&quot;, &quot;labels&quot;: {&quot;ae.app&quot;: &quot;echo&quot;}, &quot;driver&quot;: &quot;local&quot;, &quot;mountpoint&quot;: &quot;/var/lib/docker/volumes/...&quot; }]
+}
+</code></pre>
     </div>
   </body>
 </html>

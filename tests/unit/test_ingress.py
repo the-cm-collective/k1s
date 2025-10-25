@@ -27,9 +27,11 @@ def test_caddy_manager_writes_site(tmp_path, monkeypatch):
 
     def fake_run(args, check, stdout, stderr):  # noqa: ANN001 - mimic subprocess signature
         calls.append(args)
+
         class Result:
             stdout = b""
             stderr = b""
+
         return Result()
 
     monkeypatch.setattr("ae.ingress.caddy.subprocess.run", fake_run)

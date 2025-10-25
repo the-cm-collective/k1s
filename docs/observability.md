@@ -56,3 +56,29 @@ You can also embed a single panel JSON (e.g., stat showing ready apps):
   "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 }
 }
 ```
+
+### Demo Dashboard (/dashboard)
+
+- Adds a System snapshot sourced from `GET /system`:
+  - Controller: last reconcile timestamp and duration
+  - Ingress: configured site blocks and existence flag
+  - Services: declared `service.port`/`targetPort` per app
+  - Storage: Docker named volumes created for apps (PV-lite)
+  - RBAC: shows whether mutations are enabled and tokens are configured (never reveals secrets)
+
+- Per‑app details now include:
+  - Service mapping, count of secret refs, and declared storage volumes (from the manifest)
+
+### System API
+
+`GET /system` returns a JSON object combining controller stats and optional runtime/ingress snapshots, for example:
+
+```
+{
+  "controller": { "last_reconcile_timestamp": 1698000000.0, "last_reconcile_duration": 0.245, "apps": { "echo": {"reconciles": 12, "duration_sum": 2.3, "ops": {"created": 1}}}},
+  "rbac": { "mutations_enabled": false, "read_token_configured": false, "scaler_token_configured": false, "admin_token_configured": false },
+  "ingress": { "dirty": false, "sites": [{"app": "echo", "host": "echo.local", "path": "/path/to/echo.caddy", "exists": true}] },
+  "services": [{ "app": "echo", "port": 8080, "target_port": 8080, "replicas": 1 }],
+  "volumes": [{ "name": "ae-echo-data", "labels": {"ae.app": "echo"}, "driver": "local", "mountpoint": "/var/lib/docker/volumes/..." }]
+}
+```

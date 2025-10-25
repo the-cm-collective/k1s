@@ -72,7 +72,9 @@ def parse_ref(arg: str, expected: tuple[str, ...]) -> ParsedRef:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="k1s", description="kubectl-like CLI for k1s")
     p.add_argument("--verbose", action="store_true", help="Enable DEBUG logging")
-    p.add_argument("--log-level", default=None, help="Override log level (DEBUG/INFO/WARNING/ERROR)")
+    p.add_argument(
+        "--log-level", default=None, help="Override log level (DEBUG/INFO/WARNING/ERROR)"
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     # k1s get apps|app <name?>
@@ -230,9 +232,7 @@ def handle_rollout(ns: argparse.Namespace, store: SQLiteStateStore, reconciler: 
             print(str(exc))
             return 1
         report = reconciler.reconcile(manifest)
-        print(
-            f"rolled back {ref.name} to revision {report.revision} ({report.revision_status})"
-        )
+        print(f"rolled back {ref.name} to revision {report.revision} ({report.revision_status})")
         return 0
 
     print(f"Unsupported rollout command: {ns.roll_cmd}")
@@ -288,7 +288,9 @@ def handle_delete_k1s(
     return 0
 
 
-def handle_scale_k1s(ns: argparse.Namespace, store: SQLiteStateStore, reconciler: Reconciler) -> int:
+def handle_scale_k1s(
+    ns: argparse.Namespace, store: SQLiteStateStore, reconciler: Reconciler
+) -> int:
     ref = parse_ref(ns.ref, ("app",))
     revs = store.list_revisions(ref.name, limit=1)
     if not revs:

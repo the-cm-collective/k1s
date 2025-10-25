@@ -37,4 +37,3 @@ def test_controller_once_reconciles(tmp_path, monkeypatch):
     store = SQLiteStateStore(db_path)
     statuses = store.list_status()
     assert any(s.app_name == "echo" and s.ready_replicas == 1 for s in statuses)
-

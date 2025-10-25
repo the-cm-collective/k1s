@@ -56,7 +56,9 @@ class FakeContainerManager:
     def __init__(self, client: "FakeDockerClient") -> None:
         self._client = client
 
-    def list(self, all: bool = True, filters: Optional[Dict[str, str]] = None) -> List[FakeContainer]:
+    def list(
+        self, all: bool = True, filters: Optional[Dict[str, str]] = None
+    ) -> List[FakeContainer]:
         containers = list(self._client.containers_by_replica.values())
         if not filters:
             return containers
@@ -70,8 +72,17 @@ class FakeContainerManager:
             return filtered
         return containers
 
-    def run(self, image: str, command=None, name: str = "", detach: bool = True, environment=None,
-            labels=None, ports=None, restart_policy=None):  # noqa: ANN001,D401 - mimic docker
+    def run(
+        self,
+        image: str,
+        command=None,
+        name: str = "",
+        detach: bool = True,
+        environment=None,
+        labels=None,
+        ports=None,
+        restart_policy=None,
+    ):  # noqa: ANN001,D401 - mimic docker
         replica_id = labels.get("ae.replica_id")
         host_port = self._client.allocate_port()
         container = FakeContainer(

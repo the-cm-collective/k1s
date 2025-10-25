@@ -38,14 +38,27 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ae.controller", description="k1s controller daemon")
     group = p.add_mutually_exclusive_group(required=True)
     group.add_argument("--once", action="store_true", help="Reconcile once and exit")
-    group.add_argument("--loop", action="store_true", help="Run continuously and reconcile on an interval")
+    group.add_argument(
+        "--loop", action="store_true", help="Run continuously and reconcile on an interval"
+    )
     p.add_argument("--specs", default=os.getenv("AE_SPECS_DIR", "specs"), help="Specs directory")
     p.add_argument("--interval", type=int, default=5, help="Polling interval in seconds for --loop")
-    p.add_argument("--metrics-port", type=int, default=0, help="If set, serve Prometheus metrics on this TCP port")
-    p.add_argument("--watch", action="store_true", help="Watch specs directory for changes (uses watchdog if available)")
+    p.add_argument(
+        "--metrics-port",
+        type=int,
+        default=0,
+        help="If set, serve Prometheus metrics on this TCP port",
+    )
+    p.add_argument(
+        "--watch",
+        action="store_true",
+        help="Watch specs directory for changes (uses watchdog if available)",
+    )
     p.add_argument("--debounce-ms", type=int, default=200, help="Debounce time for watch events")
     p.add_argument("--verbose", action="store_true", help="Enable DEBUG logging")
-    p.add_argument("--log-level", default=None, help="Override log level (DEBUG/INFO/WARNING/ERROR)")
+    p.add_argument(
+        "--log-level", default=None, help="Override log level (DEBUG/INFO/WARNING/ERROR)"
+    )
     return p
 
 
@@ -79,7 +92,7 @@ def _load_all(paths: Iterable[Path]) -> List[AppManifest]:
             selected[name] = (m, path)
             continue
         # Prefer files whose stem exactly equals the app name
-        prefer_new = (path.stem == name and cur[1].stem != name)
+        prefer_new = path.stem == name and cur[1].stem != name
         if prefer_new:
             selected[name] = (m, path)
     return [mp[0] for mp in selected.values()]
@@ -93,7 +106,14 @@ def _make_reconciler() -> Reconciler:
     ingress = ingress_service_factory()
     secrets = secret_manager_factory()
     configs = config_manager_factory()
-    return Reconciler(runtime, store, health_manager=health, ingress_service=ingress, secret_manager=secrets, config_manager=configs)
+    return Reconciler(
+        runtime,
+        store,
+        health_manager=health,
+        ingress_service=ingress,
+        secret_manager=secrets,
+        config_manager=configs,
+    )
 
 
 def _reconcile_all(reconciler: Reconciler, manifests: Iterable[AppManifest]) -> None:
@@ -167,7 +187,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             store.delete_app_state(app, purge_history=bool(purge))
             return {"app": app, "removed": removed, "purged": bool(purge)}
 
-        def _logs(app: str, container: str | None, tail: int | None, since: int | None, follow: bool):
+        def _logs(
+            app: str, container: str | None, tail: int | None, since: int | None, follow: bool
+        ):
             reps = store.list_replicas(app)
             target = None
             if container:
@@ -180,12 +202,104 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 target = next((r for r in reps if r.ready), reps[0])
             if not target:
                 return []
-            return reconciler._runtime.read_logs(target.replica_id, follow=follow, tail=tail, since=since)
+            return reconciler._runtime.read_logs(
+                target.replica_id, follow=follow, tail=tail, since=since
+            )
 
         import logging, errno
+
+        def _system_info():
+            # Compose a lightweight snapshot for the demo dashboard
+            try:
+                statuses = store.list_status()
+            except Exception:
+                statuses = []
+            names = [s.app_name for s in statuses]
+
+            # Ingress snapshot (paths exist only if manager is configured)
+            ing = None
+            try:
+                ingress = reconciler._ingress_service  # type: ignore[attr-defined]
+                if ingress is not None:
+                    sites = []
+                    try:
+                        for s in statuses:
+                            try:
+                                p = ingress._manager._site_path(s.app_name)  # type: ignore[attr-defined]
+                                sites.append(
+                                    {
+                                        "app": s.app_name,
+                                        "host": s.ingress_host,
+                                        "path": str(p),
+                                        "exists": p.exists(),
+                                    }
+                                )
+                            except Exception:
+                                sites.append(
+                                    {
+                                        "app": s.app_name,
+                                        "host": s.ingress_host,
+                                        "path": None,
+                                        "exists": False,
+                                    }
+                                )
+                    except Exception:
+                        sites = []
+                    ing = {"dirty": bool(getattr(ingress, "_dirty", False)), "sites": sites}
+            except Exception:
+                ing = None
+
+            # Services (declared) from manifests
+            services = []
+            for s in statuses:
+                try:
+                    man = store.get_revision_manifest(s.app_name, s.revision)
+                    svc = getattr(man.spec, "service", None)
+                    if svc is not None:
+                        services.append(
+                            {
+                                "app": s.app_name,
+                                "port": getattr(svc, "port", None),
+                                "target_port": getattr(svc, "target_port", None),
+                                "replicas": s.desired_replicas,
+                            }
+                        )
+                except Exception:
+                    continue
+
+            # Runtime snapshots
+            try:
+                runtime = reconciler._runtime  # type: ignore[attr-defined]
+            except Exception:
+                runtime = None
+            containers = []
+            volumes = []
+            if runtime is not None:
+                try:
+                    containers = runtime.list_containers_info() or []  # type: ignore[attr-defined]
+                except Exception:
+                    containers = []
+                try:
+                    volumes = runtime.list_storage_volumes() or []  # type: ignore[attr-defined]
+                except Exception:
+                    volumes = []
+
+            # Return combined snapshot
+            return {
+                "ingress": ing,
+                "services": services,
+                "containers": containers,
+                "volumes": volumes,
+            }
+
         try:
             api_server, assigned, _ = start_http_api(
-                args.metrics_port, store, scale_fn=_scale, delete_fn=_delete, logs_fn=_logs
+                args.metrics_port,
+                store,
+                scale_fn=_scale,
+                delete_fn=_delete,
+                logs_fn=_logs,
+                system_info_fn=_system_info,
             )
             logging.getLogger(__name__).info("http api listening on port %s", assigned)
         except OSError as exc:
@@ -204,6 +318,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
     # loop mode
     stop = False
+
     def _graceful(*_):
         nonlocal stop
         stop = True
@@ -225,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     nonlocal changed
                     # Only react to YAML-like files
                     import os
+
                     _, ext = os.path.splitext(getattr(event, "src_path", ""))
                     if ext.lower() in {".yml", ".yaml"}:
                         changed = True
@@ -234,17 +350,20 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             observer.schedule(handler, str(specs_dir), recursive=True)
             observer.start()
             import logging
+
             logging.getLogger(__name__).info(
                 "watching %s for changes (debounce=%sms)", specs_dir, args.debounce_ms
             )
         except Exception:
             observer = None  # fallback to interval polling
             import logging
+
             logging.getLogger(__name__).info(
                 "watchdog not available; falling back to interval polling"
             )
     else:
         import logging
+
         logging.getLogger(__name__).info("polling every %ss (no file watch)", args.interval)
 
     try:

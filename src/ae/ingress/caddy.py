@@ -51,7 +51,13 @@ class CaddyIngressManager:
         self._reload_timeout = reload_timeout
         self._config_root.mkdir(parents=True, exist_ok=True)
 
-    def apply(self, manifest: AppManifest, upstream: Union[str, Sequence[str]], readiness_path: Optional[str] = None, prefer_first: bool = True) -> Path:
+    def apply(
+        self,
+        manifest: AppManifest,
+        upstream: Union[str, Sequence[str]],
+        readiness_path: Optional[str] = None,
+        prefer_first: bool = True,
+    ) -> Path:
         ingress = manifest.spec.ingress
         if ingress is None:
             raise ValueError("Manifest lacks ingress configuration")
@@ -75,7 +81,13 @@ class CaddyIngressManager:
         adapt_cmd: List[str]
         if self._container:
             adapt_cmd = [
-                "docker", "exec", self._container, self._caddy_binary, "adapt", "--config", config_path
+                "docker",
+                "exec",
+                self._container,
+                self._caddy_binary,
+                "adapt",
+                "--config",
+                config_path,
             ]
             cmd = [
                 "docker",
@@ -107,13 +119,23 @@ class CaddyIngressManager:
         except subprocess.CalledProcessError as exc:
             msg = exc.stderr.decode("utf-8", "ignore")
             # During early startup the dev Caddy container may not exist yet; avoid noisy warnings.
-            if self._container and ("No such container" in msg or "container" in msg and "not found" in msg):
-                LOGGER.info("Caddy container %s not available yet; skipping reload", self._container)
+            if self._container and (
+                "No such container" in msg or "container" in msg and "not found" in msg
+            ):
+                LOGGER.info(
+                    "Caddy container %s not available yet; skipping reload", self._container
+                )
                 return
             LOGGER.error("Caddy reload failed: %s", msg)
             raise RuntimeError("Caddy reload failed") from exc
 
-    def _render_site(self, ingress: IngressSpec, upstreams: Union[str, Sequence[str]], readiness_path: Optional[str], prefer_first: bool) -> str:
+    def _render_site(
+        self,
+        ingress: IngressSpec,
+        upstreams: Union[str, Sequence[str]],
+        readiness_path: Optional[str],
+        prefer_first: bool,
+    ) -> str:
         host = ingress.host
         if isinstance(upstreams, str):
             ups_list = [upstreams]
@@ -156,7 +178,9 @@ class CaddyIngressManager:
                 "        }"
             )
         policy_block = "lb_policy first" if prefer_first else ""
-        return SITE_TEMPLATE.substitute(host=host, upstreams=upstreams_str, health_block=health_block, policy_block=policy_block)
+        return SITE_TEMPLATE.substitute(
+            host=host, upstreams=upstreams_str, health_block=health_block, policy_block=policy_block
+        )
 
     def _site_path(self, app_name: str) -> Path:
         return self._config_root / f"{app_name}.caddy"

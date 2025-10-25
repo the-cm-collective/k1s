@@ -223,6 +223,7 @@ class Reconciler:
             else:
                 import json, yaml
                 from pathlib import Path as _P
+
                 for ref in manifest.spec.secret_refs:
                     try:
                         content = _P(ref.path).read_text(encoding="utf-8")
@@ -308,6 +309,7 @@ class Reconciler:
                     try:
                         content = Path(ref.path).read_text(encoding="utf-8")
                         import json, yaml
+
                         try:
                             data = json.loads(content)
                         except json.JSONDecodeError:

@@ -198,7 +198,9 @@ class SQLiteStateStore:
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
-    def _schema_matches(self, conn: sqlite3.Connection, table: str, expected_columns: list[str]) -> bool:
+    def _schema_matches(
+        self, conn: sqlite3.Connection, table: str, expected_columns: list[str]
+    ) -> bool:
         info = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
             (table,),
@@ -548,7 +550,9 @@ class SQLiteStateStore:
             )
         return events
 
-    def list_events_paginated(self, app_name: str, limit: int, offset: int) -> tuple[list[AppEvent], int]:
+    def list_events_paginated(
+        self, app_name: str, limit: int, offset: int
+    ) -> tuple[list[AppEvent], int]:
         with self._connect() as conn:
             total = conn.execute(
                 "SELECT COUNT(*) FROM app_events WHERE app_name = ?",

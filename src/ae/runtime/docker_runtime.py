@@ -38,9 +38,17 @@ class DockerRuntime(RuntimeAdapter):
         self._registry = registry_auth or RegistryAuthProvider()
         # Optional shared network so that ingress (Caddy) can reach containers by name
         import os as _os
+
         self._network_name = _os.getenv("AE_DOCKER_NETWORK")
 
-    def ensure_app(self, manifest: AppManifest, revision: int, *, keep_old: bool = False, limit_create: int | None = None) -> RuntimeResult:
+    def ensure_app(
+        self,
+        manifest: AppManifest,
+        revision: int,
+        *,
+        keep_old: bool = False,
+        limit_create: int | None = None,
+    ) -> RuntimeResult:
         app_name = manifest.metadata.name
         desired_replica_ids = self._desired_replica_ids(manifest, revision)
 
@@ -89,7 +97,9 @@ class DockerRuntime(RuntimeAdapter):
                         container.start()
                         updated += 1
                     except APIError as exc:
-                        raise RuntimeError(f"Failed to start container {container.name}: {exc}") from exc
+                        raise RuntimeError(
+                            f"Failed to start container {container.name}: {exc}"
+                        ) from exc
 
         if not keep_old:
             for container in old_revision_containers:
@@ -114,7 +124,14 @@ class DockerRuntime(RuntimeAdapter):
             replica_states=replica_states,
         )
 
-    def read_logs(self, replica_id: str, *, follow: bool = False, tail: int | None = None, since: int | None = None):
+    def read_logs(
+        self,
+        replica_id: str,
+        *,
+        follow: bool = False,
+        tail: int | None = None,
+        since: int | None = None,
+    ):
         """Stream logs for a container labeled with the replica id."""
         try:
             containers = self._client.containers.list(
@@ -216,7 +233,9 @@ class DockerRuntime(RuntimeAdapter):
         if getattr(manifest.spec, "service", None) and manifest.spec.replicas == 1:
             svc_port = manifest.spec.service.port
             svc_target = manifest.spec.service.target_port
-        ports = self._port_mapping(manifest.spec.ports, service_port=svc_port, service_target=svc_target)
+        ports = self._port_mapping(
+            manifest.spec.ports, service_port=svc_port, service_target=svc_target
+        )
         # Pre-flight conflict check for service stable port
         if svc_port is not None:
             self._ensure_host_port_free(app_name, int(svc_port))
@@ -246,7 +265,9 @@ class DockerRuntime(RuntimeAdapter):
                     host_path = os.path.abspath(host_path)
                 volumes[host_path] = {"bind": v.mount_path, "mode": mode}
         if getattr(manifest.spec, "storage", None):
-            self.ensure_storage_volumes(manifest.metadata.name, [s.model_dump() for s in manifest.spec.storage])
+            self.ensure_storage_volumes(
+                manifest.metadata.name, [s.model_dump() for s in manifest.spec.storage]
+            )
             for s in manifest.spec.storage:
                 vol_name = self._storage_volume_name(manifest.metadata.name, s.name)
                 volumes[vol_name] = {"bind": s.mount_path, "mode": "rw"}
@@ -276,8 +297,7 @@ class DockerRuntime(RuntimeAdapter):
                 kwargs["volumes"] = volumes
 
             container = run_fn(
-                manifest.spec.image,
-                **{k: v for k, v in kwargs.items() if v is not None}
+                manifest.spec.image, **{k: v for k, v in kwargs.items() if v is not None}
             )
             # Attach to shared network if configured
             if self._network_name:
@@ -290,7 +310,9 @@ class DockerRuntime(RuntimeAdapter):
                     ]
                     net.connect(container, aliases=aliases)
                 except Exception as _exc:  # pragma: no cover - optional path
-                    LOGGER.warning("Failed to connect %s to network %s: %s", name, self._network_name, _exc)
+                    LOGGER.warning(
+                        "Failed to connect %s to network %s: %s", name, self._network_name, _exc
+                    )
             self._reload(container)
             return container
         except APIError as exc:
@@ -375,7 +397,9 @@ class DockerRuntime(RuntimeAdapter):
             mapping[key] = host_port
         return mapping
 
-    def _endpoint_from_ports(self, ports: Iterable[PortSpec], container: Container) -> Optional[str]:
+    def _endpoint_from_ports(
+        self, ports: Iterable[PortSpec], container: Container
+    ) -> Optional[str]:
         if not ports:
             return None
         network_ports = container.attrs.get("NetworkSettings", {}).get("Ports", {}) or {}
@@ -473,13 +497,15 @@ class DockerRuntime(RuntimeAdapter):
                                 ports.append(int(hp))
                             except ValueError:
                                 continue
-                out.append({
-                    "name": c.name,
-                    "labels": c.labels or {},
-                    "host_ports": ports,
-                })
+                out.append(
+                    {
+                        "name": c.name,
+                        "labels": c.labels or {},
+                        "host_ports": ports,
+                    }
+                )
             except Exception:
-                out.append({"name": getattr(c, 'name', ''), "labels": {}, "host_ports": []})
+                out.append({"name": getattr(c, "name", ""), "labels": {}, "host_ports": []})
         return out
 
     # Storage volumes ---------------------------------------------------

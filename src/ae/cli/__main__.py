@@ -24,8 +24,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ae", description="Minimal application engine CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
     parser.add_argument("--verbose", action="store_true", help="Enable DEBUG logging")
-    parser.add_argument("--log-level", default=None, help="Override log level (DEBUG/INFO/WARNING/ERROR)")
-    parser.add_argument("--server", default=None, help="Remote API base URL (e.g. http://127.0.0.1:9108)")
+    parser.add_argument(
+        "--log-level", default=None, help="Override log level (DEBUG/INFO/WARNING/ERROR)"
+    )
+    parser.add_argument(
+        "--server", default=None, help="Remote API base URL (e.g. http://127.0.0.1:9108)"
+    )
     parser.add_argument("--token", default=None, help="Bearer token for remote API auth")
 
     apply_parser = subparsers.add_parser("apply", help="Apply a manifest")
@@ -42,16 +46,18 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser.add_argument(
         "--wide", action="store_true", help="Show additional details like resources and volumes"
     )
-    status_parser.add_argument(
-        "--json", action="store_true", help="Emit JSON instead of text"
-    )
+    status_parser.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
     logs_parser = subparsers.add_parser("logs", help="Tail application logs")
     logs_parser.add_argument("name", help="Application name")
     logs_parser.add_argument("--follow", action="store_true", help="Stream logs continuously")
-    logs_parser.add_argument("--container", help="Replica selector: index (e.g. 0) or replica id", default=None)
+    logs_parser.add_argument(
+        "--container", help="Replica selector: index (e.g. 0) or replica id", default=None
+    )
     logs_parser.add_argument("--revision", type=int, default=None, help="Filter by revision number")
-    logs_parser.add_argument("--tail", type=int, default=None, help="Number of lines from the end of the logs")
+    logs_parser.add_argument(
+        "--tail", type=int, default=None, help="Number of lines from the end of the logs"
+    )
     logs_parser.add_argument(
         "--since",
         default=None,
@@ -97,7 +103,9 @@ def build_parser() -> argparse.ArgumentParser:
     # secret validate
     sec_parser = subparsers.add_parser("secret", help="Manage secret resources")
     sec_sub = sec_parser.add_subparsers(dest="secret_cmd", required=True)
-    sec_val = sec_sub.add_parser("validate", help="Validate and show keys from a secret (SOPS) file")
+    sec_val = sec_sub.add_parser(
+        "validate", help="Validate and show keys from a secret (SOPS) file"
+    )
     sec_val.add_argument("--file", "-f", type=Path, required=True)
     sec_val.add_argument("--json", action="store_true", help="Emit JSON with keys")
     sec_enc = sec_sub.add_parser("encrypt", help="Encrypt a JSON/YAML file with sops (wrapper)")
@@ -108,12 +116,18 @@ def build_parser() -> argparse.ArgumentParser:
     sec_dec.add_argument("--output", "-o", type=Path, required=True)
 
     # delete <name> [--purge]
-    delete_parser = subparsers.add_parser("delete", help="Delete an application (containers + status)")
+    delete_parser = subparsers.add_parser(
+        "delete", help="Delete an application (containers + status)"
+    )
     delete_parser.add_argument("name", help="Application name")
-    delete_parser.add_argument("--purge", action="store_true", help="Also purge events and revisions history")
+    delete_parser.add_argument(
+        "--purge", action="store_true", help="Also purge events and revisions history"
+    )
 
     # scale <name> --replicas N
-    scale_parser = subparsers.add_parser("scale", help="Scale an application by reconciling replicas")
+    scale_parser = subparsers.add_parser(
+        "scale", help="Scale an application by reconciling replicas"
+    )
     scale_parser.add_argument("name", help="Application name")
     scale_parser.add_argument("--replicas", type=int, required=True)
 
@@ -124,15 +138,19 @@ def build_parser() -> argparse.ArgumentParser:
     backup_create = backup_sub.add_parser("create", help="Create a backup tar.gz of DB and specs")
     backup_create.add_argument("--output", required=True, help="Output tar.gz path")
     backup_create.add_argument("--db", default=None, help="Path to state DB (defaults AE_STATE_DB)")
-    backup_create.add_argument("--specs", default=None, help="Specs directory (defaults AE_SPECS_DIR or specs)")
+    backup_create.add_argument(
+        "--specs", default=None, help="Specs directory (defaults AE_SPECS_DIR or specs)"
+    )
 
-    backup_restore = backup_sub.add_parser("restore", help="Restore a backup tar.gz into a directory")
+    backup_restore = backup_sub.add_parser(
+        "restore", help="Restore a backup tar.gz into a directory"
+    )
     backup_restore.add_argument("--input", required=True, help="Input tar.gz path")
     backup_restore.add_argument("--into", required=True, help="Target directory to extract into")
-    
+
     backup_list = backup_sub.add_parser("list", help="List archive contents")
     backup_list.add_argument("--input", required=True, help="Input tar.gz path")
-    
+
     backup_verify = backup_sub.add_parser("verify", help="Verify archive health and contents")
     backup_verify.add_argument("--input", required=True, help="Input tar.gz path")
 
@@ -304,11 +322,13 @@ def handle_apply(args: argparse.Namespace, reconciler: Reconciler) -> int:
 def handle_config(ns: argparse.Namespace) -> int:
     if ns.config_cmd == "validate":
         from ae.config.manager import ConfigManager
+
         mgr = ConfigManager()
         data = mgr._load(ns.file)  # internal, safe for CLI
         keys = sorted(list(data.keys()))
         if ns.json:
             import json as _json
+
             print(_json.dumps({"file": str(ns.file), "keys": keys}, indent=2))
         else:
             print(f"config keys in {ns.file}:")
@@ -322,9 +342,11 @@ def handle_config(ns: argparse.Namespace) -> int:
 def handle_secret(ns: argparse.Namespace) -> int:
     if ns.secret_cmd == "validate":
         from ae.secrets.manager import SecretManager
+
         mgr = SecretManager()
         # Use SecretRef adapter to reuse decrypt
         from ae.controller.spec import SecretRef, SecretEnvMapping
+
         dummy = SecretRef(name="cli", path=str(ns.file), env=[SecretEnvMapping(name="_", key="_")])
         # Call decrypt privately to get mapping
         try:
@@ -335,6 +357,7 @@ def handle_secret(ns: argparse.Namespace) -> int:
         keys = sorted(list(map(str, data.keys())))
         if ns.json:
             import json as _json
+
             print(_json.dumps({"file": str(ns.file), "keys": keys}, indent=2))
         else:
             print(f"secret keys in {ns.file}:")
@@ -344,11 +367,13 @@ def handle_secret(ns: argparse.Namespace) -> int:
     if ns.secret_cmd == "encrypt":
         # pass-through to sops -e -o
         from shutil import which
+
         sops = which("sops")
         if not sops:
             print("sops binary not found; install sops to use this wrapper")
             return 1
         import subprocess as sp
+
         try:
             sp.run([sops, "-e", "-o", str(ns.output), str(ns.input)], check=True)
             print(f"encrypted → {ns.output}")
@@ -358,11 +383,13 @@ def handle_secret(ns: argparse.Namespace) -> int:
             return 1
     if ns.secret_cmd == "decrypt":
         from shutil import which
+
         sops = which("sops")
         if not sops:
             print("sops binary not found; install sops to use this wrapper")
             return 1
         import subprocess as sp
+
         try:
             sp.run([sops, "-d", "-o", str(ns.output), str(ns.input)], check=True)
             print(f"decrypted → {ns.output}")
@@ -385,7 +412,9 @@ def handle_delete(
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
         try:
-            resp = _http_post_json(base, f"/delete/{args.name}?purge={'1' if args.purge else '0'}", {}, tok)
+            resp = _http_post_json(
+                base, f"/delete/{args.name}?purge={'1' if args.purge else '0'}", {}, tok
+            )
             print(
                 f"deleted {args.name}: removed={resp.get('removed', 0)} containers{' (purged history)' if resp.get('purged') else ''}"
             )
@@ -407,7 +436,11 @@ def handle_delete(
             latest = store.list_revisions(name, limit=1)
             if latest:
                 manifest = store.get_revision_manifest(name, latest[0].revision)
-                deletes = [s.name for s in getattr(manifest.spec, "storage", []) if str(getattr(s, "retention", "Retain")) == "Delete"]
+                deletes = [
+                    s.name
+                    for s in getattr(manifest.spec, "storage", [])
+                    if str(getattr(s, "retention", "Retain")) == "Delete"
+                ]
                 if deletes:
                     try:
                         runtime.remove_storage_volumes(name, deletes)
@@ -416,16 +449,25 @@ def handle_delete(
         except Exception:
             pass
     store.delete_app_state(name, purge_history=bool(args.purge))
-    print(f"deleted {name}: removed={removed} containers{' (purged history)' if args.purge else ''}")
+    print(
+        f"deleted {name}: removed={removed} containers{' (purged history)' if args.purge else ''}"
+    )
     return 0
 
 
-def handle_scale(args: argparse.Namespace, store: SQLiteStateStore, reconciler: Reconciler, global_args: argparse.Namespace | None = None) -> int:
+def handle_scale(
+    args: argparse.Namespace,
+    store: SQLiteStateStore,
+    reconciler: Reconciler,
+    global_args: argparse.Namespace | None = None,
+) -> int:
     if global_args and getattr(global_args, "server", None):
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
         try:
-            resp = _http_post_json(base, f"/scale/{args.name}", {"replicas": int(args.replicas)}, tok)
+            resp = _http_post_json(
+                base, f"/scale/{args.name}", {"replicas": int(args.replicas)}, tok
+            )
             print(
                 f"scaled {args.name} to replicas={resp.get('replicas')} rev={resp.get('revision')}({resp.get('status')}) "
             )
@@ -495,6 +537,7 @@ def handle_backup(args: argparse.Namespace) -> int:
                 name = m.name
                 # Skip absolute paths and path traversal
                 from pathlib import Path as _P
+
                 parts = _P(name).parts
                 if name.startswith("/") or ".." in parts:
                     continue
@@ -514,6 +557,7 @@ def handle_backup(args: argparse.Namespace) -> int:
 
     if args.backup_cmd == "verify":
         import io
+
         src = args.input
         with tarfile.open(src, "r:gz") as tar:
             names = set(m.name for m in tar.getmembers())
@@ -536,6 +580,7 @@ def handle_backup(args: argparse.Namespace) -> int:
 
 def _http_get_json(base: str, path: str, token: str | None = None):
     import requests
+
     url = base.rstrip("/") + path
     headers = {"Accept": "application/json"}
     if token:
@@ -547,6 +592,7 @@ def _http_get_json(base: str, path: str, token: str | None = None):
 
 def _http_post_json(base: str, path: str, body: dict, token: str | None = None):
     import requests
+
     url = base.rstrip("/") + path
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if token:
@@ -556,7 +602,9 @@ def _http_post_json(base: str, path: str, body: dict, token: str | None = None):
     return r.json()
 
 
-def handle_status(args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace) -> int:
+def handle_status(
+    args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace
+) -> int:
     if getattr(global_args, "server", None):
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
@@ -590,7 +638,11 @@ def handle_status(args: argparse.Namespace, store: SQLiteStateStore, global_args
                         f"rev={s0['revision']}({s0['revision_status']})",
                         f"image={s0['image']}",
                     ]
-                    + ([f"ingress={s0['ingress_host']}{s0.get('ingress_path') or '/'}"] if s0.get("ingress_host") else [])
+                    + (
+                        [f"ingress={s0['ingress_host']}{s0.get('ingress_path') or '/'}"]
+                        if s0.get("ingress_host")
+                        else []
+                    )
                 )
                 print(line)
             if page.get("next"):
@@ -760,11 +812,12 @@ def handle_status(args: argparse.Namespace, store: SQLiteStateStore, global_args
 def handle_logs(args: argparse.Namespace, store: SQLiteStateStore, runtime: RuntimeAdapter) -> int:
     # Remote mode
     import inspect as _inspect
+
     frame = _inspect.currentframe()
     if frame is not None:
         outer_locals = frame.f_back.f_locals if frame.f_back else {}
-        gargs = outer_locals.get('global_args') or outer_locals.get('args')
-        if gargs is not None and getattr(gargs, 'server', None):
+        gargs = outer_locals.get("global_args") or outer_locals.get("args")
+        if gargs is not None and getattr(gargs, "server", None):
             return handle_logs_remote(args, gargs)
     status = store.get_status(args.name)
     if status is None:
@@ -924,10 +977,7 @@ def handle_rollback(
         return 1
 
     report = reconciler.reconcile(manifest)
-    print(
-        f"Rolled back {args.name} to revision {report.revision} "
-        f"({report.revision_status})"
-    )
+    print(f"Rolled back {args.name} to revision {report.revision} " f"({report.revision_status})")
     return 0
 
 
@@ -998,7 +1048,9 @@ def handle_metrics(args: argparse.Namespace, store: SQLiteStateStore) -> int:
     return 0
 
 
-def handle_events(args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace) -> int:
+def handle_events(
+    args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace
+) -> int:
     if getattr(global_args, "server", None):
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
@@ -1024,12 +1076,8 @@ def handle_events(args: argparse.Namespace, store: SQLiteStateStore, global_args
         return 0
     for event in events:
         timestamp = event.created_at.strftime("%Y-%m-%d %H:%M:%S")
-        print(
-            f"{timestamp} rev={event.revision} {event.event_type}: {event.message}"
-        )
+        print(f"{timestamp} rev={event.revision} {event.event_type}: {event.message}")
     return 0
-
-
 
 
 def handle_volumes(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
@@ -1044,6 +1092,7 @@ def handle_volumes(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
             return 0
         if getattr(args, "json", False):
             import json as _json
+
             print(_json.dumps(vols, indent=2))
         else:
             for v in vols:
@@ -1056,7 +1105,6 @@ def handle_volumes(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
         return 0
     print(f"Unsupported volumes command: {args.vol_cmd}")
     return 1
-
 
 
 def handle_logs_remote(args: argparse.Namespace, global_args: argparse.Namespace) -> int:
@@ -1078,10 +1126,12 @@ def handle_logs_remote(args: argparse.Namespace, global_args: argparse.Namespace
     if args.follow:
         params.append(("follow", "1"))
     from urllib.parse import urlencode
+
     path = f"/logs/{args.name}"
     if params:
         path += "?" + urlencode(params)
     import requests
+
     url = base.rstrip("/") + path
     headers = {"Accept": "text/plain" if args.follow else "application/json"}
     if tok:
@@ -1106,9 +1156,9 @@ def handle_logs_remote(args: argparse.Namespace, global_args: argparse.Namespace
         return 1
 
 
-
 def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
     from ae.controller.spec import load_manifest
+
     try:
         manifest = load_manifest(args.file)
     except Exception as exc:  # noqa: BLE001
@@ -1120,7 +1170,9 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
     rollout = getattr(manifest.spec, "rollout", {}) or {}
     strategy = str(rollout.get("strategy", "parallel"))
     print(f"  - replicas: {desired}")
-    print(f"  - rollout: strategy={strategy} maxSurge={rollout.get('maxSurge', 1)} maxUnavailable={rollout.get('maxUnavailable', 0)}")
+    print(
+        f"  - rollout: strategy={strategy} maxSurge={rollout.get('maxSurge', 1)} maxUnavailable={rollout.get('maxUnavailable', 0)}"
+    )
 
     warnings = []
 
@@ -1150,30 +1202,42 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
         infos = runtime.list_containers_info()  # type: ignore[attr-defined]
     except Exception:
         infos = []
-    running_same = [i for i in infos if (i.get("labels") or {}).get("ae.app") == manifest.metadata.name]
+    running_same = [
+        i for i in infos if (i.get("labels") or {}).get("ae.app") == manifest.metadata.name
+    ]
     if running_same:
-        print(f"  - note: found {len(running_same)} running container(s) for app '{manifest.metadata.name}' (rollout surge may temporarily increase count)")
+        print(
+            f"  - note: found {len(running_same)} running container(s) for app '{manifest.metadata.name}' (rollout surge may temporarily increase count)"
+        )
     if desired > 1 and not os.getenv("AE_DOCKER_NETWORK"):
-        print("  - note: AE_DOCKER_NETWORK is not set; multi-replica ingress may require host ports")
-
+        print(
+            "  - note: AE_DOCKER_NETWORK is not set; multi-replica ingress may require host ports"
+        )
 
     # Affinity warnings
     try:
         infos = runtime.list_containers_info()  # type: ignore[attr-defined]
     except Exception:
         infos = []
-    running_same = [i for i in infos if (i.get("labels") or {}).get("ae.app") == manifest.metadata.name]
+    running_same = [
+        i for i in infos if (i.get("labels") or {}).get("ae.app") == manifest.metadata.name
+    ]
     if running_same:
         warnings.append(
-            f"found {len(running_same)} running container(s) for app \"{manifest.metadata.name}\" (surge may increase count)"
+            f'found {len(running_same)} running container(s) for app "{manifest.metadata.name}" (surge may increase count)'
         )
     import os as _os
+
     if desired > 1 and not _os.getenv("AE_DOCKER_NETWORK"):
-        warnings.append("AE_DOCKER_NETWORK is not set; multi-replica ingress may require host ports")
+        warnings.append(
+            "AE_DOCKER_NETWORK is not set; multi-replica ingress may require host ports"
+        )
     vols = getattr(manifest.spec, "volumes", []) or []
     for v in vols:
         if not getattr(v, "read_only", True):
-            warnings.append(f"hostPath bind at {getattr(v, 'mount_path', '')} is RW; consider spec.storage PV-lite for persistence")
+            warnings.append(
+                f"hostPath bind at {getattr(v, 'mount_path', '')} is RW; consider spec.storage PV-lite for persistence"
+            )
     for w in warnings:
         print(f"  ! warning: {w}")
     if getattr(args, "strict", False) and warnings:
@@ -1182,6 +1246,7 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
     print("  - actions: create or reconcile containers; update ingress as needed")
     print("Plan OK.")
     return 0
+
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
     raise SystemExit(main())

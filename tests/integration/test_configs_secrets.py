@@ -14,4 +14,3 @@ def test_echo_projection_files_exist():
     root = candidates[0]
     assert (root / "config" / "mode").exists()
     assert (root / "secret" / "token").exists()
-

@@ -123,7 +123,7 @@ def test_logs_command(tmp_path, monkeypatch, capsys):
     write_manifest(manifest_path)
     assert main(["apply", "-f", str(manifest_path)]) == 0
     capsys.readouterr()
-    exit_code = main(["logs", "echo"]) 
+    exit_code = main(["logs", "echo"])
     assert exit_code == 0
     output = capsys.readouterr().out
     assert "echo-rev1-0" in output

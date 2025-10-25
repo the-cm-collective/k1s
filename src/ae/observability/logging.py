@@ -25,4 +25,3 @@ def configure_logging(level: Level | None = None) -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-

@@ -25,9 +25,7 @@ class SecretManager:
         self._sops = sops_binary or os.getenv("AE_SOPS_BIN", "sops")
         allow_plaintext_env = os.getenv("AE_ALLOW_PLAINTEXT_SECRETS")
         self._allow_plaintext = (
-            allow_plaintext
-            if allow_plaintext is not None
-            else allow_plaintext_env == "1"
+            allow_plaintext if allow_plaintext is not None else allow_plaintext_env == "1"
         )
 
     def load_env(self, refs: Iterable[SecretRef]) -> Dict[str, str]:
@@ -94,6 +92,7 @@ class SecretManager:
                 if i < attempts - 1:
                     try:
                         import time as _t
+
                         _t.sleep(delay)
                     except Exception:
                         pass

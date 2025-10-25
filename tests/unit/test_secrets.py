@@ -42,7 +42,7 @@ BAZ: qux
 
 def test_secret_manager_missing_key(tmp_path, monkeypatch):
     secret_path = tmp_path / "secret.json"
-    write_secret(secret_path, "{\"FOO\": \"bar\"}")
+    write_secret(secret_path, '{"FOO": "bar"}')
 
     monkeypatch.setenv("AE_ALLOW_PLAINTEXT_SECRETS", "1")
     manager = SecretManager()

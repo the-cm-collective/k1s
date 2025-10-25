@@ -62,6 +62,7 @@ class IngressSpec(BaseModel):
     path: str = Field(default="/")
     tls: bool = Field(default=True)
 
+
 class ServiceSpec(BaseModel):
     """Service abstraction (single-host) providing a stable published port.
 
@@ -71,7 +72,11 @@ class ServiceSpec(BaseModel):
     """
 
     port: int = Field(description="Host port to publish (stable)")
-    target_port: Optional[int] = Field(default=None, alias="targetPort", description="Container port to expose; defaults to first port")
+    target_port: Optional[int] = Field(
+        default=None,
+        alias="targetPort",
+        description="Container port to expose; defaults to first port",
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -163,6 +168,7 @@ class SecretRef(BaseModel):
     # Optional file projections: project selected keys into files under the mount root
     files: List[dict] = Field(default_factory=list)
 
+
 class ConfigEnvMapping(BaseModel):
     """Mapping from config key to environment variable."""
 
@@ -192,7 +198,9 @@ class AppSpec(BaseModel):
     ingress: Optional[IngressSpec] = None
     service: Optional[ServiceSpec] = None
     # Rollout policy
-    rollout: Optional[dict] = Field(default_factory=lambda: {"strategy": "parallel", "maxSurge": 1, "maxUnavailable": 0})
+    rollout: Optional[dict] = Field(
+        default_factory=lambda: {"strategy": "parallel", "maxSurge": 1, "maxUnavailable": 0}
+    )
     registry_auth_ref: Optional[str] = Field(default=None, alias="registryAuthRef")
     secret_refs: List[SecretRef] = Field(default_factory=list, alias="secretRefs")
     config_refs: List[ConfigRef] = Field(default_factory=list, alias="configRefs")
@@ -201,7 +209,6 @@ class AppSpec(BaseModel):
     storage: List[StorageSpec] = Field(default_factory=list)
 
     model_config = {"populate_by_name": True}
-
 
 
 class AppManifest(BaseModel):

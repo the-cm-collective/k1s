@@ -30,7 +30,9 @@ class RegistryAuthProvider:
         creds = self._credentials.get(registry)
         if not creds:
             return
-        client.login(registry=registry, username=creds.get("username"), password=creds.get("password"))
+        client.login(
+            registry=registry, username=creds.get("username"), password=creds.get("password")
+        )
 
     def list_registries(self) -> Dict[str, Dict[str, str]]:
         return self._credentials
