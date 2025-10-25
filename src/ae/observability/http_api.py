@@ -867,7 +867,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                   .node text { font-size:12px; pointer-events:none; }
                   .node.system rect { fill:#e5e7eb; stroke:#6b7280; }
                   .node.app rect { fill:#dbeafe; stroke:#3b82f6; }
-                  .node.pod circle { fill:#dcfce7; stroke:#16a34a; }
+                  .node.pod circle { fill:#e5e7eb; stroke:#6b7280; }
+                  .node.pod.ready circle { fill:#dcfce7; stroke:#16a34a; }
+                  .node.pod.pending circle { fill:#fef3c7; stroke:#f59e0b; }
                   .link { stroke:#6b7280; stroke-width:1.5; fill:none; marker-end:url(#arrow); }
                   .flow { stroke-dasharray:6 6; animation: flow 1.6s linear infinite; }
                   .selected rect, .selected circle { stroke-width:2.4 !important; filter: drop-shadow(0 0 2px #60a5fa); }
@@ -879,6 +881,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
               <g id=\"links\"></g>
               <g id=\"nodes\"></g>
             </svg>
+            <div id=\"graph-legend\" style=\"position:absolute; right:8px; top:8px; background:#fffcc; color:inherit; padding:6px 8px; border-radius:6px; border:1px solid #8884; backdrop-filter: blur(2px); font-size:12px;\">
+              <div style=\"display:flex; gap:10px; align-items:center; flex-wrap:wrap;\">
+                <span><svg width=\"14\" height=\"14\"><rect x=\"1\" y=\"1\" width=\"12\" height=\"12\" rx=\"3\" fill=\"#e5e7eb\" stroke=\"#6b7280\"/></svg> System</span>
+                <span><svg width=\"14\" height=\"14\"><rect x=\"1\" y=\"1\" width=\"12\" height=\"12\" rx=\"3\" fill=\"#dbeafe\" stroke=\"#3b82f6\"/></svg> App</span>
+                <span><svg width=\"14\" height=\"14\"><circle cx=\"7\" cy=\"7\" r=\"5\" fill=\"#dcfce7\" stroke=\"#16a34a\"/></svg> Pod ready</span>
+                <span><svg width=\"14\" height=\"14\"><circle cx=\"7\" cy=\"7\" r=\"5\" fill=\"#fef3c7\" stroke=\"#f59e0b\"/></svg> Pod pending</span>
+                <span><svg width=\"30\" height=\"8\"><defs><marker id=\"lg-a\" markerWidth=\"10\" markerHeight=\"10\" refX=\"10\" refY=\"3\" orient=\"auto\"><path d=\"M0,0 L10,3 L0,6 Z\" fill=\"#6b7280\"/></marker></defs><path d=\"M1 4 L26 4\" stroke=\"#6b7280\" stroke-width=\"1.5\" stroke-dasharray=\"6 6\" marker-end=\"url(#lg-a)\"/></svg> Flow</span>
+              </div>
+            </div>
           </div>
         </div>
         <div class=\"card\" style=\"margin-top:12px;\">
@@ -1121,7 +1132,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
         var nodes = [];
         var nodeById = {};
-        function addNode(id, label, type, x, y){ var n={id:id,label:label,type:type,x:x,y:y}; nodes.push(n); nodeById[id]=n; return n; }
+        function addNode(id, label, type, x, y, meta){ var n={id:id,label:label,type:type,x:x,y:y,meta:meta||{}}; nodes.push(n); nodeById[id]=n; return n; }
 
         var hasIngress = !!(sys.ingress && (sys.ingress.sites||[]).length);
         addNode('dns', 'DNS', 'system', padX + 160, topY);
@@ -1132,16 +1143,19 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         var apps = (statuses||[]).slice();
         var cols = Math.max(1, Math.min(apps.length, 5));
         var gap = (W - padX*2) / Math.max(1, cols);
+        var byApp = {};
+        apps.forEach(function(s){ byApp[s.app_name]=s; });
         apps.forEach(function(s, i){
           var col = i % cols;
           var x = padX + gap*col + gap*0.5;
-          addNode('app:'+s.app_name, s.app_name, 'app', x, appY);
+          addNode('app:'+s.app_name, s.app_name, 'app', x, appY, {app:s.app_name, ready:s.ready_replicas, desired:s.desired_replicas, rev:s.revision, status:s.revision_status});
           var desired = Math.max(0, Number(s.desired_replicas||0));
           var ready = Math.max(0, Number(s.ready_replicas||0));
           var pods = Math.min(desired, 12);
           for (var k=0;k<pods;k++){
             var px = x - (pods-1)*10/2 + k*10;
-            addNode('pod:'+s.app_name+':'+k, (k<ready?'ready':'pending'), 'pod', px, podY);
+            var state=(k<ready?'ready':'pending');
+            addNode('pod:'+s.app_name+':'+k, state, 'pod', px, podY, {app:s.app_name, podIndex:k, state:state});
           }
         });
 
@@ -1192,7 +1206,14 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             var c = document.createElementNS('http://www.w3.org/2000/svg','circle');
             c.setAttribute('r','5'); c.setAttribute('cx','5'); c.setAttribute('cy','5');
             c.setAttribute('stroke-width','1.2');
+            // class for ready/pending
+            if(n.meta && n.meta.state){ g.setAttribute('class', g.getAttribute('class') + ' ' + n.meta.state); }
             g.appendChild(c);
+            var title = document.createElementNS('http://www.w3.org/2000/svg','title');
+            var appInfo = n.meta && n.meta.app ? 'App: '+n.meta.app+'\n' : '';
+            var idx = (n.meta && (n.meta.podIndex!=null)) ? ('Replica: '+String(n.meta.podIndex)+'\n') : '';
+            title.textContent = appInfo + idx + 'State: ' + (n.meta && n.meta.state ? n.meta.state : n.label);
+            g.appendChild(title);
           } else {
             var rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
             rect.setAttribute('width','80'); rect.setAttribute('height','32'); rect.setAttribute('rx','6'); rect.setAttribute('ry','6'); rect.setAttribute('stroke-width','1.2');
@@ -1200,6 +1221,14 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             var t = document.createElementNS('http://www.w3.org/2000/svg','text');
             t.setAttribute('x','40'); t.setAttribute('y','20'); t.setAttribute('text-anchor','middle'); t.textContent = n.label;
             g.appendChild(t);
+            var title = document.createElementNS('http://www.w3.org/2000/svg','title');
+            if(n.id.startsWith('app:')){
+              var a = n.meta || {};
+              title.textContent = 'App: '+(a.app||n.label)+'\nReplicas: '+(a.ready||0)+'/'+(a.desired||0)+(a.rev!=null?('\nRevision: '+a.rev+' ('+(a.status||'-')+')'):'');
+            } else {
+              title.textContent = n.label;
+            }
+            g.appendChild(title);
           }
           gNodes.appendChild(g);
         }
