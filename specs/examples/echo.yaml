@@ -3,15 +3,26 @@ kind: App
 metadata:
   name: echo
 spec:
-  image: alpine:3.20
-  command:
-    - sh
-    - -c
-    - "while true; do printf 'ready\n'; sleep 5; done"
+  image: demo-blue:latest
   replicas: 1
+  env:
+    - name: APP_NAME
+      value: echo
+    - name: MESSAGE
+      value: "Hello from echo"
   ports:
     - name: http
       containerPort: 8080
+  health:
+    readiness:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 1
+      timeoutSeconds: 1
+      periodSeconds: 5
+      successThreshold: 1
+      failureThreshold: 3
   # Demonstrate configRefs projecting keys into env
   configRefs:
     - name: app-config
