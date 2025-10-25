@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional
 
@@ -53,10 +54,16 @@ class DockerRuntime(RuntimeAdapter):
         containers_by_replica: Dict[str, Container] = {}
         old_revision_containers: List[Container] = []
         for container in existing_containers:
-            replica_label = container.labels.get(self.REPLICA_LABEL)
+            # Accessing .labels may trigger an inspect call; guard against races where
+            # the container disappears between list() and inspect().
+            try:
+                labels = container.labels or {}
+            except NotFound:
+                continue
+            replica_label = labels.get(self.REPLICA_LABEL)
             if not replica_label:
                 continue
-            if container.labels.get(self.REVISION_LABEL) == str(revision):
+            if labels.get(self.REVISION_LABEL) == str(revision):
                 containers_by_replica[replica_label] = container
             else:
                 old_revision_containers.append(container)
@@ -216,7 +223,12 @@ class DockerRuntime(RuntimeAdapter):
         if manifest.spec.volumes:
             for v in manifest.spec.volumes:
                 mode = "ro" if v.read_only else "rw"
-                volumes[v.host_path] = {"bind": v.mount_path, "mode": mode}
+                host_path = v.host_path
+                # Docker bind mounts require absolute host paths; relative paths are treated
+                # as named volumes and will be rejected if they contain '/'. Make absolute.
+                if host_path and not os.path.isabs(host_path):
+                    host_path = os.path.abspath(host_path)
+                volumes[host_path] = {"bind": v.mount_path, "mode": mode}
         if getattr(manifest.spec, "storage", None):
             self.ensure_storage_volumes(manifest.metadata.name, [s.model_dump() for s in manifest.spec.storage])
             for s in manifest.spec.storage:
@@ -384,6 +396,13 @@ class DockerRuntime(RuntimeAdapter):
     def _parse_datetime(self, raw: Optional[str]) -> Optional[datetime]:
         if not raw or raw == "0001-01-01T00:00:00Z":
             return None
+        cleaned = str(raw)
+        if cleaned.endswith("Z"):
+            cleaned = cleaned[:-1] + "+00:00"
+        try:
+            return datetime.fromisoformat(cleaned)
+        except ValueError:  # pragma: no cover - best effort parsing
+            return None
 
     def _parse_memory_bytes(self, raw: str) -> Optional[int]:
         try:
@@ -416,13 +435,6 @@ class DockerRuntime(RuntimeAdapter):
             return int(float(num) * factor)
         except Exception:  # pragma: no cover - forgiving
             return None
-        cleaned = raw
-        if cleaned.endswith("Z"):
-            cleaned = cleaned[:-1] + "+00:00"
-        try:
-            return datetime.fromisoformat(cleaned)
-        except ValueError:  # pragma: no cover - best effort parsing
-            return None
 
     def list_containers_info(self) -> list[dict]:  # type: ignore[override]
         """List running containers with published host ports for conflict checks."""
@@ -452,4 +464,83 @@ class DockerRuntime(RuntimeAdapter):
                 })
             except Exception:
                 out.append({"name": getattr(c, 'name', ''), "labels": {}, "host_ports": []})
+        return out
+
+    # Storage volumes ---------------------------------------------------
+
+    def _storage_volume_name(self, app_name: str, vol_name: str) -> str:
+        """Derive the Docker volume name for a given app + storage spec name."""
+        return f"ae-{app_name}-{vol_name}"
+
+    def ensure_storage_volumes(self, app_name: str, volumes: list[dict]) -> None:  # type: ignore[override]
+        """Ensure Docker named volumes exist for each storage spec.
+
+        Each volume is labeled with ae.app and ae.volume for discovery and pruning.
+        """
+        try:
+            for v in volumes or []:
+                name = (v or {}).get("name")
+                if not name:
+                    continue
+                vol_name = self._storage_volume_name(app_name, str(name))
+                try:
+                    self._client.volumes.get(vol_name)
+                    continue
+                except NotFound:
+                    pass
+                self._client.volumes.create(
+                    name=vol_name,
+                    labels={
+                        "ae.app": app_name,
+                        "ae.volume": str(name),
+                    },
+                )
+        except APIError as exc:  # pragma: no cover - depends on docker daemon
+            raise RuntimeError(f"Failed to ensure storage volumes for {app_name}: {exc}") from exc
+
+    def remove_storage_volumes(self, app_name: str, names: list[str]) -> int:  # type: ignore[override]
+        removed = 0
+        for n in names or []:
+            vol_name = self._storage_volume_name(app_name, str(n))
+            try:
+                vol = self._client.volumes.get(vol_name)
+            except NotFound:
+                continue
+            try:
+                vol.remove(force=True)
+                removed += 1
+            except APIError:
+                # best-effort removal; continue
+                continue
+        return removed
+
+    def list_storage_volumes(self, app_name: str | None = None) -> list[dict]:  # type: ignore[override]
+        out: list[dict] = []
+        try:
+            vols = self._client.volumes.list()
+        except APIError:
+            return out
+        for v in vols:
+            try:
+                attrs = getattr(v, "attrs", {}) or {}
+                labels = attrs.get("Labels", {}) or {}
+                app = labels.get("ae.app")
+                if app_name is not None:
+                    if app != app_name:
+                        continue
+                else:
+                    # Only show volumes that belong to this system
+                    if not app:
+                        continue
+                out.append(
+                    {
+                        "name": getattr(v, "name", attrs.get("Name", "")),
+                        "labels": labels,
+                        "driver": attrs.get("Driver", ""),
+                        "mountpoint": attrs.get("Mountpoint", ""),
+                    }
+                )
+            except Exception:
+                # Skip any unexpected volume shape
+                continue
         return out

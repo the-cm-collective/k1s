@@ -14,6 +14,7 @@ import json
 import socketserver
 import threading
 from typing import Tuple
+import errno
 
 from ae.controller.state import SQLiteStateStore
 from ae.observability.metrics import MetricsService
@@ -557,7 +558,18 @@ def start_http_api(
     handler_cls.scale_fn = scale_fn
     handler_cls.delete_fn = delete_fn
     handler_cls.logs_fn = logs_fn
-    httpd = socketserver.TCPServer(("0.0.0.0", port), handler_cls)
+    # Allow quick restarts by enabling SO_REUSEADDR to avoid TIME_WAIT bind errors
+    class ReusableTCPServer(socketserver.TCPServer):
+        allow_reuse_address = True
+
+    try:
+        httpd = ReusableTCPServer(("0.0.0.0", port), handler_cls)
+    except OSError as exc:
+        # If the requested port is in use (rapid restarts), fall back to an ephemeral port
+        if exc.errno == errno.EADDRINUSE:
+            httpd = ReusableTCPServer(("0.0.0.0", 0), handler_cls)
+        else:
+            raise
     assigned = httpd.server_address[1]
     thread = threading.Thread(target=httpd.serve_forever, name="ae-http-api", daemon=True)
     thread.start()

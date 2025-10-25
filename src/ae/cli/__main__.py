@@ -144,7 +144,6 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("-f", "--file", type=Path, required=True)
     plan.add_argument("--verbose", action="store_true", help="Show replica placement details")
     plan.add_argument("--strict", action="store_true", help="Treat warnings as errors")
-    plan.add_argument("--verbose", action="store_true", help="Show replica placement details")
 
     # volumes list
     vols = subparsers.add_parser("volumes", help="Inspect storage volumes")
@@ -1165,7 +1164,9 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
         infos = []
     running_same = [i for i in infos if (i.get("labels") or {}).get("ae.app") == manifest.metadata.name]
     if running_same:
-        warnings.append(f"found {len(running_same)} running container(s) for app "{manifest.metadata.name}" (surge may increase count)")
+        warnings.append(
+            f"found {len(running_same)} running container(s) for app \"{manifest.metadata.name}\" (surge may increase count)"
+        )
     import os as _os
     if desired > 1 and not _os.getenv("AE_DOCKER_NETWORK"):
         warnings.append("AE_DOCKER_NETWORK is not set; multi-replica ingress may require host ports")

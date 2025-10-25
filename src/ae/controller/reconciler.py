@@ -9,7 +9,7 @@ from pathlib import Path
 import os
 
 from ae.controller.health import HealthManager, HealthReport
-from ae.controller.spec import AppManifest, load_manifest
+from ae.controller.spec import AppManifest, VolumeSpec, load_manifest
 from ae.runtime import RuntimeAdapter, RuntimeResult
 
 from .state import SQLiteStateStore
@@ -77,11 +77,10 @@ class Reconciler:
         if projection_root is not None:
             vols = list(manifest_for_runtime.spec.volumes)
             mount_root = f"/var/run/ae/config/{manifest.metadata.name}"
-            vols.append({
-                "hostPath": str(projection_root),
-                "mountPath": mount_root,
-                "readOnly": True,
-            })
+            # Append a typed VolumeSpec so downstream code sees attributes, not dicts
+            vols.append(
+                VolumeSpec(host_path=str(projection_root), mount_path=mount_root, read_only=True)
+            )
             updated_spec = manifest_for_runtime.spec.model_copy(update={"volumes": vols})
             manifest_for_runtime = manifest_for_runtime.model_copy(update={"spec": updated_spec})
 
@@ -171,6 +170,8 @@ class Reconciler:
     ) -> list[str]:
         states_by_id = {state.replica_id: state for state in result.replica_states}
 
+        # Prefer only ready endpoints; defer ingress changes until at least one
+        # replica is ready to avoid transient 502s during warm-up.
         ready_eps: list[str] = []
         for replica in health_report.replicas:
             if not replica.ready:
@@ -181,15 +182,8 @@ class Reconciler:
         if ready_eps:
             return ready_eps
 
-        # fall back to any endpoints we have
-        any_eps = [s.endpoint for s in result.replica_states if s.endpoint]
-        if any_eps:
-            return any_eps  # type: ignore[return-value]
-
-        # final fallback: first declared port on loopback
-        if manifest.spec.ports:
-            port = manifest.spec.ports[0].container_port
-            return [f"127.0.0.1:{port}"]
+        # No ready endpoints yet: return empty to keep previous ingress
+        # configuration intact until readiness is achieved.
         return []
 
     def _compute_spec_hash(self, manifest: AppManifest) -> str:

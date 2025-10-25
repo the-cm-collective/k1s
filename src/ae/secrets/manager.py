@@ -46,24 +46,44 @@ class SecretManager:
         if not path.exists():
             raise FileNotFoundError(f"Secret file {path} not found")
 
-        try:
-            completed = subprocess.run(  # noqa: S603
-                [self._sops, "--decrypt", str(path)],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            content = completed.stdout
-        except FileNotFoundError:
-            if not self._allow_plaintext:
-                raise RuntimeError(
-                    "SOPS binary not found and plaintext secrets are disabled"
+        # Try sops a few times to ride out transient startup races; if plaintext is allowed,
+        # fall back to direct read on failure to avoid noisy crashes during demos.
+        attempts = 3
+        delay = 0.3
+        last_err: Exception | None = None
+        for i in range(attempts):
+            try:
+                completed = subprocess.run(  # noqa: S603
+                    [self._sops, "--decrypt", str(path)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
                 )
-            content = path.read_text()
-        except subprocess.CalledProcessError as exc:
-            if not self._allow_plaintext:
+                content = completed.stdout
+                break
+            except FileNotFoundError as exc:
+                last_err = exc
+                if not self._allow_plaintext:
+                    raise RuntimeError(
+                        "SOPS binary not found and plaintext secrets are disabled"
+                    ) from exc
+                content = path.read_text()
+                break
+            except subprocess.CalledProcessError as exc:
+                last_err = exc
+                # If plaintext permitted, read raw file immediately to reduce log noise.
+                if self._allow_plaintext:
+                    content = path.read_text()
+                    break
+                # Otherwise, brief retry to handle transient sops/env setup races.
+                if i < attempts - 1:
+                    try:
+                        import time as _t
+                        _t.sleep(delay)
+                    except Exception:
+                        pass
+                    continue
                 raise RuntimeError(f"sops decrypt failed for {path}: {exc.stderr}") from exc
-            content = path.read_text()
 
         try:
             data = json.loads(content)

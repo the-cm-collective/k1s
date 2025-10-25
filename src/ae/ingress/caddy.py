@@ -103,7 +103,12 @@ class CaddyIngressManager:
             LOGGER.error("Caddy reload timed out after %.1fs", (self._reload_timeout or 0))
             raise RuntimeError("Caddy reload timed out") from exc
         except subprocess.CalledProcessError as exc:
-            LOGGER.error("Caddy reload failed: %s", exc.stderr.decode("utf-8", "ignore"))
+            msg = exc.stderr.decode("utf-8", "ignore")
+            # During early startup the dev Caddy container may not exist yet; avoid noisy warnings.
+            if self._container and ("No such container" in msg or "container" in msg and "not found" in msg):
+                LOGGER.info("Caddy container %s not available yet; skipping reload", self._container)
+                return
+            LOGGER.error("Caddy reload failed: %s", msg)
             raise RuntimeError("Caddy reload failed") from exc
 
     def _render_site(self, ingress: IngressSpec, upstreams: Union[str, Sequence[str]], readiness_path: Optional[str], prefer_first: bool) -> str:

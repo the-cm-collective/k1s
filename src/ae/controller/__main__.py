@@ -70,10 +70,6 @@ def _load_all(paths: Iterable[Path]) -> List[AppManifest]:
     return manifests
 
 
-    # replaced by shared API server; kept import surface minimal
-    raise NotImplementedError
-
-
 def _make_reconciler() -> Reconciler:
     store = state_store_from_env()
     registry_auth = registry_auth_factory()
@@ -171,11 +167,21 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 return []
             return reconciler._runtime.read_logs(target.replica_id, follow=follow, tail=tail, since=since)
 
-        api_server, assigned, _ = start_http_api(
-            args.metrics_port, store, scale_fn=_scale, delete_fn=_delete, logs_fn=_logs
-        )
-        import logging
-        logging.getLogger(__name__).info("http api listening on port %s", assigned)
+        import logging, errno
+        try:
+            api_server, assigned, _ = start_http_api(
+                args.metrics_port, store, scale_fn=_scale, delete_fn=_delete, logs_fn=_logs
+            )
+            logging.getLogger(__name__).info("http api listening on port %s", assigned)
+        except OSError as exc:
+            if getattr(exc, "errno", None) == errno.EADDRINUSE:
+                logging.getLogger(__name__).warning(
+                    "http api port %s already in use; continuing without API server",
+                    args.metrics_port,
+                )
+                api_server = None
+            else:
+                raise
 
     if args.once:
         manifests = _load_all(_find_manifests(specs_dir))

@@ -287,6 +287,8 @@ export AE_CADDY_CONTAINER=${AE_CADDY_CONTAINER:-dev-caddy-1}
 export AE_STATE_DB=${AE_STATE_DB:-state/controller.db}
 # Avoid indefinite hangs on Caddy reload inside docker exec
 export AE_CADDY_RELOAD_TIMEOUT=${AE_CADDY_RELOAD_TIMEOUT:-10}
+# For local demos, allow plaintext secrets by default unless explicitly disabled
+export AE_ALLOW_PLAINTEXT_SECRETS=${AE_ALLOW_PLAINTEXT_SECRETS:-1}
 mkdir -p "${AE_CADDY_SITES}"
 if [[ ! -w "${AE_CADDY_SITES}" ]]; then
   log "Adjusting permissions on ${AE_CADDY_SITES} (may require sudo)"
@@ -303,6 +305,7 @@ export AE_CADDY_SITES=${AE_CADDY_SITES}
 export AE_CADDY_FILE=${AE_CADDY_FILE}
 export AE_CADDY_CONTAINER=${AE_CADDY_CONTAINER}
 export AE_DOCKER_NETWORK=${AE_DOCKER_NETWORK}
+export AE_ALLOW_PLAINTEXT_SECRETS=${AE_ALLOW_PLAINTEXT_SECRETS}
 ENV
 
 # Seed dynsites for docs and API so they are always available
@@ -357,6 +360,31 @@ ls -1 ops/dev/caddy/sites | sed 's/^/  - /' | xargs -r -I{} true >/dev/null 2>&1
 
 log "Applying demo manifests"
 APPLY_TIMEOUT=${APPLY_TIMEOUT:-120}
+
+# Ensure controller supervisor is running before applies to inherit demo env
+ensure_supervisor_running() {
+  if [[ $NO_CONTROLLER -ne 0 ]]; then
+    return 0
+  fi
+  local running=0
+  if [[ -f state/controller_supervisor.pid ]] && kill -0 "$(cat state/controller_supervisor.pid 2>/dev/null)" 2>/dev/null; then
+    running=1
+  fi
+  if [[ $running -eq 0 ]]; then
+    log "Controller supervisor not running; starting it now"
+    nohup bash scripts/supervise_controller.sh "$PY_BIN" specs "${API_PORT}" >/dev/null 2>&1 &
+    echo $! > state/controller_supervisor.pid
+  fi
+  # Wait briefly for the HTTP API to come up so subsequent steps see a stable controller
+  for i in {1..40}; do
+    if curl -fsS "http://127.0.0.1:${API_PORT}/openapi.json" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.25
+  done
+}
+
+ensure_supervisor_running || true
 
 # Wait briefly for Caddy container to accept execs
 for i in {1..20}; do
