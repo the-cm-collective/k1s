@@ -194,10 +194,16 @@ class Reconciler:
         return hashlib.sha256(payload).hexdigest()
 
     def _calculate_revision_status(self, manifest: AppManifest, report: HealthReport) -> str:
-        desired = manifest.spec.replicas
+        """Classify status with stable, non-flappy semantics.
+
+        - ready:       ready_replicas >= desired
+        - progressing: some replicas are live (>0) but readiness not met yet
+        - degraded:    no live replicas
+        """
+        desired = max(1, int(manifest.spec.replicas))
         if report.ready_replicas >= desired:
             return "ready"
-        if report.live_replicas >= desired:
+        if report.live_replicas > 0:
             return "progressing"
         return "degraded"
 

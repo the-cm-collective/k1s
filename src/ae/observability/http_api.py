@@ -128,6 +128,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if path_only in ("/dashboard", "/dashboard/"):
             self._handle_dashboard()
             return
+        if path_only == "/dashboard.js":
+            self._handle_dashboard_js()
+            return
         if path_only == "/status" or path_only == "/status/":
             self._handle_status_list()
             return
@@ -721,7 +724,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
               return fetchJSON('/logs/' + encodeURIComponent(current) + '?' + q.toString()).then(function(data){
                 var filt = (logFilter.value || '').toLowerCase();
                 var lines = (data.lines || []).filter(function(l){ return !filt || String(l).toLowerCase().indexOf(filt) !== -1; });
-                elLogs.textContent = lines.join('\n');
+                elLogs.textContent = lines.join(' ');
                 elLogs.scrollTop = elLogs.scrollHeight;
               });
             }
