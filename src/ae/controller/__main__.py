@@ -60,14 +60,29 @@ def _find_manifests(specs_dir: Path) -> List[Path]:
 
 
 def _load_all(paths: Iterable[Path]) -> List[AppManifest]:
-    manifests: List[AppManifest] = []
+    """Load manifests, preferring a single file per app name.
+
+    If multiple files declare the same metadata.name, prefer the file whose
+    basename matches the app name (e.g., echo.yaml) over variant samples like
+    echo-rollout.yaml, echo-resources.yaml, etc. This prevents rapid spec
+    churn when multiple examples exist for the same app.
+    """
+    selected: dict[str, tuple[AppManifest, Path]] = {}
     for path in paths:
         try:
             m = load_manifest(path)
         except ManifestError:
             continue
-        manifests.append(m)
-    return manifests
+        name = m.metadata.name
+        cur = selected.get(name)
+        if cur is None:
+            selected[name] = (m, path)
+            continue
+        # Prefer files whose stem exactly equals the app name
+        prefer_new = (path.stem == name and cur[1].stem != name)
+        if prefer_new:
+            selected[name] = (m, path)
+    return [mp[0] for mp in selected.values()]
 
 
 def _make_reconciler() -> Reconciler:
