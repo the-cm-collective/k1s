@@ -8,6 +8,8 @@ services:
       - "8443:443"
     volumes:
       - ./caddy:/etc/caddy:ro
+      # Persist Caddy state (includes the local CA and issued certs)
+      - ../../state/caddy-data:/data
       - ../../state/caddy:/etc/caddy/dynsites:ro
       - ../../docs/site:/srv/docs:ro
     extra_hosts:

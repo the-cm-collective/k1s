@@ -128,6 +128,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if path_only in ("/dashboard", "/dashboard/"):
             self._handle_dashboard()
             return
+        if path_only.startswith("/dashboard/partials/"):
+            # server-rendered fragments for HTMX-enhanced dashboard
+            subpath = path_only[len("/dashboard/partials/"):]
+            if subpath == "logs":
+                self._handle_dashboard_partial_logs()
+                return
         if path_only == "/dashboard.js":
             self._handle_dashboard_js()
             return
@@ -599,6 +605,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     <meta charset=\"utf-8\" />
     <title>k1s Demo Dashboard</title>
     <link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='28' fill='%234f46e5'/%3E%3Ctext x='32' y='40' font-size='28' text-anchor='middle' fill='white' font-family='sans-serif'%3Ek%3C/text%3E%3C/svg%3E\" />
+    <script src=\"https://unpkg.com/htmx.org@1.9.12\" integrity=\"sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2\" crossorigin=\"anonymous\"></script>
     <style>
       :root { color-scheme: light dark; }
       body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
@@ -614,7 +621,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       .bad { background:#ef444433; color:#b91c1c; }
       .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
       .card { border:1px solid #8884; border-radius:8px; padding:8px 10px; }
-      pre { width:100%; box-sizing:border-box; }
+      .detail-card { flex: 0 0 320px; }
+      .logbox { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; width:100%; box-sizing:border-box; height:420px; overflow:auto; background:#0001; padding:8px; border-radius:6px; }
+      .log-entry { white-space: pre-wrap; }
+      .log-entry code { opacity:0.8; margin-right:6px; }
       #controls { gap:8px; }
       input[type=text], select { padding:6px; }
       button { padding:6px 10px; }
@@ -633,7 +643,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           <option value=\"5000\" selected>5s</option>
           <option value=\"10000\">10s</option>
         </select></label>
-        <label>Log filter <input id=\"log-filter\" type=\"text\" size=\"24\" placeholder=\"substring\" /></label>
+        <label>Log filter <input id=\"log-filter\" name=\"filter\" type=\"text\" size=\"24\" placeholder=\"substring\" /></label>
         <button id=\"pause-btn\">Pause Logs</button>
       </div>
     </header>
@@ -641,7 +651,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       <section id=\"apps\"></section>
       <section id=\"detail\">
         <div class=\"row\">
-          <div class=\"card\" style=\"min-width:220px;\">
+          <div class=\"card detail-card\">
             <div><strong>App:</strong> <span id=\"d-app\">-</span></div>
             <div><strong>Image:</strong> <span id=\"d-image\">-</span></div>
             <div><strong>Ingress:</strong> <span id=\"d-ingress\">-</span></div>
@@ -655,13 +665,20 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         </div>
         <div class=\"card\" style=\"margin-top:12px;\">
           <strong>Logs</strong>
-          <pre id=\"logs\" style=\"max-height:360px; overflow:auto; background:#0001; padding:8px; border-radius:6px;\"></pre>
+          <div
+            id=\"logs\"
+            class=\"logbox\"
+            hx-get=\"/dashboard/partials/logs\"
+            hx-trigger=\"load, every 5s, refresh\"
+            hx-include=\"#log-filter\"
+            hx-swap=\"innerHTML\"
+            hx-on::after-settle=\"this.scrollTop=this.scrollHeight\"
+          ></div>
         </div>
       </section>
     </main>
     <script>
       var elApps = document.getElementById('apps');
-      var elLogs = document.getElementById('logs');
       var elEvents = document.getElementById('events');
       var pollSel = document.getElementById('poll-interval');
       var logFilter = document.getElementById('log-filter');
@@ -670,8 +687,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       var pollTimer = null;
       var pauseLogs = false;
 
-      pauseBtn.addEventListener('click', function () { pauseLogs = !pauseLogs; pauseBtn.textContent = pauseLogs ? 'Resume Logs' : 'Pause Logs'; });
-      pollSel.addEventListener('change', function () { schedulePoll(); });
+      pauseBtn.addEventListener('click', function () {
+        pauseLogs = !pauseLogs;
+        pauseBtn.textContent = pauseLogs ? 'Resume Logs' : 'Pause Logs';
+        updateLogsHTMX();
+      });
+      pollSel.addEventListener('change', function () { schedulePoll(); updateLogsHTMX(); });
 
       function badge(cls, text){ return '<span class="pill ' + cls + '">' + text + '</span>'; }
 
@@ -718,17 +739,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           document.getElementById('d-rev-status').textContent = s.revision_status;
           return fetchJSON('/events/' + encodeURIComponent(current) + '?limit=50').then(function(ev){
             elEvents.innerHTML = ev.map(function(e){ return '<div><code>' + e.created_at + '</code> ' + e.event_type + ' - ' + escapeHtml(e.message) + '</div>'; }).join('');
-          }).then(function(){
-            if(!pauseLogs){
-              var q = new URLSearchParams({ tail: '200' });
-              return fetchJSON('/logs/' + encodeURIComponent(current) + '?' + q.toString()).then(function(data){
-                var filt = (logFilter.value || '').toLowerCase();
-                var lines = (data.lines || []).filter(function(l){ return !filt || String(l).toLowerCase().indexOf(filt) !== -1; });
-                elLogs.textContent = lines.join(' ');
-                elLogs.scrollTop = elLogs.scrollHeight;
-              });
-            }
-          });
+          }).then(function(){ updateLogsHTMX(); });
         });
       }
 
@@ -738,14 +749,36 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if(ms > 0){ pollTimer = setInterval(function(){ refreshApps().then(refreshDetail).catch(console.error); }, ms); }
       }
 
-      function selectApp(name){ current = name; refreshDetail().then(refreshApps); }
+      function selectApp(name){ current = name; updateLogsHTMX(); refreshDetail().then(refreshApps); }
 
       function escapeHtml(s){
         s = (s === null || s === undefined) ? '' : String(s);
         return s.replace(/[&<>]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]); });
       }
 
-      refreshApps().then(refreshDetail).catch(console.error);
+      function updateLogsHTMX(){
+        var el = document.getElementById('logs');
+        if(!el) return;
+        var ms = parseInt(pollSel.value, 10) || 0;
+        var trig = 'refresh';
+        if (!pauseLogs) {
+          if (ms > 0) { trig = 'load, every ' + (ms/1000) + 's, refresh'; }
+          else { trig = 'load, refresh'; }
+        } else {
+          trig = 'none';
+        }
+        el.setAttribute('hx-trigger', trig);
+        var app = current ? encodeURIComponent(current) : '';
+        var url = '/dashboard/partials/logs' + (app ? ('?app=' + app + '&tail=200') : '');
+        el.setAttribute('hx-get', url);
+        if (window.htmx) {
+          window.htmx.process(el);
+          // kick a refresh for immediate load
+          if (!pauseLogs && current) { window.htmx.trigger(el, 'refresh'); }
+        }
+      }
+
+      refreshApps().then(function(){ updateLogsHTMX(); return refreshDetail(); }).catch(console.error);
       schedulePoll();
     </script>
   </body>
@@ -757,6 +790,71 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def _handle_dashboard_partial_logs(self) -> None:
+        # Render logs as an HTML fragment suitable for hx-swap=innerHTML
+        import urllib.parse as _up
+        frag, _, query = self.path.partition("?")
+        params = _up.parse_qs(query)
+        app = (params.get("app", [""])[0] or "").strip()
+        container = params.get("container", [None])[0]
+        try:
+            tail = int(params.get("tail", ["200"])[0])
+        except ValueError:
+            tail = 200
+        filt = (params.get("filter", [""])[0] or "").lower()
+
+        fn = getattr(self, "logs_fn", None)
+        if not app or fn is None:
+            html = "<div class=\"log-entry\">No logs</div>"
+            payload = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        try:
+            lines = list(fn(app, container, tail, None, False))  # type: ignore[misc]
+        except Exception as exc:
+            html = f"<div class=\"log-entry\"><code>error</code> {self._escape_html(str(exc))}</div>"
+            payload = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        out: list[str] = []
+        for l in lines:
+            s = l.decode('utf-8', 'replace') if isinstance(l, (bytes, bytearray)) else str(l)
+            if filt and (filt not in s.lower()):
+                continue
+            ts, msg = self._split_ts(s)
+            out.append(f"<div class=\"log-entry\"><code>{self._escape_html(ts)}</code> {self._escape_html(msg)}</div>")
+        html = "\n".join(out) if out else "<div class=\"log-entry\">No recent log lines</div>"
+        payload = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _split_ts(self, line: str) -> tuple[str, str]:
+        # Best-effort split: Docker timestamps are RFC3339 then a space
+        try:
+            if len(line) >= 20 and line[4] == '-' and 'T' in line[:25]:
+                ts, msg = line.split(' ', 1)
+                return ts, msg
+        except Exception:
+            pass
+        return '-', line
+
+    @staticmethod
+    def _escape_html(s: str) -> str:
+        import html as _html
+        return _html.escape(s, quote=False)
 
     def _handle_logs(self, app_and_query: str) -> None:
         # Return logs as JSON {app, lines:[...]}. Prefer polling over streaming for demo simplicity.

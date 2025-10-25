@@ -206,6 +206,16 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
   else
     log "Keeping hosts entries"
   fi
+  # Optionally remove trusted local CA
+  if command -v update-ca-certificates >/dev/null 2>&1; then
+    if [[ -f /usr/local/share/ca-certificates/caddy-local-root.crt ]]; then
+      if prompt_yes_no_hosts "Remove trusted Caddy local root CA from host trust store?" Y; then
+        $SUDO rm -f /usr/local/share/ca-certificates/caddy-local-root.crt || true
+        $SUDO update-ca-certificates >/dev/null 2>&1 || true
+        log "Removed Caddy local root CA from host trust"
+      fi
+    fi
+  fi
   log "Demo teardown complete."
   exit 0
 fi
@@ -274,7 +284,28 @@ mkdir -p ops/dev/caddy/sites
 find ops/dev/caddy/sites -maxdepth 1 -type f -name '*.caddy' \
   ! -name 'docs.caddy' ! -name 'api.caddy' -print -delete 2>/dev/null || true
 # Controller writes dynamic sites under state/caddy (mounted as /etc/caddy/dynsites)
-docker compose -f ops/dev/docker-compose.yaml up -d
+  docker compose -f ops/dev/docker-compose.yaml up -d
+
+  # Trust Caddy's local CA on the host so browsers don't warn on every run.
+  # This only applies to Debian/Ubuntu hosts.
+  if command -v update-ca-certificates >/dev/null 2>&1; then
+    # Trigger local CA creation by touching one TLS site once (ignore TLS verify)
+    curl -ksS https://docs.home.arpa:8443/ >/dev/null 2>&1 || true
+    # Give Caddy a moment to mint the local CA and leaf certs
+    sleep 1
+    # Export Caddy local root from the container if present
+    if docker exec dev-caddy-1 test -f /data/caddy/pki/authorities/local/root.crt; then
+      mkdir -p state/certs
+      docker cp dev-caddy-1:/data/caddy/pki/authorities/local/root.crt state/certs/caddy-local-root.crt >/dev/null 2>&1 || true
+      if [[ -s state/certs/caddy-local-root.crt ]]; then
+        log "Installing Caddy local root CA into host trust store"
+        $SUDO cp state/certs/caddy-local-root.crt /usr/local/share/ca-certificates/caddy-local-root.crt
+        $SUDO update-ca-certificates >/dev/null 2>&1 || true
+      fi
+    fi
+  else
+    log "update-ca-certificates not found; skipping local CA trust (manually import state/certs/caddy-local-root.crt)"
+  fi
 
 if prompt_yes_no_hosts "Add hosts entries for ${HOSTS[*]} to /etc/hosts?" N; then
   log "Configuring hosts entries"
@@ -330,6 +361,7 @@ https://docs.home.arpa {
         format console
     }
     header -Strict-Transport-Security
+    tls internal
     root * /srv/docs
     file_server browse
 }
@@ -342,6 +374,7 @@ https://api.home.arpa {
         format console
     }
     header -Strict-Transport-Security
+    tls internal
     reverse_proxy host.docker.internal:${API_PORT}
 }
 API

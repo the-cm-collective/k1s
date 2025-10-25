@@ -22,6 +22,8 @@ SITE_TEMPLATE = Template(
     }
     # Ensure upstream HSTS does not stick during dev
     header -Strict-Transport-Security
+    # Use Caddy's local CA for dev so certs chain to a stable root we can trust
+    tls internal
     reverse_proxy $upstreams {
         $health_block
         $policy_block

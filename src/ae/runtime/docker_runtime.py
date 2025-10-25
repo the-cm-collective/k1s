@@ -127,11 +127,27 @@ class DockerRuntime(RuntimeAdapter):
             return iter(())
         container = containers[0]
         try:
+            # Include timestamps so the UI can render time-prefixed entries.
             if follow:
-                for chunk in container.logs(stdout=True, stderr=True, stream=True, follow=True, tail=tail or "all", since=since):
+                for chunk in container.logs(
+                    stdout=True,
+                    stderr=True,
+                    stream=True,
+                    follow=True,
+                    tail=tail or "all",
+                    since=since,
+                    timestamps=True,
+                ):
                     yield chunk.decode("utf-8", "replace").rstrip("\n")
             else:
-                output = container.logs(stdout=True, stderr=True, stream=False, tail=tail or 200, since=since)
+                output = container.logs(
+                    stdout=True,
+                    stderr=True,
+                    stream=False,
+                    tail=tail or 200,
+                    since=since,
+                    timestamps=True,
+                )
                 text = output.decode("utf-8", "replace")
                 for line in text.splitlines():
                     yield line
