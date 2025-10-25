@@ -175,13 +175,12 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             logging.getLogger(__name__).info("http api listening on port %s", assigned)
         except OSError as exc:
             if getattr(exc, "errno", None) == errno.EADDRINUSE:
-                logging.getLogger(__name__).warning(
-                    "http api port %s already in use; continuing without API server",
+                logging.getLogger(__name__).error(
+                    "http api port %s already in use; exiting so supervisor can restart",
                     args.metrics_port,
                 )
-                api_server = None
-            else:
-                raise
+                return 2
+            raise
 
     if args.once:
         manifests = _load_all(_find_manifests(specs_dir))

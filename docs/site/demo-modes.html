@@ -90,6 +90,7 @@
       <a href="concepts.html">Concepts</a>
       <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="https://api.home.arpa:8443/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <a href="https://api.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
     </nav>
     <div class="container">
     <h2>Demo Modes</h2>
@@ -149,6 +150,7 @@
 <ul>
 <li>Caddy HTTP: <code>:8888</code>, HTTPS: <code>:8443</code>.</li>
 <li>Hosts entries (added with <code>-y</code>): <code>blue|green|echo-mr|docs|api.home.arpa</code> → <code>127.0.0.1</code>.</li>
+<li>Dashboard lives under the API host: <code>https://api.home.arpa:8443/dashboard</code> (or <code>http://127.0.0.1:9108/dashboard</code> directly).</li>
 <li>Health checks are disabled by default for compatibility; enable with <code>AE_CADDY_ACTIVE_HEALTH=1</code> if your Caddy supports the directive.</li>
 </ul>
 <h3>Storage (PV-lite)</h3>

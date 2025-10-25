@@ -66,7 +66,7 @@ Environment variables you can override:
 Endpoints after setup:
   - Apps via Caddy: https://blue.home.arpa:8443/ and https://green.home.arpa:8443/
   - Docs via Caddy: https://docs.home.arpa:8443/
-  - API via Caddy:  https://api.home.arpa:8443/ (Swagger at /swagger, ReDoc at /redoc)
+  - API via Caddy:  https://api.home.arpa:8443/ (Swagger /swagger, ReDoc /redoc, Dashboard /dashboard)
   - Docs direct:    http://127.0.0.1:9109/
 
 USAGE
@@ -486,7 +486,7 @@ check_api_reachability() {
   # Direct API JSON
   if curl -fsS "http://127.0.0.1:${API_PORT}/openapi.json" >/dev/null 2>&1; then
     log "Direct API OK: http://127.0.0.1:${API_PORT}/openapi.json"
-    for path in /swagger /redoc; do
+    for path in /swagger /redoc /dashboard; do
       code=$(curl -fsS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${API_PORT}${path}" || true)
       if [[ "$code" == "200" ]]; then
         log "Direct ${path} OK: http://127.0.0.1:${API_PORT}${path}"
@@ -506,6 +506,15 @@ check_api_reachability() {
              "https://api.home.arpa:${CADDY_HTTPS_PORT}/openapi.json" || true)
   if [[ "$code_api" == "200" ]]; then
     log "Caddy API OK: https://api.home.arpa:${CADDY_HTTPS_PORT}/openapi.json"
+    for path in /swagger /redoc /dashboard; do
+      code=$(curl -ksS --resolve "api.home.arpa:${CADDY_HTTPS_PORT}:127.0.0.1" -o /dev/null -w '%{http_code}' \
+             "https://api.home.arpa:${CADDY_HTTPS_PORT}${path}" || true)
+      if [[ "$code" == "200" ]]; then
+        log "Caddy ${path} OK: https://api.home.arpa:${CADDY_HTTPS_PORT}${path}"
+      else
+        log "Caddy ${path} not reachable (HTTP ${code:-fail})"
+      fi
+    done
   else
     log "Caddy API not reachable (HTTP ${code_api:-fail})."
     echo "If direct API works, try reloading Caddy:"
@@ -619,8 +628,8 @@ Demo setup complete.
 - Blue app:   https://blue.home.arpa:8443/
 - Green app:  https://green.home.arpa:8443/
 - Docs site:  https://docs.home.arpa:8443/ (via Caddy) and http://127.0.0.1:${DOCS_PORT}/ (direct)
-  API UIs:    https://api.home.arpa:8443/swagger (Swagger), https://api.home.arpa:8443/redoc (ReDoc)
-  API direct: http://127.0.0.1:9108/swagger and http://127.0.0.1:9108/redoc
+  API UIs:    https://api.home.arpa:8443/swagger, https://api.home.arpa:8443/redoc, https://api.home.arpa:8443/dashboard
+  API direct: http://127.0.0.1:9108/swagger, http://127.0.0.1:9108/redoc, http://127.0.0.1:9108/dashboard
 
 If hosts mapping was added, you can also visit:
   - curl -k https://blue.home.arpa:8443/

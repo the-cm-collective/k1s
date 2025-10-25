@@ -16,7 +16,7 @@ This snapshot captures a stable, working demo configuration.
 - Controller + API
   - Supervisor auto-start enabled
   - API on `:9108` (Direct: `http://127.0.0.1:9108/`)
-  - API via Caddy: `https://api.home.arpa:8443/` (Swagger `/swagger`, ReDoc `/redoc`)
+- API via Caddy: `https://api.home.arpa:8443/` (Swagger `/swagger`, ReDoc `/redoc`, Dashboard `/dashboard`)
 
 - Docs
   - Built to `docs/site/`, served by `python -m http.server` on `:9109`
@@ -38,4 +38,3 @@ This snapshot captures a stable, working demo configuration.
   - Sanity checks validate upstream DNS/ports from appropriate context
 
 Use `./scripts/init_demo.sh --down` to tear down and clean hosts entries.
-

@@ -130,6 +130,7 @@ TEMPLATE = """<!doctype html>
       <a href="concepts.html">Concepts</a>
       <a href="{api_base}/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="{api_base}/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <a href="{api_base}/dashboard" target="_blank" rel="noopener">Dashboard</a>
     </nav>
     <div class="container">
     {body}
@@ -273,7 +274,7 @@ def main() -> None:
         "scheduling.md": "scheduling.html",
     }
     # index
-    index = """
+    index = f"""
 <h1>k1s Documentation</h1>
 <ul>
   <li><a href="overview.html">Overview</a></li>
@@ -287,6 +288,7 @@ def main() -> None:
   <li><a href="observability.html">Observability</a></li>
   <li><a href="examples.html">Examples</a></li>
   <li><a href="scheduling.html">Scheduling</a></li>
+  <li><a href="{API_BASE}/dashboard" target="_blank" rel="noopener">Live Demo Dashboard</a></li>
 </ul>
 """
     (OUT / "index.html").write_text(TEMPLATE.format(title="k1s Docs", body=index, api_base=API_BASE), encoding="utf-8")

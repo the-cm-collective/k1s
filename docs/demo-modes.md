@@ -59,6 +59,7 @@ logs (Ctrl-C to exit).
 
 - Caddy HTTP: `:8888`, HTTPS: `:8443`.
 - Hosts entries (added with `-y`): `blue|green|echo-mr|docs|api.home.arpa` → `127.0.0.1`.
+  - Dashboard lives under the API host: `https://api.home.arpa:8443/dashboard` (or `http://127.0.0.1:9108/dashboard` directly).
 - Health checks are disabled by default for compatibility; enable with `AE_CADDY_ACTIVE_HEALTH=1` if your Caddy supports the directive.
 
 
@@ -72,4 +73,3 @@ logs (Ctrl-C to exit).
   - `ae volumes list --app echo`
 - Delete with purge to remove volumes marked `retention: Delete`:
   - `ae delete echo --purge`
-
