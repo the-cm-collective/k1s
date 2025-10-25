@@ -54,10 +54,15 @@ spec:
       files:
         - key: token
           file: secret/token
-  # Also project selected config keys to files
+  # Also project selected config keys to files (same configRef entry)
   configRefs:
     - name: app-config
       path: configs/app-config.yaml
+      env:
+        - name: APP_MODE
+          key: mode
+        - name: APP_COLOR
+          key: color
       files:
         - key: mode
           file: config/app_mode.txt
