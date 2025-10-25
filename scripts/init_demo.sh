@@ -38,6 +38,7 @@ Options:
   --docs-only      Start docs + API only (no apps)
   --demo-rollout   Apply a two-step ordered rollout for echo
   --demo-storage   Apply a storage (PV-lite) demo for echo and list volumes
+  --hosts-ip IP    Use this IP for /etc/hosts entries (default 127.0.0.1)
 
 What this does (setup):
   1) Ensures required system packages (python3, venv, pip, sqlite3, age, sops) are present
@@ -85,6 +86,7 @@ DEMO_ECHO_MR=0
 DOCS_ONLY=0
 DEMO_ROLLOUT=0
 DEMO_STORAGE=0
+HOSTS_IP=${HOSTS_IP:-127.0.0.1}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h|help)
@@ -113,6 +115,8 @@ while [[ $# -gt 0 ]]; do
       DEMO_ROLLOUT=1 ;;
     --demo-storage)
       DEMO_STORAGE=1 ;;
+    --hosts-ip)
+      HOSTS_IP=${2:?requires IP}; shift ;;
     --bind-all)
       DOCS_BIND=0.0.0.0 ;;
     *)
@@ -275,8 +279,8 @@ docker compose -f ops/dev/docker-compose.yaml up -d
 if prompt_yes_no_hosts "Add hosts entries for ${HOSTS[*]} to /etc/hosts?" N; then
   log "Configuring hosts entries"
   for host in "${HOSTS[@]}"; do
-    if ! grep -q "$host" /etc/hosts; then
-      $SUDO sh -c "echo '127.0.0.1 $host' >> /etc/hosts"
+    if ! grep -q "[[:space:]]$host$" /etc/hosts; then
+      $SUDO sh -c "echo '${HOSTS_IP} ${host}' >> /etc/hosts"
     fi
   done
 else
@@ -326,7 +330,8 @@ https://docs.home.arpa {
         format console
     }
     header -Strict-Transport-Security
-    reverse_proxy host.docker.internal:${DOCS_PORT}
+    root * /srv/docs
+    file_server browse
 }
 DOCS
 

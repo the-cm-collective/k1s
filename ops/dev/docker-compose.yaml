@@ -9,6 +9,7 @@ services:
     volumes:
       - ./caddy:/etc/caddy:ro
       - ../../state/caddy:/etc/caddy/dynsites:ro
+      - ../../docs/site:/srv/docs:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Placeholder until controller writes per-app config.
