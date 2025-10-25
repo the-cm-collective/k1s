@@ -1,18 +1,17 @@
 apiVersion: ae.dev/v1alpha1
 kind: App
 metadata:
-  name: echo
+  name: echo-resources
 spec:
-  image: alpine:3.20
+  image: demo-blue:latest
   replicas: 1
-  command: ["sh", "-c", "while true; do echo hello; sleep 2; done"]
   ports:
     - name: http
       containerPort: 8080
   health:
     readiness:
-      httpGet: { path: /, port: 8080 }
-      initialDelaySeconds: 5
+      httpGet: { path: /healthz, port: 8080 }
+      initialDelaySeconds: 1
       timeoutSeconds: 2
   resources:
     limits:
@@ -23,6 +22,6 @@ spec:
       mountPath: /host-tmp
       readOnly: false
   ingress:
-    host: echo.localtest.me
+    host: echo-resources.home.arpa
     path: /
-    tls: false
+    tls: true

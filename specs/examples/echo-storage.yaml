@@ -1,14 +1,17 @@
 apiVersion: ae.dev/v1alpha1
 kind: App
 metadata:
-  name: echo
+  name: echo-storage
 spec:
-  image: alpine:3.20
-  command: ["sh", "-c", "while true; do date >> /var/lib/echo/data.log; sleep 5; done"]
+  image: demo-blue:latest
   replicas: 1
   ports:
     - name: http
       containerPort: 8080
+  health:
+    readiness:
+      httpGet: { path: /healthz, port: 8080 }
+      initialDelaySeconds: 1
   storage:
     - name: data
       mountPath: /var/lib/echo

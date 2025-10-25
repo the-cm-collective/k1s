@@ -1,15 +1,30 @@
 apiVersion: ae.dev/v1alpha1
 kind: App
 metadata:
-  name: echo
+  name: echo-del
 spec:
   image: alpine:3.20
-  command: ["sh", "-c", "while true; do printf 'ready\\n'; sleep 5; done"]
+  command: ["sh", "-c", "while true; do date >> /var/lib/echo/data.log; sleep 1; done"]
   replicas: 1
-  ports: [{ name: http, containerPort: 8080 }]
+  ports:
+    - name: http
+      containerPort: 8080
+  storage:
+    - name: data
+      mountPath: /var/lib/echo
+      retention: Delete
+---
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: echo-rollout
+spec:
+  image: demo-blue:latest
+  replicas: 1
+  ports:
+    - { name: http, containerPort: 8080 }
   health:
-    readiness: { httpGet: { path: /, port: 8080 }, initialDelaySeconds: 5 }
+    readiness: { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 1 }
   rollout: { strategy: ordered, maxSurge: 1, maxUnavailable: 0 }
-  # Change an env value to trigger a new revision
   env:
     - { name: APP_MODE, value: demo-override-2 }
