@@ -147,6 +147,14 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             self._handle_events(self.path.split("/", 2)[2])
             return
         if path_only.startswith("/logs/"):
+            # SSE streaming: /logs/<app>/stream
+            if path_only.endswith("/stream"):
+                parts = path_only.split("/")
+                if len(parts) >= 4:
+                    self._handle_logs_stream(parts[2])
+                else:
+                    self.send_response(400); self.end_headers()
+                return
             self._handle_logs(self.path.split("/", 2)[2])
             return
         self.send_response(404)
@@ -686,11 +694,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       var current = null;
       var pollTimer = null;
       var pauseLogs = false;
+      var logSource = null;
 
       pauseBtn.addEventListener('click', function () {
         pauseLogs = !pauseLogs;
         pauseBtn.textContent = pauseLogs ? 'Resume Logs' : 'Pause Logs';
         updateLogsHTMX();
+        updateLogStreaming();
       });
       pollSel.addEventListener('change', function () { schedulePoll(); updateLogsHTMX(); });
 
@@ -749,7 +759,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if(ms > 0){ pollTimer = setInterval(function(){ refreshApps().then(refreshDetail).catch(console.error); }, ms); }
       }
 
-      function selectApp(name){ current = name; updateLogsHTMX(); refreshDetail().then(refreshApps); }
+      function selectApp(name){
+        current = name;
+        clearLogs();
+        updateLogsHTMX();
+        updateLogStreaming();
+        refreshDetail().then(refreshApps);
+      }
 
       function escapeHtml(s){
         s = (s === null || s === undefined) ? '' : String(s);
@@ -759,26 +775,50 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       function updateLogsHTMX(){
         var el = document.getElementById('logs');
         if(!el) return;
-        var ms = parseInt(pollSel.value, 10) || 0;
-        var trig = 'refresh';
-        if (!pauseLogs) {
-          if (ms > 0) { trig = 'load, every ' + (ms/1000) + 's, refresh'; }
-          else { trig = 'load, refresh'; }
-        } else {
-          trig = 'none';
-        }
+        // Disable HTMX polling; we will stream via SSE. We still allow one-shot refresh events.
+        var trig = 'none';
         el.setAttribute('hx-trigger', trig);
         var app = current ? encodeURIComponent(current) : '';
         var url = '/dashboard/partials/logs' + (app ? ('?app=' + app + '&tail=200') : '');
         el.setAttribute('hx-get', url);
-        if (window.htmx) {
-          window.htmx.process(el);
-          // kick a refresh for immediate load
-          if (!pauseLogs && current) { window.htmx.trigger(el, 'refresh'); }
-        }
+        if (window.htmx) { window.htmx.process(el); }
       }
 
-      refreshApps().then(function(){ updateLogsHTMX(); return refreshDetail(); }).catch(console.error);
+      function clearLogs(){ var el = document.getElementById('logs'); if (el) el.innerHTML = ''; }
+
+      function updateLogStreaming(){
+        // Close existing source
+        if (logSource) { try { logSource.close(); } catch(e){} logSource = null; }
+        if (pauseLogs || !current) return;
+        var el = document.getElementById('logs');
+        if (window.htmx && el && el.getAttribute('hx-get')) {
+          // One-shot initial fill for context
+          window.htmx.trigger(el, 'refresh');
+        }
+        var url = '/logs/' + encodeURIComponent(current) + '/stream?' + new URLSearchParams({ tail: '200' }).toString();
+        try {
+          var es = new EventSource(url);
+          logSource = es;
+          es.onmessage = function(ev){
+            var line = ev.data || '';
+            var filt = (logFilter.value || '').toLowerCase();
+            if (filt && String(line).toLowerCase().indexOf(filt) === -1) return;
+            var ts='-', msg=line; var i=line.indexOf(' ');
+            if (i>18 && line.indexOf('T')>0 && line.indexOf('T')<25){ ts=line.slice(0,i); msg=line.slice(i+1); }
+            var row = document.createElement('div');
+            row.className='log-entry';
+            row.innerHTML='<code>'+escapeHtml(ts)+'</code> '+escapeHtml(msg);
+            var box = document.getElementById('logs');
+            if(!box) return;
+            var atBottom = (box.scrollTop + box.clientHeight) >= (box.scrollHeight - 16);
+            box.appendChild(row);
+            if (atBottom) { box.scrollTop = box.scrollHeight; }
+          };
+          es.onerror = function(){ /* default retry */ };
+        } catch (e) { console.error('EventSource failed', e); }
+      }
+
+      refreshApps().then(function(){ updateLogsHTMX(); updateLogStreaming(); return refreshDetail(); }).catch(console.error);
       schedulePoll();
     </script>
   </body>
@@ -840,6 +880,53 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def _handle_logs_stream(self, app: str) -> None:
+        """Stream logs as Server-Sent Events (SSE): one log entry per event."""
+        import urllib.parse as _up
+        _path, _, query = self.path.partition("?")
+        params = _up.parse_qs(query)
+        container = params.get("container", [None])[0]
+        try:
+            tail = int(params.get("tail", ["100"])[0])
+        except ValueError:
+            tail = 100
+        try:
+            since = int(params.get("since", ["0"])[0]) or None
+        except ValueError:
+            since = None
+
+        fn = getattr(self, "logs_fn", None)
+        if fn is None:
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        try:
+            # Hint client retry interval
+            self.wfile.write(b"retry: 1000\n\n")
+            self.wfile.flush()
+            for line in fn(app, container, tail, since, True):  # type: ignore[misc]
+                if isinstance(line, (bytes, bytearray)):
+                    s = line.decode('utf-8', 'replace').rstrip('\n')
+                else:
+                    s = str(line).rstrip('\n')
+                out = ("data: " + s + "\n\n").encode('utf-8', 'replace')
+                self.wfile.write(out)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception:
+            try:
+                self.wfile.write(b"event: error\n" b"data: stream closed\n\n")
+                self.wfile.flush()
+            except Exception:
+                pass
 
     def _split_ts(self, line: str) -> tuple[str, str]:
         # Best-effort split: Docker timestamps are RFC3339 then a space
@@ -916,8 +1003,9 @@ def start_http_api(
     handler_cls.delete_fn = staticmethod(delete_fn) if delete_fn is not None else None
     handler_cls.logs_fn = staticmethod(logs_fn) if logs_fn is not None else None
     # Allow quick restarts by enabling SO_REUSEADDR to avoid TIME_WAIT bind errors
-    class ReusableTCPServer(socketserver.TCPServer):
+    class ReusableTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         allow_reuse_address = True
+        daemon_threads = True
 
     try:
         httpd = ReusableTCPServer(("0.0.0.0", port), handler_cls)
