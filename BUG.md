@@ -387,3 +387,852 @@ green: desired=1, ready=1, live=1, rev=3(ready), image=demo-green:latest, ops=+1
 [caddy] {"level":"info","ts":1761356178.7996354,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"51302","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
 [caddy] {"level":"info","ts":1761356178.7997842,"msg":"config is unchanged"}
 [caddy] {"level":"info","ts":1761356178.799789,"logger":"admin.api","msg":"load complete"}
+^[[A^[[B[controller] 2025-10-24 18:36:48 INFO __main__: http api listening on port 37033
+[controller] 2025-10-24 18:36:48 WARNING __main__: watchdog not available; falling back to interval polling
+[sites] https://blue.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33176 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356208.6304948,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"50540","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356208.6306481,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356208.6306524,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356209.1466372,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"50542","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356209.1468,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356209.1468062,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356209.3997736,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"50558","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356209.3999412,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356209.399948,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356209.6229339,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"50564","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356209.6231356,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356209.623143,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356210.4676914,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"52520","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356210.4678893,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356210.4678948,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356210.8424165,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"52536","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356210.842564,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356210.8425698,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/green.caddy <==
+[sites] https://green.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33178 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356211.0249074,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"52542","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356211.025003,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356211.0250056,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/echo-mr.caddy <==
+[sites] https://echo-mr.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33187 host.docker.internal:33186 host.docker.internal:33185 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356211.2583888,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"52554","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356211.258534,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356211.258539,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/blue.caddy <==
+[sites] https://blue.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33176 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356211.7301826,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"52570","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356211.7303326,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356211.7303412,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356212.30204,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"52576","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356212.302191,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356212.3021958,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356212.5409422,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"52588","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356212.541045,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356212.5410473,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356212.7660782,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"52594","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356212.7662358,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356212.7662416,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356213.3529658,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"52608","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356213.3531363,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356213.353142,"logger":"admin.api","msg":"load complete"}
+[controller] 2025-10-24 18:37:03 WARNING ae.runtime.docker_runtime: Failed to stop container ae-echo-rev214-0: 404 Client Error for http+docker://localhost/v1.45/containers/75a3c8fe679373a4a7197e3a5cb9b0396d3873f10b91d9fc2c7e9b2c24336987/stop?t=10: Not Found ("No such container: 75a3c8fe679373a4a7197e3a5cb9b0396d3873f10b91d9fc2c7e9b2c24336987")
+[controller] 2025-10-24 18:37:03 WARNING ae.runtime.docker_runtime: Failed to remove container ae-echo-rev214-0: 404 Client Error for http+docker://localhost/v1.45/containers/75a3c8fe679373a4a7197e3a5cb9b0396d3873f10b91d9fc2c7e9b2c24336987?v=False&link=False&force=False: Not Found ("No such container: 75a3c8fe679373a4a7197e3a5cb9b0396d3873f10b91d9fc2c7e9b2c24336987")
+[controller] 2025-10-24 18:37:14 WARNING ae.runtime.docker_runtime: Failed to stop container ae-echo-rev212-0: 404 Client Error for http+docker://localhost/v1.45/containers/a6b3890bae8e8424e82da5ce08739b4ddab1a506d74bf6524998f72b159a6d4b/stop?t=10: Not Found ("No such container: a6b3890bae8e8424e82da5ce08739b4ddab1a506d74bf6524998f72b159a6d4b")
+[controller] 2025-10-24 18:37:14 WARNING ae.runtime.docker_runtime: Failed to remove container ae-echo-rev212-0: 404 Client Error for http+docker://localhost/v1.45/containers/a6b3890bae8e8424e82da5ce08739b4ddab1a506d74bf6524998f72b159a6d4b?v=False&link=False&force=False: Not Found ("No such container: a6b3890bae8e8424e82da5ce08739b4ddab1a506d74bf6524998f72b159a6d4b")
+[controller] 2025-10-24 18:37:22 WARNING ae.runtime.docker_runtime: Failed to remove container ae-echo-rev211-0: 409 Client Error for http+docker://localhost/v1.45/containers/ed1929b82f036d0f903e7481a42462a721a5a5e2832f994124cc96f3ca31c90f?v=False&link=False&force=False: Conflict ("removal of container ed1929b82f036d0f903e7481a42462a721a5a5e2832f994124cc96f3ca31c90f is already in progress")
+[controller] Traceback (most recent call last):
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/secrets/manager.py", line 50, in _decrypt
+[controller]     completed = subprocess.run(  # noqa: S603
+[controller]         [self._sops, "--decrypt", str(path)],
+[controller]     ...<2 lines>...
+[controller]         text=True,
+[controller]     )
+[controller]   File "/usr/lib/python3.13/subprocess.py", line 577, in run
+[controller]     raise CalledProcessError(retcode, process.args,
+[controller]                              output=stdout, stderr=stderr)
+[controller] subprocess.CalledProcessError: Command '['sops', '--decrypt', 'specs/examples/demo-secret.sops.yaml']' returned non-zero exit status 1.
+[controller]
+[controller] The above exception was the direct cause of the following exception:
+[controller]
+[controller] Traceback (most recent call last):
+[controller]   File "<frozen runpy>", line 198, in _run_module_as_main
+[controller]   File "<frozen runpy>", line 88, in _run_code
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/__main__.py", line 268, in <module>
+[controller]     raise SystemExit(main())
+[controller]                      ~~~~^^
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/__main__.py", line 243, in main
+[controller]     _reconcile_all(reconciler, manifests)
+[controller]     ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/__main__.py", line 90, in _reconcile_all
+[controller]     report = reconciler.reconcile(m)
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/reconciler.py", line 73, in reconcile
+[controller]     manifest_with_env = self._apply_configs_and_secrets(manifest)
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/reconciler.py", line 215, in _apply_configs_and_secrets
+[controller]     sec_env = self._secret_manager.load_env(manifest.spec.secret_refs)
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/secrets/manager.py", line 36, in load_env
+[controller]     decrypted = self._decrypt(Path(ref.path))
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/secrets/manager.py", line 65, in _decrypt
+[controller]     raise RuntimeError(f"sops decrypt failed for {path}: {exc.stderr}") from exc
+[controller] RuntimeError: sops decrypt failed for specs/examples/demo-secret.sops.yaml: sops metadata not found
+[controller]
+[controller] Applied blue: +0/~0/-0, ready=1, live=1, rev=3(ready)
+[controller] Applied echo: +1/~0/-0, ready=0, live=1, rev=212(progressing)
+[controller] Applied echo-stateful: +0/~0/-0, ready=1, live=1, rev=1(ready)
+[controller] Applied echo-del: +0/~0/-0, ready=1, live=1, rev=1(ready)
+[controller] Applied echo: +1/~0/-0, ready=1, live=1, rev=213(ready)
+[caddy] {"level":"info","ts":1761356242.5886707,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"56800","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356242.5888348,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356242.588841,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/green.caddy <==
+[sites] https://green.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33178 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356242.8567672,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"56810","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356242.8569224,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356242.8569276,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/echo-mr.caddy <==
+[sites] https://echo-mr.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33187 host.docker.internal:33186 host.docker.internal:33185 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356243.094649,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"56814","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356243.094796,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356243.094802,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/blue.caddy <==
+[sites] https://blue.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33176 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356243.528698,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"56822","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356243.5288496,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356243.5288548,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356244.070305,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"56834","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356244.0704563,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356244.0704613,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356244.293955,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"56844","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356244.2941117,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356244.2941198,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356244.5135741,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"56854","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356244.5137296,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356244.513736,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356245.0566313,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"56856","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356245.056775,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356245.0567787,"logger":"admin.api","msg":"load complete"}
+[controller] 2025-10-24 18:37:54 INFO __main__: http api listening on port 38839
+[controller] 2025-10-24 18:37:54 WARNING __main__: watchdog not available; falling back to interval polling
+[sites] https://blue.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33176 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356274.8599582,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39132","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356274.8601053,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356274.8601098,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356275.3760338,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39134","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356275.3761806,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356275.376186,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356275.588276,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39142","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356275.5884185,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356275.5884235,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356275.7944071,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39146","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356275.7945726,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356275.794578,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356276.6487906,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39156","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356276.6489341,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356276.6489387,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356276.9646516,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39166","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356276.9648058,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356276.9648106,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/green.caddy <==
+[sites] https://green.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33178 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356277.194097,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39168","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356277.1942518,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356277.1942568,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/echo-mr.caddy <==
+[sites] https://echo-mr.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33187 host.docker.internal:33186 host.docker.internal:33185 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356277.440378,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39180","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356277.4405475,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356277.4405735,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356277.8852952,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39186","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356277.885393,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356277.8853955,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356278.3793254,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39200","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356278.379498,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356278.379504,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356278.610809,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39216","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356278.610958,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356278.610964,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356278.831785,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39222","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356278.8319483,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356278.831956,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356279.3608687,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39230","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356279.361025,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356279.3610303,"logger":"admin.api","msg":"load complete"}
+[controller] 2025-10-24 18:38:09 WARNING ae.runtime.docker_runtime: Failed to stop container ae-echo-rev222-0: 404 Client Error for http+docker://localhost/v1.45/containers/760d043820f4a726f7e9150a3c8fe09d2ca434fa654a9ec4eccba297d51aa2f3/stop?t=10: Not Found ("No such container: 760d043820f4a726f7e9150a3c8fe09d2ca434fa654a9ec4eccba297d51aa2f3")
+[controller] 2025-10-24 18:38:09 WARNING ae.runtime.docker_runtime: Failed to remove container ae-echo-rev222-0: 404 Client Error for http+docker://localhost/v1.45/containers/760d043820f4a726f7e9150a3c8fe09d2ca434fa654a9ec4eccba297d51aa2f3?v=False&link=False&force=False: Not Found ("No such container: 760d043820f4a726f7e9150a3c8fe09d2ca434fa654a9ec4eccba297d51aa2f3")
+[controller] 2025-10-24 18:38:20 WARNING ae.runtime.docker_runtime: Failed to stop container ae-echo-rev220-0: 404 Client Error for http+docker://localhost/v1.45/containers/c8a9d1b13c214cf6e545f29d571a81dc86a13807a3535f9566d31047716559d7/stop?t=10: Not Found ("No such container: c8a9d1b13c214cf6e545f29d571a81dc86a13807a3535f9566d31047716559d7")
+[controller] 2025-10-24 18:38:20 WARNING ae.runtime.docker_runtime: Failed to remove container ae-echo-rev220-0: 404 Client Error for http+docker://localhost/v1.45/containers/c8a9d1b13c214cf6e545f29d571a81dc86a13807a3535f9566d31047716559d7?v=False&link=False&force=False: Not Found ("No such container: c8a9d1b13c214cf6e545f29d571a81dc86a13807a3535f9566d31047716559d7")
+[controller] 2025-10-24 18:38:28 WARNING ae.runtime.docker_runtime: Failed to remove container ae-echo-rev219-0: 409 Client Error for http+docker://localhost/v1.45/containers/931805c62842b587695ce48f05039fd315bd15c92bfe1d9e7736ef9588c4390d?v=False&link=False&force=False: Conflict ("removal of container 931805c62842b587695ce48f05039fd315bd15c92bfe1d9e7736ef9588c4390d is already in progress")
+[controller] Traceback (most recent call last):
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/secrets/manager.py", line 50, in _decrypt
+[controller]     completed = subprocess.run(  # noqa: S603
+[controller]         [self._sops, "--decrypt", str(path)],
+[controller]     ...<2 lines>...
+[controller]         text=True,
+[controller]     )
+[controller]   File "/usr/lib/python3.13/subprocess.py", line 577, in run
+[controller]     raise CalledProcessError(retcode, process.args,
+[controller]                              output=stdout, stderr=stderr)
+[controller] subprocess.CalledProcessError: Command '['sops', '--decrypt', 'specs/examples/demo-secret.sops.yaml']' returned non-zero exit status 1.
+[controller]
+[controller] The above exception was the direct cause of the following exception:
+[controller]
+[controller] Traceback (most recent call last):
+[controller]   File "<frozen runpy>", line 198, in _run_module_as_main
+[controller]   File "<frozen runpy>", line 88, in _run_code
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/__main__.py", line 268, in <module>
+[controller]     raise SystemExit(main())
+[controller]                      ~~~~^^
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/__main__.py", line 243, in main
+[controller]     _reconcile_all(reconciler, manifests)
+[controller]     ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/__main__.py", line 90, in _reconcile_all
+[controller]     report = reconciler.reconcile(m)
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/reconciler.py", line 73, in reconcile
+[controller]     manifest_with_env = self._apply_configs_and_secrets(manifest)
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/reconciler.py", line 215, in _apply_configs_and_secrets
+[controller]     sec_env = self._secret_manager.load_env(manifest.spec.secret_refs)
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/secrets/manager.py", line 36, in load_env
+[controller]     decrypted = self._decrypt(Path(ref.path))
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/secrets/manager.py", line 65, in _decrypt
+[controller]     raise RuntimeError(f"sops decrypt failed for {path}: {exc.stderr}") from exc
+[controller] RuntimeError: sops decrypt failed for specs/examples/demo-secret.sops.yaml: sops metadata not found
+[controller]
+[controller] Applied blue: +0/~0/-0, ready=1, live=1, rev=3(ready)
+[controller] Applied echo: +1/~0/-0, ready=0, live=1, rev=220(progressing)
+[controller] Applied echo-stateful: +0/~0/-0, ready=1, live=1, rev=1(ready)
+[controller] Applied echo-del: +0/~0/-0, ready=1, live=1, rev=1(ready)
+[controller] Applied echo: +1/~0/-0, ready=1, live=1, rev=221(ready)
+[caddy] {"level":"info","ts":1761356308.7502596,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"36430","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356308.7504163,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356308.7504213,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/green.caddy <==
+[sites] https://green.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33178 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356308.969034,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"36438","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356308.9691315,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356308.9691343,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/echo-mr.caddy <==
+[sites] https://echo-mr.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33187 host.docker.internal:33186 host.docker.internal:33185 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356309.1873002,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"36446","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356309.187405,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356309.187408,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/blue.caddy <==
+[sites] https://blue.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33176 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356309.647575,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"36456","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356309.6477282,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356309.6477332,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356310.1543477,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"60392","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356310.1544967,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356310.1545017,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356310.352276,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"60406","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356310.3524399,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356310.352445,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356310.5569096,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"60408","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356310.5570688,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356310.557073,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356311.1270983,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"60418","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356311.127286,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356311.1272955,"logger":"admin.api","msg":"load complete"}
+[controller] 2025-10-24 18:39:00 INFO __main__: http api listening on port 33147
+[controller] 2025-10-24 18:39:00 WARNING __main__: watchdog not available; falling back to interval polling
+[sites] https://blue.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33176 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356341.078029,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39760","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356341.0781932,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356341.0781982,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356341.5467618,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39776","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356341.5469162,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356341.5469215,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356341.6914065,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39782","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356341.691506,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356341.6915088,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356341.9069388,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39784","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356341.9070919,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356341.9070966,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356342.8089697,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39786","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356342.8090794,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356342.8090818,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356343.133071,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39798","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356343.1332166,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356343.133221,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/green.caddy <==
+[sites] https://green.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33178 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356343.3785043,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39802","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356343.3786538,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356343.3786588,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/echo-mr.caddy <==
+[sites] https://echo-mr.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33187 host.docker.internal:33186 host.docker.internal:33185 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356343.600354,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39818","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356343.6005008,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356343.6005058,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/blue.caddy <==
+[sites] https://blue.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33176 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356344.0653894,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39834","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356344.0655391,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356344.0655434,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356344.5837348,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39848","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356344.583881,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356344.5838864,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356344.8042934,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39858","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356344.8044457,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356344.8044505,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356345.0207467,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39874","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356345.0208924,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356345.0208967,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356345.5147882,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"39888","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356345.5149343,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356345.5149384,"logger":"admin.api","msg":"load complete"}
+[controller] 2025-10-24 18:39:15 WARNING ae.runtime.docker_runtime: Failed to stop container ae-echo-rev230-0: 404 Client Error for http+docker://localhost/v1.45/containers/8bdf42b4844c6f386e15a2719b5272c44cde1315440e9492439152fb22cecec4/stop?t=10: Not Found ("No such container: 8bdf42b4844c6f386e15a2719b5272c44cde1315440e9492439152fb22cecec4")
+[controller] 2025-10-24 18:39:15 WARNING ae.runtime.docker_runtime: Failed to remove container ae-echo-rev230-0: 404 Client Error for http+docker://localhost/v1.45/containers/8bdf42b4844c6f386e15a2719b5272c44cde1315440e9492439152fb22cecec4?v=False&link=False&force=False: Not Found ("No such container: 8bdf42b4844c6f386e15a2719b5272c44cde1315440e9492439152fb22cecec4")
+[controller] 2025-10-24 18:39:26 WARNING ae.runtime.docker_runtime: Failed to stop container ae-echo-rev228-0: 404 Client Error for http+docker://localhost/v1.45/containers/e64751ab17c5dd84a20ae82936ec36fb6d65ac941c1e8853173d9bd4fbb1846f/stop?t=10: Not Found ("No such container: e64751ab17c5dd84a20ae82936ec36fb6d65ac941c1e8853173d9bd4fbb1846f")
+[controller] 2025-10-24 18:39:26 WARNING ae.runtime.docker_runtime: Failed to remove container ae-echo-rev228-0: 404 Client Error for http+docker://localhost/v1.45/containers/e64751ab17c5dd84a20ae82936ec36fb6d65ac941c1e8853173d9bd4fbb1846f?v=False&link=False&force=False: Not Found ("No such container: e64751ab17c5dd84a20ae82936ec36fb6d65ac941c1e8853173d9bd4fbb1846f")
+[controller] 2025-10-24 18:39:34 WARNING ae.runtime.docker_runtime: Failed to remove container ae-echo-rev227-0: 409 Client Error for http+docker://localhost/v1.45/containers/bb0494d8a94129d625666b3e0cdc12376a994928e1a23c68e98086dd0818c9c0?v=False&link=False&force=False: Conflict ("removal of container bb0494d8a94129d625666b3e0cdc12376a994928e1a23c68e98086dd0818c9c0 is already in progress")
+[caddy] {"level":"info","ts":1761356374.9338157,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"46052","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356374.9339592,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356374.9339645,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/green.caddy <==
+[sites] https://green.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33178 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356375.1415606,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"46054","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356375.1417139,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356375.1417189,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/echo-mr.caddy <==
+[sites] https://echo-mr.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33187 host.docker.internal:33186 host.docker.internal:33185 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356375.3684196,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"46064","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356375.3685832,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356375.3685896,"logger":"admin.api","msg":"load complete"}
+[controller] Traceback (most recent call last):
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/secrets/manager.py", line 56, in _decrypt
+[controller]     completed = subprocess.run(  # noqa: S603
+[controller]         [self._sops, "--decrypt", str(path)],
+[controller]     ...<2 lines>...
+[controller]         text=True,
+[controller]     )
+[controller]   File "/usr/lib/python3.13/subprocess.py", line 577, in run
+[controller]     raise CalledProcessError(retcode, process.args,
+[controller]                              output=stdout, stderr=stderr)
+[controller] subprocess.CalledProcessError: Command '['sops', '--decrypt', 'specs/examples/demo-secret.sops.yaml']' returned non-zero exit status 1.
+[controller]
+[controller] The above exception was the direct cause of the following exception:
+[controller]
+[controller] Traceback (most recent call last):
+[controller]   File "<frozen runpy>", line 198, in _run_module_as_main
+[controller]   File "<frozen runpy>", line 88, in _run_code
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/__main__.py", line 268, in <module>
+[controller]     raise SystemExit(main())
+[controller]                      ~~~~^^
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/__main__.py", line 243, in main
+[controller]     _reconcile_all(reconciler, manifests)
+[controller]     ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/__main__.py", line 90, in _reconcile_all
+[controller]     report = reconciler.reconcile(m)
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/reconciler.py", line 73, in reconcile
+[controller]     manifest_with_env = self._apply_configs_and_secrets(manifest)
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/reconciler.py", line 215, in _apply_configs_and_secrets
+[controller]     sec_env = self._secret_manager.load_env(manifest.spec.secret_refs)
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/secrets/manager.py", line 36, in load_env
+[controller]     decrypted = self._decrypt(Path(ref.path))
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/secrets/manager.py", line 86, in _decrypt
+[controller]     raise RuntimeError(f"sops decrypt failed for {path}: {exc.stderr}") from exc
+[controller] RuntimeError: sops decrypt failed for specs/examples/demo-secret.sops.yaml: sops metadata not found
+[controller]
+[controller] Applied blue: +0/~0/-0, ready=1, live=1, rev=3(ready)
+[controller] Applied echo: +1/~0/-0, ready=0, live=1, rev=228(progressing)
+[controller] Applied echo-stateful: +0/~0/-0, ready=1, live=1, rev=1(ready)
+[controller] Applied echo-del: +0/~0/-0, ready=1, live=1, rev=1(ready)
+[controller] Applied echo: +1/~0/-0, ready=1, live=1, rev=229(ready)
+[caddy] {"level":"info","ts":1761356375.8215852,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"46072","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356375.8217404,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356375.8217452,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356376.347291,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"46078","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356376.3473911,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356376.3473938,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356376.5378754,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"46092","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356376.5380237,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356376.5380285,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356376.7732396,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"46106","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356376.773389,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356376.7733932,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356377.2902803,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"46120","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356377.2904484,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356377.2904527,"logger":"admin.api","msg":"load complete"}
+[controller] 2025-10-24 18:40:07 INFO __main__: http api listening on port 38227
+[controller] 2025-10-24 18:40:07 WARNING __main__: watchdog not available; falling back to interval polling
+[sites]
+[sites] ==> state/caddy/blue.caddy <==
+[sites] https://blue.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33176 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356407.8027864,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"54784","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356407.8029382,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356407.8029435,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356408.3671272,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"54792","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356408.367276,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356408.3672805,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356408.570886,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"54802","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356408.5710368,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356408.5710418,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356408.7959588,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"54814","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356408.7961173,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356408.7961237,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356409.4243813,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"54828","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356409.4245524,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356409.4245582,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/green.caddy <==
+[sites] https://green.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33178 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356409.4922538,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"54832","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356409.4924207,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356409.4924257,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356409.6433768,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"54842","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356409.6435385,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356409.643544,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/echo-mr.caddy <==
+[sites] https://echo-mr.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33187 host.docker.internal:33186 host.docker.internal:33185 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356409.8848922,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"54850","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356409.8850398,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356409.8850446,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/blue.caddy <==
+[sites] https://blue.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33176 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356410.321769,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"45992","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356410.3219287,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356410.3219335,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356410.87978,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"45998","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356410.8799613,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356410.879969,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356411.0998702,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"46002","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356411.100027,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356411.1000326,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356411.3264167,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"46004","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356411.3265786,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356411.326584,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356411.8817835,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"46008","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356411.8819318,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356411.8819366,"logger":"admin.api","msg":"load complete"}
+[controller] 2025-10-24 18:40:32 WARNING ae.runtime.docker_runtime: Failed to stop container ae-echo-rev237-0: 404 Client Error for http+docker://localhost/v1.45/containers/5b16f25d1ca2583488e1290c8aec7e2da16c084e949584d3f64d73a17a7b29d6/stop?t=10: Not Found ("No such container: 5b16f25d1ca2583488e1290c8aec7e2da16c084e949584d3f64d73a17a7b29d6")
+[controller] 2025-10-24 18:40:32 WARNING ae.runtime.docker_runtime: Failed to remove container ae-echo-rev237-0: 404 Client Error for http+docker://localhost/v1.45/containers/5b16f25d1ca2583488e1290c8aec7e2da16c084e949584d3f64d73a17a7b29d6?v=False&link=False&force=False: Not Found ("No such container: 5b16f25d1ca2583488e1290c8aec7e2da16c084e949584d3f64d73a17a7b29d6")
+[controller] 2025-10-24 18:40:32 WARNING ae.runtime.docker_runtime: Failed to stop container ae-echo-rev236-0: 404 Client Error for http+docker://localhost/v1.45/containers/d8b3e926e93a9a4525cfcfc36fc6c9d27ac9271bc16eba0632b1a6eb19197950/stop?t=10: Not Found ("No such container: d8b3e926e93a9a4525cfcfc36fc6c9d27ac9271bc16eba0632b1a6eb19197950")
+[controller] 2025-10-24 18:40:32 WARNING ae.runtime.docker_runtime: Failed to remove container ae-echo-rev236-0: 404 Client Error for http+docker://localhost/v1.45/containers/d8b3e926e93a9a4525cfcfc36fc6c9d27ac9271bc16eba0632b1a6eb19197950?v=False&link=False&force=False: Not Found ("No such container: d8b3e926e93a9a4525cfcfc36fc6c9d27ac9271bc16eba0632b1a6eb19197950")
+[controller] 2025-10-24 18:40:40 WARNING ae.runtime.docker_runtime: Failed to remove container ae-echo-rev235-0: 409 Client Error for http+docker://localhost/v1.45/containers/6549caed0a7c2b6d0d5556fddc94e5675aeca8555f00ad67d7a48dbe235a1062?v=False&link=False&force=False: Conflict ("removal of container 6549caed0a7c2b6d0d5556fddc94e5675aeca8555f00ad67d7a48dbe235a1062 is already in progress")
+[caddy] {"level":"info","ts":1761356441.2922168,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"60532","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356441.2923124,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356441.2923145,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/green.caddy <==
+[sites] https://green.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33178 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356441.5546098,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"60538","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356441.5547614,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356441.5547667,"logger":"admin.api","msg":"load complete"}
+[controller] Traceback (most recent call last):
+[sites]
+[sites] ==> state/caddy/echo-mr.caddy <==
+[sites] https://echo-mr.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33187 host.docker.internal:33186 host.docker.internal:33185 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/secrets/manager.py", line 56, in _decrypt
+[controller]     completed = subprocess.run(  # noqa: S603
+[controller]         [self._sops, "--decrypt", str(path)],
+[controller]     ...<2 lines>...
+[controller]         text=True,
+[controller]     )
+[controller]   File "/usr/lib/python3.13/subprocess.py", line 577, in run
+[controller]     raise CalledProcessError(retcode, process.args,
+[controller]                              output=stdout, stderr=stderr)
+[controller] subprocess.CalledProcessError: Command '['sops', '--decrypt', 'specs/examples/demo-secret.sops.yaml']' returned non-zero exit status 1.
+[controller]
+[controller] The above exception was the direct cause of the following exception:
+[controller]
+[controller] Traceback (most recent call last):
+[controller]   File "<frozen runpy>", line 198, in _run_module_as_main
+[controller]   File "<frozen runpy>", line 88, in _run_code
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/__main__.py", line 268, in <module>
+[controller]     raise SystemExit(main())
+[controller]                      ~~~~^^
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/__main__.py", line 243, in main
+[controller]     _reconcile_all(reconciler, manifests)
+[controller]     ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/__main__.py", line 90, in _reconcile_all
+[controller]     report = reconciler.reconcile(m)
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/reconciler.py", line 73, in reconcile
+[controller]     manifest_with_env = self._apply_configs_and_secrets(manifest)
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/controller/reconciler.py", line 215, in _apply_configs_and_secrets
+[controller]     sec_env = self._secret_manager.load_env(manifest.spec.secret_refs)
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/secrets/manager.py", line 36, in load_env
+[controller]     decrypted = self._decrypt(Path(ref.path))
+[controller]   File "/home/m4xx3d0ut/git/k1s/src/ae/secrets/manager.py", line 86, in _decrypt
+[controller]     raise RuntimeError(f"sops decrypt failed for {path}: {exc.stderr}") from exc
+[controller] RuntimeError: sops decrypt failed for specs/examples/demo-secret.sops.yaml: sops metadata not found
+[controller]
+[controller] Applied blue: +0/~0/-0, ready=1, live=1, rev=3(ready)
+[controller] Applied echo: +1/~0/-0, ready=0, live=1, rev=236(progressing)
+[controller] Applied echo-stateful: +0/~0/-0, ready=1, live=1, rev=1(ready)
+[controller] Applied echo-del: +0/~0/-0, ready=1, live=1, rev=1(ready)
+[controller] Applied echo: +1/~0/-0, ready=1, live=1, rev=238(ready)
+[caddy] {"level":"info","ts":1761356441.8147466,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"60548","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356441.814905,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356441.8149095,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356442.2553241,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"60560","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356442.2554765,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356442.2554812,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356442.821158,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"60562","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356442.8213115,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356442.821317,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356443.038033,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"60576","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356443.0381944,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356443.0381992,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356443.2476285,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"60582","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356443.2477808,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356443.2477863,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356443.7813387,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"60590","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356443.781492,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356443.7814963,"logger":"admin.api","msg":"load complete"}
+[controller] 2025-10-24 18:41:13 INFO __main__: http api listening on port 43453
+[controller] 2025-10-24 18:41:13 WARNING __main__: watchdog not available; falling back to interval polling
+[sites]
+[sites] ==> state/caddy/blue.caddy <==
+[sites] https://blue.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33176 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356473.9955623,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"49788","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356473.995714,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356473.9957192,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356474.5663934,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"49800","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356474.5665472,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356474.5665526,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356474.8342178,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"49802","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356474.8343723,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356474.834377,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356475.0741534,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"49812","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356475.074333,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356475.0743408,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356476.123504,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"49822","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356476.1236563,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356476.1236613,"logger":"admin.api","msg":"load complete"}
+[caddy] {"level":"info","ts":1761356476.192326,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"49826","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356476.192481,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356476.192487,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/green.caddy <==
+[sites] https://green.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33178 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }
+[caddy] {"level":"info","ts":1761356476.4284878,"logger":"admin.api","msg":"received request","method":"POST","host":"localhost:2019","uri":"/load","remote_ip":"127.0.0.1","remote_port":"49834","headers":{"Accept-Encoding":["gzip"],"Content-Length":["2621"],"Content-Type":["application/json"],"Origin":["http://localhost:2019"],"User-Agent":["Go-http-client/1.1"]}}
+[caddy] {"level":"info","ts":1761356476.4286592,"msg":"config is unchanged"}
+[caddy] {"level":"info","ts":1761356476.4286654,"logger":"admin.api","msg":"load complete"}
+[sites]
+[sites] ==> state/caddy/echo-mr.caddy <==
+[sites] https://echo-mr.home.arpa {
+[sites]     log {
+[sites]         output stdout
+[sites]         format console
+[sites]     }
+[sites]     # Ensure upstream HSTS does not stick during dev
+[sites]     header -Strict-Transport-Security
+[sites]     reverse_proxy host.docker.internal:33187 host.docker.internal:33186 host.docker.internal:33185 {
+[sites]
+[sites]         lb_policy first
+[sites]     }
+[sites] }

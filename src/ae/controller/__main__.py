@@ -226,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         except Exception:
             observer = None  # fallback to interval polling
             import logging
-            logging.getLogger(__name__).warning(
+            logging.getLogger(__name__).info(
                 "watchdog not available; falling back to interval polling"
             )
     else:
