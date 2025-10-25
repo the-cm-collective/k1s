@@ -721,7 +721,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
               return fetchJSON('/logs/' + encodeURIComponent(current) + '?' + q.toString()).then(function(data){
                 var filt = (logFilter.value || '').toLowerCase();
                 var lines = (data.lines || []).filter(function(l){ return !filt || String(l).toLowerCase().indexOf(filt) !== -1; });
-                elLogs.textContent = lines.join(' ');
+                elLogs.textContent = lines.join('\n');
                 elLogs.scrollTop = elLogs.scrollHeight;
               });
             }

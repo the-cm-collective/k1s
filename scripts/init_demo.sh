@@ -31,6 +31,7 @@ Options:
   --no-controller  Do not auto-start the controller daemon
   --no-supervisor  Start controller once (no restart loop)
   -d, --debug  Attach logs to console for troubleshooting (blocks; Ctrl-C to exit)
+  --bind-all   Bind local helpers (docs server) to 0.0.0.0 instead of 127.0.0.1 for LAN access
   --demo-configs   Apply the configs/secrets demo (echo) and enable plaintext secrets for local run
   --demo-standard  Apply the standard demo (blue, green)
   --demo-echo-mr   Apply the multi-replica echo demo (echo-mr)
@@ -112,6 +113,8 @@ while [[ $# -gt 0 ]]; do
       DEMO_ROLLOUT=1 ;;
     --demo-storage)
       DEMO_STORAGE=1 ;;
+    --bind-all)
+      DOCS_BIND=0.0.0.0 ;;
     *)
       echo "Unknown option: $1" >&2
       usage
@@ -313,6 +316,7 @@ ENV
 
 # Seed dynsites for docs and API so they are always available
 DOCS_PORT=${DOCS_PORT:-9109}
+DOCS_BIND=${DOCS_BIND:-127.0.0.1}
 cat > "${AE_CADDY_SITES}/docs.caddy" <<DOCS
 https://docs.home.arpa {
     log {
@@ -468,9 +472,9 @@ fi
 DOCS_PORT=${DOCS_PORT:-9109}
 log "Building static docs (docs/site)"
 "$PY_BIN" docs/build_docs.py || true
-log "Starting docs server on http://127.0.0.1:${DOCS_PORT} (background)"
+log "Starting docs server on http://${DOCS_BIND}:${DOCS_PORT} (background)"
 mkdir -p state
-nohup "$PY_BIN" -m http.server "${DOCS_PORT}" --directory docs/site >/dev/null 2>&1 &
+nohup "$PY_BIN" -m http.server "${DOCS_PORT}" --bind "${DOCS_BIND}" --directory docs/site >/dev/null 2>&1 &
 echo $! > state/docs_server.pid
 
 log "Current status"
