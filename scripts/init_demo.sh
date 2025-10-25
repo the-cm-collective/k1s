@@ -316,7 +316,9 @@ ENV
 
 # Seed dynsites for docs and API so they are always available
 DOCS_PORT=${DOCS_PORT:-9109}
-DOCS_BIND=${DOCS_BIND:-127.0.0.1}
+# Bind docs server to all interfaces by default so Caddy (in a container)
+# can reach it via host.docker.internal. Override with --bind-all or env.
+DOCS_BIND=${DOCS_BIND:-0.0.0.0}
 cat > "${AE_CADDY_SITES}/docs.caddy" <<DOCS
 https://docs.home.arpa {
     log {
@@ -631,7 +633,7 @@ Demo setup complete.
 
 - Blue app:   https://blue.home.arpa:8443/
 - Green app:  https://green.home.arpa:8443/
-- Docs site:  https://docs.home.arpa:8443/ (via Caddy) and http://127.0.0.1:${DOCS_PORT}/ (direct)
+- Docs site:  https://docs.home.arpa:8443/ (via Caddy) and http://${DOCS_BIND}:${DOCS_PORT}/ (direct)
   API UIs:    https://api.home.arpa:8443/swagger, https://api.home.arpa:8443/redoc, https://api.home.arpa:8443/dashboard
   API direct: http://127.0.0.1:9108/swagger, http://127.0.0.1:9108/redoc, http://127.0.0.1:9108/dashboard
 
