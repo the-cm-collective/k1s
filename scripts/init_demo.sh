@@ -15,7 +15,7 @@ require_root_or_sudo() {
 
 SUDO=$(require_root_or_sudo)
 
-HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa api.home.arpa echo-mr.home.arpa)
+HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa api.home.arpa echo-mr.home.arpa echo-resources.home.arpa)
 AUTO_HOSTS=""  # set by -y/--yes or -n/--no to auto answer host prompts
 
 usage() {
