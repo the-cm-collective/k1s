@@ -289,6 +289,8 @@ export AE_STATE_DB=${AE_STATE_DB:-state/controller.db}
 export AE_CADDY_RELOAD_TIMEOUT=${AE_CADDY_RELOAD_TIMEOUT:-10}
 # For local demos, allow plaintext secrets by default unless explicitly disabled
 export AE_ALLOW_PLAINTEXT_SECRETS=${AE_ALLOW_PLAINTEXT_SECRETS:-1}
+# Mark this run as demo-init so components can quiet benign warnings
+export AE_DEMO_MODE=${AE_DEMO_MODE:-1}
 mkdir -p "${AE_CADDY_SITES}"
 if [[ ! -w "${AE_CADDY_SITES}" ]]; then
   log "Adjusting permissions on ${AE_CADDY_SITES} (may require sudo)"
@@ -306,6 +308,7 @@ export AE_CADDY_FILE=${AE_CADDY_FILE}
 export AE_CADDY_CONTAINER=${AE_CADDY_CONTAINER}
 export AE_DOCKER_NETWORK=${AE_DOCKER_NETWORK}
 export AE_ALLOW_PLAINTEXT_SECRETS=${AE_ALLOW_PLAINTEXT_SECRETS}
+export AE_DEMO_MODE=${AE_DEMO_MODE}
 ENV
 
 # Seed dynsites for docs and API so they are always available
@@ -582,10 +585,18 @@ attach_debug_logs() {
   log "Attaching logs (Ctrl-C to exit)"
   # Tail controller log if present
   touch state/controller.log
-  tail -n 50 -F state/controller.log | sed -u 's/^/[controller] /' &
+  # Filter out known benign demo-mode messages
+  grep_ctl='sops metadata not found|watchdog not available'
+  tail -n 50 -F state/controller.log \
+    | grep -Ev "$grep_ctl" \
+    | sed -u 's/^/[controller] /' &
   T1=$!
   # Docker logs for dev services
-  docker logs -f dev-caddy-1 2>&1 | sed -u 's/^/[caddy] /' &
+  # Filter noisy TLS trust/OCSP messages which are expected in dev
+  grep_caddy='certutil|no OCSP stapling|installing root certificate|admin endpoint started|config is unchanged'
+  docker logs -f dev-caddy-1 2>&1 \
+    | grep -Ev "$grep_caddy" \
+    | sed -u 's/^/[caddy] /' &
   T2=$!
   docker logs -f dev-prometheus-1 2>&1 | sed -u 's/^/[prometheus] /' &
   T3=$!
