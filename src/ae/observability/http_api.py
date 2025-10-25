@@ -851,9 +851,35 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             <div class=\"scrollcap\" id=\"events\"></div>
           </div>
         </div>
-        <div class=\"card\" style=\"margin-top:12px;\">
+        <div class=\"card\" style=\"margin-top:12px;\"> 
           <strong>System</strong>
           <div class=\"row\" id=\"sys-counters\" style=\"gap:10px; margin-top:6px; flex-wrap:wrap;\"></div>
+        </div>
+        <div class=\"card\" style=\"margin-top:12px;\">
+          <strong>System Graph</strong>
+          <div id=\"graph-wrap\" style=\"position:relative; width:100%; height:420px; margin-top:8px; background:#0001; border-radius:6px;\">
+            <svg id=\"sys-graph\" viewBox=\"0 0 1000 420\" preserveAspectRatio=\"xMidYMid meet\" style=\"width:100%; height:100%;\">
+              <defs>
+                <marker id=\"arrow\" markerWidth=\"10\" markerHeight=\"10\" refX=\"10\" refY=\"3\" orient=\"auto\">
+                  <path d=\"M0,0 L10,3 L0,6 Z\" fill=\"#6b7280\" />
+                </marker>
+                <style>
+                  .node text { font-size:12px; pointer-events:none; }
+                  .node.system rect { fill:#e5e7eb; stroke:#6b7280; }
+                  .node.app rect { fill:#dbeafe; stroke:#3b82f6; }
+                  .node.pod circle { fill:#dcfce7; stroke:#16a34a; }
+                  .link { stroke:#6b7280; stroke-width:1.5; fill:none; marker-end:url(#arrow); }
+                  .flow { stroke-dasharray:6 6; animation: flow 1.6s linear infinite; }
+                  .selected rect, .selected circle { stroke-width:2.4 !important; filter: drop-shadow(0 0 2px #60a5fa); }
+                  .selected.link { stroke:#2563eb; }
+                  .faded { opacity:0.35; }
+                  @keyframes flow { to { stroke-dashoffset: -24; } }
+                </style>
+              </defs>
+              <g id=\"links\"></g>
+              <g id=\"nodes\"></g>
+            </svg>
+          </div>
         </div>
         <div class=\"card\" style=\"margin-top:12px;\">
           <strong>Logs</strong>
@@ -896,6 +922,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       var pauseLogs = false;
       var logSource = null;
       var lastSystem = null;
+      var lastStatuses = [];
 
       pauseBtn.addEventListener('click', function () {
         pauseLogs = !pauseLogs;
@@ -922,12 +949,14 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       function refreshApps(){
         return fetchJSON('/status?limit=200').then(function(data){
           elApps.innerHTML = '';
+          lastStatuses = data.items || [];
           data.items.forEach(function(s){
             var ok = s.ready_replicas >= s.desired_replicas && s.desired_replicas > 0;
             var warn = !ok && s.ready_replicas > 0;
             var bad = s.ready_replicas === 0 && s.desired_replicas > 0;
             var div = document.createElement('div');
             div.className = 'app' + (current===s.app_name ? ' active' : '');
+            try { div.dataset.app = s.app_name; } catch(e){}
             var line1 = '<div><strong>' + s.app_name + '</strong> ' + (ok?badge('ok','ready'):warn?badge('warn','progressing'):bad?badge('bad','degraded'):'') + '</div>';
             var line2 = '<div style="font-size:12px;color:#666;">' + s.ready_replicas + '/' + s.desired_replicas + ' ready - rev ' + s.revision_status + '</div>';
             div.innerHTML = line1 + line2;
@@ -935,6 +964,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             elApps.appendChild(div);
           });
           if(!current && data.items.length){ selectApp(data.items[0].app_name); }
+          renderGraphIfReady();
         });
       }
 
@@ -975,7 +1005,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         clearLogs();
         updateLogsHTMX();
         updateLogStreaming();
-        refreshDetail().then(refreshApps);
+        refreshDetail().then(function(){ refreshApps(); focusAppListItem(name); renderGraphIfReady(); });
       }
 
       function escapeHtml(s){
@@ -1029,6 +1059,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         } catch (e) { console.error('EventSource failed', e); }
       }
 
+      function focusAppListItem(name){
+        try {
+          var el = Array.from(document.querySelectorAll('#apps .app')).find(function(e){ return (e.dataset && e.dataset.app)===name; });
+          if (el) { el.scrollIntoView({block:'nearest'}); }
+        } catch(e){}
+      }
+
       function renderCounters(sys){
         var el = document.getElementById('sys-counters');
         if(!el) return;
@@ -1065,7 +1102,134 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             var app = (v.labels&&v.labels['ae.app'])||'';
             return '<tr><td>'+escapeHtml(v.name||'')+'</td><td>'+escapeHtml(app)+'</td><td>'+escapeHtml(v.driver||'')+'</td><td>'+escapeHtml(v.mountpoint||'')+'</td></tr>';
           }).join(''); }
+          renderGraphIfReady();
         });
+      }
+
+      function renderGraphIfReady(){
+        if (!lastSystem || !lastStatuses) return;
+        try { drawSystemGraph(lastSystem, lastStatuses); } catch(e){ console.error('graph', e); }
+      }
+
+      function drawSystemGraph(sys, statuses){
+        var svg = document.getElementById('sys-graph');
+        if(!svg) return;
+        var W = svg.clientWidth || 1000;
+        var H = svg.clientHeight || 420;
+        var padX = 40, padY = 30;
+        var topY = 40, midY = 150, appY = 280, podY = 340;
+
+        var nodes = [];
+        var nodeById = {};
+        function addNode(id, label, type, x, y){ var n={id:id,label:label,type:type,x:x,y:y}; nodes.push(n); nodeById[id]=n; return n; }
+
+        var hasIngress = !!(sys.ingress && (sys.ingress.sites||[]).length);
+        addNode('dns', 'DNS', 'system', padX + 160, topY);
+        addNode('ingress', 'Ingress', 'system', padX + 360, topY);
+        addNode('controller', 'Controller', 'system', padX + 160, midY);
+        addNode('runtime', 'Runtime', 'system', padX + 360, midY);
+
+        var apps = (statuses||[]).slice();
+        var cols = Math.max(1, Math.min(apps.length, 5));
+        var gap = (W - padX*2) / Math.max(1, cols);
+        apps.forEach(function(s, i){
+          var col = i % cols;
+          var x = padX + gap*col + gap*0.5;
+          addNode('app:'+s.app_name, s.app_name, 'app', x, appY);
+          var desired = Math.max(0, Number(s.desired_replicas||0));
+          var ready = Math.max(0, Number(s.ready_replicas||0));
+          var pods = Math.min(desired, 12);
+          for (var k=0;k<pods;k++){
+            var px = x - (pods-1)*10/2 + k*10;
+            addNode('pod:'+s.app_name+':'+k, (k<ready?'ready':'pending'), 'pod', px, podY);
+          }
+        });
+
+        var links = [];
+        function link(a,b, cls){ links.push({a:a,b:b,cls:cls||''}); }
+        if (hasIngress) link('dns','ingress','flow');
+        link('controller','runtime','flow');
+        if (hasIngress) link('controller','ingress','flow');
+        var sites = (sys.ingress && sys.ingress.sites) || [];
+        var appsWithIngress = new Set(sites.map(function(s){ return s.app; }));
+        appsWithIngress.forEach(function(name){ link('ingress','app:'+name,'flow'); });
+        (statuses||[]).forEach(function(s){
+          link('runtime','app:'+s.app_name,'');
+          var desired = Math.max(0, Number(s.desired_replicas||0));
+          var pods = Math.min(desired, 12);
+          for (var k=0;k<pods;k++){ link('app:'+s.app_name, 'pod:'+s.app_name+':'+k, ''); }
+        });
+
+        var gNodes = svg.querySelector('#nodes');
+        var gLinks = svg.querySelector('#links');
+        if(!gNodes||!gLinks) return;
+        gNodes.innerHTML = '';
+        gLinks.innerHTML = '';
+
+        function drawLink(id, src, dst, cls){
+          var a = nodeById[src], b = nodeById[dst]; if(!a||!b) return;
+          var d = 'M '+a.x+' '+a.y+' L '+b.x+' '+b.y;
+          var p = document.createElementNS('http://www.w3.org/2000/svg','path');
+          p.setAttribute('d', d);
+          p.setAttribute('class', 'link '+(cls||''));
+          p.setAttribute('stroke-linecap','round');
+          gLinks.appendChild(p);
+        }
+
+        function drawNode(n){
+          var g = document.createElementNS('http://www.w3.org/2000/svg','g');
+          g.setAttribute('class','node '+n.type);
+          g.setAttribute('transform','translate('+(n.x-40)+','+(n.y-16)+')');
+          // map to app for interactions
+          var appName = null;
+          if(n.id.startsWith('app:')) appName = n.id.slice(4);
+          if(n.id.startsWith('pod:')) appName = n.id.split(':')[1] || null;
+          if(appName){ g.setAttribute('data-app', appName); g.style.cursor='pointer';
+            g.addEventListener('click', function(ev){ ev.preventDefault(); ev.stopPropagation(); try { selectApp(appName); focusAppListItem(appName); } catch(e){} });
+          }
+          if(n.type==='pod'){
+            g.setAttribute('transform','translate('+(n.x-5)+','+(n.y-5)+')');
+            var c = document.createElementNS('http://www.w3.org/2000/svg','circle');
+            c.setAttribute('r','5'); c.setAttribute('cx','5'); c.setAttribute('cy','5');
+            c.setAttribute('stroke-width','1.2');
+            g.appendChild(c);
+          } else {
+            var rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+            rect.setAttribute('width','80'); rect.setAttribute('height','32'); rect.setAttribute('rx','6'); rect.setAttribute('ry','6'); rect.setAttribute('stroke-width','1.2');
+            g.appendChild(rect);
+            var t = document.createElementNS('http://www.w3.org/2000/svg','text');
+            t.setAttribute('x','40'); t.setAttribute('y','20'); t.setAttribute('text-anchor','middle'); t.textContent = n.label;
+            g.appendChild(t);
+          }
+          gNodes.appendChild(g);
+        }
+
+        links.forEach(function(L,i){ drawLink('e'+i, L.a, L.b, L.cls); });
+        nodes.forEach(drawNode);
+
+        // Highlight selection
+        try {
+          var sel = (typeof current==='string' && current) ? String(current) : null;
+          if (sel){
+            // nodes
+            Array.from(gNodes.children).forEach(function(n){
+              var a = n.getAttribute('data-app');
+              var isSel = (a===sel);
+              if(isSel) n.classList.add('selected'); else if(n.className.baseVal.indexOf('system')===-1) n.classList.add('faded');
+            });
+            // links
+            Array.from(gLinks.children).forEach(function(p){
+              var d = p.getAttribute('d')||''; // fallback: we can’t easily parse ends; recompute using id map instead
+            });
+            // More precise: mark links whose endpoints include the selected app
+            links.forEach(function(L, i){
+              var p = gLinks.children[i];
+              if(!p) return;
+              var involved = (L.a.indexOf('app:'+sel)===0) || (L.b.indexOf('app:'+sel)===0) || (L.b.indexOf('pod:'+sel+':')===0) || (L.a.indexOf('pod:'+sel+':')===0);
+              if(involved) p.classList.add('selected'); else p.classList.add('faded');
+            });
+          }
+        } catch(e){}
       }
 
       refreshApps().then(function(){ updateLogsHTMX(); updateLogStreaming(); return Promise.all([refreshDetail(), refreshSystem()]); }).catch(console.error);
