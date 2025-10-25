@@ -46,6 +46,21 @@ class SecretManager:
         if not path.exists():
             raise FileNotFoundError(f"Secret file {path} not found")
 
+        # Fast-path: if plaintext allowed and file does not look like a SOPS file,
+        # parse and return it directly to avoid invoking sops and emitting errors.
+        if self._allow_plaintext:
+            try:
+                raw = path.read_text()
+                try:
+                    probe = json.loads(raw)
+                except json.JSONDecodeError:
+                    probe = yaml.safe_load(raw)
+                if isinstance(probe, dict) and "sops" not in probe:
+                    return {str(k): str(v) for k, v in probe.items()}
+            except Exception:
+                # Fall back to sops flow below
+                pass
+
         # Try sops a few times to ride out transient startup races; if plaintext is allowed,
         # fall back to direct read on failure to avoid noisy crashes during demos.
         attempts = 3
