@@ -130,6 +130,7 @@ TEMPLATE = """<!doctype html>
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
       <a href="concepts.html">Concepts</a>
+      <a href="benchmarks.html">Benchmarks</a>
       <a href="{api_base}/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="{api_base}/redoc" target="_blank" rel="noopener">ReDoc</a>
       <a href="{api_base}/dashboard" target="_blank" rel="noopener">Dashboard</a>
@@ -269,6 +270,9 @@ def main() -> None:
         "architecture.md": "architecture.html",
         "http-api.md": "http-api.html",
         "concepts.md": "concepts.html",
+        "benchmarks.md": "benchmarks.html",
+        "testing-memory-k1s.md": "testing-memory-k1s.html",
+        "benchmark-k3s.md": "benchmark-k3s.html",
         "configs-secrets.md": "configs-secrets.html",
         "demo-modes.md": "demo-modes.html",
         "rollouts.md": "rollouts.html",
@@ -290,6 +294,7 @@ def main() -> None:
   <li><a href="rollouts.html">Rollouts</a></li>
   <li><a href="storage.html">Storage</a></li>
   <li><a href="observability.html">Observability</a></li>
+  <li><a href="benchmarks.html">Benchmarks</a></li>
   <li><a href="examples.html">Examples</a></li>
   <li><a href="scheduling.html">Scheduling</a></li>
   <li><a href="{API_BASE}/dashboard" target="_blank" rel="noopener">Live Demo Dashboard</a></li>
