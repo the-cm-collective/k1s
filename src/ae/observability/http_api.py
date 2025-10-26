@@ -352,7 +352,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             except Exception:
                 extra = {}
 
-        payload = {"controller": ctrl, "rbac": rbac, **(extra or {})}
+        # Built-in endpoints available on this API host (relative paths) and optional docs server
+        import socket as _socket
+        builtin: dict = {
+            "dashboard": {"path": "/dashboard"},
+            "swagger": {"path": "/swagger"},
+            "redoc": {"path": "/redoc"},
+        }
+        # Try to detect local docs server on :9109
+        docs_url = "http://127.0.0.1:9109"
+        running = False
+        try:
+            with _socket.create_connection(("127.0.0.1", 9109), timeout=0.05):
+                running = True
+        except Exception:
+            running = False
+        builtin["docs"] = {"url": docs_url, "running": running}
+
+        payload = {"controller": ctrl, "rbac": rbac, "builtin": builtin, **(extra or {})}
         self._json_ok(payload)
 
     def _handle_swagger(self) -> None:
@@ -857,6 +874,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           <strong>System</strong>
           <div class=\"row\" id=\"sys-counters\" style=\"gap:10px; margin-top:6px; flex-wrap:wrap;\"></div>
         </div>
+        <div class=\"card\" style=\"margin-top:12px;\"> 
+          <strong>Built-in Tools</strong>
+          <div id=\"builtins\" class=\"row\" style=\"gap:10px; margin-top:6px; flex-wrap:wrap;\"></div>
+        </div>
         <div class=\"card\" style=\"margin-top:12px;\">
           <strong>System Graph</strong>
           <div id=\"graph-wrap\" style=\"position:relative; width:100%; height:420px; margin-top:8px; background:#0001; border-radius:6px;\">
@@ -869,6 +890,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                   .node text { font-size:12px; pointer-events:none; }
                   .node.system rect { fill:#e5e7eb; stroke:#6b7280; }
                   .node.app rect { fill:#dbeafe; stroke:#3b82f6; }
+                  .node.tool rect { fill:#f3e8ff; stroke:#7c3aed; }
                   .node.pod circle { fill:#e5e7eb; stroke:#6b7280; }
                   .node.pod.ready circle { fill:#dcfce7; stroke:#16a34a; }
                   .node.pod.pending circle { fill:#fef3c7; stroke:#f59e0b; }
@@ -938,6 +960,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       var lastSystem = null;
       var lastStatuses = [];
       var graphHover = null;
+      var builtins = null;
 
       pauseBtn.addEventListener('click', function () {
         pauseLogs = !pauseLogs;
@@ -1103,6 +1126,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       function refreshSystem(){
         return fetchJSON('/system').then(function(sys){
           lastSystem = sys;
+          builtins = sys.builtin || null;
           renderCounters(sys);
           var sbody = document.querySelector('#tbl-services tbody');
           if(sbody){ sbody.innerHTML = (sys.services||[]).map(function(s){
@@ -1117,6 +1141,21 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             var app = (v.labels&&v.labels['ae.app'])||'';
             return '<tr><td>'+escapeHtml(v.name||'')+'</td><td>'+escapeHtml(app)+'</td><td>'+escapeHtml(v.driver||'')+'</td><td>'+escapeHtml(v.mountpoint||'')+'</td></tr>';
           }).join(''); }
+          var bdiv = document.getElementById('builtins');
+          if(bdiv){
+            var items = [];
+            if(sys.builtin){
+              if(sys.builtin.swagger) items.push('<a class=\"pill\" href=\"'+(sys.builtin.swagger.path||'/swagger')+'\" target=\"_blank\" style=\"text-decoration:none; background:#dbeafe; color:#1e3a8a;\">Swagger</a>');
+              if(sys.builtin.redoc) items.push('<a class=\"pill\" href=\"'+(sys.builtin.redoc.path||'/redoc')+'\" target=\"_blank\" style=\"text-decoration:none; background:#f3e8ff; color:#6b21a8;\">ReDoc</a>');
+              if(sys.builtin.dashboard) items.push('<a class=\"pill\" href=\"'+(sys.builtin.dashboard.path||'/dashboard')+'\" target=\"_blank\" style=\"text-decoration:none; background:#e0e7ff; color:#3730a3;\">Dashboard</a>');
+              if(sys.builtin.docs){
+                var url = sys.builtin.docs.url || 'http://127.0.0.1:9109';
+                var live = !!sys.builtin.docs.running;
+                items.push('<a class=\"pill\" href=\"'+url+'\" target=\"_blank\" style=\"text-decoration:none; background:'+(live?'#dcfce7':'#fee2e2')+'; color:'+(live?'#166534':'#991b1b')+';\">Docs'+(live?'':' (offline)')+'</a>');
+              }
+            }
+            bdiv.innerHTML = items.join('');
+          }
           renderGraphIfReady();
         });
       }
@@ -1145,6 +1184,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         addNode('ingress', 'Ingress', 'system', padX + 360, topY);
         addNode('controller', 'Controller', 'system', padX + 160, midY);
         addNode('runtime', 'Runtime', 'system', padX + 360, midY);
+        // Built-in tools
+        addNode('swagger', 'Swagger', 'tool', W - padX - 240, topY);
+        addNode('redoc', 'ReDoc', 'tool', W - padX - 100, topY);
+        addNode('docs', 'Docs', 'tool', W - padX - 170, midY);
 
         var apps = (statuses||[]).slice();
         var cols = Math.max(1, Math.min(apps.length, 5));
@@ -1170,6 +1213,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if (hasIngress) link('dns','ingress','flow');
         link('controller','runtime','flow');
         if (hasIngress) link('controller','ingress','flow');
+        if (hasIngress) { link('ingress','swagger','flow'); link('ingress','redoc','flow'); }
+        link('dns','docs','flow');
         var sites = (sys.ingress && sys.ingress.sites) || [];
         var appsWithIngress = new Set(sites.map(function(s){ return s.app; }));
         appsWithIngress.forEach(function(name){ link('ingress','app:'+name,'flow'); });
@@ -1252,6 +1297,20 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           if(n.id.startsWith('pod:')) appName = n.id.split(':')[1] || null;
           if(appName){ g.setAttribute('data-app', appName); g.style.cursor='pointer';
             g.addEventListener('click', function(ev){ ev.preventDefault(); ev.stopPropagation(); try { selectApp(appName); focusAppListItem(appName); } catch(e){} });
+          }
+          // Tool nodes: open links on click in a new tab
+          if(n.id==='swagger' || n.id==='redoc' || n.id==='docs'){
+            g.style.cursor='pointer';
+            g.addEventListener('click', function(ev){
+              try{
+                var url = '#';
+                if (n.id==='swagger') url = (builtins && builtins.swagger && builtins.swagger.path) ? builtins.swagger.path : '/swagger';
+                if (n.id==='redoc') url = (builtins && builtins.redoc && builtins.redoc.path) ? builtins.redoc.path : '/redoc';
+                if (n.id==='docs') url = (builtins && builtins.docs && builtins.docs.url) ? builtins.docs.url : 'http://127.0.0.1:9109';
+                window.open(url, '_blank');
+                ev.preventDefault(); ev.stopPropagation();
+              } catch(e){}
+            });
           }
           if(n.type==='pod'){
             g.setAttribute('transform','translate('+(n.x-5)+','+(n.y-5)+')');
