@@ -51,3 +51,16 @@ demo-down:
 
 integ-test:
 	AE_DOCKER_TEST=1 pytest -q tests/integration/
+# Benchmarks -------------------------------------------------------------
+
+.PHONY: bench-mem-k1s bench-mem-k3s bench-mem-agg
+
+bench-mem-k1s:
+	@./scripts/bench/mem_snapshot.sh --mode k1s --label $${LABEL:-manual} --duration $${DURATION:-30}
+
+bench-mem-k3s:
+	@./scripts/bench/mem_snapshot.sh --mode k3s --label $${LABEL:-manual} --duration $${DURATION:-30}
+
+# Aggregate latest snapshot under snapshots/<LABEL>/
+bench-mem-agg:
+	@python scripts/bench/mem_aggregate.py $$(ls -d snapshots/$${LABEL:-manual}/* | sort | tail -n1)
