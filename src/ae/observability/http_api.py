@@ -352,8 +352,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             except Exception:
                 extra = {}
 
-        # Built-in endpoints available on this API host (relative paths) and optional docs server
-        import socket as _socket
         payload = {"controller": ctrl, "rbac": rbac, **(extra or {})}
         self._json_ok(payload)
 
