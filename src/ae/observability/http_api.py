@@ -1214,7 +1214,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             if(n.meta && n.meta.app) parts.push('App: '+n.meta.app);
             if(n.meta && (n.meta.podIndex!=null)) parts.push('Replica: '+String(n.meta.podIndex));
             parts.push('State: ' + (n.meta && n.meta.state ? n.meta.state : n.label));
-            title.textContent = parts.join('\n');
+            title.textContent = parts.join(String.fromCharCode(10));
             g.appendChild(title);
           } else {
             var rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
@@ -1226,7 +1226,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             var title = document.createElementNS('http://www.w3.org/2000/svg','title');
             if(n.id.startsWith('app:')){
               var a = n.meta || {};
-              title.textContent = 'App: '+(a.app||n.label)+'\nReplicas: '+(a.ready||0)+'/'+(a.desired||0)+(a.rev!=null?('\nRevision: '+a.rev+' ('+(a.status||'-')+')'):'');
+              var info = [];
+              info.push('App: ' + (a.app||n.label));
+              info.push('Replicas: ' + (a.ready||0) + '/' + (a.desired||0));
+              if(a.rev!=null) info.push('Revision: ' + a.rev + ' (' + (a.status||'-') + ')');
+              title.textContent = info.join(String.fromCharCode(10));
             } else {
               title.textContent = n.label;
             }
