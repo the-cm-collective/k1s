@@ -1,0 +1,61 @@
+Name:	caddy
+Umask:	0022
+State:	S (sleeping)
+Tgid:	2039407
+Ngid:	0
+Pid:	2039407
+PPid:	2039369
+TracerPid:	0
+Uid:	0	0	0	0
+Gid:	0	0	0	0
+FDSize:	64
+Groups:	0 1 2 3 4 6 10 11 20 26 27 
+NStgid:	2039407	1
+NSpid:	2039407	1
+NSpgid:	2039407	1
+NSsid:	2039407	1
+Kthread:	0
+VmPeak:	 1269804 kB
+VmSize:	 1269804 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	   47844 kB
+VmRSS:	   47844 kB
+RssAnon:	   16560 kB
+RssFile:	   31284 kB
+RssShmem:	       0 kB
+VmData:	   58308 kB
+VmStk:	     132 kB
+VmExe:	   17928 kB
+VmLib:	       8 kB
+VmPTE:	     196 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffffff
+Threads:	18
+SigQ:	2/253762
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000000000
+SigIgn:	0000000000000000
+SigCgt:	fffffffd7fc1feff
+CapInh:	0000000000000000
+CapPrm:	00000000a80425fb
+CapEff:	00000000a80425fb
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+Speculation_Store_Bypass:	thread vulnerable
+SpeculationIndirectBranch:	conditional enabled
+Cpus_allowed:	3fff
+Cpus_allowed_list:	0-13
+Mems_allowed:	00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	66
+nonvoluntary_ctxt_switches:	29
+x86_Thread_features:	
+x86_Thread_features_locked:	

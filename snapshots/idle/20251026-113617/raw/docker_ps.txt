@@ -1,0 +1,25 @@
+f7379f40c484cf4e886588ff97e8a8c90e5d2c0cbe0866ad447a027d1faa5d97 ae-echo-mr-rev2-2 Up 4 minutes
+0b0678fffae071f527cf22947cef75bee84ac9fa84612508687f13f8fc4124e5 ae-echo-mr-rev2-1 Up 4 minutes
+28485a746be731a584c75a81ef2b2b72567f92136df88ee5191933d25eaa8274 ae-echo-mr-rev2-0 Up 4 minutes
+68c3080efbb20e5dbecaa164bc1da9278ebe5f98b23ddf6c4349701c0e328c93 ae-echo-rev6687-0 Up 4 minutes
+d5e1c4bbecee38b96514683cb1439857f86dc49ef0dad3864835857e4b0390db ae-echo-storage-rev1-0 Up 4 minutes
+e29d43ca512aab131bceb3cdaee88ae87fa1eecfc170b6c0dea522dc8ef5a47c ae-echo-del-rev1-0 Up 4 minutes
+d11d3e77156c81f7d8d5dbdfd34342986cfed5ba709adad097fb13843f93a5c2 ae-green-rev3-0 Up 4 minutes
+a8df85cdedc28d7e517ba68b21edbb611087ea4cc0b8b84d84f98bae5b3db9fd ae-echo-stateful-rev1-0 Up 4 minutes
+4fdb453271fd75d136f4f99aeba1d0280cc17902fb45d339938f5adf1a7f7bae ae-blue-rev3-0 Up 4 minutes
+df9312cd9ae85a5a4c6d9f9560f64bfc11be73265978d1ee5ee409081612931e dev-caddy-1 Up 4 minutes
+5fd009558bc9cea733c6bec9f9c8e633ef22ad58c899a30fe76d1762faff0d39 dev-prometheus-1 Up 4 minutes
+989b73aa39e931a23395e53f30f5f3bb4fa84393ef52135cd124a3a8d0628de5 music-agent-frontend Exited (137) 41 hours ago
+20f0ac261436ebaa63b7c85841f3dd021d828832a2b5f4d4777ecb9f8f1f4b6f music-agent-persona-api Exited (137) 41 hours ago
+bd1312684d5b198616416b5cd9530f47b9d3ec00f6d38ace304682c57ca04fa4 music-agent-migrate Exited (0) 41 hours ago
+055bc363833b2dcd2bf2f315edc64fca3a11050caddd0f20f4573cadfcfbfa95 music-agent-postgres Exited (137) 41 hours ago
+d33c2b4d88d9206471b0909f1734e66453756e1cfde088f425668ecd4935a3f8 elastic_keldysh Exited (137) 2 days ago
+eec2f115e13d6184a8c57759b8d47d9b28059b6a35d6f2456b6e0bc28750c4b5 serene_hofstadter Exited (137) 2 days ago
+4551404b232e78879dd985d05a126f5760a1f45add6735daa34086e876d2485b elastic_dijkstra Exited (137) 2 days ago
+1e08457f2c1d2368ac624fd53f526d28d2350bf8fca7517a594f0d04f248c362 strange_hellman Exited (137) 2 days ago
+f567ad2b7e79a3fba56c57a1b964b4fdc547aa0486e930544e07e6029191ce2b practical_ritchie Created
+bdc75af89accaf503be72a573402bdb49e0c04764b3cfc35cb7cab855afc2fc1 ir-engine_minio_s3 Exited (137) 3 weeks ago
+85c8209f9750627a5be34b984c42f2ab3de00fef604a9f9cff000681321d5506 ir-engine_minikube_db Exited (0) 3 weeks ago
+43edbd4b4353164bd01298d7b3f7fd313a2a3e1c0c01d03b607eaeb5c766e101 ir-engine_test_db Exited (0) 3 weeks ago
+a043d367451847e308e2ae2a505b174effd972bc3c21cafbcc275d94b90fd8f4 ir-engine_db Exited (0) 3 weeks ago
+a9ace0bc9735bb98a6ff5faca7505f14d4c6180e9c65e10449c09bc9317c707c ir-engine_redis Exited (0) 3 weeks ago

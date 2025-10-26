@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Examples</title>
+    <title>Benchmarks</title>
     <style>
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.55; }
       code, pre { background: #f6f8fa; }
@@ -94,48 +94,13 @@
       <a href="https://api.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
     </nav>
     <div class="container">
-    <h2>Examples</h2>
-<p>This page summarizes the example manifests and demo modes available.</p>
-<h3>Standard Demo (blue/green)</h3>
+    <h1>Benchmarks &amp; Tests</h1>
+<p>Use these guides to profile memory and compare k1s with k3s.</p>
 <ul>
-<li>Apps: blue and green services behind TLS via Caddy.</li>
-<li>Command:</li>
-<li><code>./scripts/init_demo.sh --demo-standard -y</code></li>
-<li><code>make demo ARGS=&quot;--demo-standard -y -d&quot;</code></li>
+<li><a href="testing-memory-k1s.html">k1s Memory Profiling (General)</a></li>
+<li><a href="benchmark-k3s.html">Benchmarking k1s vs k3s (In‑Depth)</a></li>
 </ul>
-<h3>Configs &amp; Secrets (echo)</h3>
-<ul>
-<li>Demonstrates <code>configRefs</code> and <code>secretRefs</code> → env and file projections.</li>
-<li>Files: <code>configs/app-config.yaml</code>, <code>specs/examples/demo-secret.sops.yaml</code></li>
-<li>Command:</li>
-<li><code>./scripts/init_demo.sh --demo-configs -y</code></li>
-<li><code>make demo</code> (defaults to <code>-y --demo-configs</code>)</li>
-</ul>
-<h3>Multi-Replica Echo (echo-mr)</h3>
-<ul>
-<li>Shows Caddy load-balancing across replicas on a shared Docker network.</li>
-<li>File: <code>specs/examples/multi-replica-echo.yaml</code></li>
-<li>Command:</li>
-<li><code>./scripts/init_demo.sh --demo-echo-mr -y</code></li>
-<li><code>make demo ARGS=&quot;--demo-echo-mr -y -d&quot;</code></li>
-</ul>
-<h3>Rollout (ordered)</h3>
-<ul>
-<li>Two-step apply for <code>echo</code> with rollout <code>{ strategy: ordered }</code>.</li>
-<li>Files: <code>specs/examples/echo.yaml</code>, <code>specs/examples/echo-rollout.yaml</code></li>
-<li>Command:</li>
-<li><code>./scripts/init_demo.sh --demo-rollout -y</code></li>
-<li>Optional bias: <code>AE_ROLLOUT_FIRST_WEIGHT=3 ./scripts/init_demo.sh --demo-rollout -y</code></li>
-</ul>
-<h3>Storage (PV-lite)</h3>
-<ul>
-<li>Named Docker volume mounted at <code>/var/lib/echo</code>.</li>
-<li>Files: <code>specs/examples/echo-storage.yaml</code> and <code>echo-storage-delete.yaml</code> (Delete retention)</li>
-<li>Command:</li>
-<li><code>./scripts/init_demo.sh --demo-storage -y</code></li>
-<li><code>ae volumes list --app echo</code> (use <code>--json</code> for machine-readable output)</li>
-<li><code>ae delete echo-del --purge</code> to remove volumes marked <code>retention: Delete</code></li>
-</ul>
+<p>For quick commands and charts, see the end‑to‑end Make targets in each guide.</p>
     </div>
   </body>
 </html>
