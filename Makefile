@@ -129,3 +129,7 @@ bench-mem-e2e-k3s:
 		--duration $${DURATION:-30}
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+
+.PHONY: bench-mem-idle-k1s
+bench-mem-idle-k1s:
+	@./scripts/bench/idle_baseline.sh --label $${LABEL:-idle-baseline} --duration $${DURATION:-30}

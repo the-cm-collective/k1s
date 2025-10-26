@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Examples</title>
+    <title>Benchmark K3S</title>
     <style>
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.55; }
       code, pre { background: #f6f8fa; }
@@ -94,48 +94,61 @@
       <a href="https://api.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
     </nav>
     <div class="container">
-    <h2>Examples</h2>
-<p>This page summarizes the example manifests and demo modes available.</p>
-<h3>Standard Demo (blue/green)</h3>
+    <h1>Benchmarking k1s vs k3s (In‑Depth)</h1>
+<p>This guide walks through building an apples‑to‑apples memory benchmark between k1s and k3s.</p>
+<h2>Goals &amp; Scope</h2>
 <ul>
-<li>Apps: blue and green services behind TLS via Caddy.</li>
-<li>Command:</li>
-<li><code>./scripts/init_demo.sh --demo-standard -y</code></li>
-<li><code>make demo ARGS=&quot;--demo-standard -y -d&quot;</code></li>
+<li>Compare control‑plane/system overhead and per‑pod overhead across common scenarios.</li>
+<li>Use the same demo app and replica counts.</li>
+<li>Keep ingress settings aligned (Traefik on k3s, Caddy on k1s) or disable both.</li>
 </ul>
-<h3>Configs &amp; Secrets (echo)</h3>
+<h2>Prerequisites</h2>
 <ul>
-<li>Demonstrates <code>configRefs</code> and <code>secretRefs</code> → env and file projections.</li>
-<li>Files: <code>configs/app-config.yaml</code>, <code>specs/examples/demo-secret.sops.yaml</code></li>
-<li>Command:</li>
-<li><code>./scripts/init_demo.sh --demo-configs -y</code></li>
-<li><code>make demo</code> (defaults to <code>-y --demo-configs</code>)</li>
+<li>k3d installed (to run k3s locally): https://k3d.io</li>
+<li>kubectl in PATH</li>
+<li>For k1s runs: <code>python -m ae.controller --loop</code> in another terminal</li>
+<li>Optional: Docker installed (for container cgroup memory)</li>
 </ul>
-<h3>Multi-Replica Echo (echo-mr)</h3>
+<h2>Bring up k3s (k3d)</h2>
+<pre><code>
+make bench-k3s-up K3S_NAME=bench
+</code></pre>
+<p>This exposes ports 80/443 for Traefik; the provided Ingress uses host <code>echo.localtest.me</code>.</p>
+<h2>Run Scenarios (k3s)</h2>
 <ul>
-<li>Shows Caddy load-balancing across replicas on a shared Docker network.</li>
-<li>File: <code>specs/examples/multi-replica-echo.yaml</code></li>
-<li>Command:</li>
-<li><code>./scripts/init_demo.sh --demo-echo-mr -y</code></li>
-<li><code>make demo ARGS=&quot;--demo-echo-mr -y -d&quot;</code></li>
+<li>Idle + scale‑out matrix:</li>
+<pre><code>
+make bench-mem-matrix-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yaml REPLICAS=1,5,10 DURATION=30
+</code></pre>
+<li>Rollout (during vs post):</li>
+<pre><code>
+make bench-mem-rollout-k3s LABEL_SUITE=baseline-roll DEPLOY=echo NS=default REPLICAS=5 DURATION=30
+</code></pre>
 </ul>
-<h3>Rollout (ordered)</h3>
+<h2>Run Scenarios (k1s)</h2>
 <ul>
-<li>Two-step apply for <code>echo</code> with rollout <code>{ strategy: ordered }</code>.</li>
-<li>Files: <code>specs/examples/echo.yaml</code>, <code>specs/examples/echo-rollout.yaml</code></li>
-<li>Command:</li>
-<li><code>./scripts/init_demo.sh --demo-rollout -y</code></li>
-<li>Optional bias: <code>AE_ROLLOUT_FIRST_WEIGHT=3 ./scripts/init_demo.sh --demo-rollout -y</code></li>
+<li>Matrix and rollout (in a separate terminal, controller running):</li>
+<pre><code>
+make bench-mem-matrix-k1s LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30
+make bench-mem-rollout-k1s LABEL_SUITE=baseline-roll APP=specs/examples/echo.yaml REPLICAS=5 DURATION=30
+</code></pre>
 </ul>
-<h3>Storage (PV-lite)</h3>
+<h2>Combine and Plot</h2>
+<pre><code>
+make bench-mem-combine GLOB=&#x27;snapshots/*/*&#x27;
+make bench-mem-plot CSV=combined/combined.csv OUTDIR=charts
+</code></pre>
+<p>Charts include control‑plane PSS, system cgroup memory, and approximate per‑pod overhead.</p>
+<h2>Caveats</h2>
 <ul>
-<li>Named Docker volume mounted at <code>/var/lib/echo</code>.</li>
-<li>Files: <code>specs/examples/echo-storage.yaml</code> and <code>echo-storage-delete.yaml</code> (Delete retention)</li>
-<li>Command:</li>
-<li><code>./scripts/init_demo.sh --demo-storage -y</code></li>
-<li><code>ae volumes list --app echo</code> (use <code>--json</code> for machine-readable output)</li>
-<li><code>ae delete echo-del --purge</code> to remove volumes marked <code>retention: Delete</code></li>
+<li>k3s via k3d enables Traefik; be consistent with ingress between systems.</li>
+<li>Without Docker, container cgroup metrics are skipped; process PSS totals remain available.</li>
+<li>You can bypass preflight checks with <code>SKIP_GUARDS=1</code> in CI.</li>
 </ul>
+<h2>Teardown</h2>
+<pre><code>
+make bench-k3s-down K3S_NAME=bench
+</code></pre>
     </div>
   </body>
 </html>

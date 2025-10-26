@@ -66,10 +66,10 @@ esac
 grep -E "${proc_pat}" "${outdir}/raw/ps_before.txt" | awk '{print $1" "$3}' | while read -r pid comm; do
   [[ -z "${pid}" ]] && continue
   if [[ -r "/proc/${pid}/smaps_rollup" ]]; then
-    cp "/proc/${pid}/smaps_rollup" "${outdir}/raw/smaps_${pid}_${comm//\//_}.txt" || true
+    cp "/proc/${pid}/smaps_rollup" "${outdir}/raw/smaps_${pid}_${comm//\//_}.txt" 2>/dev/null || true
   fi
   if [[ -r "/proc/${pid}/status" ]]; then
-    cp "/proc/${pid}/status" "${outdir}/raw/status_${pid}_${comm//\//_}.txt" || true
+    cp "/proc/${pid}/status" "${outdir}/raw/status_${pid}_${comm//\//_}.txt" 2>/dev/null || true
   fi
 done
 
@@ -86,7 +86,7 @@ if command -v docker >/dev/null 2>&1; then
   {
     echo "container_id,name,pid,mem_current_bytes"
     if [[ -f "${outdir}/raw/docker_inspect.json" ]]; then
-      python - << 'PY' 2>/dev/null || true
+      python - "$outdir" << 'PY' 2>/dev/null || true
 import json, os, sys
 root = sys.argv[1]
 path = os.path.join(root, 'raw', 'docker_inspect.json')
@@ -111,7 +111,6 @@ for c in data:
     mem = read_mem_current(pid) if pid and pid!='0' else -1
     print(f"{cid},{name},{pid},{mem}")
 PY
-      "${outdir}"
     fi
   } > "${outdir}/raw/containers_mem.csv"
 else
