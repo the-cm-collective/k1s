@@ -37,7 +37,13 @@ ensure_controller() {
   exit 2
 }
 
-ensure_controller
+if [[ "${SKIP_GUARDS:-0}" != "1" ]]; then
+  ensure_controller
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "[rollout] docker not found; snapshots will skip container cgroup metrics." >&2
+fi
 
 wait_ready() {
   local name="$1"; local want="$2"; local tries=120

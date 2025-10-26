@@ -36,7 +36,13 @@ ensure_kube() {
   exit 2
 }
 
-ensure_kube
+if [[ "${SKIP_GUARDS:-0}" != "1" ]]; then
+  ensure_kube
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "[k3s-matrix] docker not found; snapshots will skip container cgroup metrics." >&2
+fi
 
 wait_ready() {
   local dep="$1"; local want="$2"; local tries=60

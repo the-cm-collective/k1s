@@ -114,6 +114,8 @@ PY
       "${outdir}"
     fi
   } > "${outdir}/raw/containers_mem.csv"
+else
+  echo "[mem-snapshot] docker not found; container cgroup metrics will be skipped. Install Docker or adjust runtime classification." >&2
 fi
 
 # Quick system stats (after)
@@ -123,4 +125,3 @@ ps -eo pid,ppid,comm,rss --sort -rss > "${outdir}/raw/ps_after.txt" || true
 echo "[mem-snapshot] done -> ${outdir}" >&2
 
 echo "${outdir}"
-

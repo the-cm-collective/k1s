@@ -49,6 +49,8 @@ Tips for consistency
 - Use the same host and OS between runs; minimize background services.
 - Keep ingress enabled or disabled across both systems for apples-to-apples.
 - Allow a 2-minute warm-up before snapshotting busy scenarios.
+ - If Docker is not installed, snapshots still run but container-level cgroup metrics are skipped (process PSS totals are still reported).
+ - CI or advanced users can bypass safety checks by setting `SKIP_GUARDS=1` in the environment.
 
 Interpreting results
 - Process PSS approximates unique+fair-share memory for control-plane processes.
