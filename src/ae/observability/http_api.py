@@ -1210,9 +1210,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             if(n.meta && n.meta.state){ g.setAttribute('class', g.getAttribute('class') + ' ' + n.meta.state); }
             g.appendChild(c);
             var title = document.createElementNS('http://www.w3.org/2000/svg','title');
-            var appInfo = n.meta && n.meta.app ? 'App: '+n.meta.app+'\n' : '';
-            var idx = (n.meta && (n.meta.podIndex!=null)) ? ('Replica: '+String(n.meta.podIndex)+'\n') : '';
-            title.textContent = appInfo + idx + 'State: ' + (n.meta && n.meta.state ? n.meta.state : n.label);
+            var parts = [];
+            if(n.meta && n.meta.app) parts.push('App: '+n.meta.app);
+            if(n.meta && (n.meta.podIndex!=null)) parts.push('Replica: '+String(n.meta.podIndex));
+            parts.push('State: ' + (n.meta && n.meta.state ? n.meta.state : n.label));
+            title.textContent = parts.join('\n');
             g.appendChild(title);
           } else {
             var rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
