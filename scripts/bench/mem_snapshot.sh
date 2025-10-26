@@ -43,27 +43,34 @@ echo "[mem-snapshot] mode=${mode} label=${label} duration=${duration}s -> ${outd
 
 # Quick system stats (before)
 free -b > "${outdir}/raw/free_before.txt" || true
+# Two views: compact (comm) and scan (includes args)
 ps -eo pid,ppid,comm,rss --sort -rss > "${outdir}/raw/ps_before.txt" || true
+ps -eo pid,ppid,comm,args --sort -rss > "${outdir}/raw/ps_scan_before.txt" || true
 
 # Streaming vmstat during warm window (non-fatal)
 vmcount=$(( duration > 5 ? duration : 5 ))
 vmstat 1 "${vmcount}" > "${outdir}/raw/vmstat.txt" 2>/dev/null || true
 
 # Process target patterns
+# Use args-aware scan to capture controller accurately and avoid shims
 case "${mode}" in
   k1s)
-    proc_pat='python.*ae.controller|caddy|dockerd|containerd'
+    # match: python -m ae.controller, caddy, dockerd, containerd (but NOT containerd-shim)
+    proc_pat='ae\.controller|\bcaddy\b|\bdockerd\b|\bcontainerd\b'
+    scan_file="${outdir}/raw/ps_scan_before.txt"
     ;;
   k3s)
-    proc_pat='k3s|containerd|coredns|traefik'
+    proc_pat='\bk3s\b|\bcontainerd\b|\bcoredns\b|\btraefik\b'
+    scan_file="${outdir}/raw/ps_scan_before.txt"
     ;;
   *)
     proc_pat='.'
+    scan_file="${outdir}/raw/ps_scan_before.txt"
     ;;
 esac
 
-# Capture smaps_rollup + status for matching processes
-grep -E "${proc_pat}" "${outdir}/raw/ps_before.txt" | awk '{print $1" "$3}' | while read -r pid comm; do
+# Capture smaps_rollup + status for matching processes (exclude containerd-shim)
+grep -E "${proc_pat}" "${scan_file}" | grep -v "containerd-shim" | awk '{print $1" "$3}' | while read -r pid comm; do
   [[ -z "${pid}" ]] && continue
   if [[ -r "/proc/${pid}/smaps_rollup" ]]; then
     cp "/proc/${pid}/smaps_rollup" "${outdir}/raw/smaps_${pid}_${comm//\//_}.txt" 2>/dev/null || true

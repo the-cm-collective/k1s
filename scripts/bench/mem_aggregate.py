@@ -90,6 +90,8 @@ def _read_containers_csv(raw_dir: Path) -> List[Dict[str, str]]:
 
 def _classify_proc(comm: str, mode: str) -> str:
     comm_l = comm.lower()
+    if "containerd-shim" in comm_l:
+        return "ignore"
     if mode == "k3s":
         if "k3s" in comm_l:
             return "control_plane"
@@ -124,6 +126,8 @@ def aggregate(snapshot_dir: Path) -> Dict:
     by_class: Dict[str, Dict[str, int]] = {}
     for pr in procs:
         c = _classify_proc(pr.comm or "", mode)
+        if c == "ignore":
+            continue
         bucket = by_class.setdefault(c, {"rss_kb": 0, "pss_kb": 0, "uss_kb": 0})
         if pr.rss_kb is not None:
             proc_totals["rss_kb"] += pr.rss_kb
@@ -221,4 +225,3 @@ def main(argv: List[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))
-
