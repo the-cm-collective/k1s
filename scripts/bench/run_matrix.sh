@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Orchestrate a small matrix of scenarios for k1s and collect memory snapshots.
+# Assumes controller is already running (python -m ae.controller --loop) and Docker available.
+#
+# Usage:
+#   scripts/bench/run_matrix.sh --label-suite baseline --app specs/examples/echo.yaml --replicas 1,5,10
+#   LABEL_SUITE=baseline make bench-mem-matrix-k1s
+
+label_suite="baseline"
+manifest="specs/examples/echo.yaml"
+replicas_csv="1,5,10"
+mode="k1s"
+duration=30
+app_name="echo"  # derived from example; can be overridden via --app-name
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --label-suite) label_suite="$2"; shift 2;;
+    --app) manifest="$2"; shift 2;;
+    --app-name) app_name="$2"; shift 2;;
+    --replicas) replicas_csv="$2"; shift 2;;
+    --mode) mode="$2"; shift 2;;
+    --duration) duration="$2"; shift 2;;
+    *) echo "unknown arg: $1"; exit 2;;
+  esac
+done
+
+info() { echo "[matrix] $*" >&2; }
+
+require() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "missing required command: $1" >&2; exit 2
+  fi
+}
+
+require python
+
+ae() { python -m ae.cli "$@"; }
+
+wait_ready() {
+  local name="$1"; local want="$2"; local tries=60
+  while (( tries-- > 0 )); do
+    local js
+    if ! js=$(ae status "$name" --json 2>/dev/null); then sleep 2; continue; fi
+    local ready desired
+    ready=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("ready_replicas",0))') || ready=0
+    desired=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("desired_replicas",0))') || desired=0
+    if [[ "$ready" == "$want" && "$desired" == "$want" ]]; then return 0; fi
+    sleep 2
+  done
+  echo "timeout waiting for $name ready=$want" >&2
+  return 1
+}
+
+# Idle snapshot
+info "idle snapshot"
+scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true
+
+# Ensure app applied
+info "apply manifest: $manifest"
+ae apply -f "$manifest" || true
+
+IFS=',' read -r -a reps <<< "$replicas_csv"
+for n in "${reps[@]}"; do
+  n=${n// /}
+  [[ -z "$n" ]] && continue
+  info "scale $app_name to $n"
+  ae scale "$app_name" --replicas "$n" || true
+  wait_ready "$app_name" "$n" || true
+  info "snapshot label=${label_suite}-pods-${n}"
+  scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-pods-${n}" --duration "$duration" || true
+done
+
+info "done"
+

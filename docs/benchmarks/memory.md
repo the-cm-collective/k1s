@@ -61,7 +61,35 @@ Limitations
 - If Docker is unavailable, container-level stats are skipped; process PSS is still reported.
 - USS is approximated from `Private_*` in `smaps_rollup`.
 
-Next steps
-- Add k3s parity targets (k3d or native k3s) to automate bringing up comparable workloads.
-- Export combined CSV across labels for quick charting.
+Caveats
+- k3s (via k3d) enables Traefik by default; the provided Ingress uses class `traefik`. Keep ingress turned on in k1s for apples-to-apples, or disable both.
+- The echo image `ealen/echo-server:0.7.0` serves `/` on port 80 and has a lightweight memory footprint suitable for baseline comparisons.
+- If you prefer your demo image, push it to a registry and update `specs/examples/k3s-echo.yaml` accordingly.
 
+Automate a small matrix (k1s)
+- Run idle + scale-out snapshots in one go (requires controller running and echo example available):
+```
+make bench-mem-matrix-k1s LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30
+```
+- Combine all summaries into one CSV/JSON for charting:
+```
+make bench-mem-combine GLOB='snapshots/*/*'
+```
+
+Automate a small matrix (k3s via k3d)
+- Create cluster and expose ports 80/443 for Traefik:
+```
+make bench-k3s-up K3S_NAME=bench
+```
+- Run idle + scale-out snapshots using a simple echo Deployment/Service/Ingress:
+```
+make bench-mem-matrix-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yaml REPLICAS=1,5,10 DURATION=30
+```
+- Combine across runs:
+```
+make bench-mem-combine GLOB='snapshots/*/*'
+```
+- Tear down cluster when finished:
+```
+make bench-k3s-down K3S_NAME=bench
+```
