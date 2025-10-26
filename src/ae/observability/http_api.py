@@ -811,6 +811,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       code { background:#0001; padding:2px 4px; border-radius:4px; }
       h2 { font-size:14px; margin: 14px 4px 6px; opacity:0.9; }
       .divider { border-top:1px solid #8884; margin:16px 0; }
+      .hover-card { position:absolute; display:none; max-width:280px; font-size:12px; line-height:1.35; background:rgba(255,255,255,0.95); color:inherit; border:1px solid #888; border-radius:6px; padding:8px 10px; box-shadow:0 2px 8px rgba(0,0,0,0.1); pointer-events:none; }
+      @media (prefers-color-scheme: dark) { .hover-card { background:rgba(17,17,17,0.9); border-color:#555; } }
       h2 { font-size:14px; margin: 14px 4px 6px; opacity:0.9; }
       .divider { border-top:1px solid #8884; margin:16px 0; }
     </style>
@@ -890,6 +892,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 <span><svg width=\"30\" height=\"8\"><path d=\"M1 4 L22 4\" stroke=\"#6b7280\" stroke-width=\"1.5\" stroke-dasharray=\"6 6\"/><polygon points=\"22,1 29,4 22,7\" fill=\"#6b7280\"/></svg> Flow</span>
               </div>
             </div>
+            <div id=\"graph-hover\" class=\"hover-card\"></div>
           </div>
         </div>
         <div class=\"card\" style=\"margin-top:12px;\">
@@ -934,6 +937,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       var logSource = null;
       var lastSystem = null;
       var lastStatuses = [];
+      var graphHover = null;
 
       pauseBtn.addEventListener('click', function () {
         pauseLogs = !pauseLogs;
@@ -1125,6 +1129,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       function drawSystemGraph(sys, statuses){
         var svg = document.getElementById('sys-graph');
         if(!svg) return;
+        graphHover = graphHover || document.getElementById('graph-hover');
+        if (graphHover) { graphHover.style.display='none'; }
         var W = svg.clientWidth || 1000;
         var H = svg.clientHeight || 420;
         var padX = 40, padY = 30;
@@ -1190,6 +1196,27 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           gLinks.appendChild(p);
         }
 
+        var sysHelp = {
+          ingress: {title:'Ingress', body:'HTTP reverse proxy. Routes external requests to healthy app endpoints based on host/path. Controller updates routes on successful rollouts.'},
+          controller: {title:'Controller', body:'Reconciliation loop. Compares desired manifests to observed runtime and applies creates/updates/deletes. Publishes status, events, and metrics.'},
+          runtime: {title:'Runtime', body:'Container adapter. Manages containers for replicas, reads logs, and lists volumes/ports. Provides per-replica readiness and liveness info.'}
+        };
+
+        function showHoverCard(kind, evt){
+          if (!graphHover) return;
+          var wrap = document.getElementById('graph-wrap');
+          var rect = wrap.getBoundingClientRect();
+          var x = (evt.clientX - rect.left) + 10;
+          var y = (evt.clientY - rect.top) + 10;
+          var info = sysHelp[kind];
+          if (!info) return;
+          graphHover.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">'+info.title+'</div><div>'+info.body+'</div>';
+          graphHover.style.left = x + 'px';
+          graphHover.style.top = y + 'px';
+          graphHover.style.display = 'block';
+        }
+        function hideHoverCard(){ if (graphHover) graphHover.style.display='none'; }
+
         function drawNode(n){
           var g = document.createElementNS('http://www.w3.org/2000/svg','g');
           g.setAttribute('class','node '+n.type);
@@ -1235,6 +1262,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
               title.textContent = n.label;
             }
             g.appendChild(title);
+          }
+          // System node hover help
+          if(n.type==='system' && (n.id==='ingress' || n.id==='controller' || n.id==='runtime')){
+            g.addEventListener('mouseenter', function(ev){ showHoverCard(n.id, ev); });
+            g.addEventListener('mousemove', function(ev){ showHoverCard(n.id, ev); });
+            g.addEventListener('mouseleave', function(){ hideHoverCard(); });
           }
           gNodes.appendChild(g);
         }
