@@ -30,6 +30,16 @@ require kubectl
 
 info(){ echo "[k3s-rollout] $*" >&2; }
 
+ensure_kube() {
+  if kubectl cluster-info >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "[k3s-rollout] kubectl cannot reach a cluster. Create one with 'make bench-k3s-up' (k3d required)." >&2
+  exit 2
+}
+
+ensure_kube
+
 wait_ready() {
   local dep="$1"; local want="$2"; local tries=120
   while (( tries-- > 0 )); do
@@ -60,4 +70,3 @@ wait_ready "$deploy" "$replicas" || true
 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
 
 info "done"
-

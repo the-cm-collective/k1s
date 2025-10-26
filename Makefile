@@ -94,3 +94,38 @@ bench-mem-rollout-k3s:
 
 bench-mem-plot:
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+
+.PHONY: bench-mem-e2e-k1s bench-mem-e2e-k3s
+
+# End-to-end: k1s matrix + rollout + combine + plot
+bench-mem-e2e-k1s:
+	@./scripts/bench/run_matrix.sh \
+		--label-suite $${LABEL_SUITE:-baseline} \
+		--app $${APP:-specs/examples/echo.yaml} \
+		--app-name $${APP_NAME:-echo} \
+		--replicas $${REPLICAS:-1,5,10} \
+		--duration $${DURATION:-30}
+	@./scripts/bench/run_rollout_k1s.sh \
+		--label-suite $${LABEL_SUITE_ROLL:-baseline-roll} \
+		--app $${APP:-specs/examples/echo.yaml} \
+		--app-name $${APP_NAME:-echo} \
+		--replicas $${ROLL_REPLICAS:-5} \
+		--duration $${DURATION:-30}
+	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
+	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+
+# End-to-end: k3s matrix + rollout + combine + plot (requires k3d cluster up)
+bench-mem-e2e-k3s:
+	@./scripts/bench/run_matrix_k3s.sh \
+		--label-suite $${LABEL_SUITE:-baseline} \
+		--manifest $${MANIFEST:-specs/examples/k3s-echo.yaml} \
+		--replicas $${REPLICAS:-1,5,10} \
+		--duration $${DURATION:-30}
+	@./scripts/bench/run_rollout_k3s.sh \
+		--label-suite $${LABEL_SUITE_ROLL:-baseline-roll} \
+		--deploy $${DEPLOY:-echo} \
+		--namespace $${NS:-default} \
+		--replicas $${ROLL_REPLICAS:-5} \
+		--duration $${DURATION:-30}
+	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
+	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}

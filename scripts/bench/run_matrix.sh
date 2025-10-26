@@ -39,6 +39,16 @@ require python
 
 ae() { python -m ae.cli "$@"; }
 
+ensure_controller() {
+  if pgrep -f "python\s*-m\s*ae\.controller" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "[matrix] controller not detected. Start it in another terminal: 'python -m ae.controller --loop'" >&2
+  exit 2
+}
+
+ensure_controller
+
 wait_ready() {
   local name="$1"; local want="$2"; local tries=60
   while (( tries-- > 0 )); do
@@ -74,4 +84,3 @@ for n in "${reps[@]}"; do
 done
 
 info "done"
-

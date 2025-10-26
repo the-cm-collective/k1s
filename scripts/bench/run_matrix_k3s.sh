@@ -28,6 +28,16 @@ require kubectl
 
 info(){ echo "[k3s-matrix] $*" >&2; }
 
+ensure_kube() {
+  if kubectl cluster-info >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "[k3s-matrix] kubectl cannot reach a cluster. Create one with 'make bench-k3s-up' (k3d required)." >&2
+  exit 2
+}
+
+ensure_kube
+
 wait_ready() {
   local dep="$1"; local want="$2"; local tries=60
   while (( tries-- > 0 )); do
@@ -60,4 +70,3 @@ for n in "${reps[@]}"; do
 done
 
 info "done"
-

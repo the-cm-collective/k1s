@@ -76,6 +76,12 @@ make bench-mem-matrix-k1s LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPL
 make bench-mem-combine GLOB='snapshots/*/*'
 ```
 
+End-to-end (k1s one-liner)
+```
+make bench-mem-e2e-k1s LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5
+```
+This runs matrix + rollout, combines all summaries, and writes charts/.
+
 Automate a small matrix (k3s via k3d)
 - Create cluster and expose ports 80/443 for Traefik:
 ```
@@ -92,4 +98,9 @@ make bench-mem-combine GLOB='snapshots/*/*'
 - Tear down cluster when finished:
 ```
 make bench-k3s-down K3S_NAME=bench
+```
+
+End-to-end (k3s one-liner; cluster must be up)
+```
+make bench-mem-e2e-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5
 ```
