@@ -881,13 +881,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
               <g id=\"links\"></g>
               <g id=\"nodes\"></g>
             </svg>
-            <div id=\"graph-legend\" style=\"position:absolute; right:8px; top:8px; background:#fffcc; color:inherit; padding:6px 8px; border-radius:6px; border:1px solid #8884; backdrop-filter: blur(2px); font-size:12px;\">
+            <div id=\"graph-legend\" style=\"position:absolute; right:8px; top:8px; background:rgba(255,255,255,0.78); color:inherit; padding:6px 8px; border-radius:6px; border:1px solid #888; backdrop-filter: blur(2px); font-size:12px;\">
               <div style=\"display:flex; gap:10px; align-items:center; flex-wrap:wrap;\">
                 <span><svg width=\"14\" height=\"14\"><rect x=\"1\" y=\"1\" width=\"12\" height=\"12\" rx=\"3\" fill=\"#e5e7eb\" stroke=\"#6b7280\"/></svg> System</span>
                 <span><svg width=\"14\" height=\"14\"><rect x=\"1\" y=\"1\" width=\"12\" height=\"12\" rx=\"3\" fill=\"#dbeafe\" stroke=\"#3b82f6\"/></svg> App</span>
                 <span><svg width=\"14\" height=\"14\"><circle cx=\"7\" cy=\"7\" r=\"5\" fill=\"#dcfce7\" stroke=\"#16a34a\"/></svg> Pod ready</span>
                 <span><svg width=\"14\" height=\"14\"><circle cx=\"7\" cy=\"7\" r=\"5\" fill=\"#fef3c7\" stroke=\"#f59e0b\"/></svg> Pod pending</span>
-                <span><svg width=\"30\" height=\"8\"><defs><marker id=\"lg-a\" markerWidth=\"10\" markerHeight=\"10\" refX=\"10\" refY=\"3\" orient=\"auto\"><path d=\"M0,0 L10,3 L0,6 Z\" fill=\"#6b7280\"/></marker></defs><path d=\"M1 4 L26 4\" stroke=\"#6b7280\" stroke-width=\"1.5\" stroke-dasharray=\"6 6\" marker-end=\"url(#lg-a)\"/></svg> Flow</span>
+                <span><svg width=\"30\" height=\"8\"><path d=\"M1 4 L22 4\" stroke=\"#6b7280\" stroke-width=\"1.5\" stroke-dasharray=\"6 6\"/><polygon points=\"22,1 29,4 22,7\" fill=\"#6b7280\"/></svg> Flow</span>
               </div>
             </div>
           </div>
@@ -1248,7 +1248,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             });
             // links
             Array.from(gLinks.children).forEach(function(p){
-              var d = p.getAttribute('d')||''; // fallback: we can’t easily parse ends; recompute using id map instead
+              var d = p.getAttribute('d')||''; // fallback: we can't easily parse ends; recompute using id map instead
             });
             // More precise: mark links whose endpoints include the selected app
             links.forEach(function(L, i){
