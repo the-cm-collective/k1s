@@ -1197,9 +1197,34 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         }
 
         var sysHelp = {
-          ingress: {title:'Ingress', body:'HTTP reverse proxy. Routes external requests to healthy app endpoints based on host/path. Controller updates routes on successful rollouts.'},
-          controller: {title:'Controller', body:'Reconciliation loop. Compares desired manifests to observed runtime and applies creates/updates/deletes. Publishes status, events, and metrics.'},
-          runtime: {title:'Runtime', body:'Container adapter. Manages containers for replicas, reads logs, and lists volumes/ports. Provides per-replica readiness and liveness info.'}
+          ingress: {
+            title:'Ingress (Caddy)',
+            body:[
+              'Front door for HTTP/HTTPS traffic.',
+              'Routes host/path to healthy app endpoints after readiness.',
+              'Controller writes site snippets and reloads the proxy on rollouts.',
+              'When proxy runs in a container, upstream 127.0.0.1 is rewritten to host.docker.internal.'
+            ].join('<br>')
+          },
+          controller: {
+            title:'Controller',
+            body:[
+              'Reconciliation loop for manifests in specs/.',
+              'Computes desired state and converges containers and ingress.',
+              'Single-node rollout: maxUnavailable=0, maxSurge=1 (zero-downtime).',
+              'Records events, exposes /status, /events, /metrics, and serves the dashboard.',
+              'Cleans up old revisions after switching traffic.'
+            ].join('<br>')
+          },
+          runtime: {
+            title:'Runtime (Docker)',
+            body:[
+              'Container adapter that manages replicas for each app.',
+              'Reads logs, reports readiness/liveness, and lists ports.',
+              'Ensures named storage volumes exist; prunes when retention=Delete.',
+              'Provides container info for conflict checks and observability.'
+            ].join('<br>')
+          }
         };
 
         function showHoverCard(kind, evt){
@@ -1265,9 +1290,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           }
           // System node hover help
           if(n.type==='system' && (n.id==='ingress' || n.id==='controller' || n.id==='runtime')){
-            g.addEventListener('mouseenter', function(ev){ showHoverCard(n.id, ev); });
+            var label = g.querySelector('text');
+            g.addEventListener('mouseenter', function(ev){ if(label) label.style.visibility='hidden'; showHoverCard(n.id, ev); });
             g.addEventListener('mousemove', function(ev){ showHoverCard(n.id, ev); });
-            g.addEventListener('mouseleave', function(){ hideHoverCard(); });
+            g.addEventListener('mouseleave', function(){ if(label) label.style.visibility='visible'; hideHoverCard(); });
           }
           gNodes.appendChild(g);
         }
