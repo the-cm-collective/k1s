@@ -732,7 +732,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
   <body>
     <h1>k1s Controller API</h1>
     <p>Minimal, read-only endpoints. OpenAPI at <code>/openapi.json</code>.</p>
-    <div id="endpoints">Loading…</div>
+    <div id="endpoints">Loading...</div>
     <script>
       fetch('/openapi.json').then(r => r.json()).then(doc => {
         const container = document.getElementById('endpoints');
