@@ -1,0 +1,558 @@
+    PID    PPID COMMAND           RSS
+  21523   21522 nvim            1719812
+  21525   21523 node            1081244
+  23877   23871 nvim            781464
+   2625    2410 gnome-shell     773144
+  94475    2410 chrome          669140
+  22785   22783 node            579156
+ 984378   94501 chrome          523968
+ 626495   94501 chrome          489068
+  91450   91342 slack           486576
+   2095       1 dockerd         421532
+1020973 1020429 joplin          417136
+  97568   94501 chrome          391392
+4062516    2410 nautilus        387356
+  96110   94501 chrome          372700
+  95713   94501 chrome          370220
+  94574   94498 chrome          362868
+  98067   94501 chrome          347232
+  95491   94501 chrome          316080
+  94641   94501 chrome          315912
+1020429    2625 joplin          293440
+  91333    2625 slack           224460
+    735       1 systemd-journal 221084
+1021183 1020429 joplin          206200
+   3200    2625 mutter-x11-fram 195548
+1021184 1020429 joplin          193908
+  91401   91339 slack           191040
+  95100   94501 chrome          187808
+1995880   94501 chrome          178344
+  94580   94475 chrome          169412
+  23925   23877 node            169032
+ 833195   94501 chrome          159832
+  94787   94501 chrome          157980
+ 587951    2410 evince          151468
+  94994   94501 chrome          146836
+   2723    2625 Xwayland        139992
+ 370003       1 tailscaled      121820
+1020933 1020429 joplin          119740
+1020895 1020735 joplin          115988
+1021253 1020736 joplin          103820
+  22783   22782 nvim            103264
+1020735 1020429 joplin          102600
+1020736 1020429 joplin          102236
+1879287    2625 guake           99648
+   2532    2410 gnome-remote-de 98232
+  95214   94475 chrome          85060
+   2793    2552 evolution-alarm 83464
+   3158    2410 gsd-xsettings   83044
+  91406   91333 slack           81244
+2040473 2040465 python          80508
+   2699    2410 evolution-sourc 78672
+2090052   94501 chrome          74964
+  24258   24247 codex           68616
+   1367       1 containerd      68568
+  94593   94501 chrome          65668
+  91709   91333 slack           65316
+  94499   94475 chrome          65024
+  94498   94475 chrome          65000
+   3024    2410 evolution-calen 52660
+   3138    2410 localsearch-3   52652
+  91340   91333 slack           51916
+  91339   91333 slack           51692
+ 138999       1 fwupd           48004
+   3270    2410 xdg-desktop-por 47236
+1817802   26850 node            46324
+ 981169   15630 node            46196
+  24247   14096 node            46188
+   1204       1 snapd           44800
+   2990    2410 goa-daemon      43344
+1817813 1817802 codex           39964
+  25026    2410 tmux: server    39364
+ 112221    2410 python3         36644
+   2865    2728 ibus-extension- 34852
+ 981180  981169 codex           34352
+   3079    2410 evolution-addre 30168
+   4818    2410 tmux: server    30024
+   2704    2410 gjs             29308
+   3348    2410 xdg-desktop-por 29120
+   2446    2410 pipewire-pulse  29060
+   2920    2410 gjs             28628
+   2744    2410 gsd-media-keys  28156
+   2747    2410 gsd-power       28140
+1020821    2410 snap            28060
+  20328   20215 nvim            26804
+   2782    2410 gsd-wacom       24888
+   2730    2410 gsd-color       24276
+   2739    2410 gsd-keyboard    23808
+2041069 2041043 python          23540
+2041551 2041513 python          23420
+2040550 2040521 python          23224
+2042254 2042233 python          23196
+   2687    2410 gnome-shell-cal 23160
+2041404 2041381 python          23040
+2042144 2042122 python          22956
+2041962 2041941 python          22936
+   2440    2410 pipewire        22744
+   1229       1 NetworkManager  21156
+   2445    2410 wireplumber     20752
+   3247    2410 xdg-desktop-por 20320
+  94501   94499 chrome          19736
+2041447 2038007 python          19012
+   2875       1 udisksd         17612
+2042233       1 containerd-shim 16628
+2042122       1 containerd-shim 16428
+2041513       1 containerd-shim 16412
+      1       0 systemd         16272
+2040926       1 containerd-shim 16124
+   2410       1 systemd         16016
+2041043       1 containerd-shim 15956
+2041121       1 containerd-shim 15948
+2041941       1 containerd-shim 15936
+2040521       1 containerd-shim 15676
+2041381       1 containerd-shim 15644
+   2552    2410 gnome-session-b 15496
+   2485    2481 gnome-session-b 14468
+   2888    2410 gsd-printer     14432
+   1631       1 colord          14220
+  91342   91340 slack           13036
+   2764    2410 gsd-smartcard   12788
+   3218    2410 ibus-x11        12348
+   1272       1 ModemManager    12316
+   2324    1391 gdm-session-wor 12216
+   2756    2410 gsd-sharing     11728
+   1315       1 wpa_supplicant  11588
+    774       1 systemd-udevd   11244
+   2993    2410 gvfs-udisks2-vo 11128
+   1684       1 upowerd         10848
+   2749    2410 gsd-print-notif 10780
+   1201       1 polkitd         10676
+   2728    2410 ibus-daemon     10520
+   3175    2544 gvfsd-recent    10272
+  60586   23877 tmux: client    10220
+  26401   21523 tmux: client    10204
+2086775 1879308 tmux: client    10096
+2511318   22783 tmux: client    10096
+  26604   25026 zsh              9976
+   2443    2410 gnome-keyring-d  9788
+   2731    2410 gsd-datetime     9548
+   1206       1 systemd-logind   9464
+  50421   48164 ssh              9412
+  49179   47277 ssh              9304
+   4756    2410 ssh              9164
+  49857   47863 ssh              9136
+   2736    2410 gsd-housekeepin  9072
+   2773    2410 gsd-sound        8700
+   3001    2410 goa-identity-se  8688
+   3176    2544 gvfsd-trash      8672
+  27855   25026 zsh              8612
+ 112199    2544 gvfsd-network    8412
+  21522   12951 nvim             8408
+  53678   25026 zsh              8316
+ 112209    2544 gvfsd-dnssd      8284
+  23871   14494 nvim             8204
+  22782    6462 nvim             8156
+2041920    2095 docker-proxy     8148
+   1379       1 sshd             8096
+2042096    2095 docker-proxy     8088
+   1196       1 dbus-daemon      8076
+   3047    2410 gvfs-afc-volume  8036
+    868       1 systemd-timesyn  7968
+   1841       1 pcscd            7960
+2096156 2095963 sudo             7952
+   1391       1 gdm3             7892
+2041493    2095 docker-proxy     7892
+  27280   25026 zsh              7784
+2096113     774 (udev-worker)    7752
+   1446       1 systemd-oomd     7748
+  15295    4818 zsh              7720
+  54145   25026 zsh              7720
+2042211    2095 docker-proxy     7704
+   2544    2410 gvfsd            7696
+2096130     774 (udev-worker)    7688
+   1194       1 accounts-daemon  7580
+  20215    6075 nvim             7452
+2096131     774 (udev-worker)    7392
+   2398       1 power-profiles-  7372
+   3058    2728 ibus-engine-sim  7176
+   2668    2410 at-spi2-registr  7140
+   1273       1 boltd            7132
+   2597    2552 at-spi-bus-laun  7072
+  53217   25026 zsh              7072
+   2800    2552 gsd-disk-utilit  7028
+   4764    2531 ssh-agent        6972
+   3017    2410 gvfs-goa-volume  6924
+   2531    2410 gcr-ssh-agent    6920
+   2776    2410 gsd-usb-protect  6760
+   2861    2728 ibus-memconf     6740
+   2534    2410 ssh-agent        6704
+   2550    2410 gvfsd-fuse       6696
+  14096    4818 zsh              6656
+  25765   25026 zsh              6628
+   2871    2410 ibus-portal      6616
+   3007    2410 gvfsd-metadata   6596
+  26850   25026 zsh              6580
+   3259    2410 xdg-document-po  6548
+   3042    2410 gvfs-mtp-volume  6464
+   3031    2410 gvfs-gphoto2-vo  6460
+1879308 1879287 zsh              6448
+   6615    4818 zsh              6404
+   1136       1 haveged          6372
+   2753    2410 gsd-rfkill       6312
+   2688    2410 xdg-permission-  6268
+   2439    2410 dbus-daemon      6248
+  47277   25026 zsh              6196
+  28299   25026 zsh              6192
+   2755    2410 gsd-screensaver  6184
+   2729    2410 gsd-a11y-settin  6144
+  15630    4818 zsh              6096
+   6075    4818 zsh              6092
+  48164   25026 zsh              6064
+   2624    2410 dconf-service    6044
+2041107    2095 docker-proxy     5996
+  12951    4818 zsh              5988
+2042102    2095 docker-proxy     5980
+  47863   25026 zsh              5976
+1879306 1879287 zsh              5976
+  16068    4818 zsh              5964
+2041029    2095 docker-proxy     5960
+2041499    2095 docker-proxy     5952
+2042219    2095 docker-proxy     5952
+2041361    2095 docker-proxy     5924
+2040901    2095 docker-proxy     5920
+2041926    2095 docker-proxy     5912
+   5994    4818 zsh              5884
+  14494    4818 zsh              5864
+   6462    4818 zsh              5856
+2040501    2095 docker-proxy     5852
+2040908    2095 docker-proxy     5848
+   5898    4818 zsh              5816
+2040507    2095 docker-proxy     5812
+2041101    2095 docker-proxy     5812
+   2481    2324 gdm-wayland-ses  5804
+   7816    4818 zsh              5800
+   5657    4818 zsh              5796
+   7493    4818 zsh              5780
+   5628    4818 zsh              5776
+   8585    4818 zsh              5776
+2041021    2095 docker-proxy     5756
+  10377    4818 zsh              5752
+   6314    4818 zsh              5740
+1879314 1879287 zsh              5732
+   7234    4818 zsh              5712
+2041367    2095 docker-proxy     5712
+  11731    4818 zsh              5680
+  12522    4818 zsh              5660
+   8775    4818 zsh              5656
+  11109    4818 zsh              5648
+ 587959    2410 evinced          5644
+1879322 1879287 zsh              5632
+  16349    4818 zsh              5612
+   1202       1 smartd           5608
+   9026    4818 zsh              5592
+   5823    4818 zsh              5580
+   6188    4818 zsh              5564
+   5766    4818 zsh              5556
+  14802    4818 zsh              5540
+  10876    4818 zsh              5536
+   5730    4818 zsh              5532
+   5692    4818 zsh              5524
+   6766    4818 zsh              5524
+  12110    4818 zsh              5516
+   9661    4818 zsh              5508
+  13259    4818 zsh              5496
+   9953    4818 zsh              5492
+   9378    4818 zsh              5488
+   8014    4818 zsh              5472
+   7022    4818 zsh              5440
+  13772    4818 zsh              5416
+   8347    4818 zsh              5352
+  11406    4818 zsh              5324
+   2441    2410 pipewire         5060
+   2533    2410 gnome-session-c  4968
+   2621    2597 dbus-daemon      4524
+2096167 2096160 ps               4380
+   2412    2410 (sd-pam)         3808
+2456553    2410 bash             3548
+   2444    2410 mpris-proxy      3528
+  94490    2410 chrome_crashpad  3528
+2095770 2095760 bash             3416
+2095755 2095751 bash             3404
+2095750 2095746 bash             3400
+2095681 2095676 bash             3348
+  91385    2410 chrome_crashpad  3344
+2096160 2096159 bash             3192
+  94492    2410 chrome_crashpad  3184
+2040465 2038007 bash             3116
+   1533       1 rtkit-daemon     3104
+2038007   53678 bash             3076
+2095963 2095962 bash             3028
+ 112340       1 uuidd            2816
+2096159 2096156 sudo             2628
+   1313       1 cron             2512
+2095961   54145 make             2324
+   4768    2410 sshfs            2128
+2041874 2038007 tail             2104
+2041883 2038007 sed              2096
+2041876 2038007 sed              2028
+2041875 2038007 grep             2020
+   3265    3259 fusermount3      1896
+2095872 2095755 sleep            1884
+2095735 2095681 sleep            1868
+2094425 2456553 sleep            1856
+2095873 2095770 sleep            1848
+2095871 2095750 sleep            1832
+2041882 2038007 tail             1824
+2089926    2410 xclip            1800
+2095751   25026 sh               1696
+2095746   25026 sh               1656
+2095676    4818 sh               1652
+2095962 2095961 sh               1608
+  94485   94475 cat              1544
+  94484   94475 cat              1516
+2095760   25026 sh               1476
+2040948 2040926 sh                880
+2041153 2041121 sh                864
+2095979 2041153 sleep             760
+2096150 2040948 sleep             752
+      2       0 kthreadd            0
+      3       2 pool_workqueue_     0
+      4       2 kworker/R-kvfre     0
+      5       2 kworker/R-rcu_g     0
+      6       2 kworker/R-sync_     0
+      7       2 kworker/R-slub_     0
+      8       2 kworker/R-netns     0
+     10       2 kworker/0:0H-ev     0
+     13       2 kworker/R-mm_pe     0
+     14       2 rcu_tasks_kthre     0
+     15       2 rcu_tasks_rude_     0
+     16       2 rcu_tasks_trace     0
+     17       2 ksoftirqd/0         0
+     18       2 rcu_preempt         0
+     19       2 rcu_exp_par_gp_     0
+     20       2 rcu_exp_gp_kthr     0
+     21       2 migration/0         0
+     22       2 idle_inject/0       0
+     23       2 cpuhp/0             0
+     24       2 cpuhp/2             0
+     25       2 idle_inject/2       0
+     26       2 migration/2         0
+     27       2 ksoftirqd/2         0
+     30       2 cpuhp/4             0
+     31       2 idle_inject/4       0
+     32       2 migration/4         0
+     33       2 ksoftirqd/4         0
+     36       2 cpuhp/5             0
+     37       2 idle_inject/5       0
+     38       2 migration/5         0
+     39       2 ksoftirqd/5         0
+     42       2 cpuhp/6             0
+     43       2 idle_inject/6       0
+     44       2 migration/6         0
+     45       2 ksoftirqd/6         0
+     48       2 cpuhp/7             0
+     49       2 idle_inject/7       0
+     50       2 migration/7         0
+     51       2 ksoftirqd/7         0
+     53       2 kworker/7:0H-ev     0
+     54       2 cpuhp/8             0
+     55       2 idle_inject/8       0
+     56       2 migration/8         0
+     57       2 ksoftirqd/8         0
+     60       2 cpuhp/9             0
+     61       2 idle_inject/9       0
+     62       2 migration/9         0
+     63       2 ksoftirqd/9         0
+     66       2 cpuhp/10            0
+     67       2 idle_inject/10      0
+     68       2 migration/10        0
+     69       2 ksoftirqd/10        0
+     72       2 cpuhp/11            0
+     73       2 idle_inject/11      0
+     74       2 migration/11        0
+     75       2 ksoftirqd/11        0
+     78       2 cpuhp/12            0
+     79       2 idle_inject/12      0
+     80       2 migration/12        0
+     81       2 ksoftirqd/12        0
+     83       2 kworker/12:0H-e     0
+     84       2 cpuhp/13            0
+     85       2 idle_inject/13      0
+     86       2 migration/13        0
+     87       2 ksoftirqd/13        0
+     89       2 kworker/13:0H-e     0
+     90       2 cpuhp/1             0
+     91       2 idle_inject/1       0
+     92       2 migration/1         0
+     93       2 ksoftirqd/1         0
+     96       2 cpuhp/3             0
+     97       2 idle_inject/3       0
+     98       2 migration/3         0
+     99       2 ksoftirqd/3         0
+    118       2 kdevtmpfs           0
+    119       2 kworker/R-inet_     0
+    120       2 kauditd             0
+    121       2 khungtaskd          0
+    122       2 oom_reaper          0
+    123       2 kworker/R-write     0
+    124       2 kcompactd0          0
+    125       2 ksmd                0
+    126       2 khugepaged          0
+    127       2 kworker/R-kinte     0
+    128       2 kworker/R-kbloc     0
+    129       2 kworker/R-blkcg     0
+    130       2 irq/9-acpi          0
+    138       2 kworker/R-tpm_d     0
+    139       2 kworker/R-edac-     0
+    141       2 kworker/R-devfr     0
+    143       2 kworker/8:1H-kb     0
+    144       2 kswapd0             0
+    152       2 kworker/R-kthro     0
+    156       2 irq/122-pciehp      0
+    157       2 irq/124-pciehp      0
+    158       2 irq/125-pciehp      0
+    159       2 irq/126-pciehp      0
+    160       2 kworker/R-acpi_     0
+    168       2 hwrng               0
+    169       2 kworker/R-hfi-u     0
+    170       2 kworker/R-mld       0
+    171       2 kworker/R-ipv6_     0
+    172       2 kworker/4:1H-kb     0
+    177       2 kworker/R-kstrp     0
+    181       2 kworker/u59:0-h     0
+    247       2 kworker/0:1H-kb     0
+    268       2 kworker/7:1H-kb     0
+    282       2 kworker/6:1H-kb     0
+    283       2 kworker/2:1H-kb     0
+    299       2 kworker/5:1H-kb     0
+    300       2 kworker/1:1H-kb     0
+    301       2 kworker/3:1H-ev     0
+    303       2 kworker/9:1H-kb     0
+    307       2 kworker/10:1H-k     0
+    312       2 kworker/11:1H-e     0
+    336       2 kworker/R-crypt     0
+    338       2 kworker/12:1H-k     0
+    339       2 kworker/13:1H       0
+    340       2 kworker/R-nvme-     0
+    341       2 kworker/R-nvme-     0
+    342       2 kworker/R-nvme-     0
+    343       2 kworker/R-nvme-     0
+    344       2 watchdogd           0
+    431       2 kworker/R-USBC0     0
+    435       2 kworker/R-ttm       0
+    436       2 card0-crtc0         0
+    437       2 card0-crtc1         0
+    438       2 card0-crtc2         0
+    439       2 card0-crtc3         0
+    443       2 kworker/R-USBC0     0
+    452       2 kworker/R-md        0
+    453       2 kworker/R-md_bi     0
+    459       2 kworker/R-raid5     0
+    596       2 kworker/R-kdmfl     0
+    597       2 kworker/R-kcryp     0
+    598       2 kworker/R-kcryp     0
+    600       2 dmcrypt_write/2     0
+    606       2 kworker/R-kdmfl     0
+    607       2 kworker/R-kdmfl     0
+    648       2 jbd2/dm-1-8         0
+    649       2 kworker/R-ext4-     0
+    780       2 psimon              0
+    849       2 irq/65-ELAN901C     0
+    863       2 irq/192-SNSL002     0
+    883       2 kworker/R-cfg80     0
+    885       2 irq/193-mei_me      0
+    886       2 irq/194-intel_v     0
+    903       2 irq/16-intel-ip     0
+    904       2 irq/195-iwlwifi     0
+    905       2 irq/196-iwlwifi     0
+    906       2 irq/197-iwlwifi     0
+    907       2 irq/198-iwlwifi     0
+    908       2 irq/199-iwlwifi     0
+    909       2 irq/200-iwlwifi     0
+    910       2 irq/201-iwlwifi     0
+    911       2 irq/202-iwlwifi     0
+    912       2 irq/203-iwlwifi     0
+    913       2 irq/204-iwlwifi     0
+    914       2 irq/205-iwlwifi     0
+    915       2 irq/206-iwlwifi     0
+    916       2 irq/207-iwlwifi     0
+    917       2 irq/208-iwlwifi     0
+    918       2 irq/209-iwlwifi     0
+    919       2 irq/210-iwlwifi     0
+    921       2 kworker/R-ktpac     0
+    922       2 kworker/u59:1-h     0
+    925       2 irq/16-processo     0
+    987       2 irq/213-AudioDS     0
+   1017       2 kworker/R-ext4-     0
+   1309       2 kworker/R-rpcio     0
+   1310       2 kworker/R-xprti     0
+ 416418       2 kworker/4:2H        0
+ 828174       2 kworker/u61:0-r     0
+ 924522       2 kworker/11:2H       0
+1139203       2 kworker/1:2H        0
+1620275       2 kworker/13:1-mm     0
+1644362       2 kworker/u61:1-r     0
+1678490       2 kworker/9:0-i91     0
+1746887       2 kworker/u57:3-k     0
+1778263       2 kworker/8:1-eve     0
+1784948       2 kworker/3:0-eve     0
+1846086       2 kworker/7:2-eve     0
+1859324       2 kworker/u58:3-k     0
+1861477       2 kworker/u57:0-k     0
+1889630       2 kworker/u58:2-e     0
+1890720       2 kworker/u57:6-e     0
+1895407       2 kworker/u57:11-     0
+1901363       2 kworker/u56:2+n     0
+1907843       2 kworker/12:0-ev     0
+1928268       2 kworker/2:1-eve     0
+1952907       2 kworker/u57:2-k     0
+1977979       2 kworker/6:2-eve     0
+1980803       2 kworker/11:1-ev     0
+1980853       2 kworker/10:2-ev     0
+1980983       2 kworker/12:1-mm     0
+1981171       2 kworker/1:0-eve     0
+2008117       2 kworker/13:2-ev     0
+2020156       2 kworker/u58:1-e     0
+2025063       2 kworker/0:3-eve     0
+2025937       2 kworker/5:2-eve     0
+2032368       2 kworker/2:2-eve     0
+2033020       2 kworker/2:0H        0
+2035578       2 kworker/11:0-ev     0
+2035619       2 kworker/7:0-mm_     0
+2035623       2 kworker/4:2-eve     0
+2035633       2 kworker/1:1-eve     0
+2036016       2 kworker/3:2-eve     0
+2036037       2 kworker/6:0-eve     0
+2036347       2 kworker/10:1-ev     0
+2036496       2 kworker/4:3-eve     0
+2036511       2 kworker/8:0-eve     0
+2037590       2 kworker/u57:7-k     0
+2038666       2 psimon              0
+2038962       2 kworker/3:2H        0
+2039224       2 kworker/u57:10-     0
+2042777       2 kworker/u60:2-r     0
+2048944       2 kworker/5:2H        0
+2063686       2 kworker/u60:0-r     0
+2063711       2 kworker/9:1         0
+2066566       2 kworker/u58:0-k     0
+2067437       2 kworker/5:1-cgr     0
+2070853       2 kworker/0:0-eve     0
+2074341       2 kworker/u56:1-i     0
+2075556       2 kworker/u58:4-k     0
+2084324       2 kworker/7:1-eve     0
+2087401       2 kworker/u60:1-i     0
+2090916       2 kworker/6:0H        0
+2091340       2 kworker/5:0-cgr     0
+2091807       2 kworker/4:0-eve     0
+2092516       2 kworker/0:1-eve     0
+2093797       2 kworker/u57:1-k     0
+2096050       2 kworker/1:2-eve     0
+2096091       2 kworker/10:0-ev     0
+2096101       2 kworker/6:1-eve     0
+2096110       2 kworker/10:3        0
+2096115       2 kworker/11:2        0
+2096151       2 kworker/u57:4-k     0
+2096158       2 kworker/u56:0       0
+2105695       2 kworker/10:2H       0
+2783889       2 kworker/9:0H        0
+3917573       2 kworker/8:2H        0

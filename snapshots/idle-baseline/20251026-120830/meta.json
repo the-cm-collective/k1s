@@ -1,0 +1,7 @@
+{
+  "label": "idle-baseline",
+  "mode": "k1s",
+  "duration_sec": 30,
+  "timestamp": "20251026-120830",
+  "uname": "Linux h4ckt0p 6.12.38+kali-amd64 #1 SMP PREEMPT_DYNAMIC Kali 6.12.38-1kali1 (2025-08-12) x86_64 GNU/Linux"
+}

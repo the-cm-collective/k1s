@@ -1,0 +1,61 @@
+Name:	dockerd
+Umask:	0022
+State:	S (sleeping)
+Tgid:	2095
+Ngid:	0
+Pid:	2095
+PPid:	1
+TracerPid:	0
+Uid:	0	0	0	0
+Gid:	0	0	0	0
+FDSize:	512
+Groups:	 
+NStgid:	2095
+NSpid:	2095
+NSpgid:	2095
+NSsid:	2095
+Kthread:	0
+VmPeak:	 7891208 kB
+VmSize:	 7826152 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	  506188 kB
+VmRSS:	  414980 kB
+RssAnon:	  187244 kB
+RssFile:	  227736 kB
+RssShmem:	       0 kB
+VmData:	  686468 kB
+VmStk:	     132 kB
+VmExe:	   31544 kB
+VmLib:	    3216 kB
+VmPTE:	    1732 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffffff
+Threads:	45
+SigQ:	3/253762
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000000000
+SigIgn:	0000000000001000
+SigCgt:	fffffffd7fc1eeff
+CapInh:	0000000000000000
+CapPrm:	000001ffffffffff
+CapEff:	000001ffffffffff
+CapBnd:	000001ffffffffff
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	0
+Seccomp_filters:	0
+Speculation_Store_Bypass:	thread vulnerable
+SpeculationIndirectBranch:	conditional enabled
+Cpus_allowed:	3fff
+Cpus_allowed_list:	0-13
+Mems_allowed:	00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	68968
+nonvoluntary_ctxt_switches:	9043
+x86_Thread_features:	
+x86_Thread_features_locked:	

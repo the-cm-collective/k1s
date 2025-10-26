@@ -449,3 +449,246 @@ This document tracks the current capabilities of k1s and outlines gaps to close 
 - Secrets: enforce SOPS in CI; disallow AE_ALLOW_PLAINTEXT_SECRETS outside dev; key rotation.
 - Backups: scheduled state DB + specs archives; integrity checks; restore drills.
 - Supply chain: pin base images; enable image trust policy; registry credentials scoped and short‑lived.
+
+---
+
+# TODO 
+
+## Task 1 k8s spec
+
+We want to asses our current level of alignment with K8s best practices.  We will use the [K8s App Operator Playbook](https://kubernetes.io/docs/tasks/configure-pod-container/configure-pod-configmap/) as a reference.  See the chat below, our MVP target is 75% feature parity with k3s, eventually exceeding k3s compliance.
+
+## **Chat History for Research:**
+
+# K8s Spec Assesment & Alignement Path Research Chat
+
+Great topic. There isn’t a single “Kubernetes app spec” document to comply with; portability comes from using the stable Kubernetes APIs and avoiding distro/controller-specific features. k3s is a CNCF-conformant Kubernetes, but it ships with lightweight defaults (containerd, flannel, Traefik/ServiceLB, etc.). If you target the common denominator of upstream K8s **stable** APIs and steer clear of optional add-ons, you’ll be >75% portable to k3s out of the box.
+
+Here’s a pragmatic blueprint.
+
+# What’s the *minimum* portable spec for an app?
+
+If you ship only the items below, using **stable** API groups/versions, you’re generally safe across upstream, k3s, MicroK8s, Kind, etc.
+
+**Core resources (all `v1` unless noted):**
+
+* Namespace (optional, but helpful for isolation).
+* ServiceAccount (+ minimal RBAC if the app calls the API).
+* ConfigMap / Secret for configuration.
+* Deployment (`apps/v1`) or StatefulSet if you truly need stable identities.
+* Service (ClusterIP).
+* (Optional) Ingress (`networking.k8s.io/v1`) with **basic** rules only.
+
+**Inside the Pod template:**
+
+* One or more containers with:
+
+  * `resources.requests` (CPU/Memory) and (preferably) `limits`.
+  * `livenessProbe` and `readinessProbe`.
+  * `securityContext` that runs **non-root**, drops `NET_RAW`, and sets `readOnlyRootFilesystem: true` when possible.
+  * `terminationGracePeriodSeconds` and proper SIGTERM handling for graceful shutdown.
+  * `imagePullPolicy: IfNotPresent` (with immutable tags or digests in production).
+  * `envFrom` ConfigMap/Secret or mounted files for config, not baked paths.
+
+**If stateful:**
+
+* `PersistentVolumeClaim` with generic `ReadWriteOnce` (RWO). Don’t assume ReadWriteMany is available.
+* Let the default `StorageClass` bind the PVC; avoid hardcoding provisioner-specific parameters.
+
+**Networking/DNS:**
+
+* Talk to peer services using their **ClusterIP** DNS name.
+* Assume only basic cluster networking; don’t depend on NetworkPolicy enforcement being present.
+
+**Example “minimal but solid” manifest (portable):**
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: web
+  namespace: demo
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-config
+  namespace: demo
+data:
+  APP_ENV: "prod"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: web-secret
+  namespace: demo
+type: Opaque
+stringData:
+  DATABASE_URL: "postgres://user:pass@postgres.demo.svc.cluster.local:5432/app"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: web }
+  template:
+    metadata:
+      labels: { app: web }
+    spec:
+      serviceAccountName: web
+      containers:
+      - name: web
+        image: ghcr.io/example/web@sha256:...    # use digest for immutability
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - configMapRef: { name: web-config }
+        - secretRef:    { name: web-secret }
+        resources:
+          requests: { cpu: "100m", memory: "128Mi" }
+          limits:   { cpu: "500m", memory: "512Mi" }
+        livenessProbe:
+          httpGet: { path: /healthz, port: 8080 }
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet: { path: /ready, port: 8080 }
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          readOnlyRootFilesystem: true
+          capabilities: { drop: ["ALL"] }
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: demo
+spec:
+  selector: { app: web }
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+```
+
+# Hitting ~75% parity with **k3s**
+
+k3s differences to account for (so your app “just works”):
+
+1. **Container runtime**: containerd (no dockershim).
+
+   * Use OCI images; avoid Docker-specific behavior.
+   * **Multi-arch** images (amd64/arm64) strongly recommended—k3s often runs on ARM.
+
+2. **CNI default**: flannel.
+
+   * **NetworkPolicy** isn’t enforced with plain flannel. Don’t rely on NetworkPolicies unless you deploy a policy-capable CNI (Calico, Cilium). Your app should run fine with *no* policies.
+
+3. **Ingress**: Traefik often enabled by default.
+
+   * Stick to standard `networking.k8s.io/v1` Ingress with simple rules.
+   * Avoid controller-specific annotations (e.g., NGINX-only features) unless you gate them with conditionals.
+
+4. **Service type LoadBalancer**: k3s ServiceLB (klipper-lb) on bare metal.
+
+   * Works, but it’s a thin wrapper around hostPorts; no cloud L4 bells & whistles.
+   * Prefer `ClusterIP` + Ingress for HTTP apps; use `NodePort` only when you must.
+
+5. **Storage**: varies by environment.
+
+   * Expect only RWO. If you need RWX, document an external provisioner (NFS, CephFS) rather than assuming it exists.
+
+6. **Control plane/Datastore**: SQLite for single-node; etcd for HA.
+
+   * Don’t assume cloud provider features (no cloud-provider load balancers, instance metadata, etc.).
+   * Apps shouldn’t care—but avoid init logic that introspects cloud metadata.
+
+7. **Admission/Pod Security**: PodSecurity admission (baseline/restricted) commonly enabled.
+
+   * Run as non-root, avoid privileged/hostPath/hostNetwork, and keep your filesystem read-only where possible.
+
+8. **Beta/Alpha features**:
+
+   * Don’t use alpha gates. Use stable APIs only:
+
+     * Deployments/DaemonSets/StatefulSets: `apps/v1`
+     * Ingress/NetworkPolicy: `networking.k8s.io/v1`
+     * Jobs/CronJobs: `batch/v1`
+     * PDBs: `policy/v1`
+
+# Things that break portability (avoid by default)
+
+* Controller-specific annotations (e.g., NGINX/Traefik magic) baked into the only manifest.
+* Cloud-provider Service annotations (AWS/GCP/Azure) and `LoadBalancer` assumptions.
+* Depending on **NetworkPolicy enforcement** being present.
+* HostPath volumes, privileged pods, hostNetwork/hostPID.
+* Assuming `ReadWriteMany` or storage classes with provider-specific parameters.
+* Relying on node OS features or Docker socket mounts.
+* Alpha APIs or feature gates.
+
+# Optional (nice-to-have) add-ons that remain portable
+
+* **HorizontalPodAutoscaler** (`autoscaling/v2`) using CPU/Memory metrics.
+* **PodDisruptionBudget** (`policy/v1`) for graceful rollouts.
+* **TopologySpreadConstraints** for basic HA (still portable; not distro-specific).
+* **InitContainers** and **Ephemeral volumes** (projected/emptyDir) for setup.
+
+# A portable Ingress (keeps you k3s-friendly)
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web
+  namespace: demo
+spec:
+  ingressClassName: traefik   # omit if your cluster sets a default class
+  rules:
+  - host: web.example.test
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: web
+            port:
+              number: 80
+```
+
+If you deploy on clusters with NGINX elsewhere, ship a tiny overlay patch that swaps `ingressClassName` and keeps rules identical.
+
+# Quick self-check checklist
+
+* [ ] Only stable API versions (`apps/v1`, `batch/v1`, `networking.k8s.io/v1`, `policy/v1`).
+* [ ] Works with **ClusterIP + Ingress**; does not require `LoadBalancer`.
+* [ ] No controller/cloud-specific annotations in the base manifests.
+* [ ] No reliance on NetworkPolicy enforcement.
+* [ ] Non-root, least-privilege `securityContext`.
+* [ ] Probes set; graceful shutdown implemented.
+* [ ] CPU/Memory requests defined.
+* [ ] PVCs (if any) are generic and RWO.
+* [ ] Images available for amd64/arm64.
+
+# How to *prove* portability fast
+
+* Spin up **k3s** (or MicroK8s) locally and apply the same manifests.
+* Run e2e smoke tests that only assume ClusterIP + Ingress.
+* If you want more rigor, run your app against **Kind** + **k3s** + **MicroK8s** in CI with a shared test suite. If all pass, you’re in excellent shape.
+
+If you want, I can take one of your existing app manifests and “shrink-wrap” it to this baseline, then provide tiny overlays for NGINX/Traefik or for clusters that do offer a real LoadBalancer.
+

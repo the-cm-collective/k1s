@@ -132,4 +132,4 @@ bench-mem-e2e-k3s:
 
 .PHONY: bench-mem-idle-k1s
 bench-mem-idle-k1s:
-	@./scripts/bench/idle_baseline.sh --label $${LABEL:-idle-baseline} --duration $${DURATION:-30}
+	@bash ./scripts/bench/idle_baseline.sh --label $${LABEL:-idle-baseline} --duration $${DURATION:-30} $${ARGS:-}
