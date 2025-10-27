@@ -1,0 +1,29 @@
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: echo-sec
+spec:
+  image: demo-blue:latest
+  replicas: 1
+  env:
+    - name: APP_NAME
+      value: echo-sec
+    - name: PYTHONDONTWRITEBYTECODE
+      value: "1"
+  ports:
+    - name: http
+      containerPort: 8080
+  health:
+    readiness:
+      httpGet: { path: /healthz, port: 8080 }
+      initialDelaySeconds: 1
+      timeoutSeconds: 1
+  security:
+    runAsUser: 1000
+    runAsGroup: 1000
+    readOnlyRootFilesystem: true
+    dropCapabilities: ["NET_RAW"]
+  ingress:
+    host: echo-sec.home.arpa
+    path: /
+

@@ -1,0 +1,24 @@
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: echo-tcp
+spec:
+  image: demo-blue:latest
+  replicas: 1
+  env:
+    - name: APP_NAME
+      value: echo-tcp
+  ports:
+    - name: http
+      containerPort: 8080
+  health:
+    readiness:
+      tcpSocket: { port: 8080 }
+      initialDelaySeconds: 1
+      timeoutSeconds: 1
+      successThreshold: 2
+      failureThreshold: 2
+  ingress:
+    host: echo-tcp.home.arpa
+    path: /
+
