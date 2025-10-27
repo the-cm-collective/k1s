@@ -160,3 +160,14 @@ spec:
     assert exit_code == 0
     output = capsys.readouterr().out
     assert "Rolled back echo" in output
+
+
+def test_api_tokens_with_ttl_and_state(tmp_path, monkeypatch, capsys):
+    dest = tmp_path / ".env.api"
+    state = tmp_path / "tokens.json"
+    exit_code = main(["api", "tokens", "--generate", "--ttl-hours", "1", "-o", str(dest), "--state", str(state)])
+    assert exit_code == 0
+    out = dest.read_text()
+    assert "AE_API_ADMIN_TOKEN=" in out and "AE_API_ADMIN_TOKEN_EXPIRES=" in out
+    payload = state.read_text()
+    assert "generated_at" in payload and "admin" in payload

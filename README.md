@@ -1,6 +1,15 @@
 # k1s Minimal Application Engine
 
-Work-in-progress controller and CLI for a lightweight single-node deployment engine. See `FEAT.md` and `docs/` for design and operations.
+Work-in-progress controller and CLI for a lightweight single-node deployment engine.
+
+- Design and roadmap: see `FEAT.md`.
+- Operations runbook: see `docs/runbook.md`.
+- Ingress/TLS details: see `docs/ingress.md`.
+- End-to-end walkthrough: see `docs/e2e.md`.
+
+Quick token generation with expiry
+- Generate API tokens that expire in 24 hours and write them to a file of exports you can `source`:
+  - `python -m ae.cli api tokens --generate --ttl-hours 24 -o .env.api`
 
 ## Quickstart
 
@@ -53,6 +62,7 @@ API endpoints (when started with `--metrics-port`): see `docs/http-api.md`.
 - HTTP API reference and UI docs: `docs/http-api.md`
 - Configs & Secrets: `docs/configs-secrets.md`
 - Demo Modes (flags for init script and Make): `docs/demo-modes.md`
+- End-to-end test process: `docs/e2e.md`
 
 ## Remote CLI (over LAN)
 

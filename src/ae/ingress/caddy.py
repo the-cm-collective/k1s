@@ -22,12 +22,8 @@ SITE_TEMPLATE = Template(
     }
     # Ensure upstream HSTS does not stick during dev
     header -Strict-Transport-Security
-    # Use Caddy's local CA for dev so certs chain to a stable root we can trust
-    tls internal
-    reverse_proxy $upstreams {
-        $health_block
-        $policy_block
-    }
+    $tls_block
+    $routes
 }
 """
 )
@@ -60,12 +56,13 @@ class CaddyIngressManager:
         upstream: Union[str, Sequence[str]],
         readiness_path: Optional[str] = None,
         prefer_first: bool = True,
+        first_weight: int = 1,
     ) -> Path:
         ingress = manifest.spec.ingress
         if ingress is None:
             raise ValueError("Manifest lacks ingress configuration")
 
-        site_config = self._render_site(ingress, upstream, readiness_path, prefer_first)
+        site_config = self._render_site(ingress, upstream, readiness_path, prefer_first, first_weight)
         site_path = self._site_path(manifest.metadata.name)
         site_path.write_text(site_config)
         LOGGER.debug("Wrote Caddy site config to %s", site_path)
@@ -138,6 +135,7 @@ class CaddyIngressManager:
         upstreams: Union[str, Sequence[str]],
         readiness_path: Optional[str],
         prefer_first: bool,
+        first_weight: int,
     ) -> str:
         host = ingress.host
         if isinstance(upstreams, str):
@@ -170,10 +168,6 @@ class CaddyIngressManager:
 
         # Optional weighting: duplicate the first upstream N times to bias selection
         if prefer_first:
-            try:
-                first_weight = int(os.getenv("AE_ROLLOUT_FIRST_WEIGHT", "1"))
-            except ValueError:
-                first_weight = 1
             if first_weight > 1 and targets:
                 targets = [targets[0]] * int(first_weight) + targets[1:]
         upstreams_str = " ".join(targets)
@@ -188,9 +182,50 @@ class CaddyIngressManager:
                 "        }"
             )
         policy_block = "lb_policy first" if prefer_first else ""
-        return SITE_TEMPLATE.substitute(
-            host=host, upstreams=upstreams_str, health_block=health_block, policy_block=policy_block
-        )
+        # Build routes: multi-path support when ingress.paths is set
+        paths = list(getattr(ingress, "paths", []) or [])
+        if not paths:
+            # Single path (ingress.path)
+            routes = (
+                "reverse_proxy "
+                + upstreams_str
+                + " {\n"
+                + (health_block + "\n" if health_block else "")
+                + (policy_block + "\n" if policy_block else "")
+                + "}"
+            )
+        else:
+            blocks: list[str] = []
+            for p in paths:
+                if not p or p == "/":
+                    blocks.append(
+                        "reverse_proxy "
+                        + upstreams_str
+                        + " {\n"
+                        + (health_block + "\n" if health_block else "")
+                        + (policy_block + "\n" if policy_block else "")
+                        + "}"
+                    )
+                else:
+                    blocks.append(
+                        "handle_path "
+                        + p
+                        + " {\n    reverse_proxy "
+                        + upstreams_str
+                        + " {\n"
+                        + (health_block + "\n" if health_block else "")
+                        + (policy_block + "\n" if policy_block else "")
+                        + "    }\n}"
+                    )
+            routes = "\n    ".join(blocks)
+        # TLS block: prefer BYO cert/key when provided; else use internal
+        cert = getattr(ingress, "tls_cert_path", None)
+        key = getattr(ingress, "tls_key_path", None)
+        if cert and key:
+            tls_block = f"tls {cert} {key}"
+        else:
+            tls_block = "tls internal"
+        return SITE_TEMPLATE.substitute(host=host, routes=routes, tls_block=tls_block)
 
     def _site_path(self, app_name: str) -> Path:
         return self._config_root / f"{app_name}.caddy"

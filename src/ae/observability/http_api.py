@@ -73,6 +73,25 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         admin = os.getenv("AE_API_ADMIN_TOKEN")
         scaler = os.getenv("AE_API_SCALER_TOKEN")
         reader = os.getenv("AE_API_READ_TOKEN")
+        # Optional expiry checks (ISO8601). If set and now > expiry, treat token as absent.
+        def _not_expired(env_name: str) -> bool:
+            val = os.getenv(env_name)
+            if not val:
+                return True
+            try:
+                s = val.strip()
+                from datetime import datetime, timezone
+
+                if s.endswith("Z"):
+                    dt = datetime.fromisoformat(s[:-1] + "+00:00")
+                else:
+                    dt = datetime.fromisoformat(s)
+                now = datetime.now(timezone.utc)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return now <= dt
+            except Exception:
+                return True
 
         have_any = any([admin, scaler, reader])
         if not have_any:
@@ -81,15 +100,112 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
         # Determine presented level
         level = 0
-        if token and reader and token == reader:
+        if token and reader and token == reader and _not_expired("AE_API_READ_TOKEN_EXPIRES"):
             level = 1
-        if token and scaler and token == scaler:
+        if token and scaler and token == scaler and _not_expired("AE_API_SCALER_TOKEN_EXPIRES"):
             level = max(level, 2)
-        if token and admin and token == admin:
+        if token and admin and token == admin and _not_expired("AE_API_ADMIN_TOKEN_EXPIRES"):
             level = max(level, 3)
+
+        # Warn once per role when near expiry
+        try:
+            import os as _os
+            warn_hours = float(_os.getenv("AE_API_TOKEN_WARN_HOURS", "24"))
+            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+            def _warn_if(role: str, env: str) -> None:
+                global _TOKEN_WARNED
+                if role in _TOKEN_WARNED:
+                    return
+                val = _os.getenv(env)
+                if not val:
+                    return
+                try:
+                    s = val.strip()
+                    exp = _dt.fromisoformat(s[:-1] + "+00:00") if s.endswith("Z") else _dt.fromisoformat(s)
+                    if exp.tzinfo is None:
+                        exp = exp.replace(tzinfo=_tz.utc)
+                    now = _dt.now(_tz.utc)
+                    if exp - now <= _td(hours=warn_hours):
+                        import logging as _log
+
+                        rem = (exp - now).total_seconds()
+                        _log.getLogger(__name__).warning("API token for role '%s' expires in %.0f seconds", role, rem)
+                        _TOKEN_WARNED.add(role)
+                except Exception:
+                    pass
+
+            _warn_if("admin", "AE_API_ADMIN_TOKEN_EXPIRES")
+            _warn_if("scaler", "AE_API_SCALER_TOKEN_EXPIRES")
+            _warn_if("read", "AE_API_READ_TOKEN_EXPIRES")
+        except Exception:
+            pass
 
         required = {"": 0, "read": 1, "scale": 2, "admin": 3}.get(role, 0)
         return level >= required
+
+    # Role/scope helpers -------------------------------------------------
+    def _presented_role(self) -> str:
+        """Return presented role name (admin|scale|read) or empty string if none."""
+        import os
+
+        auth = self.headers.get("Authorization", "")
+        token = auth.split(" ", 1)[1] if auth.startswith("Bearer ") else ""
+        # Reuse expiry logic via a small inner function
+        def _not_expired(env_name: str) -> bool:
+            val = os.getenv(env_name)
+            if not val:
+                return True
+            try:
+                s = val.strip()
+                from datetime import datetime, timezone
+
+                if s.endswith("Z"):
+                    dt = datetime.fromisoformat(s[:-1] + "+00:00")
+                else:
+                    dt = datetime.fromisoformat(s)
+                now = datetime.now(timezone.utc)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return now <= dt
+            except Exception:
+                return True
+
+        admin = os.getenv("AE_API_ADMIN_TOKEN")
+        scaler = os.getenv("AE_API_SCALER_TOKEN")
+        reader = os.getenv("AE_API_READ_TOKEN")
+        if token and admin and token == admin and _not_expired("AE_API_ADMIN_TOKEN_EXPIRES"):
+            return "admin"
+        if token and scaler and token == scaler and _not_expired("AE_API_SCALER_TOKEN_EXPIRES"):
+            return "scale"
+        if token and reader and token == reader and _not_expired("AE_API_READ_TOKEN_EXPIRES"):
+            return "read"
+        return ""
+
+    def _scope_allows(self, role: str, app: str) -> bool:
+        """Check optional scope patterns for a role (mutations only).
+
+        Env vars (comma-separated glob patterns):
+        - AE_API_ADMIN_SCOPE
+        - AE_API_SCALER_SCOPE
+        - AE_API_READ_SCOPE (not currently enforced for reads)
+        """
+        import os, fnmatch
+
+        key = {
+            "admin": "AE_API_ADMIN_SCOPE",
+            "scale": "AE_API_SCALER_SCOPE",
+            "read": "AE_API_READ_SCOPE",
+        }.get(role)
+        if not key:
+            return False
+        raw = os.getenv(key, "").strip()
+        if not raw:
+            return True
+        patterns = [p.strip() for p in raw.split(",") if p.strip()]
+        if not patterns:
+            return True
+        return any(fnmatch.fnmatch(app, pat) for pat in patterns)
 
     def _deny(self, code: int, message: str = "unauthorized") -> None:
         payload = json.dumps({"error": message}).encode("utf-8")
@@ -149,9 +265,22 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             self._handle_status_list()
             return
         if path_only.startswith("/status/"):
+            # Enforce read scope for single-app read if configured
+            app = self.path.split("/", 2)[2].split("?", 1)[0]
+            role = self._presented_role()
+            import os as _os
+            if _os.getenv("AE_API_READ_SCOPE") and not self._scope_allows("read", app):
+                self._deny(403)
+                return
             self._handle_status_single(self.path.split("/", 2)[2])
             return
         if path_only.startswith("/events/"):
+            app = self.path.split("/", 2)[2].split("?", 1)[0]
+            role = self._presented_role()
+            import os as _os
+            if _os.getenv("AE_API_READ_SCOPE") and not self._scope_allows("read", app):
+                self._deny(403)
+                return
             self._handle_events(self.path.split("/", 2)[2])
             return
         if path_only.startswith("/logs/"):
@@ -159,10 +288,19 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             if path_only.endswith("/stream"):
                 parts = path_only.split("/")
                 if len(parts) >= 4:
+                    import os as _os
+                    if _os.getenv("AE_API_READ_SCOPE") and not self._scope_allows("read", parts[2]):
+                        self._deny(403)
+                        return
                     self._handle_logs_stream(parts[2])
                 else:
                     self.send_response(400)
                     self.end_headers()
+                return
+            app = self.path.split("/", 2)[2].split("?", 1)[0]
+            import os as _os
+            if _os.getenv("AE_API_READ_SCOPE") and not self._scope_allows("read", app):
+                self._deny(403)
                 return
             self._handle_logs(self.path.split("/", 2)[2])
             return
@@ -203,6 +341,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 self._json_error(400, "invalid JSON body: expected App manifest")
                 return
             try:
+                # Scope enforcement: admin token must be allowed for target app
+                role = self._presented_role()
+                app = str(payload.get("metadata", {}).get("name", ""))
+                if not app:
+                    self._json_error(400, "manifest missing metadata.name for scope check")
+                    return
+                if role != "admin" or not self._scope_allows("admin", app):
+                    self._json_error(403, "token scope denies apply to target app")
+                    return
                 report = self.apply_fn(payload)  # type: ignore[misc]
                 self._json_ok(report)
             except Exception as exc:  # pragma: no cover
@@ -220,6 +367,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 self._json_error(400, "invalid JSON body; expected { 'replicas': <int> }")
                 return
             try:
+                role = self._presented_role()
+                # Only enforce scope for presented role if it's scale/admin
+                if role not in {"admin", "scale"} or not self._scope_allows(role, app):
+                    self._json_error(403, "token scope denies scale for target app")
+                    return
                 report = self.scale_fn(app, replicas)  # type: ignore[misc]
                 self._json_ok(report)
             except Exception as exc:  # pragma: no cover - defensive
@@ -237,6 +389,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         purge = part.split("=", 1)[1] in {"1", "true", "True"}
                         break
             try:
+                role = self._presented_role()
+                if role != "admin" or not self._scope_allows("admin", app):
+                    self._json_error(403, "token scope denies delete for target app")
+                    return
                 result = self.delete_fn(app, purge)  # type: ignore[misc]
                 self._json_ok(result)
             except Exception as exc:  # pragma: no cover
@@ -271,9 +427,42 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "# TYPE ae_replicas_live gauge",
             f"ae_replicas_live {snap.live_replicas}",
         ]
+        # Token expiry metrics
+        import os as _os
+        from datetime import datetime as _dt, timezone as _tz
+
+        def _expiry_seconds(env: str):
+            val = _os.getenv(env)
+            if not val:
+                return None
+            try:
+                s = val.strip()
+                exp = _dt.fromisoformat(s[:-1] + "+00:00") if s.endswith("Z") else _dt.fromisoformat(s)
+                if exp.tzinfo is None:
+                    exp = exp.replace(tzinfo=_tz.utc)
+                now = _dt.now(_tz.utc)
+                return (exp - now).total_seconds()
+            except Exception:
+                return None
+
+        for role, env in (("admin", "AE_API_ADMIN_TOKEN_EXPIRES"), ("scaler", "AE_API_SCALER_TOKEN_EXPIRES"), ("read", "AE_API_READ_TOKEN_EXPIRES")):
+            secs = _expiry_seconds(env)
+            if secs is not None:
+                lines.append(f'ae_api_token_expiry_seconds{{role="{role}"}} {secs}')
         # Per-app and per-replica labeled gauges
         try:
             statuses = self.store.list_status()
+            # Optional read scope filtering when a read-capable token is presented
+            try:
+                import os as _os, fnmatch as _fn
+                scope = (_os.getenv("AE_API_READ_SCOPE") or "").strip()
+                role = self._presented_role()
+                if scope and role in {"read", "scale", "admin"}:
+                    pats = [p.strip() for p in scope.split(",") if p.strip()]
+                    if pats:
+                        statuses = [s for s in statuses if any(_fn.fnmatch(s.app_name, p) for p in pats)]
+            except Exception:
+                pass
             for s0 in statuses:
                 app = s0.app_name
                 lines.append(f'ae_app_desired_replicas{{app="{app}"}} {s0.desired_replicas}')
@@ -605,6 +794,17 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         import urllib.parse as _up
 
         statuses = self.store.list_status()
+        # Optional read scope filtering when a read-capable token is presented
+        try:
+            import os as _os, fnmatch as _fn
+            scope = (_os.getenv("AE_API_READ_SCOPE") or "").strip()
+            role = self._presented_role()
+            if scope and role in {"read", "scale", "admin"}:
+                pats = [p.strip() for p in scope.split(",") if p.strip()]
+                if pats:
+                    statuses = [s for s in statuses if any(_fn.fnmatch(s.app_name, p) for p in pats)]
+        except Exception:
+            pass
         path, _, query = self.path.partition("?")
         params = _up.parse_qs(query)
         app_filter = params.get("app", [None])[0]

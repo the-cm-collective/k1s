@@ -73,6 +73,14 @@ class IngressSpec(BaseModel):
     host: str
     path: str = Field(default="/")
     tls: bool = Field(default=True)
+    # Phase 7: optional multi-paths and TLS secret passthrough
+    paths: List[str] = Field(default_factory=list)
+    tls_secret_name: Optional[str] = Field(default=None, alias="tlsSecretName")
+    # Optional BYO TLS for Caddy writer (host cert/key paths)
+    tls_cert_path: Optional[str] = Field(default=None, alias="tlsCertPath")
+    tls_key_path: Optional[str] = Field(default=None, alias="tlsKeyPath")
+
+    model_config = {"populate_by_name": True}
 
 
 class ServiceSpec(BaseModel):

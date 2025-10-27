@@ -1,0 +1,63 @@
+name: k8s-conformance
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: |
+          python -m pip install -e .[dev]
+      - name: Install kind and kubectl
+        run: |
+          curl -Lo kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+          chmod +x kind && sudo mv kind /usr/local/bin/
+          curl -LO https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+      - name: Run conformance script
+        env:
+          PYTHONPATH: src
+        run: |
+          bash scripts/ci/k8s-conformance.sh
+      - name: Run k8s-check strict on samples
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m ae.cli k8s-check -f specs/examples/echo.yaml --policy strict
+          python -m ae.cli k8s-check -f specs/examples/multi-replica-echo.yaml --policy strict
+
+  k3s:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: |
+          python -m pip install -e .[dev]
+      - name: Install k3d and kubectl
+        run: |
+          curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+          curl -LO https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+      - name: Run k3s conformance
+        env:
+          PYTHONPATH: src
+        run: |
+          bash scripts/ci/k3s-conformance.sh
+
+      - name: Run k8s-check with HPA assumptions (blocking)
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m ae.cli k8s-check -f specs/examples/echo-hpa.yaml --policy strict --assume-hpa cpu-util
