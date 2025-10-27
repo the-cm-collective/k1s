@@ -217,6 +217,7 @@ class AppSpec(BaseModel):
     config_refs: List[ConfigRef] = Field(default_factory=list, alias="configRefs")
     resources: Optional[ResourcesSpec] = None
     security: Optional[SecuritySpec] = None
+    termination_grace_period_seconds: int = Field(default=10, alias="terminationGracePeriodSeconds")
     volumes: List[VolumeSpec] = Field(default_factory=list)
     storage: List[StorageSpec] = Field(default_factory=list)
 
