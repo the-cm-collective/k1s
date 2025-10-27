@@ -122,6 +122,17 @@ class ResourcesSpec(BaseModel):
     limits: Optional[ResourceQuantities] = None
 
 
+class SecuritySpec(BaseModel):
+    """Container security context (subset aligned with K8s semantics)."""
+
+    run_as_user: Optional[int] = Field(default=None, alias="runAsUser")
+    run_as_group: Optional[int] = Field(default=None, alias="runAsGroup")
+    read_only_root: bool = Field(default=False, alias="readOnlyRootFilesystem")
+    drop_caps: List[str] = Field(default_factory=list, alias="dropCapabilities")
+
+    model_config = {"populate_by_name": True}
+
+
 class VolumeSpec(BaseModel):
     """HostPath volume mapping."""
 
@@ -205,6 +216,7 @@ class AppSpec(BaseModel):
     secret_refs: List[SecretRef] = Field(default_factory=list, alias="secretRefs")
     config_refs: List[ConfigRef] = Field(default_factory=list, alias="configRefs")
     resources: Optional[ResourcesSpec] = None
+    security: Optional[SecuritySpec] = None
     volumes: List[VolumeSpec] = Field(default_factory=list)
     storage: List[StorageSpec] = Field(default_factory=list)
 
