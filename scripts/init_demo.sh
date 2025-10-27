@@ -15,7 +15,9 @@ require_root_or_sudo() {
 
 SUDO=$(require_root_or_sudo)
 
-HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa api.home.arpa echo-mr.home.arpa echo-resources.home.arpa)
+# Static demo hosts we can safely add to /etc/hosts when requested.
+# Note: echo-storage and echo-stateful do not expose ingress by default.
+HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa api.home.arpa echo.home.arpa echo-mr.home.arpa echo-resources.home.arpa)
 AUTO_HOSTS=""  # set by -y/--yes or -n/--no to auto answer host prompts
 
 usage() {
@@ -58,7 +60,7 @@ What this does (down):
 
 Prerequisites:
   - Ubuntu/Debian with sudo access
-  - Docker Engine installed and enabled (this script will try to start it)
+  - Docker Engine installed and enabled (for dev stack), or Podman for OCI runtime
 
 Environment variables you can override:
   - VENV_DIR (default .venv-demo)
@@ -78,6 +80,8 @@ USAGE
 DOWN_FLAG=0
 NO_CONTROLLER=0
 API_PORT=${API_PORT:-9108}
+# Runtime backend (default to podman/OCI if not set)
+AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-podman}
 NO_SUPERVISOR=0
 DEBUG_ATTACH=0
 DEMO_CONFIGS=0
@@ -175,8 +179,11 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
       log "Stopping controller supervisor (pid ${SUP_PID})"
       kill "$SUP_PID" || true
     fi
-    rm -f state/controller_supervisor.pid
+    rm -f state/controller_supervisor.pid state/controller_supervisor.lock || true
   fi
+  # Best-effort: kill any stray supervisors/controllers on the same port
+  pkill -f 'scripts/supervise_controller\.sh .*\s[0-9]{4,5}$' 2>/dev/null || true
+  pkill -f 'python(.venv-demo)?/bin/python -m ae\.controller' 2>/dev/null || true
   # Stop docs server if running
   if [[ -f state/docs_server.pid ]]; then
     DOCS_PID=$(cat state/docs_server.pid || true)
@@ -187,14 +194,21 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
     rm -f state/docs_server.pid
   fi
   # Stop dev stack
-  if command -v docker >/dev/null 2>&1; then
-    log "Stopping dev docker compose stack (caddy, prometheus)"
-    docker compose -f ops/dev/docker-compose.yaml down || true
+  if command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1; then
+    # Prefer podman if present to match setup; otherwise docker
+    if command -v podman >/dev/null 2>&1; then
+      STACK_BIN_DOWN=podman
+    else
+      STACK_BIN_DOWN=docker
+    fi
+    STACK_COMPOSE_DOWN=("$STACK_BIN_DOWN" compose)
+    log "Stopping dev ${STACK_BIN_DOWN} compose stack (caddy, prometheus)"
+    "${STACK_COMPOSE_DOWN[@]}" -f ops/dev/docker-compose.yaml down || true
     # Remove demo app containers
     log "Removing demo app containers (label=ae.app)"
-    ids=$(docker ps -aq --filter "label=ae.app" || true)
+    ids=$("$STACK_BIN_DOWN" ps -aq --filter "label=ae.app" || true)
     if [[ -n "$ids" ]]; then
-      docker rm -f $ids || true
+      "$STACK_BIN_DOWN" rm -f $ids || true
     fi
   fi
   # Optionally remove hosts entries
@@ -256,8 +270,49 @@ install_sops || {
   exit 1
 }
 
-log "Ensuring Docker service is running"
-$SUDO systemctl enable --now docker
+if [[ "$AE_RUNTIME_BACKEND" == "docker" ]]; then
+  log "Ensuring Docker service is running (backend=docker)"
+  $SUDO systemctl enable --now docker
+else
+  # Prefer Podman for dev stack when available; otherwise fall back to Docker.
+  if command -v podman >/dev/null 2>&1; then
+    STACK_BIN=podman
+  else
+    STACK_BIN=docker
+  fi
+  if [[ "$STACK_BIN" == "docker" ]]; then
+    if command -v docker >/dev/null 2>&1; then
+      log "Ensuring Docker service is running for dev stack (backend=$AE_RUNTIME_BACKEND)"
+      $SUDO systemctl enable --now docker || true
+    fi
+    if ! command -v podman >/dev/null 2>&1; then
+      log "Podman not found; fallback backend will be docker. Set AE_RUNTIME_BACKEND=docker or install Podman."
+    fi
+  fi
+fi
+
+# Determine container stack CLI for compose/exec/cp/logs (docker or podman)
+if [[ -z "${STACK_BIN:-}" ]]; then
+  if command -v docker >/dev/null 2>&1; then
+    STACK_BIN=docker
+  elif command -v podman >/dev/null 2>&1; then
+    STACK_BIN=podman
+  else
+    STACK_BIN=docker
+  fi
+fi
+STACK_COMPOSE=("$STACK_BIN" compose)
+
+# Select host network alias for container->host routing
+if [[ "$STACK_BIN" == "podman" ]]; then
+  HOST_ALIAS=host.containers.internal
+else
+  HOST_ALIAS=host.docker.internal
+fi
+
+# Export shared network name so runtimes can attach app containers to the ingress network
+export AE_DOCKER_NETWORK=${AE_DOCKER_NETWORK:-dev_default}
+export AE_PODMAN_NETWORK=${AE_PODMAN_NETWORK:-dev_default}
 
 VENV_DIR=${VENV_DIR:-.venv-demo}
 
@@ -273,34 +328,121 @@ log "Installing Python dependencies inside virtualenv"
 "$PY_BIN" -m pip install --upgrade pip
 "$PIP_BIN" install -e .[dev]
 
-log "Building demo Docker images"
-docker build -t demo-blue:latest samples/servers/blue
-
-docker build -t demo-green:latest samples/servers/green
+log "Building demo images (backend=$AE_RUNTIME_BACKEND)"
+if [[ "$AE_RUNTIME_BACKEND" == "podman" || "$AE_RUNTIME_BACKEND" == "oci" ]]; then
+  if command -v podman >/dev/null 2>&1; then
+    podman build -t localhost/demo-blue:latest samples/servers/blue || true
+    podman build -t localhost/demo-green:latest samples/servers/green || true
+  else
+    log "Podman not available; building images with Docker as a fallback"
+    docker build -t demo-blue:latest samples/servers/blue || true
+    docker build -t demo-green:latest samples/servers/green || true
+  fi
+else
+  docker build -t demo-blue:latest samples/servers/blue || true
+  docker build -t demo-green:latest samples/servers/green || true
+fi
 
 log "Starting local Caddy and Prometheus stack"
+# Pick ports (prefer defaults, fall back if busy)
+pick_port() {
+  local preferred=$1
+  local p=$preferred
+  for ((i=0;i<50;i++)); do
+    if ! ss -ltn 2>/dev/null | awk '{print $4}' | grep -E "[:\.]${p}$" >/dev/null; then
+      echo "$p"; return 0
+    fi
+    p=$((p+1))
+  done
+  echo "$preferred"
+}
+
+# Podman/systemd cgroup pre-flight (avoid libpod-*.scope already loaded)
+if [[ "$STACK_BIN" == "podman" ]]; then
+  podman rm -f dev-caddy-1 dev-prometheus-1 2>/dev/null || true
+  if systemctl --user status >/dev/null 2>&1; then
+    systemctl --user reset-failed >/dev/null 2>&1 || true
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+  fi
+fi
+
+# Allow caller to override; otherwise choose free ports
+export CADDY_HTTP_PORT=${CADDY_HTTP_PORT:-$(pick_port 8888)}
+export CADDY_HTTPS_PORT=${CADDY_HTTPS_PORT:-$(pick_port 8443)}
+export PROMETHEUS_PORT=${PROMETHEUS_PORT:-$(pick_port 9090)}
+if [[ "$PROMETHEUS_PORT" != "9090" ]]; then
+  log "Prometheus default port 9090 busy; using ${PROMETHEUS_PORT}"
+fi
+if [[ "$CADDY_HTTP_PORT" != "8888" || "$CADDY_HTTPS_PORT" != "8443" ]]; then
+  log "Caddy ports mapped to HTTP=${CADDY_HTTP_PORT}, HTTPS=${CADDY_HTTPS_PORT}"
+fi
+# Ensure state directories exist with liberal perms for rootless Podman
+mkdir -p state/caddy-data state/caddy docs/site || true
+# Ensure Caddy can write to /data even under rootless runtimes; if the directory is
+# not writable (e.g., created by root from a previous run), replace it with a fresh one.
+chmod -R 0777 state/caddy-data state/caddy || true
+if ! touch state/caddy-data/.write_test 2>/dev/null; then
+  log "caddy-data not writable; recreating with liberal permissions"
+  ts=$(date +%Y%m%d-%H%M%S)
+  mv state/caddy-data "state/caddy-data.bak-${ts}" 2>/dev/null || true
+  mkdir -p state/caddy-data
+  chmod -R 0777 state/caddy-data || true
+fi
+rm -f state/caddy-data/.write_test 2>/dev/null || true
+
 # Clean stale static site snippets (keep docs/api)
 mkdir -p ops/dev/caddy/sites
 find ops/dev/caddy/sites -maxdepth 1 -type f -name '*.caddy' \
   ! -name 'docs.caddy' ! -name 'api.caddy' -print -delete 2>/dev/null || true
 # Controller writes dynamic sites under state/caddy (mounted as /etc/caddy/dynsites)
-  docker compose -f ops/dev/docker-compose.yaml up -d
+  if ! ${STACK_COMPOSE[@]} -f ops/dev/docker-compose.yaml up -d; then
+    if [[ "$STACK_BIN" == "podman" ]]; then
+      log "Compose up failed; retrying after Podman/systemd remedial steps"
+      # Reset failed user units and prune any orphaned artifacts
+      if systemctl --user status >/dev/null 2>&1; then
+        systemctl --user reset-failed >/dev/null 2>&1 || true
+        systemctl --user daemon-reload >/dev/null 2>&1 || true
+      fi
+      podman system prune -f >/dev/null 2>&1 || true
+      podman rm -f dev-caddy-1 dev-prometheus-1 >/dev/null 2>&1 || true
+      sleep 1
+      ${STACK_COMPOSE[@]} -f ops/dev/docker-compose.yaml up -d
+    else
+      # Non-Podman path: rethrow
+      ${STACK_COMPOSE[@]} -f ops/dev/docker-compose.yaml up -d
+    fi
+  fi
 
   # Trust Caddy's local CA on the host so browsers don't warn on every run.
   # This only applies to Debian/Ubuntu hosts.
   if command -v update-ca-certificates >/dev/null 2>&1; then
     # Trigger local CA creation by touching one TLS site once (ignore TLS verify)
-    curl -ksS https://docs.home.arpa:8443/ >/dev/null 2>&1 || true
+    curl -ksS "https://docs.home.arpa:${CADDY_HTTPS_PORT}/" >/dev/null 2>&1 || true
     # Give Caddy a moment to mint the local CA and leaf certs
     sleep 1
     # Export Caddy local root from the container if present
-    if docker exec dev-caddy-1 test -f /data/caddy/pki/authorities/local/root.crt; then
+    if "$STACK_BIN" exec dev-caddy-1 test -f /data/caddy/pki/authorities/local/root.crt; then
       mkdir -p state/certs
-      docker cp dev-caddy-1:/data/caddy/pki/authorities/local/root.crt state/certs/caddy-local-root.crt >/dev/null 2>&1 || true
+      "$STACK_BIN" cp dev-caddy-1:/data/caddy/pki/authorities/local/root.crt state/certs/caddy-local-root.crt >/dev/null 2>&1 || true
       if [[ -s state/certs/caddy-local-root.crt ]]; then
         log "Installing Caddy local root CA into host trust store"
         $SUDO cp state/certs/caddy-local-root.crt /usr/local/share/ca-certificates/caddy-local-root.crt
         $SUDO update-ca-certificates >/dev/null 2>&1 || true
+      fi
+    else
+      # If CA not present yet, fix perms and try one more cycle (Podman rootless often needs this)
+      chmod -R 0777 state/caddy-data || true
+      sleep 1
+      ${STACK_COMPOSE[@]} -f ops/dev/docker-compose.yaml restart caddy || true
+      sleep 1
+      if "$STACK_BIN" exec dev-caddy-1 test -f /data/caddy/pki/authorities/local/root.crt; then
+        mkdir -p state/certs
+        "$STACK_BIN" cp dev-caddy-1:/data/caddy/pki/authorities/local/root.crt state/certs/caddy-local-root.crt >/dev/null 2>&1 || true
+        if [[ -s state/certs/caddy-local-root.crt ]]; then
+          log "Installing Caddy local root CA into host trust store (retry)"
+          $SUDO cp state/certs/caddy-local-root.crt /usr/local/share/ca-certificates/caddy-local-root.crt
+          $SUDO update-ca-certificates >/dev/null 2>&1 || true
+        fi
       fi
     fi
   else
@@ -322,6 +464,8 @@ export AE_CADDY_SITES=${AE_CADDY_SITES:-state/caddy}
 export AE_CADDY_FILE=${AE_CADDY_FILE:-/etc/caddy/Caddyfile}
 # When using the dev docker-compose stack, reload Caddy inside the container.
 export AE_CADDY_CONTAINER=${AE_CADDY_CONTAINER:-dev-caddy-1}
+# Tell the controller which CLI to use to exec inside the Caddy container
+export AE_CONTAINER_CLI=${AE_CONTAINER_CLI:-$STACK_BIN}
 export AE_STATE_DB=${AE_STATE_DB:-state/controller.db}
 # Avoid indefinite hangs on Caddy reload inside docker exec
 export AE_CADDY_RELOAD_TIMEOUT=${AE_CADDY_RELOAD_TIMEOUT:-10}
@@ -329,13 +473,14 @@ export AE_CADDY_RELOAD_TIMEOUT=${AE_CADDY_RELOAD_TIMEOUT:-10}
 export AE_ALLOW_PLAINTEXT_SECRETS=${AE_ALLOW_PLAINTEXT_SECRETS:-1}
 # Mark this run as demo-init so components can quiet benign warnings
 export AE_DEMO_MODE=${AE_DEMO_MODE:-1}
+export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
 mkdir -p "${AE_CADDY_SITES}"
 if [[ ! -w "${AE_CADDY_SITES}" ]]; then
   log "Adjusting permissions on ${AE_CADDY_SITES} (may require sudo)"
   $SUDO chown -R "$(id -u):$(id -g)" "${AE_CADDY_SITES}" || true
 fi
 
-# Ensure app containers join the dev compose network so Caddy can resolve them by name
+# Ensure app containers join the dev compose network so Caddy can resolve them by name (docker path)
 export AE_DOCKER_NETWORK=${AE_DOCKER_NETWORK:-dev_default}
 
 # Write env helper for manual shells (after exports)
@@ -345,8 +490,11 @@ export AE_CADDY_SITES=${AE_CADDY_SITES}
 export AE_CADDY_FILE=${AE_CADDY_FILE}
 export AE_CADDY_CONTAINER=${AE_CADDY_CONTAINER}
 export AE_DOCKER_NETWORK=${AE_DOCKER_NETWORK}
+export AE_CONTAINER_CLI=${AE_CONTAINER_CLI}
 export AE_ALLOW_PLAINTEXT_SECRETS=${AE_ALLOW_PLAINTEXT_SECRETS}
 export AE_DEMO_MODE=${AE_DEMO_MODE}
+export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
+export API_PORT=${API_PORT}
 ENV
 
 # Seed dynsites for docs and API so they are always available
@@ -375,7 +523,7 @@ https://api.home.arpa {
     }
     header -Strict-Transport-Security
     tls internal
-    reverse_proxy host.docker.internal:${API_PORT}
+    reverse_proxy ${HOST_ALIAS}:${API_PORT}
 }
 API
 
@@ -435,7 +583,7 @@ ensure_supervisor_running || true
 
 # Wait briefly for Caddy container to accept execs
 for i in {1..20}; do
-  if docker exec "$AE_CADDY_CONTAINER" caddy version >/dev/null 2>&1; then
+  if "$STACK_BIN" exec "$AE_CADDY_CONTAINER" caddy version >/dev/null 2>&1; then
     break
   fi
   sleep 0.5
@@ -446,15 +594,15 @@ if [[ $DOCS_ONLY -ne 1 ]]; then
   if [[ $DEMO_STANDARD -eq 1 ]] || { [[ $DEMO_STANDARD -eq 0 && $DEMO_ECHO_MR -eq 0 && $DEMO_CONFIGS -eq 0 ]]; }; then
     if ! timeout --kill-after=5 "$APPLY_TIMEOUT" "$PY_BIN" -m ae.cli --verbose apply -f specs/examples/blue.yaml; then
       log "Apply for blue timed out or failed. Diagnostics:"
-      docker ps || true
-      log "Try: docker logs dev-caddy-1; docker exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
+      "$STACK_BIN" ps || true
+      log "Try: $STACK_BIN logs dev-caddy-1; $STACK_BIN exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
       log "Or re-run with more verbosity: $PY_BIN -m ae.cli --verbose apply -f specs/examples/blue.yaml"
       exit 1
     fi
     if ! timeout --kill-after=5 "$APPLY_TIMEOUT" "$PY_BIN" -m ae.cli --verbose apply -f specs/examples/green.yaml; then
       log "Apply for green timed out or failed. Diagnostics:"
-      docker ps || true
-      log "Try: docker logs dev-caddy-1; docker exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
+      "$STACK_BIN" ps || true
+      log "Try: $STACK_BIN logs dev-caddy-1; $STACK_BIN exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
       log "Or re-run with more verbosity: $PY_BIN -m ae.cli --verbose apply -f specs/examples/green.yaml"
       exit 1
     fi
@@ -475,9 +623,9 @@ if [[ $DEMO_CONFIGS -eq 1 ]]; then
     fi
     # Quick endpoint verification
     echo
-    log "Demo endpoint verification (HTTPS via Caddy 8443)"
+    log "Demo endpoint verification (HTTPS via Caddy ${CADDY_HTTPS_PORT})"
     for host in blue.home.arpa green.home.arpa echo-mr.home.arpa docs.home.arpa api.home.arpa; do
-      code=$(curl -ksS -o /dev/null -w '%{http_code}' "https://$host:8443/" || true)
+      code=$(curl -ksS -o /dev/null -w '%{http_code}' "https://$host:${CADDY_HTTPS_PORT}/" || true)
       printf '[verify] %-20s -> %s\n' "$host" "${code:-fail}"
     done
   else
@@ -519,6 +667,28 @@ echo $! > state/docs_server.pid
 
 log "Current status"
 "$PY_BIN" -m ae.cli status
+
+# If backend is podman, ensure demo images are available to Podman by importing from Docker when needed
+if [[ "$AE_RUNTIME_BACKEND" == "podman" || "$AE_RUNTIME_BACKEND" == "oci" ]]; then
+  if command -v podman >/dev/null 2>&1; then
+    for img in demo-blue:latest demo-green:latest; do
+      if ! podman images --format '{{.Repository}}:{{.Tag}}' | grep -qE "(^|/)${img}$"; then
+        if command -v docker >/dev/null 2>&1; then
+          if docker image inspect "$img" >/dev/null 2>&1; then
+            log "Importing $img from Docker into Podman (docker-daemon:$img)"
+            podman pull "docker-daemon:${img}" >/dev/null 2>&1 || true
+          fi
+        fi
+        # also try localhost/<img>
+        if ! podman images --format '{{.Repository}}:{{.Tag}}' | grep -qE "(^|/)${img}$"; then
+          if podman images --format '{{.Repository}}:{{.Tag}}' | grep -q "localhost/${img}$"; then
+            log "Podman has localhost/${img}; runtime will resolve it"
+          fi
+        fi
+      fi
+    done
+  fi
+fi
 
 # Report reachability of the controller HTTP API and UIs.
 check_api_reachability() {
@@ -562,7 +732,7 @@ check_api_reachability() {
   else
     log "Caddy API not reachable (HTTP ${code_api:-fail})."
     echo "If direct API works, try reloading Caddy:"
-    echo "  $ docker exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
+    echo "  $ $STACK_BIN exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
   fi
 
   # Supervisor status
@@ -609,16 +779,16 @@ check_network_sanity() {
       if [[ "$host" == "127.0.0.1" || "$host" == "0.0.0.0" ]]; then
         code=$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 3 "http://$up" || true)
         if [[ -n "$code" ]]; then ok_count=$((ok_count+1)); else log "[$app] upstream http://$up not reachable"; fi
-      elif [[ "$host" == "host.docker.internal" ]]; then
-        # Validate inside caddy container where host.docker.internal is mapped
-        if docker exec "$AE_CADDY_CONTAINER" getent hosts host.docker.internal >/dev/null 2>&1; then
+      elif [[ "$host" == "host.docker.internal" || "$host" == "host.containers.internal" ]]; then
+        # Validate inside caddy container where host alias is mapped
+        if "$STACK_BIN" exec "$AE_CADDY_CONTAINER" getent hosts "$host" >/dev/null 2>&1; then
           ok_count=$((ok_count+1))
         else
-          log "[$app] caddy cannot resolve host.docker.internal"
+          log "[$app] caddy cannot resolve $host"
         fi
       else
         # Check DNS from inside caddy container
-        if docker exec "$AE_CADDY_CONTAINER" getent hosts "$host" >/dev/null 2>&1; then
+        if "$STACK_BIN" exec "$AE_CADDY_CONTAINER" getent hosts "$host" >/dev/null 2>&1; then
           ok_count=$((ok_count+1))
         else
           log "[$app] caddy cannot resolve $host on network $AE_DOCKER_NETWORK"
@@ -647,11 +817,11 @@ attach_debug_logs() {
   # Docker logs for dev services
   # Filter noisy TLS trust/OCSP messages which are expected in dev
   grep_caddy='certutil|no OCSP stapling|installing root certificate|admin endpoint started|config is unchanged'
-  docker logs -f dev-caddy-1 2>&1 \
+  "$STACK_BIN" logs -f dev-caddy-1 2>&1 \
     | grep -Ev "$grep_caddy" \
     | sed -u 's/^/[caddy] /' &
   T2=$!
-  docker logs -f dev-prometheus-1 2>&1 | sed -u 's/^/[prometheus] /' &
+  "$STACK_BIN" logs -f dev-prometheus-1 2>&1 | sed -u 's/^/[prometheus] /' &
   T3=$!
   # Stream site changes
   tail -n 0 -F "$AE_CADDY_SITES"/*.caddy 2>/dev/null | sed -u 's/^/[sites] /' &
@@ -669,16 +839,16 @@ cat <<EOF
 
 Demo setup complete.
 
-- Blue app:   https://blue.home.arpa:8443/
-- Green app:  https://green.home.arpa:8443/
-- Docs site:  https://docs.home.arpa:8443/ (via Caddy) and http://${DOCS_BIND}:${DOCS_PORT}/ (direct)
-  API UIs:    https://api.home.arpa:8443/swagger, https://api.home.arpa:8443/redoc, https://api.home.arpa:8443/dashboard
+- Blue app:   https://blue.home.arpa:${CADDY_HTTPS_PORT}/
+- Green app:  https://green.home.arpa:${CADDY_HTTPS_PORT}/
+- Docs site:  https://docs.home.arpa:${CADDY_HTTPS_PORT}/ (via Caddy) and http://${DOCS_BIND}:${DOCS_PORT}/ (direct)
+  API UIs:    https://api.home.arpa:${CADDY_HTTPS_PORT}/swagger, https://api.home.arpa:${CADDY_HTTPS_PORT}/redoc, https://api.home.arpa:${CADDY_HTTPS_PORT}/dashboard
   API direct: http://127.0.0.1:9108/swagger, http://127.0.0.1:9108/redoc, http://127.0.0.1:9108/dashboard
 
 If hosts mapping was added, you can also visit:
-  - curl -k https://blue.home.arpa:8443/
-  - curl -k https://green.home.arpa:8443/
-  - curl -k https://docs.home.arpa:8443/
+  - curl -k https://blue.home.arpa:${CADDY_HTTPS_PORT}/
+  - curl -k https://green.home.arpa:${CADDY_HTTPS_PORT}/
+  - curl -k https://docs.home.arpa:${CADDY_HTTPS_PORT}/
 
 To tear everything down when finished:
   $ ./scripts/init_demo.sh --down
