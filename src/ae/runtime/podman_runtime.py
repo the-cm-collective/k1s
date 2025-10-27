@@ -302,6 +302,19 @@ class PodmanRuntime(RuntimeAdapter):
             out.append({"name": it.get("Names", [it.get("Id", "")])[0], "labels": labels, "host_ports": host_ports})
         return out
 
+    def exec(self, replica_id: str, command: list[str], *, timeout: int | None = None) -> int:  # type: ignore[override]
+        # Locate container by label
+        cid = self._find_by_label(self.REPLICA_LABEL, replica_id)
+        if not cid:
+            return 127
+        cmd = [self._bin, "exec"]
+        if timeout is not None and int(timeout) > 0:
+            # podman exec lacks a direct timeout; rely on caller to limit retries
+            pass
+        cmd += [cid] + [str(x) for x in command]
+        r = self._run_ok(cmd, allow_fail=True)
+        return int(r.code)
+
     # Helpers ----------------------------------------------------------
     def _create_container(self, manifest: AppManifest, replica_id: str, revision: int, *, service: tuple[int | None, int | None] = (None, None)) -> None:
         app = manifest.metadata.name

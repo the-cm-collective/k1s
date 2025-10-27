@@ -32,9 +32,17 @@ Examples
   - readiness: { tcpSocket: { port: 8080 }, successThreshold: 2, failureThreshold: 2 }
 - SecuritySpec:
   - security: { runAsUser: 1000, runAsGroup: 1000, readOnlyRootFilesystem: true, dropCapabilities: ["NET_RAW"] }
+- Exec readiness probe (spec):
+  - readiness: { exec: { command: ["sh", "-c", "true"] }, timeoutSeconds: 1 }
 
 Demo manifests
 - specs/examples/echo-sec.yaml: non-root + read-only root filesystem + HTTP readiness + ingress.
   - Apply: `python -m ae.cli apply -f specs/examples/echo-sec.yaml`
 - specs/examples/echo-tcp.yaml: TCP readiness with thresholds + ingress.
   - Apply: `python -m ae.cli apply -f specs/examples/echo-tcp.yaml`
+- specs/examples/echo-exec.yaml: Exec readiness probe + ingress.
+  - Apply: `python -m ae.cli apply -f specs/examples/echo-exec.yaml`
+
+Remote apply
+- Enable mutations and token, then:
+  - `ae --server https://api.home.arpa:8443 --token <admin> apply -f specs/examples/echo-sec.yaml`

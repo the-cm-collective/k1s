@@ -1,0 +1,2 @@
+label,mode,pss_kb_total,pss_kb_control_plane,app_mem_bytes,system_mem_bytes
+idle-baseline,k1s,558657,488830,120262656,0

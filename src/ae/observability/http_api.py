@@ -51,6 +51,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     # Optional mutators injected by controller when enabled
     scale_fn = None  # type: ignore[var-annotated]
     delete_fn = None  # type: ignore[var-annotated]
+    apply_fn = None  # type: ignore[var-annotated]
     # Optional system info provider injected by controller
     system_info_fn = None  # type: ignore[var-annotated]
 
@@ -183,12 +184,30 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         except Exception:
             check = None
         if check:
+            if self.path == "/apply" and not self._require_role("admin"):
+                self._deny(401 if not self.headers.get("Authorization") else 403)
+                return
             if self.path.startswith("/scale/") and not self._require_role("scale"):
                 self._deny(401 if not self.headers.get("Authorization") else 403)
                 return
             if self.path.startswith("/delete/") and not self._require_role("admin"):
                 self._deny(401 if not self.headers.get("Authorization") else 403)
                 return
+
+        if self.path == "/apply" and self.apply_fn is not None:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            try:
+                body = self.rfile.read(length) if length > 0 else b"{}"
+                payload = json.loads(body.decode("utf-8"))
+            except Exception:
+                self._json_error(400, "invalid JSON body: expected App manifest")
+                return
+            try:
+                report = self.apply_fn(payload)  # type: ignore[misc]
+                self._json_ok(report)
+            except Exception as exc:  # pragma: no cover
+                self._json_error(500, str(exc))
+            return
 
         if self.path.startswith("/scale/") and self.scale_fn is not None:
             app = self.path.split("/", 2)[2]
@@ -1658,6 +1677,7 @@ def start_http_api(
     *,
     scale_fn=None,
     delete_fn=None,
+    apply_fn=None,
     logs_fn=None,
     system_info_fn=None,
 ) -> Tuple[socketserver.TCPServer, int, threading.Thread]:
@@ -1672,6 +1692,7 @@ def start_http_api(
     # Avoid Python descriptor binding when accessed via instances: wrap as staticmethods
     handler_cls.scale_fn = staticmethod(scale_fn) if scale_fn is not None else None
     handler_cls.delete_fn = staticmethod(delete_fn) if delete_fn is not None else None
+    handler_cls.apply_fn = staticmethod(apply_fn) if apply_fn is not None else None
     handler_cls.logs_fn = staticmethod(logs_fn) if logs_fn is not None else None
     handler_cls.system_info_fn = (
         staticmethod(system_info_fn) if system_info_fn is not None else None
