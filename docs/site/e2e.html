@@ -1,0 +1,232 @@
+<!doctype html>
+<html data-theme="dark">
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>E2E</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.55; }
+      code, pre { background: #f6f8fa; }
+      pre { padding: 12px; overflow-x: auto; }
+      h1, h2, h3 { margin-top: 1.5em; }
+      nav a { margin-right: 1rem; }
+      .container { max-width: 920px; }
+    </style>
+    <style>
+      :root {
+        --bg: #0b0f15;
+        --fg: #e6edf3;
+        --muted: #161b22;
+        --link: #79c0ff;
+        --code-bg: #0f1623;
+        --border: #263040;
+      }
+      html[data-theme="light"] {
+        --bg: #ffffff;
+        --fg: #0b0f15;
+        --muted: #f6f8fa;
+        --link: #0969da;
+        --code-bg: #f6f8fa;
+        --border: #e5e7eb;
+      }
+      body { background: var(--bg); color: var(--fg); }
+      a { color: var(--link); }
+      code, pre { background: var(--code-bg); border: 1px solid var(--border); }
+      nav { display: flex; align-items: center; gap: .75rem; margin-bottom: 1.25rem; }
+      nav a { margin-right: 1rem; }
+      .spacer { flex: 1 1 auto; }
+      button#theme-toggle { background: var(--muted); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+      /* Improve Mermaid readability in dark mode by inverting SVG colors */
+      html[data-theme="dark"] .mermaid svg { filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }
+      html[data-theme="dark"] .mermaid { background: var(--bg); }
+    </style>
+    <script>
+      (function() {
+        const key = 'k1s-theme';
+        const saved = localStorage.getItem(key);
+        const initial = saved || 'dark';
+        document.documentElement.setAttribute('data-theme', initial);
+        function setLabel(btn) {
+          var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+          btn.textContent = (cur === 'dark') ? 'Light Mode' : 'Dark Mode';
+        }
+        function ensureButton() {
+          var nav = document.querySelector('nav');
+          if (!nav) return;
+          var btn = document.getElementById('theme-toggle');
+          if (!btn) {
+            var spacer = document.createElement('span');
+            spacer.className = 'spacer';
+            btn = document.createElement('button');
+            btn.id = 'theme-toggle';
+            btn.addEventListener('click', function() {
+              var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+              var next = (cur === 'dark') ? 'light' : 'dark';
+              document.documentElement.setAttribute('data-theme', next);
+              localStorage.setItem(key, next);
+              setLabel(btn);
+            });
+            nav.appendChild(spacer);
+            nav.appendChild(btn);
+          }
+          setLabel(btn);
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', ensureButton);
+        } else {
+          ensureButton();
+        }
+      })();
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({ startOnLoad: true });</script>
+  </head>
+  <body>
+    <nav>
+      <a href="index.html">Home</a>
+      <a href="overview.html">Overview</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="http-api.html">HTTP API</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="https://api.home.arpa:8443/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <a href="https://api.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+    </nav>
+    <div class="container">
+    <h1>End-to-End Guide</h1>
+<p>This guide walks an engineer through full system operation on a single host: boot the controller, apply all example manifests, observe readiness/liveness, ingress, storage, rollouts, run portability checks, export K8s YAML, and clean up. Every command below is runnable as-is on a dev machine.</p>
+<p>Prerequisites</p>
+<ul>
+<li>Python 3.11+, Docker or Podman, and optional Caddy for ingress.</li>
+<li>Dev install: <code>python -m pip install -e .[dev]</code></li>
+<li>Optional live file watch: <code>python -m pip install -e .[watch]</code></li>
+<li>Optional fixtures (Caddy+Prometheus): <code>docker compose -f ops/dev/docker-compose.yaml up -d</code></li>
+</ul>
+<p>Start Controller</p>
+<ul>
+<li>Polling loop with metrics and watch (if watchdog installed):</li>
+<li><code>python -m ae.controller --loop --watch --specs specs/ --metrics-port 9108</code></li>
+<li>UI: <code>http://127.0.0.1:9108</code> → status, docs, metrics.</li>
+</ul>
+<p>Conventions</p>
+<ul>
+<li>All sample manifests live in <code>specs/examples/</code>.</li>
+<li>Use <code>python -m ae.cli</code> (aka <code>ae</code>). <code>k1s</code> provides kubectl-like aliases.</li>
+</ul>
+<p>1) Standard Demo (blue/green)</p>
+<ul>
+<li>Apply blue, verify, then swap to green.</li>
+<li><code>python -m ae.cli apply -f specs/examples/blue.yaml</code></li>
+<li><code>python -m ae.cli status blue --wide --events</code></li>
+<li><code>python -m ae.cli logs blue --tail 50</code></li>
+<li>Switch color: <code>python -m ae.cli apply -f specs/examples/green.yaml</code></li>
+<li>Verify zero-downtime: <code>python -m ae.cli status green --wide --events</code></li>
+</ul>
+<p>2) Echo (Configs &amp; Secrets)</p>
+<ul>
+<li>Demonstrates <code>configRefs</code> and <code>secretRefs</code> projected into env and files, plus readiness/liveness.</li>
+<li>Decrypt sample secret for dev only (requires <code>sops</code>):</li>
+<li><code>sops --decrypt specs/examples/demo-secret.sops.yaml &gt; state/demo-secret.yaml</code> (or set <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> and use the sops file directly)</li>
+<li><code>python -m ae.cli apply -f specs/examples/echo.yaml</code></li>
+<li>Inspect:</li>
+<li><code>python -m ae.cli status echo --wide --events</code></li>
+<li><code>python -m ae.cli logs echo --tail 100</code></li>
+<li>Ingress (if Caddy running): open <code>http://echo.home.arpa/</code> (map host in <code>/etc/hosts</code> to 127.0.0.1 for dev).</li>
+</ul>
+<p>3) Echo (Resources and hostPath)</p>
+<ul>
+<li>Demonstrates resource limits and a writable hostPath mount.</li>
+<li><code>python -m ae.cli apply -f specs/examples/echo-resources.yaml</code></li>
+<li><code>python -m ae.cli status echo-resources --wide --events</code></li>
+<li>Expect <code>k8s-check</code> to warn about hostPath RW when exporting to K8s.</li>
+</ul>
+<p>4) Echo (Security Hardening)</p>
+<ul>
+<li>Non-root, read-only root FS, <code>allowPrivilegeEscalation: false</code>, drop <code>ALL</code> caps.</li>
+<li><code>python -m ae.cli apply -f specs/examples/echo-sec.yaml</code></li>
+<li><code>python -m ae.cli status echo-sec --wide</code></li>
+</ul>
+<p>5) Echo (Probes via Exec &amp; TCP)</p>
+<ul>
+<li>Exec probe: <code>echo-exec.yaml</code></li>
+<li><code>python -m ae.cli apply -f specs/examples/echo-exec.yaml</code></li>
+<li><code>python -m ae.cli status echo-exec --events</code></li>
+<li>TCP probe: <code>echo-tcp.yaml</code></li>
+<li><code>python -m ae.cli apply -f specs/examples/echo-tcp.yaml</code></li>
+<li><code>python -m ae.cli status echo-tcp --events</code></li>
+</ul>
+<p>6) Storage (PV-lite)</p>
+<ul>
+<li>Retain volume: <code>echo-stateful.yaml</code></li>
+<li><code>python -m ae.cli apply -f specs/examples/echo-stateful.yaml</code></li>
+<li><code>python -m ae.cli volumes list --app echo-stateful</code></li>
+<li>Delete-on-purge volume: <code>echo-storage-delete.yaml</code></li>
+<li><code>python -m ae.cli apply -f specs/examples/echo-storage-delete.yaml</code></li>
+<li>Purge removes named volumes with <code>retention: Delete</code>:</li>
+<li><code>python -m ae.cli delete echo-del --purge</code></li>
+</ul>
+<p>7) Rollout Policy</p>
+<ul>
+<li>Ordered rolling with explicit surge/unavailable:</li>
+<li><code>python -m ae.cli apply -f specs/examples/echo-rollout.yaml</code></li>
+<li>Pause/resume controls:</li>
+<li><code>python -m ae.cli rollout pause echo-rollout</code></li>
+<li><code>python -m ae.cli rollout resume echo-rollout</code></li>
+</ul>
+<p>8) Multi-Replica</p>
+<ul>
+<li>Native (controller-side) multi-replica demo:</li>
+<li><code>python -m ae.cli apply -f specs/examples/multi-replica-echo.yaml</code></li>
+<li><code>python -m ae.cli status echo-mr --wide --events</code></li>
+</ul>
+<p>9) Observability</p>
+<ul>
+<li>Metrics snapshot: <code>python -m ae.cli metrics</code></li>
+<li>Events stream: <code>python -m ae.cli events echo --limit 20</code></li>
+<li>HTTP API: <code>curl :9108/status</code>, <code>curl :9108/metrics</code></li>
+</ul>
+<p>10) K8s Portability Check (offline)</p>
+<ul>
+<li>Baseline checklist:</li>
+<li><code>python -m ae.cli k8s-check -f specs/examples/echo.yaml</code></li>
+<li>Strict policy (CI-like):</li>
+<li><code>python -m ae.cli k8s-check -f specs/examples/multi-replica-echo.yaml --policy strict</code></li>
+<li>HPA pre-req advisory using an HPA-oriented sample:</li>
+<li><code>python -m ae.cli k8s-check -f specs/examples/echo-hpa.yaml --policy strict --assume-hpa cpu-util</code></li>
+</ul>
+<p>11) Export to Kubernetes YAML</p>
+<ul>
+<li>Hardened single-replica echo:</li>
+<li><code>python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --preset web-hardened --ingress-class traefik --service-port 80 --validate -o specs/examples/echo-k8s.yaml</code></li>
+<li>Multi-replica hardened export:</li>
+<li><code>python -m ae.cli export-k8s -f specs/examples/multi-replica-echo.yaml --namespace demo --preset web-hardened --ingress-class traefik --service-port 80 --validate -o specs/examples/multi-replica-echo-k8s.yaml</code></li>
+<li>Validate structure (already done via <code>--validate</code>) and run server-side dry-run if a cluster is present:</li>
+<li><code>kubectl apply --dry-run=server -f specs/examples/echo-k8s.yaml -n demo</code></li>
+</ul>
+<p>12) TLS Options (Ingress)</p>
+<ul>
+<li>BYO TLS via Secret material:</li>
+<li><code>python -m ae.cli tls sync --name mycert --input path/to/mycert.yaml --root state/tls</code></li>
+<li>Set only <code>spec.ingress.tlsSecretName: mycert</code> in your App manifest; controller resolves PEMs.</li>
+</ul>
+<p>13) Cleanup</p>
+<ul>
+<li>Delete apps (keep history): <code>python -m ae.cli delete &lt;app&gt;</code></li>
+<li>Purge with retained volume deletion where <code>retention: Delete</code>: <code>python -m ae.cli delete &lt;app&gt; --purge</code></li>
+<li>Stop fixtures: <code>docker compose -f ops/dev/docker-compose.yaml down</code></li>
+</ul>
+<p>CI Conformance (reference)</p>
+<ul>
+<li>GitHub workflow <code>.github/workflows/k8s-conformance.yaml</code> bootstraps Kind and k3s, exports hardened samples, <code>kubectl apply --dry-run=server</code>, and validates with <code>kubeconform -strict</code>.</li>
+</ul>
+<p>Where to next</p>
+<ul>
+<li>Runbook: <code>docs/runbook.md</code></li>
+<li>Ingress/TLS: <code>docs/ingress.md</code></li>
+<li>HTTP API: <code>docs/http-api.md</code></li>
+<li>Architecture: <code>docs/architecture.md</code></li>
+</ul>
+    </div>
+  </body>
+</html>

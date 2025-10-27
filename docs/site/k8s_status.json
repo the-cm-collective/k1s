@@ -1,0 +1,112 @@
+{
+  "generated_at": "2025-10-27T21:23:57.186634+00:00",
+  "samples_count": 3,
+  "overall_score": 100.0,
+  "grade": "excellent",
+  "results": [
+    {
+      "sample": "specs/examples/echo.yaml",
+      "exists": true,
+      "export_length": 2830,
+      "validate": {
+        "ran": true,
+        "ok": true,
+        "errors": []
+      },
+      "policy_strict": {
+        "ran": true,
+        "errors": 0,
+        "warnings": 2
+      },
+      "kubeconform": {
+        "ran": false,
+        "ok": null,
+        "summary": null
+      },
+      "server_dry_run": {
+        "ran": false,
+        "ok": null,
+        "output": null
+      },
+      "kinds": [
+        "ConfigMap",
+        "Deployment",
+        "Service",
+        "Ingress",
+        "ServiceAccount",
+        "HorizontalPodAutoscaler"
+      ],
+      "score": 100.0,
+      "confidence": 0.45
+    },
+    {
+      "sample": "specs/examples/multi-replica-echo.yaml",
+      "exists": true,
+      "export_length": 2107,
+      "validate": {
+        "ran": true,
+        "ok": true,
+        "errors": []
+      },
+      "policy_strict": {
+        "ran": true,
+        "errors": 0,
+        "warnings": 4
+      },
+      "kubeconform": {
+        "ran": false,
+        "ok": null,
+        "summary": null
+      },
+      "server_dry_run": {
+        "ran": false,
+        "ok": null,
+        "output": null
+      },
+      "kinds": [
+        "Deployment",
+        "Service",
+        "Ingress",
+        "ServiceAccount",
+        "PodDisruptionBudget",
+        "HorizontalPodAutoscaler"
+      ],
+      "score": 100.0,
+      "confidence": 0.45
+    },
+    {
+      "sample": "specs/examples/echo-hpa.yaml",
+      "exists": true,
+      "export_length": 1814,
+      "validate": {
+        "ran": true,
+        "ok": true,
+        "errors": []
+      },
+      "policy_strict": {
+        "ran": true,
+        "errors": 0,
+        "warnings": 4
+      },
+      "kubeconform": {
+        "ran": false,
+        "ok": null,
+        "summary": null
+      },
+      "server_dry_run": {
+        "ran": false,
+        "ok": null,
+        "output": null
+      },
+      "kinds": [
+        "Deployment",
+        "Service",
+        "ServiceAccount",
+        "PodDisruptionBudget",
+        "HorizontalPodAutoscaler"
+      ],
+      "score": 100.0,
+      "confidence": 0.45
+    }
+  ]
+}

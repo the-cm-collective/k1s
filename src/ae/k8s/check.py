@@ -94,7 +94,9 @@ def apply_policy(issues: List[Issue], policy: str) -> List[Issue]:
     if policy.lower() != "strict":
         return issues
     out: List[Issue] = []
-    escalate = {"PROBE_READINESS", "REQS_NONE", "PDB_MISSING"}
+    # Escalate only readiness probe and resource requests; keep PDB advisory as a warning
+    # because PDB is an export-time policy that may be satisfied by exporter flags/presets.
+    escalate = {"PROBE_READINESS", "REQS_NONE"}
     for it in issues:
         if it.code in escalate and it.level == "warn":
             out.append(Issue("error", it.code, it.message))

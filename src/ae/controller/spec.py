@@ -129,7 +129,8 @@ class ResourceQuantities(BaseModel):
         # accept digits only or digits+unit (K/M/G with optional iB/B)
         import re
 
-        pattern = re.compile(r"^\d+(?:\.\d+)?\s*(?:[KMG](?:i?B)?|[kKmMgG]|)$")
+        # Accept common Kubernetes forms: 128Mi, 256M, 1Gi, 2G, 500Ki, and with optional trailing 'B'
+        pattern = re.compile(r"^\d+(?:\.\d+)?\s*(?:[KMG](?:i)?(?:B)?|[kKmMgG])?$")
         if not pattern.match(s):
             raise ValueError("memory must be a number optionally suffixed by K/M/G or KiB/MiB/GiB")
         return s
