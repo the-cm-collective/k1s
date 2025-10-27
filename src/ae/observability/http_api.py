@@ -1256,14 +1256,21 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             var colIdx = (b.meta && b.meta.col!=null) ? b.meta.col : 0;
             var yBand = ((colIdx % 5) - 2) * 6; // -12..+12
             var laneY = laneBase + yBand + jitter;
-            // Approach between columns on the left side of the target card
-            var leftBound = b.x - gap*0.5 + 12; // inside the gap to the left
-            var approachX = Math.min(b.x - 12, Math.max(gutterLeftX+8, b.x - gap*0.35));
-            if (!isFinite(leftBound) || isNaN(leftBound)) leftBound = b.x - 40;
-            approachX = Math.max(approachX, leftBound);
+            // Choose gutter based on relative x to avoid "backtracking"
+            var useLeft = b.x < a.x;
+            var gutX = useLeft ? gutterLeftX : gutterRightX;
+            // Approach between columns on the side nearest the gutter
+            var leftBound = b.x - gap*0.5 + 12;
+            var rightBound = b.x + gap*0.5 - 12;
+            var approachX = useLeft
+              ? Math.min(b.x - 12, Math.max(gutX+8, b.x - gap*0.35))
+              : Math.max(b.x + 12, Math.min(gutX-8, b.x + gap*0.35));
+            if (!isFinite(leftBound)) leftBound = b.x - 40;
+            if (!isFinite(rightBound)) rightBound = b.x + 40;
+            if (useLeft) approachX = Math.max(approachX, leftBound); else approachX = Math.min(approachX, rightBound);
             points.push([a.x, a.y]);
-            points.push([gutterLeftX, a.y]);
-            points.push([gutterLeftX, laneY]);
+            points.push([gutX, a.y]);
+            points.push([gutX, laneY]);
             points.push([approachX, laneY]);
             points.push([approachX, topEdgeY(b)-4]);
             points.push([b.x, topEdgeY(b)-4]);
@@ -1273,14 +1280,19 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             var colIdx2 = (b.meta && b.meta.col!=null) ? b.meta.col : 0;
             var yBand2 = ((colIdx2 % 5) - 2) * 6;
             var laneY2 = laneBase2 + yBand2 + jitter;
-            // Approach between columns on the right side of the target card
-            var rightBound = b.x + gap*0.5 - 12;
-            var approachX2 = Math.max(b.x + 12, Math.min(gutterRightX-8, b.x + gap*0.35));
-            if (!isFinite(rightBound) || isNaN(rightBound)) rightBound = b.x + 40;
-            approachX2 = Math.min(approachX2, rightBound);
+            var useLeft2 = b.x < a.x;
+            var gutX2 = useLeft2 ? gutterLeftX : gutterRightX;
+            var leftBound2 = b.x - gap*0.5 + 12;
+            var rightBound2 = b.x + gap*0.5 - 12;
+            var approachX2 = useLeft2
+              ? Math.min(b.x - 12, Math.max(gutX2+8, b.x - gap*0.35))
+              : Math.max(b.x + 12, Math.min(gutX2-8, b.x + gap*0.35));
+            if (!isFinite(leftBound2)) leftBound2 = b.x - 40;
+            if (!isFinite(rightBound2)) rightBound2 = b.x + 40;
+            if (useLeft2) approachX2 = Math.max(approachX2, leftBound2); else approachX2 = Math.min(approachX2, rightBound2);
             points.push([a.x, a.y]);
-            points.push([gutterRightX, a.y]);
-            points.push([gutterRightX, laneY2]);
+            points.push([gutX2, a.y]);
+            points.push([gutX2, laneY2]);
             points.push([approachX2, laneY2]);
             points.push([approachX2, topEdgeY(b)-4]);
             points.push([b.x, topEdgeY(b)-4]);
