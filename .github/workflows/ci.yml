@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, dev, feat/** ]
+  pull_request:
+    branches: [ main, dev ]
+
+jobs:
+  build-test-plan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+
+      - name: Unit tests
+        run: pytest --maxfail=1 --disable-warnings -q
+
+      - name: Planner gating (strict)
+        env:
+          AE_RUNTIME_BACKEND: stub
+        run: |
+          chmod +x tools/plan_ci.sh
+          tools/plan_ci.sh
+
