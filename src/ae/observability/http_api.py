@@ -890,6 +890,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 <span><svg width=\"14\" height=\"14\"><circle cx=\"7\" cy=\"7\" r=\"5\" fill=\"#dcfce7\" stroke=\"#16a34a\"/></svg> Pod ready</span>
                 <span><svg width=\"14\" height=\"14\"><circle cx=\"7\" cy=\"7\" r=\"5\" fill=\"#fef3c7\" stroke=\"#f59e0b\"/></svg> Pod pending</span>
                 <span><svg width=\"30\" height=\"8\"><path d=\"M1 4 L22 4\" stroke=\"#9ca3af\" stroke-width=\"1.5\" stroke-dasharray=\"6 6\"/><polygon points=\"22,1 29,4 22,7\" fill=\"#9ca3af\"/></svg> Flow</span>
+                <span><button id=\"graph-path-toggle\" style=\"font-size:12px; padding:4px 8px; border:1px solid #4b5563; border-radius:6px; background:#111827; color:#e5e7eb; cursor:pointer;\">Paths: Orth</button></span>
               </div>
             </div>
             <div id=\"graph-hover\" class=\"hover-card\"></div>
@@ -938,6 +939,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       var lastSystem = null;
       var lastStatuses = [];
       var graphHover = null;
+      var graphPathMode = (localStorage.getItem('graph_path_mode') || 'orth'); // 'orth' or 'straight'
 
       pauseBtn.addEventListener('click', function () {
         pauseLogs = !pauseLogs;
@@ -1126,6 +1128,25 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         try { drawSystemGraph(lastSystem, lastStatuses); } catch(e){ console.error('graph', e); }
       }
 
+      // Legend toggle for path mode
+      (function(){
+        function setLabel(){
+          var b = document.getElementById('graph-path-toggle');
+          if (!b) return;
+          b.textContent = 'Paths: ' + (graphPathMode==='orth' ? 'Orth' : 'Straight');
+        }
+        var btn = document.getElementById('graph-path-toggle');
+        if (btn){
+          setLabel();
+          btn.addEventListener('click', function(){
+            graphPathMode = (graphPathMode==='orth' ? 'straight' : 'orth');
+            try { localStorage.setItem('graph_path_mode', graphPathMode); } catch(e){}
+            setLabel();
+            renderGraphIfReady();
+          });
+        }
+      })();
+
       function drawSystemGraph(sys, statuses){
         var svg = document.getElementById('sys-graph');
         if(!svg) return;
@@ -1225,6 +1246,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var jitter = ((dstCounts[dst] % 5) - 2) * 2; // -4..+4 px
 
           var points = [];
+          if (graphPathMode === 'straight'){
+            points = [[a.x, a.y], [b.x, b.y]];
+          } else {
           // Select routing strategy by pair types
           if (a.id==='ingress' && b.type==='app'){
             var laneBase = (b.y - nodeH/2 - lanePad);
@@ -1279,10 +1303,46 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             points.push([b.x, midY]);
             points.push([b.x, ty2]);
           }
-          // Build path
+          }
+          // Build path (rounded corners for orth mode)
           var d = '';
-          for (var i=0;i<points.length;i++){
-            d += (i===0 ? 'M ' : ' L ') + points[i][0] + ' ' + points[i][1];
+          if (graphPathMode === 'straight'){
+            for (var i=0;i<points.length;i++){
+              d += (i===0 ? 'M ' : ' L ') + points[i][0] + ' ' + points[i][1];
+            }
+          } else {
+            var r = 8; // corner radius
+            if (points.length > 0){ d = 'M ' + points[0][0] + ' ' + points[0][1]; }
+            for (var i=1;i<points.length;i++){
+              var prev = points[i-1];
+              var curr = points[i];
+              var next = (i+1<points.length) ? points[i+1] : null;
+              if (!next){
+                d += ' L ' + curr[0] + ' ' + curr[1];
+                break;
+              }
+              var v1x = curr[0]-prev[0], v1y = curr[1]-prev[1];
+              var v2x = next[0]-curr[0], v2y = next[1]-curr[1];
+              var len1 = Math.max(1, Math.abs(v1x)+Math.abs(v1y));
+              var len2 = Math.max(1, Math.abs(v2x)+Math.abs(v2y));
+              // If colinear, keep straight
+              var colinear = (v1x===0 && v2x===0) || (v1y===0 && v2y===0);
+              if (colinear){ d += ' L ' + curr[0] + ' ' + curr[1]; continue; }
+              var r1 = Math.min(r, Math.floor((Math.abs(v1x)+Math.abs(v1y))/2));
+              var r2 = Math.min(r, Math.floor((Math.abs(v2x)+Math.abs(v2y))/2));
+              var rin = Math.min(r1, r2);
+              // Offset along v1 to approach corner
+              var u1x = v1x===0 ? 0 : (v1x>0?1:-1);
+              var u1y = v1y===0 ? 0 : (v1y>0?1:-1);
+              var pInX = curr[0] - u1x * rin;
+              var pInY = curr[1] - u1y * rin;
+              // Offset along v2 to exit corner
+              var u2x = v2x===0 ? 0 : (v2x>0?1:-1);
+              var u2y = v2y===0 ? 0 : (v2y>0?1:-1);
+              var pOutX = curr[0] + u2x * rin;
+              var pOutY = curr[1] + u2y * rin;
+              d += ' L ' + pInX + ' ' + pInY + ' Q ' + curr[0] + ' ' + curr[1] + ' ' + pOutX + ' ' + pOutY;
+            }
           }
           var p = document.createElementNS('http://www.w3.org/2000/svg','path');
           p.setAttribute('d', d);
