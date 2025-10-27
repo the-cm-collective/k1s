@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import os
 
-from ae.controller.health import HealthManager, HealthReport
+from ae.controller.health import HealthManager, HealthReport, ReplicaHealth
 from ae.controller.spec import AppManifest, VolumeSpec, load_manifest
 from ae.runtime import RuntimeAdapter, RuntimeResult
 
@@ -96,6 +96,51 @@ class Reconciler:
         strategy = str(rollout.get("strategy", "parallel")).lower()
         max_surge = int(rollout.get("maxSurge", 1))
         max_unavail = int(rollout.get("maxUnavailable", 0))
+
+        # Pause: record snapshot with current status and skip runtime/ingress changes
+        if bool(rollout.get("pause", False)):
+            # Build a health report from last known status (if any)
+            prev = self._state_store.get_status(manifest.metadata.name)
+            replicas = self._state_store.list_replicas(manifest.metadata.name)
+            hr = HealthReport(
+                ready_replicas=prev.ready_replicas if prev else 0,
+                live_replicas=prev.live_replicas if prev else 0,
+                replicas=[
+                    ReplicaHealth(
+                        replica_id=r.replica_id,
+                        ready=r.ready,
+                        live=r.live,
+                        readiness_message=r.readiness_message,
+                        liveness_message=r.liveness_message,
+                    )
+                    for r in replicas
+                ],
+            )
+            result = RuntimeResult(revision=revision, created=0, updated=0, removed=0, replica_states=[])
+            revision_status = "paused"
+            self._state_store.record_snapshot(
+                manifest=manifest_for_runtime,
+                runtime_result=result,
+                health_report=hr,
+                revision=revision,
+                revision_status=revision_status,
+            )
+            self._state_store.record_event(
+                manifest.metadata.name,
+                revision,
+                "RolloutPaused",
+                "Rollout paused by manifest; runtime unchanged",
+            )
+            return ReconcileReport(
+                app_name=manifest.metadata.name,
+                created=0,
+                updated=0,
+                removed=0,
+                ready_replicas=hr.ready_replicas,
+                live_replicas=hr.live_replicas,
+                revision=revision,
+                revision_status=revision_status,
+            )
 
         limit_create = 1 if strategy == "ordered" else None
         # Keep old replicas during rollout to respect surge/unavailable; we'll remove them after readiness check

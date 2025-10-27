@@ -14,6 +14,16 @@ Got it — here’s a pragmatic path to a “minimal app engine” that runs wel
 
 # Milestones (build order)
 
+# Progress Log (2025-10-27)
+
+* [x] Phase 3 – K8s export + checks: Added `ae export-k8s` to render Deployment/Service/Ingress YAML mapped from the App manifest, and `ae k8s-check` to run the portability checklist (warnings by default, `--strict` to fail).
+* [x] Phase 5 – Policy + rollout safety: Exporter now supports optional PodDisruptionBudget, HorizontalPodAutoscaler (CPU target), PVC emission from `spec.storage`, ConfigMap/Secret emission and env wiring, ServiceAccount attach, and conservative default securityContext via flags.
+* [x] Phase 6 – Operational polish: `export-k8s` presets (`web-basic`, `web-hardened`, `scale-ready`), offline YAML validation (`--validate`), and tests.
+* [x] Phase 7 – Conformance + Ingress polish: Multi-path Ingress and optional `tlsSecretName` in exporter; CI Kind workflow with server-side dry-run on exported samples (`.github/workflows/k8s-conformance.yaml`).
+* [x] Phase 8 – Drift guard + richer checks: CI adds kubeconform schema validation for exported YAMLs; `k8s-check` warns about HPA prerequisites (CPU requests) and recommends PDB defaults for multi-replica apps. Exporter supports HPA memory target and configurable PDB minAvailable.
+* [x] Phase 9 – Rollout controls + API tokens: Added `rollout pause|resume` commands and `rollout.pause` support in manifests (controller records paused status without changing runtime); Caddy ingress supports multi-path and canary weighting via rollout.strategy=canary, rollout.weight. `ae api tokens --generate` prints bearer tokens/env for HTTP API.
+* [x] Phase 10 – BYO TLS + strict checks: Caddy ingress accepts BYO cert/key via `spec.ingress.tlsCertPath` and `tlsKeyPath` (falls back to `tls internal` when unset). `k8s-check` supports `--policy strict` to escalate key warnings (readiness probe, requests, PDB) to errors.
+
 # Progress Log (2025-10-23)
 
 * [x] Phase 0 – Environment & scaffolding complete: Python package layout (`src/ae/...`), tooling (`pytest`, `ruff`, `mypy`, pre-commit), bootstrap script, and dev assets committed.
@@ -26,15 +36,27 @@ Got it — here’s a pragmatic path to a “minimal app engine” that runs wel
 
 ---
 
-## Known Gaps (not implemented yet)
+## Known Gaps (current)
 
-- HTTP API writes: read-only API (metrics/status/events) only; no mutate endpoints.
-- Advanced probes: only HTTP-get; no TCP/exec probes, no per-probe backoff limits.
-- Resources/volumes: initial limits and bind mounts only; no requests enforcement or cgroups beyond Docker flags.
-- Rollout options: only rolling-replace with implicit surge=1; no pause/resume or canary.
-- Ingress extras: no TLS options beyond Caddy defaults; no multi-path or headers.
-- Auth ergonomics: no helper to fetch short-lived registry tokens.
-- Multi-node: intentionally out of scope.
+- HTTP API writes: API is read-only (metrics/status/events); no mutate endpoints (apply/delete/scale) yet.
+- Probe backoff/rate limits: HTTP/TCP/exec probes exist, but no per-probe backoff/rate limiting windows.
+- Requests enforcement: controller honors `limits`; `requests` used for checks only (no cgroups requests). HPA relies on user-provided `resources.requests.cpu`.
+- Rollout options: only rolling-replace with implicit surge=1; no pause/resume, canary, or maxUnavailable/maxSurge controls.
+- Ingress writer parity: K8s export supports multi-path and optional `tlsSecretName`; Caddy writer remains single-path and does not consume a TLS secret mapping.
+- Auth ergonomics: no helper to mint/refresh short‑lived registry tokens; manual config only.
+- Multi-node: intentionally out of scope for this project.
+
+---
+
+## Last‑Mile Checklist
+
+- Controller canary promotion: move from in‑memory ingress weighting to a controller timer/state (DB) with step schedules and completion events.
+- Ingress TLS parity: optional mapping from `tlsSecretName` (K8s) to local cert/key mounting for Caddy, or a tiny sync helper.
+- Requests strictness: CI runs `k8s-check --policy strict` for samples; consider stricter defaults or gate HPA export when CPU requests are missing.
+- Rollout options: add `maxUnavailable`/`maxSurge` validation and expose `--pdb-max-unavailable` alongside `--pdb-min-available` with exclusivity checks.
+- HPA targets: support `AverageValue` for memory (MiB) in exporter; add validation.
+- API tokens: add rotation/expiry helper and short how‑to in docs.
+- CI matrix: run conformance on Kind and a k3s job, and run `k8s-check --policy strict` on sample manifests.
 
 ## Next Steps (near-term plan)
 
@@ -476,6 +498,79 @@ If you ship only the items below, using **stable** API groups/versions, you’re
 * ServiceAccount (+ minimal RBAC if the app calls the API).
 * ConfigMap / Secret for configuration.
 * Deployment (`apps/v1`) or StatefulSet if you truly need stable identities.
+
+---
+
+## K8s Export Coverage (current)
+
+This section summarizes what our exporter (`ae cli export-k8s`) can generate today from an App manifest, the key fields supported, and notable gaps. The intent is to keep a concise, testable checklist tied to code under `src/ae/k8s/` and the examples under `specs/examples/`.
+
+Supported resources (stable APIs only)
+- Deployment (`apps/v1`): always emitted.
+- Service (`v1`): emitted when container `spec.ports` are present.
+- Ingress (`networking.k8s.io/v1`): emitted when `spec.ingress` exists; supports multi-path and optional TLS secret name.
+- ConfigMap (`v1`): optional via `--emit-configs`; can inline YAML/JSON with `--inline-configs`.
+- Secret (`v1` type Opaque): optional via `--emit-secrets`; can inline YAML/JSON with `--inline-secrets` (dev only; prefer SOPS in practice).
+- PersistentVolumeClaim (`v1`): optional via `--emit-storage` from `spec.storage[*]` with `--default-pvc-size` fallback.
+- ServiceAccount (`v1`): optional via `--service-account <name>` and mounts on Pod.
+- PodDisruptionBudget (`policy/v1`): optional via `--emit-pdb` with `--pdb-min-available` or `--pdb-max-unavailable` (mutually exclusive); only when replicas > 1.
+- HorizontalPodAutoscaler (`autoscaling/v2`): optional when `--hpa-min`, `--hpa-max` and at least one target is specified: `--hpa-cpu-target`, `--hpa-mem-target`, or `--hpa-mem-type value --hpa-mem-value 200Mi`.
+
+Deployment mapping (from App → Pod/Container)
+- Image, command, env list (literal pairs) → container fields.
+- `configRefs[*].env` → `env.valueFrom.configMapKeyRef` per key.
+- `secretRefs[*].env` → `env.valueFrom.secretKeyRef` per key.
+- Ports → `container.ports[*].containerPort` (names preserved).
+- Resources → `resources.requests/limits` for `cpu` and `memory` string quantities.
+- Security → `securityContext` fields (`runAsUser`, `runAsGroup`, `readOnlyRootFilesystem`, `capabilities.drop`).
+- Default security hardening → `--default-security` applies: `runAsNonRoot: true`, `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]` when no explicit `security` is present.
+- Probes → readiness/liveness translate HTTP/TCP/exec and thresholds/delays.
+- ServiceAccount → `spec.template.spec.serviceAccountName`.
+- Storage → with `--emit-storage`, PVCs are generated and mounted at each `storage[*].mountPath`.
+
+Service mapping
+- `spec.service.port` overrides Service `spec.ports[0].port` (default 80); `targetPort` defaults to first container port or `spec.service.targetPort` if set.
+
+Ingress mapping
+- Host and one-or-many paths from `spec.ingress.host` + `spec.ingress.paths` (or single `path`) with `pathType: Prefix`.
+- `--ingress-class` sets `spec.ingressClassName`.
+- TLS: if `spec.ingress.tls` is truthy, exporter emits `spec.tls[0].hosts` and uses `spec.ingress.tlsSecretName` for `secretName` when provided.
+
+Policy and scaling
+- PDB: emitted only when replicas > 1; flags enforce exclusivity between minAvailable/maxUnavailable.
+- HPA: CPU `Utilization` percent, Memory `Utilization` percent, or Memory `AverageValue` with a quantity like `200Mi`.
+
+Validation and presets
+- Offline structure checks via `--validate` (see `src/ae/k8s/validate.py`).
+- Presets fill common flags without clobbering explicit options:
+  - `web-basic`: `--default-security`, Service port 80.
+  - `web-hardened`: adds PDB, HPA(2→4 @70% CPU), `--emit-configs`, `--service-account app-sa`.
+  - `scale-ready`: PDB, HPA(2→10 @70% CPU).
+
+CLI examples (see also docs/runbook.md)
+- Single-app hardened export with validation:
+  - `python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --preset web-hardened --ingress-class traefik --service-port 80 --validate -o specs/examples/echo-k8s.yaml`
+- Multi-replica hardened export:
+  - `python -m ae.cli export-k8s -f specs/examples/multi-replica-echo.yaml --namespace demo --preset web-hardened --ingress-class traefik --service-port 80 --validate -o specs/examples/multi-replica-echo-k8s.yaml`
+
+Portability checks (`ae cli k8s-check`)
+- Baseline checklist flags common pitfalls: missing probes, missing `resources.requests`, ingress with no ports, multi-replica without PDB, single-replica with canary rollout, and hostPath RW mounts.
+- `--policy strict` escalates key warnings to errors (readiness probe, requests, PDB).
+- HPA pre-reqs: `--assume-hpa cpu-util|mem-util|mem-value=200Mi` validates resource requests or quantity formats.
+
+Notable gaps (K8s parity)
+- StatefulSet export (stable identities) — not implemented.
+- NetworkPolicy emission — not implemented; assume cluster defaults.
+- Advanced Ingress features (canary annotations per controller) — out of scope for exporter.
+- Secrets: exporter can inline plaintext data for demos; production path remains SOPS-managed secrets applied by controller.
+
+Tests and CI
+- Unit tests cover exporter, checker, and validator under `tests/unit/`.
+- CI workflow `.github/workflows/k8s-conformance.yaml` spins up Kind and k3s (via k3d) to dry-run apply exported samples and validates with kubeconform; it also runs `k8s-check --policy strict` on representative manifests.
+
+See also
+- Source: `src/ae/k8s/exporter.py`, `src/ae/k8s/check.py`, `src/ae/k8s/validate.py`, `src/ae/k8s/presets.py`.
+- Examples: `specs/examples/*k8s*.yaml` and `specs/examples/echo.yaml`, `multi-replica-echo.yaml`, `echo-hpa.yaml`.
 * Service (ClusterIP).
 * (Optional) Ingress (`networking.k8s.io/v1`) with **basic** rules only.
 
@@ -679,8 +774,8 @@ If you deploy on clusters with NGINX elsewhere, ship a tiny overlay patch that s
 * [ ] No controller/cloud-specific annotations in the base manifests.
 * [ ] No reliance on NetworkPolicy enforcement.
 * [ ] Non-root, least-privilege `securityContext`.
-* [ ] Probes set; graceful shutdown implemented.
-* [ ] CPU/Memory requests defined.
+* [ ] Probes set (readiness+liveness); graceful shutdown implemented.
+* [ ] CPU/Memory requests defined (CPU requests required for HPA utilization targets).
 * [ ] PVCs (if any) are generic and RWO.
 * [ ] Images available for amd64/arm64.
 
@@ -692,3 +787,54 @@ If you deploy on clusters with NGINX elsewhere, ship a tiny overlay patch that s
 
 If you want, I can take one of your existing app manifests and “shrink-wrap” it to this baseline, then provide tiny overlays for NGINX/Traefik or for clusters that do offer a real LoadBalancer.
 
+See also:
+- Operations Runbook: `docs/runbook.md`
+- Ingress Guide: `docs/ingress.md`
+
+---
+
+# Conformance Automation
+
+- Offline validation: `python -m ae.cli export-k8s -f <spec> --preset web-hardened --validate`.
+- CI dry-run apply: `.github/workflows/k8s-conformance.yaml` runs server-side `kubectl apply --dry-run=server` on exported samples in a Kind cluster.
+- Schema guard: the same workflow validates YAML with `kubeconform -strict`.
+- k3s matrix: CI also runs a k3s conformance job (k3d) to server‑dry‑run the exported samples. See `.github/workflows/k8s-conformance.yaml`.
+
+---
+
+# Canary Rollout
+
+- Static weighting: set `spec.rollout.strategy: canary` and `spec.rollout.weight: <int>` to bias first upstream in Caddy.
+- Auto progression: optionally configure `spec.rollout.auto`:
+
+  ```yaml
+  spec:
+    rollout:
+      strategy: canary
+      weight: 1           # initial bias
+      auto:
+        start: 1          # starting weight
+        step: 2           # weight increment per interval
+        intervalSeconds: 60
+        max: 10           # cap weight
+  ```
+
+  Notes: auto-progression is controller-local and in-memory; it updates on reconcile calls. For single-replica apps, canary has no effect.
+
+---
+
+# BYO TLS (Caddy)
+
+- Provide `spec.ingress.tlsCertPath` and `spec.ingress.tlsKeyPath` to use file-based certificates for the host.
+- If unset, the dev default `tls internal` is used.
+
+---
+
+# Exporter Presets and Flags (quick reference)
+
+- Presets: `--preset web-basic | web-hardened | scale-ready` (explicit flags override preset defaults).
+- Validation: `--validate` performs offline structural checks.
+- Ingress: supports `spec.ingress.paths[]`, `spec.ingress.tlsSecretName`, and `--ingress-class`.
+- PDB: `--emit-pdb` plus optional `--pdb-min-available N`.
+- HPA: `--hpa-min N --hpa-max M --hpa-cpu-target PCT [--hpa-mem-target PCT]` (requires CPU requests in spec).
+- Security: `--default-security` applies conservative container securityContext defaults when none provided.

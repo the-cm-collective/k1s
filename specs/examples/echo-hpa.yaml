@@ -1,0 +1,24 @@
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: echo-hpa
+spec:
+  image: demo-blue:latest
+  replicas: 2
+  ports:
+    - name: http
+      containerPort: 8080
+  health:
+    readiness:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 2
+      periodSeconds: 5
+  resources:
+    requests:
+      cpu: 0.1
+      memory: 128Mi
+    limits:
+      cpu: 0.5
+      memory: 256Mi

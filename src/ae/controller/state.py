@@ -191,6 +191,18 @@ class SQLiteStateStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS rollout_canary (
+                    app_name TEXT PRIMARY KEY,
+                    weight REAL NOT NULL,
+                    next_step_at TEXT NOT NULL,
+                    step REAL NOT NULL,
+                    max REAL NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -581,6 +593,42 @@ class SQLiteStateStore:
                 )
             )
         return events, total
+
+    # --- Canary rollout state ----------------------------------------------
+
+    def get_canary_state(self, app_name: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT weight, next_step_at, step, max, updated_at
+                FROM rollout_canary WHERE app_name = ?
+                """,
+                (app_name,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "weight": float(row[0]),
+            "next_step_at": str(row[1]),
+            "step": float(row[2]),
+            "max": float(row[3]),
+            "updated_at": str(row[4]),
+        }
+
+    def upsert_canary_state(
+        self, app_name: str, *, weight: float, next_step_at: str, step: float, max_weight: float
+    ) -> None:
+        updated_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO rollout_canary(app_name, weight, next_step_at, step, max, updated_at)
+                VALUES(?,?,?,?,?,?)
+                ON CONFLICT(app_name) DO UPDATE SET weight=excluded.weight, next_step_at=excluded.next_step_at, step=excluded.step, max=excluded.max, updated_at=excluded.updated_at
+                """,
+                (app_name, float(weight), next_step_at, float(step), float(max_weight), updated_at),
+            )
+            conn.commit()
 
     # --- Admin / maintenance helpers ---
     def delete_app_state(self, app_name: str, *, purge_history: bool = False) -> None:

@@ -91,5 +91,6 @@ flowchart LR
 ## Further Reading
 
 - Runbook: `docs/runbook.md`
+- End-to-End Guide: `docs/e2e.md`
 - HTTP API: `docs/http-api.md`
 - Architecture (detailed): `docs/architecture.md`

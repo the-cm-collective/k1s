@@ -25,6 +25,10 @@ from ae.secrets import SecretManager
 from ae.config.manager import ConfigManager
 from ae import __version__ as AE_VERSION
 from ae import build_info as AE_BUILD_INFO
+from ae.k8s.exporter import ExportOptions, export_k8s_yaml
+from ae.k8s.check import k8s_portability_issues
+from ae.k8s.presets import apply_preset
+from ae.k8s.validate import validate_documents
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -171,6 +175,75 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--strict", action="store_true", help="Treat warnings as errors")
     plan.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
+    # export-k8s (render Kubernetes YAML)
+    xk = subparsers.add_parser("export-k8s", help="Export a manifest to Kubernetes YAML")
+    xk.add_argument("-f", "--file", type=Path, required=True)
+    xk.add_argument("--namespace", default="default", help="K8s namespace (default: default)")
+    xk.add_argument("--ingress-class", default=None, help="Ingress class name (e.g., traefik or nginx)")
+    xk.add_argument("--service-port", type=int, default=None, help="Override Service port (default: 80)")
+    xk.add_argument("--output", "-o", type=Path, default=None, help="Write output to file path")
+    xk.add_argument("--emit-configs", action="store_true", help="Emit ConfigMap resources for configRefs")
+    xk.add_argument("--inline-configs", action="store_true", help="Inline config file data into ConfigMaps (YAML/JSON)")
+    xk.add_argument("--emit-secrets", action="store_true", help="Emit Secret resources for secretRefs (no data by default)")
+    xk.add_argument("--inline-secrets", action="store_true", help="Inline secret data from plaintext YAML/JSON (use with caution)")
+    xk.add_argument("--emit-storage", action="store_true", help="Emit PVCs from spec.storage and mount them")
+    xk.add_argument("--default-pvc-size", default="1Gi", help="Default PVC size when storage.size is not set")
+    xk.add_argument("--service-account", default=None, help="Attach ServiceAccount and emit it by this name")
+    xk.add_argument("--emit-pdb", action="store_true", help="Emit a PodDisruptionBudget when replicas > 1")
+    xk.add_argument("--pdb-min-available", type=int, default=None, help="PDB minAvailable value (default: 1)")
+    xk.add_argument("--pdb-max-unavailable", type=int, default=None, help="PDB maxUnavailable value (mutually exclusive with minAvailable)")
+    xk.add_argument("--hpa-min", type=int, default=None, help="HPA min replicas (enables HPA with --hpa-max and --hpa-cpu-target)")
+    xk.add_argument("--hpa-max", type=int, default=None, help="HPA max replicas")
+    xk.add_argument("--hpa-cpu-target", type=int, default=None, help="HPA CPU averageUtilization target percent (e.g., 70)")
+    xk.add_argument("--hpa-mem-target", type=int, default=None, help="HPA memory averageUtilization target percent")
+    xk.add_argument("--hpa-mem-type", choices=["utilization", "value"], default=None, help="Memory HPA target type: utilization (percent) or value (e.g., 200Mi)")
+    xk.add_argument("--hpa-mem-value", default=None, help="Memory HPA AverageValue quantity (e.g., 200Mi) when --hpa-mem-type=value")
+    xk.add_argument("--default-security", action="store_true", help="Apply conservative securityContext defaults when none provided")
+    xk.add_argument("--preset", choices=["web-basic", "web-hardened", "scale-ready"], default=None, help="Apply a preset of common flags")
+    xk.add_argument("--validate", action="store_true", help="Validate generated YAML structure (offline checks)")
+
+    # k8s-check (run FEAT checklist against manifest)
+    kc = subparsers.add_parser("k8s-check", help="Run K8s portability checklist against a manifest")
+    kc.add_argument("-f", "--file", type=Path, required=True)
+    kc.add_argument("--strict", action="store_true", help="Treat warnings as errors (deprecated; use --policy strict)")
+    kc.add_argument("--policy", choices=["baseline", "strict"], default="baseline", help="Validation policy (strict escalates key warnings to errors)")
+    kc.add_argument("--json", action="store_true", help="Emit JSON output")
+    kc.add_argument(
+        "--assume-hpa",
+        action="append",
+        default=[],
+        help="Assume HPA metrics when validating: cpu-util | mem-util | mem-value=<quantity> (repeatable)",
+    )
+
+    # rollout pause/resume
+    rollout_cmd = subparsers.add_parser("rollout", help="Control rollout behavior (pause/resume)")
+    rollout_sub = rollout_cmd.add_subparsers(dest="rollout_cmd", required=True)
+    r_pause = rollout_sub.add_parser("pause", help="Pause rollout for an app")
+    r_pause.add_argument("name", help="Application name")
+    r_resume = rollout_sub.add_parser("resume", help="Resume rollout for an app")
+    r_resume.add_argument("name", help="Application name")
+
+    # api tokens helper
+    api_cmd = subparsers.add_parser("api", help="HTTP API helpers")
+    api_sub = api_cmd.add_subparsers(dest="api_cmd", required=True)
+    api_tok = api_sub.add_parser("tokens", help="Generate or rotate bearer tokens for roles")
+    api_tok.add_argument("--generate", action="store_true", help="Generate random tokens and print export snippets")
+    api_tok.add_argument("--rotate", action="store_true", help="Rotate tokens (same as --generate)")
+    api_tok.add_argument("--output", "-o", type=Path, default=None, help="Write exports to this file instead of stdout")
+    api_tok.add_argument("--ttl-hours", type=int, default=None, help="Optional hours until expiry; emits AE_API_*_TOKEN_EXPIRES lines (UTC)")
+    api_tok.add_argument("--ttl-admin-hours", type=int, default=None, help="Override admin token expiry hours")
+    api_tok.add_argument("--ttl-scaler-hours", type=int, default=None, help="Override scaler token expiry hours")
+    api_tok.add_argument("--ttl-read-hours", type=int, default=None, help="Override read token expiry hours")
+    api_tok.add_argument("--state", type=Path, default=None, help="Optional path to write JSON state with tokens and expiries")
+
+    # tls helpers
+    tls_cmd = subparsers.add_parser("tls", help="TLS helpers for ingress")
+    tls_sub = tls_cmd.add_subparsers(dest="tls_cmd", required=True)
+    tls_sync = tls_sub.add_parser("sync", help="Render PEMs from K8s Secret YAML/JSON or use direct files")
+    tls_sync.add_argument("--name", "-n", required=True, help="Secret name (used as file prefix <name>.crt/.key)")
+    tls_sync.add_argument("--input", "-i", type=Path, default=None, help="Path to K8s Secret YAML/JSON (optional)")
+    tls_sync.add_argument("--root", type=Path, default=None, help="TLS root directory (defaults AE_TLS_DIR or state/tls)")
+
     # volumes list
     vols = subparsers.add_parser("volumes", help="Inspect storage volumes")
     vols_sub = vols.add_subparsers(dest="vol_cmd", required=True)
@@ -298,6 +371,12 @@ def main(argv: list[str] | None = None) -> int:
     runtime = runtime_factory(registry_auth=registry_auth)
     health_manager = health_manager_factory()
     ingress_service = ingress_service_factory()
+    # Inject store into ingress service if supported (for canary state persistence)
+    try:
+        if ingress_service is not None:
+            ingress_service._store = store  # type: ignore[attr-defined]
+    except Exception:
+        pass
     secret_manager = secret_manager_factory()
     config_manager = config_manager_factory()
     reconciler = Reconciler(
@@ -315,6 +394,9 @@ def main(argv: list[str] | None = None) -> int:
         "logs": lambda ns: handle_logs(ns, store, runtime),
         "rollback": lambda ns: handle_rollback(ns, store, reconciler),
         "revisions": lambda ns: handle_revisions(ns, store),
+        "rollout": lambda ns: handle_rollout(ns, store, reconciler),
+        "api": handle_api,
+        "tls": handle_tls,
         "registry": lambda ns: handle_registry(ns, registry_auth),
         "metrics": lambda ns: handle_metrics(ns, store),
         "events": lambda ns: handle_events(ns, store, args),
@@ -326,6 +408,8 @@ def main(argv: list[str] | None = None) -> int:
         "secret": lambda ns: handle_secret(ns),
         "volumes": lambda ns: handle_volumes(ns, runtime),
         "plan": lambda ns: handle_plan(ns, runtime),
+        "export-k8s": handle_export_k8s,
+        "k8s-check": handle_k8s_check,
     }
 
     handler = command_handlers.get(args.command)
@@ -772,6 +856,112 @@ def handle_status(
         return 0
     for status in statuses:
         print(format_status(status))
+    return 0
+
+
+def handle_rollout(args: argparse.Namespace, store: SQLiteStateStore, reconciler: Reconciler) -> int:
+    if args.rollout_cmd not in {"pause", "resume"}:
+        print("unsupported rollout command")
+        return 2
+    app = args.name
+    revs = store.list_revisions(app, limit=1)
+    if not revs:
+        print(f"no revisions recorded for {app}")
+        return 1
+    man = store.get_revision_manifest(app, revs[0].revision)
+    rollout = dict(getattr(man.spec, "rollout", {}) or {})
+    rollout["pause"] = True if args.rollout_cmd == "pause" else False
+    new_spec = man.spec.model_copy(update={"rollout": rollout})
+    updated = man.model_copy(update={"spec": new_spec})
+    report = reconciler.reconcile(updated)
+    print(
+        f"rollout {args.rollout_cmd} {app}: rev={report.revision} status={report.revision_status} ready={report.ready_replicas}/{new_spec.replicas}"
+    )
+    return 0
+
+
+def handle_api(args: argparse.Namespace) -> int:
+    if args.api_cmd == "tokens" and (getattr(args, "generate", False) or getattr(args, "rotate", False)):
+        import secrets
+        from datetime import datetime, timedelta, timezone
+
+        admin = secrets.token_hex(16)
+        scaler = secrets.token_hex(16)
+        reader = secrets.token_hex(16)
+        lines = [
+            "# Add these to your environment (or CI secrets):",
+            f"export AE_API_ADMIN_TOKEN={admin}",
+            f"export AE_API_SCALER_TOKEN={scaler}",
+            f"export AE_API_READ_TOKEN={reader}",
+            "# To enable mutations:",
+            "export AE_API_MUTATIONS=1",
+        ]
+        def _exp(hours):
+            return (datetime.now(timezone.utc) + timedelta(hours=int(hours))).isoformat().replace("+00:00", "Z")
+        ttl = getattr(args, "ttl_hours", None)
+        admin_ttl = getattr(args, "ttl_admin_hours", None) or ttl
+        scaler_ttl = getattr(args, "ttl_scaler_hours", None) or ttl
+        read_ttl = getattr(args, "ttl_read_hours", None) or ttl
+        admin_exp = _exp(admin_ttl) if admin_ttl and admin_ttl > 0 else None
+        scaler_exp = _exp(scaler_ttl) if scaler_ttl and scaler_ttl > 0 else None
+        read_exp = _exp(read_ttl) if read_ttl and read_ttl > 0 else None
+        if admin_exp:
+            lines.append(f"export AE_API_ADMIN_TOKEN_EXPIRES={admin_exp}")
+        if scaler_exp:
+            lines.append(f"export AE_API_SCALER_TOKEN_EXPIRES={scaler_exp}")
+        if read_exp:
+            lines.append(f"export AE_API_READ_TOKEN_EXPIRES={read_exp}")
+        out = "\n".join(lines) + "\n"
+        dest = getattr(args, "output", None)
+        if dest:
+            Path(dest).write_text(out)
+        else:
+            print(out, end="")
+        # Optional JSON state
+        state_path = getattr(args, "state", None)
+        if state_path:
+            import json as _json
+            payload = {
+                "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "admin": {"token": admin, "expires": admin_exp},
+                "scaler": {"token": scaler, "expires": scaler_exp},
+                "read": {"token": reader, "expires": read_exp},
+            }
+            Path(state_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(state_path).write_text(_json.dumps(payload, indent=2))
+        return 0
+    print("unsupported api command")
+    return 2
+
+
+def handle_tls(args: argparse.Namespace) -> int:
+    if args.tls_cmd != "sync":
+        print("unsupported tls command")
+        return 2
+    from ae.ingress.tls_sync import TlsSecretResolver
+    import os
+
+    root = Path(args.root) if args.root else Path(os.getenv("AE_TLS_DIR", "state/tls"))
+    root.mkdir(parents=True, exist_ok=True)
+    name = str(args.name)
+    if getattr(args, "input", None):
+        src: Path = args.input
+        ext = src.suffix.lower().lstrip(".") or "yaml"
+        if ext not in {"yaml", "yml", "json"}:
+            ext = "yaml"
+        dst = root / f"{name}.{ext}"
+        try:
+            dst.write_bytes(src.read_bytes())
+        except Exception as exc:  # noqa: BLE001
+            print(f"failed to copy secret file: {exc}")
+            return 1
+    resolver = TlsSecretResolver(root)
+    resolved = resolver.resolve(name)
+    if not resolved:
+        print("no TLS material found; provide --input or place <name>.crt/.key or <name>.yaml in root")
+        return 2
+    crt, key = resolved
+    print(f"TLS ready: cert={crt} key={key}")
     return 0
     if args.name:
         status = store.get_status(args.name)
@@ -1342,6 +1532,105 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
         print("  - actions: create or reconcile containers; update ingress as needed")
         print("Plan OK.")
         return 0
+
+
+def handle_export_k8s(args: argparse.Namespace) -> int:
+    from ae.controller.spec import load_manifest
+    try:
+        man = load_manifest(args.file)
+    except Exception as exc:  # noqa: BLE001
+        print(f"failed to load manifest: {exc}")
+        return 1
+    # guard mutually exclusive PDB options
+    if getattr(args, "pdb_min_available", None) is not None and getattr(args, "pdb_max_unavailable", None) is not None:
+        print("error: --pdb-min-available and --pdb-max-unavailable are mutually exclusive")
+        return 2
+    opts = ExportOptions(
+        namespace=str(args.namespace or "default"),
+        ingress_class_name=args.ingress_class,
+        service_port=args.service_port,
+        emit_configs=bool(getattr(args, "emit_configs", False)),
+        inline_configs=bool(getattr(args, "inline_configs", False)),
+        emit_secrets=bool(getattr(args, "emit_secrets", False)),
+        inline_secrets=bool(getattr(args, "inline_secrets", False)),
+        emit_storage=bool(getattr(args, "emit_storage", False)),
+        default_pvc_size=str(getattr(args, "default_pvc_size", "1Gi")),
+        service_account_name=getattr(args, "service_account", None),
+        emit_pdb=bool(getattr(args, "emit_pdb", False)),
+        pdb_min_available=getattr(args, "pdb_min_available", None),
+        pdb_max_unavailable=getattr(args, "pdb_max_unavailable", None),
+        hpa_min=getattr(args, "hpa_min", None),
+        hpa_max=getattr(args, "hpa_max", None),
+        hpa_cpu_target=getattr(args, "hpa_cpu_target", None),
+        hpa_mem_target=getattr(args, "hpa_mem_target", None),
+        hpa_mem_type=getattr(args, "hpa_mem_type", None),
+        hpa_mem_value=getattr(args, "hpa_mem_value", None),
+        default_security=bool(getattr(args, "default_security", False)),
+    )
+    # Apply preset last so explicit flags take precedence
+    if getattr(args, "preset", None):
+        opts = apply_preset(opts, args.preset)  # type: ignore[arg-type]
+    out = export_k8s_yaml(manifest=man, options=opts)
+    if getattr(args, "validate", False):
+        ok, errs = validate_documents(out)
+        if not ok:
+            print("validation failed:")
+            for e in errs:
+                print(f"  - {e}")
+            return 2
+    if args.output:
+        try:
+            Path(args.output).write_text(out, encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            print(f"failed to write output: {exc}")
+            return 1
+    else:
+        print(out, end="")
+    return 0
+
+
+def handle_k8s_check(args: argparse.Namespace) -> int:
+    from ae.controller.spec import load_manifest
+    try:
+        man = load_manifest(args.file)
+    except Exception as exc:  # noqa: BLE001
+        print(f"failed to load manifest: {exc}")
+        return 1
+    from ae.k8s.check import apply_policy
+    issues = k8s_portability_issues(man)
+    policy = getattr(args, "policy", "baseline")
+    if getattr(args, "strict", False):
+        policy = "strict"
+    # Extra HPA validations based on assumptions
+    if getattr(args, "assume_hpa", None):
+        from ae.k8s.check import infer_hpa_issues
+
+        issues.extend(infer_hpa_issues(man, list(getattr(args, "assume_hpa", []))))
+    issues = apply_policy(issues, policy)
+    if getattr(args, "json", False):
+        import json as _json
+
+        print(
+            _json.dumps(
+                {
+                    "app": man.metadata.name,
+                    "issues": [issue.__dict__ for issue in issues],
+                    "ok": not issues,
+                },
+                indent=2,
+            )
+        )
+        return 0 if not issues else (2 if any(i.level == "error" for i in issues) or policy == "strict" else 0)
+    # text output
+    if not issues:
+        print("All checks passed.")
+        return 0
+    for it in issues:
+        tag = "ERROR" if it.level == "error" else "WARN "
+        print(f"[{tag}] {it.code}: {it.message}")
+    if any(i.level == "error" for i in issues):
+        return 2
+    return 3 if policy == "strict" else 0
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point

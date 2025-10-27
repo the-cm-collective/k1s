@@ -104,6 +104,7 @@ class HealthManager:
     ) -> ProbeOutcome:
         key = (replica.replica_id, probe_type)
         st = self._state.get(key, {"succ": 0, "fail": 0, "last": None, "effective": default_success, "ts": None})
+        now = datetime.now(timezone.utc)
 
         if probe is None:
             st.update({"succ": 1 if default_success else 0, "fail": 0 if default_success else 1, "last": default_success, "effective": default_success, "ts": datetime.now(timezone.utc)})
@@ -111,7 +112,6 @@ class HealthManager:
             return ProbeOutcome(success=default_success, message=f"{probe_type} default {'ok' if default_success else 'pending'}")
 
         if probe.initial_delay_seconds > 0 and replica.started_at is not None:
-            now = datetime.now(timezone.utc)
             started_at = replica.started_at
             if started_at.tzinfo is None:
                 started_at = started_at.replace(tzinfo=timezone.utc)
@@ -119,6 +119,25 @@ class HealthManager:
             if elapsed < probe.initial_delay_seconds:
                 remaining = int(probe.initial_delay_seconds - elapsed)
                 return ProbeOutcome(False, f"waiting initial delay ({remaining}s)")
+
+        # Period limiting: avoid probing more often than periodSeconds; reuse last decision
+        try:
+            raw_period = int(probe.period_seconds)
+        except Exception:
+            raw_period = 10
+        period = raw_period if raw_period > 0 else 0
+        last_ts = st.get("ts")
+        if last_ts is not None and period > 0:
+            try:
+                # last_ts may be naive; treat as UTC
+                if getattr(last_ts, "tzinfo", None) is None:
+                    last_ts = last_ts.replace(tzinfo=timezone.utc)
+            except Exception:
+                pass
+            age = (now - last_ts).total_seconds()
+            if age < period:
+                # Return cached effective result
+                return ProbeOutcome(bool(st.get("effective", default_success)), f"{probe_type} cached ({int(period-age)}s)")
 
         # Enforce minimal periodSeconds between probe attempts
         now = datetime.now(timezone.utc)

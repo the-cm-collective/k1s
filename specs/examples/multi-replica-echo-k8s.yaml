@@ -1,0 +1,111 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo-mr
+  namespace: demo
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: echo-mr
+  template:
+    metadata:
+      labels:
+        app: echo-mr
+    spec:
+      containers:
+      - name: echo-mr
+        image: demo-blue:latest
+        ports:
+        - name: http
+          containerPort: 8080
+        securityContext:
+          runAsNonRoot: true
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        readinessProbe:
+          initialDelaySeconds: 2
+          timeoutSeconds: 1
+          periodSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+          httpGet:
+            path: /
+            port: 8080
+      terminationGracePeriodSeconds: 10
+      serviceAccountName: app-sa
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-mr
+  namespace: demo
+spec:
+  selector:
+    app: echo-mr
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: echo-mr
+  namespace: demo
+spec:
+  rules:
+  - host: echo-mr.home.arpa
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: echo-mr
+            port:
+              number: 80
+  ingressClassName: traefik
+  tls:
+  - hosts:
+    - echo-mr.home.arpa
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-sa
+  namespace: demo
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: echo-mr-pdb
+  namespace: demo
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: echo-mr
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: echo-mr
+  namespace: demo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: echo-mr
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
