@@ -863,7 +863,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             <svg id=\"sys-graph\" viewBox=\"0 0 1000 420\" preserveAspectRatio=\"xMidYMid meet\" style=\"width:100%; height:100%;\">
               <defs>
                 <marker id=\"arrow\" markerWidth=\"10\" markerHeight=\"10\" refX=\"10\" refY=\"3\" orient=\"auto\">
-                  <path d=\"M0,0 L10,3 L0,6 Z\" fill=\"#6b7280\" />
+                  <path d=\"M0,0 L10,3 L0,6 Z\" fill=\"#9ca3af\" />
                 </marker>
                 <style>
                   .node text { font-size:12px; pointer-events:none; }
@@ -872,7 +872,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                   .node.pod circle { fill:#e5e7eb; stroke:#6b7280; }
                   .node.pod.ready circle { fill:#dcfce7; stroke:#16a34a; }
                   .node.pod.pending circle { fill:#fef3c7; stroke:#f59e0b; }
-                  .link { stroke:#6b7280; stroke-width:1.5; fill:none; marker-end:url(#arrow); }
+                  .link { stroke:#9ca3af; stroke-width:1.5; fill:none; marker-end:url(#arrow); }
                   .flow { stroke-dasharray:6 6; animation: flow 1.6s linear infinite; }
                   .selected rect, .selected circle { stroke-width:2.4 !important; filter: drop-shadow(0 0 2px #60a5fa); }
                   .selected.link { stroke:#2563eb; }
@@ -883,13 +883,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
               <g id=\"links\"></g>
               <g id=\"nodes\"></g>
             </svg>
-            <div id=\"graph-legend\" style=\"position:absolute; right:8px; top:8px; background:rgba(255,255,255,0.78); color:inherit; padding:6px 8px; border-radius:6px; border:1px solid #888; backdrop-filter: blur(2px); font-size:12px;\">
+            <div id=\"graph-legend\" style=\"position:absolute; right:8px; top:8px; background:rgba(17,24,39,0.82); color:#e5e7eb; padding:6px 8px; border-radius:6px; border:1px solid #334155; backdrop-filter: blur(2px); font-size:12px;\">
               <div style=\"display:flex; gap:10px; align-items:center; flex-wrap:wrap;\">
                 <span><svg width=\"14\" height=\"14\"><rect x=\"1\" y=\"1\" width=\"12\" height=\"12\" rx=\"3\" fill=\"#e5e7eb\" stroke=\"#6b7280\"/></svg> System</span>
                 <span><svg width=\"14\" height=\"14\"><rect x=\"1\" y=\"1\" width=\"12\" height=\"12\" rx=\"3\" fill=\"#dbeafe\" stroke=\"#3b82f6\"/></svg> App</span>
                 <span><svg width=\"14\" height=\"14\"><circle cx=\"7\" cy=\"7\" r=\"5\" fill=\"#dcfce7\" stroke=\"#16a34a\"/></svg> Pod ready</span>
                 <span><svg width=\"14\" height=\"14\"><circle cx=\"7\" cy=\"7\" r=\"5\" fill=\"#fef3c7\" stroke=\"#f59e0b\"/></svg> Pod pending</span>
-                <span><svg width=\"30\" height=\"8\"><path d=\"M1 4 L22 4\" stroke=\"#6b7280\" stroke-width=\"1.5\" stroke-dasharray=\"6 6\"/><polygon points=\"22,1 29,4 22,7\" fill=\"#6b7280\"/></svg> Flow</span>
+                <span><svg width=\"30\" height=\"8\"><path d=\"M1 4 L22 4\" stroke=\"#9ca3af\" stroke-width=\"1.5\" stroke-dasharray=\"6 6\"/><polygon points=\"22,1 29,4 22,7\" fill=\"#9ca3af\"/></svg> Flow</span>
               </div>
             </div>
             <div id=\"graph-hover\" class=\"hover-card\"></div>
@@ -1131,10 +1131,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if(!svg) return;
         graphHover = graphHover || document.getElementById('graph-hover');
         if (graphHover) { graphHover.style.display='none'; }
-        var W = svg.clientWidth || 1000;
+        var wrapEl = document.getElementById('graph-wrap');
+        var W = svg.clientWidth || (wrapEl ? wrapEl.clientWidth : 1000) || 1000;
         var H = svg.clientHeight || 420;
         var padX = 40, padY = 30;
-        var topY = 40, midY = 150, appY = 280, podY = 340;
+        var topY = 40, midY = 150;
+        // Node metrics
+        var nodeW = 80, nodeH = 32;
+        var minXGap = 40; // horizontal spacing between app cards
+        var rowGap = 48;  // vertical spacing between app rows
+        var podOffsetY = 60; // pods rendered below their app card
 
         var nodes = [];
         var nodeById = {};
@@ -1147,19 +1153,27 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         addNode('runtime', 'Runtime', 'system', padX + 360, midY);
 
         var apps = (statuses||[]).slice();
-        var cols = Math.max(1, Math.min(apps.length, 5));
-        var gap = (W - padX*2) / Math.max(1, cols);
+        // Calculate columns based on available width and minimum center-to-center gap
+        var minCenterGap = nodeW + minXGap; // 120px default
+        var colsCap = Math.max(1, Math.floor((W - padX*2) / Math.max(1, minCenterGap)));
+        // Reduce the max-per-row by 2 to create more breathing room
+        var cols = Math.max(1, Math.min(apps.length, Math.max(1, colsCap - 2)));
+        var rows = Math.max(1, Math.ceil(apps.length / cols));
+        var gap = (W - padX*2) / Math.max(1, cols); // actual center-to-center gap used
         var byApp = {};
         apps.forEach(function(s){ byApp[s.app_name]=s; });
         apps.forEach(function(s, i){
           var col = i % cols;
+          var row = Math.floor(i / cols);
           var x = padX + gap*col + gap*0.5;
+          var appY = (midY + 90) + row * (nodeH + podOffsetY + rowGap);
           addNode('app:'+s.app_name, s.app_name, 'app', x, appY, {app:s.app_name, ready:s.ready_replicas, desired:s.desired_replicas, rev:s.revision, status:s.revision_status});
           var desired = Math.max(0, Number(s.desired_replicas||0));
           var ready = Math.max(0, Number(s.ready_replicas||0));
           var pods = Math.min(desired, 12);
           for (var k=0;k<pods;k++){
             var px = x - (pods-1)*10/2 + k*10;
+            var podY = appY + podOffsetY;
             var state=(k<ready?'ready':'pending');
             addNode('pod:'+s.app_name+':'+k, state, 'pod', px, podY, {app:s.app_name, podIndex:k, state:state});
           }
@@ -1185,6 +1199,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if(!gNodes||!gLinks) return;
         gNodes.innerHTML = '';
         gLinks.innerHTML = '';
+
+        // Resize the canvas height dynamically to fit all rows
+        var totalHeight = (midY + 90) + (rows-1) * (nodeH + podOffsetY + rowGap) + podOffsetY + padY;
+        if (wrapEl) {
+          wrapEl.style.height = Math.max(420, Math.ceil(totalHeight)) + 'px';
+        }
+        svg.setAttribute('viewBox', '0 0 ' + Math.max(1000, W) + ' ' + Math.max(420, Math.ceil(totalHeight)));
 
         function drawLink(id, src, dst, cls){
           var a = nodeById[src], b = nodeById[dst]; if(!a||!b) return;
