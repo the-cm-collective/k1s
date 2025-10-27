@@ -257,6 +257,39 @@ def md_to_html(md: str) -> str:
 
 def build_one(md_path: Path, out_path: Path) -> None:
     html_body = md_to_html(md_path.read_text(encoding="utf-8"))
+    # Inject K8s compliance status if building parity/compliance pages and a report exists
+    try:
+        if md_path.name in {"K8S_PARITY.md", "k8s-compliance.md"}:
+            status_path = OUT / "k8s_status.json"
+            if status_path.exists():
+                import json
+
+                data = json.loads(status_path.read_text(encoding="utf-8"))
+                score = data.get("overall_score", 0)
+                grade = data.get("grade", "n/a")
+                samples = int(data.get("samples_count", 0))
+                html_body += "\n" + "\n".join(
+                    [
+                        "<hr/>",
+                        "<h2>K8s Compliance Status</h2>",
+                        f"<p><strong>Score:</strong> {score}/100 &nbsp; <strong>Grade:</strong> {grade} &nbsp; <strong>Samples:</strong> {samples}</p>",
+                        "<details><summary>Per-sample details</summary>",
+                        "<ul>",
+                    ]
+                )
+                for r in data.get("results", []):
+                    name = Path(r.get("sample", "")).name
+                    v_ok = "ok" if r.get("validate", {}).get("ok") else "fail"
+                    kc = r.get("kubeconform", {})
+                    kc_str = "skip" if not kc.get("ran") else ("ok" if kc.get("ok") else "fail")
+                    dr = r.get("server_dry_run", {})
+                    dr_str = "skip" if not dr.get("ran") else ("ok" if dr.get("ok") else "fail")
+                    pe = int(r.get("policy_strict", {}).get("errors", 0))
+                    html_body += f"<li>{name}: score={r.get('score')} validate={v_ok} kubeconform={kc_str} dry-run={dr_str} policyErrors={pe}</li>"
+                html_body += "</ul></details>"
+    except Exception:
+        # Non-fatal: keep page renderable if injection fails
+        pass
     title = md_path.stem.replace("-", " ").title()
     out_path.write_text(
         TEMPLATE.format(title=title, body=html_body, api_base=API_BASE), encoding="utf-8"
@@ -280,6 +313,9 @@ def main() -> None:
         "observability.md": "observability.html",
         "examples.md": "examples.html",
         "scheduling.md": "scheduling.html",
+        "e2e.md": "e2e.html",
+        "K8S_PARITY.md": "k8s-parity.html",
+        "k8s-compliance.md": "k8s-compliance.html",
     }
     # index
     index = f"""
@@ -297,6 +333,9 @@ def main() -> None:
   <li><a href="benchmarks.html">Benchmarks</a></li>
   <li><a href="examples.html">Examples</a></li>
   <li><a href="scheduling.html">Scheduling</a></li>
+  <li><a href="e2e.html">End-to-End Guide</a></li>
+  <li><a href="k8s-parity.html">K8s Parity</a></li>
+  <li><a href="k8s-compliance.html">K8s Compliance Status</a></li>
   <li><a href="{API_BASE}/dashboard" target="_blank" rel="noopener">Live Demo Dashboard</a></li>
 </ul>
 """
