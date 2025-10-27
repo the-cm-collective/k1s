@@ -3,6 +3,7 @@
 from .base import ReplicaState, RuntimeAdapter, RuntimeResult
 from .docker_runtime import DockerRuntime
 from .docker_stub import StubRuntime
+from .podman_runtime import PodmanRuntime
 from .registry import RegistryAuthProvider
 
 __all__ = [
@@ -11,5 +12,6 @@ __all__ = [
     "ReplicaState",
     "DockerRuntime",
     "StubRuntime",
+    "PodmanRuntime",
     "RegistryAuthProvider",
 ]
