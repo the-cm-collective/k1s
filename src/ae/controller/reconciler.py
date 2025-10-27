@@ -121,7 +121,7 @@ class Reconciler:
                 "IngressRemoved",
                 "Ingress configuration removed",
             )
-        revision_status = self._calculate_revision_status(manifest, health_report)
+        revision_status = self._calculate_revision_status(manifest, health_report, result)
 
         # Remove old revisions if availability is satisfied
         desired = manifest.spec.replicas
@@ -193,17 +193,29 @@ class Reconciler:
         ).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
 
-    def _calculate_revision_status(self, manifest: AppManifest, report: HealthReport) -> str:
+    def _calculate_revision_status(
+        self, manifest: AppManifest, report: HealthReport, runtime_result: RuntimeResult
+    ) -> str:
         """Classify status with stable, non-flappy semantics.
 
         - ready:       ready_replicas >= desired
-        - progressing: some replicas are live (>0) but readiness not met yet
-        - degraded:    no live replicas
+        - progressing: replicas for this revision exist (even if liveness fails yet),
+                       or runtime reported creates/updates but replicas not observed yet (race)
+        - degraded:    no replicas exist and no recent create/update for this revision
+
+        Rationale: right after scheduling/creation, HTTP liveness probes can fail
+        briefly until the container publishes ports and starts serving. Treating
+        that period as "progressing" avoids misleading degraded states during
+        normal warm-up while still surfacing real outages (no replicas present).
         """
         desired = max(1, int(manifest.spec.replicas))
         if report.ready_replicas >= desired:
             return "ready"
-        if report.live_replicas > 0:
+        # Consider any recorded replica (regardless of liveness) as progressing.
+        if len(report.replicas) > 0:
+            return "progressing"
+        # Race: runtime created/updated containers but list didn't return them yet
+        if (runtime_result.created + runtime_result.updated) > 0:
             return "progressing"
         return "degraded"
 

@@ -37,7 +37,7 @@ Per‑app aggregate status is one of:
 
 - ready: all desired replicas are ready
 - progressing: desired count is live but not yet all ready
-- degraded: fewer than desired live replicas
+- degraded: no replicas present for the current revision
 
 CLI examples:
 
@@ -89,4 +89,3 @@ Read‑only status/metrics/events published at:
 
 - `/metrics`, `/status`, `/status/<app>`, `/events/<app>`
 - `/openapi.json` and a tiny docs page at `/docs`
-
