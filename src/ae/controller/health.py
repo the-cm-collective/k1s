@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from requests import RequestException, get
@@ -41,7 +41,16 @@ class HealthReport:
 
 
 class HealthManager:
-    """Evaluates readiness and liveness based on probe specs."""
+    """Evaluates readiness and liveness based on probe specs with basic windowing.
+
+    Tracks per-replica probe streaks to honor successThreshold/failureThreshold and
+    avoids probing more frequently than periodSeconds by reusing the last decision
+    within the period window. State is in-memory and resets on process restart.
+    """
+
+    def __init__(self) -> None:
+        # (replica_id, probe_type) -> state
+        self._state: dict[tuple[str, str], dict] = {}
 
     def evaluate(self, manifest: AppManifest, result: RuntimeResult) -> HealthReport:
         replicas: list[ReplicaHealth] = []
@@ -88,11 +97,13 @@ class HealthManager:
         default_success: bool,
         probe_type: str,
     ) -> ProbeOutcome:
+        key = (replica.replica_id, probe_type)
+        st = self._state.get(key, {"succ": 0, "fail": 0, "last": None, "effective": default_success, "ts": None})
+
         if probe is None:
-            return ProbeOutcome(
-                success=default_success,
-                message=f"{probe_type} default {'ok' if default_success else 'pending'}",
-            )
+            st.update({"succ": 1 if default_success else 0, "fail": 0 if default_success else 1, "last": default_success, "effective": default_success, "ts": datetime.now(timezone.utc)})
+            self._state[key] = st
+            return ProbeOutcome(success=default_success, message=f"{probe_type} default {'ok' if default_success else 'pending'}")
 
         if probe.initial_delay_seconds > 0 and replica.started_at is not None:
             now = datetime.now(timezone.utc)
@@ -104,13 +115,55 @@ class HealthManager:
                 remaining = int(probe.initial_delay_seconds - elapsed)
                 return ProbeOutcome(False, f"waiting initial delay ({remaining}s)")
 
-        if probe.http_get:
-            return self._evaluate_http_probe(replica, probe.http_get.path, probe, probe_type)
+        # Enforce minimal periodSeconds between probe attempts
+        now = datetime.now(timezone.utc)
+        if st.get("ts") and probe.period_seconds > 0:
+            last_ts = st["ts"]
+            if isinstance(last_ts, datetime):
+                if (now - last_ts).total_seconds() < max(0, int(probe.period_seconds)):
+                    # Reuse last effective decision
+                    return ProbeOutcome(st.get("effective", default_success), f"{probe_type} cached")
 
-        return ProbeOutcome(
-            success=default_success,
-            message=f"{probe_type} no-op {'ok' if default_success else 'pending'}",
-        )
+        if probe.http_get:
+            outcome = self._evaluate_http_probe(replica, probe.http_get.path, probe, probe_type)
+        elif getattr(probe, "tcp_socket", None) is not None:
+            outcome = self._evaluate_tcp_probe(replica, probe.tcp_socket.port, probe, probe_type)  # type: ignore[union-attr]
+        else:
+            outcome = ProbeOutcome(success=default_success, message=f"{probe_type} no-op {'ok' if default_success else 'pending'}")
+
+        # Update streaks and compute effective result using thresholds
+        if outcome.success:
+            st["succ"] = int(st.get("succ", 0)) + 1
+            st["fail"] = 0
+            st["last"] = True
+        else:
+            st["fail"] = int(st.get("fail", 0)) + 1
+            st["succ"] = 0
+            st["last"] = False
+        st["ts"] = now
+
+        # Success requires successThreshold consecutive successes
+        if outcome.success:
+            if st["succ"] >= max(1, int(probe.success_threshold)):
+                st["effective"] = True
+                msg = outcome.message
+            else:
+                st["effective"] = False
+                need = max(1, int(probe.success_threshold))
+                msg = f"{probe_type} waiting successThreshold ({st['succ']}/{need})"
+            self._state[key] = st
+            return ProbeOutcome(st["effective"], msg)
+
+        # Failure requires failureThreshold consecutive fails; otherwise retain previous effective
+        need_fail = max(1, int(probe.failure_threshold))
+        if st["fail"] >= need_fail:
+            st["effective"] = False
+            msg = outcome.message
+        else:
+            # Keep previous effective decision but annotate
+            msg = f"{probe_type} transient fail ({st['fail']}/{need_fail})"
+        self._state[key] = st
+        return ProbeOutcome(bool(st["effective"]), msg)
 
     def _evaluate_http_probe(
         self,
@@ -132,3 +185,24 @@ class HealthManager:
         if 200 <= response.status_code < 300:
             return ProbeOutcome(True, f"{probe_type} http {response.status_code}")
         return ProbeOutcome(False, f"{probe_type} http {response.status_code}")
+
+    def _evaluate_tcp_probe(
+        self,
+        replica: ReplicaState,
+        port: int,
+        probe: ProbeSpec,
+        probe_type: str,
+    ) -> ProbeOutcome:
+        import socket as _sock
+
+        if not replica.endpoint:
+            return ProbeOutcome(False, f"{probe_type} endpoint missing")
+        # Prefer the replica's resolved endpoint; if it includes a host port mapping, use it.
+        host, _, ep_port = str(replica.endpoint).partition(":")
+        target_port = int(ep_port or port)
+        try:
+            timeout = max(probe.timeout_seconds, 1)
+            with _sock.create_connection((host, int(target_port)), timeout=timeout):
+                return ProbeOutcome(True, f"{probe_type} tcp ok")
+        except OSError as exc:
+            return ProbeOutcome(False, f"{probe_type} tcp error: {exc}")

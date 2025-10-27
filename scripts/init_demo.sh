@@ -17,7 +17,7 @@ SUDO=$(require_root_or_sudo)
 
 # Static demo hosts we can safely add to /etc/hosts when requested.
 # Note: echo-storage and echo-stateful do not expose ingress by default.
-HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa api.home.arpa echo.home.arpa echo-mr.home.arpa echo-resources.home.arpa)
+HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa api.home.arpa echo.home.arpa echo-mr.home.arpa echo-resources.home.arpa echo-sec.home.arpa echo-tcp.home.arpa)
 AUTO_HOSTS=""  # set by -y/--yes or -n/--no to auto answer host prompts
 
 usage() {
@@ -37,6 +37,8 @@ Options:
   --demo-configs   Apply the configs/secrets demo (echo) and enable plaintext secrets for local run
   --demo-standard  Apply the standard demo (blue, green)
   --demo-echo-mr   Apply the multi-replica echo demo (echo-mr)
+  --demo-security  Apply security-hardened demo (echo-sec)
+  --demo-tcp       Apply TCP-probe demo (echo-tcp)
   --docs-only      Start docs + API only (no apps)
   --demo-rollout   Apply a two-step ordered rollout for echo
   --demo-storage   Apply a storage (PV-lite) demo for echo and list volumes
@@ -87,6 +89,8 @@ DEBUG_ATTACH=0
 DEMO_CONFIGS=0
 DEMO_STANDARD=0
 DEMO_ECHO_MR=0
+DEMO_SECURITY=0
+DEMO_TCP=0
 DOCS_ONLY=0
 DEMO_ROLLOUT=0
 DEMO_STORAGE=0
@@ -113,6 +117,10 @@ while [[ $# -gt 0 ]]; do
       DEMO_STANDARD=1 ;;
     --demo-echo-mr)
       DEMO_ECHO_MR=1 ;;
+    --demo-security)
+      DEMO_SECURITY=1 ;;
+    --demo-tcp)
+      DEMO_TCP=1 ;;
     --docs-only)
       DOCS_ONLY=1 ;;
     --demo-rollout)
@@ -637,6 +645,18 @@ fi
 if [[ $DEMO_ECHO_MR -eq 1 && $DOCS_ONLY -ne 1 ]]; then
   log "Applying multi-replica echo demo (echo-mr)"
   "$PY_BIN" -m ae.cli apply -f specs/examples/multi-replica-echo.yaml || true
+fi
+
+# Optional security demo
+if [[ $DEMO_SECURITY -eq 1 && $DOCS_ONLY -ne 1 ]]; then
+  log "Applying security-hardened echo demo (echo-sec)"
+  "$PY_BIN" -m ae.cli apply -f specs/examples/echo-sec.yaml || true
+fi
+
+# Optional TCP probe demo
+if [[ $DEMO_TCP -eq 1 && $DOCS_ONLY -ne 1 ]]; then
+  log "Applying TCP-probe echo demo (echo-tcp)"
+  "$PY_BIN" -m ae.cli apply -f specs/examples/echo-tcp.yaml || true
 fi
 
 # Optional rollout demo: apply echo, then echo-rollout
