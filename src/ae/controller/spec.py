@@ -25,11 +25,17 @@ class HTTPGetProbe(BaseModel):
     path: str = Field(default="/")
     port: int
 
+class TCPSocketProbe(BaseModel):
+    """TCP socket probe configuration."""
+
+    port: int
+
 
 class ProbeSpec(BaseModel):
     """Container probe definition."""
 
     http_get: Optional[HTTPGetProbe] = Field(default=None, alias="httpGet")
+    tcp_socket: Optional[TCPSocketProbe] = Field(default=None, alias="tcpSocket")
     initial_delay_seconds: int = Field(default=0, alias="initialDelaySeconds")
     timeout_seconds: int = Field(default=1, alias="timeoutSeconds")
     period_seconds: int = Field(default=10, alias="periodSeconds")
@@ -122,6 +128,17 @@ class ResourcesSpec(BaseModel):
     limits: Optional[ResourceQuantities] = None
 
 
+class SecuritySpec(BaseModel):
+    """Container security context (subset aligned with K8s semantics)."""
+
+    run_as_user: Optional[int] = Field(default=None, alias="runAsUser")
+    run_as_group: Optional[int] = Field(default=None, alias="runAsGroup")
+    read_only_root: bool = Field(default=False, alias="readOnlyRootFilesystem")
+    drop_caps: List[str] = Field(default_factory=list, alias="dropCapabilities")
+
+    model_config = {"populate_by_name": True}
+
+
 class VolumeSpec(BaseModel):
     """HostPath volume mapping."""
 
@@ -205,6 +222,8 @@ class AppSpec(BaseModel):
     secret_refs: List[SecretRef] = Field(default_factory=list, alias="secretRefs")
     config_refs: List[ConfigRef] = Field(default_factory=list, alias="configRefs")
     resources: Optional[ResourcesSpec] = None
+    security: Optional[SecuritySpec] = None
+    termination_grace_period_seconds: int = Field(default=10, alias="terminationGracePeriodSeconds")
     volumes: List[VolumeSpec] = Field(default_factory=list)
     storage: List[StorageSpec] = Field(default_factory=list)
 

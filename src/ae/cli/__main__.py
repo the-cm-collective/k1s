@@ -13,7 +13,14 @@ from ae.controller.state import AppStatus, SQLiteStateStore, RevisionInfo
 from ae.ingress import CaddyIngressManager, IngressService
 from ae.observability import MetricsService
 from ae.observability.logging import configure_logging
-from ae.runtime import DockerRuntime, RegistryAuthProvider, RuntimeAdapter, StubRuntime
+from ae.runtime import (
+    DockerRuntime,
+    PodmanRuntime,
+    RegistryAuthProvider,
+    RuntimeAdapter,
+    StubRuntime,
+)
+import logging, shutil
 from ae.secrets import SecretManager
 from ae.config.manager import ConfigManager
 from ae import __version__ as AE_VERSION
@@ -162,6 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("-f", "--file", type=Path, required=True)
     plan.add_argument("--verbose", action="store_true", help="Show replica placement details")
     plan.add_argument("--strict", action="store_true", help="Treat warnings as errors")
+    plan.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
     # volumes list
     vols = subparsers.add_parser("volumes", help="Inspect storage volumes")
@@ -180,9 +188,21 @@ def state_store_from_env() -> SQLiteStateStore:
 
 
 def runtime_factory(registry_auth: RegistryAuthProvider | None = None) -> RuntimeAdapter:
-    backend = os.getenv("AE_RUNTIME_BACKEND", "docker").lower()
+    # Default to OCI/Podman; fall back to Docker when unavailable
+    backend = os.getenv("AE_RUNTIME_BACKEND", "podman").lower()
     if backend == "stub":
         return StubRuntime()
+    if backend in {"podman", "oci"}:
+        try:
+            # quick availability check
+            if shutil.which(os.getenv("AE_PODMAN_BIN", "podman")) is None:
+                raise RuntimeError("podman not found on PATH")
+            return PodmanRuntime()
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Podman backend requested/unavailable (%s); falling back to Docker", exc
+            )
+            return DockerRuntime(registry_auth=registry_auth)
     return DockerRuntime(registry_auth=registry_auth)
 
 
@@ -201,6 +221,7 @@ def ingress_service_factory() -> IngressService | None:
     config_file_env = os.getenv("AE_CADDY_FILE")
     config_file = Path(config_file_env) if config_file_env else None
     container = os.getenv("AE_CADDY_CONTAINER") or None
+    container_cli = os.getenv("AE_CONTAINER_CLI", "docker")
 
     # Optional reload timeout to avoid hangs if docker exec blocks
     timeout_env = os.getenv("AE_CADDY_RELOAD_TIMEOUT", "10")
@@ -215,6 +236,7 @@ def ingress_service_factory() -> IngressService | None:
         config_file=config_file,
         container=container,
         reload_timeout=reload_timeout,
+        container_cli=container_cli,
     )
     return IngressService(manager)
 
@@ -1191,11 +1213,27 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
         if conflicts:
             print(f"  ! conflict: host port {port} is already published by: {', '.join(conflicts)}")
             print("    Resolve by stopping the conflicting service or changing spec.service.port")
+            if getattr(args, "json", False):
+                import json as _json
+
+                out = {
+                    "app": manifest.metadata.name,
+                    "replicas": desired,
+                    "rollout": strategy,
+                    "service": {"port": port, "targetPort": getattr(svc, "target_port", None)},
+                    "warnings": warnings,
+                    "conflicts": conflicts,
+                    "ok": False,
+                }
+                print(_json.dumps(out, indent=2))
             return 2
         print(f"    OK: host port {port} available")
     else:
         if svc and desired != 1:
             print("  - note: service.port is only applied for single-replica apps in this version")
+            warnings.append(
+                "spec.service defined with replicas>1; stable host port is not applied for multi-replica apps. Use ingress for HTTP or per-replica ports."
+            )
 
     # Affinity warnings
     try:
@@ -1238,14 +1276,50 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
             warnings.append(
                 f"hostPath bind at {getattr(v, 'mount_path', '')} is RW; consider spec.storage PV-lite for persistence"
             )
-    for w in warnings:
-        print(f"  ! warning: {w}")
-    if getattr(args, "strict", False) and warnings:
-        print("  ! Planner strict mode: warnings treated as errors")
-        return 3
-    print("  - actions: create or reconcile containers; update ingress as needed")
-    print("Plan OK.")
-    return 0
+    # Recommend readiness probe
+    health = getattr(manifest.spec, "health", None)
+    if not health or not getattr(health, "readiness", None):
+        warnings.append("no readiness probe configured; add HTTP or TCP probe for smoother rollouts")
+    # Recommend security hardening
+    sec = getattr(manifest.spec, "security", None)
+    if not sec:
+        warnings.append("no security spec; consider runAsUser/runAsGroup and readOnlyRootFilesystem")
+    else:
+        if not getattr(sec, "run_as_user", None):
+            warnings.append("security.runAsUser not set; prefer non-root UID (e.g., 1000)")
+        if not getattr(sec, "read_only_root", False):
+            warnings.append("security.readOnlyRootFilesystem is false; enable if possible")
+    # Guidance for multi-replica without ingress
+    if desired > 1 and not getattr(manifest.spec, "ingress", None):
+        if getattr(manifest.spec, "ports", []):
+            warnings.append(
+                "multi-replica app without ingress: per-replica host ports will be ephemeral; use ingress for HTTP access"
+            )
+    if getattr(args, "json", False):
+        import json as _json
+
+        out = {
+            "app": manifest.metadata.name,
+            "replicas": desired,
+            "rollout": {"strategy": strategy, "maxSurge": rollout.get("maxSurge", 1), "maxUnavailable": rollout.get("maxUnavailable", 0)},
+            "service": (
+                {"port": getattr(svc, "port", None), "targetPort": getattr(svc, "target_port", None)} if svc else None
+            ),
+            "warnings": warnings,
+            "conflicts": [],
+            "ok": not warnings or not getattr(args, "strict", False),
+        }
+        print(_json.dumps(out, indent=2))
+        return 0 if out["ok"] else 3
+    else:
+        for w in warnings:
+            print(f"  ! warning: {w}")
+        if getattr(args, "strict", False) and warnings:
+            print("  ! Planner strict mode: warnings treated as errors")
+            return 3
+        print("  - actions: create or reconcile containers; update ingress as needed")
+        print("Plan OK.")
+        return 0
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
