@@ -368,6 +368,20 @@ class PodmanRuntime(RuntimeAdapter):
                     host = os.path.abspath(host)
                 cmd += ["-v", f"{host}:{v.mount_path}:{mode}"]
 
+        # Security context
+        sec = getattr(manifest.spec, "security", None)
+        if sec is not None:
+            if getattr(sec, "run_as_user", None) is not None:
+                if getattr(sec, "run_as_group", None) is not None:
+                    cmd += ["--user", f"{int(sec.run_as_user)}:{int(sec.run_as_group)}"]
+                else:
+                    cmd += ["--user", str(int(sec.run_as_user))]
+            if bool(getattr(sec, "read_only_root", False)):
+                cmd += ["--read-only"]
+            drops = list(getattr(sec, "drop_caps", []) or [])
+            for cap in drops:
+                cmd += ["--cap-drop", str(cap)]
+
         # Image and command
         cmd += [manifest.spec.image]
         # If unqualified name missing but localhost/<name> exists, use that

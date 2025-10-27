@@ -289,6 +289,22 @@ class DockerRuntime(RuntimeAdapter):
                 "ports": ports if ports else None,
                 "restart_policy": {"Name": "unless-stopped"},
             }
+            # Security context mapping
+            sec = getattr(manifest.spec, "security", None)
+            if sec is not None:
+                user = None
+                if getattr(sec, "run_as_user", None) is not None:
+                    if getattr(sec, "run_as_group", None) is not None:
+                        user = f"{int(sec.run_as_user)}:{int(sec.run_as_group)}"
+                    else:
+                        user = str(int(sec.run_as_user))
+                if user:
+                    kwargs["user"] = user
+                if bool(getattr(sec, "read_only_root", False)):
+                    kwargs["read_only"] = True
+                drops = list(getattr(sec, "drop_caps", []) or [])
+                if drops:
+                    kwargs["cap_drop"] = drops
             if nano_cpus is not None:
                 kwargs["nano_cpus"] = nano_cpus
             if mem_limit is not None:
