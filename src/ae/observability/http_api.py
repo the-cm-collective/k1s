@@ -1207,13 +1207,67 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         }
         svg.setAttribute('viewBox', '0 0 ' + Math.max(1000, W) + ' ' + Math.max(420, Math.ceil(totalHeight)));
 
+        // Orthogonal routing helpers
+        var gutterLeftX = padX + 8;
+        var gutterRightX = W - padX - 8;
+        var lanePad = 12; // horizontal lane above an app row
+
+        // Track counts per destination to slightly offset and reduce overlap
+        var dstCounts = {};
+
+        function topEdgeY(n){ return (n.type==='pod') ? (n.y-5) : (n.y - (n.type==='app' || n.type==='system' ? nodeH/2 : 0)); }
+        function bottomEdgeY(n){ return (n.type==='pod') ? (n.y+5) : (n.y + (n.type==='app' || n.type==='system' ? nodeH/2 : 0)); }
+
         function drawLink(id, src, dst, cls){
           var a = nodeById[src], b = nodeById[dst]; if(!a||!b) return;
-          var d = 'M '+a.x+' '+a.y+' L '+b.x+' '+b.y;
+          // Small per-destination jitter to reduce perfect overlap
+          dstCounts[dst] = (dstCounts[dst]||0) + 1;
+          var jitter = ((dstCounts[dst] % 5) - 2) * 2; // -4..+4 px
+
+          var points = [];
+          // Select routing strategy by pair types
+          if (a.id==='ingress' && b.type==='app'){
+            var laneY = (b.y - nodeH/2 - lanePad) + jitter;
+            points.push([a.x, a.y]);
+            points.push([gutterLeftX, a.y]);
+            points.push([gutterLeftX, laneY]);
+            points.push([b.x, laneY]);
+            points.push([b.x, topEdgeY(b)]);
+          } else if (a.id==='runtime' && b.type==='app'){
+            var laneY2 = (b.y - nodeH/2 - lanePad) + jitter;
+            points.push([a.x, a.y]);
+            points.push([gutterRightX, a.y]);
+            points.push([gutterRightX, laneY2]);
+            points.push([b.x, laneY2]);
+            points.push([b.x, topEdgeY(b)]);
+          } else if (a.type==='app' && b.type==='pod'){
+            // Drop from bottom of app, then short horizontal, then into pod
+            var sy = bottomEdgeY(a);
+            var ey = topEdgeY(b);
+            points.push([a.x, sy]);
+            points.push([a.x, ey]);
+            points.push([b.x, ey]);
+            points.push([b.x, b.y-5]);
+          } else {
+            // Default orthogonal: vertical then horizontal then vertical
+            var sy2 = (b.y > a.y) ? bottomEdgeY(a) : a.y;
+            var ty2 = (b.y > a.y) ? topEdgeY(b) : b.y;
+            points.push([a.x, sy2]);
+            var midY = a.y + (b.y - a.y)/2;
+            points.push([a.x, midY]);
+            points.push([b.x, midY]);
+            points.push([b.x, ty2]);
+          }
+          // Build path
+          var d = '';
+          for (var i=0;i<points.length;i++){
+            d += (i===0 ? 'M ' : ' L ') + points[i][0] + ' ' + points[i][1];
+          }
           var p = document.createElementNS('http://www.w3.org/2000/svg','path');
           p.setAttribute('d', d);
           p.setAttribute('class', 'link '+(cls||''));
           p.setAttribute('stroke-linecap','round');
+          p.setAttribute('fill','none');
           gLinks.appendChild(p);
         }
 
