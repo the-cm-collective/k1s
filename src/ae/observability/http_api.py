@@ -1167,7 +1167,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var row = Math.floor(i / cols);
           var x = padX + gap*col + gap*0.5;
           var appY = (midY + 90) + row * (nodeH + podOffsetY + rowGap);
-          addNode('app:'+s.app_name, s.app_name, 'app', x, appY, {app:s.app_name, ready:s.ready_replicas, desired:s.desired_replicas, rev:s.revision, status:s.revision_status});
+          addNode('app:'+s.app_name, s.app_name, 'app', x, appY, {app:s.app_name, ready:s.ready_replicas, desired:s.desired_replicas, rev:s.revision, status:s.revision_status, row:row, col:col});
           var desired = Math.max(0, Number(s.desired_replicas||0));
           var ready = Math.max(0, Number(s.ready_replicas||0));
           var pods = Math.min(desired, 12);
@@ -1227,18 +1227,39 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var points = [];
           // Select routing strategy by pair types
           if (a.id==='ingress' && b.type==='app'){
-            var laneY = (b.y - nodeH/2 - lanePad) + jitter;
+            var laneBase = (b.y - nodeH/2 - lanePad);
+            // Stagger lanes by column to avoid heavy overlays
+            var colIdx = (b.meta && b.meta.col!=null) ? b.meta.col : 0;
+            var yBand = ((colIdx % 5) - 2) * 6; // -12..+12
+            var laneY = laneBase + yBand + jitter;
+            // Approach between columns on the left side of the target card
+            var leftBound = b.x - gap*0.5 + 12; // inside the gap to the left
+            var approachX = Math.min(b.x - 12, Math.max(gutterLeftX+8, b.x - gap*0.35));
+            if (!isFinite(leftBound) || isNaN(leftBound)) leftBound = b.x - 40;
+            approachX = Math.max(approachX, leftBound);
             points.push([a.x, a.y]);
             points.push([gutterLeftX, a.y]);
             points.push([gutterLeftX, laneY]);
-            points.push([b.x, laneY]);
+            points.push([approachX, laneY]);
+            points.push([approachX, topEdgeY(b)-4]);
+            points.push([b.x, topEdgeY(b)-4]);
             points.push([b.x, topEdgeY(b)]);
           } else if (a.id==='runtime' && b.type==='app'){
-            var laneY2 = (b.y - nodeH/2 - lanePad) + jitter;
+            var laneBase2 = (b.y - nodeH/2 - lanePad);
+            var colIdx2 = (b.meta && b.meta.col!=null) ? b.meta.col : 0;
+            var yBand2 = ((colIdx2 % 5) - 2) * 6;
+            var laneY2 = laneBase2 + yBand2 + jitter;
+            // Approach between columns on the right side of the target card
+            var rightBound = b.x + gap*0.5 - 12;
+            var approachX2 = Math.max(b.x + 12, Math.min(gutterRightX-8, b.x + gap*0.35));
+            if (!isFinite(rightBound) || isNaN(rightBound)) rightBound = b.x + 40;
+            approachX2 = Math.min(approachX2, rightBound);
             points.push([a.x, a.y]);
             points.push([gutterRightX, a.y]);
             points.push([gutterRightX, laneY2]);
-            points.push([b.x, laneY2]);
+            points.push([approachX2, laneY2]);
+            points.push([approachX2, topEdgeY(b)-4]);
+            points.push([b.x, topEdgeY(b)-4]);
             points.push([b.x, topEdgeY(b)]);
           } else if (a.type==='app' && b.type==='pod'){
             // Drop from bottom of app, then short horizontal, then into pod
