@@ -215,6 +215,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Assume HPA metrics when validating: cpu-util | mem-util | mem-value=<quantity> (repeatable)",
     )
 
+    # k8s-report (generate compliance JSON for docs)
+    kr = subparsers.add_parser("k8s-report", help="Generate a Kubernetes compliance report (JSON)")
+    kr.add_argument(
+        "--samples",
+        nargs="+",
+        default=[
+            Path("specs/examples/echo.yaml"),
+            Path("specs/examples/multi-replica-echo.yaml"),
+            Path("specs/examples/echo-hpa.yaml"),
+        ],
+        help="List of App manifests to score (files)",
+    )
+    kr.add_argument("--namespace", default="demo")
+    kr.add_argument("--preset", choices=["web-basic", "web-hardened", "scale-ready"], default="web-hardened")
+    kr.add_argument("--ingress-class", default="traefik")
+    kr.add_argument("--service-port", type=int, default=80)
+    kr.add_argument("--output", "-o", type=Path, default=Path("docs/site/k8s_status.json"))
+    kr.add_argument("--run-dry-run", action="store_true", help="Attempt kubectl server-side dry-run if available")
+    kr.add_argument("--kubectl-bin", default=os.getenv("KUBECTL_BIN", "kubectl"))
+    kr.add_argument("--kubeconform-bin", default=os.getenv("KUBECONFORM_BIN", "kubeconform"))
+
     # rollout pause/resume
     rollout_cmd = subparsers.add_parser("rollout", help="Control rollout behavior (pause/resume)")
     rollout_sub = rollout_cmd.add_subparsers(dest="rollout_cmd", required=True)
@@ -365,6 +386,9 @@ def main(argv: list[str] | None = None) -> int:
     # Fast path for commands that don't need full wiring
     if args.command == "version":
         return handle_version()
+
+    if args.command == "k8s-report":
+        return handle_k8s_report(args)
 
     store = state_store_from_env()
     registry_auth = registry_auth_factory()
@@ -704,6 +728,168 @@ def handle_backup(args: argparse.Namespace) -> int:
 
     print(f"Unsupported backup command: {args.backup_cmd}")
     return 1
+
+
+def handle_k8s_report(args: argparse.Namespace) -> int:
+    from datetime import datetime, timezone
+    import json
+    import shutil
+    import tempfile
+    from ae.controller.spec import load_manifest
+
+    # Build export options (with preset)
+    opts = ExportOptions(
+        namespace=str(args.namespace),
+        ingress_class_name=str(args.ingress_class) if args.ingress_class else None,
+        service_port=int(args.service_port) if args.service_port else None,
+        default_security=True,
+    )
+    opts = apply_preset(opts, args.preset)
+
+    kubeconform_bin = shutil.which(args.kubeconform_bin)
+    kubectl_bin = shutil.which(args.kubectl_bin) if args.run_dry_run else None
+
+    results: list[dict] = []
+    checks_total = 0
+    checks_ran = 0
+    sample_scores: list[float] = []
+
+    for sample in args.samples:
+        path = Path(sample)
+        entry: dict = {"sample": str(path), "exists": path.exists()}
+        if not path.exists():
+            entry["error"] = "file not found"
+            results.append(entry)
+            continue
+
+        try:
+            manifest = load_manifest(path)
+        except Exception as exc:  # noqa: BLE001
+            entry["error"] = f"manifest load failed: {exc}"
+            results.append(entry)
+            continue
+
+        # Export YAML
+        yaml_text = export_k8s_yaml(manifest, options=opts)
+        entry["export_length"] = len(yaml_text)
+
+        # Offline validation
+        valid_ok, errors = validate_documents(yaml_text)
+        entry["validate"] = {"ran": True, "ok": bool(valid_ok), "errors": errors}
+
+        # Policy issues (strict)
+        issues = k8s_portability_issues(manifest)
+        # Reuse apply_policy from check module to escalate in strict mode
+        from ae.k8s.check import apply_policy
+
+        strict = apply_policy(issues, "strict")
+        errs = [i.__dict__ for i in strict if i.level == "error"]
+        warns = [i.__dict__ for i in strict if i.level == "warn"]
+        entry["policy_strict"] = {"ran": True, "errors": len(errs), "warnings": len(warns)}
+
+        # kubeconform (optional)
+        kc_res = {"ran": False, "ok": None, "summary": None}
+        if kubeconform_bin:
+            kc_res["ran"] = True
+            with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
+                tmp.write(yaml_text)
+                tmp.flush()
+                import subprocess as sp
+
+                try:
+                    proc = sp.run([kubeconform_bin, "-strict", "-summary", tmp.name], capture_output=True, text=True, check=False)
+                    kc_res["ok"] = proc.returncode == 0
+                    kc_res["summary"] = proc.stdout.strip() or proc.stderr.strip()
+                except Exception as exc:  # noqa: BLE001
+                    kc_res["ok"] = False
+                    kc_res["summary"] = f"kubeconform failed: {exc}"
+        entry["kubeconform"] = kc_res
+
+        # kubectl server-side dry-run (optional)
+        dr_res = {"ran": False, "ok": None, "output": None}
+        if kubectl_bin:
+            dr_res["ran"] = True
+            with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
+                tmp.write(yaml_text)
+                tmp.flush()
+                import subprocess as sp
+
+                try:
+                    proc = sp.run([kubectl_bin, "apply", "--dry-run=server", "-f", tmp.name, "-n", str(args.namespace)], capture_output=True, text=True, check=False)
+                    dr_res["ok"] = proc.returncode == 0
+                    dr_res["output"] = (proc.stdout or proc.stderr).strip()
+                except Exception as exc:  # noqa: BLE001
+                    dr_res["ok"] = False
+                    dr_res["output"] = f"kubectl dry-run failed: {exc}"
+        entry["server_dry_run"] = dr_res
+
+        # Summarize kinds emitted
+        try:
+            import yaml as _y
+            kinds = []
+            for d in _y.safe_load_all(yaml_text):
+                if isinstance(d, dict):
+                    kinds.append(str(d.get("kind")))
+            entry["kinds"] = kinds
+        except Exception:
+            entry["kinds"] = []
+
+        # Scoring per sample
+        # Weights: validate=25, kubeconform=25, dry_run=30, policy_strict(no errors)=20
+        weights = {"validate": 25, "kubeconform": 25, "server_dry_run": 30, "policy_strict": 20}
+        checks_total += sum(weights.values())
+        ran_weight = 0
+        got = 0
+        if entry["validate"]["ran"]:
+            ran_weight += weights["validate"]
+            if entry["validate"]["ok"]:
+                got += weights["validate"]
+        if entry["kubeconform"]["ran"]:
+            ran_weight += weights["kubeconform"]
+            if bool(entry["kubeconform"]["ok"]):
+                got += weights["kubeconform"]
+        if entry["server_dry_run"]["ran"]:
+            ran_weight += weights["server_dry_run"]
+            if bool(entry["server_dry_run"]["ok"]):
+                got += weights["server_dry_run"]
+        if entry["policy_strict"]["ran"]:
+            ran_weight += weights["policy_strict"]
+            if int(entry["policy_strict"]["errors"]) == 0:
+                got += weights["policy_strict"]
+        # Normalize to 100 for this sample based only on ran checks
+        sample_score = (got / ran_weight * 100.0) if ran_weight else 0.0
+        entry["score"] = round(sample_score, 1)
+        entry["confidence"] = round(ran_weight / sum(weights.values()), 2)
+        checks_ran += ran_weight
+        sample_scores.append(sample_score)
+
+        results.append(entry)
+
+    overall = round(sum(sample_scores) / len(sample_scores), 1) if sample_scores else 0.0
+    # Qualitative grade
+    grade = "failing"
+    if overall >= 90:
+        grade = "excellent"
+    elif overall >= 80:
+        grade = "passing"
+    elif overall >= 70:
+        grade = "needs-attention"
+
+    report = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "samples_count": len(results),
+        "overall_score": overall,
+        "grade": grade,
+        "results": results,
+    }
+
+    # Write JSON for docs server page consumption
+    out: Path = args.output
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(f"wrote report → {out}")
+    print(f"score={overall} grade={grade}")
+    return 0
 
 
 def _http_get_json(base: str, path: str, token: str | None = None):
