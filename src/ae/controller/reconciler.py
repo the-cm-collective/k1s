@@ -50,6 +50,13 @@ class Reconciler:
         self._ingress_service = ingress_service
         self._secret_manager = secret_manager
         self._config_manager = config_manager or ConfigManager()
+        # Inject exec callback for exec probes
+        try:
+            self._health_manager.set_exec_callback(
+                lambda rid, cmd, t: self._runtime.exec(rid, cmd, timeout=t)
+            )
+        except Exception:
+            pass
 
     def reconcile_manifest_path(self, path: Path) -> ReconcileReport:
         """Load a manifest from disk and reconcile it."""

@@ -80,7 +80,7 @@ grep -E "${proc_pat}" "${scan_file}" | grep -v "containerd-shim" | awk '{print $
   fi
 done
 
-# Docker/containers (optional)
+# Containers (Docker or Podman) — optional cgroup memory
 if command -v docker >/dev/null 2>&1; then
   docker ps -a --no-trunc --format '{{.ID}} {{.Names}} {{.Status}}' > "${outdir}/raw/docker_ps.txt" || true
   if docker ps -aq >/dev/null 2>&1; then
@@ -120,8 +120,41 @@ for c in data:
 PY
     fi
   } > "${outdir}/raw/containers_mem.csv"
+elif command -v podman >/dev/null 2>&1; then
+  podman ps -a --format json > "${outdir}/raw/podman_ps.json" 2>/dev/null || true
+  ids=$(podman ps -aq 2>/dev/null || true)
+  if [[ -n "${ids}" ]]; then
+    podman inspect --format json $ids > "${outdir}/raw/podman_inspect.json" 2>/dev/null || true
+  fi
+  {
+    echo "container_id,name,pid,mem_current_bytes"
+    python - "$outdir" << 'PY' 2>/dev/null || true
+import json, os, sys
+root=sys.argv[1]
+path=os.path.join(root,'raw','podman_inspect.json')
+try:
+    data=json.load(open(path,'r'))
+except Exception:
+    data=[]
+def read_mem_current(pid:str)->int:
+    try:
+        cg = open(f"/proc/{pid}/cgroup","r").read().strip().split(':')[-1]
+        if not cg.startswith('/'):
+            cg = '/' + cg
+        mc = f"/sys/fs/cgroup{cg}/memory.current"
+        return int(open(mc,'r').read().strip()) if os.path.exists(mc) else -1
+    except Exception:
+        return -1
+for c in data:
+    cid = (c.get('Id','') or '')[:12]
+    name = (c.get('Name','') or '').strip('/ ')
+    pid = str(((c.get('State') or {}).get('Pid') or 0))
+    mem = read_mem_current(pid) if pid and pid!='0' else -1
+    print(f"{cid},{name},{pid},{mem}")
+PY
+  } > "${outdir}/raw/containers_mem.csv"
 else
-  echo "[mem-snapshot] docker not found; container cgroup metrics will be skipped. Install Docker or adjust runtime classification." >&2
+  echo "[mem-snapshot] docker/podman not found; container cgroup metrics will be skipped." >&2
 fi
 
 # Quick system stats (after)

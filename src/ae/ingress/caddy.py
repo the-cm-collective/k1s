@@ -43,12 +43,15 @@ class CaddyIngressManager:
         config_file: Path | None = None,
         container: str | None = None,
         reload_timeout: float | None = None,
+        container_cli: str = "docker",
     ) -> None:
         self._config_root = config_root
         self._caddy_binary = caddy_binary
         self._config_file = config_file
         self._container = container
         self._reload_timeout = reload_timeout
+        # Which container CLI to use when reloading inside a container (docker|podman)
+        self._container_cli = container_cli or "docker"
         self._config_root.mkdir(parents=True, exist_ok=True)
 
     def apply(
@@ -81,7 +84,7 @@ class CaddyIngressManager:
         adapt_cmd: List[str]
         if self._container:
             adapt_cmd = [
-                "docker",
+                self._container_cli,
                 "exec",
                 self._container,
                 self._caddy_binary,
@@ -90,7 +93,7 @@ class CaddyIngressManager:
                 config_path,
             ]
             cmd = [
-                "docker",
+                self._container_cli,
                 "exec",
                 self._container,
                 self._caddy_binary,
@@ -111,7 +114,7 @@ class CaddyIngressManager:
                 subprocess.run(adapt_cmd, **kwargs)
             subprocess.run(cmd, **kwargs)
         except FileNotFoundError as exc:
-            missing = self._caddy_binary if not self._container else "docker"
+            missing = self._caddy_binary if not self._container else self._container_cli
             raise RuntimeError(f"Caddy reload dependency not found: {missing}") from exc
         except subprocess.TimeoutExpired as exc:
             LOGGER.error("Caddy reload timed out after %.1fs", (self._reload_timeout or 0))
@@ -145,14 +148,21 @@ class CaddyIngressManager:
         targets: list[str] = []
         for up in ups_list:
             target = up
-            # If Caddy is running in a container and target refers to host loopback,
-            # route via the host gateway name so the container can reach it.
+            # If Caddy runs in a container and target refers to host loopback,
+            # route via the host gateway alias so the container can reach it.
             if self._container:
                 try:
                     host_part, port_part = up.split(":", 1)
                 except ValueError:
                     host_part, port_part = up, ""
                 if host_part in {"127.0.0.1", "0.0.0.0"} and port_part:
+                    # Prefer Podman alias when using podman; otherwise use Docker alias.
+                    host_alias = "host.containers.internal" if self._container_cli == "podman" else "host.docker.internal"
+                    target = f"{host_alias}:{port_part}"
+                # Also normalize if previous runs wrote the other runtime's alias
+                if host_part == "host.docker.internal" and self._container_cli == "podman" and port_part:
+                    target = f"host.containers.internal:{port_part}"
+                if host_part == "host.containers.internal" and self._container_cli != "podman" and port_part:
                     target = f"host.docker.internal:{port_part}"
             if ingress.path and ingress.path != "/":
                 target = f"{target} {ingress.path}"

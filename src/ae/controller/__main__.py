@@ -187,6 +187,24 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             store.delete_app_state(app, purge_history=bool(purge))
             return {"app": app, "removed": removed, "purged": bool(purge)}
 
+        def _apply(payload: dict):  # noqa: ANN001
+            # Accept an App manifest JSON and reconcile
+            from ae.controller.spec import AppManifest
+
+            try:
+                manifest = AppManifest.model_validate(payload)
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(f"invalid manifest: {exc}")
+            report = reconciler.reconcile(manifest)
+            return {
+                "app": report.app_name,
+                "revision": report.revision,
+                "status": report.revision_status,
+                "created": report.created,
+                "updated": report.updated,
+                "removed": report.removed,
+            }
+
         def _logs(
             app: str, container: str | None, tail: int | None, since: int | None, follow: bool
         ):
@@ -298,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 store,
                 scale_fn=_scale,
                 delete_fn=_delete,
+                apply_fn=_apply,
                 logs_fn=_logs,
                 system_info_fn=_system_info,
             )

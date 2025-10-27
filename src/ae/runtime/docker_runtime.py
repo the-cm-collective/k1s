@@ -171,6 +171,25 @@ class DockerRuntime(RuntimeAdapter):
         except APIError as exc:
             raise RuntimeError(f"Failed to read logs for {replica_id}: {exc}") from exc
 
+    def exec(self, replica_id: str, command: list[str], *, timeout: int | None = None) -> int:  # type: ignore[override]
+        try:
+            containers = self._client.containers.list(
+                all=True, filters={"label": f"{self.REPLICA_LABEL}={replica_id}"}
+            )
+        except APIError as exc:  # pragma: no cover
+            raise RuntimeError(f"Failed to locate container for exec: {exc}") from exc
+        if not containers:
+            return 127
+        c = containers[0]
+        try:
+            exec_id = self._client.api.exec_create(c.id, cmd=command)
+            res = self._client.api.exec_start(exec_id, stream=False, detach=False, tty=False)
+            # fetch exit code
+            info = self._client.api.exec_inspect(exec_id)
+            return int(info.get("ExitCode", 1))
+        except APIError:
+            return 1
+
     def remove_app(self, app_name: str) -> int:
         """Stop and remove all containers for a given app label."""
         try:

@@ -23,6 +23,8 @@ while [[ $# -gt 0 ]]; do
     --duration) duration="$2"; shift 2;;
     --no-sudo) use_sudo=0; shift;;
     --keep-fixtures) stop_fixtures=0; shift;;
+    --restart-docker) export IDLE_RESTART_DOCKER=1; shift;;
+    --prune-system) export IDLE_PRUNE_SYSTEM=1; shift;;
     *) echo "unknown arg: $1"; exit 2;;
   esac
 done
@@ -91,6 +93,55 @@ if (( stop_fixtures )); then
   if [[ -f ops/dev/docker-compose.yaml ]] && command -v docker >/dev/null 2>&1; then
     echo "[idle] stopping dev fixtures via docker compose" >&2
     docker compose -f ops/dev/docker-compose.yaml down >/dev/null 2>&1 || true
+  fi
+fi
+
+# Optional: restart docker to reduce daemon memory (stabilize baseline)
+if [[ "${IDLE_RESTART_DOCKER:-0}" == "1" ]] && command -v systemctl >/dev/null 2>&1; then
+  echo "[idle] restarting docker service" >&2
+  sudo systemctl restart docker 2>/dev/null || true
+  sleep 2
+fi
+
+# Optional: prune images/containers/volumes to drop caches before baseline
+if [[ "${IDLE_PRUNE_SYSTEM:-0}" == "1" ]] && command -v docker >/dev/null 2>&1; then
+  echo "[idle] pruning docker system caches (images/containers/volumes)" >&2
+  docker system prune -af --volumes >/dev/null 2>&1 || true
+fi
+
+# Best-effort: ensure no demo app containers remain (ae-*)
+if command -v docker >/dev/null 2>&1; then
+  echo "[idle] pruning lingering app containers (ae-*, ae.app label)" >&2
+  ids_a=$(docker ps -aq --filter 'name=^ae-') || ids_a=""
+  ids_b=$(docker ps -aq --filter 'label=ae.app') || ids_b=""
+  ids=$(printf "%s\n%s\n" "$ids_a" "$ids_b" | sort -u | tr '\n' ' ')
+  if [[ -n "${ids// /}" ]]; then
+    docker rm -f $ids >/dev/null 2>&1 || true
+  fi
+  # Wait until no ae.app containers remain
+  echo "[idle] waiting for ae.app containers to vanish" >&2
+  tries=60
+  while (( tries-- > 0 )); do
+    left=$(docker ps -aq --filter 'label=ae.app' | wc -l | awk '{print $1}')
+    if [[ "$left" == "0" ]]; then break; fi
+    sleep 1
+  done
+fi
+
+# Best-effort: stop local docs server on :9109 if running
+if command -v lsof >/dev/null 2>&1; then
+  pid=$(lsof -t -i :9109 2>/dev/null | head -1 || true)
+  if [[ -n "$pid" ]]; then
+    echo "[idle] stopping docs server (pid=$pid on :9109)" >&2
+    kill "$pid" 2>/dev/null || true
+  fi
+else
+  if command -v ss >/dev/null 2>&1; then
+    pid=$(ss -tulpn 2>/dev/null | awk '/:9109/{print $NF}' | sed 's/.*pid=\([0-9]*\).*/\1/' | head -1)
+    if [[ -n "$pid" ]]; then
+      echo "[idle] stopping docs server (pid=$pid on :9109)" >&2
+      kill "$pid" 2>/dev/null || true
+    fi
   fi
 fi
 
@@ -184,3 +235,31 @@ open(os.path.join(os.path.dirname(p),'summary.txt'),'w').write("\n".join(txt)+"\
 PY
 
 echo "[idle] snapshot: $snap_dir" >&2
+
+# Optional: print per-process PSS breakdown from smaps (top contributors)
+python - << 'PY' "$snap_dir" || true
+import os, sys, re
+snap=sys.argv[1]
+raw=os.path.join(snap,'raw')
+entries={}
+if os.path.isdir(raw):
+    for fn in os.listdir(raw):
+        if not fn.startswith('smaps_') or not fn.endswith('.txt'): continue
+        parts=fn[:-4].split('_',2)
+        if len(parts)<3: continue
+        pid=parts[1]; comm=parts[2]
+        pss=0
+        try:
+            with open(os.path.join(raw,fn),'r',encoding='utf-8',errors='ignore') as fh:
+                for line in fh:
+                    if line.startswith('Pss:'):
+                        try: pss += int(line.split()[1])
+                        except: pass
+        except Exception:
+            continue
+        entries[comm]=entries.get(comm,0)+pss
+if entries:
+    print('\nPer-process PSS breakdown (MiB):')
+    for comm,pss_kb in sorted(entries.items(), key=lambda kv: kv[1], reverse=True):
+        print(f"  {comm:20s}  {pss_kb/1024.0:.2f}")
+PY
