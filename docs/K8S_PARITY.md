@@ -32,3 +32,9 @@ Examples
   - readiness: { tcpSocket: { port: 8080 }, successThreshold: 2, failureThreshold: 2 }
 - SecuritySpec:
   - security: { runAsUser: 1000, runAsGroup: 1000, readOnlyRootFilesystem: true, dropCapabilities: ["NET_RAW"] }
+
+Demo manifests
+- specs/examples/echo-sec.yaml: non-root + read-only root filesystem + HTTP readiness + ingress.
+  - Apply: `python -m ae.cli apply -f specs/examples/echo-sec.yaml`
+- specs/examples/echo-tcp.yaml: TCP readiness with thresholds + ingress.
+  - Apply: `python -m ae.cli apply -f specs/examples/echo-tcp.yaml`
