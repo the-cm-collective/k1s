@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>k1s Docs</title>
+    <title>K8S_Parity</title>
     <style>
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.55; }
       code, pre { background: #f6f8fa; }
@@ -94,27 +94,65 @@
       <a href="https://api.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
     </nav>
     <div class="container">
-    
-<h1>k1s Documentation</h1>
+    <p>K8s Parity and Alignment (MVP)</p>
+<p>Status summary</p>
 <ul>
-  <li><a href="overview.html">Overview</a></li>
-  <li><a href="architecture.html">Architecture</a></li>
-  <li><a href="http-api.html">HTTP API</a></li>
-  <li><a href="concepts.html">Concepts</a></li>
-  <li><a href="configs-secrets.html">Configs &amp; Secrets</a></li>
-  <li><a href="demo-modes.html">Demo Modes</a></li>
-  <li><a href="rollouts.html">Rollouts</a></li>
-  <li><a href="storage.html">Storage</a></li>
-  <li><a href="observability.html">Observability</a></li>
-  <li><a href="benchmarks.html">Benchmarks</a></li>
-  <li><a href="examples.html">Examples</a></li>
-  <li><a href="scheduling.html">Scheduling</a></li>
-  <li><a href="e2e.html">End-to-End Guide</a></li>
-  <li><a href="k8s-parity.html">K8s Parity</a></li>
-  <li><a href="k8s-compliance.html">K8s Compliance Status</a></li>
-  <li><a href="https://api.home.arpa:8443/dashboard" target="_blank" rel="noopener">Live Demo Dashboard</a></li>
+<li>Deployment-like rollouts: ready/progressing/degraded with health-gated cutover ✓</li>
+<li>Ingress/TLS (Caddy) with ready-only upstreams ✓</li>
+<li>Probes: HTTP and TCP with initialDelay/timeout; windowing for success/failure thresholds ✓</li>
+<li>Resources: CPU/memory limits mapped to runtime ✓</li>
+<li>Security: runAsUser/runAsGroup/readOnlyRootFilesystem/cap drop ✓</li>
+<li>Services: single replica host port; multi-replica via ingress LB (HTTP) ◻︎</li>
+<li>API writes: CLI-only; HTTP API read-only ◻︎</li>
 </ul>
-
+<p>Checklist</p>
+<ul>
+<li>Use stable APIs and portable features where analogous:</li>
+<li>Readiness/liveness probes present (HTTP/TCP).</li>
+<li>Resources.limits present; requests optional.</li>
+<li>Non-root security context available and wired.</li>
+<li>Graceful termination exposed via terminationGracePeriodSeconds.</li>
+<li>Ingress flips only after ≥1 ready replica.</li>
+<li>Storage: hostPath and PV-lite; stateful demo available.</li>
+</ul>
+<p>Verification notes</p>
+<ul>
+<li>Docker and Podman paths validated by unit/integration tests and demos.</li>
+<li>Echo variants exercise readiness, ingress, storage.</li>
+<li>Dashboard provides live logs and status snapshots.</li>
+</ul>
+<p>Roadmap</p>
+<ul>
+<li>Add exec probe (optional).</li>
+<li>Token-gated mutate endpoints for remote CLI against controller.</li>
+<li>Document multi-replica non-HTTP “service” patterns.</li>
+<p>Examples</p>
+<li>TCP readiness probe (spec):</li>
+<li>readiness: { tcpSocket: { port: 8080 }, successThreshold: 2, failureThreshold: 2 }</li>
+<li>SecuritySpec:</li>
+<li>security: { runAsUser: 1000, runAsGroup: 1000, readOnlyRootFilesystem: true, dropCapabilities: [&quot;NET_RAW&quot;] }</li>
+<li>Exec readiness probe (spec):</li>
+<li>readiness: { exec: { command: [&quot;sh&quot;, &quot;-c&quot;, &quot;true&quot;] }, timeoutSeconds: 1 }</li>
+</ul>
+<p>Demo manifests</p>
+<ul>
+<li>specs/examples/echo-sec.yaml: non-root + read-only root filesystem + HTTP readiness + ingress.</li>
+<li>Apply: <code>python -m ae.cli apply -f specs/examples/echo-sec.yaml</code></li>
+<li>specs/examples/echo-tcp.yaml: TCP readiness with thresholds + ingress.</li>
+<li>Apply: <code>python -m ae.cli apply -f specs/examples/echo-tcp.yaml</code></li>
+<li>specs/examples/echo-exec.yaml: Exec readiness probe + ingress.</li>
+<li>Apply: <code>python -m ae.cli apply -f specs/examples/echo-exec.yaml</code></li>
+</ul>
+<p>Remote apply</p>
+<ul>
+<li>Enable mutations and token, then:</li>
+<li><code>ae --server https://api.home.arpa:8443 --token &lt;admin&gt; apply -f specs/examples/echo-sec.yaml</code></li>
+</ul>
+<hr/>
+<h2>K8s Compliance Status</h2>
+<p><strong>Score:</strong> 100.0/100 &nbsp; <strong>Grade:</strong> excellent &nbsp; <strong>Samples:</strong> 3</p>
+<details><summary>Per-sample details</summary>
+<ul><li>echo.yaml: score=100.0 validate=ok kubeconform=skip dry-run=skip policyErrors=0</li><li>multi-replica-echo.yaml: score=100.0 validate=ok kubeconform=skip dry-run=skip policyErrors=0</li><li>echo-hpa.yaml: score=100.0 validate=ok kubeconform=skip dry-run=skip policyErrors=0</li></ul></details>
     </div>
   </body>
 </html>

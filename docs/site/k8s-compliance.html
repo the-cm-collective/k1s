@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>k1s Docs</title>
+    <title>K8S Compliance</title>
     <style>
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.55; }
       code, pre { background: #f6f8fa; }
@@ -94,27 +94,27 @@
       <a href="https://api.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
     </nav>
     <div class="container">
-    
-<h1>k1s Documentation</h1>
+    <h1>Kubernetes Compliance</h1>
+<p>This page summarizes our current Kubernetes spec compliance for exported manifests.</p>
+<p>How it works</p>
 <ul>
-  <li><a href="overview.html">Overview</a></li>
-  <li><a href="architecture.html">Architecture</a></li>
-  <li><a href="http-api.html">HTTP API</a></li>
-  <li><a href="concepts.html">Concepts</a></li>
-  <li><a href="configs-secrets.html">Configs &amp; Secrets</a></li>
-  <li><a href="demo-modes.html">Demo Modes</a></li>
-  <li><a href="rollouts.html">Rollouts</a></li>
-  <li><a href="storage.html">Storage</a></li>
-  <li><a href="observability.html">Observability</a></li>
-  <li><a href="benchmarks.html">Benchmarks</a></li>
-  <li><a href="examples.html">Examples</a></li>
-  <li><a href="scheduling.html">Scheduling</a></li>
-  <li><a href="e2e.html">End-to-End Guide</a></li>
-  <li><a href="k8s-parity.html">K8s Parity</a></li>
-  <li><a href="k8s-compliance.html">K8s Compliance Status</a></li>
-  <li><a href="https://api.home.arpa:8443/dashboard" target="_blank" rel="noopener">Live Demo Dashboard</a></li>
+<li>We export K8s YAML from representative App manifests using <code>ae cli export-k8s</code> (preset: web-hardened).</li>
+<li>We run offline structural validation, optional <code>kubeconform -strict</code> schema checks, optional <code>kubectl apply --dry-run=server</code>, and our <code>k8s-check --policy strict</code>.</li>
+<li>A weighted score is computed per sample; the overall score is the average across samples.</li>
 </ul>
-
+<p>Update the status</p>
+<ul>
+<li>Generate a fresh report and write it where the docs server picks it up:</li>
+<li><code>python -m ae.cli k8s-report --run-dry-run -o docs/site/k8s_status.json</code></li>
+<li>Rebuild docs to embed the status in this page:</li>
+<li><code>python docs/build_docs.py</code></li>
+</ul>
+<p>The compliance status and per-sample details render below when a report is present.</p>
+<hr/>
+<h2>K8s Compliance Status</h2>
+<p><strong>Score:</strong> 100.0/100 &nbsp; <strong>Grade:</strong> excellent &nbsp; <strong>Samples:</strong> 3</p>
+<details><summary>Per-sample details</summary>
+<ul><li>echo.yaml: score=100.0 validate=ok kubeconform=skip dry-run=skip policyErrors=0</li><li>multi-replica-echo.yaml: score=100.0 validate=ok kubeconform=skip dry-run=skip policyErrors=0</li><li>echo-hpa.yaml: score=100.0 validate=ok kubeconform=skip dry-run=skip policyErrors=0</li></ul></details>
     </div>
   </body>
 </html>

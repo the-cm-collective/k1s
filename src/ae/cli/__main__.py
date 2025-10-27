@@ -783,9 +783,9 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
         from ae.k8s.check import apply_policy
 
         strict = apply_policy(issues, "strict")
-        errs = [i.__dict__ for i in strict if i.level == "error"]
-        warns = [i.__dict__ for i in strict if i.level == "warn"]
-        entry["policy_strict"] = {"ran": True, "errors": len(errs), "warnings": len(warns)}
+        err_count = sum(1 for i in strict if getattr(i, "level", "") == "error")
+        warn_count = sum(1 for i in strict if getattr(i, "level", "") == "warn")
+        entry["policy_strict"] = {"ran": True, "errors": err_count, "warnings": warn_count}
 
         # kubeconform (optional)
         kc_res = {"ran": False, "ok": None, "summary": None}
