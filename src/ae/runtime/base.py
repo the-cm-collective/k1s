@@ -92,3 +92,10 @@ class RuntimeAdapter(Protocol):
         Returns a list of dicts with at least: { name, labels, host_ports: [int] }.
         """
         return []
+
+    def exec(self, replica_id: str, command: list[str], *, timeout: int | None = None) -> int:
+        """Execute a command inside the target replica's container.
+
+        Returns the exit code. Implementations should locate the container by
+        the `ae.replica_id` label and run the command non-interactively.
+        """
