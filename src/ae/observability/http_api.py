@@ -1190,7 +1190,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var row = Math.floor(i / cols);
           var x = padX + gap*col + gap*0.5;
           var appY = (midY + 90) + row * (nodeH + podOffsetY + rowGap);
-          addNode('app:'+s.app_name, s.app_name, 'app', x, appY, {app:s.app_name, ready:s.ready_replicas, desired:s.desired_replicas, rev:s.revision, status:s.revision_status, row:row, col:col});
+          addNode('app:'+s.app_name, s.app_name, 'app', x, appY, {app:s.app_name, ready:s.ready_replicas, desired:s.desired_replicas, rev:s.revision, status:s.revision_status, row:row, col:col, idx:i});
           var desired = Math.max(0, Number(s.desired_replicas||0));
           var ready = Math.max(0, Number(s.ready_replicas||0));
           var pods = Math.min(desired, 12);
@@ -1254,43 +1254,26 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           // Select routing strategy by pair types
           if (a.id==='ingress' && b.type==='app'){
             var laneBase = (b.y - nodeH/2 - lanePad);
-            // Stagger lanes by column to avoid heavy overlays
-            var colIdx = (b.meta && b.meta.col!=null) ? b.meta.col : 0;
-            var yBand = ((colIdx % 5) - 2) * 6; // -12..+12
-            var laneY = laneBase + yBand + jitter;
-            // Approach between columns; pick side nearest the app relative to ingress
-            var leftBound = b.x - gap*0.5 + 12;
-            var rightBound = b.x + gap*0.5 - 12;
-            var approachX = (b.x >= a.x)
-              ? Math.min(rightBound, b.x + gap*0.35)
-              : Math.max(leftBound,  b.x - gap*0.35);
-            if (!isFinite(leftBound)) leftBound = b.x - 40;
-            if (!isFinite(rightBound)) rightBound = b.x + 40;
-            // Path: drop from Ingress first, then horizontal lane, then approach and down
+            // Stagger lanes by index to minimize overlay, and separate source types
+            var idx = (b.meta && b.meta.idx!=null) ? b.meta.idx : 0;
+            var yBand = ((idx % 7) - 3) * 5; // -15..+15
+            var srcSep = -6; // ingress a bit higher than runtime
+            var laneY = laneBase + yBand + srcSep + jitter;
+            // Direct turn into center of app to avoid U-turns
             points.push([a.x, a.y]);
             points.push([a.x, laneY]);
-            points.push([approachX, laneY]);
-            points.push([approachX, topEdgeY(b)-4]);
-            points.push([b.x, topEdgeY(b)-4]);
+            points.push([b.x, laneY]);
             points.push([b.x, topEdgeY(b)]);
           } else if (a.id==='runtime' && b.type==='app'){
             var laneBase2 = (b.y - nodeH/2 - lanePad);
-            var colIdx2 = (b.meta && b.meta.col!=null) ? b.meta.col : 0;
-            var yBand2 = ((colIdx2 % 5) - 2) * 6;
-            var laneY2 = laneBase2 + yBand2 + jitter;
-            var leftBound2 = b.x - gap*0.5 + 12;
-            var rightBound2 = b.x + gap*0.5 - 12;
-            var approachX2 = (b.x >= a.x)
-              ? Math.min(rightBound2, b.x + gap*0.35)
-              : Math.max(leftBound2,  b.x - gap*0.35);
-            if (!isFinite(leftBound2)) leftBound2 = b.x - 40;
-            if (!isFinite(rightBound2)) rightBound2 = b.x + 40;
-            // Path: drop from Runtime first, then horizontal lane towards app side
+            var idx2 = (b.meta && b.meta.idx!=null) ? b.meta.idx : 0;
+            var yBand2 = ((idx2 % 7) - 3) * 5; // -15..+15
+            var srcSep2 = +6; // runtime a bit lower than ingress
+            var laneY2 = laneBase2 + yBand2 + srcSep2 + jitter;
+            // Direct into center: down, across, down
             points.push([a.x, a.y]);
             points.push([a.x, laneY2]);
-            points.push([approachX2, laneY2]);
-            points.push([approachX2, topEdgeY(b)-4]);
-            points.push([b.x, topEdgeY(b)-4]);
+            points.push([b.x, laneY2]);
             points.push([b.x, topEdgeY(b)]);
           } else if (a.type==='app' && b.type==='pod'){
             // Drop from bottom of app, then short horizontal, then into pod
