@@ -37,6 +37,95 @@ class StubRuntime(RuntimeAdapter):
         )
 
 
+class FailingLivenessRuntime(RuntimeAdapter):
+    """Runtime that creates a replica without a reachable endpoint.
+
+    This simulates the window where the container exists but liveness HTTP
+    probes fail because the port isn't yet published/ready.
+    """
+
+    def ensure_app(self, manifest: AppManifest, revision: int) -> RuntimeResult:  # type: ignore[override]
+        return RuntimeResult(
+            revision=revision,
+            created=1,
+            updated=0,
+            removed=0,
+            replica_states=[
+                ReplicaState(
+                    replica_id=f"{manifest.metadata.name}-rev{revision}-0",
+                    ready=False,
+                    status="created",
+                    endpoint=None,
+                )
+            ],
+        )
+
+
+def test_status_progressing_when_replica_present_but_liveness_failing(tmp_path: Path) -> None:
+    # Manifest with an HTTP liveness probe so live=false when endpoint is None
+    from ae.controller.spec import AppSpec, Metadata, AppManifest, HealthSpec, ProbeSpec
+
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            health=HealthSpec(
+                liveness=ProbeSpec(httpGet={"path": "/healthz", "port": 8080})  # type: ignore[arg-type]
+            ),
+        ),
+    )
+
+    state = SQLiteStateStore(tmp_path / "state.db")
+    reconciler = Reconciler(runtime=FailingLivenessRuntime(), state_store=state)
+
+    report = reconciler.reconcile(manifest)
+    assert isinstance(report, ReconcileReport)
+    status = state.get_status("demo")
+    assert status is not None
+    # With at least one replica recorded, we should be "progressing", not "degraded"
+    assert status.revision_status == "progressing"
+
+
+class CreateButEmptyStatesRuntime(RuntimeAdapter):
+    """Runtime that reports a creation but returns no replica states yet.
+
+    Mirrors a transient race window seen with Podman where `run` succeeds but
+    an immediate `ps/inspect` does not include the new container.
+    """
+
+    def ensure_app(self, manifest: AppManifest, revision: int) -> RuntimeResult:  # type: ignore[override]
+        return RuntimeResult(
+            revision=revision,
+            created=1,
+            updated=0,
+            removed=0,
+            replica_states=[],
+        )
+
+
+def test_status_progressing_when_created_but_states_empty(tmp_path: Path) -> None:
+    from ae.controller.spec import AppSpec, Metadata, AppManifest
+
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(image="alpine:3.20"),
+    )
+
+    state = SQLiteStateStore(tmp_path / "state.db")
+    reconciler = Reconciler(runtime=CreateButEmptyStatesRuntime(), state_store=state)
+
+    report = reconciler.reconcile(manifest)
+    assert isinstance(report, ReconcileReport)
+    status = state.get_status("demo")
+    assert status is not None
+    # Even with zero observed replicas, a create implies we're progressing
+    assert status.revision_status == "progressing"
+
+
 class StubIngressService:
     def __init__(self) -> None:
         self.applied: list[tuple[str, str]] = []
