@@ -30,11 +30,17 @@ class TCPSocketProbe(BaseModel):
 
     port: int
 
+class ExecProbe(BaseModel):
+    """Exec probe: run a command inside the container."""
+
+    command: List[str]
+
 
 class ProbeSpec(BaseModel):
     """Container probe definition."""
 
     http_get: Optional[HTTPGetProbe] = Field(default=None, alias="httpGet")
+    exec: Optional[ExecProbe] = Field(default=None, alias="exec")
     tcp_socket: Optional[TCPSocketProbe] = Field(default=None, alias="tcpSocket")
     initial_delay_seconds: int = Field(default=0, alias="initialDelaySeconds")
     timeout_seconds: int = Field(default=1, alias="timeoutSeconds")

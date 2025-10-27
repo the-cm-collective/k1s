@@ -51,6 +51,11 @@ class HealthManager:
     def __init__(self) -> None:
         # (replica_id, probe_type) -> state
         self._state: dict[tuple[str, str], dict] = {}
+        self._exec_cb = None
+
+    def set_exec_callback(self, fn):  # type: ignore[no-untyped-def]
+        """Inject a callback taking (replica_id, command:list[str], timeout:int|None)->int."""
+        self._exec_cb = fn
 
     def evaluate(self, manifest: AppManifest, result: RuntimeResult) -> HealthReport:
         replicas: list[ReplicaHealth] = []
@@ -128,6 +133,8 @@ class HealthManager:
             outcome = self._evaluate_http_probe(replica, probe.http_get.path, probe, probe_type)
         elif getattr(probe, "tcp_socket", None) is not None:
             outcome = self._evaluate_tcp_probe(replica, probe.tcp_socket.port, probe, probe_type)  # type: ignore[union-attr]
+        elif getattr(probe, "exec", None) is not None:
+            outcome = self._evaluate_exec_probe(replica, probe.exec.command, probe, probe_type)  # type: ignore[union-attr]
         else:
             outcome = ProbeOutcome(success=default_success, message=f"{probe_type} no-op {'ok' if default_success else 'pending'}")
 
@@ -206,3 +213,22 @@ class HealthManager:
                 return ProbeOutcome(True, f"{probe_type} tcp ok")
         except OSError as exc:
             return ProbeOutcome(False, f"{probe_type} tcp error: {exc}")
+
+    def _evaluate_exec_probe(
+        self,
+        replica: ReplicaState,
+        command: list[str],
+        probe: ProbeSpec,
+        probe_type: str,
+    ) -> ProbeOutcome:
+        if not callable(getattr(self, "_exec_cb", None)):
+            return ProbeOutcome(False, f"{probe_type} exec unsupported")
+        try:
+            timeout = max(probe.timeout_seconds, 1)
+        except Exception:
+            timeout = 1
+        try:
+            code = self._exec_cb(replica.replica_id, list(command), timeout)  # type: ignore[misc]
+        except Exception as exc:  # pragma: no cover
+            return ProbeOutcome(False, f"{probe_type} exec error: {exc}")
+        return ProbeOutcome(code == 0, f"{probe_type} exec rc={code}")
