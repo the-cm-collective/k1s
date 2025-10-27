@@ -25,11 +25,17 @@ class HTTPGetProbe(BaseModel):
     path: str = Field(default="/")
     port: int
 
+class TCPSocketProbe(BaseModel):
+    """TCP socket probe configuration."""
+
+    port: int
+
 
 class ProbeSpec(BaseModel):
     """Container probe definition."""
 
     http_get: Optional[HTTPGetProbe] = Field(default=None, alias="httpGet")
+    tcp_socket: Optional[TCPSocketProbe] = Field(default=None, alias="tcpSocket")
     initial_delay_seconds: int = Field(default=0, alias="initialDelaySeconds")
     timeout_seconds: int = Field(default=1, alias="timeoutSeconds")
     period_seconds: int = Field(default=10, alias="periodSeconds")

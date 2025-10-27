@@ -126,6 +126,8 @@ class HealthManager:
 
         if probe.http_get:
             outcome = self._evaluate_http_probe(replica, probe.http_get.path, probe, probe_type)
+        elif getattr(probe, "tcp_socket", None) is not None:
+            outcome = self._evaluate_tcp_probe(replica, probe.tcp_socket.port, probe, probe_type)  # type: ignore[union-attr]
         else:
             outcome = ProbeOutcome(success=default_success, message=f"{probe_type} no-op {'ok' if default_success else 'pending'}")
 
@@ -183,3 +185,24 @@ class HealthManager:
         if 200 <= response.status_code < 300:
             return ProbeOutcome(True, f"{probe_type} http {response.status_code}")
         return ProbeOutcome(False, f"{probe_type} http {response.status_code}")
+
+    def _evaluate_tcp_probe(
+        self,
+        replica: ReplicaState,
+        port: int,
+        probe: ProbeSpec,
+        probe_type: str,
+    ) -> ProbeOutcome:
+        import socket as _sock
+
+        if not replica.endpoint:
+            return ProbeOutcome(False, f"{probe_type} endpoint missing")
+        # Prefer the replica's resolved endpoint; if it includes a host port mapping, use it.
+        host, _, ep_port = str(replica.endpoint).partition(":")
+        target_port = int(ep_port or port)
+        try:
+            timeout = max(probe.timeout_seconds, 1)
+            with _sock.create_connection((host, int(target_port)), timeout=timeout):
+                return ProbeOutcome(True, f"{probe_type} tcp ok")
+        except OSError as exc:
+            return ProbeOutcome(False, f"{probe_type} tcp error: {exc}")
