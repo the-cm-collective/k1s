@@ -3,7 +3,7 @@ K8s Parity and Alignment (MVP)
 Status summary
 - Deployment-like rollouts: ready/progressing/degraded with health-gated cutover ✓
 - Ingress/TLS (Caddy) with ready-only upstreams ✓
-- Probes: HTTP with initialDelay/timeout; windowing for success/failure thresholds ✓ (TCP planned)
+- Probes: HTTP and TCP with initialDelay/timeout; windowing for success/failure thresholds ✓
 - Resources: CPU/memory limits mapped to runtime ✓
 - Security: runAsUser/runAsGroup/readOnlyRootFilesystem/cap drop ✓
 - Services: single replica host port; multi-replica via ingress LB (HTTP) ◻︎
@@ -11,7 +11,7 @@ Status summary
 
 Checklist
 - Use stable APIs and portable features where analogous:
-  - Readiness/liveness probes present (HTTP). TCP planned.
+  - Readiness/liveness probes present (HTTP/TCP).
   - Resources.limits present; requests optional.
   - Non-root security context available and wired.
   - Graceful termination exposed via terminationGracePeriodSeconds.
@@ -24,7 +24,11 @@ Verification notes
 - Dashboard provides live logs and status snapshots.
 
 Roadmap
-- Add TCP probes and exec probe (optional).
+- Add exec probe (optional).
 - Token-gated mutate endpoints for remote CLI against controller.
 - Document multi-replica non-HTTP “service” patterns.
-
+Examples
+- TCP readiness probe (spec):
+  - readiness: { tcpSocket: { port: 8080 }, successThreshold: 2, failureThreshold: 2 }
+- SecuritySpec:
+  - security: { runAsUser: 1000, runAsGroup: 1000, readOnlyRootFilesystem: true, dropCapabilities: ["NET_RAW"] }
