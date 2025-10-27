@@ -169,6 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("-f", "--file", type=Path, required=True)
     plan.add_argument("--verbose", action="store_true", help="Show replica placement details")
     plan.add_argument("--strict", action="store_true", help="Treat warnings as errors")
+    plan.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
     # volumes list
     vols = subparsers.add_parser("volumes", help="Inspect storage volumes")
@@ -1212,6 +1213,19 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
         if conflicts:
             print(f"  ! conflict: host port {port} is already published by: {', '.join(conflicts)}")
             print("    Resolve by stopping the conflicting service or changing spec.service.port")
+            if getattr(args, "json", False):
+                import json as _json
+
+                out = {
+                    "app": manifest.metadata.name,
+                    "replicas": desired,
+                    "rollout": strategy,
+                    "service": {"port": port, "targetPort": getattr(svc, "target_port", None)},
+                    "warnings": warnings,
+                    "conflicts": conflicts,
+                    "ok": False,
+                }
+                print(_json.dumps(out, indent=2))
             return 2
         print(f"    OK: host port {port} available")
     else:
@@ -1281,14 +1295,31 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
             warnings.append(
                 "multi-replica app without ingress: per-replica host ports will be ephemeral; use ingress for HTTP access"
             )
-    for w in warnings:
-        print(f"  ! warning: {w}")
-    if getattr(args, "strict", False) and warnings:
-        print("  ! Planner strict mode: warnings treated as errors")
-        return 3
-    print("  - actions: create or reconcile containers; update ingress as needed")
-    print("Plan OK.")
-    return 0
+    if getattr(args, "json", False):
+        import json as _json
+
+        out = {
+            "app": manifest.metadata.name,
+            "replicas": desired,
+            "rollout": {"strategy": strategy, "maxSurge": rollout.get("maxSurge", 1), "maxUnavailable": rollout.get("maxUnavailable", 0)},
+            "service": (
+                {"port": getattr(svc, "port", None), "targetPort": getattr(svc, "target_port", None)} if svc else None
+            ),
+            "warnings": warnings,
+            "conflicts": [],
+            "ok": not warnings or not getattr(args, "strict", False),
+        }
+        print(_json.dumps(out, indent=2))
+        return 0 if out["ok"] else 3
+    else:
+        for w in warnings:
+            print(f"  ! warning: {w}")
+        if getattr(args, "strict", False) and warnings:
+            print("  ! Planner strict mode: warnings treated as errors")
+            return 3
+        print("  - actions: create or reconcile containers; update ingress as needed")
+        print("Plan OK.")
+        return 0
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
