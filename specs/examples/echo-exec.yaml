@@ -1,0 +1,21 @@
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: echo-exec
+spec:
+  image: demo-blue:latest
+  replicas: 1
+  env:
+    - name: APP_NAME
+      value: echo-exec
+  ports:
+    - name: http
+      containerPort: 8080
+  health:
+    readiness:
+      exec: { command: ["sh", "-c", "true"] }
+      timeoutSeconds: 1
+  ingress:
+    host: echo-exec.home.arpa
+    path: /
+

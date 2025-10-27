@@ -310,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     command_handlers: dict[str, Callable[[argparse.Namespace], int]] = {
-        "apply": lambda ns: handle_apply(ns, reconciler),
+        "apply": lambda ns: handle_apply(ns, reconciler, args),
         "status": lambda ns: handle_status(ns, store, args),
         "logs": lambda ns: handle_logs(ns, store, runtime),
         "rollback": lambda ns: handle_rollback(ns, store, reconciler),
@@ -335,7 +335,29 @@ def main(argv: list[str] | None = None) -> int:
     return handler(args)
 
 
-def handle_apply(args: argparse.Namespace, reconciler: Reconciler) -> int:
+def handle_apply(args: argparse.Namespace, reconciler: Reconciler, global_args: argparse.Namespace | None = None) -> int:
+    # Remote apply via API when --server is set
+    if global_args and getattr(global_args, "server", None):
+        base = str(global_args.server)
+        tok = getattr(global_args, "token", None)
+        try:
+            import yaml as _yaml
+
+            payload = _yaml.safe_load(args.file.read_text())
+        except Exception as exc:  # noqa: BLE001
+            print(f"failed to read manifest: {exc}")
+            return 1
+        try:
+            resp = _http_post_json(base, "/apply", payload, tok)
+            print(
+                f"applied {resp.get('app')} rev={resp.get('revision')}({resp.get('status')}) "
+                f"ops=+{resp.get('created')}/~{resp.get('updated')}/-{resp.get('removed')}"
+            )
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            print(f"remote apply failed: {exc}")
+            return 1
+    # Local apply path
     report = reconciler.reconcile_manifest_path(args.file)
     print(format_report(report))
     return 0

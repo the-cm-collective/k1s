@@ -5,11 +5,14 @@ metadata:
 spec:
   image: demo-blue:latest
   replicas: 1
+  # Env consolidated (avoid duplicate keys overriding earlier values)
   env:
     - name: APP_NAME
       value: echo
     - name: MESSAGE
       value: "Hello from echo"
+    - name: APP_MODE
+      value: demo-override
   ports:
     - name: http
       containerPort: 8080
@@ -32,19 +35,7 @@ spec:
       periodSeconds: 10
       successThreshold: 1
       failureThreshold: 3
-  # Demonstrate configRefs projecting keys into env
-  configRefs:
-    - name: app-config
-      path: configs/app-config.yaml
-      env:
-        - name: APP_MODE
-          key: mode
-        - name: APP_COLOR
-          key: color
-  # Manifest env overrides config/secret values if same key is present
-  env:
-    - name: APP_MODE
-      value: demo-override
+  # Demonstrate configRefs projecting keys into env and files
   secretRefs:
     - name: demo-secret
       path: specs/examples/demo-secret.sops.yaml
@@ -54,7 +45,6 @@ spec:
       files:
         - key: token
           file: secret/token
-  # Also project selected config keys to files (same configRef entry)
   configRefs:
     - name: app-config
       path: configs/app-config.yaml
@@ -66,3 +56,6 @@ spec:
       files:
         - key: mode
           file: config/app_mode.txt
+  ingress:
+    host: echo.home.arpa
+    path: /

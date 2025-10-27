@@ -1,11 +1,9 @@
-version: "3.9"
-
 services:
   caddy:
     image: caddy:2.8
     ports:
-      - "8888:80"
-      - "8443:443"
+      - "${CADDY_HTTP_PORT:-8888}:80"
+      - "${CADDY_HTTPS_PORT:-8443}:443"
     volumes:
       - ./caddy:/etc/caddy:ro
       # Persist Caddy state (includes the local CA and issued certs)
@@ -18,7 +16,7 @@ services:
   prometheus:
     image: prom/prometheus:v2.53.0
     ports:
-      - "9090:9090"
+      - "${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     # Configure scrape targets after observability endpoints exist.
