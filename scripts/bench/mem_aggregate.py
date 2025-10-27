@@ -173,10 +173,27 @@ def aggregate(snapshot_dir: Path) -> Dict:
 
     # Overhead estimate (favor container cgroup sums when available)
     # Report both process PSS and container cgroup bytes
+    # Summarize breakdown buckets in MiB for quick human readout
+    def kb_to_mib(x: int | None) -> float:
+        try:
+            return round(float(x or 0) / 1024.0, 2)
+        except Exception:
+            return 0.0
+    ctrl_mib = kb_to_mib((by_class.get("controller") or {}).get("pss_kb", 0))
+    ingress_mib = kb_to_mib((by_class.get("ingress") or {}).get("pss_kb", 0))
+    runtime_mib = kb_to_mib(((by_class.get("runtime") or {}).get("pss_kb", 0)))
+    k3s_cp_mib = kb_to_mib((by_class.get("control_plane") or {}).get("pss_kb", 0))
+
     summary = {
         "meta": meta,
         "process_totals_kb": proc_totals,
         "process_breakdown_kb": by_class,
+        "pss_breakdown_mib": {
+            "controller": ctrl_mib,
+            "ingress": ingress_mib,
+            "runtime": runtime_mib,
+            "k3s_control_plane": k3s_cp_mib,
+        },
         "containers": {
             "app_mem_bytes": app_bytes,
             "system_mem_bytes": system_bytes,

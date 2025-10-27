@@ -1,0 +1,61 @@
+Name:	tail
+Umask:	0002
+State:	S (sleeping)
+Tgid:	2222118
+Ngid:	0
+Pid:	2222118
+PPid:	2217992
+TracerPid:	0
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+FDSize:	256
+Groups:	4 20 24 25 27 29 30 44 46 100 101 119 121 124 129 135 986 996 1000 
+NStgid:	2222118
+NSpid:	2222118
+NSpgid:	2217992
+NSsid:	53678
+Kthread:	0
+VmPeak:	    3060 kB
+VmSize:	    3060 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	    1832 kB
+VmRSS:	    1832 kB
+RssAnon:	       0 kB
+RssFile:	    1832 kB
+RssShmem:	       0 kB
+VmData:	     224 kB
+VmStk:	     136 kB
+VmExe:	      48 kB
+VmLib:	    1596 kB
+VmPTE:	      48 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffffff
+Threads:	1
+SigQ:	1/253762
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000000000
+SigIgn:	0000000000000006
+SigCgt:	0000000000000000
+CapInh:	0000000800000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	000001ffffffffff
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	0
+Seccomp_filters:	0
+Speculation_Store_Bypass:	thread vulnerable
+SpeculationIndirectBranch:	conditional enabled
+Cpus_allowed:	3fff
+Cpus_allowed_list:	0-13
+Mems_allowed:	00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	41
+nonvoluntary_ctxt_switches:	3
+x86_Thread_features:	
+x86_Thread_features_locked:	

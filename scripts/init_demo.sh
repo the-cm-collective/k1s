@@ -17,7 +17,7 @@ SUDO=$(require_root_or_sudo)
 
 # Static demo hosts we can safely add to /etc/hosts when requested.
 # Note: echo-storage and echo-stateful do not expose ingress by default.
-HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa api.home.arpa echo.home.arpa echo-mr.home.arpa echo-resources.home.arpa echo-sec.home.arpa echo-tcp.home.arpa)
+HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa api.home.arpa echo.home.arpa echo-mr.home.arpa echo-resources.home.arpa echo-sec.home.arpa echo-tcp.home.arpa echo-exec.home.arpa)
 AUTO_HOSTS=""  # set by -y/--yes or -n/--no to auto answer host prompts
 
 usage() {
@@ -39,6 +39,7 @@ Options:
   --demo-echo-mr   Apply the multi-replica echo demo (echo-mr)
   --demo-security  Apply security-hardened demo (echo-sec)
   --demo-tcp       Apply TCP-probe demo (echo-tcp)
+  --demo-exec      Apply exec-probe demo (echo-exec)
   --docs-only      Start docs + API only (no apps)
   --demo-rollout   Apply a two-step ordered rollout for echo
   --demo-storage   Apply a storage (PV-lite) demo for echo and list volumes
@@ -91,6 +92,7 @@ DEMO_STANDARD=0
 DEMO_ECHO_MR=0
 DEMO_SECURITY=0
 DEMO_TCP=0
+DEMO_EXEC=0
 DOCS_ONLY=0
 DEMO_ROLLOUT=0
 DEMO_STORAGE=0
@@ -121,6 +123,8 @@ while [[ $# -gt 0 ]]; do
       DEMO_SECURITY=1 ;;
     --demo-tcp)
       DEMO_TCP=1 ;;
+    --demo-exec)
+      DEMO_EXEC=1 ;;
     --docs-only)
       DOCS_ONLY=1 ;;
     --demo-rollout)
@@ -657,6 +661,12 @@ fi
 if [[ $DEMO_TCP -eq 1 && $DOCS_ONLY -ne 1 ]]; then
   log "Applying TCP-probe echo demo (echo-tcp)"
   "$PY_BIN" -m ae.cli apply -f specs/examples/echo-tcp.yaml || true
+fi
+
+# Optional exec probe demo
+if [[ $DEMO_EXEC -eq 1 && $DOCS_ONLY -ne 1 ]]; then
+  log "Applying exec-probe echo demo (echo-exec)"
+  "$PY_BIN" -m ae.cli apply -f specs/examples/echo-exec.yaml || true
 fi
 
 # Optional rollout demo: apply echo, then echo-rollout
