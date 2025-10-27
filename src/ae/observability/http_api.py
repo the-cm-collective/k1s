@@ -873,7 +873,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                   .node.pod.ready circle { fill:#dcfce7; stroke:#16a34a; }
                   .node.pod.pending circle { fill:#fef3c7; stroke:#f59e0b; }
                   .link { stroke:#9ca3af; stroke-width:1.5; fill:none; marker-end:url(#arrow); }
-                  .flow { stroke-dasharray:6 6; animation: flow 1.6s linear infinite; }
+                  .flow { stroke-dasharray:6 6; }
+                  .flow-fwd { animation: flow 1.6s linear infinite; }
+                  .flow-rev { animation: flow 1.6s linear infinite reverse; }
                   .selected rect, .selected circle { stroke-width:2.4 !important; filter: drop-shadow(0 0 2px #60a5fa); }
                   .selected.link { stroke:#2563eb; }
                   .faded { opacity:0.35; }
@@ -1358,7 +1360,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           }
           var p = document.createElementNS('http://www.w3.org/2000/svg','path');
           p.setAttribute('d', d);
-          p.setAttribute('class', 'link '+(cls||''));
+          var klass = 'link ' + (cls||'');
+          if ((cls||'').indexOf('flow') !== -1){
+            // Decide animation direction based on net displacement from src->dst
+            var dx = b.x - a.x, dy = b.y - a.y;
+            var horiz = Math.abs(dx) >= Math.abs(dy);
+            var forward = horiz ? (dx >= 0) : (dy >= 0);
+            klass += forward ? ' flow-fwd' : ' flow-rev';
+          }
+          p.setAttribute('class', klass);
           p.setAttribute('stroke-linecap','round');
           p.setAttribute('fill','none');
           gLinks.appendChild(p);
