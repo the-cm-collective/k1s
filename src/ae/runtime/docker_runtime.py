@@ -329,6 +329,15 @@ class DockerRuntime(RuntimeAdapter):
                     LOGGER.warning(
                         "Failed to connect %s to network %s: %s", name, self._network_name, _exc
                     )
+            # Record per-container stop timeout label for graceful shutdowns
+            stop_timeout = int(getattr(manifest.spec, "termination_grace_period_seconds", 10) or 10)
+            # docker-py doesn't allow setting custom labels post-create via kwargs; update label map
+            try:
+                lbls = container.labels or {}
+                lbls["ae.stop_timeout"] = str(int(stop_timeout))
+                container.update(labels=lbls)
+            except Exception:
+                pass
             self._reload(container)
             return container
         except APIError as exc:
@@ -359,7 +368,15 @@ class DockerRuntime(RuntimeAdapter):
     def _stop_and_remove(self, container: Container) -> None:
         try:
             LOGGER.debug("Removing container %s", container.name)
-            container.stop(timeout=10)
+            # Prefer per-container label timeout if present
+            timeout = 10
+            try:
+                lbls = container.labels or {}
+                if "ae.stop_timeout" in lbls:
+                    timeout = int(lbls.get("ae.stop_timeout", "10"))
+            except Exception:
+                pass
+            container.stop(timeout=timeout)
         except APIError as exc:  # pragma: no cover - protective guard
             LOGGER.warning("Failed to stop container %s: %s", container.name, exc)
         try:

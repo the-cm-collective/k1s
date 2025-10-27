@@ -322,6 +322,11 @@ class PodmanRuntime(RuntimeAdapter):
                "--label", f"{self.REPLICA_LABEL}={replica_id}",
                "--label", f"{self.REVISION_LABEL}={revision}",
                "--restart", "unless-stopped"]
+        try:
+            stop_timeout = int(getattr(manifest.spec, "termination_grace_period_seconds", 10) or 10)
+        except Exception:
+            stop_timeout = 10
+        cmd += ["--label", f"ae.stop_timeout={int(stop_timeout)}"]
 
         # Env
         for item in (manifest.spec.env or []):
@@ -398,7 +403,18 @@ class PodmanRuntime(RuntimeAdapter):
     def _stop_and_remove(self, cid: str) -> None:
         if not cid:
             return
-        self._run_ok([self._bin, "stop", "-t", "2", cid], allow_fail=True)
+        # Inspect label for per-container stop timeout
+        timeout = 10
+        try:
+            r = self._run_ok([self._bin, "inspect", cid, "--format", "{{json .Config.Labels}}"], allow_fail=True)
+            import json as _json
+
+            labels = _json.loads(r.out or "{}") or {}
+            if isinstance(labels, dict) and labels.get("ae.stop_timeout"):
+                timeout = int(str(labels.get("ae.stop_timeout")))
+        except Exception:
+            pass
+        self._run_ok([self._bin, "stop", "-t", str(int(timeout)), cid], allow_fail=True)
         self._run_ok([self._bin, "rm", "-f", cid], allow_fail=True)
 
     def _list_app_containers(self, app: str) -> list[dict]:
