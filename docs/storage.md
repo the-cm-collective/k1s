@@ -1,7 +1,7 @@
 ## Storage (PV-lite)
 
 Use `spec.storage` to declare named persistent volumes for an app. The controller
-creates a Docker named volume per entry and mounts it into the container.
+creates a container‑engine named volume per entry and mounts it into the container.
 
 ### Spec
 
@@ -13,7 +13,7 @@ spec:
       retention: Retain   # or Delete
 ```
 
-- name: logical name for the volume; actual Docker volume will be `ae-<app>-<name>`
+- name: logical name for the volume; the engine volume will be named `ae-<app>-<name>`
 - mountPath: container path where the volume is mounted
 - retention: `Retain` (default) keeps the volume on `ae delete`; `Delete` removes it on `ae delete --purge`
 
@@ -41,7 +41,7 @@ ae delete echo --purge
 ### Retention & Purge
 
 - `retention: Retain` (default) keeps data even if you delete the app:
-  - `ae delete <app>` will stop and remove containers but keep the Docker volume(s).
+  - `ae delete <app>` will stop and remove containers but keep the engine volume(s).
 - `retention: Delete` removes data only when you purge:
   - `ae delete <app> --purge`
 
@@ -54,4 +54,3 @@ spec:
       mountPath: /var/lib/echo
       retention: Delete
 ```
-

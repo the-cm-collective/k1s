@@ -19,7 +19,7 @@ This page summarizes the example manifests and demo modes available.
 
 ### Multi-Replica Echo (echo-mr)
 
-- Shows Caddy load-balancing across replicas on a shared Docker network.
+- Shows Caddy load-balancing across replicas on a shared container network.
 - File: `specs/examples/multi-replica-echo.yaml`
 - Command:
   - `./scripts/init_demo.sh --demo-echo-mr -y`
@@ -31,11 +31,11 @@ This page summarizes the example manifests and demo modes available.
 - Files: `specs/examples/echo.yaml`, `specs/examples/echo-rollout.yaml`
 - Command:
   - `./scripts/init_demo.sh --demo-rollout -y`
-  - Optional bias: `AE_ROLLOUT_FIRST_WEIGHT=3 ./scripts/init_demo.sh --demo-rollout -y`
+  - Optional canary: set `rollout: { strategy: canary, weight: 3 }` (use `auto` to ramp)
 
 ### Storage (PV-lite)
 
-- Named Docker volume mounted at `/var/lib/echo`.
+- Named engine volume mounted at `/var/lib/echo`.
 - Files: `specs/examples/echo-storage.yaml` and `echo-storage-delete.yaml` (Delete retention)
 - Command:
   - `./scripts/init_demo.sh --demo-storage -y`

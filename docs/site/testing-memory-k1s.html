@@ -87,6 +87,8 @@
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="ingress.html">Ingress</a>
+      <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
@@ -151,14 +153,16 @@ make bench-mem-rollout-k1s LABEL_SUITE=baseline-roll APP=specs/examples/echo.yam
 <p>Summarized from <code>combined/combined.csv</code> at build time.</p>
 <table border=1 cellpadding=6 cellspacing=0>
 <tr><th>Label</th><th>Mode</th><th>Timestamp</th><th>Ctrl‑Plane PSS (MiB)</th><th>System Cgroups (MiB)</th></tr>
-<tr><td>report-20251027-idle2</td><td>k1s</td><td>20251027-162049</td><td style='text-align:right'>0.0</td><td style='text-align:right'>0.0</td></tr>
-<tr><td>report-20251027-pods-1</td><td>k1s</td><td>20251027-160252</td><td style='text-align:right'>0.0</td><td style='text-align:right'>0.0</td></tr>
-<tr><td>report-20251027-pods-10</td><td>k1s</td><td>20251027-160835</td><td style='text-align:right'>0.0</td><td style='text-align:right'>0.0</td></tr>
-<tr><td>report-20251027-pods-5</td><td>k1s</td><td>20251027-160544</td><td style='text-align:right'>0.0</td><td style='text-align:right'>0.0</td></tr>
-<tr><td>report-20251028-idle</td><td>k1s</td><td>20251027-172213</td><td style='text-align:right'>0.5</td><td style='text-align:right'>0.0</td></tr>
-<tr><td>report-20251028-pods-1</td><td>k1s</td><td>20251027-185731</td><td style='text-align:right'>78.4</td><td style='text-align:right'>0.0</td></tr>
+<tr><td>baseline-roll-rollout-5-post</td><td>k1s</td><td>20251028-141017</td><td style='text-align:right'>113.2</td><td style='text-align:right'>308.3</td></tr>
+<tr><td>r20251028+podman+rootless+cg2-idle</td><td>k1s</td><td>20251028-144307</td><td style='text-align:right'>0.3</td><td style='text-align:right'>0.0</td></tr>
+<tr><td>r20251028+podman+rootless+cg2-idle</td><td>k1s</td><td>20251028-150135</td><td style='text-align:right'>52.3</td><td style='text-align:right'>0.0</td></tr>
+<tr><td>r20251028+podman+rootless+cg2-pods-1</td><td>k1s</td><td>20251028-150212</td><td style='text-align:right'>60.1</td><td style='text-align:right'>0.0</td></tr>
+<tr><td>r20251028+podman+rootless+cg2-pods-5</td><td>k1s</td><td>20251028-150458</td><td style='text-align:right'>62.7</td><td style='text-align:right'>0.0</td></tr>
+<tr><td>r20251028+podman+rootless+cg2-pods-10</td><td>k1s</td><td>20251028-150746</td><td style='text-align:right'>65.6</td><td style='text-align:right'>0.0</td></tr>
+<tr><td>r20251028+podman+rootless+cg2-rollout-5-during</td><td>k1s</td><td>20251028-151647</td><td style='text-align:right'>62.3</td><td style='text-align:right'>311.0</td></tr>
+<tr><td>r20251028+podman+rootless+cg2-rollout-5-post</td><td>k1s</td><td>20251028-152141</td><td style='text-align:right'>114.9</td><td style='text-align:right'>311.0</td></tr>
 </table>
-<p>Charts:</p><ul><li><a href='../charts/control_plane_pss.png'>control_plane_pss.png</a></li><li><a href='../charts/system_cgroups.png'>system_cgroups.png</a></li><li><a href='../charts/per_pod_overhead.png'>per_pod_overhead.png</a></li></ul>
+<p>Charts:</p><ul><li><a href='charts/control_plane_pss.png'>control_plane_pss.png</a></li><li><a href='charts/system_cgroups.png'>system_cgroups.png</a></li><li><a href='charts/per_pod_overhead.png'>per_pod_overhead.png</a></li></ul>
     </div>
   </body>
 </html>

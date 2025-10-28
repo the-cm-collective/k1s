@@ -87,6 +87,8 @@
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="ingress.html">Ingress</a>
+      <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
@@ -107,7 +109,7 @@
 <li>k3d installed (to run k3s locally): https://k3d.io</li>
 <li>kubectl in PATH</li>
 <li>For k1s runs: <code>python -m ae.controller --loop</code> in another terminal</li>
-<li>Optional: Docker installed (for container cgroup memory)</li>
+<li>Optional: Podman or Docker installed (for container cgroup memory)</li>
 </ul>
 <h2>Bring up k3s (k3d)</h2>
 <pre><code>
@@ -142,7 +144,7 @@ make bench-mem-plot CSV=combined/combined.csv OUTDIR=charts
 <h2>Caveats</h2>
 <ul>
 <li>k3s via k3d enables Traefik; be consistent with ingress between systems.</li>
-<li>Without Docker, container cgroup metrics are skipped; process PSS totals remain available.</li>
+<li>Without a container CLI, container cgroup metrics are skipped; process PSS totals remain available.</li>
 <li>You can bypass preflight checks with <code>SKIP_GUARDS=1</code> in CI.</li>
 </ul>
 <h2>Teardown</h2>

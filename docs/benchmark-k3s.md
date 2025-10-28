@@ -11,7 +11,7 @@ This guide walks through building an apples‑to‑apples memory benchmark betwe
 - k3d installed (to run k3s locally): https://k3d.io
 - kubectl in PATH
 - For k1s runs: `python -m ae.controller --loop` in another terminal
-- Optional: Docker installed (for container cgroup memory)
+- Optional: Podman or Docker installed (for container cgroup memory)
 
 ## Bring up k3s (k3d)
 ```
@@ -45,11 +45,10 @@ Charts include control‑plane PSS, system cgroup memory, and approximate per‑
 
 ## Caveats
 - k3s via k3d enables Traefik; be consistent with ingress between systems.
-- Without Docker, container cgroup metrics are skipped; process PSS totals remain available.
+- Without a container CLI, container cgroup metrics are skipped; process PSS totals remain available.
 - You can bypass preflight checks with `SKIP_GUARDS=1` in CI.
 
 ## Teardown
 ```
 make bench-k3s-down K3S_NAME=bench
 ```
-

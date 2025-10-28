@@ -12,12 +12,12 @@ This document describes k1s in depth: components, data model, reconcile algorith
 ## Components
 
 - Controller (src/ae/controller): orchestrates reconcile, writes state, emits events.
-- Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is primary, Docker optional.
+- Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback.
 - Ingress (src/ae/ingress): writes Caddy site fragments and triggers reloads.
-- Health (src/ae/controller/health.py): readiness/liveness evaluation.
-- State store (src/ae/controller/state.py): SQLite schema and queries.
-- Secrets (src/ae/secrets): SOPS/age integration, env projection.
-- Observability (src/ae/observability): metrics snapshot, HTTP API, logging helpers.
+- Health (src/ae/controller/health.py): readiness/liveness/exec/tcp evaluation.
+- State store (src/ae/controller/state.py): SQLite schema and queries (+ canary rollout state).
+- Secrets (src/ae/secrets) and Configs (src/ae/config): SOPS/age integration, env and file projection.
+- Observability (src/ae/observability): metrics snapshot, HTTP API, dashboard, logging helpers.
 - CLI (src/ae/cli) + kubectl‑like wrapper (src/ae/kctl).
 
 ## Reconcile Loop
@@ -29,11 +29,12 @@ Triggers
 
 Ordering
 - Load manifests (YAML → Pydantic models).
+- Inject configs/secrets into env; project selected keys into files mounted read‑only.
 - Compute revision: hash the spec; reuse the latest revision if hash unchanged; otherwise increment.
-- Runtime ensure: create/update/remove containers to match replicas.
-- Health gate: evaluate readiness/liveness; decide revision status ready/progressing/degraded.
-- Ingress: pick a healthy upstream (if any) and write/reload Caddy; remove ingress when omitted.
-- Persist: write app status, replicas, probe history, and revision record; emit events.
+- Runtime ensure: create/update/remove containers to match replicas (respect rollout policy).
+- Health gate: evaluate readiness/liveness/exec/tcp; decide revision status ready/progressing/degraded/paused.
+- Ingress: prefer‑first routing to new revision; optional canary weight/auto progression; remove ingress when omitted.
+- Persist: write app status, replicas, probe history, canary state, and revision record; emit events.
 
 Idempotency & Diff
 - Spec hash drives revisions; reconciler tracks created/updated/removed per pass.
@@ -43,10 +44,12 @@ Idempotency & Diff
 Pseudocode (as implemented in src/ae/controller/reconciler.py)
 ```
 for manifest in manifests:
+  manifest = apply_configs_and_secrets(manifest)
+  projection_root = prepare_file_projections(manifest, rev)
   rev = store.prepare_revision(spec_hash)
-  result = runtime.ensure_app(manifest, rev)
+  result = runtime.ensure_app(manifest, rev, keep_old=True, limit_create=...)  # per rollout
   health = health.evaluate(manifest, result)
-  ingress.apply/remove based on health/spec
+  ingress.apply/remove based on health/spec (+ canary weight)
   store.record_snapshot(manifest, result, health, rev, status)
   events.emit(ApplyCompleted)
 ```
@@ -87,15 +90,19 @@ Top‑level
 Spec fields (src/ae/controller/spec.py)
 - `image: str`
 - `command: [str]?`
-- `env: [{name, value}]` (merged with secrets)
+- `env: [{name, value}]` (merged with configs/secrets)
 - `replicas: int>=1`
 - `ports: [{name, containerPort}]`
-- `health.readiness|liveness` HTTP probes with `initialDelaySeconds`, `timeoutSeconds` etc.
-- `ingress: { host, path: '/', tls: bool }`
-- `secretRefs: [{ name, path, env: [{name, key}] }]` (SOPS‑decrypted)
-- `registryAuthRef: str?` (reserved, not yet used directly)
-- `resources: { requests?, limits?: { cpu: float cores, memory: str (e.g., 256Mi) } }`
+- `service: { port, targetPort? }` (stable host port when replicas==1)
+- `health.readiness|liveness`: HTTP, TCP, or Exec probes with `initialDelaySeconds`, `timeoutSeconds`, `periodSeconds`, thresholds
+- `ingress: { host, path: '/', paths: [...], tls: bool, tlsSecretName?, tlsCertPath?, tlsKeyPath? }`
+- `secretRefs|configRefs: [{ name, path, env: [{name, key}], files: [{key, file}] }]`
+- `rollout: { strategy: ordered|parallel|canary, maxSurge, maxUnavailable, pause?, weight?, auto?{start,step,intervalSeconds,max} }`
+- `security: { runAsUser?, runAsGroup?, readOnlyRootFilesystem?, dropCapabilities[] }`
+- `resources: { requests?, limits?: { cpu: float cores, memory: quantity } }`
 - `volumes: [{ hostPath, mountPath, readOnly? }]`
+- `storage: [{ name, mountPath, retention: Retain|Delete }]`
+- `terminationGracePeriodSeconds: int (default 10)`
 
 Notes
 - CPU limits map to Docker `nano_cpus`; memory to `mem_limit` (K/M/G, KiB/MiB/GiB supported).
@@ -125,6 +132,7 @@ Tables (created in src/ae/controller/state.py)
 - probe_history(id, app_name, replica_id, check_time, ready, live, readiness_message, liveness_message) [kept to 50 per replica]
 - app_revisions(app_name, revision, spec_hash, spec_json, image, created_at, status)
 - app_events(id, app_name, revision, event_type, message, created_at)
+- rollout_canary(app_name PK, weight, next_step_at, step, max, updated_at)
 
 Query surfaces
 - `list_status()`, `get_status(app)`
@@ -132,24 +140,25 @@ Query surfaces
 - `list_revisions(app)`, `get_revision_manifest(app, rev)`
 - `list_events(app, limit)`
 
-## Runtime: Docker
+## Runtime: Container Engine (Podman/Docker)
 
 Labels
 - `ae.app=<name>`
 - `ae.replica_id=<name>-rev<rev>-<index>`
 - `ae.revision=<rev>`
 
-Ensure flow (src/ae/runtime/docker_runtime.py)
+Ensure flow (Docker/Podman runtimes)
 - List existing containers by `ae.app` label.
-- Partition by current revision vs old.
-- Pull image only when a new replica is needed and image is missing.
-- Create missing replicas with labels, env, ports, restart policy; then reload and start as needed.
-- Remove old revision containers.
-- Build `ReplicaState` by reloading container attributes (status, startedAt) and mapping published ports to endpoints.
+- Partition by current revision vs old; keep old during surge.
+- Pull image only when needed; prefer local `localhost/<image>` on Podman when present.
+- Create missing replicas with labels, env, ports, security, volumes/storage, restart policy.
+- Remove old revision containers after readiness thresholds.
+- Build `ReplicaState` from inspection (status, startedAt) and endpoints.
 
 Resources/Volumes
-- `limits.cpu` → `nano_cpus=int(cpu*1e9)`, `limits.memory` → bytes (K/M/G, KiB/MiB/GiB).
-- Volumes: `{ hostPath: { bind: mountPath, mode: ro|rw } }` in container run call.
+- `limits.cpu` → container CLI flag (`--cpus` on Podman/Docker); Docker uses `nano_cpus=int(cpu*1e9)` internally.
+- Memory quantities map to bytes (K/M/G, KiB/MiB/GiB supported).
+- Volumes: hostPath bind mounts ro/rw; `spec.storage` becomes named engine volumes per app.
 
 Logs
 - `read_logs(replica_id, follow, tail, since)` adapts to Docker SDK parameters.
@@ -160,12 +169,15 @@ Auth
 ## Ingress: Caddy
 
 - Each app with `spec.ingress` gets a small site block written to `ops/dev/caddy/sites/<app>.caddy` (or configured root).
-- Reloads via `caddy reload --config <file|dir>`, optionally inside a container via `docker exec`.
-- When Caddy runs in a container, upstreams with 127.0.0.1 are rewritten to `host.docker.internal`.
+- Reloads via `caddy reload --config <file|dir>`, optionally inside a container via `docker|podman exec` (controlled by `AE_CONTAINER_CLI`).
+- When Caddy runs in a container, loopback upstreams are rewritten to the host alias: `host.docker.internal` (Docker) or `host.containers.internal` (Podman).
+- Optional active health checks can be enabled with `AE_CADDY_ACTIVE_HEALTH=1` when readiness probe is configured.
 
 ## Health
 
 - HTTP probe: GET `http://<replica.endpoint><path>`; success is 2xx.
+- TCP probe: attempts a TCP connection to the declared port.
+- Exec probe: runs a command inside the container and checks exit code 0.
 - Initial delay honored using container `StartedAt`.
 - Liveness defaults to true when unspecified; readiness defaults to container state when unspecified.
 - `HealthReport` aggregates per‑replica `ready/live` and messages.
@@ -179,6 +191,8 @@ Revision status
 
 - spec hash (SHA‑256 of normalized JSON) creates a new revision when changed.
 - Rolling replace with `maxUnavailable=0, maxSurge=1` semantics at single‑app scale.
+- Pause/resume: `ae rollout pause|resume <app>` toggles rollout without touching runtime.
+- Canary: set `rollout.strategy: canary` and `rollout.weight` to bias routing; optional `rollout.auto{start,step,intervalSeconds,max}` for controller‑tracked ramp up.
 - `ae rollback <app> [--to <rev>]` fetches stored manifest and reconciles.
 
 ## Events
@@ -189,8 +203,7 @@ Revision status
 ## Metrics and API
 
 - CLI snapshot: aggregated counts (apps ready/progressing/degraded, replicas).
-- HTTP `/metrics`: includes app/replica gauges, last reconcile timestamp/duration, per‑app reconcile sum/count, rollout operation counters.
-- HTTP `/status`, `/status/<app>`, `/events/<app>` return JSON; `/openapi.json` documents the surface; `/docs` lists endpoints.
+- HTTP: `/metrics`, `/health`, `/status`, `/status/<app>`, `/events/<app>`, `/logs/<app>`; `/openapi.json` documents the surface; `/docs` lists endpoints; `/dashboard` provides a live UI.
 
 ## Secrets
 

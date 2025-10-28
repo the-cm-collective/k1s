@@ -63,7 +63,7 @@ You can also embed a single panel JSON (e.g., stat showing ready apps):
   - Controller: last reconcile timestamp and duration
   - Ingress: configured site blocks and existence flag
   - Services: declared `service.port`/`targetPort` per app
-  - Storage: Docker named volumes created for apps (PV-lite)
+  - Storage: container‑engine named volumes created for apps (PV‑lite)
   - RBAC: shows whether mutations are enabled and tokens are configured (never reveals secrets)
 
 - Per‑app details now include:
