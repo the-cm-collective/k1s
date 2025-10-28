@@ -77,7 +77,22 @@ class Reconciler:
             f"Reconciling revision {revision}",
         )
 
-        manifest_with_env = self._apply_configs_and_secrets(manifest)
+        # Apply config/secret projections. Be resilient to secret errors so a
+        # single bad SOPS file does not crash the controller under load.
+        try:
+            manifest_with_env = self._apply_configs_and_secrets(manifest)
+        except Exception as exc:  # noqa: BLE001
+            try:
+                self._state_store.record_event(
+                    manifest.metadata.name,
+                    revision,
+                    "SecretError",
+                    f"secrets/config application failed: {exc}",
+                )
+            except Exception:
+                pass
+            # Fallback: continue without injecting secret/config env
+            manifest_with_env = manifest
         # Prepare file projections and add a read-only volume mount if any files were written
         projection_root = self._prepare_file_projections(manifest, revision)
         manifest_for_runtime = manifest_with_env

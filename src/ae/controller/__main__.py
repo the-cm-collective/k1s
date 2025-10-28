@@ -145,6 +145,17 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     else:
         configure_logging(None)
 
+    # Hint: log active SOPS age key file for secret decryption troubleshooting
+    try:
+        import logging as _log
+
+        _log.getLogger(__name__).info(
+            "SOPS_AGE_KEY_FILE=%s",
+            os.getenv("SOPS_AGE_KEY_FILE", "<unset>"),
+        )
+    except Exception:
+        pass
+
     # Build reconciler (runtime, ingress, secrets, store)
     reconciler = _make_reconciler()
 
