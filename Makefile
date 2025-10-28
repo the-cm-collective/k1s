@@ -137,3 +137,7 @@ bench-mem-idle-k1s:
 .PHONY: bench-mem-idle-k3s
 bench-mem-idle-k3s:
 	@bash ./scripts/bench/idle_baseline_k3s.sh --label $${LABEL:-idle-k3s} --duration $${DURATION:-30} $${ARGS:-}
+
+.PHONY: secrets-seal-demo
+secrets-seal-demo:
+	@bash ./scripts/seal_demo_secret.sh
