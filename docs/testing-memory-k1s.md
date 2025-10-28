@@ -15,6 +15,8 @@ make bench-mem-agg LABEL=idle
 - Scale a single app and compare (uses the echo example):
 ```
 make bench-mem-matrix-k1s LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30
+# For PSS via smaps (dockerd/containerd/podman) add sudo:
+./scripts/bench/run_matrix.sh --label-suite baseline --app specs/examples/echo.yaml --replicas 1,5,10 --duration 30 --sudo
 make bench-mem-combine GLOB='snapshots/*/*'
 make bench-mem-plot CSV=combined/combined.csv OUTDIR=charts
 ```
@@ -23,6 +25,8 @@ make bench-mem-plot CSV=combined/combined.csv OUTDIR=charts
 Capture snapshots during a rolling update and after convergence:
 ```
 make bench-mem-rollout-k1s LABEL_SUITE=baseline-roll APP=specs/examples/echo.yaml REPLICAS=5 DURATION=30
+# With privileged snapshots for accurate PSS:
+./scripts/bench/run_rollout_k1s.sh --label-suite baseline-roll --app specs/examples/echo.yaml --replicas 5 --duration 30 --sudo
 ```
 
 ## Outputs

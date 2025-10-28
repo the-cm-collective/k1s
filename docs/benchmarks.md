@@ -18,6 +18,9 @@ For quick commands and charts, see the end‑to‑end Make targets in each guide
   - `python scripts/bench/mem_combine.py snapshots/*/*`
   - `python scripts/bench/plot_overhead.py combined/combined.csv charts`
   - `python docs/build_docs.py`
+  - Tip: for accurate process PSS on dockerd/containerd/podman, prefer privileged snapshots:
+    - Matrix: `./scripts/bench/run_matrix.sh --label-suite baseline --app specs/examples/echo.yaml --replicas 1,5,10 --duration 30 --sudo`
+    - Rollout: `./scripts/bench/run_rollout_k1s.sh --label-suite baseline-roll --app specs/examples/echo.yaml --replicas 5 --duration 30 --sudo`
 - Preflights:
   - Podman must pass `podman info`; if not, start `podman.socket`, enable lingering with `loginctl enable-linger "$USER"`, and run `podman system migrate`.
   - If not using plaintext secrets, ensure `sops --decrypt` works; scripts fail fast with guidance otherwise.
