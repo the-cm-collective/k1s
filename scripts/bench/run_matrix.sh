@@ -14,6 +14,7 @@ replicas_csv="1,5,10"
 mode="k1s"
 duration=30
 app_name="echo"  # derived from example; can be overridden via --app-name
+use_sudo=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -23,6 +24,7 @@ while [[ $# -gt 0 ]]; do
     --replicas) replicas_csv="$2"; shift 2;;
     --mode) mode="$2"; shift 2;;
     --duration) duration="$2"; shift 2;;
+    --sudo) use_sudo=1; shift;;
     *) echo "unknown arg: $1"; exit 2;;
   esac
 done
@@ -115,7 +117,11 @@ wait_ready() {
 
 # Idle snapshot
 info "idle snapshot"
-scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true
+if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+  sudo -E scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true
+else
+  scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true
+fi
 
 # Ensure app applied
 info "apply manifest: $manifest"
@@ -129,7 +135,11 @@ for n in "${reps[@]}"; do
   ae scale "$app_name" --replicas "$n" || true
   wait_ready "$app_name" "$n" || true
   info "snapshot label=${label_suite}-pods-${n}"
-  scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-pods-${n}" --duration "$duration" || true
+  if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+    sudo -E scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-pods-${n}" --duration "$duration" || true
+  else
+    scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-pods-${n}" --duration "$duration" || true
+  fi
 done
 
 info "done"

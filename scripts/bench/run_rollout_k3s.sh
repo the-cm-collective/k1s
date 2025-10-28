@@ -9,6 +9,7 @@ deploy="echo"
 namespace="default"
 replicas=5
 duration=30
+use_sudo=0
 old_tag="0.7.0"
 new_tag="0.9.0"
 
@@ -19,6 +20,7 @@ while [[ $# -gt 0 ]]; do
     --namespace) namespace="$2"; shift 2;;
     --replicas) replicas="$2"; shift 2;;
     --duration) duration="$2"; shift 2;;
+    --sudo) use_sudo=1; shift;;
     --old-tag) old_tag="$2"; shift 2;;
     --new-tag) new_tag="$2"; shift 2;;
     *) echo "unknown arg: $1"; exit 2;;
@@ -69,10 +71,18 @@ if [[ "$cur" == *":"$old_tag ]]; then target=${cur/%:$old_tag/:$new_tag}; else t
 
 info "set image to ${target} and snapshot DURING"
 kubectl -n "$namespace" set image deploy/"$deploy" "$deploy"="$target"
-scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+  sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+else
+  scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+fi
 
 info "wait ready and snapshot POST"
 wait_ready "$deploy" "$replicas" || true
-scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+  sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+else
+  scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+fi
 
 info "done"

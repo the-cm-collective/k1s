@@ -55,8 +55,8 @@ vmstat 1 "${vmcount}" > "${outdir}/raw/vmstat.txt" 2>/dev/null || true
 # Use args-aware scan to capture controller accurately and avoid shims
 case "${mode}" in
   k1s)
-    # match: python -m ae.controller, caddy, dockerd, containerd (but NOT containerd-shim)
-    proc_pat='ae\.controller|\bcaddy\b|\bdockerd\b|\bcontainerd\b'
+    # match: python -m ae.controller, caddy, docker/containerd, and podman/conmon (but NOT containerd-shim)
+    proc_pat='ae\.controller|\bcaddy\b|\bdockerd\b|\bcontainerd\b|\bpodman\b|\bconmon\b'
     scan_file="${outdir}/raw/ps_scan_before.txt"
     ;;
   k3s)
@@ -91,26 +91,62 @@ if command -v podman >/dev/null 2>&1; then
     echo "container_id,name,pid,mem_current_bytes"
     python - "$outdir" << 'PY' 2>/dev/null || true
 import json, os, sys
-root=sys.argv[1]
-path=os.path.join(root,'raw','podman_inspect.json')
+from typing import Optional
+
+root = sys.argv[1]
+inspect_path = os.path.join(root, 'raw', 'podman_inspect.json')
 try:
-    data=json.load(open(path,'r'))
+    data = json.load(open(inspect_path, 'r'))
 except Exception:
-    data=[]
-def read_mem_current(pid:str)->int:
+    data = []
+
+def detect_cgv2() -> bool:
+    return os.path.exists('/sys/fs/cgroup/cgroup.controllers')
+
+def cgroup_path_for_pid(pid: str, want: str = 'memory') -> Optional[str]:
     try:
-        cg = open(f"/proc/{pid}/cgroup","r").read().strip().split(':')[-1]
-        if not cg.startswith('/'):
-            cg = '/' + cg
-        mc = f"/sys/fs/cgroup{cg}/memory.current"
-        return int(open(mc,'r').read().strip()) if os.path.exists(mc) else -1
+        with open(f"/proc/{pid}/cgroup", 'r') as fh:
+            lines = [ln.strip() for ln in fh if ln.strip()]
+        if not lines:
+            return None
+        if detect_cgv2():
+            # single unified hierarchy: look for 0::/...
+            for ln in lines:
+                parts = ln.split(':', 2)
+                if len(parts) == 3 and parts[0] == '0':
+                    return parts[2] if parts[2].startswith('/') else '/' + parts[2]
+            # fallback to last field
+            last = lines[-1].split(':', 2)[-1]
+            return last if last.startswith('/') else '/' + last
+        else:
+            # cgroup v1: find line where controller list includes 'memory'
+            for ln in lines:
+                parts = ln.split(':', 2)
+                if len(parts) == 3 and want in (parts[1] or '').split(','):
+                    p = parts[2]
+                    return p if p.startswith('/') else '/' + p
+            return None
+    except Exception:
+        return None
+
+def read_mem_bytes(pid: str) -> int:
+    try:
+        cg = cgroup_path_for_pid(pid, 'memory')
+        if not cg:
+            return -1
+        if detect_cgv2():
+            mc = f"/sys/fs/cgroup{cg}/memory.current"
+        else:
+            mc = f"/sys/fs/cgroup/memory{cg}/memory.usage_in_bytes"
+        return int(open(mc, 'r').read().strip()) if os.path.exists(mc) else -1
     except Exception:
         return -1
+
 for c in data:
-    cid = (c.get('Id','') or '')[:12]
-    name = (c.get('Name','') or '').strip('/ ')
+    cid = (c.get('Id', '') or '')[:12]
+    name = (c.get('Name', '') or '').strip('/ ')
     pid = str(((c.get('State') or {}).get('Pid') or 0))
-    mem = read_mem_current(pid) if pid and pid!='0' else -1
+    mem = read_mem_bytes(pid) if pid and pid != '0' else -1
     print(f"{cid},{name},{pid},{mem}")
 PY
   } > "${outdir}/raw/containers_mem.csv"
@@ -128,27 +164,59 @@ elif command -v docker >/dev/null 2>&1; then
     if [[ -f "${outdir}/raw/docker_inspect.json" ]]; then
       python - "$outdir" << 'PY' 2>/dev/null || true
 import json, os, sys
+from typing import Optional
+
 root = sys.argv[1]
 path = os.path.join(root, 'raw', 'docker_inspect.json')
 try:
     data = json.load(open(path,'r'))
 except Exception:
     sys.exit(0)
-def read_mem_current(pid:str)->int:
+
+def detect_cgv2() -> bool:
+    return os.path.exists('/sys/fs/cgroup/cgroup.controllers')
+
+def cgroup_path_for_pid(pid: str, want: str = 'memory') -> Optional[str]:
     try:
-        cg = open(f"/proc/{pid}/cgroup","r").read().strip().split(':')[-1]
-        if not cg.startswith('/'):
-            cg = '/' + cg
-        # cgroup v2 path
-        mc = f"/sys/fs/cgroup{cg}/memory.current"
-        return int(open(mc,'r').read().strip()) if os.path.exists(mc) else -1
+        with open(f"/proc/{pid}/cgroup", 'r') as fh:
+            lines = [ln.strip() for ln in fh if ln.strip()]
+        if not lines:
+            return None
+        if detect_cgv2():
+            for ln in lines:
+                parts = ln.split(':', 2)
+                if len(parts) == 3 and parts[0] == '0':
+                    return parts[2] if parts[2].startswith('/') else '/' + parts[2]
+            last = lines[-1].split(':', 2)[-1]
+            return last if last.startswith('/') else '/' + last
+        else:
+            for ln in lines:
+                parts = ln.split(':', 2)
+                if len(parts) == 3 and want in (parts[1] or '').split(','):
+                    p = parts[2]
+                    return p if p.startswith('/') else '/' + p
+            return None
+    except Exception:
+        return None
+
+def read_mem_bytes(pid: str) -> int:
+    try:
+        cg = cgroup_path_for_pid(pid, 'memory')
+        if not cg:
+            return -1
+        if detect_cgv2():
+            mc = f"/sys/fs/cgroup{cg}/memory.current"
+        else:
+            mc = f"/sys/fs/cgroup/memory{cg}/memory.usage_in_bytes"
+        return int(open(mc, 'r').read().strip()) if os.path.exists(mc) else -1
     except Exception:
         return -1
+
 for c in data:
     cid = c.get('Id','')[:12]
     name = (c.get('Name','') or '').strip('/ ')
     pid = str(((c.get('State') or {}).get('Pid') or 0))
-    mem = read_mem_current(pid) if pid and pid!='0' else -1
+    mem = read_mem_bytes(pid) if pid and pid!='0' else -1
     print(f"{cid},{name},{pid},{mem}")
 PY
     fi
