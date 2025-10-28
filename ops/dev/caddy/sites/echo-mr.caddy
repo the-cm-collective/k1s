@@ -1,0 +1,12 @@
+https://echo-mr.home.arpa {
+    log {
+        output stdout
+        format console
+    }
+    # Ensure upstream HSTS does not stick during dev
+    header -Strict-Transport-Security
+    tls internal
+    reverse_proxy 127.0.0.1:33939 127.0.0.1:42855 127.0.0.1:46645 {
+lb_policy first
+}
+}

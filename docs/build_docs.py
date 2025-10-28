@@ -290,6 +290,64 @@ def build_one(md_path: Path, out_path: Path) -> None:
     except Exception:
         # Non-fatal: keep page renderable if injection fails
         pass
+
+    # Inject latest memory benchmark summary into the k1s memory testing page
+    try:
+        if md_path.name == "testing-memory-k1s.md":
+            # Look for outputs at repo root: ./combined and ./charts
+            repo_root = ROOT.parent
+            combined_csv = repo_root / "combined" / "combined.csv"
+            charts_dir = repo_root / "charts"
+            if combined_csv.exists():
+                import csv
+                rows: list[dict[str, str]] = []
+                with combined_csv.open("r", encoding="utf-8", errors="ignore") as fh:
+                    for r in csv.DictReader(fh):
+                        rows.append(r)
+                # Keep the last 6 entries to avoid bloating the page
+                tail = rows[-6:] if len(rows) > 6 else rows
+                def fmt_mib(val: str) -> str:
+                    try:
+                        v = int(val or 0)
+                    except Exception:
+                        v = 0
+                    # control_plane_pss_kb comes in KiB; others in bytes
+                    return f"{v/1024/1024:.1f}"
+                def fmt_kib(val: str) -> str:
+                    try:
+                        v = int(val or 0)
+                    except Exception:
+                        v = 0
+                    return f"{v/1024:.1f}"
+                parts: list[str] = [
+                    "<hr/>",
+                    "<h2>Latest Benchmarks (Auto)</h2>",
+                    "<p>Summarized from <code>combined/combined.csv</code> at build time.</p>",
+                    "<table border=1 cellpadding=6 cellspacing=0>",
+                    "<tr><th>Label</th><th>Mode</th><th>Timestamp</th><th>Ctrl‑Plane PSS (MiB)</th><th>System Cgroups (MiB)</th></tr>",
+                ]
+                for r in tail:
+                    cp_mib = fmt_kib(r.get("control_plane_pss_kb", "0"))
+                    sys_mib = fmt_mib(r.get("system_mem_bytes", "0"))
+                    parts.append(
+                        f"<tr><td>{html.escape(r.get('label',''))}</td><td>{html.escape(r.get('mode',''))}</td>"
+                        f"<td>{html.escape(r.get('timestamp',''))}</td><td style='text-align:right'>{cp_mib}</td>"
+                        f"<td style='text-align:right'>{sys_mib}</td></tr>"
+                    )
+                parts.append("</table>")
+                # Link charts if present
+                chart_links: list[str] = []
+                if charts_dir.exists():
+                    for name in ("control_plane_pss.png", "system_cgroups.png", "per_pod_overhead.png"):
+                        p = charts_dir / name
+                        if p.exists():
+                            chart_links.append(f"<li><a href='../charts/{name}'>{name}</a></li>")
+                if chart_links:
+                    parts.append("<p>Charts:</p><ul>" + "".join(chart_links) + "</ul>")
+                html_body += "\n" + "\n".join(parts)
+    except Exception:
+        # Non-fatal: keep page renderable if injection fails
+        pass
     title = md_path.stem.replace("-", " ").title()
     out_path.write_text(
         TEMPLATE.format(title=title, body=html_body, api_base=API_BASE), encoding="utf-8"

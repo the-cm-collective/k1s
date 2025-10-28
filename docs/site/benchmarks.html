@@ -89,9 +89,9 @@
       <a href="http-api.html">HTTP API</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
-      <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
-      <a href="https://api.home.arpa:8443/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="https://api.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="http://127.0.0.1:9108/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="http://127.0.0.1:9108/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <a href="http://127.0.0.1:9108/dashboard" target="_blank" rel="noopener">Dashboard</a>
     </nav>
     <div class="container">
     <h1>Benchmarks &amp; Tests</h1>
@@ -101,6 +101,23 @@
 <li><a href="benchmark-k3s.html">Benchmarking k1s vs k3s (In‑Depth)</a></li>
 </ul>
 <p>For quick commands and charts, see the end‑to‑end Make targets in each guide.</p>
+<h2>Runbook: Quick Start</h2>
+<ul>
+<li>Set env: <code>PYTHONPATH=src</code>, <code>AE_RUNTIME_BACKEND=podman</code> (or <code>docker</code>), <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> for demos.</li>
+<li>Keep controller running (or let scripts auto‑start): <code>python -m ae.controller --loop --specs specs/ --watch</code>.</li>
+<li>Build or ensure images are present (Podman shown):</li>
+<li><code>podman build -t localhost/demo-blue:latest samples/servers/blue</code></li>
+<li><code>podman build -t localhost/demo-green:latest samples/servers/green</code></li>
+<li>Run end‑to‑end and generate charts:</li>
+<li><code>make bench-mem-e2e-k1s LABEL_SUITE=report-YYYYMMDD APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5</code></li>
+<li><code>python scripts/bench/mem_combine.py snapshots/*/*</code></li>
+<li><code>python scripts/bench/plot_overhead.py combined/combined.csv charts</code></li>
+<li><code>python docs/build_docs.py</code></li>
+<li>Preflights:</li>
+<li>Podman must pass <code>podman info</code>; if not, start <code>podman.socket</code>, enable lingering with <code>loginctl enable-linger &quot;$USER&quot;</code>, and run <code>podman system migrate</code>.</li>
+<li>If not using plaintext secrets, ensure <code>sops --decrypt</code> works; scripts fail fast with guidance otherwise.</li>
+<li>Outputs: <code>combined/combined.csv</code> and <code>charts/*.png</code>. The testing-memory-k1s page auto‑shows the latest results.</li>
+</ul>
     </div>
   </body>
 </html>

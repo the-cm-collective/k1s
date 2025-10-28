@@ -50,7 +50,7 @@ demo-down:
 	./scripts/init_demo.sh --down -y
 
 integ-test:
-	AE_DOCKER_TEST=1 pytest -q tests/integration/
+	AE_INTEG_RUNTIME=$${AE_INTEG_RUNTIME:-podman} pytest -q tests/integration/
 # Benchmarks -------------------------------------------------------------
 
 .PHONY: bench-mem-k1s bench-mem-k3s bench-mem-agg

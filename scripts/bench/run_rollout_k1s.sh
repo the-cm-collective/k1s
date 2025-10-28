@@ -33,12 +33,54 @@ ensure_controller() {
   if pgrep -f "python\s*-m\s*ae\.controller" >/dev/null 2>&1; then
     return 0
   fi
-  echo "[rollout] controller not detected. Start it in another terminal: 'python -m ae.controller --loop'" >&2
+  echo "[rollout] controller not detected; attempting auto-start..." >&2
+  nohup python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch >/tmp/k1s_ctrl_bench.log 2>&1 &
+  sleep 3
+  if pgrep -f "python\s*-m\s*ae\.controller" >/dev/null 2>&1; then
+    echo "[rollout] controller started (logs: /tmp/k1s_ctrl_bench.log)" >&2
+    return 0
+  fi
+  echo "[rollout] controller still not running. Start it manually: 'python -m ae.controller --loop'" >&2
   exit 2
+}
+
+preflight_runtime() {
+  backend=${AE_RUNTIME_BACKEND:-podman}
+  if [[ "$backend" == "podman" || "$backend" == "oci" ]]; then
+    if ! command -v podman >/dev/null 2>&1; then
+      echo "[rollout] Podman not found. Set AE_RUNTIME_BACKEND=docker or install Podman." >&2
+      exit 2
+    fi
+    if ! podman info >/dev/null 2>&1; then
+      echo "[rollout] Podman is not ready (podman info failed)." >&2
+      echo "         Hints: systemctl --user start podman.socket; loginctl enable-linger $USER; podman system migrate" >&2
+      exit 2
+    fi
+  elif [[ "$backend" == "docker" ]]; then
+    if ! command -v docker >/dev/null 2>&1; then
+      echo "[rollout] Docker not found. Install Docker or set AE_RUNTIME_BACKEND=podman." >&2
+      exit 2
+    fi
+    if ! docker ps >/dev/null 2>&1; then
+      echo "[rollout] Docker not accessible to current user. Ensure group membership or rootless config." >&2
+      exit 2
+    fi
+  fi
+}
+
+secrets_guard() {
+  if [[ "${AE_ALLOW_PLAINTEXT_SECRETS:-0}" != "1" ]]; then
+    if ! command -v sops >/dev/null 2>&1; then
+      echo "[rollout] Secrets guard: set AE_ALLOW_PLAINTEXT_SECRETS=1 or install/configure sops for demo secrets." >&2
+      exit 2
+    fi
+  fi
 }
 
 if [[ "${SKIP_GUARDS:-0}" != "1" ]]; then
   ensure_controller
+  preflight_runtime
+  secrets_guard
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
