@@ -12,6 +12,7 @@ manifest="specs/examples/echo.yaml"
 app_name="echo"
 replicas=5
 duration=30
+use_sudo=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -20,6 +21,7 @@ while [[ $# -gt 0 ]]; do
     --app-name) app_name="$2"; shift 2;;
     --replicas) replicas="$2"; shift 2;;
     --duration) duration="$2"; shift 2;;
+    --sudo) use_sudo=1; shift;;
     *) echo "unknown arg: $1"; exit 2;;
   esac
 done
@@ -154,12 +156,20 @@ echo "[rollout] apply new image: ${target_img}" >&2
 ae apply -f "$tmpman" || true
 
 echo "[rollout] snapshot DURING rollout" >&2
-scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+  sudo -E scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+else
+  scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+fi
 
 echo "[rollout] wait ready post-rollout" >&2
 wait_ready "$app_name" "$replicas" || true
 
 echo "[rollout] snapshot POST rollout" >&2
-scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+  sudo -E scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+else
+  scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+fi
 
 echo "[rollout] done" >&2

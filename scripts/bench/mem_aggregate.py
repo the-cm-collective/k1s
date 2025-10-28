@@ -23,6 +23,7 @@ from typing import Dict, List, Tuple
 class ProcRollup:
     pid: int
     comm: str
+    cmdline: str | None = None  # full args from ps_scan_before.txt when available
     rss_kb: int | None = None
     pss_kb: int | None = None
     uss_kb: int | None = None  # approx from Private_* if available
@@ -61,8 +62,32 @@ def _parse_ps(ps_path: Path) -> Dict[int, str]:
     return out
 
 
+def _parse_ps_scan(ps_scan_path: Path) -> Dict[int, str]:
+    """Parse pid -> full command line from ps_scan_before.txt.
+
+    The file is produced by `ps -eo pid,ppid,comm,args --sort -rss`.
+    We want the args column (4th), which may contain spaces; capture the
+    substring after the first three whitespace‑separated fields.
+    """
+    out: Dict[int, str] = {}
+    try:
+        with ps_scan_path.open("r", encoding="utf-8", errors="ignore") as fh:
+            next(fh, None)  # header
+            for line in fh:
+                # Split into at most 4 parts so the 4th is the full args
+                parts = line.rstrip("\n").split(None, 3)
+                if len(parts) == 4:
+                    pid = int(parts[0])
+                    args = parts[3]
+                    out[pid] = args
+    except Exception:
+        pass
+    return out
+
+
 def _collect_proc_rollups(raw_dir: Path) -> List[ProcRollup]:
     ps_map = _parse_ps(raw_dir / "ps_after.txt") or _parse_ps(raw_dir / "ps_before.txt")
+    ps_args = _parse_ps_scan(raw_dir / "ps_scan_before.txt")
     rollups: List[ProcRollup] = []
     for sm in raw_dir.glob("smaps_*_*.txt"):
         # smaps_<pid>_<comm>.txt
@@ -71,8 +96,9 @@ def _collect_proc_rollups(raw_dir: Path) -> List[ProcRollup]:
         except Exception:
             continue
         comm = ps_map.get(pid, sm.name.split("_", 2)[-1].rsplit(".", 1)[0])
+        cmdline = ps_args.get(pid)
         rss, pss, uss = _read_smaps_rollup(sm)
-        rollups.append(ProcRollup(pid=pid, comm=comm, rss_kb=rss, pss_kb=pss, uss_kb=uss))
+        rollups.append(ProcRollup(pid=pid, comm=comm, cmdline=cmdline, rss_kb=rss, pss_kb=pss, uss_kb=uss))
     return rollups
 
 
@@ -88,8 +114,9 @@ def _read_containers_csv(raw_dir: Path) -> List[Dict[str, str]]:
     return out
 
 
-def _classify_proc(comm: str, mode: str) -> str:
-    comm_l = comm.lower()
+def _classify_proc(comm: str, mode: str, cmdline: str | None = None) -> str:
+    comm_l = (comm or "").lower()
+    args_l = (cmdline or "").lower()
     if "containerd-shim" in comm_l:
         return "ignore"
     if mode == "k3s":
@@ -102,12 +129,22 @@ def _classify_proc(comm: str, mode: str) -> str:
         if "traefik" in comm_l:
             return "ingress"
         return "other"
-    # k1s default
-    if "ae.controller" in comm_l:
+    # k1s default — match either the short comm or full args
+    if "ae.controller" in comm_l or "ae.controller" in args_l:
         return "controller"
-    if "caddy" in comm_l:
+    if "caddy" in comm_l or "caddy" in args_l:
         return "ingress"
-    if "dockerd" in comm_l or "containerd" in comm_l:
+    # Container runtime: docker/containerd/podman/conmon (rootless podman)
+    if (
+        "dockerd" in comm_l
+        or "containerd" in comm_l
+        or "podman" in comm_l
+        or "conmon" in comm_l
+        or "dockerd" in args_l
+        or "containerd" in args_l
+        or "podman" in args_l
+        or "conmon" in args_l
+    ):
         return "runtime"
     return "other"
 
@@ -125,7 +162,7 @@ def aggregate(snapshot_dir: Path) -> Dict:
     proc_totals = {"rss_kb": 0, "pss_kb": 0, "uss_kb": 0}
     by_class: Dict[str, Dict[str, int]] = {}
     for pr in procs:
-        c = _classify_proc(pr.comm or "", mode)
+        c = _classify_proc(pr.comm or "", mode, pr.cmdline)
         if c == "ignore":
             continue
         bucket = by_class.setdefault(c, {"rss_kb": 0, "pss_kb": 0, "uss_kb": 0})
@@ -143,8 +180,8 @@ def aggregate(snapshot_dir: Path) -> Dict:
     containers = _read_containers_csv(raw)
     app_bytes = system_bytes = 0
     if containers:
-        # Attempt to classify app vs system using docker inspect labels (if available)
-        # Fallback: name prefix heuristics
+        # Attempt to classify app vs system using container inspect labels
+        # Prefer docker_inspect.json; fallback to podman_inspect.json when present
         inspect = None
         insp_path = raw / "docker_inspect.json"
         if insp_path.exists():
@@ -152,6 +189,13 @@ def aggregate(snapshot_dir: Path) -> Dict:
                 inspect = {c.get("Id", "")[:12]: c for c in json.loads(insp_path.read_text())}
             except Exception:
                 inspect = None
+        if inspect is None:
+            insp_pod = raw / "podman_inspect.json"
+            if insp_pod.exists():
+                try:
+                    inspect = {c.get("Id", "")[:12]: c for c in json.loads(insp_pod.read_text())}
+                except Exception:
+                    inspect = None
         for row in containers:
             cid = (row.get("container_id") or "")
             mem = int(row.get("mem_current_bytes") or "-1")
@@ -159,7 +203,9 @@ def aggregate(snapshot_dir: Path) -> Dict:
                 continue
             is_app = False
             if inspect is not None and cid in inspect:
-                labels = (inspect[cid].get("Config") or {}).get("Labels") or {}
+                # Docker and Podman both expose Config.Labels; also check top-level Labels for safety
+                ins = inspect[cid]
+                labels = ((ins.get("Config") or {}).get("Labels") or {}) or (ins.get("Labels") or {})
                 if any(k.startswith("ae.app") for k in labels.keys()) or labels.get("ae.app"):
                     is_app = True
             else:
