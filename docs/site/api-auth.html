@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Demo Modes</title>
+    <title>Api Auth</title>
     <style>
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.55; }
       code, pre { background: #f6f8fa; }
@@ -96,76 +96,35 @@
       <a href="https://api.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
     </nav>
     <div class="container">
-    <h2>Demo Modes</h2>
-<p>The init script can stand up different demo combinations. Use the flags below to control which apps are applied. Add <code>-y</code> to auto-add hosts and <code>-d</code> to attach logs (Ctrl-C to exit).</p>
-<h3>Standard Demo (blue/green)</h3>
+    <p>API Auth and Mutations</p>
+<p>Overview</p>
 <ul>
-<li>Apps: blue and green services behind TLS via Caddy</li>
-<li>Command:</li>
-<li><code>./scripts/init_demo.sh --demo-standard -y</code></li>
-<li><code>make demo ARGS=&quot;--demo-standard -y -d&quot;</code></li>
-<li>Endpoints:</li>
-<li><code>https://blue.home.arpa:8443/</code></li>
-<li><code>https://green.home.arpa:8443/</code></li>
+<li>Read-only endpoints (/status, /events, /metrics, /logs, /health, /openapi.json) are available by default.</li>
+<li>Mutating endpoints (/scale/&lt;app&gt;, /delete/&lt;app&gt;) are disabled unless AE_API_MUTATIONS=1.</li>
+<li>Optional Bearer tokens gate access per role:</li>
+<li>AE_API_READ_TOKEN   (read)</li>
+<li>AE_API_SCALER_TOKEN (scale)</li>
+<li>AE_API_ADMIN_TOKEN  (admin)</li>
 </ul>
-<h3>Configs &amp; Secrets Demo (echo)</h3>
+<p>Enabling mutations (dev) 1) Export tokens and enable mutations for the controller process:</p>
 <ul>
-<li>Shows <code>configRefs</code> and <code>secretRefs</code> → env and file projections.</li>
-<li>Projections (host): <code>state/projections/echo-revN/{config,secret}/...</code></li>
-<li>Mounted RO (container): <code>/var/run/ae/config/echo</code></li>
-<li>Command:</li>
-<li><code>./scripts/init_demo.sh --demo-configs -y</code></li>
-<li><code>make demo</code> (defaults to <code>-y --demo-configs</code>)</li>
+<li>AE_API_MUTATIONS=1</li>
+<li>AE_API_ADMIN_TOKEN=changeme</li>
+<p>2) Start controller with --metrics-port and Caddy fronting the API.</p>
 </ul>
-<h3>Multi-Replica Echo (echo-mr)</h3>
+<p>Remote CLI usage</p>
 <ul>
-<li>Shows Caddy load-balancing across multiple replicas on a shared container network.</li>
-<li>Command:</li>
-<li><code>./scripts/init_demo.sh --demo-echo-mr -y</code></li>
-<li><code>make demo ARGS=&quot;--demo-echo-mr -y -d&quot;</code></li>
-<li>Endpoint: <code>https://echo-mr.home.arpa:8443/</code></li>
+<li>Scale:</li>
+<li>ae --server https://api.home.arpa:8443 --token $SCALER scale echo --replicas 2</li>
+<li>Delete:</li>
+<li>ae --server https://api.home.arpa:8443 --token $ADMIN delete echo --purge</li>
+<li>Logs (requires READ token when any token is configured):</li>
+<li>ae --server https://api.home.arpa:8443 --token $READ logs echo --tail 100</li>
 </ul>
-<h3>Docs Only</h3>
+<p>Security notes</p>
 <ul>
-<li>Starts the docs server and API; does not apply any apps.</li>
-<li>Command:</li>
-<li><code>./scripts/init_demo.sh --docs-only -y</code></li>
-<li><code>make demo ARGS=&quot;--docs-only -y -d&quot;</code></li>
-<li>Endpoints:</li>
-<li>Docs: <code>https://docs.home.arpa:8443/</code> and <code>http://127.0.0.1:9109/</code></li>
-<li>API:  <code>https://api.home.arpa:8443/swagger</code> and <code>http://127.0.0.1:9108/swagger</code></li>
-</ul>
-<h3>Helpful Flags &amp; Targets</h3>
-<ul>
-<li><code>-d, --debug</code> — attach logs for controller, caddy, prometheus, and site changes.</li>
-<li><code>--down -y</code> — tear down: <code>./scripts/init_demo.sh --down -y</code></li>
-<li><code>make demo-help</code> — print demo script usage</li>
-<li><code>make demo-down</code> — tear down demo</li>
-<li><code>make integ-test</code> — run integration tests (set <code>AE_INTEG_RUNTIME=podman</code> or <code>docker</code>)</li>
-</ul>
-<h3>Rollout Demo</h3>
-<ul>
-<li>Ordered rollout for <code>echo</code> with default prefer-first routing:</li>
-<li><code>./scripts/init_demo.sh --demo-rollout -y -d</code></li>
-<li>Optional canary: set <code>spec.rollout.strategy: canary</code> with <code>weight</code> (and <code>auto</code> for ramps).</li>
-</ul>
-<h3>Notes</h3>
-<ul>
-<li>Caddy HTTP: <code>:8888</code>, HTTPS: <code>:8443</code>.</li>
-<li>Hosts entries (added with <code>-y</code>): <code>blue|green|echo-mr|docs|api.home.arpa</code> → <code>127.0.0.1</code>.</li>
-<li>Dashboard lives under the API host: <code>https://api.home.arpa:8443/dashboard</code> (or <code>http://127.0.0.1:9108/dashboard</code> directly).</li>
-<li>Health checks are disabled by default for compatibility; enable with <code>AE_CADDY_ACTIVE_HEALTH=1</code> if your Caddy supports the directive.</li>
-</ul>
-<h3>Storage (PV-lite)</h3>
-<ul>
-<li>Applies an <code>echo</code> app with a named volume mounted at <code>/var/lib/echo</code>.</li>
-<li>Command:</li>
-<li><code>./scripts/init_demo.sh --demo-storage -y</code></li>
-<li><code>make demo ARGS=&quot;--demo-storage -y -d&quot;</code></li>
-<li>Inspect volumes:</li>
-<li><code>ae volumes list --app echo</code></li>
-<li>Delete with purge to remove volumes marked <code>retention: Delete</code>:</li>
-<li><code>ae delete echo --purge</code></li>
+<li>For production, place the API behind TLS (Caddy) and use client auth or network ACLs.</li>
+<li>Prefer short-lived tokens and minimal roles for automation.</li>
 </ul>
     </div>
   </body>

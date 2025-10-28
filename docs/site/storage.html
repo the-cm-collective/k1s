@@ -87,6 +87,8 @@
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="ingress.html">Ingress</a>
+      <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
@@ -95,7 +97,7 @@
     </nav>
     <div class="container">
     <h2>Storage (PV-lite)</h2>
-<p>Use <code>spec.storage</code> to declare named persistent volumes for an app. The controller creates a Docker named volume per entry and mounts it into the container.</p>
+<p>Use <code>spec.storage</code> to declare named persistent volumes for an app. The controller creates a container‑engine named volume per entry and mounts it into the container.</p>
 <h3>Spec</h3>
 <pre><code>
 spec:
@@ -105,7 +107,7 @@ spec:
       retention: Retain   # or Delete
 </code></pre>
 <ul>
-<li>name: logical name for the volume; actual Docker volume will be <code>ae-&lt;app&gt;-&lt;name&gt;</code></li>
+<li>name: logical name for the volume; the engine volume will be named <code>ae-&lt;app&gt;-&lt;name&gt;</code></li>
 <li>mountPath: container path where the volume is mounted</li>
 <li>retention: <code>Retain</code> (default) keeps the volume on <code>ae delete</code>; <code>Delete</code> removes it on <code>ae delete --purge</code></li>
 </ul>
@@ -127,7 +129,7 @@ ae delete echo --purge
 <h3>Retention &amp; Purge</h3>
 <ul>
 <li><code>retention: Retain</code> (default) keeps data even if you delete the app:</li>
-<li><code>ae delete &lt;app&gt;</code> will stop and remove containers but keep the Docker volume(s).</li>
+<li><code>ae delete &lt;app&gt;</code> will stop and remove containers but keep the engine volume(s).</li>
 <li><code>retention: Delete</code> removes data only when you purge:</li>
 <li><code>ae delete &lt;app&gt; --purge</code></li>
 </ul>

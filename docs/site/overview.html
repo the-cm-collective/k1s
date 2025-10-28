@@ -87,6 +87,8 @@
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="ingress.html">Ingress</a>
+      <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
@@ -95,7 +97,7 @@
     </nav>
     <div class="container">
     <h1>k1s Overview</h1>
-<p>k1s is a tiny, single‑node application engine that lets you declare apps in YAML, run them in Docker, and expose them via Caddy. It aims to give you the everyday ergonomics of a small Kubernetes subset without the operational weight.</p>
+<p>k1s is a tiny, single‑node application engine that lets you declare apps in YAML, run them with a container runtime (Podman preferred; Docker supported), and expose them via Caddy. It aims to give you the everyday ergonomics of a small Kubernetes subset without the operational weight.</p>
 <ul>
 <li>Goal: simple, predictable rollouts for 1–3 services on a small VPS.</li>
 <li>Non‑goals: multi‑node scheduling, CRDs, complex RBAC, full Kubernetes API.</li>
@@ -103,21 +105,24 @@
 <h2>Features (High‑Level)</h2>
 <ul>
 <li>Declarative specs: <code>apiVersion: ae.dev/v1alpha1</code>, <code>kind: App</code>.</li>
-<li>Rolling deploys and rollback with health gates.</li>
-<li>Readiness/Liveness probes (HTTP) with initial delay.</li>
-<li>Ingress via Caddy site fragments + <code>caddy reload</code>.</li>
-<li>Secrets via SOPS/age; env injection at apply time.</li>
+<li>Rolling deploys and rollback with health gates; pause/resume via <code>ae rollout</code>.</li>
+<li>Probes: HTTP, TCP, and Exec with initial delays/timeouts.</li>
+<li>Ingress via Caddy site fragments + reload; TLS via BYO certs or k8s‑style secrets.</li>
+<li>Configs and Secrets: project keys to env and files (SOPS/age supported).</li>
+<li>Storage: per‑app named volumes (PV‑lite) with <code>retention: Retain|Delete</code>.</li>
+<li>Security: runAsUser/runAsGroup, readOnlyRootFilesystem, dropCapabilities.</li>
 <li>Registry auth from <code>~/.config/ae/registries.yaml</code>.</li>
 <li>Events and metrics; CLI snapshot and Prometheus text endpoint.</li>
 <li>CLIs: <code>ae</code> (native) and <code>k1s</code> (kubectl‑like wrapper).</li>
-<li>HTTP API (read‑only): <code>/metrics</code>, <code>/status</code>, <code>/status/&lt;app&gt;</code>, <code>/events/&lt;app&gt;</code>, <code>/openapi.json</code>, <code>/docs</code>.</li>
+<li>HTTP API (read‑mostly): <code>/metrics</code>, <code>/health</code>, <code>/status</code>, <code>/status/&lt;app&gt;</code>, <code>/events/&lt;app&gt;</code>, <code>/logs/&lt;app&gt;</code>, <code>/openapi.json</code>, <code>/docs</code>, <code>/dashboard</code>.</li>
+<li>K8s helpers: <code>export-k8s</code>, <code>k8s-check</code>, and <code>k8s-report</code> for parity/compliance.</li>
 </ul>
 <h3>Architecture at a Glance (Diagram)</h3>
 <pre class="mermaid">
 flowchart LR
   A[Specs/*.yaml] --&gt;|load| C[Controller]
-  C --&gt;|ensure| D[(Docker Engine)]
-  C --&gt;|health| H[HTTP Probes]
+  C --&gt;|ensure| R[(Container Runtime)]
+  C --&gt;|health| H[Probes]
   C --&gt;|write| S[(SQLite State)]
   C --&gt;|render+reload| I[Caddy Ingress]
   C --&gt;|expose| API[HTTP API: /status /metrics]
@@ -127,7 +132,7 @@ flowchart LR
 <h2>Requirements</h2>
 <ul>
 <li>Python 3.11+</li>
-<li>Docker Engine</li>
+<li>Podman (preferred) or Docker</li>
 <li>Optional: Caddy (for ingress), SOPS/age (for secrets), watchdog (for live file watch)</li>
 </ul>
 <h2>Install</h2>
@@ -173,7 +178,7 @@ flowchart LR
 <h2>Project Layout</h2>
 <ul>
 <li>src/ae/controller: reconcile loop, state, health, spec models</li>
-<li>src/ae/runtime: Docker adapter, registry auth, stub runtime</li>
+<li>src/ae/runtime: Podman (default) and Docker adapters, registry auth, stub runtime</li>
 <li>src/ae/ingress: Caddy templating + reload</li>
 <li>src/ae/cli and src/ae/kctl: CLIs (<code>ae</code>, <code>k1s</code>)</li>
 <li>src/ae/observability: metrics, HTTP API, logging</li>

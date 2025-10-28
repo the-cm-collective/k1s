@@ -129,6 +129,8 @@ TEMPLATE = """<!doctype html>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="ingress.html">Ingress</a>
+      <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="{api_base}/swagger" target="_blank" rel="noopener">Swagger</a>
@@ -304,8 +306,12 @@ def build_one(md_path: Path, out_path: Path) -> None:
                 with combined_csv.open("r", encoding="utf-8", errors="ignore") as fh:
                     for r in csv.DictReader(fh):
                         rows.append(r)
-                # Keep the last 6 entries to avoid bloating the page
-                tail = rows[-6:] if len(rows) > 6 else rows
+                # Sort by timestamp (YYYYMMDD-HHMMSS) and keep the last N entries
+                try:
+                    rows.sort(key=lambda r: str(r.get("timestamp", "")))
+                except Exception:
+                    pass
+                tail = rows[-8:] if len(rows) > 8 else rows
                 def fmt_mib(val: str) -> str:
                     try:
                         v = int(val or 0)
@@ -338,10 +344,15 @@ def build_one(md_path: Path, out_path: Path) -> None:
                 # Link charts if present
                 chart_links: list[str] = []
                 if charts_dir.exists():
+                    # Copy charts into docs/site/charts so the docs server can serve them directly
+                    import shutil
+                    charts_out = OUT / "charts"
+                    charts_out.mkdir(parents=True, exist_ok=True)
                     for name in ("control_plane_pss.png", "system_cgroups.png", "per_pod_overhead.png"):
                         p = charts_dir / name
                         if p.exists():
-                            chart_links.append(f"<li><a href='../charts/{name}'>{name}</a></li>")
+                            shutil.copy2(p, charts_out / name)
+                            chart_links.append(f"<li><a href='charts/{name}'>{name}</a></li>")
                 if chart_links:
                     parts.append("<p>Charts:</p><ul>" + "".join(chart_links) + "</ul>")
                 html_body += "\n" + "\n".join(parts)
@@ -360,6 +371,8 @@ def main() -> None:
         "overview.md": "overview.html",
         "architecture.md": "architecture.html",
         "http-api.md": "http-api.html",
+        "ingress.md": "ingress.html",
+        "api-auth.md": "api-auth.html",
         "concepts.md": "concepts.html",
         "benchmarks.md": "benchmarks.html",
         "testing-memory-k1s.md": "testing-memory-k1s.html",
@@ -382,6 +395,8 @@ def main() -> None:
   <li><a href="overview.html">Overview</a></li>
   <li><a href="architecture.html">Architecture</a></li>
   <li><a href="http-api.html">HTTP API</a></li>
+  <li><a href="ingress.html">Ingress</a></li>
+  <li><a href="api-auth.html">API Auth</a></li>
   <li><a href="concepts.html">Concepts</a></li>
   <li><a href="configs-secrets.html">Configs &amp; Secrets</a></li>
   <li><a href="demo-modes.html">Demo Modes</a></li>

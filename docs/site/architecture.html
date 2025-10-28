@@ -87,6 +87,8 @@
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="ingress.html">Ingress</a>
+      <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
@@ -106,12 +108,12 @@
 <h2>Components</h2>
 <ul>
 <li>Controller (src/ae/controller): orchestrates reconcile, writes state, emits events.</li>
-<li>Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is primary, Docker optional.</li>
+<li>Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback.</li>
 <li>Ingress (src/ae/ingress): writes Caddy site fragments and triggers reloads.</li>
-<li>Health (src/ae/controller/health.py): readiness/liveness evaluation.</li>
-<li>State store (src/ae/controller/state.py): SQLite schema and queries.</li>
-<li>Secrets (src/ae/secrets): SOPS/age integration, env projection.</li>
-<li>Observability (src/ae/observability): metrics snapshot, HTTP API, logging helpers.</li>
+<li>Health (src/ae/controller/health.py): readiness/liveness/exec/tcp evaluation.</li>
+<li>State store (src/ae/controller/state.py): SQLite schema and queries (+ canary rollout state).</li>
+<li>Secrets (src/ae/secrets) and Configs (src/ae/config): SOPS/age integration, env and file projection.</li>
+<li>Observability (src/ae/observability): metrics snapshot, HTTP API, dashboard, logging helpers.</li>
 <li>CLI (src/ae/cli) + kubectl‑like wrapper (src/ae/kctl).</li>
 </ul>
 <h2>Reconcile Loop</h2>
@@ -124,11 +126,12 @@
 <p>Ordering</p>
 <ul>
 <li>Load manifests (YAML → Pydantic models).</li>
+<li>Inject configs/secrets into env; project selected keys into files mounted read‑only.</li>
 <li>Compute revision: hash the spec; reuse the latest revision if hash unchanged; otherwise increment.</li>
-<li>Runtime ensure: create/update/remove containers to match replicas.</li>
-<li>Health gate: evaluate readiness/liveness; decide revision status ready/progressing/degraded.</li>
-<li>Ingress: pick a healthy upstream (if any) and write/reload Caddy; remove ingress when omitted.</li>
-<li>Persist: write app status, replicas, probe history, and revision record; emit events.</li>
+<li>Runtime ensure: create/update/remove containers to match replicas (respect rollout policy).</li>
+<li>Health gate: evaluate readiness/liveness/exec/tcp; decide revision status ready/progressing/degraded/paused.</li>
+<li>Ingress: prefer‑first routing to new revision; optional canary weight/auto progression; remove ingress when omitted.</li>
+<li>Persist: write app status, replicas, probe history, canary state, and revision record; emit events.</li>
 </ul>
 <p>Idempotency &amp; Diff</p>
 <ul>
@@ -139,10 +142,12 @@
 <p>Pseudocode (as implemented in src/ae/controller/reconciler.py)</p>
 <pre><code>
 for manifest in manifests:
+  manifest = apply_configs_and_secrets(manifest)
+  projection_root = prepare_file_projections(manifest, rev)
   rev = store.prepare_revision(spec_hash)
-  result = runtime.ensure_app(manifest, rev)
+  result = runtime.ensure_app(manifest, rev, keep_old=True, limit_create=...)  # per rollout
   health = health.evaluate(manifest, result)
-  ingress.apply/remove based on health/spec
+  ingress.apply/remove based on health/spec (+ canary weight)
   store.record_snapshot(manifest, result, health, rev, status)
   events.emit(ApplyCompleted)
 </code></pre>
@@ -181,15 +186,19 @@ sequenceDiagram
 <ul>
 <li><code>image: str</code></li>
 <li><code>command: [str]?</code></li>
-<li><code>env: [{name, value}]</code> (merged with secrets)</li>
+<li><code>env: [{name, value}]</code> (merged with configs/secrets)</li>
 <li><code>replicas: int&gt;=1</code></li>
 <li><code>ports: [{name, containerPort}]</code></li>
-<li><code>health.readiness|liveness</code> HTTP probes with <code>initialDelaySeconds</code>, <code>timeoutSeconds</code> etc.</li>
-<li><code>ingress: { host, path: &#x27;/&#x27;, tls: bool }</code></li>
-<li><code>secretRefs: [{ name, path, env: [{name, key}] }]</code> (SOPS‑decrypted)</li>
-<li><code>registryAuthRef: str?</code> (reserved, not yet used directly)</li>
-<li><code>resources: { requests?, limits?: { cpu: float cores, memory: str (e.g., 256Mi) } }</code></li>
+<li><code>service: { port, targetPort? }</code> (stable host port when replicas==1)</li>
+<li><code>health.readiness|liveness</code>: HTTP, TCP, or Exec probes with <code>initialDelaySeconds</code>, <code>timeoutSeconds</code>, <code>periodSeconds</code>, thresholds</li>
+<li><code>ingress: { host, path: &#x27;/&#x27;, paths: [...], tls: bool, tlsSecretName?, tlsCertPath?, tlsKeyPath? }</code></li>
+<li><code>secretRefs|configRefs: [{ name, path, env: [{name, key}], files: [{key, file}] }]</code></li>
+<li><code>rollout: { strategy: ordered|parallel|canary, maxSurge, maxUnavailable, pause?, weight?, auto?{start,step,intervalSeconds,max} }</code></li>
+<li><code>security: { runAsUser?, runAsGroup?, readOnlyRootFilesystem?, dropCapabilities[] }</code></li>
+<li><code>resources: { requests?, limits?: { cpu: float cores, memory: quantity } }</code></li>
 <li><code>volumes: [{ hostPath, mountPath, readOnly? }]</code></li>
+<li><code>storage: [{ name, mountPath, retention: Retain|Delete }]</code></li>
+<li><code>terminationGracePeriodSeconds: int (default 10)</code></li>
 </ul>
 <p>Notes</p>
 <ul>
@@ -219,6 +228,7 @@ spec:
 <li>probe_history(id, app_name, replica_id, check_time, ready, live, readiness_message, liveness_message) [kept to 50 per replica]</li>
 <li>app_revisions(app_name, revision, spec_hash, spec_json, image, created_at, status)</li>
 <li>app_events(id, app_name, revision, event_type, message, created_at)</li>
+<li>rollout_canary(app_name PK, weight, next_step_at, step, max, updated_at)</li>
 </ul>
 <p>Query surfaces</p>
 <ul>
@@ -227,26 +237,27 @@ spec:
 <li><code>list_revisions(app)</code>, <code>get_revision_manifest(app, rev)</code></li>
 <li><code>list_events(app, limit)</code></li>
 </ul>
-<h2>Runtime: Docker</h2>
+<h2>Runtime: Container Engine (Podman/Docker)</h2>
 <p>Labels</p>
 <ul>
 <li><code>ae.app=&lt;name&gt;</code></li>
 <li><code>ae.replica_id=&lt;name&gt;-rev&lt;rev&gt;-&lt;index&gt;</code></li>
 <li><code>ae.revision=&lt;rev&gt;</code></li>
 </ul>
-<p>Ensure flow (src/ae/runtime/docker_runtime.py)</p>
+<p>Ensure flow (Docker/Podman runtimes)</p>
 <ul>
 <li>List existing containers by <code>ae.app</code> label.</li>
-<li>Partition by current revision vs old.</li>
-<li>Pull image only when a new replica is needed and image is missing.</li>
-<li>Create missing replicas with labels, env, ports, restart policy; then reload and start as needed.</li>
-<li>Remove old revision containers.</li>
-<li>Build <code>ReplicaState</code> by reloading container attributes (status, startedAt) and mapping published ports to endpoints.</li>
+<li>Partition by current revision vs old; keep old during surge.</li>
+<li>Pull image only when needed; prefer local <code>localhost/&lt;image&gt;</code> on Podman when present.</li>
+<li>Create missing replicas with labels, env, ports, security, volumes/storage, restart policy.</li>
+<li>Remove old revision containers after readiness thresholds.</li>
+<li>Build <code>ReplicaState</code> from inspection (status, startedAt) and endpoints.</li>
 </ul>
 <p>Resources/Volumes</p>
 <ul>
-<li><code>limits.cpu</code> → <code>nano_cpus=int(cpu*1e9)</code>, <code>limits.memory</code> → bytes (K/M/G, KiB/MiB/GiB).</li>
-<li>Volumes: <code>{ hostPath: { bind: mountPath, mode: ro|rw } }</code> in container run call.</li>
+<li><code>limits.cpu</code> → container CLI flag (<code>--cpus</code> on Podman/Docker); Docker uses <code>nano_cpus=int(cpu*1e9)</code> internally.</li>
+<li>Memory quantities map to bytes (K/M/G, KiB/MiB/GiB supported).</li>
+<li>Volumes: hostPath bind mounts ro/rw; <code>spec.storage</code> becomes named engine volumes per app.</li>
 </ul>
 <p>Logs</p>
 <ul>
@@ -259,12 +270,15 @@ spec:
 <h2>Ingress: Caddy</h2>
 <ul>
 <li>Each app with <code>spec.ingress</code> gets a small site block written to <code>ops/dev/caddy/sites/&lt;app&gt;.caddy</code> (or configured root).</li>
-<li>Reloads via <code>caddy reload --config &lt;file|dir&gt;</code>, optionally inside a container via <code>docker exec</code>.</li>
-<li>When Caddy runs in a container, upstreams with 127.0.0.1 are rewritten to <code>host.docker.internal</code>.</li>
+<li>Reloads via <code>caddy reload --config &lt;file|dir&gt;</code>, optionally inside a container via <code>docker|podman exec</code> (controlled by <code>AE_CONTAINER_CLI</code>).</li>
+<li>When Caddy runs in a container, loopback upstreams are rewritten to the host alias: <code>host.docker.internal</code> (Docker) or <code>host.containers.internal</code> (Podman).</li>
+<li>Optional active health checks can be enabled with <code>AE_CADDY_ACTIVE_HEALTH=1</code> when readiness probe is configured.</li>
 </ul>
 <h2>Health</h2>
 <ul>
 <li>HTTP probe: GET <code>http://&lt;replica.endpoint&gt;&lt;path&gt;</code>; success is 2xx.</li>
+<li>TCP probe: attempts a TCP connection to the declared port.</li>
+<li>Exec probe: runs a command inside the container and checks exit code 0.</li>
 <li>Initial delay honored using container <code>StartedAt</code>.</li>
 <li>Liveness defaults to true when unspecified; readiness defaults to container state when unspecified.</li>
 <li><code>HealthReport</code> aggregates per‑replica <code>ready/live</code> and messages.</li>
@@ -279,6 +293,8 @@ spec:
 <ul>
 <li>spec hash (SHA‑256 of normalized JSON) creates a new revision when changed.</li>
 <li>Rolling replace with <code>maxUnavailable=0, maxSurge=1</code> semantics at single‑app scale.</li>
+<li>Pause/resume: <code>ae rollout pause|resume &lt;app&gt;</code> toggles rollout without touching runtime.</li>
+<li>Canary: set <code>rollout.strategy: canary</code> and <code>rollout.weight</code> to bias routing; optional <code>rollout.auto{start,step,intervalSeconds,max}</code> for controller‑tracked ramp up.</li>
 <li><code>ae rollback &lt;app&gt; [--to &lt;rev&gt;]</code> fetches stored manifest and reconciles.</li>
 </ul>
 <h2>Events</h2>
@@ -289,8 +305,7 @@ spec:
 <h2>Metrics and API</h2>
 <ul>
 <li>CLI snapshot: aggregated counts (apps ready/progressing/degraded, replicas).</li>
-<li>HTTP <code>/metrics</code>: includes app/replica gauges, last reconcile timestamp/duration, per‑app reconcile sum/count, rollout operation counters.</li>
-<li>HTTP <code>/status</code>, <code>/status/&lt;app&gt;</code>, <code>/events/&lt;app&gt;</code> return JSON; <code>/openapi.json</code> documents the surface; <code>/docs</code> lists endpoints.</li>
+<li>HTTP: <code>/metrics</code>, <code>/health</code>, <code>/status</code>, <code>/status/&lt;app&gt;</code>, <code>/events/&lt;app&gt;</code>, <code>/logs/&lt;app&gt;</code>; <code>/openapi.json</code> documents the surface; <code>/docs</code> lists endpoints; <code>/dashboard</code> provides a live UI.</li>
 </ul>
 <h2>Secrets</h2>
 <ul>

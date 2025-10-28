@@ -87,6 +87,8 @@
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="ingress.html">Ingress</a>
+      <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
@@ -100,9 +102,13 @@
 <pre><code>
 spec:
   rollout:
-    strategy: ordered | parallel   # default: parallel
-    maxSurge: 1                    # keep old replicas temporarily (default: 1)
-    maxUnavailable: 0              # allow up to N replicas unavailable (default: 0)
+    strategy: ordered | parallel | canary   # default: parallel
+    maxSurge: 1                             # keep old replicas temporarily (default: 1)
+    maxUnavailable: 0                       # allow up to N replicas unavailable (default: 0)
+    pause: true|false                       # pause rollout without changing runtime
+    # canary options
+    weight: 1                               # bias first upstream Nx in ingress (canary)
+    auto: { start: 1, step: 2, intervalSeconds: 60, max: 10 }  # controller‑tracked ramp
 </code></pre>
 <h3>Semantics</h3>
 <ul>
@@ -117,6 +123,11 @@ spec:
 <li>Leaves old running during rollout (surge), then removes when readiness target is met.</li>
 </ul>
 <ul>
+<li>strategy=canary:</li>
+<li>Biases ingress routing toward the first upstream. With <code>weight: N</code>, the first upstream is duplicated N times in the Caddy config.</li>
+<li>With an <code>auto</code> block, the controller persists the weight in SQLite and increases it on schedule until <code>max</code>.</li>
+</ul>
+<ul>
 <li>maxSurge (current behavior):</li>
 <li>Old revision containers are kept until new replicas are ready enough per maxUnavailable.</li>
 </ul>
@@ -125,17 +136,17 @@ spec:
 <li>Old replicas are removed only when <code>ready_replicas &gt;= desired - maxUnavailable</code>.</li>
 </ul>
 <h3>Routing Bias</h3>
-<p>Ingress uses a “first available upstream” policy by default. The controller writes the new revision endpoints first, so traffic prefers the new revision as soon as it becomes ready; old replicas are removed once readiness satisfies the policy.</p>
-<p>Weighting (intra-revision bias): set <code>AE_ROLLOUT_FIRST_WEIGHT</code> (default <code>1</code>) to duplicate the first upstream N times in the Caddy config, biasing selection toward it. This is a simple approximation and currently applies within the active upstream set.</p>
+<p>Ingress uses a “prefer first” policy by default. The controller writes the new revision endpoints first, so traffic prefers the new revision as soon as it becomes ready; old replicas are removed once readiness satisfies the policy. For canary rollouts, use <code>rollout.weight</code> (and optional <code>rollout.auto</code>) to bias and ramp traffic.</p>
 <h3>Demo</h3>
 <p>Apply a two-step ordered rollout for <code>echo</code>:</p>
 <pre><code>
 ./scripts/init_demo.sh --demo-rollout -y -d
 </code></pre>
 <p>This applies <code>specs/examples/echo.yaml</code> then <code>specs/examples/echo-rollout.yaml</code> with rollout <code>{ strategy: ordered, maxSurge: 1, maxUnavailable: 0 }</code>.</p>
-<p>Optional bias:</p>
+<p>Pause/resume:</p>
 <pre><code>
-AE_ROLLOUT_FIRST_WEIGHT=3 ./scripts/init_demo.sh --demo-rollout -y
+ae rollout pause echo
+ae rollout resume echo
 </code></pre>
     </div>
   </body>

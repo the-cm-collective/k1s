@@ -87,6 +87,8 @@
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="ingress.html">Ingress</a>
+      <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
@@ -113,7 +115,7 @@
 </ul>
 <h3>Multi-Replica Echo (echo-mr)</h3>
 <ul>
-<li>Shows Caddy load-balancing across replicas on a shared Docker network.</li>
+<li>Shows Caddy load-balancing across replicas on a shared container network.</li>
 <li>File: <code>specs/examples/multi-replica-echo.yaml</code></li>
 <li>Command:</li>
 <li><code>./scripts/init_demo.sh --demo-echo-mr -y</code></li>
@@ -125,11 +127,11 @@
 <li>Files: <code>specs/examples/echo.yaml</code>, <code>specs/examples/echo-rollout.yaml</code></li>
 <li>Command:</li>
 <li><code>./scripts/init_demo.sh --demo-rollout -y</code></li>
-<li>Optional bias: <code>AE_ROLLOUT_FIRST_WEIGHT=3 ./scripts/init_demo.sh --demo-rollout -y</code></li>
+<li>Optional canary: set <code>rollout: { strategy: canary, weight: 3 }</code> (use <code>auto</code> to ramp)</li>
 </ul>
 <h3>Storage (PV-lite)</h3>
 <ul>
-<li>Named Docker volume mounted at <code>/var/lib/echo</code>.</li>
+<li>Named engine volume mounted at <code>/var/lib/echo</code>.</li>
 <li>Files: <code>specs/examples/echo-storage.yaml</code> and <code>echo-storage-delete.yaml</code> (Delete retention)</li>
 <li>Command:</li>
 <li><code>./scripts/init_demo.sh --demo-storage -y</code></li>

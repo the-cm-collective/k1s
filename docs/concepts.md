@@ -19,7 +19,7 @@ An immutable snapshot of desired state computed from the manifest spec hash. A n
 
 ## Reconcile
 
-The controller compares the desired state from specs to the observed state (Docker + SQLite) and performs the operations needed to converge.
+The controller compares the desired state from specs to the observed state (container runtime + SQLite) and performs the operations needed to converge.
 
 - Creates missing replicas (pulling images as needed).
 - Removes containers from older revisions after the new revision is live.
@@ -76,12 +76,12 @@ ae rollback myapp --to 3
 
 ## Resources & Volumes
 
-- CPU/memory limits map to Docker `nano_cpus` and `mem_limit`.
-- Volumes map to hostPath → bind mount (ro/rw).
+- CPU/memory limits map to engine flags (Docker nano_cpus; Podman/Docker `--cpus`, memory quantities → bytes).
+- Volumes map to hostPath → bind mount (ro/rw). `spec.storage` creates named engine volumes per app.
 
 ## Ingress
 
-For apps with `spec.ingress`, the controller writes a Caddy site snippet and reloads the proxy. When Caddy runs in a container, upstreams pointing to 127.0.0.1 are rewritten to `host.docker.internal`.
+For apps with `spec.ingress`, the controller writes a Caddy site snippet and reloads the proxy. When Caddy runs in a container, loopback upstreams are rewritten to the host alias: `host.docker.internal` (Docker) or `host.containers.internal` (Podman).
 
 ## HTTP API
 

@@ -1,6 +1,6 @@
 # k1s Overview
 
-k1s is a tiny, single‑node application engine that lets you declare apps in YAML, run them in Docker, and expose them via Caddy. It aims to give you the everyday ergonomics of a small Kubernetes subset without the operational weight.
+k1s is a tiny, single‑node application engine that lets you declare apps in YAML, run them with a container runtime (Podman preferred; Docker supported), and expose them via Caddy. It aims to give you the everyday ergonomics of a small Kubernetes subset without the operational weight.
 
 - Goal: simple, predictable rollouts for 1–3 services on a small VPS.
 - Non‑goals: multi‑node scheduling, CRDs, complex RBAC, full Kubernetes API.
@@ -8,22 +8,25 @@ k1s is a tiny, single‑node application engine that lets you declare apps in YA
 ## Features (High‑Level)
 
 - Declarative specs: `apiVersion: ae.dev/v1alpha1`, `kind: App`.
-- Rolling deploys and rollback with health gates.
-- Readiness/Liveness probes (HTTP) with initial delay.
-- Ingress via Caddy site fragments + `caddy reload`.
-- Secrets via SOPS/age; env injection at apply time.
+- Rolling deploys and rollback with health gates; pause/resume via `ae rollout`.
+- Probes: HTTP, TCP, and Exec with initial delays/timeouts.
+- Ingress via Caddy site fragments + reload; TLS via BYO certs or k8s‑style secrets.
+- Configs and Secrets: project keys to env and files (SOPS/age supported).
+- Storage: per‑app named volumes (PV‑lite) with `retention: Retain|Delete`.
+- Security: runAsUser/runAsGroup, readOnlyRootFilesystem, dropCapabilities.
 - Registry auth from `~/.config/ae/registries.yaml`.
 - Events and metrics; CLI snapshot and Prometheus text endpoint.
 - CLIs: `ae` (native) and `k1s` (kubectl‑like wrapper).
-- HTTP API (read‑only): `/metrics`, `/status`, `/status/<app>`, `/events/<app>`, `/openapi.json`, `/docs`.
+- HTTP API (read‑mostly): `/metrics`, `/health`, `/status`, `/status/<app>`, `/events/<app>`, `/logs/<app>`, `/openapi.json`, `/docs`, `/dashboard`.
+- K8s helpers: `export-k8s`, `k8s-check`, and `k8s-report` for parity/compliance.
 
 ### Architecture at a Glance (Diagram)
 
 ```mermaid
 flowchart LR
   A[Specs/*.yaml] -->|load| C[Controller]
-  C -->|ensure| D[(Docker Engine)]
-  C -->|health| H[HTTP Probes]
+  C -->|ensure| R[(Container Runtime)]
+  C -->|health| H[Probes]
   C -->|write| S[(SQLite State)]
   C -->|render+reload| I[Caddy Ingress]
   C -->|expose| API[HTTP API: /status /metrics]
@@ -34,7 +37,7 @@ flowchart LR
 ## Requirements
 
 - Python 3.11+
-- Docker Engine
+- Podman (preferred) or Docker
 - Optional: Caddy (for ingress), SOPS/age (for secrets), watchdog (for live file watch)
 
 ## Install
@@ -81,7 +84,7 @@ flowchart LR
 ## Project Layout
 
 - src/ae/controller: reconcile loop, state, health, spec models
-- src/ae/runtime: Docker adapter, registry auth, stub runtime
+- src/ae/runtime: Podman (default) and Docker adapters, registry auth, stub runtime
 - src/ae/ingress: Caddy templating + reload
 - src/ae/cli and src/ae/kctl: CLIs (`ae`, `k1s`)
 - src/ae/observability: metrics, HTTP API, logging

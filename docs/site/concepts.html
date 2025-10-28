@@ -87,6 +87,8 @@
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="ingress.html">Ingress</a>
+      <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
@@ -107,7 +109,7 @@
 <li>Used for rollbacks: <code>ae rollback &lt;app&gt; [--to &lt;rev&gt;]</code>.</li>
 </ul>
 <h2>Reconcile</h2>
-<p>The controller compares the desired state from specs to the observed state (Docker + SQLite) and performs the operations needed to converge.</p>
+<p>The controller compares the desired state from specs to the observed state (container runtime + SQLite) and performs the operations needed to converge.</p>
 <ul>
 <li>Creates missing replicas (pulling images as needed).</li>
 <li>Removes containers from older revisions after the new revision is live.</li>
@@ -150,11 +152,11 @@ ae rollback myapp --to 3
 </code></pre>
 <h2>Resources &amp; Volumes</h2>
 <ul>
-<li>CPU/memory limits map to Docker <code>nano_cpus</code> and <code>mem_limit</code>.</li>
-<li>Volumes map to hostPath → bind mount (ro/rw).</li>
+<li>CPU/memory limits map to engine flags (Docker nano_cpus; Podman/Docker <code>--cpus</code>, memory quantities → bytes).</li>
+<li>Volumes map to hostPath → bind mount (ro/rw). <code>spec.storage</code> creates named engine volumes per app.</li>
 </ul>
 <h2>Ingress</h2>
-<p>For apps with <code>spec.ingress</code>, the controller writes a Caddy site snippet and reloads the proxy. When Caddy runs in a container, upstreams pointing to 127.0.0.1 are rewritten to <code>host.docker.internal</code>.</p>
+<p>For apps with <code>spec.ingress</code>, the controller writes a Caddy site snippet and reloads the proxy. When Caddy runs in a container, loopback upstreams are rewritten to the host alias: <code>host.docker.internal</code> (Docker) or <code>host.containers.internal</code> (Podman).</p>
 <h2>HTTP API</h2>
 <p>Read‑only status/metrics/events published at:</p>
 <ul>
