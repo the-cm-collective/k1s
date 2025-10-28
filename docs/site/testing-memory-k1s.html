@@ -89,9 +89,9 @@
       <a href="http-api.html">HTTP API</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
-      <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
-      <a href="https://api.home.arpa:8443/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="https://api.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="http://127.0.0.1:9108/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="http://127.0.0.1:9108/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <a href="http://127.0.0.1:9108/dashboard" target="_blank" rel="noopener">Dashboard</a>
     </nav>
     <div class="container">
     <h1>k1s Memory Profiling (General)</h1>
@@ -99,7 +99,7 @@
 <h2>Prerequisites</h2>
 <ul>
 <li>k1s controller running locally: <code>python -m ae.controller --loop</code></li>
-<li>Optional: Docker installed (for container‐level cgroup metrics). Without Docker the snapshotter still reports process PSS totals.</li>
+<li>Optional: Podman or Docker installed for container‑level cgroup metrics. Without a container CLI, the snapshotter still reports process PSS totals.</li>
 </ul>
 <h2>Quick Start</h2>
 <ul>
@@ -133,6 +133,28 @@ make bench-mem-rollout-k1s LABEL_SUITE=baseline-roll APP=specs/examples/echo.yam
 <li>Warm up for ~2 minutes before heavy scenarios.</li>
 <li>Set <code>SKIP_GUARDS=1</code> to bypass preflight checks in CI.</li>
 </ul>
+<h2>Runbook (Quick Reference)</h2>
+<ul>
+<li>Environment: <code>PYTHONPATH=src</code>, <code>AE_RUNTIME_BACKEND=podman</code> (or <code>docker</code>), <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> for demos.</li>
+<li>Terminal A: <code>python -m ae.controller --loop --specs specs/ --watch</code> (bench scripts will auto-start if missing; logs <code>/tmp/k1s_ctrl_bench.log</code>).</li>
+<li>Terminal B:</li>
+<li><code>make bench-mem-e2e-k1s LABEL_SUITE=report-YYYYMMDD APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5</code></li>
+<li><code>python scripts/bench/mem_combine.py snapshots/*/* &amp;&amp; python scripts/bench/plot_overhead.py combined/combined.csv charts &amp;&amp; python docs/build_docs.py</code></li>
+<li>Podman preflight: <code>podman info</code> must succeed; see “Runbook: Successful Benchmark Runs” in memory.md for remedies if not.</li>
+</ul>
+<hr/>
+<h2>Latest Benchmarks (Auto)</h2>
+<p>Summarized from <code>combined/combined.csv</code> at build time.</p>
+<table border=1 cellpadding=6 cellspacing=0>
+<tr><th>Label</th><th>Mode</th><th>Timestamp</th><th>Ctrl‑Plane PSS (MiB)</th><th>System Cgroups (MiB)</th></tr>
+<tr><td>report-20251027-idle</td><td>k1s</td><td>20251027-160235</td><td style='text-align:right'>0.0</td><td style='text-align:right'>0.0</td></tr>
+<tr><td>report-20251027-idle2</td><td>k1s</td><td>20251027-162049</td><td style='text-align:right'>0.0</td><td style='text-align:right'>0.0</td></tr>
+<tr><td>report-20251027-pods-1</td><td>k1s</td><td>20251027-160252</td><td style='text-align:right'>0.0</td><td style='text-align:right'>0.0</td></tr>
+<tr><td>report-20251027-pods-10</td><td>k1s</td><td>20251027-160835</td><td style='text-align:right'>0.0</td><td style='text-align:right'>0.0</td></tr>
+<tr><td>report-20251027-pods-5</td><td>k1s</td><td>20251027-160544</td><td style='text-align:right'>0.0</td><td style='text-align:right'>0.0</td></tr>
+<tr><td>report-20251028-idle</td><td>k1s</td><td>20251027-172213</td><td style='text-align:right'>0.0</td><td style='text-align:right'>0.0</td></tr>
+</table>
+<p>Charts:</p><ul><li><a href='../charts/control_plane_pss.png'>control_plane_pss.png</a></li><li><a href='../charts/system_cgroups.png'>system_cgroups.png</a></li><li><a href='../charts/per_pod_overhead.png'>per_pod_overhead.png</a></li></ul>
     </div>
   </body>
 </html>

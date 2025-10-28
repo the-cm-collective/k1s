@@ -14,7 +14,7 @@ What we measure
 - Containers (cgroups): `memory.current` for each container cgroup via the container PID.
 
 Outputs
-- `snapshots/<label>/<timestamp>/raw/*`: raw text and JSON (ps, free, vmstat, smaps_rollup, docker inspect, per-container memory CSV).
+- `snapshots/<label>/<timestamp>/raw/*`: raw text and JSON (ps, free, vmstat, smaps_rollup, docker/podman inspect, per-container memory CSV).
 - `summary.json`: totals and breakdowns for processes and containers.
 - `summary.csv`: one-line rollup: total PSS, control-plane PSS, app/system cgroup bytes.
 
@@ -49,7 +49,7 @@ Tips for consistency
 - Use the same host and OS between runs; minimize background services.
 - Keep ingress enabled or disabled across both systems for apples-to-apples.
 - Allow a 2-minute warm-up before snapshotting busy scenarios.
- - If Docker is not installed, snapshots still run but container-level cgroup metrics are skipped (process PSS totals are still reported).
+- If Podman/Docker is not installed, snapshots still run but container-level cgroup metrics are skipped (process PSS totals are still reported).
  - CI or advanced users can bypass safety checks by setting `SKIP_GUARDS=1` in the environment.
 
 Interpreting results
@@ -106,3 +106,46 @@ End-to-end (k3s one-liner; cluster must be up)
 ```
 make bench-mem-e2e-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5
 ```
+
+## Runbook: Successful Benchmark Runs
+
+- Environment
+  - `PYTHONPATH=src` in the shell running commands.
+  - Runtime backend: `AE_RUNTIME_BACKEND=podman` (preferred) or `docker`.
+  - Secrets (demo-friendly): set `AE_ALLOW_PLAINTEXT_SECRETS=1` unless SOPS is configured.
+
+- Controller
+  - Keep the controller running for the full duration:
+    - Terminal A: `python -m ae.controller --loop --specs specs/ --watch`
+  - The bench scripts auto-start it if missing and log to `/tmp/k1s_ctrl_bench.log`, but a dedicated terminal is more predictable.
+
+- Images
+  - Podman: `podman build -t localhost/demo-blue:latest samples/servers/blue` and `localhost/demo-green:latest samples/servers/green`.
+  - Docker: `docker build -t demo-blue:latest samples/servers/blue` and `demo-green:latest`.
+  - Verify: `podman images | rg 'demo-(blue|green)'` or `docker images | rg 'demo-(blue|green)'`.
+
+- Commands (Podman-first)
+  - Terminal B:
+    - `export PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_ALLOW_PLAINTEXT_SECRETS=1`
+    - `make bench-mem-e2e-k1s LABEL_SUITE=report-YYYYMMDD APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5`
+    - `python scripts/bench/mem_combine.py snapshots/*/*`
+    - `python scripts/bench/plot_overhead.py combined/combined.csv charts`
+    - `python docs/build_docs.py`
+
+- Docker fallback
+  - `export AE_RUNTIME_BACKEND=docker` and re-run the same commands.
+  - Ensure the current user can run `docker ps` without sudo (group membership or rootless config).
+
+- Preflights and guardrails
+  - Podman readiness: `podman info` must succeed. If not, try:
+    - `systemctl --user reset-failed; systemctl --user daemon-reload`
+    - `systemctl --user start podman.socket || systemctl --user start podman.service`
+    - `loginctl enable-linger "$USER"`; open a new login shell
+    - `podman system migrate`
+  - Secrets guard: if `AE_ALLOW_PLAINTEXT_SECRETS!=1` and `sops` is missing or cannot decrypt, the scripts will fail fast with guidance.
+  - Logs: controller auto-start logs at `/tmp/k1s_ctrl_bench.log`.
+
+- After run
+  - Combined table: `combined/combined.csv` and `combined/combined.json`.
+  - Charts: `charts/control_plane_pss.png`, `charts/system_cgroups.png`, `charts/per_pod_overhead.png`.
+  - Docs page `testing-memory-k1s.html` auto-appends a “Latest Benchmarks (Auto)” section from `combined/combined.csv`.

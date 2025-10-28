@@ -47,7 +47,7 @@ logs (Ctrl-C to exit).
 - `--down -y` — tear down: `./scripts/init_demo.sh --down -y`
 - `make demo-help` — print demo script usage
 - `make demo-down` — tear down demo
-- `make integ-test` — run integration tests (set `AE_DOCKER_TEST=1`)
+- `make integ-test` — run integration tests (set `AE_INTEG_RUNTIME=podman` or `docker`)
 
 ### Rollout Demo
 

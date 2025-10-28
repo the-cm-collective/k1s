@@ -10,7 +10,7 @@ Environment knobs
 - AE_CADDY_BIN: Caddy binary (default: caddy).
 - AE_CADDY_FILE: optional path to a Caddyfile (container/host reload target).
 - AE_CADDY_CONTAINER: name of the Caddy container (enables docker/podman exec reload).
-- AE_CONTAINER_CLI: docker or podman (default: docker).
+- AE_CONTAINER_CLI: podman or docker (default: podman).
 - AE_CADDY_RELOAD_TIMEOUT: seconds to wait on reload (default: 10).
 
 BYO TLS options
@@ -36,4 +36,3 @@ Multi-path routing
 Notes
 - For containers, the ingress manager will adapt loopback upstreams to host.docker.internal or host.containers.internal as needed.
 - To enable active health checks in Caddy, set `AE_CADDY_ACTIVE_HEALTH=1` and configure a readiness probe in the manifest.
-

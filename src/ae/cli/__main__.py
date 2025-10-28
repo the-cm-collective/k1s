@@ -235,6 +235,9 @@ def build_parser() -> argparse.ArgumentParser:
     kr.add_argument("--run-dry-run", action="store_true", help="Attempt kubectl server-side dry-run if available")
     kr.add_argument("--kubectl-bin", default=os.getenv("KUBECTL_BIN", "kubectl"))
     kr.add_argument("--kubeconform-bin", default=os.getenv("KUBECONFORM_BIN", "kubeconform"))
+    kr.add_argument("--apply-online", action="store_true", help="Apply exported YAML to the current cluster and wait for rollout")
+    kr.add_argument("--cleanup", action="store_true", help="Delete applied resources after online test")
+    kr.add_argument("--timeout", type=int, default=180, help="Rollout wait timeout seconds for online apply")
 
     # rollout pause/resume
     rollout_cmd = subparsers.add_parser("rollout", help="Control rollout behavior (pause/resume)")
@@ -747,7 +750,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
     opts = apply_preset(opts, args.preset)
 
     kubeconform_bin = shutil.which(args.kubeconform_bin)
-    kubectl_bin = shutil.which(args.kubectl_bin) if args.run_dry_run else None
+    kubectl_bin = shutil.which(args.kubectl_bin) if (args.run_dry_run or args.apply_online) else None
 
     results: list[dict] = []
     checks_total = 0
@@ -807,7 +810,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
 
         # kubectl server-side dry-run (optional)
         dr_res = {"ran": False, "ok": None, "output": None}
-        if kubectl_bin:
+        if kubectl_bin and args.run_dry_run:
             dr_res["ran"] = True
             with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
                 tmp.write(yaml_text)
@@ -834,9 +837,48 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
         except Exception:
             entry["kinds"] = []
 
+        # Optional: online apply and rollout wait
+        online = {"ran": False, "ok": None, "details": None}
+        if kubectl_bin and args.apply_online:
+            online["ran"] = True
+            # Ensure namespace exists
+            import subprocess as sp
+            try:
+                sp.run([kubectl_bin, "create", "namespace", str(args.namespace)], capture_output=True, text=True)
+            except Exception:
+                pass
+            with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
+                tmp.write(yaml_text)
+                tmp.flush()
+                try:
+                    ap = sp.run([kubectl_bin, "apply", "-f", tmp.name, "-n", str(args.namespace)], capture_output=True, text=True, check=False)
+                    # Try to find the Deployment name(s) from parsed docs
+                    deploys = [k for k in (entry.get("kinds") or []) if k == "Deployment"]
+                    # Fallback: use manifest name
+                    dep_name = manifest.metadata.name
+                    # rollout status (best effort)
+                    rs = sp.run([kubectl_bin, "rollout", "status", f"deploy/{dep_name}", "-n", str(args.namespace), f"--timeout={int(args.timeout)}s"], capture_output=True, text=True, check=False)
+                    online["ok"] = ap.returncode == 0 and rs.returncode == 0
+                    online["details"] = {
+                        "apply_rc": ap.returncode,
+                        "apply_out": (ap.stdout or ap.stderr).strip(),
+                        "rollout_rc": rs.returncode,
+                        "rollout_out": (rs.stdout or rs.stderr).strip(),
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    online["ok"] = False
+                    online["details"] = {"error": str(exc)}
+                finally:
+                    if args.cleanup:
+                        try:
+                            sp.run([kubectl_bin, "delete", "-f", tmp.name, "-n", str(args.namespace), "--ignore-not-found"], capture_output=True, text=True)
+                        except Exception:
+                            pass
+        entry["apply_online"] = online
+
         # Scoring per sample
-        # Weights: validate=25, kubeconform=25, dry_run=30, policy_strict(no errors)=20
-        weights = {"validate": 25, "kubeconform": 25, "server_dry_run": 30, "policy_strict": 20}
+        # Weights: validate=20, kubeconform=20, dry_run=30, policy_strict(no errors)=20, apply_online=10
+        weights = {"validate": 20, "kubeconform": 20, "server_dry_run": 30, "policy_strict": 20, "apply_online": 10}
         checks_total += sum(weights.values())
         ran_weight = 0
         got = 0
@@ -856,6 +898,10 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
             ran_weight += weights["policy_strict"]
             if int(entry["policy_strict"]["errors"]) == 0:
                 got += weights["policy_strict"]
+        if entry.get("apply_online", {}).get("ran"):
+            ran_weight += weights["apply_online"]
+            if bool(entry.get("apply_online", {}).get("ok")):
+                got += weights["apply_online"]
         # Normalize to 100 for this sample based only on ran checks
         sample_score = (got / ran_weight * 100.0) if ran_weight else 0.0
         entry["score"] = round(sample_score, 1)

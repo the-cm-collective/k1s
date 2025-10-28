@@ -89,9 +89,9 @@
       <a href="http-api.html">HTTP API</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
-      <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
-      <a href="https://api.home.arpa:8443/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="https://api.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="http://127.0.0.1:9108/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="http://127.0.0.1:9108/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <a href="http://127.0.0.1:9108/dashboard" target="_blank" rel="noopener">Dashboard</a>
     </nav>
     <div class="container">
     <h1>Kubernetes Compliance</h1>
@@ -108,6 +108,12 @@
 <li><code>python -m ae.cli k8s-report --run-dry-run -o docs/site/k8s_status.json</code></li>
 <li>Rebuild docs to embed the status in this page:</li>
 <li><code>python docs/build_docs.py</code></li>
+</ul>
+<p>Online (cluster-backed) checks</p>
+<ul>
+<li>If you have kubectl and a cluster (Kind or k3s via k3d):</li>
+<li><code>python -m ae.cli k8s-report --run-dry-run --apply-online --cleanup -o docs/site/k8s_status.json</code></li>
+<li>This adds server-side dry-run and applies the exported YAML to the cluster, waiting for the Deployment rollout; results are included in the score.</li>
 </ul>
 <p>The compliance status and per-sample details render below when a report is present.</p>
 <hr/>

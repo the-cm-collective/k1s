@@ -5,7 +5,8 @@ import pytest
 
 
 pytestmark = pytest.mark.skipif(
-    not os.environ.get("AE_DOCKER_TEST"), reason="set AE_DOCKER_TEST=1 to run docker-backed tests"
+    not os.environ.get("AE_INTEG_RUNTIME"),
+    reason="set AE_INTEG_RUNTIME=podman or docker to enable runtime-backed tests",
 )
 
 

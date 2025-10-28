@@ -13,5 +13,9 @@ Update the status
 - Rebuild docs to embed the status in this page:
   - `python docs/build_docs.py`
 
-The compliance status and per-sample details render below when a report is present.
+Online (cluster-backed) checks
+- If you have kubectl and a cluster (Kind or k3s via k3d):
+  - `python -m ae.cli k8s-report --run-dry-run --apply-online --cleanup -o docs/site/k8s_status.json`
+- This adds server-side dry-run and applies the exported YAML to the cluster, waiting for the Deployment rollout; results are included in the score.
 
+The compliance status and per-sample details render below when a report is present.

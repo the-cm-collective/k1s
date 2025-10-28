@@ -4,7 +4,7 @@ This document describes k1s in depth: components, data model, reconcile algorith
 
 ## Scope and Principles
 
-- Single node. All containers run on one host via Docker.
+- Single node. All containers run on one host via Podman (OCI) or Docker.
 - Declarative spec → idempotent reconcile. The controller continuously applies desired state and converges.
 - Small surface. Prefer composition over features; leave seams to extend later.
 - Fail well. A crash restarts cleanly; reconcile rebuilds reality from Docker + SQLite.
@@ -12,7 +12,7 @@ This document describes k1s in depth: components, data model, reconcile algorith
 ## Components
 
 - Controller (src/ae/controller): orchestrates reconcile, writes state, emits events.
-- Runtime (src/ae/runtime): pluggable adapters; Docker is primary.
+- Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is primary, Docker optional.
 - Ingress (src/ae/ingress): writes Caddy site fragments and triggers reloads.
 - Health (src/ae/controller/health.py): readiness/liveness evaluation.
 - State store (src/ae/controller/state.py): SQLite schema and queries.
