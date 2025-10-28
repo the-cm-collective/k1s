@@ -6,7 +6,7 @@ https://echo-tcp.home.arpa {
     # Ensure upstream HSTS does not stick during dev
     header -Strict-Transport-Security
     tls internal
-    reverse_proxy 127.0.0.1:34569 {
+    reverse_proxy 127.0.0.1:46427 {
 lb_policy first
 }
 }
