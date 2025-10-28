@@ -89,9 +89,9 @@
       <a href="http-api.html">HTTP API</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
-      <a href="http://127.0.0.1:9108/swagger" target="_blank" rel="noopener">Swagger</a>
-      <a href="http://127.0.0.1:9108/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="http://127.0.0.1:9108/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="https://api.home.arpa:8443/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <a href="https://api.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
     </nav>
     <div class="container">
     <h1>k1s Memory Profiling (General)</h1>
@@ -111,6 +111,8 @@ make bench-mem-agg LABEL=idle
 <li>Scale a single app and compare (uses the echo example):</li>
 <pre><code>
 make bench-mem-matrix-k1s LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30
+# For PSS via smaps (dockerd/containerd/podman) add sudo:
+./scripts/bench/run_matrix.sh --label-suite baseline --app specs/examples/echo.yaml --replicas 1,5,10 --duration 30 --sudo
 make bench-mem-combine GLOB=&#x27;snapshots/*/*&#x27;
 make bench-mem-plot CSV=combined/combined.csv OUTDIR=charts
 </code></pre>
@@ -119,6 +121,8 @@ make bench-mem-plot CSV=combined/combined.csv OUTDIR=charts
 <p>Capture snapshots during a rolling update and after convergence:</p>
 <pre><code>
 make bench-mem-rollout-k1s LABEL_SUITE=baseline-roll APP=specs/examples/echo.yaml REPLICAS=5 DURATION=30
+# With privileged snapshots for accurate PSS:
+./scripts/bench/run_rollout_k1s.sh --label-suite baseline-roll --app specs/examples/echo.yaml --replicas 5 --duration 30 --sudo
 </code></pre>
 <h2>Outputs</h2>
 <ul>
@@ -147,12 +151,12 @@ make bench-mem-rollout-k1s LABEL_SUITE=baseline-roll APP=specs/examples/echo.yam
 <p>Summarized from <code>combined/combined.csv</code> at build time.</p>
 <table border=1 cellpadding=6 cellspacing=0>
 <tr><th>Label</th><th>Mode</th><th>Timestamp</th><th>Ctrl‑Plane PSS (MiB)</th><th>System Cgroups (MiB)</th></tr>
-<tr><td>report-20251027-idle</td><td>k1s</td><td>20251027-160235</td><td style='text-align:right'>0.0</td><td style='text-align:right'>0.0</td></tr>
 <tr><td>report-20251027-idle2</td><td>k1s</td><td>20251027-162049</td><td style='text-align:right'>0.0</td><td style='text-align:right'>0.0</td></tr>
 <tr><td>report-20251027-pods-1</td><td>k1s</td><td>20251027-160252</td><td style='text-align:right'>0.0</td><td style='text-align:right'>0.0</td></tr>
 <tr><td>report-20251027-pods-10</td><td>k1s</td><td>20251027-160835</td><td style='text-align:right'>0.0</td><td style='text-align:right'>0.0</td></tr>
 <tr><td>report-20251027-pods-5</td><td>k1s</td><td>20251027-160544</td><td style='text-align:right'>0.0</td><td style='text-align:right'>0.0</td></tr>
-<tr><td>report-20251028-idle</td><td>k1s</td><td>20251027-172213</td><td style='text-align:right'>0.0</td><td style='text-align:right'>0.0</td></tr>
+<tr><td>report-20251028-idle</td><td>k1s</td><td>20251027-172213</td><td style='text-align:right'>0.5</td><td style='text-align:right'>0.0</td></tr>
+<tr><td>report-20251028-pods-1</td><td>k1s</td><td>20251027-185731</td><td style='text-align:right'>78.4</td><td style='text-align:right'>0.0</td></tr>
 </table>
 <p>Charts:</p><ul><li><a href='../charts/control_plane_pss.png'>control_plane_pss.png</a></li><li><a href='../charts/system_cgroups.png'>system_cgroups.png</a></li><li><a href='../charts/per_pod_overhead.png'>per_pod_overhead.png</a></li></ul>
     </div>
