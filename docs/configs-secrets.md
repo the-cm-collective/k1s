@@ -28,6 +28,22 @@ spec:
 
 For local demos without SOPS, set `AE_ALLOW_PLAINTEXT_SECRETS=1`.
 
+### Sealing the sample secret (SOPS/age)
+
+If you prefer to use a real sealed secret for the examples:
+
+- Ensure you have an age recipient:
+  - EITHER create an age identity (private key) at `~/.config/ae/keys.txt` using `age-keygen -o ~/.config/ae/keys.txt` (preferred),
+  - OR set `AE_AGE_RECIPIENT=age1...` to your public recipient directly.
+- Seal the demo secret:
+  - `make secrets-seal-demo` (runs `scripts/seal_demo_secret.sh`)
+- Verify decryption works locally:
+  - `sops --decrypt specs/examples/demo-secret.sops.yaml | yq` (should show a `token` field)
+
+Notes:
+- The controller attempts to decrypt via `sops --decrypt`. In dev, you can bypass sealing by setting `AE_ALLOW_PLAINTEXT_SECRETS=1`.
+- If decryption fails at runtime, the controller records an `AppEvent` with type `SecretError` and continues; use `ae events <app>` to inspect.
+
 ### File Projection
 
 At reconcile time, k1s writes key/value files under:
@@ -62,4 +78,3 @@ Inside the container this produces, for example:
 ### Notes
 - For production, use SOPS/age and keep plaintext disabled (do not set `AE_ALLOW_PLAINTEXT_SECRETS`).
 - File projection is additive; you can still mount your own volumes.
-

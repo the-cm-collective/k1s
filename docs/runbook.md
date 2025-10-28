@@ -7,6 +7,10 @@ Setup
 - Install Python deps: `python -m pip install -e .[dev]`
 - Dev services (optional): `docker compose -f ops/dev/docker-compose.yaml up -d`
 - Controller loop (dev): `python -m ae.controller --loop --interval 5 --specs specs/ --metrics-port 9108`
+- SOPS/age (secrets):
+  - Generate an age identity: `mkdir -p ~/.config/ae && age-keygen -o ~/.config/ae/keys.txt && chmod 600 ~/.config/ae/keys.txt`
+  - Point SOPS to it: `export SOPS_AGE_KEY_FILE=~/.config/ae/keys.txt`
+  - Seal sample secret: `make secrets-seal-demo` (uses `AE_AGE_RECIPIENT` or your keys.txt)
 
 Export and Validate K8s YAML
 - Hardened export with validation:
