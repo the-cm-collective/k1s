@@ -155,14 +155,14 @@ make bench-mem-rollout-k1s LABEL_SUITE=baseline-roll APP=specs/examples/echo.yam
 <p>Summarized from <code>combined/combined.csv</code> at build time.</p>
 <table border=1 cellpadding=6 cellspacing=0>
 <tr><th>Label</th><th>Mode</th><th>Timestamp</th><th>Ctrl‑Plane PSS (MiB)</th><th>System Cgroups (MiB)</th></tr>
-<tr><td>baseline-roll-rollout-5-post</td><td>k1s</td><td>20251028-141017</td><td style='text-align:right'>113.2</td><td style='text-align:right'>308.3</td></tr>
-<tr><td>r20251028+podman+rootless+cg2-idle</td><td>k1s</td><td>20251028-144307</td><td style='text-align:right'>0.3</td><td style='text-align:right'>0.0</td></tr>
-<tr><td>r20251028+podman+rootless+cg2-idle</td><td>k1s</td><td>20251028-150135</td><td style='text-align:right'>52.3</td><td style='text-align:right'>0.0</td></tr>
-<tr><td>r20251028+podman+rootless+cg2-pods-1</td><td>k1s</td><td>20251028-150212</td><td style='text-align:right'>60.1</td><td style='text-align:right'>0.0</td></tr>
-<tr><td>r20251028+podman+rootless+cg2-pods-5</td><td>k1s</td><td>20251028-150458</td><td style='text-align:right'>62.7</td><td style='text-align:right'>0.0</td></tr>
-<tr><td>r20251028+podman+rootless+cg2-pods-10</td><td>k1s</td><td>20251028-150746</td><td style='text-align:right'>65.6</td><td style='text-align:right'>0.0</td></tr>
 <tr><td>r20251028+podman+rootless+cg2-rollout-5-during</td><td>k1s</td><td>20251028-151647</td><td style='text-align:right'>62.3</td><td style='text-align:right'>311.0</td></tr>
 <tr><td>r20251028+podman+rootless+cg2-rollout-5-post</td><td>k1s</td><td>20251028-152141</td><td style='text-align:right'>114.9</td><td style='text-align:right'>311.0</td></tr>
+<tr><td>r20251028+podman+rootless+cg2-idle</td><td>k1s</td><td>20251028-173036</td><td style='text-align:right'>44.5</td><td style='text-align:right'>0.0</td></tr>
+<tr><td>r20251028+podman+rootless+cg2-pods-1</td><td>k1s</td><td>20251028-173325</td><td style='text-align:right'>52.6</td><td style='text-align:right'>311.1</td></tr>
+<tr><td>r20251028+podman+rootless+cg2-pods-5</td><td>k1s</td><td>20251028-173611</td><td style='text-align:right'>61.7</td><td style='text-align:right'>314.5</td></tr>
+<tr><td>r20251028+podman+rootless+cg2-pods-10</td><td>k1s</td><td>20251028-173858</td><td style='text-align:right'>65.1</td><td style='text-align:right'>303.5</td></tr>
+<tr><td>r20251028+podman+rootless+cg2-rollout-5-during</td><td>k1s</td><td>20251028-174405</td><td style='text-align:right'>67.9</td><td style='text-align:right'>312.9</td></tr>
+<tr><td>r20251028+podman+rootless+cg2-rollout-5-post</td><td>k1s</td><td>20251028-174859</td><td style='text-align:right'>116.5</td><td style='text-align:right'>319.2</td></tr>
 </table>
 <h2>Charts</h2><h3>Control Plane PSS (MiB)</h3><img src='charts/control_plane_pss.png' alt='Control Plane PSS (MiB)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>System Cgroups (MiB)</h3><img src='charts/system_cgroups.png' alt='System Cgroups (MiB)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Per‑Pod Overhead (MiB)</h3><img src='charts/per_pod_overhead.png' alt='Per‑Pod Overhead (MiB)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/>
     </div>
@@ -170,7 +170,7 @@ make bench-mem-rollout-k1s LABEL_SUITE=baseline-roll APP=specs/examples/echo.yam
       <div class="container inner">
         <span>k1s Documentation</span>
         <span class="spacer"></span>
-        <span>Built 2025-10-28 17:25:14</span>
+        <span>Built 2025-10-28 17:55:18</span>
       </div>
     </footer>
   </body>
