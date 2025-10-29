@@ -63,6 +63,12 @@ def main(argv: List[str]) -> int:
         print("no summaries found")
         return 1
 
+    # Sort rows chronologically by timestamp (YYYYMMDD-HHMMSS), fallback to original order
+    try:
+        rows.sort(key=lambda r: (str(r.get("timestamp", ""))))
+    except Exception:
+        pass
+
     # Write combined outputs next to the first directory's parent
     outdir = Path("combined")
     outdir.mkdir(parents=True, exist_ok=True)
@@ -77,4 +83,3 @@ def main(argv: List[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))
-

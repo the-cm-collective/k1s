@@ -80,16 +80,19 @@ grep -E "${proc_pat}" "${scan_file}" | grep -v "containerd-shim" | awk '{print $
   fi
 done
 
-# Containers (Docker or Podman) — optional cgroup memory
+## Containers (collect from BOTH Podman and Docker when available)
+{
+  echo "container_id,name,pid,mem_current_bytes"
+} > "${outdir}/raw/containers_mem.csv"
+
+# Podman
 if command -v podman >/dev/null 2>&1; then
   podman ps -a --format json > "${outdir}/raw/podman_ps.json" 2>/dev/null || true
   ids=$(podman ps -aq 2>/dev/null || true)
   if [[ -n "${ids}" ]]; then
     podman inspect --format json $ids > "${outdir}/raw/podman_inspect.json" 2>/dev/null || true
   fi
-  {
-    echo "container_id,name,pid,mem_current_bytes"
-    python - "$outdir" << 'PY' 2>/dev/null || true
+  python - "$outdir" << 'PY' 2>/dev/null >> "${outdir}/raw/containers_mem.csv" || true
 import json, os, sys
 from typing import Optional
 
@@ -149,8 +152,10 @@ for c in data:
     mem = read_mem_bytes(pid) if pid and pid != '0' else -1
     print(f"{cid},{name},{pid},{mem}")
 PY
-  } > "${outdir}/raw/containers_mem.csv"
-elif command -v docker >/dev/null 2>&1; then
+fi
+
+# Docker
+if command -v docker >/dev/null 2>&1; then
   docker ps -a --no-trunc --format '{{.ID}} {{.Names}} {{.Status}}' > "${outdir}/raw/docker_ps.txt" || true
   if docker ps -aq >/dev/null 2>&1; then
     ids=$(docker ps -aq)
@@ -159,10 +164,8 @@ elif command -v docker >/dev/null 2>&1; then
     fi
   fi
   # Try to capture per-container cgroup memory via the main process PID
-  {
-    echo "container_id,name,pid,mem_current_bytes"
-    if [[ -f "${outdir}/raw/docker_inspect.json" ]]; then
-      python - "$outdir" << 'PY' 2>/dev/null || true
+  if [[ -f "${outdir}/raw/docker_inspect.json" ]]; then
+    python - "$outdir" << 'PY' 2>/dev/null >> "${outdir}/raw/containers_mem.csv" || true
 import json, os, sys
 from typing import Optional
 
@@ -219,9 +222,10 @@ for c in data:
     mem = read_mem_bytes(pid) if pid and pid!='0' else -1
     print(f"{cid},{name},{pid},{mem}")
 PY
-    fi
-  } > "${outdir}/raw/containers_mem.csv"
-else
+  fi
+fi
+
+if ! command -v podman >/dev/null 2>&1 && ! command -v docker >/dev/null 2>&1; then
   echo "[mem-snapshot] docker/podman not found; container cgroup metrics will be skipped." >&2
 fi
 
@@ -230,5 +234,13 @@ free -b > "${outdir}/raw/free_after.txt" || true
 ps -eo pid,ppid,comm,rss --sort -rss > "${outdir}/raw/ps_after.txt" || true
 
 echo "[mem-snapshot] done -> ${outdir}" >&2
+
+# Auto-aggregate so each snapshot has summary.json for downstream combine/docs
+# Non-fatal: if Python is missing or aggregation fails, continue.
+if command -v python >/dev/null 2>&1; then
+  python scripts/bench/mem_aggregate.py "${outdir}" >/dev/null 2>&1 || true
+else
+  echo "[mem-snapshot] warn: python not found; skipping aggregation" >&2
+fi
 
 echo "${outdir}"

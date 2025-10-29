@@ -25,7 +25,7 @@ logs (Ctrl-C to exit).
 
 ### Multi-Replica Echo (echo-mr)
 
-- Shows Caddy load-balancing across multiple replicas on a shared Docker network.
+- Shows Caddy load-balancing across multiple replicas on a shared container network.
 - Command:
   - `./scripts/init_demo.sh --demo-echo-mr -y`
   - `make demo ARGS="--demo-echo-mr -y -d"`
@@ -51,9 +51,9 @@ logs (Ctrl-C to exit).
 
 ### Rollout Demo
 
-- Ordered rollout for `echo` with default bias-first routing:
+- Ordered rollout for `echo` with default prefer-first routing:
   - `./scripts/init_demo.sh --demo-rollout -y -d`
-  - Optional: `AE_ROLLOUT_FIRST_WEIGHT=3` to increase bias toward the newest upstream.
+  - Optional canary: set `spec.rollout.strategy: canary` with `weight` (and `auto` for ramps).
 
 ### Notes
 

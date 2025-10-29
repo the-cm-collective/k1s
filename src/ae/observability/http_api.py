@@ -223,6 +223,17 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if path_only.startswith("/metrics"):
             self._handle_metrics()
             return
+        # Public pages (always allowed): OpenAPI + lightweight docs UIs
+        if path_only in {"/openapi.json", "/swagger", "/swagger/", "/redoc", "/redoc/", "/", "/docs"}:
+            if path_only == "/openapi.json":
+                self._handle_openapi()
+            elif path_only in ("/", "/docs"):
+                self._handle_docs()
+            elif path_only in ("/swagger", "/swagger/"):
+                self._handle_swagger()
+            else:
+                self._handle_redoc()
+            return
         # Enforce read auth if configured
         try:
             check = self._require_role  # type: ignore[attr-defined]
@@ -231,23 +242,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if check and not self._require_role("read"):
             self._deny(401 if not self.headers.get("Authorization") else 403)
             return
-        if path_only == "/openapi.json":
-            self._handle_openapi()
-            return
+        # From here on, read requires authorization when configured
         if path_only in ("/health", "/health/"):
             self._handle_health()
             return
         if path_only in ("/system", "/system/"):
             self._handle_system()
-            return
-        if path_only in ("/swagger", "/swagger/"):
-            self._handle_swagger()
-            return
-        if path_only in ("/redoc", "/redoc/"):
-            self._handle_redoc()
-            return
-        if path_only in ("/", "/docs"):
-            self._handle_docs()
             return
         if path_only in ("/dashboard", "/dashboard/"):
             self._handle_dashboard()
@@ -618,6 +618,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
     def _handle_openapi(self) -> None:
         # OpenAPI document with bearer auth and basic schemas
+        import os as _os
+        tokens_configured = bool(
+            _os.getenv("AE_API_ADMIN_TOKEN") or _os.getenv("AE_API_SCALER_TOKEN") or _os.getenv("AE_API_READ_TOKEN")
+        )
         doc = {
             "openapi": "3.0.0",
             "info": {"title": "k1s Controller API", "version": "0.1.0"},
@@ -783,6 +787,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 },
             },
         }
+        # If tokens are configured, mark API as requiring bearer auth to surface the Authorize button in Swagger/ReDoc
+        if tokens_configured:
+            doc["security"] = [{"bearerAuth": []}]
         payload = json.dumps(doc).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -1048,6 +1055,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         </select></label>
         <label>Log filter <input id=\"log-filter\" name=\"filter\" type=\"text\" size=\"24\" placeholder=\"substring\" /></label>
         <button id=\"pause-btn\">Pause Logs</button>
+        <label>Bearer <input id=\"auth-token\" type=\"password\" size=\"22\" placeholder=\"read/scaler/admin token\" /></label>
+        <button id=\"save-token\">Save</button>
+        <button id=\"clear-token\">Clear</button>
       </div>
     </header>
     <main>
@@ -1161,6 +1171,14 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       var lastStatuses = [];
       var graphHover = null;
       var graphPathMode = (localStorage.getItem('graph_path_mode') || 'orth'); // 'orth' or 'straight'
+
+      // Token helpers
+      var tokInput = document.getElementById('auth-token');
+      var saveBtn = document.getElementById('save-token');
+      var clearBtn = document.getElementById('clear-token');
+      try { tokInput.value = localStorage.getItem('ae_token') || ''; } catch(e) {}
+      saveBtn.addEventListener('click', function(){ try { localStorage.setItem('ae_token', tokInput.value||''); } catch(e){}; window.location.reload(); });
+      clearBtn.addEventListener('click', function(){ try { localStorage.removeItem('ae_token'); } catch(e){}; window.location.reload(); });
 
       pauseBtn.addEventListener('click', function () {
         pauseLogs = !pauseLogs;

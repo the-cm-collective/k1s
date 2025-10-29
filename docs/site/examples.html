@@ -39,6 +39,8 @@
       /* Improve Mermaid readability in dark mode by inverting SVG colors */
       html[data-theme="dark"] .mermaid svg { filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }
       html[data-theme="dark"] .mermaid { background: var(--bg); }
+      footer.site-footer { margin-top: 3rem; border-top: 1px solid var(--border); }
+      footer.site-footer .inner { display: flex; align-items: center; gap: .75rem; padding: 14px 0; opacity: .85; }
     </style>
     <script>
       (function() {
@@ -139,5 +141,12 @@
 <li><code>ae delete echo-del --purge</code> to remove volumes marked <code>retention: Delete</code></li>
 </ul>
     </div>
+    <footer class="site-footer">
+      <div class="container inner">
+        <span>k1s Documentation</span>
+        <span class="spacer"></span>
+        <span>Built 2025-10-28 17:25:14</span>
+      </div>
+    </footer>
   </body>
 </html>

@@ -181,28 +181,29 @@ def aggregate(snapshot_dir: Path) -> Dict:
     app_bytes = system_bytes = 0
     if containers:
         # Attempt to classify app vs system using container inspect labels
-        # Prefer docker_inspect.json; fallback to podman_inspect.json when present
-        inspect = None
-        insp_path = raw / "docker_inspect.json"
-        if insp_path.exists():
-            try:
-                inspect = {c.get("Id", "")[:12]: c for c in json.loads(insp_path.read_text())}
-            except Exception:
-                inspect = None
-        if inspect is None:
-            insp_pod = raw / "podman_inspect.json"
-            if insp_pod.exists():
-                try:
-                    inspect = {c.get("Id", "")[:12]: c for c in json.loads(insp_pod.read_text())}
-                except Exception:
-                    inspect = None
+        # Merge inspect from both docker and podman when available
+        inspect: Dict[str, Dict] = {}
+        try:
+            insp_d = raw / "docker_inspect.json"
+            if insp_d.exists():
+                for c in json.loads(insp_d.read_text()):
+                    inspect[c.get("Id", "")[:12]] = c
+        except Exception:
+            pass
+        try:
+            insp_p = raw / "podman_inspect.json"
+            if insp_p.exists():
+                for c in json.loads(insp_p.read_text()):
+                    inspect[c.get("Id", "")[:12]] = c
+        except Exception:
+            pass
         for row in containers:
             cid = (row.get("container_id") or "")
             mem = int(row.get("mem_current_bytes") or "-1")
             if mem < 0:
                 continue
             is_app = False
-            if inspect is not None and cid in inspect:
+            if cid in inspect:
                 # Docker and Podman both expose Config.Labels; also check top-level Labels for safety
                 ins = inspect[cid]
                 labels = ((ins.get("Config") or {}).get("Labels") or {}) or (ins.get("Labels") or {})

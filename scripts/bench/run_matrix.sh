@@ -41,6 +41,21 @@ require python
 
 ae() { python -m ae.cli "$@"; }
 
+# Build an automatic label base when none provided explicitly
+auto_label() {
+  local today="r$(date +%Y%m%d)"
+  local backend="${AE_RUNTIME_BACKEND:-podman}"
+  # Normalize backend tag
+  if [[ "$backend" != "podman" && "$backend" != "docker" && "$backend" != "oci" ]]; then
+    if command -v podman >/dev/null 2>&1; then backend=podman; elif command -v docker >/dev/null 2>&1; then backend=docker; else backend=unknown; fi
+  fi
+  local root_tag
+  if [[ $(id -u) -eq 0 ]]; then root_tag=priv; else root_tag=rootless; fi
+  local cg_tag
+  if [[ -f /sys/fs/cgroup/cgroup.controllers ]]; then cg_tag=cg2; else cg_tag=cg1; fi
+  echo "${today}+${backend}+${root_tag}+${cg_tag}"
+}
+
 ensure_controller() {
   if pgrep -f "python\s*-m\s*ae\.controller" >/dev/null 2>&1; then
     return 0
@@ -93,6 +108,12 @@ if [[ "${SKIP_GUARDS:-0}" != "1" ]]; then
   ensure_controller
   preflight_runtime
   secrets_guard
+fi
+
+# If user kept default label 'baseline', switch to an auto label
+if [[ "$label_suite" == "baseline" ]]; then
+  label_suite="$(auto_label)"
+  info "using auto label suite: ${label_suite}"
 fi
 
 # Warn if Docker missing (container metrics best-effort)
