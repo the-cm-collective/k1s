@@ -39,6 +39,8 @@
       /* Improve Mermaid readability in dark mode by inverting SVG colors */
       html[data-theme="dark"] .mermaid svg { filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }
       html[data-theme="dark"] .mermaid { background: var(--bg); }
+      footer.site-footer { margin-top: 3rem; border-top: 1px solid var(--border); }
+      footer.site-footer .inner { display: flex; align-items: center; gap: .75rem; padding: 14px 0; opacity: .85; }
     </style>
     <script>
       (function() {
@@ -162,7 +164,14 @@ make bench-mem-rollout-k1s LABEL_SUITE=baseline-roll APP=specs/examples/echo.yam
 <tr><td>r20251028+podman+rootless+cg2-rollout-5-during</td><td>k1s</td><td>20251028-151647</td><td style='text-align:right'>62.3</td><td style='text-align:right'>311.0</td></tr>
 <tr><td>r20251028+podman+rootless+cg2-rollout-5-post</td><td>k1s</td><td>20251028-152141</td><td style='text-align:right'>114.9</td><td style='text-align:right'>311.0</td></tr>
 </table>
-<p>Charts:</p><ul><li><a href='charts/control_plane_pss.png'>control_plane_pss.png</a></li><li><a href='charts/system_cgroups.png'>system_cgroups.png</a></li><li><a href='charts/per_pod_overhead.png'>per_pod_overhead.png</a></li></ul>
+<h2>Charts</h2><h3>Control Plane PSS (MiB)</h3><img src='charts/control_plane_pss.png' alt='Control Plane PSS (MiB)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>System Cgroups (MiB)</h3><img src='charts/system_cgroups.png' alt='System Cgroups (MiB)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Per‑Pod Overhead (MiB)</h3><img src='charts/per_pod_overhead.png' alt='Per‑Pod Overhead (MiB)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/>
     </div>
+    <footer class="site-footer">
+      <div class="container inner">
+        <span>k1s Documentation</span>
+        <span class="spacer"></span>
+        <span>Built 2025-10-28 17:25:14</span>
+      </div>
+    </footer>
   </body>
 </html>

@@ -18,6 +18,7 @@ import html
 import os
 from pathlib import Path
 import re
+from datetime import datetime
 
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT
@@ -81,6 +82,8 @@ TEMPLATE = """<!doctype html>
       /* Improve Mermaid readability in dark mode by inverting SVG colors */
       html[data-theme="dark"] .mermaid svg {{ filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }}
       html[data-theme="dark"] .mermaid {{ background: var(--bg); }}
+      footer.site-footer {{ margin-top: 3rem; border-top: 1px solid var(--border); }}
+      footer.site-footer .inner {{ display: flex; align-items: center; gap: .75rem; padding: 14px 0; opacity: .85; }}
     </style>
     <script>
       (function() {{
@@ -140,6 +143,13 @@ TEMPLATE = """<!doctype html>
     <div class="container">
     {body}
     </div>
+    <footer class="site-footer">
+      <div class="container inner">
+        <span>k1s Documentation</span>
+        <span class="spacer"></span>
+        <span>{footer_text}</span>
+      </div>
+    </footer>
   </body>
 </html>
 """
@@ -341,27 +351,36 @@ def build_one(md_path: Path, out_path: Path) -> None:
                         f"<td style='text-align:right'>{sys_mib}</td></tr>"
                     )
                 parts.append("</table>")
-                # Link charts if present
-                chart_links: list[str] = []
+                # Inline charts below the table
                 if charts_dir.exists():
-                    # Copy charts into docs/site/charts so the docs server can serve them directly
                     import shutil
                     charts_out = OUT / "charts"
                     charts_out.mkdir(parents=True, exist_ok=True)
-                    for name in ("control_plane_pss.png", "system_cgroups.png", "per_pod_overhead.png"):
-                        p = charts_dir / name
-                        if p.exists():
-                            shutil.copy2(p, charts_out / name)
-                            chart_links.append(f"<li><a href='charts/{name}'>{name}</a></li>")
-                if chart_links:
-                    parts.append("<p>Charts:</p><ul>" + "".join(chart_links) + "</ul>")
+                    chart_map = [
+                        ("control_plane_pss.png", "Control Plane PSS (MiB)"),
+                        ("system_cgroups.png", "System Cgroups (MiB)"),
+                        ("per_pod_overhead.png", "Per‑Pod Overhead (MiB)")
+                    ]
+                    inline_blocks: list[str] = []
+                    for fname, title_txt in chart_map:
+                        src = charts_dir / fname
+                        if src.exists():
+                            shutil.copy2(src, charts_out / fname)
+                            inline_blocks.append(
+                                f"<h3>{html.escape(title_txt)}</h3>"
+                                f"<img src='charts/{fname}' alt='{html.escape(title_txt)}' "
+                                f"style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/>"
+                            )
+                    if inline_blocks:
+                        parts.append("<h2>Charts</h2>" + "".join(inline_blocks))
                 html_body += "\n" + "\n".join(parts)
     except Exception:
         # Non-fatal: keep page renderable if injection fails
         pass
     title = md_path.stem.replace("-", " ").title()
     out_path.write_text(
-        TEMPLATE.format(title=title, body=html_body, api_base=API_BASE), encoding="utf-8"
+        TEMPLATE.format(title=title, body=html_body, api_base=API_BASE, footer_text=f"Built {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        , encoding="utf-8"
     )
 
 
@@ -413,7 +432,8 @@ def main() -> None:
 </ul>
 """
     (OUT / "index.html").write_text(
-        TEMPLATE.format(title="k1s Docs", body=index, api_base=API_BASE), encoding="utf-8"
+        TEMPLATE.format(title="k1s Docs", body=index, api_base=API_BASE, footer_text=f"Built {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        , encoding="utf-8"
     )
 
     for src_name, out_name in mapping.items():

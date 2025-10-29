@@ -65,13 +65,19 @@ bench-mem-k3s:
 bench-mem-agg:
 	@python scripts/bench/mem_aggregate.py $$(ls -d snapshots/$${LABEL:-manual}/* | sort | tail -n1)
 
-.PHONY: bench-mem-matrix-k1s bench-mem-combine
+.PHONY: bench-mem-matrix-k1s bench-mem-combine bench-mem-verify
 
 bench-mem-matrix-k1s:
 	@./scripts/bench/run_matrix.sh --label-suite $${LABEL_SUITE:-baseline} --app $${APP:-specs/examples/echo.yaml} --app-name $${APP_NAME:-echo} --replicas $${REPLICAS:-1,5,10} --duration $${DURATION:-30}
 
 bench-mem-combine:
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
+
+# Verify a specific snapshot (or latest for LABEL) and print per-container split
+bench-mem-verify:
+	@SNAP=$${SNAPSHOT:-$$(test -n "$$TS" && echo snapshots/$${LABEL:-manual}/$$TS || ls -d snapshots/$${LABEL:-manual}/* | sort | tail -n1)}; \
+		echo "[verify] using $$SNAP"; \
+		python scripts/bench/verify_snapshot.py $$SNAP $${JSON:+--json}
 
 .PHONY: bench-k3s-up bench-k3s-down bench-mem-matrix-k3s
 
@@ -113,6 +119,29 @@ bench-mem-e2e-k1s:
 		--duration $${DURATION:-30}
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+
+.PHONY: bench-mem-docs
+# Combine, plot, and rebuild docs in one go
+bench-mem-docs:
+	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
+	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+	@python docs/build_docs.py
+
+.PHONY: bench-mem-backfill
+# Aggregate any snapshots missing summary.json, then rebuild combined, charts, and docs
+
+
+bench-mem-backfill:
+	@echo "[backfill] scanning for snapshots without summary.json" >&2
+	@python scripts/bench/backfill.py
+	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
+	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+	@python docs/build_docs.py
+
+.PHONY: docs-watch
+# Rebuild docs whenever combined/combined.csv changes
+docs-watch:
+	@python scripts/watch_docs.py
 
 # End-to-end: k3s matrix + rollout + combine + plot (requires k3d cluster up)
 bench-mem-e2e-k3s:
