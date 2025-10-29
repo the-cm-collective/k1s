@@ -1,4 +1,4 @@
-https://echo-exec.home.arpa {
+https://echo-resources.home.arpa {
     log {
         output stdout
         format console
@@ -6,7 +6,7 @@ https://echo-exec.home.arpa {
     # Ensure upstream HSTS does not stick during dev
     header -Strict-Transport-Security
     tls internal
-    reverse_proxy 127.0.0.1:45615 {
+    reverse_proxy 127.0.0.1:44223 {
 lb_policy first
 }
 }
