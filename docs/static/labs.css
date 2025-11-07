@@ -1,0 +1,99 @@
+.container{font-size:15px}
+.container h2{margin-top:1.25rem;border-bottom:1px solid var(--border);padding-bottom:4px}
+.container h3{margin-top:1rem}
+.panel{border:1px solid var(--border);padding:10px;margin:.5rem 0;min-height:140px;border-radius:8px;background:var(--muted)}
+.ok{color:#22c55e}
+.fail{color:#ef4444}
+.pending{color:#9ca3af}
+.muted{opacity:.8}
+.row{display:flex;gap:8px;align-items:center}
+.hidden{display:none}
+.ribbon{padding:6px 10px;border:1px solid var(--border);background:var(--muted);margin:.5rem 0;border-radius:6px}
+.ribbon{min-height:28px}
+.ribbon .ok{font-weight:600}
+.ribbon .close-btn{float:right; cursor:pointer; padding:0 6px; border:1px solid var(--border); border-radius:4px; background:transparent}
+.ribbon .close-btn:hover{background:var(--border)}
+.callout{border-left:4px solid #3b82f6; padding:8px 10px; background:var(--muted); border:1px solid var(--border); border-radius:6px}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;border:1px solid var(--border);background:var(--muted)}
+.nudge{font-size:12px; margin-left:8px; opacity:.9; color:#f59e0b}
+.attn{outline:2px solid #f59e0b; outline-offset:2px}
+/* Lists spacing for playground layout */
+.container ul{padding-left:1.2rem}
+.container ul>li{margin:4px 0}
+/* Form controls: size and theme */
+.container input[type="text"],
+.container input[type="password"],
+.container select,
+.container button{
+  font-size:14px;
+  padding:6px 10px;
+  border:1px solid var(--border);
+  background:var(--muted);
+  color:var(--fg);
+  border-radius:6px;
+}
+.container .btn-primary{background:#2563eb;color:#e5e7eb;border-color:#1e40af}
+.container .btn-primary:active{background:#1e40af;border-color:#1e3a8a;color:#f3f4f6}
+.container button:active{background:rgba(0,0,0,0.08)}
+.container button.is-busy{background:#1f2937;color:#e5e7eb;border-color:#111827;opacity:0.9}
+.container button.is-busy::after{content:'';display:inline-block;width:12px;height:12px;margin-left:6px;border:2px solid rgba(229,231,235,0.7);border-top-color:transparent;border-radius:50%;vertical-align:-1px;animation:spin .8s linear infinite}
+.container .btn-primary.is-busy{background:#1e40af;border-color:#1e3a8a}
+.container button[aria-busy="true"]{pointer-events:none}
+.container .btn-primary:disabled{opacity:.65}
+.container button{cursor:pointer}
+.container #btn-use-token{position:relative; z-index:2; pointer-events:auto}
+.container button:disabled{opacity:.6; cursor:not-allowed}
+#backend-select,#example-select{min-width:240px}
+#labs-token{min-width:220px}
+#canary-weight{width:180px}
+/* Backend status ribbon */
+#backend-status{font-size:.95rem; white-space:normal; overflow-wrap:anywhere}
+/* Floating, sticky header-style banner used for feedback */
+#banner{
+  position: sticky; /* stays visible like dashboard header */
+  top: 0;
+  margin: .5rem 0; /* keep it near the top controls */
+  border-radius: 8px;
+  z-index: 100; /* overlay local content */
+  box-shadow: 0 2px 10px rgba(0,0,0,.12);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  background: rgba(10,10,10,0.10);
+}
+html[data-theme="dark"] #banner{ background: rgba(10,10,10,0.22); }
+html[data-theme="light"] #banner{ background: rgba(255,255,255,0.70); }
+/* Subtle type accents for banner states */
+#banner.ok{border-color:#16a34a}
+#banner.fail{border-color:#dc2626}
+#banner.pending{border-color:#eab308}
+/* Status badge */
+#status-summary{display:inline-block;min-width:120px;padding:2px 8px;border:1px solid var(--border);background:var(--muted);border-radius:999px;text-align:center;line-height:1.4;color:var(--fg)}
+/* Logs/Events panels */
+#observe .panel, #logs-sse, #events-sse{max-height:360px;overflow:auto;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:13px}
+.log-entry{white-space:pre-wrap; word-break:break-word}
+
+/* Better layout for control-heavy lists (labels + controls) */
+@supports(selector(:has(*))){
+  .container ul:has(input),
+  .container ul:has(select),
+  .container ul:has(button){
+    list-style:none;
+    padding-left:0;
+  }
+  @media (min-width: 880px){
+    .container ul:has(input),
+    .container ul:has(select),
+    .container ul:has(button){
+      display:grid;
+      grid-template-columns: 200px 1fr;
+      column-gap:12px;
+    }
+    .container ul:has(input)>li,
+    .container ul:has(select)>li,
+    .container ul:has(button)>li{margin:6px 0}
+  }
+}
+
+@keyframes spin{
+  to{ transform: rotate(360deg); }
+}
