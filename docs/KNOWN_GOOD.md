@@ -23,7 +23,8 @@ This snapshot captures a stable, working demo configuration.
   - Dynsite seeds ensure `https://docs.home.arpa:8443/` works via Caddy
 
 - Service networking
-  - Shared Docker network: `dev_default` (export `AE_DOCKER_NETWORK=dev_default`)
+  - Podman (default): create a shared network, e.g., `podman network create devnet`, then `export AE_PODMAN_NETWORK=devnet`
+  - Docker (fallback): shared network `dev_default` via compose; `export AE_DOCKER_NETWORK=dev_default`
   - Multi-replica routing via container DNS on shared network
   - Single-replica stable port via `spec.service.port` when needed
 
@@ -31,7 +32,9 @@ This snapshot captures a stable, working demo configuration.
   - `AE_CADDY_SITES=state/caddy`
   - `AE_CADDY_FILE=/etc/caddy/Caddyfile`
   - `AE_CADDY_CONTAINER=dev-caddy-1`
-  - `AE_DOCKER_NETWORK=dev_default`
+  - `AE_CONTAINER_CLI=docker` (set to `podman` if using Podman for the Caddy container)
+  - `AE_PODMAN_NETWORK=devnet` (when using Podman)
+  - `AE_DOCKER_NETWORK=dev_default` (when using Docker)
 
 - Troubleshooting helpers
   - `./scripts/init_demo.sh -d` attaches logs: controller, caddy, prometheus, and site changes

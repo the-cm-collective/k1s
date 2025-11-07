@@ -1,28 +1,134 @@
-Got it — here’s a pragmatic path to a “minimal app engine” that runs well on a 1-CPU/2-GB VPS and gives you: image management, a basic “pod” abstraction, zero-downtime deploys, health checks, ingress/TLS, logs/metrics, and a tiny CLI. You’ll keep things simple, but leave room to evolve.
+Got it — here’s a pragmatic path to a “minimal app engine” that runs well on a 1‑CPU/2‑GB VPS and gives you: image management, a basic “pod” abstraction, zero‑downtime deploys, health checks, ingress/TLS, logs/metrics, and a tiny CLI. You’ll keep things simple, but leave room to evolve.
 
 # Architecture at a glance
 
-* **Runtime**: Docker or containerd (pick one; Docker is quickest).
-* **Controller**: single daemon (Python or Go) with a reconcile loop + SQLite state.
-* **Spec**: one declarative YAML per app (versioned), your “Deployment”.
-* **Ingress/TLS**: Caddy (ACME built-in) or nginx; controller writes vhost config from specs.
-* **Observability**: logs via `docker logs`/journald; metrics via `docker stats` + a Prometheus exporter.
-* **Secrets**: file-based sealed secrets (age/sops) decrypted at deploy.
-* **CLI**: `ae` (apply/get/logs/rollout/restart/rollback).
+* Runtime: Podman (default) with Docker fallback.
+* Controller: single daemon with a reconcile loop + SQLite state.
+* Spec: one declarative YAML per app (versioned), your “Deployment”.
+* Ingress/TLS: Caddy; controller writes vhost config from specs and can use ACME internal or BYO certs.
+* Observability: logs via runtime adapters; Prometheus metrics via HTTP API; events stored in SQLite.
+* Secrets: sealed secrets (age/sops) decrypted at deploy; plaintext allowed only for local dev.
+* CLI: `ae` plus a kubectl‑like `k1s` wrapper.
 
 ---
 
+## Feature Matrix (as of 2025-10-31)
+
+- Controller daemon
+  - `python -m ae.controller --once|--loop --interval N --specs DIR [--watch]`
+  - Optional HTTP API and Prometheus metrics: `--metrics-port PORT`
+  - File‑watching via watchdog when available; falls back to polling
+
+- Runtime adapters
+  - Podman and Docker adapters with image pull, create/start/cleanup, log read, exec, volume helpers
+  - Security mapping: read‑only rootfs, cap drops, seccomp (RuntimeDefault/Unconfined/Localhost), AppArmor profile
+
+- Reconcile features
+  - Rolling replace with `rollout.maxSurge` and `rollout.maxUnavailable`
+  - Readiness/liveness: HTTP, TCP, and exec probes with backoff/jitter and history
+  - Crashloop detection with recreate cooldown and eventing
+  - Scale, delete, backup/restore; revision history + rollback
+
+- Ingress/TLS (Caddy)
+  - Multi‑path routing; prefer‑first policy for new revision
+  - Canary strategy: `rollout.strategy=canary` with `weight` and optional `auto { start, step, intervalSeconds, max }`; state persisted in SQLite
+  - TLS: internal ACME by default; BYO via `tlsCertPath/tlsKeyPath` or `tlsSecretName` resolved from `AE_TLS_DIR`
+
+- Spec surface
+  - Resources, volumes, env, service (NodePort supported), security, health, rollout, configRefs, secretRefs, storage
+  - File projections for configs/secrets into `state/projections/<app>-rev<rev>/`
+
+- CLI
+  - Core: `apply`, `status [--events] [--wide] [--json]`, `logs`, `revisions`, `rollback`, `scale`, `delete`, `backup {create|restore|list|verify}`
+  - K8s: `export-k8s` (Deployment/StatefulSet/Service/Ingress + optional HPA/PDB/SA/PVC/ConfigMap/Secret; presets; `--validate`), `k8s-check --policy strict`, `k8s-report`
+  - Registry and secrets/config helpers; `metrics`, `events`, `plan`, `version`
+  - Image supply‑chain: `verify-image` (cosign wrapper)
+  - `k1s` kubectl‑like frontend for familiar verbs
+
+- HTTP API (when enabled)
+  - Read endpoints: `/metrics`, `/status`, `/status/<app>`, `/events/<app>`, `/logs/<app>`
+  - Optional mutations (dev): `/scale/<app>`, `/delete/<app>`, and JSON `apply` via environment‑gated roles
+  - Token roles and expiries: `AE_API_{READ,SCALER,ADMIN}_TOKEN[_EXPIRES]`
+
+---
+
+## Kubernetes Spec Compliance (as of 2025-10-31)
+
+Summary
+- Targets only stable APIs: `apps/v1`, `v1`, `networking.k8s.io/v1`, `policy/v1`, `autoscaling/v2`.
+- Exporter is conservative: emits a portable subset; optional resources gated by flags.
+- Local runtime intentionally diverges from full Kubernetes semantics (single-node, no ClusterIP), but the exporter strives for upstream‑compatible YAML.
+
+Workloads
+- Deployment: supported. Pod template maps container `env`, `ports`, `resources`, `securityContext`, `readinessProbe`/`livenessProbe`, `terminationGracePeriodSeconds`, optional `priorityClassName`.
+- StatefulSet: supported via `--workload statefulset`. Emits headless Service and `volumeClaimTemplates` when `--emit-storage` is set.
+- Not supported: DaemonSet, Job, CronJob.
+
+PodSpec and Container
+- Env: key/value pairs supported; `configMapKeyRef`/`secretKeyRef` produced from `configRefs`/`secretRefs` mappings. `envFrom` not supported.
+- Resources: requests/limits pass‑through. `--require-requests` can enforce both present.
+- Probes: readiness and liveness (HTTP/TCP/exec). StartupProbe not supported.
+- SecurityContext: `runAsUser`, `runAsGroup`, `readOnlyRootFilesystem`, capability drops, `seccompProfile` (RuntimeDefault/Localhost/Unconfined). AppArmor via Pod template annotation. `runAsNonRoot` applied only with `--default-security`.
+- Volumes: storage mounts created from `spec.storage` when `--emit-storage`. Config/Secret volumes not auto‑mounted (env/keyRef only). Lifecycle hooks (postStart/preStop), `imagePullSecrets`, `imagePullPolicy`, `fsGroup`, `seccomp at Pod level` are not explicitly set.
+
+Service
+- ClusterIP emitted when ports exist. Multi‑port mapping supported via `spec.service.ports` with validation for duplicate names/ports.
+- Types: `NodePort`/`LoadBalancer` honored; `nodePort` validated in 30000–32767 range; `externalIPs` passthrough. SessionAffinity, healthCheckNodePort not supported.
+
+Ingress
+- `networking.k8s.io/v1` with `PathType=Prefix`. Multiple paths supported. TLS enabled by default; `tls.secretName` set when `tlsSecretName` provided; `ingressClassName` optional.
+- Advanced annotations, regex paths, multiple backends per rule, and canary annotations are out of scope.
+
+Policy, Autoscaling, Accounts
+- HPA (`autoscaling/v2`): CPU utilization, memory utilization, or memory AverageValue. Requires requests unless `--allow-hpa-no-requests` set. No custom/external metrics.
+- PDB (`policy/v1`): emits when `--emit-pdb` and replicas > 1, with either `minAvailable` (default 1) or `maxUnavailable`. Percent values are not supported (integers only).
+- ServiceAccount: emitted/attached when `--service-account <name>` is provided. RBAC Roles/Bindings are not emitted.
+- NetworkPolicy: pass‑through from `spec.networkPolicy` to `networking.k8s.io/v1`. No additional validation beyond shape.
+
+Scheduling
+- Pass‑through: `affinity`, `tolerations`, `topologySpreadConstraints`, `priorityClassName` to Pod template. `nodeSelector` can be expressed via `affinity`; there is no first‑class field.
+
+Validation and Tooling
+- `ae export-k8s --validate` performs offline structural checks; `k8s-check --policy strict` applies FEAT checklist; `k8s-report` can run kubeconform and optional `kubectl --dry-run=server`/apply when available.
+
+Notable Gaps vs. Kubernetes
+- No startupProbe, lifecycle hooks, `envFrom`, `imagePullSecrets`, or `imagePullPolicy` control.
+- PDB percentage values and advanced HPA behaviors (scaleUp/Down policies) not supported.
+- Service sessionAffinity, healthCheckNodePort, and advanced Ingress annotations/features are not emitted.
+- ConfigMap/Secret volume mounts are not modeled; only env/key references or inline data emission.
+- Storage: `accessModes` fixed to `ReadWriteOnce`; no `storageClassName` selection; no ephemeral/emptyDir.
+- RBAC (Role/RoleBinding/ClusterRoleBinding) not emitted.
+
+Planned Improvements
+- Add `startupProbe`, `envFrom`, and lifecycle hook support in spec/exporter.
+- Allow PDB percentage values and HPA behavior tuning.
+- Model Config/Secret volume mounts and `imagePullSecrets` in spec/exporter.
+- Optional `storageClassName` and access mode selection in PVC emission.
+- Extend Service/Ingress knobs (sessionAffinity, common annotations) behind explicit flags.
+
 # Milestones (build order)
 
-# Progress Log (2025-10-27)
+# Progress Log (2025-10-30)
+* [x] Controller daemon with HTTP API/metrics, file watch, and graceful shutdown.
+* [x] Runtime adapters for Podman and Docker with security mapping and volume helpers.
+* [x] Health manager with HTTP/TCP/exec probes and backoff reporting; crashloop detection + cooldown.
+* [x] Ingress: Caddy templates, multi‑path, BYO TLS and `tlsSecretName` resolver; canary with optional auto progression and persisted state.
+* [x] CLI: rich surface including `export-k8s`, `k8s-check`, `k8s-report`, `backup`, `verify-image`, `registry`, `events`, `metrics`.
+* [x] K8s export: presets, offline validation, HPA (CPU/memory utilization and AverageValue), PDB, SA, PVC, ConfigMap/Secret emission.
+* [x] CI: k8s conformance jobs and kubeconform validation for exported YAML; e2e samples.
+* [x] 2025-10-29 – Runtime hardening + image verification:
+  - Docker/Podman adapters map `spec.security.seccomp*` and `apparmorProfile` to runtime flags (`security_opt`).
+  - New CLI: `ae verify-image` (cosign wrapper) for key-based or keyless signature verification; supports `--json`.
+  - Planner emits security hardening warnings (read-only root FS, cap drops, seccomp/AppArmor not set).
+  - Optional systemd hardening: set `AE_SYSTEMD_HARDEN=1` when running `scripts/install.sh` to install strict drop-ins.
 
-* [x] Phase 3 – K8s export + checks: Added `ae export-k8s` to render Deployment/Service/Ingress YAML mapped from the App manifest, and `ae k8s-check` to run the portability checklist (warnings by default, `--strict` to fail).
-* [x] Phase 5 – Policy + rollout safety: Exporter now supports optional PodDisruptionBudget, HorizontalPodAutoscaler (CPU target), PVC emission from `spec.storage`, ConfigMap/Secret emission and env wiring, ServiceAccount attach, and conservative default securityContext via flags.
-* [x] Phase 6 – Operational polish: `export-k8s` presets (`web-basic`, `web-hardened`, `scale-ready`), offline YAML validation (`--validate`), and tests.
-* [x] Phase 7 – Conformance + Ingress polish: Multi-path Ingress and optional `tlsSecretName` in exporter; CI Kind workflow with server-side dry-run on exported samples (`.github/workflows/k8s-conformance.yaml`).
-* [x] Phase 8 – Drift guard + richer checks: CI adds kubeconform schema validation for exported YAMLs; `k8s-check` warns about HPA prerequisites (CPU requests) and recommends PDB defaults for multi-replica apps. Exporter supports HPA memory target and configurable PDB minAvailable.
-* [x] Phase 9 – Rollout controls + API tokens: Added `rollout pause|resume` commands and `rollout.pause` support in manifests (controller records paused status without changing runtime); Caddy ingress supports multi-path and canary weighting via rollout.strategy=canary, rollout.weight. `ae api tokens --generate` prints bearer tokens/env for HTTP API.
-* [x] Phase 10 – BYO TLS + strict checks: Caddy ingress accepts BYO cert/key via `spec.ingress.tlsCertPath` and `tlsKeyPath` (falls back to `tls internal` when unset). `k8s-check` supports `--policy strict` to escalate key warnings (readiness probe, requests, PDB) to errors.
+* [x] Phase 3 – K8s export + checks: `ae export-k8s` emits Deployment/Service/Ingress; `ae k8s-check` runs the portability checklist (with `--policy strict`).
+* [x] Phase 5 – Policy + rollout safety: PDB/HPA/PVC/ConfigMap/Secret emission; ServiceAccount attach; conservative default securityContext via flags.
+* [x] Phase 6 – Operational polish: `export-k8s` presets, `--validate`, and tests.
+* [x] Phase 7 – Conformance + Ingress polish: Multi‑path ingress; exporter `tlsSecretName`; CI kind workflow with server‑side dry‑run.
+* [x] Phase 8 – Drift guard + richer checks: kubeconform in CI; HPA prerequisites guidance; memory AverageValue targets; configurable PDB.
+* [x] Phase 9 – Rollout controls + API tokens: `rollout pause|resume`; ingress canary weighting and auto progression; `ae api tokens --generate`.
+* [x] Phase 10 – BYO TLS + strict checks: Ingress BYO cert/key; strict policy in `k8s-check`.
 
 # Progress Log (2025-10-23)
 
@@ -30,68 +136,63 @@ Got it — here’s a pragmatic path to a “minimal app engine” that runs wel
 * [x] Phase 1 – Core spec and reconcile skeleton landed: Pydantic manifest loader, runtime stub, SQLite snapshot store, and CLI commands (`apply`, `status`, `logs`) with unit coverage.
 * [x] Phase 2 – Docker runtime + health loops: Real Docker adapter with create/start/cleanup flow, readiness/liveness evaluator with initial-delay semantics, probe history persisted for CLI inspection.
 * [x] Phase 3 – Ingress & TLS automation: Added Caddy templating/reload hooks, persisted ingress host metadata, and surfaced replica/ingress status via CLI.
-* [x] Phase 4 – Rollouts & rollbacks: Revision-aware reconciler/runtime, revision history + CLI rollback/list commands, and health-gated status tracking.
+* [x] Phase 4 – Rollouts & rollbacks: Revision-aware reconciler/runtime, revision history + CLI rollback/list commands, and health-gated status tracking. Hooks: optional `rollout.hooks.preSwitch|postSwitch` with `exec` (list) or `tcp.port`, `timeoutSeconds`; preSwitch runs before ingress switch and blocks on failure; postSwitch runs best-effort and records events.
 * [x] Phase 5 – Secrets & registry auth: SOPS-backed secret manager with env injection, registry credential loading, and CLI wiring.
 * [x] Phase 6 – Observability baseline: Metrics snapshot CLI, event logging in SQLite, and registry/secret guidance updated.
 
 ---
 
-## Known Gaps (current)
+## Gap Audit (2025-10-30)
 
-- HTTP API writes: API is read-only (metrics/status/events); no mutate endpoints (apply/delete/scale) yet.
-- Probe backoff/rate limits: HTTP/TCP/exec probes exist, but no per-probe backoff/rate limiting windows.
-- Requests enforcement: controller honors `limits`; `requests` used for checks only (no cgroups requests). HPA relies on user-provided `resources.requests.cpu`.
-- Rollout options: only rolling-replace with implicit surge=1; no pause/resume, canary, or maxUnavailable/maxSurge controls.
-- Ingress writer parity: K8s export supports multi-path and optional `tlsSecretName`; Caddy writer remains single-path and does not consume a TLS secret mapping.
-- Auth ergonomics: no helper to mint/refresh short‑lived registry tokens; manual config only.
-- Multi-node: intentionally out of scope for this project.
+- Networking
+  - ClusterIP compatibility and multi-node path — see `docs/CLUSTERIP.md` for the phased plan (Phases 1–3).
+
+- Packaging and distribution
+  - Publish a controller container image (GitHub Container Registry) and document image‑based install.
+  - Add a release workflow that builds wheels and images; pin toolchain versions in `scripts/bootstrap.sh`.
+
+- Documentation sync
+  - Align FEAT.md, runbook, and ingress docs with: canary auto progression, TLS `tlsSecretName` resolver, crashloop cooldown, and HTTP API mutation roles.
+  - Add examples for security profiles (seccomp Localhost JSON, AppArmor names) and recommended defaults.
+
+- Policy and validation depth
+  - Expand `k8s-check` coverage for service port edge cases (NodePort ranges) and stricter presets for production.
+  - Enrich probe/health reporting endpoints (expose recent evaluation windows via API).
+
+- Observability polish
+  - Add per‑app reconcile histograms/counters to `/metrics` and document Grafana panels around them.
+
+- Platform scope
+  - Multi‑node scheduling/placement: explicitly out of scope (single‑node only).
+  - OS support: focus on Linux; call out macOS/WSL2 as best‑effort dev targets.
 
 ---
 
 ## Last‑Mile Checklist
 
-- Controller canary promotion: move from in‑memory ingress weighting to a controller timer/state (DB) with step schedules and completion events.
-- Ingress TLS parity: optional mapping from `tlsSecretName` (K8s) to local cert/key mounting for Caddy, or a tiny sync helper.
-- Requests strictness: CI runs `k8s-check --policy strict` for samples; consider stricter defaults or gate HPA export when CPU requests are missing.
-- Rollout options: add `maxUnavailable`/`maxSurge` validation and expose `--pdb-max-unavailable` alongside `--pdb-min-available` with exclusivity checks.
-- HPA targets: support `AverageValue` for memory (MiB) in exporter; add validation.
-- API tokens: add rotation/expiry helper and short how‑to in docs.
-- CI matrix: run conformance on Kind and a k3s job, and run `k8s-check --policy strict` on sample manifests.
+- [x] Controller canary promotion: ingress bias now ramps via controller state (SQLite) with step/interval/max; UI/API reflect progress.
+- [x] Ingress TLS parity: `tlsSecretName` resolves to local PEMs (via `AE_TLS_DIR`) and is wired to Caddy; BYO TLS also supported.
+- [x] Requests strictness: `k8s-check --policy strict` escalates missing requests; `export-k8s --require-requests` fails when cpu/memory requests are absent; planner emits warnings.
+- [x] Rollout options: `--pdb-max-unavailable` exposed; exporter validates exclusivity with `--pdb-min-available`.
+- [x] HPA targets: Memory `AverageValue` supported with validation; utilization modes require requests unless explicitly allowed.
+- [x] API tokens: generation/rotation with optional TTLs; docs added (see docs/api-auth.md).
+- [x] CI matrix: Kind and k3s jobs run conformance and `k8s-check --policy strict` on sample manifests.
 
-## Next Steps (near-term plan)
+## Near‑Term Focus (Q4 2025)
 
-1) Controller daemon + polling watch
-- Add `python -m ae.controller` with `--once | --loop --interval N` and `--specs DIR`.
-- Poll the specs directory for `*.y(a)ml` and reconcile all apps.
+1) Releases and packaging
+- Ship controller image and PyPI releases; docs for image‑based and systemd installs.
 
-2) Minimal metrics exporter
-- Optional `--metrics-port PORT` serving Prometheus text with basic app/replica gauges.
+2) Docs and examples
+- Update runbook and examples to showcase canary auto, TLS secret resolution, and security profiles.
 
-3) Logs implementation (basic)
-- `ae logs <app> [-f]` using Docker SDK; default to current revision’s first container.
+3) Policy/validation
+- Tighten `k8s-check` and exporter validations for prod defaults; add opt‑in strict preset files.
 
-4) Resource flags
-- Map `spec.resources.limits` to Docker `--cpus`/`--memory` on create.
+4) Metrics
+- Add reconcile duration histogram and canary step counters; document sample Grafana.
 
-5) Volumes (starter)
-- Support simple hostPath → container mount mappings in spec.
-
-6) HTTP API (starter)
-- Tiny read-only endpoints: `/status`, `/events`, `/metrics` for CLI parity.
-
-Stretch (after the above)
-- TCP/exec probes, pause/resume rollouts, richer ingress, backup/restore command.
-
-## 0) Bootstrap (1–2 hrs)
-
-* Install Docker (or containerd+nerdctl), Caddy, SQLite.
-* Create a repo with: `cmd/`, `pkg/` (or `ae/` in Python), `specs/`, `state/`.
-
-## 1) Core “pod” & app spec (day 1)
-
-**Goal:** run one app via a declarative spec and reconcile to desired state.
-
-**Spec v0 (YAML):**
+## Appendix — Spec v0 (reference)
 
 ```yaml
 apiVersion: v1
@@ -128,7 +229,7 @@ spec:
   registryAuthRef: default # optional
 ```
 
-**Controller responsibilities:**
+**Controller responsibilities (reference):**
 
 * Parse spec → compute desired container set (replicas, names).
 * **Reconcile loop** (every 3–5s or on file watch):
@@ -140,17 +241,17 @@ spec:
   5. Update ingress (write Caddy config and reload).
   6. Persist status in SQLite (`apps`, `revisions`, `replicas`).
 
-**Data model (SQLite):**
+**Data model (SQLite reference):**
 
 * `apps(name TEXT PK, gen INT, desired_replicas INT, image TEXT, …)`
 * `revisions(app, rev INT, image, created_at, status, PRIMARY KEY(app,rev))`
 * `replicas(app, rev, instance_id, container_id, state, started_at, …)`
 
-**Minimal health checker:**
+**Minimal health checker (reference):**
 
 * Side thread that hits readiness/liveness endpoints; mark instance `Ready` only after success.
 
-## 2) Ingress & TLS (day 1)
+## Ingress & TLS (reference)
 
 * Choose **Caddy** for simplest ACME:
 
@@ -164,14 +265,14 @@ spec:
   * Reload via `caddy reload`.
 * If you prefer nginx, template + `nginx -s reload` (no built-in ACME).
 
-## 3) Zero-downtime deploy & rollback (day 2)
+## Zero‑downtime deploy & rollback (reference)
 
 * **Strategy: RollingReplace( maxUnavailable=0, maxSurge=1 )**
 
   * Create `rev = current+1`; start a new container; wait for readiness; switch ingress; stop previous.
 * Keep last N revisions; `ae rollback myapp --to-rev <n>` switches image/env back and reconciles.
 
-## 4) CLI & UX (day 2)
+## CLI & UX (reference)
 
 Commands (talk to controller over a tiny HTTP API or just call into the db/socket):
 
@@ -185,7 +286,7 @@ ae restart myapp
 ae rollback myapp --to-rev 3
 ```
 
-## 5) Secrets & registry auth (day 2–3)
+## Secrets & registry auth (reference)
 
 * Store secrets as **sops**-encrypted YAML alongside specs:
 
@@ -450,8 +551,14 @@ This document tracks the current capabilities of k1s and outlines gaps to close 
 
 ### Current Focus
 
-- Next up: Secrets and Config (ConfigMap/Secret-like resources)
-  - Goals: define resource schemas, implement decryption and mounting/env injections, add CLI commands, update docs and examples.
+- Runtime rigor: probe backoff+jitter; restart counters and simple backoff on container crashes; surface in metrics/status.
+  - [done: probes] Added exponential backoff with jitter and period enforcement in health checks; optional cap via AE_PROBE_MAX_BACKOFF (default 30s).
+- [partial: restarts] Detect crashloop surges (>= AE_RESTART_THRESHOLD within AE_RESTART_WINDOW_SEC); emit CrashLoopDetected events and surface metrics `ae_app_crashloop{app}` plus per-container `ae_container_restart_count`.
+  - [partial: recreate cooldown] After crashloop detection, suppress new replica creation for AE_RECREATE_COOLDOWN_SEC (default 30s) and expose `ae_app_recreate_cooldown_seconds{app}`.
+- L4 story: document non‑HTTP multi‑replica patterns (external LB), provide examples and planner warnings.
+  - [done: docs+planner] Added docs/l4-services.md and planner warnings for multi-replica non-HTTP ports without ingress.
+- Packaging: systemd units and optional controller container image; minimal installer and runbook updates.
+- Registry ergonomics: `ae registry login` helpers for common providers; short‑lived tokens workflow.
 
 ### CLI Installation and Aliases
 - `pipx install .` provides `ae` and `k1s` console scripts (see pyproject).
@@ -506,7 +613,8 @@ If you ship only the items below, using **stable** API groups/versions, you’re
 This section summarizes what our exporter (`ae cli export-k8s`) can generate today from an App manifest, the key fields supported, and notable gaps. The intent is to keep a concise, testable checklist tied to code under `src/ae/k8s/` and the examples under `specs/examples/`.
 
 Supported resources (stable APIs only)
-- Deployment (`apps/v1`): always emitted.
+- Deployment (`apps/v1`): default.
+- StatefulSet (`apps/v1`): when `--workload statefulset` (emits headless Service and uses volumeClaimTemplates when `--emit-storage`).
 - Service (`v1`): emitted when container `spec.ports` are present.
 - Ingress (`networking.k8s.io/v1`): emitted when `spec.ingress` exists; supports multi-path and optional TLS secret name.
 - ConfigMap (`v1`): optional via `--emit-configs`; can inline YAML/JSON with `--inline-configs`.
@@ -559,10 +667,8 @@ Portability checks (`ae cli k8s-check`)
 - HPA pre-reqs: `--assume-hpa cpu-util|mem-util|mem-value=200Mi` validates resource requests or quantity formats.
 
 Notable gaps (K8s parity)
-- StatefulSet export (stable identities) — not implemented.
-- NetworkPolicy emission — not implemented; assume cluster defaults.
-- Advanced Ingress features (canary annotations per controller) — out of scope for exporter.
-- Secrets: exporter can inline plaintext data for demos; production path remains SOPS-managed secrets applied by controller.
+- Advanced Ingress features (controller‑specific canary annotations) — out of scope for exporter.
+- Secrets: exporter can inline plaintext data for demos; production path remains SOPS‑managed secrets applied by controller.
 
 Tests and CI
 - Unit tests cover exporter, checker, and validator under `tests/unit/`.
@@ -571,6 +677,7 @@ Tests and CI
 See also
 - Source: `src/ae/k8s/exporter.py`, `src/ae/k8s/check.py`, `src/ae/k8s/validate.py`, `src/ae/k8s/presets.py`.
 - Examples: `specs/examples/*k8s*.yaml` and `specs/examples/echo.yaml`, `multi-replica-echo.yaml`, `echo-hpa.yaml`.
+  - L4 example: `specs/examples/tcp-echo.yaml` with dev HAProxy at `ops/dev/haproxy/` (see docs/l4-services.md).
 * Service (ClusterIP).
 * (Optional) Ingress (`networking.k8s.io/v1`) with **basic** rules only.
 

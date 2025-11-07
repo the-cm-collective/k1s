@@ -30,9 +30,15 @@ CLI helper: tls sync
   - `python -m ae.cli tls sync --name mycert --input path/to/mycert.yaml --root state/tls`
   - Output shows where cert/key were written (under state/tls/rendered/).
 
+CLI helper: tls verify
+- Check if TLS material is resolvable for a given name (without copying):
+  - `python -m ae.cli tls verify --name mycert --root state/tls`
+  - Returns non-zero if not found; use `--json` for machine-readable results.
+
 Multi-path routing
 - In your App manifest, set `spec.ingress.paths: ["/", "/api"]` to render multiple routes.
 
 Notes
 - For containers, the ingress manager will adapt loopback upstreams to the correct host alias: `host.docker.internal` (Docker) or `host.containers.internal` (Podman).
 - To enable active health checks in Caddy, set `AE_CADDY_ACTIVE_HEALTH=1` and configure a readiness probe in the manifest.
+- AppArmor & Seccomp: When exporting to K8s, the engine maps `spec.security.seccompProfile*` to the container `securityContext.seccompProfile` and sets an AppArmor annotation on the Pod template. Ensure your cluster supports AppArmor (e.g., apparmor_parser present and profiles loaded). On some local clusters (Kind/MicroK8s), you may need to enable AppArmor and allow custom profiles.

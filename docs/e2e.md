@@ -3,10 +3,25 @@
 This guide walks an engineer through full system operation on a single host: boot the controller, apply all example manifests, observe readiness/liveness, ingress, storage, rollouts, run portability checks, export K8s YAML, and clean up. Every command below is runnable as-is on a dev machine.
 
 Prerequisites
-- Python 3.11+, Docker or Podman, and optional Caddy for ingress.
+- Python 3.11+, Podman (default) or Docker, and optional Caddy for ingress.
 - Dev install: `python -m pip install -e .[dev]`
 - Optional live file watch: `python -m pip install -e .[watch]`
-- Optional fixtures (Caddy+Prometheus): `docker compose -f ops/dev/docker-compose.yaml up -d`
+- Optional fixtures (Caddy+Prometheus): `docker compose -f ops/dev/docker-compose.yaml up -d` (use `podman compose` if you prefer Podman)
+
+Podman Quickstart (recommended)
+- Create a shared network for multi-replica + ingress DNS:
+  - `podman network create devnet`
+- Export environment for the controller and ingress tooling:
+  - `export AE_RUNTIME_BACKEND=podman`
+  - `export AE_PODMAN_NETWORK=devnet`
+  - `export AE_CONTAINER_CLI=podman`  # lets the controller reload Caddy via podman exec
+- Start fixtures with Podman if desired:
+  - `podman compose -f ops/dev/docker-compose.yaml up -d`
+- Run the controller with metrics:
+  - `python -m ae.controller --loop --watch --specs specs/ --metrics-port 9108`
+- Apply a sample and open the dashboard:
+  - `python -m ae.cli apply -f specs/examples/echo.yaml`
+  - `http://127.0.0.1:9108/dashboard`
 
 Start Controller
 - Polling loop with metrics and watch (if watchdog installed):
@@ -115,3 +130,7 @@ Where to next
 - HTTP API: `docs/http-api.md`
 - Architecture: `docs/architecture.md`
 
+Quick E2E Target
+- Run the multi-port end-to-end smoke test (applies demo, checks status, curls ingress):
+  - `make e2e` or `make e2e-multiport`
+  - Uses `scripts/e2e/multiport.sh` and defaults to Caddy HTTPS `:8443` unless `CADDY_HTTPS_PORT` is set.
