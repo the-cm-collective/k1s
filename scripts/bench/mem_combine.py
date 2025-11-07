@@ -8,6 +8,7 @@ Usage:
 Examples:
   scripts/bench/mem_combine.py snapshots/baseline-*
 """
+
 from __future__ import annotations
 
 import csv
@@ -49,15 +50,17 @@ def main(argv: List[str]) -> int:
         if not s:
             continue
         meta = s.get("meta", {})
-        rows.append({
-            "label": meta.get("label", ""),
-            "mode": meta.get("mode", ""),
-            "timestamp": meta.get("timestamp", ""),
-            "process_pss_kb": s.get("process_totals_kb", {}).get("pss_kb", 0),
-            "control_plane_pss_kb": s.get("overhead", {}).get("pss_kb_control_plane", 0),
-            "app_mem_bytes": s.get("containers", {}).get("app_mem_bytes", 0),
-            "system_mem_bytes": s.get("containers", {}).get("system_mem_bytes", 0),
-        })
+        rows.append(
+            {
+                "label": meta.get("label", ""),
+                "mode": meta.get("mode", ""),
+                "timestamp": meta.get("timestamp", ""),
+                "process_pss_kb": s.get("process_totals_kb", {}).get("pss_kb", 0),
+                "control_plane_pss_kb": s.get("overhead", {}).get("pss_kb_control_plane", 0),
+                "app_mem_bytes": s.get("containers", {}).get("app_mem_bytes", 0),
+                "system_mem_bytes": s.get("containers", {}).get("system_mem_bytes", 0),
+            }
+        )
 
     if not rows:
         print("no summaries found")

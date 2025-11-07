@@ -7,6 +7,7 @@ Outputs: summary.json, summary.csv with totals and breakdowns.
 
 This focuses on robust, best-effort parsing and avoids strict dependencies.
 """
+
 from __future__ import annotations
 
 import csv
@@ -98,7 +99,9 @@ def _collect_proc_rollups(raw_dir: Path) -> List[ProcRollup]:
         comm = ps_map.get(pid, sm.name.split("_", 2)[-1].rsplit(".", 1)[0])
         cmdline = ps_args.get(pid)
         rss, pss, uss = _read_smaps_rollup(sm)
-        rollups.append(ProcRollup(pid=pid, comm=comm, cmdline=cmdline, rss_kb=rss, pss_kb=pss, uss_kb=uss))
+        rollups.append(
+            ProcRollup(pid=pid, comm=comm, cmdline=cmdline, rss_kb=rss, pss_kb=pss, uss_kb=uss)
+        )
     return rollups
 
 
@@ -198,7 +201,7 @@ def aggregate(snapshot_dir: Path) -> Dict:
         except Exception:
             pass
         for row in containers:
-            cid = (row.get("container_id") or "")
+            cid = row.get("container_id") or ""
             mem = int(row.get("mem_current_bytes") or "-1")
             if mem < 0:
                 continue
@@ -206,7 +209,9 @@ def aggregate(snapshot_dir: Path) -> Dict:
             if cid in inspect:
                 # Docker and Podman both expose Config.Labels; also check top-level Labels for safety
                 ins = inspect[cid]
-                labels = ((ins.get("Config") or {}).get("Labels") or {}) or (ins.get("Labels") or {})
+                labels = ((ins.get("Config") or {}).get("Labels") or {}) or (
+                    ins.get("Labels") or {}
+                )
                 if any(k.startswith("ae.app") for k in labels.keys()) or labels.get("ae.app"):
                     is_app = True
             else:
@@ -226,6 +231,7 @@ def aggregate(snapshot_dir: Path) -> Dict:
             return round(float(x or 0) / 1024.0, 2)
         except Exception:
             return 0.0
+
     ctrl_mib = kb_to_mib((by_class.get("controller") or {}).get("pss_kb", 0))
     ingress_mib = kb_to_mib((by_class.get("ingress") or {}).get("pss_kb", 0))
     runtime_mib = kb_to_mib(((by_class.get("runtime") or {}).get("pss_kb", 0)))
@@ -247,7 +253,9 @@ def aggregate(snapshot_dir: Path) -> Dict:
             "total_mem_bytes": app_bytes + system_bytes,
         },
         "overhead": {
-            "pss_kb_control_plane": int(sum(v.get("pss_kb", 0) for k, v in by_class.items() if k != "other")),
+            "pss_kb_control_plane": int(
+                sum(v.get("pss_kb", 0) for k, v in by_class.items() if k != "other")
+            ),
             "cgroup_system_overhead_bytes": int(system_bytes),
         },
     }
@@ -261,16 +269,27 @@ def write_outputs(snapshot_dir: Path, summary: Dict) -> None:
     csv_path = snapshot_dir / "summary.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as fh:
         cw = csv.writer(fh)
-        cw.writerow(["label", "mode", "pss_kb_total", "pss_kb_control_plane", "app_mem_bytes", "system_mem_bytes"]) 
+        cw.writerow(
+            [
+                "label",
+                "mode",
+                "pss_kb_total",
+                "pss_kb_control_plane",
+                "app_mem_bytes",
+                "system_mem_bytes",
+            ]
+        )
         meta = summary.get("meta", {})
-        cw.writerow([
-            meta.get("label", ""),
-            meta.get("mode", ""),
-            summary.get("process_totals_kb", {}).get("pss_kb", 0),
-            summary.get("overhead", {}).get("pss_kb_control_plane", 0),
-            summary.get("containers", {}).get("app_mem_bytes", 0),
-            summary.get("containers", {}).get("system_mem_bytes", 0),
-        ])
+        cw.writerow(
+            [
+                meta.get("label", ""),
+                meta.get("mode", ""),
+                summary.get("process_totals_kb", {}).get("pss_kb", 0),
+                summary.get("overhead", {}).get("pss_kb_control_plane", 0),
+                summary.get("containers", {}).get("app_mem_bytes", 0),
+                summary.get("containers", {}).get("system_mem_bytes", 0),
+            ]
+        )
 
 
 def main(argv: List[str]) -> int:

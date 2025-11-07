@@ -9,6 +9,7 @@ Usage:
 Options:
   --json    Output JSON instead of human text.
 """
+
 from __future__ import annotations
 
 import csv
@@ -80,9 +81,9 @@ def summarize(snapshot_dir: Path) -> dict:
     sys_b = 0
     for r in cont_rows:
         try:
-            cid = (r.get("container_id") or "")
-            name = (r.get("name") or "")
-            pid = (r.get("pid") or "")
+            cid = r.get("container_id") or ""
+            name = r.get("name") or ""
+            pid = r.get("pid") or ""
             b = int(r.get("mem_current_bytes") or "-1")
         except Exception:
             continue
@@ -132,11 +133,14 @@ def summarize(snapshot_dir: Path) -> dict:
 
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
-        print("usage: python scripts/bench/verify_snapshot.py snapshots/<label>/<timestamp> [--json]", file=sys.stderr)
+        print(
+            "usage: python scripts/bench/verify_snapshot.py snapshots/<label>/<timestamp> [--json]",
+            file=sys.stderr,
+        )
         return 2
     out_json = False
     args = [a for a in argv[1:] if a != "--json"]
-    out_json = (len(argv) > 2 and "--json" in argv[2:])
+    out_json = len(argv) > 2 and "--json" in argv[2:]
     snap = Path(args[0]).resolve()
     if not (snap / "raw" / "containers_mem.csv").exists():
         print(f"containers_mem.csv not found under: {snap}", file=sys.stderr)
@@ -147,11 +151,15 @@ def main(argv: list[str]) -> int:
         return 0
 
     meta = data.get("meta", {})
-    print(f"Snapshot: label={meta.get('label','')} mode={meta.get('mode','')} ts={meta.get('timestamp','')}")
+    print(
+        f"Snapshot: label={meta.get('label', '')} mode={meta.get('mode', '')} ts={meta.get('timestamp', '')}"
+    )
     print("Containers (by cgroup bytes):")
     print("  id           name                 class    pid      MiB")
     for r in data["rows"]:
-        print(f"  {r['id'][:12]:12}  {r['name'][:20]:20}  {r['class'][:6]:6}  {r['pid'][:8]:8}  {r['mib']:7.3f}")
+        print(
+            f"  {r['id'][:12]:12}  {r['name'][:20]:20}  {r['class'][:6]:6}  {r['pid'][:8]:8}  {r['mib']:7.3f}"
+        )
     t = data["totals"]
     print("Totals:")
     print(f"  App cgroups (MiB):    {t['app_mib']}")
@@ -160,10 +168,11 @@ def main(argv: list[str]) -> int:
     m = data["summary_json_match"]
     if (not m["app_match"]) or (not m["system_match"]):
         print("Note: differs from summary.json totals:")
-        print(f"  summary app bytes={m['app_bytes_summary']} system bytes={m['system_bytes_summary']}")
+        print(
+            f"  summary app bytes={m['app_bytes_summary']} system bytes={m['system_bytes_summary']}"
+        )
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))
-
