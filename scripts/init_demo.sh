@@ -17,7 +17,7 @@ SUDO=$(require_root_or_sudo)
 
 # Static demo hosts we can safely add to /etc/hosts when requested.
 # Note: echo-storage and echo-stateful do not expose ingress by default.
-HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa api.home.arpa echo.home.arpa echo-mr.home.arpa echo-resources.home.arpa echo-sec.home.arpa echo-tcp.home.arpa echo-exec.home.arpa)
+HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa api.home.arpa echo.home.arpa echo-mr.home.arpa echo-multi.home.arpa echo-resources.home.arpa echo-sec.home.arpa echo-tcp.home.arpa echo-exec.home.arpa)
 AUTO_HOSTS=""  # set by -y/--yes or -n/--no to auto answer host prompts
 
 usage() {
@@ -37,6 +37,7 @@ Options:
   --demo-configs   Apply the configs/secrets demo (echo) and enable plaintext secrets for local run
   --demo-standard  Apply the standard demo (blue, green)
   --demo-echo-mr   Apply the multi-replica echo demo (echo-mr)
+  --demo-echo-multi Apply the multi-port echo demo (echo-multi)
   --demo-security  Apply security-hardened demo (echo-sec)
   --demo-tcp       Apply TCP-probe demo (echo-tcp)
   --demo-exec      Apply exec-probe demo (echo-exec)
@@ -44,6 +45,8 @@ Options:
   --demo-rollout   Apply a two-step ordered rollout for echo
   --demo-storage   Apply a storage (PV-lite) demo for echo and list volumes
   --hosts-ip IP    Use this IP for /etc/hosts entries (default 127.0.0.1)
+  --labs           Enable Labs API on the controller (playground actions)
+  --labs-token T   Enable Labs with bearer token T (use with --labs)
 
 What this does (setup):
   1) Ensures required system packages (python3, venv, pip, sqlite3, age, sops) are present
@@ -90,6 +93,7 @@ DEBUG_ATTACH=0
 DEMO_CONFIGS=0
 DEMO_STANDARD=0
 DEMO_ECHO_MR=0
+DEMO_ECHO_MULTI=0
 DEMO_SECURITY=0
 DEMO_TCP=0
 DEMO_EXEC=0
@@ -97,6 +101,11 @@ DOCS_ONLY=0
 DEMO_ROLLOUT=0
 DEMO_STORAGE=0
 HOSTS_IP=${HOSTS_IP:-127.0.0.1}
+# Labs/demo playground flags
+LABS_ENABLE=${LABS_ENABLE:-0}
+LABS_TOKEN=${LABS_TOKEN:-}
+# Default location for the curated demo specs set (controller watches this)
+DEMO_SPECS_DIR=${DEMO_SPECS_DIR:-state/demo-specs}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h|help)
@@ -119,6 +128,8 @@ while [[ $# -gt 0 ]]; do
       DEMO_STANDARD=1 ;;
     --demo-echo-mr)
       DEMO_ECHO_MR=1 ;;
+    --demo-echo-multi)
+      DEMO_ECHO_MULTI=1 ;;
     --demo-security)
       DEMO_SECURITY=1 ;;
     --demo-tcp)
@@ -131,6 +142,10 @@ while [[ $# -gt 0 ]]; do
       DEMO_ROLLOUT=1 ;;
     --demo-storage)
       DEMO_STORAGE=1 ;;
+    --labs)
+      LABS_ENABLE=1 ;;
+    --labs-token)
+      LABS_TOKEN=${2:?requires token}; LABS_ENABLE=1; shift ;;
     --hosts-ip)
       HOSTS_IP=${2:?requires IP}; shift ;;
     --bind-all)
@@ -222,6 +237,11 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
     if [[ -n "$ids" ]]; then
       "$STACK_BIN_DOWN" rm -f $ids || true
     fi
+  fi
+  # Clear dynamic Caddy site fragments to avoid stale host collisions on next start
+  if [[ -d state/caddy ]]; then
+    log "Clearing dynamic Caddy sites under state/caddy/*.caddy"
+    rm -f state/caddy/*.caddy 2>/dev/null || true
   fi
   # Optionally remove hosts entries
   if prompt_yes_no_hosts "Remove hosts entries for ${HOSTS[*]} from /etc/hosts?" N; then
@@ -318,8 +338,12 @@ STACK_COMPOSE=("$STACK_BIN" compose)
 # Select host network alias for container->host routing
 if [[ "$STACK_BIN" == "podman" ]]; then
   HOST_ALIAS=host.containers.internal
+  # Prefer the stable host alias inside containers; raw gateway IPs (e.g., 169.254.1.2)
+  # can be unreachable or vary per setup.
+  unset AE_CADDY_HOST_ALIAS
 else
   HOST_ALIAS=host.docker.internal
+  unset AE_CADDY_HOST_ALIAS
 fi
 
 # Export shared network name so runtimes can attach app containers to the ingress network
@@ -426,40 +450,85 @@ find ops/dev/caddy/sites -maxdepth 1 -type f -name '*.caddy' \
   fi
 
   # Trust Caddy's local CA on the host so browsers don't warn on every run.
-  # This only applies to Debian/Ubuntu hosts.
+  # This only applies to Debian/Ubuntu hosts (update-ca-certificates). If -y was
+  # passed, do it non-interactively; otherwise still proceed best‑effort.
   if command -v update-ca-certificates >/dev/null 2>&1; then
     # Trigger local CA creation by touching one TLS site once (ignore TLS verify)
     curl -ksS "https://docs.home.arpa:${CADDY_HTTPS_PORT}/" >/dev/null 2>&1 || true
     # Give Caddy a moment to mint the local CA and leaf certs
     sleep 1
-    # Export Caddy local root from the container if present
-    if "$STACK_BIN" exec dev-caddy-1 test -f /data/caddy/pki/authorities/local/root.crt; then
-      mkdir -p state/certs
-      "$STACK_BIN" cp dev-caddy-1:/data/caddy/pki/authorities/local/root.crt state/certs/caddy-local-root.crt >/dev/null 2>&1 || true
-      if [[ -s state/certs/caddy-local-root.crt ]]; then
-        log "Installing Caddy local root CA into host trust store"
-        $SUDO cp state/certs/caddy-local-root.crt /usr/local/share/ca-certificates/caddy-local-root.crt
-        $SUDO update-ca-certificates >/dev/null 2>&1 || true
+    mkdir -p state/certs
+    ROOT_CA_HOST="state/caddy-data/pki/authorities/local/root.crt"
+    if [[ ! -s "${ROOT_CA_HOST}" ]]; then
+      # Fallback: try to copy from the running container (name may vary; prefer AE_CADDY_CONTAINER when set)
+      CADDY_CONTAINER=${AE_CADDY_CONTAINER:-}
+      if [[ -z "${CADDY_CONTAINER}" ]]; then
+        # Best-effort: pick first container with image caddy and port 443 mapped
+        CADDY_CONTAINER=$($STACK_BIN ps --format '{{.Names}}\t{{.Image}}' | awk '/caddy/ {print $1; exit}' || true)
+      fi
+      if [[ -n "${CADDY_CONTAINER}" ]]; then
+        if "$STACK_BIN" exec "${CADDY_CONTAINER}" test -f /data/caddy/pki/authorities/local/root.crt; then
+          "$STACK_BIN" cp "${CADDY_CONTAINER}":/data/caddy/pki/authorities/local/root.crt state/certs/caddy-local-root.crt >/dev/null 2>&1 || true
+        fi
       fi
     else
-      # If CA not present yet, fix perms and try one more cycle (Podman rootless often needs this)
+      cp -f "${ROOT_CA_HOST}" state/certs/caddy-local-root.crt || true
+    fi
+    if [[ -s state/certs/caddy-local-root.crt ]]; then
+      log "Installing Caddy local root CA into host trust store"
+      $SUDO cp state/certs/caddy-local-root.crt /usr/local/share/ca-certificates/caddy-local-root.crt
+      $SUDO update-ca-certificates >/dev/null 2>&1 || true
+      # Build a canonical dev CA bundle (system + local CA) for CLI tools/SDKs
+      mkdir -p state/certs
+      COMBINED_OUT="state/certs/combined-dev-ca.pem"
+      "$PY_BIN" - <<'PY' || true
+import os, sys
+try:
+    import certifi
+    src = certifi.where()
+    dev = os.path.join('state','certs','caddy-local-root.crt')
+    out = os.path.join('state','certs','combined-dev-ca.pem')
+    with open(src,'rb') as fsrc, open(out,'wb') as fout:
+        data = fsrc.read()
+        fout.write(data)
+        with open(dev,'rb') as fd:
+            d = fd.read()
+            if d not in data:
+                if not d.endswith(b"\n"): d += b"\n"
+                fout.write(d)
+    print(out)
+except Exception as e:
+    print('skip-combined:', e)
+PY
+      # Best-effort user trust for Chrome/Chromium (NSS) and Firefox profiles
+      if command -v certutil >/dev/null 2>&1; then
+        mkdir -p "$HOME/.pki/nssdb"
+        certutil -d sql:"$HOME/.pki/nssdb" -A -t "C,," -n "Caddy Local Root" -i state/certs/caddy-local-root.crt 2>/dev/null || true
+        for prof in "$HOME"/.mozilla/firefox/*.default* "$HOME"/.mozilla/firefox/*.dev*; do
+          [ -d "$prof" ] || continue
+          certutil -d sql:"$prof" -A -t "C,," -n "Caddy Local Root" -i state/certs/caddy-local-root.crt 2>/dev/null || true
+        done
+      fi
+    else
+      # If CA not present yet, fix perms and try once more (Podman rootless often needs this)
       chmod -R 0777 state/caddy-data || true
       sleep 1
       ${STACK_COMPOSE[@]} -f ops/dev/docker-compose.yaml restart caddy || true
       sleep 1
-      if "$STACK_BIN" exec dev-caddy-1 test -f /data/caddy/pki/authorities/local/root.crt; then
-        mkdir -p state/certs
-        "$STACK_BIN" cp dev-caddy-1:/data/caddy/pki/authorities/local/root.crt state/certs/caddy-local-root.crt >/dev/null 2>&1 || true
-        if [[ -s state/certs/caddy-local-root.crt ]]; then
-          log "Installing Caddy local root CA into host trust store (retry)"
-          $SUDO cp state/certs/caddy-local-root.crt /usr/local/share/ca-certificates/caddy-local-root.crt
-          $SUDO update-ca-certificates >/dev/null 2>&1 || true
-        fi
+      if [[ -s "${ROOT_CA_HOST}" ]]; then
+        cp -f "${ROOT_CA_HOST}" state/certs/caddy-local-root.crt || true
+      fi
+      if [[ -s state/certs/caddy-local-root.crt ]]; then
+        log "Installing Caddy local root CA into host trust store (retry)"
+        $SUDO cp state/certs/caddy-local-root.crt /usr/local/share/ca-certificates/caddy-local-root.crt
+        $SUDO update-ca-certificates >/dev/null 2>&1 || true
+      else
+        log "Local CA not found; skipping trust install (you can import state/certs/caddy-local-root.crt manually later)"
       fi
     fi
-  else
-    log "update-ca-certificates not found; skipping local CA trust (manually import state/certs/caddy-local-root.crt)"
-  fi
+else
+  log "update-ca-certificates not found; skipping local CA trust (manually import state/certs/caddy-local-root.crt)"
+fi
 
 if prompt_yes_no_hosts "Add hosts entries for ${HOSTS[*]} to /etc/hosts?" N; then
   log "Configuring hosts entries"
@@ -492,6 +561,10 @@ if [[ ! -w "${AE_CADDY_SITES}" ]]; then
   $SUDO chown -R "$(id -u):$(id -g)" "${AE_CADDY_SITES}" || true
 fi
 
+# Proactively clear stale dynamic sites to prevent ambiguous host errors from past runs
+log "Resetting dynamic Caddy sites at ${AE_CADDY_SITES}"
+rm -f "${AE_CADDY_SITES}"/*.caddy 2>/dev/null || true
+
 # Ensure app containers join the dev compose network so Caddy can resolve them by name (docker path)
 export AE_DOCKER_NETWORK=${AE_DOCKER_NETWORK:-dev_default}
 
@@ -507,6 +580,23 @@ export AE_ALLOW_PLAINTEXT_SECRETS=${AE_ALLOW_PLAINTEXT_SECRETS}
 export AE_DEMO_MODE=${AE_DEMO_MODE}
 export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
 export API_PORT=${API_PORT}
+export AE_SPECS_DIR=${DEMO_SPECS_DIR}
+# Labs + docs wiring for controller
+export AE_LABS=${LABS_ENABLE}
+export AE_LABS_TOKEN=${LABS_TOKEN}
+if [[ ${LABS_ENABLE:-0} -eq 1 ]]; then
+  # Ensure sessionized hosts to avoid Caddy host collisions from multiple echo-* apps
+  export AE_LABS_SESSION_HOSTS=${AE_LABS_SESSION_HOSTS:-1}
+fi
+export AE_DOCS_PORT=${DOCS_PORT:-9109}
+# Canonical dev CA bundle for tools/SDKs (if built by init)
+if [ -f "state/certs/combined-dev-ca.pem" ]; then
+  # These envs are safe for local shells and scripts; they augment trust for dev endpoints
+  export CURL_CA_BUNDLE="$(pwd)/state/certs/combined-dev-ca.pem"
+  export REQUESTS_CA_BUNDLE="$(pwd)/state/certs/combined-dev-ca.pem"
+  export NODE_EXTRA_CA_CERTS="$(pwd)/state/certs/combined-dev-ca.pem"
+  export GIT_SSL_CAINFO="$(pwd)/state/certs/combined-dev-ca.pem"
+fi
 ENV
 
 # Seed dynsites for docs and API so they are always available
@@ -522,6 +612,18 @@ https://docs.home.arpa {
     }
     header -Strict-Transport-Security
     tls internal
+
+    # Proxy controller API paths for single-origin labs (no CORS required)
+    @apibase path /health /openapi.json
+    handle @apibase {
+        reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT}
+    }
+    @apipaths path /api* /labs* /status* /events* /logs* /swagger* /redoc* /dashboard*
+    handle @apipaths {
+        reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT}
+    }
+
+    # Static docs fallback
     root * /srv/docs
     file_server browse
 }
@@ -535,11 +637,52 @@ https://api.home.arpa {
     }
     header -Strict-Transport-Security
     tls internal
-    reverse_proxy ${HOST_ALIAS}:${API_PORT}
+    reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT}
 }
 API
 
 # Auto-start the controller daemon unless disabled
+# Build a temporary specs set for the selected demo so the controller only watches required apps
+DEMO_SPECS_DIR="state/demo-specs"
+rm -rf "$DEMO_SPECS_DIR" 2>/dev/null || true
+mkdir -p "$DEMO_SPECS_DIR"
+if [[ $DOCS_ONLY -ne 1 ]]; then
+  # Helper to include a spec if the file exists
+  add_spec() {
+    local f="$1"; if [[ -f "$f" ]]; then cp "$f" "$DEMO_SPECS_DIR/"; fi
+  }
+  ANY_DEMO=$(( DEMO_CONFIGS | DEMO_STANDARD | DEMO_ECHO_MR | DEMO_ECHO_MULTI | DEMO_SECURITY | DEMO_TCP | DEMO_EXEC | DEMO_ROLLOUT | DEMO_STORAGE ))
+  if [[ $DEMO_STANDARD -eq 1 || $ANY_DEMO -eq 0 ]]; then
+    add_spec specs/examples/blue.yaml
+    add_spec specs/examples/green.yaml
+  fi
+  if [[ $DEMO_CONFIGS -eq 1 ]]; then
+    add_spec specs/examples/echo.yaml
+  fi
+  if [[ $DEMO_ECHO_MR -eq 1 ]]; then
+    add_spec specs/examples/multi-replica-echo.yaml
+  fi
+  if [[ $DEMO_ECHO_MULTI -eq 1 ]]; then
+    add_spec specs/examples/echo-multiport.yaml
+  fi
+  if [[ $DEMO_SECURITY -eq 1 ]]; then
+    add_spec specs/examples/echo-sec.yaml
+  fi
+  if [[ $DEMO_TCP -eq 1 ]]; then
+    add_spec specs/examples/echo-tcp.yaml
+  fi
+  if [[ $DEMO_EXEC -eq 1 ]]; then
+    add_spec specs/examples/echo-exec.yaml
+  fi
+  if [[ $DEMO_ROLLOUT -eq 1 ]]; then
+    add_spec specs/examples/echo.yaml
+    add_spec specs/examples/echo-rollout.yaml
+  fi
+  if [[ $DEMO_STORAGE -eq 1 ]]; then
+    add_spec specs/examples/echo-storage.yaml
+  fi
+fi
+
 if [[ $NO_CONTROLLER -eq 0 ]]; then
   if [[ -f state/controller.pid ]]; then
     CTRL_PID=$(cat state/controller.pid || true)
@@ -551,11 +694,11 @@ if [[ $NO_CONTROLLER -eq 0 ]]; then
   else
     if [[ $NO_SUPERVISOR -eq 0 ]]; then
       log "Starting controller supervisor (port ${API_PORT})"
-      nohup bash scripts/supervise_controller.sh "$PY_BIN" specs "${API_PORT}" >/dev/null 2>&1 &
+      nohup bash scripts/supervise_controller.sh "$PY_BIN" "$DEMO_SPECS_DIR" "${API_PORT}" >/dev/null 2>&1 &
       echo $! > state/controller_supervisor.pid
     else
       log "Starting controller once on :${API_PORT} (background)"
-      nohup "$PY_BIN" -m ae.controller --loop --specs specs/ --metrics-port "${API_PORT}" --watch \
+      nohup "$PY_BIN" -m ae.controller --loop --specs "$DEMO_SPECS_DIR" --metrics-port "${API_PORT}" --watch \
         >/dev/null 2>&1 &
       echo $! > state/controller.pid
     fi
@@ -579,7 +722,7 @@ ensure_supervisor_running() {
   fi
   if [[ $running -eq 0 ]]; then
     log "Controller supervisor not running; starting it now"
-    nohup bash scripts/supervise_controller.sh "$PY_BIN" specs "${API_PORT}" >/dev/null 2>&1 &
+    nohup bash scripts/supervise_controller.sh "$PY_BIN" "$DEMO_SPECS_DIR" "${API_PORT}" >/dev/null 2>&1 &
     echo $! > state/controller_supervisor.pid
   fi
   # Wait briefly for the HTTP API to come up so subsequent steps see a stable controller
@@ -601,9 +744,20 @@ for i in {1..20}; do
   sleep 0.5
 done
 
+# If Labs is enabled, proactively clean up stray session apps that may share the same base ingress host
+if [[ ${LABS_ENABLE:-0} -eq 1 ]]; then
+  log "Cleaning old Labs session apps (pattern: echo-<hex6>) to prevent ingress host collisions"
+  while read -r app; do
+    if [[ "$app" =~ ^echo-[0-9a-f]{6}$ ]]; then
+      "$PY_BIN" -m ae.cli delete "$app" >/dev/null 2>&1 || true
+    fi
+  done < <("$PY_BIN" -m ae.cli status | awk -F: '/^echo-/ {print $1}')
+fi
+
 if [[ $DOCS_ONLY -ne 1 ]]; then
-  # Default: apply standard demo unless explicitly disabled. If no flags specified, treat as standard.
-  if [[ $DEMO_STANDARD -eq 1 ]] || { [[ $DEMO_STANDARD -eq 0 && $DEMO_ECHO_MR -eq 0 && $DEMO_CONFIGS -eq 0 ]]; }; then
+  # Default: apply standard demo only when explicitly requested OR when no demo flags were provided at all.
+  ANY_DEMO=$(( DEMO_CONFIGS | DEMO_STANDARD | DEMO_ECHO_MR | DEMO_ECHO_MULTI | DEMO_SECURITY | DEMO_TCP | DEMO_EXEC | DEMO_ROLLOUT | DEMO_STORAGE ))
+  if [[ $DEMO_STANDARD -eq 1 || $ANY_DEMO -eq 0 ]]; then
     if ! timeout --kill-after=5 "$APPLY_TIMEOUT" "$PY_BIN" -m ae.cli --verbose apply -f specs/examples/blue.yaml; then
       log "Apply for blue timed out or failed. Diagnostics:"
       "$STACK_BIN" ps || true
@@ -651,6 +805,15 @@ if [[ $DEMO_ECHO_MR -eq 1 && $DOCS_ONLY -ne 1 ]]; then
   "$PY_BIN" -m ae.cli apply -f specs/examples/multi-replica-echo.yaml || true
 fi
 
+# Optional multi-port echo demo (http + metrics)
+if [[ $DEMO_ECHO_MULTI -eq 1 && $DOCS_ONLY -ne 1 ]]; then
+  log "Applying multi-port echo demo (echo-multi)"
+  "$PY_BIN" -m ae.cli apply -f specs/examples/echo-multiport.yaml || true
+  # Quick endpoint verification
+  code=$(curl -ksS -o /dev/null -w '%{http_code}' "https://echo-multi.home.arpa:${CADDY_HTTPS_PORT}/" || true)
+  printf '[verify] %-20s -> %s\n' "echo-multi.home.arpa/" "${code:-fail}"
+fi
+
 # Optional security demo
 if [[ $DEMO_SECURITY -eq 1 && $DOCS_ONLY -ne 1 ]]; then
   log "Applying security-hardened echo demo (echo-sec)"
@@ -689,6 +852,7 @@ fi
 # Build and serve docs locally
 DOCS_PORT=${DOCS_PORT:-9109}
 log "Building static docs (docs/site)"
+export DOCS_LABS_TOKEN="${LABS_TOKEN}"
 "$PY_BIN" docs/build_docs.py || true
 log "Starting docs server on http://${DOCS_BIND}:${DOCS_PORT} (background)"
 mkdir -p state
@@ -697,6 +861,17 @@ echo $! > state/docs_server.pid
 
 log "Current status"
 "$PY_BIN" -m ae.cli status
+
+# If Labs demo requested, print playground hints
+if [[ ${LABS_ENABLE:-0} -eq 1 ]]; then
+  echo
+  log "Labs enabled for controller sessions (AE_LABS=1)"
+  if [[ -n "${LABS_TOKEN:-}" ]]; then
+    log "Labs token exported via state/env.sh (AE_LABS_TOKEN). Paste it in the playground or click 'Use Token'."
+  fi
+  log "Playground: https://docs.home.arpa:${CADDY_HTTPS_PORT}/playground.html"
+  log "Dashboard:  https://docs.home.arpa:${CADDY_HTTPS_PORT}/dashboard"
+fi
 
 # If backend is podman, ensure demo images are available to Podman by importing from Docker when needed
 if [[ "$AE_RUNTIME_BACKEND" == "podman" || "$AE_RUNTIME_BACKEND" == "oci" ]]; then
@@ -836,11 +1011,78 @@ check_network_sanity || true
 attach_debug_logs() {
   echo
   log "Attaching logs (Ctrl-C to exit)"
+
+  # Runtime summary banner for -d mode
+  echo
+  log "Runtime summary"
+  # Determine the effective runtime the CLI would instantiate under current env
+  EFFECTIVE_RUNTIME=$(
+    "$PY_BIN" - <<'PY' 2>/dev/null || true
+from ae.cli.__main__ import runtime_factory
+try:
+    r = runtime_factory()
+    print(type(r).__name__)
+except Exception as e:  # fallback if imports fail in partial env
+    print(f"Unavailable ({e})")
+PY
+  )
+  printf '[runtime] requested=%s effective=%s\n' "${AE_RUNTIME_BACKEND:-unset}" "${EFFECTIVE_RUNTIME:-unknown}"
+  # Container stack CLI (docker|podman) used for dev services like Caddy
+  printf '[runtime] stack_cli=%s host_alias=%s docker_net=%s podman_net=%s\n' \
+    "${STACK_BIN:-unknown}" "${HOST_ALIAS:-unknown}" "${AE_DOCKER_NETWORK:-unset}" "${AE_PODMAN_NETWORK:-unset}"
+  # Versions (best-effort)
+  if command -v podman >/dev/null 2>&1; then
+    printf '[version] podman: %s\n' "$(podman --version 2>/dev/null | head -n1)"
+  else
+    printf '[version] podman: not found on PATH\n'
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    printf '[version] docker: %s\n' "$(docker --version 2>/dev/null | head -n1)"
+  else
+    printf '[version] docker: not found on PATH\n'
+  fi
+  # Python used by controller + ae CLI
+  printf '[version] python: %s\n' "$("$PY_BIN" --version 2>&1)"
+
+  # TLS/dev CA summary
+  echo
+  log "Dev TLS bundle"
+  ROOT_CA_LOCAL="state/certs/caddy-local-root.crt"
+  COMBINED_CA="state/certs/combined-dev-ca.pem"
+  SYS_CA="/usr/local/share/ca-certificates/caddy-local-root.crt"
+  if [[ -s "$ROOT_CA_LOCAL" ]]; then
+    printf '[tls] local root: %s\n' "$(realpath "$ROOT_CA_LOCAL" 2>/dev/null || echo "$ROOT_CA_LOCAL")"
+  else
+    printf '[tls] local root: missing (will be created after first TLS access)\n'
+  fi
+  if [[ -s "$COMBINED_CA" ]]; then
+    printf '[tls] combined bundle: %s\n' "$(realpath "$COMBINED_CA" 2>/dev/null || echo "$COMBINED_CA")"
+  else
+    printf '[tls] combined bundle: not built\n'
+  fi
+  if [[ -s "$SYS_CA" ]]; then
+    printf '[tls] system trust: %s (installed)\n' "$SYS_CA"
+  else
+    printf '[tls] system trust: not installed (import %s)\n' "$ROOT_CA_LOCAL"
+  fi
+  # Show exported tool envs if present
+  if [[ -s "state/env.sh" ]]; then
+    # shellcheck disable=SC1091
+    . state/env.sh >/dev/null 2>&1 || true
+  fi
+  printf '[tls] env CURL_CA_BUNDLE=%s\n' "${CURL_CA_BUNDLE:-unset}"
+  printf '[tls] env REQUESTS_CA_BUNDLE=%s\n' "${REQUESTS_CA_BUNDLE:-unset}"
+  printf '[tls] env NODE_EXTRA_CA_CERTS=%s\n' "${NODE_EXTRA_CA_CERTS:-unset}"
+  printf '[tls] env GIT_SSL_CAINFO=%s\n' "${GIT_SSL_CAINFO:-unset}"
   # Tail controller log if present
   touch state/controller.log
   # Filter out known benign demo-mode messages
   grep_ctl='sops metadata not found|watchdog not available'
-  tail -n 50 -F state/controller.log \
+  TAIL_OPTS=""
+  if tail --help 2>&1 | grep -q -- "--disable-inotify"; then
+    TAIL_OPTS="--disable-inotify"
+  fi
+  tail ${TAIL_OPTS} -n 50 -F state/controller.log \
     | grep -Ev "$grep_ctl" \
     | sed -u 's/^/[controller] /' &
   T1=$!
@@ -854,7 +1096,7 @@ attach_debug_logs() {
   "$STACK_BIN" logs -f dev-prometheus-1 2>&1 | sed -u 's/^/[prometheus] /' &
   T3=$!
   # Stream site changes
-  tail -n 0 -F "$AE_CADDY_SITES"/*.caddy 2>/dev/null | sed -u 's/^/[sites] /' &
+  tail ${TAIL_OPTS} -n 0 -F "$AE_CADDY_SITES"/*.caddy 2>/dev/null | sed -u 's/^/[sites] /' &
   T4=$!
   # Clean up on exit
   trap 'kill $T1 $T2 $T3 $T4 2>/dev/null || true; exit 0' INT TERM

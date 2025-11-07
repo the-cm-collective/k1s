@@ -7,14 +7,14 @@ import subprocess
 
 def main() -> int:
     missing = []
-    snaps = Path('snapshots')
-    for lbl in sorted(snaps.glob('*')):
+    snaps = Path("snapshots")
+    for lbl in sorted(snaps.glob("*")):
         if not lbl.is_dir():
             continue
-        for ts in sorted(lbl.glob('*')):
+        for ts in sorted(lbl.glob("*")):
             if not ts.is_dir():
                 continue
-            if (ts / 'meta.json').exists() and not (ts / 'summary.json').exists():
+            if (ts / "meta.json").exists() and not (ts / "summary.json").exists():
                 missing.append(ts)
     print(f"[backfill] found {len(missing)} snapshots to aggregate")
     for p in missing:
@@ -25,4 +25,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
