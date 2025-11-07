@@ -57,6 +57,11 @@ class Reconciler:
             )
         except Exception:
             pass
+        # Track last seen restart counts per container/app to detect crash loops
+        self._last_restart_counts: dict[str, int] = {}
+        self._last_restart_ts: dict[str, float] = {}
+        # Create cooldowns: app -> unix timestamp until which we avoid creating new replicas
+        self._create_cooldown_until: dict[str, float] = {}
 
     def reconcile_manifest_path(self, path: Path) -> ReconcileReport:
         """Load a manifest from disk and reconcile it."""
@@ -131,7 +136,9 @@ class Reconciler:
                     for r in replicas
                 ],
             )
-            result = RuntimeResult(revision=revision, created=0, updated=0, removed=0, replica_states=[])
+            result = RuntimeResult(
+                revision=revision, created=0, updated=0, removed=0, replica_states=[]
+            )
             revision_status = "paused"
             self._state_store.record_snapshot(
                 manifest=manifest_for_runtime,
@@ -157,7 +164,14 @@ class Reconciler:
                 revision_status=revision_status,
             )
 
+        import time as _t
+
+        now_ts = float(_t.time())
         limit_create = 1 if strategy == "ordered" else None
+        # Apply create cooldown when active
+        until = float(self._create_cooldown_until.get(manifest.metadata.name, 0.0) or 0.0)
+        if until > now_ts:
+            limit_create = 0
         # Keep old replicas during rollout to respect surge/unavailable; we'll remove them after readiness check
         try:
             result = self._runtime.ensure_app(  # type: ignore[arg-type]
@@ -167,7 +181,58 @@ class Reconciler:
             # Compatibility with runtimes/tests that don't accept new kwargs
             result = self._runtime.ensure_app(manifest_for_runtime, revision)  # type: ignore[arg-type]
         health_report = self._health_manager.evaluate(manifest, result)
-        if manifest.spec.ingress and self._ingress_service:
+        # Record probe backoff metrics from messages
+        try:
+            from ae.observability.http_api import record_probe_backoff  # type: ignore
+
+            def _parse_bo(msg: str | None) -> int:
+                try:
+                    import re
+
+                    m = re.search(r"backoff \((\d+)s\)", str(msg or ""))
+                    return int(m.group(1)) if m else 0
+                except Exception:
+                    return 0
+
+            for rep in getattr(health_report, "replicas", []) or []:
+                app_name = manifest.metadata.name
+                record_probe_backoff(
+                    app_name,
+                    rep.replica_id,
+                    "readiness",
+                    _parse_bo(getattr(rep, "readiness_message", "")),
+                )
+                record_probe_backoff(
+                    app_name,
+                    rep.replica_id,
+                    "liveness",
+                    _parse_bo(getattr(rep, "liveness_message", "")),
+                )
+        except Exception:
+            pass
+        # Pre-switch rollout hook (optional)
+        hook_ok = True
+        hook_msg = None
+        try:
+            ro = getattr(manifest.spec, "rollout", {}) or {}
+            hooks = ro.get("hooks") if isinstance(ro, dict) else None
+            pre = (hooks or {}).get("preSwitch") or (hooks or {}).get("pre_switch")
+            if pre:
+                hook_ok, hook_msg = self._run_rollout_hook(manifest, result, pre)
+                if not hook_ok:
+                    try:
+                        self._state_store.record_event(
+                            manifest.metadata.name,
+                            revision,
+                            "HookFailed",
+                            f"preSwitch: {hook_msg or 'failed'}",
+                        )
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        if manifest.spec.ingress and self._ingress_service and hook_ok:
             upstreams = self._select_upstreams(manifest, result, health_report)
             if upstreams:
                 upstream_param = upstreams[0] if len(upstreams) == 1 else upstreams
@@ -188,11 +253,42 @@ class Reconciler:
                 "IngressRemoved",
                 "Ingress configuration removed",
             )
+        # Post-switch rollout hook (optional, best-effort)
+        try:
+            if hook_ok:
+                ro = getattr(manifest.spec, "rollout", {}) or {}
+                hooks = ro.get("hooks") if isinstance(ro, dict) else None
+                post = (hooks or {}).get("postSwitch") or (hooks or {}).get("post_switch")
+                if post:
+                    ok, msg = self._run_rollout_hook(manifest, result, post)
+                    ev = "HookPassed" if ok else "HookFailed"
+                    self._state_store.record_event(
+                        manifest.metadata.name,
+                        revision,
+                        ev,
+                        f"postSwitch: {msg or ('ok' if ok else 'failed')}",
+                    )
+        except Exception:
+            pass
         revision_status = self._calculate_revision_status(manifest, health_report, result)
 
-        # Remove old revisions if availability is satisfied
+        # Crashloop detection: emit events when container restart counts surge in a window
+        try:
+            self._detect_crashloops(manifest)
+        except Exception:
+            pass
+
+        # Remove old revisions if availability is satisfied, except while canary is active
         desired = manifest.spec.replicas
-        if health_report.ready_replicas >= max(0, desired - max_unavail):
+        ro_now = getattr(manifest.spec, "rollout", {}) or {}
+        strat_now = str(ro_now.get("strategy", "parallel")).lower()
+        w_now = None
+        try:
+            w_now = int(ro_now.get("weight")) if ro_now.get("weight") is not None else None
+        except Exception:
+            w_now = None
+        canary_active = strat_now == "canary" and (w_now or 0) > 0 and (w_now or 0) < 100
+        if (not canary_active) and health_report.ready_replicas >= max(0, desired - max_unavail):
             try:
                 removed_old = self._runtime.remove_old_revisions(manifest.metadata.name, revision)
                 if removed_old > 0:
@@ -204,6 +300,44 @@ class Reconciler:
                     )
             except Exception:
                 pass
+
+        # Emit rollout change events (e.g., canary enabled/updated/disabled)
+        try:
+            prev = self._state_store.get_status(manifest.metadata.name)
+            prev_ro = None
+            if prev is not None:
+                try:
+                    prev_man = self._state_store.get_revision_manifest(prev.app_name, prev.revision)
+                    prev_ro = getattr(prev_man.spec, "rollout", {}) or {}
+                except Exception:
+                    prev_ro = None
+            new_ro = getattr(manifest.spec, "rollout", {}) or {}
+            def _ro_view(ro: dict | None) -> tuple[str, int | None, bool]:
+                try:
+                    strat = str((ro or {}).get("strategy", "parallel")).lower()
+                    weight = (ro or {}).get("weight")
+                    w = int(weight) if weight is not None else None
+                    paused = bool((ro or {}).get("pause", False))
+                    return strat, w, paused
+                except Exception:
+                    return "parallel", None, False
+            p_strat, p_weight, _p_paused = _ro_view(prev_ro if isinstance(prev_ro, dict) else {})
+            n_strat, n_weight, _n_paused = _ro_view(new_ro if isinstance(new_ro, dict) else {})
+            ev_type = None
+            msg = None
+            if p_strat != "canary" and n_strat == "canary" and (n_weight or 0) > 0:
+                ev_type = "CanaryEnabled"
+                msg = f"canary enabled: weight {int(n_weight)}%" if n_weight is not None else "canary enabled"
+            elif p_strat == "canary" and (n_strat != "canary" or (n_weight or 0) == 0):
+                ev_type = "CanaryDisabled"
+                msg = "canary disabled"
+            elif p_strat == "canary" and n_strat == "canary" and (p_weight != n_weight) and (n_weight is not None):
+                ev_type = "CanaryUpdated"
+                msg = f"canary weight {int(p_weight or 0)}% -> {int(n_weight)}%"
+            if ev_type and msg:
+                self._state_store.record_event(manifest.metadata.name, revision, ev_type, msg)
+        except Exception:
+            pass
 
         self._state_store.record_snapshot(
             manifest=manifest_for_runtime,
@@ -229,6 +363,128 @@ class Reconciler:
             revision_status=revision_status,
         )
 
+    def _run_rollout_hook(self, manifest, runtime_result, hook) -> tuple[bool, str | None]:  # noqa: ANN001
+        """Execute a rollout hook against the new revision.
+
+        Supports:
+          - exec: list[str] executed in the first ready replica (fallback to first replica)
+          - tcp: { port } TCP connect to replica endpoint host:port
+          - timeoutSeconds: optional per-hook timeout (default 5)
+        """
+        timeout = 5
+        try:
+            timeout = int(hook.get("timeoutSeconds", 5))
+        except Exception:
+            timeout = 5
+        replicas = list(runtime_result.replica_states or [])
+        target = None
+        # prefer ready
+        for r in replicas:
+            if getattr(r, "ready", False):
+                target = r
+                break
+        if target is None and replicas:
+            target = replicas[0]
+        if target is None:
+            return False, "no replicas available for hook"
+        # exec hook
+        if "exec" in hook:
+            cmd = hook.get("exec") or []
+            if not isinstance(cmd, (list, tuple)) or not cmd:
+                return False, "exec hook missing/invalid command"
+            try:
+                code = self._runtime.exec(target.replica_id, [str(x) for x in cmd], timeout=timeout)
+                return (code == 0), (f"exec rc={code}")
+            except Exception as exc:  # noqa: BLE001
+                return False, f"exec error: {exc}"
+        # tcp hook
+        if "tcp" in hook:
+            port = None
+            try:
+                port = int((hook.get("tcp") or {}).get("port", 0))
+            except Exception:
+                port = 0
+            if port <= 0:
+                return False, "tcp.port must be set"
+            # Build target host: use resolved endpoint host or localhost
+            host = "127.0.0.1"
+            try:
+                ep = str(getattr(target, "endpoint", "") or "")
+                if ":" in ep:
+                    host = ep.split(":", 1)[0]
+            except Exception:
+                pass
+            import socket as _s
+
+            try:
+                with _s.create_connection((host, int(port)), timeout=max(1, int(timeout))):
+                    return True, "tcp ok"
+            except OSError as exc:
+                return False, f"tcp error: {exc}"
+        return False, "unsupported hook"
+
+    def _detect_crashloops(self, manifest: AppManifest) -> None:
+        import time as _t
+
+        app = manifest.metadata.name
+        try:
+            infos = self._runtime.list_containers_info()  # type: ignore[attr-defined]
+        except Exception:
+            infos = []
+        # thresholds
+        try:
+            wnd = float(os.getenv("AE_RESTART_WINDOW_SEC", "60"))
+            thr = int(os.getenv("AE_RESTART_THRESHOLD", "3"))
+        except Exception:
+            wnd, thr = 60.0, 3
+        now = float(_t.time())
+        surges = 0
+        for c in infos or []:
+            labels = c.get("labels") or {}
+            if (labels.get("ae.app") or "") != app:
+                continue
+            name = str(c.get("name", ""))
+            rc = int(c.get("restart_count", 0) or 0)
+            key = f"{app}|{name}"
+            last_rc = self._last_restart_counts.get(key, rc)
+            last_ts = self._last_restart_ts.get(key, now)
+            if rc > last_rc:
+                # increased since last observe; if within window, count surge
+                if (now - last_ts) <= wnd and (rc - last_rc) >= 1:
+                    surges += rc - last_rc
+                # update trackers
+                self._last_restart_counts[key] = rc
+                self._last_restart_ts[key] = now
+        if surges >= thr:
+            try:
+                # record event and mark crashloop in API for a short TTL
+                self._state_store.record_event(
+                    app,
+                    0,
+                    "CrashLoopDetected",
+                    f"container restarts surged: {surges} in {int(wnd)}s (>= {thr})",
+                )
+            except Exception:
+                pass
+            try:
+                from ae.observability.http_api import set_app_crashloop  # type: ignore
+
+                set_app_crashloop(app, ttl_seconds=float(os.getenv("AE_CRASHLOOP_TTL", "300")))
+            except Exception:
+                pass
+            # Apply create cooldown
+            try:
+                cd = float(os.getenv("AE_RECREATE_COOLDOWN_SEC", "30"))
+            except Exception:
+                cd = 30.0
+            try:
+                self._create_cooldown_until[app] = float(_t.time()) + float(cd)
+                self._state_store.record_event(
+                    app, 0, "RecreateCooldown", f"suppressing new replica creation for {int(cd)}s"
+                )
+            except Exception:
+                pass
+
     def _select_upstreams(
         self,
         manifest: AppManifest,
@@ -246,6 +502,45 @@ class Reconciler:
             state = states_by_id.get(replica.replica_id)
             if state and state.endpoint:
                 ready_eps.append(state.endpoint)
+        # When canary is enabled, include previous revision endpoints to split traffic
+        try:
+            ro = getattr(manifest.spec, "rollout", {}) or {}
+            strat = str(ro.get("strategy", "parallel")).lower()
+            w = int(ro.get("weight")) if ro.get("weight") is not None else 0
+        except Exception:
+            strat, w = "parallel", 0
+        if ready_eps and strat == "canary" and w > 0:
+            try:
+                items = self._runtime.list_containers_info()  # type: ignore[attr-defined]
+            except Exception:
+                items = []
+            prev_eps: list[str] = []
+            cur_rev = str(result.revision)
+            app = manifest.metadata.name
+            for it in items or []:
+                labs = (it.get("labels") or {})
+                if (labs.get("ae.app") or "") != app:
+                    continue
+                if (labs.get("ae.revision") or "") == cur_rev:
+                    continue
+                ports = list(it.get("host_ports") or [])
+                if not ports:
+                    continue
+                try:
+                    ep = f"127.0.0.1:{int(ports[0])}"
+                    prev_eps.append(ep)
+                except Exception:
+                    continue
+            # Merge, de-duplicating, keeping new first to honor prefer-first policy
+            seen = set()
+            merged: list[str] = []
+            for ep in ready_eps + prev_eps:
+                if ep in seen:
+                    continue
+                seen.add(ep)
+                merged.append(ep)
+            if merged:
+                return merged
         if ready_eps:
             return ready_eps
 
@@ -420,4 +715,10 @@ class Reconciler:
                         except Exception:
                             pass
 
-        return root if wrote else None
+        # Prefer absolute path for runtime volume mounts to avoid Docker/Podman
+        # treating relative paths as named volumes (which can fail validation).
+        try:
+            abs_root = root.resolve()
+        except Exception:
+            abs_root = root
+        return abs_root if wrote else None
