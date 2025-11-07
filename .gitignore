@@ -19,3 +19,4 @@ ops/dev/caddy/sites/green.caddy
 .mypy_cache/
 coverage.xml
 htmlcov/
+*.mp4
