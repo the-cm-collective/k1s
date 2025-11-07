@@ -43,7 +43,7 @@ def test_create_container_removes_existing(monkeypatch):
 
     m = _manifest_single()
     # Call the private helper to focus the behavior
-    rt._create_container(m, "blue-rev3-0", 3, service=(8080, 8080))
+    rt._create_container(m, "blue-rev3-0", 3, service=(8080, 8080, None))
 
     # Expect a `container exists <name>` check, a stop+rm by name, then `run ... --name <name>`
     names = [" ".join(c) for c in calls]

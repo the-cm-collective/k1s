@@ -16,7 +16,7 @@ def test_podman_inspect_labels_classification(tmp_path: Path) -> None:
     (raw / "containers_mem.csv").write_text(
         "container_id,name,pid,mem_current_bytes\n"
         "abc123def456,ae-echo,100,1048576\n"  # 1 MiB app
-        "fff111222333,caddy,200,2097152\n"     # 2 MiB system
+        "fff111222333,caddy,200,2097152\n"  # 2 MiB system
     )
 
     # podman inspect providing labels for app classification
@@ -37,4 +37,3 @@ def test_podman_inspect_labels_classification(tmp_path: Path) -> None:
     summary = MA.aggregate(snap)
     assert summary["containers"]["app_mem_bytes"] == 1048576
     assert summary["containers"]["system_mem_bytes"] == 2097152
-
