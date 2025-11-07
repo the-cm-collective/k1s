@@ -62,7 +62,9 @@ class CaddyIngressManager:
         if ingress is None:
             raise ValueError("Manifest lacks ingress configuration")
 
-        site_config = self._render_site(ingress, upstream, readiness_path, prefer_first, first_weight)
+        site_config = self._render_site(
+            ingress, upstream, readiness_path, prefer_first, first_weight
+        )
         site_path = self._site_path(manifest.metadata.name)
         site_path.write_text(site_config)
         LOGGER.debug("Wrote Caddy site config to %s", site_path)
@@ -119,9 +121,12 @@ class CaddyIngressManager:
         except subprocess.CalledProcessError as exc:
             msg = exc.stderr.decode("utf-8", "ignore")
             # During early startup the dev Caddy container may not exist yet; avoid noisy warnings.
-            if self._container and (
-                "No such container" in msg or "container" in msg and "not found" in msg
-            ):
+            transient = (
+                "No such container" in msg
+                or ("container" in msg and "not found" in msg)
+                or ("state improper" in msg)
+            )
+            if self._container and transient:
                 LOGGER.info(
                     "Caddy container %s not available yet; skipping reload", self._container
                 )
@@ -144,6 +149,7 @@ class CaddyIngressManager:
             ups_list = list(upstreams)
 
         targets: list[str] = []
+        env_host_alias = os.getenv("AE_CADDY_HOST_ALIAS", "").strip()
         for up in ups_list:
             target = up
             # If Caddy runs in a container and target refers to host loopback,
@@ -155,12 +161,24 @@ class CaddyIngressManager:
                     host_part, port_part = up, ""
                 if host_part in {"127.0.0.1", "0.0.0.0"} and port_part:
                     # Prefer Podman alias when using podman; otherwise use Docker alias.
-                    host_alias = "host.containers.internal" if self._container_cli == "podman" else "host.docker.internal"
+                    host_alias = env_host_alias or (
+                        "host.containers.internal"
+                        if self._container_cli == "podman"
+                        else "host.docker.internal"
+                    )
                     target = f"{host_alias}:{port_part}"
                 # Also normalize if previous runs wrote the other runtime's alias
-                if host_part == "host.docker.internal" and self._container_cli == "podman" and port_part:
+                if (
+                    host_part == "host.docker.internal"
+                    and self._container_cli == "podman"
+                    and port_part
+                ):
                     target = f"host.containers.internal:{port_part}"
-                if host_part == "host.containers.internal" and self._container_cli != "podman" and port_part:
+                if (
+                    host_part == "host.containers.internal"
+                    and self._container_cli != "podman"
+                    and port_part
+                ):
                     target = f"host.docker.internal:{port_part}"
             if ingress.path and ingress.path != "/":
                 target = f"{target} {ingress.path}"
