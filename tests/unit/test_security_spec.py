@@ -6,9 +6,16 @@ def test_podman_security_flags_mapping(monkeypatch, tmp_path):
     # Prepare manifest with security context
     spec = AppSpec(
         image="alpine:3.20",
-        security=SecuritySpec(runAsUser=1000, runAsGroup=1000, readOnlyRootFilesystem=True, dropCapabilities=["NET_RAW", "SYS_PTRACE"]),
+        security=SecuritySpec(
+            runAsUser=1000,
+            runAsGroup=1000,
+            readOnlyRootFilesystem=True,
+            dropCapabilities=["NET_RAW", "SYS_PTRACE"],
+        ),
     )
-    manifest = AppManifest(apiVersion="ae.dev/v1alpha1", kind="App", metadata=Metadata(name="demo-sec"), spec=spec)
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1", kind="App", metadata=Metadata(name="demo-sec"), spec=spec
+    )
 
     runtime = PodmanRuntime()
     recorded = {"cmds": []}
@@ -28,7 +35,13 @@ def test_podman_security_flags_mapping(monkeypatch, tmp_path):
                 {
                     "Id": "abc123",
                     "Name": "ae-demo-sec-rev1-0",
-                    "Config": {"Labels": {PodmanRuntime.APP_LABEL: "demo-sec", PodmanRuntime.REPLICA_LABEL: "demo-sec-rev1-0", PodmanRuntime.REVISION_LABEL: "1"}},
+                    "Config": {
+                        "Labels": {
+                            PodmanRuntime.APP_LABEL: "demo-sec",
+                            PodmanRuntime.REPLICA_LABEL: "demo-sec-rev1-0",
+                            PodmanRuntime.REVISION_LABEL: "1",
+                        }
+                    },
                     "State": {"Status": "running", "StartedAt": "2025-10-26T22:00:00Z"},
                     "NetworkSettings": {"Ports": {"8080/tcp": None}},
                 }
@@ -48,9 +61,10 @@ def test_podman_security_flags_mapping(monkeypatch, tmp_path):
     assert run_cmds, "no podman run captured"
     run = run_cmds[-1]
     # Security flags present
-    assert "--user" in run and ("1000:1000" in run or "--user" in run and run[run.index("--user") + 1] == "1000:1000")
+    assert "--user" in run and (
+        "1000:1000" in run or "--user" in run and run[run.index("--user") + 1] == "1000:1000"
+    )
     assert "--read-only" in run
     # Both caps dropped
     drops = [run[i + 1] for i, t in enumerate(run) if t == "--cap-drop" and (i + 1) < len(run)]
     assert set(drops) >= {"NET_RAW", "SYS_PTRACE"}
-
