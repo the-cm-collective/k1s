@@ -1,0 +1,71 @@
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: echo
+spec:
+  image: demo-blue:latest
+  replicas: 1
+  # Env consolidated (avoid duplicate keys overriding earlier values)
+  env:
+    - name: APP_NAME
+      value: echo
+    - name: MESSAGE
+      value: "Hello from echo"
+    - name: APP_MODE
+      value: demo-override
+  ports:
+    - name: http
+      containerPort: 8080
+  # Publish a stable host port for local runtimes (Podman/Docker).
+  # This makes readiness/liveness probes and the Playground ingress checks
+  # reliable without requiring a custom network.
+  service:
+    port: 18080      # host port (avoid common 8081 collisions)
+    targetPort: 8080 # container port
+  health:
+    readiness:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 1
+      timeoutSeconds: 1
+      periodSeconds: 5
+      successThreshold: 1
+      failureThreshold: 3
+    liveness:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 3
+      timeoutSeconds: 1
+      periodSeconds: 10
+      successThreshold: 1
+      failureThreshold: 3
+  # Demonstrate configRefs projecting keys into env and files
+  secretRefs:
+    - name: demo-secret
+      path: specs/examples/demo-secret.sops.yaml
+      env:
+        - name: API_TOKEN
+          key: token
+      files:
+        - key: token
+          file: secret/token
+  configRefs:
+    - name: app-config
+      path: configs/app-config.yaml
+      env:
+        - name: APP_MODE
+          key: mode
+        - name: APP_COLOR
+          key: color
+      files:
+        - key: mode
+          file: config/app_mode.txt
+  ingress:
+    host: echo.home.arpa
+    path: /
+  resources:
+    requests:
+      cpu: 0.05
+      memory: 128Mi

@@ -1,0 +1,15 @@
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: echo-del
+spec:
+  image: alpine:3.20
+  command: ["sh", "-c", "while true; do date >> /var/lib/echo/data.log; sleep 1; done"]
+  replicas: 1
+  ports:
+    - name: http
+      containerPort: 8080
+  storage:
+    - name: data
+      mountPath: /var/lib/echo
+      retention: Delete

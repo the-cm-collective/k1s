@@ -1,0 +1,294 @@
+<!doctype html>
+<html data-theme="dark">
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Playground</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs/%3E%3Crect width='64' height='64' rx='12' fill='%23096ad9'/%3E%3Cpath d='M16 45h32M16 19h32M16 32h32' stroke='white' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E"/>
+    <style>
+      /* Base layout */
+      html, body { height: 100%; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.55; min-height: 100vh; display: flex; flex-direction: column; }
+      code, pre { background: #f6f8fa; }
+      pre { padding: 12px; overflow-x: auto; }
+      h1, h2, h3 { margin-top: 1.5em; }
+      nav a { margin-right: 1rem; }
+      .container { max-width: 920px; }
+      /* Make main content take remaining height so footer sits at bottom */
+      .container { flex: 1 0 auto; }
+    </style>
+    <style>
+      :root {
+        --bg: #0b0f15;
+        --fg: #e6edf3;
+        --muted: #161b22;
+        --link: #79c0ff;
+        --code-bg: #0f1623;
+        --border: #263040;
+      }
+      html[data-theme="light"] {
+        --bg: #ffffff;
+        --fg: #0b0f15;
+        --muted: #f6f8fa;
+        --link: #0969da;
+        --code-bg: #f6f8fa;
+        --border: #e5e7eb;
+      }
+      body { background: var(--bg); color: var(--fg); }
+      a { color: var(--link); }
+      code, pre { background: var(--code-bg); border: 1px solid var(--border); }
+      nav { display: flex; align-items: center; gap: .75rem; margin-bottom: 1.25rem; }
+      nav a { margin-right: 1rem; }
+      .spacer { flex: 1 1 auto; }
+      button#theme-toggle { background: var(--muted); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+      /* Improve Mermaid readability in dark mode by inverting SVG colors */
+      html[data-theme="dark"] .mermaid svg { filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }
+      html[data-theme="dark"] .mermaid { background: var(--bg); }
+      footer.site-footer { margin-top: 3rem; border-top: 1px solid var(--border); flex: 0 0 auto; }
+      footer.site-footer .inner { display: flex; align-items: center; gap: .75rem; padding: 14px 0; opacity: .85; }
+    </style>
+    <script>
+      (function() {
+        const key = 'k1s-theme';
+        const saved = localStorage.getItem(key);
+        const initial = saved || 'dark';
+        document.documentElement.setAttribute('data-theme', initial);
+        function setLabel(btn) {
+          var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+          btn.textContent = (cur === 'dark') ? 'Light Mode' : 'Dark Mode';
+        }
+        function ensureButton() {
+          var nav = document.querySelector('nav');
+          if (!nav) return;
+          var btn = document.getElementById('theme-toggle');
+          if (!btn) {
+            var spacer = document.createElement('span');
+            spacer.className = 'spacer';
+            btn = document.createElement('button');
+            btn.id = 'theme-toggle';
+            btn.addEventListener('click', function() {
+              var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+              var next = (cur === 'dark') ? 'light' : 'dark';
+              document.documentElement.setAttribute('data-theme', next);
+              localStorage.setItem(key, next);
+              setLabel(btn);
+            });
+            nav.appendChild(spacer);
+            nav.appendChild(btn);
+          }
+          setLabel(btn);
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', ensureButton);
+        } else {
+          ensureButton();
+        }
+      })();
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({ startOnLoad: true });</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <link rel="stylesheet" href="static/labs.css?v=1762537272"/>
+<script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+<script>window.DOCS_LABS_TOKEN='D34DB33F';</script>
+<script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>
+<script defer src="static/labs.js?v=1762537272"></script>
+  </head>
+  <body>
+    <nav>
+      <a href="index.html">Home</a>
+      <a href="overview.html">Overview</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="http-api.html">HTTP API</a>
+      <a href="ingress.html">Ingress</a>
+      <a href="api-auth.html">API Auth</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="playground.html">Playground</a>
+    </nav>
+    <div class="container">
+    <h2>Interactive Lab Playground</h2>
+<p>Use this page to try k1s in minutes — no Kubernetes experience required. The playground can run fully read‑only or, when enabled, perform safe actions like "apply example" and "scale".</p>
+<p>Quick start:</p>
+<ul>
+<li>Step 1: Scroll to "A. Environment & Backend" and click <code>Start Session</code>.</li>
+<li>Step 2: In "B. Apply Example", choose <code>echo</code> and click <code>Apply Selected Example</code>.</li>
+<li>Step 3: In "E. Ingress Test", click <code>Open App</code> to view the service, and in "C. Logs & Events" watch activity live.</li>
+</ul>
+<div class="callout" role="note">Tip: If the page says “Labs: unavailable”, you’re in read‑only mode — verifiers still run and CLI commands are shown to try locally.</div>
+<p>This page prefers HTMX + SSE for live updates and uses a small <code>labs.js</code> helper for sessions. If the dev‑only lab orchestrator is not running, the page falls back to read‑only checks with copyable CLI commands.</p>
+<h2>A. Environment &amp; Backend</h2>
+<ul>
+<li>API Base: <span id="env-api-base">(detecting)</span></li>
+<li>Orchestrator: <span id="env-orch">(checking)</span></li>
+<li>Backend:</li>
+<li><select id="backend-select">
+<option value="auto" selected>Auto</option>
+<option value="k1s-host">k1s-Host (local)</option>
+<option value="k1s-docker">k1s-in-Docker (compose)</option>
+<option value="k3s">k3s via k3d</option>
+</select></li>
+<li><label><input type="checkbox" id="toggle-actions"/> Enable Controlled Actions</label></li>
+<li>Token: <input id="labs-token" type="password" placeholder="paste AE_LABS_TOKEN"/> <button id="btn-use-token" onclick="window.k1sUseToken && window.k1sUseToken()">Use Token</button> <span id="labs-token-nudge" class="nudge hidden" role="status" aria-live="polite">Paste AE_LABS_TOKEN, then click <em>Use Token</em>.</span></li>
+<li><button id="btn-start-session" class="btn-primary">Start Session</button></li>
+<li>Session: <span id="session-id">(none)</span></li>
+</ul>
+<div id="env-notes"></div> <div id="backend-status" class="ribbon muted"></div>
+<ul>
+<div class="row">Status: </div>
+<li>Direct API curl: <code id="api-curl"></code> <button id="api-curl-copy" disabled>Copy</button>
+<span id="status-summary" class="pending" hx-ext="sse" sse-connect="" sse-swap="message">n/a</span>
+<button id="status-mode-cluster" title="Show totals across all apps">Cluster</button>
+<button id="status-mode-app" title="Show the selected app">App</button></li>
+</ul>
+<!-- Global banner for errors and important notices --> <div id="banner" class="ribbon hidden"></div>
+<!-- Labs token controls are now part of the Backend row, above Start Session -->
+<h3>k3d Controls (k3s backend)</h3>
+<ul>
+<li><button id="btn-k3d-ensure" class="hidden">Create k3d Cluster</button></li>
+<li><a id="k3d-open-ingress" href="#" target="_blank" rel="noopener" class="hidden">Open k3s Ingress (LB)</a></li>
+</ul>
+<h3>Quick Links</h3>
+<ul>
+<li><a id="open-dashboard" href="#" target="_blank" rel="noopener" class="hidden">Open Dashboard</a></li>
+</ul>
+<h2>B. Apply Example</h2>
+<p>Pick a sample and apply it. In read‑only mode the UI shows the exact CLI you can run locally.</p>
+<ul>
+<li>Example:</li>
+<li><select id="example-select">
+<option value="echo" selected>echo</option>
+<option value="multi-replica-echo">multi-replica-echo</option>
+<option value="echo-multiport">echo-multiport</option>
+<option value="echo-hpa">echo-hpa</option>
+<option value="echo-resources">echo-resources</option>
+<option value="echo-stateful">echo-stateful</option>
+<option value="echo-sec">echo-sec</option>
+<option value="echo-sec-adv">echo-sec-adv</option>
+<option value="echo-tcp">echo-tcp</option>
+<option value="echo-exec">echo-exec</option>
+<option value="echo-storage">echo-storage</option>
+<option value="echo-storage-delete">echo-storage-delete</option>
+</select></li>
+<li>Action: <button id="btn-apply-echo" class="btn-primary" disabled>Apply Selected Example</button></li>
+<li>YAML (read-only):</li>
+</ul>
+<pre><code id="example-yaml" class="lang-yaml">(select an example to preview its YAML)</code></pre>
+<!-- CLI fallback removed to avoid hardcoding echo.yaml -->
+<h3>Verifiers</h3>
+<ul>
+<li>Events include “ApplyCompleted” for a revision: <span id="v-apply-events" data-v="pending">pending</span></li>
+<li>Status readyReplicas == spec.replicas: <span id="v-apply-ready" data-v="pending">pending</span></li>
+</ul>
+<h2>C. Logs &amp; Events</h2>
+<p>Live feed of events and logs for your sample app. When sessions are enabled, this switches to streaming mode automatically.</p>
+<div id="observe">   <button id="btn-observe-toggle" disabled>Start Tail</button>   <div id="observe-events" class="panel" aria-live="polite" aria-busy="true" data-source="events"></div>   <div id="observe-logs" class="panel" aria-live="polite" aria-busy="true" data-source="logs"></div>   <!-- HTMX SSE variant for logs; labs.js will arm sse-connect once a session exists -->   <div id="logs-sse" class="panel hidden" hx-ext="sse" sse-connect="" sse-swap="message" hx-swap="beforeend"></div>   <!-- HTMX SSE variant for events; labs.js will arm sse-connect once a session exists -->   <div id="events-sse" class="panel hidden" hx-ext="sse" sse-connect="" sse-swap="message"></div> </div>
+<h2>D. Scale &amp; Rollout</h2>
+<p>Try increasing replicas or enabling a tiny canary rollout. These buttons become active after a session starts and actions are enabled.</p>
+<ul>
+<li>Scale to 2/3: updates the app's desired replica count. The controller reconciles containers until readyReplicas matches the new spec. Watch the status badge and events to see the change propagate.</li>
+<li>Canary 10%: enables a canary rollout policy and shifts a small portion of traffic to a new revision. This is a safe way to test changes with limited impact. You can later fine‑tune weight in "F. Rollout Controls" or revert to 0%.</li>
+<li>Requirements: an active session, "Enable Controlled Actions" toggled on, and an example applied (e.g., echo).</li>
+</ul>
+<ul>
+<li><button id="btn-scale-2" disabled>Scale to 2</button></li>
+<li><button id="btn-scale-3" disabled>Scale to 3</button></li>
+<li><button id="btn-canary-10" disabled>Canary 10%</button></li>
+</ul>
+<p>CLI (fallback):</p>
+<pre><code>
+# Scale using the CLI
+python -m ae.cli scale &lt;app&gt; --replicas 2
+python -m ae.cli scale &lt;app&gt; --replicas 3
+
+# Pause/resume an in‑progress rollout
+python -m ae.cli rollout pause &lt;app&gt;
+python -m ae.cli rollout resume &lt;app&gt;
+</code></pre>
+<p>Canary via YAML (conceptual):</p>
+<pre><code>
+spec:
+  rollout:
+    strategy: canary
+    weight: 10   # send ~10% of traffic to the canary
+</code></pre>
+<h4>Notes</h4>
+<ul>
+<li>Scaling edits only <code>spec.replicas</code>; the current image revision stays the same.</li>
+<li>Canary weights bias routing between the old and new revision; readiness gates still apply before traffic shifts.</li>
+<li>To fully roll forward, increase weight gradually (see section "F. Rollout Controls"). To roll back, set weight to 0 or re‑apply the previous image.</li>
+</ul>
+<h3>Verifiers</h3>
+<ul>
+<li>Events show scaling: <span id="v-scale-events" data-v="pending">pending</span></li>
+<li>Metrics present for app: <span id="v-scale-metrics" data-v="pending">pending</span></li>
+</ul>
+<h2>E. Ingress Test</h2>
+<ul>
+<li>Open App: <a id="ingress-link" href="#" target="_blank" rel="noopener">(disabled)</a></li>
+<li>Last check: <span id="ingress-check">n/a</span></li>
+<li>DNS hint: <code id="ingress-hosts-hint"></code> <button id="ingress-hosts-copy" disabled>Copy</button></li>
+<li>Direct curl (no hosts): <code id="ingress-curl"></code> <button id="ingress-curl-copy" disabled>Copy</button></li>
+</ul>
+<h2>F. Rollout Controls</h2>
+<p>Advanced controls you can ignore on your first run. Use the slider to choose a small weight, then "Apply" to shift a portion of traffic to the canary image.</p>
+<ul>
+<li><button id="btn-rollout-pause" disabled>Pause Rollout</button></li>
+<li><button id="btn-rollout-resume" disabled>Resume Rollout</button></li>
+<li>Canary weight: <input type="range" id="canary-weight" min="1" max="10" step="1" value="3"/> <span id="canary-weight-val">3</span></li>
+<li><button id="btn-canary-apply" disabled>Apply Canary Weight</button></li>
+</ul>
+<h2>G. Reset</h2>
+<ul>
+<li><button id="btn-reset" disabled>Reset Session</button></li>
+</ul>
+<hr/>
+<details> <summary><strong>Final Notes</strong></summary>
+<ul>
+<li>Controlled actions require the dev-only orchestrator to be enabled (<code>AE_LABS=1</code>) and proxied by Caddy.</li>
+<li>Backends: Auto detection prefers k1s-in-Docker when the compose stack is up, otherwise k1s-Host; k3s engages if a k3d cluster is detected or allowed to auto-provision.</li>
+</ul>
+</details>
+    </div>
+    <footer class="site-footer">
+      <div class="container inner">
+        <span>k1s Documentation</span>
+        <span class="spacer"></span>
+        <button id="api-mode-toggle">API Mode</button>
+        <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
+        <span>Built 2025-11-07 09:41:12</span>
+      </div>
+    </footer>
+    <script>
+      (function() {
+        var btn = document.getElementById('api-mode-toggle');
+        if (!btn) return;
+        function label() {
+          var mode = localStorage.getItem('docsApiMode') || 'proxy';
+          btn.textContent = (mode === 'direct') ? 'API Mode: Direct' : 'API Mode: Proxy';
+          var lab = document.getElementById('api-mode-label');
+          if (lab) {
+            if (mode === 'direct') {
+              var base = (window.DOCS_API_BASE||'').trim() || '(unset)';
+              lab.textContent = ' [' + base + ']';
+            } else {
+              lab.textContent = ' (proxy)';
+            }
+          }
+        }
+        btn.addEventListener('click', function() {
+          var cur = localStorage.getItem('docsApiMode') || 'proxy';
+          var next = (cur === 'direct') ? 'proxy' : 'direct';
+          localStorage.setItem('docsApiMode', next);
+          label();
+          if (location.pathname.endsWith('playground.html')) location.reload();
+        });
+        label();
+      })();
+    </script>
+  </body>
+</html>

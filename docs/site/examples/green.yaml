@@ -1,0 +1,18 @@
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: green
+spec:
+  image: demo-green:latest
+  replicas: 1
+  env:
+    - name: APP_NAME
+      value: green
+    - name: MESSAGE
+      value: "Hello from green"
+  ports:
+    - name: http
+      containerPort: 8080
+  ingress:
+    host: green.home.arpa
+    path: /

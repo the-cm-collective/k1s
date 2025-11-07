@@ -1,0 +1,15 @@
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: echo-stateful
+spec:
+  image: alpine:3.20
+  command: ["sh", "-c", "i=0; while true; do i=1; echo \"\" >> /var/lib/echo/data.log; sleep 2; done"]
+  replicas: 1
+  ports:
+    - name: http
+      containerPort: 8080
+  storage:
+    - name: data
+      mountPath: /var/lib/echo
+      retention: Retain
