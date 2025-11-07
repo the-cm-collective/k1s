@@ -1,0 +1,44 @@
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: echo-sec-adv
+spec:
+  image: demo-blue:latest
+  replicas: 1
+  ports:
+    - name: http
+      containerPort: 8080
+  health:
+    readiness:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 1
+      timeoutSeconds: 1
+      periodSeconds: 5
+    liveness:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 3
+      timeoutSeconds: 1
+      periodSeconds: 10
+  ingress:
+    host: echo-sec-adv.home.arpa
+    path: /
+  security:
+    runAsUser: 1000
+    readOnlyRootFilesystem: true
+    dropCapabilities: ["NET_RAW"]
+    # Use the default runtime seccomp profile (recommended)
+    seccompProfileType: RuntimeDefault
+    # Example for a local profile (uncomment both lines when providing a profile file)
+    # seccompProfileType: Localhost
+    # seccompLocalhostProfile: profiles/echo.json
+    # AppArmor example (requires host/AppArmor support). Leave disabled by default
+    # to avoid errors on systems without AppArmor.
+    # apparmorProfile: runtime/default
+  resources:
+    requests:
+      cpu: 0.05
+      memory: 128Mi

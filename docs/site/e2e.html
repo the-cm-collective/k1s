@@ -4,13 +4,18 @@
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>E2E</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs/%3E%3Crect width='64' height='64' rx='12' fill='%23096ad9'/%3E%3Cpath d='M16 45h32M16 19h32M16 32h32' stroke='white' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E"/>
     <style>
-      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.55; }
+      /* Base layout */
+      html, body { height: 100%; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.55; min-height: 100vh; display: flex; flex-direction: column; }
       code, pre { background: #f6f8fa; }
       pre { padding: 12px; overflow-x: auto; }
       h1, h2, h3 { margin-top: 1.5em; }
       nav a { margin-right: 1rem; }
       .container { max-width: 920px; }
+      /* Make main content take remaining height so footer sits at bottom */
+      .container { flex: 1 0 auto; }
     </style>
     <style>
       :root {
@@ -39,7 +44,7 @@
       /* Improve Mermaid readability in dark mode by inverting SVG colors */
       html[data-theme="dark"] .mermaid svg { filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }
       html[data-theme="dark"] .mermaid { background: var(--bg); }
-      footer.site-footer { margin-top: 3rem; border-top: 1px solid var(--border); }
+      footer.site-footer { margin-top: 3rem; border-top: 1px solid var(--border); flex: 0 0 auto; }
       footer.site-footer .inner { display: flex; align-items: center; gap: .75rem; padding: 14px 0; opacity: .85; }
     </style>
     <script>
@@ -82,6 +87,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    
   </head>
   <body>
     <nav>
@@ -93,19 +100,36 @@
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
-      <a href="https://api.home.arpa:8443/swagger" target="_blank" rel="noopener">Swagger</a>
-      <a href="https://api.home.arpa:8443/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="https://api.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="playground.html">Playground</a>
     </nav>
     <div class="container">
     <h1>End-to-End Guide</h1>
 <p>This guide walks an engineer through full system operation on a single host: boot the controller, apply all example manifests, observe readiness/liveness, ingress, storage, rollouts, run portability checks, export K8s YAML, and clean up. Every command below is runnable as-is on a dev machine.</p>
 <p>Prerequisites</p>
 <ul>
-<li>Python 3.11+, Docker or Podman, and optional Caddy for ingress.</li>
+<li>Python 3.11+, Podman (default) or Docker, and optional Caddy for ingress.</li>
 <li>Dev install: <code>python -m pip install -e .[dev]</code></li>
 <li>Optional live file watch: <code>python -m pip install -e .[watch]</code></li>
-<li>Optional fixtures (Caddy+Prometheus): <code>docker compose -f ops/dev/docker-compose.yaml up -d</code></li>
+<li>Optional fixtures (Caddy+Prometheus): <code>docker compose -f ops/dev/docker-compose.yaml up -d</code> (use <code>podman compose</code> if you prefer Podman)</li>
+</ul>
+<p>Podman Quickstart (recommended)</p>
+<ul>
+<li>Create a shared network for multi-replica + ingress DNS:</li>
+<li><code>podman network create devnet</code></li>
+<li>Export environment for the controller and ingress tooling:</li>
+<li><code>export AE_RUNTIME_BACKEND=podman</code></li>
+<li><code>export AE_PODMAN_NETWORK=devnet</code></li>
+<li><code>export AE_CONTAINER_CLI=podman</code>  # lets the controller reload Caddy via podman exec</li>
+<li>Start fixtures with Podman if desired:</li>
+<li><code>podman compose -f ops/dev/docker-compose.yaml up -d</code></li>
+<li>Run the controller with metrics:</li>
+<li><code>python -m ae.controller --loop --watch --specs specs/ --metrics-port 9108</code></li>
+<li>Apply a sample and open the dashboard:</li>
+<li><code>python -m ae.cli apply -f specs/examples/echo.yaml</code></li>
+<li><code>http://127.0.0.1:9108/dashboard</code></li>
 </ul>
 <p>Start Controller</p>
 <ul>
@@ -231,13 +255,48 @@
 <li>HTTP API: <code>docs/http-api.md</code></li>
 <li>Architecture: <code>docs/architecture.md</code></li>
 </ul>
+<p>Quick E2E Target</p>
+<ul>
+<li>Run the multi-port end-to-end smoke test (applies demo, checks status, curls ingress):</li>
+<li><code>make e2e</code> or <code>make e2e-multiport</code></li>
+<li>Uses <code>scripts/e2e/multiport.sh</code> and defaults to Caddy HTTPS <code>:8443</code> unless <code>CADDY_HTTPS_PORT</code> is set.</li>
+</ul>
     </div>
     <footer class="site-footer">
       <div class="container inner">
         <span>k1s Documentation</span>
         <span class="spacer"></span>
-        <span>Built 2025-10-28 18:55:42</span>
+        <button id="api-mode-toggle">API Mode</button>
+        <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
+        <span>Built 2025-11-07 09:41:12</span>
       </div>
     </footer>
+    <script>
+      (function() {
+        var btn = document.getElementById('api-mode-toggle');
+        if (!btn) return;
+        function label() {
+          var mode = localStorage.getItem('docsApiMode') || 'proxy';
+          btn.textContent = (mode === 'direct') ? 'API Mode: Direct' : 'API Mode: Proxy';
+          var lab = document.getElementById('api-mode-label');
+          if (lab) {
+            if (mode === 'direct') {
+              var base = (window.DOCS_API_BASE||'').trim() || '(unset)';
+              lab.textContent = ' [' + base + ']';
+            } else {
+              lab.textContent = ' (proxy)';
+            }
+          }
+        }
+        btn.addEventListener('click', function() {
+          var cur = localStorage.getItem('docsApiMode') || 'proxy';
+          var next = (cur === 'direct') ? 'proxy' : 'direct';
+          localStorage.setItem('docsApiMode', next);
+          label();
+          if (location.pathname.endsWith('playground.html')) location.reload();
+        });
+        label();
+      })();
+    </script>
   </body>
 </html>

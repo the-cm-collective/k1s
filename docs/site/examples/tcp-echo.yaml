@@ -1,0 +1,54 @@
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: tcp-echo
+spec:
+  image: python:3.11-alpine
+  replicas: 2
+  command:
+    - sh
+    - -lc
+    - |
+      python - <<'PY'
+      import socket, threading
+      import os
+      HOST, PORT = '0.0.0.0', int(os.getenv('PORT','8080'))
+      def handle(conn, addr):
+          try:
+              while True:
+                  data = conn.recv(4096)
+                  if not data: break
+                  conn.sendall(data)
+          finally:
+              try: conn.close()
+              except Exception: pass
+      s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+      s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+      s.bind((HOST, PORT))
+      s.listen(128)
+      print(f"tcp-echo listening on {HOST}:{PORT}")
+      while True:
+          c,a = s.accept()
+          threading.Thread(target=handle, args=(c,a), daemon=True).start()
+      PY
+  env:
+    - name: PORT
+      value: "8080"
+  ports:
+    - name: tcp
+      containerPort: 8080
+  health:
+    readiness:
+      tcpSocket: { port: 8080 }
+      initialDelaySeconds: 1
+      periodSeconds: 3
+      timeoutSeconds: 1
+      failureThreshold: 2
+    liveness:
+      tcpSocket: { port: 8080 }
+      initialDelaySeconds: 3
+      periodSeconds: 5
+      timeoutSeconds: 1
+      failureThreshold: 3
+  # No ingress: we will front the per-replica host ports with HAProxy (see ops/dev/haproxy)
+

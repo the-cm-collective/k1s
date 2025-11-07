@@ -1,0 +1,18 @@
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: echo-storage
+spec:
+  image: demo-blue:latest
+  replicas: 1
+  ports:
+    - name: http
+      containerPort: 8080
+  health:
+    readiness:
+      httpGet: { path: /healthz, port: 8080 }
+      initialDelaySeconds: 1
+  storage:
+    - name: data
+      mountPath: /var/lib/echo
+      retention: Retain

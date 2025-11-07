@@ -1,0 +1,27 @@
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: echo-resources
+spec:
+  image: demo-blue:latest
+  replicas: 1
+  ports:
+    - name: http
+      containerPort: 8080
+  health:
+    readiness:
+      httpGet: { path: /healthz, port: 8080 }
+      initialDelaySeconds: 1
+      timeoutSeconds: 2
+  resources:
+    limits:
+      cpu: 0.25
+      memory: 256Mi
+  volumes:
+    - hostPath: /tmp
+      mountPath: /host-tmp
+      readOnly: false
+  ingress:
+    host: echo-resources.home.arpa
+    path: /
+    tls: true
