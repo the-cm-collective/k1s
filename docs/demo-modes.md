@@ -29,6 +29,14 @@ logs (Ctrl-C to exit).
 - Command:
   - `./scripts/init_demo.sh --demo-echo-mr -y`
   - `make demo ARGS="--demo-echo-mr -y -d"`
+
+### Multi‑Port Echo (echo-multi)
+
+- Demonstrates a Service with multiple ports (HTTP + metrics) and readiness bound to the HTTP port. Ingress routes to the `http` port.
+- File: `specs/examples/echo-multiport.yaml`
+- Commands:
+  - `./scripts/init_demo.sh --demo-echo-multi -y`
+  - `make demo ARGS="--demo-echo-multi -y -d"`
 - Endpoint: `https://echo-mr.home.arpa:8443/`
 
 ### Docs Only

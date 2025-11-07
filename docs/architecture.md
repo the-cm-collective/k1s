@@ -4,7 +4,7 @@ This document describes k1s in depth: components, data model, reconcile algorith
 
 ## Scope and Principles
 
-- Single node. All containers run on one host via Podman (OCI) or Docker.
+- Single node. All containers run on one host via Podman (OCI) by default; Docker is a fallback when Podman is unavailable.
 - Declarative spec → idempotent reconcile. The controller continuously applies desired state and converges.
 - Small surface. Prefer composition over features; leave seams to extend later.
 - Fail well. A crash restarts cleanly; reconcile rebuilds reality from Docker + SQLite.
@@ -60,7 +60,7 @@ Sequence Diagram
 sequenceDiagram
   participant CLI as ae CLI
   participant C as Controller
-  participant R as Docker Runtime
+  participant R as Runtime (Podman/Docker)
   participant H as Health
   participant I as Ingress
   participant S as SQLite
@@ -241,7 +241,11 @@ Revision status
 - AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER
 - AE_REGISTRY_CONFIG
 - AE_SOPS_BIN, AE_ALLOW_PLAINTEXT_SECRETS
-- AE_RUNTIME_BACKEND ("docker"|"stub")
+- AE_RUNTIME_BACKEND ("podman" [default], "docker", "stub")
+- AE_PODMAN_BIN (default: podman)
+- AE_PODMAN_NETWORK (name of shared network for multi-replica + ingress)
+- AE_DOCKER_NETWORK (name of shared network when using Docker)
+- AE_CONTAINER_CLI ("docker"|"podman") for ingress reloads inside the Caddy container
 - AE_LOG_LEVEL
 
 ## Testing Strategy

@@ -63,6 +63,15 @@ Observability
 - Controller dashboard/API: `http://127.0.0.1:9108` when `--metrics-port` is set.
 - Prometheus metrics at `/metrics` (text), recent events via `/events/<app>`.
 
+Dashboard reload vs. restart
+- Code/UI changes only (e.g., edits in `src/ae/observability/http_api.py`): `make dashboard-reload`
+  - Kills the controller; the supervisor restarts it and picks up code changes.
+- Env or port/token changes (anything in `state/env.sh`, `AE_API_*`, `AE_*` flags): `make dashboard-restart`
+  - Stops the supervisor, clears any stale lock, then starts fresh so env is re‑sourced.
+- Viewing via docs host proxy? If you changed Caddy site files, restart the docs stack:
+  - `make dev-down && make dev-up` (or `docker compose -f ops/dev/labs-compose.yaml restart caddy`).
+- After any of the above, hard‑refresh the browser (Shift+Reload) to ensure the latest HTML/JS loads.
+
 Tips
 - Prefer non‑root containers and set readOnlyRootFilesystem where possible.
 - For utilization HPAs, set CPU/Memory requests to avoid HPA errors.
@@ -105,3 +114,139 @@ HPA exporter examples
   - `python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --hpa-min 1 --hpa-max 3 --hpa-cpu-target 70`
 - Memory AverageValue (requires a sensible quantity like 200Mi):
   - `python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --hpa-min 1 --hpa-max 3 --hpa-mem-type value --hpa-mem-value 200Mi`
+
+Planning and CI Gating
+- Use `ae plan` to dry‑run an apply and surface host port conflicts, TLS resolution status, and best‑practice warnings.
+- Use `ae plan --json` for CI gating. The JSON includes a `diagnostics` object with:
+  - `service`: `{ type, ports[], duplicates{names|ports|nodePorts}, outOfRangeNodePorts[], hostPortConflicts{port:[containers]} }`
+  - `tls`: `{ ingress, secretName, root, resolved, cert?, key?, error? }`
+
+Example:
+```
+out=$(python -m ae.cli plan -f specs/examples/echo-multiport.yaml --json)
+echo "$out" | jq '.'
+dup_names=$(echo "$out" | jq -r '.diagnostics.service.duplicates.names | length')
+oor=$(echo "$out" | jq -r '.diagnostics.service.outOfRangeNodePorts | length')
+if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
+  echo "Plan validation failed"; exit 2; fi
+```
+
+Tip: Set `AE_TLS_DIR` so `tlsSecretName` can resolve; otherwise plan warns and the controller falls back to Caddy internal TLS.
+## Install as a Service (systemd)
+
+Quick install
+- Install the package: `python -m pip install -e .[dev]`
+- Create a Podman network for multi-replica+ingress DNS (recommended): `podman network create devnet`
+- Install and enable the controller service:
+  - `make install-systemd`
+
+What it does
+- Installs `ops/systemd/ae-controller.service` to `/etc/systemd/system/`.
+- Writes env file to `/etc/ae/ae.env` (edit to suit your host).
+- Creates `/etc/ae/specs/` and seeds a sample `echo.yaml` if missing.
+- Starts the controller (`ae-controller.service`), serving the API on `:9108` by default.
+
+Important env in `/etc/ae/ae.env`
+- `AE_RUNTIME_BACKEND=podman` (default)
+- `AE_PODMAN_NETWORK=devnet` (set to your network name)
+- `AE_SPECS_DIR=/etc/ae/specs`
+- `AE_STATE_DB=/var/lib/ae/controller.db` (create the dir and adjust perms if you change this)
+- `AE_CADDY_*` to integrate with a Caddy instance
+
+Uninstall
+- `make uninstall-systemd`
+- Removes the systemd unit; leaves `/etc/ae` for inspection/backups.
+
+Serve Documentation on Boot (optional)
+- Build docs: `make docs`
+- Install and enable the docs service (serves static HTML):
+  - `make install-docs-service`
+- By default it serves `/usr/share/ae/docs` on `:9109`.
+- Customize in `/etc/ae/ae.env`:
+  - `AE_DOCS_DIR=/usr/share/ae/docs`
+  - `AE_DOCS_PORT=9109`
+- Uninstall:
+  - `make uninstall-docs-service`
+
+### Systemd hardening (opt-in)
+- Enable hardening drop-ins during install:
+  - `AE_SYSTEMD_HARDEN=1 make install-systemd`
+- This creates `/etc/systemd/system/ae-controller.service.d/hardening.conf` (and similar drop-ins for docs and caddy units when installed) with:
+  - `NoNewPrivileges=true`, `PrivateTmp=true`, `ProtectSystem=strict`, `ProtectHome=read-only`, `LockPersonality=true`, `RestrictSUIDSGID=true`, `ProtectControlGroups=true`, `ProtectKernelTunables=true`, `ProtectKernelModules=true`, `ProtectClock=yes`, `RestrictRealtime=yes`, `MemoryDenyWriteExecute=true`, `CapabilityBoundingSet=`, `AmbientCapabilities=`, `SystemCallFilter=@system-service`.
+- To disable: remove the drop-in and run `systemctl daemon-reload && systemctl restart ae-controller`.
+
+## Container Images and Docker/Podman
+Build the controller image
+- Docker: `make image-docker IMAGE=ghcr.io/<org>/ae-controller:dev`
+- Podman: `make image-podman IMAGE=ghcr.io/<org>/ae-controller:dev`
+
+Push the image
+- Docker: `make push-docker IMAGE=ghcr.io/<org>/ae-controller:dev`
+- Podman: `make push-podman IMAGE=ghcr.io/<org>/ae-controller:dev`
+
+Tags guidance
+- Use `:main` for latest from main branch, `:vX.Y.Z` for releases, and `:sha-<short>` for immutable pins in CI.
+- Example:
+  - `export ORG=acme && export TAG=v0.1.0`
+  - `make image-docker IMAGE=ghcr.io/$ORG/ae-controller:$TAG`
+  - `docker tag ghcr.io/$ORG/ae-controller:$TAG ghcr.io/$ORG/ae-controller:main`
+  - `make push-docker IMAGE=ghcr.io/$ORG/ae-controller:$TAG && docker push ghcr.io/$ORG/ae-controller:main`
+
+Run locally with host specs/state
+- Docker: `docker run --rm -p 9108:9108 -v $PWD/specs:/etc/ae/specs -v $PWD/state:/var/lib/ae ghcr.io/<org>/ae-controller:dev`
+- Podman: `podman run --rm -p 9108:9108 -v $PWD/specs:/etc/ae/specs -v $PWD/state:/var/lib/ae ghcr.io/<org>/ae-controller:dev`
+
+Docker users (alternative to Podman)
+- Set runtime and shared network in `/etc/ae/ae.env`:
+  - `AE_RUNTIME_BACKEND=docker`
+  - `AE_DOCKER_NETWORK=dev_default` (or your docker compose network name)
+  - `AE_CONTAINER_CLI=docker` (if the Caddy container runs under Docker)
+- Start fixtures with Docker Compose instead of Podman Compose:
+  - `docker compose -f ops/dev/docker-compose.yaml up -d`
+  - Notes:
+  - Multi-replica + ingress via container DNS requires a shared Docker network; export `AE_DOCKER_NETWORK=<name>` so app containers join it for Caddy reachability.
+  - The controller continues to expose the API on `:9108` by default; metrics and dashboard are identical.
+
+## Interactive Labs
+
+The Interactive Lab Playground is a single HTML page that exercises read‑only verification, controlled actions (apply/scale/reset), live events/logs, and ingress checks.
+
+- Build docs (includes playground): `python docs/build_docs.py`
+- Open: `docs/site/playground.html`
+
+Two easy ways to run it:
+- Host controller + Caddy (serve docs only)
+  - Start controller with labs enabled:
+    - `AE_LABS=1 python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch`
+  - Serve docs via compose:
+    - `docker compose -f ops/dev/labs-compose.yaml up -d`
+  - Open https://localhost:8443/playground.html
+  - Optional token gate:
+    - Export `AE_LABS_TOKEN=…` for the controller; paste it into “Labs Token” on the page.
+
+- All‑in‑one compose (controller + docs)
+  - `docker compose -f ops/dev/labs-aio.yaml up -d`
+  - Open https://localhost:8443/playground.html
+
+Tips
+- Toggle “Enable Controlled Actions” to activate Apply/Scale/Reset; otherwise the page remains read‑only.
+- The page auto‑detects the API base; use the “API Mode” button in the footer to switch proxy vs. direct.
+- k3s/k3d: click “Create k3d Cluster” to bootstrap a local k3d for the Kubernetes track; ports default to 8081/8444 and are shown in the banner.
+- If ingress uses a custom TLS secret, make sure it’s synced (see “Ingress and TLS” above) so the app hostname resolves under Caddy.
+
+DNS/hosts for local domains
+- Add entries to your hosts file so browsers resolve the dev domains:
+  - Linux/macOS: add to `/etc/hosts`
+  - Windows: add to `C:\Windows\System32\drivers\etc\hosts`
+
+```
+127.0.0.1 docs.home.arpa
+127.0.0.1 api.home.arpa
+```
+
+Caddy site config (dev)
+- The repo ships site snippets under `ops/dev/caddy/sites/`:
+  - `docs.caddy`: serves the docs at `https://docs.home.arpa:8443/` and proxies API paths (`/health`, `/status`, `/events`, `/logs`, `/metrics`, `/swagger`, `/redoc`, `/dashboard`, `/labs`, `/system`) to the controller on `host.docker.internal:9108`.
+  - `api.caddy`: exposes the API directly at `https://api.home.arpa:8443/` (handy for Swagger/ReDoc).
+- After updating site files, restart Caddy:
+  - `docker compose -f ops/dev/labs-compose.yaml restart caddy` (or bring the stack up again)
