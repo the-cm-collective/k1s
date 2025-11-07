@@ -16,6 +16,12 @@ spec:
   ports:
     - name: http
       containerPort: 8080
+  # Publish a stable host port for local runtimes (Podman/Docker).
+  # This makes readiness/liveness probes and the Playground ingress checks
+  # reliable without requiring a custom network.
+  service:
+    port: 18080      # host port (avoid common 8081 collisions)
+    targetPort: 8080 # container port
   health:
     readiness:
       httpGet:
