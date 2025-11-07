@@ -71,4 +71,3 @@ class TlsSecretResolver:
             return yaml.safe_load(path.read_text())
         except Exception:
             return None
-

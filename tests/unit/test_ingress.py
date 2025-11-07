@@ -86,7 +86,20 @@ def test_caddy_byo_tls(tmp_path, monkeypatch):
     m = build_manifest()
     ing = m.spec.ingress
     assert ing is not None
-    m = m.model_copy(update={"spec": m.spec.model_copy(update={"ingress": ing.model_copy(update={"tls_cert_path": "/etc/certs/tls.crt", "tls_key_path": "/etc/certs/tls.key"})})})
+    m = m.model_copy(
+        update={
+            "spec": m.spec.model_copy(
+                update={
+                    "ingress": ing.model_copy(
+                        update={
+                            "tls_cert_path": "/etc/certs/tls.crt",
+                            "tls_key_path": "/etc/certs/tls.key",
+                        }
+                    )
+                }
+            )
+        }
+    )
     site_path = manager.apply(m, upstream="127.0.0.1:32000")
     content = site_path.read_text()
     assert "tls /etc/certs/tls.crt /etc/certs/tls.key" in content

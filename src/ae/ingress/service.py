@@ -60,8 +60,24 @@ class IngressService:
             if resolved:
                 cert_path, key_path = resolved
                 # Create a temporary copy of the manifest spec with cert/key paths filled
-                ingress_spec = ingress_spec.model_copy(update={"tls_cert_path": str(cert_path), "tls_key_path": str(key_path)})
-                manifest = manifest.model_copy(update={"spec": manifest.spec.model_copy(update={"ingress": ingress_spec})})
+                ingress_spec = ingress_spec.model_copy(
+                    update={"tls_cert_path": str(cert_path), "tls_key_path": str(key_path)}
+                )
+                manifest = manifest.model_copy(
+                    update={"spec": manifest.spec.model_copy(update={"ingress": ingress_spec})}
+                )
+            else:
+                # Emit a warning event for visibility when store is available
+                try:
+                    if self._store is not None:
+                        self._store.record_event(
+                            manifest.metadata.name,
+                            0,
+                            "IngressTLSMissing",
+                            f"tlsSecretName '{ingress_spec.tls_secret_name}' not found under AE_TLS_DIR; using Caddy internal TLS",
+                        )
+                except Exception:
+                    pass
         # Compute a simple signature to avoid redundant reloads
         if isinstance(upstream, (list, tuple)):
             ups_tuple = tuple(upstream)
@@ -89,7 +105,9 @@ class IngressService:
                         row = self._store.get_canary_state(app)
                         if row is None:
                             next_at = (now + timedelta(seconds=interval)).isoformat()
-                            self._store.upsert_canary_state(app, weight=startw, next_step_at=next_at, step=step, max_weight=maxw)
+                            self._store.upsert_canary_state(
+                                app, weight=startw, next_step_at=next_at, step=step, max_weight=maxw
+                            )
                             effective = startw
                         else:
                             # parse next_step_at
@@ -101,7 +119,13 @@ class IngressService:
                             if interval <= 0 or now >= due:
                                 effective = min(maxw, effective + step)
                                 next_at = (now + timedelta(seconds=interval)).isoformat()
-                                self._store.upsert_canary_state(app, weight=effective, next_step_at=next_at, step=step, max_weight=maxw)
+                                self._store.upsert_canary_state(
+                                    app,
+                                    weight=effective,
+                                    next_step_at=next_at,
+                                    step=step,
+                                    max_weight=maxw,
+                                )
                         canary_weight = int(max(canary_weight, effective))
                     else:
                         # fallback to in-memory when no store is present
@@ -119,7 +143,11 @@ class IngressService:
             prefer_first = True
             try:
                 site_path = self._manager.apply(
-                    manifest, upstream, readiness_path, prefer_first=prefer_first, first_weight=canary_weight
+                    manifest,
+                    upstream,
+                    readiness_path,
+                    prefer_first=prefer_first,
+                    first_weight=canary_weight,
                 )  # type: ignore[arg-type]
             except TypeError:
                 try:
