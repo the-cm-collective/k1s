@@ -53,4 +53,3 @@ def apply_preset(opts: ExportOptions, preset: PresetName) -> ExportOptions:
         )
 
     return base
-

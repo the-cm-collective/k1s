@@ -13,7 +13,9 @@ def test_ingress_multi_path_and_tls_secret() -> None:
         update={
             "spec": man.spec.model_copy(
                 update={
-                    "ingress": ing.model_copy(update={"paths": ["/", "/api"], "tls_secret_name": "echo-tls"})
+                    "ingress": ing.model_copy(
+                        update={"paths": ["/", "/api"], "tls_secret_name": "echo-tls"}
+                    )
                 }
             )
         }
