@@ -1,0 +1,40 @@
+name: podman-compat
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  podman-flows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+          podman --version
+      - name: Install deps
+        run: |
+          python -m pip install -e .[dev]
+      - name: Podman quick sanity
+        env:
+          AE_RUNTIME_BACKEND: podman
+        run: |
+          podman info >/dev/null 2>&1 || true
+          # no container ops required; ensure CLI works with podman backend selected
+          python -m ae.cli k8s-check -f specs/examples/echo.yaml --policy strict
+          python -m ae.cli export-k8s -f specs/examples/echo.yaml --validate >/dev/null
+          python -m ae.cli plan -f specs/examples/echo.yaml --json >/dev/null
+      - name: L4 docs present
+        run: |
+          test -f docs/l4-services.md
+      - name: StatefulSet export smoke
+        run: |
+          python -m ae.cli export-k8s -f specs/examples/echo.yaml --workload statefulset --validate >/dev/null
+
