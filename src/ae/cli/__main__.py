@@ -94,8 +94,44 @@ def build_parser() -> argparse.ArgumentParser:
     revisions_parser.add_argument("name", help="Application name")
     revisions_parser.add_argument("--limit", type=int, default=10)
 
+    # registry helpers
     registry_parser = subparsers.add_parser("registry", help="Manage registry credentials")
-    registry_parser.add_argument("action", choices=["list"], help="Action to perform")
+    reg_sub = registry_parser.add_subparsers(dest="registry_cmd", required=True)
+    reg_list = reg_sub.add_parser("list", help="List configured registries")
+    reg_login = reg_sub.add_parser("login", help="Login to a registry and store credentials")
+    reg_login.add_argument(
+        "provider", choices=["ghcr", "gcr", "ecr", "custom"], help="Registry provider"
+    )
+    reg_login.add_argument(
+        "--registry", default=None, help="Registry hostname (defaults per provider)"
+    )
+    reg_login.add_argument(
+        "--username", default=None, help="Username for basic auth (overrides provider defaults)"
+    )
+    reg_login.add_argument(
+        "--password", default=None, help="Password/token for basic auth (overrides provider flows)"
+    )
+    reg_login.add_argument(
+        "--token", default=None, help="Provider token (e.g., GHCR PAT or GCR access token)"
+    )
+    reg_login.add_argument(
+        "--use-gcloud", action="store_true", help="Use 'gcloud auth print-access-token' for GCR"
+    )
+    reg_login.add_argument(
+        "--gcr-host", default=None, help="GCR host override (e.g., us.gcr.io, eu.gcr.io)"
+    )
+    reg_login.add_argument(
+        "--use-aws", action="store_true", help="Use 'aws ecr get-login-password' for ECR"
+    )
+    reg_login.add_argument("--region", default=None, help="AWS region (e.g., us-east-1)")
+    reg_login.add_argument("--account-id", default=None, help="AWS account ID (12-digit)")
+    reg_refresh = reg_sub.add_parser("refresh", help="Refresh short-lived tokens for registries")
+    reg_refresh.add_argument(
+        "--provider",
+        choices=["all", "ghcr", "gcr", "ecr"],
+        default="all",
+        help="Provider to refresh (default: all)",
+    )
 
     metrics_parser = subparsers.add_parser("metrics", help="Show aggregated metrics")
     metrics_parser.add_argument("--json", action="store_true", help="Emit JSON output")
@@ -179,34 +215,127 @@ def build_parser() -> argparse.ArgumentParser:
     xk = subparsers.add_parser("export-k8s", help="Export a manifest to Kubernetes YAML")
     xk.add_argument("-f", "--file", type=Path, required=True)
     xk.add_argument("--namespace", default="default", help="K8s namespace (default: default)")
-    xk.add_argument("--ingress-class", default=None, help="Ingress class name (e.g., traefik or nginx)")
-    xk.add_argument("--service-port", type=int, default=None, help="Override Service port (default: 80)")
+    xk.add_argument(
+        "--ingress-class", default=None, help="Ingress class name (e.g., traefik or nginx)"
+    )
+    xk.add_argument(
+        "--service-port", type=int, default=None, help="Override Service port (default: 80)"
+    )
+    xk.add_argument(
+        "--workload",
+        choices=["deployment", "statefulset"],
+        default="deployment",
+        help="Workload kind to emit (default: deployment)",
+    )
+    xk.add_argument(
+        "--require-requests",
+        action="store_true",
+        help="Fail export if resources.requests (cpu and memory) are missing",
+    )
     xk.add_argument("--output", "-o", type=Path, default=None, help="Write output to file path")
-    xk.add_argument("--emit-configs", action="store_true", help="Emit ConfigMap resources for configRefs")
-    xk.add_argument("--inline-configs", action="store_true", help="Inline config file data into ConfigMaps (YAML/JSON)")
-    xk.add_argument("--emit-secrets", action="store_true", help="Emit Secret resources for secretRefs (no data by default)")
-    xk.add_argument("--inline-secrets", action="store_true", help="Inline secret data from plaintext YAML/JSON (use with caution)")
-    xk.add_argument("--emit-storage", action="store_true", help="Emit PVCs from spec.storage and mount them")
-    xk.add_argument("--default-pvc-size", default="1Gi", help="Default PVC size when storage.size is not set")
-    xk.add_argument("--service-account", default=None, help="Attach ServiceAccount and emit it by this name")
-    xk.add_argument("--emit-pdb", action="store_true", help="Emit a PodDisruptionBudget when replicas > 1")
-    xk.add_argument("--pdb-min-available", type=int, default=None, help="PDB minAvailable value (default: 1)")
-    xk.add_argument("--pdb-max-unavailable", type=int, default=None, help="PDB maxUnavailable value (mutually exclusive with minAvailable)")
-    xk.add_argument("--hpa-min", type=int, default=None, help="HPA min replicas (enables HPA with --hpa-max and --hpa-cpu-target)")
+    xk.add_argument(
+        "--emit-configs", action="store_true", help="Emit ConfigMap resources for configRefs"
+    )
+    xk.add_argument(
+        "--inline-configs",
+        action="store_true",
+        help="Inline config file data into ConfigMaps (YAML/JSON)",
+    )
+    xk.add_argument(
+        "--emit-secrets",
+        action="store_true",
+        help="Emit Secret resources for secretRefs (no data by default)",
+    )
+    xk.add_argument(
+        "--inline-secrets",
+        action="store_true",
+        help="Inline secret data from plaintext YAML/JSON (use with caution)",
+    )
+    xk.add_argument(
+        "--emit-storage", action="store_true", help="Emit PVCs from spec.storage and mount them"
+    )
+    xk.add_argument(
+        "--default-pvc-size", default="1Gi", help="Default PVC size when storage.size is not set"
+    )
+    xk.add_argument(
+        "--service-account", default=None, help="Attach ServiceAccount and emit it by this name"
+    )
+    xk.add_argument(
+        "--emit-pdb", action="store_true", help="Emit a PodDisruptionBudget when replicas > 1"
+    )
+    xk.add_argument(
+        "--pdb-min-available", type=int, default=None, help="PDB minAvailable value (default: 1)"
+    )
+    xk.add_argument(
+        "--pdb-max-unavailable",
+        type=int,
+        default=None,
+        help="PDB maxUnavailable value (mutually exclusive with minAvailable)",
+    )
+    xk.add_argument(
+        "--hpa-min",
+        type=int,
+        default=None,
+        help="HPA min replicas (enables HPA with --hpa-max and --hpa-cpu-target)",
+    )
     xk.add_argument("--hpa-max", type=int, default=None, help="HPA max replicas")
-    xk.add_argument("--hpa-cpu-target", type=int, default=None, help="HPA CPU averageUtilization target percent (e.g., 70)")
-    xk.add_argument("--hpa-mem-target", type=int, default=None, help="HPA memory averageUtilization target percent")
-    xk.add_argument("--hpa-mem-type", choices=["utilization", "value"], default=None, help="Memory HPA target type: utilization (percent) or value (e.g., 200Mi)")
-    xk.add_argument("--hpa-mem-value", default=None, help="Memory HPA AverageValue quantity (e.g., 200Mi) when --hpa-mem-type=value")
-    xk.add_argument("--default-security", action="store_true", help="Apply conservative securityContext defaults when none provided")
-    xk.add_argument("--preset", choices=["web-basic", "web-hardened", "scale-ready"], default=None, help="Apply a preset of common flags")
-    xk.add_argument("--validate", action="store_true", help="Validate generated YAML structure (offline checks)")
+    xk.add_argument(
+        "--hpa-cpu-target",
+        type=int,
+        default=None,
+        help="HPA CPU averageUtilization target percent (e.g., 70)",
+    )
+    xk.add_argument(
+        "--hpa-mem-target",
+        type=int,
+        default=None,
+        help="HPA memory averageUtilization target percent",
+    )
+    xk.add_argument(
+        "--hpa-mem-type",
+        choices=["utilization", "value"],
+        default=None,
+        help="Memory HPA target type: utilization (percent) or value (e.g., 200Mi)",
+    )
+    xk.add_argument(
+        "--hpa-mem-value",
+        default=None,
+        help="Memory HPA AverageValue quantity (e.g., 200Mi) when --hpa-mem-type=value",
+    )
+    xk.add_argument(
+        "--allow-hpa-no-requests",
+        action="store_true",
+        help="Allow HPA export without CPU/Memory requests (not recommended)",
+    )
+    xk.add_argument(
+        "--default-security",
+        action="store_true",
+        help="Apply conservative securityContext defaults when none provided",
+    )
+    xk.add_argument(
+        "--preset",
+        choices=["web-basic", "web-hardened", "scale-ready"],
+        default=None,
+        help="Apply a preset of common flags",
+    )
+    xk.add_argument(
+        "--validate", action="store_true", help="Validate generated YAML structure (offline checks)"
+    )
 
     # k8s-check (run FEAT checklist against manifest)
     kc = subparsers.add_parser("k8s-check", help="Run K8s portability checklist against a manifest")
     kc.add_argument("-f", "--file", type=Path, required=True)
-    kc.add_argument("--strict", action="store_true", help="Treat warnings as errors (deprecated; use --policy strict)")
-    kc.add_argument("--policy", choices=["baseline", "strict"], default="baseline", help="Validation policy (strict escalates key warnings to errors)")
+    kc.add_argument(
+        "--strict",
+        action="store_true",
+        help="Treat warnings as errors (deprecated; use --policy strict)",
+    )
+    kc.add_argument(
+        "--policy",
+        choices=["baseline", "strict"],
+        default="baseline",
+        help="Validation policy (strict escalates key warnings to errors)",
+    )
     kc.add_argument("--json", action="store_true", help="Emit JSON output")
     kc.add_argument(
         "--assume-hpa",
@@ -228,16 +357,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="List of App manifests to score (files)",
     )
     kr.add_argument("--namespace", default="demo")
-    kr.add_argument("--preset", choices=["web-basic", "web-hardened", "scale-ready"], default="web-hardened")
+    kr.add_argument(
+        "--preset", choices=["web-basic", "web-hardened", "scale-ready"], default="web-hardened"
+    )
     kr.add_argument("--ingress-class", default="traefik")
     kr.add_argument("--service-port", type=int, default=80)
     kr.add_argument("--output", "-o", type=Path, default=Path("docs/site/k8s_status.json"))
-    kr.add_argument("--run-dry-run", action="store_true", help="Attempt kubectl server-side dry-run if available")
+    kr.add_argument(
+        "--run-dry-run",
+        action="store_true",
+        help="Attempt kubectl server-side dry-run if available",
+    )
     kr.add_argument("--kubectl-bin", default=os.getenv("KUBECTL_BIN", "kubectl"))
     kr.add_argument("--kubeconform-bin", default=os.getenv("KUBECONFORM_BIN", "kubeconform"))
-    kr.add_argument("--apply-online", action="store_true", help="Apply exported YAML to the current cluster and wait for rollout")
-    kr.add_argument("--cleanup", action="store_true", help="Delete applied resources after online test")
-    kr.add_argument("--timeout", type=int, default=180, help="Rollout wait timeout seconds for online apply")
+    kr.add_argument(
+        "--apply-online",
+        action="store_true",
+        help="Apply exported YAML to the current cluster and wait for rollout",
+    )
+    kr.add_argument(
+        "--cleanup", action="store_true", help="Delete applied resources after online test"
+    )
+    kr.add_argument(
+        "--timeout", type=int, default=180, help="Rollout wait timeout seconds for online apply"
+    )
 
     # rollout pause/resume
     rollout_cmd = subparsers.add_parser("rollout", help="Control rollout behavior (pause/resume)")
@@ -251,22 +394,68 @@ def build_parser() -> argparse.ArgumentParser:
     api_cmd = subparsers.add_parser("api", help="HTTP API helpers")
     api_sub = api_cmd.add_subparsers(dest="api_cmd", required=True)
     api_tok = api_sub.add_parser("tokens", help="Generate or rotate bearer tokens for roles")
-    api_tok.add_argument("--generate", action="store_true", help="Generate random tokens and print export snippets")
+    api_tok.add_argument(
+        "--generate", action="store_true", help="Generate random tokens and print export snippets"
+    )
     api_tok.add_argument("--rotate", action="store_true", help="Rotate tokens (same as --generate)")
-    api_tok.add_argument("--output", "-o", type=Path, default=None, help="Write exports to this file instead of stdout")
-    api_tok.add_argument("--ttl-hours", type=int, default=None, help="Optional hours until expiry; emits AE_API_*_TOKEN_EXPIRES lines (UTC)")
-    api_tok.add_argument("--ttl-admin-hours", type=int, default=None, help="Override admin token expiry hours")
-    api_tok.add_argument("--ttl-scaler-hours", type=int, default=None, help="Override scaler token expiry hours")
-    api_tok.add_argument("--ttl-read-hours", type=int, default=None, help="Override read token expiry hours")
-    api_tok.add_argument("--state", type=Path, default=None, help="Optional path to write JSON state with tokens and expiries")
+    api_tok.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        default=None,
+        help="Write exports to this file instead of stdout",
+    )
+    api_tok.add_argument(
+        "--ttl-hours",
+        type=int,
+        default=None,
+        help="Optional hours until expiry; emits AE_API_*_TOKEN_EXPIRES lines (UTC)",
+    )
+    api_tok.add_argument(
+        "--ttl-admin-hours", type=int, default=None, help="Override admin token expiry hours"
+    )
+    api_tok.add_argument(
+        "--ttl-scaler-hours", type=int, default=None, help="Override scaler token expiry hours"
+    )
+    api_tok.add_argument(
+        "--ttl-read-hours", type=int, default=None, help="Override read token expiry hours"
+    )
+    api_tok.add_argument(
+        "--state",
+        type=Path,
+        default=None,
+        help="Optional path to write JSON state with tokens and expiries",
+    )
 
     # tls helpers
     tls_cmd = subparsers.add_parser("tls", help="TLS helpers for ingress")
     tls_sub = tls_cmd.add_subparsers(dest="tls_cmd", required=True)
-    tls_sync = tls_sub.add_parser("sync", help="Render PEMs from K8s Secret YAML/JSON or use direct files")
-    tls_sync.add_argument("--name", "-n", required=True, help="Secret name (used as file prefix <name>.crt/.key)")
-    tls_sync.add_argument("--input", "-i", type=Path, default=None, help="Path to K8s Secret YAML/JSON (optional)")
-    tls_sync.add_argument("--root", type=Path, default=None, help="TLS root directory (defaults AE_TLS_DIR or state/tls)")
+    tls_sync = tls_sub.add_parser(
+        "sync", help="Render PEMs from K8s Secret YAML/JSON or use direct files"
+    )
+    tls_sync.add_argument(
+        "--name", "-n", required=True, help="Secret name (used as file prefix <name>.crt/.key)"
+    )
+    tls_sync.add_argument(
+        "--input", "-i", type=Path, default=None, help="Path to K8s Secret YAML/JSON (optional)"
+    )
+    tls_sync.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="TLS root directory (defaults AE_TLS_DIR or state/tls)",
+    )
+    tls_verify = tls_sub.add_parser(
+        "verify", help="Verify that TLS material for a name can be resolved"
+    )
+    tls_verify.add_argument("--name", "-n", required=True, help="Secret name to verify under root")
+    tls_verify.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="TLS root directory (defaults AE_TLS_DIR or state/tls)",
+    )
+    tls_verify.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # volumes list
     vols = subparsers.add_parser("volumes", help="Inspect storage volumes")
@@ -274,6 +463,47 @@ def build_parser() -> argparse.ArgumentParser:
     vols_list = vols_sub.add_parser("list", help="List storage volumes (PV-lite)")
     vols_list.add_argument("--app", default=None, help="Filter by app name")
     vols_list.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    # examples helper
+    ex = subparsers.add_parser("examples", help="Write example manifests")
+    ex_sub = ex.add_subparsers(dest="ex_cmd", required=True)
+    ex_write = ex_sub.add_parser("write", help="Write an example manifest to a file")
+    ex_write.add_argument(
+        "--type",
+        choices=["multiport", "tcp-echo"],
+        required=True,
+        help="Example type to write",
+    )
+    ex_write.add_argument("--output", "-o", type=Path, required=True, help="Destination file path")
+    ex_write.add_argument("--force", action="store_true", help="Overwrite existing file")
+
+    # verify-image (cosign wrapper)
+    vimg = subparsers.add_parser(
+        "verify-image", help="Verify container image signatures with cosign"
+    )
+    vimg.add_argument("image", help="Image reference (e.g., ghcr.io/org/app:tag)")
+    vimg.add_argument("--key", default=None, help="Path/URI to public key (cosign --key)")
+    vimg.add_argument(
+        "--certificate-identity",
+        default=None,
+        help="Certificate identity for keyless verification (cosign --certificate-identity)",
+    )
+    vimg.add_argument(
+        "--certificate-oidc-issuer",
+        default=None,
+        help="OIDC issuer for keyless verification (cosign --certificate-oidc-issuer)",
+    )
+    vimg.add_argument(
+        "--attachment",
+        default=None,
+        choices=["sbom"],
+        help="Verify an attachment, e.g. sbom (cosign --attachment)",
+    )
+    vimg.add_argument("--rekor-url", default=None, help="Override Rekor URL")
+    vimg.add_argument(
+        "--cosign-bin", default=os.getenv("COSIGN_BIN", "cosign"), help="cosign binary path"
+    )
+    vimg.add_argument("--json", action="store_true", help="Emit JSON result")
 
     return parser
 
@@ -305,6 +535,250 @@ def runtime_factory(registry_auth: RegistryAuthProvider | None = None) -> Runtim
 
 def health_manager_factory() -> HealthManager:
     return HealthManager()
+
+
+def _registry_config_path() -> Path:
+    override = os.getenv("AE_REGISTRY_CONFIG")
+    if override:
+        return Path(override)
+    return Path.home() / ".config" / "ae" / "registries.yaml"
+
+
+def _registry_load() -> dict:
+    import yaml as _yaml
+
+    p = _registry_config_path()
+    if not p.exists():
+        return {}
+    try:
+        data = _yaml.safe_load(p.read_text()) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _registry_save(host: str, username: str, password: str) -> None:
+    import yaml as _yaml
+
+    p = _registry_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    data = _registry_load()
+    data[str(host)] = {"username": str(username), "password": str(password)}
+    p.write_text(_yaml.safe_dump(data, sort_keys=True), encoding="utf-8")
+
+
+def handle_registry(args: argparse.Namespace) -> int:
+    cmd = getattr(args, "registry_cmd", None)
+    if cmd == "list":
+        prov = RegistryAuthProvider()
+        entries = prov.list_registries()
+        if not entries:
+            print("no registries configured")
+            return 0
+        for host, creds in sorted(entries.items()):
+            user = creds.get("username")
+            print(f"{host}: {user}")
+        return 0
+    if cmd == "login":
+        provider = str(getattr(args, "provider"))
+        reg = getattr(args, "registry", None)
+        user = getattr(args, "username", None)
+        pw = getattr(args, "password", None)
+        token = getattr(args, "token", None)
+        # Provider-specific defaults
+        if provider == "ghcr":
+            host = reg or "ghcr.io"
+            u = user or (os.getenv("GHCR_USERNAME") or os.getenv("USER") or "")
+            # Try explicit password/token, then env, then gh CLI
+            p = pw or token or os.getenv("GHCR_TOKEN") or os.getenv("GH_TOKEN") or ""
+            if (not p) and shutil.which("gh") is not None:
+                try:
+                    import subprocess as sp
+
+                    cp = sp.run(["gh", "auth", "token"], capture_output=True, text=True, check=True)
+                    p = (cp.stdout or "").strip()
+                except Exception:
+                    p = p
+            if not u or not p:
+                print("error: --username and --token (or GHCR_TOKEN) required for ghcr")
+                return 2
+            _registry_save(host, u, p)
+            print(f"saved credentials for {host} (user {u})")
+            return 0
+        if provider == "ecr":
+            # AWS ECR short-lived password from AWS CLI
+            host = reg
+            region = (
+                getattr(args, "region", None)
+                or os.getenv("AWS_REGION")
+                or os.getenv("AWS_DEFAULT_REGION")
+            )
+            account = getattr(args, "account_id", None) or os.getenv("AWS_ACCOUNT_ID")
+            if not host:
+                if not (region and account):
+                    print(
+                        "error: for ECR without --registry, provide --region and --account-id (or set AWS_REGION and AWS_ACCOUNT_ID)"
+                    )
+                    return 2
+                host = f"{account}.dkr.ecr.{region}.amazonaws.com"
+            if not region:
+                # Try to infer region from registry host
+                try:
+                    parts = str(host).split(".")
+                    region = parts[3]
+                except Exception:
+                    region = None
+            if not region:
+                print("error: unable to infer AWS region; pass --region or set AWS_REGION")
+                return 2
+            if not getattr(args, "use_aws", False) and not pw and not token:
+                print(
+                    "hint: pass --use-aws to obtain a short-lived password via AWS CLI, or provide --password/--token"
+                )
+            p = pw or token
+            if not p and shutil.which("aws") is not None:
+                try:
+                    import subprocess as sp
+
+                    cp = sp.run(
+                        ["aws", "ecr", "get-login-password", "--region", region],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+                    p = (cp.stdout or "").strip()
+                except Exception as exc:  # noqa: BLE001
+                    print(f"error: aws CLI failed to fetch ECR password: {exc}")
+                    return 2
+            if not p:
+                print("error: missing ECR password; use --use-aws or provide --password/--token")
+                return 2
+            _registry_save(str(host), "AWS", p)
+            print(f"saved credentials for {host} (user AWS)")
+            return 0
+        if provider == "gcr":
+            host = getattr(args, "gcr_host", None) or reg or "gcr.io"
+            if getattr(args, "use_gcloud", False) and not pw and not token:
+                try:
+                    import subprocess as sp
+
+                    cp = sp.run(
+                        ["gcloud", "auth", "print-access-token"],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+                    token = (cp.stdout or "").strip()
+                except Exception as exc:  # noqa: BLE001
+                    print(f"error: gcloud failed to print access token: {exc}")
+                    return 2
+            p = pw or token or ""
+            u = user or "oauth2accesstoken"
+            if not p:
+                print("error: missing --token/--password for gcr (or use --use-gcloud)")
+                return 2
+            _registry_save(host, u, p)
+            print(f"saved credentials for {host} (user {u})")
+            return 0
+        # (no-op) duplicate ECR branch removed
+        if provider == "custom":
+            host = reg
+            if not host or not user or not pw:
+                print("error: custom requires --registry, --username, --password")
+                return 2
+            _registry_save(host, user, pw)
+            print(f"saved credentials for {host} (user {user})")
+            return 0
+        print("unsupported provider")
+        return 2
+    if cmd == "refresh":
+        prov_filter = getattr(args, "provider", "all")
+        prov = RegistryAuthProvider()
+        entries = prov.list_registries()
+        if not entries:
+            print("no registries configured; use 'ae registry login' first")
+            return 1
+        updated = 0
+        for host, creds in sorted(entries.items()):
+            try:
+                if prov_filter in {"all", "ghcr"} and host == "ghcr.io":
+                    new_tok = None
+                    if shutil.which("gh") is not None:
+                        import subprocess as sp
+
+                        try:
+                            cp = sp.run(
+                                ["gh", "auth", "token"], capture_output=True, text=True, check=True
+                            )
+                            new_tok = (cp.stdout or "").strip()
+                        except Exception:
+                            new_tok = None
+                    new_tok = new_tok or os.getenv("GHCR_TOKEN") or os.getenv("GH_TOKEN")
+                    if new_tok:
+                        user = (
+                            creds.get("username")
+                            or os.getenv("GHCR_USERNAME")
+                            or os.getenv("USER")
+                            or ""
+                        )
+                        _registry_save(host, user, new_tok)
+                        print(f"refreshed ghcr token for {host}")
+                        updated += 1
+                        continue
+                if prov_filter in {"all", "gcr"} and (host.endswith(".gcr.io") or host == "gcr.io"):
+                    if shutil.which("gcloud") is not None:
+                        import subprocess as sp
+
+                        try:
+                            cp = sp.run(
+                                ["gcloud", "auth", "print-access-token"],
+                                capture_output=True,
+                                text=True,
+                                check=True,
+                            )
+                            tok = (cp.stdout or "").strip()
+                            if tok:
+                                _registry_save(host, "oauth2accesstoken", tok)
+                                print(f"refreshed gcr token for {host}")
+                                updated += 1
+                                continue
+                        except Exception:
+                            pass
+                if prov_filter in {"all", "ecr"} and (
+                    ".dkr.ecr." in host and host.endswith("amazonaws.com")
+                ):
+                    if shutil.which("aws") is not None:
+                        import subprocess as sp
+
+                        try:
+                            region = host.split(".")[3]
+                        except Exception:
+                            region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+                        if not region:
+                            continue
+                        try:
+                            cp = sp.run(
+                                ["aws", "ecr", "get-login-password", "--region", region],
+                                capture_output=True,
+                                text=True,
+                                check=True,
+                            )
+                            pw_new = (cp.stdout or "").strip()
+                            if pw_new:
+                                _registry_save(host, "AWS", pw_new)
+                                print(f"refreshed ecr password for {host}")
+                                updated += 1
+                                continue
+                        except Exception:
+                            pass
+            except Exception:
+                continue
+        if updated == 0:
+            print("no registry tokens refreshed")
+            return 1
+        return 0
+    print("unsupported registry command")
+    return 2
 
 
 def ingress_service_factory() -> IngressService | None:
@@ -434,9 +908,12 @@ def main(argv: list[str] | None = None) -> int:
         "config": lambda ns: handle_config(ns),
         "secret": lambda ns: handle_secret(ns),
         "volumes": lambda ns: handle_volumes(ns, runtime),
+        "examples": handle_examples,
         "plan": lambda ns: handle_plan(ns, runtime),
         "export-k8s": handle_export_k8s,
         "k8s-check": handle_k8s_check,
+        "registry": handle_registry,
+        "verify-image": handle_verify_image,
     }
 
     handler = command_handlers.get(args.command)
@@ -446,7 +923,9 @@ def main(argv: list[str] | None = None) -> int:
     return handler(args)
 
 
-def handle_apply(args: argparse.Namespace, reconciler: Reconciler, global_args: argparse.Namespace | None = None) -> int:
+def handle_apply(
+    args: argparse.Namespace, reconciler: Reconciler, global_args: argparse.Namespace | None = None
+) -> int:
     # Remote apply via API when --server is set
     if global_args and getattr(global_args, "server", None):
         base = str(global_args.server)
@@ -652,6 +1131,35 @@ def handle_version() -> int:
     return 0
 
 
+def handle_examples(args: argparse.Namespace) -> int:
+    # Only supports 'write' for now
+    if args.ex_cmd == "write":
+        from shutil import copyfile
+
+        src_map = {
+            "multiport": Path("specs/examples/echo-multiport.yaml"),
+            "tcp-echo": Path("specs/examples/tcp-echo.yaml"),
+        }
+        src = src_map.get(args.type)
+        if src is None:
+            print("unknown example type")
+            return 2
+        dst = Path(args.output)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if dst.exists() and not args.force:
+            print(f"refusing to overwrite existing file: {dst} (use --force)")
+            return 2
+        try:
+            copyfile(src, dst)
+        except Exception as exc:  # noqa: BLE001
+            print(f"failed to write example: {exc}")
+            return 1
+        print(f"wrote example to {dst}")
+        return 0
+    print("unsupported examples command")
+    return 2
+
+
 def handle_backup(args: argparse.Namespace) -> int:
     import os
     import tarfile
@@ -727,7 +1235,7 @@ def handle_backup(args: argparse.Namespace) -> int:
             for m in list(tar.getmembers())[:3]:
                 _ = tar.extractfile(m)
         print("verify: ok" if ok else "verify: failed")
-        return 0 if ok else 1
+    return 0 if ok else 1
 
     print(f"Unsupported backup command: {args.backup_cmd}")
     return 1
@@ -750,7 +1258,9 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
     opts = apply_preset(opts, args.preset)
 
     kubeconform_bin = shutil.which(args.kubeconform_bin)
-    kubectl_bin = shutil.which(args.kubectl_bin) if (args.run_dry_run or args.apply_online) else None
+    kubectl_bin = (
+        shutil.which(args.kubectl_bin) if (args.run_dry_run or args.apply_online) else None
+    )
 
     results: list[dict] = []
     checks_total = 0
@@ -800,7 +1310,12 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                 import subprocess as sp
 
                 try:
-                    proc = sp.run([kubeconform_bin, "-strict", "-summary", tmp.name], capture_output=True, text=True, check=False)
+                    proc = sp.run(
+                        [kubeconform_bin, "-strict", "-summary", tmp.name],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
                     kc_res["ok"] = proc.returncode == 0
                     kc_res["summary"] = proc.stdout.strip() or proc.stderr.strip()
                 except Exception as exc:  # noqa: BLE001
@@ -818,7 +1333,20 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                 import subprocess as sp
 
                 try:
-                    proc = sp.run([kubectl_bin, "apply", "--dry-run=server", "-f", tmp.name, "-n", str(args.namespace)], capture_output=True, text=True, check=False)
+                    proc = sp.run(
+                        [
+                            kubectl_bin,
+                            "apply",
+                            "--dry-run=server",
+                            "-f",
+                            tmp.name,
+                            "-n",
+                            str(args.namespace),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
                     dr_res["ok"] = proc.returncode == 0
                     dr_res["output"] = (proc.stdout or proc.stderr).strip()
                 except Exception as exc:  # noqa: BLE001
@@ -829,6 +1357,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
         # Summarize kinds emitted
         try:
             import yaml as _y
+
             kinds = []
             for d in _y.safe_load_all(yaml_text):
                 if isinstance(d, dict):
@@ -843,21 +1372,44 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
             online["ran"] = True
             # Ensure namespace exists
             import subprocess as sp
+
             try:
-                sp.run([kubectl_bin, "create", "namespace", str(args.namespace)], capture_output=True, text=True)
+                sp.run(
+                    [kubectl_bin, "create", "namespace", str(args.namespace)],
+                    capture_output=True,
+                    text=True,
+                )
             except Exception:
                 pass
             with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
                 tmp.write(yaml_text)
                 tmp.flush()
                 try:
-                    ap = sp.run([kubectl_bin, "apply", "-f", tmp.name, "-n", str(args.namespace)], capture_output=True, text=True, check=False)
+                    ap = sp.run(
+                        [kubectl_bin, "apply", "-f", tmp.name, "-n", str(args.namespace)],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
                     # Try to find the Deployment name(s) from parsed docs
                     deploys = [k for k in (entry.get("kinds") or []) if k == "Deployment"]
                     # Fallback: use manifest name
                     dep_name = manifest.metadata.name
                     # rollout status (best effort)
-                    rs = sp.run([kubectl_bin, "rollout", "status", f"deploy/{dep_name}", "-n", str(args.namespace), f"--timeout={int(args.timeout)}s"], capture_output=True, text=True, check=False)
+                    rs = sp.run(
+                        [
+                            kubectl_bin,
+                            "rollout",
+                            "status",
+                            f"deploy/{dep_name}",
+                            "-n",
+                            str(args.namespace),
+                            f"--timeout={int(args.timeout)}s",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
                     online["ok"] = ap.returncode == 0 and rs.returncode == 0
                     online["details"] = {
                         "apply_rc": ap.returncode,
@@ -871,14 +1423,32 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                 finally:
                     if args.cleanup:
                         try:
-                            sp.run([kubectl_bin, "delete", "-f", tmp.name, "-n", str(args.namespace), "--ignore-not-found"], capture_output=True, text=True)
+                            sp.run(
+                                [
+                                    kubectl_bin,
+                                    "delete",
+                                    "-f",
+                                    tmp.name,
+                                    "-n",
+                                    str(args.namespace),
+                                    "--ignore-not-found",
+                                ],
+                                capture_output=True,
+                                text=True,
+                            )
                         except Exception:
                             pass
         entry["apply_online"] = online
 
         # Scoring per sample
         # Weights: validate=20, kubeconform=20, dry_run=30, policy_strict(no errors)=20, apply_online=10
-        weights = {"validate": 20, "kubeconform": 20, "server_dry_run": 30, "policy_strict": 20, "apply_online": 10}
+        weights = {
+            "validate": 20,
+            "kubeconform": 20,
+            "server_dry_run": 30,
+            "policy_strict": 20,
+            "apply_online": 10,
+        }
         checks_total += sum(weights.values())
         ran_weight = 0
         got = 0
@@ -1030,6 +1600,15 @@ def handle_status(
                     cpu = res.limits.cpu if res.limits.cpu is not None else "-"
                     mem = res.limits.memory if res.limits.memory is not None else "-"
                     print(f"    resources: limits cpu={cpu}, memory={mem}")
+                # Crashloop hint based on recent events
+                try:
+                    events = store.list_events(args.name, limit=10)
+                    if any(e.event_type == "CrashLoopDetected" for e in events):
+                        print(
+                            "    crashloop: recent CrashLoopDetected events present (see 'ae events' for details)"
+                        )
+                except Exception:
+                    pass
                 if vols:
                     print(f"    volumes: {len(vols)} mounts")
             except Exception:
@@ -1091,7 +1670,9 @@ def handle_status(
     return 0
 
 
-def handle_rollout(args: argparse.Namespace, store: SQLiteStateStore, reconciler: Reconciler) -> int:
+def handle_rollout(
+    args: argparse.Namespace, store: SQLiteStateStore, reconciler: Reconciler
+) -> int:
     if args.rollout_cmd not in {"pause", "resume"}:
         print("unsupported rollout command")
         return 2
@@ -1113,7 +1694,9 @@ def handle_rollout(args: argparse.Namespace, store: SQLiteStateStore, reconciler
 
 
 def handle_api(args: argparse.Namespace) -> int:
-    if args.api_cmd == "tokens" and (getattr(args, "generate", False) or getattr(args, "rotate", False)):
+    if args.api_cmd == "tokens" and (
+        getattr(args, "generate", False) or getattr(args, "rotate", False)
+    ):
         import secrets
         from datetime import datetime, timedelta, timezone
 
@@ -1128,8 +1711,14 @@ def handle_api(args: argparse.Namespace) -> int:
             "# To enable mutations:",
             "export AE_API_MUTATIONS=1",
         ]
+
         def _exp(hours):
-            return (datetime.now(timezone.utc) + timedelta(hours=int(hours))).isoformat().replace("+00:00", "Z")
+            return (
+                (datetime.now(timezone.utc) + timedelta(hours=int(hours)))
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+
         ttl = getattr(args, "ttl_hours", None)
         admin_ttl = getattr(args, "ttl_admin_hours", None) or ttl
         scaler_ttl = getattr(args, "ttl_scaler_hours", None) or ttl
@@ -1153,6 +1742,7 @@ def handle_api(args: argparse.Namespace) -> int:
         state_path = getattr(args, "state", None)
         if state_path:
             import json as _json
+
             payload = {
                 "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "admin": {"token": admin, "expires": admin_exp},
@@ -1167,112 +1757,63 @@ def handle_api(args: argparse.Namespace) -> int:
 
 
 def handle_tls(args: argparse.Namespace) -> int:
-    if args.tls_cmd != "sync":
-        print("unsupported tls command")
-        return 2
-    from ae.ingress.tls_sync import TlsSecretResolver
-    import os
+    # tls sync: copy optional input and resolve to PEM
+    if args.tls_cmd == "sync":
+        from ae.ingress.tls_sync import TlsSecretResolver
+        import os
 
-    root = Path(args.root) if args.root else Path(os.getenv("AE_TLS_DIR", "state/tls"))
-    root.mkdir(parents=True, exist_ok=True)
-    name = str(args.name)
-    if getattr(args, "input", None):
-        src: Path = args.input
-        ext = src.suffix.lower().lstrip(".") or "yaml"
-        if ext not in {"yaml", "yml", "json"}:
-            ext = "yaml"
-        dst = root / f"{name}.{ext}"
-        try:
-            dst.write_bytes(src.read_bytes())
-        except Exception as exc:  # noqa: BLE001
-            print(f"failed to copy secret file: {exc}")
-            return 1
-    resolver = TlsSecretResolver(root)
-    resolved = resolver.resolve(name)
-    if not resolved:
-        print("no TLS material found; provide --input or place <name>.crt/.key or <name>.yaml in root")
-        return 2
-    crt, key = resolved
-    print(f"TLS ready: cert={crt} key={key}")
-    return 0
-    if args.name:
-        status = store.get_status(args.name)
-        if status is None:
-            print(f"No status recorded for {args.name}")
-            return 1
-        if args.json:
-            print(_status_to_json(status, store, include_details=args.wide))
-            return 0
-        print(format_status(status))
-        if args.wide:
+        root = Path(args.root) if args.root else Path(os.getenv("AE_TLS_DIR", "state/tls"))
+        root.mkdir(parents=True, exist_ok=True)
+        name = str(args.name)
+        if getattr(args, "input", None):
+            src: Path = args.input
+            ext = src.suffix.lower().lstrip(".") or "yaml"
+            if ext not in {"yaml", "yml", "json"}:
+                ext = "yaml"
+            dst = root / f"{name}.{ext}"
             try:
-                manifest = store.get_revision_manifest(args.name, status.revision)
-                res = manifest.spec.resources
-                vols = manifest.spec.volumes
-                if res and res.limits:
-                    cpu = res.limits.cpu if res.limits.cpu is not None else "-"
-                    mem = res.limits.memory if res.limits.memory is not None else "-"
-                    print(f"    resources: limits cpu={cpu}, memory={mem}")
-                if vols:
-                    print(f"    volumes: {len(vols)} mounts")
-            except Exception:
-                pass
-        replicas = store.list_replicas(args.name)
-        for replica in replicas:
+                dst.write_bytes(src.read_bytes())
+            except Exception as exc:  # noqa: BLE001
+                print(f"failed to copy secret file: {exc}")
+                return 1
+        resolver = TlsSecretResolver(root)
+        resolved = resolver.resolve(name)
+        if not resolved:
             print(
-                f"  - {replica.replica_id}: ready={replica.ready} "
-                f"live={replica.live} status={replica.status} | "
-                f"readiness={replica.readiness_message}; "
-                f"liveness={replica.liveness_message}"
+                "no TLS material found; provide --input or place <name>.crt/.key or <name>.yaml in root"
             )
-        if args.history and args.history > 0:
-            history = store.get_probe_history(args.name, args.history)
-            for entry in history:
-                timestamp = entry.check_time.strftime("%Y-%m-%d %H:%M:%S")
-                print(
-                    f"    history {timestamp} {entry.replica_id}: ready={entry.ready} "
-                    f"live={entry.live} | readiness={entry.readiness_message}; "
-                    f"liveness={entry.liveness_message}"
-                )
-        if args.events:
-            events = store.list_events(args.name, limit=10)
-            if not events:
-                print("    no events recorded")
-            else:
-                for event in events:
-                    timestamp = event.created_at.strftime("%Y-%m-%d %H:%M:%S")
-                    print(
-                        f"    event {timestamp} rev={event.revision} "
-                        f"{event.event_type}: {event.message}"
-                    )
+            return 2
+        crt, key = resolved
+        print(f"TLS ready: cert={crt} key={key}")
         return 0
+    # tls verify: check resolvability only
+    if args.tls_cmd == "verify":
+        from ae.ingress.tls_sync import TlsSecretResolver
+        import os
 
-    statuses = store.list_status()
-    if not statuses:
-        print("No applications recorded.")
-        return 0
-    if args.json:
-        import json
+        root = Path(args.root) if args.root else Path(os.getenv("AE_TLS_DIR", "state/tls"))
+        resolver = TlsSecretResolver(root)
+        resolved = resolver.resolve(str(args.name))
+        if getattr(args, "json", False):
+            import json as _json
 
-        def as_dict(s: AppStatus) -> dict:
-            return {
-                "app_name": s.app_name,
-                "desired_replicas": s.desired_replicas,
-                "ready_replicas": s.ready_replicas,
-                "live_replicas": s.live_replicas,
-                "revision": s.revision,
-                "revision_status": s.revision_status,
-                "image": s.image,
-                "ingress_host": s.ingress_host,
-                "ingress_path": s.ingress_path,
+            payload = {
+                "name": str(args.name),
+                "root": str(root),
+                "ok": bool(resolved),
+                "cert": str(resolved[0]) if resolved else None,
+                "key": str(resolved[1]) if resolved else None,
             }
-
-        print(json.dumps([as_dict(s) for s in statuses], indent=2))
+            print(_json.dumps(payload, indent=2))
+            return 0 if resolved else 2
+        if not resolved:
+            print(f"not found: {args.name} under {root}")
+            return 2
+        crt, key = resolved
+        print(f"found TLS: cert={crt} key={key}")
         return 0
-
-    for status in statuses:
-        print(format_status(status))
-    return 0
+    print("unsupported tls command")
+    return 2
 
 
 def handle_logs(args: argparse.Namespace, store: SQLiteStateStore, runtime: RuntimeAdapter) -> int:
@@ -1443,7 +1984,7 @@ def handle_rollback(
         return 1
 
     report = reconciler.reconcile(manifest)
-    print(f"Rolled back {args.name} to revision {report.revision} " f"({report.revision_status})")
+    print(f"Rolled back {args.name} to revision {report.revision} ({report.revision_status})")
     return 0
 
 
@@ -1460,18 +2001,7 @@ def handle_revisions(args: argparse.Namespace, store: SQLiteStateStore) -> int:
     return 0
 
 
-def handle_registry(args: argparse.Namespace, provider: RegistryAuthProvider) -> int:
-    if args.action == "list":
-        registries = provider.list_registries()
-        if not registries:
-            print("No registry credentials configured.")
-            return 0
-        for host, creds in registries.items():
-            user = creds.get("username", "")
-            print(f"{host}: username={user}")
-        return 0
-    print(f"Unsupported registry action: {args.action}")
-    return 1
+## (removed duplicate handle_registry definition that conflicted with the primary one above)
 
 
 def handle_metrics(args: argparse.Namespace, store: SQLiteStateStore) -> int:
@@ -1631,53 +2161,208 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
         print(f"failed to load manifest: {exc}")
         return 1
 
-    print(f"Plan for {manifest.metadata.name}:")
     desired = int(manifest.spec.replicas)
     rollout = getattr(manifest.spec, "rollout", {}) or {}
     strategy = str(rollout.get("strategy", "parallel"))
-    print(f"  - replicas: {desired}")
-    print(
-        f"  - rollout: strategy={strategy} maxSurge={rollout.get('maxSurge', 1)} maxUnavailable={rollout.get('maxUnavailable', 0)}"
-    )
+    if not getattr(args, "json", False):
+        print(f"Plan for {manifest.metadata.name}:")
+        print(
+            f"  - replicas: {desired}\n  - rollout: strategy={strategy} maxSurge={rollout.get('maxSurge', 1)} maxUnavailable={rollout.get('maxUnavailable', 0)}"
+        )
 
-    warnings = []
+    warnings: list[str] = []
+    diagnostics: dict = {"service": {}, "tls": {}}
+
+    # Security hardening hints
+    try:
+        sec = getattr(manifest.spec, "security", None)
+        if sec is None:
+            warnings.append(
+                "no security context provided; consider readOnlyRootFilesystem, dropCapabilities, and seccomp/AppArmor profiles"
+            )
+        else:
+            if not bool(getattr(sec, "read_only_root", False)):
+                warnings.append("readOnlyRootFilesystem is not enabled")
+            drops = list(getattr(sec, "drop_caps", []) or [])
+            if not drops:
+                warnings.append(
+                    "no Linux capabilities dropped; consider dropping NET_RAW and other unnecessary caps"
+                )
+            s_type = getattr(sec, "seccomp_type", None)
+            if not s_type:
+                warnings.append(
+                    "no seccompProfileType set; RuntimeDefault is recommended (or Localhost with a custom profile)"
+                )
+            a_prof = getattr(sec, "apparmor_profile", None)
+            if not a_prof:
+                warnings.append(
+                    "no apparmorProfile set; runtime/default is recommended on AppArmor-enabled hosts"
+                )
+    except Exception:
+        # non-fatal; continue planning
+        pass
+
+    # Requests vs limits sanity checks
+    try:
+        res = getattr(manifest.spec, "resources", None)
+        req = getattr(res, "requests", None) if res else None
+        lim = getattr(res, "limits", None) if res else None
+        if req and lim:
+            try:
+                if getattr(req, "cpu", None) is not None and getattr(lim, "cpu", None) is not None:
+                    if float(req.cpu) > float(lim.cpu):
+                        warnings.append("resources.requests.cpu exceeds limits.cpu")
+            except Exception:
+                pass
+            try:
+                # Compare memory quantities in a simple way when both are plain numbers with units of same suffix
+                rq = getattr(req, "memory", None)
+                lm = getattr(lim, "memory", None)
+                if rq is not None and lm is not None and str(rq).strip() and str(lm).strip():
+                    # Only compare when units match (best-effort)
+                    import re as _re
+
+                    m1 = _re.match(r"^(\d+(?:\.\d+)?)(.*)$", str(rq).strip())
+                    m2 = _re.match(r"^(\d+(?:\.\d+)?)(.*)$", str(lm).strip())
+                    if m1 and m2 and m1.group(2).strip().lower() == m2.group(2).strip().lower():
+                        if float(m1.group(1)) > float(m2.group(1)):
+                            warnings.append("resources.requests.memory exceeds limits.memory")
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     svc = getattr(manifest.spec, "service", None)
     if svc and desired == 1:
-        port = int(svc.port)
-        print(f"  - checking service.port={port} for conflicts...")
-        conflicts: list[str] = []
-        try:
-            infos = runtime.list_containers_info()  # type: ignore[attr-defined]
-            for info in infos:
-                if port in (info.get("host_ports") or []):
-                    conflicts.append(str(info.get("name", "")))
-        except Exception:
-            conflicts = []
-        if conflicts:
-            print(f"  ! conflict: host port {port} is already published by: {', '.join(conflicts)}")
-            print("    Resolve by stopping the conflicting service or changing spec.service.port")
-            if getattr(args, "json", False):
-                import json as _json
+        # Multi-port list takes precedence; otherwise check single service.port
+        ports_to_check: list[int] = []
+        # NodePort validation warning when exporting later
+        if getattr(svc, "type", None) == "NodePort" and getattr(svc, "ports", None):
+            name_seen: set[str] = set()
+            port_seen: set[int] = set()
+            nodeport_seen: set[int] = set()
+            dup_names: list[str] = []
+            dup_ports: list[int] = []
+            dup_nodeports: list[int] = []
+            out_of_range: list[int] = []
+            for sp in svc.ports:
+                np = getattr(sp, "node_port", None)
+                if np is not None and not (30000 <= int(np) <= 32767):
+                    warnings.append(
+                        f"service.ports[{sp.name}].nodePort {np} is outside the default Kubernetes range 30000-32767"
+                    )
+                    out_of_range.append(int(np))
+                # duplicate checks
+                nm = getattr(sp, "name", None)
+                if nm in name_seen:
+                    warnings.append(f"duplicate service port name '{nm}'")
+                    dup_names.append(str(nm))
+                elif nm is not None:
+                    name_seen.add(nm)
+                try:
+                    pnum = int(getattr(sp, "port", -1))
+                    if pnum in port_seen:
+                        warnings.append(f"duplicate service port {pnum}")
+                        dup_ports.append(pnum)
+                    else:
+                        port_seen.add(pnum)
+                except Exception:
+                    pass
+                if np is not None:
+                    npi = int(np)
+                    if npi in nodeport_seen:
+                        warnings.append(f"duplicate service nodePort {npi}")
+                        dup_nodeports.append(npi)
+                    else:
+                        nodeport_seen.add(npi)
+            diagnostics["service"]["type"] = "NodePort"
+            diagnostics["service"]["duplicates"] = {
+                "names": dup_names,
+                "ports": dup_ports,
+                "nodePorts": dup_nodeports,
+            }
+            diagnostics["service"]["outOfRangeNodePorts"] = out_of_range
+        if getattr(svc, "ports", None):
+            try:
+                ports_to_check = [
+                    int(sp.port) for sp in svc.ports if getattr(sp, "port", None) is not None
+                ]
+            except Exception:
+                ports_to_check = []
+        elif getattr(svc, "port", None) is not None:
+            ports_to_check = [int(svc.port)]
+        if ports_to_check and not getattr(args, "json", False):
+            print(f"  - checking service port(s) {ports_to_check} for conflicts...")
+            conflicts: dict[int, list[str]] = {}
+            try:
+                infos = runtime.list_containers_info()  # type: ignore[attr-defined]
+                for p in ports_to_check:
+                    for info in infos:
+                        if p in (info.get("host_ports") or []):
+                            conflicts.setdefault(int(p), []).append(str(info.get("name", "")))
+            except Exception:
+                conflicts = {}
+            if any(conflicts.values()):
+                diagnostics["service"]["hostPortConflicts"] = conflicts
+                if not getattr(args, "json", False):
+                    for p, conts in conflicts.items():
+                        if conts:
+                            print(
+                                f"  ! conflict: host port {p} is already published by: {', '.join(conts)}"
+                            )
+                    print(
+                        "    Resolve by stopping the conflicting service(s) or changing spec.service.ports"
+                    )
+                if getattr(args, "json", False):
+                    import json as _json
 
-                out = {
-                    "app": manifest.metadata.name,
-                    "replicas": desired,
-                    "rollout": strategy,
-                    "service": {"port": port, "targetPort": getattr(svc, "target_port", None)},
-                    "warnings": warnings,
-                    "conflicts": conflicts,
-                    "ok": False,
-                }
-                print(_json.dumps(out, indent=2))
-            return 2
-        print(f"    OK: host port {port} available")
+                    out = {
+                        "app": manifest.metadata.name,
+                        "replicas": desired,
+                        "rollout": strategy,
+                        "service": {"ports": ports_to_check},
+                        "warnings": warnings,
+                        "diagnostics": diagnostics,
+                        "conflicts": conflicts,
+                        "ok": False,
+                    }
+                    print(_json.dumps(out, indent=2))
+                return 2
+            if not getattr(args, "json", False):
+                print("    OK: all requested host ports available")
     else:
-        if svc and desired != 1:
+        if (
+            svc
+            and desired != 1
+            and (getattr(svc, "port", None) is not None or getattr(svc, "ports", None))
+        ):
             print("  - note: service.port is only applied for single-replica apps in this version")
             warnings.append(
                 "spec.service defined with replicas>1; stable host port is not applied for multi-replica apps. Use ingress for HTTP or per-replica ports."
             )
+
+    # Materialize service.port details for JSON diagnostics
+    if svc:
+        try:
+            if getattr(svc, "ports", None):
+                diagnostics["service"]["ports"] = [
+                    {
+                        "name": getattr(sp, "name", None),
+                        "port": int(getattr(sp, "port", 0) or 0),
+                        "targetPort": getattr(sp, "target_port", None),
+                        "nodePort": getattr(sp, "node_port", None),
+                    }
+                    for sp in svc.ports
+                ]
+            elif getattr(svc, "port", None) is not None:
+                diagnostics["service"]["stablePort"] = {
+                    "port": int(getattr(svc, "port", 0) or 0),
+                    "targetPort": getattr(svc, "target_port", None),
+                }
+            if getattr(svc, "type", None):
+                diagnostics["service"]["type"] = str(getattr(svc, "type"))
+        except Exception:
+            pass
 
     # Affinity warnings
     try:
@@ -1687,11 +2372,11 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
     running_same = [
         i for i in infos if (i.get("labels") or {}).get("ae.app") == manifest.metadata.name
     ]
-    if running_same:
+    if running_same and not getattr(args, "json", False):
         print(
             f"  - note: found {len(running_same)} running container(s) for app '{manifest.metadata.name}' (rollout surge may temporarily increase count)"
         )
-    if desired > 1 and not os.getenv("AE_DOCKER_NETWORK"):
+    if desired > 1 and not os.getenv("AE_DOCKER_NETWORK") and not getattr(args, "json", False):
         print(
             "  - note: AE_DOCKER_NETWORK is not set; multi-replica ingress may require host ports"
         )
@@ -1714,6 +2399,132 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
         warnings.append(
             "AE_DOCKER_NETWORK is not set; multi-replica ingress may require host ports"
         )
+    # Podman shared network hint when using Podman backend
+    backend = str(_os.getenv("AE_RUNTIME_BACKEND", "podman")).lower() or "podman"
+    if desired > 1 and backend in {"podman", "oci"} and not _os.getenv("AE_PODMAN_NETWORK"):
+        warnings.append(
+            "AE_PODMAN_NETWORK is not set; for multi-replica ingress via container DNS, create a podman network and export AE_PODMAN_NETWORK=<name>"
+        )
+
+    # Rollout validation
+    try:
+        ms = int(rollout.get("maxSurge", 1))
+        mu = int(rollout.get("maxUnavailable", 0))
+        if ms < 0:
+            warnings.append("rollout.maxSurge must be >= 0")
+        if mu < 0:
+            warnings.append("rollout.maxUnavailable must be >= 0")
+        if desired > 0 and mu >= desired:
+            warnings.append("rollout.maxUnavailable must be < replicas")
+        if desired > 0 and ms > desired:
+            warnings.append("rollout.maxSurge should not exceed replicas")
+        # Hooks structure
+        hooks = (rollout.get("hooks") or {}) if isinstance(rollout, dict) else {}
+        if hooks:
+            pre = hooks.get("preSwitch") if "preSwitch" in hooks else hooks.get("pre_switch")
+            post = hooks.get("postSwitch") if "postSwitch" in hooks else hooks.get("post_switch")
+            for name, h in (("preSwitch", pre), ("postSwitch", post)):
+                if h is None:
+                    continue
+                if ("exec" not in h) and ("tcp" not in h):
+                    warnings.append(f"rollout.hooks.{name} must contain 'exec' or 'tcp'")
+                if "exec" in h and not isinstance(h.get("exec"), (list, tuple)):
+                    warnings.append(f"rollout.hooks.{name}.exec must be a list of args")
+                if "tcp" in h:
+                    try:
+                        port = int((h.get("tcp") or {}).get("port", -1))
+                        if port <= 0 or port > 65535:
+                            warnings.append(f"rollout.hooks.{name}.tcp.port must be 1-65535")
+                    except Exception:
+                        warnings.append(f"rollout.hooks.{name}.tcp.port must be an integer")
+    except Exception:
+        pass
+
+    # Private registry creds check
+    try:
+        img = str(getattr(manifest.spec, "image", ""))
+        host = img.split("/", 1)[0] if "." in img.split("/", 1)[0] else None
+        if host:
+            from ae.runtime.registry import RegistryAuthProvider as _R
+
+            prov = _R()
+            creds = prov.list_registries().get(host)
+            if not creds:
+                warnings.append(
+                    f"registry credentials for '{host}' not found; run 'ae registry login' or configure ~/.config/ae/registries.yaml"
+                )
+    except Exception:
+        pass
+
+    # Rollout validation
+    try:
+        ms = int(rollout.get("maxSurge", 1))
+        mu = int(rollout.get("maxUnavailable", 0))
+        if ms < 0:
+            warnings.append("rollout.maxSurge must be >= 0")
+        if mu < 0:
+            warnings.append("rollout.maxUnavailable must be >= 0")
+        if desired > 0 and mu >= desired:
+            warnings.append("rollout.maxUnavailable must be < replicas")
+        if desired > 0 and ms > desired:
+            warnings.append("rollout.maxSurge should not exceed replicas")
+        # Hooks structure
+        hooks = (rollout.get("hooks") or {}) if isinstance(rollout, dict) else {}
+        if hooks:
+            pre = hooks.get("preSwitch") if "preSwitch" in hooks else hooks.get("pre_switch")
+            post = hooks.get("postSwitch") if "postSwitch" in hooks else hooks.get("post_switch")
+            for name, h in (("preSwitch", pre), ("postSwitch", post)):
+                if h is None:
+                    continue
+                if ("exec" not in h) and ("tcp" not in h):
+                    warnings.append(f"rollout.hooks.{name} must contain 'exec' or 'tcp'")
+                if "exec" in h and not isinstance(h.get("exec"), (list, tuple)):
+                    warnings.append(f"rollout.hooks.{name}.exec must be a list of args")
+                if "tcp" in h:
+                    try:
+                        port = int((h.get("tcp") or {}).get("port", -1))
+                        if port <= 0 or port > 65535:
+                            warnings.append(f"rollout.hooks.{name}.tcp.port must be 1-65535")
+                    except Exception:
+                        warnings.append(f"rollout.hooks.{name}.tcp.port must be an integer")
+    except Exception:
+        pass
+    # Ingress/TLS validation: warn when tlsSecretName is set but cannot be resolved to PEMs
+    ing = getattr(manifest.spec, "ingress", None)
+    if ing and getattr(ing, "tls", True) and getattr(ing, "tls_secret_name", None):
+        try:
+            from ae.ingress.tls_sync import TlsSecretResolver
+
+            root = _os.getenv("AE_TLS_DIR", "state/tls")
+            res = TlsSecretResolver(Path(root)).resolve(str(ing.tls_secret_name))
+            if res is None:
+                warnings.append(
+                    f"ingress.tlsSecretName '{ing.tls_secret_name}' not found under AE_TLS_DIR={root}; controller will fall back to Caddy 'tls internal'"
+                )
+                diagnostics["tls"] = {
+                    "ingress": True,
+                    "secretName": str(ing.tls_secret_name),
+                    "root": root,
+                    "resolved": False,
+                }
+            else:
+                diagnostics["tls"] = {
+                    "ingress": True,
+                    "secretName": str(ing.tls_secret_name),
+                    "root": root,
+                    "resolved": True,
+                    "cert": str(res[0]),
+                    "key": str(res[1]),
+                }
+        except Exception:
+            warnings.append(
+                "failed to validate ingress.tlsSecretName; check AE_TLS_DIR and secret files"
+            )
+            diagnostics["tls"] = {
+                "ingress": True,
+                "secretName": str(getattr(ing, "tls_secret_name", "")),
+                "error": True,
+            }
     vols = getattr(manifest.spec, "volumes", []) or []
     for v in vols:
         if not getattr(v, "read_only", True):
@@ -1723,11 +2534,15 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
     # Recommend readiness probe
     health = getattr(manifest.spec, "health", None)
     if not health or not getattr(health, "readiness", None):
-        warnings.append("no readiness probe configured; add HTTP or TCP probe for smoother rollouts")
+        warnings.append(
+            "no readiness probe configured; add HTTP or TCP probe for smoother rollouts"
+        )
     # Recommend security hardening
     sec = getattr(manifest.spec, "security", None)
     if not sec:
-        warnings.append("no security spec; consider runAsUser/runAsGroup and readOnlyRootFilesystem")
+        warnings.append(
+            "no security spec; consider runAsUser/runAsGroup and readOnlyRootFilesystem"
+        )
     else:
         if not getattr(sec, "run_as_user", None):
             warnings.append("security.runAsUser not set; prefer non-root UID (e.g., 1000)")
@@ -1735,21 +2550,40 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
             warnings.append("security.readOnlyRootFilesystem is false; enable if possible")
     # Guidance for multi-replica without ingress
     if desired > 1 and not getattr(manifest.spec, "ingress", None):
-        if getattr(manifest.spec, "ports", []):
+        port_list = list(getattr(manifest.spec, "ports", []) or [])
+        if port_list:
             warnings.append(
                 "multi-replica app without ingress: per-replica host ports will be ephemeral; use ingress for HTTP access"
             )
+            http_names = {"http", "https", "web"}
+            non_http = [
+                p for p in port_list if str(getattr(p, "name", "")).lower() not in http_names
+            ]
+            if non_http:
+                warnings.append(
+                    "multi-replica non-HTTP (L4) detected; consider an external TCP proxy (HAProxy/Traefik TCP) — see docs/l4-services.md"
+                )
     if getattr(args, "json", False):
         import json as _json
 
         out = {
             "app": manifest.metadata.name,
             "replicas": desired,
-            "rollout": {"strategy": strategy, "maxSurge": rollout.get("maxSurge", 1), "maxUnavailable": rollout.get("maxUnavailable", 0)},
+            "rollout": {
+                "strategy": strategy,
+                "maxSurge": rollout.get("maxSurge", 1),
+                "maxUnavailable": rollout.get("maxUnavailable", 0),
+            },
             "service": (
-                {"port": getattr(svc, "port", None), "targetPort": getattr(svc, "target_port", None)} if svc else None
+                {
+                    "port": getattr(svc, "port", None),
+                    "targetPort": getattr(svc, "target_port", None),
+                }
+                if svc
+                else None
             ),
             "warnings": warnings,
+            "diagnostics": diagnostics,
             "conflicts": [],
             "ok": not warnings or not getattr(args, "strict", False),
         }
@@ -1768,16 +2602,21 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
 
 def handle_export_k8s(args: argparse.Namespace) -> int:
     from ae.controller.spec import load_manifest
+
     try:
         man = load_manifest(args.file)
     except Exception as exc:  # noqa: BLE001
         print(f"failed to load manifest: {exc}")
         return 1
     # guard mutually exclusive PDB options
-    if getattr(args, "pdb_min_available", None) is not None and getattr(args, "pdb_max_unavailable", None) is not None:
+    if (
+        getattr(args, "pdb_min_available", None) is not None
+        and getattr(args, "pdb_max_unavailable", None) is not None
+    ):
         print("error: --pdb-min-available and --pdb-max-unavailable are mutually exclusive")
         return 2
     opts = ExportOptions(
+        workload_kind=str(getattr(args, "workload", "deployment")).title(),
         namespace=str(args.namespace or "default"),
         ingress_class_name=args.ingress_class,
         service_port=args.service_port,
@@ -1797,7 +2636,9 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
         hpa_mem_target=getattr(args, "hpa_mem_target", None),
         hpa_mem_type=getattr(args, "hpa_mem_type", None),
         hpa_mem_value=getattr(args, "hpa_mem_value", None),
+        allow_hpa_without_requests=bool(getattr(args, "allow_hpa_no_requests", False)),
         default_security=bool(getattr(args, "default_security", False)),
+        require_requests=bool(getattr(args, "require_requests", False)),
     )
     # Apply preset last so explicit flags take precedence
     if getattr(args, "preset", None):
@@ -1823,12 +2664,14 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
 
 def handle_k8s_check(args: argparse.Namespace) -> int:
     from ae.controller.spec import load_manifest
+
     try:
         man = load_manifest(args.file)
     except Exception as exc:  # noqa: BLE001
         print(f"failed to load manifest: {exc}")
         return 1
     from ae.k8s.check import apply_policy
+
     issues = k8s_portability_issues(man)
     policy = getattr(args, "policy", "baseline")
     if getattr(args, "strict", False):
@@ -1852,7 +2695,11 @@ def handle_k8s_check(args: argparse.Namespace) -> int:
                 indent=2,
             )
         )
-        return 0 if not issues else (2 if any(i.level == "error" for i in issues) or policy == "strict" else 0)
+        return (
+            0
+            if not issues
+            else (2 if any(i.level == "error" for i in issues) or policy == "strict" else 0)
+        )
     # text output
     if not issues:
         print("All checks passed.")
@@ -1865,5 +2712,72 @@ def handle_k8s_check(args: argparse.Namespace) -> int:
     return 3 if policy == "strict" else 0
 
 
+def handle_verify_image(args: argparse.Namespace) -> int:
+    """Verify container image signatures using cosign.
+
+    Supports key-based and keyless verification. Prints a one-line summary
+    and returns an appropriate exit code. With --json, emits { ok, image, summary }.
+    """
+    import shutil
+    import subprocess as sp
+    import json as _json
+
+    cosign_bin = getattr(args, "cosign_bin", "cosign")
+    cosign_path = shutil.which(cosign_bin)
+    if cosign_path is None:
+        msg = "cosign binary not found; install cosign or pass --cosign-bin"
+        if getattr(args, "json", False):
+            print(_json.dumps({"ok": False, "image": args.image, "summary": msg}))
+        else:
+            print(f"error: {msg}")
+        return 127
+
+    cmd = [cosign_path, "verify"]
+    if getattr(args, "key", None):
+        cmd += ["--key", str(args.key)]
+    if getattr(args, "certificate_identity", None):
+        cmd += ["--certificate-identity", str(args.certificate_identity)]
+    if getattr(args, "certificate_oidc_issuer", None):
+        cmd += ["--certificate-oidc-issuer", str(args.certificate_oidc_issuer)]
+    if getattr(args, "attachment", None):
+        cmd += ["--attachment", str(args.attachment)]
+    if getattr(args, "rekor_url", None):
+        cmd += ["--rekor-url", str(args.rekor_url)]
+    cmd += [str(args.image)]
+
+    try:
+        proc = sp.run(cmd, capture_output=True, text=True, check=False)
+    except Exception as exc:  # noqa: BLE001
+        summary = f"cosign failed to start: {exc}"
+        if getattr(args, "json", False):
+            print(_json.dumps({"ok": False, "image": args.image, "summary": summary}))
+        else:
+            print(f"error: {summary}")
+        return 1
+
+    ok = proc.returncode == 0
+    summary = (
+        (proc.stdout or proc.stderr or "").strip().splitlines()[-1]
+        if (proc.stdout or proc.stderr)
+        else ("verify: ok" if ok else "verify: failed")
+    )
+    if getattr(args, "json", False):
+        print(_json.dumps({"ok": ok, "image": args.image, "summary": summary}))
+    else:
+        print(summary)
+    return 0 if ok else (proc.returncode or 1)
+
+
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
     raise SystemExit(main())
+    # Requests strictness: warn when requests are missing
+    res = getattr(manifest.spec, "resources", None)
+    req = getattr(res, "requests", None) if res else None
+    if not (req and getattr(req, "cpu", None)):
+        warnings.append(
+            "no resources.requests.cpu; set at least 100m for portability and HPA readiness"
+        )
+    if not (req and getattr(req, "memory", None)):
+        warnings.append(
+            "no resources.requests.memory; set a baseline (e.g., 128Mi) for scheduling consistency"
+        )

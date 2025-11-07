@@ -165,9 +165,21 @@ spec:
 def test_api_tokens_with_ttl_and_state(tmp_path, monkeypatch, capsys):
     dest = tmp_path / ".env.api"
     state = tmp_path / "tokens.json"
-    exit_code = main(["api", "tokens", "--generate", "--ttl-hours", "1", "-o", str(dest), "--state", str(state)])
+    exit_code = main(
+        ["api", "tokens", "--generate", "--ttl-hours", "1", "-o", str(dest), "--state", str(state)]
+    )
     assert exit_code == 0
     out = dest.read_text()
     assert "AE_API_ADMIN_TOKEN=" in out and "AE_API_ADMIN_TOKEN_EXPIRES=" in out
     payload = state.read_text()
     assert "generated_at" in payload and "admin" in payload
+
+
+def test_examples_write_multiport(tmp_path, capsys):
+    from ae.cli.__main__ import main as _main
+
+    out_path = tmp_path / "echo-mp.yaml"
+    exit_code = _main(["examples", "write", "--type", "multiport", "-o", str(out_path)])
+    assert exit_code == 0
+    text = out_path.read_text()
+    assert "kind: App" in text and "echo-multi" in text
