@@ -1,0 +1,57 @@
+name: e2e-plan
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: e2e-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    env:
+      AE_RUNTIME_BACKEND: docker
+      DOCKER_BUILDKIT: 1
+      API_PORT: 9108
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: >-
+            ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml', 'setup.cfg', 'setup.py', 'requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install system deps (age, sops)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y age sops
+
+      - name: Install project deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+
+      - name: Run E2E /plan validations
+        run: bash ./scripts/e2e/plan_validate.sh
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-plan-artifacts
+          path: |
+            artifacts
