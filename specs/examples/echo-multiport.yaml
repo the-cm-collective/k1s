@@ -1,0 +1,42 @@
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: echo-multi
+spec:
+  image: demo-blue:latest
+  replicas: 1
+  env:
+    - name: APP_NAME
+      value: echo-multi
+  ports:
+    - name: http
+      containerPort: 8080
+    - name: metrics
+      containerPort: 9090
+  service:
+    ports:
+      - name: http
+        port: 8085      # host/Service port (avoid privileged :80)
+        targetPort: 8080
+      - name: metrics
+        port: 9091      # host/Service port (avoid conflict with Prometheus :9090)
+        targetPort: 9090
+  health:
+    readiness:
+      httpGet:
+        path: /healthz
+        port: 8080      # readiness targets the http container port
+      initialDelaySeconds: 1
+      timeoutSeconds: 1
+      periodSeconds: 5
+    liveness:
+      tcpSocket:
+        port: 8080
+      initialDelaySeconds: 3
+  ingress:
+    host: echo-multi.home.arpa
+    path: /
+  resources:
+    requests:
+      cpu: 0.05
+      memory: 128Mi
