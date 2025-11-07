@@ -36,7 +36,10 @@ def validate_documents(yaml_text: str) -> Tuple[bool, List[str]]:
         # Stable api checks
         if kind in {"Deployment"} and api != "apps/v1":
             errors.append(f"doc {i}: Deployment must use apps/v1")
-        if kind in {"Service", "PersistentVolumeClaim", "Secret", "ConfigMap", "ServiceAccount"} and api != "v1":
+        if (
+            kind in {"Service", "PersistentVolumeClaim", "Secret", "ConfigMap", "ServiceAccount"}
+            and api != "v1"
+        ):
             errors.append(f"doc {i}: {kind} must use v1")
         if kind == "Ingress" and api != "networking.k8s.io/v1":
             errors.append(f"doc {i}: Ingress must use networking.k8s.io/v1")
@@ -64,4 +67,3 @@ def validate_documents(yaml_text: str) -> Tuple[bool, List[str]]:
                 errors.append(f"doc {i}: Ingress.spec.rules required")
 
     return (len(errors) == 0), errors
-
