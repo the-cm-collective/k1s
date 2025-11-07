@@ -25,10 +25,12 @@ class HTTPGetProbe(BaseModel):
     path: str = Field(default="/")
     port: int
 
+
 class TCPSocketProbe(BaseModel):
     """TCP socket probe configuration."""
 
     port: int
+
 
 class ExecProbe(BaseModel):
     """Exec probe: run a command inside the container."""
@@ -91,12 +93,42 @@ class ServiceSpec(BaseModel):
     per-replica ephemeral host ports and ingress load-balances to one endpoint.
     """
 
-    port: int = Field(description="Host port to publish (stable)")
+    class ServicePort(BaseModel):
+        """Optional explicit Service port mapping for K8s export.
+
+        - name: logical name (e.g., "http", "metrics")
+        - port: Service port number (ClusterIP port)
+        - targetPort: container port to target; defaults to matching containerPort by
+          name/number when omitted.
+        - protocol: defaults to TCP
+        """
+
+        name: str
+        port: int
+        target_port: Optional[int] = Field(default=None, alias="targetPort")
+        protocol: str = Field(default="TCP")
+        node_port: Optional[int] = Field(default=None, alias="nodePort")
+
+        model_config = {"populate_by_name": True}
+
+    # Optional service type for K8s exports
+    type: Optional[Literal["ClusterIP", "NodePort", "LoadBalancer"]] = None
+    external_traffic_policy: Optional[Literal["Cluster", "Local"]] = Field(
+        default=None, alias="externalTrafficPolicy"
+    )
+
+    # Back-compat single-port fields (used by local runtime stable host port and
+    # as defaults for exporter when ports[] is not provided)
+    port: Optional[int] = Field(default=None, description="Host/Service port (single)")
     target_port: Optional[int] = Field(
         default=None,
         alias="targetPort",
         description="Container port to expose; defaults to first port",
     )
+    # Optional multi-port mapping for exporter
+    ports: List[ServicePort] = Field(default_factory=list)
+    # Optional externalIPs for ClusterIP/NodePort Services
+    external_ips: List[str] = Field(default_factory=list, alias="externalIPs")
 
     model_config = {"populate_by_name": True}
 
@@ -150,6 +182,13 @@ class SecuritySpec(BaseModel):
     run_as_group: Optional[int] = Field(default=None, alias="runAsGroup")
     read_only_root: bool = Field(default=False, alias="readOnlyRootFilesystem")
     drop_caps: List[str] = Field(default_factory=list, alias="dropCapabilities")
+    # Optional seccomp profile (maps to securityContext.seccompProfile)
+    seccomp_type: Optional[Literal["RuntimeDefault", "Localhost", "Unconfined"]] = Field(
+        default=None, alias="seccompProfileType"
+    )
+    seccomp_localhost_profile: Optional[str] = Field(default=None, alias="seccompLocalhostProfile")
+    # Optional AppArmor profile annotation value: runtime/default | unconfined | localhost/<profile>
+    apparmor_profile: Optional[str] = Field(default=None, alias="apparmorProfile")
 
     model_config = {"populate_by_name": True}
 
@@ -241,6 +280,15 @@ class AppSpec(BaseModel):
     termination_grace_period_seconds: int = Field(default=10, alias="terminationGracePeriodSeconds")
     volumes: List[VolumeSpec] = Field(default_factory=list)
     storage: List[StorageSpec] = Field(default_factory=list)
+    # Scheduling (pass-through for K8s export)
+    affinity: dict | None = None
+    tolerations: List[dict] = Field(default_factory=list)
+    topology_spread_constraints: List[dict] = Field(
+        default_factory=list, alias="topologySpreadConstraints"
+    )
+    priority_class_name: Optional[str] = Field(default=None, alias="priorityClassName")
+    # Network policy (K8s export)
+    network_policy: Optional[dict] = Field(default=None, alias="networkPolicy")
 
     model_config = {"populate_by_name": True}
 

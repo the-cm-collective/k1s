@@ -42,7 +42,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--loop", action="store_true", help="Run continuously and reconcile on an interval"
     )
     p.add_argument("--specs", default=os.getenv("AE_SPECS_DIR", "specs"), help="Specs directory")
-    p.add_argument("--interval", type=int, default=5, help="Polling interval in seconds for --loop")
+    # Lower default polling interval to improve readiness after apply
+    p.add_argument(
+        "--interval",
+        type=int,
+        default=2,
+        help="Polling interval in seconds for --loop",
+    )
     p.add_argument(
         "--metrics-port",
         type=int,
@@ -119,19 +125,34 @@ def _make_reconciler() -> Reconciler:
 def _reconcile_all(reconciler: Reconciler, manifests: Iterable[AppManifest]) -> None:
     import time as _t
     from ae.observability.http_api import record_app_reconcile
+    import logging as _log
 
     for m in manifests:
         t0 = _t.time()
-        report = reconciler.reconcile(m)
-        dt = _t.time() - t0
-        record_app_reconcile(
-            m.metadata.name,
-            dt,
-            created=report.created,
-            updated=report.updated,
-            removed=report.removed,
-        )
-        print(format_report(report))
+        try:
+            report = reconciler.reconcile(m)
+            dt = _t.time() - t0
+            record_app_reconcile(
+                m.metadata.name,
+                dt,
+                created=report.created,
+                updated=report.updated,
+                removed=report.removed,
+            )
+            print(format_report(report))
+        except Exception as exc:  # pragma: no cover - defensive path
+            # Do not crash the controller on a single manifest failure during demo/bootstrap.
+            # Log the error, emit an event if the store is reachable, and continue.
+            _log.getLogger(__name__).error("reconcile failed for %s: %s", m.metadata.name, exc)
+            try:
+                store = getattr(reconciler, "_state_store", None)
+                if store is not None:
+                    # Attribute to the latest revision if available; otherwise 0.
+                    revs = store.list_revisions(m.metadata.name, limit=1)
+                    rev = int(revs[0].revision) if revs else 0
+                    store.record_event(m.metadata.name, rev, "ApplyError", str(exc))
+            except Exception:
+                pass
 
 
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via unit test paths)
@@ -172,7 +193,27 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             manifest = store.get_revision_manifest(app, revs[0].revision)
             new_spec = manifest.spec.model_copy(update={"replicas": int(replicas)})
             updated = manifest.model_copy(update={"spec": new_spec})
+
+            # First reconcile immediately
             report = reconciler.reconcile(updated)
+
+            # Optional fast-follow burst: perform a few short-interval reconciles
+            # to shorten the time from progressing->ready for demo/playground flows.
+            try:
+                import os as _os, time as _t
+
+                burst = int(_os.getenv("AE_SCALE_RECONCILE_BURST", "2"))
+                delay_ms = int(_os.getenv("AE_SCALE_RECONCILE_DELAY_MS", "300"))
+                burst = max(0, burst)
+                for _ in range(burst):
+                    if str(report.revision_status).lower() == "ready":
+                        break
+                    _t.sleep(max(0.001, delay_ms / 1000.0))
+                    report = reconciler.reconcile(updated)
+            except Exception:
+                # Best-effort only; never fail the scale on fast-follow errors
+                pass
+
             return {
                 "app": app,
                 "replicas": int(replicas),
@@ -206,7 +247,26 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 manifest = AppManifest.model_validate(payload)
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(f"invalid manifest: {exc}")
+            # First reconcile immediately
             report = reconciler.reconcile(manifest)
+
+            # Optional fast-follow burst: perform a few short-interval reconciles
+            # to shorten the time from progressing->ready for demo/playground flows.
+            try:
+                import os as _os, time as _t
+
+                burst = int(_os.getenv("AE_APPLY_RECONCILE_BURST", "2"))
+                delay_ms = int(_os.getenv("AE_APPLY_RECONCILE_DELAY_MS", "300"))
+                burst = max(0, burst)
+                for _ in range(burst):
+                    if str(report.revision_status).lower() == "ready":
+                        break
+                    _t.sleep(max(0.001, delay_ms / 1000.0))
+                    report = reconciler.reconcile(manifest)
+            except Exception:
+                # Best-effort only; never fail the apply on fast-follow errors
+                pass
+
             return {
                 "app": report.app_name,
                 "revision": report.revision,
@@ -243,6 +303,15 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 statuses = store.list_status()
             except Exception:
                 statuses = []
+            # Restrict to demo apps when AE_DEMO_MODE=1
+            try:
+                from ae.observability.http_api import _demo_allowed_apps
+
+                allowed = _demo_allowed_apps()
+                if allowed:
+                    statuses = [s for s in statuses if s.app_name in allowed]
+            except Exception:
+                pass
             names = [s.app_name for s in statuses]
 
             # Ingress snapshot (paths exist only if manager is configured)
@@ -313,15 +382,246 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 except Exception:
                     volumes = []
 
+            # Create cooldowns (seconds remaining) if available
+            cooldowns = {}
+            try:
+                cd_map = getattr(reconciler, "_create_cooldown_until", {})  # type: ignore[attr-defined]
+                import time as _t
+
+                now = float(_t.time())
+                for app, until in (cd_map or {}).items():
+                    rem = max(0, int(float(until) - now))
+                    if rem > 0:
+                        cooldowns[str(app)] = rem
+            except Exception:
+                cooldowns = {}
+
+            # Docs service health (best effort)
+            docs = None
+            try:
+                import os as _os, urllib.request as _ur
+
+                dport = int(_os.getenv("AE_DOCS_PORT", "9109") or 9109)
+                url = f"http://127.0.0.1:{dport}/"
+                ok = False
+                try:
+                    with _ur.urlopen(url, timeout=1) as r:  # nosec - local health probe
+                        ok = int(getattr(r, "status", 200)) >= 200
+                except Exception:
+                    ok = False
+                docs = {"port": dport, "ok": bool(ok)}
+            except Exception:
+                docs = None
+
+            # API health (self-check via /health when port configured)
+            api = None
+            try:
+                import urllib.request as _ur
+
+                port = int(args.metrics_port or 0)
+                if port > 0:
+                    url = f"http://127.0.0.1:{port}/health"
+                    ok = False
+                    try:
+                        with _ur.urlopen(url, timeout=1) as r:  # nosec - local health probe
+                            ok = int(getattr(r, "status", 200)) >= 200
+                    except Exception:
+                        ok = False
+                    api = {"port": port, "ok": bool(ok)}
+            except Exception:
+                api = None
+
             # Return combined snapshot
             return {
                 "ingress": ing,
                 "services": services,
                 "containers": containers,
                 "volumes": volumes,
+                "cooldown": cooldowns,
+                "docs": docs,
+                "api": api,
             }
 
         try:
+            # Planner: reuse CLI planner logic for diagnostics and host-port checks
+            def _plan(payload: dict) -> dict:  # noqa: ANN001
+                from ae.controller.spec import AppManifest
+                from ae.ingress.tls_sync import TlsSecretResolver
+                import os as _os
+
+                # Validate manifest
+                manifest = AppManifest.model_validate(payload)
+                desired = int(manifest.spec.replicas)
+                rollout = getattr(manifest.spec, "rollout", {}) or {}
+                svc = getattr(manifest.spec, "service", None)
+                warnings: list[str] = []
+                diagnostics: dict = {"service": {}, "tls": {}}
+                # NodePort validation and duplicates
+                if svc and getattr(svc, "type", None) == "NodePort" and getattr(svc, "ports", None):
+                    NP_MIN, NP_MAX = 30000, 32767
+                    name_seen: set[str] = set()
+                    port_seen: set[int] = set()
+                    nodeport_seen: set[int] = set()
+                    dup_names: list[str] = []
+                    dup_ports: list[int] = []
+                    dup_nps: list[int] = []
+                    oor: list[int] = []
+                    for sp in svc.ports:
+                        np = getattr(sp, "node_port", None)
+                        if np is not None and not (NP_MIN <= int(np) <= NP_MAX):
+                            warnings.append(
+                                f"service.ports[{getattr(sp, 'name', '')}].nodePort {np} is outside the default Kubernetes range 30000-32767"
+                            )
+                            oor.append(int(np))
+                        nm = getattr(sp, "name", None)
+                        if nm in name_seen:
+                            warnings.append(f"duplicate service port name '{nm}'")
+                            dup_names.append(str(nm))
+                        elif nm is not None:
+                            name_seen.add(nm)
+                        try:
+                            pnum = int(getattr(sp, "port", -1))
+                            if pnum in port_seen:
+                                warnings.append(f"duplicate service port {pnum}")
+                                dup_ports.append(pnum)
+                            else:
+                                port_seen.add(pnum)
+                        except Exception:
+                            pass
+                        if np is not None:
+                            npi = int(np)
+                            if npi in nodeport_seen:
+                                warnings.append(f"duplicate service nodePort {npi}")
+                                dup_nps.append(npi)
+                            else:
+                                nodeport_seen.add(npi)
+                    diagnostics["service"]["duplicates"] = {
+                        "names": dup_names,
+                        "ports": dup_ports,
+                        "nodePorts": dup_nps,
+                    }
+                    diagnostics["service"]["outOfRangeNodePorts"] = oor
+                # Stable host port conflicts (single-replica only)
+                conflicts: dict[int, list[str]] = {}
+                if svc and desired == 1:
+                    ports_to_check: list[int] = []
+                    if getattr(svc, "ports", None):
+                        try:
+                            ports_to_check = [
+                                int(sp.port)
+                                for sp in svc.ports
+                                if getattr(sp, "port", None) is not None
+                            ]
+                        except Exception:
+                            ports_to_check = []
+                    elif getattr(svc, "port", None) is not None:
+                        ports_to_check = [int(svc.port)]
+                    if ports_to_check:
+                        try:
+                            infos = reconciler._runtime.list_containers_info()  # type: ignore[attr-defined]
+                        except Exception:
+                            infos = []
+                        for p in ports_to_check:
+                            for info in infos or []:
+                                if p in (info.get("host_ports") or []):
+                                    conflicts.setdefault(int(p), []).append(
+                                        str(info.get("name", ""))
+                                    )
+                        if any(conflicts.values()):
+                            diagnostics["service"]["hostPortConflicts"] = conflicts
+                # TLS check
+                ing = getattr(manifest.spec, "ingress", None)
+                if ing and getattr(ing, "tls", True) and getattr(ing, "tls_secret_name", None):
+                    root = _os.getenv("AE_TLS_DIR", "state/tls")
+                    res = TlsSecretResolver(Path(root)).resolve(str(ing.tls_secret_name))
+                    diagnostics["tls"] = {
+                        "ingress": True,
+                        "secretName": str(ing.tls_secret_name),
+                        "root": root,
+                        "resolved": bool(res),
+                        **({"cert": str(res[0]), "key": str(res[1])} if res else {}),
+                    }
+                    if res is None:
+                        warnings.append(
+                            f"ingress.tlsSecretName '{ing.tls_secret_name}' not found under AE_TLS_DIR={root}; controller will fall back to Caddy 'tls internal'"
+                        )
+                return {
+                    "app": manifest.metadata.name,
+                    "replicas": desired,
+                    "rollout": {
+                        "strategy": str(rollout.get("strategy", "parallel")),
+                        "maxSurge": rollout.get("maxSurge", 1),
+                        "maxUnavailable": rollout.get("maxUnavailable", 0),
+                    },
+                    "service": (
+                        {
+                            "port": getattr(svc, "port", None),
+                            "targetPort": getattr(svc, "target_port", None),
+                        }
+                        if svc
+                        else None
+                    ),
+                    "warnings": warnings,
+                    "diagnostics": diagnostics,
+                    "ok": len(warnings) == 0,
+                }
+
+            def _rollout_pause(app: str) -> dict:
+                revs = store.list_revisions(app, limit=1)
+                if not revs:
+                    raise RuntimeError(f"no revisions recorded for {app}")
+                man = store.get_revision_manifest(app, revs[0].revision)
+                ro = dict(getattr(man.spec, "rollout", {}) or {})
+                ro["pause"] = True
+                new_spec = man.spec.model_copy(update={"rollout": ro})
+                updated = man.model_copy(update={"spec": new_spec})
+                report = reconciler.reconcile(updated)
+                # Best-effort fast-follow burst to surface "paused" promptly
+                try:
+                    import os as _os, time as _t
+
+                    burst = int(_os.getenv("AE_ROLLOUT_RECONCILE_BURST", "2"))
+                    delay_ms = int(_os.getenv("AE_ROLLOUT_RECONCILE_DELAY_MS", "300"))
+                    burst = max(0, burst)
+                    for _ in range(burst):
+                        if str(report.revision_status).lower() == "paused":
+                            break
+                        _t.sleep(max(0.001, delay_ms / 1000.0))
+                        report = reconciler.reconcile(updated)
+                except Exception:
+                    pass
+                return {"app": app, "revision": report.revision, "status": report.revision_status}
+
+            def _rollout_resume(app: str) -> dict:
+                revs = store.list_revisions(app, limit=1)
+                if not revs:
+                    raise RuntimeError(f"no revisions recorded for {app}")
+                man = store.get_revision_manifest(app, revs[0].revision)
+                ro = dict(getattr(man.spec, "rollout", {}) or {})
+                ro["pause"] = False
+                new_spec = man.spec.model_copy(update={"rollout": ro})
+                updated = man.model_copy(update={"spec": new_spec})
+                report = reconciler.reconcile(updated)
+                try:
+                    store.record_event(app, report.revision, "RolloutResumed", "Rollout resumed")
+                except Exception:
+                    pass
+                # Best-effort fast-follow burst to surface "ready" promptly
+                try:
+                    import os as _os, time as _t
+
+                    burst = int(_os.getenv("AE_ROLLOUT_RECONCILE_BURST", "2"))
+                    delay_ms = int(_os.getenv("AE_ROLLOUT_RECONCILE_DELAY_MS", "300"))
+                    burst = max(0, burst)
+                    for _ in range(burst):
+                        if str(report.revision_status).lower() == "ready":
+                            break
+                        _t.sleep(max(0.001, delay_ms / 1000.0))
+                        report = reconciler.reconcile(updated)
+                except Exception:
+                    pass
+                return {"app": app, "revision": report.revision, "status": report.revision_status}
+
             api_server, assigned, _ = start_http_api(
                 args.metrics_port,
                 store,
@@ -330,6 +630,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 apply_fn=_apply,
                 logs_fn=_logs,
                 system_info_fn=_system_info,
+                plan_fn=_plan,
+                rollout_pause_fn=_rollout_pause,
+                rollout_resume_fn=_rollout_resume,
             )
             logging.getLogger(__name__).info("http api listening on port %s", assigned)
         except OSError as exc:
@@ -343,6 +646,20 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
     if args.once:
         manifests = _load_all(_find_manifests(specs_dir))
+        # Include DB-stored apps that aren't backed by files (e.g., labs sessions)
+        try:
+            store = state_store_from_env()
+            present = {m.metadata.name for m in manifests}
+            for s in store.list_status():
+                if s.app_name in present:
+                    continue
+                try:
+                    man = store.get_revision_manifest(s.app_name, s.revision)
+                    manifests.append(man)
+                except Exception:
+                    continue
+        except Exception:
+            pass
         _reconcile_all(reconciler, manifests)
         return 0
 
@@ -403,6 +720,20 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             if do_full:
                 t0 = time.time()
                 manifests = _load_all(_find_manifests(specs_dir))
+                # Also reconcile DB-backed apps (session/labs) not present on disk
+                try:
+                    store = state_store_from_env()
+                    present = {m.metadata.name for m in manifests}
+                    for s in store.list_status():
+                        if s.app_name in present:
+                            continue
+                        try:
+                            man = store.get_revision_manifest(s.app_name, s.revision)
+                            manifests.append(man)
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
                 _reconcile_all(reconciler, manifests)
                 t1 = time.time()
                 set_reconcile_metrics(ts_seconds=t1, duration_seconds=(t1 - t0))
@@ -411,7 +742,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 changed = False
                 time.sleep(max(0.001, args.debounce_ms / 1000.0))
             else:
-                time.sleep(0.25)
+                time.sleep(0.1)
     except KeyboardInterrupt:
         pass
     finally:

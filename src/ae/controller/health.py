@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -41,11 +42,14 @@ class HealthReport:
 
 
 class HealthManager:
-    """Evaluates readiness and liveness based on probe specs with basic windowing.
+    """Evaluates readiness and liveness with thresholds, period, and backoff.
 
-    Tracks per-replica probe streaks to honor successThreshold/failureThreshold and
-    avoids probing more frequently than periodSeconds by reusing the last decision
-    within the period window. State is in-memory and resets on process restart.
+    - Honors successThreshold/failureThreshold using per-replica streaks
+    - Enforces periodSeconds: within the period, reuse last effective result
+    - Applies exponential backoff with jitter after sustained failures, capped by
+      AE_PROBE_MAX_BACKOFF (seconds, default 30). Jitter is a small per-replica
+      stable offset to avoid thundering herds.
+    - State is in-memory and resets on process restart.
     """
 
     def __init__(self) -> None:
@@ -77,7 +81,10 @@ class HealthManager:
                 probe_type="liveness",
             )
 
-            ready = readiness.success and liveness.success
+            # Align with Kubernetes semantics:
+            # - readiness gates traffic and is independent of liveness
+            # - liveness indicates whether the container should be considered alive
+            ready = readiness.success
             live = liveness.success
 
             replicas.append(
@@ -103,13 +110,57 @@ class HealthManager:
         probe_type: str,
     ) -> ProbeOutcome:
         key = (replica.replica_id, probe_type)
-        st = self._state.get(key, {"succ": 0, "fail": 0, "last": None, "effective": default_success, "ts": None})
+        st = self._state.get(
+            key,
+            {
+                "succ": 0,
+                "fail": 0,
+                "last": None,
+                "effective": default_success,
+                "ts": None,
+                "cooldown_until": None,
+            },
+        )
         now = datetime.now(timezone.utc)
 
         if probe is None:
-            st.update({"succ": 1 if default_success else 0, "fail": 0 if default_success else 1, "last": default_success, "effective": default_success, "ts": datetime.now(timezone.utc)})
+            st.update(
+                {
+                    "succ": 1 if default_success else 0,
+                    "fail": 0 if default_success else 1,
+                    "last": default_success,
+                    "effective": default_success,
+                    "ts": datetime.now(timezone.utc),
+                }
+            )
             self._state[key] = st
-            return ProbeOutcome(success=default_success, message=f"{probe_type} default {'ok' if default_success else 'pending'}")
+            return ProbeOutcome(
+                success=default_success,
+                message=f"{probe_type} default {'ok' if default_success else 'pending'}",
+            )
+
+        # Enforce periodSeconds: reuse last decision within the window
+        try:
+            period = int(getattr(probe, "period_seconds", 10))
+        except Exception:
+            period = 10
+        last_ts = st.get("ts")
+        if last_ts is not None and period > 0:
+            elapsed = (now - last_ts).total_seconds()
+            if elapsed < period:
+                remaining = int(max(0, period - elapsed))
+                return ProbeOutcome(
+                    bool(st.get("effective", default_success)),
+                    f"{probe_type} waiting period ({remaining}s)",
+                )
+
+        # Respect backoff cooldown window after sustained failures
+        cd_until = st.get("cooldown_until")
+        if cd_until is not None and isinstance(cd_until, datetime) and now < cd_until:
+            remaining = int((cd_until - now).total_seconds())
+            return ProbeOutcome(
+                bool(st.get("effective", default_success)), f"{probe_type} backoff ({remaining}s)"
+            )
 
         if probe.initial_delay_seconds > 0 and replica.started_at is not None:
             started_at = replica.started_at
@@ -137,7 +188,10 @@ class HealthManager:
             age = (now - last_ts).total_seconds()
             if age < period:
                 # Return cached effective result
-                return ProbeOutcome(bool(st.get("effective", default_success)), f"{probe_type} cached ({int(period-age)}s)")
+                return ProbeOutcome(
+                    bool(st.get("effective", default_success)),
+                    f"{probe_type} cached ({int(period - age)}s)",
+                )
 
         # Enforce minimal periodSeconds between probe attempts
         now = datetime.now(timezone.utc)
@@ -146,7 +200,9 @@ class HealthManager:
             if isinstance(last_ts, datetime):
                 if (now - last_ts).total_seconds() < max(0, int(probe.period_seconds)):
                     # Reuse last effective decision
-                    return ProbeOutcome(st.get("effective", default_success), f"{probe_type} cached")
+                    return ProbeOutcome(
+                        st.get("effective", default_success), f"{probe_type} cached"
+                    )
 
         if probe.http_get:
             outcome = self._evaluate_http_probe(replica, probe.http_get.path, probe, probe_type)
@@ -155,7 +211,10 @@ class HealthManager:
         elif getattr(probe, "exec", None) is not None:
             outcome = self._evaluate_exec_probe(replica, probe.exec.command, probe, probe_type)  # type: ignore[union-attr]
         else:
-            outcome = ProbeOutcome(success=default_success, message=f"{probe_type} no-op {'ok' if default_success else 'pending'}")
+            outcome = ProbeOutcome(
+                success=default_success,
+                message=f"{probe_type} no-op {'ok' if default_success else 'pending'}",
+            )
 
         # Update streaks and compute effective result using thresholds
         if outcome.success:
@@ -185,6 +244,20 @@ class HealthManager:
         if st["fail"] >= need_fail:
             st["effective"] = False
             msg = outcome.message
+            # Compute exponential backoff with small stable jitter
+            try:
+                max_backoff = int(os.getenv("AE_PROBE_MAX_BACKOFF", "30"))
+            except Exception:
+                max_backoff = 30
+            base = max(1, period)
+            # Exponent grows with extra failures beyond the threshold
+            exponent = max(0, int(st["fail"]) - need_fail)
+            backoff = min(max_backoff, int(base * (2**exponent)))
+            # Stable jitter in [-10%, +10%] derived from key hash
+            h = abs(hash(key)) % 1000
+            jitter_pct = ((h / 999.0) - 0.5) * 0.2  # [-0.1 .. +0.1]
+            jittered = max(1, int(backoff * (1.0 + jitter_pct)))
+            st["cooldown_until"] = now + timedelta(seconds=jittered)
         else:
             # Keep previous effective decision but annotate
             msg = f"{probe_type} transient fail ({st['fail']}/{need_fail})"

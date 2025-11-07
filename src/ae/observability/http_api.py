@@ -17,6 +17,64 @@ from typing import Tuple
 import errno
 
 from ae.controller.state import SQLiteStateStore
+
+
+# Helper: when running in demo mode, restrict visible apps to those declared
+# in the active specs directory (AE_SPECS_DIR). This keeps the dashboard
+# scoped to the selected demo and avoids surfacing historical apps from the
+# state DB.
+def _demo_allowed_apps() -> set[str]:
+    try:
+        import os as _os
+        from pathlib import Path as _Path
+
+        # Only filter when explicitly in demo mode
+        if _os.getenv("AE_DEMO_MODE") != "1":
+            return set()
+        specs_root = _os.getenv("AE_SPECS_DIR") or ""
+        if not specs_root:
+            return set()
+        root = _Path(specs_root)
+        if not root.exists():
+            return set()
+        # Parse manifests to extract app names
+        try:
+            from ae.controller.spec import load_manifest as _load
+        except Exception:
+            return set()
+        names: set[str] = set()
+        for p in root.rglob("*.y*"):
+            try:
+                if not p.is_file():
+                    continue
+                m = _load(p)
+                nm = getattr(getattr(m, "metadata", None), "name", None)
+                if nm:
+                    names.add(str(nm))
+            except Exception:
+                continue
+        return names
+    except Exception:
+        return set()
+
+
+def _filter_statuses_for_demo(items):
+    try:
+        allowed = set(_demo_allowed_apps())
+        try:
+            allowed |= set(_LABS_APPS)
+        except Exception:
+            pass
+        if not allowed:
+            return items
+        # Prefer allowed set, but avoid empty results (UI flicker) during races
+        # where a newly applied labs app isn't yet recorded in the store.
+        subset = [s for s in items if getattr(s, "app_name", None) in allowed]
+        return subset if subset else items
+    except Exception:
+        return items
+
+
 from ae.observability.metrics import MetricsService
 
 # Simple in-memory reconcile metrics updated by the controller loop.
@@ -24,6 +82,14 @@ _LAST_RECONCILE_TS: float | None = None
 _LAST_RECONCILE_DURATION: float | None = None
 _APP_RECONCILE_SUM: dict[str, float] = {}
 _APP_RECONCILE_COUNT: dict[str, int] = {}
+# Track labs-applied app names so demo filters include them
+_LABS_APPS: set[str] = set()
+# Crashloop flags: app -> unix timestamp until which the flag is considered active
+_APP_CRASHLOOP_UNTIL: dict[str, float] = {}
+# Hook observations: (app, hook, type) -> (duration_seconds: float, success: bool)
+_HOOK_LAST: dict[tuple[str, str, str], tuple[float, bool]] = {}
+# Probe backoff: (app, replica, type) -> seconds
+_PROBE_BACKOFF: dict[tuple[str, str, str], int] = {}
 _APP_ROLLOUT_OPS: dict[str, dict[str, int]] = {}
 
 
@@ -45,6 +111,32 @@ def record_app_reconcile(
     ops["removed"] += int(removed)
 
 
+def set_app_crashloop(app: str, *, ttl_seconds: float = 300.0) -> None:
+    """Mark an app as in crashloop for a short TTL so metrics/UI can reflect it."""
+    try:
+        import time as _t
+
+        _APP_CRASHLOOP_UNTIL[app] = float(_t.time()) + float(ttl_seconds)
+    except Exception:
+        pass
+
+
+def record_hook_observation(
+    app: str, hook: str, kind: str, duration_seconds: float, success: bool
+) -> None:
+    try:
+        _HOOK_LAST[(str(app), str(hook), str(kind))] = (float(duration_seconds), bool(success))
+    except Exception:
+        pass
+
+
+def record_probe_backoff(app: str, replica: str, probe_type: str, seconds: int) -> None:
+    try:
+        _PROBE_BACKOFF[(str(app), str(replica), str(probe_type))] = max(0, int(seconds))
+    except Exception:
+        pass
+
+
 class _ApiHandler(http.server.BaseHTTPRequestHandler):
     store: SQLiteStateStore  # injected
     metrics: MetricsService  # injected
@@ -54,6 +146,46 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     apply_fn = None  # type: ignore[var-annotated]
     # Optional system info provider injected by controller
     system_info_fn = None  # type: ignore[var-annotated]
+    plan_fn = None  # type: ignore[var-annotated]
+    rollout_pause_fn = None  # type: ignore[var-annotated]
+    rollout_resume_fn = None  # type: ignore[var-annotated]
+
+    # --- Dev CORS helpers (used by the labs playground) ----------------
+    def _labs_enabled(self) -> bool:
+        try:
+            import os as _os
+
+            return _os.getenv("AE_LABS") == "1"
+        except Exception:
+            return False
+
+    def _maybe_cors(self) -> None:
+        if not self._labs_enabled():
+            return
+        try:
+            import os as _os
+
+            origin = _os.getenv("AE_LABS_CORS_ORIGIN", "*")
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        except Exception:
+            pass
+
+    def end_headers(self) -> None:  # type: ignore[override]
+        # Inject permissive CORS for labs when enabled
+        self._maybe_cors()
+        super().end_headers()
+
+    def do_OPTIONS(self) -> None:  # type: ignore[override]
+        # Preflight CORS support for labs
+        if self._labs_enabled():
+            self.send_response(204)
+            self._maybe_cors()
+            super().end_headers()
+        else:
+            self.send_response(404)
+            super().end_headers()
 
     # --- Auth helpers -------------------------------------------------
     def _require_role(self, role: str) -> bool:
@@ -73,6 +205,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         admin = os.getenv("AE_API_ADMIN_TOKEN")
         scaler = os.getenv("AE_API_SCALER_TOKEN")
         reader = os.getenv("AE_API_READ_TOKEN")
+
         # Optional expiry checks (ISO8601). If set and now > expiry, treat token as absent.
         def _not_expired(env_name: str) -> bool:
             val = os.getenv(env_name)
@@ -110,6 +243,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         # Warn once per role when near expiry
         try:
             import os as _os
+
             warn_hours = float(_os.getenv("AE_API_TOKEN_WARN_HOURS", "24"))
             from datetime import datetime as _dt, timezone as _tz, timedelta as _td
 
@@ -122,7 +256,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     return
                 try:
                     s = val.strip()
-                    exp = _dt.fromisoformat(s[:-1] + "+00:00") if s.endswith("Z") else _dt.fromisoformat(s)
+                    exp = (
+                        _dt.fromisoformat(s[:-1] + "+00:00")
+                        if s.endswith("Z")
+                        else _dt.fromisoformat(s)
+                    )
                     if exp.tzinfo is None:
                         exp = exp.replace(tzinfo=_tz.utc)
                     now = _dt.now(_tz.utc)
@@ -130,7 +268,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         import logging as _log
 
                         rem = (exp - now).total_seconds()
-                        _log.getLogger(__name__).warning("API token for role '%s' expires in %.0f seconds", role, rem)
+                        _log.getLogger(__name__).warning(
+                            "API token for role '%s' expires in %.0f seconds", role, rem
+                        )
                         _TOKEN_WARNED.add(role)
                 except Exception:
                     pass
@@ -151,6 +291,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
         auth = self.headers.get("Authorization", "")
         token = auth.split(" ", 1)[1] if auth.startswith("Bearer ") else ""
+
         # Reuse expiry logic via a small inner function
         def _not_expired(env_name: str) -> bool:
             val = os.getenv(env_name)
@@ -219,12 +360,84 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):  # type: ignore[override]
         path_only = self.path.split("?", 1)[0]
+        # Helper: does a presented Labs token (header or query) match?
+        def _labs_token_ok() -> bool:
+            try:
+                import os as _os, urllib.parse as _up
+                if not self._labs_enabled():
+                    return False
+                tok = (_os.getenv("AE_LABS_TOKEN") or "").strip()
+                if not tok:
+                    return False
+                hdr = self.headers.get("Authorization", "")
+                if hdr == f"Bearer {tok}":
+                    return True
+                _p, _, q = self.path.partition("?")
+                if q:
+                    params = _up.parse_qs(q)
+                    if (params.get("token") or [""])[0] == tok:
+                        return True
+            except Exception:
+                return False
+            return False
+        # Labs SSE (dev-only): stream events/status to the playground
+        if path_only.startswith("/labs/sse/"):
+            if not self._labs_enabled():
+                self.send_response(404)
+                self.end_headers()
+                return
+            # Optional bearer for labs
+            try:
+                import os as _os, urllib.parse as _up
+
+                hdr = self.headers.get("Authorization", "")
+                labs_token = _os.getenv("AE_LABS_TOKEN") or ""
+                if labs_token:
+                    ok = False
+                    if hdr == f"Bearer {labs_token}":
+                        ok = True
+                    else:
+                        # Allow token via query string for SSE (EventSource/HTMX cannot set headers)
+                        _path, _, query = self.path.partition("?")
+                        params = _up.parse_qs(query)
+                        qtok = (params.get("token", [""]) or [""])[0]
+                        if qtok == labs_token:
+                            ok = True
+                    if not ok:
+                        # Distinguish between missing and wrong credential
+                        self._deny(401 if not hdr and not (params.get("token") if 'params' in locals() else False) else 403)
+                        return
+            except Exception:
+                pass
+            if path_only == "/labs/sse/events":
+                self._handle_labs_sse_events()
+                return
+            if path_only == "/labs/sse/events_html":
+                self._handle_labs_sse_events_html()
+                return
+            if path_only == "/labs/sse/status":
+                self._handle_labs_sse_status()
+                return
+            if path_only == "/labs/sse/status_badge":
+                self._handle_labs_sse_status_badge()
+                return
+            self.send_response(404)
+            self.end_headers()
+            return
         # Metrics allowed without auth
         if path_only.startswith("/metrics"):
             self._handle_metrics()
             return
         # Public pages (always allowed): OpenAPI + lightweight docs UIs
-        if path_only in {"/openapi.json", "/swagger", "/swagger/", "/redoc", "/redoc/", "/", "/docs"}:
+        if path_only in {
+            "/openapi.json",
+            "/swagger",
+            "/swagger/",
+            "/redoc",
+            "/redoc/",
+            "/",
+            "/docs",
+        }:
             if path_only == "/openapi.json":
                 self._handle_openapi()
             elif path_only in ("/", "/docs"):
@@ -240,11 +453,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         except Exception:
             check = None
         if check and not self._require_role("read"):
-            self._deny(401 if not self.headers.get("Authorization") else 403)
-            return
+            # Allow Labs token to satisfy read-only GETs (SSE and JSON) in dev
+            if _labs_token_ok():
+                pass
+            else:
+                self._deny(401 if not self.headers.get("Authorization") else 403)
+                return
         # From here on, read requires authorization when configured
         if path_only in ("/health", "/health/"):
             self._handle_health()
+            return
+        if path_only == "/tls/verify":
+            self._handle_tls_verify()
             return
         if path_only in ("/system", "/system/"):
             self._handle_system()
@@ -258,8 +478,26 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             if subpath == "logs":
                 self._handle_dashboard_partial_logs()
                 return
+        # Dashboard SSE alias for events (no labs gating)
+        if path_only == "/dashboard/sse/events":
+            self._handle_labs_sse_events()
+            return
         if path_only == "/dashboard.js":
             self._handle_dashboard_js()
+            return
+        if path_only.startswith("/manifest/"):
+            # Return the latest stored manifest for the app
+            app = self.path.split("/", 2)[2].split("?", 1)[0]
+            try:
+                # Enforce read scope if configured
+                import os as _os
+
+                if _os.getenv("AE_API_READ_SCOPE") and not self._scope_allows("read", app):
+                    self._deny(403)
+                    return
+                self._handle_manifest_single(app)
+            except Exception:
+                self._json_error(404, "manifest not found")
             return
         if path_only == "/status" or path_only == "/status/":
             self._handle_status_list()
@@ -269,6 +507,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             app = self.path.split("/", 2)[2].split("?", 1)[0]
             role = self._presented_role()
             import os as _os
+
             if _os.getenv("AE_API_READ_SCOPE") and not self._scope_allows("read", app):
                 self._deny(403)
                 return
@@ -278,6 +517,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             app = self.path.split("/", 2)[2].split("?", 1)[0]
             role = self._presented_role()
             import os as _os
+
             if _os.getenv("AE_API_READ_SCOPE") and not self._scope_allows("read", app):
                 self._deny(403)
                 return
@@ -289,6 +529,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 parts = path_only.split("/")
                 if len(parts) >= 4:
                     import os as _os
+
                     if _os.getenv("AE_API_READ_SCOPE") and not self._scope_allows("read", parts[2]):
                         self._deny(403)
                         return
@@ -299,6 +540,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 return
             app = self.path.split("/", 2)[2].split("?", 1)[0]
             import os as _os
+
             if _os.getenv("AE_API_READ_SCOPE") and not self._scope_allows("read", app):
                 self._deny(403)
                 return
@@ -308,6 +550,32 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):  # type: ignore[override]
+        # Read-only planner (not gated by AE_API_MUTATIONS)
+        if self.path in {"/plan", "/dashboard/plan"}:
+            try:
+                # Enforce read auth if configured
+                try:
+                    check = self._require_role  # type: ignore[attr-defined]
+                except Exception:
+                    check = None
+                if check and not self._require_role("read"):
+                    self._deny(401 if not self.headers.get("Authorization") else 403)
+                    return
+                if self.plan_fn is None:
+                    self._json_error(404, "plan endpoint not available")
+                    return
+                length = int(self.headers.get("Content-Length", "0") or "0")
+                body = self.rfile.read(length) if length > 0 else b"{}"
+                payload = json.loads(body.decode("utf-8")) if body else {}
+                out = self.plan_fn(payload)  # type: ignore[misc]
+                self._json_ok(out)
+            except Exception as exc:  # pragma: no cover
+                self._json_error(500, str(exc))
+            return
+        # Labs playground micro-API (dev only)
+        if self.path.startswith("/labs/") or self.path == "/labs/info":
+            self._handle_labs_post()
+            return
         # Mutations are optional and gated by env
         import os
 
@@ -329,6 +597,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 self._deny(401 if not self.headers.get("Authorization") else 403)
                 return
             if self.path.startswith("/delete/") and not self._require_role("admin"):
+                self._deny(401 if not self.headers.get("Authorization") else 403)
+                return
+            if (
+                self.path.startswith("/rollout/pause/") or self.path.startswith("/rollout/resume/")
+            ) and not self._require_role("admin"):
                 self._deny(401 if not self.headers.get("Authorization") else 403)
                 return
 
@@ -399,8 +672,792 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 self._json_error(500, str(exc))
             return
 
+        if self.path.startswith("/rollout/pause/") and self.rollout_pause_fn is not None:
+            app = self.path.split("/", 3)[3] if self.path.count("/") >= 3 else ""
+            if not app:
+                self._json_error(400, "missing app name in path")
+                return
+            try:
+                out = self.rollout_pause_fn(app)  # type: ignore[misc]
+                self._json_ok(out)
+            except Exception as exc:  # pragma: no cover
+                self._json_error(500, str(exc))
+            return
+
+        if self.path.startswith("/rollout/resume/") and self.rollout_resume_fn is not None:
+            app = self.path.split("/", 3)[3] if self.path.count("/") >= 3 else ""
+            if not app:
+                self._json_error(400, "missing app name in path")
+                return
+            try:
+                out = self.rollout_resume_fn(app)  # type: ignore[misc]
+                self._json_ok(out)
+            except Exception as exc:  # pragma: no cover
+                self._json_error(500, str(exc))
+            return
+
         self.send_response(404)
         self.end_headers()
+
+    # --- Labs playground micro-API (dev only, opt-in) ------------------
+    def _handle_labs_post(self) -> None:
+        import os as _os, secrets as _secrets
+
+        if not self._labs_enabled():
+            self._json_error(404, "labs disabled")
+            return
+        path = self.path.split("?", 1)[0]
+        # Always allow info without auth
+        if path == "/labs/info":
+            backends = ["k1s-host"]
+            try:
+                import shutil as _sh
+
+                if _os.getenv("AE_LABS_DOCKER") == "1":
+                    backends.append("k1s-docker")
+                # Detect k3d automatically when present on PATH or explicit opt-in
+                k3d_present = bool(_sh.which("k3d")) or _os.getenv("AE_LABS_K3S") == "1"
+            except Exception:
+                k3d_present = _os.getenv("AE_LABS_K3S") == "1"
+            if k3d_present:
+                backends.append("k3s")
+            http_port = int(_os.getenv("K3D_HTTP", "8081") or 8081)
+            https_port = int(_os.getenv("K3D_HTTPS", "8444") or 8444)
+            self._json_ok(
+                {
+                    "backends": backends,
+                    "api_base": "",
+                    "k3d": {
+                        "present": k3d_present,
+                        "ports": {"http": http_port, "https": https_port},
+                    },
+                }
+            )
+            return
+        # Optional bearer token for labs
+        tok = self.headers.get("Authorization", "")
+        labs_token = _os.getenv("AE_LABS_TOKEN") or ""
+        if labs_token and tok != f"Bearer {labs_token}":
+            self._deny(401 if not tok else 403)
+            return
+        # Parse JSON body if present
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        try:
+            body = self.rfile.read(length) if length > 0 else b"{}"
+            payload = json.loads(body.decode("utf-8")) if body else {}
+        except Exception:
+            payload = {}
+        # Session create
+        if path == "/labs/session":
+            sid = _secrets.token_hex(3)
+            backend = str(payload.get("backend") or "k1s-host")
+            # Optional auto-provision of k3d when requested
+            if backend == "k3s" and _os.getenv("AE_LABS_K3D_AUTOCREATE") == "1":
+                try:
+                    import subprocess as _sp
+
+                    name = _os.getenv("K3D_NAME", "k1s-labs")
+                    http_port = _os.getenv("K3D_HTTP", "8081")
+                    https_port = _os.getenv("K3D_HTTPS", "8444")
+                    _sp.run(
+                        [
+                            "bash",
+                            "scripts/lab_k3d.sh",
+                            "ensure",
+                            "--name",
+                            name,
+                            "--http",
+                            str(http_port),
+                            "--https",
+                            str(https_port),
+                        ],
+                        check=False,
+                    )
+                except Exception:
+                    pass
+            self._json_ok({"session_id": sid, "backend": backend, "token": labs_token or None})
+            return
+        # k3d ensure (auto-provision cluster)
+        if path == "/labs/k3d/ensure":
+            try:
+                import subprocess as _sp
+
+                name = _os.getenv("K3D_NAME", "k1s-labs")
+                http_port = _os.getenv("K3D_HTTP", "8081")
+                https_port = _os.getenv("K3D_HTTPS", "8444")
+                _sp.run(
+                    [
+                        "bash",
+                        "scripts/lab_k3d.sh",
+                        "ensure",
+                        "--name",
+                        name,
+                        "--http",
+                        str(http_port),
+                        "--https",
+                        str(https_port),
+                    ],
+                    check=False,
+                )
+                self._json_ok(
+                    {
+                        "ok": True,
+                        "name": name,
+                        "ports": {"http": int(http_port), "https": int(https_port)},
+                    }
+                )
+            except Exception as exc:
+                self._json_error(500, str(exc))
+            return
+
+        # Planner passthrough (labs-safe alias for /plan)
+        if path == "/labs/plan":
+            if self.plan_fn is None:
+                self._json_error(404, "plan not available")
+                return
+            try:
+                out = self.plan_fn(payload)  # type: ignore[misc]
+                self._json_ok(out)
+            except Exception as exc:  # pragma: no cover
+                self._json_error(500, str(exc))
+            return
+
+        # Apply curated example (labs-only)
+        if path == "/labs/apply":
+            if self.apply_fn is None:
+                self._json_error(404, "apply not available")
+                return
+            try:
+                import yaml as _yaml
+                from pathlib import Path as _Path
+
+                sess = str(payload.get("session_id") or "")
+                ex = str(payload.get("example") or "echo")
+                # Map example id to file path
+                ex_map = {
+                    "echo": _Path("specs/examples/echo.yaml"),
+                    "echo-multiport": _Path("specs/examples/echo-multiport.yaml"),
+                    "echo-rollout": _Path("specs/examples/echo-rollout.yaml"),
+                    "echo-hpa": _Path("specs/examples/echo-hpa.yaml"),
+                    "echo-resources": _Path("specs/examples/echo-resources.yaml"),
+                    "echo-stateful": _Path("specs/examples/echo-stateful.yaml"),
+                    "echo-sec": _Path("specs/examples/echo-sec.yaml"),
+                    "echo-sec-adv": _Path("specs/examples/echo-sec-adv.yaml"),
+                    "echo-tcp": _Path("specs/examples/echo-tcp.yaml"),
+                    "echo-exec": _Path("specs/examples/echo-exec.yaml"),
+                    "echo-storage": _Path("specs/examples/echo-storage.yaml"),
+                    "echo-storage-delete": _Path("specs/examples/echo-storage-delete.yaml"),
+                    "multi-replica-echo": _Path("specs/examples/multi-replica-echo.yaml"),
+                    "blue": _Path("specs/examples/blue.yaml"),
+                    "green": _Path("specs/examples/green.yaml"),
+                }
+                src = ex_map.get(ex)
+                if src is None or not src.exists():
+                    self._json_error(400, "unknown or missing example")
+                    return
+                data = _yaml.safe_load(src.read_text(encoding="utf-8")) or {}
+                # Prefix app name with session id for isolation
+                name = str(((data or {}).get("metadata") or {}).get("name") or "app")
+                if sess:
+                    new_name = f"{name}-{sess}"
+                else:
+                    new_name = name
+                data.setdefault("metadata", {})["name"] = new_name
+                # If ingress host is a .home.arpa, avoid session-specific hosts by default
+                # to prevent DNS failures in browsers (no wildcard in /etc/hosts). Keep
+                # per-session hostnames only when AE_LABS_SESSION_HOSTS=1.
+                try:
+                    import os as _os
+
+                    ing = (data.get("spec") or {}).get("ingress") or {}
+                    host = str(ing.get("host") or "")
+                    if host.endswith(".home.arpa"):
+                        use_session_host = _os.getenv("AE_LABS_SESSION_HOSTS") == "1"
+                        new_host = f"{new_name}.home.arpa" if use_session_host else host
+                        data.setdefault("spec", {}).setdefault("ingress", {})["host"] = new_host
+                except Exception:
+                    pass
+
+                # Inject a stable Service mapping for single-replica apps so readiness probes
+                # target a deterministic localhost:PORT. Controlled by AE_LABS_STABLE_SERVICE (default on).
+                try:
+                    import os as _os
+
+                    enable = _os.getenv("AE_LABS_STABLE_SERVICE")
+                    stable_enabled = True if (enable is None or enable == "1") else False
+                    spec = data.setdefault("spec", {})
+                    has_service = bool(spec.get("service"))
+                    replicas = int(spec.get("replicas", 1))
+                    if stable_enabled and not has_service and replicas == 1:
+                        # Determine readiness target port then choose a free host port
+                        target = None
+                        try:
+                            h = (spec.get("health") or {}).get("readiness") or {}
+                            if (
+                                isinstance(h.get("httpGet"), dict)
+                                and h["httpGet"].get("port") is not None
+                            ):
+                                target = int(h["httpGet"]["port"])  # type: ignore[call-arg]
+                            elif (
+                                isinstance(h.get("tcpSocket"), dict)
+                                and h["tcpSocket"].get("port") is not None
+                            ):
+                                target = int(h["tcpSocket"]["port"])  # type: ignore[call-arg]
+                        except Exception:
+                            target = None
+                        if target is None:
+                            try:
+                                ports = list(spec.get("ports") or [])
+                                if ports:
+                                    target = int(
+                                        ports[0].get("containerPort")
+                                        or ports[0].get("container_port")
+                                    )
+                            except Exception:
+                                target = None
+                        if target is not None:
+                            base = 18080
+                            span = 200
+                            try:
+                                seed = abs(hash(new_name)) % span
+                            except Exception:
+                                seed = 0
+                            chosen = None
+                            for off in range(span):
+                                candidate = base + ((seed + off) % span)
+                                ok = True
+                                # Use planner if available to avoid container hostPort conflicts
+                                try:
+                                    if self.plan_fn is not None:
+                                        probe = dict(data)
+                                        ps = probe.setdefault("spec", {})
+                                        ps["service"] = {
+                                            "port": int(candidate),
+                                            "targetPort": int(target),
+                                        }
+                                        report = self.plan_fn(probe)  # type: ignore[misc]
+                                        diags = (report or {}).get("diagnostics") or {}
+                                        conflicts = (diags.get("service") or {}).get(
+                                            "hostPortConflicts"
+                                        ) or {}
+                                        ok = not bool(conflicts)
+                                except Exception:
+                                    ok = True
+                                if ok:
+                                    chosen = candidate
+                                    break
+                            if chosen is not None:
+                                spec["service"] = {"port": int(chosen), "targetPort": int(target)}
+                except Exception:
+                    # Best-effort only; never fail labs apply on stable-port injection
+                    pass
+                # If a Service already exists in the example and the chosen host port is busy,
+                # auto-shift to a free port to avoid Podman/Docker start failures.
+                try:
+                    spec = data.setdefault("spec", {})
+                    svc = spec.get("service") or {}
+                    replicas = int(spec.get("replicas", 1))
+                    if (
+                        self.plan_fn is not None
+                        and svc
+                        and replicas == 1
+                        and svc.get("port") is not None
+                    ):
+                        # Check for conflicts
+                        rep0 = self.plan_fn(data)  # type: ignore[misc]
+                        diags0 = (rep0 or {}).get("diagnostics") or {}
+                        conflicts0 = (diags0.get("service") or {}).get("hostPortConflicts") or {}
+                        cur = int(svc.get("port"))
+                        needs_shift = bool(conflicts0) and (
+                            cur in set(int(p) for p in conflicts0.keys())
+                        )
+                        if needs_shift:
+                            # Choose a free alternative in the dev range
+                            target = None
+                            try:
+                                h = (spec.get("health") or {}).get("readiness") or {}
+                                if (
+                                    isinstance(h.get("httpGet"), dict)
+                                    and h["httpGet"].get("port") is not None
+                                ):
+                                    target = int(h["httpGet"]["port"])  # type: ignore[call-arg]
+                                elif (
+                                    isinstance(h.get("tcpSocket"), dict)
+                                    and h["tcpSocket"].get("port") is not None
+                                ):
+                                    target = int(h["tcpSocket"]["port"])  # type: ignore[call-arg]
+                            except Exception:
+                                target = None
+                            if target is None:
+                                try:
+                                    ports = list(spec.get("ports") or [])
+                                    if ports:
+                                        target = int(
+                                            ports[0].get("containerPort")
+                                            or ports[0].get("container_port")
+                                        )
+                                except Exception:
+                                    target = None
+                            base = 18080
+                            span = 200
+                            try:
+                                seed = (
+                                    abs(
+                                        hash(
+                                            str(
+                                                ((data or {}).get("metadata") or {}).get("name")
+                                                or "app"
+                                            )
+                                        )
+                                    )
+                                    % span
+                                )
+                            except Exception:
+                                seed = 0
+                            for off in range(span):
+                                candidate = base + ((seed + off) % span)
+                                ok = True
+                                try:
+                                    probe = dict(data)
+                                    ps = probe.setdefault("spec", {})
+                                    ps["service"] = {
+                                        "port": int(candidate),
+                                        "targetPort": int(target or cur),
+                                    }
+                                    rpt = self.plan_fn(probe)  # type: ignore[misc]
+                                    dg = (rpt or {}).get("diagnostics") or {}
+                                    cf = (dg.get("service") or {}).get("hostPortConflicts") or {}
+                                    ok = not bool(cf)
+                                except Exception:
+                                    ok = True
+                                if ok:
+                                    spec.setdefault("service", {})["port"] = int(candidate)
+                                    if target is not None:
+                                        spec["service"]["targetPort"] = int(target)
+                                    break
+                except Exception:
+                    pass
+                report = self.apply_fn(data)  # type: ignore[misc]
+                try:
+                    _LABS_APPS.add(new_name)
+                except Exception:
+                    pass
+                self._json_ok(report)
+            except Exception as exc:  # pragma: no cover
+                self._json_error(500, str(exc))
+            return
+        # Scale
+        if path == "/labs/scale":
+            if self.scale_fn is None:
+                self._json_error(404, "scale not available")
+                return
+            try:
+                app = str(payload.get("app") or "")
+                replicas = int(payload.get("replicas"))
+                if not app:
+                    self._json_error(400, "missing app")
+                    return
+                report = self.scale_fn(app, replicas)  # type: ignore[misc]
+                self._json_ok(report)
+            except Exception as exc:  # pragma: no cover
+                self._json_error(500, str(exc))
+            return
+        # Reset: delete known apps for the session
+        if path == "/labs/reset":
+            if self.delete_fn is None:
+                self._json_error(404, "reset not available")
+                return
+            try:
+                sess = str(payload.get("session_id") or "")
+                # Prefer tracked labs apps that match the session suffix; fallback to echo-<sess>
+                try:
+                    suffix = f"-{sess}" if sess else ""
+                    tracked = list(_LABS_APPS)
+                except Exception:
+                    suffix = f"-{sess}" if sess else ""
+                    tracked = []
+                candidates = [a for a in tracked if suffix and a.endswith(suffix)]
+                # If no tracked apps matched, consult the store to find session-scoped apps
+                if not candidates and suffix and getattr(self, "store", None) is not None:
+                    try:
+                        names = [s.app_name for s in self.store.list_status()]
+                        candidates = [n for n in names if n.endswith(suffix)]
+                    except Exception:
+                        pass
+                # Fallbacks: common example names
+                if not candidates and sess:
+                    candidates = [f"echo-{sess}"]
+                # Final fallback: delete base echo if present (covers non-session applies)
+                if not candidates and getattr(self, "store", None) is not None:
+                    try:
+                        names = [s.app_name for s in self.store.list_status()]
+                        if "echo" in names:
+                            candidates = ["echo"]
+                    except Exception:
+                        pass
+                removed = []
+                for app in candidates:
+                    try:
+                        res = self.delete_fn(app, True)  # type: ignore[misc]
+                        removed.append(res)
+                        try:
+                            _LABS_APPS.discard(app)
+                        except Exception:
+                            pass
+                    except Exception:
+                        continue
+                self._json_ok({"removed": removed})
+            except Exception as exc:  # pragma: no cover
+                self._json_error(500, str(exc))
+            return
+        # Ingress reachability check (server-side to avoid browser TLS issues in dev)
+        if path == "/labs/ingress_check":
+            try:
+                url = str(payload.get("url") or "").strip()
+                if not url:
+                    # Support host+path form
+                    host = str(payload.get("host") or "").strip()
+                    p = str(payload.get("path") or "/")
+                    if not host:
+                        self._json_error(400, "missing url or host")
+                        return
+                    scheme = "https"
+                    url = f"{scheme}://{host}{p if p.startswith('/') else ('/' + p)}"
+                # Guard: restrict to dev hostnames to avoid SSRF in labs
+                try:
+                    from urllib.parse import urlparse
+
+                    u = urlparse(url)
+                    host = (u.hostname or "").lower()
+                    if not host.endswith(".home.arpa"):
+                        self._json_error(400, "host not allowed")
+                        return
+                except Exception:
+                    self._json_error(400, "bad url")
+                    return
+                import time as _t
+                import requests as _req
+                from urllib.parse import urlparse as _urlparse
+
+                verify_path = "state/certs/combined-dev-ca.pem"
+                # Use the already-imported _os rather than os to avoid NameError
+                verify = verify_path if _os.path.exists(verify_path) else False
+                t0 = _t.time()
+                # For dev *.home.arpa, try known host gateways since this process
+                # might be running inside a container where 127.0.0.1 is not the host.
+                u = _urlparse(url)
+                host = (u.hostname or "").lower()
+                scheme = (u.scheme or "https").lower()
+                port = (u.port or (8443 if scheme == "https" else 8888))
+                candidates = [
+                    "127.0.0.1",
+                    "host.docker.internal",
+                    "gateway.docker.internal",
+                    "host.containers.internal",
+                ]
+                last_exc = None
+                r = None  # type: ignore[assignment]
+                # Prefer preserving SNI by resolving the hostname to candidate addresses
+                # temporarily via socket.getaddrinfo monkeypatch.
+                import socket as _sock
+                orig_gai = _sock.getaddrinfo
+                for addr in candidates:
+                    try:
+                        def _fake_getaddrinfo(h, p, family=0, type=0, proto=0, flags=0):  # type: ignore[override]
+                            if h == host:
+                                try:
+                                    return orig_gai(addr, p, family, type, proto, flags)
+                                except Exception:
+                                    return orig_gai(h, p, family, type, proto, flags)
+                            return orig_gai(h, p, family, type, proto, flags)
+                        _sock.getaddrinfo = _fake_getaddrinfo  # type: ignore[assignment]
+                        r = _req.get(url, timeout=3, verify=verify)
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        r = None
+                        continue
+                    finally:
+                        try:
+                            _sock.getaddrinfo = orig_gai  # type: ignore[assignment]
+                        except Exception:
+                            pass
+                if r is None:
+                    # Fallback to direct URL if all overrides fail
+                    try:
+                        r = _req.get(url, timeout=3, verify=verify)
+                    except Exception as exc2:  # pragma: no cover
+                        dt = int(round((_t.time() - t0) * 1000))
+                        self._json_ok({"ok": False, "code": 0, "elapsed_ms": dt, "error": str(exc2 or last_exc)})
+                        return
+                dt = int(round((_t.time() - t0) * 1000))
+                self._json_ok(
+                    {
+                        "ok": bool(200 <= r.status_code < 400),
+                        "code": int(r.status_code),
+                        "elapsed_ms": dt,
+                    }
+                )
+            except Exception as exc:  # pragma: no cover
+                self._json_error(500, str(exc))
+            return
+        # Rollout helpers (pause/resume/canary)
+        if path == "/labs/rollout":
+            action = str(payload.get("action") or "").lower()
+            app = str(payload.get("app") or "")
+            if action in {"pause", "resume"}:
+                fn = self.rollout_pause_fn if action == "pause" else self.rollout_resume_fn
+                if fn is None:
+                    self._json_error(404, f"rollout {action} not available")
+                    return
+                try:
+                    out = fn(app)  # type: ignore[misc]
+                    self._json_ok(out)
+                except Exception as exc:
+                    self._json_error(500, str(exc))
+                return
+            if action == "canary":
+                # Set canary weight on existing app manifest when possible; fallback to curated example
+                if self.apply_fn is None:
+                    self._json_error(404, "apply not available")
+                    return
+                try:
+                    weight = int(payload.get("weight") or 10)
+                    if app:
+                        # Try to fetch current manifest and patch rollout strategy/weight
+                        try:
+                            revs = self.store.list_revisions(app, limit=1)  # type: ignore[attr-defined]
+                        except Exception:
+                            revs = []
+                        if revs:
+                            man = self.store.get_revision_manifest(app, revs[0].revision)  # type: ignore[attr-defined]
+                            data = man.model_dump(by_alias=True)
+                            spec = data.setdefault("spec", {})
+                            rollout = dict(spec.get("rollout") or {})
+                            rollout["strategy"] = "canary"
+                            rollout["weight"] = int(weight)
+                            spec["rollout"] = rollout
+                            rep = self.apply_fn(data)  # type: ignore[misc]
+                            self._json_ok(rep)
+                            return
+                    # Fallback to curated example
+                    import yaml as _yaml
+                    from pathlib import Path as _Path
+
+                    sess = str(payload.get("session_id") or "")
+                    src = _Path("specs/examples/echo-rollout.yaml")
+                    if not src.exists():
+                        self._json_error(404, "echo-rollout.yaml not found")
+                        return
+                    data = _yaml.safe_load(src.read_text(encoding="utf-8")) or {}
+                    old = str(((data or {}).get("metadata") or {}).get("name") or "echo")
+                    new_name = f"{old}-{sess}" if sess else old
+                    data.setdefault("metadata", {})["name"] = new_name
+                    spec = data.setdefault("spec", {})
+                    ro = dict(spec.get("rollout") or {})
+                    ro["strategy"] = "canary"
+                    ro["weight"] = int(weight)
+                    spec["rollout"] = ro
+                    rep = self.apply_fn(data)  # type: ignore[misc]
+                    self._json_ok(rep)
+                except Exception as exc:
+                    self._json_error(500, str(exc))
+                return
+            self._json_error(400, "unknown rollout action")
+            return
+
+        # Unknown labs path
+        self._json_error(404, "unknown labs endpoint")
+
+    def _handle_labs_sse_events(self) -> None:
+        import urllib.parse as _up, time as _t, json as _json
+
+        _path, _, query = self.path.partition("?")
+        params = _up.parse_qs(query)
+        app = str((params.get("app", [""])[0] or "").strip())
+        try:
+            limit = int(params.get("limit", ["20"])[0])
+        except ValueError:
+            limit = 20
+        if not app:
+            self._json_error(400, "missing app")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        last_serialized = ""
+        try:
+            self.wfile.write(b"retry: 1500\n\n")
+            self.wfile.flush()
+            while True:
+                events = self.store.list_events(app, limit=limit)
+                data = [
+                    {
+                        "app_name": e.app_name,
+                        "revision": e.revision,
+                        "event_type": e.event_type,
+                        "message": e.message,
+                        "created_at": e.created_at.isoformat(),
+                    }
+                    for e in events
+                ]
+                s = _json.dumps(data)
+                if s != last_serialized:
+                    last_serialized = s
+                    self.wfile.write(("data: " + s + "\n\n").encode("utf-8"))
+                    self.wfile.flush()
+                _t.sleep(1.0)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception:
+            try:
+                self.wfile.write(b"event: error\ndata: stream closed\n\n")
+                self.wfile.flush()
+            except Exception:
+                pass
+
+    def _handle_labs_sse_status(self) -> None:
+        import urllib.parse as _up, time as _t, json as _json
+
+        _path, _, query = self.path.partition("?")
+        params = _up.parse_qs(query)
+        app = str((params.get("app", [""])[0] or "").strip())
+        if not app:
+            self._json_error(400, "missing app")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        last_serialized = ""
+        try:
+            self.wfile.write(b"retry: 1500\n\n")
+            self.wfile.flush()
+            while True:
+                s = self.store.get_status(app)
+                obj = None
+                if s is not None:
+                    obj = {
+                        "app_name": s.app_name,
+                        "desired": s.desired_replicas,
+                        "ready": s.ready_replicas,
+                        "live": s.live_replicas,
+                        "revision": s.revision,
+                        "status": s.revision_status,
+                        "ingress_host": s.ingress_host,
+                        "ingress_path": s.ingress_path,
+                    }
+                sval = _json.dumps(obj)
+                if sval != last_serialized:
+                    last_serialized = sval
+                    self.wfile.write(("data: " + sval + "\n\n").encode("utf-8"))
+                    self.wfile.flush()
+                _t.sleep(1.0)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception:
+            try:
+                self.wfile.write(b"event: error\ndata: stream closed\n\n")
+                self.wfile.flush()
+            except Exception:
+                pass
+
+    def _handle_labs_sse_events_html(self) -> None:
+        import urllib.parse as _up, time as _t, json as _json
+
+        _path, _, query = self.path.partition("?")
+        params = _up.parse_qs(query)
+        app = str((params.get("app", [""])[0] or "").strip())
+        try:
+            limit = int(params.get("limit", ["20"])[0])
+        except ValueError:
+            limit = 20
+        if not app:
+            self._json_error(400, "missing app")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        last_serialized = ""
+        try:
+            self.wfile.write(b"retry: 1500\n\n")
+            self.wfile.flush()
+            while True:
+                events = self.store.list_events(app, limit=limit)
+                data = [
+                    {
+                        "app_name": e.app_name,
+                        "revision": e.revision,
+                        "event_type": e.event_type,
+                        "message": e.message,
+                        "created_at": e.created_at.isoformat(),
+                    }
+                    for e in events
+                ]
+                s = _json.dumps(data)
+                if s != last_serialized:
+                    last_serialized = s
+                    # Emit full HTML snapshot oldest-first so new events appear at the bottom
+                    html = "".join(
+                        f"<div class='log-entry'><code>{self._escape_html(d['created_at'])}</code> {self._escape_html(d['message'])}</div>"
+                        for d in reversed(data)
+                    )
+                    self.wfile.write(("data: " + html + "\n\n").encode("utf-8"))
+                    self.wfile.flush()
+                _t.sleep(1.0)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception:
+            try:
+                self.wfile.write(b"event: error\ndata: stream closed\n\n")
+                self.wfile.flush()
+            except Exception:
+                pass
+
+    def _handle_labs_sse_status_badge(self) -> None:
+        import urllib.parse as _up, time as _t, json as _json
+
+        _path, _, query = self.path.partition("?")
+        params = _up.parse_qs(query)
+        app = str((params.get("app", [""])[0] or "").strip())
+        if not app:
+            self._json_error(400, "missing app")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        last_html = ""
+        try:
+            self.wfile.write(b"retry: 1500\n\n")
+            self.wfile.flush()
+            while True:
+                s = self.store.get_status(app)
+                if s is None:
+                    html = "<span class='pending'>n/a</span>"
+                else:
+                    ok = int(s.ready_replicas) == int(s.desired_replicas)
+                    klass = "ok" if ok else "fail"
+                    html = f"<span class='{klass}'>{int(s.ready_replicas)}/{int(s.desired_replicas)} ready</span>"
+                if html != last_html:
+                    last_html = html
+                    self.wfile.write(("data: " + html + "\n\n").encode("utf-8"))
+                    self.wfile.flush()
+                _t.sleep(1.0)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception:
+            try:
+                self.wfile.write(b"event: error\ndata: stream closed\n\n")
+                self.wfile.flush()
+            except Exception:
+                pass
 
     def _handle_metrics(self) -> None:
         snap = self.metrics.snapshot()
@@ -427,6 +1484,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "# TYPE ae_replicas_live gauge",
             f"ae_replicas_live {snap.live_replicas}",
         ]
+        # Per-app series metadata (declared once before samples)
+        lines += [
+            "# HELP ae_app_desired_replicas Desired replicas per app",
+            "# TYPE ae_app_desired_replicas gauge",
+            "# HELP ae_app_ready_replicas Ready replicas per app",
+            "# TYPE ae_app_ready_replicas gauge",
+            "# HELP ae_app_live_replicas Live replicas per app",
+            "# TYPE ae_app_live_replicas gauge",
+            "# HELP ae_app_status One-hot app status by label {status=ready|progressing|degraded}",
+            "# TYPE ae_app_status gauge",
+            # Backwards/compat aliases to match earlier docs snippets
+            "# HELP ae_desired_replicas Desired replicas per app (alias)",
+            "# TYPE ae_desired_replicas gauge",
+            "# HELP ae_ready_replicas Ready replicas per app (alias)",
+            "# TYPE ae_ready_replicas gauge",
+            "# HELP ae_live_replicas Live replicas per app (alias)",
+            "# TYPE ae_live_replicas gauge",
+        ]
         # Token expiry metrics
         import os as _os
         from datetime import datetime as _dt, timezone as _tz
@@ -437,7 +1512,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 return None
             try:
                 s = val.strip()
-                exp = _dt.fromisoformat(s[:-1] + "+00:00") if s.endswith("Z") else _dt.fromisoformat(s)
+                exp = (
+                    _dt.fromisoformat(s[:-1] + "+00:00")
+                    if s.endswith("Z")
+                    else _dt.fromisoformat(s)
+                )
                 if exp.tzinfo is None:
                     exp = exp.replace(tzinfo=_tz.utc)
                 now = _dt.now(_tz.utc)
@@ -445,22 +1524,31 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             except Exception:
                 return None
 
-        for role, env in (("admin", "AE_API_ADMIN_TOKEN_EXPIRES"), ("scaler", "AE_API_SCALER_TOKEN_EXPIRES"), ("read", "AE_API_READ_TOKEN_EXPIRES")):
+        for role, env in (
+            ("admin", "AE_API_ADMIN_TOKEN_EXPIRES"),
+            ("scaler", "AE_API_SCALER_TOKEN_EXPIRES"),
+            ("read", "AE_API_READ_TOKEN_EXPIRES"),
+        ):
             secs = _expiry_seconds(env)
             if secs is not None:
                 lines.append(f'ae_api_token_expiry_seconds{{role="{role}"}} {secs}')
         # Per-app and per-replica labeled gauges
         try:
             statuses = self.store.list_status()
+            # Demo filter: keep only apps present in the active specs directory
+            statuses = _filter_statuses_for_demo(statuses)
             # Optional read scope filtering when a read-capable token is presented
             try:
                 import os as _os, fnmatch as _fn
+
                 scope = (_os.getenv("AE_API_READ_SCOPE") or "").strip()
                 role = self._presented_role()
                 if scope and role in {"read", "scale", "admin"}:
                     pats = [p.strip() for p in scope.split(",") if p.strip()]
                     if pats:
-                        statuses = [s for s in statuses if any(_fn.fnmatch(s.app_name, p) for p in pats)]
+                        statuses = [
+                            s for s in statuses if any(_fn.fnmatch(s.app_name, p) for p in pats)
+                        ]
             except Exception:
                 pass
             for s0 in statuses:
@@ -468,6 +1556,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 lines.append(f'ae_app_desired_replicas{{app="{app}"}} {s0.desired_replicas}')
                 lines.append(f'ae_app_ready_replicas{{app="{app}"}} {s0.ready_replicas}')
                 lines.append(f'ae_app_live_replicas{{app="{app}"}} {s0.live_replicas}')
+                # Aliases used by playground docs examples
+                lines.append(f'ae_desired_replicas{{app="{app}"}} {s0.desired_replicas}')
+                lines.append(f'ae_ready_replicas{{app="{app}"}} {s0.ready_replicas}')
+                lines.append(f'ae_live_replicas{{app="{app}"}} {s0.live_replicas}')
                 # one-hot app status metric
                 st = (s0.revision_status or "").strip().lower()
                 for name in ("ready", "progressing", "degraded"):
@@ -480,6 +1572,55 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     lines.append(
                         f'ae_replica_ready{{app="{s0.app_name}",replica="{r.replica_id}"}} {val}'
                     )
+        except Exception:
+            pass
+        # Crashloop flags from controller
+        try:
+            from time import time as _now
+
+            now = float(_now())
+            for app, until in list(_APP_CRASHLOOP_UNTIL.items()):
+                val = 1 if float(until) > now else 0
+                lines.append(f'ae_app_crashloop{{app="{app}"}} {val}')
+        except Exception:
+            pass
+        # Hook durations
+        try:
+            for (app, hook, kind), (dur, ok) in list(_HOOK_LAST.items()):
+                lines.append(
+                    f'ae_rollout_hook_duration_seconds{{app="{app}",hook="{hook}",type="{kind}",success="{str(bool(ok)).lower()}"}} {float(dur)}'
+                )
+        except Exception:
+            pass
+        # Container restart counts via system snapshot (if available)
+        try:
+            fn = getattr(self, "system_info_fn", None)
+            if fn is not None:
+                sysinfo = dict(fn())  # type: ignore[misc]
+                # App-level recreate cooldown seconds
+                for app, secs in (sysinfo.get("cooldown") or {}).items():
+                    try:
+                        lines.append(f'ae_app_recreate_cooldown_seconds{{app="{app}"}} {int(secs)}')
+                    except Exception:
+                        continue
+                for c in sysinfo.get("containers") or []:
+                    try:
+                        name = str(c.get("name", ""))
+                        app = str((c.get("labels") or {}).get("ae.app", ""))
+                        rc = int(c.get("restart_count", 0) or 0)
+                        lines.append(
+                            f'ae_container_restart_count{{app="{app}",container="{name}"}} {rc}'
+                        )
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        # Probe backoff seconds
+        try:
+            for (app, replica, ptype), secs in list(_PROBE_BACKOFF.items()):
+                lines.append(
+                    f'ae_probe_backoff_seconds{{app="{app}",replica="{replica}",type="{ptype}"}} {int(secs)}'
+                )
         except Exception:
             pass
         # Optional loop metrics
@@ -544,6 +1685,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 )
             },
         }
+        # In demo mode, restrict controller app counters to allowed apps from specs
+        try:
+            allowed_apps = _demo_allowed_apps()
+            if allowed_apps:
+                ctrl["apps"] = {k: v for k, v in ctrl["apps"].items() if k in allowed_apps}
+        except Exception:
+            pass
         # RBAC/mutations flags (never echo secrets)
         rbac = {
             "mutations_enabled": os.getenv("AE_API_MUTATIONS") == "1",
@@ -560,7 +1708,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             except Exception:
                 extra = {}
 
-        payload = {"controller": ctrl, "rbac": rbac, **(extra or {})}
+        # Crashloop flags snapshot (apps with active TTL)
+        try:
+            from time import time as _now
+
+            now = float(_now())
+            crash = {app: (float(until) > now) for app, until in list(_APP_CRASHLOOP_UNTIL.items())}
+        except Exception:
+            crash = {}
+        payload = {"controller": ctrl, "rbac": rbac, "crashloop": crash, **(extra or {})}
         self._json_ok(payload)
 
     def _handle_swagger(self) -> None:
@@ -619,8 +1775,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     def _handle_openapi(self) -> None:
         # OpenAPI document with bearer auth and basic schemas
         import os as _os
+
         tokens_configured = bool(
-            _os.getenv("AE_API_ADMIN_TOKEN") or _os.getenv("AE_API_SCALER_TOKEN") or _os.getenv("AE_API_READ_TOKEN")
+            _os.getenv("AE_API_ADMIN_TOKEN")
+            or _os.getenv("AE_API_SCALER_TOKEN")
+            or _os.getenv("AE_API_READ_TOKEN")
         )
         doc = {
             "openapi": "3.0.0",
@@ -714,6 +1873,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         "security": [{"bearerAuth": []}],
                     }
                 },
+                "/manifest/{app}": {
+                    "get": {
+                        "summary": "Get the latest stored manifest for an app",
+                        "parameters": [
+                            {
+                                "name": "app",
+                                "in": "path",
+                                "required": True,
+                                "schema": {"type": "string"},
+                            }
+                        ],
+                        "responses": {
+                            "200": {"description": "OK"},
+                            "404": {"description": "Not Found"},
+                        },
+                        "security": [{"bearerAuth": []}],
+                    }
+                },
                 "/events/{app}": {
                     "get": {
                         "summary": "List app events (paginated)",
@@ -785,6 +1962,60 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         "security": [{"bearerAuth": []}],
                     }
                 },
+                "/plan": {
+                    "post": {
+                        "summary": "Validate a manifest and return plan diagnostics",
+                        "requestBody": {"required": True},
+                        "responses": {"200": {"description": "OK"}},
+                        "security": [{"bearerAuth": []}],
+                    }
+                },
+                "/tls/verify": {
+                    "get": {
+                        "summary": "Verify tlsSecretName resolvability under AE_TLS_DIR",
+                        "parameters": [
+                            {
+                                "name": "name",
+                                "in": "query",
+                                "required": True,
+                                "schema": {"type": "string"},
+                            },
+                            {"name": "root", "in": "query", "schema": {"type": "string"}},
+                        ],
+                        "responses": {"200": {"description": "OK"}},
+                        "security": [{"bearerAuth": []}],
+                    }
+                },
+                "/rollout/pause/{app}": {
+                    "post": {
+                        "summary": "Pause rollout for an app",
+                        "parameters": [
+                            {
+                                "name": "app",
+                                "in": "path",
+                                "required": True,
+                                "schema": {"type": "string"},
+                            }
+                        ],
+                        "responses": {"200": {"description": "OK"}},
+                        "security": [{"bearerAuth": []}],
+                    }
+                },
+                "/rollout/resume/{app}": {
+                    "post": {
+                        "summary": "Resume rollout for an app",
+                        "parameters": [
+                            {
+                                "name": "app",
+                                "in": "path",
+                                "required": True,
+                                "schema": {"type": "string"},
+                            }
+                        ],
+                        "responses": {"200": {"description": "OK"}},
+                        "security": [{"bearerAuth": []}],
+                    }
+                },
             },
         }
         # If tokens are configured, mark API as requiring bearer auth to surface the Authorize button in Swagger/ReDoc
@@ -797,19 +2028,68 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _handle_manifest_single(self, app: str) -> None:
+        try:
+            revs = self.store.list_revisions(app, limit=1)
+            if not revs:
+                self._json_error(404, "no manifest stored")
+                return
+            man = self.store.get_revision_manifest(app, revs[0].revision)
+            payload = json.dumps(man.model_dump(by_alias=True, exclude_none=True)).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        except Exception as exc:
+            self._json_error(404, str(exc))
+
+    def _handle_tls_verify(self) -> None:
+        import urllib.parse as _u
+
+        qs = _u.urlparse(self.path).query
+        params = _u.parse_qs(qs)
+        name = (params.get("name") or [""])[0]
+        root = (params.get("root") or [None])[0]
+        if not name:
+            self._json_error(400, "missing name query param")
+            return
+        try:
+            from ae.ingress.tls_sync import TlsSecretResolver
+            import os
+
+            tls_root = Path(root) if root else Path(os.getenv("AE_TLS_DIR", "state/tls"))
+            res = TlsSecretResolver(tls_root).resolve(name)
+            self._json_ok(
+                {
+                    "name": name,
+                    "root": str(tls_root),
+                    "ok": bool(res),
+                    "cert": str(res[0]) if res else None,
+                    "key": str(res[1]) if res else None,
+                }
+            )
+        except Exception as exc:
+            self._json_error(500, str(exc))
+
     def _handle_status_list(self) -> None:
         import urllib.parse as _up
 
         statuses = self.store.list_status()
+        # Demo filter: keep only apps present in the active specs directory
+        statuses = _filter_statuses_for_demo(statuses)
         # Optional read scope filtering when a read-capable token is presented
         try:
             import os as _os, fnmatch as _fn
+
             scope = (_os.getenv("AE_API_READ_SCOPE") or "").strip()
             role = self._presented_role()
             if scope and role in {"read", "scale", "admin"}:
                 pats = [p.strip() for p in scope.split(",") if p.strip()]
                 if pats:
-                    statuses = [s for s in statuses if any(_fn.fnmatch(s.app_name, p) for p in pats)]
+                    statuses = [
+                        s for s in statuses if any(_fn.fnmatch(s.app_name, p) for p in pats)
+                    ]
         except Exception:
             pass
         path, _, query = self.path.partition("?")
@@ -831,21 +2111,35 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         total = len(items)
         page = items[offset : offset + limit]
         next_cursor = offset + limit if (offset + limit) < total else None
+        out_items = []
+        for s in page:
+            item = {
+                "app_name": s.app_name,
+                "desired_replicas": s.desired_replicas,
+                "ready_replicas": s.ready_replicas,
+                "live_replicas": s.live_replicas,
+                "revision": s.revision,
+                "revision_status": s.revision_status,
+                "image": s.image,
+                "ingress_host": s.ingress_host,
+                "ingress_path": s.ingress_path,
+            }
+            # Best-effort rollout summary for list view
+            try:
+                man = self.store.get_revision_manifest(s.app_name, s.revision)
+                ro = getattr(man.spec, "rollout", {}) or {}
+                if isinstance(ro, dict) and ro:
+                    item["rollout"] = {
+                        "strategy": str(ro.get("strategy", "parallel")),
+                        "weight": ro.get("weight"),
+                        "pause": bool(ro.get("pause", False)),
+                    }
+            except Exception:
+                pass
+            out_items.append(item)
+
         payload = {
-            "items": [
-                {
-                    "app_name": s.app_name,
-                    "desired_replicas": s.desired_replicas,
-                    "ready_replicas": s.ready_replicas,
-                    "live_replicas": s.live_replicas,
-                    "revision": s.revision,
-                    "revision_status": s.revision_status,
-                    "image": s.image,
-                    "ingress_host": s.ingress_host,
-                    "ingress_path": s.ingress_path,
-                }
-                for s in page
-            ],
+            "items": out_items,
             "next": str(next_cursor) if next_cursor is not None else None,
         }
         self._json_ok(payload)
@@ -888,6 +2182,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         "ready": bool(r.ready),
                         "live": bool(r.live),
                         "status": r.status,
+                        "readiness_message": r.readiness_message,
+                        "liveness_message": r.liveness_message,
                     }
                     for r in reps
                 ]
@@ -1009,29 +2305,65 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     <script src=\"https://unpkg.com/htmx.org@1.9.12\" integrity=\"sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2\" crossorigin=\"anonymous\"></script>
     <style>
       :root { color-scheme: light dark; }
-      body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+      body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; overflow-x:hidden; }
       header { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; background:#0a0a0a10; position:sticky; top:0; backdrop-filter: blur(4px); }
       h1 { margin:0; font-size: 18px; }
-      main { display:grid; grid-template-columns: 280px 1fr; gap:12px; padding:12px 12px 48px; }
-      #apps { border-right:1px solid #8884; padding-right:8px; }
+      main { display:grid; grid-template-columns: 210px 1fr; gap:12px; padding:12px 12px 48px; overflow-x:hidden; }
+      #detail { min-width:0; overflow:hidden; }
+      #apps { width:210px; }
+      /* Collapsible left apps pane */
+      body.apps-collapsed main { grid-template-columns: 16px 1fr; }
+      #apps { position:relative; border-right:1px solid #8884; padding-right:8px; min-height:0; }
+      body.apps-collapsed #apps { border-right:0; padding-right:0; }
+      #apps-list { display:block; overflow-y:auto; max-height: calc(100vh - 56px - 80px); scrollbar-width: none; -ms-overflow-style: none; }
+      #apps-list::-webkit-scrollbar { width:0; height:0; }
+      body.apps-collapsed #apps-list { display:none; }
       .app { padding:6px 8px; border-radius:6px; cursor:pointer; }
-      .app.active { background:#4f46e5; color:#fff; }
+      .app.active { background:#1f2937; color:#e5e7eb; }
       .pill { display:inline-block; padding:1px 6px; border-radius:999px; font-size:12px; margin-left:6px; }
       .ok { background:#16a34a33; color:#16a34a; }
       .warn { background:#f59e0b33; color:#b45309; }
       .bad { background:#ef444433; color:#b91c1c; }
       .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
-      .row.stretch { align-items: stretch; }
-      .row.stretch { align-items: stretch; }
-      .card { border:1px solid #8884; border-radius:8px; padding:8px 10px; }
+      .row.stretch { align-items: stretch; flex-wrap: nowrap; overflow-x: hidden; }
+      .row.stretch::-webkit-scrollbar { height:0; }
+      .row.stretch { scrollbar-width: none; -ms-overflow-style: none; }
+      .card { border:1px solid #8884; border-radius:8px; padding:8px 10px; min-width:0; max-width:100%; overflow:hidden; }
+      .card table { display:block; overflow:auto; white-space: nowrap; }
+      .card pre { overflow:auto; }
+      /* Ensure flex children can shrink and let inner boxes scroll */
+      .row.stretch > .card { min-width: 0; }
       .detail-card { flex: 0 0 320px; }
-      .logbox { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; width:100%; box-sizing:border-box; height:420px; overflow:auto; background:#0001; padding:8px; border-radius:6px; }
-      .scrollcap { max-height:180px; overflow:auto; }
-      .log-entry { white-space: pre-wrap; }
+      /* Reduce default Logs panel height by ~20% (294px → ~235px) */
+      .logbox { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; width:100%; box-sizing:border-box; height:235px; overflow:auto; overflow-x:auto; white-space: pre; background:#0001; padding:8px; border-radius:6px; scrollbar-width: none; -ms-overflow-style: none; }
+      .logbox::-webkit-scrollbar { width:0; height:0; }
+      .scrollcap { max-height:180px; overflow:auto; overflow-x:auto; white-space: normal; scrollbar-width: none; -ms-overflow-style: none; max-width:100%; width:100%; }
+      /* Ensure detail text uses compact line spacing */
+      #desc { line-height: 1.3; min-height: 12em; max-height: none; overflow-y: hidden; }
+      /* Match events panel baseline height to keep row stable */
+      #events { min-height: 12em; }
+      .scrollcap::-webkit-scrollbar { width:0; height:0; }
+      .log-entry { white-space: pre; }
+      /* Ensure events panel never widens the layout; scroll inside */
+      #events { max-width:100%; width:100%; overflow-x:auto; }
       .log-entry code { opacity:0.8; margin-right:6px; }
       #controls { gap:8px; }
-      input[type=text], select { padding:6px; }
-      button { padding:6px 10px; }
+      /* Unified rounded controls */
+      input[type=text], input[type=password], select, textarea { padding:6px; border:1px solid #8884; border-radius:6px; background:#0001; color:inherit; }
+      /* All selects — dark UI: light text on dark background */
+      select { background:#0f172a; color:#e5e7eb; border-color:#334155; color-scheme: dark; }
+      select option { background:#0f172a; color:#e5e7eb; }
+      button { padding:6px 10px; border:1px solid #8884; border-radius:6px; background:#0001; color:inherit; cursor:pointer; }
+      /* Hide legacy header toggle and add pane handle */
+      header #apps-toggle { display:none !important; }
+      /* Small round chevron handle; positioned by JS for exact edge alignment */
+      #apps-pane-toggle { position:fixed; left: 0; top: 50vh; transform: translateY(-50%); width:28px; height:28px; border-radius:9999px; padding:0; border:1px solid #334155; background:#0f172a; color:#e5e7eb; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 6px rgba(0,0,0,.2); cursor:pointer; z-index: 10; transition: left .12s ease, top .12s ease; }
+      /* When collapsed, keep the handle fully within the thin bar */
+      /* Collapsed state handled in JS so the button centers on the 16px rail */
+      #apps-pane-toggle:hover { background:#111827; }
+      #apps-pane-toggle svg { width:18px; height:18px; transition: transform .15s ease; }
+      /* Chevron points left (collapse) when expanded; rotate to point right when collapsed */
+      body.apps-collapsed #apps-pane-toggle svg { transform: rotate(180deg); }
       table { border-collapse:collapse; width:100%; }
       th, td { border-bottom:1px solid #8884; padding:6px; text-align:left; font-size:13px; }
       code { background:#0001; padding:2px 4px; border-radius:4px; }
@@ -1046,8 +2378,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
   </head>
   <body>
     <header>
-      <h1>k1s Demo Dashboard</h1>
-      <div class=\"row\" id=\"controls\">
+      <div class=\"row\" style=\"gap:10px; align-items:center;\">
+        <button id=\"apps-toggle\" class=\"icon-btn\" title=\"Collapse apps pane\" aria-pressed=\"false\" aria-label=\"Toggle apps panel\">
+          <svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z\"/></svg>
+        </button>
+        <h1>k1s Demo Dashboard</h1>
+      </div>
+      <div class=\"row\" id=\"controls\"> 
         <label>Poll <select id=\"poll-interval\">
           <option value=\"0\">off</option>
           <option value=\"2000\">2s</option>
@@ -1056,13 +2393,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         </select></label>
         <label>Log filter <input id=\"log-filter\" name=\"filter\" type=\"text\" size=\"24\" placeholder=\"substring\" /></label>
         <button id=\"pause-btn\">Pause Logs</button>
-        <label>Bearer <input id=\"auth-token\" type=\"password\" size=\"22\" placeholder=\"read/scaler/admin token\" /></label>
+        <label>Bearer <input id=\"auth-token\" type=\"password\" size=\"22\" placeholder=\"read/scaler/admin token\" title=\"Optional bearer token. Roles: read (GET), scaler (POST /scale), admin (mutations & rollout).\" /></label>
         <button id=\"save-token\">Save</button>
         <button id=\"clear-token\">Clear</button>
+        <label title=\"Hide healthy counters (show warn/bad only)\"><input type=\"checkbox\" id=\"hide-healthy\" /> Hide Healthy</label>
+        <label title=\"Hide less critical counters (services, volumes, containers, restarts)\"><input type=\"checkbox\" id=\"compact-counters\" /> Compact Counters</label>
       </div>
     </header>
     <main>
-      <section id=\"apps\"></section>
+      <section id=\"apps\"><div id=\"apps-list\"></div><button id=\"apps-pane-toggle\" title=\"Collapse apps pane\" aria-pressed=\"false\" aria-label=\"Toggle apps panel\"><svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"0\" fill=\"none\"/><path d=\"M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z\"/></svg></button></section>
       <section id=\"detail\">
         <h2>Application</h2>
         <div class=\"row stretch\">
@@ -1074,6 +2413,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             <div><strong>Replicas:</strong> <span id=\"d-replicas\">-</span></div>
             <div><strong>Revision:</strong> <span id=\"d-rev\">-</span> (<span id=\"d-rev-status\">-</span>)</div>
             <div><strong>Service:</strong> <span id=\"d-service\">-</span></div>
+            <div><strong>Rollout:</strong> <span id=\"d-rollout\">-</span></div>
             <div><strong>Secrets:</strong> <span id=\"d-secrets\">-</span></div>
             <div><strong>Storage:</strong> <span id=\"d-storage\">-</span></div>
             </div>
@@ -1083,9 +2423,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             <div class=\"scrollcap\" id=\"events\"></div>
           </div>
         </div>
+        <!-- Logs directly below Application/Events -->
+        <div class=\"card\" style=\"margin-top:12px;\">
+          <strong>Logs</strong>
+          <div id=\"logs\" class=\"logbox\" style=\"height:235px;\" hx-get=\"/dashboard/partials/logs\" hx-trigger=\"load, every 5s, refresh\" hx-include=\"#log-filter\" hx-swap=\"innerHTML\" hx-on::after-settle=\"this.scrollTop=this.scrollHeight\"></div>
+        </div>
         <div class=\"card\" style=\"margin-top:12px;\"> 
           <strong>System</strong>
           <div class=\"row\" id=\"sys-counters\" style=\"gap:10px; margin-top:6px; flex-wrap:wrap;\"></div>
+        </div>
+        <div class=\"card\" style=\"margin-top:12px;\">
+          <strong>Replicas</strong>
+          <table id=\"tbl-replicas\"><thead><tr><th>Replica</th><th>Ready</th><th>Live</th><th>Status</th><th>Backoff</th></tr></thead><tbody></tbody></table>
         </div>
         <div class=\"card\" style=\"margin-top:12px;\">
           <strong>System Graph</strong>
@@ -1128,18 +2477,28 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             <div id=\"graph-hover\" class=\"hover-card\"></div>
           </div>
         </div>
-        <div class=\"card\" style=\"margin-top:12px;\">
-          <strong>Logs</strong>
-          <div
-            id=\"logs\"
-            class=\"logbox\"
-            hx-get=\"/dashboard/partials/logs\"
-            hx-trigger=\"load, every 5s, refresh\"
-            hx-include=\"#log-filter\"
-            hx-swap=\"innerHTML\"
-            hx-on::after-settle=\"this.scrollTop=this.scrollHeight\"
-          ></div>
+        <div class=\"row stretch\" style=\"margin-top:12px; gap:12px;\"> 
+          <div class=\"card detail-card\" style=\"flex:0 0 360px;\">
+            <strong>Plan Diagnostics</strong>
+            <div style=\"font-size:12px; opacity:.9; margin:6px 0;\">Paste an App manifest (YAML or JSON) to preview warnings and diagnostics before applying. Or use the button to load the selected app's last applied manifest.</div>
+            <form id=\"plan-form\" onsubmit=\"return false;\">
+              <div><textarea id=\"plan-json\" rows=\"12\" cols=\"40\" placeholder=\"Paste App manifest YAML or JSON here...\"></textarea></div>
+              <div class=\"row\" style=\"margin-top:6px\">
+                <button type=\"button\" id=\"plan-run\">Run Plan</button>
+                <button type=\"button\" id=\"plan-load\">Load from App</button>
+                <span id=\"plan-status\" class=\"pill\" style=\"margin-left:8px\"></span>
+              </div>
+            </form>
+          </div>
+          <div class=\"card\" style=\"flex:1;\"> 
+            <div class=\"row\" style=\"justify-content:space-between; align-items:center;\">
+              <strong>Plan Result</strong>
+              <button type=\"button\" id=\"plan-copy\" title=\"Copy JSON to clipboard\">Copy</button>
+            </div>
+            <pre id=\"plan-output\" class=\"logbox\" style=\"height:280px\"></pre>
+          </div>
         </div>
+        
         <div class=\"divider\"></div>
         <h2>Ingress, Services & Storage</h2>
         <div class=\"row stretch\" style=\"margin-top:12px;\">
@@ -1156,6 +2515,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           <strong>Storage Volumes</strong>
           <table id=\"tbl-vols\"><thead><tr><th>Name</th><th>App</th><th>Driver</th><th>Mountpoint</th></tr></thead><tbody></tbody></table>
         </div>
+        <div class=\"card\" style=\"margin-top:12px;\">
+          <strong>Runtime Containers</strong>
+          <table id=\"tbl-containers\"><thead><tr><th>Name</th><th>App</th><th>Host Ports</th><th>Restarts</th><th>Restarts (1m)</th></tr></thead><tbody></tbody></table>
+        </div>
       </section>
     </main>
     <footer class=\"site-footer\"> 
@@ -1171,14 +2534,17 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     </script>
     <script>
       var elApps = document.getElementById('apps');
+      var elAppsList = document.getElementById('apps-list');
       var elEvents = document.getElementById('events');
       var pollSel = document.getElementById('poll-interval');
       var logFilter = document.getElementById('log-filter');
       var pauseBtn = document.getElementById('pause-btn');
+      var appsToggle = document.getElementById('apps-pane-toggle');
       var current = null;
       var pollTimer = null;
       var pauseLogs = false;
       var logSource = null;
+      var eventsSource = null;
       var lastSystem = null;
       var lastStatuses = [];
       var graphHover = null;
@@ -1191,6 +2557,68 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       try { tokInput.value = localStorage.getItem('ae_token') || ''; } catch(e) {}
       saveBtn.addEventListener('click', function(){ try { localStorage.setItem('ae_token', tokInput.value||''); } catch(e){}; window.location.reload(); });
       clearBtn.addEventListener('click', function(){ try { localStorage.removeItem('ae_token'); } catch(e){}; window.location.reload(); });
+
+      // UI prefs: hide healthy pills / compact counters
+      var hideHealthy = false, compactCounters = false;
+      var hhStored = '', ccStored = '';
+      try { hhStored = (localStorage.getItem('ae_hide_healthy')||''); } catch(e){}
+      try { ccStored = (localStorage.getItem('ae_compact_counters')||''); } catch(e){}
+      try { hideHealthy = (hhStored==='1'); } catch(e){}
+      try { compactCounters = (ccStored==='1'); } catch(e){}
+      // Mobile default: if no stored pref, default hideHealthy/compactCounters on small screens
+      try {
+        var isMobile = (window.matchMedia && window.matchMedia('(max-width: 640px)').matches) || (Math.min(screen.width, screen.height) <= 640);
+        if (!hhStored && isMobile) hideHealthy = true;
+        if (!ccStored && isMobile) compactCounters = true;
+      } catch(e){}
+      try { var hh = document.getElementById('hide-healthy'); if (hh) { hh.checked = hideHealthy; hh.addEventListener('change', function(){ try{ localStorage.setItem('ae_hide_healthy', hh.checked?'1':''); }catch(e){}; renderCounters(lastSystem||{}); }); } } catch(e){}
+      try { var cc = document.getElementById('compact-counters'); if (cc) { cc.checked = compactCounters; cc.addEventListener('change', function(){ try{ localStorage.setItem('ae_compact_counters', cc.checked?'1':''); }catch(e){}; renderCounters(lastSystem||{}); }); } } catch(e){}
+
+      // Apps pane collapse/expand (expanded by default)
+      try {
+        var initCollapsed = (localStorage.getItem('dash_apps_collapsed')||'') === '1';
+        if (initCollapsed) {
+          document.body.classList.add('apps-collapsed');
+          appsToggle.setAttribute('aria-pressed','true');
+          appsToggle.title='Expand apps pane';
+          try { requestAnimationFrame(positionAppsToggle); } catch(e){}
+        }
+        appsToggle.addEventListener('click', function(){
+          var collapsed = document.body.classList.toggle('apps-collapsed');
+          try { localStorage.setItem('dash_apps_collapsed', collapsed ? '1' : ''); } catch(e){}
+          appsToggle.setAttribute('aria-pressed', collapsed ? 'true' : 'false');
+          appsToggle.title = collapsed ? 'Expand apps pane' : 'Collapse apps pane';
+          try { requestAnimationFrame(function(){ requestAnimationFrame(positionAppsToggle); }); } catch(e){}
+        });
+      } catch(e){}
+
+      // Precisely position the chevron relative to the apps pane (account for collapse/expand)
+      function positionAppsToggle(){
+        try {
+          var pane = document.getElementById('apps');
+          var btn = document.getElementById('apps-pane-toggle');
+          if (!pane || !btn) return;
+          var rect = pane.getBoundingClientRect();
+          var isCollapsed = document.body.classList.contains('apps-collapsed');
+          // Horizontal target (center the 28px button explicitly since we removed translateX):
+          //  - Expanded: hug the pane's right edge (inset 12px)
+          //  - Collapsed: center on the 16px rail, then nudge left by ~50px per feedback
+          var btnW = (btn.getBoundingClientRect().width || 28);
+          // Collapsed: place handle at a fixed gutter (visual spec: ~8px from viewport left).
+          // Expanded: hug apps pane right edge minus 12px (minus half button width to center).
+          var targetX = isCollapsed
+            ? (8 - btnW / 2)  // center the button at an 8px gutter
+            : (rect.right - 12 - btnW / 2);
+          btn.style.left = Math.round(targetX) + 'px';
+          // Let CSS keep the vertical centering via top:50vh; avoid JS scroll offset bugs.
+        } catch(_){}
+      }
+      // Initial placement and on interactions
+      try { positionAppsToggle(); } catch(_){}
+      window.addEventListener('scroll', positionAppsToggle, { passive: true });
+      window.addEventListener('resize', positionAppsToggle);
+
+      // Removed dynamic apps pane sizer; rely on CSS max-height.
 
       pauseBtn.addEventListener('click', function () {
         pauseLogs = !pauseLogs;
@@ -1216,20 +2644,40 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
       function refreshApps(){
         return fetchJSON('/status?limit=200').then(function(data){
-          elApps.innerHTML = '';
+          if (elAppsList) elAppsList.innerHTML = '';
           lastStatuses = data.items || [];
           data.items.forEach(function(s){
-            var ok = s.ready_replicas >= s.desired_replicas && s.desired_replicas > 0;
-            var warn = !ok && s.ready_replicas > 0;
-            var bad = s.ready_replicas === 0 && s.desired_replicas > 0;
+            // Use server-derived revision_status for the primary badge to avoid
+            // drift with controller semantics (ready/progressing/degraded).
+            var statusBadge = '';
+            var rs = String(s.revision_status||'').toLowerCase();
+            if (rs === 'ready') statusBadge = badge('ok','ready');
+            else if (rs === 'progressing') statusBadge = badge('warn','progressing');
+            else statusBadge = badge('bad','degraded');
             var div = document.createElement('div');
             div.className = 'app' + (current===s.app_name ? ' active' : '');
             try { div.dataset.app = s.app_name; } catch(e){}
-            var line1 = '<div><strong>' + s.app_name + '</strong> ' + (ok?badge('ok','ready'):warn?badge('warn','progressing'):bad?badge('bad','degraded'):'') + '</div>';
+            // Canary pill if rollout strategy is canary with weight>0
+            var canary = '';
+            var pausedPill = '';
+            try {
+              var ro = s.rollout || null;
+              var w = (ro && ro.weight!=null) ? Number(ro.weight) : 0;
+              if (ro && String((ro.strategy||'')).toLowerCase()==='canary' && w>0) {
+                canary = badge('warn', 'canary ' + String(w) + '%');
+              }
+              if (ro && ro.pause === true) {
+                pausedPill = badge('warn', 'paused');
+              }
+            } catch(e){}
+            var crash = (lastSystem && lastSystem.crashloop && lastSystem.crashloop[s.app_name]) ? badge('bad','crashloop') : '';
+            var cdsec = (lastSystem && lastSystem.cooldown && lastSystem.cooldown[s.app_name]) ? Number(lastSystem.cooldown[s.app_name]||0) : 0;
+            var cd = cdsec>0 ? badge('warn','cooldown '+String(cdsec)+'s') : '';
+            var line1 = '<div><strong>' + s.app_name + '</strong> ' + statusBadge + ' ' + canary + ' ' + pausedPill + ' ' + crash + ' ' + cd + '</div>';
             var line2 = '<div style="font-size:12px;color:#666;">' + s.ready_replicas + '/' + s.desired_replicas + ' ready - rev ' + s.revision_status + '</div>';
             div.innerHTML = line1 + line2;
             div.onclick = function(){ selectApp(s.app_name); };
-            elApps.appendChild(div);
+            if (elAppsList) elAppsList.appendChild(div);
           });
           if(!current && data.items.length){ selectApp(data.items[0].app_name); }
           renderGraphIfReady();
@@ -1243,7 +2691,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           document.getElementById('d-image').textContent = s.image || '-';
           var inh = (s.ingress_host || '-') + (s.ingress_path || '');
           document.getElementById('d-ingress').textContent = inh;
-          document.getElementById('d-replicas').textContent = s.ready_replicas + '/' + s.desired_replicas + ' (live ' + s.live_replicas + ')';
+          var repText = s.ready_replicas + '/' + s.desired_replicas + ' (live ' + s.live_replicas + ')';
+          if (lastSystem && lastSystem.crashloop && lastSystem.crashloop[s.app_name]) { repText += '  crashloop'; }
+          try {
+            var cdsec = (lastSystem && lastSystem.cooldown && lastSystem.cooldown[s.app_name]) ? Number(lastSystem.cooldown[s.app_name]||0) : 0;
+            if (cdsec>0) { repText += '  cooldown ' + String(cdsec) + 's'; }
+          } catch(e){}
+          document.getElementById('d-replicas').textContent = repText;
           document.getElementById('d-rev').textContent = s.revision;
           document.getElementById('d-rev-status').textContent = s.revision_status;
           try {
@@ -1251,14 +2705,56 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             var svc = (man.spec || {}).service || null;
             var svcText = svc ? (String(svc.port) + (svc.target_port ? (' -> ' + String(svc.target_port)) : '')) : '-';
             document.getElementById('d-service').textContent = svcText;
+            // Rollout config (show strategy/weight/pause when present)
+            var ro = (man.spec || {}).rollout || null;
+            var roText = '-';
+            if (ro) {
+              var strat = String(ro.strategy||'parallel');
+              var weight = (ro.weight!=null) ? Number(ro.weight) : null;
+              var paused = (ro.pause===true);
+              if (strat==='canary') {
+                roText = 'canary' + (weight!=null? (' weight '+String(weight)+'%'):'');
+              } else {
+                roText = strat;
+              }
+              if (paused) roText += ' (paused)';
+            }
+            document.getElementById('d-rollout').textContent = roText;
             var secRefs = ((man.spec || {}).secret_refs || []).length;
             document.getElementById('d-secrets').textContent = secRefs ? (secRefs + ' ref' + (secRefs>1?'s':'')) : '-';
             var storage = ((man.spec || {}).storage || []).map(function(v){ return v.name || ''; }).filter(Boolean);
             document.getElementById('d-storage').textContent = storage.length ? storage.join(', ') : '-';
           } catch(e) { }
-          return fetchJSON('/events/' + encodeURIComponent(current) + '?limit=50').then(function(ev){
-            elEvents.innerHTML = ev.map(function(e){ return '<div><code>' + e.created_at + '</code> ' + e.event_type + ' - ' + escapeHtml(e.message) + '</div>'; }).join('');
-          }).then(function(){ updateLogsHTMX(); });
+          // Render replicas table with backoff countdown
+          try {
+            var rbody = document.querySelector('#tbl-replicas tbody');
+            if (rbody) {
+              var rows = (s.replicas||[]).map(function(r){
+                // Extract backoff seconds from readiness/liveness messages
+                function parseBackoff(msg){
+                  var m = String(msg||'').match(/backoff \((\d+)s\)/);
+                  return m ? Number(m[1]) : 0;
+                }
+                var bo = Math.max(parseBackoff(r.readiness_message), parseBackoff(r.liveness_message));
+                var now = Date.now();
+                var deadline = bo > 0 ? (now + bo*1000) : 0;
+                var boText = bo>0 ? (String(bo)+'s') : '';
+                return {
+                  html: '<tr data-rid="'+escapeHtml(r.replica_id)+'" data-deadline="'+String(deadline)+'">'
+                        + '<td>'+escapeHtml(r.replica_id)+'</td>'
+                        + '<td>'+(r.ready?'yes':'no')+'</td>'
+                        + '<td>'+(r.live?'yes':'no')+'</td>'
+                        + '<td>'+escapeHtml(r.status||'')+'</td>'
+                        + '<td class="bo">'+boText+'</td>'
+                        + '</tr>'
+                };
+              });
+              rbody.innerHTML = rows.map(function(x){ return x.html; }).join('');
+              scheduleBackoffTick();
+            }
+          } catch(e) { console.error('replica table', e); }
+          // Events are now streamed via SSE; keep logs HTMX config fresh
+          updateLogsHTMX();
         });
       }
 
@@ -1268,11 +2764,31 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if(ms > 0){ pollTimer = setInterval(function(){ Promise.all([refreshApps(), refreshDetail(), refreshSystem()]).catch(console.error); }, ms); }
       }
 
+      var backoffTimer = null;
+      function scheduleBackoffTick(){
+        if (backoffTimer) return;
+        backoffTimer = setInterval(function(){
+          try {
+            var rows = Array.from(document.querySelectorAll('#tbl-replicas tbody tr'));
+            var now = Date.now();
+            rows.forEach(function(tr){
+              var td = tr.querySelector('td.bo');
+              var deadline = Number(tr.getAttribute('data-deadline')||'0');
+              if (!td || !deadline) { if(td) td.textContent=''; return; }
+              var rem = Math.max(0, Math.floor((deadline - now)/1000));
+              td.textContent = rem>0 ? (String(rem)+'s') : '';
+              if (rem <= 0) tr.setAttribute('data-deadline','0');
+            });
+          } catch(e){}
+        }, 1000);
+      }
+
       function selectApp(name){
         current = name;
         clearLogs();
         updateLogsHTMX();
         updateLogStreaming();
+        updateEventsStreaming();
         refreshDetail().then(function(){ refreshApps(); focusAppListItem(name); renderGraphIfReady(); });
       }
 
@@ -1319,12 +2835,74 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             row.innerHTML='<code>'+escapeHtml(ts)+'</code> '+escapeHtml(msg);
             var box = document.getElementById('logs');
             if(!box) return;
-            var atBottom = (box.scrollTop + box.clientHeight) >= (box.scrollHeight - 16);
             box.appendChild(row);
-            if (atBottom) { box.scrollTop = box.scrollHeight; }
+            // Always follow newest line to bottom edge
+            box.scrollTop = box.scrollHeight;
           };
           es.onerror = function(){ /* default retry */ };
         } catch (e) { console.error('EventSource failed', e); }
+      }
+      function updateEventsStreaming(){
+        if (eventsSource) { try { eventsSource.close(); } catch(e){} eventsSource = null; }
+        if (!current) return;
+        var url = '/dashboard/sse/events?' + new URLSearchParams({ app: current, limit: '50' }).toString();
+        try {
+          var es = new EventSource(url);
+          eventsSource = es;
+          es.onmessage = function(ev){
+            var list = [];
+            try { list = JSON.parse(ev.data || '[]') || []; } catch(_) { list = []; }
+            list = list.slice().reverse();
+            elEvents.innerHTML = list.map(function(e){ return '<div class="log-entry"><code>' + e.created_at + '</code> ' + e.event_type + ' - ' + escapeHtml(e.message) + '</div>'; }).join('') || '<div class="log-entry">No recent events</div>';
+            try { elEvents.scrollTop = elEvents.scrollHeight; } catch(_){}
+          };
+          es.onerror = function(){ /* default retry */ };
+        } catch (e) { console.error('EventSource events failed', e); }
+      }
+
+      // Plan diagnostics UI
+      function runPlan(){
+        var txt = document.getElementById('plan-json').value || '';
+        var out = document.getElementById('plan-output');
+        var status = document.getElementById('plan-status');
+        status.textContent = '…'; status.className='pill';
+        out.textContent = '';
+        var payload = null;
+        try {
+          if (txt.trim().startsWith('{')) {
+            payload = JSON.parse(txt);
+          } else if (window.jsyaml) {
+            payload = window.jsyaml.load(txt);
+          } else {
+            payload = JSON.parse(txt);
+          }
+        } catch(e) { status.textContent='Invalid YAML/JSON'; status.className='pill bad'; return; }
+        function postJSON(url, data){
+          return fetch(url, { method: 'POST', headers: Object.assign({'Content-Type':'application/json'}, authHeaders()), body: JSON.stringify(data) })
+            .then(function(r){ return r.text().then(function(t){ if(!r.ok){ throw new Error(t || ('HTTP '+r.status)); } try { return t ? JSON.parse(t) : {}; } catch(e){ throw new Error('Bad JSON'); } }); });
+        }
+        postJSON('/plan', payload)
+          .catch(function(){ return postJSON('/dashboard/plan', payload); })
+          .catch(function(){ return postJSON('/labs/plan', payload); })
+          .then(function(data){ out.textContent = JSON.stringify(data, null, 2); var ok=!!data.ok; status.textContent = ok? 'ok' : 'warnings'; status.className='pill '+(ok?'ok':'warn'); })
+          .catch(function(err){ status.textContent='error'; status.className='pill bad'; out.textContent=String(err); });
+      }
+      function loadPlanFromApp(){
+        if (!current) { return; }
+        // Prefer /status?details=1 (proxied by docs) to avoid /manifest proxy gaps
+        fetchJSON('/status/' + encodeURIComponent(current) + '?details=1')
+          .then(function(s){
+            var man = (s && s.manifest) ? s.manifest : null;
+            if (!man) throw new Error('no manifest on status');
+            document.getElementById('plan-json').value = JSON.stringify(man, null, 2);
+          })
+          .catch(function(){
+            // Fallback to /manifest/<app>
+            return fetch('/manifest/' + encodeURIComponent(current), { headers: authHeaders() })
+              .then(function(r){ if(!r.ok) throw new Error('manifest not found'); return r.json(); })
+              .then(function(data){ document.getElementById('plan-json').value = JSON.stringify(data, null, 2); })
+              .catch(function(err){ console.error('load manifest failed', err); });
+          });
       }
 
       function focusAppListItem(name){
@@ -1333,6 +2911,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           if (el) { el.scrollIntoView({block:'nearest'}); }
         } catch(e){}
       }
+      try { document.getElementById('plan-run').addEventListener('click', runPlan); } catch(e) {}
+      try { document.getElementById('plan-load').addEventListener('click', loadPlanFromApp); } catch(e) {}
+      try { document.getElementById('plan-copy').addEventListener('click', function(){
+        try { navigator.clipboard.writeText(document.getElementById('plan-output').textContent || ''); } catch(e){}
+      }); } catch(e) {}
 
       function renderCounters(sys){
         var el = document.getElementById('sys-counters');
@@ -1342,15 +2925,82 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         var ingressSites = (sys.ingress && sys.ingress.sites) ? sys.ingress.sites.length : 0;
         var services = (sys.services || []).length;
         var volumes = (sys.volumes || []).length;
+        var containers = (sys.containers || []);
+        var containerCount = containers.length;
+        var restartSum = containers.reduce(function(acc, c){ return acc + (Number(c.restart_count||0)||0); }, 0);
         var pills = [
           {k:'Last Reconcile', v:lastTs},
           {k:'Duration', v:lastDur},
           {k:'Ingress Sites', v:String(ingressSites)},
           {k:'Services', v:String(services)},
           {k:'Volumes', v:String(volumes)},
+          {k:'Containers', v:String(containerCount)},
+          {k:'Restarts', v:String(restartSum)},
           {k:'Mutations', v: (sys.rbac && sys.rbac.mutations_enabled) ? 'enabled' : 'disabled'},
         ];
+        try {
+          var docs = sys.docs || null;
+          if (docs) {
+            pills.push({k:'Docs', v: (docs.ok ? ('up :'+String(docs.port)) : 'down')});
+          }
+          var api = sys.api || null;
+          if (api) { pills.push({k:'API', v: (api.ok ? ('up :'+String(api.port)) : 'down')}); }
+        } catch(e){}
         el.innerHTML = pills.map(function(p){ return '<div class="pill" style="background:#0001">'+escapeHtml(p.k)+': <strong>'+escapeHtml(p.v)+'</strong></div>'; }).join('');
+      }
+
+      // Restart sparkline state (per-container ring buffers)
+      var restartSeries = {}; // name -> [{t, rc}]
+      function _seriesCap(){
+        try {
+          var ms = parseInt(pollSel.value, 10) || 0;
+          if (ms <= 0) return 60; // default when manual refresh
+          return Math.max(10, Math.min(120, Math.floor(60000 / ms)));
+        } catch(e){ return 60; }
+      }
+      function _updateRestartSeries(containers){
+        var now = Date.now();
+        var cap = _seriesCap(); // ~last minute worth of samples
+        (containers||[]).forEach(function(c){
+          var name = String(c.name||'');
+          if (!name) return;
+          var rc = Number(c.restart_count||0)||0;
+          var arr = restartSeries[name] || [];
+          arr.push({t: now, rc: rc});
+          if (arr.length > cap) arr = arr.slice(arr.length - cap);
+          restartSeries[name] = arr;
+        });
+      }
+      function _sparklineSVG(name){
+        var arr = restartSeries[name] || [];
+        var W = 60, H = 12;
+        if (arr.length < 2) return '<svg width="'+W+'" height="'+H+'"></svg>';
+        // Build deltas across samples
+        var deltas = [];
+        for (var i=1;i<arr.length;i++){ var d = Math.max(0, (arr[i].rc - arr[i-1].rc)); deltas.push(d); }
+        var maxd = 0; for (var j=0;j<deltas.length;j++){ if (deltas[j]>maxd) maxd=deltas[j]; }
+        // Choose color by severity
+        var color = '#9ca3af'; // gray baseline
+        if (maxd <= 0) color = '#9ca3af';
+        else if (maxd === 1) color = '#16a34a';       // green for occasional single restarts
+        else if (maxd <= 3) color = '#f59e0b';        // orange for moderate
+        else color = '#ef4444';                       // red for high
+        // Avoid division by zero; flat line near bottom when no restarts
+        var points = [];
+        for (var k=0;k<deltas.length;k++){
+          var x = Math.floor(k * (W-1) / Math.max(1, deltas.length-1));
+          var y;
+          if (maxd <= 0){ y = H-2; }
+          else { var v = deltas[k] / maxd; y = Math.max(1, H - 1 - Math.floor(v * (H-2))); }
+          points.push(x+','+y);
+        }
+        var tip = '';
+        try {
+          var tail = deltas.slice(-5);
+          tip = ' last deltas: ' + tail.join(', ');
+        } catch(e){}
+        var poly = '<polyline fill="none" stroke="'+color+'" stroke-width="1" points="'+points.join(' ')+'" />';
+        return '<svg width="'+W+'" height="'+H+'"><title>'+('Restarts per sample,'+tip)+'</title>'+poly+'</svg>';
       }
 
       function refreshSystem(){
@@ -1369,6 +3019,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           if(vbody){ vbody.innerHTML = (sys.volumes||[]).map(function(v){
             var app = (v.labels&&v.labels['ae.app'])||'';
             return '<tr><td>'+escapeHtml(v.name||'')+'</td><td>'+escapeHtml(app)+'</td><td>'+escapeHtml(v.driver||'')+'</td><td>'+escapeHtml(v.mountpoint||'')+'</td></tr>';
+          }).join(''); }
+          // Update restart series, then render containers
+          _updateRestartSeries(sys.containers||[]);
+          var cbody = document.querySelector('#tbl-containers tbody');
+          if(cbody){ cbody.innerHTML = (sys.containers||[]).map(function(c){
+            var app = (c.labels&&c.labels['ae.app'])||'';
+            var ports = (c.host_ports||[]).join(', ');
+            var restarts = Number(c.restart_count||0)||0;
+            var spark = _sparklineSVG(String(c.name||''));
+            return '<tr><td>'+escapeHtml(c.name||'')+'</td><td>'+escapeHtml(app)+'</td><td>'+escapeHtml(ports)+'</td><td>'+String(restarts)+'</td><td>'+spark+'</td></tr>';
           }).join(''); }
           renderGraphIfReady();
         });
@@ -1838,7 +3498,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             return
         except Exception:
             try:
-                self.wfile.write(b"event: error\n" b"data: stream closed\n\n")
+                self.wfile.write(b"event: error\ndata: stream closed\n\n")
                 self.wfile.flush()
             except Exception:
                 pass
@@ -1910,6 +3570,9 @@ def start_http_api(
     apply_fn=None,
     logs_fn=None,
     system_info_fn=None,
+    plan_fn=None,
+    rollout_pause_fn=None,
+    rollout_resume_fn=None,
 ) -> Tuple[socketserver.TCPServer, int, threading.Thread]:
     """Start the HTTP API on the given port.
 
@@ -1926,6 +3589,13 @@ def start_http_api(
     handler_cls.logs_fn = staticmethod(logs_fn) if logs_fn is not None else None
     handler_cls.system_info_fn = (
         staticmethod(system_info_fn) if system_info_fn is not None else None
+    )
+    handler_cls.plan_fn = staticmethod(plan_fn) if plan_fn is not None else None
+    handler_cls.rollout_pause_fn = (
+        staticmethod(rollout_pause_fn) if rollout_pause_fn is not None else None
+    )
+    handler_cls.rollout_resume_fn = (
+        staticmethod(rollout_resume_fn) if rollout_resume_fn is not None else None
     )
 
     # Allow quick restarts by enabling SO_REUSEADDR to avoid TIME_WAIT bind errors
