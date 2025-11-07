@@ -249,11 +249,18 @@ class DockerRuntime(RuntimeAdapter):
         # Build port mapping; if a Service is specified and replicas==1, publish a stable host port
         svc_port = None
         svc_target = None
+        svc_ports_list = None
         if getattr(manifest.spec, "service", None) and manifest.spec.replicas == 1:
-            svc_port = manifest.spec.service.port
-            svc_target = manifest.spec.service.target_port
+            svc_port = getattr(manifest.spec.service, "port", None)
+            svc_target = getattr(manifest.spec.service, "target_port", None)
+            # Optional multi-port publishing for single-replica services
+            if getattr(manifest.spec.service, "ports", None):
+                svc_ports_list = list(manifest.spec.service.ports)
         ports = self._port_mapping(
-            manifest.spec.ports, service_port=svc_port, service_target=svc_target
+            manifest.spec.ports,
+            service_port=svc_port,
+            service_target=svc_target,
+            service_ports=svc_ports_list,
         )
         # Pre-flight conflict check for service stable port
         if svc_port is not None:
@@ -262,6 +269,8 @@ class DockerRuntime(RuntimeAdapter):
         # resource limits
         nano_cpus = None
         mem_limit = None
+        cpu_shares = None
+        mem_reservation = None
         if manifest.spec.resources and manifest.spec.resources.limits:
             limits = manifest.spec.resources.limits
             if limits.cpu is not None:
@@ -271,6 +280,17 @@ class DockerRuntime(RuntimeAdapter):
                     nano_cpus = None
             if limits.memory is not None:
                 mem_limit = self._parse_memory_bytes(str(limits.memory))
+        # resource requests → soft reservations
+        if manifest.spec.resources and manifest.spec.resources.requests:
+            reqs = manifest.spec.resources.requests
+            if reqs.cpu is not None:
+                try:
+                    # Docker cpu-shares: 1024 ≈ 1 CPU share
+                    cpu_shares = max(2, int(float(reqs.cpu) * 1024))
+                except ValueError:
+                    cpu_shares = None
+            if reqs.memory is not None:
+                mem_reservation = self._parse_memory_bytes(str(reqs.memory))
 
         # volumes
         volumes = {}
@@ -324,10 +344,41 @@ class DockerRuntime(RuntimeAdapter):
                 drops = list(getattr(sec, "drop_caps", []) or [])
                 if drops:
                     kwargs["cap_drop"] = drops
+                # Map seccomp and AppArmor to Docker security_opt
+                secopts: list[str] = []
+                try:
+                    s_type = getattr(sec, "seccomp_type", None)
+                    s_local = getattr(sec, "seccomp_localhost_profile", None)
+                    if s_type:
+                        st = str(s_type)
+                        if st == "RuntimeDefault":
+                            secopts.append("seccomp=runtime/default")
+                        elif st == "Unconfined":
+                            secopts.append("seccomp=unconfined")
+                        elif st == "Localhost" and s_local:
+                            # Docker expects a path to a local profile JSON
+                            secopts.append(f"seccomp={s_local}")
+                    a_prof = getattr(sec, "apparmor_profile", None)
+                    if a_prof:
+                        ap = str(a_prof)
+                        if ap.startswith("localhost/"):
+                            ap = ap.split("/", 1)[1]
+                        if ap == "runtime/default":
+                            ap = "docker-default"
+                        secopts.append(f"apparmor={ap}")
+                except Exception:
+                    # Be permissive if any mapping input is malformed
+                    pass
+                if secopts:
+                    kwargs["security_opt"] = secopts
             if nano_cpus is not None:
                 kwargs["nano_cpus"] = nano_cpus
             if mem_limit is not None:
                 kwargs["mem_limit"] = mem_limit
+            if cpu_shares is not None:
+                kwargs["cpu_shares"] = cpu_shares
+            if mem_reservation is not None:
+                kwargs["mem_reservation"] = mem_reservation
             if volumes:
                 kwargs["volumes"] = volumes
 
@@ -416,7 +467,20 @@ class DockerRuntime(RuntimeAdapter):
         else:
             ready = status == "running"
 
-        endpoint = self._endpoint_from_ports(manifest.spec.ports, container)
+        # Prefer endpoint that matches readiness probe's declared port (http/tcp)
+        preferred_port = None
+        try:
+            if manifest.spec.health and manifest.spec.health.readiness:
+                r = manifest.spec.health.readiness
+                if getattr(r, "http_get", None) is not None:
+                    preferred_port = int(r.http_get.port)
+                elif getattr(r, "tcp_socket", None) is not None:
+                    preferred_port = int(r.tcp_socket.port)
+        except Exception:
+            preferred_port = None
+        endpoint = self._endpoint_from_ports(
+            manifest.spec.ports, container, preferred=preferred_port
+        )
 
         started_at = self._parse_datetime(state.get("StartedAt"))
 
@@ -434,15 +498,42 @@ class DockerRuntime(RuntimeAdapter):
         *,
         service_port: Optional[int] = None,
         service_target: Optional[int] = None,
+        service_ports: Optional[Iterable] = None,
     ) -> Dict[str, Optional[int]]:
         mapping: Dict[str, Optional[int]] = {}
         first_port = None
+        # If multi-port service mapping is provided, build quick lookup from target->host
+        svc_map: Dict[int, int] = {}
+        if service_ports is not None:
+            # Build container port name/number map
+            try:
+                by_name = {p.name: int(p.container_port) for p in ports if getattr(p, "name", None)}
+            except Exception:
+                by_name = {}
+            try:
+                by_num = {int(p.container_port): int(p.container_port) for p in ports}
+            except Exception:
+                by_num = {}
+            for sp in service_ports:
+                try:
+                    tgt = getattr(sp, "target_port", None)
+                    name = getattr(sp, "name", None)
+                    portnum = getattr(sp, "port", None)
+                    if tgt is None:
+                        tgt = by_name.get(name) or by_num.get(int(portnum))
+                    if tgt is not None and portnum is not None:
+                        svc_map[int(tgt)] = int(portnum)
+                except Exception:
+                    continue
+
         for port in ports:
             if first_port is None:
                 first_port = port.container_port
             key = f"{port.container_port}/tcp"
             host_port: Optional[int] = None
-            if service_port is not None:
+            if svc_map:
+                host_port = svc_map.get(int(port.container_port))
+            elif service_port is not None:
                 target = service_target if service_target is not None else first_port
                 if port.container_port == target:
                     host_port = int(service_port)
@@ -450,11 +541,24 @@ class DockerRuntime(RuntimeAdapter):
         return mapping
 
     def _endpoint_from_ports(
-        self, ports: Iterable[PortSpec], container: Container
+        self, ports: Iterable[PortSpec], container: Container, *, preferred: Optional[int] = None
     ) -> Optional[str]:
         if not ports:
             return None
         network_ports = container.attrs.get("NetworkSettings", {}).get("Ports", {}) or {}
+        # Try preferred container port first when provided
+        if preferred is not None:
+            key = f"{int(preferred)}/tcp"
+            binds = network_ports.get(key)
+            if binds:
+                binding = binds[0]
+                host_ip = binding.get("HostIp", "127.0.0.1")
+                # Docker reports HostIp "0.0.0.0"/"::" for wildcard binds; use loopback for local probes
+                if host_ip in ("0.0.0.0", "::", "[::]"):
+                    host_ip = "127.0.0.1"
+                host_port = binding.get("HostPort")
+                if host_port:
+                    return f"{host_ip}:{host_port}"
         for port in ports:
             key = f"{port.container_port}/tcp"
             bindings = network_ports.get(key)
@@ -462,6 +566,8 @@ class DockerRuntime(RuntimeAdapter):
                 continue
             binding = bindings[0]
             host_ip = binding.get("HostIp", "127.0.0.1")
+            if host_ip in ("0.0.0.0", "::", "[::]"):
+                host_ip = "127.0.0.1"
             host_port = binding.get("HostPort")
             if host_port:
                 return f"{host_ip}:{host_port}"
@@ -549,15 +655,29 @@ class DockerRuntime(RuntimeAdapter):
                                 ports.append(int(hp))
                             except ValueError:
                                 continue
+                state = (c.attrs or {}).get("State", {})
+                restarts = (
+                    int(state.get("RestartCount", 0))
+                    if isinstance(state.get("RestartCount", 0), (int, float))
+                    else 0
+                )
                 out.append(
                     {
                         "name": c.name,
                         "labels": c.labels or {},
                         "host_ports": ports,
+                        "restart_count": restarts,
                     }
                 )
             except Exception:
-                out.append({"name": getattr(c, "name", ""), "labels": {}, "host_ports": []})
+                out.append(
+                    {
+                        "name": getattr(c, "name", ""),
+                        "labels": {},
+                        "host_ports": [],
+                        "restart_count": 0,
+                    }
+                )
         return out
 
     # Storage volumes ---------------------------------------------------

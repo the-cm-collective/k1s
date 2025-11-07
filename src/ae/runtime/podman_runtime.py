@@ -51,9 +51,11 @@ class PodmanRuntime(RuntimeAdapter):
 
         # Find existing containers for this app
         existing = self._list_app_containers(app)
+
         def _labels(obj: dict) -> dict:
             return (obj.get("Config") or {}).get("Labels") or {}
-        by_replica = { _labels(c).get(self.REPLICA_LABEL): c for c in existing if _labels(c) }
+
+        by_replica = {_labels(c).get(self.REPLICA_LABEL): c for c in existing if _labels(c)}
         old = [c for c in existing if _labels(c).get(self.REVISION_LABEL) != str(revision)]
 
         created = updated = removed = 0
@@ -65,8 +67,14 @@ class PodmanRuntime(RuntimeAdapter):
             # import from Docker daemon if present
             try:
                 import shutil as _sh
+
                 if _sh.which("docker") is not None:
-                    di = subprocess.run(["docker", "image", "inspect", image], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    di = subprocess.run(
+                        ["docker", "image", "inspect", image],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
                     if di.returncode == 0:
                         self._run_ok([self._bin, "pull", f"docker-daemon:{image}"], allow_fail=True)
             except Exception:
@@ -77,16 +85,21 @@ class PodmanRuntime(RuntimeAdapter):
 
         svc_port = None
         svc_target = None
+        svc_ports_list = None
         if getattr(manifest.spec, "service", None) and manifest.spec.replicas == 1:
-            svc_port = manifest.spec.service.port
-            svc_target = manifest.spec.service.target_port
+            svc_port = getattr(manifest.spec.service, "port", None)
+            svc_target = getattr(manifest.spec.service, "target_port", None)
+            if getattr(manifest.spec.service, "ports", None):
+                svc_ports_list = list(manifest.spec.service.ports)
 
         for rid in desired_ids:
             c = by_replica.get(rid)
             if c is None:
                 if limit_create is not None and created >= int(limit_create):
                     continue
-                self._create_container(manifest, rid, revision, service=(svc_port, svc_target))
+                self._create_container(
+                    manifest, rid, revision, service=(svc_port, svc_target, svc_ports_list)
+                )
                 # If a shared network is configured, connect the new container to it
                 if self._network_name:
                     cid = self._find_by_label(self.REPLICA_LABEL, rid)
@@ -97,13 +110,38 @@ class PodmanRuntime(RuntimeAdapter):
                             f"ae-{app}-rep-{rid.split('-')[-1]}",
                         ]
                         for al in aliases:
-                            self._run_ok([self._bin, "network", "connect", "--alias", al, self._network_name, cid], allow_fail=True)
+                            self._run_ok(
+                                [
+                                    self._bin,
+                                    "network",
+                                    "connect",
+                                    "--alias",
+                                    al,
+                                    self._network_name,
+                                    cid,
+                                ],
+                                allow_fail=True,
+                            )
                 created += 1
             else:
-                # Ensure running
-                if (c.get("State") or {}).get("Status") != "running":
-                    self._run_ok([self._bin, "start", c.get("Id", "")])
-                    updated += 1
+                # Ensure running with proper handling of Podman states
+                st = (c.get("State") or {}).get("Status") or ""
+                cid = c.get("Id", "")
+                if st != "running":
+                    # Unpause if needed
+                    if st == "paused":
+                        self._run_ok([self._bin, "unpause", cid], allow_fail=True)
+                        # refresh status lazily after unpause
+                        updated += 1
+                    # Initialize if container is in 'configured' state (Podman specific)
+                    elif st == "configured":
+                        self._run_ok([self._bin, "container", "init", cid], allow_fail=True)
+                        self._run_ok([self._bin, "start", cid], allow_fail=True)
+                        updated += 1
+                    else:
+                        # created/exited/stopped → start
+                        self._run_ok([self._bin, "start", cid], allow_fail=True)
+                        updated += 1
 
         if not keep_old:
             for c in old:
@@ -113,6 +151,18 @@ class PodmanRuntime(RuntimeAdapter):
         # Compose replica states
         final = self._list_app_containers(app)
         states: list[ReplicaState] = []
+        # Preferred container port for readiness
+        preferred_port: int | None = None
+        try:
+            if manifest.spec.health and manifest.spec.health.readiness:
+                r = manifest.spec.health.readiness
+                if getattr(r, "http_get", None) is not None:
+                    preferred_port = int(r.http_get.port)
+                elif getattr(r, "tcp_socket", None) is not None:
+                    preferred_port = int(r.tcp_socket.port)
+        except Exception:
+            preferred_port = None
+
         for c in final:
             labs = (c.get("Config") or {}).get("Labels") or {}
             if labs.get(self.REVISION_LABEL) != str(revision):
@@ -126,28 +176,48 @@ class PodmanRuntime(RuntimeAdapter):
             try:
                 pmap = (c.get("NetworkSettings") or {}).get("Ports") or {}
                 # Prefer host-published ports
-                for k, binds in (pmap or {}).items():
-                    if not binds:
-                        continue
-                    hp = (binds[0] or {}).get("HostPort")
-                    if hp:
-                        endpoint = f"127.0.0.1:{hp}"
-                        break
+                # 1) check preferred container port first
+                if preferred_port is not None:
+                    binds = (pmap or {}).get(f"{int(preferred_port)}/tcp")
+                    if binds:
+                        b0 = binds[0] or {}
+                        hp = b0.get("HostPort")
+                        if hp:
+                            hip = (b0.get("HostIp") or "").strip()
+                            loop_host = (
+                                "[::1]" if hip.startswith("[") or hip == "::" else "127.0.0.1"
+                            )
+                            endpoint = f"{loop_host}:{hp}"
+                # 2) otherwise pick the first published host port
+                if endpoint is None:
+                    for k, binds in (pmap or {}).items():
+                        if not binds:
+                            continue
+                        b0 = binds[0] or {}
+                        hp = b0.get("HostPort")
+                        if hp:
+                            hip = (b0.get("HostIp") or "").strip()
+                            loop_host = (
+                                "[::1]" if hip.startswith("[") or hip == "::" else "127.0.0.1"
+                            )
+                            endpoint = f"{loop_host}:{hp}"
+                            break
                 if endpoint is None:
                     # Fallback to `podman port <id>` which reliably reports published mappings
                     cid = c.get("Id") or ""
                     if cid:
                         pr = self._run_ok([self._bin, "port", cid], allow_fail=True)
-                        # Expected lines like: "8080/tcp -> 0.0.0.0:49213"
+                        # Expected lines like: "8080/tcp -> 0.0.0.0:49213" or "8080/tcp -> [::]:49213"
                         for line in (pr.out or "").splitlines():
                             try:
                                 _lhs, _arrow, rhs = line.partition("->")
                                 host = rhs.strip()
                                 if host:
-                                    # host may be "0.0.0.0:PORT" or "[::]:PORT"; use 127.0.0.1
+                                    # host may be "0.0.0.0:PORT" or "[::]:PORT"; use 127.0.0.1 or ::1 accordingly
                                     hp = host.split(":")[-1].strip()
                                     if hp.isdigit():
-                                        endpoint = f"127.0.0.1:{hp}"
+                                        loop_host = "[::1]" if host.startswith("[") else "127.0.0.1"
+                                        endpoint = f"{loop_host}:{hp}"
                                         break
                             except Exception:
                                 continue
@@ -156,15 +226,36 @@ class PodmanRuntime(RuntimeAdapter):
                     for k in (pmap or {}).keys():
                         port = k.split("/")[0]
                         if port:
-                            endpoint = f"{(c.get('Name','').lstrip('/'))}:{port}"
+                            endpoint = f"{(c.get('Name', '').lstrip('/'))}:{port}"
                             break
             except Exception:
                 pass
-            states.append(ReplicaState(replica_id=rid, ready=(st == "running"), status=st or "", endpoint=endpoint, started_at=started))
+            states.append(
+                ReplicaState(
+                    replica_id=rid,
+                    ready=(st == "running"),
+                    status=st or "",
+                    endpoint=endpoint,
+                    started_at=started,
+                )
+            )
 
-        return RuntimeResult(revision=revision, created=created, updated=updated, removed=removed, replica_states=states)
+        return RuntimeResult(
+            revision=revision,
+            created=created,
+            updated=updated,
+            removed=removed,
+            replica_states=states,
+        )
 
-    def read_logs(self, replica_id: str, *, follow: bool = False, tail: int | None = None, since: int | None = None):
+    def read_logs(
+        self,
+        replica_id: str,
+        *,
+        follow: bool = False,
+        tail: int | None = None,
+        since: int | None = None,
+    ):
         # Find container by label
         cid = self._find_by_label(self.REPLICA_LABEL, replica_id)
         if not cid:
@@ -193,7 +284,9 @@ class PodmanRuntime(RuntimeAdapter):
         # Stream using Popen when following to avoid buffering until process exit
         if follow:
             try:
-                with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) as proc:  # type: ignore
+                with subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+                ) as proc:  # type: ignore
                     if proc.stdout is not None:
                         for line in proc.stdout:
                             yield line.rstrip("\n")
@@ -241,7 +334,19 @@ class PodmanRuntime(RuntimeAdapter):
             except Exception:
                 pass
             if not exists:
-                self._run_ok([self._bin, "volume", "create", "--label", f"{self.APP_LABEL}={app_name}", "--label", f"ae.volume={name}", vol], allow_fail=False)
+                self._run_ok(
+                    [
+                        self._bin,
+                        "volume",
+                        "create",
+                        "--label",
+                        f"{self.APP_LABEL}={app_name}",
+                        "--label",
+                        f"ae.volume={name}",
+                        vol,
+                    ],
+                    allow_fail=False,
+                )
 
     def remove_storage_volumes(self, app_name: str, names: list[str]) -> int:  # type: ignore[override]
         removed = 0
@@ -268,7 +373,14 @@ class PodmanRuntime(RuntimeAdapter):
             else:
                 if not app:
                     continue
-            out.append({"name": it.get("Name", ""), "labels": labels, "driver": it.get("Driver", ""), "mountpoint": it.get("Mountpoint", "")})
+            out.append(
+                {
+                    "name": it.get("Name", ""),
+                    "labels": labels,
+                    "driver": it.get("Driver", ""),
+                    "mountpoint": it.get("Mountpoint", ""),
+                }
+            )
         return out
 
     # Info -------------------------------------------------------------
@@ -282,8 +394,11 @@ class PodmanRuntime(RuntimeAdapter):
         for it in items:
             labels = (it.get("Config") or {}).get("Labels") or {}
             host_ports: list[int] = []
+            restarts = 0
             try:
-                insp = self._run_ok([self._bin, "inspect", it.get("Id", ""), "--format", "json"], allow_fail=True)
+                insp = self._run_ok(
+                    [self._bin, "inspect", it.get("Id", ""), "--format", "json"], allow_fail=True
+                )
                 arr = json.loads(insp.out or "[]")
                 if arr:
                     pmap = (arr[0].get("NetworkSettings") or {}).get("Ports") or {}
@@ -297,9 +412,23 @@ class PodmanRuntime(RuntimeAdapter):
                                     host_ports.append(int(hp))
                                 except Exception:
                                     pass
+                    try:
+                        st = arr[0].get("State") or {}
+                        rc = st.get("RestartCount", 0)
+                        if isinstance(rc, (int, float)):
+                            restarts = int(rc)
+                    except Exception:
+                        restarts = 0
             except Exception:
                 pass
-            out.append({"name": it.get("Names", [it.get("Id", "")])[0], "labels": labels, "host_ports": host_ports})
+            out.append(
+                {
+                    "name": it.get("Names", [it.get("Id", "")])[0],
+                    "labels": labels,
+                    "host_ports": host_ports,
+                    "restart_count": restarts,
+                }
+            )
         return out
 
     def exec(self, replica_id: str, command: list[str], *, timeout: int | None = None) -> int:  # type: ignore[override]
@@ -316,7 +445,14 @@ class PodmanRuntime(RuntimeAdapter):
         return int(r.code)
 
     # Helpers ----------------------------------------------------------
-    def _create_container(self, manifest: AppManifest, replica_id: str, revision: int, *, service: tuple[int | None, int | None] = (None, None)) -> None:
+    def _create_container(
+        self,
+        manifest: AppManifest,
+        replica_id: str,
+        revision: int,
+        *,
+        service: tuple[int | None, int | None, list | None] = (None, None, None),
+    ) -> None:
         app = manifest.metadata.name
         suffix = replica_id.split("-")[-1]
         name = f"ae-{app}-rev{revision}-{suffix}"
@@ -330,19 +466,45 @@ class PodmanRuntime(RuntimeAdapter):
             # Best-effort stop/remove by name
             self._stop_and_remove(name)
 
-        cmd = [self._bin, "run", "-d", "--name", name,
-               "--label", f"{self.APP_LABEL}={app}",
-               "--label", f"{self.REPLICA_LABEL}={replica_id}",
-               "--label", f"{self.REVISION_LABEL}={revision}",
-               "--restart", "unless-stopped"]
+        cmd = [
+            self._bin,
+            "run",
+            "-d",
+            "--name",
+            name,
+            "--label",
+            f"{self.APP_LABEL}={app}",
+            "--label",
+            f"{self.REPLICA_LABEL}={replica_id}",
+            "--label",
+            f"{self.REVISION_LABEL}={revision}",
+            "--restart",
+            "unless-stopped",
+        ]
         try:
             stop_timeout = int(getattr(manifest.spec, "termination_grace_period_seconds", 10) or 10)
         except Exception:
             stop_timeout = 10
         cmd += ["--label", f"ae.stop_timeout={int(stop_timeout)}"]
 
+        # Resources: requests → soft reservations (cpu-shares, memory-reservation)
+        try:
+            reqs = getattr(getattr(manifest.spec, "resources", None), "requests", None)
+            if reqs is not None:
+                if getattr(reqs, "cpu", None) is not None:
+                    try:
+                        shares = max(2, int(float(reqs.cpu) * 1024))
+                        cmd += ["--cpu-shares", str(shares)]
+                    except Exception:
+                        pass
+                if getattr(reqs, "memory", None) is not None:
+                    mem = str(getattr(reqs, "memory"))
+                    cmd += ["--memory-reservation", mem]
+        except Exception:
+            pass
+
         # Env
-        for item in (manifest.spec.env or []):
+        for item in manifest.spec.env or []:
             if "name" in item and "value" in item:
                 cmd += ["-e", f"{item['name']}={item['value']}"]
 
@@ -351,17 +513,51 @@ class PodmanRuntime(RuntimeAdapter):
         # container ports (Docker parity: docker-py maps {"8080/tcp": None}). This
         # allows the controller (host) to probe readiness via 127.0.0.1:ephemeral and
         # lets Caddy proxy via host alias inside the container.
-        svc_port, svc_target = service
+        svc_port, svc_target, svc_ports_list = service
         published_any = False
-        if svc_port is not None:
+        if svc_ports_list:
+            # Publish each declared service port as host:container mapping
+            # Resolve targetPort similarly to the exporter rules
+            try:
+                by_name = {
+                    p.name: int(p.container_port)
+                    for p in (manifest.spec.ports or [])
+                    if getattr(p, "name", None)
+                }
+            except Exception:
+                by_name = {}
+            try:
+                by_num = {
+                    int(p.container_port): int(p.container_port)
+                    for p in (manifest.spec.ports or [])
+                }
+            except Exception:
+                by_num = {}
+            for sp in svc_ports_list or []:
+                try:
+                    portnum = getattr(sp, "port", None)
+                    tgt = getattr(sp, "target_port", None)
+                    name = getattr(sp, "name", None)
+                    if tgt is None:
+                        tgt = by_name.get(name) or (
+                            by_num.get(int(portnum)) if portnum is not None else None
+                        )
+                    if portnum is not None and tgt is not None:
+                        cmd += ["-p", f"{int(portnum)}:{int(tgt)}"]
+                        published_any = True
+                except Exception:
+                    continue
+        elif svc_port is not None:
             target = int(svc_target) if svc_target is not None else int(svc_port)
             cmd += ["-p", f"{int(svc_port)}:{target}"]
             published_any = True
         else:
-            for p in (manifest.spec.ports or []):
+            for p in manifest.spec.ports or []:
                 try:
                     host = int(getattr(p, "hostPort", 0) or 0)
-                    cport = int(getattr(p, "container_port", 0) or getattr(p, "containerPort", 0) or 0)
+                    cport = int(
+                        getattr(p, "container_port", 0) or getattr(p, "containerPort", 0) or 0
+                    )
                     if host and cport:
                         cmd += ["-p", f"{host}:{cport}"]
                         published_any = True
@@ -399,11 +595,39 @@ class PodmanRuntime(RuntimeAdapter):
             drops = list(getattr(sec, "drop_caps", []) or [])
             for cap in drops:
                 cmd += ["--cap-drop", str(cap)]
+            # seccomp and AppArmor via --security-opt
+            try:
+                s_type = getattr(sec, "seccomp_type", None)
+                s_local = getattr(sec, "seccomp_localhost_profile", None)
+                if s_type:
+                    st = str(s_type)
+                    if st == "RuntimeDefault":
+                        cmd += ["--security-opt", "seccomp=runtime/default"]
+                    elif st == "Unconfined":
+                        cmd += ["--security-opt", "seccomp=unconfined"]
+                    elif st == "Localhost" and s_local:
+                        # Podman accepts a path to a local profile JSON
+                        cmd += ["--security-opt", f"seccomp={s_local}"]
+                a_prof = getattr(sec, "apparmor_profile", None)
+                if a_prof:
+                    ap = str(a_prof)
+                    if ap.startswith("localhost/"):
+                        ap = ap.split("/", 1)[1]
+                    if ap == "runtime/default":
+                        # Podman uses "container-default" profile name typically; allow plain default mapping
+                        ap = "container-default"
+                    cmd += ["--security-opt", f"apparmor={ap}"]
+            except Exception:
+                pass
 
         # Image and command
         cmd += [manifest.spec.image]
         # If unqualified name missing but localhost/<name> exists, use that
-        if "/" not in manifest.spec.image and not self._image_exists(manifest.spec.image) and self._image_exists(f"localhost/{manifest.spec.image}"):
+        if (
+            "/" not in manifest.spec.image
+            and not self._image_exists(manifest.spec.image)
+            and self._image_exists(f"localhost/{manifest.spec.image}")
+        ):
             cmd[-1] = f"localhost/{manifest.spec.image}"
         if manifest.spec.command:
             if isinstance(manifest.spec.command, (list, tuple)):
@@ -419,7 +643,9 @@ class PodmanRuntime(RuntimeAdapter):
         # Inspect label for per-container stop timeout
         timeout = 10
         try:
-            r = self._run_ok([self._bin, "inspect", cid, "--format", "{{json .Config.Labels}}"], allow_fail=True)
+            r = self._run_ok(
+                [self._bin, "inspect", cid, "--format", "{{json .Config.Labels}}"], allow_fail=True
+            )
             import json as _json
 
             labels = _json.loads(r.out or "{}") or {}
@@ -431,7 +657,18 @@ class PodmanRuntime(RuntimeAdapter):
         self._run_ok([self._bin, "rm", "-f", cid], allow_fail=True)
 
     def _list_app_containers(self, app: str) -> list[dict]:
-        r = self._run_ok([self._bin, "ps", "-a", "--filter", f"label={self.APP_LABEL}={app}", "--format", "json"], allow_fail=True)
+        r = self._run_ok(
+            [
+                self._bin,
+                "ps",
+                "-a",
+                "--filter",
+                f"label={self.APP_LABEL}={app}",
+                "--format",
+                "json",
+            ],
+            allow_fail=True,
+        )
         try:
             ids = [it.get("Id", "") for it in json.loads(r.out or "[]")]
         except Exception:
@@ -449,7 +686,10 @@ class PodmanRuntime(RuntimeAdapter):
         return items
 
     def _find_by_label(self, key: str, value: str) -> Optional[str]:
-        r = self._run_ok([self._bin, "ps", "-a", "--filter", f"label={key}={value}", "--format", "{{.ID}}"], allow_fail=True)
+        r = self._run_ok(
+            [self._bin, "ps", "-a", "--filter", f"label={key}={value}", "--format", "{{.ID}}"],
+            allow_fail=True,
+        )
         cid = (r.out or "").strip().splitlines()
         return cid[0] if cid else None
 
@@ -464,7 +704,9 @@ class PodmanRuntime(RuntimeAdapter):
 
     def _run_ok(self, argv: list[str], *, allow_fail: bool = False) -> _RunResult:
         try:
-            cp = subprocess.run(argv, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            cp = subprocess.run(
+                argv, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
             if cp.returncode != 0 and not allow_fail:
                 raise RuntimeError(f"podman failed: {' '.join(argv)} => {cp.stderr.strip()}")
             return _RunResult(cp.returncode, cp.stdout or "", cp.stderr or "")
@@ -494,7 +736,7 @@ class PodmanRuntime(RuntimeAdapter):
                 for rp in repos or []:
                     for tg in tags or []:
                         names.append(f"{rp}:{tg}")
-                for n in (it.get("Names") or []):
+                for n in it.get("Names") or []:
                     names.append(n)
                 if name in names:
                     return True

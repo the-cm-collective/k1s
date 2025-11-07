@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 
 from docker.errors import NotFound
 
-from ae.controller.spec import AppManifest, AppSpec, Metadata, PortSpec
+from ae.controller.spec import AppManifest, AppSpec, Metadata, PortSpec, ServiceSpec
 from ae.runtime.docker_runtime import DockerRuntime
 
 
@@ -209,6 +209,55 @@ def test_docker_runtime_skips_pull_when_image_local():
     assert client.images.pulled == []
 
 
+def test_port_mapping_with_multi_service_ports():
+    client = FakeDockerClient()
+    runtime = DockerRuntime(client=client)
+
+    manifest = make_manifest(replica_count=1)
+    # Add a metrics port and multi-port Service mapping
+    manifest = manifest.model_copy(
+        update={
+            "spec": manifest.spec.model_copy(
+                update={
+                    "ports": manifest.spec.ports + [PortSpec(name="metrics", containerPort=9090)],
+                    "service": ServiceSpec(
+                        ports=[
+                            ServiceSpec.ServicePort(name="http", port=8080, targetPort=8080),
+                            ServiceSpec.ServicePort(name="metrics", port=9090, targetPort=9090),
+                        ]
+                    ),
+                }
+            )
+        }
+    )
+    mapping = runtime._port_mapping(  # type: ignore[attr-defined]
+        manifest.spec.ports,
+        service_ports=list(manifest.spec.service.ports),  # type: ignore[arg-type]
+    )
+    # Expect both container ports to be present with host ports matching service ports
+    assert mapping.get("8080/tcp") == 8080
+    assert mapping.get("9090/tcp") == 9090
+
+
+def test_endpoint_normalizes_anyaddr_to_loopback():
+    """HostIp 0.0.0.0 (wildcard) should be treated as 127.0.0.1 for probes."""
+    client = FakeDockerClient()
+    runtime = DockerRuntime(client=client)
+
+    manifest = make_manifest(replica_count=1)
+
+    # Seed a container and rewrite HostIp to the wildcard address that Docker uses
+    client.seed_container("demo", 0, revision=1)
+    container = client.containers_by_replica["demo-rev1-0"]
+    container.attrs["NetworkSettings"]["Ports"]["8080/tcp"][0]["HostIp"] = "0.0.0.0"
+
+    endpoint = runtime._endpoint_from_ports(manifest.spec.ports, container)  # type: ignore[attr-defined]
+
+    assert endpoint is not None
+    # Should map to loopback, not 0.0.0.0
+    assert endpoint.startswith("127.0.0.1:")
+
+
 def tmp_registry_config(client: FakeDockerClient):  # noqa: ANN001
     class StubAuth:
         def ensure_login(self, docker_client, image: str) -> None:  # noqa: ANN001
@@ -218,3 +267,45 @@ def tmp_registry_config(client: FakeDockerClient):  # noqa: ANN001
             return {"ghcr.io": {"username": "user", "password": "pass"}}
 
     return StubAuth()
+
+
+def test_build_state_prefers_readiness_port_for_endpoint():
+    # Minimal fake container with two published ports
+    class C:
+        def __init__(self) -> None:
+            self.name = "ae-echo-rev1-0"
+            self.labels = {"ae.replica_id": "echo-rev1-0"}
+            self.status = "running"
+            self.attrs = {
+                "State": {"Status": "running", "StartedAt": "2025-10-23T00:00:00+00:00"},
+                "NetworkSettings": {
+                    "Ports": {
+                        "8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "32001"}],
+                        "9090/tcp": [{"HostIp": "127.0.0.1", "HostPort": "40000"}],
+                    }
+                },
+            }
+
+        def reload(self) -> None:  # needed by _build_state
+            pass
+
+    runtime = DockerRuntime(client=FakeDockerClient())
+    # Manifest with readiness on 9090
+    man = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="echo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            ports=[
+                PortSpec(name="http", containerPort=8080),
+                PortSpec(name="metrics", containerPort=9090),
+            ],
+            health={
+                "readiness": {"httpGet": {"path": "/healthz", "port": 9090}},
+            },
+        ),
+    )
+    state = runtime._build_state(man, C())  # type: ignore[arg-type]
+    assert state.endpoint.endswith(":40000")
