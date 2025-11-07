@@ -1,4 +1,4 @@
-.PHONY: install test lint run loop dev-up dev-down apply-sample status-sample logs-sample
+.PHONY: install test lint run loop dev-up dev-down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service
 
 install:
 	python -m pip install -e .[dev]
@@ -32,11 +32,49 @@ status-sample:
 	python -m ae.cli status echo --wide --events
 
 logs-sample:
-	python -m ae.cli logs echo --tail 50
+		python -m ae.cli logs echo --tail 50
+
+haproxy-update:
+		@python scripts/dev/update_haproxy_from_api.py --app $${APP:-tcp-echo} --server $${SERVER:-http://127.0.0.1:9108} --cfg $${CFG:-ops/dev/haproxy/haproxy.cfg} --port $${PORT:-9000}
+
+haproxy-watch:
+		@python scripts/dev/watch_haproxy.py --app $${APP:-tcp-echo} --server $${SERVER:-http://127.0.0.1:9108} --cfg $${CFG:-ops/dev/haproxy/haproxy.cfg} --port $${PORT:-9000} --compose $${COMPOSE:-ops/dev/docker-compose.yaml} --service $${SERVICE:-haproxy} --interval $${INTERVAL:-5}
+
+install-systemd:
+		@bash scripts/install.sh install --enable
+
+uninstall-systemd:
+			@bash scripts/install.sh uninstall --disable
+
+install-docs-service:
+			@bash scripts/install.sh docs-install --enable
+
+uninstall-docs-service:
+			@bash scripts/install.sh docs-uninstall --disable
 
 .PHONY: docs
 docs:
 	python docs/build_docs.py
+
+.PHONY: labs-k3d-up labs-k3d-down
+labs-k3d-up:
+	@./scripts/lab_k3d.sh up --name $${K3D_NAME:-k1s-labs} --http $${K3D_HTTP:-8081} --https $${K3D_HTTPS:-8444}
+
+labs-k3d-down:
+	@./scripts/lab_k3d.sh down --name $${K3D_NAME:-k1s-labs}
+
+.PHONY: labs-up labs-down labs-aio-up labs-aio-down
+labs-up:
+	docker compose -f ops/dev/labs-compose.yaml up -d
+
+labs-down:
+	docker compose -f ops/dev/labs-compose.yaml down
+
+labs-aio-up:
+	docker compose -f ops/dev/labs-aio.yaml up -d
+
+labs-aio-down:
+	docker compose -f ops/dev/labs-aio.yaml down
 
 .PHONY: demo demo-down integ-test
 demo:
@@ -51,6 +89,13 @@ demo-down:
 
 integ-test:
 	AE_INTEG_RUNTIME=$${AE_INTEG_RUNTIME:-podman} pytest -q tests/integration/
+
+.PHONY: e2e e2e-multiport
+e2e:
+	@bash ./scripts/e2e/multiport.sh
+
+e2e-multiport:
+	@bash ./scripts/e2e/multiport.sh
 # Benchmarks -------------------------------------------------------------
 
 .PHONY: bench-mem-k1s bench-mem-k3s bench-mem-agg
@@ -170,3 +215,72 @@ bench-mem-idle-k3s:
 .PHONY: secrets-seal-demo
 secrets-seal-demo:
 	@bash ./scripts/seal_demo_secret.sh
+
+# ---------------------------------------------------------------------------
+# Container images (controller)
+
+.PHONY: image-docker image-podman push-docker push-podman
+
+# Variables:
+#   IMAGE ?= ghcr.io/<org>/ae-controller:<tag>
+#   TAG   ?= dev
+#   BASE  ?= python:3.12-slim (Dockerfile) or python:3.12-alpine (Containerfile)
+
+IMAGE ?= k1s/ae-controller:dev
+TAG   ?= dev
+BASE  ?=
+
+image-docker:
+	docker build \
+		-f ops/controller/Dockerfile \
+		--build-arg BASE_IMAGE=$${BASE:-python:3.12-slim} \
+		-t $${IMAGE:-k1s/ae-controller:$(TAG)} \
+		.
+
+image-podman:
+	podman build \
+		-f ops/controller/Containerfile \
+		--build-arg BASE_IMAGE=$${BASE:-python:3.12-alpine} \
+		-t $${IMAGE:-k1s/ae-controller:$(TAG)} \
+		.
+
+push-docker:
+	@test -n "$$IMAGE" || (echo "set IMAGE=<registry/repo>:<tag>" >&2; exit 2)
+	docker push $$IMAGE
+
+# ---------------------------------------------------------------------------
+# Dev helpers
+
+.PHONY: dashboard-reload
+dashboard-reload:
+	@bash -eu -c '\
+	  echo "[dashboard] attempting controller reload"; \
+	  if [ -f state/controller.pid ] && kill -0 $$(cat state/controller.pid) 2>/dev/null; then \
+	    pid=$$(cat state/controller.pid); \
+	    echo "[dashboard] killing controller (pid=$$pid); supervisor will restart it"; \
+	    kill $$pid || true; \
+	    exit 0; \
+	  fi; \
+	  if [ -f state/controller_supervisor.pid ] && kill -0 $$(cat state/controller_supervisor.pid) 2>/dev/null; then \
+	    echo "[dashboard] supervisor is running but controller pid not found; it will respawn shortly"; \
+	    exit 0; \
+	  fi; \
+	  echo "[dashboard] no supervisor detected; starting supervisor on default demo port"; \
+	  if [ -f state/env.sh ]; then set -a; . state/env.sh; set +a; fi; \
+	  PY_BIN=$${PY_BIN:-python}; SPECS=$${AE_SPECS_DIR:-specs}; PORT=$${API_PORT:-9108}; \
+	  nohup bash scripts/supervise_controller.sh "$$PY_BIN" "$$SPECS" "$$PORT" >/dev/null 2>&1 & \
+	  echo "[dashboard] supervisor started (port: $$PORT)"; \
+	'
+
+.PHONY: dashboard-restart
+# Fully restart the supervisor so updated state/env.sh is applied.
+# - Sends SIGTERM to the supervisor (which stops the child controller),
+# - waits briefly for pid/lock cleanup,
+# - then re-invokes dashboard-reload to start fresh.
+dashboard-restart:
+	@bash -eu scripts/dev/dashboard_restart.sh
+	@$(MAKE) --no-print-directory dashboard-reload
+
+push-podman:
+	@test -n "$$IMAGE" || (echo "set IMAGE=<registry/repo>:<tag>" >&2; exit 2)
+	podman push $$IMAGE
