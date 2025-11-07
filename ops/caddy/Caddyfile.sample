@@ -1,0 +1,14 @@
+# Development Caddyfile for ae
+
+:8888 {
+  encode zstd gzip
+  # Serve static docs at root
+  root * /usr/share/ae/docs
+  file_server
+
+  # Proxy API under /api/
+  handle_path /api/* {
+    reverse_proxy 127.0.0.1:9108
+  }
+}
+

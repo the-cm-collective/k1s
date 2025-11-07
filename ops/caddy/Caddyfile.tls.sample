@@ -1,0 +1,24 @@
+# Caddyfile (TLS with local CA) for ae
+
+# Map these hostnames to 127.0.0.1 in /etc/hosts (dev):
+#   127.0.0.1 docs.home.arpa api.home.arpa
+
+docs.home.arpa:8443 {
+  tls internal
+  encode zstd gzip
+  root * /usr/share/ae/docs
+  file_server
+}
+
+api.home.arpa:8443 {
+  tls internal
+  encode zstd gzip
+  handle_path /api/* {
+    reverse_proxy 127.0.0.1:9108
+  }
+  # Optional: serve docs on / as a landing page
+  handle {
+    root * /usr/share/ae/docs
+    file_server
+  }
+}

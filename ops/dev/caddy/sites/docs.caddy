@@ -1,0 +1,25 @@
+docs.home.arpa:443, docs.home.arpa
+{
+    tls internal
+    encode gzip zstd
+
+    @static {
+        path *
+        not path /swagger* /redoc* /dashboard* /openapi.json /health* /status* /events* /logs* /metrics* /labs* /system*
+    }
+    handle @static {
+        root * /srv/docs
+        file_server browse
+    }
+
+    # Proxy API endpoints to the controller on the host
+    @api {
+        path /swagger* /redoc* /dashboard* /openapi.json /health* /status* /events* /logs* /metrics* /labs* /system*
+    }
+    handle @api {
+        reverse_proxy {
+            to host.docker.internal:9108
+            header_up Host {http.reverse_proxy.upstream.hostport}
+        }
+    }
+}

@@ -12,6 +12,7 @@ services:
       - ../../docs/site:/srv/docs:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "host.containers.internal:host-gateway"
     # Placeholder until controller writes per-app config.
   prometheus:
     image: prom/prometheus:v2.53.0
@@ -20,3 +21,14 @@ services:
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     # Configure scrape targets after observability endpoints exist.
+
+  haproxy:
+    image: haproxy:lts
+    container_name: dev-haproxy
+    ports:
+      - "${HAPROXY_TCP_PORT:-9000}:9000"
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "host.containers.internal:host-gateway"

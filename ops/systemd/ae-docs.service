@@ -1,0 +1,15 @@
+[Unit]
+Description=ae documentation site (static)
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/ae/ae.env
+ExecStart=/usr/bin/env python -m http.server ${AE_DOCS_PORT:-9109} --directory ${AE_DOCS_DIR:-/usr/share/ae/docs}
+Restart=on-failure
+WorkingDirectory=/
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+
