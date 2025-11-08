@@ -1,5 +1,0 @@
-Idle baseline (k1s) @ 20251026-125609
-  Control-plane PSS (MiB): 228.38
-  System cgroups (MiB):    0.0
-  App cgroups (MiB):       114.7
-  Total cgroups (MiB):     114.7
