@@ -93,6 +93,7 @@
   <body>
     <nav>
       <a href="index.html">Home</a>
+      <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
@@ -108,6 +109,10 @@
     <div class="container">
     <h2>Examples</h2>
 <p>This page summarizes the example manifests and demo modes available.</p>
+<p>Tip</p>
+<ul>
+<li>When running demos that read secrets, you can pass <code>--with-secrets-env</code> to <code>init_demo.sh</code> to automatically export <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> and <code>SOPS_AGE_KEY_FILE=~/.config/ae/keys.txt</code> for the session.</li>
+</ul>
 <h3>Standard Demo (blue/green)</h3>
 <ul>
 <li>Apps: blue and green services behind TLS via Caddy.</li>
@@ -120,7 +125,7 @@
 <li>Demonstrates <code>configRefs</code> and <code>secretRefs</code> → env and file projections.</li>
 <li>Files: <code>configs/app-config.yaml</code>, <code>specs/examples/demo-secret.sops.yaml</code></li>
 <li>Command:</li>
-<li><code>./scripts/init_demo.sh --demo-configs -y</code></li>
+<li><code>./scripts/init_demo.sh --with-secrets-env --demo-configs -y</code></li>
 <li><code>make demo</code> (defaults to <code>-y --demo-configs</code>)</li>
 </ul>
 <h3>Multi-Replica Echo (echo-mr)</h3>
@@ -173,7 +178,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2025-11-07 09:41:12</span>
+        <span>Built 2025-11-07 18:24:05</span>
       </div>
     </footer>
     <script>

@@ -93,6 +93,7 @@
   <body>
     <nav>
       <a href="index.html">Home</a>
+      <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
@@ -155,7 +156,7 @@
 <ul>
 <li>Demonstrates <code>configRefs</code> and <code>secretRefs</code> projected into env and files, plus readiness/liveness.</li>
 <li>Decrypt sample secret for dev only (requires <code>sops</code>):</li>
-<li><code>sops --decrypt specs/examples/demo-secret.sops.yaml &gt; state/demo-secret.yaml</code> (or set <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> and use the sops file directly)</li>
+<li><code>sops --decrypt specs/examples/demo-secret.sops.yaml &gt; state/demo-secret.yaml</code> (or set <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> and use the sops file directly; <code>init_demo.sh --with-secrets-env</code> exports this for you)</li>
 <li><code>python -m ae.cli apply -f specs/examples/echo.yaml</code></li>
 <li>Inspect:</li>
 <li><code>python -m ae.cli status echo --wide --events</code></li>
@@ -268,7 +269,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2025-11-07 09:41:12</span>
+        <span>Built 2025-11-07 18:24:05</span>
       </div>
     </footer>
     <script>

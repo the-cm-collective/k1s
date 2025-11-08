@@ -159,6 +159,7 @@ TEMPLATE = """<!doctype html>
   <body>
     <nav>
       <a href="index.html">Home</a>
+      <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
@@ -568,6 +569,7 @@ def main() -> None:
     except Exception:
         pass
     mapping = {
+        "start-here.md": "start-here.html",
         "overview.md": "overview.html",
         "architecture.md": "architecture.html",
         "http-api.md": "http-api.html",
@@ -593,6 +595,7 @@ def main() -> None:
     index = f"""
 <h1>k1s Documentation</h1>
 <ul>
+  <li><a href="start-here.html">Start Here (Onboarding)</a></li>
   <li><a href="overview.html">Overview</a></li>
   <li><a href="architecture.html">Architecture</a></li>
   <li><a href="http-api.html">HTTP API</a></li>

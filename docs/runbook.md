@@ -11,6 +11,7 @@ Setup
   - Generate an age identity: `mkdir -p ~/.config/ae && age-keygen -o ~/.config/ae/keys.txt && chmod 600 ~/.config/ae/keys.txt`
   - Point SOPS to it: `export SOPS_AGE_KEY_FILE=~/.config/ae/keys.txt`
   - Seal sample secret: `make secrets-seal-demo` (uses `AE_AGE_RECIPIENT` or your keys.txt)
+  - Convenience for demos: run `./scripts/init_demo.sh --with-secrets-env` to export both `AE_ALLOW_PLAINTEXT_SECRETS=1` and `SOPS_AGE_KEY_FILE` automatically.
 
 Export and Validate K8s YAML
 - Hardened export with validation:

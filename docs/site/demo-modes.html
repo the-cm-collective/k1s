@@ -93,6 +93,7 @@
   <body>
     <nav>
       <a href="index.html">Home</a>
+      <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
@@ -107,7 +108,7 @@
     </nav>
     <div class="container">
     <h2>Demo Modes</h2>
-<p>The init script can stand up different demo combinations. Use the flags below to control which apps are applied. Add <code>-y</code> to auto-add hosts and <code>-d</code> to attach logs (Ctrl-C to exit).</p>
+<p>The init script can stand up different demo combinations. Use the flags below to control which apps are applied. Add <code>-y</code> to auto-add hosts and <code>-d</code> to attach logs (Ctrl-C to exit). For secrets-friendly runs, add <code>--with-secrets-env</code> to export <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> and <code>SOPS_AGE_KEY_FILE</code>.</p>
 <h3>Standard Demo (blue/green)</h3>
 <ul>
 <li>Apps: blue and green services behind TLS via Caddy</li>
@@ -124,7 +125,7 @@
 <li>Projections (host): <code>state/projections/echo-revN/{config,secret}/...</code></li>
 <li>Mounted RO (container): <code>/var/run/ae/config/echo</code></li>
 <li>Command:</li>
-<li><code>./scripts/init_demo.sh --demo-configs -y</code></li>
+<li><code>./scripts/init_demo.sh --with-secrets-env --demo-configs -y</code></li>
 <li><code>make demo</code> (defaults to <code>-y --demo-configs</code>)</li>
 </ul>
 <h3>Multi-Replica Echo (echo-mr)</h3>
@@ -156,6 +157,7 @@
 <h3>Helpful Flags &amp; Targets</h3>
 <ul>
 <li><code>-d, --debug</code> — attach logs for controller, caddy, prometheus, and site changes.</li>
+<li><code>--with-secrets-env</code> — export <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> and <code>SOPS_AGE_KEY_FILE=~/.config/ae/keys.txt</code> for the demo session.</li>
 <li><code>--down -y</code> — tear down: <code>./scripts/init_demo.sh --down -y</code></li>
 <li><code>make demo-help</code> — print demo script usage</li>
 <li><code>make demo-down</code> — tear down demo</li>
@@ -192,7 +194,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2025-11-07 09:41:12</span>
+        <span>Built 2025-11-07 18:24:05</span>
       </div>
     </footer>
     <script>

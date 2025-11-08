@@ -1,4 +1,4 @@
-.PHONY: install test lint run loop dev-up dev-down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service
+.PHONY: install test lint run loop dev-up dev-down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here
 
 install:
 	python -m pip install -e .[dev]
@@ -33,6 +33,13 @@ status-sample:
 
 logs-sample:
 		python -m ae.cli logs echo --tail 50
+
+# Build docs and open the Start Here page
+start-here:
+	@python docs/build_docs.py
+	@echo "Open file://$$(pwd)/docs/site/start-here.html"
+	@{ command -v xdg-open >/dev/null 2>&1 && xdg-open "$$(pwd)/docs/site/start-here.html" >/dev/null 2>&1; } || \
+	 { command -v open >/dev/null 2>&1 && open "$$(pwd)/docs/site/start-here.html" >/dev/null 2>&1; } || true
 
 haproxy-update:
 		@python scripts/dev/update_haproxy_from_api.py --app $${APP:-tcp-echo} --server $${SERVER:-http://127.0.0.1:9108} --cfg $${CFG:-ops/dev/haproxy/haproxy.cfg} --port $${PORT:-9000}

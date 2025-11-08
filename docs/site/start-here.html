@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Api Auth</title>
+    <title>Start Here</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs/%3E%3Crect width='64' height='64' rx='12' fill='%23096ad9'/%3E%3Cpath d='M16 45h32M16 19h32M16 32h32' stroke='white' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E"/>
     <style>
       /* Base layout */
@@ -107,74 +107,138 @@
       <a href="playground.html">Playground</a>
     </nav>
     <div class="container">
-    <p>API Auth and Mutations</p>
-<p>Overview</p>
+    <h1>Start Here: k1s Onboarding</h1>
+<p>This single page gets a new contributor or user from a fresh clone to a running demo, with pointers to the most useful docs and commands.</p>
+<h2>Prerequisites</h2>
 <ul>
-<li>Read-only endpoints (/status, /events, /metrics, /logs, /health, /openapi.json) are available by default.</li>
-<li>Mutating endpoints (/scale/&lt;app&gt;, /delete/&lt;app&gt;) are disabled unless AE_API_MUTATIONS=1.</li>
-<li>Optional Bearer tokens gate access per role:</li>
-<li>AE_API_READ_TOKEN   (read)</li>
-<li>AE_API_SCALER_TOKEN (scale)</li>
-<li>AE_API_ADMIN_TOKEN  (admin)</li>
+<li>Python 3.11+</li>
+<li>Podman (preferred) or Docker installed and running</li>
+<li>Optional (for ingress/docs via Caddy and Prometheus): <code>docker compose</code> or <code>podman compose</code></li>
 </ul>
-<p>Enabling mutations (dev) 1) Export tokens and enable mutations for the controller process:</p>
+<h2>Option A — Zero‑to‑Demo (automated)</h2>
+<p>This script provisions a local demo stack, serves docs, starts the controller API, and applies sample apps.</p>
+<p>1) Run the demo initializer (adds hosts; Ctrl‑C safe):</p>
+<pre><code>
+./scripts/init_demo.sh --demo-standard -y
+</code></pre>
 <ul>
-<li>AE_API_MUTATIONS=1</li>
-<p>2) Start controller with --metrics-port and Caddy fronting the API.</p>
-<li>AE_API_ADMIN_TOKEN=changeme</li>
+<li>Script reference: <code>scripts/init_demo.sh:1</code></li>
+<li>Flags map: <code>docs/demo-modes.md:1</code></li>
 </ul>
-<p>Remote CLI usage</p>
+<p>2) Open endpoints:</p>
 <ul>
-<li>Scale:</li>
-<li>ae --server https://api.home.arpa:8443 --token $SCALER scale echo --replicas 2</li>
-<li>Delete:</li>
-<li>ae --server https://api.home.arpa:8443 --token $ADMIN delete echo --purge</li>
-<li>Logs (requires READ token when any token is configured):</li>
-<li>ae --server https://api.home.arpa:8443 --token $READ logs echo --tail 100</li>
+<li>Docs: https://docs.home.arpa:8443/ and http://127.0.0.1:9109/</li>
+<li>API dashboard: https://api.home.arpa:8443/dashboard or http://127.0.0.1:9108/dashboard</li>
+<li>Sample apps: https://blue.home.arpa:8443/ and https://green.home.arpa:8443/</li>
 </ul>
-<p>Security notes</p>
+<p>3) Inspect via CLI while the demo runs:</p>
+<pre><code>
+python -m ae.cli status --wide
+python -m ae.cli logs blue --tail 50
+</code></pre>
+<p>4) Tear down when done (stops stack, cleans containers; keeps state):</p>
+<pre><code>
+./scripts/init_demo.sh --down -y
+</code></pre>
+<p>Tips</p>
 <ul>
-<li>For production, place the API behind TLS (Caddy) and use client auth or network ACLs.</li>
-<li>Prefer short-lived tokens and minimal roles for automation.</li>
+<li>Need only docs + API? Use <code>./scripts/init_demo.sh --docs-only -y</code>.</li>
+<li>Prefer Make: <code>make demo ARGS=&quot;--demo-standard -y -d&quot;</code> and <code>make demo-down</code> (see <code>Makefile:1</code>).</li>
 </ul>
-<p>Registry Auth (private images)</p>
+<h2>Option B — Manual Quickstart (hands‑on)</h2>
+<p>Follow this if you want to see each moving part.</p>
+<p>1) Install the package (editable dev mode):</p>
+<pre><code>
+python -m pip install -e .[dev]
+# Optional: file watching for instant reconciles on spec changes
+python -m pip install -e .[watch]
+</code></pre>
+<p>2) Start ingress/docs fixtures (optional but recommended):</p>
+<pre><code>
+docker compose -f ops/dev/docker-compose.yaml up -d
+</code></pre>
 <ul>
-<li>Credentials are stored at <code>~/.config/ae/registries.yaml</code> and used by the runtime before pulls.</li>
-<li>List configured hosts:</li>
-<li><code>ae registry list</code></li>
-<li>Docker Hub:</li>
-<li>Short image names (e.g., <code>caddy:2.8</code>, <code>python:3.12-slim</code>) are treated as <code>docker.io</code>.</li>
-<li>Add Docker Hub creds by host key <code>docker.io</code> (also accepts <code>index.docker.io</code>):</li>
-<li><code>ae registry login custom --registry docker.io --username &lt;you&gt; --password &lt;token&gt;</code></li>
-<li>Or run <code>docker login</code> once; the runtime will reuse your local Docker credentials.</li>
-<li>GHCR (GitHub Container Registry):</li>
-<li><code>ae registry login ghcr --username &lt;you&gt; --token &lt;PAT&gt;</code></li>
-<li>Or rely on <code>gh</code> CLI: <code>ae registry login ghcr --username &lt;you&gt;</code> (uses <code>gh auth token</code>)</li>
-<li>GCR (Google Container Registry/Artifact Registry):</li>
-<li><code>ae registry login gcr --use-gcloud --gcr-host us.gcr.io</code></li>
-<li>Or provide a token: <code>ae registry login gcr --gcr-host us.gcr.io --token $(gcloud auth print-access-token)</code></li>
-<li>Username defaults to <code>oauth2accesstoken</code>.</li>
-<li>ECR (AWS Elastic Container Registry):</li>
-<li><code>ae registry login ecr --use-aws --region us-east-1 --account-id 123456789012</code></li>
-<li>Or specify: <code>ae registry login ecr --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com --password $(aws ecr get-login-password)</code></li>
-<li>Custom registry:</li>
-<li><code>ae registry login custom --registry registry.example.com --username user --password secret</code></li>
+<li>Compose file: <code>ops/dev/docker-compose.yaml:1</code></li>
 </ul>
-<p>Refreshing short‑lived tokens</p>
+<p>3) Run the controller with API + file watch:</p>
+<pre><code>
+python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch
+</code></pre>
+<p>4) Apply and inspect a sample app:</p>
+<pre><code>
+python -m ae.cli apply -f specs/examples/echo.yaml
+python -m ae.cli status echo --wide --events
+python -m ae.cli logs echo --tail 50
+</code></pre>
 <ul>
-<li>Some providers issue short‑lived credentials (GCR/ECR). Refresh any saved hosts with:</li>
-<li><code>ae registry refresh</code> (all supported providers)</li>
-<li><code>ae registry refresh --provider gcr</code></li>
-<li><code>ae registry refresh --provider ecr</code></li>
-<li>Refresh logic uses local CLIs when available:</li>
-<li>ghcr: <code>gh auth token</code> or <code>GHCR_TOKEN</code>.</li>
-<li>gcr: <code>gcloud auth print-access-token</code>.</li>
-<li>ecr: <code>aws ecr get-login-password</code> (region derived from the registry hostname).</li>
+<li>Samples live under: <code>specs/examples/</code></li>
 </ul>
-<p>Planner hint</p>
+<p>5) Kubectl‑like wrapper (optional):</p>
+<pre><code>
+k1s get apps
+k1s describe app/echo
+k1s logs app/echo --follow --tail 100
+</code></pre>
+<h2>Using the <code>ae</code> CLI (greatest hits)</h2>
 <ul>
-<li>If the image host looks private (e.g., <code>ghcr.io</code>, <code>gcr.io</code>, <code>*.ecr.*.amazonaws.com</code>) and no entry exists in <code>registries.yaml</code>, <code>ae plan</code> emits a warning with the matching <code>ae registry login</code> command suggestion.</li>
+<pre><code>
+ae apply -f &lt;manifest.yaml&gt;
+ae status [&lt;app&gt;] --wide --events --json
+ae logs &lt;app&gt; --follow --tail 100
+ae revisions &lt;app&gt;
+ae rollback &lt;app&gt; [--to N]
+ae delete &lt;app&gt; [--purge]
+</code></pre>
+<li>Apply/inspect lifecycle:</li>
+<pre><code>
+ae plan -f specs/examples/echo.yaml --verbose --json
+ae export-k8s -f specs/examples/echo.yaml --namespace demo --preset web-hardened --validate -o specs/examples/echo-k8s.yaml
+ae k8s-check -f specs/examples/echo.yaml --policy strict
+</code></pre>
+<li>Planning and K8s helpers:</li>
+<pre><code>
+ae registry login ghcr --username &lt;u&gt; --token &lt;pat&gt;
+ae registry list
+ae tls sync --name mycert --input path/to/k8s-secret.yaml
+ae tls verify --name mycert --json
+</code></pre>
+<li>Registries and TLS:</li>
 </ul>
+<h2>Remote CLI &amp; Tokens (optional)</h2>
+<p>Generate API tokens and point the CLI at a remote controller.</p>
+<pre><code>
+python -m ae.cli api tokens --generate --ttl-hours 24 -o .env.api
+source .env.api
+ae --server http://&lt;controller-ip&gt;:9108 --token $AE_API_READ_TOKEN status
+</code></pre>
+<p>Details: <code>README.md:67</code> and token management in <code>docs/runbook.md:1</code>.</p>
+<h2>Documentation Map (most useful first)</h2>
+<ul>
+<li>High‑level overview: <code>docs/overview.md:1</code></li>
+<li>Operations runbook: <code>docs/runbook.md:1</code></li>
+<li>HTTP API reference: <code>docs/http-api.md:1</code></li>
+<li>Ingress &amp; TLS: <code>docs/ingress.md:1</code></li>
+<li>Demo modes: <code>docs/demo-modes.md:1</code></li>
+<li>Examples index: <code>docs/examples.md:1</code></li>
+<li>Architecture deep dive: <code>docs/architecture.md:1</code></li>
+</ul>
+<h2>Where things live in the repo</h2>
+<ul>
+<li>Controller daemon entry: <code>src/ae/controller/__main__.py:1</code></li>
+<li>CLIs: <code>src/ae/cli/__main__.py:1</code>, <code>src/ae/kctl/__main__.py:1</code></li>
+<li>Ingress (Caddy): <code>src/ae/ingress/</code>, site fragments under <code>ops/dev/caddy/sites/</code></li>
+<li>Runtimes: <code>src/ae/runtime/</code> (Podman default, Docker optional)</li>
+<li>Observability/API: <code>src/ae/observability/</code></li>
+<li>Specs &amp; samples: <code>specs/</code>, <code>specs/examples/</code></li>
+<li>Dev stack compose: <code>ops/dev/docker-compose.yaml:1</code></li>
+</ul>
+<h2>Troubleshooting</h2>
+<ul>
+<li>If Caddy HTTPS ports 8443/8888 are busy, the demo auto‑picks free ports and prints them.</li>
+<li>To rebuild docs locally: <code>make docs</code> (builder at <code>docs/build_docs.py:1</code>).</li>
+<li>Teardown and reset demo: <code>./scripts/init_demo.sh --down -y</code>.</li>
+</ul>
+<p>Happy shipping!</p>
     </div>
     <footer class="site-footer">
       <div class="container inner">

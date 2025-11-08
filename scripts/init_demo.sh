@@ -34,6 +34,7 @@ Options:
   --no-supervisor  Start controller once (no restart loop)
   -d, --debug  Attach logs to console for troubleshooting (blocks; Ctrl-C to exit)
   --bind-all   Bind local helpers (docs server) to 0.0.0.0 instead of 127.0.0.1 for LAN access
+  --with-secrets-env  Export AE_ALLOW_PLAINTEXT_SECRETS=1 and SOPS_AGE_KEY_FILE=$HOME/.config/ae/keys.txt for this demo run
   --demo-configs   Apply the configs/secrets demo (echo) and enable plaintext secrets for local run
   --demo-standard  Apply the standard demo (blue, green)
   --demo-echo-mr   Apply the multi-replica echo demo (echo-mr)
@@ -104,6 +105,8 @@ HOSTS_IP=${HOSTS_IP:-127.0.0.1}
 # Labs/demo playground flags
 LABS_ENABLE=${LABS_ENABLE:-0}
 LABS_TOKEN=${LABS_TOKEN:-}
+# Secrets env convenience flag (sets AE_ALLOW_PLAINTEXT_SECRETS=1 and SOPS_AGE_KEY_FILE)
+WITH_SECRETS_ENV=0
 # Default location for the curated demo specs set (controller watches this)
 DEMO_SPECS_DIR=${DEMO_SPECS_DIR:-state/demo-specs}
 while [[ $# -gt 0 ]]; do
@@ -142,6 +145,8 @@ while [[ $# -gt 0 ]]; do
       DEMO_ROLLOUT=1 ;;
     --demo-storage)
       DEMO_STORAGE=1 ;;
+    --with-secrets-env)
+      WITH_SECRETS_ENV=1 ;;
     --labs)
       LABS_ENABLE=1 ;;
     --labs-token)
@@ -552,6 +557,12 @@ export AE_STATE_DB=${AE_STATE_DB:-state/controller.db}
 export AE_CADDY_RELOAD_TIMEOUT=${AE_CADDY_RELOAD_TIMEOUT:-10}
 # For local demos, allow plaintext secrets by default unless explicitly disabled
 export AE_ALLOW_PLAINTEXT_SECRETS=${AE_ALLOW_PLAINTEXT_SECRETS:-1}
+# If requested, enforce demo-friendly secrets env and point SOPS to age key file
+if [[ ${WITH_SECRETS_ENV:-0} -eq 1 ]]; then
+  export AE_ALLOW_PLAINTEXT_SECRETS=1
+  export SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-$HOME/.config/ae/keys.txt}"
+  log "Secrets env enabled (AE_ALLOW_PLAINTEXT_SECRETS=1; SOPS_AGE_KEY_FILE=${SOPS_AGE_KEY_FILE})"
+fi
 # Mark this run as demo-init so components can quiet benign warnings
 export AE_DEMO_MODE=${AE_DEMO_MODE:-1}
 export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
@@ -577,6 +588,7 @@ export AE_CADDY_CONTAINER=${AE_CADDY_CONTAINER}
 export AE_DOCKER_NETWORK=${AE_DOCKER_NETWORK}
 export AE_CONTAINER_CLI=${AE_CONTAINER_CLI}
 export AE_ALLOW_PLAINTEXT_SECRETS=${AE_ALLOW_PLAINTEXT_SECRETS}
+export SOPS_AGE_KEY_FILE=${SOPS_AGE_KEY_FILE:-}
 export AE_DEMO_MODE=${AE_DEMO_MODE}
 export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
 export API_PORT=${API_PORT}

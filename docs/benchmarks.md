@@ -8,7 +8,7 @@ Use these guides to profile memory and compare k1s with k3s.
 For quick commands and charts, see the end‑to‑end Make targets in each guide.
 
 ## Runbook: Quick Start
-- Set env: `PYTHONPATH=src`, `AE_RUNTIME_BACKEND=podman` (or `docker`), `AE_ALLOW_PLAINTEXT_SECRETS=1` for demos.
+- Set env: `PYTHONPATH=src`, `AE_RUNTIME_BACKEND=podman` (or `docker`), `AE_ALLOW_PLAINTEXT_SECRETS=1` for demos (or start with `./scripts/init_demo.sh --with-secrets-env`).
 - Keep controller running (or let scripts auto‑start): `python -m ae.controller --loop --specs specs/ --watch`.
 - Build or ensure images are present (Podman shown):
   - `podman build -t localhost/demo-blue:latest samples/servers/blue`

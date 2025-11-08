@@ -2,6 +2,9 @@
 
 This page summarizes the example manifests and demo modes available.
 
+Tip
+- When running demos that read secrets, you can pass `--with-secrets-env` to `init_demo.sh` to automatically export `AE_ALLOW_PLAINTEXT_SECRETS=1` and `SOPS_AGE_KEY_FILE=~/.config/ae/keys.txt` for the session.
+
 ### Standard Demo (blue/green)
 
 - Apps: blue and green services behind TLS via Caddy.
@@ -14,7 +17,7 @@ This page summarizes the example manifests and demo modes available.
 - Demonstrates `configRefs` and `secretRefs` → env and file projections.
 - Files: `configs/app-config.yaml`, `specs/examples/demo-secret.sops.yaml`
 - Command:
-  - `./scripts/init_demo.sh --demo-configs -y`
+  - `./scripts/init_demo.sh --with-secrets-env --demo-configs -y`
   - `make demo` (defaults to `-y --demo-configs`)
 
 ### Multi-Replica Echo (echo-mr)
