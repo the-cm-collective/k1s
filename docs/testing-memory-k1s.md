@@ -41,7 +41,7 @@ make bench-mem-rollout-k1s LABEL_SUITE=baseline-roll APP=specs/examples/echo.yam
 - Set `SKIP_GUARDS=1` to bypass preflight checks in CI.
 
 ## Runbook (Quick Reference)
-- Environment: `PYTHONPATH=src`, `AE_RUNTIME_BACKEND=podman` (or `docker`), `AE_ALLOW_PLAINTEXT_SECRETS=1` for demos.
+- Environment: `PYTHONPATH=src`, `AE_RUNTIME_BACKEND=podman` (or `docker`), `AE_ALLOW_PLAINTEXT_SECRETS=1` for demos (or use `./scripts/init_demo.sh --with-secrets-env`).
 - Terminal A: `python -m ae.controller --loop --specs specs/ --watch` (bench scripts will auto-start if missing; logs `/tmp/k1s_ctrl_bench.log`).
 - Terminal B:
   - `make bench-mem-e2e-k1s LABEL_SUITE=report-YYYYMMDD APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5`

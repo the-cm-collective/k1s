@@ -57,6 +57,7 @@ API endpoints (when started with `--metrics-port`): see `docs/http-api.md`.
 
 ## Documentation
 
+- Start here onboarding: `docs/start-here.md`
 - High-level overview and getting started: `docs/overview.md`
 - Technical architecture and reference: `docs/architecture.md`
 - HTTP API reference and UI docs: `docs/http-api.md`

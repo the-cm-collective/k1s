@@ -26,7 +26,7 @@ spec:
     - { name: APP_MODE, value: demo-override }  # overrides config/secret
 ```
 
-For local demos without SOPS, set `AE_ALLOW_PLAINTEXT_SECRETS=1`.
+For local demos without SOPS, set `AE_ALLOW_PLAINTEXT_SECRETS=1` (or run `./scripts/init_demo.sh --with-secrets-env`).
 
 ### Sealing the sample secret (SOPS/age)
 
@@ -41,7 +41,7 @@ If you prefer to use a real sealed secret for the examples:
   - `sops --decrypt specs/examples/demo-secret.sops.yaml | yq` (should show a `token` field)
 
 Notes:
-- The controller attempts to decrypt via `sops --decrypt`. In dev, you can bypass sealing by setting `AE_ALLOW_PLAINTEXT_SECRETS=1`.
+- The controller attempts to decrypt via `sops --decrypt`. In dev, you can bypass sealing by setting `AE_ALLOW_PLAINTEXT_SECRETS=1` (or by starting the demo with `--with-secrets-env`).
 - If decryption fails at runtime, the controller records an `AppEvent` with type `SecretError` and continues; use `ae events <app>` to inspect.
 
 ### File Projection

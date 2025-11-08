@@ -112,7 +112,7 @@ make bench-mem-e2e-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yam
 - Environment
   - `PYTHONPATH=src` in the shell running commands.
   - Runtime backend: `AE_RUNTIME_BACKEND=podman` (preferred) or `docker`.
-  - Secrets (demo-friendly): set `AE_ALLOW_PLAINTEXT_SECRETS=1` unless SOPS is configured.
+  - Secrets (demo-friendly): set `AE_ALLOW_PLAINTEXT_SECRETS=1` unless SOPS is configured (or run `init_demo.sh --with-secrets-env`).
 
 - Controller
   - Keep the controller running for the full duration:
@@ -126,7 +126,7 @@ make bench-mem-e2e-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yam
 
 - Commands (Podman-first)
   - Terminal B:
-    - `export PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_ALLOW_PLAINTEXT_SECRETS=1`
+    - `export PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_ALLOW_PLAINTEXT_SECRETS=1` (or start with `./scripts/init_demo.sh --with-secrets-env`)
     - `make bench-mem-e2e-k1s LABEL_SUITE=report-YYYYMMDD APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5`
     - `python scripts/bench/mem_combine.py snapshots/*/*`
     - `python scripts/bench/plot_overhead.py combined/combined.csv charts`

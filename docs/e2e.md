@@ -43,7 +43,7 @@ Conventions
 2) Echo (Configs & Secrets)
 - Demonstrates `configRefs` and `secretRefs` projected into env and files, plus readiness/liveness.
   - Decrypt sample secret for dev only (requires `sops`):
-    - `sops --decrypt specs/examples/demo-secret.sops.yaml > state/demo-secret.yaml` (or set `AE_ALLOW_PLAINTEXT_SECRETS=1` and use the sops file directly)
+    - `sops --decrypt specs/examples/demo-secret.sops.yaml > state/demo-secret.yaml` (or set `AE_ALLOW_PLAINTEXT_SECRETS=1` and use the sops file directly; `init_demo.sh --with-secrets-env` exports this for you)
   - `python -m ae.cli apply -f specs/examples/echo.yaml`
   - Inspect:
     - `python -m ae.cli status echo --wide --events`

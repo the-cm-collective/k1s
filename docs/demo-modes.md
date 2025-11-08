@@ -3,6 +3,7 @@
 The init script can stand up different demo combinations. Use the flags below
 to control which apps are applied. Add `-y` to auto-add hosts and `-d` to attach
 logs (Ctrl-C to exit).
+For secrets-friendly runs, add `--with-secrets-env` to export `AE_ALLOW_PLAINTEXT_SECRETS=1` and `SOPS_AGE_KEY_FILE`.
 
 ### Standard Demo (blue/green)
 
@@ -20,7 +21,7 @@ logs (Ctrl-C to exit).
 - Projections (host): `state/projections/echo-revN/{config,secret}/...`
 - Mounted RO (container): `/var/run/ae/config/echo`
 - Command:
-  - `./scripts/init_demo.sh --demo-configs -y`
+  - `./scripts/init_demo.sh --with-secrets-env --demo-configs -y`
   - `make demo` (defaults to `-y --demo-configs`)
 
 ### Multi-Replica Echo (echo-mr)
@@ -52,6 +53,7 @@ logs (Ctrl-C to exit).
 ### Helpful Flags & Targets
 
 - `-d, --debug` — attach logs for controller, caddy, prometheus, and site changes.
+- `--with-secrets-env` — export `AE_ALLOW_PLAINTEXT_SECRETS=1` and `SOPS_AGE_KEY_FILE=~/.config/ae/keys.txt` for the demo session.
 - `--down -y` — tear down: `./scripts/init_demo.sh --down -y`
 - `make demo-help` — print demo script usage
 - `make demo-down` — tear down demo

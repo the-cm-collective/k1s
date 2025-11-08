@@ -93,6 +93,7 @@
   <body>
     <nav>
       <a href="index.html">Home</a>
+      <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
       <a href="http-api.html">HTTP API</a>
@@ -151,7 +152,7 @@ make bench-mem-rollout-k1s LABEL_SUITE=baseline-roll APP=specs/examples/echo.yam
 </ul>
 <h2>Runbook (Quick Reference)</h2>
 <ul>
-<li>Environment: <code>PYTHONPATH=src</code>, <code>AE_RUNTIME_BACKEND=podman</code> (or <code>docker</code>), <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> for demos.</li>
+<li>Environment: <code>PYTHONPATH=src</code>, <code>AE_RUNTIME_BACKEND=podman</code> (or <code>docker</code>), <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> for demos (or use <code>./scripts/init_demo.sh --with-secrets-env</code>).</li>
 <li>Terminal A: <code>python -m ae.controller --loop --specs specs/ --watch</code> (bench scripts will auto-start if missing; logs <code>/tmp/k1s_ctrl_bench.log</code>).</li>
 <li>Terminal B:</li>
 <li><code>make bench-mem-e2e-k1s LABEL_SUITE=report-YYYYMMDD APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5</code></li>
@@ -180,7 +181,7 @@ make bench-mem-rollout-k1s LABEL_SUITE=baseline-roll APP=specs/examples/echo.yam
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2025-11-07 09:41:12</span>
+        <span>Built 2025-11-07 18:24:05</span>
       </div>
     </footer>
     <script>
