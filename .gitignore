@@ -12,6 +12,11 @@ state/
 snapshots/
 combined/
 charts/
+# One-off root screenshots accidentally committed
+/# Anchor to repo root to avoid blocking docs assets
+/docs.home.arpa_*.png
+# Ignore future dev Caddy site snippets broadly
+ops/dev/caddy/sites/*.caddy
 # Generated dev Caddy site snippets (ports are ephemeral)
 ops/dev/caddy/sites/blue.caddy
 ops/dev/caddy/sites/green.caddy
