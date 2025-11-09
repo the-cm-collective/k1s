@@ -60,17 +60,28 @@ def _demo_allowed_apps() -> set[str]:
 
 def _filter_statuses_for_demo(items):
     try:
-        allowed = set(_demo_allowed_apps())
+        # Compute the allowed app set from the active demo specs and any Labs-applied apps.
+        demo_allowed = set(_demo_allowed_apps())
         try:
-            allowed |= set(_LABS_APPS)
+            labs_allowed = set(_LABS_APPS)
         except Exception:
-            pass
+            labs_allowed = set()
+        allowed = demo_allowed | labs_allowed
         if not allowed:
+            # No demo scope and no labs apps tracked: do not filter.
             return items
-        # Prefer allowed set, but avoid empty results (UI flicker) during races
-        # where a newly applied labs app isn't yet recorded in the store.
+        # Restrict to the allowed set.
         subset = [s for s in items if getattr(s, "app_name", None) in allowed]
-        return subset if subset else items
+        if subset:
+            return subset
+        # If a demo scope exists (apps declared under AE_SPECS_DIR), strictly enforce it
+        # even if the controller hasn't recorded any of those apps yet. This prevents
+        # leaking historical apps from previous runs.
+        if demo_allowed:
+            return []
+        # Otherwise, this is a Labs-only race (session app not yet materialized in the store):
+        # fall back to the unfiltered list to avoid an empty UI during the brief apply window.
+        return items
     except Exception:
         return items
 
