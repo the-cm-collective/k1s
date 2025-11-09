@@ -17,6 +17,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+import stat
 from typing import Dict, List, Tuple
 
 
@@ -179,6 +180,127 @@ def aggregate(snapshot_dir: Path) -> Dict:
             proc_totals["uss_kb"] += pr.uss_kb
             bucket["uss_kb"] += pr.uss_kb
 
+    # --- Host system cgroups (cg2 preferred) ---------------------------------
+    def _detect_cgv2() -> bool:
+        try:
+            return Path("/sys/fs/cgroup/cgroup.controllers").exists()
+        except Exception:
+            return False
+
+    def _dir_is_leaf(p: Path) -> bool:
+        """Return True if p has no child directories that are cgroups.
+
+        Heuristic: any immediate child directory containing a file named
+        'cgroup.procs' indicates a nested cgroup. We also treat directories
+        without subdirectories as leaves.
+        """
+        try:
+            for ch in p.iterdir():
+                if not ch.is_dir():
+                    continue
+                if (ch / "cgroup.procs").exists() or (ch / "cgroup.events").exists():
+                    return False
+        except Exception:
+            return True
+        return True
+
+    def _safe_read_int(path: Path) -> int:
+        try:
+            return int(path.read_text().strip())
+        except Exception:
+            return 0
+
+    def _sum_leaf_memory_current(root: Path) -> int:
+        total = 0
+        try:
+            if not root.exists():
+                return 0
+            # Walk recursively. Sum memory.current for leaves only.
+            for p in root.rglob("*"):
+                try:
+                    if not p.is_dir():
+                        continue
+                except Exception:
+                    continue
+                mc = p / "memory.current"
+                if mc.exists() and _dir_is_leaf(p):
+                    total += _safe_read_int(mc)
+        except Exception:
+            return 0
+        return total
+
+    def _sum_host_system_cgroups_bytes() -> int:
+        # Exclude user.slice entirely. Include system.slice and init.scope.
+        if _detect_cgv2():
+            base = Path("/sys/fs/cgroup")
+            system_slice = base / "system.slice"
+            init_scope = base / "init.scope"
+            return _sum_leaf_memory_current(system_slice) + _safe_read_int(init_scope / "memory.current")
+        else:
+            # cgroup v1 fallback: system.slice under memory hierarchy
+            base = Path("/sys/fs/cgroup/memory")
+            system_slice = base / "system.slice"
+            init_scope = base / "init.scope"
+            total = 0
+            # Best-effort: sum *.scope/*.service usage_in_bytes as leaves
+            try:
+                for p in system_slice.rglob("*.scope"):
+                    u = p / "memory.usage_in_bytes"
+                    if u.exists():
+                        total += _safe_read_int(u)
+                for p in system_slice.rglob("*.service"):
+                    u = p / "memory.usage_in_bytes"
+                    if u.exists():
+                        total += _safe_read_int(u)
+                # init.scope single file
+                u = init_scope / "memory.usage_in_bytes"
+                if u.exists():
+                    total += _safe_read_int(u)
+            except Exception:
+                pass
+            return total
+
+    # Parse MemAvailable (bytes) from free -b output before/after snapshot
+    def _read_free_available(path: Path) -> int:
+        try:
+            txt = path.read_text(encoding="utf-8", errors="ignore").strip().splitlines()
+            if not txt:
+                return 0
+            # Find header line containing 'available'
+            header_idx = None
+            for i, ln in enumerate(txt):
+                if ln.lower().startswith("              total") or ("available" in ln.lower() and "mem:" not in ln.lower()):
+                    header_idx = i
+                    break
+            # Fallback: assume first line is header if not found
+            if header_idx is None:
+                header_idx = 0
+            headers = txt[header_idx].lower().split()
+            avail_col = None
+            for i, h in enumerate(headers):
+                if h.startswith("available") or h == "avail":
+                    avail_col = i
+                    break
+            # Find the Mem: row
+            mem_line = None
+            for ln in txt[header_idx + 1 :]:
+                if ln.lower().startswith("mem:"):
+                    mem_line = ln
+                    break
+            if mem_line is None or avail_col is None:
+                return 0
+            parts = mem_line.split()
+            # mem_line typically like: "Mem:  total used free shared buff/cache available"
+            # After splitting, last column should be available bytes
+            try:
+                # Try using header index first
+                val = int(parts[avail_col + 1])  # +1 offset for 'Mem:' token
+            except Exception:
+                val = int(parts[-1])
+            return val
+        except Exception:
+            return 0
+
     # Containers
     containers = _read_containers_csv(raw)
     app_bytes = system_bytes = 0
@@ -223,6 +345,11 @@ def aggregate(snapshot_dir: Path) -> Dict:
             else:
                 system_bytes += mem
 
+    host_system_bytes = _sum_host_system_cgroups_bytes()
+    mem_avail_before = _read_free_available(raw / "free_before.txt")
+    mem_avail_after = _read_free_available(raw / "free_after.txt")
+    mem_avail_delta = max(0, mem_avail_before - mem_avail_after) if (mem_avail_before and mem_avail_after) else 0
+
     # Overhead estimate (favor container cgroup sums when available)
     # Report both process PSS and container cgroup bytes
     # Summarize breakdown buckets in MiB for quick human readout
@@ -256,7 +383,15 @@ def aggregate(snapshot_dir: Path) -> Dict:
             "pss_kb_control_plane": int(
                 sum(v.get("pss_kb", 0) for k, v in by_class.items() if k != "other")
             ),
+            # Non-app containers (runtime/infra)
             "cgroup_system_overhead_bytes": int(system_bytes),
+            # Host services only (system.slice + init.scope, leaf-summed)
+            "host_system_cgroups_bytes": int(host_system_bytes),
+        },
+        "mem_available": {
+            "before_bytes": int(mem_avail_before),
+            "after_bytes": int(mem_avail_after),
+            "delta_bytes": int(mem_avail_delta),
         },
     }
     # Per-pod overhead left for higher-level aggregator where replica count is known

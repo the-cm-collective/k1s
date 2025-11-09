@@ -10,6 +10,7 @@ replicas_csv="1,5,10"
 duration=30
 ns="default"
 app_name="echo"
+use_sudo=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -19,6 +20,7 @@ while [[ $# -gt 0 ]]; do
     --duration) duration="$2"; shift 2;;
     --namespace) ns="$2"; shift 2;;
     --app-name) app_name="$2"; shift 2;;
+    --sudo) use_sudo=1; shift;;
     *) echo "unknown arg: $1"; exit 2;;
   esac
 done
@@ -59,7 +61,11 @@ wait_ready() {
 
 # Idle snapshot (no app deployed)
 info "idle snapshot"
-scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-idle" --duration "$duration" || true
+if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+  sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-idle" --duration "$duration" || true
+else
+  scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-idle" --duration "$duration" || true
+fi
 
 info "apply manifest: $manifest"
 kubectl -n "$ns" apply -f "$manifest"
@@ -72,7 +78,11 @@ for n in "${reps[@]}"; do
   kubectl -n "$ns" scale deploy "$app_name" --replicas "$n"
   wait_ready "$app_name" "$n" || true
   info "snapshot label=${label_suite}-pods-${n}"
-  scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-pods-${n}" --duration "$duration" || true
+  if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+    sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-pods-${n}" --duration "$duration" || true
+  else
+    scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-pods-${n}" --duration "$duration" || true
+  fi
 done
 
 info "done"

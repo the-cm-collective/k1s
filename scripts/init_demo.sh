@@ -564,7 +564,8 @@ if [[ ${WITH_SECRETS_ENV:-0} -eq 1 ]]; then
   log "Secrets env enabled (AE_ALLOW_PLAINTEXT_SECRETS=1; SOPS_AGE_KEY_FILE=${SOPS_AGE_KEY_FILE})"
 fi
 # Mark this run as demo-init so components can quiet benign warnings
-export AE_DEMO_MODE=${AE_DEMO_MODE:-1}
+# Force AE_DEMO_MODE=1 for demos regardless of a pre-set env (prevents scope being disabled)
+export AE_DEMO_MODE=1
 export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
 mkdir -p "${AE_CADDY_SITES}"
 if [[ ! -w "${AE_CADDY_SITES}" ]]; then
@@ -589,7 +590,8 @@ export AE_DOCKER_NETWORK=${AE_DOCKER_NETWORK}
 export AE_CONTAINER_CLI=${AE_CONTAINER_CLI}
 export AE_ALLOW_PLAINTEXT_SECRETS=${AE_ALLOW_PLAINTEXT_SECRETS}
 export SOPS_AGE_KEY_FILE=${SOPS_AGE_KEY_FILE:-}
-export AE_DEMO_MODE=${AE_DEMO_MODE}
+# Force demo scoping for the controller/dashboard
+export AE_DEMO_MODE=1
 export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
 export API_PORT=${API_PORT}
 export AE_SPECS_DIR=${DEMO_SPECS_DIR}
@@ -696,24 +698,36 @@ if [[ $DOCS_ONLY -ne 1 ]]; then
 fi
 
 if [[ $NO_CONTROLLER -eq 0 ]]; then
+  # Always (re)start the controller to ensure it picks up the curated AE_SPECS_DIR and AE_DEMO_MODE.
+  # This avoids stale supervisors carrying an old environment (root cause of apps leakage in dashboard).
+  if [[ -f state/controller_supervisor.pid ]]; then
+    SUP_PID=$(cat state/controller_supervisor.pid || true)
+    if [[ -n "${SUP_PID}" ]] && kill -0 "$SUP_PID" 2>/dev/null; then
+      log "Restarting controller supervisor to apply fresh demo env"
+      kill "$SUP_PID" || true
+      # Allow a short grace for child exit and port release
+      sleep 0.5
+    fi
+    rm -f state/controller_supervisor.pid state/controller_supervisor.lock || true
+  fi
   if [[ -f state/controller.pid ]]; then
     CTRL_PID=$(cat state/controller.pid || true)
-  else
-    CTRL_PID=""
-  fi
-  if [[ -n "${CTRL_PID}" ]] && kill -0 "$CTRL_PID" 2>/dev/null; then
-    log "Controller already running (pid ${CTRL_PID})"
-  else
-    if [[ $NO_SUPERVISOR -eq 0 ]]; then
-      log "Starting controller supervisor (port ${API_PORT})"
-      nohup bash scripts/supervise_controller.sh "$PY_BIN" "$DEMO_SPECS_DIR" "${API_PORT}" >/dev/null 2>&1 &
-      echo $! > state/controller_supervisor.pid
-    else
-      log "Starting controller once on :${API_PORT} (background)"
-      nohup "$PY_BIN" -m ae.controller --loop --specs "$DEMO_SPECS_DIR" --metrics-port "${API_PORT}" --watch \
-        >/dev/null 2>&1 &
-      echo $! > state/controller.pid
+    if [[ -n "${CTRL_PID}" ]] && kill -0 "$CTRL_PID" 2>/dev/null; then
+      log "Stopping prior controller (pid ${CTRL_PID})"
+      kill "$CTRL_PID" || true
+      sleep 0.2
     fi
+    rm -f state/controller.pid || true
+  fi
+  if [[ $NO_SUPERVISOR -eq 0 ]]; then
+    log "Starting controller supervisor (port ${API_PORT})"
+    nohup bash scripts/supervise_controller.sh "$PY_BIN" "$DEMO_SPECS_DIR" "${API_PORT}" >/dev/null 2>&1 &
+    echo $! > state/controller_supervisor.pid
+  else
+    log "Starting controller once on :${API_PORT} (background)"
+    nohup "$PY_BIN" -m ae.controller --loop --specs "$DEMO_SPECS_DIR" --metrics-port "${API_PORT}" --watch \
+      >/dev/null 2>&1 &
+    echo $! > state/controller.pid
   fi
 else
   log "Skipping controller auto-start (--no-controller)"

@@ -9,14 +9,15 @@ Goals
 
 What we measure
 - Processes (PSS/RSS/USS) via `/proc/<pid>/smaps_rollup` and `/proc/<pid>/status`:
-  - k1s: `python -m ae.controller`, ingress proxy (Caddy), Docker/container runtime.
+  - k1s: `python -m ae.controller`, ingress proxy (Caddy), Docker/Podman runtime processes.
   - k3s: `k3s`, `containerd`, `coredns`, ingress controller (Traefik if enabled).
-- Containers (cgroups): `memory.current` for each container cgroup via the container PID.
+- Containers (cgroups): `memory.current` for each container cgroup via the container PID (split into app vs non‑app based on labels/names).
+- Host services (cgroups): sum of `memory.current` for leaf cgroups under `system.slice` plus `init.scope` (cgroup v2), excluding `user.slice` entirely. This avoids parent+child double counting.
 
 Outputs
-- `snapshots/<label>/<timestamp>/raw/*`: raw text and JSON (ps, free, vmstat, smaps_rollup, docker/podman inspect, per-container memory CSV).
-- `summary.json`: totals and breakdowns for processes and containers.
-- `summary.csv`: one-line rollup: total PSS, control-plane PSS, app/system cgroup bytes.
+- `snapshots/<label>/<timestamp>/raw/*`: raw text and JSON (ps, free, vmstat, smaps_rollup, docker/podman inspect, per‑container memory CSV).
+- `summary.json`: totals and breakdowns for processes, container cgroups, host system cgroups, and MemAvailable before/after from `free -b`.
+- `summary.csv`: one‑line rollup: total PSS, control‑plane PSS, app/system container bytes, host system cgroup bytes.
 
 Quick start
 1) Take a snapshot (k1s):
@@ -53,10 +54,11 @@ Tips for consistency
  - CI or advanced users can bypass safety checks by setting `SKIP_GUARDS=1` in the environment.
 
 Interpreting results
-- Process PSS approximates unique+fair-share memory for control-plane processes.
-- Container `memory.current` shows cgroup-resident memory per container (includes cache).
-- System overhead (cgroup) = sum of non-app container `memory.current`.
-- Per-pod overhead (rough) = system_overhead / pod_count (for pod_count > 0).
+- Process PSS approximates unique+fair‑share memory for control‑plane processes.
+- Container `memory.current` shows cgroup‑resident memory per container (includes cache); we split into app vs non‑app containers.
+- Host system cgroups reflects only OS services under `system.slice` and `init.scope` (excludes user/container trees), summed over leaf cgroups to avoid double counting.
+- Per‑pod app footprint (rough) ≈ app_container_bytes / pod_count.
+- MemAvailable Δ validates totals at the kernel level: `delta = MemAvailable(before) − MemAvailable(after)` for the snapshot window. Small negatives are clamped to 0.
 
 Limitations
 - cgroup paths vary across distros; the snapshotter falls back gracefully.

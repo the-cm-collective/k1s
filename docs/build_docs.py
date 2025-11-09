@@ -485,15 +485,32 @@ def build_one(md_path: Path, out_path: Path) -> None:
                     "<h2>Latest Benchmarks (Auto)</h2>",
                     "<p>Summarized from <code>combined/combined.csv</code> at build time.</p>",
                     "<table border=1 cellpadding=6 cellspacing=0>",
-                    "<tr><th>Label</th><th>Mode</th><th>Timestamp</th><th>Ctrl‑Plane PSS (MiB)</th><th>System Cgroups (MiB)</th></tr>",
+                    (
+                        "<tr>"
+                        "<th>Label</th><th>Mode</th><th>Timestamp</th>"
+                        "<th>Ctrl‑Plane PSS (MiB)</th>"
+                        "<th>App Cgroups (MiB)</th>"
+                        "<th>Infra Cgroups (MiB)</th>"
+                        "<th>Host System (MiB)</th>"
+                        "<th>MemAvail Δ (MiB)</th>"
+                        "</tr>"
+                    ),
                 ]
                 for r in tail:
                     cp_mib = fmt_kib(r.get("control_plane_pss_kb", "0"))
-                    sys_mib = fmt_mib(r.get("system_mem_bytes", "0"))
+                    app_mib = fmt_mib(r.get("app_mem_bytes", "0"))
+                    infra_mib = fmt_mib(r.get("system_mem_bytes", "0"))
+                    # Prefer host services only; fall back to container system bytes for older rows
+                    sys_host = r.get("host_system_cgroups_bytes")
+                    host_mib = fmt_mib(sys_host if sys_host is not None else r.get("system_mem_bytes", "0"))
+                    mdelta_mib = fmt_mib(r.get("mem_available_delta_bytes", "0"))
                     parts.append(
                         f"<tr><td>{html.escape(r.get('label', ''))}</td><td>{html.escape(r.get('mode', ''))}</td>"
                         f"<td>{html.escape(r.get('timestamp', ''))}</td><td style='text-align:right'>{cp_mib}</td>"
-                        f"<td style='text-align:right'>{sys_mib}</td></tr>"
+                        f"<td style='text-align:right'>{app_mib}</td>"
+                        f"<td style='text-align:right'>{infra_mib}</td>"
+                        f"<td style='text-align:right'>{host_mib}</td>"
+                        f"<td style='text-align:right'>{mdelta_mib}</td></tr>"
                     )
                 parts.append("</table>")
                 # Inline charts below the table
