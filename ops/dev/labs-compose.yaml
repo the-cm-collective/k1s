@@ -12,6 +12,5 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Note: This compose stack serves docs (including playground). Run the controller on the host:
-    #   AE_LABS=1 python -m ae.controller --loop --metrics-port 9108 --specs specs/
+    #   AE_SPECS_DIR=state/demo-specs AE_LABS=1 python -m ae.controller --loop --metrics-port 9108 --specs "$AE_SPECS_DIR" --watch
     # The playground will talk to the host controller at http://127.0.0.1:9108.
-

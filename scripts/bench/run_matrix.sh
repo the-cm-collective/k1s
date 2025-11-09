@@ -41,6 +41,65 @@ require python
 
 ae() { python -m ae.cli "$@"; }
 
+# Optionally warm endpoints (help readiness converge before snapshot)
+warm_endpoints() {
+  local app="$1"; local seconds="${WARM_SECONDS:-8}"; local backend="${AE_RUNTIME_BACKEND:-podman}"
+  command -v curl >/dev/null 2>&1 || return 0
+  if [[ "$backend" == "podman" ]] && command -v podman >/dev/null 2>&1; then
+    # Discover host ports for app containers via podman JSON, fallback to 'podman port'
+    local eps
+    eps=$(python - "$app" << 'PY'
+import json, subprocess, sys
+app=sys.argv[1]
+try:
+    out=subprocess.run(['podman','ps','-a','--format','json'],capture_output=True,text=True,check=False).stdout
+    arr=json.loads(out or '[]')
+except Exception:
+    arr=[]
+eps=[]
+for c in arr:
+    labs=(c.get('Config') or {}).get('Labels') or {}
+    if labs.get('ae.app')!=app: continue
+    pmap=(c.get('NetworkSettings') or {}).get('Ports') or {}
+    got=False
+    for k,binds in (pmap or {}).items():
+        if not binds: continue
+        hp=(binds[0] or {}).get('HostPort')
+        hip=((binds[0] or {}).get('HostIp') or '').strip()
+        if hp:
+            loop='[::1]' if hip.startswith('[') or hip=='::' else '127.0.0.1'
+            eps.append(f"{loop}:{hp}"); got=True; break
+    if got: continue
+    # fallback
+    cid=c.get('Id') or ''
+    if cid:
+        pr=subprocess.run(['podman','port',cid],capture_output=True,text=True,check=False).stdout
+        for ln in (pr or '').splitlines():
+            try:
+                rhs=ln.partition('->')[2].strip()
+                hp=rhs.split(':')[-1].strip()
+                if hp.isdigit():
+                    loop='[::1]' if rhs.startswith('[') else '127.0.0.1'
+                    eps.append(f"{loop}:{hp}"); break
+            except Exception:
+                pass
+print('\n'.join(eps))
+PY
+)
+    if [[ -n "$eps" ]]; then
+      info "warming ${app} endpoints for ${seconds}s"
+      local deadline=$((SECONDS + seconds))
+      while (( SECONDS < deadline )); do
+        while IFS= read -r ep; do
+          [[ -z "$ep" ]] && continue
+          curl -fsS --max-time 1 "http://$ep/healthz" >/dev/null 2>&1 || true
+        done <<< "$eps"
+        sleep 1
+      done
+    fi
+  fi
+}
+
 # Build an automatic label base when none provided explicitly
 auto_label() {
   local today="r$(date +%Y%m%d)"
@@ -61,7 +120,9 @@ ensure_controller() {
     return 0
   fi
   echo "[matrix] controller not detected; attempting auto-start..." >&2
-  nohup python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch >/tmp/k1s_ctrl_bench.log 2>&1 &
+  # Respect AE_SPECS_DIR if set so we don't inadvertently reconcile every sample under specs/
+  SPECS_DIR="${AE_SPECS_DIR:-specs}"
+  nohup python -m ae.controller --loop --specs "$SPECS_DIR" --metrics-port 9108 --watch >/tmp/k1s_ctrl_bench.log 2>&1 &
   sleep 3
   if pgrep -f "python\s*-m\s*ae\.controller" >/dev/null 2>&1; then
     echo "[matrix] controller started (logs: /tmp/k1s_ctrl_bench.log)" >&2
@@ -122,7 +183,7 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 wait_ready() {
-  local name="$1"; local want="$2"; local tries=60
+  local name="$1"; local want="$2"; local tries=${WAIT_READY_TRIES:-60}
   while (( tries-- > 0 )); do
     local js
     if ! js=$(ae status "$name" --json 2>/dev/null); then sleep 2; continue; fi
@@ -155,6 +216,10 @@ for n in "${reps[@]}"; do
   info "scale $app_name to $n"
   ae scale "$app_name" --replicas "$n" || true
   wait_ready "$app_name" "$n" || true
+  # Optional warm phase to tickle endpoints before snapshot
+  if [[ "${WARM_ENABLED:-1}" == "1" ]]; then
+    warm_endpoints "$app_name" || true
+  fi
   info "snapshot label=${label_suite}-pods-${n}"
   if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
     sudo -E scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-pods-${n}" --duration "$duration" || true

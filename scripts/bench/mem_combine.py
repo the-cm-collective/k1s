@@ -59,6 +59,12 @@ def main(argv: List[str]) -> int:
                 "control_plane_pss_kb": s.get("overhead", {}).get("pss_kb_control_plane", 0),
                 "app_mem_bytes": s.get("containers", {}).get("app_mem_bytes", 0),
                 "system_mem_bytes": s.get("containers", {}).get("system_mem_bytes", 0),
+                "host_system_cgroups_bytes": s.get("overhead", {}).get(
+                    "host_system_cgroups_bytes", 0
+                ),
+                "mem_available_before_bytes": (s.get("mem_available", {}) or {}).get("before_bytes", 0),
+                "mem_available_after_bytes": (s.get("mem_available", {}) or {}).get("after_bytes", 0),
+                "mem_available_delta_bytes": (s.get("mem_available", {}) or {}).get("delta_bytes", 0),
             }
         )
 

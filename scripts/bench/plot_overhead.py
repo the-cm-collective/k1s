@@ -46,8 +46,12 @@ def main(argv):
     plt.savefig(outdir / "control_plane_pss.png", dpi=120)
     plt.close()
 
-    # Figure 2: system cgroup memory by label
-    sys_mem = [int(r.get("system_mem_bytes") or 0) / (1024.0 * 1024.0) for r in rows]
+    # Figure 2: host system cgroup memory by label (system.slice + init.scope)
+    sys_mem = [
+        int((r.get("host_system_cgroups_bytes") or r.get("system_mem_bytes") or 0))
+        / (1024.0 * 1024.0)
+        for r in rows
+    ]
     plt.figure(figsize=(10, 4))
     plt.bar(labels, sys_mem, color="#34d399")
     plt.ylabel("System cgroups (MiB)")
@@ -56,7 +60,7 @@ def main(argv):
     plt.savefig(outdir / "system_cgroups.png", dpi=120)
     plt.close()
 
-    # Figure 3: per-pod overhead ~ system_mem_bytes / N for labels matching *-pods-N
+    # Figure 3: per-pod app footprint ~ app_mem_bytes / N for labels matching *-pods-N
     pods_labels = []
     pods_vals = []
     for r in rows:
@@ -65,13 +69,13 @@ def main(argv):
         if not m:
             continue
         n = int(m.group(1) or 0) or 1
-        per_pod = (int(r.get("system_mem_bytes") or 0) / max(1, n)) / (1024.0 * 1024.0)
+        per_pod = (int(r.get("app_mem_bytes") or 0) / max(1, n)) / (1024.0 * 1024.0)
         pods_labels.append(lab)
         pods_vals.append(per_pod)
     if pods_labels:
         plt.figure(figsize=(10, 4))
         plt.bar(pods_labels, pods_vals, color="#f59e0b")
-        plt.ylabel("Per-pod overhead (MiB) ~ system/replicas")
+        plt.ylabel("Per‑pod app mem (MiB) ~ app/replicas")
         plt.xticks(rotation=45, ha="right")
         plt.tight_layout()
         plt.savefig(outdir / "per_pod_overhead.png", dpi=120)

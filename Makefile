@@ -20,10 +20,10 @@ dev-down:
 	docker compose -f ops/dev/docker-compose.yaml down
 
 loop:
-	python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch
+	python -m ae.controller --loop --specs $${AE_SPECS_DIR:-specs} --metrics-port 9108 --watch
 
 run:
-	python -m ae.controller --once --specs specs/
+	python -m ae.controller --once --specs $${AE_SPECS_DIR:-specs}
 
 apply-sample:
 	python -m ae.cli apply -f specs/examples/echo.yaml
@@ -151,6 +151,26 @@ bench-mem-rollout-k3s:
 	@./scripts/bench/run_rollout_k3s.sh --label-suite $${LABEL_SUITE:-baseline-roll} --deploy $${DEPLOY:-echo} --namespace $${NS:-default} --replicas $${REPLICAS:-5} --duration $${DURATION:-30}
 
 bench-mem-plot:
+	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+
+.PHONY: bench-mem-e2e-k3s-sudo
+# End-to-end K3s (with sudo for snapshots to capture accurate PSS)
+bench-mem-e2e-k3s-sudo:
+	@./scripts/bench/k3s_up.sh --name $${K3S_NAME:-bench}
+	@./scripts/bench/run_matrix_k3s.sh \
+		--label-suite $${LABEL_SUITE:-baseline} \
+		--manifest $${MANIFEST:-specs/examples/k3s-echo.yaml} \
+		--replicas $${REPLICAS:-1,5,10} \
+		--duration $${DURATION:-30} \
+		--sudo
+	@./scripts/bench/run_rollout_k3s.sh \
+		--label-suite $${LABEL_SUITE_ROLL:-baseline-roll} \
+		--deploy $${DEPLOY:-echo} \
+		--namespace $${NS:-default} \
+		--replicas $${ROLL_REPLICAS:-5} \
+		--duration $${DURATION:-30} \
+		--sudo
+	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 
 .PHONY: bench-mem-e2e-k1s bench-mem-e2e-k3s

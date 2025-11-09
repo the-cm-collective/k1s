@@ -50,7 +50,8 @@ ensure_controller() {
     return 0
   fi
   echo "[rollout] controller not detected; attempting auto-start..." >&2
-  nohup python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch >/tmp/k1s_ctrl_bench.log 2>&1 &
+  SPECS_DIR="${AE_SPECS_DIR:-specs}"
+  nohup python -m ae.controller --loop --specs "$SPECS_DIR" --metrics-port 9108 --watch >/tmp/k1s_ctrl_bench.log 2>&1 &
   sleep 3
   if pgrep -f "python\s*-m\s*ae\.controller" >/dev/null 2>&1; then
     echo "[rollout] controller started (logs: /tmp/k1s_ctrl_bench.log)" >&2
@@ -110,7 +111,7 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 wait_ready() {
-  local name="$1"; local want="$2"; local tries=120
+  local name="$1"; local want="$2"; local tries=${WAIT_READY_TRIES:-120}
   while (( tries-- > 0 )); do
     local js
     if ! js=$(ae status "$name" --json 2>/dev/null); then sleep 2; continue; fi
