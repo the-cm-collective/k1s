@@ -232,7 +232,7 @@ def _container_from_manifest(m: AppManifest, *, opts: ExportOptions) -> Dict[str
     return c
 
 
-def _container_from_spec(m: AppManifest, csp, *, opts: ExportOptions, allow_probes: bool = True) -> Dict[str, Any]:
+def _container_from_spec(m: AppManifest, csp, *, opts: ExportOptions, allow_probes: bool = True, projected_volume_name: str | None = None) -> Dict[str, Any]:
     """Build a K8s container dict from a ContainerSpec-like object."""
     def _gf(obj, field, default=None):
         if isinstance(obj, dict):
@@ -337,6 +337,18 @@ def _container_from_spec(m: AppManifest, csp, *, opts: ExportOptions, allow_prob
             c["livenessProbe"] = _probe_to_k8s(h.liveness)
         if getattr(h, "startup", None):
             c["startupProbe"] = _probe_to_k8s(h.startup)
+
+    # per-container projectionMounts via subPath on the projected volume
+    if projected_volume_name and getattr(csp, "projection_mounts", None):
+        vms = c.setdefault("volumeMounts", [])
+        for pm in getattr(csp, "projection_mounts", []) or []:
+            path = getattr(pm, "path", None) if not isinstance(pm, dict) else pm.get("path")
+            mnt = getattr(pm, "mount_path", None) if not isinstance(pm, dict) else pm.get("mountPath") or pm.get("mount_path")
+            ro = (
+                bool(getattr(pm, "read_only", True)) if not isinstance(pm, dict) else bool(pm.get("readOnly", True))
+            )
+            if path and mnt:
+                vms.append({"name": projected_volume_name, "mountPath": str(mnt), "subPath": str(path), "readOnly": ro})
     return c
 
 
@@ -613,8 +625,9 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
         },
     }
     if getattr(m.spec, "init_containers", None):
+        proj_name = proj["name"] if proj is not None else None
         pod["spec"]["template"]["spec"]["initContainers"] = [
-            _container_from_spec(m, csp, opts=opts, allow_probes=False)
+            _container_from_spec(m, csp, opts=opts, allow_probes=False, projected_volume_name=proj_name)
             for csp in m.spec.init_containers
         ]
     return pod
@@ -827,8 +840,9 @@ def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str,
         },
     }
     if getattr(m.spec, "init_containers", None):
+        proj_name = proj["name"] if proj is not None else None
         pod["spec"]["template"]["spec"]["initContainers"] = [
-            _container_from_spec(m, csp, opts=opts, allow_probes=False)
+            _container_from_spec(m, csp, opts=opts, allow_probes=False, projected_volume_name=proj_name)
             for csp in m.spec.init_containers
         ]
     if vcts:
@@ -999,8 +1013,9 @@ def _pvc_from_storage(app: AppManifest, s, opts: ExportOptions) -> Dict[str, Any
         },
     }
     if getattr(m.spec, "init_containers", None):
+        proj_name = proj["name"] if proj is not None else None
         pod["spec"]["template"]["spec"]["initContainers"] = [
-            _container_from_spec(m, csp, opts=opts, allow_probes=False)
+            _container_from_spec(m, csp, opts=opts, allow_probes=False, projected_volume_name=proj_name)
             for csp in m.spec.init_containers
         ]
 
