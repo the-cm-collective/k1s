@@ -1,10 +1,12 @@
-"""Lightweight HTTP API for metrics, status, and events.
+"""Lightweight HTTP API for metrics, status, events, and previews.
 
 Endpoints:
 - GET /metrics            -> Prometheus text format
 - GET /status             -> JSON list of app statuses
 - GET /status/<app>       -> JSON object for app status (404 if missing)
 - GET /events/<app>?limit -> JSON list of recent events for app
+ - GET /history/<app>?limit -> JSON list of recent probe evaluations (replica histories)
+ - POST /k8s/preview      -> Render K8s YAML for a manifest (dev only; gated by AE_API_DEV_EXPORT=1)
 """
 
 from __future__ import annotations
@@ -514,6 +516,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             if subpath == "logs":
                 self._handle_dashboard_partial_logs()
                 return
+            if subpath == "probe-history":
+                self._handle_dashboard_partial_probe_history()
+                return
         # Dashboard SSE alias for events (no labs gating)
         if path_only == "/dashboard/sse/events":
             self._handle_labs_sse_events()
@@ -632,6 +637,30 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 payload = json.loads(body.decode("utf-8")) if body else {}
                 out = self.plan_fn(payload)  # type: ignore[misc]
                 self._json_ok(out)
+            except Exception as exc:  # pragma: no cover
+                self._json_error(500, str(exc))
+            return
+        # Dev-only exporter preview: render K8s YAML for a posted manifest
+        if self.path == "/k8s/preview":
+            try:
+                import os as _os
+                if _os.getenv("AE_API_DEV_EXPORT") != "1":
+                    self._json_error(403, "disabled: set AE_API_DEV_EXPORT=1 to enable k8s preview")
+                    return
+                length = int(self.headers.get("Content-Length", "0"))
+                raw = self.rfile.read(length) if length > 0 else b"{}"
+                import json as _json
+                payload = _json.loads(raw.decode("utf-8")) if raw else {}
+                # Build manifest model
+                from ae.controller.spec import AppManifest as _AppManifest
+                man = _AppManifest.model_validate(payload)
+                # Options (optional) under payload["options"]
+                from ae.k8s.exporter import export_k8s_yaml as _export, ExportOptions as _Opts
+
+                opts_payload = payload.get("options") or {}
+                opts = _Opts(**opts_payload) if isinstance(opts_payload, dict) else _Opts()
+                yaml_text = _export(man, options=opts)
+                self._json_ok({"yaml": yaml_text})
             except Exception as exc:  # pragma: no cover
                 self._json_error(500, str(exc))
             return
@@ -2534,7 +2563,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       </div>
     </header>
     <main>
-      <section id=\"apps\"><div id=\"apps-list\"></div><button id=\"apps-pane-toggle\" title=\"Collapse apps pane\" aria-pressed=\"false\" aria-label=\"Toggle apps panel\"><svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"0\" fill=\"none\"/><path d=\"M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z\"/></svg></button></section>
+  <section id=\"apps\"><div id=\"apps-list\"></div><button id=\"apps-pane-toggle\" title=\"Collapse apps pane\" aria-pressed=\"false\" aria-label=\"Toggle apps panel\"><svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"0\" fill=\"none\"/><path d=\"M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z\"/></svg></button></section>
       <section id=\"detail\">
         <h2>Application</h2>
         <div class=\"row stretch\">
@@ -2566,7 +2595,25 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           <div class=\"row\" id=\"sys-counters\" style=\"gap:10px; margin-top:6px; flex-wrap:wrap;\"></div>
         </div>
         <div class=\"card\" style=\"margin-top:12px;\">
-          <strong>Replicas</strong>
+          <strong>Probe History</strong>
+          <div id=\"probe-history\" class=\"scrollcap\" style=\"max-height:220px;\"
+               hx-get=\"/dashboard/partials/probe-history\"
+               hx-trigger=\"load, every 10s, refresh\"
+               hx-include=\"#app-select\"
+               hx-swap=\"innerHTML\"></div>
+        </div>
+        <div class=\"card\" style=\"margin-top:12px;\">
+          <div class=\"row\" style=\"align-items:center; justify-content:space-between;\">
+            <strong>Replicas</strong>
+            <label title=\"Rows history count\">Show last
+              <select id=\"hist-count\" style=\"margin:0 4px;\">
+                <option value=\"5\" selected>5</option>
+                <option value=\"10\">10</option>
+                <option value=\"20\">20</option>
+              </select>
+              checks
+            </label>
+          </div>
           <table id=\"tbl-replicas\"><thead><tr><th>Replica</th><th>Ready</th><th>Live</th><th>Status</th><th>Backoff</th></tr></thead><tbody></tbody></table>
         </div>
         <div class=\"card\" style=\"margin-top:12px;\">
@@ -2884,6 +2931,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
               });
               rbody.innerHTML = rows.map(function(x){ return x.html; }).join('');
               scheduleBackoffTick();
+              attachReplicaHistoryHandlers();
             }
           } catch(e) { console.error('replica table', e); }
           // Events are now streamed via SSE; keep logs HTMX config fresh
@@ -2914,6 +2962,47 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             });
           } catch(e){}
         }, 1000);
+      }
+
+      var historyCache = null; // cache last fetched /history for current app
+      function attachReplicaHistoryHandlers(){
+        try {
+          var tbody = document.querySelector('#tbl-replicas tbody');
+          if (!tbody) return;
+          Array.from(tbody.querySelectorAll('tr')).forEach(function(tr){
+            tr.addEventListener('click', function(){ toggleReplicaHistory(tr); });
+          });
+        } catch(e){}
+      }
+      function toggleReplicaHistory(tr){
+        try {
+          var rid = tr.getAttribute('data-rid');
+          // If next row is a history row, remove it
+          var next = tr.nextElementSibling;
+          if (next && next.classList.contains('hist')) { next.parentNode.removeChild(next); return; }
+          // else insert one and populate
+          var row = document.createElement('tr');
+          row.className = 'hist';
+          var td = document.createElement('td');
+          td.colSpan = 5;
+          td.textContent = 'loading…';
+          row.appendChild(td);
+          tr.parentNode.insertBefore(row, tr.nextSibling);
+          var nSel = document.getElementById('hist-count');
+          var n = 5;
+          try { n = parseInt(nSel && nSel.value || '5', 10) || 5; } catch(e) { n = 5; }
+          (historyCache ? Promise.resolve(historyCache) : fetchJSON('/history/' + encodeURIComponent(current) + '?limit=50'))
+            .then(function(list){ historyCache = list; return list; })
+            .then(function(list){
+              var items = (list||[]).filter(function(h){ return String(h.replica_id||'') === String(rid||''); }).slice(0, n);
+              if (!items.length) { td.innerHTML = '<div class="muted">No recent probe checks for '+escapeHtml(rid)+'</div>'; return; }
+              var html = '<table class="mini"><thead><tr><th>Time</th><th>Ready</th><th>Live</th><th>R msg</th><th>L msg</th></tr></thead><tbody>'
+                + items.map(function(h){ return '<tr><td>'+escapeHtml(h.check_time)+'</td><td>'+(h.ready?'yes':'no')+'</td><td>'+(h.live?'yes':'no')+'</td><td>'+escapeHtml(h.readiness_message||'')+'</td><td>'+escapeHtml(h.liveness_message||'')+'</td></tr>'; }).join('')
+                + '</tbody></table>';
+              td.innerHTML = html;
+            })
+            .catch(function(err){ td.innerHTML = '<div class="bad">history error: '+escapeHtml(String(err))+'</div>'; });
+        } catch(e){}
       }
 
       function selectApp(name){
@@ -3644,7 +3733,45 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 return ts, msg
         except Exception:
             pass
-        return "-", line
+        return "", line
+
+    def _handle_dashboard_partial_probe_history(self) -> None:
+        # Render probe histories as an HTML fragment for hx-swap
+        import urllib.parse as _up
+
+        frag, _, query = self.path.partition("?")
+        params = _up.parse_qs(query)
+        app = (params.get("app", [""])[0] or "").strip()
+        try:
+            limit = int(params.get("limit", ["50"])[0])
+        except ValueError:
+            limit = 50
+        if not app:
+            html = '<div class="muted">Select an app to view probe history.</div>'
+        else:
+            rows = self.store.get_probe_history(app, limit)
+            if not rows:
+                html = '<div class="muted">No probe evaluations recorded.</div>'
+            else:
+                out = [
+                    '<table class="mini"><thead><tr><th>Time</th><th>Replica</th><th>Ready</th><th>Live</th><th>R msg</th><th>L msg</th></tr></thead><tbody>'
+                ]
+                esc = self._escape_html
+                for r in rows:
+                    rd = "yes" if r.ready else "no"
+                    lv = "yes" if r.live else "no"
+                    out.append(
+                        f"<tr><td>{esc(r.check_time.isoformat())}</td><td>{esc(r.replica_id)}</td><td>{rd}</td><td>{lv}</td>"
+                        f"<td>{esc(r.readiness_message or '')}</td><td>{esc(r.liveness_message or '')}</td></tr>"
+                    )
+                out.append("</tbody></table>")
+                html = "".join(out)
+        payload = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     @staticmethod
     def _escape_html(s: str) -> str:

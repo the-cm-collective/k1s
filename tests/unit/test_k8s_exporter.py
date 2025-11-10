@@ -152,6 +152,17 @@ def test_pdb_max_unavailable() -> None:
     assert "minAvailable" not in pdb["spec"]
 
 
+def test_pdb_percentage_values_supported() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    # replicas>1 to make PDB eligible
+    man = man.model_copy(update={"spec": man.spec.model_copy(update={"replicas": 4})})
+    # Pass a percentage string intentionally (exporter supports coercion fallback)
+    opts = ExportOptions(namespace="demo", emit_pdb=True, pdb_min_available="50%")  # type: ignore[arg-type]
+    docs = export_k8s_docs(man, options=opts)
+    pdb = next(d for d in docs if d["kind"] == "PodDisruptionBudget")
+    assert pdb["spec"].get("minAvailable") == "50%"
+
+
 def test_hpa_memory_average_value() -> None:
     man = load_manifest(Path("specs/examples/echo.yaml"))
     # need HPA bounds
@@ -163,6 +174,23 @@ def test_hpa_memory_average_value() -> None:
     mem = next(m for m in hpa["spec"]["metrics"] if m["resource"]["name"] == "memory")
     assert mem["resource"]["target"]["type"] == "AverageValue"
     assert mem["resource"]["target"]["averageValue"] == "200Mi"
+
+
+def test_hpa_behavior_knobs_pass_through() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    opts = ExportOptions(
+        namespace="demo",
+        hpa_min=1,
+        hpa_max=3,
+        hpa_cpu_target=70,
+        hpa_behavior_up={"stabilizationWindowSeconds": 60, "policies": [{"type": "Percent", "value": 50, "periodSeconds": 60}]},
+        hpa_behavior_down={"stabilizationWindowSeconds": 60},
+    )
+    docs = export_k8s_docs(man, options=opts)
+    hpa = next(d for d in docs if d["kind"] == "HorizontalPodAutoscaler")
+    behavior = hpa["spec"].get("behavior", {})
+    assert behavior.get("scaleUp", {}).get("stabilizationWindowSeconds") == 60
+    assert behavior.get("scaleDown", {}).get("stabilizationWindowSeconds") == 60
 
 
 def test_service_multi_port_and_ingress_backend() -> None:

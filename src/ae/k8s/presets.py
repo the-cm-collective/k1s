@@ -62,3 +62,39 @@ def apply_preset(opts: ExportOptions, preset: PresetName) -> ExportOptions:
         )
 
     return base
+
+
+# Ingress presets for common controllers
+IngressPresetName = Literal["nginx-web", "traefik-web"]
+
+
+def apply_ingress_preset(opts: ExportOptions, preset: IngressPresetName) -> ExportOptions:
+    """Inject opinionated ingress annotations and defaults.
+
+    These are conservative, opt-in hints for popular controllers.
+    """
+    if preset == "nginx-web":
+        ann = {
+            # Timeouts and buffering suitable for typical web apps
+            "nginx.ingress.kubernetes.io/proxy-read-timeout": "60",
+            "nginx.ingress.kubernetes.io/proxy-send-timeout": "60",
+            "nginx.ingress.kubernetes.io/proxy-buffer-size": "16k",
+            # Basic rate limit (requests per second per client IP). Adjust as needed.
+            "nginx.ingress.kubernetes.io/limit-rps": "20",
+        }
+        merged = dict(opts.ingress_annotations or {})
+        merged.update(ann)
+        return replace(opts, ingress_annotations=merged, ingress_path_type=opts.ingress_path_type or "Prefix")
+
+    if preset == "traefik-web":
+        ann = {
+            # Route via websecure by default; relies on cluster config
+            "traefik.ingress.kubernetes.io/router.entrypoints": "web,websecure",
+        }
+        merged = dict(opts.ingress_annotations or {})
+        merged.update(ann)
+        # Traefik supports Prefix/ImplementationSpecific. Prefer Prefix.
+        pt = opts.ingress_path_type if opts.ingress_path_type in {"Prefix", "ImplementationSpecific"} else "Prefix"
+        return replace(opts, ingress_annotations=merged, ingress_path_type=pt)
+
+    return opts

@@ -159,6 +159,14 @@ def build_parser() -> argparse.ArgumentParser:
     events_parser.add_argument("name", help="Application name")
     events_parser.add_argument("--limit", type=int, default=20)
 
+    history_parser = subparsers.add_parser("history", help="Show recent probe evaluations")
+    history_parser.add_argument("name", help="Application name")
+    history_parser.add_argument("--limit", type=int, default=20)
+    history_parser.add_argument("--replica", default=None, help="Filter by replica id")
+    history_parser.add_argument("--json", action="store_true", help="Emit JSON output")
+    history_parser.add_argument("--since", default=None, help="Show entries since a relative duration (e.g., 10m, 2h)")
+    history_parser.add_argument("--since-time", dest="since_time", default=None, help="Show entries since an RFC3339 timestamp (e.g., 2025-11-10T12:34:00Z)")
+
     # config validate
     cfg_parser = subparsers.add_parser("config", help="Manage config resources")
     cfg_sub = cfg_parser.add_subparsers(dest="config_cmd", required=True)
@@ -238,11 +246,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--ingress-class", default=None, help="Ingress class name (e.g., traefik or nginx)"
     )
     xk.add_argument(
+        "--ingress-path-type",
+        choices=["Prefix", "Exact", "ImplementationSpecific"],
+        default=None,
+        help="Ingress pathType to use for all paths (default: Prefix)",
+    )
+    xk.add_argument(
         "--ingress-annotation",
         action="append",
         default=[],
         dest="ingress_annotation",
         help="Ingress annotation key=value (repeatable)",
+    )
+    xk.add_argument(
+        "--ingress-preset",
+        choices=["nginx-web", "traefik-web"],
+        default=None,
+        help="Apply curated annotations for common ingress controllers",
     )
     xk.add_argument(
         "--service-port", type=int, default=None, help="Override Service port (default: 80)"
@@ -292,6 +312,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     xk.add_argument(
         "--storage-class-name", default=None, help="PVC storageClassName to set on emitted PVCs"
+    )
+    xk.add_argument(
+        "--pvc-access-modes",
+        action="append",
+        default=None,
+        help="Override PVC accessModes (repeat to provide multiple, e.g., ReadWriteOnce)",
     )
     xk.add_argument(
         "--service-account", default=None, help="Attach ServiceAccount and emit it by this name"
@@ -1032,6 +1058,7 @@ def main(argv: list[str] | None = None) -> int:
         "registry": lambda ns: handle_registry(ns, registry_auth),
         "metrics": lambda ns: handle_metrics(ns, store),
         "events": lambda ns: handle_events(ns, store, args),
+        "history": lambda ns: handle_history(ns, store, args),
         "delete": lambda ns: handle_delete(ns, store, runtime, ingress_service, args),
         "scale": lambda ns: handle_scale(ns, store, reconciler, args),
         "backup": lambda ns: handle_backup(ns),
@@ -2341,6 +2368,119 @@ def handle_events(
     return 0
 
 
+def handle_history(
+    args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace
+) -> int:
+    # Server mode
+    if getattr(global_args, "server", None):
+        base = str(global_args.server)
+        tok = getattr(global_args, "token", None)
+        limit = int(getattr(args, "limit", 20))
+        since_secs = _parse_since_secs(getattr(args, "since", None)) if getattr(args, "since", None) else None
+        since_ts = _parse_rfc3339_to_epoch(getattr(args, "since_time", None)) if getattr(args, "since_time", None) else None
+        query_limit = max(limit, 200) if (since_secs or since_ts) else limit
+        try:
+            items = _http_get_json(base, f"/history/{args.name}?limit={query_limit}", tok)
+            if getattr(args, "json", False):
+                import json as _json
+                if since_secs or since_ts:
+                    cutoff = (time.time() - since_secs) if since_secs else float(since_ts)
+                    def _keep(h):
+                        try:
+                            import datetime as _dt
+                            t = _dt.datetime.fromisoformat(h.get("check_time", "").replace("Z", "+00:00")).timestamp()
+                            return t >= float(cutoff)
+                        except Exception:
+                            return True
+                    items = [h for h in (items or []) if _keep(h)][:limit]
+                print(_json.dumps(items, indent=2))
+                return 0
+            if not items:
+                print(f"No probe history for {args.name}.")
+                return 0
+            rep = getattr(args, "replica", None)
+            import time
+            cutoff = None
+            if since_secs:
+                cutoff = time.time() - since_secs
+            elif since_ts:
+                cutoff = float(since_ts)
+            shown = 0
+            for h in items:
+                if rep and str(h.get("replica_id")) != str(rep):
+                    continue
+                if cutoff is not None:
+                    try:
+                        import datetime as _dt
+                        t = _dt.datetime.fromisoformat(h.get("check_time", "").replace("Z", "+00:00")).timestamp()
+                        if t < float(cutoff):
+                            continue
+                    except Exception:
+                        pass
+                ts = h.get("check_time", "")
+                print(
+                    f"{ts} {h.get('replica_id')}: ready={bool(h.get('ready'))} live={bool(h.get('live'))} "
+                    f"R='{h.get('readiness_message') or ''}' L='{h.get('liveness_message') or ''}'"
+                )
+                shown += 1
+                if shown >= limit:
+                    break
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            print(f"remote history failed: {exc}")
+            return 1
+    # Local store fallback
+    limit = int(getattr(args, "limit", 20))
+    since_secs = _parse_since_secs(getattr(args, "since", None)) if getattr(args, "since", None) else None
+    since_ts = _parse_rfc3339_to_epoch(getattr(args, "since_time", None)) if getattr(args, "since_time", None) else None
+    query_limit = max(limit, 200) if (since_secs or since_ts) else limit
+    items = store.get_probe_history(args.name, query_limit)
+    if getattr(args, "json", False):
+        import json as _json
+        import time
+        def _filter(h):
+            if since_secs is None and since_ts is None:
+                return True
+            try:
+                cutoff = (time.time() - since_secs) if since_secs else float(since_ts)
+                return h.check_time.timestamp() >= cutoff
+            except Exception:
+                return True
+        j = [
+            {
+                "replica_id": h.replica_id,
+                "check_time": h.check_time.isoformat(),
+                "ready": bool(h.ready),
+                "live": bool(h.live),
+                "readiness_message": h.readiness_message,
+                "liveness_message": h.liveness_message,
+            }
+            for h in items if _filter(h)
+        ][:limit]
+        print(_json.dumps(j, indent=2))
+        return 0
+    rep = getattr(args, "replica", None)
+    import time
+    shown = 0
+    for h in items:
+        if rep and str(h.replica_id) != str(rep):
+            continue
+        if since_secs or since_ts:
+            try:
+                cutoff = (time.time() - since_secs) if since_secs else float(since_ts)
+                if h.check_time.timestamp() < cutoff:
+                    continue
+            except Exception:
+                pass
+        ts = h.check_time.strftime("%Y-%m-%d %H:%M:%S")
+        print(
+            f"{ts} {h.replica_id}: ready={h.ready} live={h.live} R='{h.readiness_message}' L='{h.liveness_message}'"
+        )
+        shown += 1
+        if shown >= limit:
+            break
+    return 0
+
 def handle_volumes(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
     if args.vol_cmd == "list":
         try:
@@ -2884,6 +3024,7 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
         workload_kind=str(getattr(args, "workload", "deployment")).title(),
         namespace=str(args.namespace or "default"),
         ingress_class_name=args.ingress_class,
+        ingress_path_type=getattr(args, "ingress_path_type", None),
         ingress_annotations=(
             dict(a.split("=",1) for a in (getattr(args,"ingress_annotation",[]) or []) if "=" in a)
             if getattr(args,"ingress_annotation",None) is not None else None
@@ -2896,6 +3037,7 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
         emit_storage=bool(getattr(args, "emit_storage", False)),
         default_pvc_size=str(getattr(args, "default_pvc_size", "1Gi")),
         storage_class_name=getattr(args, "storage_class_name", None),
+        pvc_access_modes=(list(getattr(args, "pvc_access_modes", []) or []) or None),
         service_account_name=getattr(args, "service_account", None),
         emit_pdb=bool(getattr(args, "emit_pdb", False)),
         pdb_min_available=getattr(args, "pdb_min_available", None),
@@ -2929,6 +3071,11 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
     # Apply preset last so explicit flags take precedence
     if getattr(args, "preset", None):
         opts = apply_preset(opts, args.preset)  # type: ignore[arg-type]
+    # Ingress preset after main preset and flags; still allow explicit --ingress-annotation to win
+    if getattr(args, "ingress_preset", None):
+        from ae.k8s.presets import apply_ingress_preset  # local import to avoid cycles
+
+        opts = apply_ingress_preset(opts, args.ingress_preset)  # type: ignore[arg-type]
     out = export_k8s_yaml(manifest=man, options=opts)
     if getattr(args, "validate", False):
         ok, errs = validate_documents(out)

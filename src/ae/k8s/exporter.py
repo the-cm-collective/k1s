@@ -906,12 +906,13 @@ def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str,
             for csp in m.spec.init_containers
         ]
     if vcts:
-        # Apply storageClassName/accessModes overrides when requested
+        # Apply storageClassName/accessModes overrides when requested (override defaults)
         for tmpl in vcts:
-            if opts.storage_class_name:
-                tmpl.setdefault("spec", {}).setdefault("storageClassName", str(opts.storage_class_name))
-            if opts.pvc_access_modes:
-                tmpl.setdefault("spec", {}).setdefault("accessModes", list(opts.pvc_access_modes))
+            spec = tmpl.setdefault("spec", {})
+            if opts.storage_class_name is not None:
+                spec["storageClassName"] = str(opts.storage_class_name)
+            if opts.pvc_access_modes is not None:
+                spec["accessModes"] = list(opts.pvc_access_modes)
         sts["spec"]["volumeClaimTemplates"] = vcts
     return sts
 
