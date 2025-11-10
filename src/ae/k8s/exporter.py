@@ -70,6 +70,8 @@ class ExportOptions:
     np_allow_internal_ports: list[int] = field(default_factory=list)
     # Topology spread (inject if none provided)
     inject_topology_spread: bool = False
+    # Ingress annotations (passthrough)
+    ingress_annotations: Optional[Dict[str, Any]] = None
 
 
 def _container_from_manifest(m: AppManifest, *, opts: ExportOptions) -> Dict[str, Any]:
@@ -907,12 +909,16 @@ def _ingress_from_manifest(m: AppManifest, opts: ExportOptions) -> Optional[Dict
         if secret:
             tls_entry["secretName"] = secret
         spec["tls"] = [tls_entry]
-    return {
+    meta: Dict[str, Any] = {"name": m.metadata.name, "namespace": opts.namespace}
+    if opts.ingress_annotations:
+        meta.setdefault("annotations", {}).update(dict(opts.ingress_annotations))
+    ing_res = {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "Ingress",
-        "metadata": {"name": m.metadata.name, "namespace": opts.namespace},
+        "metadata": meta,
         "spec": spec,
     }
+    return ing_res
 
 
 def _configmap_from_ref(app: AppManifest, ref, opts: ExportOptions) -> Dict[str, Any]:
