@@ -238,6 +238,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--ingress-class", default=None, help="Ingress class name (e.g., traefik or nginx)"
     )
     xk.add_argument(
+        "--ingress-annotation",
+        action="append",
+        default=[],
+        dest="ingress_annotation",
+        help="Ingress annotation key=value (repeatable)",
+    )
+    xk.add_argument(
         "--service-port", type=int, default=None, help="Override Service port (default: 80)"
     )
     xk.add_argument(
@@ -2877,6 +2884,10 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
         workload_kind=str(getattr(args, "workload", "deployment")).title(),
         namespace=str(args.namespace or "default"),
         ingress_class_name=args.ingress_class,
+        ingress_annotations=(
+            dict(a.split("=",1) for a in (getattr(args,"ingress_annotation",[]) or []) if "=" in a)
+            if getattr(args,"ingress_annotation",None) is not None else None
+        ),
         service_port=args.service_port,
         emit_configs=bool(getattr(args, "emit_configs", False)),
         inline_configs=bool(getattr(args, "inline_configs", False)),
