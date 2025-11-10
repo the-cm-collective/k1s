@@ -260,3 +260,32 @@ Caddy site config (dev)
   - `api.caddy`: exposes the API directly at `https://api.home.arpa:8443/` (handy for Swagger/ReDoc).
 - After updating site files, restart Caddy:
   - `docker compose -f ops/dev/labs-compose.yaml restart caddy` (or bring the stack up again)
+## Probe History: Dashboard and CLI
+
+The controller records the result of each readiness/liveness evaluation per replica. You can now surface this in two ways:
+
+- Dashboard
+  - Probe History card: shows the most recent evaluations for the selected app (auto‑refreshes every 10s).
+  - Replicas table: click a replica row to toggle an inline panel with the last N checks (selector at the top right of the card). Useful for debugging intermittent probe failures or backoff windows.
+
+- CLI
+  - List recent checks:
+    - `ae history <app> [--limit 20] [--replica <id>] [--json]`
+    - Time filters: `--since 30m` (supports `s`, `m`, `h`) or `--since-time 2025-11-10T12:34:00Z`.
+  - Remote mode: add `--server http://host:port` and `--token $AE_API_READ_TOKEN` to query a running controller via HTTP.
+
+Notes
+- The dashboard caches the most recent history response while browsing replica rows to stay responsive.
+- In constrained environments, some tests involving local TCP sockets may be skipped or fail due to sandbox restrictions; this does not affect runtime behavior.
+
+## Dev Exporter Preview (K8s YAML)
+
+For rapid iteration on exporter options, enable a development-only endpoint to render Kubernetes YAML from a posted manifest:
+
+- Set `AE_API_DEV_EXPORT=1` and POST to `/k8s/preview` with JSON payload `{ manifest fields..., "options": { ExportOptions... } }`.
+- Response JSON includes a `yaml` field with a multi‑document manifest.
+
+## Ingress Presets and Storage Overrides
+
+- Ingress: use `--ingress-preset nginx-web|traefik-web` to apply common, opt‑in annotations. Combine with `--ingress-class` and custom `--ingress-annotation key=value` for fine‑tuning.
+- Storage: `--storage-class-name <name>` and `--pvc-access-modes <mode>` override defaults for generated PVCs and StatefulSet `volumeClaimTemplates`.
