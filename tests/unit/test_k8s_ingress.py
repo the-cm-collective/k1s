@@ -27,3 +27,12 @@ def test_ingress_multi_path_and_tls_secret() -> None:
     assert any(p.get("path") == "/api" for p in paths)
     tls = ing_doc["spec"]["tls"][0]
     assert tls.get("secretName") == "echo-tls"
+
+
+def test_traefik_rejects_exact_pathtype() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    opts = ExportOptions(namespace="demo", ingress_class_name="traefik", ingress_path_type="Exact")
+    import pytest
+
+    with pytest.raises(ValueError):
+        export_k8s_docs(manifest=man, options=opts)

@@ -85,12 +85,12 @@ Workloads
  - healthCheckNodePort not supported.
 
  Ingress
-- `networking.k8s.io/v1` with `PathType=Prefix`. Multiple paths supported. TLS enabled by default; `tls.secretName` set when `tlsSecretName` provided; `ingressClassName` optional.
-- Advanced annotations, regex paths, multiple backends per rule, and canary annotations are out of scope.
+- `networking.k8s.io/v1` with `PathType=Prefix` by default (Traefik limited to Prefix/ImplementationSpecific). Multiple paths supported. TLS enabled by default; `tls.secretName` set when `tlsSecretName` provided; `ingressClassName` optional. `--ingress-annotation` and `--ingress-preset` provide opt-in controller hints.
+- Advanced regex paths, multiple backends per rule, and canary annotations are out of scope.
 
  Policy, Autoscaling, Accounts
-- HPA (`autoscaling/v2`): CPU utilization, memory utilization, or memory AverageValue. Requires requests unless `--allow-hpa-no-requests` set. No custom/external metrics.
-- PDB (`policy/v1`): emits when `--emit-pdb` and replicas > 1, with either `minAvailable` (default 1) or `maxUnavailable`. Percent values are not supported (integers only).
+- HPA (`autoscaling/v2`): CPU utilization, memory utilization, or memory AverageValue. Requires requests unless `--allow-hpa-no-requests` set. Exposes `behavior.scaleUp/scaleDown` knobs via CLI JSON.
+- PDB (`policy/v1`): emits when `--emit-pdb` and replicas > 1, with either `minAvailable` (default 1) or `maxUnavailable`. Accepts integer or percentage values.
 - ServiceAccount: emitted/attached when `--service-account <name>` is provided. RBAC Roles/Bindings are not emitted.
 - NetworkPolicy: pass‑through from `spec.networkPolicy`. Exporter can generate default‑deny ingress/egress with optional DNS/HTTP(S) allowances when flags are set; backend preset allows RFC1918 egress on common DB/cache ports; checker advises when missing.
 
@@ -101,11 +101,9 @@ Validation and Tooling
 - `ae export-k8s --validate` performs offline structural checks; `k8s-check --policy strict` applies FEAT checklist; kubeconform integration via `k8s-check --kubeconform`; `export-k8s --split` writes per‑resource YAML.
 
 Notable Gaps vs. Kubernetes
-- Multi‑container Pods and initContainers not modeled (single container supported).
-- PDB percentage values and advanced HPA behaviors (scaleUp/Down policies) not supported.
-- Service sessionAffinity, healthCheckNodePort, and advanced Ingress annotations/features are not emitted.
-- ConfigMap/Secret volume mounts are not modeled; only env/key references or inline data emission.
-- Storage: `accessModes` fixed to `ReadWriteOnce`; no `storageClassName` selection; no ephemeral/emptyDir.
+- Multi‑container Pods: runtime remains single‑container; exporter supports `containers[]` and `initContainers` including per‑container probes.
+- Service sessionAffinity healthCheckNodePort and advanced Ingress features remain out of scope.
+- Storage: no ephemeral/emptyDir.
 - RBAC (Role/RoleBinding/ClusterRoleBinding) not emitted.
 
 Planned Improvements
@@ -114,10 +112,10 @@ Planned Improvements
   - [x] Sidecars in runtime with health aggregation; container‑targeted logs/exec.
   - [x] InitContainers runtime (sequential with timeouts and events).
   - [x] Exporter emits initContainers/containers and projected config/secret volumes.
-  - [ ] Export per‑container probes/lifecycle when using `spec.containers[*].health|lifecycle`.
+  - [x] Export per‑container probes/lifecycle when using `spec.containers[*].health|lifecycle`.
 - Config/Secret volumes parity:
   - [x] File projections with per‑container `projectionMounts` in runtime.
-  - [ ] Exporter: support explicit `items` (ConfigMap/Secret) with mode/path and per‑container mounts.
+  - [x] Exporter: support explicit `items` (ConfigMap/Secret) with mode/path and per‑container mounts.
 - Policy & autoscaling:
   - [ ] PDB percent values; HPA scaleUp/Down behavior tuning.
   - [ ] Optional `storageClassName` and accessModes selection.
