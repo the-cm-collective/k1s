@@ -1097,11 +1097,18 @@ def export_k8s_docs(
                 "PDB minAvailable and maxUnavailable are mutually exclusive; provide only one"
             )
         if opts.pdb_max_unavailable is not None:
-            spec_pdb["maxUnavailable"] = int(opts.pdb_max_unavailable)
+            try:
+                spec_pdb["maxUnavailable"] = int(opts.pdb_max_unavailable)
+            except Exception:
+                spec_pdb["maxUnavailable"] = str(opts.pdb_max_unavailable)
         else:
-            spec_pdb["minAvailable"] = (
-                int(opts.pdb_min_available) if opts.pdb_min_available is not None else 1
-            )
+            if opts.pdb_min_available is not None:
+                try:
+                    spec_pdb["minAvailable"] = int(opts.pdb_min_available)
+                except Exception:
+                    spec_pdb["minAvailable"] = str(opts.pdb_min_available)
+            else:
+                spec_pdb["minAvailable"] = 1
         docs.append(
             {
                 "apiVersion": "policy/v1",
