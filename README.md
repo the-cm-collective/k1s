@@ -43,6 +43,7 @@ python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch
 python -m ae.cli apply -f specs/examples/echo.yaml
 python -m ae.cli status echo --wide --events
 python -m ae.cli logs echo --tail 50
+python -m ae.cli exec echo -- -- sh -c 'echo hello from main'
 ```
 
 Kubectl-like aliases via `k1s`:
@@ -55,6 +56,22 @@ k1s logs app/echo --follow --tail 100
 
 API endpoints (when started with `--metrics-port`): see `docs/http-api.md`.
 
+Multi-container tips:
+- Add sidecars under `spec.containers` and init containers under `spec.initContainers`.
+- Use `ae logs <app> --container <name>` and `ae exec <app> --container <name> -- <cmd>` to target a specific container.
+- Config/Secret file projections are mounted at `/var/run/ae/config/<app>`; sidecars can add custom `projectionMounts` to bind specific subpaths to custom mount points.
+
+## Kubernetes Export Quick Start
+
+- Render the echo example to Kubernetes YAML and validate:
+  - `python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --ingress-class traefik --validate > k8s.yaml`
+- Include ConfigMap/Secret objects, envFrom, and file projections (mounted at `/var/run/ae/config`):
+  - `python -m ae.cli export-k8s -f specs/examples/envfrom-and-projection.yaml --namespace demo --emit-configs --emit-secrets --validate > k8s.yaml`
+- Harden NetworkPolicy quickly:
+  - `python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --np-preset web --validate > k8s.yaml`
+  - `python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --np-preset backend --validate > k8s.yaml`
+- See `docs/k8s-export.md` for supported fields: startupProbe, image pull options, env/envFrom, projected volumes, PDB/HPA, pod-level security, and more.
+
 ## Documentation
 
 - Start here onboarding: `docs/start-here.md`
@@ -64,6 +81,7 @@ API endpoints (when started with `--metrics-port`): see `docs/http-api.md`.
 - Configs & Secrets: `docs/configs-secrets.md`
 - Demo Modes (flags for init script and Make): `docs/demo-modes.md`
 - End-to-end test process: `docs/e2e.md`
+- CI examples: `docs/ci-gh-actions.md`
 
 ## Remote CLI (over LAN)
 

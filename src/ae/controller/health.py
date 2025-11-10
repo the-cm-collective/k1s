@@ -66,8 +66,50 @@ class HealthManager:
 
         readiness_spec = manifest.spec.health.readiness if manifest.spec.health else None
         liveness_spec = manifest.spec.health.liveness if manifest.spec.health else None
+        startup_spec = getattr(manifest.spec.health, "startup", None) if manifest.spec.health else None
 
-        for replica in result.replica_states:
+        # Group runtime states by replica_id to support multi-container replicas
+        groups: dict[str, list[ReplicaState]] = {}
+        for rs in result.replica_states:
+            groups.setdefault(rs.replica_id, []).append(rs)
+
+        for replica_id, members in groups.items():
+            # Choose a primary state for probe evaluation: prefer the one with an endpoint
+            primary = None
+            for m in members:
+                if getattr(m, "endpoint", None):
+                    primary = m
+                    break
+            if primary is None:
+                primary = members[0]
+            # All containers in the replica must be running to be considered healthy overall
+            sidecars_ok = all((getattr(m, "status", "running") == "running") for m in members)
+            replica = primary
+            # If startupProbe is defined, gate readiness/liveness until it succeeds.
+            startup_msg = None
+            if startup_spec is not None:
+                startup = self._evaluate_probe(
+                    replica=replica,
+                    probe=startup_spec,
+                    default_success=False,
+                    probe_type="startup",
+                )
+                if not startup.success:
+                    # While startup is pending/failing, treat liveness as OK and readiness as False.
+                    replicas.append(
+                        ReplicaHealth(
+                            replica_id=replica_id,
+                            ready=False,
+                            live=True if sidecars_ok else False,
+                            readiness_message=f"startup pending: {startup.message}",
+                            liveness_message=(
+                                "liveness gated by startup" if sidecars_ok else "sidecar not running"
+                            ),
+                        )
+                    )
+                    # Defer further probe work until startup succeeds
+                    continue
+
             readiness = self._evaluate_probe(
                 replica=replica,
                 probe=readiness_spec,
@@ -84,16 +126,18 @@ class HealthManager:
             # Align with Kubernetes semantics:
             # - readiness gates traffic and is independent of liveness
             # - liveness indicates whether the container should be considered alive
-            ready = readiness.success
-            live = liveness.success
+            ready = readiness.success and sidecars_ok
+            live = liveness.success and sidecars_ok
 
             replicas.append(
                 ReplicaHealth(
-                    replica_id=replica.replica_id,
+                    replica_id=replica_id,
                     ready=ready,
                     live=live,
                     readiness_message=readiness.message,
-                    liveness_message=liveness.message,
+                    liveness_message=(
+                        liveness.message if sidecars_ok else "one or more sidecars not running"
+                    ),
                 )
             )
 

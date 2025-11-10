@@ -6,13 +6,15 @@ Got it — here’s a pragmatic path to a “minimal app engine” that runs wel
 * Controller: single daemon with a reconcile loop + SQLite state.
 * Spec: one declarative YAML per app (versioned), your “Deployment”.
 * Ingress/TLS: Caddy; controller writes vhost config from specs and can use ACME internal or BYO certs.
-* Observability: logs via runtime adapters; Prometheus metrics via HTTP API; events stored in SQLite.
+* Observability: logs via runtime adapters; Prometheus metrics via HTTP API; events stored in SQLite. Metrics now include system/app/replica gauges, per‑app reconcile duration sum/count, last reconcile ts/duration, rollout ops counters, canary weight and step counters, hook durations, container restarts, and probe backoff seconds.
 * Secrets: sealed secrets (age/sops) decrypted at deploy; plaintext allowed only for local dev.
 * CLI: `ae` plus a kubectl‑like `k1s` wrapper.
+* Packaging & Ops: controller Dockerfile; systemd unit; GitHub Actions release workflow (wheel + image).
+* Dev Stack: Docker Compose for controller + Prometheus + Grafana with pre‑provisioned dashboards.
 
 ---
 
-## Feature Matrix (as of 2025-10-31)
+## Feature Matrix (as of 2025-11-10)
 
 - Controller daemon
   - `python -m ae.controller --once|--loop --interval N --specs DIR [--watch]`
@@ -44,11 +46,13 @@ Got it — here’s a pragmatic path to a “minimal app engine” that runs wel
   - Registry and secrets/config helpers; `metrics`, `events`, `plan`, `version`
   - Image supply‑chain: `verify-image` (cosign wrapper)
   - `k1s` kubectl‑like frontend for familiar verbs
+  - Remote exec: `ae exec <app> [--container <name>] -- <cmd...>` (local and HTTP API)
 
 - HTTP API (when enabled)
   - Read endpoints: `/metrics`, `/status`, `/status/<app>`, `/events/<app>`, `/logs/<app>`
-  - Optional mutations (dev): `/scale/<app>`, `/delete/<app>`, and JSON `apply` via environment‑gated roles
+  - Optional mutations (dev): `/scale/<app>`, `/delete/<app>`, JSON `apply`, and container `exec` via environment‑gated roles
   - Token roles and expiries: `AE_API_{READ,SCALER,ADMIN}_TOKEN[_EXPIRES]`
+  - Metrics: app/replica gauges, reconcile sum/count + last, rollout operations, canary weight/steps, hook durations, container restarts, probe backoff.
 
 ---
 
@@ -64,35 +68,40 @@ Workloads
 - StatefulSet: supported via `--workload statefulset`. Emits headless Service and `volumeClaimTemplates` when `--emit-storage` is set.
 - Not supported: DaemonSet, Job, CronJob.
 
-PodSpec and Container
-- Env: key/value pairs supported; `configMapKeyRef`/`secretKeyRef` produced from `configRefs`/`secretRefs` mappings. `envFrom` not supported.
-- Resources: requests/limits pass‑through. `--require-requests` can enforce both present.
-- Probes: readiness and liveness (HTTP/TCP/exec). StartupProbe not supported.
-- SecurityContext: `runAsUser`, `runAsGroup`, `readOnlyRootFilesystem`, capability drops, `seccompProfile` (RuntimeDefault/Localhost/Unconfined). AppArmor via Pod template annotation. `runAsNonRoot` applied only with `--default-security`.
-- Volumes: storage mounts created from `spec.storage` when `--emit-storage`. Config/Secret volumes not auto‑mounted (env/keyRef only). Lifecycle hooks (postStart/preStop), `imagePullSecrets`, `imagePullPolicy`, `fsGroup`, `seccomp at Pod level` are not explicitly set.
+ PodSpec and Container (current parity)
+ - Env: key/value pairs supported; `valueFrom` for key refs (`configMapKeyRef`/`secretKeyRef`) emitted from `configRefs`/`secretRefs`; optional `envFrom` via `configRefs[].envFrom` and `secretRefs[].envFrom`; `fieldRef`/`resourceFieldRef` passed through (local runtime resolves `metadata.{name,namespace}` and basic `resources.{requests,limits}` cpu/memory for convenience).
+ - Resources: requests/limits pass‑through. `--require-requests` can enforce both present; checker warns when limits exist without requests.
+ - Probes: readiness, liveness, startup (HTTP/TCP/exec). Runtime gates liveness on startup success.
+ - SecurityContext: container fields (`runAsUser`, `runAsGroup`, `readOnlyRootFilesystem`, capability drops, `seccompProfile`); Pod‑level `securityContext` (`fsGroup`, `seccompProfile`) supported. AppArmor via annotation. `--default-security` applies conservative defaults.
+ - Image pulls: `imagePullPolicy` and `imagePullSecrets`. Helper: `ae registry kubesecret` renders a `dockerconfigjson` Secret from `~/.config/ae/registries.yaml`.
+ - Command model: `command` + `args`, `workingDir`, and termination message `{Path,Policy}`.
+ - DNS & identity: `dnsPolicy`, `dnsConfig`, `hostname`, `subdomain`; `hostAliases`; `enableServiceLinks`, `shareProcessNamespace`, `hostNetwork`, `hostPID`, `hostIPC`, `nodeSelector`, `setHostnameAsFQDN` pass‑through when set.
+ - Volumes: storage mounts from `spec.storage` when `--emit-storage`. When `configRefs[].files[]` or `secretRefs[].files[]` are present, exporter emits a single projected volume with per‑key `items.path` mounted at `/var/run/ae/config`. Lifecycle hooks (postStart/preStop) exported; runtime executes preStop exec and best‑effort HTTP/TCP with timeout.
 
-Service
-- ClusterIP emitted when ports exist. Multi‑port mapping supported via `spec.service.ports` with validation for duplicate names/ports.
-- Types: `NodePort`/`LoadBalancer` honored; `nodePort` validated in 30000–32767 range; `externalIPs` passthrough. SessionAffinity, healthCheckNodePort not supported.
+ Service
+ - ClusterIP emitted when ports exist. Multi‑port mapping supported via `spec.service.ports` with validation for duplicate names/ports.
+ - Types: `NodePort`/`LoadBalancer` honored; `nodePort` validated in 30000–32767 range; `externalIPs` passthrough.
+ - Session Affinity: `service.sessionAffinity: ClientIP|None` and optional `sessionAffinityConfig.clientIP.timeoutSeconds` passed through.
+ - healthCheckNodePort not supported.
 
-Ingress
+ Ingress
 - `networking.k8s.io/v1` with `PathType=Prefix`. Multiple paths supported. TLS enabled by default; `tls.secretName` set when `tlsSecretName` provided; `ingressClassName` optional.
 - Advanced annotations, regex paths, multiple backends per rule, and canary annotations are out of scope.
 
-Policy, Autoscaling, Accounts
+ Policy, Autoscaling, Accounts
 - HPA (`autoscaling/v2`): CPU utilization, memory utilization, or memory AverageValue. Requires requests unless `--allow-hpa-no-requests` set. No custom/external metrics.
 - PDB (`policy/v1`): emits when `--emit-pdb` and replicas > 1, with either `minAvailable` (default 1) or `maxUnavailable`. Percent values are not supported (integers only).
 - ServiceAccount: emitted/attached when `--service-account <name>` is provided. RBAC Roles/Bindings are not emitted.
-- NetworkPolicy: pass‑through from `spec.networkPolicy` to `networking.k8s.io/v1`. No additional validation beyond shape.
+- NetworkPolicy: pass‑through from `spec.networkPolicy`. Exporter can generate default‑deny ingress/egress with optional DNS/HTTP(S) allowances when flags are set; backend preset allows RFC1918 egress on common DB/cache ports; checker advises when missing.
 
 Scheduling
-- Pass‑through: `affinity`, `tolerations`, `topologySpreadConstraints`, `priorityClassName` to Pod template. `nodeSelector` can be expressed via `affinity`; there is no first‑class field.
+- Pass‑through: `affinity`, `tolerations`, `topologySpreadConstraints`, `priorityClassName`, `nodeSelector`. Optional injection of a host‑level `topologySpreadConstraints` when replicas>1 and none provided.
 
 Validation and Tooling
-- `ae export-k8s --validate` performs offline structural checks; `k8s-check --policy strict` applies FEAT checklist; `k8s-report` can run kubeconform and optional `kubectl --dry-run=server`/apply when available.
+- `ae export-k8s --validate` performs offline structural checks; `k8s-check --policy strict` applies FEAT checklist; kubeconform integration via `k8s-check --kubeconform`; `export-k8s --split` writes per‑resource YAML.
 
 Notable Gaps vs. Kubernetes
-- No startupProbe, lifecycle hooks, `envFrom`, `imagePullSecrets`, or `imagePullPolicy` control.
+- Multi‑container Pods and initContainers not modeled (single container supported).
 - PDB percentage values and advanced HPA behaviors (scaleUp/Down policies) not supported.
 - Service sessionAffinity, healthCheckNodePort, and advanced Ingress annotations/features are not emitted.
 - ConfigMap/Secret volume mounts are not modeled; only env/key references or inline data emission.
@@ -100,11 +109,28 @@ Notable Gaps vs. Kubernetes
 - RBAC (Role/RoleBinding/ClusterRoleBinding) not emitted.
 
 Planned Improvements
-- Add `startupProbe`, `envFrom`, and lifecycle hook support in spec/exporter.
-- Allow PDB percentage values and HPA behavior tuning.
-- Model Config/Secret volume mounts and `imagePullSecrets` in spec/exporter.
-- Optional `storageClassName` and access mode selection in PVC emission.
-- Extend Service/Ingress knobs (sessionAffinity, common annotations) behind explicit flags.
+
+- Multi‑container support (exporter + runtime) and initContainers (exporter + runtime):
+  - [x] Sidecars in runtime with health aggregation; container‑targeted logs/exec.
+  - [x] InitContainers runtime (sequential with timeouts and events).
+  - [x] Exporter emits initContainers/containers and projected config/secret volumes.
+  - [ ] Export per‑container probes/lifecycle when using `spec.containers[*].health|lifecycle`.
+- Config/Secret volumes parity:
+  - [x] File projections with per‑container `projectionMounts` in runtime.
+  - [ ] Exporter: support explicit `items` (ConfigMap/Secret) with mode/path and per‑container mounts.
+- Policy & autoscaling:
+  - [ ] PDB percent values; HPA scaleUp/Down behavior tuning.
+  - [ ] Optional `storageClassName` and accessModes selection.
+- Service/Ingress:
+  - [x] Validation for ingress host/path and service ports.
+  - [ ] Extended ingress annotations (nginx/traefik) behind explicit flags.
+- Observability:
+  - [x] Grafana/Prometheus dev stack with pre‑provisioned dashboards.
+  - [ ] Add per‑replica readiness histories endpoint; dashboard panels for histories.
+- Multi‑container support (exporter + runtime) and initContainers (exporter + minimal runtime): next major parity effort.
+- Config/Secret volume mounts parity with `items` selection (beyond projected files convenience).
+- PDB percent values; HPA behavior tuning; optional `storageClassName` selection.
+- Extended Service/Ingress knobs behind explicit flags.
 
 # Milestones (build order)
 
@@ -177,6 +203,19 @@ Planned Improvements
 - [x] HPA targets: Memory `AverageValue` supported with validation; utilization modes require requests unless explicitly allowed.
 - [x] API tokens: generation/rotation with optional TTLs; docs added (see docs/api-auth.md).
 - [x] CI matrix: Kind and k3s jobs run conformance and `k8s-check --policy strict` on sample manifests.
+- [x] StartupProbe parity: add `spec.health.startup` → export `startupProbe` and gate runtime liveness until it passes.
+- [x] Remote exec (local + HTTP): `ae exec <app> [--container <name>] -- <cmd...>` and POST `/exec/<app>`.
+- [x] Multi‑container runtime: sidecars ensured per replica, shared projection mounts, container‑targeted logs/exec, aggregated readiness.
+- [x] InitContainers: sequential run with timeouts and events.
+- [x] Config/Secret parity: file projections mounted to all containers with optional `projectionMounts`.
+- [x] Service/Ingress validations: stricter `k8s-check` for ingress host/path and service port naming/targets.
+- [x] NetworkPolicy presets: `--np-preset web|backend` (backend allows RFC1918 egress for common DB/cache ports).
+- [x] Metrics: per‑app reconcile sum/count, canary weight + step counters, hook timings, crashloop flags, container restarts.
+ - [x] Image pull knobs: support `spec.imagePullPolicy` and `spec.imagePullSecrets` → export to container and pod respectively.
+ - [x] Lifecycle parity (export): add `spec.lifecycle.postStart|preStop` with `exec|httpGet|tcpSocket`; exporter emits `container.lifecycle.*`.
+ - [x] Service Session Affinity: support `service.sessionAffinity` and `sessionAffinityConfig.clientIP.timeoutSeconds`.
+ - [x] DNS & identity: pass through `dnsPolicy`, `dnsConfig`, `hostname`, `subdomain` to PodSpec.
+ - [x] Runtime preStop execution (exec): honor `spec.lifecycle.preStop.exec` on container replacement/deletion with timeout; emit events and integrate with grace period.
 
 ## Near‑Term Focus (Q4 2025)
 
@@ -190,7 +229,10 @@ Planned Improvements
 - Tighten `k8s-check` and exporter validations for prod defaults; add opt‑in strict preset files.
 
 4) Metrics
-- Add reconcile duration histogram and canary step counters; document sample Grafana.
+- [x] Add reconcile duration histogram (sum/count) and canary step counters; document sample Grafana.
+
+5) K8s spec parity (incremental)
+- Ship runtime preStop execution semantics and tests.
 
 ## Appendix — Spec v0 (reference)
 

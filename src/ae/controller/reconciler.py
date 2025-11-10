@@ -111,6 +111,35 @@ class Reconciler:
             updated_spec = manifest_for_runtime.spec.model_copy(update={"volumes": vols})
             manifest_for_runtime = manifest_for_runtime.model_copy(update={"spec": updated_spec})
 
+        # Run init containers if the runtime supports it
+        try:
+            inits = getattr(manifest_for_runtime.spec, "init_containers", []) or []
+            if inits and callable(getattr(self._runtime, "run_init_containers", None)):
+                # Emit start events
+                for c in inits:
+                    try:
+                        name = getattr(c, "name", None) if not isinstance(c, dict) else c.get("name")
+                        if name:
+                            self._state_store.record_event(
+                                manifest.metadata.name, revision, "InitStart", f"container={name}"
+                            )
+                    except Exception:
+                        pass
+                results = self._runtime.run_init_containers(manifest_for_runtime)  # type: ignore[attr-defined]
+                for (name, rc, msg) in results:
+                    try:
+                        self._state_store.record_event(
+                            manifest.metadata.name,
+                            revision,
+                            "InitDone",
+                            f"container={name} rc={rc} {msg or ''}",
+                        )
+                    except Exception:
+                        pass
+        except Exception:
+            # Do not block rollout on init container orchestration errors
+            pass
+
         # Rollout policy
         rollout = getattr(manifest.spec, "rollout", {}) or {}
         strategy = str(rollout.get("strategy", "parallel")).lower()
@@ -290,6 +319,11 @@ class Reconciler:
         canary_active = strat_now == "canary" and (w_now or 0) > 0 and (w_now or 0) < 100
         if (not canary_active) and health_report.ready_replicas >= max(0, desired - max_unavail):
             try:
+                # Run preStop exec for old replicas before removal (best-effort)
+                try:
+                    self._run_prestop_on_old(manifest, keep_revision=revision)
+                except Exception:
+                    pass
                 removed_old = self._runtime.remove_old_revisions(manifest.metadata.name, revision)
                 if removed_old > 0:
                     self._state_store.record_event(
@@ -373,6 +407,109 @@ class Reconciler:
             revision=revision,
             revision_status=revision_status,
         )
+
+    def _run_prestop_on_old(self, manifest: AppManifest, *, keep_revision: int) -> None:
+        """Execute lifecycle.preStop (exec) on old replicas before removal.
+
+        Best-effort: only handles exec handlers. Uses terminationGracePeriodSeconds as timeout.
+        Emits PreStopExec events with outcome per replica.
+        """
+        lc = getattr(manifest.spec, "lifecycle", None)
+        handler = getattr(lc, "pre_stop", None) if lc else None
+        if handler is None:
+            return
+        timeout = 10
+        try:
+            timeout = int(
+                (getattr(handler, "timeout_seconds", None) or getattr(manifest.spec, "termination_grace_period_seconds", 10) or 10)
+            )
+        except Exception:
+            timeout = 10
+        # Discover old replicas via runtime list
+        runtime = self._runtime
+        items: list[dict] = []
+        try:
+            items = list(getattr(runtime, "list_containers_info", lambda: [])() or [])  # type: ignore[misc]
+        except Exception:
+            items = []
+        for it in items:
+            labels = (it or {}).get("labels") or {}
+            if (labels.get("ae.app") or "") != manifest.metadata.name:
+                continue
+            if str(labels.get("ae.revision")) == str(keep_revision):
+                continue
+            rid = labels.get("ae.replica_id") or labels.get("ae.replica")
+            if not rid:
+                continue
+            rc = None
+            # Exec handler
+            if getattr(handler, "exec", None) is not None:
+                cmd = list(getattr(handler.exec, "command", []) or [])  # type: ignore[union-attr]
+                if not cmd:
+                    continue
+                try:
+                    if callable(getattr(runtime, "exec", None)):
+                        rc = int(runtime.exec(str(rid), cmd, timeout=timeout))  # type: ignore[arg-type]
+                except Exception:  # noqa: BLE001
+                    rc = None
+                try:
+                    self._state_store.record_event(
+                        manifest.metadata.name,
+                        keep_revision,
+                        "PreStopExec",
+                        f"replica={rid} rc={rc if rc is not None else 'n/a'}",
+                    )
+                except Exception:
+                    pass
+            # HTTP handler
+            elif getattr(handler, "http_get", None) is not None:
+                try:
+                    import requests as _req
+
+                    path = str(handler.http_get.path or "/")  # type: ignore[union-attr]
+                    # Best-effort: use the first published host port if present
+                    host_ports = (it or {}).get("host_ports") or []
+                    if host_ports:
+                        url = f"http://127.0.0.1:{int(host_ports[0])}{path}"
+                        _req.get(url, timeout=max(1, int(timeout)))
+                        outcome = "ok"
+                    else:
+                        outcome = "skipped(no-host-port)"
+                except Exception as exc:  # noqa: BLE001
+                    outcome = f"error({exc.__class__.__name__})"
+                try:
+                    self._state_store.record_event(
+                        manifest.metadata.name,
+                        keep_revision,
+                        "PreStopHTTP",
+                        f"replica={rid} {outcome}",
+                    )
+                except Exception:
+                    pass
+            # TCP handler
+            elif getattr(handler, "tcp_socket", None) is not None:
+                import socket as _sock
+
+                try:
+                    host_ports = (it or {}).get("host_ports") or []
+                    if host_ports:
+                        with _sock.create_connection(
+                            ("127.0.0.1", int(host_ports[0])), timeout=max(1, int(timeout))
+                        ):
+                            outcome = "ok"
+                    else:
+                        outcome = "skipped(no-host-port)"
+                except OSError:
+                    outcome = "error"
+                try:
+                    self._state_store.record_event(
+                        manifest.metadata.name,
+                        keep_revision,
+                        "PreStopTCP",
+                        f"replica={rid} {outcome}",
+                    )
+                except Exception:
+                    pass
 
     def _run_rollout_hook(self, manifest, runtime_result, hook) -> tuple[bool, str | None]:  # noqa: ANN001
         """Execute a rollout hook against the new revision.

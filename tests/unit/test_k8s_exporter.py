@@ -1,6 +1,13 @@
 from pathlib import Path
 
-from ae.controller.spec import load_manifest, PortSpec, ServiceSpec
+from ae.controller.spec import (
+    HTTPGetProbe,
+    TCPSocketProbe,
+    load_manifest,
+    PortSpec,
+    ProbeSpec,
+    ServiceSpec,
+)
 from ae.k8s.exporter import ExportOptions, export_k8s_docs, export_k8s_yaml
 from ae.k8s.check import k8s_portability_issues
 
@@ -41,6 +48,39 @@ def test_export_k8s_minimal_echo(tmp_path: Path) -> None:
     # YAML render sanity
     out = export_k8s_yaml(man, options=opts)
     assert "kind: Deployment" in out and "kind: Service" in out and "kind: Ingress" in out
+
+
+def test_envfrom_and_projected_volume_exports() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    # Mark envFrom on both refs and ensure file projections create a projected volume
+    man = man.model_copy(
+        update={
+            "spec": man.spec.model_copy(
+                update={
+                    "config_refs": [
+                        man.spec.config_refs[0].model_copy(update={"env_from": True}),
+                    ],
+                    "secret_refs": [
+                        man.spec.secret_refs[0].model_copy(update={"env_from": True}),
+                    ],
+                }
+            )
+        }
+    )
+    opts = ExportOptions(namespace="demo", emit_configs=True, emit_secrets=True)
+    docs = export_k8s_docs(man, options=opts)
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    c = dep["spec"]["template"]["spec"]["containers"][0]
+    # envFrom should include configMapRef and secretRef
+    assert any("configMapRef" in e for e in c.get("envFrom", []))
+    assert any("secretRef" in e for e in c.get("envFrom", []))
+    # projected volume should be present and mounted at /var/run/ae/config
+    pod = dep["spec"]["template"]["spec"]
+    vols = pod.get("volumes", [])
+    vms = c.get("volumeMounts", [])
+    proj = next(v for v in vols if v.get("projected"))
+    assert proj["projected"]["sources"]
+    assert any(vm.get("mountPath") == "/var/run/ae/config" for vm in vms)
 
 
 def test_k8s_check_echo_manifest() -> None:
@@ -245,6 +285,31 @@ def test_service_type_loadbalancer_external_traffic_policy() -> None:
     assert "nodePort" not in svc["spec"]["ports"][0]
 
 
+def test_service_session_affinity_clientip_timeout() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    from ae.controller.spec import ServiceSpec
+
+    man = man.model_copy(
+        update={
+            "spec": man.spec.model_copy(
+                update={
+                    "service": ServiceSpec(
+                        type="ClusterIP",
+                        ports=[ServiceSpec.ServicePort(name="http", port=80, targetPort=8080)],
+                        sessionAffinity="ClientIP",
+                        sessionAffinityConfig={"clientIP": {"timeoutSeconds": 10800}},
+                    )
+                }
+            )
+        }
+    )
+    docs = export_k8s_docs(man, options=ExportOptions(namespace="demo"))
+    svc = next(d for d in docs if d["kind"] == "Service")
+    spec = svc["spec"]
+    assert spec.get("sessionAffinity") == "ClientIP"
+    assert spec.get("sessionAffinityConfig", {}).get("clientIP", {}).get("timeoutSeconds") == 10800
+
+
 def test_scheduling_pass_through_affinity_tolerations_topology() -> None:
     man = load_manifest(Path("specs/examples/echo.yaml"))
     # Inject scheduling fields
@@ -343,6 +408,258 @@ def test_service_external_ips_and_priority_class() -> None:
     assert dep["spec"]["template"]["spec"].get("priorityClassName") == "high-priority"
 
 
+def test_exports_startup_probe_and_pull_options() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    # Inject startup probe and image pull options
+    startup = ProbeSpec(
+        httpGet=HTTPGetProbe(path="/healthz", port=8080),
+        initialDelaySeconds=2,
+        timeoutSeconds=1,
+    )
+    man = man.model_copy(
+        update={
+            "spec": man.spec.model_copy(
+                update={
+                    "health": man.spec.health.model_copy(update={"startup": startup}),
+                    "image_pull_policy": "IfNotPresent",
+                    "image_pull_secrets": ["regcred"],
+                }
+            )
+        }
+    )
+    docs = export_k8s_docs(man, options=ExportOptions(namespace="demo"))
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    c = dep["spec"]["template"]["spec"]["containers"][0]
+    assert c.get("startupProbe") and c.get("imagePullPolicy") == "IfNotPresent"
+    pod = dep["spec"]["template"]["spec"]
+    assert pod.get("imagePullSecrets") == [{"name": "regcred"}]
+
+
+def test_pod_security_fs_group_and_pod_seccomp() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    # Add pod-level fsGroup and seccompProfile(Localhost)
+    from ae.controller.spec import PodSecuritySpec
+    psec = PodSecuritySpec(
+        fs_group=2000, seccomp_type="Localhost", seccomp_localhost_profile="profiles/pod.json"
+    )
+    man = man.model_copy(update={"spec": man.spec.model_copy(update={"pod_security": psec})})
+    docs = export_k8s_docs(man, options=ExportOptions(namespace="demo"))
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    psec = dep["spec"]["template"]["spec"].get("securityContext", {})
+    assert psec.get("fsGroup") == 2000
+    assert psec.get("seccompProfile", {}).get("type") == "Localhost"
+    assert psec.get("seccompProfile", {}).get("localhostProfile") == "profiles/pod.json"
+
+
+def test_lifecycle_hooks_exported() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    # Add lifecycle: postStart exec, preStop httpGet
+    man = man.model_copy(
+        update={
+            "spec": man.spec.model_copy(
+                update={
+                    "lifecycle": {
+                        "postStart": {"exec": {"command": ["/bin/sh", "-c", "echo start"]}},
+                        "preStop": {"httpGet": {"path": "/quit", "port": 8080}},
+                    }
+                }
+            )
+        }
+    )
+    docs = export_k8s_docs(man, options=ExportOptions(namespace="demo"))
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    c = dep["spec"]["template"]["spec"]["containers"][0]
+    lc = c.get("lifecycle", {})
+    assert lc.get("postStart", {}).get("exec", {}).get("command")
+    assert lc.get("preStop", {}).get("httpGet", {}).get("path") == "/quit"
+
+
+def test_container_args_and_working_dir_export() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    man = man.model_copy(
+        update={
+            "spec": man.spec.model_copy(
+                update={
+                    "command": ["/bin/app"],
+                    "args": ["--flag", "value"],
+                    "working_dir": "/work",
+                }
+            )
+        }
+    )
+    docs = export_k8s_docs(man, options=ExportOptions(namespace="demo"))
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    c = dep["spec"]["template"]["spec"]["containers"][0]
+    assert c.get("command") == ["/bin/app"]
+    assert c.get("args") == ["--flag", "value"]
+    assert c.get("workingDir") == "/work"
+
+
+def test_container_termination_message_fields_export() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    man = man.model_copy(
+        update={
+            "spec": man.spec.model_copy(
+                update={
+                    "termination_message_path": "/var/log/term.msg",
+                    "termination_message_policy": "FallbackToLogsOnError",
+                }
+            )
+        }
+    )
+    docs = export_k8s_docs(man, options=ExportOptions(namespace="demo"))
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    c = dep["spec"]["template"]["spec"]["containers"][0]
+    assert c.get("terminationMessagePath") == "/var/log/term.msg"
+    assert c.get("terminationMessagePolicy") == "FallbackToLogsOnError"
+
+
+def test_env_valuefrom_fieldref_pass_through() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    # Add a fieldRef env for metadata.name
+    man = man.model_copy(
+        update={
+            "spec": man.spec.model_copy(
+                update={
+                    "env": man.spec.env
+                    + [
+                        {
+                            "name": "POD_NAME",
+                            "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}},
+                        }
+                    ]
+                }
+            )
+        }
+    )
+    docs = export_k8s_docs(man, options=ExportOptions(namespace="demo"))
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    env = dep["spec"]["template"]["spec"]["containers"][0].get("env", [])
+    pod_name = next(e for e in env if e.get("name") == "POD_NAME")
+    assert pod_name.get("valueFrom", {}).get("fieldRef", {}).get("fieldPath") == "metadata.name"
+
+
+def test_pod_dns_policy_and_config_exports() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    man = man.model_copy(
+        update={
+            "spec": man.spec.model_copy(
+                update={
+                    "dns_policy": "ClusterFirst",
+                    "dns_config": {
+                        "nameservers": ["1.1.1.1", "8.8.8.8"],
+                        "searches": ["svc.cluster.local", "cluster.local"],
+                        "options": [{"name": "ndots", "value": "5"}],
+                    },
+                }
+            )
+        }
+    )
+    docs = export_k8s_docs(man, options=ExportOptions(namespace="demo"))
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    pod = dep["spec"]["template"]["spec"]
+    assert pod.get("dnsPolicy") == "ClusterFirst"
+    assert pod.get("dnsConfig", {}).get("nameservers") == ["1.1.1.1", "8.8.8.8"]
+    assert pod.get("dnsConfig", {}).get("searches") == ["svc.cluster.local", "cluster.local"]
+    opts = pod.get("dnsConfig", {}).get("options", [])
+    assert any(o.get("name") == "ndots" and o.get("value") == "5" for o in opts)
+
+
+def test_pod_hostname_and_subdomain_export() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    man = man.model_copy(
+        update={
+            "spec": man.spec.model_copy(update={"hostname": "echo-0", "subdomain": "echo"})
+        }
+    )
+    docs = export_k8s_docs(man, options=ExportOptions(namespace="demo"))
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    pod = dep["spec"]["template"]["spec"]
+    assert pod.get("hostname") == "echo-0"
+    assert pod.get("subdomain") == "echo"
+
+
+def test_pod_host_aliases_export() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    man = man.model_copy(
+        update={
+            "spec": man.spec.model_copy(
+                update={
+                    "host_aliases": [
+                        {"ip": "10.0.0.10", "hostnames": ["db", "db.local"]},
+                        {"ip": "10.0.0.11", "hostnames": ["cache"]},
+                    ]
+                }
+            )
+        }
+    )
+    docs = export_k8s_docs(man, options=ExportOptions(namespace="demo"))
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    pod = dep["spec"]["template"]["spec"]
+    al = pod.get("hostAliases", [])
+    assert {a["ip"] for a in al} == {"10.0.0.10", "10.0.0.11"}
+    assert any("db" in a.get("hostnames", []) for a in al)
+
+
+def test_pod_small_pass_throughs() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    man = man.model_copy(
+        update={
+            "spec": man.spec.model_copy(
+                update={
+                    "enable_service_links": False,
+                    "share_process_namespace": True,
+                    "host_network": True,
+                    "node_selector": {"disktype": "ssd", "zone": "us-east-1a"},
+                }
+            )
+        }
+    )
+    docs = export_k8s_docs(man, options=ExportOptions(namespace="demo"))
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    pod = dep["spec"]["template"]["spec"]
+    assert pod.get("enableServiceLinks") is False
+    assert pod.get("shareProcessNamespace") is True
+    assert pod.get("hostNetwork") is True
+    assert pod.get("nodeSelector") == {"disktype": "ssd", "zone": "us-east-1a"}
+    # setHostnameAsFQDN
+    man2 = man.model_copy(update={"spec": man.spec.model_copy(update={"set_hostname_as_fqdn": True})})
+    docs2 = export_k8s_docs(man2, options=ExportOptions(namespace="demo"))
+    dep2 = next(d for d in docs2 if d["kind"] == "Deployment")
+    pod2 = dep2["spec"]["template"]["spec"]
+    assert pod2.get("setHostnameAsFQDN") is True
+    # hostPID/hostIPC
+    man3 = man.model_copy(update={"spec": man.spec.model_copy(update={"host_pid": True, "host_ipc": False})})
+    docs3 = export_k8s_docs(man3, options=ExportOptions(namespace="demo"))
+    dep3 = next(d for d in docs3 if d["kind"] == "Deployment")
+    pod3 = dep3["spec"]["template"]["spec"]
+    assert pod3.get("hostPID") is True and pod3.get("hostIPC") is False
+
+
+def test_statefulset_carries_startup_probe_and_pull_secrets() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    startup2 = ProbeSpec(tcpSocket=TCPSocketProbe(port=8080), initialDelaySeconds=1, timeoutSeconds=1)
+    man = man.model_copy(
+        update={
+            "spec": man.spec.model_copy(
+                update={
+                    "replicas": 2,
+                    "health": man.spec.health.model_copy(update={"startup": startup2}),
+                    "image_pull_policy": "Always",
+                    "image_pull_secrets": ["private-reg"],
+                }
+            )
+        }
+    )
+    opts = ExportOptions(namespace="demo", workload_kind="StatefulSet", emit_storage=False)
+    docs = export_k8s_docs(man, options=opts)
+    sts = next(d for d in docs if d["kind"] == "StatefulSet")
+    c = sts["spec"]["template"]["spec"]["containers"][0]
+    assert c.get("startupProbe") and c.get("imagePullPolicy") == "Always"
+    pod = sts["spec"]["template"]["spec"]
+    assert pod.get("imagePullSecrets") == [{"name": "private-reg"}]
+
+
 def test_nodeport_range_validation_raises() -> None:
     man = load_manifest(Path("specs/examples/echo.yaml"))
     from ae.controller.spec import ServiceSpec
@@ -439,3 +756,18 @@ def test_network_policy_emit_from_manifest() -> None:
     assert np["metadata"]["name"] == man.metadata.name
     assert np["spec"]["podSelector"]["matchLabels"]["app"] == man.metadata.name
     assert np["spec"]["policyTypes"] == ["Ingress", "Egress"]
+
+
+def test_export_default_network_policy_generation() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    opts = ExportOptions(namespace="demo", emit_network_policy=True, np_default_deny_ingress=True, np_default_deny_egress=True, np_allow_dns=True, np_allow_web=True)
+    docs = export_k8s_docs(man, options=opts)
+    np = next(d for d in docs if d.get("kind") == "NetworkPolicy")
+    assert np["metadata"]["name"] == man.metadata.name
+    spec = np["spec"]
+    assert set(spec.get("policyTypes", [])) == {"Ingress", "Egress"}
+    assert spec.get("ingress", []) == []
+    egs = spec.get("egress", [])
+    assert any(any(p.get("port") == 53 for p in e.get("ports", [])) for e in egs)
+    assert any(any(p.get("port") == 80 for p in e.get("ports", [])) for e in egs)
+    assert any(any(p.get("port") == 443 for p in e.get("ports", [])) for e in egs)

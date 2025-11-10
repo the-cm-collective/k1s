@@ -13,7 +13,7 @@ the guidance captured in FEAT.md Task 1.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import yaml
@@ -56,6 +56,16 @@ class ExportOptions:
     pdb_max_unavailable: Optional[int] = None
     # Strictness
     require_requests: bool = False
+    # NetworkPolicy generation
+    emit_network_policy: bool = False
+    np_default_deny_ingress: bool = False
+    np_default_deny_egress: bool = False
+    np_allow_dns: bool = False
+    np_allow_web: bool = False  # allow TCP 80/443 egress when default-deny egress
+    # Allow egress to RFC1918 private CIDRs for specific TCP ports (e.g., DB/cache)
+    np_allow_internal_ports: list[int] = field(default_factory=list)
+    # Topology spread (inject if none provided)
+    inject_topology_spread: bool = False
 
 
 def _container_from_manifest(m: AppManifest, *, opts: ExportOptions) -> Dict[str, Any]:
@@ -66,14 +76,30 @@ def _container_from_manifest(m: AppManifest, *, opts: ExportOptions) -> Dict[str
     }
     if spec.command:
         c["command"] = list(spec.command)
+    if getattr(spec, "args", None):
+        c["args"] = list(spec.args)
+    if getattr(spec, "working_dir", None):
+        c["workingDir"] = str(spec.working_dir)
+    if getattr(spec, "termination_message_path", None):
+        c["terminationMessagePath"] = str(spec.termination_message_path)
+    if getattr(spec, "termination_message_policy", None):
+        c["terminationMessagePolicy"] = str(spec.termination_message_policy)
+    # image pull policy
+    if getattr(spec, "image_pull_policy", None):
+        c["imagePullPolicy"] = str(spec.image_pull_policy)
     # env: start with explicit pairs
     env: List[Dict[str, Any]] = []
     for item in spec.env:
         name = item.get("name")
-        value = item.get("value")
         if name is None:
             continue
-        env.append({"name": name, "value": value if value is not None else ""})
+        entry: Dict[str, Any] = {"name": name}
+        if "valueFrom" in item and isinstance(item.get("valueFrom"), dict):
+            # Pass through common valueFrom forms (fieldRef, configMapKeyRef, secretKeyRef, resourceFieldRef)
+            entry["valueFrom"] = item["valueFrom"]
+        else:
+            entry["value"] = item.get("value", "")
+        env.append(entry)
     # env via configRefs/secretRefs key mappings
     for ref in getattr(spec, "config_refs", []) or []:
         for mapp in ref.env:
@@ -93,6 +119,16 @@ def _container_from_manifest(m: AppManifest, *, opts: ExportOptions) -> Dict[str
             )
     if env:
         c["env"] = env
+    # envFrom: opt-in on refs
+    env_from: List[Dict[str, Any]] = []
+    for ref in getattr(spec, "config_refs", []) or []:
+        if bool(getattr(ref, "env_from", False)):
+            env_from.append({"configMapRef": {"name": ref.name}})
+    for ref in getattr(spec, "secret_refs", []) or []:
+        if bool(getattr(ref, "env_from", False)):
+            env_from.append({"secretRef": {"name": ref.name}})
+    if env_from:
+        c["envFrom"] = env_from
     # ports
     if spec.ports:
         c["ports"] = [{"name": p.name, "containerPort": int(p.container_port)} for p in spec.ports]
@@ -153,6 +189,154 @@ def _container_from_manifest(m: AppManifest, *, opts: ExportOptions) -> Dict[str
             c["readinessProbe"] = _probe_to_k8s(spec.health.readiness)
         if spec.health.liveness:
             c["livenessProbe"] = _probe_to_k8s(spec.health.liveness)
+        if getattr(spec.health, "startup", None):
+            c["startupProbe"] = _probe_to_k8s(spec.health.startup)
+    # lifecycle hooks
+    if getattr(spec, "lifecycle", None):
+        lifecycle: Dict[str, Any] = {}
+        def _lh_to_k8s(h) -> Dict[str, Any]:  # noqa: ANN001
+            if h is None:
+                return {}
+            # Accept both LifecycleHandler model and raw dict
+            if isinstance(h, dict):
+                if h.get("exec") is not None:
+                    return {"exec": {"command": list(h.get("exec", {}).get("command", []))}}
+                if h.get("httpGet") is not None:
+                    hg = h.get("httpGet", {})
+                    return {"httpGet": {"path": (hg.get("path") or "/"), "port": int(hg.get("port", 0))}}
+                if h.get("tcpSocket") is not None:
+                    ts = h.get("tcpSocket", {})
+                    return {"tcpSocket": {"port": int(ts.get("port", 0))}}
+                return {}
+            if getattr(h, "exec", None) is not None:
+                return {"exec": {"command": list(h.exec.command)}}
+            if getattr(h, "http_get", None) is not None:
+                return {"httpGet": {"path": h.http_get.path or "/", "port": int(h.http_get.port)}}
+            if getattr(h, "tcp_socket", None) is not None:
+                return {"tcpSocket": {"port": int(h.tcp_socket.port)}}
+            return {}
+        lc = getattr(spec, "lifecycle")
+        post = getattr(lc, "post_start", None) if lc is not None else None
+        pre = getattr(lc, "pre_stop", None) if lc is not None else None
+        # Fallback to dict keys when using raw dict updates in tests/tools
+        if post is None and isinstance(lc, dict):
+            post = lc.get("postStart") or lc.get("post_start")
+        if pre is None and isinstance(lc, dict):
+            pre = lc.get("preStop") or lc.get("pre_stop")
+        if post is not None:
+            lifecycle["postStart"] = _lh_to_k8s(post)
+        if pre is not None:
+            lifecycle["preStop"] = _lh_to_k8s(pre)
+        if lifecycle:
+            c["lifecycle"] = lifecycle
+    return c
+
+
+def _container_from_spec(m: AppManifest, csp, *, opts: ExportOptions, allow_probes: bool = True) -> Dict[str, Any]:
+    """Build a K8s container dict from a ContainerSpec-like object."""
+    def _gf(obj, field, default=None):
+        if isinstance(obj, dict):
+            return obj.get(field, default)
+        return getattr(obj, field, default)
+    
+    c: Dict[str, Any] = {"name": str(_gf(csp, "name")), "image": str(_gf(csp, "image"))}
+    if _gf(csp, "command"):
+        c["command"] = list(_gf(csp, "command"))
+    if _gf(csp, "args"):
+        c["args"] = list(_gf(csp, "args"))
+    # env
+    env: List[Dict[str, Any]] = []
+    for item in (_gf(csp, "env") or []):
+        name = item.get("name")
+        if name is None:
+            continue
+        entry: Dict[str, Any] = {"name": name}
+        if "valueFrom" in item and isinstance(item.get("valueFrom"), dict):
+            entry["valueFrom"] = item["valueFrom"]
+        else:
+            entry["value"] = item.get("value", "")
+        env.append(entry)
+    # global envFrom via refs
+    for ref in getattr(m.spec, "config_refs", []) or []:
+        if bool(getattr(ref, "env_from", False)):
+            env.append({"name": "", "valueFrom": {"configMapKeyRef": {"name": ref.name, "key": ""}}})
+    for ref in getattr(m.spec, "secret_refs", []) or []:
+        if bool(getattr(ref, "env_from", False)):
+            env.append({"name": "", "valueFrom": {"secretKeyRef": {"name": ref.name, "key": ""}}})
+    if env:
+        # sanitize envFrom hack entries by moving into envFrom list
+        env_from: List[Dict[str, Any]] = []
+        real_env: List[Dict[str, Any]] = []
+        for e in env:
+            if e.get("name") == "" and e.get("valueFrom"):  # our marker
+                if "configMapKeyRef" in e["valueFrom"]:
+                    env_from.append({"configMapRef": {"name": e["valueFrom"]["configMapKeyRef"]["name"]}})
+                elif "secretKeyRef" in e["valueFrom"]:
+                    env_from.append({"secretRef": {"name": e["valueFrom"]["secretKeyRef"]["name"]}})
+            else:
+                real_env.append(e)
+        if real_env:
+            c["env"] = real_env
+        if env_from:
+            c["envFrom"] = env_from
+    # ports
+    if _gf(csp, "ports"):
+        c["ports"] = [{"name": p.name, "containerPort": int(p.container_port)} for p in _gf(csp, "ports")]
+    # resources
+    if _gf(csp, "resources"):
+        rs = _gf(csp, "resources")
+        res: Dict[str, Any] = {}
+        if rs.requests:
+            req = {}
+            if rs.requests.cpu is not None:
+                req["cpu"] = str(rs.requests.cpu)
+            if rs.requests.memory is not None:
+                req["memory"] = str(rs.requests.memory)
+            if req:
+                res["requests"] = req
+        if rs.limits:
+            lim = {}
+            if rs.limits.cpu is not None:
+                lim["cpu"] = str(rs.limits.cpu)
+            if rs.limits.memory is not None:
+                lim["memory"] = str(rs.limits.memory)
+            if lim:
+                res["limits"] = lim
+        if res:
+            c["resources"] = res
+    # security
+    if getattr(csp, "security", None):
+        sc: Dict[str, Any] = {}
+        sec = csp.security if not isinstance(csp, dict) else None
+        if sec is None and isinstance(csp, dict) and csp.get("security"):
+            sec = csp["security"]
+        if sec.run_as_user is not None:
+            sc["runAsUser"] = int(sec.run_as_user)
+        if sec.run_as_group is not None:
+            sc["runAsGroup"] = int(sec.run_as_group)
+        if sec.read_only_root:
+            sc["readOnlyRootFilesystem"] = True
+        if sec.drop_caps:
+            sc["capabilities"] = {"drop": list(sec.drop_caps)}
+        if getattr(sec, "seccomp_type", None):
+            s = {"type": str(sec.seccomp_type)}
+            if str(sec.seccomp_type) == "Localhost" and getattr(sec, "seccomp_localhost_profile", None):
+                s["localhostProfile"] = str(sec.seccomp_localhost_profile)
+            sc["seccompProfile"] = s
+        if sc:
+            c["securityContext"] = sc
+    # working dir
+    if _gf(csp, "working_dir"):
+        c["workingDir"] = str(_gf(csp, "working_dir"))
+    # probes
+    if allow_probes and _gf(csp, "health"):
+        h = _gf(csp, "health")
+        if h.readiness:
+            c["readinessProbe"] = _probe_to_k8s(h.readiness)
+        if h.liveness:
+            c["livenessProbe"] = _probe_to_k8s(h.liveness)
+        if getattr(h, "startup", None):
+            c["startupProbe"] = _probe_to_k8s(h.startup)
     return c
 
 
@@ -255,19 +439,118 @@ def _service_from_manifest(m: AppManifest, opts: ExportOptions) -> Optional[Dict
                 body["spec"]["externalTrafficPolicy"] = spec.service.external_traffic_policy
         if getattr(spec.service, "external_ips", None):
             body["spec"]["externalIPs"] = list(spec.service.external_ips)
+        # Session affinity pass-through
+        if getattr(spec.service, "session_affinity", None) is not None:
+            body["spec"]["sessionAffinity"] = spec.service.session_affinity
+        cfg = getattr(spec.service, "session_affinity_config", None)
+        if cfg and getattr(cfg, "client_ip", None) is not None:
+            to = getattr(cfg.client_ip, "timeout_seconds", None)
+            if to is not None:
+                body["spec"]["sessionAffinityConfig"] = {"clientIP": {"timeoutSeconds": int(to)}}
     return body
 
 
 def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, Any]:
-    c = _container_from_manifest(m, opts=opts)
-    pod_spec: Dict[str, Any] = {"containers": [c]}
+    # Containers: use multi-container list when present; else build from top-level spec
+    containers: List[Dict[str, Any]] = []
+    if getattr(m.spec, "containers", None):
+        for csp in m.spec.containers:
+            containers.append(_container_from_spec(m, csp, opts=opts, allow_probes=True))
+    else:
+        containers.append(_container_from_manifest(m, opts=opts))
+    pod_spec: Dict[str, Any] = {"containers": containers}
     if m.spec.termination_grace_period_seconds is not None:
         pod_spec["terminationGracePeriodSeconds"] = int(m.spec.termination_grace_period_seconds)
     if getattr(m.spec, "priority_class_name", None):
         pod_spec["priorityClassName"] = str(m.spec.priority_class_name)
+    if getattr(m.spec, "hostname", None):
+        pod_spec["hostname"] = str(m.spec.hostname)
+    if getattr(m.spec, "subdomain", None):
+        pod_spec["subdomain"] = str(m.spec.subdomain)
+    if getattr(m.spec, "host_aliases", None):
+        aliases = []
+        for ha in m.spec.host_aliases:
+            if isinstance(ha, dict):
+                ip = ha.get("ip")
+                hns = ha.get("hostnames") or []
+            else:
+                ip = getattr(ha, "ip", None)
+                hns = list(getattr(ha, "hostnames", []) or [])
+            if ip:
+                aliases.append({"ip": str(ip), "hostnames": list(hns)})
+        if aliases:
+            pod_spec["hostAliases"] = aliases
+    if getattr(m.spec, "enable_service_links", None) is not None:
+        pod_spec["enableServiceLinks"] = bool(m.spec.enable_service_links)
+    if getattr(m.spec, "share_process_namespace", None) is not None:
+        pod_spec["shareProcessNamespace"] = bool(m.spec.share_process_namespace)
+    if getattr(m.spec, "host_network", None) is not None:
+        pod_spec["hostNetwork"] = bool(m.spec.host_network)
+    if getattr(m.spec, "node_selector", None):
+        pod_spec["nodeSelector"] = dict(m.spec.node_selector)
+    if getattr(m.spec, "set_hostname_as_fqdn", None) is not None:
+        pod_spec["setHostnameAsFQDN"] = bool(m.spec.set_hostname_as_fqdn)
+    if getattr(m.spec, "host_pid", None) is not None:
+        pod_spec["hostPID"] = bool(m.spec.host_pid)
+    if getattr(m.spec, "host_ipc", None) is not None:
+        pod_spec["hostIPC"] = bool(m.spec.host_ipc)
     # ServiceAccount
     if opts.service_account_name:
         pod_spec["serviceAccountName"] = opts.service_account_name
+    # ImagePullSecrets
+    if getattr(m.spec, "image_pull_secrets", None):
+        pod_spec["imagePullSecrets"] = [{"name": s} for s in m.spec.image_pull_secrets]
+    # DNS policy/config
+    if getattr(m.spec, "dns_policy", None):
+        pod_spec["dnsPolicy"] = str(m.spec.dns_policy)
+    if getattr(m.spec, "dns_config", None):
+        dnsc: Dict[str, Any] = {}
+        dc = m.spec.dns_config
+        if isinstance(dc, dict):
+            if dc.get("nameservers"):
+                dnsc["nameservers"] = list(dc.get("nameservers", []))
+            if dc.get("searches"):
+                dnsc["searches"] = list(dc.get("searches", []))
+            opt_list = []
+            for o in dc.get("options", []) or []:
+                name = o.get("name")
+                if not name:
+                    continue
+                ent = {"name": name}
+                if o.get("value") is not None:
+                    ent["value"] = str(o.get("value"))
+                opt_list.append(ent)
+            if opt_list:
+                dnsc["options"] = opt_list
+        else:
+            if getattr(dc, "nameservers", None):
+                dnsc["nameservers"] = list(dc.nameservers)
+            if getattr(dc, "searches", None):
+                dnsc["searches"] = list(dc.searches)
+            opt_list = []
+            for o in getattr(dc, "options", []) or []:
+                ent = {"name": o.name}
+                if getattr(o, "value", None) is not None:
+                    ent["value"] = str(o.value)
+                opt_list.append(ent)
+            if opt_list:
+                dnsc["options"] = opt_list
+        if dnsc:
+            pod_spec["dnsConfig"] = dnsc
+    # Pod-level securityContext
+    if getattr(m.spec, "pod_security", None):
+        psc = {}
+        if getattr(m.spec.pod_security, "fs_group", None) is not None:
+            psc["fsGroup"] = int(m.spec.pod_security.fs_group)
+        if getattr(m.spec.pod_security, "seccomp_type", None):
+            sec = {"type": str(m.spec.pod_security.seccomp_type)}
+            if str(m.spec.pod_security.seccomp_type) == "Localhost" and getattr(
+                m.spec.pod_security, "seccomp_localhost_profile", None
+            ):
+                sec["localhostProfile"] = str(m.spec.pod_security.seccomp_localhost_profile)
+            psc["seccompProfile"] = sec
+        if psc:
+            pod_spec["securityContext"] = psc
     # Scheduling pass-through
     if getattr(m.spec, "affinity", None):
         pod_spec["affinity"] = dict(m.spec.affinity)
@@ -275,9 +558,23 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
         pod_spec["tolerations"] = list(m.spec.tolerations)
     if getattr(m.spec, "topology_spread_constraints", None):
         pod_spec["topologySpreadConstraints"] = list(m.spec.topology_spread_constraints)
+    elif opts.inject_topology_spread and int(getattr(m.spec, "replicas", 1) or 1) > 1:
+        pod_spec["topologySpreadConstraints"] = [
+            {
+                "maxSkew": 1,
+                "topologyKey": "kubernetes.io/hostname",
+                "whenUnsatisfiable": "ScheduleAnyway",
+                "labelSelector": {"matchLabels": {"app": m.metadata.name}},
+            }
+        ]
     # Storage mounts
     volume_specs: List[Dict[str, Any]] = []
     volume_mounts: List[Dict[str, Any]] = []
+    # Projected volume from config/secret file projections
+    proj = _projected_volume_from_refs(m)
+    if proj is not None:
+        volume_specs.append(proj)
+        volume_mounts.append({"name": proj["name"], "mountPath": "/var/run/ae/config"})
     if opts.emit_storage and getattr(m.spec, "storage", None):
         for s in m.spec.storage:
             s_name = getattr(s, "name", None) if not isinstance(s, dict) else s.get("name")
@@ -294,14 +591,14 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
     if volume_specs:
         pod_spec["volumes"] = volume_specs
     if volume_mounts:
-        c.setdefault("volumeMounts", []).extend(volume_mounts)
+        pod_spec["containers"][0].setdefault("volumeMounts", []).extend(volume_mounts)
     # Add AppArmor annotation on the Pod template when requested
     pod_meta: Dict[str, Any] = {"labels": {"app": m.metadata.name}}
     if getattr(m.spec, "security", None) and getattr(m.spec.security, "apparmor_profile", None):
         ann_key = f"container.apparmor.security.beta.kubernetes.io/{m.metadata.name}"
         pod_meta["annotations"] = {ann_key: str(m.spec.security.apparmor_profile)}
 
-    return {
+    pod = {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
         "metadata": {"name": m.metadata.name, "namespace": opts.namespace},
@@ -314,6 +611,12 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
             },
         },
     }
+    if getattr(m.spec, "init_containers", None):
+        pod["spec"]["template"]["spec"]["initContainers"] = [
+            _container_from_spec(m, csp, opts=opts, allow_probes=False)
+            for csp in m.spec.init_containers
+        ]
+    return pod
 
 
 def _storage_claim_name(app: str, name: str) -> str:
@@ -347,24 +650,134 @@ def _headless_service_for_statefulset(
 
 
 def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, Any]:
-    c = _container_from_manifest(m, opts=opts)
-    pod_spec: Dict[str, Any] = {"containers": [c]}
+    # Containers
+    containers: List[Dict[str, Any]] = []
+    if getattr(m.spec, "containers", None):
+        for csp in m.spec.containers:
+            containers.append(_container_from_spec(m, csp, opts=opts, allow_probes=True))
+    else:
+        containers.append(_container_from_manifest(m, opts=opts))
+    pod_spec: Dict[str, Any] = {"containers": containers}
     if m.spec.termination_grace_period_seconds is not None:
         pod_spec["terminationGracePeriodSeconds"] = int(m.spec.termination_grace_period_seconds)
     if getattr(m.spec, "priority_class_name", None):
         pod_spec["priorityClassName"] = str(m.spec.priority_class_name)
+    if getattr(m.spec, "hostname", None):
+        pod_spec["hostname"] = str(m.spec.hostname)
+    if getattr(m.spec, "subdomain", None):
+        pod_spec["subdomain"] = str(m.spec.subdomain)
+    if getattr(m.spec, "host_aliases", None):
+        aliases = []
+        for ha in m.spec.host_aliases:
+            if isinstance(ha, dict):
+                ip = ha.get("ip")
+                hns = ha.get("hostnames") or []
+            else:
+                ip = getattr(ha, "ip", None)
+                hns = list(getattr(ha, "hostnames", []) or [])
+            if ip:
+                aliases.append({"ip": str(ip), "hostnames": list(hns)})
+        if aliases:
+            pod_spec["hostAliases"] = aliases
+    if getattr(m.spec, "enable_service_links", None) is not None:
+        pod_spec["enableServiceLinks"] = bool(m.spec.enable_service_links)
+    if getattr(m.spec, "share_process_namespace", None) is not None:
+        pod_spec["shareProcessNamespace"] = bool(m.spec.share_process_namespace)
+    if getattr(m.spec, "host_network", None) is not None:
+        pod_spec["hostNetwork"] = bool(m.spec.host_network)
+    if getattr(m.spec, "node_selector", None):
+        pod_spec["nodeSelector"] = dict(m.spec.node_selector)
+    if getattr(m.spec, "set_hostname_as_fqdn", None) is not None:
+        pod_spec["setHostnameAsFQDN"] = bool(m.spec.set_hostname_as_fqdn)
+    if getattr(m.spec, "host_pid", None) is not None:
+        pod_spec["hostPID"] = bool(m.spec.host_pid)
+    if getattr(m.spec, "host_ipc", None) is not None:
+        pod_spec["hostIPC"] = bool(m.spec.host_ipc)
+    if getattr(m.spec, "host_pid", None) is not None:
+        pod_spec["hostPID"] = bool(m.spec.host_pid)
+    if getattr(m.spec, "host_ipc", None) is not None:
+        pod_spec["hostIPC"] = bool(m.spec.host_ipc)
     if opts.service_account_name:
         pod_spec["serviceAccountName"] = opts.service_account_name
+    # ImagePullSecrets
+    if getattr(m.spec, "image_pull_secrets", None):
+        pod_spec["imagePullSecrets"] = [{"name": s} for s in m.spec.image_pull_secrets]
     if getattr(m.spec, "affinity", None):
         pod_spec["affinity"] = dict(m.spec.affinity)
     if getattr(m.spec, "tolerations", None):
         pod_spec["tolerations"] = list(m.spec.tolerations)
     if getattr(m.spec, "topology_spread_constraints", None):
         pod_spec["topologySpreadConstraints"] = list(m.spec.topology_spread_constraints)
+    elif opts.inject_topology_spread and int(getattr(m.spec, "replicas", 1) or 1) > 1:
+        pod_spec["topologySpreadConstraints"] = [
+            {
+                "maxSkew": 1,
+                "topologyKey": "kubernetes.io/hostname",
+                "whenUnsatisfiable": "ScheduleAnyway",
+                "labelSelector": {"matchLabels": {"app": m.metadata.name}},
+            }
+        ]
+    # DNS policy/config
+    if getattr(m.spec, "dns_policy", None):
+        pod_spec["dnsPolicy"] = str(m.spec.dns_policy)
+    if getattr(m.spec, "dns_config", None):
+        dnsc: Dict[str, Any] = {}
+        dc = m.spec.dns_config
+        if isinstance(dc, dict):
+            if dc.get("nameservers"):
+                dnsc["nameservers"] = list(dc.get("nameservers", []))
+            if dc.get("searches"):
+                dnsc["searches"] = list(dc.get("searches", []))
+            opt_list = []
+            for o in dc.get("options", []) or []:
+                name = o.get("name")
+                if not name:
+                    continue
+                ent = {"name": name}
+                if o.get("value") is not None:
+                    ent["value"] = str(o.get("value"))
+                opt_list.append(ent)
+            if opt_list:
+                dnsc["options"] = opt_list
+        else:
+            if getattr(dc, "nameservers", None):
+                dnsc["nameservers"] = list(dc.nameservers)
+            if getattr(dc, "searches", None):
+                dnsc["searches"] = list(dc.searches)
+            opt_list = []
+            for o in getattr(dc, "options", []) or []:
+                ent = {"name": o.name}
+                if getattr(o, "value", None) is not None:
+                    ent["value"] = str(o.value)
+                opt_list.append(ent)
+            if opt_list:
+                dnsc["options"] = opt_list
+        if dnsc:
+            pod_spec["dnsConfig"] = dnsc
+    # Pod-level securityContext
+    if getattr(m.spec, "pod_security", None):
+        psc = {}
+        if getattr(m.spec.pod_security, "fs_group", None) is not None:
+            psc["fsGroup"] = int(m.spec.pod_security.fs_group)
+        if getattr(m.spec.pod_security, "seccomp_type", None):
+            sec = {"type": str(m.spec.pod_security.seccomp_type)}
+            if str(m.spec.pod_security.seccomp_type) == "Localhost" and getattr(
+                m.spec.pod_security, "seccomp_localhost_profile", None
+            ):
+                sec["localhostProfile"] = str(m.spec.pod_security.seccomp_localhost_profile)
+            psc["seccompProfile"] = sec
+        if psc:
+            pod_spec["securityContext"] = psc
 
     # Storage via volumeClaimTemplates; mount by template name
     volume_mounts: List[Dict[str, Any]] = []
     vcts: List[Dict[str, Any]] = []
+    # Projected volume from config/secret file projections
+    proj = _projected_volume_from_refs(m)
+    volume_specs: List[Dict[str, Any]] = []
+    if proj is not None:
+        volume_specs.append(proj)
+        volume_mounts.append({"name": proj["name"], "mountPath": "/var/run/ae/config"})
     if opts.emit_storage and getattr(m.spec, "storage", None):
         for s in m.spec.storage:
             s_name = getattr(s, "name", None) if not isinstance(s, dict) else s.get("name")
@@ -390,7 +803,9 @@ def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str,
             )
             volume_mounts.append({"name": claim, "mountPath": s_mount})
     if volume_mounts:
-        c.setdefault("volumeMounts", []).extend(volume_mounts)
+        pod_spec["containers"][0].setdefault("volumeMounts", []).extend(volume_mounts)
+    if volume_specs:
+        pod_spec["volumes"] = (pod_spec.get("volumes") or []) + volume_specs
 
     pod_meta: Dict[str, Any] = {"labels": {"app": m.metadata.name}}
     if getattr(m.spec, "security", None) and getattr(m.spec.security, "apparmor_profile", None):
@@ -409,6 +824,11 @@ def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str,
             "updateStrategy": {"type": "RollingUpdate"},
         },
     }
+    if getattr(m.spec, "init_containers", None):
+        pod["spec"]["template"]["spec"]["initContainers"] = [
+            _container_from_spec(m, csp, opts=opts, allow_probes=False)
+            for csp in m.spec.init_containers
+        ]
     if vcts:
         sts["spec"]["volumeClaimTemplates"] = vcts
     return sts
@@ -526,6 +946,39 @@ def _secret_from_ref(app: AppManifest, ref, opts: ExportOptions) -> Dict[str, An
     }
 
 
+def _projected_volume_from_refs(app: AppManifest) -> Optional[Dict[str, Any]]:
+    """Build a single projected volume aggregating config/secret file projections.
+
+    Each file mapping is expressed via per-ref items with explicit path.
+    The volume is mounted by callers at /var/run/ae/config.
+    """
+    sources: List[Dict[str, Any]] = []
+    # group items per ref for compactness
+    def _items_from(files: list[dict]) -> List[Dict[str, str]]:
+        items: List[Dict[str, str]] = []
+        for f in files or []:
+            key = str(f.get("key", "")).strip()
+            path = str(f.get("file", "")).lstrip("/")
+            if not key or not path:
+                continue
+            items.append({"key": key, "path": path})
+        return items
+
+    # ConfigMaps
+    for ref in getattr(app.spec, "config_refs", []) or []:
+        items = _items_from(getattr(ref, "files", []) or [])
+        if items:
+            sources.append({"configMap": {"name": ref.name, "items": items}})
+    # Secrets
+    for ref in getattr(app.spec, "secret_refs", []) or []:
+        items = _items_from(getattr(ref, "files", []) or [])
+        if items:
+            sources.append({"secret": {"name": ref.name, "items": items}})
+    if not sources:
+        return None
+    return {"name": f"{app.metadata.name}-proj", "projected": {"sources": sources}}
+
+
 def _pvc_from_storage(app: AppManifest, s, opts: ExportOptions) -> Dict[str, Any]:
     s_name = getattr(s, "name", None) if not isinstance(s, dict) else s.get("name")
     s_size = getattr(s, "size", None) if not isinstance(s, dict) else s.get("size")
@@ -543,6 +996,11 @@ def _pvc_from_storage(app: AppManifest, s, opts: ExportOptions) -> Dict[str, Any
             "resources": {"requests": {"storage": str(size)}},
         },
     }
+    if getattr(m.spec, "init_containers", None):
+        pod["spec"]["template"]["spec"]["initContainers"] = [
+            _container_from_spec(m, csp, opts=opts, allow_probes=False)
+            for csp in m.spec.init_containers
+        ]
 
 
 def export_k8s_docs(
@@ -710,9 +1168,13 @@ def export_k8s_docs(
                 },
             }
         )
-        # Optional NetworkPolicy from manifest.spec.networkPolicy
+    # NetworkPolicy: explicit from manifest or generated default
     if getattr(manifest.spec, "network_policy", None):
         np = _network_policy_from_manifest(manifest, opts)
+        if np:
+            docs.append(np)
+    elif opts.emit_network_policy and (opts.np_default_deny_ingress or opts.np_default_deny_egress):
+        np = _default_network_policy(manifest, opts)
         if np:
             docs.append(np)
     return docs
@@ -739,6 +1201,66 @@ def _network_policy_from_manifest(m: AppManifest, opts: ExportOptions) -> Option
     if egress:
         body["spec"]["egress"] = egress
     return body
+
+
+def _default_network_policy(m: AppManifest, opts: ExportOptions) -> dict:
+    policy_types = []
+    if opts.np_default_deny_ingress:
+        policy_types.append("Ingress")
+    if opts.np_default_deny_egress:
+        policy_types.append("Egress")
+    spec: Dict[str, Any] = {
+        "podSelector": {"matchLabels": {"app": m.metadata.name}},
+        "policyTypes": policy_types or ["Ingress"],
+    }
+    # Default deny is achieved by providing no rules for selected types
+    if opts.np_default_deny_ingress:
+        spec["ingress"] = []
+    if opts.np_default_deny_egress:
+        egress: List[Dict[str, Any]] = []
+        # Optionally allow DNS egress (TCP/UDP 53) to anywhere
+        if opts.np_allow_dns:
+            egress.append({
+                "to": [ {"ipBlock": {"cidr": "0.0.0.0/0"}} ],
+                "ports": [
+                    {"protocol": "UDP", "port": 53},
+                    {"protocol": "TCP", "port": 53},
+                ],
+            })
+        # Optionally allow HTTP/HTTPS egress (TCP 80/443)
+        if opts.np_allow_web:
+            egress.append({
+                "to": [ {"ipBlock": {"cidr": "0.0.0.0/0"}} ],
+                "ports": [
+                    {"protocol": "TCP", "port": 80},
+                    {"protocol": "TCP", "port": 443},
+                ],
+            })
+        # Optionally allow internal RFC1918 destinations for selected ports
+        if opts.np_allow_internal_ports:
+            private_v4 = [
+                {"cidr": "10.0.0.0/8"},
+                {"cidr": "172.16.0.0/12"},
+                {"cidr": "192.168.0.0/16"},
+            ]
+            for p in opts.np_allow_internal_ports:
+                try:
+                    portnum = int(p)
+                except Exception:
+                    continue
+                egress.append(
+                    {
+                        "to": [{"ipBlock": cidr} for cidr in private_v4],
+                        "ports": [{"protocol": "TCP", "port": portnum}],
+                    }
+                )
+        spec["egress"] = egress
+    return {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {"name": m.metadata.name, "namespace": opts.namespace},
+        "spec": spec,
+    }
 
 
 def export_k8s_yaml(manifest: AppManifest, *, options: Optional[ExportOptions] = None) -> str:

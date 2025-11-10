@@ -82,3 +82,54 @@ def test_hpa_mem_value_invalid(tmp_path) -> None:
         ["k8s-check", "-f", str(man_path), "--assume-hpa", "mem-value=20XYZ", "--policy", "strict"]
     )
     assert exit_code != 0
+
+
+def test_startup_probe_hint_emitted() -> None:
+    from ae.controller.spec import AppManifest, AppSpec, Metadata, HealthSpec, ProbeSpec
+    man = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            health=HealthSpec(
+                liveness=ProbeSpec(httpGet={"path": "/live", "port": 8080})  # type: ignore[arg-type]
+            ),
+        ),
+    )
+    issues = k8s_portability_issues(man)
+    assert any(i.code == "PROBE_STARTUP_RECOMMENDED" and i.level == "warn" for i in issues)
+
+
+def test_prestop_short_grace_warns() -> None:
+    from ae.controller.spec import AppManifest, AppSpec, Metadata, HealthSpec, ProbeSpec
+    man = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            terminationGracePeriodSeconds=1,
+            lifecycle={"preStop": {"exec": {"command": ["/bin/sleep", "1"]}}},  # type: ignore[arg-type]
+        ),
+    )
+    issues = k8s_portability_issues(man)
+    assert any(i.code == "PRESTOP_SHORT_GRACE" for i in issues)
+
+
+def test_qos_limits_without_requests_warns() -> None:
+    from ae.controller.spec import AppManifest, AppSpec, Metadata, ResourcesSpec, ResourceQuantities
+    man = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            resources=ResourcesSpec(limits=ResourceQuantities(cpu=0.5, memory="256Mi")),
+        ),
+    )
+    issues = k8s_portability_issues(man)
+    assert any(i.code == "QOS_LIMITS_NO_REQUESTS" and i.level == "warn" for i in issues)

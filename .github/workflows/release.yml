@@ -1,0 +1,48 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install build
+        run: python -m pip install --upgrade pip build
+      - name: Build wheels
+        run: python -m build -w
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels
+          path: dist/*.whl
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build controller image
+        run: docker build -f ops/images/controller.Dockerfile -t ae/controller:${{ github.ref_name }} .
+      - name: Save image tar
+        run: docker save ae/controller:${{ github.ref_name }} -o controller.tar
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: controller-image
+          path: controller.tar
+      # --- Optional: publish to GHCR (uncomment when ready) ---
+      # - name: Login to GHCR
+      #   if: startsWith(github.ref, 'refs/tags/v')
+      #   run: |
+      #     echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      # - name: Tag and push
+      #   if: startsWith(github.ref, 'refs/tags/v')
+      #   run: |
+      #     docker tag ae/controller:${{ github.ref_name }} ghcr.io/${{ github.repository }}/controller:${{ github.ref_name }}
+      #     docker push ghcr.io/${{ github.repository }}/controller:${{ github.ref_name }}

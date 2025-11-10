@@ -53,6 +53,28 @@ class ProbeSpec(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class LifecycleHandler(BaseModel):
+    """Container lifecycle handler (exec/http/tcp)."""
+
+    http_get: Optional[HTTPGetProbe] = Field(default=None, alias="httpGet")
+    exec: Optional[ExecProbe] = Field(default=None, alias="exec")
+    tcp_socket: Optional[TCPSocketProbe] = Field(default=None, alias="tcpSocket")
+    # Optional runtime-only timeout override (seconds). K8s does not have this;
+    # we use it to bound preStop execution when present.
+    timeout_seconds: Optional[int] = Field(default=None, alias="timeoutSeconds")
+
+    model_config = {"populate_by_name": True}
+
+
+class LifecycleSpec(BaseModel):
+    """Container lifecycle hooks."""
+
+    post_start: Optional[LifecycleHandler] = Field(default=None, alias="postStart")
+    pre_stop: Optional[LifecycleHandler] = Field(default=None, alias="preStop")
+
+    model_config = {"populate_by_name": True}
+
+
 class PortSpec(BaseModel):
     """Container port definition."""
 
@@ -67,6 +89,9 @@ class HealthSpec(BaseModel):
 
     readiness: Optional[ProbeSpec] = None
     liveness: Optional[ProbeSpec] = None
+    # Optional Startup probe; when set, exporter emits startupProbe and
+    # runtime should gate liveness checks until startup succeeds.
+    startup: Optional[ProbeSpec] = None
 
 
 class IngressSpec(BaseModel):
@@ -129,6 +154,25 @@ class ServiceSpec(BaseModel):
     ports: List[ServicePort] = Field(default_factory=list)
     # Optional externalIPs for ClusterIP/NodePort Services
     external_ips: List[str] = Field(default_factory=list, alias="externalIPs")
+
+    # Optional session affinity (K8s pass-through)
+    session_affinity: Optional[Literal["None", "ClientIP"]] = Field(
+        default=None, alias="sessionAffinity"
+    )
+
+    class SessionAffinityClientIP(BaseModel):
+        timeout_seconds: Optional[int] = Field(default=None, alias="timeoutSeconds")
+
+        model_config = {"populate_by_name": True}
+
+    class SessionAffinityConfig(BaseModel):
+        client_ip: Optional[SessionAffinityClientIP] = Field(default=None, alias="clientIP")
+
+        model_config = {"populate_by_name": True}
+
+    session_affinity_config: Optional[SessionAffinityConfig] = Field(
+        default=None, alias="sessionAffinityConfig"
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -193,6 +237,38 @@ class SecuritySpec(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class PodSecuritySpec(BaseModel):
+    """Pod-level security context subset.
+
+    - fsGroup: numeric GID applied to mounted volumes
+    - seccompProfile at Pod level (type + localhostProfile)
+    """
+
+    fs_group: Optional[int] = Field(default=None, alias="fsGroup")
+    seccomp_type: Optional[Literal["RuntimeDefault", "Localhost", "Unconfined"]] = Field(
+        default=None, alias="seccompProfileType"
+    )
+    seccomp_localhost_profile: Optional[str] = Field(default=None, alias="seccompLocalhostProfile")
+
+    model_config = {"populate_by_name": True}
+
+
+class DNSConfigOption(BaseModel):
+    name: str
+    value: Optional[str] = None
+
+
+class DNSConfig(BaseModel):
+    nameservers: List[str] = Field(default_factory=list)
+    searches: List[str] = Field(default_factory=list)
+    options: List[DNSConfigOption] = Field(default_factory=list)
+
+
+class HostAlias(BaseModel):
+    ip: str
+    hostnames: List[str] = Field(default_factory=list)
+
+
 class VolumeSpec(BaseModel):
     """HostPath volume mapping."""
 
@@ -238,6 +314,8 @@ class SecretRef(BaseModel):
     env: List[SecretEnvMapping] = Field(default_factory=list)
     # Optional file projections: project selected keys into files under the mount root
     files: List[dict] = Field(default_factory=list)
+    # Optional envFrom behavior: when true, exporter may emit envFrom for this secret
+    env_from: bool = Field(default=False, alias="envFrom")
 
 
 class ConfigEnvMapping(BaseModel):
@@ -255,6 +333,8 @@ class ConfigRef(BaseModel):
     env: List[ConfigEnvMapping] = Field(default_factory=list)
     # Optional file projections: project selected keys into files under the mount root
     files: List[dict] = Field(default_factory=list)
+    # Optional envFrom behavior: when true, exporter may emit envFrom for this configmap
+    env_from: bool = Field(default=False, alias="envFrom")
 
 
 class AppSpec(BaseModel):
@@ -262,12 +342,50 @@ class AppSpec(BaseModel):
 
     image: str
     command: Optional[List[str]] = None
+    args: Optional[List[str]] = None
     env: List[dict[str, str]] = Field(default_factory=list)
     replicas: int = Field(default=1, ge=1)
     ports: List[PortSpec] = Field(default_factory=list)
     health: Optional[HealthSpec] = None
+    lifecycle: Optional[LifecycleSpec] = None
+    # Multi-container (exporter-level support; runtime runs a single container)
+    class ContainerSpec(BaseModel):
+        name: str
+        image: str
+        command: Optional[List[str]] = None
+        args: Optional[List[str]] = None
+        env: List[dict[str, str]] = Field(default_factory=list)
+        ports: List[PortSpec] = Field(default_factory=list)
+        resources: Optional[ResourcesSpec] = None
+        security: Optional[SecuritySpec] = None
+        working_dir: Optional[str] = Field(default=None, alias="workingDir")
+        # Optional per-container probes
+        health: Optional[HealthSpec] = None
+        # Optional timeout for init containers (seconds). Ignored for main containers.
+        timeout_seconds: Optional[int] = Field(default=None, alias="timeoutSeconds")
+        # Optional additional mounts from the app's projection root (state/projections/...)
+        # Each entry binds a subpath under /var/run/ae/config/<app> into a custom mountPath
+        # inside this container. Useful to expose selected config/secret files at bespoke paths.
+        class ProjectionMount(BaseModel):
+            path: str  # relative to /var/run/ae/config/<app> (e.g., "config/db", "secret/creds.json")
+            mount_path: str = Field(alias="mountPath")
+            read_only: bool = Field(default=True, alias="readOnly")
+
+            model_config = {"populate_by_name": True}
+
+        projection_mounts: List[ProjectionMount] = Field(
+            default_factory=list, alias="projectionMounts"
+        )
+
+        model_config = {"populate_by_name": True}
+
+    containers: List[ContainerSpec] = Field(default_factory=list)
+    init_containers: List[ContainerSpec] = Field(default_factory=list, alias="initContainers")
     ingress: Optional[IngressSpec] = None
     service: Optional[ServiceSpec] = None
+    working_dir: Optional[str] = Field(default=None, alias="workingDir")
+    termination_message_path: Optional[str] = Field(default=None, alias="terminationMessagePath")
+    termination_message_policy: Optional[str] = Field(default=None, alias="terminationMessagePolicy")
     # Rollout policy
     rollout: Optional[dict] = Field(
         default_factory=lambda: {"strategy": "parallel", "maxSurge": 1, "maxUnavailable": 0}
@@ -280,6 +398,11 @@ class AppSpec(BaseModel):
     termination_grace_period_seconds: int = Field(default=10, alias="terminationGracePeriodSeconds")
     volumes: List[VolumeSpec] = Field(default_factory=list)
     storage: List[StorageSpec] = Field(default_factory=list)
+    # Image pull controls (pass-through to K8s export)
+    image_pull_policy: Optional[
+        Literal["Always", "IfNotPresent", "Never"]
+    ] = Field(default=None, alias="imagePullPolicy")
+    image_pull_secrets: List[str] = Field(default_factory=list, alias="imagePullSecrets")
     # Scheduling (pass-through for K8s export)
     affinity: dict | None = None
     tolerations: List[dict] = Field(default_factory=list)
@@ -289,6 +412,26 @@ class AppSpec(BaseModel):
     priority_class_name: Optional[str] = Field(default=None, alias="priorityClassName")
     # Network policy (K8s export)
     network_policy: Optional[dict] = Field(default=None, alias="networkPolicy")
+    # Pod-level security context
+    pod_security: Optional[PodSecuritySpec] = Field(default=None, alias="podSecurity")
+    # DNS policy/config (K8s export pass-through)
+    dns_policy: Optional[
+        Literal["Default", "ClusterFirst", "ClusterFirstWithHostNet", "None"]
+    ] = Field(default=None, alias="dnsPolicy")
+    dns_config: Optional[DNSConfig] = Field(default=None, alias="dnsConfig")
+    # Pod identity (K8s export pass-through)
+    hostname: Optional[str] = None
+    subdomain: Optional[str] = None
+    # Host aliases (K8s export pass-through)
+    host_aliases: List[HostAlias] = Field(default_factory=list, alias="hostAliases")
+    # Other small pass-throughs
+    enable_service_links: Optional[bool] = Field(default=None, alias="enableServiceLinks")
+    share_process_namespace: Optional[bool] = Field(default=None, alias="shareProcessNamespace")
+    host_network: Optional[bool] = Field(default=None, alias="hostNetwork")
+    node_selector: dict[str, str] = Field(default_factory=dict, alias="nodeSelector")
+    set_hostname_as_fqdn: Optional[bool] = Field(default=None, alias="setHostnameAsFQDN")
+    host_pid: Optional[bool] = Field(default=None, alias="hostPID")
+    host_ipc: Optional[bool] = Field(default=None, alias="hostIPC")
 
     model_config = {"populate_by_name": True}
 

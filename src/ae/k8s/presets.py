@@ -8,7 +8,7 @@ from typing import Literal
 from ae.k8s.exporter import ExportOptions
 
 
-PresetName = Literal["web-basic", "web-hardened", "scale-ready"]
+PresetName = Literal["web-basic", "web-hardened", "scale-ready", "web-strict"]
 
 
 def apply_preset(opts: ExportOptions, preset: PresetName) -> ExportOptions:
@@ -49,6 +49,15 @@ def apply_preset(opts: ExportOptions, preset: PresetName) -> ExportOptions:
             hpa_min=base.hpa_min or 2,
             hpa_max=base.hpa_max or 10,
             hpa_cpu_target=base.hpa_cpu_target or 70,
+            service_port=base.service_port or 80,
+        )
+
+    if preset == "web-strict":
+        return replace(
+            base,
+            require_requests=True if base.require_requests is False else base.require_requests or True,
+            default_security=fill_bool(True, base.default_security),
+            emit_pdb=fill_bool(True, base.emit_pdb),
             service_port=base.service_port or 80,
         )
 

@@ -1,0 +1,49 @@
+{
+  "title": "AE Rollouts & Probes",
+  "schemaVersion": 38,
+  "version": 1,
+  "templating": {
+    "list": [
+      {
+        "type": "query",
+        "name": "app",
+        "label": "App",
+        "hide": 0,
+        "includeAll": true,
+        "multi": false,
+        "refresh": 1,
+        "datasource": "Prometheus",
+        "query": "label_values(ae_app_status, app)"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "graph",
+      "title": "Rollout Operations (created/updated/removed)",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 6},
+      "targets": [
+        {"expr": "ae_rollout_operations_total{app=\"$app\",op=\"created\"}", "legendFormat": "created"},
+        {"expr": "ae_rollout_operations_total{app=\"$app\",op=\"updated\"}", "legendFormat": "updated"},
+        {"expr": "ae_rollout_operations_total{app=\"$app\",op=\"removed\"}", "legendFormat": "removed"}
+      ]
+    },
+    {
+      "type": "graph",
+      "title": "Probe Backoff (seconds by replica)",
+      "gridPos": {"x": 0, "y": 6, "w": 12, "h": 6},
+      "targets": [
+        {"expr": "ae_probe_backoff_seconds{app=\"$app\",type=\"readiness\"}", "legendFormat": "readiness {{replica}}"},
+        {"expr": "ae_probe_backoff_seconds{app=\"$app\",type=\"liveness\"}", "legendFormat": "liveness {{replica}}"}
+      ]
+    },
+    {
+      "type": "graph",
+      "title": "Last Reconcile Duration (s)",
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 6},
+      "targets": [
+        {"expr": "ae_reconcile_last_duration_seconds", "legendFormat": "last"}
+      ]
+    }
+  ]
+}

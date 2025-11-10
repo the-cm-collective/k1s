@@ -81,6 +81,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only return logs after an absolute timestamp (RFC3339, e.g., 2025-10-23T12:00:00Z)",
     )
 
+    # exec: run a command inside a container
+    exec_parser = subparsers.add_parser("exec", help="Run a command in a container")
+    exec_parser.add_argument("name", help="Application name")
+    exec_parser.add_argument(
+        "--container", required=False, help="Target container name or replica id"
+    )
+    exec_parser.add_argument("--timeout", type=int, default=None, help="Timeout seconds")
+    exec_parser.add_argument("cmd", nargs=argparse.REMAINDER, help="Command to execute after --")
+
     rollback_parser = subparsers.add_parser("rollback", help="Rollback an application revision")
     rollback_parser.add_argument("name", help="Application name")
     rollback_parser.add_argument(
@@ -132,6 +141,16 @@ def build_parser() -> argparse.ArgumentParser:
         default="all",
         help="Provider to refresh (default: all)",
     )
+    # kubesecret: render dockerconfigjson Secret
+    reg_secret = reg_sub.add_parser(
+        "kubesecret", help="Render a kubernetes.io/dockerconfigjson Secret from registries.yaml"
+    )
+    reg_secret.add_argument("--name", default="regcred", help="Secret name (default: regcred)")
+    reg_secret.add_argument("--namespace", default="default", help="Namespace (default: default)")
+    reg_secret.add_argument(
+        "--host", action="append", default=[], help="Restrict to specific registry host(s); repeatable"
+    )
+    reg_secret.add_argument("--output", "-o", default="-", help="Output file ('-' for stdout)")
 
     metrics_parser = subparsers.add_parser("metrics", help="Show aggregated metrics")
     metrics_parser.add_argument("--json", action="store_true", help="Emit JSON output")
@@ -233,6 +252,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fail export if resources.requests (cpu and memory) are missing",
     )
     xk.add_argument("--output", "-o", type=Path, default=None, help="Write output to file path")
+    xk.add_argument("--out", type=Path, default=None, help="Alias for --output")
+    xk.add_argument(
+        "--split",
+        type=Path,
+        default=None,
+        help="Write each resource to its own YAML file in this directory",
+    )
     xk.add_argument(
         "--emit-configs", action="store_true", help="Emit ConfigMap resources for configRefs"
     )
@@ -314,12 +340,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
     xk.add_argument(
         "--preset",
-        choices=["web-basic", "web-hardened", "scale-ready"],
+        choices=["web-basic", "web-hardened", "scale-ready", "web-strict"],
         default=None,
         help="Apply a preset of common flags",
     )
     xk.add_argument(
         "--validate", action="store_true", help="Validate generated YAML structure (offline checks)"
+    )
+    # NetworkPolicy helper flags
+    xk.add_argument("--emit-np", action="store_true", help="Emit a default NetworkPolicy (deny-all per type)")
+    xk.add_argument("--np-deny-ingress", action="store_true", help="Default deny ingress")
+    xk.add_argument("--np-deny-egress", action="store_true", help="Default deny egress")
+    xk.add_argument("--np-allow-dns", action="store_true", help="Allow DNS egress (TCP/UDP 53) when denying egress")
+    xk.add_argument("--np-allow-web", action="store_true", help="Allow HTTP/HTTPS egress (TCP 80/443) when denying egress")
+    xk.add_argument(
+        "--np-preset",
+        choices=["web", "backend"],
+        default=None,
+        help="Convenience network policy presets: web (DNS+HTTP/HTTPS), backend (DNS + internal DB/cache ports)",
+    )
+    xk.add_argument(
+        "--np-allow-internal-port",
+        action="append",
+        default=[],
+        dest="np_allow_internal_port",
+        help="Allow egress to RFC1918 networks for this TCP port (repeatable)",
+    )
+
+    # Spread helper
+    xk.add_argument(
+        "--spread-by-host",
+        action="store_true",
+        help="Inject a basic topologySpreadConstraints across kubernetes.io/hostname when replicas>1",
     )
 
     # k8s-check (run FEAT checklist against manifest)
@@ -337,11 +389,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Validation policy (strict escalates key warnings to errors)",
     )
     kc.add_argument("--json", action="store_true", help="Emit JSON output")
+    kc.add_argument("--emit", action="store_true", help="Print the exported YAML used for checks")
+    kc.add_argument("--kubeconform", action="store_true", help="Run kubeconform on exported YAML (if available)")
+    kc.add_argument("--kubeconform-bin", default=os.getenv("KUBECONFORM_BIN", "kubeconform"))
+    kc.add_argument("--kube-version", default=None, help="Set --kubernetes-version for kubeconform")
     kc.add_argument(
         "--assume-hpa",
         action="append",
         default=[],
         help="Assume HPA metrics when validating: cpu-util | mem-util | mem-value=<quantity> (repeatable)",
+    )
+    kc.add_argument(
+        "--fail-on-warn",
+        action="store_true",
+        help="Return nonzero when any warnings are present (treat warns as failures)",
+    )
+    kc.add_argument(
+        "--summary",
+        action="store_true",
+        help="Print a concise summary (counts + exit code legend)",
     )
 
     # k8s-report (generate compliance JSON for docs)
@@ -569,6 +635,50 @@ def _registry_save(host: str, username: str, password: str) -> None:
 
 def handle_registry(args: argparse.Namespace) -> int:
     cmd = getattr(args, "registry_cmd", None)
+    if cmd == "kubesecret":
+        import base64 as _b64
+        import json as _json
+        import yaml as _yaml
+        prov = RegistryAuthProvider()
+        entries = prov.list_registries()
+        if not entries:
+            print("no registries configured; use 'ae registry login' first")
+            return 1
+        selected = entries
+        hosts = list(getattr(args, "host", []) or [])
+        if hosts:
+            selected = {h: entries[h] for h in hosts if h in entries}
+            if not selected:
+                print("no matching registry hosts found in config")
+                return 2
+        auths: dict[str, dict] = {}
+        for host, cred in selected.items():
+            u = cred.get("username") or ""
+            p = cred.get("password") or ""
+            auths[host] = {
+                "username": u,
+                "password": p,
+                "auth": _b64.b64encode(f"{u}:{p}".encode()).decode(),
+            }
+        cfg = {"auths": auths}
+        j = _json.dumps(cfg, separators=(",", ":"))
+        b64 = _b64.b64encode(j.encode("utf-8")).decode("ascii")
+        sec = {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {"name": getattr(args, "name", "regcred"), "namespace": getattr(args, "namespace", "default")},
+            "type": "kubernetes.io/dockerconfigjson",
+            "data": {".dockerconfigjson": b64},
+        }
+        out = _yaml.safe_dump(sec, sort_keys=False)
+        if getattr(args, "output", "-") in {"-", ""}:
+            print(out, end="")
+        else:
+            from pathlib import Path as _P
+
+            _P(str(args.output)).write_text(out, encoding="utf-8")
+            print(f"wrote Secret to {args.output}")
+        return 0
     if cmd == "list":
         prov = RegistryAuthProvider()
         entries = prov.list_registries()
@@ -891,8 +1001,9 @@ def main(argv: list[str] | None = None) -> int:
 
     command_handlers: dict[str, Callable[[argparse.Namespace], int]] = {
         "apply": lambda ns: handle_apply(ns, reconciler, args),
-        "status": lambda ns: handle_status(ns, store, args),
+        "status": lambda ns: handle_status(ns, store, args, runtime),
         "logs": lambda ns: handle_logs(ns, store, runtime),
+        "exec": lambda ns: handle_exec(ns, store, runtime),
         "rollback": lambda ns: handle_rollback(ns, store, reconciler),
         "revisions": lambda ns: handle_revisions(ns, store),
         "rollout": lambda ns: handle_rollout(ns, store, reconciler),
@@ -1249,6 +1360,22 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
     from ae.controller.spec import load_manifest
 
     # Build export options (with preset)
+    if getattr(args, "np_preset", None) == "web":
+        setattr(args, "emit_np", True)
+        setattr(args, "np_deny_ingress", True)
+        setattr(args, "np_deny_egress", True)
+        setattr(args, "np_allow_dns", True)
+        setattr(args, "np_allow_web", True)
+    elif getattr(args, "np_preset", None) == "backend":
+        setattr(args, "emit_np", True)
+        setattr(args, "np_deny_ingress", True)
+        setattr(args, "np_deny_egress", True)
+        setattr(args, "np_allow_dns", True)
+    elif getattr(args, "np_preset", None) == "backend":
+        setattr(args, "emit_np", True)
+        setattr(args, "np_deny_ingress", True)
+        setattr(args, "np_deny_egress", True)
+        setattr(args, "np_allow_dns", True)
     opts = ExportOptions(
         namespace=str(args.namespace),
         ingress_class_name=str(args.ingress_class) if args.ingress_class else None,
@@ -1533,14 +1660,17 @@ def _http_post_json(base: str, path: str, body: dict, token: str | None = None):
 
 
 def handle_status(
-    args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace
+    args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace, runtime: RuntimeAdapter | None = None
 ) -> int:
     if getattr(global_args, "server", None):
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
         try:
             if args.name:
-                data = _http_get_json(base, f"/status/{args.name}", tok)
+                path = f"/status/{args.name}"
+                if args.wide:
+                    path += "?details=1"
+                data = _http_get_json(base, path, tok)
                 print(
                     ", ".join(
                         [
@@ -1557,6 +1687,28 @@ def handle_status(
                         )
                     )
                 )
+                # When --wide, include replicas and containers details if available
+                if args.wide:
+                    try:
+                        for r in data.get("replicas", []) or []:
+                            print(
+                                f"  - {r.get('replica_id')}: ready={bool(r.get('ready'))} "
+                                f"live={bool(r.get('live'))} status={r.get('status')} | "
+                                f"readiness={r.get('readiness_message')}; liveness={r.get('liveness_message')}"
+                            )
+                    except Exception:
+                        pass
+                    try:
+                        conts = data.get("containers", []) or []
+                        if conts:
+                            print("  containers:")
+                            for c in conts:
+                                labs = c.get("labels") or {}
+                                role = labs.get("ae.container", "")
+                                rc = c.get("restart_count", 0)
+                                print(f"    - {c.get('name')} role={role or 'main'} restarts={rc}")
+                    except Exception:
+                        pass
                 return 0
             page = _http_get_json(base, "/status?limit=100", tok)
             for s0 in page.get("items", []):
@@ -1641,6 +1793,24 @@ def handle_status(
                         f"    event {timestamp} rev={event.revision} "
                         f"{event.event_type}: {event.message}"
                     )
+        # When --wide, include per-container runtime info if runtime is available
+        if args.wide and runtime is not None:
+            try:
+                infos = runtime.list_containers_info()  # type: ignore[attr-defined]
+            except Exception:
+                infos = []
+            if infos:
+                filtered = [c for c in infos if (c.get('labels') or {}).get('ae.app') == args.name]
+                if filtered:
+                    print("  containers:")
+                    for c in filtered:
+                        labs = c.get("labels") or {}
+                        role = labs.get("ae.container", "") or "main"
+                        ports = ",".join(str(p) for p in (c.get("host_ports") or []))
+                        print(
+                            f"    - {c.get('name')} role={role} restarts={int(c.get('restart_count', 0))}"
+                            + (f" ports=[{ports}]" if ports else "")
+                        )
         return 0
     statuses = store.list_status()
     if not statuses:
@@ -1878,6 +2048,81 @@ def handle_logs(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
     ):
         print(line)
     return 0
+
+
+def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: RuntimeAdapter) -> int:
+    # Remote mode
+    import inspect as _inspect
+
+    frame = _inspect.currentframe()
+    if frame is not None:
+        outer_locals = frame.f_back.f_locals if frame.f_back else {}
+        gargs = outer_locals.get("global_args") or outer_locals.get("args")
+        if gargs is not None and getattr(gargs, "server", None):
+            return handle_exec_remote(args, gargs)
+
+    # Local-only path
+    status = store.get_status(args.name)
+    if status is None:
+        print(f"No status recorded for {args.name}")
+        return 1
+    replicas = store.list_replicas(args.name)
+    if not replicas:
+        print(f"No replicas available for {args.name}")
+        return 1
+    timeout = getattr(args, "timeout", None)
+    cmd = list(getattr(args, "cmd", []) or [])
+    if cmd and cmd[0] == "--":
+        cmd = cmd[1:]
+    if not cmd:
+        print("exec requires a command after -- (e.g., ae exec app --container sidecar -- sh -c 'echo hi')")
+        return 2
+    if getattr(args, "container", None):
+        cname = str(args.container)
+        # If runtime supports container-scoped exec, use it
+        if hasattr(runtime, "exec_for_container"):
+            try:
+                rc = int(getattr(runtime, "exec_for_container")(args.name, cname, cmd, timeout=timeout))
+                return rc
+            except Exception as exc:  # noqa: BLE001
+                print(f"exec failed: {exc}")
+                return 1
+        # Fallback: select a replica by id substring
+        target = next((r for r in replicas if (r.replica_id == cname or cname in r.replica_id)), None)
+        if not target:
+            print(f"No matching replica for --container={cname}")
+            return 1
+        return int(runtime.exec(target.replica_id, cmd, timeout=timeout))
+    # Default: exec in a ready replica (main container context)
+    target = next((r for r in replicas if r.ready), replicas[0])
+    return int(runtime.exec(target.replica_id, cmd, timeout=timeout))
+
+
+def handle_exec_remote(args: argparse.Namespace, global_args: argparse.Namespace) -> int:
+    base = str(global_args.server)
+    tok = getattr(global_args, "token", None)
+    payload = {
+        "container": getattr(args, "container", None),
+        "cmd": [str(x) for x in (getattr(args, "cmd", []) or []) if x != "--"],
+    }
+    if getattr(args, "timeout", None) is not None:
+        payload["timeoutSeconds"] = int(args.timeout)
+    import requests
+
+    url = base.rstrip("/") + "/exec/" + args.name
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=15)  # type: ignore
+        resp.raise_for_status()
+        data = resp.json()
+        rc = int(data.get("rc", 1))
+        # Print nothing on success to be script-friendly
+        return rc
+    except Exception as exc:  # noqa: BLE001
+        print(f"remote exec failed: {exc}")
+        return 1
 
 
 def _status_to_json(status: AppStatus, store: SQLiteStateStore, *, include_details: bool) -> str:
@@ -2639,6 +2884,20 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
         allow_hpa_without_requests=bool(getattr(args, "allow_hpa_no_requests", False)),
         default_security=bool(getattr(args, "default_security", False)),
         require_requests=bool(getattr(args, "require_requests", False)),
+        emit_network_policy=bool(getattr(args, "emit_np", False)),
+        np_default_deny_ingress=bool(getattr(args, "np_deny_ingress", False)),
+        np_default_deny_egress=bool(getattr(args, "np_deny_egress", False)),
+        np_allow_dns=bool(getattr(args, "np_allow_dns", False)),
+        np_allow_web=bool(getattr(args, "np_allow_web", False)),
+        np_allow_internal_ports=(
+            [
+                int(p)
+                for p in (getattr(args, "np_allow_internal_port", []) or [])
+                if str(p).strip().isdigit()
+            ]
+            or ([5432, 6379, 3306] if getattr(args, "np_preset", None) == "backend" else [])
+        ),
+        inject_topology_spread=bool(getattr(args, "spread_by_host", False)),
     )
     # Apply preset last so explicit flags take precedence
     if getattr(args, "preset", None):
@@ -2651,9 +2910,25 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
             for e in errs:
                 print(f"  - {e}")
             return 2
-    if args.output:
+    # Split output into individual files when requested
+    if getattr(args, "split", None):
+        from ae.k8s.exporter import export_k8s_docs
+        import yaml as _yaml
+        outdir: Path = args.split
+        outdir.mkdir(parents=True, exist_ok=True)
+        docs = export_k8s_docs(man, options=opts)
+        for i, d in enumerate(docs, start=1):
+            meta = d.get("metadata") or {}
+            name = (meta.get("name") or f"res-{i}")
+            kind = (d.get("kind") or "Resource").lower()
+            fn = outdir / f"{i:02d}-{kind}-{name}.yaml"
+            fn.write_text(_yaml.safe_dump(d, sort_keys=False), encoding="utf-8")
+        return 0
+
+    output_target = args.output or getattr(args, "out", None)
+    if output_target:
         try:
-            Path(args.output).write_text(out, encoding="utf-8")
+            Path(output_target).write_text(out, encoding="utf-8")
         except Exception as exc:  # noqa: BLE001
             print(f"failed to write output: {exc}")
             return 1
@@ -2703,13 +2978,60 @@ def handle_k8s_check(args: argparse.Namespace) -> int:
     # text output
     if not issues:
         print("All checks passed.")
-        return 0
-    for it in issues:
-        tag = "ERROR" if it.level == "error" else "WARN "
-        print(f"[{tag}] {it.code}: {it.message}")
-    if any(i.level == "error" for i in issues):
-        return 2
-    return 3 if policy == "strict" else 0
+        rc = 0
+    else:
+        for it in issues:
+            tag = "ERROR" if it.level == "error" else "WARN "
+            print(f"[{tag}] {it.code}: {it.message}")
+        has_err = any(i.level == "error" for i in issues)
+        has_warn = any(i.level == "warn" for i in issues)
+        if has_err:
+            rc = 2
+        elif bool(getattr(args, "fail_on_warn", False)) and has_warn:
+            rc = 2
+        else:
+            rc = 3 if policy == "strict" else 0
+
+    # Optional: emit exported YAML and run kubeconform
+    try:
+        if bool(getattr(args, "emit", False)) or bool(getattr(args, "kubeconform", False)):
+            # Build export with default options for validation
+            from ae.k8s.exporter import export_k8s_yaml, ExportOptions
+
+            yaml_text = export_k8s_yaml(man, options=ExportOptions(namespace="default"))
+            if bool(getattr(args, "emit", False)):
+                print("---\n# Exported YAML used for validation:")
+                print(yaml_text, end="")
+            if bool(getattr(args, "kubeconform", False)):
+                import shutil
+                import subprocess as sp
+
+                bin_path = getattr(args, "kubeconform_bin", "kubeconform")
+                if shutil.which(bin_path) is None:
+                    print("(kubeconform not found; skipping schema validation)")
+                else:
+                    cmd = [bin_path, "-strict", "-summary"]
+                    if getattr(args, "kube_version", None):
+                        cmd += ["-kubernetes-version", str(args.kube_version)]
+                    proc = sp.run(cmd, input=yaml_text.encode("utf-8"), capture_output=True)
+                    out = (proc.stdout or b"").decode()
+                    err = (proc.stderr or b"").decode()
+                    if out.strip():
+                        print(out.strip())
+                    if err.strip():
+                        print(err.strip())
+                    if proc.returncode != 0 and rc == 0:
+                        rc = 2
+    except Exception:
+        pass
+    # Optional summary footer
+    if bool(getattr(args, "summary", False)):
+        total = len(issues)
+        errs = len([i for i in issues if i.level == "error"])
+        warns = len([i for i in issues if i.level == "warn"])
+        print(f"summary: {total} issues ({errs} errors, {warns} warnings). exit={rc}")
+        print("legend: 0=ok, 2=failure (errors or fail-on-warn), 3=strict warns")
+    return rc
 
 
 def handle_verify_image(args: argparse.Namespace) -> int:

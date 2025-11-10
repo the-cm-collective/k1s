@@ -1,17 +1,17 @@
 [Unit]
-Description=ae controller daemon (single-node app engine)
+Description=AE Controller (k1s minimal application engine)
 After=network.target
 
 [Service]
 Type=simple
-EnvironmentFile=-/etc/ae/ae.env
-ExecStart=/usr/bin/env python -m ae.controller --loop --specs ${AE_SPECS_DIR:-/etc/ae/specs} --metrics-port ${AE_METRICS_PORT:-9108} ${AE_WATCH:+--watch}
-Restart=always
+Environment=AE_STATE_DB=/var/lib/ae/controller.db
+Environment=AE_SPECS_DIR=/etc/ae/specs
+ExecStart=/usr/bin/python -m ae.controller --loop --specs ${AE_SPECS_DIR} --metrics-port 9108 --watch
+WorkingDirectory=/var/lib/ae
+Restart=on-failure
 RestartSec=3
-WorkingDirectory=/
-# Hardening (relaxed for dev; tighten for prod as needed)
-NoNewPrivileges=true
+User=ae
+Group=ae
 
 [Install]
 WantedBy=multi-user.target
-

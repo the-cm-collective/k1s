@@ -38,7 +38,15 @@ def k8s_portability_issues(m: AppManifest) -> List[Issue]:
 
     # Controller/cloud-specific annotations: not applicable at manifest level; skip.
 
-    # NetworkPolicy reliance: N/A at manifest level; assume safe.
+    # NetworkPolicy advisories: recommend a default deny unless explicitly set
+    if not getattr(spec, "network_policy", None):
+        issues.append(
+            Issue(
+                "warn",
+                "NP_RECOMMENDED_DEFAULT_DENY",
+                "no NetworkPolicy set; consider a default-deny with explicit allowances (use export flags)",
+            )
+        )
 
     # Security: prefer non-root and read-only root fs.
     if not spec.security:
@@ -68,6 +76,15 @@ def k8s_portability_issues(m: AppManifest) -> List[Issue]:
         issues.append(Issue("warn", "PROBE_READINESS", "no readiness probe configured"))
     if not spec.health or not spec.health.liveness:
         issues.append(Issue("warn", "PROBE_LIVENESS", "no liveness probe configured"))
+    # Recommend startup probe when liveness exists (helps cold starts)
+    if spec.health and spec.health.liveness and not getattr(spec.health, "startup", None):
+        issues.append(
+            Issue(
+                "warn",
+                "PROBE_STARTUP_RECOMMENDED",
+                "liveness configured without startup probe; consider startupProbe for slow starts",
+            )
+        )
 
     # CPU/Memory requests
     if not spec.resources or not spec.resources.requests:
@@ -133,6 +150,46 @@ def k8s_portability_issues(m: AppManifest) -> List[Issue]:
     issues.append(
         Issue("warn", "IMAGE_MULTI_ARCH_UNKNOWN", "cannot verify image is multi-arch (amd64/arm64)")
     )
+    # Multi-container advisory
+    if getattr(spec, "containers", None):
+        try:
+            if len(list(spec.containers)) > 1:
+                issues.append(
+                    Issue(
+                        "warn",
+                        "RUNTIME_SINGLE_CONTAINER",
+                        "export supports multiple containers, but local runtime runs one container",
+                    )
+                )
+        except Exception:
+            pass
+
+    # Lifecycle advisories
+    if getattr(spec, "lifecycle", None) and getattr(spec.lifecycle, "pre_stop", None) is not None:
+        # If preStop exists but grace period is very small, warn about possible truncation
+        try:
+            tgp = int(getattr(spec, "termination_grace_period_seconds", 10) or 10)
+        except Exception:
+            tgp = 10
+        if tgp < 2:
+            issues.append(
+                Issue(
+                    "warn",
+                    "PRESTOP_SHORT_GRACE",
+                    "preStop defined but terminationGracePeriodSeconds < 2s; increase to allow hook to run",
+                )
+            )
+
+    # QoS: limits without requests leads to Burstable with risk of throttling; recommend setting requests
+    res = getattr(spec, "resources", None)
+    if res and getattr(res, "limits", None) and not getattr(res, "requests", None):
+        issues.append(
+            Issue(
+                "warn",
+                "QOS_LIMITS_NO_REQUESTS",
+                "resources.limits set without resources.requests; define requests for predictable QoS",
+            )
+        )
 
     return issues
 
@@ -211,3 +268,42 @@ def _valid_quantity(q: str) -> bool:
     # and decimal SI (K, M, G, T, P, E). Keep validation pragmatic.
     pattern = re.compile(r"^\d+(?:\.(?:\d+))?\s*(?:[KMGTP]i?|)$", re.IGNORECASE)
     return bool(pattern.match(q))
+    # Ingress validations: host/path sanity
+    if spec.ingress:
+        host = str(getattr(spec.ingress, "host", "") or "").strip()
+        path = str(getattr(spec.ingress, "path", "") or "/").strip()
+        if not host:
+            issues.append(Issue("error", "INGRESS_HOST_EMPTY", "ingress.host must be set"))
+        else:
+            import re as _re
+            # Basic hostname check: labels separated by dots, allow localhost for dev
+            if host != "localhost" and not _re.match(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}$", host):
+                issues.append(Issue("warn", "INGRESS_HOST_FORMAT", f"ingress.host '{host}' looks unusual"))
+        if not path.startswith("/"):
+            issues.append(Issue("error", "INGRESS_PATH_FORMAT", "ingress.path must start with '/'"))
+
+    # Service validations
+    if getattr(spec, "service", None) and getattr(spec.service, "ports", None):
+        names = []
+        nums = []
+        for sp in spec.service.ports:
+            n = getattr(sp, "name", None)
+            p = getattr(sp, "port", None)
+            if n:
+                if n in names:
+                    issues.append(Issue("error", "SVC_PORT_NAME_DUP", f"duplicate Service port name: {n}"))
+                names.append(n)
+            if p is not None:
+                if p in nums:
+                    issues.append(Issue("warn", "SVC_PORT_NUM_DUP", f"duplicate Service port number: {p}"))
+                nums.append(p)
+            # targetPort match check (numeric)
+            tp = getattr(sp, "target_port", None)
+            if tp is not None:
+                try:
+                    tpi = int(tp)
+                except Exception:
+                    tpi = None
+                if tpi is not None:
+                    if not any(int(getattr(cp, "container_port", 0)) == tpi for cp in spec.ports or []):
+                        issues.append(Issue("warn", "SVC_TARGETPORT_MISSING", f"targetPort {tpi} not found in container ports"))

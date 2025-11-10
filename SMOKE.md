@@ -74,3 +74,20 @@ Troubleshooting
 - Swagger auth: set `AE_API_READ_TOKEN/SCALER_TOKEN/ADMIN_TOKEN` and `AE_API_MUTATIONS=1` on the controller host.
 - Caddy reload: check controller logs; you can also run
   `docker exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile`.
+
+## K8s Export Smoke
+
+Validate the exporter renders portable YAML and passes basic validation without a cluster.
+
+```
+# Basic echo export (Deployment, Service, Ingress)
+python -m ae.cli export-k8s -f specs/examples/echo.yaml \
+  --namespace demo --ingress-class traefik --validate > /tmp/echo-k8s.yaml
+
+# envFrom + projected volumes; emit ConfigMap/Secret objects
+python -m ae.cli export-k8s -f specs/examples/envfrom-and-projection.yaml \
+  --namespace demo --emit-configs --emit-secrets --validate > /tmp/envfrom-k8s.yaml
+
+# Portability check (strict)
+python -m ae.cli k8s-check -f specs/examples/echo.yaml --policy strict
+```

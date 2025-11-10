@@ -1,0 +1,63 @@
+{
+  "title": "AE Controller Overview",
+  "schemaVersion": 38,
+  "version": 3,
+  "templating": {
+    "list": [
+      {
+        "type": "query",
+        "name": "app",
+        "label": "App",
+        "hide": 0,
+        "includeAll": true,
+        "multi": false,
+        "refresh": 1,
+        "datasource": "Prometheus",
+        "query": "label_values(ae_app_status, app)"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Apps Ready",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 3},
+      "targets": [{"expr": "ae_apps_ready"}]
+    },
+    {
+      "type": "stat",
+      "title": "Replicas Ready",
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 3},
+      "targets": [{"expr": "ae_replicas_ready"}]
+    },
+    {
+      "type": "graph",
+      "title": "Per-App Reconcile Duration (avg)",
+      "gridPos": {"x": 0, "y": 3, "w": 12, "h": 6},
+      "targets": [
+        {
+          "expr": "(ae_reconcile_duration_seconds_sum{app=\"$app\"}) / ignoring(app) (ae_reconcile_duration_seconds_count{app=\"$app\"})",
+          "legendFormat": "{{app}} avg s"
+        }
+      ]
+    },
+    {
+      "type": "graph",
+      "title": "Canary Weight",
+      "gridPos": {"x": 0, "y": 9, "w": 12, "h": 6},
+      "targets": [{"expr": "ae_canary_weight{app=\"$app\"}", "legendFormat": "{{app}}"}]
+    },
+    {
+      "type": "stat",
+      "title": "Canary Steps",
+      "gridPos": {"x": 0, "y": 15, "w": 12, "h": 3},
+      "targets": [{"expr": "ae_canary_steps_total{app=\"$app\"}", "legendFormat": "{{app}}"}]
+    },
+    {
+      "type": "table",
+      "title": "Container Restarts",
+      "gridPos": {"x": 0, "y": 18, "w": 12, "h": 8},
+      "targets": [{"expr": "ae_container_restart_count{app=\"$app\"}"}]
+    }
+  ]
+}
