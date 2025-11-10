@@ -559,6 +559,33 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 return
             self._handle_events(self.path.split("/", 2)[2])
             return
+        if path_only.startswith("/history/"):
+            app_and_q = self.path.split("/", 2)[2]
+            app = app_and_q.split("?",1)[0]
+            try:
+                import urllib.parse as _up
+                q = app_and_q.split("?",1)[1] if "?" in app_and_q else ""
+                params = _up.parse_qs(q)
+                limit = int((params.get("limit", ["20"])[0] or "20"))
+            except Exception:
+                limit = 20
+            try:
+                hist = self.store.get_probe_history(app, limit)
+                out = [
+                    {
+                        "replica_id": h.replica_id,
+                        "check_time": h.check_time.isoformat(),
+                        "ready": bool(h.ready),
+                        "live": bool(h.live),
+                        "readiness_message": h.readiness_message,
+                        "liveness_message": h.liveness_message,
+                    }
+                    for h in hist
+                ]
+                self._json_ok(out)
+            except Exception as exc:
+                self._json_error(500, str(exc))
+            return
         if path_only.startswith("/logs/"):
             # SSE streaming: /logs/<app>/stream
             if path_only.endswith("/stream"):
