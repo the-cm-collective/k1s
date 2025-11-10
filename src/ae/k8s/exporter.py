@@ -37,6 +37,8 @@ class ExportOptions:
     emit_storage: bool = False
     default_pvc_size: str = "1Gi"
     storage_class_name: Optional[str] = None
+    # Optional accessModes override for PVCs (e.g., ["ReadWriteOnce", "ReadOnlyMany"]) 
+    pvc_access_modes: Optional[List[str]] = None
     # ServiceAccount
     service_account_name: Optional[str] = None
     # Policy / rollouts
@@ -72,6 +74,8 @@ class ExportOptions:
     inject_topology_spread: bool = False
     # Ingress annotations (passthrough)
     ingress_annotations: Optional[Dict[str, Any]] = None
+    # Ingress pathType selection (Prefix, Exact, ImplementationSpecific)
+    ingress_path_type: Optional[str] = None
 
 
 def _container_from_manifest(m: AppManifest, *, opts: ExportOptions) -> Dict[str, Any]:
@@ -343,6 +347,42 @@ def _container_from_spec(m: AppManifest, csp, *, opts: ExportOptions, allow_prob
             c["livenessProbe"] = _probe_to_k8s(h.liveness)
         if getattr(h, "startup", None):
             c["startupProbe"] = _probe_to_k8s(h.startup)
+    # lifecycle (per-container)
+    if getattr(csp, "lifecycle", None):
+        lc_dict: Dict[str, Any] = {}
+        lc = getattr(csp, "lifecycle")
+        def _lh_to_k8s(h) -> Dict[str, Any]:  # noqa: ANN001
+            if h is None:
+                return {}
+            if isinstance(h, dict):
+                if h.get("exec") is not None:
+                    return {"exec": {"command": list(h.get("exec", {}).get("command", []))}}
+                if h.get("httpGet") is not None:
+                    hg = h.get("httpGet", {})
+                    return {"httpGet": {"path": (hg.get("path") or "/"), "port": int(hg.get("port", 0))}}
+                if h.get("tcpSocket") is not None:
+                    ts = h.get("tcpSocket", {})
+                    return {"tcpSocket": {"port": int(ts.get("port", 0))}}
+                return {}
+            if getattr(h, "exec", None) is not None:
+                return {"exec": {"command": list(h.exec.command)}}
+            if getattr(h, "http_get", None) is not None:
+                return {"httpGet": {"path": h.http_get.path or "/", "port": int(h.http_get.port)}}
+            if getattr(h, "tcp_socket", None) is not None:
+                return {"tcpSocket": {"port": int(h.tcp_socket.port)}}
+            return {}
+        post = getattr(lc, "post_start", None) if lc is not None else None
+        pre = getattr(lc, "pre_stop", None) if lc is not None else None
+        if post is None and isinstance(lc, dict):
+            post = lc.get("postStart") or lc.get("post_start")
+        if pre is None and isinstance(lc, dict):
+            pre = lc.get("preStop") or lc.get("pre_stop")
+        if post is not None:
+            lc_dict["postStart"] = _lh_to_k8s(post)
+        if pre is not None:
+            lc_dict["preStop"] = _lh_to_k8s(pre)
+        if lc_dict:
+            c["lifecycle"] = lc_dict
 
     # per-container projectionMounts via subPath on the projected volume
     if projected_volume_name and getattr(csp, "projection_mounts", None):
@@ -449,9 +489,6 @@ def _service_from_manifest(m: AppManifest, opts: ExportOptions) -> Optional[Dict
             "ports": svc_ports,
         },
     }
-    if opts.storage_class_name:
-        pvc["spec"]["storageClassName"] = str(opts.storage_class_name)
-    return pvc
     # Optional service fields
     if getattr(spec, "service", None):
         if getattr(spec.service, "type", None):
@@ -596,6 +633,10 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
     if proj is not None:
         volume_specs.append(proj)
         volume_mounts.append({"name": proj["name"], "mountPath": "/var/run/ae/config"})
+    # Add explicit per-ref volumes when items[] are present (additive for back-compat)
+    explicit = _explicit_volumes_from_refs(m)
+    if explicit:
+        volume_specs.extend(explicit)
     if opts.emit_storage and getattr(m.spec, "storage", None):
         for s in m.spec.storage:
             s_name = getattr(s, "name", None) if not isinstance(s, dict) else s.get("name")
@@ -633,9 +674,14 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
             },
         },
     }
-    if opts.storage_class_name:
-        pvc["spec"]["storageClassName"] = str(opts.storage_class_name)
-    return pvc
+    if getattr(m.spec, "init_containers", None):
+        proj = _projected_volume_from_refs(m)
+        proj_name = proj["name"] if proj is not None else None
+        pod["spec"]["template"]["spec"]["initContainers"] = [
+            _container_from_spec(m, csp, opts=opts, allow_probes=False, projected_volume_name=proj_name)
+            for csp in m.spec.init_containers
+        ]
+    return pod
     if getattr(m.spec, "init_containers", None):
         proj_name = proj["name"] if proj is not None else None
         pod["spec"]["template"]["spec"]["initContainers"] = [
@@ -667,13 +713,12 @@ def _headless_service_for_statefulset(
     spec: Dict[str, Any] = {"clusterIP": "None", "selector": {"app": m.metadata.name}}
     if ports:
         spec["ports"] = ports
-    pvc = {
+    return {
         "apiVersion": "v1",
         "kind": "Service",
         "metadata": {"name": name, "namespace": opts.namespace},
         "spec": spec,
     }
-
 
 def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, Any]:
     # Containers
@@ -804,6 +849,9 @@ def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str,
     if proj is not None:
         volume_specs.append(proj)
         volume_mounts.append({"name": proj["name"], "mountPath": "/var/run/ae/config"})
+    explicit = _explicit_volumes_from_refs(m)
+    if explicit:
+        volume_specs.extend(explicit)
     if opts.emit_storage and getattr(m.spec, "storage", None):
         for s in m.spec.storage:
             s_name = getattr(s, "name", None) if not isinstance(s, dict) else s.get("name")
@@ -851,16 +899,19 @@ def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str,
             "updateStrategy": {"type": "RollingUpdate"},
         },
     }
-    if opts.storage_class_name:
-        pvc["spec"]["storageClassName"] = str(opts.storage_class_name)
-    return pvc
     if getattr(m.spec, "init_containers", None):
         proj_name = proj["name"] if proj is not None else None
-        pod["spec"]["template"]["spec"]["initContainers"] = [
+        sts["spec"]["template"]["spec"]["initContainers"] = [
             _container_from_spec(m, csp, opts=opts, allow_probes=False, projected_volume_name=proj_name)
             for csp in m.spec.init_containers
         ]
     if vcts:
+        # Apply storageClassName/accessModes overrides when requested
+        for tmpl in vcts:
+            if opts.storage_class_name:
+                tmpl.setdefault("spec", {}).setdefault("storageClassName", str(opts.storage_class_name))
+            if opts.pvc_access_modes:
+                tmpl.setdefault("spec", {}).setdefault("accessModes", list(opts.pvc_access_modes))
         sts["spec"]["volumeClaimTemplates"] = vcts
     return sts
 
@@ -892,10 +943,17 @@ def _ingress_from_manifest(m: AppManifest, opts: ExportOptions) -> Optional[Dict
                 )
             )
         )
+    # Validate/choose pathType
+    path_type = (opts.ingress_path_type or "Prefix")
+    if opts.ingress_class_name:
+        cls = str(opts.ingress_class_name).lower()
+        if cls.find("traefik") != -1 and path_type not in {"Prefix", "ImplementationSpecific"}:
+            raise ValueError("Traefik ingress supports Prefix/ImplementationSpecific pathType")
+        # nginx is flexible; keep provided value
     k8s_paths = [
         {
             "path": p or "/",
-            "pathType": "Prefix",
+            "pathType": path_type,
             "backend": {"service": {"name": m.metadata.name, "port": {"number": backend_number}}},
         }
         for p in path_list
@@ -939,7 +997,7 @@ def _configmap_from_ref(app: AppManifest, ref, opts: ExportOptions) -> Dict[str,
                 data = {str(k): str(v) for k, v in parsed.items()}
         except Exception:
             data = {}
-    pvc = {
+    return {
         "apiVersion": "v1",
         "kind": "ConfigMap",
         "metadata": {
@@ -969,7 +1027,7 @@ def _secret_from_ref(app: AppManifest, ref, opts: ExportOptions) -> Dict[str, An
                 body["stringData"] = {str(k): str(v) for k, v in parsed.items()}
         except Exception:
             pass
-    pvc = {
+    return {
         "apiVersion": "v1",
         "kind": "Secret",
         "metadata": {
@@ -1014,6 +1072,38 @@ def _projected_volume_from_refs(app: AppManifest) -> Optional[Dict[str, Any]]:
     return {"name": f"{app.metadata.name}-proj", "projected": {"sources": sources}}
 
 
+def _explicit_volumes_from_refs(app: AppManifest) -> List[Dict[str, Any]]:
+    """Emit explicit ConfigMap/Secret volumes with items when files[] present.
+
+    Backward-compat: we still keep the single projected volume; these are additive.
+    """
+    vols: List[Dict[str, Any]] = []
+    def _items(files: list[dict]) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for f in files or []:
+            key = str(f.get("key", "")).strip()
+            path = str(f.get("file", "")).lstrip("/")
+            if not key or not path:
+                continue
+            ent: Dict[str, Any] = {"key": key, "path": path}
+            if f.get("mode") is not None:
+                try:
+                    ent["mode"] = int(f.get("mode"))
+                except Exception:
+                    pass
+            out.append(ent)
+        return out
+    for ref in getattr(app.spec, "config_refs", []) or []:
+        items = _items(getattr(ref, "files", []) or [])
+        if items:
+            vols.append({"name": f"{app.metadata.name}-cfg-{ref.name}", "configMap": {"name": ref.name, "items": items}})
+    for ref in getattr(app.spec, "secret_refs", []) or []:
+        items = _items(getattr(ref, "files", []) or [])
+        if items:
+            vols.append({"name": f"{app.metadata.name}-sec-{ref.name}", "secret": {"secretName": ref.name, "items": items}})
+    return vols
+
+
 def _pvc_from_storage(app: AppManifest, s, opts: ExportOptions) -> Dict[str, Any]:
     s_name = getattr(s, "name", None) if not isinstance(s, dict) else s.get("name")
     s_size = getattr(s, "size", None) if not isinstance(s, dict) else s.get("size")
@@ -1027,19 +1117,13 @@ def _pvc_from_storage(app: AppManifest, s, opts: ExportOptions) -> Dict[str, Any
             "labels": {"app": app.metadata.name},
         },
         "spec": {
-            "accessModes": ["ReadWriteOnce"],
+            "accessModes": list(opts.pvc_access_modes or ["ReadWriteOnce"]),
             "resources": {"requests": {"storage": str(size)}},
         },
     }
     if opts.storage_class_name:
         pvc["spec"]["storageClassName"] = str(opts.storage_class_name)
     return pvc
-    if getattr(m.spec, "init_containers", None):
-        proj_name = proj["name"] if proj is not None else None
-        pod["spec"]["template"]["spec"]["initContainers"] = [
-            _container_from_spec(m, csp, opts=opts, allow_probes=False, projected_volume_name=proj_name)
-            for csp in m.spec.init_containers
-        ]
 
 
 def export_k8s_docs(
