@@ -36,6 +36,7 @@ class ExportOptions:
     # Storage emission
     emit_storage: bool = False
     default_pvc_size: str = "1Gi"
+    storage_class_name: Optional[str] = None
     # ServiceAccount
     service_account_name: Optional[str] = None
     # Policy / rollouts
@@ -443,6 +444,9 @@ def _service_from_manifest(m: AppManifest, opts: ExportOptions) -> Optional[Dict
             "ports": svc_ports,
         },
     }
+    if opts.storage_class_name:
+        pvc["spec"]["storageClassName"] = str(opts.storage_class_name)
+    return pvc
     # Optional service fields
     if getattr(spec, "service", None):
         if getattr(spec.service, "type", None):
@@ -624,6 +628,9 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
             },
         },
     }
+    if opts.storage_class_name:
+        pvc["spec"]["storageClassName"] = str(opts.storage_class_name)
+    return pvc
     if getattr(m.spec, "init_containers", None):
         proj_name = proj["name"] if proj is not None else None
         pod["spec"]["template"]["spec"]["initContainers"] = [
@@ -655,7 +662,7 @@ def _headless_service_for_statefulset(
     spec: Dict[str, Any] = {"clusterIP": "None", "selector": {"app": m.metadata.name}}
     if ports:
         spec["ports"] = ports
-    return {
+    pvc = {
         "apiVersion": "v1",
         "kind": "Service",
         "metadata": {"name": name, "namespace": opts.namespace},
@@ -839,6 +846,9 @@ def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str,
             "updateStrategy": {"type": "RollingUpdate"},
         },
     }
+    if opts.storage_class_name:
+        pvc["spec"]["storageClassName"] = str(opts.storage_class_name)
+    return pvc
     if getattr(m.spec, "init_containers", None):
         proj_name = proj["name"] if proj is not None else None
         pod["spec"]["template"]["spec"]["initContainers"] = [
@@ -920,7 +930,7 @@ def _configmap_from_ref(app: AppManifest, ref, opts: ExportOptions) -> Dict[str,
                 data = {str(k): str(v) for k, v in parsed.items()}
         except Exception:
             data = {}
-    return {
+    pvc = {
         "apiVersion": "v1",
         "kind": "ConfigMap",
         "metadata": {
@@ -950,7 +960,7 @@ def _secret_from_ref(app: AppManifest, ref, opts: ExportOptions) -> Dict[str, An
                 body["stringData"] = {str(k): str(v) for k, v in parsed.items()}
         except Exception:
             pass
-    return {
+    pvc = {
         "apiVersion": "v1",
         "kind": "Secret",
         "metadata": {
@@ -999,7 +1009,7 @@ def _pvc_from_storage(app: AppManifest, s, opts: ExportOptions) -> Dict[str, Any
     s_name = getattr(s, "name", None) if not isinstance(s, dict) else s.get("name")
     s_size = getattr(s, "size", None) if not isinstance(s, dict) else s.get("size")
     size = s_size or opts.default_pvc_size
-    return {
+    pvc = {
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
         "metadata": {
@@ -1012,6 +1022,9 @@ def _pvc_from_storage(app: AppManifest, s, opts: ExportOptions) -> Dict[str, Any
             "resources": {"requests": {"storage": str(size)}},
         },
     }
+    if opts.storage_class_name:
+        pvc["spec"]["storageClassName"] = str(opts.storage_class_name)
+    return pvc
     if getattr(m.spec, "init_containers", None):
         proj_name = proj["name"] if proj is not None else None
         pod["spec"]["template"]["spec"]["initContainers"] = [

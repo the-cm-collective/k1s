@@ -284,6 +284,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--default-pvc-size", default="1Gi", help="Default PVC size when storage.size is not set"
     )
     xk.add_argument(
+        "--storage-class-name", default=None, help="PVC storageClassName to set on emitted PVCs"
+    )
+    xk.add_argument(
         "--service-account", default=None, help="Attach ServiceAccount and emit it by this name"
     )
     xk.add_argument(
@@ -2871,6 +2874,7 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
         inline_secrets=bool(getattr(args, "inline_secrets", False)),
         emit_storage=bool(getattr(args, "emit_storage", False)),
         default_pvc_size=str(getattr(args, "default_pvc_size", "1Gi")),
+        storage_class_name=getattr(args, "storage_class_name", None),
         service_account_name=getattr(args, "service_account", None),
         emit_pdb=bool(getattr(args, "emit_pdb", False)),
         pdb_min_available=getattr(args, "pdb_min_available", None),
