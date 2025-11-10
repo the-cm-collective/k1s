@@ -13,6 +13,25 @@ spec:
   ports:
     - name: http
       containerPort: 8080
+  health:
+    readiness:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 1
+      timeoutSeconds: 2
+      periodSeconds: 2
+      successThreshold: 1
+      failureThreshold: 5
+    liveness:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 5
+      timeoutSeconds: 1
+      periodSeconds: 10
+      successThreshold: 1
+      failureThreshold: 3
   ingress:
     host: green.home.arpa
     path: /

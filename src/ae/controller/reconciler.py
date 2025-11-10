@@ -312,6 +312,7 @@ class Reconciler:
                 except Exception:
                     prev_ro = None
             new_ro = getattr(manifest.spec, "rollout", {}) or {}
+
             def _ro_view(ro: dict | None) -> tuple[str, int | None, bool]:
                 try:
                     strat = str((ro or {}).get("strategy", "parallel")).lower()
@@ -321,17 +322,27 @@ class Reconciler:
                     return strat, w, paused
                 except Exception:
                     return "parallel", None, False
+
             p_strat, p_weight, _p_paused = _ro_view(prev_ro if isinstance(prev_ro, dict) else {})
             n_strat, n_weight, _n_paused = _ro_view(new_ro if isinstance(new_ro, dict) else {})
             ev_type = None
             msg = None
             if p_strat != "canary" and n_strat == "canary" and (n_weight or 0) > 0:
                 ev_type = "CanaryEnabled"
-                msg = f"canary enabled: weight {int(n_weight)}%" if n_weight is not None else "canary enabled"
+                msg = (
+                    f"canary enabled: weight {int(n_weight)}%"
+                    if n_weight is not None
+                    else "canary enabled"
+                )
             elif p_strat == "canary" and (n_strat != "canary" or (n_weight or 0) == 0):
                 ev_type = "CanaryDisabled"
                 msg = "canary disabled"
-            elif p_strat == "canary" and n_strat == "canary" and (p_weight != n_weight) and (n_weight is not None):
+            elif (
+                p_strat == "canary"
+                and n_strat == "canary"
+                and (p_weight != n_weight)
+                and (n_weight is not None)
+            ):
                 ev_type = "CanaryUpdated"
                 msg = f"canary weight {int(p_weight or 0)}% -> {int(n_weight)}%"
             if ev_type and msg:
@@ -518,7 +529,7 @@ class Reconciler:
             cur_rev = str(result.revision)
             app = manifest.metadata.name
             for it in items or []:
-                labs = (it.get("labels") or {})
+                labs = it.get("labels") or {}
                 if (labs.get("ae.app") or "") != app:
                     continue
                 if (labs.get("ae.revision") or "") == cur_rev:

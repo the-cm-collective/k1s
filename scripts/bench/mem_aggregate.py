@@ -235,7 +235,9 @@ def aggregate(snapshot_dir: Path) -> Dict:
             base = Path("/sys/fs/cgroup")
             system_slice = base / "system.slice"
             init_scope = base / "init.scope"
-            return _sum_leaf_memory_current(system_slice) + _safe_read_int(init_scope / "memory.current")
+            return _sum_leaf_memory_current(system_slice) + _safe_read_int(
+                init_scope / "memory.current"
+            )
         else:
             # cgroup v1 fallback: system.slice under memory hierarchy
             base = Path("/sys/fs/cgroup/memory")
@@ -269,7 +271,9 @@ def aggregate(snapshot_dir: Path) -> Dict:
             # Find header line containing 'available'
             header_idx = None
             for i, ln in enumerate(txt):
-                if ln.lower().startswith("              total") or ("available" in ln.lower() and "mem:" not in ln.lower()):
+                if ln.lower().startswith("              total") or (
+                    "available" in ln.lower() and "mem:" not in ln.lower()
+                ):
                     header_idx = i
                     break
             # Fallback: assume first line is header if not found
@@ -348,7 +352,9 @@ def aggregate(snapshot_dir: Path) -> Dict:
     host_system_bytes = _sum_host_system_cgroups_bytes()
     mem_avail_before = _read_free_available(raw / "free_before.txt")
     mem_avail_after = _read_free_available(raw / "free_after.txt")
-    mem_avail_delta = max(0, mem_avail_before - mem_avail_after) if (mem_avail_before and mem_avail_after) else 0
+    mem_avail_delta = (
+        max(0, mem_avail_before - mem_avail_after) if (mem_avail_before and mem_avail_after) else 0
+    )
 
     # Overhead estimate (favor container cgroup sums when available)
     # Report both process PSS and container cgroup bytes
