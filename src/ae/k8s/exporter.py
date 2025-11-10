@@ -50,6 +50,9 @@ class ExportOptions:
     hpa_mem_value: Optional[str] = None  # e.g., '200Mi' for AverageValue
     # HPA guards
     allow_hpa_without_requests: bool = False
+    # HPA behavior (autoscaling/v2): optional scaleUp/scaleDown behavior dicts
+    hpa_behavior_up: Optional[Dict[str, Any]] = None
+    hpa_behavior_down: Optional[Dict[str, Any]] = None
     # Security defaults
     default_security: bool = False
     # PDB tuning
@@ -1202,6 +1205,12 @@ def export_k8s_docs(
                     "minReplicas": int(opts.hpa_min),
                     "maxReplicas": int(opts.hpa_max),
                     "metrics": metrics,
+                    **({
+                        "behavior": {
+                            **({"scaleUp": dict(opts.hpa_behavior_up)} if opts.hpa_behavior_up else {}),
+                            **({"scaleDown": dict(opts.hpa_behavior_down)} if opts.hpa_behavior_down else {}),
+                        }
+                    } if (opts.hpa_behavior_up or opts.hpa_behavior_down) else {})
                 },
             }
         )

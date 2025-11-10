@@ -332,6 +332,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Memory HPA AverageValue quantity (e.g., 200Mi) when --hpa-mem-type=value",
     )
     xk.add_argument(
+        "--hpa-behavior-up",
+        default=None,
+        help="JSON for autoscaling/v2 HPA scaleUp behavior (stabilizationWindowSeconds, policies)",
+    )
+    xk.add_argument(
+        "--hpa-behavior-down",
+        default=None,
+        help="JSON for autoscaling/v2 HPA scaleDown behavior",
+    )
+    xk.add_argument(
         "--allow-hpa-no-requests",
         action="store_true",
         help="Allow HPA export without CPU/Memory requests (not recommended)",
@@ -2888,6 +2898,8 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
         allow_hpa_without_requests=bool(getattr(args, "allow_hpa_no_requests", False)),
         default_security=bool(getattr(args, "default_security", False)),
         require_requests=bool(getattr(args, "require_requests", False)),
+        hpa_behavior_up=(__import__("json").loads(args.hpa_behavior_up) if getattr(args, "hpa_behavior_up", None) else None),
+        hpa_behavior_down=(__import__("json").loads(args.hpa_behavior_down) if getattr(args, "hpa_behavior_down", None) else None),
         emit_network_policy=bool(getattr(args, "emit_np", False)),
         np_default_deny_ingress=bool(getattr(args, "np_deny_ingress", False)),
         np_default_deny_egress=bool(getattr(args, "np_deny_egress", False)),
