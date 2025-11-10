@@ -89,6 +89,21 @@ AE_RUNTIME_BACKEND=podman python -m ae.controller --loop
 ```
 3) Use the CLI as usual (`ae apply`, `ae scale`, `ae logs`).
 
+### Runtime choice and overrides (crun by default)
+
+- When using the Podman backend, k1s prefers `crun` as the OCI runtime for better startup time, memory footprint, and cgroup v2 behavior. If `crun` is not installed, Podman will use its configured default (typically `runc`).
+- Honor host intent first: If your host sets the runtime in `containers.conf`, k1s defers to it.
+  - System‑wide: `/etc/containers/containers.conf` → `[engine] runtime = "crun"`
+  - Rootless: `$HOME/.config/containers/containers.conf` → `[engine] runtime = "crun"`
+- Force a specific runtime for k1s runs (optional):
+  - `AE_OCI_RUNTIME=crun` (or `runc`) — the Podman adapter injects `--runtime=<value>` into all `podman run` calls (main, sidecars, and init containers).
+
+Verification
+- Check the effective runtime: `podman info --format '{{ .Host.OCIRuntime.Name }}'`
+- Inspect a container: `podman inspect <id> --format '{{ .OCIRuntime }}'`
+
+See also: FEAT.md section “Podman: Default OCI Runtime = crun (2025-11-10)”.
+
 ## Caveats & compatibility
 
 - Networking: Podman uses CNI/slirp4netns depending on configuration; host port publishing is supported (the adapter preserves service stable ports when replicas=1).
@@ -111,4 +126,3 @@ AE_RUNTIME_BACKEND=podman python -m ae.controller --loop
   - `make bench-mem-e2e-k1s LABEL_SUITE=baseline REPLICAS=1,5,10 ROLL_REPLICAS=5`
 - Combine & plot across snapshots:
   - `make bench-mem-combine` then `make bench-mem-plot`
-
