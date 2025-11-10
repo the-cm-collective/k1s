@@ -37,6 +37,22 @@ class PodmanRuntime(RuntimeAdapter):
         self._bin = os.getenv("AE_PODMAN_BIN", "podman")
         # Optional shared network for ingress to reach containers by DNS name
         self._network_name = os.getenv("AE_PODMAN_NETWORK")
+        # Optional explicit OCI runtime override (e.g., "crun" or "runc").
+        # When set, the adapter passes "--runtime=<value>" to all `podman run` calls.
+        raw = os.getenv("AE_OCI_RUNTIME", "").strip()
+        # Guard against injection: allow alnum, dash, underscore
+        self._oci_runtime = raw if raw and all(ch.isalnum() or ch in ("-", "_") for ch in raw) else None
+
+    def _maybe_inject_runtime(self, argv: list[str]) -> None:
+        """Inject --runtime into a `podman run` argv in-place when AE_OCI_RUNTIME is set."""
+        if not getattr(self, "_oci_runtime", None):
+            return
+        try:
+            idx = argv.index("run")
+        except ValueError:
+            return
+        if "--runtime" not in argv:
+            argv[idx + 1:idx + 1] = ["--runtime", str(self._oci_runtime)]
 
     # Core ops ---------------------------------------------------------
     def ensure_app(
@@ -349,6 +365,8 @@ class PodmanRuntime(RuntimeAdapter):
                                 cmd += ["-v", f"{host}:{mnt}:{'ro' if ro else 'rw'}"]
                     except Exception:
                         pass
+                    # Inject runtime override if requested
+                    self._maybe_inject_runtime(cmd)
                     # Env
                     for item in getattr(csp, "env", []) or []:
                         if isinstance(item, dict) and "name" in item and "value" in item:
@@ -567,6 +585,8 @@ class PodmanRuntime(RuntimeAdapter):
 
             # Build podman run argv
             argv: list[str] = [self._bin, "run", "--rm"]
+            # Respect AE_OCI_RUNTIME for init containers
+            self._maybe_inject_runtime(argv)
             # Working dir if specified on init container
             try:
                 wd = getattr(c, "working_dir", None) if not isinstance(c, dict) else c.get("workingDir")
@@ -948,6 +968,8 @@ class PodmanRuntime(RuntimeAdapter):
         if combined:
             cmd += combined
 
+        # Respect AE_OCI_RUNTIME for container creation
+        self._maybe_inject_runtime(cmd)
         self._run_ok(cmd)
 
     def _stop_and_remove(self, cid: str) -> None:
