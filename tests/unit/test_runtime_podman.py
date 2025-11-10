@@ -52,3 +52,68 @@ def test_create_container_removes_existing(monkeypatch):
     assert any(" stop -t " in s and " ae-blue-rev3-0" in s for s in names)
     assert any(" rm -f ae-blue-rev3-0" in s for s in names)
     assert any(" run -d --name ae-blue-rev3-0" in s for s in names)
+
+
+def test_oci_runtime_flag_in_create(monkeypatch):
+    # Ensure env is read at init time
+    monkeypatch.setenv("AE_OCI_RUNTIME", "crun")
+    rt = PodmanRuntime()
+    calls: list[list[str]] = []
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        calls.append(list(argv))
+        # Behave as non-existing container, and no local images
+        if argv[:3] == [rt._bin, "container", "exists"]:
+            return DummyResult(1)
+        if argv[:3] == [rt._bin, "images", "--format"]:
+            return DummyResult(0, "[]")
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *a, **k: None)
+
+    m = _manifest_single()
+    rt._create_container(m, "blue-rev1-0", 1, service=(8080, 8080, None))
+
+    # Find the `podman run -d ...` invocation and assert --runtime crun is present
+    run_calls = [c for c in calls if len(c) >= 3 and c[0] == rt._bin and c[1] == "run" and "-d" in c]
+    assert run_calls, f"expected a podman run -d call, got: {calls}"
+    assert any("--runtime" in c and "crun" in c for c in run_calls), f"--runtime crun missing in: {run_calls}"
+
+
+def test_oci_runtime_flag_in_init_containers(monkeypatch):
+    monkeypatch.setenv("AE_OCI_RUNTIME", "crun")
+    rt = PodmanRuntime()
+
+    # Build a manifest with a simple init container
+    m = AppManifest(
+        api_version="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="initapp"),
+        spec=AppSpec(
+            image="localhost/demo:latest",
+            replicas=1,
+            init_containers=[{"name": "prep", "image": "alpine", "command": ["sh", "-c"], "args": ["true"]}],
+        ),
+    )
+
+    captured: list[list[str]] = []
+
+    class P:  # minimal proc-like object
+        def __init__(self):
+            self.returncode = 0
+
+    def fake_popen(argv, **kwargs):  # noqa: ANN001
+        # We only intercept subprocess.run used by init containers here
+        captured.append(list(argv))
+        return P()
+
+    # Avoid volume creation and image lookup side effects
+    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *a, **k: None)
+    monkeypatch.setattr(rt, "_image_exists", lambda *a, **k: True)
+    monkeypatch.setattr("subprocess.run", fake_popen)
+
+    res = rt.run_init_containers(m)
+    assert res and res[0][1] == 0
+    # Ensure the run argv contains --runtime crun
+    assert any(c[:2] == [rt._bin, "run"] and "--runtime" in c and "crun" in c for c in captured), f"--runtime crun missing in: {captured}"

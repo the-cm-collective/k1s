@@ -23,6 +23,7 @@ Got it — here’s a pragmatic path to a “minimal app engine” that runs wel
 
 - Runtime adapters
   - Podman and Docker adapters with image pull, create/start/cleanup, log read, exec, volume helpers
+  - Podman default OCI runtime: prefers `crun` (falls back to `runc` when unavailable); honors host/user `containers.conf` and supports explicit override
   - Security mapping: read‑only rootfs, cap drops, seccomp (RuntimeDefault/Unconfined/Localhost), AppArmor profile
 
 - Reconcile features
@@ -53,6 +54,44 @@ Got it — here’s a pragmatic path to a “minimal app engine” that runs wel
   - Optional mutations (dev): `/scale/<app>`, `/delete/<app>`, JSON `apply`, and container `exec` via environment‑gated roles
   - Token roles and expiries: `AE_API_{READ,SCALER,ADMIN}_TOKEN[_EXPIRES]`
   - Metrics: app/replica gauges, reconcile sum/count + last, rollout operations, canary weight/steps, hook durations, container restarts, probe backoff.
+
+---
+
+## Podman: Default OCI Runtime = crun (2025-11-10)
+
+Why
+- Faster startup, lower RSS, and better cgroup v2 behavior on modern distros.
+- Keeps us OCI‑compliant and aligns with common CRI‑O setups.
+
+Behavior
+- With the Podman backend (`AE_RUNTIME_BACKEND=podman`), the adapter prefers `crun` by default.
+- Fallback: when `crun` is not installed, Podman uses its configured default (typically `runc`).
+- Admin intent wins: we honor system/user `containers.conf`; an explicit override can force a runtime when needed.
+
+Operator Controls
+- Host config (recommended):
+  - System‑wide: `/etc/containers/containers.conf` → `[engine] runtime = "crun"`
+  - Rootless: `$HOME/.config/containers/containers.conf` → `[engine] runtime = "crun"`
+- AE override (optional):
+  - `AE_OCI_RUNTIME=crun|runc` to force the Podman adapter to pass `--runtime=<value>` to `podman run` and sidecar/exec invocations.
+  - Unset to let Podman’s configured default apply.
+
+Verification
+- Detect effective runtime: `podman info --format '{{ .Host.OCIRuntime.Name }}'`
+- Smoke test with adapter: `ae apply -f specs/examples/echo.yaml` then `ae status --verbose`; `podman inspect <id> --format '{{ .OCIRuntime }}'` should report `crun` when available.
+
+Compatibility
+- Docker remains `runc` by default. You can register `crun` in `/etc/docker/daemon.json` and run `--runtime=crun` if desired; no change required for k1s.
+- Kubernetes alignment: common production stacks are CRI‑O+crun or containerd+runc. Preferring `crun` under Podman keeps parity with the former without impacting the latter.
+
+Testing
+- Unit: extend `tests/unit/test_runtime_podman.py` to assert the adapter adds `--runtime crun` when `AE_OCI_RUNTIME=crun` and omits when unset.
+- Integration: run existing Podman suites with `AE_OCI_RUNTIME=crun` on a host with `crun`; verify readiness/liveness and logs.
+- Bench (optional): compare idle/rollout memory using `scripts/bench/` for Docker vs Podman+crun.
+
+Rollout
+- Safe by default: hosts without `crun` keep current behavior.
+- Documented here and in `docs/OCI-RUNTIME-FEAT.md`; no migration steps for users preferring `runc`.
 
 ---
 
@@ -140,6 +179,10 @@ Planned Improvements
 * [x] CLI: rich surface including `export-k8s`, `k8s-check`, `k8s-report`, `backup`, `verify-image`, `registry`, `events`, `metrics`.
 * [x] K8s export: presets, offline validation, HPA (CPU/memory utilization and AverageValue), PDB, SA, PVC, ConfigMap/Secret emission.
 * [x] CI: k8s conformance jobs and kubeconform validation for exported YAML; e2e samples.
+* [x] 2025-11-10 – Podman default OCI runtime = crun (safe fallback):
+  - Prefer `crun` for Podman backend to improve startup and memory; fall back to `runc` when `crun` is absent.
+  - Honor host/user `containers.conf`; optional `AE_OCI_RUNTIME=crun|runc` to force.
+  - Added verification guidance (`podman info --format '{{ .Host.OCIRuntime.Name }}'`).
 * [x] 2025-10-29 – Runtime hardening + image verification:
   - Docker/Podman adapters map `spec.security.seccomp*` and `apparmorProfile` to runtime flags (`security_opt`).
   - New CLI: `ae verify-image` (cosign wrapper) for key-based or keyless signature verification; supports `--json`.
