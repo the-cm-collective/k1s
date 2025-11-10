@@ -567,6 +567,20 @@ fi
 # Force AE_DEMO_MODE=1 for demos regardless of a pre-set env (prevents scope being disabled)
 export AE_DEMO_MODE=1
 export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
+# Prefer crun for Podman/OCI demos when available, unless user overrode
+if [[ "${AE_RUNTIME_BACKEND}" == "podman" || "${AE_RUNTIME_BACKEND}" == "oci" ]]; then
+  if [[ -z "${AE_OCI_RUNTIME:-}" ]]; then
+    if command -v crun >/dev/null 2>&1; then
+      export AE_OCI_RUNTIME=crun
+      log "Using AE_OCI_RUNTIME=crun for Podman runs (crun detected)"
+    else
+      log "WARN: crun not found; Podman will use its configured default OCI runtime (often runc)."
+      log "      Install crun or set [engine].runtime=\"crun\" in containers.conf to prefer it."
+    fi
+  else
+    log "Using AE_OCI_RUNTIME=${AE_OCI_RUNTIME} (user override)"
+  fi
+fi
 mkdir -p "${AE_CADDY_SITES}"
 if [[ ! -w "${AE_CADDY_SITES}" ]]; then
   log "Adjusting permissions on ${AE_CADDY_SITES} (may require sudo)"
@@ -593,6 +607,7 @@ export SOPS_AGE_KEY_FILE=${SOPS_AGE_KEY_FILE:-}
 # Force demo scoping for the controller/dashboard
 export AE_DEMO_MODE=1
 export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
+export AE_OCI_RUNTIME=${AE_OCI_RUNTIME:-}
 export API_PORT=${API_PORT}
 export AE_SPECS_DIR=${DEMO_SPECS_DIR}
 # Labs + docs wiring for controller
