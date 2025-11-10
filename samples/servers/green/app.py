@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import socket
 import sys
 import logging
 
@@ -15,7 +16,17 @@ APP_NAME = os.getenv("APP_NAME", "green")
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: D401
         logging.info("GET %s from %s", self.path, self.client_address[0])
-        body = f"{MESSAGE} ({APP_NAME})\n".encode()
+        if self.path == "/healthz":
+            body = b"ok\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        host = socket.gethostname()
+        body = f"{MESSAGE} ({APP_NAME}@{host})\n".encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))

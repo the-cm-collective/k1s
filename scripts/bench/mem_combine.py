@@ -62,9 +62,15 @@ def main(argv: List[str]) -> int:
                 "host_system_cgroups_bytes": s.get("overhead", {}).get(
                     "host_system_cgroups_bytes", 0
                 ),
-                "mem_available_before_bytes": (s.get("mem_available", {}) or {}).get("before_bytes", 0),
-                "mem_available_after_bytes": (s.get("mem_available", {}) or {}).get("after_bytes", 0),
-                "mem_available_delta_bytes": (s.get("mem_available", {}) or {}).get("delta_bytes", 0),
+                "mem_available_before_bytes": (s.get("mem_available", {}) or {}).get(
+                    "before_bytes", 0
+                ),
+                "mem_available_after_bytes": (s.get("mem_available", {}) or {}).get(
+                    "after_bytes", 0
+                ),
+                "mem_available_delta_bytes": (s.get("mem_available", {}) or {}).get(
+                    "delta_bytes", 0
+                ),
             }
         )
 

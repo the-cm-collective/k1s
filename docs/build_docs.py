@@ -502,7 +502,9 @@ def build_one(md_path: Path, out_path: Path) -> None:
                     infra_mib = fmt_mib(r.get("system_mem_bytes", "0"))
                     # Prefer host services only; fall back to container system bytes for older rows
                     sys_host = r.get("host_system_cgroups_bytes")
-                    host_mib = fmt_mib(sys_host if sys_host is not None else r.get("system_mem_bytes", "0"))
+                    host_mib = fmt_mib(
+                        sys_host if sys_host is not None else r.get("system_mem_bytes", "0")
+                    )
                     mdelta_mib = fmt_mib(r.get("mem_available_delta_bytes", "0"))
                     parts.append(
                         f"<tr><td>{html.escape(r.get('label', ''))}</td><td>{html.escape(r.get('mode', ''))}</td>"

@@ -371,10 +371,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):  # type: ignore[override]
         path_only = self.path.split("?", 1)[0]
+
         # Helper: does a presented Labs token (header or query) match?
         def _labs_token_ok() -> bool:
             try:
                 import os as _os, urllib.parse as _up
+
                 if not self._labs_enabled():
                     return False
                 tok = (_os.getenv("AE_LABS_TOKEN") or "").strip()
@@ -391,6 +393,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             except Exception:
                 return False
             return False
+
         # Labs SSE (dev-only): stream events/status to the playground
         if path_only.startswith("/labs/sse/"):
             if not self._labs_enabled():
@@ -416,7 +419,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             ok = True
                     if not ok:
                         # Distinguish between missing and wrong credential
-                        self._deny(401 if not hdr and not (params.get("token") if 'params' in locals() else False) else 403)
+                        self._deny(
+                            401
+                            if not hdr
+                            and not (params.get("token") if "params" in locals() else False)
+                            else 403
+                        )
                         return
             except Exception:
                 pass
@@ -1159,7 +1167,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 u = _urlparse(url)
                 host = (u.hostname or "").lower()
                 scheme = (u.scheme or "https").lower()
-                port = (u.port or (8443 if scheme == "https" else 8888))
+                port = u.port or (8443 if scheme == "https" else 8888)
                 candidates = [
                     "127.0.0.1",
                     "host.docker.internal",
@@ -1171,9 +1179,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 # Prefer preserving SNI by resolving the hostname to candidate addresses
                 # temporarily via socket.getaddrinfo monkeypatch.
                 import socket as _sock
+
                 orig_gai = _sock.getaddrinfo
                 for addr in candidates:
                     try:
+
                         def _fake_getaddrinfo(h, p, family=0, type=0, proto=0, flags=0):  # type: ignore[override]
                             if h == host:
                                 try:
@@ -1181,6 +1191,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                                 except Exception:
                                     return orig_gai(h, p, family, type, proto, flags)
                             return orig_gai(h, p, family, type, proto, flags)
+
                         _sock.getaddrinfo = _fake_getaddrinfo  # type: ignore[assignment]
                         r = _req.get(url, timeout=3, verify=verify)
                         break
@@ -1199,7 +1210,14 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         r = _req.get(url, timeout=3, verify=verify)
                     except Exception as exc2:  # pragma: no cover
                         dt = int(round((_t.time() - t0) * 1000))
-                        self._json_ok({"ok": False, "code": 0, "elapsed_ms": dt, "error": str(exc2 or last_exc)})
+                        self._json_ok(
+                            {
+                                "ok": False,
+                                "code": 0,
+                                "elapsed_ms": dt,
+                                "error": str(exc2 or last_exc),
+                            }
+                        )
                         return
                 dt = int(round((_t.time() - t0) * 1000))
                 self._json_ok(
