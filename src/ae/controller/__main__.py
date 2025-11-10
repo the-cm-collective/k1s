@@ -282,6 +282,12 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             reps = store.list_replicas(app)
             target = None
             if container:
+                # Prefer runtime's container-specific logs API when available
+                rt = getattr(reconciler, "_runtime", None)
+                if rt is not None and hasattr(rt, "read_logs_for_container"):
+                    fn = getattr(rt, "read_logs_for_container")
+                    return fn(app, str(container), follow=follow, tail=tail, since=since)
+                # Fallback to replica-id matching
                 sel = str(container)
                 for r in reps:
                     if r.replica_id == sel or sel in r.replica_id:
@@ -294,6 +300,27 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             return reconciler._runtime.read_logs(
                 target.replica_id, follow=follow, tail=tail, since=since
             )
+
+        def _exec(app: str, container: str | None, cmd: list[str], timeout: int | None) -> int:
+            # Prefer runtime container-scoped exec when container is provided
+            if container:
+                rt = getattr(reconciler, "_runtime", None)
+                if rt is not None and hasattr(rt, "exec_for_container"):
+                    return int(getattr(rt, "exec_for_container")(app, str(container), cmd, timeout=timeout))
+                # Fallback: run in a matching replica id
+                reps = store.list_replicas(app)
+                target = next((r for r in reps if (r.replica_id == container or str(container) in r.replica_id)), None)
+                if target is None and reps:
+                    target = reps[0]
+                if target is None:
+                    return 127
+                return int(reconciler._runtime.exec(target.replica_id, cmd, timeout=timeout))
+            # Default: pick a ready replica
+            reps = store.list_replicas(app)
+            target = next((r for r in reps if r.ready), reps[0] if reps else None)
+            if not target:
+                return 127
+            return int(reconciler._runtime.exec(target.replica_id, cmd, timeout=timeout))
 
         import logging, errno
 
@@ -628,6 +655,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 scale_fn=_scale,
                 delete_fn=_delete,
                 apply_fn=_apply,
+                exec_fn=_exec,
                 logs_fn=_logs,
                 system_info_fn=_system_info,
                 plan_fn=_plan,

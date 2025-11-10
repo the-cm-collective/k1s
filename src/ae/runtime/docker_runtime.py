@@ -25,6 +25,7 @@ class DockerRuntime(RuntimeAdapter):
     APP_LABEL = "ae.app"
     REPLICA_LABEL = "ae.replica_id"
     REVISION_LABEL = "ae.revision"
+    CONTAINER_LABEL = "ae.container"
 
     def __init__(
         self,
@@ -315,8 +316,18 @@ class DockerRuntime(RuntimeAdapter):
             run_fn = self._client.containers.run
             # Build standard kwargs. Do NOT filter by signature; docker-py forwards **kwargs.
             # Filtering here accidentally dropped 'ports', preventing host port publishing.
+            # Build command/args following K8s semantics:
+            # - If both command and args are set, pass command + args
+            # - If only args are set, pass args (ENTRYPOINT receives them)
+            _cmd: Optional[List[str]] = None
+            if getattr(manifest.spec, "command", None) and getattr(manifest.spec, "args", None):
+                _cmd = list(manifest.spec.command) + list(manifest.spec.args)
+            elif getattr(manifest.spec, "command", None):
+                _cmd = list(manifest.spec.command)
+            elif getattr(manifest.spec, "args", None):
+                _cmd = list(manifest.spec.args)
             kwargs = {
-                "command": manifest.spec.command or None,
+                "command": _cmd or None,
                 "name": name,
                 "detach": True,
                 "environment": env if env else None,
@@ -324,6 +335,7 @@ class DockerRuntime(RuntimeAdapter):
                     self.APP_LABEL: manifest.metadata.name,
                     self.REPLICA_LABEL: replica_id,
                     self.REVISION_LABEL: str(revision),
+                    self.CONTAINER_LABEL: "main",
                 },
                 "ports": ports if ports else None,
                 "restart_policy": {"Name": "unless-stopped"},
@@ -381,6 +393,8 @@ class DockerRuntime(RuntimeAdapter):
                 kwargs["mem_reservation"] = mem_reservation
             if volumes:
                 kwargs["volumes"] = volumes
+            if getattr(manifest.spec, "working_dir", None):
+                kwargs["working_dir"] = str(manifest.spec.working_dir)
 
             container = run_fn(
                 manifest.spec.image, **{k: v for k, v in kwargs.items() if v is not None}
@@ -409,6 +423,11 @@ class DockerRuntime(RuntimeAdapter):
             except Exception:
                 pass
             self._reload(container)
+            # Create/ensure sidecars if declared
+            try:
+                self._ensure_sidecars(manifest, replica_id, revision, volumes)
+            except Exception:
+                pass
             return container
         except APIError as exc:
             raise RuntimeError(f"Failed to create container {name}: {exc}") from exc
@@ -453,6 +472,199 @@ class DockerRuntime(RuntimeAdapter):
             container.remove()
         except (APIError, NotFound) as exc:  # pragma: no cover - container already gone
             LOGGER.warning("Failed to remove container %s: %s", container.name, exc)
+
+    def _ensure_sidecars(
+        self,
+        manifest: AppManifest,
+        replica_id: str,
+        revision: int,
+        volumes: Dict[str, dict],
+    ) -> None:
+        """Ensure declared sidecar containers (spec.containers) are running for a replica."""
+        if not getattr(manifest.spec, "containers", None):
+            return
+        app_name = manifest.metadata.name
+        try:
+            existing = self._client.containers.list(
+                all=True,
+                filters={
+                    "label": [
+                        f"{self.APP_LABEL}={app_name}",
+                        f"{self.REPLICA_LABEL}={replica_id}",
+                        f"{self.REVISION_LABEL}={revision}",
+                    ]
+                },
+            )
+        except APIError:
+            existing = []
+        by_cname: Dict[str, Container] = {}
+        for c in existing:
+            try:
+                cname = (c.labels or {}).get(self.CONTAINER_LABEL)
+                if cname and cname != "main":
+                    by_cname[cname] = c
+            except Exception:
+                continue
+        # Detect projection host root path
+        proj_host_root = None
+        for host_path, bind in (volumes or {}).items():
+            try:
+                b = bind or {}
+                dest = b.get("bind") or ""
+                if str(dest).startswith(f"/var/run/ae/config/{app_name}"):
+                    proj_host_root = host_path
+                    break
+            except Exception:
+                continue
+        # Build common env from manifest defaults
+        for csp in manifest.spec.containers:
+            try:
+                cname = str(getattr(csp, "name", "") or "").strip()
+                if not cname:
+                    continue
+                c = by_cname.get(cname)
+                if c is None:
+                    env_map: Dict[str, str] = {}
+                    for item in (getattr(csp, "env", []) or []):
+                        if isinstance(item, dict) and "name" in item and "value" in item:
+                            env_map[item["name"]] = str(item.get("value", ""))
+                    # Merge per-container projection mounts
+                    vmap = dict(volumes or {})
+                    try:
+                        for pm in getattr(csp, "projection_mounts", []) or []:
+                            p = getattr(pm, "path", None) if not isinstance(pm, dict) else pm.get("path")
+                            mnt = (
+                                getattr(pm, "mount_path", None)
+                                if not isinstance(pm, dict)
+                                else pm.get("mountPath") or pm.get("mount_path")
+                            )
+                            ro = (
+                                bool(getattr(pm, "read_only", True))
+                                if not isinstance(pm, dict)
+                                else bool(pm.get("readOnly", True))
+                            )
+                            if proj_host_root and p and mnt:
+                                host = os.path.join(str(proj_host_root), str(p).lstrip("/"))
+                                vmap[host] = {"bind": str(mnt), "mode": ("ro" if ro else "rw")}
+                    except Exception:
+                        pass
+                    name_suffix = replica_id.split("-")[-1]
+                    full_name = f"ae-{app_name}-rev{revision}-{name_suffix}-{cname}"
+                    try:
+                        sc = self._client.containers.run(
+                            getattr(csp, "image"),
+                            command=(list(getattr(csp, "command", []) or [])
+                                     + list(getattr(csp, "args", []) or []))
+                            or None,
+                            name=full_name,
+                            detach=True,
+                            environment=env_map or None,
+                            volumes=vmap or None,
+                            labels={
+                                self.APP_LABEL: app_name,
+                                self.REPLICA_LABEL: replica_id,
+                                self.REVISION_LABEL: str(revision),
+                                self.CONTAINER_LABEL: cname,
+                            },
+                            restart_policy={"Name": "unless-stopped"},
+                        )
+                        # Optional network join
+                        if self._network_name:
+                            try:
+                                net = self._client.networks.get(self._network_name)
+                                net.connect(sc)
+                            except Exception:
+                                pass
+                    except APIError:
+                        continue
+                else:
+                    try:
+                        c.reload()
+                        if c.status != "running":
+                            c.start()
+                    except Exception:
+                        pass
+            except Exception:
+                continue
+
+    # Logs by container (optional API used by HTTP UI)
+    def read_logs_for_container(
+        self,
+        app_name: str,
+        container_name: str,
+        *,
+        follow: bool = False,
+        tail: int | None = None,
+        since: int | None = None,
+    ):
+        try:
+            containers = self._client.containers.list(
+                all=True,
+                filters={
+                    "label": [
+                        f"{self.APP_LABEL}={app_name}",
+                        f"{self.CONTAINER_LABEL}={container_name}",
+                    ]
+                },
+            )
+        except APIError:
+            containers = []
+        if not containers:
+            return iter(())
+        container = containers[0]
+        try:
+            if follow:
+                for chunk in container.logs(
+                    stdout=True,
+                    stderr=True,
+                    stream=True,
+                    follow=True,
+                    tail=tail or "all",
+                    since=since,
+                    timestamps=True,
+                ):
+                    yield chunk.decode("utf-8", "replace").rstrip("\n")
+            else:
+                output = container.logs(
+                    stdout=True,
+                    stderr=True,
+                    stream=False,
+                    tail=tail or 200,
+                    since=since,
+                    timestamps=True,
+                )
+                text = output.decode("utf-8", "replace")
+                for line in text.splitlines():
+                    yield line
+        except APIError:
+            return iter(())
+
+    # Exec by container name -------------------------------------------
+    def exec_for_container(
+        self, app_name: str, container_name: str, command: list[str], *, timeout: int | None = None
+    ) -> int:  # type: ignore[override]
+        try:
+            containers = self._client.containers.list(
+                all=True,
+                filters={
+                    "label": [
+                        f"{self.APP_LABEL}={app_name}",
+                        f"{self.CONTAINER_LABEL}={container_name}",
+                    ]
+                },
+            )
+        except APIError:
+            return 127
+        if not containers:
+            return 127
+        c = containers[0]
+        try:
+            exec_id = self._client.api.exec_create(c.id, cmd=command)
+            _ = self._client.api.exec_start(exec_id, stream=False, detach=False, tty=False)
+            info = self._client.api.exec_inspect(exec_id)
+            return int(info.get("ExitCode", 1))
+        except APIError:
+            return 1
 
     def _build_state(self, manifest: AppManifest, container: Container) -> ReplicaState:
         self._reload(container)
@@ -545,6 +757,7 @@ class DockerRuntime(RuntimeAdapter):
     ) -> Optional[str]:
         if not ports:
             return None
+
         network_ports = container.attrs.get("NetworkSettings", {}).get("Ports", {}) or {}
         # Try preferred container port first when provided
         if preferred is not None:
@@ -578,11 +791,182 @@ class DockerRuntime(RuntimeAdapter):
                 return f"{container.name}:{first.container_port}"
         return None
 
+    # Init containers ----------------------------------------------------
+    def run_init_containers(self, manifest):  # type: ignore[override]
+        """Run initContainers sequentially with optional timeouts.
+
+        Returns list of (name, rc, message).
+        """
+        results: list[tuple[str, int, str]] = []
+        inits = getattr(manifest.spec, "init_containers", []) or []
+        if not inits:
+            return results
+
+        # Build shared volume bindings: hostPath volumes and storage volumes
+        volumes = {}
+        try:
+            if getattr(manifest.spec, "volumes", None):
+                for v in manifest.spec.volumes:
+                    mode = "ro" if getattr(v, "read_only", False) else "rw"
+                    host_path = getattr(v, "host_path", None)
+                    if host_path and not os.path.isabs(host_path):
+                        host_path = os.path.abspath(host_path)
+                    if host_path and getattr(v, "mount_path", None):
+                        volumes[host_path] = {"bind": str(v.mount_path), "mode": mode}
+        except Exception:
+            pass
+        try:
+            if getattr(manifest.spec, "storage", None):
+                self.ensure_storage_volumes(
+                    manifest.metadata.name, [s.model_dump() for s in manifest.spec.storage]
+                )
+                for s in manifest.spec.storage:
+                    vol_name = self._storage_volume_name(manifest.metadata.name, s.name)
+                    volumes[vol_name] = {"bind": str(s.mount_path), "mode": "rw"}
+        except Exception:
+            pass
+
+        for c in inits:
+            name = (
+                getattr(c, "name", None) if not isinstance(c, dict) else c.get("name")
+            ) or "init"
+            image = (
+                getattr(c, "image", None) if not isinstance(c, dict) else c.get("image")
+            )
+            if not image:
+                results.append((str(name), 1, "missing image"))
+                continue
+            # Timeout
+            timeout: int | None = None
+            try:
+                raw = getattr(c, "timeout_seconds", None) if not isinstance(c, dict) else c.get("timeoutSeconds")
+                if raw is not None:
+                    timeout = int(raw)
+            except Exception:
+                timeout = None
+            # Command + args
+            try:
+                command = [str(x) for x in (getattr(c, "command", None) or (c.get("command") if isinstance(c, dict) else []) or [])]
+            except Exception:
+                command = []
+            try:
+                args = [str(x) for x in (getattr(c, "args", None) or (c.get("args") if isinstance(c, dict) else []) or [])]
+            except Exception:
+                args = []
+            env_map: dict[str, str] = {}
+            try:
+                for item in (getattr(c, "env", None) or (c.get("env") if isinstance(c, dict) else []) or []):
+                    if isinstance(item, dict) and "name" in item and "value" in item:
+                        env_map[item["name"]] = str(item.get("value", ""))
+            except Exception:
+                env_map = {}
+
+            # Create ephemeral container to enforce timeout via wait()
+            cont = None
+            try:
+                self._pull_image(manifest)
+            except Exception:
+                # best-effort pull; continue
+                pass
+            try:
+                cont = self._client.containers.create(
+                    image,
+                    command=(command + args) or None,
+                    environment=env_map or None,
+                    volumes=volumes or None,
+                )
+                cont.start()
+                if timeout is not None and timeout > 0:
+                    try:
+                        res = cont.wait(timeout=timeout)
+                    except Exception:
+                        # Timeout or wait error; stop and remove
+                        try:
+                            cont.remove(force=True)
+                        except Exception:
+                            pass
+                        results.append((str(name), 124, "timeout"))
+                        continue
+                else:
+                    res = cont.wait()
+                rc = int((res or {}).get("StatusCode", 1))
+                try:
+                    cont.remove(force=True)
+                except Exception:
+                    pass
+                results.append((str(name), rc, "ok" if rc == 0 else "failed"))
+            except Exception as exc:
+                try:
+                    if cont is not None:
+                        cont.remove(force=True)
+                except Exception:
+                    pass
+                results.append((str(name), 1, f"error: {exc}"))
+        return results
+
     def _manifest_env(self, manifest: AppManifest) -> Dict[str, str]:
         env_map: Dict[str, str] = {}
         for item in manifest.spec.env:
-            if "name" in item and "value" in item:
-                env_map[item["name"]] = item["value"]
+            name = item.get("name")
+            if not name:
+                continue
+            if "value" in item:
+                env_map[name] = str(item.get("value", ""))
+                continue
+            # Minimal downward API: support metadata.name and metadata.namespace
+            vf = item.get("valueFrom") if isinstance(item, dict) else None
+            if isinstance(vf, dict) and isinstance(vf.get("fieldRef"), dict):
+                fp = str(vf.get("fieldRef", {}).get("fieldPath", ""))
+                if fp == "metadata.name":
+                    env_map[name] = manifest.metadata.name
+                elif fp == "metadata.namespace":
+                    env_map[name] = "default"
+                continue
+            # Minimal resourceFieldRef support for cpu/memory requests/limits
+            if isinstance(vf, dict) and isinstance(vf.get("resourceFieldRef"), dict):
+                rfr = vf.get("resourceFieldRef", {}) or {}
+                res = str(rfr.get("resource", ""))
+                divisor_raw = str(rfr.get("divisor", "")) if rfr.get("divisor") is not None else ""
+                try:
+                    # CPU in millicores math: convert both base and divisor to mCPU and integer-divide
+                    if res in {"limits.cpu", "requests.cpu"}:
+                        rs = getattr(manifest.spec, "resources", None)
+                        obj = rs.limits if res == "limits.cpu" else (rs.requests if rs else None)
+                        cpuq = getattr(obj, "cpu", None) if obj else None
+                        if isinstance(cpuq, (int, float)):
+                            base_m = int(round(float(cpuq) * 1000))
+                            if divisor_raw:
+                                d = divisor_raw.strip().lower()
+                                if d.endswith("m"):
+                                    div_m = int(float(d[:-1] or 0)) or 1
+                                else:
+                                    # cores to mCPU
+                                    div_m = int(round(float(d or "1") * 1000)) or 1
+                            else:
+                                # default divisor 1 core
+                                div_m = 1000
+                            if div_m <= 0:
+                                div_m = 1
+                            env_map[name] = str(int(base_m // div_m))
+                        continue
+                    # Memory bytes: convert both to bytes and integer-divide
+                    if res in {"limits.memory", "requests.memory"}:
+                        rs = getattr(manifest.spec, "resources", None)
+                        obj = rs.limits if res == "limits.memory" else (rs.requests if rs else None)
+                        memq = getattr(obj, "memory", None) if obj else None
+                        if memq:
+                            bytes_val = self._parse_memory_bytes(str(memq)) or 0
+                            if divisor_raw:
+                                div_bytes = self._parse_memory_bytes(str(divisor_raw)) or 1
+                            else:
+                                div_bytes = 1
+                            if div_bytes <= 0:
+                                div_bytes = 1
+                            env_map[name] = str(int(bytes_val // div_bytes))
+                        continue
+                except Exception:
+                    # ignore any parsing issues and skip resolution
+                    pass
         return env_map
 
     def _reload(self, container: Container) -> None:
@@ -602,6 +986,10 @@ class DockerRuntime(RuntimeAdapter):
         except ValueError:  # pragma: no cover - best effort parsing
             return None
 
+    
+
+    
+
     def _parse_memory_bytes(self, raw: str) -> Optional[int]:
         try:
             s = raw.strip()
@@ -616,10 +1004,8 @@ class DockerRuntime(RuntimeAdapter):
                 "gb": 1024**3,
                 "gi": 1024**3,
             }
-            # numeric only
             if s.isdigit():
                 return int(s)
-            # split number and unit
             num = ""
             unit = ""
             for ch in s:

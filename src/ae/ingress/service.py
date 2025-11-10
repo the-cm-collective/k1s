@@ -109,6 +109,12 @@ class IngressService:
                                 app, weight=startw, next_step_at=next_at, step=step, max_weight=maxw
                             )
                             effective = startw
+                            try:
+                                from ae.observability.http_api import record_canary_weight
+
+                                record_canary_weight(app, effective)
+                            except Exception:
+                                pass
                         else:
                             # parse next_step_at
                             try:
@@ -126,6 +132,16 @@ class IngressService:
                                     step=step,
                                     max_weight=maxw,
                                 )
+                                try:
+                                    from ae.observability.http_api import (
+                                        record_canary_weight,
+                                        increment_canary_step,
+                                    )
+
+                                    record_canary_weight(app, effective)
+                                    increment_canary_step(app)
+                                except Exception:
+                                    pass
                         canary_weight = int(max(canary_weight, effective))
                     else:
                         # fallback to in-memory when no store is present
@@ -137,6 +153,16 @@ class IngressService:
                             state["weight"] = min(maxw, state.get("weight", canary_weight) + step)
                             state["ts"] = now_ts
                             self._canary_state[app] = state
+                            try:
+                                from ae.observability.http_api import (
+                                    record_canary_weight,
+                                    increment_canary_step,
+                                )
+
+                                record_canary_weight(app, state.get("weight", startw))
+                                increment_canary_step(app)
+                            except Exception:
+                                pass
                         canary_weight = int(max(canary_weight, state.get("weight", canary_weight)))
                 except Exception:
                     pass

@@ -99,3 +99,11 @@ class RuntimeAdapter(Protocol):
         Returns the exit code. Implementations should locate the container by
         the `ae.replica_id` label and run the command non-interactively.
         """
+
+    # Optional API for container-scoped exec when multi-container is enabled.
+    # Implementations may choose not to support it; callers should fall back
+    # to `exec(replica_id, ...)` when unavailable.
+    def exec_for_container(
+        self, app_name: str, container_name: str, command: list[str], *, timeout: int | None = None
+    ) -> int:  # pragma: no cover - optional; implementations provide coverage
+        ...

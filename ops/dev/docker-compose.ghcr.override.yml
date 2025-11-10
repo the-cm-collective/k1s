@@ -1,0 +1,6 @@
+version: '3.8'
+
+services:
+  controller:
+    image: ${AE_CONTROLLER_IMAGE:-ghcr.io/${GITHUB_REPOSITORY:-yourorg/yourrepo}/controller:${AE_CONTROLLER_TAG:-latest}}
+    pull_policy: always

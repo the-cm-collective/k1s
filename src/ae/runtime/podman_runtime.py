@@ -31,6 +31,7 @@ class PodmanRuntime(RuntimeAdapter):
     APP_LABEL = "ae.app"
     REPLICA_LABEL = "ae.replica_id"
     REVISION_LABEL = "ae.revision"
+    CONTAINER_LABEL = "ae.container"
 
     def __init__(self) -> None:
         self._bin = os.getenv("AE_PODMAN_BIN", "podman")
@@ -131,7 +132,6 @@ class PodmanRuntime(RuntimeAdapter):
                     # Unpause if needed
                     if st == "paused":
                         self._run_ok([self._bin, "unpause", cid], allow_fail=True)
-                        # refresh status lazily after unpause
                         updated += 1
                     # Initialize if container is in 'configured' state (Podman specific)
                     elif st == "configured":
@@ -142,6 +142,12 @@ class PodmanRuntime(RuntimeAdapter):
                         # created/exited/stopped → start
                         self._run_ok([self._bin, "start", cid], allow_fail=True)
                         updated += 1
+
+            # Ensure sidecars for this replica when declared
+            try:
+                self._ensure_sidecars(manifest, rid, revision)
+            except Exception:
+                pass
 
         if not keep_old:
             for c in old:
@@ -248,6 +254,116 @@ class PodmanRuntime(RuntimeAdapter):
             replica_states=states,
         )
 
+    def _ensure_sidecars(self, manifest: AppManifest, replica_id: str, revision: int) -> None:
+        if not getattr(manifest.spec, "containers", None):
+            return
+        app = manifest.metadata.name
+        # Determine projection host root from manifest.spec.volumes
+        proj_host_root = None
+        try:
+            for v in getattr(manifest.spec, "volumes", []) or []:
+                try:
+                    mpath = getattr(v, "mount_path", None) if not isinstance(v, dict) else v.get("mountPath")
+                    hpath = getattr(v, "host_path", None) if not isinstance(v, dict) else v.get("hostPath")
+                    if mpath and str(mpath).startswith(f"/var/run/ae/config/{app}") and hpath:
+                        if hpath and not os.path.isabs(hpath):
+                            hpath = os.path.abspath(hpath)
+                        proj_host_root = hpath
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        # For each declared sidecar, create if missing for this replica
+        for csp in (manifest.spec.containers or []):
+            try:
+                cname = str(getattr(csp, "name", "") or "").strip()
+                if not cname:
+                    continue
+                # Locate by labels
+                r = self._run_ok(
+                    [
+                        self._bin,
+                        "ps",
+                        "-a",
+                        "--filter",
+                        f"label={self.APP_LABEL}={app}",
+                        "--filter",
+                        f"label={self.REPLICA_LABEL}={replica_id}",
+                        "--filter",
+                        f"label={self.REVISION_LABEL}={revision}",
+                        "--filter",
+                        f"label={self.CONTAINER_LABEL}={cname}",
+                        "--format",
+                        "{{.ID}}",
+                    ],
+                    allow_fail=True,
+                )
+                cid = (r.out or "").strip()
+                if not cid:
+                    # Build run args
+                    cmd = [
+                        self._bin,
+                        "run",
+                        "-d",
+                        "--label",
+                        f"{self.APP_LABEL}={app}",
+                        "--label",
+                        f"{self.REPLICA_LABEL}={replica_id}",
+                        "--label",
+                        f"{self.REVISION_LABEL}={revision}",
+                        "--label",
+                        f"{self.CONTAINER_LABEL}={cname}",
+                        "--restart",
+                        "unless-stopped",
+                    ]
+                    # Volumes from manifest
+                    if getattr(manifest.spec, "storage", None):
+                        for s in manifest.spec.storage:
+                            vol_name = self._storage_volume_name(app, getattr(s, "name", ""))
+                            cmd += ["-v", f"{vol_name}:{getattr(s, 'mount_path', '')}:rw"]
+                    for v in getattr(manifest.spec, "volumes", []) or []:
+                        host = getattr(v, "host_path", None)
+                        mnt = getattr(v, "mount_path", None)
+                        ro = bool(getattr(v, "read_only", False))
+                        if host and mnt:
+                            if host and not os.path.isabs(host):
+                                host = os.path.abspath(host)
+                            cmd += ["-v", f"{host}:{mnt}:{'ro' if ro else 'rw'}"]
+                    # Per-container projection mounts
+                    try:
+                        for pm in getattr(csp, "projection_mounts", []) or []:
+                            p = getattr(pm, "path", None) if not isinstance(pm, dict) else pm.get("path")
+                            mnt = (
+                                getattr(pm, "mount_path", None)
+                                if not isinstance(pm, dict)
+                                else pm.get("mountPath") or pm.get("mount_path")
+                            )
+                            ro = (
+                                bool(getattr(pm, "read_only", True))
+                                if not isinstance(pm, dict)
+                                else bool(pm.get("readOnly", True))
+                            )
+                            if proj_host_root and p and mnt:
+                                host = os.path.join(str(proj_host_root), str(p).lstrip("/"))
+                                cmd += ["-v", f"{host}:{mnt}:{'ro' if ro else 'rw'}"]
+                    except Exception:
+                        pass
+                    # Env
+                    for item in getattr(csp, "env", []) or []:
+                        if isinstance(item, dict) and "name" in item and "value" in item:
+                            cmd += ["-e", f"{item['name']}={item['value']}"]
+                    # Image and command
+                    img = getattr(csp, "image")
+                    cmd += [img]
+                    combined: list[str] = []
+                    combined += [str(x) for x in (getattr(csp, "command", []) or [])]
+                    combined += [str(x) for x in (getattr(csp, "args", []) or [])]
+                    cmd += combined
+                    self._run_ok(cmd, allow_fail=True)
+            except Exception:
+                continue
+
     def read_logs(
         self,
         replica_id: str,
@@ -297,6 +413,86 @@ class PodmanRuntime(RuntimeAdapter):
             for line in (res.out or "").splitlines():
                 yield line
 
+    # Optional API used by HTTP UI to route logs by container name
+    def read_logs_for_container(
+        self,
+        app_name: str,
+        container_name: str,
+        *,
+        follow: bool = False,
+        tail: int | None = None,
+        since: int | None = None,
+    ):
+        # Find container id by labels
+        r = self._run_ok(
+            [
+                self._bin,
+                "ps",
+                "-a",
+                "--filter",
+                f"label={self.APP_LABEL}={app_name}",
+                "--filter",
+                f"label={self.CONTAINER_LABEL}={container_name}",
+                "--format",
+                "{{.ID}}",
+            ],
+            allow_fail=True,
+        )
+        cid = (r.out or "").strip().splitlines()
+        if not cid:
+            return iter(())
+        cid0 = cid[0]
+        cmd = [self._bin, "logs"]
+        if tail is not None:
+            cmd += ["--tail", str(int(tail))]
+        if since is not None and int(since) > 0:
+            cmd += ["--since", str(int(since))]
+        if follow:
+            cmd += ["-f"]
+        cmd += [cid0]
+        if follow:
+            try:
+                with subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+                ) as proc:  # type: ignore
+                    if proc.stdout is not None:
+                        for line in proc.stdout:
+                            yield line.rstrip("\n")
+            except Exception:
+                return iter(())
+        else:
+            res = self._run_ok(cmd, allow_fail=True)
+            for line in (res.out or "").splitlines():
+                yield line
+
+    # Exec by container name (best-effort)
+    def exec_for_container(
+        self, app_name: str, container_name: str, command: list[str], *, timeout: int | None = None
+    ) -> int:  # type: ignore[override]
+        r = self._run_ok(
+            [
+                self._bin,
+                "ps",
+                "-a",
+                "--filter",
+                f"label={self.APP_LABEL}={app_name}",
+                "--filter",
+                f"label={self.CONTAINER_LABEL}={container_name}",
+                "--format",
+                "{{.ID}}",
+            ],
+            allow_fail=True,
+        )
+        cid = (r.out or "").strip().splitlines()
+        if not cid:
+            return 127
+        cmd = [self._bin, "exec", cid[0], *[str(x) for x in (command or [])]]
+        try:
+            cp = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+            return int(cp.returncode)
+        except Exception:
+            return 1
+
     def remove_app(self, app_name: str) -> int:
         removed = 0
         for c in self._list_app_containers(app_name):
@@ -312,6 +508,116 @@ class PodmanRuntime(RuntimeAdapter):
                 self._stop_and_remove(c.get("Id", ""))
                 removed += 1
         return removed
+
+    # Init containers --------------------------------------------------
+    def run_init_containers(self, manifest):  # type: ignore[override]
+        """Run initContainers sequentially with optional timeouts.
+
+        Returns a list of tuples: (name, rc, message).
+        """
+        results: list[tuple[str, int, str]] = []
+        try:
+            inits = list(getattr(manifest.spec, "init_containers", []) or [])
+        except Exception:
+            inits = []
+        if not inits:
+            return results
+
+        # Ensure storage volumes exist if referenced so we can mount them
+        try:
+            if getattr(manifest.spec, "storage", None):
+                self.ensure_storage_volumes(
+                    manifest.metadata.name, [s.model_dump() for s in manifest.spec.storage]
+                )
+        except Exception:
+            pass
+
+        for c in inits:
+            # Extract fields supporting both dict and model forms
+            name = (
+                getattr(c, "name", None)
+                if not isinstance(c, dict)
+                else c.get("name")
+            ) or "init"
+            image = (
+                getattr(c, "image", None)
+                if not isinstance(c, dict)
+                else c.get("image")
+            )
+            if not image:
+                results.append((str(name), 1, "missing image"))
+                continue
+            timeout: int | None = None
+            try:
+                raw = getattr(c, "timeout_seconds", None) if not isinstance(c, dict) else c.get("timeoutSeconds")
+                if raw is not None:
+                    timeout = int(raw)
+            except Exception:
+                timeout = None
+
+            # Build command
+            try:
+                command = [str(x) for x in (getattr(c, "command", None) or (c.get("command") if isinstance(c, dict) else []) or [])]
+            except Exception:
+                command = []
+            try:
+                args = [str(x) for x in (getattr(c, "args", None) or (c.get("args") if isinstance(c, dict) else []) or [])]
+            except Exception:
+                args = []
+
+            # Build podman run argv
+            argv: list[str] = [self._bin, "run", "--rm"]
+            # Working dir if specified on init container
+            try:
+                wd = getattr(c, "working_dir", None) if not isinstance(c, dict) else c.get("workingDir")
+                if wd:
+                    argv += ["--workdir", str(wd)]
+            except Exception:
+                pass
+            # Env
+            try:
+                for item in (getattr(c, "env", None) or (c.get("env") if isinstance(c, dict) else []) or []):
+                    if isinstance(item, dict) and "name" in item and "value" in item:
+                        argv += ["-e", f"{item['name']}={item['value']}"]
+            except Exception:
+                pass
+            # Volumes: mount app storage and hostPath volumes, plus projected config root when present
+            try:
+                if getattr(manifest.spec, "storage", None):
+                    for s in manifest.spec.storage:
+                        vol_name = self._storage_volume_name(manifest.metadata.name, getattr(s, "name", ""))
+                        mnt = getattr(s, "mount_path", None)
+                        if vol_name and mnt:
+                            argv += ["-v", f"{vol_name}:{mnt}:rw"]
+                for v in getattr(manifest.spec, "volumes", []) or []:
+                    host = getattr(v, "host_path", None) if not isinstance(v, dict) else v.get("hostPath")
+                    mnt = getattr(v, "mount_path", None) if not isinstance(v, dict) else v.get("mountPath")
+                    ro = bool(getattr(v, "read_only", False) if not isinstance(v, dict) else v.get("readOnly", False))
+                    if host and mnt:
+                        if host and not os.path.isabs(host):
+                            host = os.path.abspath(host)
+                        argv += ["-v", f"{host}:{mnt}:{'ro' if ro else 'rw'}"]
+            except Exception:
+                pass
+
+            # Image and command
+            argv += [image]
+            if "/" not in image and not self._image_exists(image) and self._image_exists(f"localhost/{image}"):
+                argv[-1] = f"localhost/{image}"
+            argv += command + args
+
+            # Execute with optional timeout
+            try:
+                cp = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout or None)
+                rc = int(cp.returncode)
+                msg = "ok" if rc == 0 else (cp.stderr.strip() or "failed")
+                results.append((str(name), rc, msg))
+            except subprocess.TimeoutExpired:
+                results.append((str(name), 124, "timeout"))
+            except Exception as exc:  # noqa: BLE001
+                results.append((str(name), 1, f"error: {exc}"))
+
+        return results
 
     # Volumes ----------------------------------------------------------
     def _storage_volume_name(self, app_name: str, vol_name: str) -> str:
@@ -620,6 +926,10 @@ class PodmanRuntime(RuntimeAdapter):
             except Exception:
                 pass
 
+        # Working directory
+        if getattr(manifest.spec, "working_dir", None):
+            cmd += ["--workdir", str(manifest.spec.working_dir)]
+
         # Image and command
         cmd += [manifest.spec.image]
         # If unqualified name missing but localhost/<name> exists, use that
@@ -629,11 +939,14 @@ class PodmanRuntime(RuntimeAdapter):
             and self._image_exists(f"localhost/{manifest.spec.image}")
         ):
             cmd[-1] = f"localhost/{manifest.spec.image}"
-        if manifest.spec.command:
-            if isinstance(manifest.spec.command, (list, tuple)):
-                cmd += [str(x) for x in manifest.spec.command]
-            else:
-                cmd += shlex.split(str(manifest.spec.command))
+        # Build command/args following K8s semantics
+        combined: list[str] = []
+        if getattr(manifest.spec, "command", None):
+            combined += [str(x) for x in (manifest.spec.command or [])]
+        if getattr(manifest.spec, "args", None):
+            combined += [str(x) for x in (manifest.spec.args or [])]
+        if combined:
+            cmd += combined
 
         self._run_ok(cmd)
 

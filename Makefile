@@ -1,4 +1,4 @@
-.PHONY: install test lint run loop dev-up dev-down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here
+.PHONY: install test lint run loop dev-up dev-down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke
 
 install:
 	python -m pip install -e .[dev]
@@ -33,6 +33,15 @@ status-sample:
 
 logs-sample:
 		python -m ae.cli logs echo --tail 50
+
+# Render and validate Kubernetes YAML for examples (no cluster required)
+k8s-smoke:
+	@echo "[k8s-smoke] exporting echo -> /tmp/echo-k8s.yaml"
+	@PYTHONPATH=src python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --ingress-class traefik --validate > /tmp/echo-k8s.yaml
+	@echo "[k8s-smoke] exporting envfrom-and-projection -> /tmp/envfrom-k8s.yaml"
+	@PYTHONPATH=src python -m ae.cli export-k8s -f specs/examples/envfrom-and-projection.yaml --namespace demo --emit-configs --emit-secrets --validate > /tmp/envfrom-k8s.yaml
+	@echo "[k8s-smoke] running portability check (strict)"
+	@PYTHONPATH=src python -m ae.cli k8s-check -f specs/examples/echo.yaml --policy strict || true
 
 # Build docs and open the Start Here page
 start-here:
@@ -311,3 +320,22 @@ dashboard-restart:
 push-podman:
 	@test -n "$$IMAGE" || (echo "set IMAGE=<registry/repo>:<tag>" >&2; exit 2)
 	podman push $$IMAGE
+# Build a wheel into dist/
+.PHONY: wheel
+wheel:
+	python -m build -w
+
+# Build controller container image
+.PHONY: docker-build-controller
+docker-build-controller:
+	docker build -f ops/images/controller.Dockerfile -t ae/controller:dev .
+
+# Run controller container (bind specs and state)
+.PHONY: docker-run-controller
+docker-run-controller:
+	docker run --rm -it \
+	  -v $(PWD)/specs:/specs:ro \
+	  -v $(PWD)/state:/state \
+	  -e AE_STATE_DB=/state/controller.db \
+	  -p 9108:9108 \
+	  ae/controller:dev

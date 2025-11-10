@@ -102,6 +102,9 @@ _HOOK_LAST: dict[tuple[str, str, str], tuple[float, bool]] = {}
 # Probe backoff: (app, replica, type) -> seconds
 _PROBE_BACKOFF: dict[tuple[str, str, str], int] = {}
 _APP_ROLLOUT_OPS: dict[str, dict[str, int]] = {}
+# Canary tracking: latest weight and step counter per app
+_APP_CANARY_WEIGHT: dict[str, float] = {}
+_APP_CANARY_STEPS: dict[str, int] = {}
 
 
 def set_reconcile_metrics(ts_seconds: float, duration_seconds: float) -> None:
@@ -137,6 +140,20 @@ def record_hook_observation(
 ) -> None:
     try:
         _HOOK_LAST[(str(app), str(hook), str(kind))] = (float(duration_seconds), bool(success))
+    except Exception:
+        pass
+
+
+def record_canary_weight(app: str, weight: float) -> None:
+    try:
+        _APP_CANARY_WEIGHT[str(app)] = float(weight)
+    except Exception:
+        pass
+
+
+def increment_canary_step(app: str) -> None:
+    try:
+        _APP_CANARY_STEPS[str(app)] = _APP_CANARY_STEPS.get(str(app), 0) + 1
     except Exception:
         pass
 
@@ -612,6 +629,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             if self.path == "/apply" and not self._require_role("admin"):
                 self._deny(401 if not self.headers.get("Authorization") else 403)
                 return
+            if self.path.startswith("/exec/") and not self._require_role("admin"):
+                self._deny(401 if not self.headers.get("Authorization") else 403)
+                return
             if self.path.startswith("/scale/") and not self._require_role("scale"):
                 self._deny(401 if not self.headers.get("Authorization") else 403)
                 return
@@ -827,6 +847,34 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 )
             except Exception as exc:
                 self._json_error(500, str(exc))
+            return
+        # Exec: POST /exec/<app> { container?, cmd: [..], timeoutSeconds? }
+        if self.path.startswith("/exec/") and getattr(self, "exec_fn", None) is not None:
+            app = self.path.split("/", 2)[2]
+            # Scope enforcement for admin commands
+            import os as _os
+
+            if _os.getenv("AE_API_ADMIN_SCOPE") and not self._scope_allows("admin", app):
+                self._deny(403)
+                return
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            try:
+                body = self.rfile.read(length) if length > 0 else b"{}"
+                payload = json.loads(body.decode("utf-8")) if body else {}
+            except Exception:
+                payload = {}
+            container = payload.get("container")
+            cmd = payload.get("cmd") or payload.get("command") or []
+            timeout = payload.get("timeoutSeconds") or payload.get("timeout")
+            if not isinstance(cmd, list) or not cmd:
+                self._json_error(400, "cmd must be a non-empty list")
+                return
+            try:
+                rc = int(self.exec_fn(app, container, [str(x) for x in cmd], int(timeout) if timeout is not None else None))  # type: ignore[misc]
+            except Exception as exc:
+                self._json_error(500, f"exec failed: {exc}")
+                return
+            self._json_ok({"app": app, "container": container, "rc": rc})
             return
 
         # Planner passthrough (labs-safe alias for /plan)
@@ -1681,6 +1729,17 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 )
                 lines.append("# TYPE ae_rollout_operations_total counter")
                 lines.append(f'ae_rollout_operations_total{{app="{app}",op="{op}"}} {val}')
+        # Canary weight and step counters
+        if _APP_CANARY_WEIGHT:
+            lines.append("# HELP ae_canary_weight Current canary weight (0-100) per app")
+            lines.append("# TYPE ae_canary_weight gauge")
+            for app, w in _APP_CANARY_WEIGHT.items():
+                lines.append(f'ae_canary_weight{{app="{app}"}} {float(w)}')
+        if _APP_CANARY_STEPS:
+            lines.append("# HELP ae_canary_steps_total Total auto canary steps applied per app")
+            lines.append("# TYPE ae_canary_steps_total counter")
+            for app, n in _APP_CANARY_STEPS.items():
+                lines.append(f'ae_canary_steps_total{{app="{app}"}} {int(n)}')
         lines.append("")
         payload = "\n".join(lines).encode("utf-8")
         self.send_response(200)
@@ -2216,6 +2275,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     }
                     for r in reps
                 ]
+                # Include per-container runtime info when system_info_fn is available
+                try:
+                    sys = self.system_info_fn() if getattr(self, "system_info_fn", None) else None  # type: ignore[misc]
+                    conts = []
+                    for c in (sys.get("containers") if isinstance(sys, dict) else []) or []:
+                        labels = c.get("labels") or {}
+                        if labels.get("ae.app") == s.app_name:
+                            conts.append(
+                                {
+                                    "name": c.get("name"),
+                                    "labels": labels,
+                                    "restart_count": c.get("restart_count", 0),
+                                }
+                            )
+                    if conts:
+                        data["containers"] = conts
+                except Exception:
+                    pass
             except Exception:
                 pass
         self._json_ok(data)
@@ -3597,6 +3674,7 @@ def start_http_api(
     scale_fn=None,
     delete_fn=None,
     apply_fn=None,
+    exec_fn=None,
     logs_fn=None,
     system_info_fn=None,
     plan_fn=None,
@@ -3615,6 +3693,7 @@ def start_http_api(
     handler_cls.scale_fn = staticmethod(scale_fn) if scale_fn is not None else None
     handler_cls.delete_fn = staticmethod(delete_fn) if delete_fn is not None else None
     handler_cls.apply_fn = staticmethod(apply_fn) if apply_fn is not None else None
+    handler_cls.exec_fn = staticmethod(exec_fn) if exec_fn is not None else None
     handler_cls.logs_fn = staticmethod(logs_fn) if logs_fn is not None else None
     handler_cls.system_info_fn = (
         staticmethod(system_info_fn) if system_info_fn is not None else None
