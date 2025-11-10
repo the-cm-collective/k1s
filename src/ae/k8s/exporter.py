@@ -591,7 +591,8 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
     if volume_specs:
         pod_spec["volumes"] = volume_specs
     if volume_mounts:
-        pod_spec["containers"][0].setdefault("volumeMounts", []).extend(volume_mounts)
+        for c in pod_spec.get("containers", []) or []:
+            c.setdefault("volumeMounts", []).extend(volume_mounts)
     # Add AppArmor annotation on the Pod template when requested
     pod_meta: Dict[str, Any] = {"labels": {"app": m.metadata.name}}
     if getattr(m.spec, "security", None) and getattr(m.spec.security, "apparmor_profile", None):
@@ -803,7 +804,8 @@ def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str,
             )
             volume_mounts.append({"name": claim, "mountPath": s_mount})
     if volume_mounts:
-        pod_spec["containers"][0].setdefault("volumeMounts", []).extend(volume_mounts)
+        for c in pod_spec.get("containers", []) or []:
+            c.setdefault("volumeMounts", []).extend(volume_mounts)
     if volume_specs:
         pod_spec["volumes"] = (pod_spec.get("volumes") or []) + volume_specs
 
