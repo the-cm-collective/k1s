@@ -87,7 +87,7 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
     
   </head>
   <body>
@@ -108,15 +108,15 @@
     </nav>
     <div class="container">
     <p>K8s Parity and Alignment (MVP)</p>
-<p>Status summary</p>
+<p>Status summary (2025-11-11)</p>
 <ul>
-<li>Deployment-like rollouts: ready/progressing/degraded with health-gated cutover ✓</li>
-<li>Ingress/TLS (Caddy) with ready-only upstreams ✓</li>
-<li>Probes: HTTP and TCP with initialDelay/timeout; windowing for success/failure thresholds ✓</li>
-<li>Resources: CPU/memory limits mapped to runtime ✓</li>
-<li>Security: runAsUser/runAsGroup/readOnlyRootFilesystem/cap drop ✓</li>
-<li>Services: single replica host port; multi-replica via ingress LB (HTTP) ◻︎</li>
-<li>API writes: CLI-only; HTTP API read-only ◻︎</li>
+<li>Exporter: Deployment/StatefulSet/Service/Ingress/HPA/PDB/SA/PVC/ConfigMap/Secret/NetworkPolicy ✓</li>
+<li>Probes: HTTP/TCP/exec + startupProbe; windowing and thresholds ✓</li>
+<li>Security: runAs*, readOnlyRootFilesystem, cap drop, seccomp; AppArmor via annotation ✓</li>
+<li>Services: ClusterIP with multi-port, NodePort support; validation for names/ports/nodePort ✓</li>
+<li>Ingress: v1 with Prefix pathType default; TLS with secretName; ingressClassName passthrough ✓</li>
+<li>Scheduling: affinity/tolerations/topology spread/priorityClassName/nodeSelector ✓</li>
+<li>API writes: CLI + optional HTTP API mutations (token‑gated) ✓</li>
 </ul>
 <p>Security &amp; Policies</p>
 <ul>
@@ -142,12 +142,12 @@ spec:
 <p>Checklist</p>
 <ul>
 <li>Use stable APIs and portable features where analogous:</li>
-<li>Readiness/liveness probes present (HTTP/TCP).</li>
-<li>Resources.limits present; requests optional.</li>
-<li>Non-root security context available and wired.</li>
-<li>Graceful termination exposed via terminationGracePeriodSeconds.</li>
+<li>Readiness/liveness/startup probes present (HTTP/TCP/exec).</li>
+<li>Resources.requests/limits modeled; strict policy available.</li>
+<li>Non-root security context encouraged; defaults available.</li>
+<li>Graceful termination via terminationGracePeriodSeconds and preStop support.</li>
 <li>Ingress flips only after ≥1 ready replica.</li>
-<li>Storage: hostPath and PV-lite; stateful demo available.</li>
+<li>Storage: PVCs; stateful demo available.</li>
 </ul>
 <p>Verification notes</p>
 <ul>
@@ -155,12 +155,13 @@ spec:
 <li>Echo variants exercise readiness, ingress, storage.</li>
 <li>Dashboard provides live logs and status snapshots.</li>
 </ul>
-<p>Roadmap</p>
+<p>Roadmap (selected)</p>
 <ul>
-<li>Add exec probe (optional).</li>
-<li>Token-gated mutate endpoints for remote CLI against controller.</li>
+<li>RBAC emitters tied to ServiceAccount.</li>
+<li>Job/CronJob exporters for batch.</li>
+<li>TLS Secret helper and Traefik ingress presets.</li>
 <p>Examples</p>
-<li>Document multi-replica non-HTTP “service” patterns.</li>
+<li><code>emptyDir</code> ephemeral volumes.</li>
 <li>TCP readiness probe (spec):</li>
 <li>readiness: { tcpSocket: { port: 8080 }, successThreshold: 2, failureThreshold: 2 }</li>
 <li>SecuritySpec:</li>
@@ -182,24 +183,38 @@ spec:
 <li>Enable mutations and token, then:</li>
 <li><code>ae --server https://api.home.arpa:8443 --token &lt;admin&gt; apply -f specs/examples/echo-sec.yaml</code></li>
 </ul>
-<h2>Compliance Summary (2025-10-31)</h2>
+<h2>Compliance Summary (2025-11-11)</h2>
 <ul>
 <li>Stable APIs only: apps/v1, v1, networking.k8s.io/v1, policy/v1, autoscaling/v2.</li>
 <li>Deployment and StatefulSet export; Services (multi-port, NodePort/LoadBalancer), Ingress v1 with TLS.</li>
-<li>Probes (HTTP/TCP/exec), resources, securityContext (+seccomp/AppArmor), SA/PDB/HPA/NetworkPolicy supported as described.</li>
+<li>Probes (HTTP/TCP/exec/startup), resources, securityContext (+seccomp/AppArmor), SA/PDB/HPA/NetworkPolicy supported as described.</li>
 <li>Single-node runtime diverges from ClusterIP semantics; exporter YAML remains upstream-compatible.</li>
 </ul>
-<h2>Gaps → Issues Checklist</h2>
+<h2>k3s High‑Priority Gaps (Q4 2025)</h2>
 <ul>
-<li>[ ] StartupProbe + lifecycle hooks (postStart/preStop).</li>
-<li>[ ] <code>envFrom</code> for ConfigMap/Secret.</li>
-<li>[ ] <code>imagePullSecrets</code> and <code>imagePullPolicy</code> controls.</li>
-<li>[ ] PDB percentage values; validation updates.</li>
-<li>[ ] HPA advanced behaviors (scale policies, stabilization windows).</li>
-<li>[ ] Config/Secret volume mounts with mountPaths.</li>
-<li>[ ] PVC <code>storageClassName</code> and accessModes selection.</li>
-<li>[ ] Service sessionAffinity and healthCheckNodePort (flagged).</li>
-<li>[ ] Optional RBAC emission tied to ServiceAccount.</li>
+<li>RBAC emitters (Role/RoleBinding) scoped to attached ServiceAccount.</li>
+<li>Batch exporters: Job/CronJob with backoff and ttlSecondsAfterFinished.</li>
+<li>TLS Secret generator (kubernetes.io/tls) from PEMs/<code>AE_TLS_DIR</code>; wire to Ingress tls.secretName.</li>
+<li><code>emptyDir</code> volumes: ephemeral storage support with medium selection.</li>
+<li>Traefik ingress presets: opt‑in annotations for timeouts/proxy headers.</li>
+<li>PDB percent strings on CLI: accept percentages to match exporter capability.</li>
+<li>PodSecurity labels preset (Namespace): <code>pod-security.kubernetes.io/enforce</code>.</li>
+<li>NetworkPolicy provider guidance: note enforcement dependency; provide web/backend presets.</li>
+</ul>
+<h2>Open Gaps (non‑k3s specific)</h2>
+<ul>
+<li>Service healthCheckNodePort.</li>
+<li>Advanced Ingress features (regex, weighted/canary annotations, multiple backends per rule).</li>
+<li>Ephemeral containers.</li>
+<li>RBAC resources for richer roles (ClusterRole/ClusterRoleBinding) and admission webhooks/CRDs (out of scope).</li>
+</ul>
+<h2>Compliance Baseline</h2>
+<ul>
+<li>Latest report JSON lives at <code>docs/site/k8s_status.json</code>.</li>
+<li>Regenerate locally:</li>
+<li><code>python -m ae.cli k8s-report --samples specs/examples/echo.yaml specs/examples/multi-replica-echo.yaml specs/examples/echo-hpa.yaml --run-dry-run -o docs/site/k8s_status.json</code></li>
+<li><code>python docs/build_docs.py</code></li>
+<li>Open <code>docs/site/k8s-parity.html</code>.</li>
 </ul>
 <hr/>
 <h2>K8s Compliance Status</h2>
@@ -213,7 +228,7 @@ spec:
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2025-11-10 17:42:59</span>
+        <span>Built 2025-11-10 18:24:05</span>
       </div>
     </footer>
     <script>

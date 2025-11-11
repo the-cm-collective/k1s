@@ -12,6 +12,7 @@ state/
 snapshots/
 combined/
 charts/
+charts-user/
 # One-off root screenshots accidentally committed
 /# Anchor to repo root to avoid blocking docs assets
 /docs.home.arpa_*.png

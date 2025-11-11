@@ -254,6 +254,24 @@ bench-mem-docs:
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 	@python docs/build_docs.py
 
+.PHONY: bench-fix-perms
+# Normalize ownership/permissions for result artifacts (useful after sudo runs)
+# - If run with sudo, uses SUDO_USER to assign back to the invoking user
+# - Always tries to set permissive read/execute for directories and read for files
+bench-fix-perms:
+	@OWN=$${SUDO_USER:-$$(id -un)}; GRP=$$(id -gn $$OWN); \
+	 for d in charts combined snapshots docs/site; do \
+	   if [ -e "$$d" ]; then \
+	     echo "[bench-fix-perms] processing $$d as $$OWN:$$GRP" >&2; \
+	     if [ "$$OWN" != "$$(id -un)" ]; then \
+	       chown -R "$$OWN:$$GRP" "$$d" >/dev/null 2>&1 || true; \
+	     fi; \
+	     find "$$d" -type d -exec chmod u+rwx,go+rx {} + >/dev/null 2>&1 || true; \
+	     find "$$d" -type f -exec chmod u+rw,go+r {} + >/dev/null 2>&1 || true; \
+	   fi; \
+	 done; \
+	 echo "[bench-fix-perms] done"
+
 .PHONY: bench-mem-backfill
 # Aggregate any snapshots missing summary.json, then rebuild combined, charts, and docs
 

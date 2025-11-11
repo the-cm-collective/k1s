@@ -1,5 +1,5 @@
 {
-  "generated_at": "2025-10-27T21:23:57.186634+00:00",
+  "generated_at": "2025-11-11T01:46:07.090674+00:00",
   "samples_count": 3,
   "overall_score": 100.0,
   "grade": "excellent",
@@ -7,7 +7,7 @@
     {
       "sample": "specs/examples/echo.yaml",
       "exists": true,
-      "export_length": 2830,
+      "export_length": 3645,
       "validate": {
         "ran": true,
         "ok": true,
@@ -16,7 +16,7 @@
       "policy_strict": {
         "ran": true,
         "errors": 0,
-        "warnings": 2
+        "warnings": 4
       },
       "kubeconform": {
         "ran": false,
@@ -36,13 +36,18 @@
         "ServiceAccount",
         "HorizontalPodAutoscaler"
       ],
+      "apply_online": {
+        "ran": false,
+        "ok": null,
+        "details": null
+      },
       "score": 100.0,
-      "confidence": 0.45
+      "confidence": 0.4
     },
     {
       "sample": "specs/examples/multi-replica-echo.yaml",
       "exists": true,
-      "export_length": 2107,
+      "export_length": 2166,
       "validate": {
         "ran": true,
         "ok": true,
@@ -51,7 +56,7 @@
       "policy_strict": {
         "ran": true,
         "errors": 0,
-        "warnings": 4
+        "warnings": 6
       },
       "kubeconform": {
         "ran": false,
@@ -71,13 +76,18 @@
         "PodDisruptionBudget",
         "HorizontalPodAutoscaler"
       ],
+      "apply_online": {
+        "ran": false,
+        "ok": null,
+        "details": null
+      },
       "score": 100.0,
-      "confidence": 0.45
+      "confidence": 0.4
     },
     {
       "sample": "specs/examples/echo-hpa.yaml",
       "exists": true,
-      "export_length": 1814,
+      "export_length": 1873,
       "validate": {
         "ran": true,
         "ok": true,
@@ -86,7 +96,7 @@
       "policy_strict": {
         "ran": true,
         "errors": 0,
-        "warnings": 4
+        "warnings": 6
       },
       "kubeconform": {
         "ran": false,
@@ -105,8 +115,13 @@
         "PodDisruptionBudget",
         "HorizontalPodAutoscaler"
       ],
+      "apply_online": {
+        "ran": false,
+        "ok": null,
+        "details": null
+      },
       "score": 100.0,
-      "confidence": 0.45
+      "confidence": 0.4
     }
   ]
 }
