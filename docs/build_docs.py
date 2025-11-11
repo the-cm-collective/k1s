@@ -444,8 +444,8 @@ def build_one(md_path: Path, out_path: Path) -> None:
         # Non-fatal: keep page renderable if injection fails, but log why
         try:
             import traceback, sys
-            print(f"[docs] injection error for {md_path.name}: {e}", file=sys.stderr)
-            traceback.print_exc()
+            # quiet failure: keep page renderable
+            _ = (e, traceback)
         except Exception:
             pass
 
@@ -457,7 +457,6 @@ def build_one(md_path: Path, out_path: Path) -> None:
             combined_csv = repo_root / "combined" / "combined.csv"
             charts_dir = repo_root / "charts"
             if combined_csv.exists():
-                print(f"[docs] injecting latest benchmarks from {combined_csv}")
                 import csv
 
                 rows: list[dict[str, str]] = []
@@ -819,15 +818,9 @@ def build_one(md_path: Path, out_path: Path) -> None:
                     if inline_blocks:
                         parts.append("<h2>Charts</h2>" + "".join(inline_blocks))
                 html_body += "\n" + "\n".join(parts)
-                print("[docs] injected tables and charts into testing-memory-k1s.html")
-    except Exception as e:
+    except Exception:
         # Non-fatal: keep page renderable if injection fails
-        try:
-            import traceback, sys
-            print(f"[docs] latest-benchmarks injection failed: {e}", file=sys.stderr)
-            traceback.print_exc()
-        except Exception:
-            pass
+        pass
     extra_head = ""
     if md_path.name == "playground.md":
         ver = str(int(datetime.now().timestamp()))
