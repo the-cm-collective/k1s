@@ -401,6 +401,17 @@ def aggregate(snapshot_dir: Path) -> Dict:
     runtime_mib = kb_to_mib(((by_class.get("runtime") or {}).get("pss_kb", 0)))
     k3s_cp_mib = kb_to_mib((by_class.get("control_plane") or {}).get("pss_kb", 0))
 
+    # Per-bucket PSS in KiB (None -> 0)
+    pss_kb_controller = int((by_class.get("controller") or {}).get("pss_kb", 0) or 0)
+    pss_kb_ingress = int((by_class.get("ingress") or {}).get("pss_kb", 0) or 0)
+    pss_kb_runtime = int((by_class.get("runtime") or {}).get("pss_kb", 0) or 0)
+    pss_kb_k3s_cp = int((by_class.get("control_plane") or {}).get("pss_kb", 0) or 0)
+
+    # Historical alias summed almost-everything except "other"; keep it but also expose clearer fields
+    pss_kb_total_overhead = int(
+        sum(v.get("pss_kb", 0) for k, v in by_class.items() if k != "other")
+    )
+
     summary = {
         "meta": meta,
         "process_totals_kb": proc_totals,
@@ -417,9 +428,14 @@ def aggregate(snapshot_dir: Path) -> Dict:
             "total_mem_bytes": app_bytes + system_bytes,
         },
         "overhead": {
-            "pss_kb_control_plane": int(
-                sum(v.get("pss_kb", 0) for k, v in by_class.items() if k != "other")
-            ),
+            # Historical field (misleading name): retained for backward compatibility
+            "pss_kb_control_plane": pss_kb_total_overhead,
+            # Clearer, structured fields
+            "pss_kb_total_overhead": pss_kb_total_overhead,
+            "pss_kb_controller": pss_kb_controller,
+            "pss_kb_ingress": pss_kb_ingress,
+            "pss_kb_runtime": pss_kb_runtime,
+            "pss_kb_k3s_control_plane": pss_kb_k3s_cp,
             # Non-app containers (runtime/infra)
             "cgroup_system_overhead_bytes": int(system_bytes),
             # Host services only (system.slice + init.scope, leaf-summed)

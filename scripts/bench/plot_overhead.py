@@ -158,9 +158,9 @@ def plot_per_pod_scaling(plt, outdir: Path, rows: List[Dict[str, str]]):
         sc = scenario_name(r)
         val = (int(r.get("app_mem_bytes") or 0) / max(1, n)) / (1024.0 * 1024.0)
         cur = by_scn.setdefault(sc, {})
-        # Keep latest by timestamp
-        prev_ts = cur.get(-n, -1.0)
-        ts = float(r.get("timestamp", "0").replace("-", ".")) if r.get("timestamp") else 0.0
+        # Keep latest by timestamp (lexicographic compare on YYYYMMDD-HHMMSS)
+        prev_ts = str(cur.get(-n, ""))
+        ts = str(r.get("timestamp", ""))
         if ts >= prev_ts:
             cur[n] = val
             cur[-n] = ts
@@ -215,9 +215,9 @@ def plot_rollout_pairs(plt, outdir: Path, latest_map: Dict[Tuple[str, str], Dict
         r_p = latest_map.get((sc, f"rollout-{target}-post"))
         if not r_d or not r_p:
             continue
-        # Use control-plane PSS as default comparison here
-        during_vals.append((sc, to_mib(r_d.get("control_plane_pss_kb", "0"), kib=True)))
-        post_vals.append((sc, to_mib(r_p.get("control_plane_pss_kb", "0"), kib=True)))
+        # Use derived Control‑plane PSS consistently
+        during_vals.append((sc, _cp_pss_mib_derived(r_d)))
+        post_vals.append((sc, _cp_pss_mib_derived(r_p)))
     if not during_vals:
         return
     # Align order by scenario
@@ -259,6 +259,29 @@ def plot_rollout_pairs(plt, outdir: Path, latest_map: Dict[Tuple[str, str], Dict
     plt.close()
 
 
+def _cp_pss_mib_derived(r: Dict[str, str]) -> float:
+    """Derive Control‑Plane PSS (MiB) consistently across modes.
+
+    - k3s: k3s process PSS only (uses inner measurement when exported).
+    - k1s: controller + ingress PSS.
+    Falls back to historical aggregate if structured fields are missing.
+    """
+    mode = str(r.get("mode", "")).lower()
+    try:
+        if mode == "k3s":
+            v = r.get("k3s_control_plane_pss_kb")
+            if v is not None and str(v) != "":
+                return to_mib(v, kib=True)
+        # k1s and others: controller + ingress
+        c = r.get("controller_pss_kb")
+        i = r.get("ingress_pss_kb")
+        if c is not None or i is not None:
+            return to_mib(int(c or 0) + int(i or 0), kib=True)
+    except Exception:
+        pass
+    return to_mib(r.get("control_plane_pss_kb", "0"), kib=True)
+
+
 def plot_matrix_heatmap(plt, outdir: Path, latest_map: Dict[Tuple[str, str], Dict[str, str]]):
     scenarios = ["k1s rootless", "k1s rootful", "k1nd", "k3d"]
     stages = sorted({st for (_sc, st) in latest_map.keys()})
@@ -267,7 +290,7 @@ def plot_matrix_heatmap(plt, outdir: Path, latest_map: Dict[Tuple[str, str], Dic
     import numpy as np  # type: ignore
 
     metrics = [
-        ("CP PSS", lambda r: to_mib(r.get("control_plane_pss_kb", "0"), kib=True)),
+        ("CP PSS", lambda r: _cp_pss_mib_derived(r)),
         ("App", lambda r: to_mib(r.get("app_mem_bytes", "0"))),
         (
             "HostSys",
@@ -299,11 +322,11 @@ def plot_matrix_heatmap(plt, outdir: Path, latest_map: Dict[Tuple[str, str], Dic
             norm = (arr - mn) / denom
         else:
             norm = arr
-    # Use new colormap accessor (avoids deprecation warnings)
-    try:
-        cmap = plt.colormaps.get_cmap("RdYlGn_r")  # matplotlib >=3.7
-    except Exception:
-        cmap = plt.cm.get_cmap("RdYlGn_r")  # fallback
+        # Use new colormap accessor (avoids deprecation warnings)
+        try:
+            cmap = plt.colormaps.get_cmap("RdYlGn_r")  # matplotlib >=3.7
+        except Exception:
+            cmap = plt.cm.get_cmap("RdYlGn_r")  # fallback
         ax.imshow(norm, cmap=cmap, aspect="auto")
         ax.set_title(mtitle)
         ax.set_yticks(range(len(stages)))
@@ -386,9 +409,9 @@ def main(argv: List[str]) -> int:
     if plt is None:
         return 0
 
-    # Preserve legacy charts for continuity
+    # Preserve legacy charts for continuity (now using derived CP PSS)
     labels = [r.get("label", "") for r in rows]
-    pss = [to_mib(r.get("control_plane_pss_kb", "0"), kib=True) for r in rows]
+    pss = [_cp_pss_mib_derived(r) for r in rows]
     plt.figure(figsize=(10, 4))
     plt.bar(labels, pss, color="#60a5fa")
     plt.ylabel("Control-plane PSS (MiB)")
@@ -441,10 +464,7 @@ def main(argv: List[str]) -> int:
 
     # Metric extractors
     def ex_cp(r):
-        # CP PSS not visible on host for k3d (mode=k3s). Label as N/A by skipping.
-        if str(r.get("mode","")) == "k3s":
-            return None
-        return to_mib(r.get("control_plane_pss_kb", "0"), kib=True)
+        return _cp_pss_mib_derived(r)
     ex_app = lambda r: to_mib(r.get("app_mem_bytes", "0"))
     ex_host = lambda r: to_mib(
         r.get("host_system_cgroups_bytes")

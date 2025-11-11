@@ -496,8 +496,25 @@ def build_one(md_path: Path, out_path: Path) -> None:
                         "</tr>"
                     ),
                 ]
+                # Derived CP PSS helper: k3s -> k3s_control_plane_pss_kb; k1s -> controller+ingress; fallback to legacy
+                def cp_pss_mib_derived(row: dict[str, str]) -> str:
+                    try:
+                        mode = str(row.get("mode", "")).lower()
+                        if mode == "k3s":
+                            v = row.get("k3s_control_plane_pss_kb")
+                            if v is not None and str(v) != "":
+                                return f"{to_float_mib(v, kib=True):.1f}"
+                        c = row.get("controller_pss_kb")
+                        i = row.get("ingress_pss_kb")
+                        if c is not None or i is not None:
+                            total_kib = int(c or 0) + int(i or 0)
+                            return f"{to_float_mib(total_kib, kib=True):.1f}"
+                    except Exception:
+                        pass
+                    return f"{to_float_mib(row.get('control_plane_pss_kb', '0'), kib=True):.1f}"
+
                 for r in tail:
-                    cp_mib = fmt_kib(r.get("control_plane_pss_kb", "0"))
+                    cp_mib = cp_pss_mib_derived(r)
                     app_mib = fmt_mib(r.get("app_mem_bytes", "0"))
                     infra_mib = fmt_mib(r.get("system_mem_bytes", "0"))
                     # Prefer host services only; fall back to container system bytes for older rows
@@ -629,8 +646,25 @@ def build_one(md_path: Path, out_path: Path) -> None:
                             rng = (bad - good) or 1.0
                             return (v - good) / rng
 
+                        def cp_pss_float_derived(r: dict[str, str]) -> float | None:
+                            try:
+                                mode = str(r.get("mode", "")).lower()
+                                if mode == "k3s":
+                                    v = r.get("k3s_control_plane_pss_kb")
+                                    if v is not None and str(v) != "":
+                                        return to_float_mib(v, kib=True)
+                                c = r.get("controller_pss_kb")
+                                i = r.get("ingress_pss_kb")
+                                if c is not None or i is not None:
+                                    total_kib = int(c or 0) + int(i or 0)
+                                    return to_float_mib(total_kib, kib=True)
+                            except Exception:
+                                pass
+                            # Fallback
+                            return to_float_mib(r.get("control_plane_pss_kb", "0"), kib=True)
+
                         metric_extractors = [
-                            ("Control Plane PSS", lambda r: (None if str(r.get("mode","")) == "k3s" else to_float_mib(r.get("control_plane_pss_kb", "0"), kib=True))),
+                            ("Control Plane PSS", lambda r: cp_pss_float_derived(r)),
                             ("App Cgroups", lambda r: to_float_mib(r.get("app_mem_bytes", "0"))),
                             (
                                 "Host System Cgroups",
@@ -685,7 +719,7 @@ def build_one(md_path: Path, out_path: Path) -> None:
                     parts.append(
                         render_metric_table(
                             "Control Plane PSS (MiB) — lower is better",
-                            lambda r: (None if str(r.get("mode","")) == "k3s" else to_float_mib(r.get("control_plane_pss_kb", "0"), kib=True)),
+                            lambda r: cp_pss_float_derived(r),
                         )
                     )
                     parts.append(
