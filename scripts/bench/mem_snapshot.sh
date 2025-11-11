@@ -30,14 +30,61 @@ mkdir -p "${outdir}/raw" || true
 
 echo "[mem-snapshot] mode=${mode} label=${label} duration=${duration}s -> ${outdir}" >&2
 
+# Detect backend and OCI runtime for metadata/labels
+detect_backend() {
+  local b="${AE_RUNTIME_BACKEND:-podman}"
+  if [[ "$b" != "podman" && "$b" != "docker" && "$b" != "oci" ]]; then
+    if command -v podman >/dev/null 2>&1; then b=podman; elif command -v docker >/dev/null 2>&1; then b=docker; else b=unknown; fi
+  fi
+  echo "$b"
+}
+
+detect_oci_runtime() {
+  local b; b=$(detect_backend)
+  local oci=""
+  if [[ "$b" == "podman" || "$b" == "oci" ]]; then
+    if command -v podman >/dev/null 2>&1; then
+      oci=$(podman info --format '{{ .Host.OCIRuntime.Name }}' 2>/dev/null | tr -d '"' || true)
+      if [[ -z "$oci" ]]; then
+        oci=$(podman info --format json 2>/dev/null | python - << 'PY'
+import json, sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    print(""); sys.exit(0)
+h = d.get('host') or d.get('Host') or {}
+oci = h.get('ociRuntime') or h.get('OCIRuntime') or {}
+name = (oci.get('name') or oci.get('Name') or oci.get('package') or oci.get('path') or '').strip()
+name = name.split('/')[-1]
+name = name.split()[0]
+print(name)
+PY
+        )
+      fi
+    fi
+  elif [[ "$b" == "docker" ]]; then
+    if command -v docker >/dev/null 2>&1; then
+      oci=$(docker info --format '{{ .DefaultRuntime }}' 2>/dev/null | tr -d '"' || true)
+      if [[ -z "$oci" ]]; then
+        oci=$(docker info 2>/dev/null | awk -F': ' '/Default Runtime/ {print $2; exit}')
+      fi
+    fi
+  fi
+  echo "$oci"
+}
+
 # Metadata
 {
   echo "{"
-  echo "  \"label\": \"${label}\","
-  echo "  \"mode\": \"${mode}\","
+  echo "  \"label\": \"${label}\"," 
+  echo "  \"mode\": \"${mode}\"," 
   echo "  \"duration_sec\": ${duration},"
-  echo "  \"timestamp\": \"${ts}\","
-  echo "  \"uname\": \"$(uname -a | sed 's/\"/\\\"/g')\""
+  echo "  \"timestamp\": \"${ts}\"," 
+  echo "  \"uname\": \"$(uname -a | sed 's/\"/\\\"/g')\"," 
+  echo "  \"backend\": \"$(detect_backend)\"," 
+  echo "  \"oci_runtime\": \"$(detect_oci_runtime)\"," 
+  echo "  \"cgroups\": \"$([[ -f /sys/fs/cgroup/cgroup.controllers ]] && echo cg2 || echo cg1)\"," 
+  echo "  \"rootless\": $([[ $(id -u) -eq 0 ]] && echo false || echo true)"
   echo "}"
 } > "${outdir}/meta.json"
 

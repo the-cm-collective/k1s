@@ -15,9 +15,11 @@ For quick commands and charts, see the end‑to‑end Make targets in each guide
   - `podman build -t localhost/demo-green:latest samples/servers/green`
 - Run end‑to‑end and generate charts:
   - `make bench-mem-e2e-k1s LABEL_SUITE=report-YYYYMMDD APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5`
+  - Or against k1nd (controller in Docker): `make bench-mem-e2e-k1nd LABEL_SUITE=report-YYYYMMDD APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5`
   - `python scripts/bench/mem_combine.py snapshots/*/*`
   - `python scripts/bench/plot_overhead.py combined/combined.csv charts`
   - `python docs/build_docs.py`
+  - Quick fix for labels: backfill the detected OCI runtime into your latest snapshots and regenerate charts with one command: `make bench-mem-backfill-oci-latest REBUILD_DOCS=1`
   - Tip: for accurate process PSS on dockerd/containerd/podman, prefer privileged snapshots:
     - Matrix: `./scripts/bench/run_matrix.sh --label-suite baseline --app specs/examples/echo.yaml --replicas 1,5,10 --duration 30 --sudo`
     - Rollout: `./scripts/bench/run_rollout_k1s.sh --label-suite baseline-roll --app specs/examples/echo.yaml --replicas 5 --duration 30 --sudo`

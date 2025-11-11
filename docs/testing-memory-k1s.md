@@ -45,5 +45,7 @@ make bench-mem-rollout-k1s LABEL_SUITE=baseline-roll APP=specs/examples/echo.yam
 - Terminal A: `python -m ae.controller --loop --specs specs/ --watch` (bench scripts will auto-start if missing; logs `/tmp/k1s_ctrl_bench.log`).
 - Terminal B:
   - `make bench-mem-e2e-k1s LABEL_SUITE=report-YYYYMMDD APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5`
+  - Or with the controller running in Docker (k1nd): `make bench-mem-e2e-k1nd LABEL_SUITE=report-YYYYMMDD APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5`
   - `python scripts/bench/mem_combine.py snapshots/*/* && python scripts/bench/plot_overhead.py combined/combined.csv charts && python docs/build_docs.py`
+  - Quick fix for labels: backfill the detected OCI runtime into your latest snapshots and regenerate charts/docs in one go: `make bench-mem-backfill-oci-latest REBUILD_DOCS=1`
 - Podman preflight: `podman info` must succeed; see “Runbook: Successful Benchmark Runs” in memory.md for remedies if not.
