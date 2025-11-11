@@ -104,14 +104,14 @@ Backfill OCI runtime into past snapshots
 ```
 make bench-mem-backfill-oci LABEL=r20251110+podman+rootless+cg2* REBUILD_DOCS=1
 ```
-- Detects your OCI runtime (e.g., `crun`) and writes it to each snapshot’s `meta.json` and label (+crun) without renaming folders.
-- Then recombines and regenerates charts; add `OCI=runc` to override detection if needed. Use `GLOB='snapshots/r2025*/*'` to target arbitrary paths.
+- Detects the OCI runtime per-snapshot by reading `raw/podman_inspect.json` (`.OCIRuntime`) or `raw/docker_inspect.json` (`HostConfig.Runtime`), then writes it to `meta.json` and injects `+<oci>+` into the label (e.g., `+crun+`) without renaming folders.
+- Then recombines and regenerates charts. Add `OCI=runc` to force an override if needed. Use `GLOB='snapshots/r2025*/*'` to target explicit paths.
 
 Backfill just the latest label
 ```
 make bench-mem-backfill-oci-latest REBUILD_DOCS=1
 ```
-- Auto-detects the most recent label under `snapshots/` and runs the same backfill + recombine + charts sequence. Pass `OCI=crun` to override detection if desired.
+- Picks the most recently modified label directory under `snapshots/` and runs the same backfill → recombine → charts (and docs) sequence. Pass `OCI=crun` to override detection if desired.
 
 Automate a small matrix (k3s via k3d)
 - Create cluster and expose ports 80/443 for Traefik:

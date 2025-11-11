@@ -102,6 +102,12 @@ Verification
 - Check the effective runtime: `podman info --format '{{ .Host.OCIRuntime.Name }}'`
 - Inspect a container: `podman inspect <id> --format '{{ .OCIRuntime }}'`
 
+Backfilling past snapshots for charts
+- If older `snapshots/` are missing `oci_runtime` or `+crun+` in the label, run:
+  - `make bench-mem-backfill-oci LABEL=rYYYYMMDD+podman+* REBUILD_DOCS=1`
+  - or auto‑target the most recent label: `make bench-mem-backfill-oci-latest REBUILD_DOCS=1`
+- The backfill logic now reads each snapshot’s `raw/podman_inspect.json`/`raw/docker_inspect.json` to infer the runtime; no host binaries required.
+
 See also: FEAT.md section “Podman: Default OCI Runtime = crun (2025-11-10)”.
 
 ## Caveats & compatibility

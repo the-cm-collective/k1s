@@ -276,7 +276,7 @@ bench-mem-backfill:
 #   OCI     - override runtime name; if empty, auto-detects via podman/docker info.
 #   REBUILD_DOCS - set to 1 to rebuild docs after charts (default 0).
 bench-mem-backfill-oci:
-	@SNAP_GLOB=$${GLOB:-$$(test -n "$$LABEL" && echo snapshots/$$LABEL/* || echo snapshots/*/*)}; \
+	@SNAP_GLOB=$${GLOB:-$$( if test -n "$$LABEL"; then printf '%s' "snapshots/$$LABEL/*"; else printf '%s' "snapshots/*/*"; fi )}; \
 		echo "[oci-backfill] targeting $$SNAP_GLOB (override with GLOB=...)" >&2; \
 		python scripts/bench/label_backfill.py "$$SNAP_GLOB" --insert-into-label $${OCI:+--oci $$OCI}
 	@python scripts/bench/mem_combine.py $${GLOB_COMBINE:-snapshots/*/*}
@@ -287,7 +287,7 @@ bench-mem-backfill-oci:
 # Detect the most recent label directory under snapshots/ and backfill just that label.
 # Pass through OCI and REBUILD_DOCS as in bench-mem-backfill-oci.
 bench-mem-backfill-oci-latest:
-	@LBL=$${LABEL:-$$(ls -1d snapshots/* 2>/dev/null | awk -F/ '{print $$2}' | sort | tail -n1)}; \
+	@LBL=$${LABEL:-$$(ls -1td snapshots/* 2>/dev/null | head -n1 | awk -F/ '{print $$2}')}; \
 		if [ -z "$$LBL" ]; then echo "[oci-backfill-latest] no snapshots found" >&2; exit 0; fi; \
 		echo "[oci-backfill-latest] latest label=$$LBL" >&2; \
 		$(MAKE) bench-mem-backfill-oci LABEL="$$LBL*" $${OCI:+OCI=$$OCI} $${REBUILD_DOCS:+REBUILD_DOCS=$$REBUILD_DOCS}
