@@ -1,0 +1,35 @@
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: echo-envfrom
+spec:
+  image: demo-blue:latest
+  replicas: 1
+  ports:
+    - name: http
+      containerPort: 8080
+  service:
+    port: 18081
+    targetPort: 8080
+  # Pull selected keys via envFrom and project others as files
+  configRefs:
+    - name: app-config
+      path: configs/app-config.yaml
+      envFrom: true
+      files:
+        - key: mode
+          file: config/app_mode.txt
+  secretRefs:
+    - name: demo-secret
+      path: specs/examples/demo-secret.sops.yaml
+      envFrom: true
+      files:
+        - key: token
+          file: secret/token
+  ingress:
+    host: envfrom.home.arpa
+    path: /
+  resources:
+    requests:
+      cpu: 0.05
+      memory: 128Mi
