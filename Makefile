@@ -247,6 +247,17 @@ bench-mem-e2e-k1nd-down:
 	@$(MAKE) bench-mem-e2e-k1nd
 	@$(MAKE) labs-aio-down
 
+.PHONY: bench-mem-e2e-baselines bench-mem-e2e-baselines-sudo
+# Run all baseline suites (k1s rootless, k1s rootful, k1nd, k3d),
+# with engine cleanup between, then rebuild charts/docs and print summary.
+# Interactive runs will prompt once for sudo unless ALLOW_SUDO is set.
+bench-mem-e2e-baselines:
+	@bash ./scripts/bench/run_all_baselines.sh
+
+# CI-friendly variant: enable sudo steps non-interactively (requires NOPASSWD or cached credentials).
+bench-mem-e2e-baselines-sudo:
+	@ALLOW_SUDO=1 bash ./scripts/bench/run_all_baselines.sh
+
 .PHONY: bench-mem-docs
 # Combine, plot, and rebuild docs in one go
 bench-mem-docs:
