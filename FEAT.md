@@ -193,6 +193,46 @@ Notes
 - PDB percent values are supported by the exporter; CLI flags for PDB currently accept integers. Use the API/options layer for percent until CLI switches to string quantities.
 - HPA behavior (scaleUp/scaleDown) is emitted when `--hpa-behavior-{up,down}` is provided with autoscaling/v2 JSON.
 
+---
+
+## k3s High‑Priority Gaps (Q4 2025)
+
+Why: We already export portable Kubernetes YAML. These items tighten the experience on k3s (Traefik, servicelb/local-path) and reduce manual cluster prep.
+
+- RBAC emitters (Role/RoleBinding)
+  - Scope: emit minimal Namespaced Role + RoleBinding when a `--service-account` is attached.
+  - Acceptance: `kubeconform` clean; permission set documented in docs/k8s-compliance.md.
+
+- Batch workloads (Job/CronJob) exporters
+  - Scope: map a subset of our spec to `batch/v1 {Job,CronJob}` with container spec reuse and optional backoff/ttlSecondsAfterFinished.
+  - Acceptance: export-k8s `--workload job|cronjob` generates valid YAML; `k8s-check` includes basic batch advisories.
+
+- TLS Secret generator (BYO certs)
+  - Scope: helper to build `kubernetes.io/tls` Secret from PEM paths or `AE_TLS_DIR` and wire into Ingress `tls.secretName`.
+  - Acceptance: docs include k3s/Traefik example; `k8s-report` sample succeeds with precreated Secret.
+
+- `emptyDir` support
+  - Scope: allow ephemeral volumes in spec and export to PodSpec `volumes[].emptyDir` with medium selection.
+  - Acceptance: exporter renders; `k8s-check` warns when used for stateful data.
+
+- Ingress presets for Traefik
+  - Scope: add opt‑in annotation preset for Traefik (timeouts, proxy headers) behind `--ingress-preset traefik`.
+  - Acceptance: preset documented; does not alter defaults unless specified.
+
+- PDB percent on CLI
+  - Scope: allow percent strings for `--pdb-{min-available,max-unavailable}` to match exporter capability.
+  - Acceptance: CLI validates integers or percent; exporter receives value verbatim.
+
+- PodSecurity labels preset
+  - Scope: optional Namespace labels (`pod-security.kubernetes.io/enforce: baseline|restricted`).
+  - Acceptance: preset writes a Namespace YAML when requested; documented caveats for existing clusters.
+
+- NetworkPolicy provider note
+  - Scope: call out that enforcement depends on k3s NP backend; provide preset shortcuts for web/backend.
+  - Acceptance: FEAT.md and docs/k8s-compliance.md updated with guidance.
+
+Tracking: regenerate docs/site/k8s_status.json after each milestone via `ae k8s-report`.
+
 # Milestones (build order)
 
 # Progress Log (2025-10-30)

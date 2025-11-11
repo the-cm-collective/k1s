@@ -515,27 +515,251 @@ def build_one(md_path: Path, out_path: Path) -> None:
                         f"<td style='text-align:right'>{mdelta_mib}</td></tr>"
                     )
                 parts.append("</table>")
-                # Inline charts below the table
-                if charts_dir.exists():
-                    import shutil
+                # ---- Comparison Matrix (pivot by scenario) ----
+                try:
+                    # Build scenario buckets from all rows (not only tail) to catch freshest per scenario
+                    def to_float_mib(val: str, kib: bool = False) -> float:
+                        try:
+                            v = float(val or 0)
+                        except Exception:
+                            v = 0.0
+                        if kib:
+                            return v / 1024.0
+                        return v / (1024.0 * 1024.0)
 
-                    charts_out = OUT / "charts"
-                    charts_out.mkdir(parents=True, exist_ok=True)
+                    # Scenario detection from mode/backend/label
+                    def scenario_name(row: dict[str, str]) -> str:
+                        mode = (row.get("mode") or "").lower().strip() or "?"
+                        backend = (row.get("backend") or "").lower().strip() or "?"
+                        label = row.get("label", "")
+                        root_tag = "rootless" if "+rootless+" in label else ("priv" if "+priv+" in label else "?")
+                        if mode == "k1s" and backend == "podman" and root_tag == "rootless":
+                            return "k1s rootless"
+                        if mode == "k1s" and backend == "podman" and root_tag == "priv":
+                            return "k1s rootful"
+                        if mode == "k1s" and backend == "docker":
+                            return "k1nd"
+                        if mode == "k3s":
+                            return "k3d"
+                        return f"{mode} {backend}"
+
+                    # Extract stage from label suffix
+                    def stage_name(label: str) -> str:
+                        l = label or ""
+                        if l.endswith("-idle"):
+                            return "idle"
+                        m = re.search(r"-pods-(\d+)$", l)
+                        if m:
+                            return f"pods-{m.group(1)}"
+                        m = re.search(r"-rollout-(\d+)-(during|post)$", l)
+                        if m:
+                            return f"rollout-{m.group(1)}-{m.group(2)}"
+                        return "other"
+
+                    # Keep the latest row per (scenario, stage)
+                    latest: dict[tuple[str, str], dict[str, str]] = {}
+                    for r in rows:
+                        sc = scenario_name(r)
+                        st = stage_name(r.get("label", ""))
+                        if st == "other":
+                            continue
+                        key = (sc, st)
+                        prev = latest.get(key)
+                        if prev is None or str(r.get("timestamp", "")) > str(prev.get("timestamp", "")):
+                            latest[key] = r
+
+                    # Desired column order
+                    col_order = ["k1s rootless", "k1s rootful", "k1nd", "k3d"]
+                    # Gather all stages we have across these columns
+                    stages = sorted({k[1] for k in latest.keys()})
+
+                    # Heatmap coloring helper (lower is better)
+                    def color_for(values: list[float], val: float) -> str:
+                        good = min(values)
+                        bad = max(values)
+                        if good == bad:
+                            return "background:rgba(128,128,128,.2)"  # flat
+                        t = (val - good) / (bad - good)  # 0..1
+                        # green (0.3) → yellow (0.5) → red (0.8)
+                        # map t into hue 120→0
+                        hue = int((1.0 - t) * 120)
+                        return f"background:hsl({hue},60%,25%); color:#fff"
+
+                    def render_metric_table(title_txt: str, extractor) -> str:
+                        html_parts: list[str] = []
+                        html_parts.append(f"<h3>{html.escape(title_txt)}</h3>")
+                        html_parts.append(
+                            "<table class='mini' style='border-collapse:collapse;width:100%'>"
+                            + "<thead><tr><th>Stage</th>"
+                            + "".join([f"<th>{c}</th>" for c in col_order])
+                            + "</tr></thead><tbody>"
+                        )
+                        for st in stages:
+                            row_vals: dict[str, float] = {}
+                            for c in col_order:
+                                r = latest.get((c, st))
+                                if r:
+                                    row_vals[c] = extractor(r)
+                            # Compute colors per stage
+                            vals = [v for v in row_vals.values() if v is not None]
+                            html_parts.append(f"<tr><td>{st}</td>")
+                            for c in col_order:
+                                if c in row_vals:
+                                    v = row_vals[c]
+                                    style = color_for(vals, v) if len(vals) > 1 else ""
+                                    html_parts.append(
+                                        f"<td style='text-align:right;{style}'>" f"{v:.1f}</td>"
+                                    )
+                                else:
+                                    html_parts.append("<td style='opacity:.5'>—</td>")
+                            html_parts.append("</tr>")
+                        html_parts.append("</tbody></table>")
+                        return "".join(html_parts)
+
+                    parts.append("<style>table.mini td, table.mini th { border:1px solid var(--border); padding:6px; }</style>")
+                    parts.append("<h2>Latest Comparison Matrix</h2>")
+                    # Overall winner band (normalized across stages x metrics; lower is better)
+                    try:
+                        def to_norm(vals: list[float], v: float) -> float:
+                            if not vals:
+                                return 0.0
+                            good, bad = min(vals), max(vals)
+                            rng = (bad - good) or 1.0
+                            return (v - good) / rng
+
+                        metric_extractors = [
+                            ("Control Plane PSS", lambda r: to_float_mib(r.get("control_plane_pss_kb", "0"), kib=True)),
+                            ("App Cgroups", lambda r: to_float_mib(r.get("app_mem_bytes", "0"))),
+                            (
+                                "Host System Cgroups",
+                                lambda r: to_float_mib(
+                                    r.get("host_system_cgroups_bytes")
+                                    if r.get("host_system_cgroups_bytes") is not None
+                                    else r.get("system_mem_bytes", "0")
+                                ),
+                            ),
+                            ("MemAvail Δ", lambda r: to_float_mib(r.get("mem_available_delta_bytes", "0"))),
+                        ]
+                        totals: dict[str, tuple[float, int]] = {c: (0.0, 0) for c in col_order}
+                        for st in stages:
+                            for _mt, ex in metric_extractors:
+                                vals_per_col: dict[str, float] = {}
+                                for c in col_order:
+                                    rr = latest.get((c, st))
+                                    if rr:
+                                        vals_per_col[c] = ex(rr)
+                                if len(vals_per_col) < 2:
+                                    continue
+                                arr = list(vals_per_col.values())
+                                for c, v in vals_per_col.items():
+                                    s, n = totals[c]
+                                    totals[c] = (s + to_norm(arr, v), n + 1)
+                        ranking = []
+                        for c in col_order:
+                            s, n = totals[c]
+                            avg = (s / n) if n else 1.0
+                            ranking.append((avg, c, n))
+                        ranking.sort(key=lambda x: x[0])
+                        parts.append(
+                            "<style> .pill { display:inline-block; padding:4px 10px; border:1px solid var(--border); border-radius:999px; margin-right:8px; }"
+                            " .pill.win { background:#144d2a; color:#fff; border-color:#1f6f3e; }"
+                            " .pill.place2 { background:#4d4a14; color:#fff; border-color:#6f6a1f; }"
+                            " .pill.place3 { background:#4d2b14; color:#fff; border-color:#6f3f1f; }"
+                            " .pill.dim { opacity:.7; }"
+                            " .band { margin:6px 0 12px 0 }"
+                            "</style>"
+                        )
+                        bl: list[str] = ["<div class='band'><strong>Overall Ranking:</strong> "]
+                        for idx, (avg, c, n) in enumerate(ranking):
+                            cls = "win" if idx == 0 else ("place2" if idx == 1 else ("place3" if idx == 2 else "dim"))
+                            score = int(round(avg * 100))
+                            bl.append(f"<span class='pill {cls}' title='comparisons:{n}'> {c} <span style='opacity:.85'>&nbsp;({score})</span></span>")
+                        bl.append("</div>")
+                        parts.append("".join(bl))
+                    except Exception:
+                        pass
+                    parts.append(
+                        render_metric_table(
+                            "Control Plane PSS (MiB) — lower is better",
+                            lambda r: to_float_mib(r.get("control_plane_pss_kb", "0"), kib=True),
+                        )
+                    )
+                    parts.append(
+                        render_metric_table(
+                            "App Cgroups (MiB) — lower is better",
+                            lambda r: to_float_mib(r.get("app_mem_bytes", "0")),
+                        )
+                    )
+                    parts.append(
+                        render_metric_table(
+                            "Host System Cgroups (MiB) — lower is better",
+                            lambda r: to_float_mib(
+                                r.get("host_system_cgroups_bytes")
+                                if r.get("host_system_cgroups_bytes") is not None
+                                else r.get("system_mem_bytes", "0")
+                            ),
+                        )
+                    )
+                    parts.append(
+                        render_metric_table(
+                            "MemAvail Δ (MiB) — lower is better",
+                            lambda r: to_float_mib(r.get("mem_available_delta_bytes", "0")),
+                        )
+                    )
+                except Exception:
+                    # Best-effort: if anything fails, skip the matrix
+                    pass
+                # Inline charts below the table
+                # Inline charts from one or more chart directories (charts, charts-user)
+                import shutil
+                charts_out = OUT / "charts"
+                charts_out.mkdir(parents=True, exist_ok=True)
+                charts_dirs = []
+                for nm in ["charts", "charts-user"]:
+                    p = repo_root / nm
+                    if p.exists():
+                        charts_dirs.append(p)
+                if charts_dirs:
                     chart_map = [
                         ("control_plane_pss.png", "Control Plane PSS (MiB)"),
                         ("system_cgroups.png", "System Cgroups (MiB)"),
                         ("per_pod_overhead.png", "Per‑Pod Overhead (MiB)"),
+                        ("per_pod_scaling.png", "Per‑Pod Scaling (MiB)"),
+                        ("rollout_pairs.png", "Rollout During vs Post (CP PSS)"),
+                        ("matrix_heatmap.png", "Latest Comparison Heatmap"),
                     ]
                     inline_blocks: list[str] = []
-                    for fname, title_txt in chart_map:
-                        src = charts_dir / fname
-                        if src.exists():
-                            shutil.copy2(src, charts_out / fname)
-                            inline_blocks.append(
-                                f"<h3>{html.escape(title_txt)}</h3>"
-                                f"<img src='charts/{fname}' alt='{html.escape(title_txt)}' "
-                                f"style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/>"
-                            )
+                    copied: set[str] = set()
+                    for cdir in charts_dirs:
+                        for fname, title_txt in chart_map:
+                            src = cdir / fname
+                            dst = charts_out / fname
+                            if src.exists() and fname not in copied:
+                                try:
+                                    shutil.copy2(src, dst)
+                                    copied.add(fname)
+                                    inline_blocks.append(
+                                        f"<h3>{html.escape(title_txt)}</h3>"
+                                        f"<img src='charts/{fname}' alt='{html.escape(title_txt)}' "
+                                        f"style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/>"
+                                    )
+                                except Exception:
+                                    pass
+                        # Dynamic comparison charts: comparison_<metric>_<stage>.png
+                        for src in cdir.glob("comparison_*.png"):
+                            try:
+                                dst = charts_out / src.name
+                                if src.name not in copied:
+                                    shutil.copy2(src, dst)
+                                    copied.add(src.name)
+                                    title_txt = src.stem.replace("comparison_", "").replace("_", " ").title()
+                                    inline_blocks.append(
+                                        f"<h3>{html.escape(title_txt)}</h3>"
+                                        f"<img src='charts/{src.name}' alt='{html.escape(title_txt)}' "
+                                        f"style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/>"
+                                    )
+                            except Exception:
+                                pass
                     if inline_blocks:
                         parts.append("<h2>Charts</h2>" + "".join(inline_blocks))
                 html_body += "\n" + "\n".join(parts)
