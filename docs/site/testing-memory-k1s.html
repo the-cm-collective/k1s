@@ -158,6 +158,7 @@ make bench-mem-rollout-k1s LABEL_SUITE=baseline-roll APP=specs/examples/echo.yam
 <li><code>make bench-mem-e2e-k1s LABEL_SUITE=report-YYYYMMDD APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5</code></li>
 <li>Or with the controller running in Docker (k1nd): <code>make bench-mem-e2e-k1nd LABEL_SUITE=report-YYYYMMDD APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5</code></li>
 <li><code>python scripts/bench/mem_combine.py snapshots/*/* &amp;&amp; python scripts/bench/plot_overhead.py combined/combined.csv charts &amp;&amp; python docs/build_docs.py</code></li>
+<li>Quick fix for labels: backfill the detected OCI runtime into your latest snapshots and regenerate charts/docs in one go: <code>make bench-mem-backfill-oci-latest REBUILD_DOCS=1</code></li>
 <li>Podman preflight: <code>podman info</code> must succeed; see “Runbook: Successful Benchmark Runs” in memory.md for remedies if not.</li>
 </ul>
 <hr/>
@@ -182,7 +183,7 @@ make bench-mem-rollout-k1s LABEL_SUITE=baseline-roll APP=specs/examples/echo.yam
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2025-11-10 16:59:42</span>
+        <span>Built 2025-11-10 17:32:49</span>
       </div>
     </footer>
     <script>

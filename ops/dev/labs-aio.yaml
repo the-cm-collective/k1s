@@ -2,14 +2,15 @@ services:
   controller:
     image: python:3.12-slim
     working_dir: /workspace
-    command: bash -lc "python -m pip install -e .[watch] && AE_LABS=1 AE_API_MUTATIONS=1 AE_SPECS_DIR=${AE_SPECS_DIR:-specs} python -m ae.controller --loop --specs \"${AE_SPECS_DIR:-specs}\" --metrics-port 9108 --watch"
+    command: bash -lc "python -m pip install -e .[watch] && AE_LABS=1 AE_API_MUTATIONS=1 AE_SPECS_DIR=${AE_SPECS_DIR:-state/demo-specs} python -m ae.controller --loop --specs \"${AE_SPECS_DIR:-state/demo-specs}\" --metrics-port 9108 --watch"
     volumes:
       - ../..:/workspace
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - AE_LABS=1
       - AE_API_MUTATIONS=1
-      - AE_SPECS_DIR=${AE_SPECS_DIR:-specs}
+      - AE_DEMO_MODE=1
+      - AE_SPECS_DIR=${AE_SPECS_DIR:-state/demo-specs}
     ports:
       - "9108:9108"
     extra_hosts:

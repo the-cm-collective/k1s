@@ -139,13 +139,15 @@ Scheduling
 Validation and Tooling
 - `ae export-k8s --validate` performs offline structural checks; `k8s-check --policy strict` applies FEAT checklist; kubeconform integration via `k8s-check --kubeconform`; `export-k8s --split` writes per‑resource YAML.
 
-Notable Gaps vs. Kubernetes
-- Multi‑container Pods: runtime remains single‑container; exporter supports `containers[]` and `initContainers` including per‑container probes.
-- Service sessionAffinity healthCheckNodePort and advanced Ingress features remain out of scope.
-- Storage: no ephemeral/emptyDir.
+Notable Gaps vs. Kubernetes (updated 2025-11-10)
+- Ephemeral containers not supported. Jobs/CronJobs/DaemonSets not emitted.
+- Advanced Ingress features (regex paths, canary annotations, multiple backends per rule) remain out of scope.
+- Service healthCheckNodePort not supported.
+- Storage: no `emptyDir`/ephemeral volumes.
 - RBAC (Role/RoleBinding/ClusterRoleBinding) not emitted.
+- CRDs and admission webhooks out of scope.
 
-Planned Improvements
+Planned Improvements (refreshed 2025-11-10)
 
 - Multi‑container support (exporter + runtime) and initContainers (exporter + runtime):
   - [x] Sidecars in runtime with health aggregation; container‑targeted logs/exec.
@@ -156,18 +158,40 @@ Planned Improvements
   - [x] File projections with per‑container `projectionMounts` in runtime.
   - [x] Exporter: support explicit `items` (ConfigMap/Secret) with mode/path and per‑container mounts.
 - Policy & autoscaling:
-  - [ ] PDB percent values; HPA scaleUp/Down behavior tuning.
-  - [ ] Optional `storageClassName` and accessModes selection.
+  - [x] PDB percent values in exporter (CLI flags accept integers today; percent supported via API/options).
+  - [x] HPA scaleUp/Down behavior (autoscaling/v2) via `--hpa-behavior-{up,down}` JSON.
+  - [x] Optional `storageClassName` and PVC `accessModes` selection.
 - Service/Ingress:
   - [x] Validation for ingress host/path and service ports.
   - [ ] Extended ingress annotations (nginx/traefik) behind explicit flags.
 - Observability:
   - [x] Grafana/Prometheus dev stack with pre‑provisioned dashboards.
   - [ ] Add per‑replica readiness histories endpoint; dashboard panels for histories.
-- Multi‑container support (exporter + runtime) and initContainers (exporter + minimal runtime): next major parity effort.
+- Multi‑container runtime parity: sidecars and initContainers implemented; ephemeral containers remain.
 - Config/Secret volume mounts parity with `items` selection (beyond projected files convenience).
-- PDB percent values; HPA behavior tuning; optional `storageClassName` selection.
 - Extended Service/Ingress knobs behind explicit flags.
+
+---
+
+## Kubernetes Spec Compliance (2025-11-10)
+
+Summary
+- Exporter coverage: Deployment, StatefulSet (with headless Service), Service (ClusterIP/NodePort), Ingress (networking.k8s.io/v1), PodDisruptionBudget (policy/v1), HorizontalPodAutoscaler (autoscaling/v2), ServiceAccount, PersistentVolumeClaim, ConfigMap, Secret, NetworkPolicy.
+- PodSpec fields: multi‑container and initContainers export; readiness/liveness/startup probes; lifecycle (postStart/preStop); resources (requests/limits); securityContext (seccomp/AppArmor via annotations, cap drops, read‑only root); DNS policy/config; imagePullSecrets; topology spread; affinity/tolerations; host aliases; optional serviceAccountName.
+- Runtime parity: single‑node; multi‑container support via sidecars with aggregated readiness and per‑container logs/exec; initContainers sequential with timeouts and events; preStop exec honored with grace period. Ephemeral containers not supported.
+
+What’s out of scope
+- DaemonSet, Job/CronJob, CRDs, admission webhooks; Ingress advanced features (regex, canary annotations); Service healthCheckNodePort; `emptyDir` ephemeral storage; RBAC resources.
+
+Validation & Reporting
+- Offline checks: `ae export-k8s --validate` and `ae k8s-check --policy strict`.
+- Schema: optional kubeconform via `k8s-check --kubeconform`.
+- Server‑side dry‑run: `ae k8s-report --run-dry-run` (uses `kubectl` if present).
+- Compliance report JSON: `ae k8s-report --samples specs/examples/echo.yaml specs/examples/multi-replica-echo.yaml -o docs/site/k8s_status.json`.
+
+Notes
+- PDB percent values are supported by the exporter; CLI flags for PDB currently accept integers. Use the API/options layer for percent until CLI switches to string quantities.
+- HPA behavior (scaleUp/scaleDown) is emitted when `--hpa-behavior-{up,down}` is provided with autoscaling/v2 JSON.
 
 # Milestones (build order)
 

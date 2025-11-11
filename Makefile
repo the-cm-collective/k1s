@@ -103,6 +103,24 @@ demo-help:
 demo-down:
 	./scripts/init_demo.sh --down -y
 
+# Reset demo/labs state so a fresh init only reconciles the curated demo apps
+.PHONY: demo-reset
+demo-reset:
+	@echo "[demo-reset] stopping controller/docs and dev stacks"
+	@bash scripts/stop_all.sh
+	@{ docker compose -f ops/dev/labs-aio.yaml down >/dev/null 2>&1 || true; }
+	@{ docker compose -f ops/dev/labs-compose.yaml down >/dev/null 2>&1 || true; }
+	@echo "[demo-reset] clearing dynamic Caddy sites"
+	@rm -f state/caddy/*.caddy 2>/dev/null || true
+	@echo "[demo-reset] removing controller DB (state/controller.db)"
+	@rm -f state/controller.db 2>/dev/null || true
+	@echo "[demo-reset] pruning ae.app volumes (docker/podman)"
+	@{ command -v docker >/dev/null 2>&1 && docker volume ls -q --filter label=ae.app | xargs -r docker volume rm >/dev/null 2>&1; } || true
+	@{ command -v podman >/dev/null 2>&1 && podman volume ls -q --filter label=ae.app | xargs -r podman volume rm >/dev/null 2>&1; } || true
+	@echo "[demo-reset] removing curated specs directory (state/demo-specs)"
+	@rm -rf state/demo-specs 2>/dev/null || true
+	@echo "[demo-reset] done"
+
 integ-test:
 	AE_INTEG_RUNTIME=$${AE_INTEG_RUNTIME:-podman} pytest -q tests/integration/
 
