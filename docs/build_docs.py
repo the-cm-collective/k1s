@@ -440,9 +440,14 @@ def build_one(md_path: Path, out_path: Path) -> None:
                     pe = int(r.get("policy_strict", {}).get("errors", 0))
                     html_body += f"<li>{name}: score={r.get('score')} validate={v_ok} kubeconform={kc_str} dry-run={dr_str} policyErrors={pe}</li>"
                 html_body += "</ul></details>"
-    except Exception:
-        # Non-fatal: keep page renderable if injection fails
-        pass
+    except Exception as e:
+        # Non-fatal: keep page renderable if injection fails, but log why
+        try:
+            import traceback, sys
+            print(f"[docs] injection error for {md_path.name}: {e}", file=sys.stderr)
+            traceback.print_exc()
+        except Exception:
+            pass
 
     # Inject latest memory benchmark summary into the k1s memory testing page
     try:
@@ -452,6 +457,7 @@ def build_one(md_path: Path, out_path: Path) -> None:
             combined_csv = repo_root / "combined" / "combined.csv"
             charts_dir = repo_root / "charts"
             if combined_csv.exists():
+                print(f"[docs] injecting latest benchmarks from {combined_csv}")
                 import csv
 
                 rows: list[dict[str, str]] = []
@@ -503,15 +509,20 @@ def build_one(md_path: Path, out_path: Path) -> None:
                         if mode == "k3s":
                             v = row.get("k3s_control_plane_pss_kb")
                             if v is not None and str(v) != "":
-                                return f"{to_float_mib(v, kib=True):.1f}"
+                                x = float(v or 0)
+                                return f"{x / 1024.0:.1f}"
                         c = row.get("controller_pss_kb")
                         i = row.get("ingress_pss_kb")
                         if c is not None or i is not None:
-                            total_kib = int(c or 0) + int(i or 0)
-                            return f"{to_float_mib(total_kib, kib=True):.1f}"
+                            total_kib = float(c or 0) + float(i or 0)
+                            return f"{total_kib / 1024.0:.1f}"
                     except Exception:
                         pass
-                    return f"{to_float_mib(row.get('control_plane_pss_kb', '0'), kib=True):.1f}"
+                    try:
+                        x = float(row.get('control_plane_pss_kb', '0') or 0)
+                    except Exception:
+                        x = 0.0
+                    return f"{x / 1024.0:.1f}"
 
                 for r in tail:
                     cp_mib = cp_pss_mib_derived(r)
@@ -652,16 +663,19 @@ def build_one(md_path: Path, out_path: Path) -> None:
                                 if mode == "k3s":
                                     v = r.get("k3s_control_plane_pss_kb")
                                     if v is not None and str(v) != "":
-                                        return to_float_mib(v, kib=True)
+                                        return float(v or 0) / 1024.0
                                 c = r.get("controller_pss_kb")
                                 i = r.get("ingress_pss_kb")
                                 if c is not None or i is not None:
-                                    total_kib = int(c or 0) + int(i or 0)
-                                    return to_float_mib(total_kib, kib=True)
+                                    total_kib = float(c or 0) + float(i or 0)
+                                    return total_kib / 1024.0
                             except Exception:
                                 pass
                             # Fallback
-                            return to_float_mib(r.get("control_plane_pss_kb", "0"), kib=True)
+                            try:
+                                return float(r.get("control_plane_pss_kb", "0") or 0) / 1024.0
+                            except Exception:
+                                return None
 
                         metric_extractors = [
                             ("Control Plane PSS", lambda r: cp_pss_float_derived(r)),
@@ -801,9 +815,15 @@ def build_one(md_path: Path, out_path: Path) -> None:
                     if inline_blocks:
                         parts.append("<h2>Charts</h2>" + "".join(inline_blocks))
                 html_body += "\n" + "\n".join(parts)
-    except Exception:
+                print("[docs] injected tables and charts into testing-memory-k1s.html")
+    except Exception as e:
         # Non-fatal: keep page renderable if injection fails
-        pass
+        try:
+            import traceback, sys
+            print(f"[docs] latest-benchmarks injection failed: {e}", file=sys.stderr)
+            traceback.print_exc()
+        except Exception:
+            pass
     extra_head = ""
     if md_path.name == "playground.md":
         ver = str(int(datetime.now().timestamp()))
