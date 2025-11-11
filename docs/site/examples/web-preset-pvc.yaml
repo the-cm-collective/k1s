@@ -1,0 +1,17 @@
+apiVersion: ae.dev/v1alpha1
+kind: App
+metadata:
+  name: web-preset-pvc
+spec:
+  image: demo-blue:latest
+  replicas: 2
+  ports:
+    - name: http
+      containerPort: 8080
+  ingress:
+    host: web-preset-pvc.home.arpa
+    path: /
+  storage:
+    - name: data
+      mountPath: /data
+      size: 2Gi
