@@ -356,6 +356,85 @@ PY
 fi
 log_step "docker containers collected (if selected)"
 
+# k3s extras: collect control-plane PSS and app cgroup bytes from inside k3d node containers
+if [[ "$mode" == "k3s" ]] && command -v docker >/dev/null 2>&1; then
+  {
+    echo "[mem-snapshot] k3s extras: probing k3d node containers via docker exec" >&2
+    # Discover k3d server/agent containers
+    mapfile -t k3d_nodes < <(docker ps --format '{{.ID}} {{.Names}}' 2>/dev/null | awk '{ if ($2 ~ /k3d-.*-(server|agent)-[0-9]+$/) print $1" "$2 }')
+    if (( ${#k3d_nodes[@]} > 0 )); then
+      total_cp_pss_kb=0
+      total_app_bytes=0
+      for entry in "${k3d_nodes[@]}"; do
+        cid="${entry%% *}"; cname="${entry#* }"
+        # Control-plane PSS: only on server nodes where k3s process exists
+        cp_kb=$(docker exec "$cid" sh -c '
+# pick a single k3s pid
+pid=""
+if command -v pidof >/dev/null 2>&1; then
+  # choose the lowest PID from pidof output (the main server)
+  set -- $(pidof k3s 2>/dev/null || true)
+  if [ -n "$1" ]; then pid=$(printf "%s\n" "$@" | sort -n | head -n1); fi
+fi
+if [ -z "$pid" ]; then
+  pid=$(ps -eo pid,comm | awk "$2==\"k3s\"{print $1; exit}")
+fi
+if [ -n "$pid" ] && [ -r "/proc/$pid/smaps_rollup" ]; then
+  sed -n "s/^Pss:\\s*\\([0-9]*\\) kB/\\1/p" "/proc/$pid/smaps_rollup" | head -n1
+else
+  echo 0
+fi' 2>/dev/null || echo 0)
+        cp_kb=${cp_kb:-0}
+        total_cp_pss_kb=$(( total_cp_pss_kb + ${cp_kb:-0} ))
+        # App cgroups: sum memory.current for leaf cgroups under kubepods{,.slice}
+        app_b=$(docker exec "$cid" sh -c '
+for base in /sys/fs/cgroup/kubepods.slice /sys/fs/cgroup/kubepods; do
+  if [ -d "$base" ]; then
+    # leaf heuristic: directory has memory.current and no immediate child directory
+    find "$base" -type d 2>/dev/null | while read d; do
+      [ -f "$d/memory.current" ] || continue
+      if find "$d" -mindepth 1 -maxdepth 1 -type d | read _; then
+        :
+      else
+        cat "$d/memory.current"
+      fi
+    done | awk "{s+=\\$1} END{print s+0}"
+    exit 0
+  fi
+done
+echo 0
+' 2>/dev/null || echo 0)
+        app_b=${app_b:-0}
+        total_app_bytes=$(( total_app_bytes + ${app_b:-0} ))
+      done
+      # Retry app cgroup scan a few times if zero (pods may be starting)
+      if [[ "${total_app_bytes}" == "0" ]]; then
+        for _ in 1 2 3; do
+          sleep 1
+          tmp_total=0
+          for entry2 in "${k3d_nodes[@]}"; do
+            cid2="${entry2%% *}"
+            app2=$(docker exec "$cid2" sh -c '
+base=/sys/fs/cgroup/kubepods; [ -d "$base" ] || base=/sys/fs/cgroup/kubepods.slice;
+find "$base" -type d 2>/dev/null | while read d; do [ -f "$d/memory.current" ] || continue; if find "$d" -mindepth 1 -maxdepth 1 -type d | read _; then :; else cat "$d/memory.current"; fi; done | awk "{s+=\$1} END{print s+0}"
+' 2>/dev/null || echo 0)
+            tmp_total=$(( tmp_total + ${app2:-0} ))
+          done
+          if [[ "$tmp_total" != "0" ]]; then
+            total_app_bytes=$tmp_total
+            break
+          fi
+        done
+      fi
+      echo "$total_cp_pss_kb" > "${outdir}/raw/k3s_control_plane_pss_kb.txt" || true
+      echo "$total_app_bytes" > "${outdir}/raw/k3s_app_cgroups_bytes.txt" || true
+      echo "[mem-snapshot] k3s extras: cp_pss_kb=${total_cp_pss_kb} app_bytes=${total_app_bytes}" >&2
+    else
+      echo "[mem-snapshot] k3s extras: no k3d node containers detected; skipping inner metrics" >&2
+    fi
+  } 2>>"${outdir}/status.log"
+fi
+
 if [[ "$collect_engine" == "podman" ]] && ! command -v podman >/dev/null 2>&1; then
   echo "[mem-snapshot] podman not found (engine_filter=podman); container metrics skipped." >&2
 elif [[ "$collect_engine" == "docker" ]] && ! command -v docker >/dev/null 2>&1; then

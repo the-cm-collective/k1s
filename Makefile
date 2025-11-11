@@ -283,6 +283,13 @@ bench-mem-backfill:
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 	@python docs/build_docs.py
 
+.PHONY: bench-engines-clear
+# Danger: stop and remove ALL Docker and Podman containers (rootful) to avoid leakage into benchmarks.
+# Usage: run with sudo and explicit confirmation:
+#   sudo make bench-engines-clear CONFIRM=1
+bench-engines-clear:
+	@./scripts/bench/engines_clear.sh $${CONFIRM:+--confirm}
+
 .PHONY: bench-mem-backfill-oci
 # Backfill: insert detected OCI runtime (e.g., crun/runc) into snapshot meta and labels,
 # then recombine results and regenerate charts (and optionally docs).

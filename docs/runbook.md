@@ -11,7 +11,8 @@ Setup
   - Curated demo/specs: set `AE_SPECS_DIR` and use Make targets that respect it:
     - `AE_SPECS_DIR=state/demo-specs make loop` (watches only the curated set)
     - `AE_SPECS_DIR=state/demo-specs make run` (single reconcile pass)
-  - Tip: `scripts/init_demo.sh` seeds `state/demo-specs` and exports `AE_SPECS_DIR` + `AE_DEMO_MODE=1` so only the selected demo apps are reconciled.
+- Tip: `scripts/init_demo.sh` seeds `state/demo-specs` and exports `AE_SPECS_DIR` + `AE_DEMO_MODE=1` so only the selected demo apps are reconciled.
+  - Reset state quickly when switching contexts: `./scripts/init_demo.sh --reset` (deletes `state/controller.db` and `state/projections/`).
 - SOPS/age (secrets):
   - Generate an age identity: `mkdir -p ~/.config/ae && age-keygen -o ~/.config/ae/keys.txt && chmod 600 ~/.config/ae/keys.txt`
   - Point SOPS to it: `export SOPS_AGE_KEY_FILE=~/.config/ae/keys.txt`

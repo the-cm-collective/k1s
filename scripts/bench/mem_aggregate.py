@@ -180,6 +180,22 @@ def aggregate(snapshot_dir: Path) -> Dict:
             proc_totals["uss_kb"] += pr.uss_kb
             bucket["uss_kb"] += pr.uss_kb
 
+    # k3s extras: allow docker-exec based metrics to fill gaps when smaps aren't readable
+    try:
+        if mode == "k3s":
+            cp_extra_path = raw / "k3s_control_plane_pss_kb.txt"
+            if cp_extra_path.exists():
+                v = int((cp_extra_path.read_text().strip() or "0"))
+                if v > 0:
+                    cp_bucket = by_class.setdefault(
+                        "control_plane", {"rss_kb": 0, "pss_kb": 0, "uss_kb": 0}
+                    )
+                    if cp_bucket.get("pss_kb", 0) == 0:
+                        cp_bucket["pss_kb"] = v
+                        proc_totals["pss_kb"] += v
+    except Exception:
+        pass
+
     # --- Host system cgroups (cg2 preferred) ---------------------------------
     def _detect_cgv2() -> bool:
         try:
@@ -332,22 +348,37 @@ def aggregate(snapshot_dir: Path) -> Dict:
             if mem < 0:
                 continue
             is_app = False
-            if cid in inspect:
-                # Docker and Podman both expose Config.Labels; also check top-level Labels for safety
-                ins = inspect[cid]
-                labels = ((ins.get("Config") or {}).get("Labels") or {}) or (
-                    ins.get("Labels") or {}
-                )
-                if any(k.startswith("ae.app") for k in labels.keys()) or labels.get("ae.app"):
-                    is_app = True
+            # For k3s mode, treat all host-engine containers as system; rely on k3s extras for app
+            if mode == "k3s":
+                is_app = False
             else:
-                name = (row.get("name") or "").lower()
-                if name.startswith("ae-") or "rev" in name:
-                    is_app = True
+                if cid in inspect:
+                    # Docker and Podman both expose Config.Labels; also check top-level Labels for safety
+                    ins = inspect[cid]
+                    labels = ((ins.get("Config") or {}).get("Labels") or {}) or (
+                        ins.get("Labels") or {}
+                    )
+                    if any(k.startswith("ae.app") for k in labels.keys()) or labels.get("ae.app"):
+                        is_app = True
+                else:
+                    name = (row.get("name") or "").lower()
+                    if name.startswith("ae-") or "rev" in name:
+                        is_app = True
             if is_app:
                 app_bytes += mem
             else:
                 system_bytes += mem
+
+    # k3s extras: prefer inner kubepods.sum if present and app_bytes not already populated
+    try:
+        if mode == "k3s" and app_bytes == 0:
+            ap_path = raw / "k3s_app_cgroups_bytes.txt"
+            if ap_path.exists():
+                v = int((ap_path.read_text().strip() or "0"))
+                if v > 0:
+                    app_bytes = v
+    except Exception:
+        pass
 
     host_system_bytes = _sum_host_system_cgroups_bytes()
     mem_avail_before = _read_free_available(raw / "free_before.txt")
