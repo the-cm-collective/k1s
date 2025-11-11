@@ -31,7 +31,7 @@ APP_NAME=${APP_NAME:-blue}
 K3S_MANIFEST=${K3S_MANIFEST:-specs/examples/k3s-echo.yaml}
 REPLICAS=${REPLICAS:-1,5,10}
 DURATION=${DURATION:-30}
-WAIT_READY_TRIES=${WAIT_READY_TRIES:-120}
+WAIT_READY_TRIES=${WAIT_READY_TRIES:-300}
 
 # -------- Helpers --------
 log() { printf "[%s] %s\n" "$(date +%H:%M:%S)" "$*" >&2; }
@@ -211,22 +211,46 @@ fi
 start_ts=$(date +%Y-%m-%dT%H:%M:%S)
 log "starting baseline at $start_ts"
 
+# Build demo images if missing (rootless/rootful)
+build_demo_images_podman() {
+  local sudo_flag="$1"    # 0 or 1
+  local runner=podman
+  if [[ "$sudo_flag" == "1" ]]; then
+    have sudo || return 0
+    runner="sudo podman"
+  fi
+  if ! $runner images --format '{{.Repository}}:{{.Tag}}' | grep -q '^demo-blue:latest$'; then
+    log "building demo-blue:latest ($([[ "$sudo_flag" == "1" ]] && echo rootful || echo rootless))"
+    $runner build -t demo-blue:latest samples/servers/blue >/dev/null 2>&1 || true
+  fi
+  if ! $runner images --format '{{.Repository}}:{{.Tag}}' | grep -q '^demo-green:latest$'; then
+    log "building demo-green:latest ($([[ "$sudo_flag" == "1" ]] && echo rootful || echo rootless))"
+    $runner build -t demo-green:latest samples/servers/green >/dev/null 2>&1 || true
+  fi
+}
+
 # -------- Suite: k1s rootless --------
 log "suite: k1s rootless"
 engines_clear_all
+make labs-aio-up >/dev/null 2>&1 || true
+build_demo_images_podman 0 || true
 PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_COLLECT_ENGINE=podman AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 \
   WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k1s \
   LABEL_SUITE="$LBL_K1S_ROOTLESS" APP="$APP" APP_NAME="$APP_NAME" REPLICAS="$REPLICAS" DURATION="$DURATION"
 fix_perms
+make labs-aio-down >/dev/null 2>&1 || true
 
 # -------- Suite: k1s rootful (sudo) --------
 log "suite: k1s rootful (sudo)"
 engines_clear_all
 if [[ "$USE_SUDO" == "1" ]]; then
+  make labs-aio-up >/dev/null 2>&1 || true
+  build_demo_images_podman 1 || true
   sudo -E PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_COLLECT_ENGINE=podman AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 \
     WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k1s \
     LABEL_SUITE="$LBL_K1S_ROOTFUL" APP="$APP" APP_NAME="$APP_NAME" REPLICAS="$REPLICAS" DURATION="$DURATION"
   fix_perms
+  make labs-aio-down >/dev/null 2>&1 || true
 else
   log "sudo not enabled; skipping k1s rootful"
 fi
