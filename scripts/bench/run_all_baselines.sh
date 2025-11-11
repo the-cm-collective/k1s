@@ -236,7 +236,8 @@ start_caddy_only() {
   if ! docker ps >/dev/null 2>&1 && [[ "${USE_SUDO:-0}" == "1" ]] && command -v sudo >/dev/null 2>&1; then
     DOCK='sudo docker'
   fi
-  local name=ae-caddy-bench
+  # Important: name must NOT start with 'ae-' to avoid strict foreign-engine checks
+  local name=caddy-bench
   $DOCK rm -f "$name" >/dev/null 2>&1 || true
   log "starting caddy (docker)"
   $DOCK run -d --name "$name" \
@@ -256,7 +257,7 @@ stop_caddy_only() {
   if ! docker ps >/dev/null 2>&1 && [[ "${USE_SUDO:-0}" == "1" ]] && command -v sudo >/dev/null 2>&1; then
     DOCK='sudo docker'
   fi
-  $DOCK rm -f ae-caddy-bench >/dev/null 2>&1 || true
+  $DOCK rm -f caddy-bench >/dev/null 2>&1 || true
 }
 
 # -------- Suite: k1s rootless --------
