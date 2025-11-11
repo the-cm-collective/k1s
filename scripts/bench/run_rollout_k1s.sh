@@ -212,9 +212,17 @@ ae apply -f "$tmpman" || true
 
 echo "[rollout] snapshot DURING rollout" >&2
 if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-  sudo -E scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+    sudo -E scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
+  else
+    sudo -E scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+  fi
 else
-  scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+    scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
+  else
+    scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+  fi
 fi
 
 echo "[rollout] wait ready post-rollout" >&2
@@ -222,9 +230,17 @@ wait_ready "$app_name" "$replicas" || true
 
 echo "[rollout] snapshot POST rollout" >&2
 if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-  sudo -E scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+    sudo -E scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+  else
+    sudo -E scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+  fi
 else
-  scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+    scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+  else
+    scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+  fi
 fi
 
 echo "[rollout] done" >&2

@@ -72,17 +72,33 @@ if [[ "$cur" == *":"$old_tag ]]; then target=${cur/%:$old_tag/:$new_tag}; else t
 info "set image to ${target} and snapshot DURING"
 kubectl -n "$namespace" set image deploy/"$deploy" "$deploy"="$target"
 if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-  sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+    sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
+  else
+    sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+  fi
 else
-  scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+    scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
+  else
+    scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+  fi
 fi
 
 info "wait ready and snapshot POST"
 wait_ready "$deploy" "$replicas" || true
 if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-  sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+    sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+  else
+    sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+  fi
 else
-  scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+    scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+  else
+    scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+  fi
 fi
 
 info "done"
