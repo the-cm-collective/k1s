@@ -674,6 +674,15 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
     if args.once:
         manifests = _load_all(_find_manifests(specs_dir))
+        # When in demo mode, strictly gate manifests to the AE_SPECS_DIR set.
+        try:
+            from ae.observability.http_api import _demo_allowed_apps  # type: ignore
+
+            demo_allowed = set(_demo_allowed_apps())
+            if demo_allowed:
+                manifests = [m for m in manifests if m.metadata.name in demo_allowed]
+        except Exception:
+            pass
         # Include DB-stored apps that aren't backed by files (e.g., labs sessions),
         # but when running in demo mode restrict to the active demo scope (AE_SPECS_DIR)
         # plus any Labs-applied apps tracked by the HTTP API.
@@ -762,6 +771,15 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             if do_full:
                 t0 = time.time()
                 manifests = _load_all(_find_manifests(specs_dir))
+                # When in demo mode, strictly gate manifests to the AE_SPECS_DIR set.
+                try:
+                    from ae.observability.http_api import _demo_allowed_apps  # type: ignore
+
+                    demo_allowed = set(_demo_allowed_apps())
+                    if demo_allowed:
+                        manifests = [m for m in manifests if m.metadata.name in demo_allowed]
+                except Exception:
+                    pass
                 # Also reconcile DB-backed apps (session/labs) not present on disk.
                 # In demo mode, restrict to the active demo scope (AE_SPECS_DIR) plus Labs-applied apps.
                 try:

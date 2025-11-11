@@ -20,11 +20,26 @@ SUDO=$(require_root_or_sudo)
 HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa api.home.arpa echo.home.arpa echo-mr.home.arpa echo-multi.home.arpa echo-resources.home.arpa echo-sec.home.arpa echo-tcp.home.arpa echo-exec.home.arpa)
 AUTO_HOSTS=""  # set by -y/--yes or -n/--no to auto answer host prompts
 
+# Summarized stop helper: log PIDs before killing by pattern
+stop_by_pattern() {
+  # $1 = regex pattern (pgrep/pkill -f), $2 = label
+  local pat="$1"; local label="${2:-processes}"
+  local found
+  found=$(pgrep -f -- "$pat" 2>/dev/null || true)
+  if [[ -n "$found" ]]; then
+    # Flatten PIDs onto one line for readability
+    local flat; flat=$(echo "$found" | tr '\n' ' ' | sed 's/  */ /g')
+    log "Stopping ${label}: ${flat}"
+    pkill -f -- "$pat" 2>/dev/null || true
+  fi
+}
+
 usage() {
   cat <<USAGE
 Usage:
   ./scripts/init_demo.sh [OPTIONS]      # Set up the demo environment
   ./scripts/init_demo.sh --down [OPTS]  # Tear the demo down (and optionally clean hosts)
+  ./scripts/init_demo.sh --reset        # Reset controller state/cache and exit
   ./scripts/init_demo.sh --help         # Show this help
 
 Options:
@@ -33,6 +48,7 @@ Options:
   --no-controller  Do not auto-start the controller daemon
   --no-supervisor  Start controller once (no restart loop)
   -d, --debug  Attach logs to console for troubleshooting (blocks; Ctrl-C to exit)
+  --reset      Delete controller state DB and projections (clean slate)
   --bind-all   Bind local helpers (docs server) to 0.0.0.0 instead of 127.0.0.1 for LAN access
   --with-secrets-env  Export AE_ALLOW_PLAINTEXT_SECRETS=1 and SOPS_AGE_KEY_FILE=$HOME/.config/ae/keys.txt for this demo run
   --demo-configs   Apply the configs/secrets demo (echo) and enable plaintext secrets for local run
@@ -85,6 +101,7 @@ USAGE
 
 # Parse flags (supports combining with --down)
 DOWN_FLAG=0
+RESET_FLAG=0
 NO_CONTROLLER=0
 API_PORT=${API_PORT:-9108}
 # Runtime backend (default to podman/OCI if not set)
@@ -115,6 +132,8 @@ while [[ $# -gt 0 ]]; do
       usage; exit 0 ;;
     --down|down)
       DOWN_FLAG=1 ;;
+    --reset|reset)
+      RESET_FLAG=1 ;;
     -y|--yes)
       AUTO_HOSTS=Y ;;
     -n|--no)
@@ -213,9 +232,9 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
     fi
     rm -f state/controller_supervisor.pid state/controller_supervisor.lock || true
   fi
-  # Best-effort: kill any stray supervisors/controllers on the same port
-  pkill -f 'scripts/supervise_controller\.sh .*\s[0-9]{4,5}$' 2>/dev/null || true
-  pkill -f 'python(.venv-demo)?/bin/python -m ae\.controller' 2>/dev/null || true
+  # Best-effort: stop stray supervisors/controllers (bench-launched or different venvs) with a visible summary
+  stop_by_pattern '[p]ython.* -m ae\.controller' 'controller(s)'
+  stop_by_pattern '[s]cripts/supervise_controller\.sh' 'supervisor(s)'
   # Stop docs server if running
   if [[ -f state/docs_server.pid ]]; then
     DOCS_PID=$(cat state/docs_server.pid || true)
@@ -248,6 +267,17 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
     log "Clearing dynamic Caddy sites under state/caddy/*.caddy"
     rm -f state/caddy/*.caddy 2>/dev/null || true
   fi
+  # Optional full reset of controller state/caches on --down --reset
+  if [[ $RESET_FLAG -eq 1 ]]; then
+    if [[ -f state/controller.db ]]; then
+      log "Removing controller state DB (state/controller.db)"
+      rm -f state/controller.db 2>/dev/null || true
+    fi
+    if [[ -d state/projections ]]; then
+      log "Removing projected config/state under state/projections/"
+      rm -rf state/projections 2>/dev/null || true
+    fi
+  fi
   # Optionally remove hosts entries
   if prompt_yes_no_hosts "Remove hosts entries for ${HOSTS[*]} from /etc/hosts?" N; then
     for host in "${HOSTS[@]}"; do
@@ -269,6 +299,47 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
   fi
   log "Demo teardown complete."
   exit 0
+fi
+
+# Standalone reset without --down: attempt a safe stop and then clear state
+if [[ $RESET_FLAG -eq 1 ]]; then
+  log "Resetting controller state (DB, projections, dynamic sites)"
+  # Best-effort stop like --down to avoid deleting an open DB
+  if [[ -f state/controller.pid ]]; then
+    CTRL_PID=$(cat state/controller.pid || true)
+    if [[ -n "${CTRL_PID}" ]] && kill -0 "$CTRL_PID" 2>/dev/null; then
+      log "Stopping controller (pid ${CTRL_PID}) for reset"
+      kill "$CTRL_PID" || true
+      sleep 0.2
+    fi
+    rm -f state/controller.pid || true
+  fi
+  if [[ -f state/controller_supervisor.pid ]]; then
+    SUP_PID=$(cat state/controller_supervisor.pid || true)
+    if [[ -n "${SUP_PID}" ]] && kill -0 "$SUP_PID" 2>/dev/null; then
+      log "Stopping controller supervisor (pid ${SUP_PID}) for reset"
+      kill "$SUP_PID" || true
+      sleep 0.2
+    fi
+    rm -f state/controller_supervisor.pid state/controller_supervisor.lock || true
+  fi
+  # Broad best-effort stop of any strays with summary
+  stop_by_pattern '[s]cripts/supervise_controller\.sh' 'supervisor(s)'
+  stop_by_pattern '[p]ython.* -m ae\.controller' 'controller(s)'
+  # Clear state
+  if [[ -f state/controller.db ]]; then
+    log "Removing controller state DB (state/controller.db)"
+    rm -f state/controller.db 2>/dev/null || true
+  fi
+  if [[ -d state/projections ]]; then
+    log "Removing projected config/state under state/projections/"
+    rm -rf state/projections 2>/dev/null || true
+  fi
+  if [[ -d state/caddy ]]; then
+    log "Clearing dynamic Caddy sites under state/caddy/*.caddy"
+    rm -f state/caddy/*.caddy 2>/dev/null || true
+  fi
+  log "Reset complete. Continuing with setup..."
 fi
 
 APT_PACKAGES=(
