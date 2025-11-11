@@ -674,12 +674,26 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
     if args.once:
         manifests = _load_all(_find_manifests(specs_dir))
-        # Include DB-stored apps that aren't backed by files (e.g., labs sessions)
+        # Include DB-stored apps that aren't backed by files (e.g., labs sessions),
+        # but when running in demo mode restrict to the active demo scope (AE_SPECS_DIR)
+        # plus any Labs-applied apps tracked by the HTTP API.
         try:
             store = state_store_from_env()
             present = {m.metadata.name for m in manifests}
+            allowed: set[str] = set()
+            try:
+                from ae.observability.http_api import _demo_allowed_apps, _LABS_APPS  # type: ignore
+
+                demo_allowed = set(_demo_allowed_apps())
+                labs_allowed = set(_LABS_APPS)
+                allowed = demo_allowed | labs_allowed
+            except Exception:
+                # If filters unavailable, default to unfiltered behavior
+                allowed = set()
             for s in store.list_status():
                 if s.app_name in present:
+                    continue
+                if allowed and (s.app_name not in allowed):
                     continue
                 try:
                     man = store.get_revision_manifest(s.app_name, s.revision)
@@ -748,12 +762,24 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             if do_full:
                 t0 = time.time()
                 manifests = _load_all(_find_manifests(specs_dir))
-                # Also reconcile DB-backed apps (session/labs) not present on disk
+                # Also reconcile DB-backed apps (session/labs) not present on disk.
+                # In demo mode, restrict to the active demo scope (AE_SPECS_DIR) plus Labs-applied apps.
                 try:
                     store = state_store_from_env()
                     present = {m.metadata.name for m in manifests}
+                    allowed: set[str] = set()
+                    try:
+                        from ae.observability.http_api import _demo_allowed_apps, _LABS_APPS  # type: ignore
+
+                        demo_allowed = set(_demo_allowed_apps())
+                        labs_allowed = set(_LABS_APPS)
+                        allowed = demo_allowed | labs_allowed
+                    except Exception:
+                        allowed = set()
                     for s in store.list_status():
                         if s.app_name in present:
+                            continue
+                        if allowed and (s.app_name not in allowed):
                             continue
                         try:
                             man = store.get_revision_manifest(s.app_name, s.revision)
