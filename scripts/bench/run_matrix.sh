@@ -217,7 +217,12 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 wait_ready() {
-  local name="$1"; local want="$2"; local tries=${WAIT_READY_TRIES:-60}
+  local name="$1"; local want="$2"
+  local default_tries=60
+  if [[ "$label_suite" =~ ^r[0-9]{8} ]]; then
+    default_tries=180
+  fi
+  local tries=${WAIT_READY_TRIES:-$default_tries}
   while (( tries-- > 0 )); do
     local js
     if ! js=$(ae status "$name" --json 2>/dev/null); then sleep 2; continue; fi

@@ -85,10 +85,12 @@ ensure_controller() {
   fi
   echo "[rollout] controller not detected; attempting auto-start..." >&2
   SPECS_DIR="${AE_SPECS_DIR:-specs}"
-  nohup python -m ae.controller --loop --specs "$SPECS_DIR" --metrics-port 9108 --watch >/tmp/k1s_ctrl_bench.log 2>&1 &
+  LOG_FILE="${TMPDIR:-/tmp}/k1s_ctrl_bench.$(id -un).$$.log"
+  rm -f "$LOG_FILE" 2>/dev/null || true
+  nohup python -m ae.controller --loop --specs "$SPECS_DIR" --metrics-port 9108 --watch >"$LOG_FILE" 2>&1 &
   sleep 3
   if pgrep -f "python\s*-m\s*ae\.controller" >/dev/null 2>&1; then
-    echo "[rollout] controller started (logs: /tmp/k1s_ctrl_bench.log)" >&2
+    echo "[rollout] controller started (logs: $LOG_FILE)" >&2
     return 0
   fi
   echo "[rollout] controller still not running. Start it manually: 'python -m ae.controller --loop'" >&2

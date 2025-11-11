@@ -47,7 +47,12 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 wait_ready() {
-  local dep="$1"; local want="$2"; local tries=60
+  local dep="$1"; local want="$2"
+  local default_tries=60
+  if [[ "$label_suite" =~ ^r[0-9]{8} ]]; then
+    default_tries=180
+  fi
+  local tries=${WAIT_READY_TRIES:-$default_tries}
   while (( tries-- > 0 )); do
     local rdy
     rdy=$(kubectl -n "$ns" get deploy "$dep" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
