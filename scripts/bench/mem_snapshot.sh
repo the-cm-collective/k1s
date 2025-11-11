@@ -98,15 +98,33 @@ fi
 # Count foreign-engine ae.app containers to help spot contamination
 foreign_ae_containers=0
 if [[ "$collect_engine" == "podman" ]] && command -v docker >/dev/null 2>&1; then
-  # Count Docker containers with ae.app label or ae-* name
-  foreign_ae_containers=$(docker ps -a --format '{{.Names}} {{.Label "ae.app"}}' 2>/dev/null | \
-    awk '{n=$1;l=$2; if (length(l)>0) c++; else if (index(n,"ae-")==1) c++} END{print c+0}' || echo 0)
+  # Count Docker containers with ae.app label or ae-* name via Python to avoid pipefail
+  foreign_ae_containers="$(python - << 'PY'
+import subprocess, sys
+try:
+    out = subprocess.run(['docker','ps','-a','--format','{{.Names}} {{.Label "ae.app"}}'], capture_output=True, text=True, check=False).stdout
+except Exception:
+    print(0); sys.exit(0)
+c=0
+for ln in (out or '').splitlines():
+    parts=ln.strip().split(None,1)
+    if not parts: continue
+    name=parts[0]
+    label=(parts[1] if len(parts)>1 else '').strip()
+    if label:
+        c+=1
+    elif name.startswith('ae-'):
+        c+=1
+print(c)
+PY
+)"
 fi
 if [[ "$collect_engine" == "docker" ]] && command -v podman >/dev/null 2>&1; then
-  foreign_ae_containers="$(podman ps -a --format json 2>/dev/null | python - << 'PY'
-import json,sys
+  foreign_ae_containers="$(python - << 'PY'
+import json, subprocess, sys
 try:
-    arr=json.load(sys.stdin)
+    out = subprocess.run(['podman','ps','-a','--format','json'], capture_output=True, text=True, check=False).stdout
+    arr = json.loads(out or '[]')
 except Exception:
     print(0); sys.exit(0)
 c=0
