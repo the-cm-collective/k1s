@@ -232,10 +232,14 @@ build_demo_images_podman() {
 # Ingress: run Caddy only (no controller) to avoid foreign ae.app containers in Docker
 start_caddy_only() {
   have docker || { log "docker required to run caddy ingress"; return 0; }
+  local DOCK='docker'
+  if ! docker ps >/dev/null 2>&1 && [[ "${USE_SUDO:-0}" == "1" ]] && command -v sudo >/dev/null 2>&1; then
+    DOCK='sudo docker'
+  fi
   local name=ae-caddy-bench
-  docker rm -f "$name" >/dev/null 2>&1 || true
+  $DOCK rm -f "$name" >/dev/null 2>&1 || true
   log "starting caddy (docker)"
-  docker run -d --name "$name" \
+  $DOCK run -d --name "$name" \
     -p "${CADDY_HTTP_PORT:-8888}:80" \
     -p "${CADDY_HTTPS_PORT:-8443}:443" \
     -v "$ROOT_DIR/ops/dev/caddy:/etc/caddy:ro" \
@@ -248,7 +252,11 @@ start_caddy_only() {
 
 stop_caddy_only() {
   have docker || return 0
-  docker rm -f ae-caddy-bench >/dev/null 2>&1 || true
+  local DOCK='docker'
+  if ! docker ps >/dev/null 2>&1 && [[ "${USE_SUDO:-0}" == "1" ]] && command -v sudo >/dev/null 2>&1; then
+    DOCK='sudo docker'
+  fi
+  $DOCK rm -f ae-caddy-bench >/dev/null 2>&1 || true
 }
 
 # -------- Suite: k1s rootless --------
