@@ -113,6 +113,13 @@ if [[ "$foreign_ae_containers" != "0" ]]; then
   echo "[mem-snapshot] warn: foreign engine has ${foreign_ae_containers} ae.app container(s); excluding them from metrics" >&2
 fi
 
+# Optional hard block: refuse to capture when foreign ae.app containers exist
+if [[ "${AE_ENGINE_STRICT:-0}" == "1" && "$foreign_ae_containers" != "0" ]]; then
+  echo "[mem-snapshot] strict engine mode enabled: refusing to snapshot with ${foreign_ae_containers} foreign ae.app container(s) running" >&2
+  echo "[mem-snapshot] hint: stop background demos/labs or unset AE_ENGINE_STRICT=1" >&2
+  exit 3
+fi
+
 # Metadata
 {
   echo "{"
