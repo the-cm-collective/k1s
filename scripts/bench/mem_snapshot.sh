@@ -179,7 +179,8 @@ case "${mode}" in
 esac
 
 # Capture smaps_rollup + status for matching processes (exclude containerd-shim)
-grep -E "${proc_pat}" "${scan_file}" | grep -v "containerd-shim" | awk '{print $1" "$3}' | while read -r pid comm; do
+matches=$(grep -E "${proc_pat}" "${scan_file}" 2>/dev/null | grep -v "containerd-shim" || true)
+awk '{print $1" "$3}' <<< "$matches" | while read -r pid comm; do
   [[ -z "${pid}" ]] && continue
   if [[ -r "/proc/${pid}/smaps_rollup" ]]; then
     cp "/proc/${pid}/smaps_rollup" "${outdir}/raw/smaps_${pid}_${comm//\//_}.txt" 2>/dev/null || true
