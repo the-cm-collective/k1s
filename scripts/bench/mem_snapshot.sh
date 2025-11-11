@@ -28,7 +28,17 @@ ts=$(date +%Y%m%d-%H%M%S)
 outdir="${outroot}/${label}/${ts}"
 mkdir -p "${outdir}/raw" || true
 
+# Optional verbose tracing for debugging
+if [[ "${AE_SNAPSHOT_TRACE:-0}" == "1" ]]; then
+  set -x
+fi
+
 echo "[mem-snapshot] mode=${mode} label=${label} duration=${duration}s -> ${outdir}" >&2
+
+# Step logger
+log_step() { echo "[mem-snapshot] $*" >&2; echo "$(date +%H:%M:%S) $*" >> "${outdir}/status.log"; }
+log_err() { echo "[mem-snapshot][error] $*" >&2; echo "$(date +%H:%M:%S) ERROR: $*" >> "${outdir}/status.log"; }
+log_step "start: outdir=${outdir}"
 
 # Detect backend and OCI runtime for metadata/labels
 detect_backend() {
@@ -90,10 +100,10 @@ foreign_ae_containers=0
 if [[ "$collect_engine" == "podman" ]] && command -v docker >/dev/null 2>&1; then
   # Count Docker containers with ae.app label or ae-* name
   foreign_ae_containers=$(docker ps -a --format '{{.Names}} {{.Label "ae.app"}}' 2>/dev/null | \
-    awk '{n=$1;l=$2; if (length(l)>0) c++; else if (index(n,"ae-")==1) c++} END{print c+0}')
+    awk '{n=$1;l=$2; if (length(l)>0) c++; else if (index(n,"ae-")==1) c++} END{print c+0}' || echo 0)
 fi
 if [[ "$collect_engine" == "docker" ]] && command -v podman >/dev/null 2>&1; then
-  foreign_ae_containers=$(podman ps -a --format json 2>/dev/null | python - << 'PY'
+  foreign_ae_containers=$(podman ps -a --format json 2>/dev/null | python - << 'PY' || echo 0
 import json,sys
 try:
     arr=json.load(sys.stdin)
@@ -121,6 +131,7 @@ if [[ "${AE_ENGINE_STRICT:-0}" == "1" && "$foreign_ae_containers" != "0" ]]; the
 fi
 
 # Metadata
+log_step "write meta and preflight"
 {
   echo "{"
   echo "  \"label\": \"${label}\"," 
@@ -136,16 +147,18 @@ fi
   echo "  \"foreign_ae_containers\": ${foreign_ae_containers}"
   echo "}"
 } > "${outdir}/meta.json"
+log_step "meta.json written"
 
 # Quick system stats (before)
-free -b > "${outdir}/raw/free_before.txt" || true
+free -b > "${outdir}/raw/free_before.txt" 2>>"${outdir}/status.log" || log_err "free_before failed"
 # Two views: compact (comm) and scan (includes args)
-ps -eo pid,ppid,comm,rss --sort -rss > "${outdir}/raw/ps_before.txt" || true
-ps -eo pid,ppid,comm,args --sort -rss > "${outdir}/raw/ps_scan_before.txt" || true
+ps -eo pid,ppid,comm,rss --sort -rss > "${outdir}/raw/ps_before.txt" 2>>"${outdir}/status.log" || log_err "ps_before failed"
+ps -eo pid,ppid,comm,args --sort -rss > "${outdir}/raw/ps_scan_before.txt" 2>>"${outdir}/status.log" || log_err "ps_scan_before failed"
+log_step "ps snapshots captured"
 
 # Streaming vmstat during warm window (non-fatal)
 vmcount=$(( duration > 5 ? duration : 5 ))
-vmstat 1 "${vmcount}" > "${outdir}/raw/vmstat.txt" 2>/dev/null || true
+vmstat 1 "${vmcount}" > "${outdir}/raw/vmstat.txt" 2>>"${outdir}/status.log" || log_err "vmstat failed"
 
 # Process target patterns
 # Use args-aware scan to capture controller accurately and avoid shims
@@ -175,6 +188,7 @@ grep -E "${proc_pat}" "${scan_file}" | grep -v "containerd-shim" | awk '{print $
     cp "/proc/${pid}/status" "${outdir}/raw/status_${pid}_${comm//\//_}.txt" 2>/dev/null || true
   fi
 done
+log_step "process smaps/status captured"
 
 ## Containers (collect only from the selected engine to avoid contamination)
 {
@@ -188,7 +202,7 @@ if [[ "$collect_engine" != "docker" ]] && command -v podman >/dev/null 2>&1; the
   if [[ -n "${ids}" ]]; then
     podman inspect --format json $ids > "${outdir}/raw/podman_inspect.json" 2>/dev/null || true
   fi
-  python - "$outdir" << 'PY' 2>/dev/null >> "${outdir}/raw/containers_mem.csv" || true
+  python - "$outdir" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
 import json, os, sys
 from typing import Optional
 
@@ -249,6 +263,7 @@ for c in data:
     print(f"{cid},{name},{pid},{mem}")
 PY
 fi
+log_step "podman containers collected (if selected)"
 
 # Docker (only when selected)
 if [[ "$collect_engine" != "podman" ]] && command -v docker >/dev/null 2>&1; then
@@ -261,7 +276,7 @@ if [[ "$collect_engine" != "podman" ]] && command -v docker >/dev/null 2>&1; the
   fi
   # Try to capture per-container cgroup memory via the main process PID
   if [[ -f "${outdir}/raw/docker_inspect.json" ]]; then
-    python - "$outdir" << 'PY' 2>/dev/null >> "${outdir}/raw/containers_mem.csv" || true
+    python - "$outdir" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
 import json, os, sys
 from typing import Optional
 
@@ -320,6 +335,7 @@ for c in data:
 PY
   fi
 fi
+log_step "docker containers collected (if selected)"
 
 if [[ "$collect_engine" == "podman" ]] && ! command -v podman >/dev/null 2>&1; then
   echo "[mem-snapshot] podman not found (engine_filter=podman); container metrics skipped." >&2
@@ -330,15 +346,20 @@ elif ! command -v podman >/dev/null 2>&1 && ! command -v docker >/dev/null 2>&1;
 fi
 
 # Quick system stats (after)
-free -b > "${outdir}/raw/free_after.txt" || true
-ps -eo pid,ppid,comm,rss --sort -rss > "${outdir}/raw/ps_after.txt" || true
+free -b > "${outdir}/raw/free_after.txt" 2>>"${outdir}/status.log" || log_err "free_after failed"
+ps -eo pid,ppid,comm,rss --sort -rss > "${outdir}/raw/ps_after.txt" 2>>"${outdir}/status.log" || log_err "ps_after failed"
 
+log_step "collection complete; aggregating"
 echo "[mem-snapshot] done -> ${outdir}" >&2
 
 # Auto-aggregate so each snapshot has summary.json for downstream combine/docs
 # Non-fatal: if Python is missing or aggregation fails, continue.
 if command -v python >/dev/null 2>&1; then
-  python scripts/bench/mem_aggregate.py "${outdir}" >/dev/null 2>&1 || true
+  if ! python scripts/bench/mem_aggregate.py "${outdir}" >/dev/null 2>&1; then
+    log_err "aggregation failed"
+  else
+    log_step "aggregation ok"
+  fi
 else
   echo "[mem-snapshot] warn: python not found; skipping aggregation" >&2
 fi
