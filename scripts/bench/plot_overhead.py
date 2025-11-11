@@ -270,15 +270,19 @@ def _cp_pss_mib_derived(r: Dict[str, str]) -> float:
     try:
         if mode == "k3s":
             v = r.get("k3s_control_plane_pss_kb")
-            if v is not None and str(v) != "":
+            # Treat missing or zero as unavailable; fall back to legacy aggregate
+            if v not in (None, "", "0", 0):
                 return to_mib(v, kib=True)
         # k1s and others: controller + ingress
         c = r.get("controller_pss_kb")
         i = r.get("ingress_pss_kb")
-        if c is not None or i is not None:
-            return to_mib(int(c or 0) + int(i or 0), kib=True)
+        c_val = int(c or 0)
+        i_val = int(i or 0)
+        if (c_val > 0) or (i_val > 0):
+            return to_mib(c_val + i_val, kib=True)
     except Exception:
         pass
+    # Final fallback: legacy field from combined CSV
     return to_mib(r.get("control_plane_pss_kb", "0"), kib=True)
 
 

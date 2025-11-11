@@ -508,13 +508,16 @@ def build_one(md_path: Path, out_path: Path) -> None:
                         mode = str(row.get("mode", "")).lower()
                         if mode == "k3s":
                             v = row.get("k3s_control_plane_pss_kb")
-                            if v is not None and str(v) != "":
+                            # Treat 0/empty as missing; fall back to legacy
+                            if v not in (None, "", "0", 0):
                                 x = float(v or 0)
                                 return f"{x / 1024.0:.1f}"
                         c = row.get("controller_pss_kb")
                         i = row.get("ingress_pss_kb")
-                        if c is not None or i is not None:
-                            total_kib = float(c or 0) + float(i or 0)
+                        c_val = float(c or 0)
+                        i_val = float(i or 0)
+                        if (c_val > 0) or (i_val > 0):
+                            total_kib = c_val + i_val
                             return f"{total_kib / 1024.0:.1f}"
                     except Exception:
                         pass
@@ -662,13 +665,14 @@ def build_one(md_path: Path, out_path: Path) -> None:
                                 mode = str(r.get("mode", "")).lower()
                                 if mode == "k3s":
                                     v = r.get("k3s_control_plane_pss_kb")
-                                    if v is not None and str(v) != "":
+                                    if v not in (None, "", "0", 0):
                                         return float(v or 0) / 1024.0
                                 c = r.get("controller_pss_kb")
                                 i = r.get("ingress_pss_kb")
-                                if c is not None or i is not None:
-                                    total_kib = float(c or 0) + float(i or 0)
-                                    return total_kib / 1024.0
+                                c_val = float(c or 0)
+                                i_val = float(i or 0)
+                                if (c_val > 0) or (i_val > 0):
+                                    return (c_val + i_val) / 1024.0
                             except Exception:
                                 pass
                             # Fallback
