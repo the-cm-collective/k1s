@@ -62,9 +62,17 @@ wait_ready() {
 # Idle snapshot (no app deployed)
 info "idle snapshot"
 if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-  sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-idle" --duration "$duration" || true
+  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+    sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-idle" --duration "$duration"
+  else
+    sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-idle" --duration "$duration" || true
+  fi
 else
-  scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-idle" --duration "$duration" || true
+  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+    scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-idle" --duration "$duration"
+  else
+    scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-idle" --duration "$duration" || true
+  fi
 fi
 
 info "apply manifest: $manifest"
@@ -79,9 +87,17 @@ for n in "${reps[@]}"; do
   wait_ready "$app_name" "$n" || true
   info "snapshot label=${label_suite}-pods-${n}"
   if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-    sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-pods-${n}" --duration "$duration" || true
+    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+      sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-pods-${n}" --duration "$duration"
+    else
+      sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-pods-${n}" --duration "$duration" || true
+    fi
   else
-    scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-pods-${n}" --duration "$duration" || true
+    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+      scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-pods-${n}" --duration "$duration"
+    else
+      scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-pods-${n}" --duration "$duration" || true
+    fi
   fi
 done
 

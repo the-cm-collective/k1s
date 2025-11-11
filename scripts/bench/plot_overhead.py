@@ -434,11 +434,17 @@ def main(argv: List[str]) -> int:
         for sc in ["k1s rootless", "k1s rootful", "k1nd", "k3d"]:
             r = latest_map.get((sc, stage_filter))
             if r:
-                vals.append((sc, ex(r)))
+                val = ex(r)
+                if val is not None and not (isinstance(val, float) and (val != val)):
+                    vals.append((sc, val))
         return vals
 
     # Metric extractors
-    ex_cp = lambda r: to_mib(r.get("control_plane_pss_kb", "0"), kib=True)
+    def ex_cp(r):
+        # CP PSS not visible on host for k3d (mode=k3s). Label as N/A by skipping.
+        if str(r.get("mode","")) == "k3s":
+            return None
+        return to_mib(r.get("control_plane_pss_kb", "0"), kib=True)
     ex_app = lambda r: to_mib(r.get("app_mem_bytes", "0"))
     ex_host = lambda r: to_mib(
         r.get("host_system_cgroups_bytes")

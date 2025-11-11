@@ -599,7 +599,9 @@ def build_one(md_path: Path, out_path: Path) -> None:
                             for c in col_order:
                                 r = latest.get((c, st))
                                 if r:
-                                    row_vals[c] = extractor(r)
+                                    _v = extractor(r)
+                                    if _v is not None:
+                                        row_vals[c] = _v
                             # Compute colors per stage
                             vals = [v for v in row_vals.values() if v is not None]
                             html_parts.append(f"<tr><td>{st}</td>")
@@ -628,7 +630,7 @@ def build_one(md_path: Path, out_path: Path) -> None:
                             return (v - good) / rng
 
                         metric_extractors = [
-                            ("Control Plane PSS", lambda r: to_float_mib(r.get("control_plane_pss_kb", "0"), kib=True)),
+                            ("Control Plane PSS", lambda r: (None if str(r.get("mode","")) == "k3s" else to_float_mib(r.get("control_plane_pss_kb", "0"), kib=True))),
                             ("App Cgroups", lambda r: to_float_mib(r.get("app_mem_bytes", "0"))),
                             (
                                 "Host System Cgroups",
@@ -647,7 +649,9 @@ def build_one(md_path: Path, out_path: Path) -> None:
                                 for c in col_order:
                                     rr = latest.get((c, st))
                                     if rr:
-                                        vals_per_col[c] = ex(rr)
+                                        _val = ex(rr)
+                                        if _val is not None:
+                                            vals_per_col[c] = _val
                                 if len(vals_per_col) < 2:
                                     continue
                                 arr = list(vals_per_col.values())
@@ -681,7 +685,7 @@ def build_one(md_path: Path, out_path: Path) -> None:
                     parts.append(
                         render_metric_table(
                             "Control Plane PSS (MiB) — lower is better",
-                            lambda r: to_float_mib(r.get("control_plane_pss_kb", "0"), kib=True),
+                            lambda r: (None if str(r.get("mode","")) == "k3s" else to_float_mib(r.get("control_plane_pss_kb", "0"), kib=True)),
                         )
                     )
                     parts.append(
