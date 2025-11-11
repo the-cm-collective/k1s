@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Run a clean, leak-free baseline across:
+# - k1s (Podman rootless)
+# - k1s (Podman rootful, snapshots via sudo)
+# - k1nd (k1s-in-Docker via labs-aio)
+# - k3d/k3s (cluster up/down, snapshots via sudo)
+#
+# Requirements:
+# - podman, docker, python, make, curl, sudo
+# - k3d + kubectl for the k3s suite
+# - repo virtualenv optional; charts/docs generation needs matplotlib per docs
+#
+# Notes:
+# - Performs aggressive engine cleanup (rootless+rootful) between suites.
+# - Preserves snapshots/ and combined/ outputs.
+# - Rebuilds combined.csv/json, charts/, and docs at the end.
+
+ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+cd "$ROOT_DIR"
+
+# -------- Config (override via env) --------
+LBL_K1S_ROOTLESS=${LBL_K1S_ROOTLESS:-r20251110+podman+rootless+cg2}
+LBL_K1S_ROOTFUL=${LBL_K1S_ROOTFUL:-r20251110+podman+priv+cg2}
+LBL_K1ND=${LBL_K1ND:-r20251110+docker+k1nd}
+LBL_K3D=${LBL_K3D:-r20251110+k3d}
+
+APP=${APP:-specs/examples/blue.yaml}
+APP_NAME=${APP_NAME:-blue}
+K3S_MANIFEST=${K3S_MANIFEST:-specs/examples/k3s-echo.yaml}
+REPLICAS=${REPLICAS:-1,5,10}
+DURATION=${DURATION:-30}
+WAIT_READY_TRIES=${WAIT_READY_TRIES:-120}
+
+# -------- Helpers --------
+log() { printf "[%s] %s\n" "$(date +%H:%M:%S)" "$*" >&2; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+stop_controller() {
+  log "stopping any running controllers (user/root)"
+  pkill -f "python\s*-m\s*ae\.controller" >/dev/null 2>&1 || true
+  if have sudo; then
+    sudo pkill -f "python\s*-m\s*ae\.controller" >/dev/null 2>&1 || true
+  fi
+}
+
+clear_rootless_podman() {
+  if have podman; then
+    local ids
+    ids=$(podman ps -aq 2>/dev/null || true)
+    if [[ -n "$ids" ]]; then
+      log "rootless podman: stopping/removing containers"
+      podman rm -f $ids >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+clear_rootful_podman() {
+  if [[ "${USE_SUDO:-0}" != "1" ]]; then return 0; fi
+  if have sudo && sudo -n true >/dev/null 2>&1; then
+    if sudo bash -lc 'command -v podman >/dev/null 2>&1'; then
+      local ids
+      ids=$(sudo podman ps -aq 2>/dev/null || true)
+      if [[ -n "$ids" ]]; then
+        log "rootful podman: stopping/removing containers (sudo)"
+        sudo podman rm -f $ids >/dev/null 2>&1 || true
+      fi
+    fi
+  fi
+}
+
+clear_docker_all() {
+  if have docker; then
+    local ids
+    ids=$(docker ps -aq 2>/dev/null || true)
+    if [[ -n "$ids" ]]; then
+      log "docker: stopping/removing containers"
+      docker rm -f $ids >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+engines_clear_all() {
+  log "clearing container engines (rootless/rootful)"
+  stop_controller || true
+  clear_rootless_podman || true
+  clear_docker_all || true
+  clear_rootful_podman || true
+  # Also run repo-provided deep clear (rootful) when allowed
+  if [[ "${USE_SUDO:-0}" == "1" ]] && have make && have sudo; then
+    log "make bench-engines-clear (sudo)"
+    sudo make bench-engines-clear CONFIRM=1 >/dev/null 2>&1 || true
+  fi
+}
+
+fix_perms() {
+  if have make && have sudo; then
+    log "normalizing artifact permissions"
+    sudo make bench-fix-perms >/dev/null 2>&1 || true
+  fi
+}
+
+rebuild_docs_and_charts() {
+  log "backfilling OCI runtime tags and rebuilding charts/docs"
+  make bench-mem-backfill-oci GLOB='snapshots/*/*' REBUILD_DOCS=1 >/dev/null 2>&1 || true
+}
+
+print_summary() {
+  local csv="combined/combined.csv"
+  [[ -f "$csv" ]] || { log "summary skipped (missing $csv)"; return 0; }
+  python - "$csv" <<'PY' || true
+import csv, sys
+from pathlib import Path
+
+csv_path = Path(sys.argv[1])
+rows = list(csv.DictReader(csv_path.open()))
+if not rows:
+    sys.exit(0)
+
+def scenario_name(r):
+    mode = (r.get('mode','') or '').lower()
+    backend = (r.get('backend','') or '').lower()
+    label = r.get('label','')
+    root = 'rootless' if '+rootless+' in label else ('priv' if '+priv+' in label else '?')
+    if mode == 'k1s' and backend == 'podman' and root == 'rootless':
+        return 'k1s rootless'
+    if mode == 'k1s' and backend == 'podman' and root == 'priv':
+        return 'k1s rootful'
+    if mode == 'k1s' and backend == 'docker':
+        return 'k1nd'
+    if mode == 'k3s':
+        return 'k3d'
+    return f"{mode} {backend}".strip()
+
+def stage_name(label):
+    if label.endswith('-idle'): return 'idle'
+    import re
+    m = re.search(r'-pods-(\d+)$', label)
+    if m: return f"pods-{m.group(1)}"
+    return 'other'
+
+latest = {}
+for r in rows:
+    st = stage_name(r.get('label',''))
+    if st == 'other':
+        continue
+    sc = scenario_name(r)
+    key = (sc, st)
+    if key not in latest or r.get('timestamp','') > latest[key].get('timestamp',''):
+        latest[key] = r
+
+scenarios = [
+    'k1s rootless','k1s rootful','k1nd','k3d'
+]
+stages = ['idle','pods-1','pods-5','pods-10']
+
+def to_mib(val, kib=False):
+    try: v=float(val or 0)
+    except: v=0.0
+    return v/1024.0 if kib else v/1048576.0
+
+print('\nSummary (latest per scenario/stage)')
+print('Scenario  Stage    CtrlPSS  Runtime  Ingress  AppCG  HostCG  MemAvailΔ')
+print('(MiB)     (MiB)    (MiB)    (MiB)    (MiB)    (MiB)')
+for sc in scenarios:
+    for st in stages:
+        r = latest.get((sc,st))
+        if not r: continue
+        ctrl = to_mib(r.get('controller_pss_kb','0'), kib=True)
+        run  = to_mib(r.get('runtime_pss_kb','0'), kib=True)
+        ingr = to_mib(r.get('ingress_pss_kb','0'), kib=True)
+        app  = to_mib(r.get('app_mem_bytes','0'))
+        host = to_mib(r.get('host_system_cgroups_bytes','0'))
+        dmem = to_mib(r.get('mem_available_delta_bytes','0'))
+        print(f"{sc:<8} {st:<7} {ctrl:7.1f} {run:8.1f} {ingr:8.1f} {app:7.1f} {host:7.1f} {dmem:9.1f}")
+print()
+PY
+}
+
+# -------- Preflights --------
+have python || { echo "python is required" >&2; exit 2; }
+have make   || { echo "make is required" >&2; exit 2; }
+have podman || { echo "podman is required for k1s suites" >&2; exit 2; }
+have docker || { echo "docker is required for k1nd/k3d suites" >&2; exit 2; }
+
+# Sudo policy: ALLOW_SUDO=1 to enable non-interactively (CI). If unset and TTY,
+# ask once up front and cache credentials. Otherwise default to 0.
+USE_SUDO=0
+if [[ "${ALLOW_SUDO:-}" == "1" ]]; then
+  if command -v sudo >/dev/null 2>&1; then
+    if sudo -v; then USE_SUDO=1; fi
+  fi
+elif [[ -t 0 ]] && command -v sudo >/dev/null 2>&1; then
+  echo -n "Use sudo for rootful runs and deep engine cleanup? [y/N] "
+  read -r ans || ans=""
+  case "${ans,,}" in
+    y|yes)
+      if sudo -v; then USE_SUDO=1; else log "sudo unavailable; continuing without"; fi
+      ;;
+    *) ;; 
+  esac
+fi
+if [[ "$USE_SUDO" == "1" ]]; then
+  log "sudo enabled for privileged steps"
+else
+  log "sudo disabled; rootful suite will be skipped; k3s will run without sudo"
+fi
+
+start_ts=$(date +%Y-%m-%dT%H:%M:%S)
+log "starting baseline at $start_ts"
+
+# -------- Suite: k1s rootless --------
+log "suite: k1s rootless"
+engines_clear_all
+PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_COLLECT_ENGINE=podman AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 \
+  WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k1s \
+  LABEL_SUITE="$LBL_K1S_ROOTLESS" APP="$APP" APP_NAME="$APP_NAME" REPLICAS="$REPLICAS" DURATION="$DURATION"
+fix_perms
+
+# -------- Suite: k1s rootful (sudo) --------
+log "suite: k1s rootful (sudo)"
+engines_clear_all
+if [[ "$USE_SUDO" == "1" ]]; then
+  sudo -E PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_COLLECT_ENGINE=podman AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 \
+    WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k1s \
+    LABEL_SUITE="$LBL_K1S_ROOTFUL" APP="$APP" APP_NAME="$APP_NAME" REPLICAS="$REPLICAS" DURATION="$DURATION"
+  fix_perms
+else
+  log "sudo not enabled; skipping k1s rootful"
+fi
+
+# -------- Suite: k1nd (labs-aio up/down) --------
+log "suite: k1nd"
+engines_clear_all
+PYTHONPATH=src AE_RUNTIME_BACKEND=docker AE_COLLECT_ENGINE=docker AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 \
+  WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k1nd \
+  LABEL_SUITE="$LBL_K1ND" REPLICAS="$REPLICAS" DURATION="$DURATION"
+# ensure compose stack torn down
+make labs-aio-down >/dev/null 2>&1 || true
+fix_perms
+
+# -------- Suite: k3d/k3s (sudo snapshots) --------
+log "suite: k3d/k3s"
+engines_clear_all
+if [[ "$USE_SUDO" == "1" ]]; then
+  AE_ENGINE_STRICT=1 AE_COLLECT_ENGINE=docker WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k3s-sudo \
+    LABEL_SUITE="$LBL_K3D" MANIFEST="$K3S_MANIFEST" REPLICAS="$REPLICAS" DURATION="$DURATION"
+else
+  AE_ENGINE_STRICT=1 AE_COLLECT_ENGINE=docker WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k3s \
+    LABEL_SUITE="$LBL_K3D" MANIFEST="$K3S_MANIFEST" REPLICAS="$REPLICAS" DURATION="$DURATION"
+fi
+# tear down cluster
+make bench-k3s-down K3S_NAME=bench >/dev/null 2>&1 || true
+fix_perms
+
+# -------- Finalize --------
+log "rebuilding combined, charts, and docs"
+python scripts/bench/mem_combine.py snapshots/*/* >/dev/null 2>&1 || true
+python scripts/bench/plot_overhead.py combined/combined.csv charts >/dev/null 2>&1 || true
+python docs/build_docs.py >/dev/null 2>&1 || true
+rebuild_docs_and_charts
+
+end_ts=$(date +%Y-%m-%dT%H:%M:%S)
+log "baseline complete at $end_ts"
+print_summary
+
+exit 0
