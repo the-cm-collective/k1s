@@ -229,28 +229,50 @@ build_demo_images_podman() {
   fi
 }
 
+# Ingress: run Caddy only (no controller) to avoid foreign ae.app containers in Docker
+start_caddy_only() {
+  have docker || { log "docker required to run caddy ingress"; return 0; }
+  local name=ae-caddy-bench
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  log "starting caddy (docker)"
+  docker run -d --name "$name" \
+    -p "${CADDY_HTTP_PORT:-8888}:80" \
+    -p "${CADDY_HTTPS_PORT:-8443}:443" \
+    -v "$ROOT_DIR/ops/dev/caddy:/etc/caddy:ro" \
+    -v "$ROOT_DIR/state/caddy-data:/data" \
+    -v "$ROOT_DIR/state/caddy:/etc/caddy/dynsites:ro" \
+    -v "$ROOT_DIR/docs/site:/srv/docs:ro" \
+    --restart unless-stopped \
+    caddy:2.8 >/dev/null 2>&1 || true
+}
+
+stop_caddy_only() {
+  have docker || return 0
+  docker rm -f ae-caddy-bench >/dev/null 2>&1 || true
+}
+
 # -------- Suite: k1s rootless --------
 log "suite: k1s rootless"
 engines_clear_all
-make labs-aio-up >/dev/null 2>&1 || true
+start_caddy_only || true
 build_demo_images_podman 0 || true
 PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_COLLECT_ENGINE=podman AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 \
   WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k1s \
   LABEL_SUITE="$LBL_K1S_ROOTLESS" APP="$APP" APP_NAME="$APP_NAME" REPLICAS="$REPLICAS" DURATION="$DURATION"
 fix_perms
-make labs-aio-down >/dev/null 2>&1 || true
+stop_caddy_only || true
 
 # -------- Suite: k1s rootful (sudo) --------
 log "suite: k1s rootful (sudo)"
 engines_clear_all
 if [[ "$USE_SUDO" == "1" ]]; then
-  make labs-aio-up >/dev/null 2>&1 || true
+  start_caddy_only || true
   build_demo_images_podman 1 || true
   sudo -E PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_COLLECT_ENGINE=podman AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 \
     WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k1s \
     LABEL_SUITE="$LBL_K1S_ROOTFUL" APP="$APP" APP_NAME="$APP_NAME" REPLICAS="$REPLICAS" DURATION="$DURATION"
   fix_perms
-  make labs-aio-down >/dev/null 2>&1 || true
+  stop_caddy_only || true
 else
   log "sudo not enabled; skipping k1s rootful"
 fi
