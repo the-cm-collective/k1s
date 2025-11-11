@@ -7,6 +7,38 @@ import subprocess
 from pathlib import Path
 
 
+def _detect_oci_from_snapshot(snap: Path) -> str:
+    """Best-effort OCI runtime detection from snapshot raw inspect files.
+
+    Prefer Podman inspect ('.OCIRuntime'), then Docker inspect (HostConfig.Runtime/Runtime).
+    Returns an empty string when not found.
+    """
+    try:
+        raw = snap / "raw"
+        pj = raw / "podman_inspect.json"
+        if pj.exists():
+            data = json.loads(pj.read_text() or "[]")
+            if isinstance(data, list) and data:
+                oci = (data[0].get("OCIRuntime") or "").strip()
+                if oci:
+                    return oci
+        dj = raw / "docker_inspect.json"
+        if dj.exists():
+            data = json.loads(dj.read_text() or "[]")
+            if isinstance(data, list) and data:
+                obj = data[0] or {}
+                oci = (
+                    (obj.get("HostConfig") or {}).get("Runtime")
+                    or obj.get("Runtime")
+                    or ""
+                )
+                if isinstance(oci, str) and oci.strip():
+                    return oci.strip()
+    except Exception:
+        pass
+    return ""
+
+
 def detect_backend() -> str:
     # Mirror mem_snapshot.sh behavior
     b = (Path.cwd().joinpath("ENV").read_text() if False else None)  # placeholder
@@ -57,6 +89,9 @@ def patch_snapshot(snap: Path, oci: str, insert_into_label: bool) -> bool:
     except Exception:
         return False
     changed = False
+    # If no explicit/host-detected value, try to infer from the snapshot itself
+    if not oci:
+        oci = _detect_oci_from_snapshot(snap)
     if not meta.get("oci_runtime") and oci:
         meta["oci_runtime"] = oci
         changed = True
@@ -112,4 +147,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
