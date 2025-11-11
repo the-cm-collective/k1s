@@ -103,13 +103,12 @@ if [[ "$collect_engine" == "podman" ]] && command -v docker >/dev/null 2>&1; the
     awk '{n=$1;l=$2; if (length(l)>0) c++; else if (index(n,"ae-")==1) c++} END{print c+0}' || echo 0)
 fi
 if [[ "$collect_engine" == "docker" ]] && command -v podman >/dev/null 2>&1; then
-  foreign_ae_containers="$(
-    { podman ps -a --format json 2>/dev/null | python - << 'PY'
+  foreign_ae_containers="$(podman ps -a --format json 2>/dev/null | python - << 'PY'
 import json,sys
 try:
     arr=json.load(sys.stdin)
 except Exception:
-    arr=[]
+    print(0); sys.exit(0)
 c=0
 for x in arr:
     labs=(x.get('Config') or {}).get('Labels') or (x.get('Labels') or {})
@@ -118,8 +117,7 @@ for x in arr:
         c+=1
 print(c)
 PY
-    ; } 2>/dev/null || echo 0
-  )"
+)"
 fi
 if [[ "$foreign_ae_containers" != "0" ]]; then
   echo "[mem-snapshot] warn: foreign engine has ${foreign_ae_containers} ae.app container(s); excluding them from metrics" >&2
