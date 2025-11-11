@@ -73,6 +73,46 @@ PY
   echo "$oci"
 }
 
+# Decide which engine's containers to collect
+collect_engine="both"
+if [[ "${AE_COLLECT_ENGINE:-}" == "podman" || "${AE_COLLECT_ENGINE:-}" == "docker" ]]; then
+  collect_engine="${AE_COLLECT_ENGINE}"
+else
+  case "${mode}" in
+    k1s) collect_engine="podman";;
+    k3s) collect_engine="docker";;
+    *) collect_engine="both";;
+  esac
+fi
+
+# Count foreign-engine ae.app containers to help spot contamination
+foreign_ae_containers=0
+if [[ "$collect_engine" == "podman" ]] && command -v docker >/dev/null 2>&1; then
+  # Count Docker containers with ae.app label or ae-* name
+  foreign_ae_containers=$(docker ps -a --format '{{.Names}} {{.Label "ae.app"}}' 2>/dev/null | \
+    awk '{n=$1;l=$2; if (length(l)>0) c++; else if (index(n,"ae-")==1) c++} END{print c+0}')
+fi
+if [[ "$collect_engine" == "docker" ]] && command -v podman >/dev/null 2>&1; then
+  foreign_ae_containers=$(podman ps -a --format json 2>/dev/null | python - << 'PY'
+import json,sys
+try:
+    arr=json.load(sys.stdin)
+except Exception:
+    arr=[]
+c=0
+for x in arr:
+    labs=(x.get('Config') or {}).get('Labels') or (x.get('Labels') or {})
+    name=(x.get('Name') or '').strip('/ ')
+    if labs.get('ae.app') or name.startswith('ae-'):
+        c+=1
+print(c)
+PY
+  )
+fi
+if [[ "$foreign_ae_containers" != "0" ]]; then
+  echo "[mem-snapshot] warn: foreign engine has ${foreign_ae_containers} ae.app container(s); excluding them from metrics" >&2
+fi
+
 # Metadata
 {
   echo "{"
@@ -84,7 +124,9 @@ PY
   echo "  \"backend\": \"$(detect_backend)\"," 
   echo "  \"oci_runtime\": \"$(detect_oci_runtime)\"," 
   echo "  \"cgroups\": \"$([[ -f /sys/fs/cgroup/cgroup.controllers ]] && echo cg2 || echo cg1)\"," 
-  echo "  \"rootless\": $([[ $(id -u) -eq 0 ]] && echo false || echo true)"
+  echo "  \"rootless\": $([[ $(id -u) -eq 0 ]] && echo false || echo true),"
+  echo "  \"engine_filter\": \"${collect_engine}\","
+  echo "  \"foreign_ae_containers\": ${foreign_ae_containers}"
   echo "}"
 } > "${outdir}/meta.json"
 
@@ -127,13 +169,13 @@ grep -E "${proc_pat}" "${scan_file}" | grep -v "containerd-shim" | awk '{print $
   fi
 done
 
-## Containers (collect from BOTH Podman and Docker when available)
+## Containers (collect only from the selected engine to avoid contamination)
 {
   echo "container_id,name,pid,mem_current_bytes"
 } > "${outdir}/raw/containers_mem.csv"
 
-# Podman
-if command -v podman >/dev/null 2>&1; then
+# Podman (only when selected)
+if [[ "$collect_engine" != "docker" ]] && command -v podman >/dev/null 2>&1; then
   podman ps -a --format json > "${outdir}/raw/podman_ps.json" 2>/dev/null || true
   ids=$(podman ps -aq 2>/dev/null || true)
   if [[ -n "${ids}" ]]; then
@@ -201,8 +243,8 @@ for c in data:
 PY
 fi
 
-# Docker
-if command -v docker >/dev/null 2>&1; then
+# Docker (only when selected)
+if [[ "$collect_engine" != "podman" ]] && command -v docker >/dev/null 2>&1; then
   docker ps -a --no-trunc --format '{{.ID}} {{.Names}} {{.Status}}' > "${outdir}/raw/docker_ps.txt" || true
   if docker ps -aq >/dev/null 2>&1; then
     ids=$(docker ps -aq)
@@ -272,7 +314,11 @@ PY
   fi
 fi
 
-if ! command -v podman >/dev/null 2>&1 && ! command -v docker >/dev/null 2>&1; then
+if [[ "$collect_engine" == "podman" ]] && ! command -v podman >/dev/null 2>&1; then
+  echo "[mem-snapshot] podman not found (engine_filter=podman); container metrics skipped." >&2
+elif [[ "$collect_engine" == "docker" ]] && ! command -v docker >/dev/null 2>&1; then
+  echo "[mem-snapshot] docker not found (engine_filter=docker); container metrics skipped." >&2
+elif ! command -v podman >/dev/null 2>&1 && ! command -v docker >/dev/null 2>&1; then
   echo "[mem-snapshot] docker/podman not found; container cgroup metrics will be skipped." >&2
 fi
 
