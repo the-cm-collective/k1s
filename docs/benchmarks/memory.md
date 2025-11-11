@@ -86,6 +86,33 @@ make bench-mem-e2e-k1s LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICA
 ```
 This runs matrix + rollout, combines all summaries, and writes charts/.
 
+End-to-end (k1nd one-liner; compose must be up)
+```
+make bench-mem-e2e-k1nd LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5
+```
+- Brings up the k1s-in-Docker dev stack (`labs-aio` compose) and then runs the same matrix + rollout sequence against that environment.
+- Uses Docker for host-side preflights and container cgroup metrics; ensure the current user can run `docker ps`.
+- Leave it running for repeated runs, or tear down with `make labs-aio-down` when done.
+
+End-to-end (k1nd with teardown)
+```
+make bench-mem-e2e-k1nd-down LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5
+```
+- Runs the same k1nd sequence and then executes `make labs-aio-down` to stop the compose stack.
+
+Backfill OCI runtime into past snapshots
+```
+make bench-mem-backfill-oci LABEL=r20251110+podman+rootless+cg2* REBUILD_DOCS=1
+```
+- Detects your OCI runtime (e.g., `crun`) and writes it to each snapshot’s `meta.json` and label (+crun) without renaming folders.
+- Then recombines and regenerates charts; add `OCI=runc` to override detection if needed. Use `GLOB='snapshots/r2025*/*'` to target arbitrary paths.
+
+Backfill just the latest label
+```
+make bench-mem-backfill-oci-latest REBUILD_DOCS=1
+```
+- Auto-detects the most recent label under `snapshots/` and runs the same backfill + recombine + charts sequence. Pass `OCI=crun` to override detection if desired.
+
 Automate a small matrix (k3s via k3d)
 - Create cluster and expose ports 80/443 for Traefik:
 ```

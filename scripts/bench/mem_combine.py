@@ -54,6 +54,8 @@ def main(argv: List[str]) -> int:
             {
                 "label": meta.get("label", ""),
                 "mode": meta.get("mode", ""),
+                "backend": meta.get("backend", ""),
+                "oci_runtime": meta.get("oci_runtime", ""),
                 "timestamp": meta.get("timestamp", ""),
                 "process_pss_kb": s.get("process_totals_kb", {}).get("pss_kb", 0),
                 "control_plane_pss_kb": s.get("overhead", {}).get("pss_kb_control_plane", 0),

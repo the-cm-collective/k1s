@@ -108,11 +108,45 @@ auto_label() {
   if [[ "$backend" != "podman" && "$backend" != "docker" && "$backend" != "oci" ]]; then
     if command -v podman >/dev/null 2>&1; then backend=podman; elif command -v docker >/dev/null 2>&1; then backend=docker; else backend=unknown; fi
   fi
+  # Detect OCI runtime (crun/runc/other) for additional tagging
+  local oci=""
+  if [[ "$backend" == "podman" || "$backend" == "oci" ]]; then
+    if command -v podman >/dev/null 2>&1; then
+      oci=$(podman info --format '{{ .Host.OCIRuntime.Name }}' 2>/dev/null | tr -d '"' || true)
+      if [[ -z "$oci" ]]; then
+        oci=$(podman info --format json 2>/dev/null | python - << 'PY'
+import json, sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    print(""); sys.exit(0)
+h = d.get('host') or d.get('Host') or {}
+oci = h.get('ociRuntime') or h.get('OCIRuntime') or {}
+name = (oci.get('name') or oci.get('Name') or oci.get('package') or oci.get('path') or '').strip()
+name = name.split('/')[-1]
+name = name.split()[0]
+print(name)
+PY
+        )
+      fi
+    fi
+  elif [[ "$backend" == "docker" ]]; then
+    if command -v docker >/dev/null 2>&1; then
+      oci=$(docker info --format '{{ .DefaultRuntime }}' 2>/dev/null | tr -d '"' || true)
+      if [[ -z "$oci" ]]; then
+        oci=$(docker info 2>/dev/null | awk -F': ' '/Default Runtime/ {print $2; exit}')
+      fi
+    fi
+  fi
   local root_tag
   if [[ $(id -u) -eq 0 ]]; then root_tag=priv; else root_tag=rootless; fi
   local cg_tag
   if [[ -f /sys/fs/cgroup/cgroup.controllers ]]; then cg_tag=cg2; else cg_tag=cg1; fi
-  echo "${today}+${backend}+${root_tag}+${cg_tag}"
+  if [[ -n "$oci" ]]; then
+    echo "${today}+${backend}+${oci}+${root_tag}+${cg_tag}"
+  else
+    echo "${today}+${backend}+${root_tag}+${cg_tag}"
+  fi
 }
 
 ensure_controller() {

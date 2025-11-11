@@ -201,6 +201,34 @@ bench-mem-e2e-k1s:
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 
+.PHONY: bench-mem-e2e-k1nd
+# End-to-end: k1nd (k1s-in-Docker via labs-aio compose) matrix + rollout + combine + plot
+# - Ensures the compose stack with controller + caddy is running
+# - Uses Docker on the host for preflights and container cgroup metrics
+# - Skips guard auto-start to avoid spawning a host controller
+bench-mem-e2e-k1nd:
+	@$(MAKE) labs-aio-up
+	@AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 ./scripts/bench/run_matrix.sh \
+		--label-suite $${LABEL_SUITE:-baseline} \
+		--app $${APP:-specs/examples/echo.yaml} \
+		--app-name $${APP_NAME:-echo} \
+		--replicas $${REPLICAS:-1,5,10} \
+		--duration $${DURATION:-30}
+	@AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 ./scripts/bench/run_rollout_k1s.sh \
+		--label-suite $${LABEL_SUITE_ROLL:-baseline-roll} \
+		--app $${APP:-specs/examples/echo.yaml} \
+		--app-name $${APP_NAME:-echo} \
+		--replicas $${ROLL_REPLICAS:-5} \
+		--duration $${DURATION:-30}
+	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
+	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+
+.PHONY: bench-mem-e2e-k1nd-down
+# Same as bench-mem-e2e-k1nd but tears down the compose stack afterwards
+bench-mem-e2e-k1nd-down:
+	@$(MAKE) bench-mem-e2e-k1nd
+	@$(MAKE) labs-aio-down
+
 .PHONY: bench-mem-docs
 # Combine, plot, and rebuild docs in one go
 bench-mem-docs:
@@ -218,6 +246,33 @@ bench-mem-backfill:
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 	@python docs/build_docs.py
+
+.PHONY: bench-mem-backfill-oci
+# Backfill: insert detected OCI runtime (e.g., crun/runc) into snapshot meta and labels,
+# then recombine results and regenerate charts (and optionally docs).
+#
+# Variables:
+#   LABEL   - snapshot label directory to target (e.g., r20251110+podman+rootless+cg2*);
+#             if empty, processes all snapshots.
+#   GLOB    - explicit snapshot path/glob (overrides LABEL), e.g., 'snapshots/r*/2025*'.
+#   OCI     - override runtime name; if empty, auto-detects via podman/docker info.
+#   REBUILD_DOCS - set to 1 to rebuild docs after charts (default 0).
+bench-mem-backfill-oci:
+	@SNAP_GLOB=$${GLOB:-$$(test -n "$$LABEL" && echo snapshots/$$LABEL/* || echo snapshots/*/*)}; \
+		echo "[oci-backfill] targeting $$SNAP_GLOB (override with GLOB=...)" >&2; \
+		python scripts/bench/label_backfill.py "$$SNAP_GLOB" --insert-into-label $${OCI:+--oci $$OCI}
+	@python scripts/bench/mem_combine.py $${GLOB_COMBINE:-snapshots/*/*}
+	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+	@{ test "$$REBUILD_DOCS" = "1" && python docs/build_docs.py || true; }
+
+.PHONY: bench-mem-backfill-oci-latest
+# Detect the most recent label directory under snapshots/ and backfill just that label.
+# Pass through OCI and REBUILD_DOCS as in bench-mem-backfill-oci.
+bench-mem-backfill-oci-latest:
+	@LBL=$${LABEL:-$$(ls -1d snapshots/* 2>/dev/null | awk -F/ '{print $$2}' | sort | tail -n1)}; \
+		if [ -z "$$LBL" ]; then echo "[oci-backfill-latest] no snapshots found" >&2; exit 0; fi; \
+		echo "[oci-backfill-latest] latest label=$$LBL" >&2; \
+		$(MAKE) bench-mem-backfill-oci LABEL="$$LBL*" $${OCI:+OCI=$$OCI} $${REBUILD_DOCS:+REBUILD_DOCS=$$REBUILD_DOCS}
 
 .PHONY: docs-watch
 # Rebuild docs whenever combined/combined.csv changes
