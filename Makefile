@@ -191,7 +191,7 @@ bench-mem-e2e-k3s-sudo:
 		--duration $${DURATION:-30} \
 		--sudo
 	@./scripts/bench/run_rollout_k3s.sh \
-		--label-suite $${LABEL_SUITE_ROLL:-baseline-roll} \
+		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--deploy $${DEPLOY:-echo} \
 		--namespace $${NS:-default} \
 		--replicas $${ROLL_REPLICAS:-5} \
@@ -211,7 +211,7 @@ bench-mem-e2e-k1s:
 		--replicas $${REPLICAS:-1,5,10} \
 		--duration $${DURATION:-30}
 	@./scripts/bench/run_rollout_k1s.sh \
-		--label-suite $${LABEL_SUITE_ROLL:-baseline-roll} \
+		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
 		--replicas $${ROLL_REPLICAS:-5} \
@@ -233,7 +233,7 @@ bench-mem-e2e-k1nd:
 		--replicas $${REPLICAS:-1,5,10} \
 		--duration $${DURATION:-30}
 	@AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 ./scripts/bench/run_rollout_k1s.sh \
-		--label-suite $${LABEL_SUITE_ROLL:-baseline-roll} \
+		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
 		--replicas $${ROLL_REPLICAS:-5} \
