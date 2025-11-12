@@ -32,7 +32,7 @@ require python
 # Support running ae CLI inside the controller container for k1nd
 AE_CLI_CONTAINER=${AE_CLI_CONTAINER:-dev-controller-1}
 IN_CONTAINER=0
-if [[ "${AE_CLI_IN_CONTAINER:-0}" == "1" ]] && command -v docker >/div/null 2>&1; then
+if [[ "${AE_CLI_IN_CONTAINER:-0}" == "1" ]] && command -v docker >/dev/null 2>&1; then
   IN_CONTAINER=1
   # Wait until the controller container has ae installed (pip -e completes)
   for i in 1 2 3 4 5; do
@@ -41,7 +41,6 @@ import importlib
 import sys
 sys.exit(0 if importlib.util.find_spec('ae') else 1)
 PY
-    then break; fi
     sleep 2
   done
   ae() { docker exec "$AE_CLI_CONTAINER" python -m ae.cli "$@"; }
