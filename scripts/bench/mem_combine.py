@@ -77,8 +77,16 @@ def main(argv: List[str]) -> int:
                 "mem_available_after_bytes": (s.get("mem_available", {}) or {}).get(
                     "after_bytes", 0
                 ),
-                "mem_available_delta_bytes": (s.get("mem_available", {}) or {}).get(
-                    "delta_bytes", 0
+                # Backfill mem-available delta if snapshot didn't compute it
+                "mem_available_delta_bytes": (
+                    (s.get("mem_available", {}) or {}).get("delta_bytes", 0)
+                    if (s.get("mem_available", {}) or {}).get("delta_bytes", 0)
+                    else (
+                        (
+                            (s.get("mem_available", {}) or {}).get("after_bytes", 0)
+                            - (s.get("mem_available", {}) or {}).get("before_bytes", 0)
+                        )
+                    )
                 ),
             }
         )
