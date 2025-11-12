@@ -267,6 +267,30 @@ bench-mem-e2e-k1nd-sudo:
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 
+.PHONY: bench-mem-e2e-k1nd-quick
+# Fast profile: in-container CLI, no warm, shorter snapshots, fewer waits
+bench-mem-e2e-k1nd-quick:
+	@$(MAKE) labs-aio-up
+	@AE_CLI_IN_CONTAINER=1 AE_BENCH_QUICK=1 SKIP_IDLE=$${SKIP_IDLE:-1} PRUNE_OLD=$${PRUNE_OLD:-1} \
+	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} \
+	 AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} \
+	 AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 ./scripts/bench/run_matrix.sh \
+		--label-suite $${LABEL_SUITE:-baseline} \
+		--app $${APP:-specs/examples/echo.yaml} \
+		--app-name $${APP_NAME:-echo} \
+		--replicas $${REPLICAS:-1,5,10} \
+		--duration $${DURATION:-10}
+	@AE_CLI_IN_CONTAINER=1 AE_BENCH_QUICK=1 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} \
+	 AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} \
+	 AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 ./scripts/bench/run_rollout_k1s.sh \
+		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
+		--app $${APP:-specs/examples/echo.yaml} \
+		--app-name $${APP_NAME:-echo} \
+		--replicas $${ROLL_REPLICAS:-5} \
+		--duration $${DURATION:-10}
+	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
+	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+
 .PHONY: bench-mem-e2e-k1nd-down
 # Same as bench-mem-e2e-k1nd but tears down the compose stack afterwards
 bench-mem-e2e-k1nd-down:

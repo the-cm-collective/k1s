@@ -39,7 +39,20 @@ require() {
 
 require python
 
-ae() { python -m ae.cli "$@"; }
+# Support running ae CLI inside the controller container for k1nd
+AE_CLI_CONTAINER=${AE_CLI_CONTAINER:-dev-controller-1}
+if [[ "${AE_CLI_IN_CONTAINER:-0}" == "1" ]] && command -v docker >/dev/null 2>&1; then
+  ae() { docker exec "$AE_CLI_CONTAINER" python -m ae.cli "$@"; }
+else
+  ae() { python -m ae.cli "$@"; }
+fi
+
+# Quick bench profile
+if [[ "${AE_BENCH_QUICK:-0}" == "1" ]]; then
+  : "${WARM_ENABLED:=0}"; export WARM_ENABLED
+  : "${DURATION:=5}"; export DURATION
+  : "${WAIT_READY_TRIES:=60}"; export WAIT_READY_TRIES
+fi
 
 # Optionally warm endpoints (help readiness converge before snapshot)
 warm_endpoints() {
@@ -238,19 +251,21 @@ wait_ready() {
   return 1
 }
 
-# Idle snapshot
-info "idle snapshot"
-if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-    sudo -E scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration"
+# Idle snapshot (skippable)
+if [[ "${SKIP_IDLE:-0}" != "1" ]]; then
+  info "idle snapshot"
+  if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+      sudo -E scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration"
+    else
+      sudo -E scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true
+    fi
   else
-    sudo -E scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true
-  fi
-else
-  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-    scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration"
-  else
-    scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true
+    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+      scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration"
+    else
+      scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true
+    fi
   fi
 fi
 
