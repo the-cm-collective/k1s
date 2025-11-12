@@ -42,7 +42,14 @@ log_step "start: outdir=${outdir}"
 
 # Detect backend and OCI runtime for metadata/labels
 detect_backend() {
-  local b="${AE_RUNTIME_BACKEND:-podman}"
+  # Prefer explicit engine used for container cgroup collection
+  # so metadata reflects where container bytes came from.
+  local b
+  if [[ -n "${AE_COLLECT_ENGINE:-}" ]]; then
+    b="${AE_COLLECT_ENGINE}"
+  else
+    b="${AE_RUNTIME_BACKEND:-podman}"
+  fi
   if [[ "$b" != "podman" && "$b" != "docker" && "$b" != "oci" ]]; then
     if command -v podman >/dev/null 2>&1; then b=podman; elif command -v docker >/dev/null 2>&1; then b=docker; else b=unknown; fi
   fi

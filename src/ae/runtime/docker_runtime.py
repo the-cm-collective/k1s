@@ -364,12 +364,20 @@ class DockerRuntime(RuntimeAdapter):
                     if s_type:
                         st = str(s_type)
                         if st == "RuntimeDefault":
-                            secopts.append("seccomp=runtime/default")
+                            # Let Docker apply its default seccomp; do NOT pass
+                            # the Kubernetes token "runtime/default" which Docker
+                            # interprets as a literal JSON path and fails to parse.
+                            pass
                         elif st == "Unconfined":
                             secopts.append("seccomp=unconfined")
                         elif st == "Localhost" and s_local:
-                            # Docker expects a path to a local profile JSON
-                            secopts.append(f"seccomp={s_local}")
+                            # Docker expects a path to a local profile JSON.
+                            # Be defensive: only append if the file exists.
+                            try:
+                                if os.path.exists(str(s_local)):
+                                    secopts.append(f"seccomp={s_local}")
+                            except Exception:
+                                pass
                     a_prof = getattr(sec, "apparmor_profile", None)
                     if a_prof:
                         ap = str(a_prof)
