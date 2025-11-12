@@ -44,7 +44,7 @@ auto_label() {
     if command -v podman >/dev/null 2>&1; then
       oci=$(podman info --format '{{ .Host.OCIRuntime.Name }}' 2>/dev/null | tr -d '"' || true)
       if [[ -z "$oci" ]]; then
-        oci=$(podman info --format json 2>/dev/null | python - << 'PY'
+      oci=$(podman info --format json 2>/dev/null | python - <<- 'PY'
 import json, sys
 try:
     d=json.load(sys.stdin)
@@ -162,7 +162,7 @@ wait_ready() {
 }
 
 current_image() {
-  ae status "$app_name" --json 2>/dev/null | python - << 'PY' || true
+  ae status "$app_name" --json 2>/dev/null | python - <<- 'PY' || true
 import sys, json
 try:
     j=json.load(sys.stdin)
@@ -174,7 +174,7 @@ PY
 
 switch_image() {
   local in="$1"; local out="$2"; local newimg="$3"; local replicas="$4"
-  python - "$in" "$out" "$newimg" "$replicas" << 'PY'
+  python - "$in" "$out" "$newimg" "$replicas" <<- 'PY'
 import sys, re
 src, dst, newimg, replicas = sys.argv[1:5]
 try:
