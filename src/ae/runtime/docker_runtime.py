@@ -763,38 +763,61 @@ class DockerRuntime(RuntimeAdapter):
     def _endpoint_from_ports(
         self, ports: Iterable[PortSpec], container: Container, *, preferred: Optional[int] = None
     ) -> Optional[str]:
-        if not ports:
-            return None
+        # It is possible for images to expose ports that don't match the declared
+        # manifest. For readiness probing we prefer, in order: a published host
+        # port matching the preferred probe port; otherwise a published 80/tcp;
+        # otherwise a published 8080/tcp; otherwise the first published non‑443
+        # mapping; finally, if on a shared network, container DNS name.
 
         network_ports = container.attrs.get("NetworkSettings", {}).get("Ports", {}) or {}
-        # Try preferred container port first when provided
-        if preferred is not None:
-            key = f"{int(preferred)}/tcp"
-            binds = network_ports.get(key)
-            if binds:
-                binding = binds[0]
-                host_ip = binding.get("HostIp", "127.0.0.1")
-                # Docker reports HostIp "0.0.0.0"/"::" for wildcard binds; use loopback for local probes
-                if host_ip in ("0.0.0.0", "::", "[::]"):
-                    host_ip = "127.0.0.1"
-                host_port = binding.get("HostPort")
-                if host_port:
-                    return f"{host_ip}:{host_port}"
-        for port in ports:
-            key = f"{port.container_port}/tcp"
-            bindings = network_ports.get(key)
-            if not bindings:
-                continue
-            binding = bindings[0]
+
+        def _binding_to_endpoint(binding: dict) -> Optional[str]:
             host_ip = binding.get("HostIp", "127.0.0.1")
             if host_ip in ("0.0.0.0", "::", "[::]"):
                 host_ip = "127.0.0.1"
             host_port = binding.get("HostPort")
             if host_port:
                 return f"{host_ip}:{host_port}"
-        # If no host port was published but we are on a shared network, use container DNS name
+            return None
+
+        # 1) Preferred probe port
+        if preferred is not None:
+            binds = network_ports.get(f"{int(preferred)}/tcp")
+            if binds:
+                ep = _binding_to_endpoint(binds[0])
+                if ep:
+                    return ep
+
+        # Convenience helper to pick a specific container port if published
+        def _pick_port(container_port: int) -> Optional[str]:
+            binds = network_ports.get(f"{int(container_port)}/tcp")
+            if binds:
+                return _binding_to_endpoint(binds[0])
+            return None
+
+        # 2) Common HTTP ports
+        for cp in (80, 8080):
+            ep = _pick_port(cp)
+            if ep:
+                return ep
+
+        # 3) First published non‑443 mapping
+        for key, binds in network_ports.items():
+            if not binds:
+                continue
+            try:
+                cport = int(str(key).split("/")[0])
+            except Exception:
+                cport = None
+            if cport == 443:
+                continue
+            ep = _binding_to_endpoint(binds[0])
+            if ep:
+                return ep
+
+        # 4) Shared-network fallback using manifest-declared ports
         if self._network_name:
-            first = next(iter(ports), None)
+            first = next(iter(ports or []), None)
             if first is not None:
                 return f"{container.name}:{first.container_port}"
         return None
