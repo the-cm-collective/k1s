@@ -231,13 +231,13 @@ bench-mem-e2e-k1s:
 bench-mem-e2e-k1nd:
 	@$(MAKE) labs-aio-up
 	# Use a writable, isolated state DB for host-side CLI during k1nd runs
-    @AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_matrix.sh \
+	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_matrix.sh \
 		--label-suite $${LABEL_SUITE:-baseline} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
 		--replicas $${REPLICAS:-1,5,10} \
 		--duration $${DURATION:-30}
-    @AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
+	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
@@ -250,14 +250,14 @@ bench-mem-e2e-k1nd:
 # Same as bench-mem-e2e-k1nd but runs snapshots with sudo to capture full PSS
 bench-mem-e2e-k1nd-sudo:
 	@$(MAKE) labs-aio-up
-    @AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_matrix.sh \
+	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_matrix.sh \
 		--label-suite $${LABEL_SUITE:-baseline} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
 		--replicas $${REPLICAS:-1,5,10} \
 		--duration $${DURATION:-30} \
 		--sudo
-    @AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
+	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
