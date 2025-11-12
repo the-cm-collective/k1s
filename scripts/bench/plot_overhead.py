@@ -50,6 +50,35 @@ def to_mib(val: str | int | float, *, kib: bool = False) -> float:
     return v / (1024.0 * 1024.0)
 
 
+def display_label(row: Dict[str, str]) -> str:
+    """Return a label string augmented with '+<oci>+' when missing.
+
+    This avoids having to mutate snapshot metadata (which may be root-owned),
+    and keeps legacy charts informative about the runtime (crun/runc).
+    """
+    label = row.get("label", "") or ""
+    oci = str(row.get("oci_runtime") or "").strip().lower()
+    if not oci or f"+{oci}+" in label:
+        return label
+    # Prefer inserting after '+<backend>+' if present
+    backend = (row.get("backend") or "").strip().lower()
+    token_b = f"+{backend}+" if backend else None
+    if token_b and token_b in label:
+        return label.replace(token_b, f"{token_b}{oci}+")
+    # Fallback: insert before stage suffixes like '-idle', '-pods-N', or rollout
+    import re
+    m = (
+        re.search(r"(-idle)$", label)
+        or re.search(r"(-pods-\d+)$", label)
+        or re.search(r"(-rollout-\d+-(during|post))$", label)
+    )
+    if m:
+        start, _end = m.span(1)
+        return f"{label[:start]}+{oci}+{label[start:]}"
+    # Last resort: append a compact suffix
+    return f"{label}+{oci}"
+
+
 # Material-ish flat colors and dark grey background for better readability
 PALETTE = {
     # Greens
@@ -430,7 +459,7 @@ def main(argv: List[str]) -> int:
     # Preserve legacy charts for continuity (now using derived CP PSS)
     # Limit to last N rows to avoid unreadably wide charts
     legacy_rows = rows[-args.latest :] if args.latest and len(rows) > args.latest else rows
-    labels = [r.get("label", "") for r in legacy_rows]
+    labels = [display_label(r) for r in legacy_rows]
     scenarios = [scenario_name(r) for r in legacy_rows]
     pss = [_cp_pss_mib_derived(r) for r in legacy_rows]
     colors = [PALETTE.get(sc, "#94a3b8") for sc in scenarios]
