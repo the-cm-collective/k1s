@@ -29,7 +29,19 @@ done
 require() { if ! command -v "$1" >/dev/null 2>&1; then echo "missing: $1" >&2; exit 2; fi; }
 require python
 
-ae() { python -m ae.cli "$@"; }
+# Support running ae CLI inside the controller container for k1nd
+AE_CLI_CONTAINER=${AE_CLI_CONTAINER:-dev-controller-1}
+if [[ "${AE_CLI_IN_CONTAINER:-0}" == "1" ]] && command -v docker >/dev/null 2>&1; then
+  ae() { docker exec "$AE_CLI_CONTAINER" python -m ae.cli "$@"; }
+else
+  ae() { python -m ae.cli "$@"; }
+fi
+
+# Quick bench profile
+if [[ "${AE_BENCH_QUICK:-0}" == "1" ]]; then
+  : "${DURATION:=5}"; export DURATION
+  : "${WAIT_READY_TRIES:=60}"; export WAIT_READY_TRIES
+fi
 
 # Build an automatic label base when none provided explicitly
 auto_label() {
