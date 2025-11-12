@@ -7,6 +7,7 @@ import math
 import re
 import sys
 from pathlib import Path
+import os
 from typing import Dict, List, Tuple
 
 
@@ -49,12 +50,19 @@ def to_mib(val: str | int | float, *, kib: bool = False) -> float:
     return v / (1024.0 * 1024.0)
 
 
+# Material-ish flat colors and dark grey background for better readability
 PALETTE = {
-    "k1s rootless": "#22c55e",
-    "k1s rootful": "#15803d",
-    "k1nd": "#3b82f6",
-    "k3d": "#f59e0b",
+    # Greens
+    "k1s rootless": "#66BB6A",  # Green 400
+    "k1s rootful": "#2E7D32",   # Green 800
+    # Blue / Amber
+    "k1nd": "#42A5F5",          # Blue 400
+    "k3d": "#FFB300",           # Amber 600
 }
+
+BG_DARK = "#263238"   # Blue Grey 900
+FG_LIGHT = "#ECEFF1"  # Blue Grey 50
+GRID_COLOR = "#546E7A"  # Blue Grey 600
 
 
 def latest_per_scenario_stage(rows: List[Dict[str, str]]) -> Dict[Tuple[str, str], Dict[str, str]]:
@@ -382,6 +390,12 @@ def main(argv: List[str]) -> int:
         default=None,
         help="target replicas N for rollout pairs; defaults to most common",
     )
+    parser.add_argument(
+        "--latest",
+        type=int,
+        default=int(os.getenv("PLOT_LATEST", "60") or 60),
+        help="limit legacy bar charts to the last N rows (default from $PLOT_LATEST or 60)",
+    )
     args = parser.parse_args(argv[1:])
 
     csv_path = Path(args.csv)
@@ -414,13 +428,38 @@ def main(argv: List[str]) -> int:
         return 0
 
     # Preserve legacy charts for continuity (now using derived CP PSS)
-    labels = [r.get("label", "") for r in rows]
-    pss = [_cp_pss_mib_derived(r) for r in rows]
-    plt.figure(figsize=(10, 4))
-    plt.bar(labels, pss, color="#60a5fa")
-    plt.ylabel("Control-plane PSS (MiB)")
-    plt.xticks(rotation=45, ha="right")
-    plt.tight_layout()
+    # Limit to last N rows to avoid unreadably wide charts
+    legacy_rows = rows[-args.latest :] if args.latest and len(rows) > args.latest else rows
+    labels = [r.get("label", "") for r in legacy_rows]
+    scenarios = [scenario_name(r) for r in legacy_rows]
+    pss = [_cp_pss_mib_derived(r) for r in legacy_rows]
+    colors = [PALETTE.get(sc, "#94a3b8") for sc in scenarios]
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.set_facecolor(BG_DARK)
+    fig.patch.set_facecolor(BG_DARK)
+    bars = ax.bar(labels, pss, color=colors, edgecolor="#000000", linewidth=0)
+    ax.set_ylabel("Control-plane PSS (MiB)", color=FG_LIGHT)
+    ax.tick_params(colors=FG_LIGHT)
+    ax.spines["bottom"].set_color(FG_LIGHT)
+    ax.spines["left"].set_color(FG_LIGHT)
+    ax.grid(axis="y", linestyle=":", color=GRID_COLOR, alpha=0.5)
+    ax.set_axisbelow(True)
+    for lbl in ax.get_xticklabels():
+        lbl.set_rotation(45)
+        lbl.set_ha("right")
+        lbl.set_color(FG_LIGHT)
+        lbl.set_fontsize(8)
+    # Add a compact legend for scenario colors
+    try:
+        import matplotlib.patches as mpatches  # type: ignore
+        handles = [
+            mpatches.Patch(color=PALETTE.get(sc, "#94a3b8"), label=sc)
+            for sc in ["k1s rootless", "k1s rootful", "k1nd", "k3d"]
+        ]
+        ax.legend(handles=handles, frameon=False, labelcolor=FG_LIGHT, facecolor=BG_DARK, loc="upper left")
+    except Exception:
+        pass
+    fig.tight_layout()
     try:
         plt.savefig(outdir / "control_plane_pss.png", dpi=120)
     except PermissionError:
@@ -431,13 +470,33 @@ def main(argv: List[str]) -> int:
 
     sys_mem = [
         to_mib((r.get("host_system_cgroups_bytes") or r.get("system_mem_bytes") or 0))
-        for r in rows
+        for r in legacy_rows
     ]
-    plt.figure(figsize=(10, 4))
-    plt.bar(labels, sys_mem, color="#34d399")
-    plt.ylabel("System cgroups (MiB)")
-    plt.xticks(rotation=45, ha="right")
-    plt.tight_layout()
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.set_facecolor(BG_DARK)
+    fig.patch.set_facecolor(BG_DARK)
+    bars = ax.bar(labels, sys_mem, color=colors, edgecolor="#000000", linewidth=0)
+    ax.set_ylabel("System cgroups (MiB)", color=FG_LIGHT)
+    ax.tick_params(colors=FG_LIGHT)
+    ax.spines["bottom"].set_color(FG_LIGHT)
+    ax.spines["left"].set_color(FG_LIGHT)
+    ax.grid(axis="y", linestyle=":", color=GRID_COLOR, alpha=0.5)
+    ax.set_axisbelow(True)
+    for lbl in ax.get_xticklabels():
+        lbl.set_rotation(45)
+        lbl.set_ha("right")
+        lbl.set_color(FG_LIGHT)
+        lbl.set_fontsize(8)
+    try:
+        import matplotlib.patches as mpatches  # type: ignore
+        handles = [
+            mpatches.Patch(color=PALETTE.get(sc, "#94a3b8"), label=sc)
+            for sc in ["k1s rootless", "k1s rootful", "k1nd", "k3d"]
+        ]
+        ax.legend(handles=handles, frameon=False, labelcolor=FG_LIGHT, facecolor=BG_DARK, loc="upper left")
+    except Exception:
+        pass
+    fig.tight_layout()
     try:
         plt.savefig(outdir / "system_cgroups.png", dpi=120)
     except PermissionError:

@@ -1092,3 +1092,61 @@ See also:
 - PDB: `--emit-pdb` plus optional `--pdb-min-available N`.
 - HPA: `--hpa-min N --hpa-max M --hpa-cpu-target PCT [--hpa-mem-target PCT]` (requires CPU requests in spec).
 - Security: `--default-security` applies conservative container securityContext defaults when none provided.
+
+---
+
+
+# Scratch
+
+```bash
+PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_COLLECT_ENGINE=podman AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 \
+  WAIT_READY_TRIES=120 make bench-mem-e2e-k1s LABEL_SUITE=r20251110+podman+rootless+cg2 APP=specs/examples/blue.yaml APP_NAME=blue \
+  REPLICAS=1,5,10 DURATION=30
+
+sudo -E PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_COLLECT_ENGINE=podman AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 \
+  WAIT_READY_TRIES=120 make bench-mem-e2e-k1s LABEL_SUITE=r20251110+podman+priv+cg2 APP=specs/examples/blue.yaml APP_NAME=blue \
+  REPLICAS=1,5,10 DURATION=30
+
+PYTHONPATH=src AE_RUNTIME_BACKEND=docker AE_COLLECT_ENGINE=docker AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 \
+  WAIT_READY_TRIES=120 make bench-mem-e2e-k1nd LABEL_SUITE=r20251110+docker+k1nd REPLICAS=1,5,10 DURATION=30
+
+AE_ENGINE_STRICT=1 AE_COLLECT_ENGINE=docker WAIT_READY_TRIES=120 make bench-mem-e2e-k3s-sudo LABEL_SUITE=r20251110+k3d \
+  MANIFEST=specs/examples/k3s-echo.yaml REPLICAS=1,5,10 DURATION=30
+```
+
+> Here’s a clean, repeatable baseline matrix that matches your ask and the repo’s bench scripts. It pins the collector engine, enforces
+  strict mode, and uses consistent labels so charts bucket correctly.
+
+  - Environment Prep
+      - Stop any demos/labs; if safe, clear engines: sudo make bench-engines-clear CONFIRM=1
+      - Common env: export PYTHONPATH=src AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 WAIT_READY_TRIES=120
+      - Keep ingress consistently ON across all runs (k1s + Caddy, k3s + Traefik).
+  - k1s Rootless (Podman)
+      - PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_COLLECT_ENGINE=podman AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1
+  WAIT_READY_TRIES=120 make bench-mem-e2e-k1s LABEL_SUITE=r20251110+podman+rootless+cg2 APP=specs/examples/blue.yaml APP_NAME=blue
+  REPLICAS=1,5,10 DURATION=30
+  - k1s Rootful (Podman, snapshots as root)
+      - sudo -E PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_COLLECT_ENGINE=podman AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1
+  WAIT_READY_TRIES=120 make bench-mem-e2e-k1s LABEL_SUITE=r20251110+podman+priv+cg2 APP=specs/examples/blue.yaml APP_NAME=blue
+  REPLICAS=1,5,10 DURATION=30
+  - k1nd (k1s-in-Docker)
+      - PYTHONPATH=src AE_RUNTIME_BACKEND=docker AE_COLLECT_ENGINE=docker AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1
+  WAIT_READY_TRIES=120 make bench-mem-e2e-k1nd LABEL_SUITE=r20251110+docker+k1nd REPLICAS=1,5,10 DURATION=30
+  - k3d/k3s (cluster up; sudo for accurate PSS)
+      - AE_ENGINE_STRICT=1 AE_COLLECT_ENGINE=docker WAIT_READY_TRIES=120 make bench-mem-e2e-k3s-sudo LABEL_SUITE=r20251110+k3d
+  MANIFEST=specs/examples/k3s-echo.yaml REPLICAS=1,5,10 DURATION=30
+  - After Each Suite
+      - Insert OCI runtime into labels + rebuild charts: make bench-mem-backfill-oci-latest REBUILD_DOCS=1
+      - If you ran with sudo, normalize artifacts: sudo make bench-fix-perms
+  - Notes to keep the baseline “clean”
+      - Pin the collector: AE_COLLECT_ENGINE=podman for k1s; AE_COLLECT_ENGINE=docker for k3s/k1nd. This avoids “missing container metrics”
+  bars.
+      - Labels matter for chart bucketing: include +rootless+ or +priv+ and engine/runtime in LABEL_SUITE as above.
+      - Use the same app across runs. You picked blue.yaml for k1s; for k3s use specs/examples/k3s-echo.yaml (lightweight and equivalent
+  footprint). If you prefer strict parity, switch all to echo.
+      - Strict mode will fail if foreign ae.app containers are running on the other engine; clear or stop them first.
+
+  If you want, I can generate a tiny wrapper script that runs all four suites back-to-back, stamps the labels, and emits a single combined/
+  combined.csv plus charts.
+
+
