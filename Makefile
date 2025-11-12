@@ -103,6 +103,10 @@ demo-help:
 demo-down:
 	./scripts/init_demo.sh --down -y
 
+.PHONY: demo-hardened
+demo-hardened:
+	./scripts/init_demo.sh --demo-hardened -y -d
+
 # Reset demo/labs state so a fresh init only reconciles the curated demo apps
 .PHONY: demo-reset
 demo-reset:
