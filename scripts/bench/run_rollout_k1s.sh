@@ -246,7 +246,46 @@ PY
 }
 
 echo "[rollout] scale ${app_name} to ${replicas} and wait ready" >&2
-ae apply -f "$manifest" || true
+# Apply a manifest with replicas set to avoid single-replica host port publishing collisions
+if [[ "$IN_CONTAINER" == "1" ]]; then
+  startman="state/rollout-start-${app_name}-${replicas}.yaml"
+else
+  startman=$(mktemp)
+fi
+python - "$manifest" "$startman" "$replicas" <<-'PY'
+import sys, re
+src, dst, replicas = sys.argv[1:4]
+try:
+    replicas = int(replicas)
+except Exception:
+    replicas = None
+data = open(src,'r',encoding='utf-8').read().splitlines()
+out=[]
+in_spec=False
+did_rep=False
+for i,line in enumerate(data):
+    if line.strip()=="spec:":
+        in_spec=True
+        out.append(line)
+        continue
+    if in_spec:
+        if replicas is not None and re.match(r"^\s*replicas:\s*", line):
+            out.append(re.sub(r"^\s*replicas:\s*.*$", f"  replicas: {replicas}", line))
+            did_rep=True
+            continue
+        if re.match(r"^[^\s]", line):
+            in_spec=False
+    out.append(line)
+if replicas is not None and not did_rep:
+    out2=[]; inserted=False
+    for line in out:
+        out2.append(line)
+        if not inserted and line.strip()=="spec:":
+            out2.append(f"  replicas: {replicas}"); inserted=True
+    out=out2
+open(dst,'w',encoding='utf-8').write("\n".join(out)+"\n")
+PY
+ae apply -f "$startman" || true
 ae scale "$app_name" --replicas "$replicas" || true
 wait_ready "$app_name" "$replicas" || true
 
