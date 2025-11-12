@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 import os
 from typing import Dict, List, Tuple
+import os
 
 
 def scenario_name(row: Dict[str, str]) -> str:
@@ -77,6 +78,25 @@ def display_label(row: Dict[str, str]) -> str:
         return f"{label[:start]}+{oci}+{label[start:]}"
     # Last resort: append a compact suffix
     return f"{label}+{oci}"
+
+
+def _pretty_ts(ts: str) -> str:
+    # Expect YYYYMMDD-HHMMSS; return 'MM-DD HH:MM'
+    if ts and len(ts) >= 15 and ts[8] == "-":
+        try:
+            return f"{ts[4:6]}-{ts[6:8]} {ts[9:11]}:{ts[11:13]}"
+        except Exception:
+            pass
+    return (ts or "").strip()
+
+
+def compact_label(row: Dict[str, str]) -> str:
+    """Compact timeline label: 'MM-DD HH:MM <stage>'.
+
+    Keeps the key context for per-scenario timelines without overflowing.
+    """
+    st = stage_name(row.get("label", ""))
+    return f"{_pretty_ts(str(row.get('timestamp','')))} {st}"
 
 
 # Material-ish flat colors and dark grey background for better readability
@@ -213,8 +233,10 @@ def plot_per_pod_scaling(plt, outdir: Path, rows: List[Dict[str, str]]):
     ax.set_ylabel("Per‑pod app mem (MiB)")
     ax.set_title("Per‑pod Scaling by Scenario")
     ax.grid(axis="both", linestyle=":", alpha=0.4)
-    ax.legend(frameon=False)
-    plt.tight_layout()
+    # Legend optional (off by default)
+    if str(os.getenv("PLOT_SHOW_LEGEND", "0")).lower() not in ("0", "false", "no", ""):
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.18), ncol=max(1, len(by_scn)), frameon=False)
+    plt.tight_layout(rect=[0, 0, 1, 0.9])
     out = outdir / "per_pod_scaling.png"
     try:
         plt.savefig(out, dpi=120)
@@ -235,7 +257,13 @@ def plot_per_pod_scaling(plt, outdir: Path, rows: List[Dict[str, str]]):
     plt.close()
 
 
-def plot_rollout_pairs(plt, outdir: Path, latest_map: Dict[Tuple[str, str], Dict[str, str]], replicas: int | None):
+def plot_rollout_pairs(
+    plt,
+    outdir: Path,
+    latest_map: Dict[Tuple[str, str], Dict[str, str]],
+    replicas: int | None,
+    scenarios: List[str],
+):
     # Determine replicas to target: use provided or the most common N available
     ns = []
     for (_sc, st) in latest_map.keys():
@@ -247,7 +275,7 @@ def plot_rollout_pairs(plt, outdir: Path, latest_map: Dict[Tuple[str, str], Dict
     target = replicas if replicas and replicas in ns else max(set(ns), key=ns.count)
     during_vals: List[Tuple[str, float]] = []
     post_vals: List[Tuple[str, float]] = []
-    for sc in ["k1s rootless", "k1s rootful", "k1nd", "k3d"]:
+    for sc in scenarios:
         r_d = latest_map.get((sc, f"rollout-{target}-during"))
         r_p = latest_map.get((sc, f"rollout-{target}-post"))
         if not r_d or not r_p:
@@ -273,9 +301,10 @@ def plot_rollout_pairs(plt, outdir: Path, latest_map: Dict[Tuple[str, str], Dict
     ax.set_xticklabels(order, rotation=30, ha="right")
     ax.set_ylabel("Control‑plane PSS (MiB)")
     ax.set_title(f"Rollout {target} — During vs Post")
-    ax.legend(frameon=False)
+    if str(os.getenv("PLOT_SHOW_LEGEND", "0")).lower() not in ("0", "false", "no", ""):
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.18), ncol=2, frameon=False)
     ax.grid(axis="y", linestyle=":", alpha=0.4)
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.9])
     out = outdir / "rollout_pairs.png"
     try:
         plt.savefig(out, dpi=120)
@@ -323,8 +352,28 @@ def _cp_pss_mib_derived(r: Dict[str, str]) -> float:
     return to_mib(r.get("control_plane_pss_kb", "0"), kib=True)
 
 
-def plot_matrix_heatmap(plt, outdir: Path, latest_map: Dict[Tuple[str, str], Dict[str, str]]):
-    scenarios = ["k1s rootless", "k1s rootful", "k1nd", "k3d"]
+def _memavail_delta_mib(r: Dict[str, str]) -> float:
+    """Return MemAvail Δ in MiB with backfill from before/after if needed."""
+    try:
+        raw = float(r.get("mem_available_delta_bytes", 0) or 0)
+    except Exception:
+        raw = 0.0
+    if raw == 0.0:
+        try:
+            before = float(r.get("mem_available_before_bytes", 0) or 0)
+            after = float(r.get("mem_available_after_bytes", 0) or 0)
+            raw = after - before
+        except Exception:
+            raw = 0.0
+    return raw / (1024.0 * 1024.0)
+
+
+def plot_matrix_heatmap(
+    plt,
+    outdir: Path,
+    latest_map: Dict[Tuple[str, str], Dict[str, str]],
+    scenarios: List[str],
+):
     stages = sorted({st for (_sc, st) in latest_map.keys()})
     if not stages:
         return
@@ -456,83 +505,87 @@ def main(argv: List[str]) -> int:
     if plt is None:
         return 0
 
-    # Preserve legacy charts for continuity (now using derived CP PSS)
+    # Preserve legacy timeline charts but split per scenario (Option B)
     # Limit to last N rows to avoid unreadably wide charts
     legacy_rows = rows[-args.latest :] if args.latest and len(rows) > args.latest else rows
-    labels = [display_label(r) for r in legacy_rows]
-    scenarios = [scenario_name(r) for r in legacy_rows]
-    pss = [_cp_pss_mib_derived(r) for r in legacy_rows]
-    colors = [PALETTE.get(sc, "#94a3b8") for sc in scenarios]
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.set_facecolor(BG_DARK)
-    fig.patch.set_facecolor(BG_DARK)
-    bars = ax.bar(labels, pss, color=colors, edgecolor="#000000", linewidth=0)
-    ax.set_ylabel("Control-plane PSS (MiB)", color=FG_LIGHT)
-    ax.tick_params(colors=FG_LIGHT)
-    ax.spines["bottom"].set_color(FG_LIGHT)
-    ax.spines["left"].set_color(FG_LIGHT)
-    ax.grid(axis="y", linestyle=":", color=GRID_COLOR, alpha=0.5)
-    ax.set_axisbelow(True)
-    for lbl in ax.get_xticklabels():
-        lbl.set_rotation(45)
-        lbl.set_ha("right")
-        lbl.set_color(FG_LIGHT)
-        lbl.set_fontsize(8)
-    # Add a compact legend for scenario colors
-    try:
-        import matplotlib.patches as mpatches  # type: ignore
-        handles = [
-            mpatches.Patch(color=PALETTE.get(sc, "#94a3b8"), label=sc)
-            for sc in ["k1s rootless", "k1s rootful", "k1nd", "k3d"]
-        ]
-        ax.legend(handles=handles, frameon=False, labelcolor=FG_LIGHT, facecolor=BG_DARK, loc="upper left")
-    except Exception:
-        pass
-    fig.tight_layout()
-    try:
-        plt.savefig(outdir / "control_plane_pss.png", dpi=120)
-    except PermissionError:
-        alt = Path("charts-user")
-        alt.mkdir(parents=True, exist_ok=True)
-        plt.savefig(alt / "control_plane_pss.png", dpi=120)
-    plt.close()
 
-    sys_mem = [
-        to_mib((r.get("host_system_cgroups_bytes") or r.get("system_mem_bytes") or 0))
-        for r in legacy_rows
-    ]
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.set_facecolor(BG_DARK)
-    fig.patch.set_facecolor(BG_DARK)
-    bars = ax.bar(labels, sys_mem, color=colors, edgecolor="#000000", linewidth=0)
-    ax.set_ylabel("System cgroups (MiB)", color=FG_LIGHT)
-    ax.tick_params(colors=FG_LIGHT)
-    ax.spines["bottom"].set_color(FG_LIGHT)
-    ax.spines["left"].set_color(FG_LIGHT)
-    ax.grid(axis="y", linestyle=":", color=GRID_COLOR, alpha=0.5)
-    ax.set_axisbelow(True)
-    for lbl in ax.get_xticklabels():
-        lbl.set_rotation(45)
-        lbl.set_ha("right")
-        lbl.set_color(FG_LIGHT)
-        lbl.set_fontsize(8)
-    try:
-        import matplotlib.patches as mpatches  # type: ignore
-        handles = [
-            mpatches.Patch(color=PALETTE.get(sc, "#94a3b8"), label=sc)
-            for sc in ["k1s rootless", "k1s rootful", "k1nd", "k3d"]
+    def scenario_key_to_suffix(sc: str) -> str:
+        return sc.replace(" ", "_")
+
+    def render_legacy_for(sc_filter: str):
+        subset = [r for r in legacy_rows if scenario_name(r) == sc_filter]
+        if not subset:
+            return
+        labels = [compact_label(r) for r in subset]
+        pss = [_cp_pss_mib_derived(r) for r in subset]
+        color = PALETTE.get(sc_filter, "#94a3b8")
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.set_facecolor(BG_DARK)
+        fig.patch.set_facecolor(BG_DARK)
+        ax.bar(labels, pss, color=color, edgecolor="#000000", linewidth=0)
+        ax.set_ylabel("Control-plane PSS (MiB)", color=FG_LIGHT)
+        ax.tick_params(colors=FG_LIGHT)
+        ax.spines["bottom"].set_color(FG_LIGHT)
+        ax.spines["left"].set_color(FG_LIGHT)
+        ax.grid(axis="y", linestyle=":", color=GRID_COLOR, alpha=0.5)
+        ax.set_axisbelow(True)
+        for lbl in ax.get_xticklabels():
+            lbl.set_rotation(45)
+            lbl.set_ha("right")
+            lbl.set_color(FG_LIGHT)
+            lbl.set_fontsize(8)
+        # Thin x labels if too dense
+        if len(labels) > 18:
+            step = max(1, len(labels) // 18)
+            for idx, lbl in enumerate(ax.get_xticklabels()):
+                if idx % step != 0:
+                    lbl.set_visible(False)
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        name = f"control_plane_pss_{scenario_key_to_suffix(sc_filter)}.png"
+        try:
+            plt.savefig(outdir / name, dpi=120)
+        except PermissionError:
+            alt = Path("charts-user")
+            alt.mkdir(parents=True, exist_ok=True)
+            plt.savefig(alt / name, dpi=120)
+        plt.close()
+
+        sys_mem = [
+            to_mib((r.get("host_system_cgroups_bytes") or r.get("system_mem_bytes") or 0))
+            for r in subset
         ]
-        ax.legend(handles=handles, frameon=False, labelcolor=FG_LIGHT, facecolor=BG_DARK, loc="upper left")
-    except Exception:
-        pass
-    fig.tight_layout()
-    try:
-        plt.savefig(outdir / "system_cgroups.png", dpi=120)
-    except PermissionError:
-        alt = Path("charts-user")
-        alt.mkdir(parents=True, exist_ok=True)
-        plt.savefig(alt / "system_cgroups.png", dpi=120)
-    plt.close()
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.set_facecolor(BG_DARK)
+        fig.patch.set_facecolor(BG_DARK)
+        ax.bar(labels, sys_mem, color=color, edgecolor="#000000", linewidth=0)
+        ax.set_ylabel("System cgroups (MiB)", color=FG_LIGHT)
+        ax.tick_params(colors=FG_LIGHT)
+        ax.spines["bottom"].set_color(FG_LIGHT)
+        ax.spines["left"].set_color(FG_LIGHT)
+        ax.grid(axis="y", linestyle=":", color=GRID_COLOR, alpha=0.5)
+        ax.set_axisbelow(True)
+        for lbl in ax.get_xticklabels():
+            lbl.set_rotation(45)
+            lbl.set_ha("right")
+            lbl.set_color(FG_LIGHT)
+            lbl.set_fontsize(8)
+        if len(labels) > 18:
+            step = max(1, len(labels) // 18)
+            for idx, lbl in enumerate(ax.get_xticklabels()):
+                if idx % step != 0:
+                    lbl.set_visible(False)
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        name = f"system_cgroups_{scenario_key_to_suffix(sc_filter)}.png"
+        try:
+            plt.savefig(outdir / name, dpi=120)
+        except PermissionError:
+            alt = Path("charts-user")
+            alt.mkdir(parents=True, exist_ok=True)
+            plt.savefig(alt / name, dpi=120)
+        plt.close()
+
+    for scn in ["k3d", "k1s rootless", "k1s rootful"]:
+        render_legacy_for(scn)
 
     # New comparative charts
     latest_map = latest_per_scenario_stage(rows)
@@ -543,18 +596,7 @@ def main(argv: List[str]) -> int:
     else:
         stages = stages_all
 
-    # Precompute metric ranges for consistent y-limits
-    def collect_metric(stage_filter: str, ex) -> List[Tuple[str, float]]:
-        vals: List[Tuple[str, float]] = []
-        for sc in ["k1s rootless", "k1s rootful", "k1nd", "k3d"]:
-            r = latest_map.get((sc, stage_filter))
-            if r:
-                val = ex(r)
-                if val is not None and not (isinstance(val, float) and (val != val)):
-                    vals.append((sc, val))
-        return vals
-
-    # Metric extractors
+    # Metric extractors (reused across charts)
     def ex_cp(r):
         return _cp_pss_mib_derived(r)
     ex_app = lambda r: to_mib(r.get("app_mem_bytes", "0"))
@@ -563,9 +605,107 @@ def main(argv: List[str]) -> int:
         if r.get("host_system_cgroups_bytes") is not None
         else r.get("system_mem_bytes", "0")
     )
-    ex_mad = lambda r: to_mib(r.get("mem_available_delta_bytes", "0"))
+    ex_mad = lambda r: _memavail_delta_mib(r)
 
-    # Compute global max per metric across selected stages
+    # Per-pod scaling lines
+    plot_per_pod_scaling(plt, outdir, rows)
+
+    # Per-pod overhead (derived CP PSS per replica)
+    def plot_per_pod_overhead():
+        by_scn: Dict[str, Dict[int, float]] = {}
+        by_ts: Dict[str, Dict[int, str]] = {}
+        for r in rows:
+            st = stage_name(r.get("label", ""))
+            if not st.startswith("pods-"):
+                continue
+            try:
+                n = int(st.split("-", 1)[1])
+            except Exception:
+                continue
+            sc = scenario_name(r)
+            cp = _cp_pss_mib_derived(r)
+            if n <= 0:
+                continue
+            val = cp / n
+            ts = str(r.get("timestamp", ""))
+            cur_ts = (by_ts.setdefault(sc, {}).get(n) or "")
+            if ts >= cur_ts:
+                by_scn.setdefault(sc, {})[n] = val
+                by_ts.setdefault(sc, {})[n] = ts
+        if not by_scn:
+            return
+        fig, ax = plt.subplots(figsize=(11, 4.5))
+        for sc, d in by_scn.items():
+            pts = sorted((k, v) for k, v in d.items())
+            xs = [k for k, _ in pts]
+            ys = [v for _, v in pts]
+            ax.plot(xs, ys, marker="o", color=PALETTE.get(sc, "#94a3b8"), label=sc)
+        ax.set_xlabel("Replicas")
+        ax.set_ylabel("Per‑pod Overhead (MiB)")
+        ax.set_title("Per‑pod Overhead by Scenario (CP PSS / replicas)")
+        ax.grid(axis="both", linestyle=":", alpha=0.4)
+        if str(os.getenv("PLOT_SHOW_LEGEND", "0")).lower() not in ("0", "false", "no", ""):
+            ax.legend(frameon=False)
+        plt.tight_layout()
+        out = outdir / "per_pod_overhead.png"
+        try:
+            plt.savefig(out, dpi=120)
+            try:
+                plt.savefig(out.with_suffix(".svg"))
+            except Exception:
+                pass
+        except PermissionError:
+            alt = Path("charts-user")
+            alt.mkdir(parents=True, exist_ok=True)
+            alt_out = alt / out.name
+            print(f"[plot] permission denied for {out}; writing to {alt_out}", file=sys.stderr)
+            plt.savefig(alt_out, dpi=120)
+            try:
+                plt.savefig(alt_out.with_suffix(".svg"))
+            except Exception:
+                pass
+        plt.close()
+
+    plot_per_pod_overhead()
+
+    # Coverage filter for comparison charts and heatmap
+    desired_order = ["k1s rootless", "k1s rootful", "k1nd", "k3d"]
+    metrics_for_cov = [ex_cp, ex_app, ex_host, ex_mad]
+    # Compute stages selected
+    selected_stages = stages
+    max_per_scn = max(1, len(selected_stages) * len(metrics_for_cov))
+    cov: Dict[str, float] = {}
+    for sc in desired_order:
+        n = 0
+        for st in selected_stages:
+            r = latest_map.get((sc, st))
+            if not r:
+                continue
+            for ex in metrics_for_cov:
+                try:
+                    v = ex(r)
+                    if v is not None and not (isinstance(v, float) and (v != v)):
+                        n += 1
+                except Exception:
+                    pass
+        cov[sc] = n / max_per_scn
+    cov_min = float(os.getenv("PLOT_COVERAGE_MIN") or os.getenv("DOCS_COVERAGE_MIN", "0.8"))
+    allowed_scenarios = [sc for sc in desired_order if cov.get(sc, 0.0) >= cov_min]
+    if not allowed_scenarios:
+        allowed_scenarios = [sc for sc in desired_order if cov.get(sc, 0.0) > 0.0] or desired_order
+
+    # Helper recomputed to honor allowed scenarios
+    def collect_metric(stage_filter: str, ex) -> List[Tuple[str, float]]:
+        vals: List[Tuple[str, float]] = []
+        for sc in allowed_scenarios:
+            r = latest_map.get((sc, stage_filter))
+            if r:
+                val = ex(r)
+                if val is not None and not (isinstance(val, float) and (val != val)):
+                    vals.append((sc, val))
+        return vals
+
+    # Precompute metric ranges for consistent y-limits using filtered scenarios
     def max_of(metric_ex) -> float:
         m = 0.0
         for st in stages:
@@ -578,6 +718,7 @@ def main(argv: List[str]) -> int:
     ylim_host = (0.0, max_of(ex_host))
     ylim_mad = (0.0, max_of(ex_mad))
 
+    # Re-render grouped comparison charts using allowed scenarios only
     for st in stages:
         plot_grouped_bars(
             plt,
@@ -616,14 +757,11 @@ def main(argv: List[str]) -> int:
             ylim=ylim_mad,
         )
 
-    # Per-pod scaling lines
-    plot_per_pod_scaling(plt, outdir, rows)
+    # Rollout during vs post pairs (filtered)
+    plot_rollout_pairs(plt, outdir, latest_map, args.rollout_replicas, allowed_scenarios)
 
-    # Rollout during vs post pairs
-    plot_rollout_pairs(plt, outdir, latest_map, args.rollout_replicas)
-
-    # Matrix heatmap across metrics
-    plot_matrix_heatmap(plt, outdir, latest_map)
+    # Matrix heatmap across metrics (filtered)
+    plot_matrix_heatmap(plt, outdir, latest_map, allowed_scenarios)
 
     print(f"wrote charts to {outdir}")
     return 0

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import html
 import os
+import time
 from pathlib import Path
 import re
 from datetime import datetime
@@ -463,12 +464,19 @@ def build_one(md_path: Path, out_path: Path) -> None:
                 with combined_csv.open("r", encoding="utf-8", errors="ignore") as fh:
                     for r in csv.DictReader(fh):
                         rows.append(r)
-                # Sort by timestamp (YYYYMMDD-HHMMSS) and keep the last N entries
+                # Sort by timestamp (YYYYMMDD-HHMMSS)
                 try:
                     rows.sort(key=lambda r: str(r.get("timestamp", "")))
                 except Exception:
                     pass
-                tail = rows[-8:] if len(rows) > 8 else rows
+                # Filter to most relevant mode for this page: default k1s only
+                latest_filter = (os.getenv("DOCS_LATEST_FILTER") or "k1s").strip().lower()
+                filtered = rows
+                if latest_filter in ("k1s", "k1s-only", "k1s_only"):
+                    filtered = [r for r in rows if str(r.get("mode", "")).lower() == "k1s"]
+                # Keep the last N entries from the filtered set; fallback to all rows if empty
+                base = filtered if filtered else rows
+                tail = base[-8:] if len(base) > 8 else base
 
                 def fmt_mib(val: str) -> str:
                     try:
@@ -488,7 +496,9 @@ def build_one(md_path: Path, out_path: Path) -> None:
                 parts: list[str] = [
                     "<hr/>",
                     "<h2>Latest Benchmarks (Auto)</h2>",
-                    "<p>Summarized from <code>combined/combined.csv</code> at build time.</p>",
+                    "<p>Summarized from <code>combined/combined.csv</code> at build time."
+                    + (" (k1s only)" if latest_filter in ("k1s", "k1s-only", "k1s_only") else "")
+                    + "</p>",
                     "<table border=1 cellpadding=6 cellspacing=0>",
                     (
                         "<tr>"
@@ -680,6 +690,20 @@ def build_one(md_path: Path, out_path: Path) -> None:
                             except Exception:
                                 return None
 
+                        def _mad_backfill_local(r: dict[str, str]) -> float:
+                            try:
+                                v = float(r.get("mem_available_delta_bytes", 0) or 0)
+                            except Exception:
+                                v = 0.0
+                            if v == 0.0:
+                                try:
+                                    before = float(r.get("mem_available_before_bytes", 0) or 0)
+                                    after = float(r.get("mem_available_after_bytes", 0) or 0)
+                                    v = after - before
+                                except Exception:
+                                    v = 0.0
+                            return to_float_mib(v)
+
                         metric_extractors = [
                             ("Control Plane PSS", lambda r: cp_pss_float_derived(r)),
                             ("App Cgroups", lambda r: to_float_mib(r.get("app_mem_bytes", "0"))),
@@ -691,7 +715,7 @@ def build_one(md_path: Path, out_path: Path) -> None:
                                     else r.get("system_mem_bytes", "0")
                                 ),
                             ),
-                            ("MemAvail Δ", lambda r: to_float_mib(r.get("mem_available_delta_bytes", "0"))),
+                            ("MemAvail Δ", lambda r: _mad_backfill_local(r)),
                         ]
                         totals: dict[str, tuple[float, int]] = {c: (0.0, 0) for c in col_order}
                         for st in stages:
@@ -724,6 +748,11 @@ def build_one(md_path: Path, out_path: Path) -> None:
                             adjusted = (avg * coverage) + (1.0 * (1.0 - coverage))
                             ranking.append((adjusted, avg, c, n, coverage))
                         ranking.sort(key=lambda x: x[0])
+                        # Apply coverage threshold to filter scenarios from ranking/tables
+                        coverage_min = float(os.getenv("DOCS_COVERAGE_MIN", "0.8") or 0.8)
+                        allowed_cols = [c for (_adj, _avg, c, n, coverage) in ranking if (max_n and (coverage >= coverage_min))]
+                        hidden_cols = [c for c in col_order if c not in allowed_cols]
+                        # Winner band (only allowed columns)
                         parts.append(
                             "<style> .pill { display:inline-block; padding:4px 10px; border:1px solid var(--border); border-radius:999px; margin-right:8px; }"
                             " .pill.win { background:#144d2a; color:#fff; border-color:#1f6f3e; }"
@@ -734,13 +763,23 @@ def build_one(md_path: Path, out_path: Path) -> None:
                             "</style>"
                         )
                         bl: list[str] = ["<div class='band'><strong>Overall Ranking:</strong> "]
-                        for idx, (adjusted, _avg, c, n, coverage) in enumerate(ranking):
+                        shown = [(adj, _avg, c, n, cov) for (adj, _avg, c, n, cov) in ranking if c in allowed_cols]
+                        for idx, (adjusted, _avg, c, n, coverage) in enumerate(shown):
                             cls = "win" if idx == 0 else ("place2" if idx == 1 else ("place3" if idx == 2 else "dim"))
                             score = int(round(adjusted * 100))
                             title = f"comparisons:{n} coverage:{coverage:.0%}"
                             bl.append(f"<span class='pill {cls}' title='{title}'> {c} <span style='opacity:.85'>&nbsp;({score})</span></span>")
                         bl.append("</div>")
+                        if hidden_cols:
+                            bl.append(
+                                "<div class='band' style='opacity:.8'>Hidden for low coverage (set DOCS_COVERAGE_MIN to adjust): "
+                                + ", ".join(hidden_cols)
+                                + "</div>"
+                            )
                         parts.append("".join(bl))
+                        # Use filtered columns for tables below
+                        if allowed_cols:
+                            col_order = allowed_cols
                     except Exception:
                         pass
                     parts.append(
@@ -765,10 +804,23 @@ def build_one(md_path: Path, out_path: Path) -> None:
                             ),
                         )
                     )
+                    def _memavail_delta_backfill(r):
+                        try:
+                            v = float(r.get("mem_available_delta_bytes", 0) or 0)
+                        except Exception:
+                            v = 0.0
+                        if v == 0.0:
+                            try:
+                                before = float(r.get("mem_available_before_bytes", 0) or 0)
+                                after = float(r.get("mem_available_after_bytes", 0) or 0)
+                                v = after - before
+                            except Exception:
+                                v = 0.0
+                        return to_float_mib(v)
                     parts.append(
                         render_metric_table(
                             "MemAvail Δ (MiB) — lower is better",
-                            lambda r: to_float_mib(r.get("mem_available_delta_bytes", "0")),
+                            lambda r: _memavail_delta_backfill(r),
                         )
                     )
                 except Exception:
@@ -786,8 +838,12 @@ def build_one(md_path: Path, out_path: Path) -> None:
                         charts_dirs.append(p)
                 if charts_dirs:
                     chart_map = [
-                        ("control_plane_pss.png", "Control Plane PSS (MiB)"),
-                        ("system_cgroups.png", "System Cgroups (MiB)"),
+                        ("control_plane_pss_k3d.png", "Control‑plane PSS — Timeline (k3s)"),
+                        ("control_plane_pss_k1s_rootless.png", "Control‑plane PSS — Timeline (k1s rootless)"),
+                        ("control_plane_pss_k1s_rootful.png", "Control‑plane PSS — Timeline (k1s rootful)"),
+                        ("system_cgroups_k3d.png", "System Cgroups — Timeline (k3s)"),
+                        ("system_cgroups_k1s_rootless.png", "System Cgroups — Timeline (k1s rootless)"),
+                        ("system_cgroups_k1s_rootful.png", "System Cgroups — Timeline (k1s rootful)"),
                         ("per_pod_overhead.png", "Per‑Pod Overhead (MiB)"),
                         ("per_pod_scaling.png", "Per‑Pod Scaling (MiB)"),
                         ("rollout_pairs.png", "Rollout During vs Post (CP PSS)"),
@@ -795,12 +851,21 @@ def build_one(md_path: Path, out_path: Path) -> None:
                     ]
                     inline_blocks: list[str] = []
                     copied: set[str] = set()
+                    stale: list[str] = []
                     for cdir in charts_dirs:
                         for fname, title_txt in chart_map:
                             src = cdir / fname
                             dst = charts_out / fname
                             if src.exists() and fname not in copied:
                                 try:
+                                    try:
+                                        src_mtime = src.stat().st_mtime
+                                        now = time.time()
+                                        # Mark as stale if older than 6 hours
+                                        if (now - src_mtime) > (6 * 3600):
+                                            stale.append(fname)
+                                    except Exception:
+                                        pass
                                     shutil.copy2(src, dst)
                                     copied.add(fname)
                                     inline_blocks.append(
@@ -825,8 +890,25 @@ def build_one(md_path: Path, out_path: Path) -> None:
                                     )
                             except Exception:
                                 pass
+                    # Cleanup: remove mixed timeline charts if present to keep site tidy
+                    try:
+                        for nm in ["control_plane_pss.png", "system_cgroups.png"]:
+                            p = charts_out / nm
+                            if p.exists():
+                                p.unlink()
+                    except Exception:
+                        pass
                     if inline_blocks:
-                        parts.append("<h2>Charts</h2>" + "".join(inline_blocks))
+                        warn = (
+                            "<div style='margin:8px 0; padding:8px; border:1px solid var(--border); color:#f59e0b'>"
+                            + "Staleness warning: "
+                            + ", ".join(stale)
+                            + " are older than 6 hours; regenerate charts if this is unexpected."
+                            + "</div>"
+                            if stale
+                            else ""
+                        )
+                        parts.append("<h2>Charts</h2>" + warn + "".join(inline_blocks))
                 html_body += "\n" + "\n".join(parts)
     except Exception:
         # Non-fatal: keep page renderable if injection fails
