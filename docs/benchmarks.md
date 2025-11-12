@@ -17,7 +17,8 @@ For quick commands and charts, see the end‑to‑end Make targets in each guide
   - `make bench-mem-e2e-k1s LABEL_SUITE=report-YYYYMMDD APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5`
   - Or against k1nd (controller in Docker): `make bench-mem-e2e-k1nd LABEL_SUITE=report-YYYYMMDD APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5`
   - `python scripts/bench/mem_combine.py snapshots/*/*`
-  - `python scripts/bench/plot_overhead.py combined/combined.csv charts`
+- `python scripts/bench/plot_overhead.py combined/combined.csv charts`
+  - To cap the two wide legacy bar charts (Control Plane PSS, System cgroups) to the most recent N samples, pass `--latest N` or set `PLOT_LATEST=N` (default 60): `PLOT_LATEST=40 python scripts/bench/plot_overhead.py combined/combined.csv charts`
   - `python docs/build_docs.py`
   - Quick fix for labels: backfill the detected OCI runtime into your latest snapshots and regenerate charts with one command: `make bench-mem-backfill-oci-latest REBUILD_DOCS=1`
   - Tip: for accurate process PSS on dockerd/containerd/podman, prefer privileged snapshots:
