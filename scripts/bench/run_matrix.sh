@@ -290,6 +290,11 @@ for n in "${reps[@]}"; do
   if [[ "${WARM_ENABLED:-1}" == "1" ]]; then
     warm_endpoints "$app_name" || true
   fi
+  # Skip if snapshot for this label already exists and SKIP_EXISTING=1
+  if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label_suite}-pods-${n}"/* >/dev/null 2>&1; then
+    info "skip existing snapshot label=${label_suite}-pods-${n}"
+    continue
+  fi
   info "snapshot label=${label_suite}-pods-${n}"
   if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
