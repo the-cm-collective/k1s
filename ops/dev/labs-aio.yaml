@@ -9,6 +9,8 @@ services:
     environment:
       - AE_LABS=1
       - AE_API_MUTATIONS=1
+      # Local-only: allow plaintext secrets during dev/bench runs
+      - AE_ALLOW_PLAINTEXT_SECRETS=1
       - AE_DEMO_MODE=1
       - AE_SPECS_DIR=${AE_SPECS_DIR:-state/demo-specs}
     ports:

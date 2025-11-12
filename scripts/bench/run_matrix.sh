@@ -265,6 +265,12 @@ for n in "${reps[@]}"; do
   info "scale $app_name to $n"
   ae scale "$app_name" --replicas "$n" || true
   wait_ready "$app_name" "$n" || true
+  # Optional: prune older revisions to avoid multi-revision accumulation in snapshots
+  if [[ "${PRUNE_OLD:-0}" == "1" ]]; then
+    if command -v ./scripts/bench/prune_old_revisions.sh >/dev/null 2>&1; then
+      ./scripts/bench/prune_old_revisions.sh "$app_name" || true
+    fi
+  fi
   # Optional warm phase to tickle endpoints before snapshot
   if [[ "${WARM_ENABLED:-1}" == "1" ]]; then
     warm_endpoints "$app_name" || true
