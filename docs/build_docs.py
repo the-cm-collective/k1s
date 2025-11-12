@@ -709,11 +709,20 @@ def build_one(md_path: Path, out_path: Path) -> None:
                                 for c, v in vals_per_col.items():
                                     s, n = totals[c]
                                     totals[c] = (s + to_norm(arr, v), n + 1)
+                        # Compute a coverage-aware ranking: blend missing coverage toward worst-case (1.0)
                         ranking = []
+                        try:
+                            max_n = max(n for (_s, n) in totals.values()) or 1
+                        except ValueError:
+                            max_n = 1
                         for c in col_order:
                             s, n = totals[c]
                             avg = (s / n) if n else 1.0
-                            ranking.append((avg, c, n))
+                            coverage = (n / max_n) if max_n else 0.0
+                            # Adjusted score keeps scale [0,1], lower is better.
+                            # When coverage < 1, blend missing portion toward worst-case (1.0).
+                            adjusted = (avg * coverage) + (1.0 * (1.0 - coverage))
+                            ranking.append((adjusted, avg, c, n, coverage))
                         ranking.sort(key=lambda x: x[0])
                         parts.append(
                             "<style> .pill { display:inline-block; padding:4px 10px; border:1px solid var(--border); border-radius:999px; margin-right:8px; }"
@@ -725,10 +734,11 @@ def build_one(md_path: Path, out_path: Path) -> None:
                             "</style>"
                         )
                         bl: list[str] = ["<div class='band'><strong>Overall Ranking:</strong> "]
-                        for idx, (avg, c, n) in enumerate(ranking):
+                        for idx, (adjusted, _avg, c, n, coverage) in enumerate(ranking):
                             cls = "win" if idx == 0 else ("place2" if idx == 1 else ("place3" if idx == 2 else "dim"))
-                            score = int(round(avg * 100))
-                            bl.append(f"<span class='pill {cls}' title='comparisons:{n}'> {c} <span style='opacity:.85'>&nbsp;({score})</span></span>")
+                            score = int(round(adjusted * 100))
+                            title = f"comparisons:{n} coverage:{coverage:.0%}"
+                            bl.append(f"<span class='pill {cls}' title='{title}'> {c} <span style='opacity:.85'>&nbsp;({score})</span></span>")
                         bl.append("</div>")
                         parts.append("".join(bl))
                     except Exception:
