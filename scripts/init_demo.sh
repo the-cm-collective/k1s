@@ -502,6 +502,16 @@ mkdir -p state/caddy-data state/caddy docs/site || true
 # Ensure Caddy can write to /data even under rootless runtimes; if the directory is
 # not writable (e.g., created by root from a previous run), replace it with a fresh one.
 chmod -R 0777 state/caddy-data state/caddy || true
+# Guard: prune any root-owned or otherwise unwritable cert subdirs that Caddy created previously
+# These can appear after sudo/bench runs and make chmod fail with EPERM
+if [[ -d state/caddy-data/caddy/certificates/local ]]; then
+  while IFS= read -r -d '' d; do
+    if [[ ! -w "$d" ]]; then
+      log "Removing unwritable Caddy cert dir: ${d}"
+      $SUDO rm -rf "$d" 2>/dev/null || true
+    fi
+  done < <(find state/caddy-data/caddy/certificates/local -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+fi
 if ! touch state/caddy-data/.write_test 2>/dev/null; then
   log "caddy-data not writable; recreating with liberal permissions"
   ts=$(date +%Y%m%d-%H%M%S)
@@ -632,7 +642,44 @@ export AE_CADDY_FILE=${AE_CADDY_FILE:-/etc/caddy/Caddyfile}
 export AE_CADDY_CONTAINER=${AE_CADDY_CONTAINER:-dev-caddy-1}
 # Tell the controller which CLI to use to exec inside the Caddy container
 export AE_CONTAINER_CLI=${AE_CONTAINER_CLI:-$STACK_BIN}
+
+# Auto-detect the actual engine that owns the Caddy container to avoid
+# reload failures when the chosen STACK_BIN doesn't match a previously
+# running stack (e.g., after k1nd/k3d benches).
+if command -v docker >/dev/null 2>&1 || command -v podman >/dev/null 2>&1; then
+  DETECTED_ENGINE=""
+  # Prefer an exact container name match
+  if command -v docker >/dev/null 2>&1; then
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "${AE_CADDY_CONTAINER}"; then
+      DETECTED_ENGINE="docker"
+    fi
+  fi
+  if [[ -z "${DETECTED_ENGINE}" ]] && command -v podman >/dev/null 2>&1; then
+    if podman ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "${AE_CADDY_CONTAINER}"; then
+      DETECTED_ENGINE="podman"
+    fi
+  fi
+  if [[ -n "${DETECTED_ENGINE}" && "${AE_CONTAINER_CLI}" != "${DETECTED_ENGINE}" ]]; then
+    log "Adjusting AE_CONTAINER_CLI=${DETECTED_ENGINE} (found ${AE_CADDY_CONTAINER} under ${DETECTED_ENGINE})"
+    export AE_CONTAINER_CLI="${DETECTED_ENGINE}"
+  fi
+fi
 export AE_STATE_DB=${AE_STATE_DB:-state/controller.db}
+# Guard: ensure controller DB is writable (bench runs with sudo can leave it root-owned)
+DB_DIR="$(dirname -- "${AE_STATE_DB}")"
+mkdir -p "${DB_DIR}" || true
+if [[ -e "${AE_STATE_DB}" && ! -w "${AE_STATE_DB}" ]]; then
+  log "Fixing permissions on controller state DB (${AE_STATE_DB})"
+  if ! $SUDO chown "$(id -u):$(id -g)" "${AE_STATE_DB}" 2>/dev/null; then
+    # Fallback: copy to a user-owned file to unblock local dev
+    tmpdb="${AE_STATE_DB}.usercopy"
+    cp -f "${AE_STATE_DB}" "${tmpdb}" 2>/dev/null || true
+    if [[ -s "${tmpdb}" ]]; then
+      mv -f "${tmpdb}" "${AE_STATE_DB}" 2>/dev/null || true
+    fi
+  fi
+  chmod u+rw "${AE_STATE_DB}" 2>/dev/null || true
+fi
 # Avoid indefinite hangs on Caddy reload inside docker exec
 export AE_CADDY_RELOAD_TIMEOUT=${AE_CADDY_RELOAD_TIMEOUT:-10}
 # For local demos, allow plaintext secrets by default unless explicitly disabled
@@ -665,6 +712,13 @@ mkdir -p "${AE_CADDY_SITES}"
 if [[ ! -w "${AE_CADDY_SITES}" ]]; then
   log "Adjusting permissions on ${AE_CADDY_SITES} (may require sudo)"
   $SUDO chown -R "$(id -u):$(id -g)" "${AE_CADDY_SITES}" || true
+fi
+
+# If still not writable after attempting chown, gracefully disable ingress writes
+if [[ ! -w "${AE_CADDY_SITES}" ]]; then
+  log "Ingress config dir not writable: ${AE_CADDY_SITES}. Disabling ingress management for this run."
+  # An empty AE_CADDY_SITES tells the CLI to skip ingress manager wiring
+  export AE_CADDY_SITES=""
 fi
 
 # Proactively clear stale dynamic sites to prevent ambiguous host errors from past runs
