@@ -173,26 +173,52 @@ PY
 }
 
 switch_image() {
-  local in="$1"; local out="$2"; local newimg="$3"
-  python - "$in" "$out" "$newimg" << 'PY'
+  local in="$1"; local out="$2"; local newimg="$3"; local replicas="$4"
+  python - "$in" "$out" "$newimg" "$replicas" << 'PY'
 import sys, re
-src, dst, newimg = sys.argv[1:4]
+src, dst, newimg, replicas = sys.argv[1:5]
+try:
+    replicas = int(replicas)
+except Exception:
+    replicas = None
 data = open(src,'r',encoding='utf-8').read().splitlines()
-in_spec=False
-changed=False
 out=[]
+in_spec=False
+did_img=False
+did_rep=False
 for i,line in enumerate(data):
     if line.strip()=="spec:":
         in_spec=True
-        out.append(line); continue
-    if in_spec and re.match(r"^\s*image:\s*", line):
-        out.append(re.sub(r"^\s*image:\s*.*$", "  image: "+newimg, line))
-        in_spec=False; changed=True; continue
+        out.append(line)
+        # If we won't find explicit replicas below, insert one right after spec:
+        # (deferred: only insert after scanning unless found)
+        continue
+    if in_spec:
+        if re.match(r"^\s*image:\s*", line):
+            out.append(re.sub(r"^\s*image:\s*.*$", "  image: "+newimg, line))
+            did_img=True
+            continue
+        if replicas is not None and re.match(r"^\s*replicas:\s*", line):
+            out.append(re.sub(r"^\s*replicas:\s*.*$", f"  replicas: {replicas}", line))
+            did_rep=True
+            continue
+        # Leave spec block when next top-level key appears
+        if re.match(r"^[^\s]", line):
+            in_spec=False
     out.append(line)
+
+# If spec existed but replicas wasn't present and we have a value, insert it after 'spec:'
+if replicas is not None and not did_rep:
+    out2=[]
+    inserted=False
+    for i,line in enumerate(out):
+        out2.append(line)
+        if not inserted and line.strip()=="spec:":
+            out2.append(f"  replicas: {replicas}")
+            inserted=True
+    out=out2
+
 open(dst,'w',encoding='utf-8').write("\n".join(out)+"\n")
-if not changed:
-    # fallback: append/replace under spec by inserting after 'spec:'
-    pass
 PY
 }
 
@@ -207,7 +233,7 @@ if [[ "$base_img" == *demo-blue* ]]; then target_img="demo-green:latest"; fi
 if [[ "$base_img" == *demo-green* || -z "$base_img" ]]; then target_img="demo-blue:latest"; fi
 
 tmpman=$(mktemp)
-switch_image "$manifest" "$tmpman" "$target_img"
+switch_image "$manifest" "$tmpman" "$target_img" "$replicas"
 
 echo "[rollout] apply new image: ${target_img}" >&2
 ae apply -f "$tmpman" || true
