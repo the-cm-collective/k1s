@@ -251,6 +251,10 @@ echo "[rollout] apply new image: ${target_img}" >&2
 ae apply -f "$tmpman" || true
 
 echo "[rollout] snapshot DURING rollout" >&2
+# Skip if existing and SKIP_EXISTING=1
+if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label_suite}-rollout-${replicas}-during"/* >/dev/null 2>&1; then
+  echo "[rollout] skip existing DURING snapshot ${label_suite}-rollout-${replicas}-during" >&2
+else
 if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
   if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
     sudo -E scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
@@ -264,11 +268,16 @@ else
     scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
   fi
 fi
+fi
 
 echo "[rollout] wait ready post-rollout" >&2
 wait_ready "$app_name" "$replicas" || true
 
 echo "[rollout] snapshot POST rollout" >&2
+# Skip if existing and SKIP_EXISTING=1
+if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label_suite}-rollout-${replicas}-post"/* >/dev/null 2>&1; then
+  echo "[rollout] skip existing POST snapshot ${label_suite}-rollout-${replicas}-post" >&2
+else
 if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
   if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
     sudo -E scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
@@ -281,6 +290,7 @@ else
   else
     scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
   fi
+fi
 fi
 
 echo "[rollout] done" >&2
