@@ -229,42 +229,43 @@ bench-mem-e2e-k1s:
 # - Uses Docker on the host for preflights and container cgroup metrics
 # - Skips guard auto-start to avoid spawning a host controller
 bench-mem-e2e-k1nd:
-	@$(MAKE) labs-aio-up
-	@AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 ./scripts/bench/run_matrix.sh \
-		--label-suite $${LABEL_SUITE:-baseline} \
-		--app $${APP:-specs/examples/echo.yaml} \
-		--app-name $${APP_NAME:-echo} \
-		--replicas $${REPLICAS:-1,5,10} \
-		--duration $${DURATION:-30}
-	@AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 ./scripts/bench/run_rollout_k1s.sh \
-		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
-		--app $${APP:-specs/examples/echo.yaml} \
-		--app-name $${APP_NAME:-echo} \
-		--replicas $${ROLL_REPLICAS:-5} \
-		--duration $${DURATION:-30}
-	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
-	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+    @$(MAKE) labs-aio-up
+    # Use a writable, isolated state DB for host-side CLI during k1nd runs
+    @AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 ./scripts/bench/run_matrix.sh \
+        --label-suite $${LABEL_SUITE:-baseline} \
+        --app $${APP:-specs/examples/echo.yaml} \
+        --app-name $${APP_NAME:-echo} \
+        --replicas $${REPLICAS:-1,5,10} \
+        --duration $${DURATION:-30}
+    @AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 ./scripts/bench/run_rollout_k1s.sh \
+        --label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
+        --app $${APP:-specs/examples/echo.yaml} \
+        --app-name $${APP_NAME:-echo} \
+        --replicas $${ROLL_REPLICAS:-5} \
+        --duration $${DURATION:-30}
+    @python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
+    @python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 
 .PHONY: bench-mem-e2e-k1nd-sudo
 # Same as bench-mem-e2e-k1nd but runs snapshots with sudo to capture full PSS
 bench-mem-e2e-k1nd-sudo:
-	@$(MAKE) labs-aio-up
-	@AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 ./scripts/bench/run_matrix.sh \
-		--label-suite $${LABEL_SUITE:-baseline} \
-		--app $${APP:-specs/examples/echo.yaml} \
-		--app-name $${APP_NAME:-echo} \
-		--replicas $${REPLICAS:-1,5,10} \
-		--duration $${DURATION:-30} \
-		--sudo
-	@AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 ./scripts/bench/run_rollout_k1s.sh \
-		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
-		--app $${APP:-specs/examples/echo.yaml} \
-		--app-name $${APP_NAME:-echo} \
-		--replicas $${ROLL_REPLICAS:-5} \
-		--duration $${DURATION:-30} \
-		--sudo
-	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
-	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+    @$(MAKE) labs-aio-up
+    @AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 ./scripts/bench/run_matrix.sh \
+        --label-suite $${LABEL_SUITE:-baseline} \
+        --app $${APP:-specs/examples/echo.yaml} \
+        --app-name $${APP_NAME:-echo} \
+        --replicas $${REPLICAS:-1,5,10} \
+        --duration $${DURATION:-30} \
+        --sudo
+    @AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 ./scripts/bench/run_rollout_k1s.sh \
+        --label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
+        --app $${APP:-specs/examples/echo.yaml} \
+        --app-name $${APP_NAME:-echo} \
+        --replicas $${ROLL_REPLICAS:-5} \
+        --duration $${DURATION:-30} \
+        --sudo
+    @python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
+    @python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 
 .PHONY: bench-mem-e2e-k1nd-down
 # Same as bench-mem-e2e-k1nd but tears down the compose stack afterwards
