@@ -17,7 +17,7 @@ SUDO=$(require_root_or_sudo)
 
 # Static demo hosts we can safely add to /etc/hosts when requested.
 # Note: echo-storage and echo-stateful do not expose ingress by default.
-HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa api.home.arpa echo.home.arpa echo-mr.home.arpa echo-multi.home.arpa echo-resources.home.arpa echo-sec.home.arpa echo-tcp.home.arpa echo-exec.home.arpa)
+HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa api.home.arpa echo.home.arpa echo-mr.home.arpa echo-multi.home.arpa echo-resources.home.arpa echo-sec.home.arpa echo-tcp.home.arpa echo-exec.home.arpa echo-hardened.home.arpa)
 AUTO_HOSTS=""  # set by -y/--yes or -n/--no to auto answer host prompts
 
 # Summarized stop helper: log PIDs before killing by pattern
@@ -58,6 +58,7 @@ Options:
   --demo-security  Apply security-hardened demo (echo-sec)
   --demo-tcp       Apply TCP-probe demo (echo-tcp)
   --demo-exec      Apply exec-probe demo (echo-exec)
+  --demo-hardened  Apply hardened echo demo (echo-hardened)
   --docs-only      Start docs + API only (no apps)
   --demo-rollout   Apply a two-step ordered rollout for echo
   --demo-storage   Apply a storage (PV-lite) demo for echo and list volumes
@@ -68,7 +69,7 @@ Options:
 What this does (setup):
   1) Ensures required system packages (python3, venv, pip, sqlite3, age, sops) are present
   2) Creates a Python virtualenv (.venv-demo) and installs project deps
-  3) Builds demo Docker images (blue/green) under samples/servers/
+  3) Prepares demo images: pre-pulls a multi‑arch echo image and builds the local green image under samples/servers/
   4) Starts the dev stack (Caddy on :8888 and Prometheus on :9090)
   5) Optionally appends hosts entries for: ${HOSTS[*]}
   6) Applies example manifests (blue, green) via the ae CLI
@@ -91,7 +92,7 @@ Environment variables you can override:
   - AE_STATE_DB, AE_SPECS_DIR, AE_CADDY_* (see docs/runbook.md)
 
 Endpoints after setup:
-  - Apps via Caddy: https://blue.home.arpa:8443/ and https://green.home.arpa:8443/
+  - Apps via Caddy: https://blue.home.arpa:8443/ (multi‑arch echo) and https://green.home.arpa:8443/ (local build)
   - Docs via Caddy: https://docs.home.arpa:8443/
   - API via Caddy:  https://api.home.arpa:8443/ (Swagger /swagger, ReDoc /redoc, Dashboard /dashboard)
   - Docs direct:    http://127.0.0.1:9109/
@@ -115,6 +116,7 @@ DEMO_ECHO_MULTI=0
 DEMO_SECURITY=0
 DEMO_TCP=0
 DEMO_EXEC=0
+DEMO_HARDENED=0
 DOCS_ONLY=0
 DEMO_ROLLOUT=0
 DEMO_STORAGE=0
@@ -158,6 +160,8 @@ while [[ $# -gt 0 ]]; do
       DEMO_TCP=1 ;;
     --demo-exec)
       DEMO_EXEC=1 ;;
+    --demo-hardened)
+      DEMO_HARDENED=1 ;;
     --docs-only)
       DOCS_ONLY=1 ;;
     --demo-rollout)
@@ -440,18 +444,23 @@ log "Installing Python dependencies inside virtualenv"
 "$PY_BIN" -m pip install --upgrade pip
 "$PIP_BIN" install -e .[dev]
 
-log "Building demo images (backend=$AE_RUNTIME_BACKEND)"
+log "Preparing demo images (backend=$AE_RUNTIME_BACKEND)"
+# Pre-pull multi-arch echo image used by most samples for faster first run
+if command -v podman >/dev/null 2>&1; then
+  podman pull mendhak/http-https-echo:37 >/dev/null 2>&1 || true
+fi
+if command -v docker >/dev/null 2>&1; then
+  docker pull mendhak/http-https-echo:37 >/dev/null 2>&1 || true
+fi
+# Build only the local green image; blue samples now use the pre-pulled multi-arch echo image
 if [[ "$AE_RUNTIME_BACKEND" == "podman" || "$AE_RUNTIME_BACKEND" == "oci" ]]; then
   if command -v podman >/dev/null 2>&1; then
-    podman build -t localhost/demo-blue:latest samples/servers/blue || true
     podman build -t localhost/demo-green:latest samples/servers/green || true
   else
     log "Podman not available; building images with Docker as a fallback"
-    docker build -t demo-blue:latest samples/servers/blue || true
     docker build -t demo-green:latest samples/servers/green || true
   fi
 else
-  docker build -t demo-blue:latest samples/servers/blue || true
   docker build -t demo-green:latest samples/servers/green || true
 fi
 
@@ -938,6 +947,12 @@ if [[ $DEMO_TCP -eq 1 && $DOCS_ONLY -ne 1 ]]; then
   "$PY_BIN" -m ae.cli apply -f specs/examples/echo-tcp.yaml || true
 fi
 
+# Optional hardened demo
+if [[ $DEMO_HARDENED -eq 1 && $DOCS_ONLY -ne 1 ]]; then
+  log "Applying hardened echo demo (echo-hardened)"
+  "$PY_BIN" -m ae.cli apply -f specs/examples/echo-hardened.yaml || true
+fi
+
 # Optional exec probe demo
 if [[ $DEMO_EXEC -eq 1 && $DOCS_ONLY -ne 1 ]]; then
   log "Applying exec-probe echo demo (echo-exec)"
@@ -988,7 +1003,7 @@ fi
 # If backend is podman, ensure demo images are available to Podman by importing from Docker when needed
 if [[ "$AE_RUNTIME_BACKEND" == "podman" || "$AE_RUNTIME_BACKEND" == "oci" ]]; then
   if command -v podman >/dev/null 2>&1; then
-    for img in demo-blue:latest demo-green:latest; do
+    for img in demo-green:latest; do
       if ! podman images --format '{{.Repository}}:{{.Tag}}' | grep -qE "(^|/)${img}$"; then
         if command -v docker >/dev/null 2>&1; then
           if docker image inspect "$img" >/dev/null 2>&1; then
@@ -1004,6 +1019,10 @@ if [[ "$AE_RUNTIME_BACKEND" == "podman" || "$AE_RUNTIME_BACKEND" == "oci" ]]; th
         fi
       fi
     done
+    # Ensure the multi-arch echo image is present for Podman
+    if ! podman images --format '{{.Repository}}:{{.Tag}}' | grep -q '^mendhak/http-https-echo:37$'; then
+      podman pull mendhak/http-https-echo:37 >/dev/null 2>&1 || true
+    fi
   fi
 fi
 

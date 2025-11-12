@@ -35,6 +35,11 @@ CLI helper: tls verify
   - `python -m ae.cli tls verify --name mycert --root state/tls`
   - Returns non-zero if not found; use `--json` for machine-readable results.
 
+CLI helper: tls kubesecret
+- Generate a Kubernetes TLS Secret YAML (`kubernetes.io/tls`) from PEMs under `AE_TLS_DIR`:
+  - `python -m ae.cli tls kubesecret --name mycert --namespace demo --root state/tls -o mycert-secret.yaml`
+- Apply it to your cluster and reference it from the exporter/manifest via `ingress.tlsSecretName: mycert`.
+
 Multi-path routing
 - In your App manifest, set `spec.ingress.paths: ["/", "/api"]` to render multiple routes.
 

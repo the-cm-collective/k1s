@@ -139,11 +139,11 @@ Scheduling
 Validation and Tooling
 - `ae export-k8s --validate` performs offline structural checks; `k8s-check --policy strict` applies FEAT checklist; kubeconform integration via `k8s-check --kubeconform`; `export-k8s --split` writes per‑resource YAML.
 
-Notable Gaps vs. Kubernetes (updated 2025-11-10)
-- Ephemeral containers not supported. Jobs/CronJobs/DaemonSets not emitted.
+- Notable Gaps vs. Kubernetes (updated 2025-11-12)
+- Ephemeral containers not supported. DaemonSets not emitted.
 - Advanced Ingress features (regex paths, canary annotations, multiple backends per rule) remain out of scope.
 - Service healthCheckNodePort not supported.
-- Storage: no `emptyDir`/ephemeral volumes.
+ - Storage: `emptyDir` supported (ephemeral); PVCs supported; local hostPath remains non-portable.
 - RBAC (Role/RoleBinding/ClusterRoleBinding) not emitted.
 - CRDs and admission webhooks out of scope.
 
@@ -158,7 +158,7 @@ Planned Improvements (refreshed 2025-11-10)
   - [x] File projections with per‑container `projectionMounts` in runtime.
   - [x] Exporter: support explicit `items` (ConfigMap/Secret) with mode/path and per‑container mounts.
 - Policy & autoscaling:
-  - [x] PDB percent values in exporter (CLI flags accept integers today; percent supported via API/options).
+  - [x] PDB percent values in exporter and CLI.
   - [x] HPA scaleUp/Down behavior (autoscaling/v2) via `--hpa-behavior-{up,down}` JSON.
   - [x] Optional `storageClassName` and PVC `accessModes` selection.
 - Service/Ingress:
@@ -181,7 +181,7 @@ Summary
 - Runtime parity: single‑node; multi‑container support via sidecars with aggregated readiness and per‑container logs/exec; initContainers sequential with timeouts and events; preStop exec honored with grace period. Ephemeral containers not supported.
 
 What’s out of scope
-- DaemonSet, Job/CronJob, CRDs, admission webhooks; Ingress advanced features (regex, canary annotations); Service healthCheckNodePort; `emptyDir` ephemeral storage; RBAC resources.
+- DaemonSet, CRDs, admission webhooks; Ingress advanced features (regex, canary annotations); Service healthCheckNodePort.
 
 Validation & Reporting
 - Offline checks: `ae export-k8s --validate` and `ae k8s-check --policy strict`.
@@ -190,7 +190,7 @@ Validation & Reporting
 - Compliance report JSON: `ae k8s-report --samples specs/examples/echo.yaml specs/examples/multi-replica-echo.yaml -o docs/site/k8s_status.json`.
 
 Notes
-- PDB percent values are supported by the exporter; CLI flags for PDB currently accept integers. Use the API/options layer for percent until CLI switches to string quantities.
+- PDB percent values supported by both exporter and CLI (integers or percent strings).
 - HPA behavior (scaleUp/scaleDown) is emitted when `--hpa-behavior-{up,down}` is provided with autoscaling/v2 JSON.
 
 ---
@@ -199,19 +199,19 @@ Notes
 
 Why: We already export portable Kubernetes YAML. These items tighten the experience on k3s (Traefik, servicelb/local-path) and reduce manual cluster prep.
 
-- RBAC emitters (Role/RoleBinding)
+ - RBAC emitters (Role/RoleBinding) — DONE (2025-11-12)
   - Scope: emit minimal Namespaced Role + RoleBinding when a `--service-account` is attached.
   - Acceptance: `kubeconform` clean; permission set documented in docs/k8s-compliance.md.
 
-- Batch workloads (Job/CronJob) exporters
+ - Batch workloads (Job/CronJob) exporters — DONE (2025-11-12)
   - Scope: map a subset of our spec to `batch/v1 {Job,CronJob}` with container spec reuse and optional backoff/ttlSecondsAfterFinished.
-  - Acceptance: export-k8s `--workload job|cronjob` generates valid YAML; `k8s-check` includes basic batch advisories.
+  - Acceptance: export-k8s `--workload job|cronjob` generates valid YAML; docs updated with flags.
 
-- TLS Secret generator (BYO certs)
+ - TLS Secret generator (BYO certs) — DONE (2025-11-12)
   - Scope: helper to build `kubernetes.io/tls` Secret from PEM paths or `AE_TLS_DIR` and wire into Ingress `tls.secretName`.
   - Acceptance: docs include k3s/Traefik example; `k8s-report` sample succeeds with precreated Secret.
 
-- `emptyDir` support
+ - `emptyDir` support — DONE (2025-11-12)
   - Scope: allow ephemeral volumes in spec and export to PodSpec `volumes[].emptyDir` with medium selection.
   - Acceptance: exporter renders; `k8s-check` warns when used for stateful data.
 
@@ -219,15 +219,15 @@ Why: We already export portable Kubernetes YAML. These items tighten the experie
   - Scope: add opt‑in annotation preset for Traefik (timeouts, proxy headers) behind `--ingress-preset traefik`.
   - Acceptance: preset documented; does not alter defaults unless specified.
 
-- PDB percent on CLI
+- PDB percent on CLI — DONE (2025-11-12)
   - Scope: allow percent strings for `--pdb-{min-available,max-unavailable}` to match exporter capability.
   - Acceptance: CLI validates integers or percent; exporter receives value verbatim.
 
-- PodSecurity labels preset
+ - PodSecurity labels preset — DONE (2025-11-12)
   - Scope: optional Namespace labels (`pod-security.kubernetes.io/enforce: baseline|restricted`).
   - Acceptance: preset writes a Namespace YAML when requested; documented caveats for existing clusters.
 
-- NetworkPolicy provider note
+ - NetworkPolicy provider note — DONE (2025-11-12)
   - Scope: call out that enforcement depends on k3s NP backend; provide preset shortcuts for web/backend.
   - Acceptance: FEAT.md and docs/k8s-compliance.md updated with guidance.
 
@@ -247,6 +247,12 @@ Tracking: regenerate docs/site/k8s_status.json after each milestone via `ae k8s-
   - Prefer `crun` for Podman backend to improve startup and memory; fall back to `runc` when `crun` is absent.
   - Honor host/user `containers.conf`; optional `AE_OCI_RUNTIME=crun|runc` to force.
   - Added verification guidance (`podman info --format '{{ .Host.OCIRuntime.Name }}'`).
+* [x] 2025-11-12 – PDB percent on CLI:
+  - CLI now accepts integer or percent strings for `--pdb-min-available`/`--pdb-max-unavailable`.
+  - Exporter already maps values verbatim to policy/v1 PDB; validation added with bounds checking (0–100%) for percent forms.
+* [x] 2025-11-12 – RBAC emitters tied to ServiceAccount:
+  - Exporter emits namespaced Role and RoleBinding when `--service-account` is provided.
+  - Role includes conservative read-only rules: pods, pods/log, services, endpoints, events, configmaps.
 * [x] 2025-10-29 – Runtime hardening + image verification:
   - Docker/Podman adapters map `spec.security.seccomp*` and `apparmorProfile` to runtime flags (`security_opt`).
   - New CLI: `ae verify-image` (cosign wrapper) for key-based or keyless signature verification; supports `--json`.
@@ -1149,4 +1155,63 @@ AE_ENGINE_STRICT=1 AE_COLLECT_ENGINE=docker WAIT_READY_TRIES=120 make bench-mem-
   If you want, I can generate a tiny wrapper script that runs all four suites back-to-back, stamps the labels, and emits a single combined/
   combined.csv plus charts.
 
+---
 
+## Runtime Backend Options (2025-11-12)
+
+Summary
+- Default: Podman adapter. The controller shells to `podman` and can inject `--runtime=<crun|runc>` so the OCI runtime is selected explicitly. Podman handles images, storage, networking, exec, and logs for us.
+- Alternatives: a direct OCI path (runc/crun without Podman) or a containerd-based adapter.
+
+Option A — Keep Podman Adapter (status quo)
+- What Podman provides
+  - Image management: `podman pull`, unqualified name resolution, optional import from `docker-daemon:`.
+  - Lifecycle: create/start/stop, restart policies, Podman states (created/configured/paused/running), idempotent naming.
+  - Networking and ports: CNI networking, rootless port publishing, `podman port` discovery; shared CNI network via `AE_PODMAN_NETWORK` with DNS aliases.
+  - Volumes: named volumes and hostPath mounts with simple flags.
+  - Security: seccomp/AppArmor toggles, user namespaces, read-only rootfs, cap drops.
+  - Ergonomics: Docker-like CLI semantics our adapter already targets; no resident daemon.
+- Pros
+  - Minimal adapter complexity; robust features out of the box; strong rootless story.
+- Cons
+  - Hard dependency on the Podman CLI; small behavioral differences vs Docker to account for.
+
+Option B — Direct OCI Runtime (runc/crun) without Podman
+- What we would have to build/own
+  - Images: pull/verify (OCI Distribution) and unpack bundles (e.g., `skopeo` + `umoci` or a library), auth and local cache.
+  - Bundles/specs: generate `config.json` (namespaces, mounts, env, seccomp, cgroups v2, userns) and rootfs; map our security/resource flags.
+  - Supervision/IO: manage lifecycle and logs (a `conmon`-like supervisor) for detached processes and exit status.
+  - Exec/attach: namespace entry (`setns`), TTY handling, timeouts.
+  - Networking: CNI netns or rootless `slirp4netns`, host port publishing and endpoint discovery.
+  - Volumes/storage: named volumes (overlayfs/fuse-overlayfs) and hostPath mounts lifecycle.
+  - Introspection: replace `podman ps/inspect/logs/port` with our own inventory and restart counters.
+- Pros
+  - No Podman dependency; maximum control over runtime behavior.
+- Cons/Risks
+  - High engineering effort and ongoing maintenance; effectively recreates a slim CRI stack.
+  - More surface for security hardening and distro nuances (cgroups/userns/SELinux/AppArmor/slirp4netns).
+
+Option C — containerd-based Adapter
+- Shape
+  - Use `containerd` for images, snapshots, tasks, exec, and CNI networking; drive via client bindings or `nerdctl/ctr`.
+- Pros
+  - Removes Podman dependency without re-implementing OCI plumbing; widely supported on Linux; uses `runc/crun` under the hood.
+- Cons
+  - Requires a resident daemon (`containerd`); rootless support and ops are more involved than Podman’s single-CLI model.
+  - New adapter surface and test matrix.
+
+Decision Guidance
+- Prefer Podman when targeting single-node, daemonless, rootless-friendly setups and minimizing bespoke runtime code.
+- Consider containerd backend when standardizing on a node runtime across environments or where Podman isn’t available.
+- Avoid a direct runc/crun path unless there’s a strong requirement to remove intermediaries; expect a multi-phase project.
+
+Environment Controls (current)
+- `AE_RUNTIME_BACKEND` = `podman` (default), `docker`, or `stub`.
+- `AE_PODMAN_BIN` — path to the Podman binary.
+- `AE_OCI_RUNTIME` — forces `--runtime=<crun|runc>` for run/exec when using Podman.
+- `AE_PODMAN_NETWORK` — connects new replicas to a shared CNI network and registers DNS aliases.
+
+Next Steps
+- Keep: Maintain Podman as default; continue smoothing Docker parity and handling Podman-specific states.
+- Explore: Prototype a containerd adapter behind `AE_RUNTIME_BACKEND=containerd` with parity goals: images, run/stop, ports/endpoint discovery, volumes, logs, exec.
+- Investigate: For direct OCI, start with a scoped PoC (pull+unpack+run single process via `skopeo+umoci+runc`, no networking) to quantify gaps before a full plan.

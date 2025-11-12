@@ -87,7 +87,7 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
     
   </head>
   <body>
@@ -108,9 +108,9 @@
     </nav>
     <div class="container">
     <p>K8s Parity and Alignment (MVP)</p>
-<p>Status summary (2025-11-11)</p>
+<p>Status summary (2025-11-12)</p>
 <ul>
-<li>Exporter: Deployment/StatefulSet/Service/Ingress/HPA/PDB/SA/PVC/ConfigMap/Secret/NetworkPolicy ✓</li>
+<li>Exporter: Deployment/StatefulSet/Service/Ingress/HPA/PDB/SA/PVC/ConfigMap/Secret/Role/RoleBinding/NetworkPolicy ✓</li>
 <li>Probes: HTTP/TCP/exec + startupProbe; windowing and thresholds ✓</li>
 <li>Security: runAs*, readOnlyRootFilesystem, cap drop, seccomp; AppArmor via annotation ✓</li>
 <li>Services: ClusterIP with multi-port, NodePort support; validation for names/ports/nodePort ✓</li>
@@ -192,13 +192,7 @@ spec:
 </ul>
 <h2>k3s High‑Priority Gaps (Q4 2025)</h2>
 <ul>
-<li>RBAC emitters (Role/RoleBinding) scoped to attached ServiceAccount.</li>
-<li>Batch exporters: Job/CronJob with backoff and ttlSecondsAfterFinished.</li>
-<li>TLS Secret generator (kubernetes.io/tls) from PEMs/<code>AE_TLS_DIR</code>; wire to Ingress tls.secretName.</li>
-<li><code>emptyDir</code> volumes: ephemeral storage support with medium selection.</li>
-<li>Traefik ingress presets: opt‑in annotations for timeouts/proxy headers.</li>
-<li>PDB percent strings on CLI: accept percentages to match exporter capability.</li>
-<li>PodSecurity labels preset (Namespace): <code>pod-security.kubernetes.io/enforce</code>.</li>
+<li>PodSecurity labels preset (Namespace): DONE via <code>--emit-namespace --psa-enforce</code>.</li>
 <li>NetworkPolicy provider guidance: note enforcement dependency; provide web/backend presets.</li>
 </ul>
 <h2>Open Gaps (non‑k3s specific)</h2>
@@ -228,7 +222,7 @@ spec:
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2025-11-11 21:30:03</span>
+        <span>Built 2025-11-11 22:50:39</span>
       </div>
     </footer>
     <script>

@@ -3,7 +3,7 @@ kind: App
 metadata:
   name: echo-sec-adv
 spec:
-  image: demo-blue:latest
+  image: mendhak/http-https-echo:37
   replicas: 1
   ports:
     - name: http

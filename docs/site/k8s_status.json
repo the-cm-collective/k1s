@@ -1,5 +1,5 @@
 {
-  "generated_at": "2025-11-11T01:46:07.090674+00:00",
+  "generated_at": "2025-11-12T06:37:38.984894+00:00",
   "samples_count": 3,
   "overall_score": 100.0,
   "grade": "excellent",
@@ -7,7 +7,7 @@
     {
       "sample": "specs/examples/echo.yaml",
       "exists": true,
-      "export_length": 3645,
+      "export_length": 4358,
       "validate": {
         "ran": true,
         "ok": true,
@@ -16,7 +16,7 @@
       "policy_strict": {
         "ran": true,
         "errors": 0,
-        "warnings": 4
+        "warnings": 1
       },
       "kubeconform": {
         "ran": false,
@@ -34,6 +34,8 @@
         "Service",
         "Ingress",
         "ServiceAccount",
+        "Role",
+        "RoleBinding",
         "HorizontalPodAutoscaler"
       ],
       "apply_online": {
@@ -47,7 +49,7 @@
     {
       "sample": "specs/examples/multi-replica-echo.yaml",
       "exists": true,
-      "export_length": 2166,
+      "export_length": 3555,
       "validate": {
         "ran": true,
         "ok": true,
@@ -56,7 +58,7 @@
       "policy_strict": {
         "ran": true,
         "errors": 0,
-        "warnings": 6
+        "warnings": 0
       },
       "kubeconform": {
         "ran": false,
@@ -73,8 +75,11 @@
         "Service",
         "Ingress",
         "ServiceAccount",
+        "Role",
+        "RoleBinding",
         "PodDisruptionBudget",
-        "HorizontalPodAutoscaler"
+        "HorizontalPodAutoscaler",
+        "NetworkPolicy"
       ],
       "apply_online": {
         "ran": false,
@@ -87,7 +92,7 @@
     {
       "sample": "specs/examples/echo-hpa.yaml",
       "exists": true,
-      "export_length": 1873,
+      "export_length": 3282,
       "validate": {
         "ran": true,
         "ok": true,
@@ -96,7 +101,7 @@
       "policy_strict": {
         "ran": true,
         "errors": 0,
-        "warnings": 6
+        "warnings": 0
       },
       "kubeconform": {
         "ran": false,
@@ -112,8 +117,11 @@
         "Deployment",
         "Service",
         "ServiceAccount",
+        "Role",
+        "RoleBinding",
         "PodDisruptionBudget",
-        "HorizontalPodAutoscaler"
+        "HorizontalPodAutoscaler",
+        "NetworkPolicy"
       ],
       "apply_online": {
         "ran": false,

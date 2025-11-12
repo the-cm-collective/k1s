@@ -130,4 +130,7 @@ Details: `README.md:67` and token management in `docs/runbook.md:1`.
 - Teardown and reset demo: `./scripts/init_demo.sh --down -y`.
 
 Happy shipping!
-
+Want a stricter baseline? Try the hardened demo (non‑root, read‑only, startup/liveness, PDB, PSA labels, NP default‑deny):
+```
+./scripts/init_demo.sh --demo-hardened -y
+```

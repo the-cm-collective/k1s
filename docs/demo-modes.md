@@ -40,6 +40,15 @@ For secrets-friendly runs, add `--with-secrets-env` to export `AE_ALLOW_PLAINTEX
   - `make demo ARGS="--demo-echo-multi -y -d"`
 - Endpoint: `https://echo-mr.home.arpa:8443/`
 
+### Hardened Echo (echo-hardened)
+
+- Shows a security-hardened manifest with non-root, read-only root filesystem, seccomp RuntimeDefault, startup/liveness probes, topology spread, PDB hint, and a default-deny NetworkPolicy with DNS/HTTP(S) egress.
+- File: `specs/examples/echo-hardened.yaml`
+- Commands:
+  - `./scripts/init_demo.sh --demo-hardened -y`
+  - `make demo ARGS="--demo-hardened -y -d"`
+- Endpoint: `https://echo-hardened.home.arpa:8443/`
+
 ### Docs Only
 
 - Starts the docs server and API; does not apply any apps.
@@ -69,6 +78,7 @@ For secrets-friendly runs, add `--with-secrets-env` to export `AE_ALLOW_PLAINTEX
 
 - Caddy HTTP: `:8888`, HTTPS: `:8443`.
 - Hosts entries (added with `-y`): `blue|green|echo-mr|docs|api.home.arpa` → `127.0.0.1`.
+  - Also: `echo-hardened.home.arpa` when running the hardened demo.
   - Dashboard lives under the API host: `https://api.home.arpa:8443/dashboard` (or `http://127.0.0.1:9108/dashboard` directly).
 - Health checks are disabled by default for compatibility; enable with `AE_CADDY_ACTIVE_HEALTH=1` if your Caddy supports the directive.
 

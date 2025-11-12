@@ -3,7 +3,7 @@ kind: App
 metadata:
   name: echo-sec
 spec:
-  image: demo-blue:latest
+  image: mendhak/http-https-echo:37
   replicas: 1
   env:
     - name: APP_NAME
@@ -26,4 +26,3 @@ spec:
   ingress:
     host: echo-sec.home.arpa
     path: /
-

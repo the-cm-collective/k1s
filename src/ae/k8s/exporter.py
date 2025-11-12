@@ -24,7 +24,7 @@ from ae.controller.spec import AppManifest
 @dataclass(slots=True)
 class ExportOptions:
     # Which workload to emit
-    workload_kind: str = "Deployment"  # "Deployment" or "StatefulSet"
+    workload_kind: str = "Deployment"  # "Deployment" | "StatefulSet" | "Job" | "CronJob"
     namespace: str = "default"
     ingress_class_name: Optional[str] = None
     service_port: Optional[int] = None  # override; default to 80
@@ -57,9 +57,9 @@ class ExportOptions:
     hpa_behavior_down: Optional[Dict[str, Any]] = None
     # Security defaults
     default_security: bool = False
-    # PDB tuning
-    pdb_min_available: Optional[int] = None
-    pdb_max_unavailable: Optional[int] = None
+    # PDB tuning (accepts integers or percentage strings, e.g., "50%")
+    pdb_min_available: Optional[str | int] = None
+    pdb_max_unavailable: Optional[str | int] = None
     # Strictness
     require_requests: bool = False
     # NetworkPolicy generation
@@ -76,6 +76,17 @@ class ExportOptions:
     ingress_annotations: Optional[Dict[str, Any]] = None
     # Ingress pathType selection (Prefix, Exact, ImplementationSpecific)
     ingress_path_type: Optional[str] = None
+    # Job options
+    job_backoff_limit: Optional[int] = None
+    job_ttl_seconds_after_finished: Optional[int] = None
+    # CronJob options
+    cron_schedule: Optional[str] = None
+    cron_concurrency_policy: Optional[str] = None  # Allow|Forbid|Replace
+    cron_suspend: Optional[bool] = None
+    cron_starting_deadline_seconds: Optional[int] = None
+    # Namespace emission with PodSecurity labels
+    emit_namespace: bool = False
+    pod_security_enforce: Optional[str] = None  # baseline|restricted
 
 
 def _container_from_manifest(m: AppManifest, *, opts: ExportOptions) -> Dict[str, Any]:
@@ -650,6 +661,28 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
             claim = _storage_claim_name(m.metadata.name, s_name)
             volume_specs.append({"name": claim, "persistentVolumeClaim": {"claimName": claim}})
             volume_mounts.append({"name": claim, "mountPath": s_mount})
+    # emptyDir ephemeral volumes
+    if getattr(m.spec, "empty_dirs", None):
+        for ed in m.spec.empty_dirs:
+            ed_name = getattr(ed, "name", None) if not isinstance(ed, dict) else ed.get("name")
+            ed_mount = (
+                getattr(ed, "mount_path", None)
+                if not isinstance(ed, dict)
+                else (ed.get("mountPath") or ed.get("mount_path"))
+            )
+            if not ed_name or not ed_mount:
+                continue
+            body: Dict[str, Any] = {}
+            medium = (getattr(ed, "medium", None) if not isinstance(ed, dict) else ed.get("medium"))
+            if medium is not None and str(medium) != "":
+                body["medium"] = str(medium)
+            size_limit = (
+                getattr(ed, "size_limit", None) if not isinstance(ed, dict) else ed.get("sizeLimit") or ed.get("size_limit")
+            )
+            if size_limit is not None:
+                body["sizeLimit"] = str(size_limit)
+            volume_specs.append({"name": ed_name, "emptyDir": body or {}})
+            volume_mounts.append({"name": ed_name, "mountPath": ed_mount})
     if volume_specs:
         pod_spec["volumes"] = volume_specs
     if volume_mounts:
@@ -1144,6 +1177,19 @@ def export_k8s_docs(
             raise ValueError(
                 "resources.requests (cpu and memory) are required for export; remove --require-requests to allow best-effort export"
             )
+    # Optional Namespace emission (so it exists before other objects when applying whole file)
+    if bool(getattr(opts, "emit_namespace", False)):
+        ns_meta = {"name": opts.namespace}
+        labels: Dict[str, Any] = {}
+        pse = (getattr(opts, "pod_security_enforce", None) or None)
+        if pse:
+            labels["pod-security.kubernetes.io/enforce"] = str(pse)
+            # default to latest policy version
+            labels["pod-security.kubernetes.io/enforce-version"] = "latest"
+        if labels:
+            ns_meta["labels"] = labels
+        docs.append({"apiVersion": "v1", "kind": "Namespace", "metadata": ns_meta})
+
     # Optional resources first (so references exist when applying whole file)
     if opts.emit_configs:
         for ref in getattr(manifest.spec, "config_refs", []) or []:
@@ -1162,17 +1208,21 @@ def export_k8s_docs(
         if headless is not None:
             docs.append(headless)
         docs.append(_statefulset_from_manifest(manifest, opts))
+    elif wk == "job":
+        docs.append(_job_from_manifest(manifest, opts))
+    elif wk == "cronjob":
+        docs.append(_cronjob_from_manifest(manifest, opts))
     else:
         docs.append(_deployment_from_manifest(manifest, opts))
 
-    # Service when ports exist (normal ClusterIP for routing)
-    svc = _service_from_manifest(manifest, opts)
-    if svc is not None:
-        docs.append(svc)
-    # Ingress when requested
-    ing = _ingress_from_manifest(manifest, opts)
-    if ing is not None:
-        docs.append(ing)
+    # Service/Ingress: skip for Job/CronJob by default
+    if wk not in {"job", "cronjob"}:
+        svc = _service_from_manifest(manifest, opts)
+        if svc is not None:
+            docs.append(svc)
+        ing = _ingress_from_manifest(manifest, opts)
+        if ing is not None:
+            docs.append(ing)
     # Optional ServiceAccount
     if opts.service_account_name:
         docs.append(
@@ -1182,8 +1232,48 @@ def export_k8s_docs(
                 "metadata": {"name": opts.service_account_name, "namespace": opts.namespace},
             }
         )
-    # Optional PodDisruptionBudget
-    if opts.emit_pdb and int(manifest.spec.replicas) > 1:
+        # Emit a minimal Namespaced Role and RoleBinding tied to this ServiceAccount.
+        # Conservative, read-only permissions useful for basic app diagnostics.
+        role_name = f"{manifest.metadata.name}-role"
+        rb_name = f"{manifest.metadata.name}-rb"
+        docs.append(
+            {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "Role",
+                "metadata": {"name": role_name, "namespace": opts.namespace},
+                "rules": [
+                    {  # Core read access to pods/services/endpoints/events (no secrets)
+                        "apiGroups": [""],
+                        "resources": [
+                            "pods",
+                            "pods/log",
+                            "services",
+                            "endpoints",
+                            "events",
+                            "configmaps",
+                        ],
+                        "verbs": ["get", "list", "watch"],
+                    }
+                ],
+            }
+        )
+        docs.append(
+            {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "RoleBinding",
+                "metadata": {"name": rb_name, "namespace": opts.namespace},
+                "subjects": [
+                    {"kind": "ServiceAccount", "name": opts.service_account_name, "namespace": opts.namespace}
+                ],
+                "roleRef": {
+                    "apiGroup": "rbac.authorization.k8s.io",
+                    "kind": "Role",
+                    "name": role_name,
+                },
+            }
+        )
+    # Optional PodDisruptionBudget (not applicable to Job/CronJob)
+    if wk not in {"job", "cronjob"} and opts.emit_pdb and int(manifest.spec.replicas) > 1:
         # Choose either minAvailable or maxUnavailable; prefer explicit provided one.
         spec_pdb: Dict[str, Any] = {"selector": {"matchLabels": {"app": manifest.metadata.name}}}
         if opts.pdb_max_unavailable is not None and opts.pdb_min_available is not None:
@@ -1315,6 +1405,57 @@ def export_k8s_docs(
         if np:
             docs.append(np)
     return docs
+
+
+def _pod_template_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, Any]:
+    """Return a Deployment-style Pod template for reuse in Job/CronJob."""
+    dep = _deployment_from_manifest(m, opts)
+    return dep["spec"]["template"]
+
+
+def _job_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, Any]:
+    tpl = _pod_template_from_manifest(m, opts)
+    # Ensure a valid restartPolicy for Jobs
+    tpl.setdefault("spec", {}).setdefault("restartPolicy", "OnFailure")
+    body: Dict[str, Any] = {"template": tpl}
+    if opts.job_backoff_limit is not None:
+        body["backoffLimit"] = int(opts.job_backoff_limit)
+    if opts.job_ttl_seconds_after_finished is not None:
+        body["ttlSecondsAfterFinished"] = int(opts.job_ttl_seconds_after_finished)
+    return {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {"name": m.metadata.name, "namespace": opts.namespace},
+        "spec": body,
+    }
+
+
+def _cronjob_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, Any]:
+    if not opts.cron_schedule:
+        raise ValueError("CronJob requires --cron-schedule (e.g., '*/5 * * * *')")
+    tpl = _pod_template_from_manifest(m, opts)
+    tpl.setdefault("spec", {}).setdefault("restartPolicy", "OnFailure")
+    job_spec: Dict[str, Any] = {"template": tpl}
+    if opts.job_backoff_limit is not None:
+        job_spec["backoffLimit"] = int(opts.job_backoff_limit)
+    if opts.job_ttl_seconds_after_finished is not None:
+        job_spec["ttlSecondsAfterFinished"] = int(opts.job_ttl_seconds_after_finished)
+    spec: Dict[str, Any] = {
+        "schedule": str(opts.cron_schedule),
+        "jobTemplate": {"spec": job_spec},
+    }
+    if opts.cron_concurrency_policy is not None:
+        spec["concurrencyPolicy"] = str(opts.cron_concurrency_policy)
+    if opts.cron_suspend is not None:
+        spec["suspend"] = bool(opts.cron_suspend)
+    if opts.cron_starting_deadline_seconds is not None:
+        spec["startingDeadlineSeconds"] = int(opts.cron_starting_deadline_seconds)
+    return {
+        "apiVersion": "batch/v1",
+        "kind": "CronJob",
+        "metadata": {"name": m.metadata.name, "namespace": opts.namespace},
+        "spec": spec,
+    }
 
 
 def _network_policy_from_manifest(m: AppManifest, opts: ExportOptions) -> Optional[dict]:

@@ -299,6 +299,36 @@ class StorageSpec(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class EmptyDirSpec(BaseModel):
+    """Ephemeral emptyDir volume mount.
+
+    - medium: "" (node filesystem) or "Memory" (tmpfs). Other K8s mediums are passed through if provided.
+    - sizeLimit: optional Kubernetes quantity string (e.g., "256Mi").
+    """
+
+    name: str
+    mount_path: str = Field(alias="mountPath")
+    medium: Optional[str] = None
+    size_limit: Optional[str] = Field(default=None, alias="sizeLimit")
+
+    model_config = {"populate_by_name": True}
+
+
+class ExportHints(BaseModel):
+    """Optional exporter hints to suppress certain checks or toggle emissions.
+
+    - emitPDB: request exporter to emit a PodDisruptionBudget when replicas>1.
+    """
+
+    emit_pdb: bool = Field(default=False, alias="emitPDB")
+    # Suppress informational check about image multi-arch when you know your image is multi-arch
+    suppress_image_multi_arch_warning: bool = Field(
+        default=False, alias="suppressImageMultiArchWarning"
+    )
+
+    model_config = {"populate_by_name": True}
+
+
 class SecretEnvMapping(BaseModel):
     """Mapping from decrypted secret key to environment variable."""
 
@@ -335,7 +365,6 @@ class ConfigRef(BaseModel):
     files: List[dict] = Field(default_factory=list)
     # Optional envFrom behavior: when true, exporter may emit envFrom for this configmap
     env_from: bool = Field(default=False, alias="envFrom")
-
 
 class AppSpec(BaseModel):
     """Workload specification."""
@@ -398,6 +427,9 @@ class AppSpec(BaseModel):
     termination_grace_period_seconds: int = Field(default=10, alias="terminationGracePeriodSeconds")
     volumes: List[VolumeSpec] = Field(default_factory=list)
     storage: List[StorageSpec] = Field(default_factory=list)
+    empty_dirs: List[EmptyDirSpec] = Field(default_factory=list, alias="emptyDirs")
+    # Optional exporter hints (purely affects export/check tooling)
+    export_hints: Optional[ExportHints] = Field(default=None, alias="exportHints")
     # Image pull controls (pass-through to K8s export)
     image_pull_policy: Optional[
         Literal["Always", "IfNotPresent", "Never"]
