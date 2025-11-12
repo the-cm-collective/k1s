@@ -886,6 +886,44 @@ ls -1 ops/dev/caddy/sites | sed 's/^/  - /' | xargs -r -I{} true >/dev/null 2>&1
 log "Applying demo manifests"
 APPLY_TIMEOUT=${APPLY_TIMEOUT:-120}
 
+# Heartbeat helper: run an apply with a periodic progress line so users know it's alive.
+APPLY_HEARTBEAT_INTERVAL=${APPLY_HEARTBEAT_INTERVAL:-10}
+apply_with_heartbeat() {
+  # $1=label (blue/green), $2=manifest path
+  local label="$1"; local mf="$2"
+  local elapsed=0
+  log "Applying ${label} from ${mf} (timeout=${APPLY_TIMEOUT}s)"
+  (
+    timeout --kill-after=5 "$APPLY_TIMEOUT" "$PY_BIN" -m ae.cli --verbose apply -f "$mf"
+  ) &
+  local apid=$!
+  while kill -0 "$apid" 2>/dev/null; do
+    sleep "$APPLY_HEARTBEAT_INTERVAL"
+    elapsed=$((elapsed+APPLY_HEARTBEAT_INTERVAL))
+    log "… still applying ${label} (${elapsed}s elapsed)"
+  done
+  wait "$apid"; return $?
+}
+
+# Wrapper: on failure, keep -d attached instead of exiting immediately
+APPLY_FAILED=0
+apply_or_diag() {
+  # $1=label, $2=manifest path
+  local label="$1"; local mf="$2"
+  if ! apply_with_heartbeat "$label" "$mf"; then
+    log "Apply for ${label} timed out or failed. Diagnostics:"
+    "$STACK_BIN" ps || true
+    log "Try: $STACK_BIN logs dev-caddy-1; $STACK_BIN exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
+    log "Or re-run with more verbosity: $PY_BIN -m ae.cli --verbose apply -f ${mf}"
+    if [[ $DEBUG_ATTACH -eq 1 ]]; then
+      APPLY_FAILED=1
+      log "Continuing to attach logs due to -d (debug) flag. Press Ctrl-C to exit." 
+    else
+      exit 1
+    fi
+  fi
+}
+
 # Ensure controller supervisor is running before applies to inherit demo env
 ensure_supervisor_running() {
   if [[ $NO_CONTROLLER -ne 0 ]]; then
@@ -933,20 +971,8 @@ if [[ $DOCS_ONLY -ne 1 ]]; then
   # Default: apply standard demo only when explicitly requested OR when no demo flags were provided at all.
   ANY_DEMO=$(( DEMO_CONFIGS | DEMO_STANDARD | DEMO_ECHO_MR | DEMO_ECHO_MULTI | DEMO_SECURITY | DEMO_TCP | DEMO_EXEC | DEMO_ROLLOUT | DEMO_STORAGE ))
   if [[ $DEMO_STANDARD -eq 1 || $ANY_DEMO -eq 0 ]]; then
-    if ! timeout --kill-after=5 "$APPLY_TIMEOUT" "$PY_BIN" -m ae.cli --verbose apply -f specs/examples/blue.yaml; then
-      log "Apply for blue timed out or failed. Diagnostics:"
-      "$STACK_BIN" ps || true
-      log "Try: $STACK_BIN logs dev-caddy-1; $STACK_BIN exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
-      log "Or re-run with more verbosity: $PY_BIN -m ae.cli --verbose apply -f specs/examples/blue.yaml"
-      exit 1
-    fi
-    if ! timeout --kill-after=5 "$APPLY_TIMEOUT" "$PY_BIN" -m ae.cli --verbose apply -f specs/examples/green.yaml; then
-      log "Apply for green timed out or failed. Diagnostics:"
-      "$STACK_BIN" ps || true
-      log "Try: $STACK_BIN logs dev-caddy-1; $STACK_BIN exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
-      log "Or re-run with more verbosity: $PY_BIN -m ae.cli --verbose apply -f specs/examples/green.yaml"
-      exit 1
-    fi
+    apply_or_diag "blue"  "specs/examples/blue.yaml"
+    apply_or_diag "green" "specs/examples/green.yaml"
   fi
 fi
 
@@ -954,7 +980,7 @@ fi
 if [[ $DEMO_CONFIGS -eq 1 ]]; then
   export AE_ALLOW_PLAINTEXT_SECRETS=1
   log "Applying configs/secrets demo (echo) with plaintext secrets enabled"
-  if "$PY_BIN" -m ae.cli apply -f specs/examples/echo.yaml; then
+  if apply_with_heartbeat "echo" "specs/examples/echo.yaml"; then
     "$PY_BIN" -m ae.cli status echo --wide || true
     # Print projection location and sample values if present
     APP_ROOT="state/projections/echo-rev1"; for d in "$APP_ROOT"*; do APP_ROOT="$d"; break; done
@@ -977,13 +1003,13 @@ fi
 # Optional multi-replica echo demo
 if [[ $DEMO_ECHO_MR -eq 1 && $DOCS_ONLY -ne 1 ]]; then
   log "Applying multi-replica echo demo (echo-mr)"
-  "$PY_BIN" -m ae.cli apply -f specs/examples/multi-replica-echo.yaml || true
+  apply_with_heartbeat "echo-mr" "specs/examples/multi-replica-echo.yaml" || true
 fi
 
 # Optional multi-port echo demo (http + metrics)
 if [[ $DEMO_ECHO_MULTI -eq 1 && $DOCS_ONLY -ne 1 ]]; then
   log "Applying multi-port echo demo (echo-multi)"
-  "$PY_BIN" -m ae.cli apply -f specs/examples/echo-multiport.yaml || true
+  apply_with_heartbeat "echo-multi" "specs/examples/echo-multiport.yaml" || true
   # Quick endpoint verification
   code=$(curl -ksS -o /dev/null -w '%{http_code}' "https://echo-multi.home.arpa:${CADDY_HTTPS_PORT}/" || true)
   printf '[verify] %-20s -> %s\n' "echo-multi.home.arpa/" "${code:-fail}"
@@ -992,40 +1018,40 @@ fi
 # Optional security demo
 if [[ $DEMO_SECURITY -eq 1 && $DOCS_ONLY -ne 1 ]]; then
   log "Applying security-hardened echo demo (echo-sec)"
-  "$PY_BIN" -m ae.cli apply -f specs/examples/echo-sec.yaml || true
+  apply_with_heartbeat "echo-sec" "specs/examples/echo-sec.yaml" || true
 fi
 
 # Optional TCP probe demo
 if [[ $DEMO_TCP -eq 1 && $DOCS_ONLY -ne 1 ]]; then
   log "Applying TCP-probe echo demo (echo-tcp)"
-  "$PY_BIN" -m ae.cli apply -f specs/examples/echo-tcp.yaml || true
+  apply_with_heartbeat "echo-tcp" "specs/examples/echo-tcp.yaml" || true
 fi
 
 # Optional hardened demo
 if [[ $DEMO_HARDENED -eq 1 && $DOCS_ONLY -ne 1 ]]; then
   log "Applying hardened echo demo (echo-hardened)"
-  "$PY_BIN" -m ae.cli apply -f specs/examples/echo-hardened.yaml || true
+  apply_with_heartbeat "echo-hardened" "specs/examples/echo-hardened.yaml" || true
 fi
 
 # Optional exec probe demo
 if [[ $DEMO_EXEC -eq 1 && $DOCS_ONLY -ne 1 ]]; then
   log "Applying exec-probe echo demo (echo-exec)"
-  "$PY_BIN" -m ae.cli apply -f specs/examples/echo-exec.yaml || true
+  apply_with_heartbeat "echo-exec" "specs/examples/echo-exec.yaml" || true
 fi
 
 # Optional rollout demo: apply echo, then echo-rollout
 if [[ $DEMO_ROLLOUT -eq 1 && $DOCS_ONLY -ne 1 ]]; then
   log "Applying rollout demo (echo → echo-rollout)"
-  "$PY_BIN" -m ae.cli apply -f specs/examples/echo.yaml || true
+  apply_with_heartbeat "echo" "specs/examples/echo.yaml" || true
   sleep 2
-  "$PY_BIN" -m ae.cli apply -f specs/examples/echo-rollout.yaml || true
+  apply_with_heartbeat "echo-rollout" "specs/examples/echo-rollout.yaml" || true
   "$PY_BIN" -m ae.cli status echo --events --history 5 || true
 fi
 
 # Optional storage demo
 if [[ $DEMO_STORAGE -eq 1 && $DOCS_ONLY -ne 1 ]]; then
   log "Applying storage demo (echo with PV-lite)"
-  "$PY_BIN" -m ae.cli apply -f specs/examples/echo-storage.yaml || true
+  apply_with_heartbeat "echo-storage" "specs/examples/echo-storage.yaml" || true
   log "Listing storage volumes"
   "$PY_BIN" -m ae.cli volumes list --app echo || true
 fi

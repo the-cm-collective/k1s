@@ -77,9 +77,12 @@ class PodmanRuntime(RuntimeAdapter):
 
         created = updated = removed = 0
 
-        # Ensure image is available locally (best-effort)
+        # Ensure image is available locally (best-effort). Avoid unconditional pulls
+        # which can block startup when registry access is slow/unavailable. Mirror
+        # DockerRuntime behavior: pull only if the image is not present locally.
         image = manifest.spec.image
-        self._run_ok([self._bin, "pull", image], allow_fail=True)
+        if not self._image_exists(image):
+            self._run_ok([self._bin, "pull", image], allow_fail=True)
         if not self._image_exists(image):
             # import from Docker daemon if present
             try:
@@ -193,8 +196,8 @@ class PodmanRuntime(RuntimeAdapter):
             st = (c.get("State") or {}).get("Status", "")
             started = self._parse_dt((c.get("State") or {}).get("StartedAt"))
             endpoint = None
-            # Prefer published host ports (so Caddy can reach via host alias),
-            # fall back to container DNS name only if no host port is published.
+            # Prefer published host ports (so Caddy can reach via host alias).
+            # Selection order: preferred probe port; 80/tcp; 8080/tcp; first non‑443 mapping.
             try:
                 pmap = (c.get("NetworkSettings") or {}).get("Ports") or {}
                 # Prefer host-published ports
@@ -210,10 +213,28 @@ class PodmanRuntime(RuntimeAdapter):
                                 "[::1]" if hip.startswith("[") or hip == "::" else "127.0.0.1"
                             )
                             endpoint = f"{loop_host}:{hp}"
-                # 2) otherwise pick the first published host port
+                # 2) common HTTP ports
+                if endpoint is None:
+                    for cp in (80, 8080):
+                        binds = (pmap or {}).get(f"{int(cp)}/tcp")
+                        if binds:
+                            b0 = binds[0] or {}
+                            hp = b0.get("HostPort")
+                            if hp:
+                                hip = (b0.get("HostIp") or "").strip()
+                                loop_host = (
+                                    "[::1]" if hip.startswith("[") or hip == "::" else "127.0.0.1"
+                                )
+                                endpoint = f"{loop_host}:{hp}"
+                                break
+                # 3) otherwise pick the first published host port that is not 443
                 if endpoint is None:
                     for k, binds in (pmap or {}).items():
                         if not binds:
+                            continue
+                        # Skip HTTPS container port to avoid http-over-https probe mismatch
+                        port_key = str(k).split("/")[0]
+                        if port_key.isdigit() and int(port_key) == 443:
                             continue
                         b0 = binds[0] or {}
                         hp = b0.get("HostPort")
@@ -1073,10 +1094,17 @@ class PodmanRuntime(RuntimeAdapter):
                         names.append(f"{rp}:{tg}")
                 for n in it.get("Names") or []:
                     names.append(n)
+                # Direct hit
                 if name in names:
                     return True
-                if "/" not in name and any(n.endswith(f"/{name}") for n in names):
-                    return True
+                # Treat default-registry qualified names as matching the unqualified input and vice versa
+                # Examples: docker.io/mendhak/http-https-echo:37 ≈ mendhak/http-https-echo:37
+                if "/" in name:
+                    if any(n.endswith(f"/{name}") for n in names):
+                        return True
+                else:
+                    if any(n.endswith(f"/{name}") for n in names):
+                        return True
         except Exception:
             return False
         return False
