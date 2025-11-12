@@ -80,6 +80,40 @@ def detect_oci(backend: str) -> str:
     return ""
 
 
+def _insert_oci_into_label(label: str, *, backend: str, oci: str) -> str:
+    """Insert '+<oci>+' into human label strings.
+
+    Primary path: if '+<backend>+' is present, insert right after it.
+    Fallback path: for labels without backend tokens (e.g., 'baseline-...'),
+    insert '+<oci>+' before the stage suffix ('-idle', '-pods-N',
+    '-rollout-N-(during|post)'). If no suffix detected, append at the end.
+    """
+    if not label or not oci:
+        return label
+    token_b = f"+{backend}+" if backend else None
+    token_o = f"+{oci}+"
+    if token_b and token_b in label and token_o not in label:
+        return label.replace(token_b, f"{token_b}{oci}+")
+
+    # Fallback: inject before stage suffix
+    import re
+
+    # Known stage patterns in our labels
+    m = (
+        re.search(r"(-idle)$", label)
+        or re.search(r"(-pods-\d+)$", label)
+        or re.search(r"(-rollout-\d+-(during|post))$", label)
+    )
+    if m and token_o not in label:
+        start, end = m.span(1)
+        return f"{label[:start]}{token_o}{label[start:]}"
+
+    # As a last resort, append once
+    if token_o not in label:
+        return label + token_o.rstrip("+")
+    return label
+
+
 def patch_snapshot(snap: Path, oci: str, insert_into_label: bool) -> bool:
     meta_path = snap / "meta.json"
     if not meta_path.exists():
@@ -97,11 +131,10 @@ def patch_snapshot(snap: Path, oci: str, insert_into_label: bool) -> bool:
         changed = True
     label = meta.get("label") or ""
     backend = (meta.get("backend") or "").lower()
-    if insert_into_label and oci and backend:
-        token = f"+{oci}+"
-        if f"+{backend}+" in label and token not in label:
-            label = label.replace(f"+{backend}+", f"+{backend}+{oci}+")
-            meta["label"] = label
+    if insert_into_label and oci:
+        new_label = _insert_oci_into_label(label, backend=backend, oci=oci.lower())
+        if new_label != label:
+            meta["label"] = new_label
             changed = True
     if changed:
         meta_path.write_text(json.dumps(meta, indent=2) + "\n")

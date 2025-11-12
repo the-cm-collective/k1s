@@ -87,7 +87,7 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
     
   </head>
   <body>
@@ -137,6 +137,13 @@
 <li>If not using plaintext secrets, ensure <code>sops --decrypt</code> works; scripts fail fast with guidance otherwise.</li>
 <li>Outputs: <code>combined/combined.csv</code> and <code>charts/*.png</code>. The testing-memory-k1s page auto‑shows the latest results.</li>
 </ul>
+<h2>All Baselines Helper</h2>
+<ul>
+<li>Run all baseline suites (k1s rootless, k1s rootful, k1nd, k3d) with cleanup and docs refresh:</li>
+<li><code>make bench-mem-e2e-baselines</code> (or CI-friendly: <code>make bench-mem-e2e-baselines-sudo</code>)</li>
+<li>To skip the k1nd stage entirely, set an environment toggle:</li>
+<li><code>DISABLE_K1ND=1 make bench-mem-e2e-baselines</code>  (alias: <code>SKIP_K1ND=1</code>)</li>
+</ul>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -144,7 +151,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2025-11-11 17:15:55</span>
+        <span>Built 2025-11-11 20:14:14</span>
       </div>
     </footer>
     <script>
