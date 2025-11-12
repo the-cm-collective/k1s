@@ -1,23 +1,30 @@
 apiVersion: ae.dev/v1alpha1
 kind: App
 metadata:
-  name: echo-hpa
+  name: echo-hardened
 spec:
   image: mendhak/http-https-echo:37
   replicas: 2
+  env:
+    - name: APP_NAME
+      value: echo-hardened
   ports:
     - name: http
       containerPort: 8080
+  service:
+    port: 80
+    targetPort: 8080
   health:
     readiness:
       httpGet:
-        path: /healthz
+        path: /
         port: 8080
       initialDelaySeconds: 2
+      timeoutSeconds: 1
       periodSeconds: 5
     liveness:
       httpGet:
-        path: /healthz
+        path: /
         port: 8080
       initialDelaySeconds: 5
       timeoutSeconds: 1
@@ -25,7 +32,7 @@ spec:
       failureThreshold: 3
     startup:
       httpGet:
-        path: /healthz
+        path: /
         port: 8080
       failureThreshold: 30
       periodSeconds: 5
@@ -47,13 +54,22 @@ spec:
       whenUnsatisfiable: ScheduleAnyway
       labelSelector:
         matchLabels:
-          app: echo-hpa
+          app: echo-hardened
+  ingress:
+    host: echo-hardened.home.arpa
+    path: /
   networkPolicy:
     policyTypes: ["Ingress", "Egress"]
-    ingress:
-      - {}
+    # Default deny with explicit egress allowances for DNS and web
+    ingress: []
     egress:
-      - {}
+      - to:
+          - ipBlock: { cidr: 0.0.0.0/0 }
+        ports:
+          - { protocol: UDP, port: 53 }
+          - { protocol: TCP, port: 53 }
+          - { protocol: TCP, port: 80 }
+          - { protocol: TCP, port: 443 }
   exportHints:
     emitPDB: true
     suppressImageMultiArchWarning: true

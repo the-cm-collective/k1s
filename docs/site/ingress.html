@@ -87,7 +87,7 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
     
   </head>
   <body>
@@ -148,6 +148,12 @@
 <li><code>python -m ae.cli tls verify --name mycert --root state/tls</code></li>
 <li>Returns non-zero if not found; use <code>--json</code> for machine-readable results.</li>
 </ul>
+<p>CLI helper: tls kubesecret</p>
+<ul>
+<li>Generate a Kubernetes TLS Secret YAML (<code>kubernetes.io/tls</code>) from PEMs under <code>AE_TLS_DIR</code>:</li>
+<li><code>python -m ae.cli tls kubesecret --name mycert --namespace demo --root state/tls -o mycert-secret.yaml</code></li>
+<li>Apply it to your cluster and reference it from the exporter/manifest via <code>ingress.tlsSecretName: mycert</code>.</li>
+</ul>
 <p>Multi-path routing</p>
 <ul>
 <li>In your App manifest, set <code>spec.ingress.paths: [&quot;/&quot;, &quot;/api&quot;]</code> to render multiple routes.</li>
@@ -165,7 +171,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2025-11-11 21:30:03</span>
+        <span>Built 2025-11-11 22:50:39</span>
       </div>
     </footer>
     <script>

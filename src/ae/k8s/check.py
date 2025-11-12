@@ -101,15 +101,36 @@ def k8s_portability_issues(m: AppManifest) -> List[Issue]:
                         f"hostPath at {v.mount_path} is RW; prefer portable storage or read-only binds",
                     )
                 )
-    # Multi-replica without PDB
-    if int(spec.replicas) > 1:
-        issues.append(
-            Issue(
-                "warn",
-                "PDB_MISSING",
-                "multi-replica app without PodDisruptionBudget (recommend minAvailable: 1)",
+    # emptyDir advisories: ephemeral storage warning
+    if getattr(spec, "empty_dirs", None):
+        for ed in spec.empty_dirs:
+            try:
+                mnt = getattr(ed, "mount_path", None) or ed.get("mountPath") if isinstance(ed, dict) else None
+            except Exception:
+                mnt = None
+            issues.append(
+                Issue(
+                    "warn",
+                    "EMPTYDIR_EPHEMERAL",
+                    f"emptyDir volume at {mnt or '/path'} is ephemeral; data is lost on Pod restart/eviction",
+                )
             )
-        )
+    # Multi-replica without PDB (skip when manifest requests exporter to emit a PDB)
+    if int(spec.replicas) > 1:
+        has_pdb_hint = False
+        try:
+            if getattr(spec, "export_hints", None) and bool(getattr(spec.export_hints, "emit_pdb", False)):
+                has_pdb_hint = True
+        except Exception:
+            has_pdb_hint = False
+        if not has_pdb_hint:
+            issues.append(
+                Issue(
+                    "warn",
+                    "PDB_MISSING",
+                    "multi-replica app without PodDisruptionBudget (recommend minAvailable: 1)",
+                )
+            )
         # Recommend anti-affinity or topology spread for multi-replica resilience
         has_affinity = bool(getattr(spec, "affinity", None))
         has_spread = bool(getattr(spec, "topology_spread_constraints", None))
@@ -146,10 +167,17 @@ def k8s_portability_issues(m: AppManifest) -> List[Issue]:
                 )
             )
 
-    # Image arch: cannot verify; warn as informational only.
-    issues.append(
-        Issue("warn", "IMAGE_MULTI_ARCH_UNKNOWN", "cannot verify image is multi-arch (amd64/arm64)")
-    )
+    # Image arch: cannot verify; warn as informational only unless suppressed by exportHints
+    suppress_img = False
+    try:
+        if getattr(spec, "export_hints", None) and bool(getattr(spec.export_hints, "suppress_image_multi_arch_warning", False)):
+            suppress_img = True
+    except Exception:
+        suppress_img = False
+    if not suppress_img:
+        issues.append(
+            Issue("warn", "IMAGE_MULTI_ARCH_UNKNOWN", "cannot verify image is multi-arch (amd64/arm64)")
+        )
     # Multi-container advisory
     if getattr(spec, "containers", None):
         try:

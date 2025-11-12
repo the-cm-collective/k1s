@@ -269,7 +269,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     xk.add_argument(
         "--workload",
-        choices=["deployment", "statefulset"],
+        choices=["deployment", "statefulset", "job", "cronjob"],
         default="deployment",
         help="Workload kind to emit (default: deployment)",
     )
@@ -280,6 +280,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     xk.add_argument("--output", "-o", type=Path, default=None, help="Write output to file path")
     xk.add_argument("--out", type=Path, default=None, help="Alias for --output")
+    # Job/CronJob options
+    xk.add_argument("--job-backoff-limit", type=int, default=None)
+    xk.add_argument("--job-ttl-seconds-after-finished", type=int, default=None)
+    xk.add_argument("--cron-schedule", default=None, help="Cron expression for CronJob (required for --workload cronjob)")
+    xk.add_argument(
+        "--cron-concurrency-policy",
+        choices=["Allow", "Forbid", "Replace"],
+        default=None,
+        help="CronJob concurrencyPolicy (default: cluster default)",
+    )
+    xk.add_argument("--cron-suspend", action="store_true", help="Create CronJob in suspended state")
+    xk.add_argument("--cron-starting-deadline-seconds", type=int, default=None)
     xk.add_argument(
         "--split",
         type=Path,
@@ -326,13 +338,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--emit-pdb", action="store_true", help="Emit a PodDisruptionBudget when replicas > 1"
     )
     xk.add_argument(
-        "--pdb-min-available", type=int, default=None, help="PDB minAvailable value (default: 1)"
+        "--pdb-min-available",
+        type=str,
+        default=None,
+        help="PDB minAvailable (int or percent, e.g., 1 or 50%)",
     )
     xk.add_argument(
         "--pdb-max-unavailable",
-        type=int,
+        type=str,
         default=None,
-        help="PDB maxUnavailable value (mutually exclusive with minAvailable)",
+        help="PDB maxUnavailable (int or percent; mutually exclusive with minAvailable)",
     )
     xk.add_argument(
         "--hpa-min",
@@ -418,6 +433,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--spread-by-host",
         action="store_true",
         help="Inject a basic topologySpreadConstraints across kubernetes.io/hostname when replicas>1",
+    )
+    # Namespace + PodSecurity labels
+    xk.add_argument("--emit-namespace", action="store_true", help="Emit a Namespace object for --namespace")
+    xk.add_argument(
+        "--psa-enforce",
+        choices=["baseline", "restricted"],
+        default=None,
+        help="Set pod-security.kubernetes.io/enforce label on emitted Namespace",
     )
 
     # k8s-check (run FEAT checklist against manifest)
@@ -568,6 +591,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="TLS root directory (defaults AE_TLS_DIR or state/tls)",
     )
     tls_verify.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    tls_k8s = tls_sub.add_parser(
+        "kubesecret", help="Generate a kubernetes.io/tls Secret YAML from PEMs"
+    )
+    tls_k8s.add_argument(
+        "--name", "-n", required=True, help="Secret name (also the TLS material name under root)"
+    )
+    tls_k8s.add_argument(
+        "--namespace", default="default", help="Kubernetes namespace for the Secret"
+    )
+    tls_k8s.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="TLS root directory (defaults AE_TLS_DIR or state/tls)",
+    )
+    tls_k8s.add_argument(
+        "--output", "-o", type=Path, default=None, help="Write Secret YAML to this file"
+    )
 
     # volumes list
     vols = subparsers.add_parser("volumes", help="Inspect storage volumes")
@@ -2029,6 +2071,43 @@ def handle_tls(args: argparse.Namespace) -> int:
         crt, key = resolved
         print(f"found TLS: cert={crt} key={key}")
         return 0
+    # tls kubesecret: emit kubernetes.io/tls Secret YAML from resolved PEMs
+    if args.tls_cmd == "kubesecret":
+        from ae.ingress.tls_sync import TlsSecretResolver
+        import os
+        import base64 as _b64
+        import yaml as _yaml
+
+        root = Path(args.root) if args.root else Path(os.getenv("AE_TLS_DIR", "state/tls"))
+        resolver = TlsSecretResolver(root)
+        resolved = resolver.resolve(str(args.name))
+        if not resolved:
+            print(
+                f"not found: {args.name} under {root}. Use 'ae tls sync' or place <name>.crt/.key first."
+            )
+            return 2
+        crt, key = resolved
+        try:
+            crt_b64 = _b64.b64encode(Path(crt).read_bytes()).decode("ascii")
+            key_b64 = _b64.b64encode(Path(key).read_bytes()).decode("ascii")
+        except Exception as exc:  # noqa: BLE001
+            print(f"failed to read TLS PEMs: {exc}")
+            return 1
+        doc = {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {"name": str(args.name), "namespace": str(args.namespace)},
+            "type": "kubernetes.io/tls",
+            "data": {"tls.crt": crt_b64, "tls.key": key_b64},
+        }
+        out = _yaml.safe_dump(doc, sort_keys=False)
+        dest = getattr(args, "output", None)
+        if dest:
+            Path(dest).parent.mkdir(parents=True, exist_ok=True)
+            Path(dest).write_text(out, encoding="utf-8")
+        else:
+            print(out, end="")
+        return 0
     print("unsupported tls command")
     return 2
 
@@ -3020,6 +3099,38 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
     ):
         print("error: --pdb-min-available and --pdb-max-unavailable are mutually exclusive")
         return 2
+    # validate PDB values when provided (allow integer or percent string 0-100%)
+    def _parse_pdb_value(v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        if s == "":
+            return None
+        if s.endswith("%"):
+            num = s[:-1]
+            if num.isdigit():
+                # keep as percentage string; optional bounds check 0-100
+                try:
+                    n = int(num)
+                    if 0 <= n <= 100:
+                        return f"{n}%"
+                except Exception:
+                    pass
+            print("error: PDB percent must be an integer 0-100 followed by % (e.g., 50%)")
+            return "__INVALID__"
+        # integer form
+        if s.isdigit():
+            try:
+                return int(s)
+            except Exception:
+                pass
+        print("error: PDB value must be an integer or a percent like 50%")
+        return "__INVALID__"
+
+    _min_avail = _parse_pdb_value(getattr(args, "pdb_min_available", None))
+    _max_unavail = _parse_pdb_value(getattr(args, "pdb_max_unavailable", None))
+    if _min_avail == "__INVALID__" or _max_unavail == "__INVALID__":
+        return 2
     opts = ExportOptions(
         workload_kind=str(getattr(args, "workload", "deployment")).title(),
         namespace=str(args.namespace or "default"),
@@ -3040,8 +3151,8 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
         pvc_access_modes=(list(getattr(args, "pvc_access_modes", []) or []) or None),
         service_account_name=getattr(args, "service_account", None),
         emit_pdb=bool(getattr(args, "emit_pdb", False)),
-        pdb_min_available=getattr(args, "pdb_min_available", None),
-        pdb_max_unavailable=getattr(args, "pdb_max_unavailable", None),
+        pdb_min_available=_min_avail,
+        pdb_max_unavailable=_max_unavail,
         hpa_min=getattr(args, "hpa_min", None),
         hpa_max=getattr(args, "hpa_max", None),
         hpa_cpu_target=getattr(args, "hpa_cpu_target", None),
@@ -3067,7 +3178,22 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
             or ([5432, 6379, 3306] if getattr(args, "np_preset", None) == "backend" else [])
         ),
         inject_topology_spread=bool(getattr(args, "spread_by_host", False)),
+        emit_namespace=bool(getattr(args, "emit_namespace", False)),
+        pod_security_enforce=getattr(args, "psa_enforce", None),
+        job_backoff_limit=getattr(args, "job_backoff_limit", None),
+        job_ttl_seconds_after_finished=getattr(args, "job_ttl_seconds_after_finished", None),
+        cron_schedule=getattr(args, "cron_schedule", None),
+        cron_concurrency_policy=getattr(args, "cron_concurrency_policy", None),
+        cron_suspend=(True if bool(getattr(args, "cron_suspend", False)) else None),
+        cron_starting_deadline_seconds=getattr(args, "cron_starting_deadline_seconds", None),
     )
+    # Allow manifest exportHints to toggle certain options
+    try:
+        if getattr(man, "spec", None) and getattr(man.spec, "export_hints", None):
+            if bool(getattr(man.spec.export_hints, "emit_pdb", False)):
+                opts.emit_pdb = True
+    except Exception:
+        pass
     # Apply preset last so explicit flags take precedence
     if getattr(args, "preset", None):
         opts = apply_preset(opts, args.preset)  # type: ignore[arg-type]

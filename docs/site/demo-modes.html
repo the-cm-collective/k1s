@@ -87,7 +87,7 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
     
   </head>
   <body>
@@ -144,6 +144,15 @@
 <li><code>make demo ARGS=&quot;--demo-echo-multi -y -d&quot;</code></li>
 <li>Endpoint: <code>https://echo-mr.home.arpa:8443/</code></li>
 </ul>
+<h3>Hardened Echo (echo-hardened)</h3>
+<ul>
+<li>Shows a security-hardened manifest with non-root, read-only root filesystem, seccomp RuntimeDefault, startup/liveness probes, topology spread, PDB hint, and a default-deny NetworkPolicy with DNS/HTTP(S) egress.</li>
+<li>File: <code>specs/examples/echo-hardened.yaml</code></li>
+<li>Commands:</li>
+<li><code>./scripts/init_demo.sh --demo-hardened -y</code></li>
+<li><code>make demo ARGS=&quot;--demo-hardened -y -d&quot;</code></li>
+<li>Endpoint: <code>https://echo-hardened.home.arpa:8443/</code></li>
+</ul>
 <h3>Docs Only</h3>
 <ul>
 <li>Starts the docs server and API; does not apply any apps.</li>
@@ -173,6 +182,7 @@
 <ul>
 <li>Caddy HTTP: <code>:8888</code>, HTTPS: <code>:8443</code>.</li>
 <li>Hosts entries (added with <code>-y</code>): <code>blue|green|echo-mr|docs|api.home.arpa</code> → <code>127.0.0.1</code>.</li>
+<li>Also: <code>echo-hardened.home.arpa</code> when running the hardened demo.</li>
 <li>Dashboard lives under the API host: <code>https://api.home.arpa:8443/dashboard</code> (or <code>http://127.0.0.1:9108/dashboard</code> directly).</li>
 <li>Health checks are disabled by default for compatibility; enable with <code>AE_CADDY_ACTIVE_HEALTH=1</code> if your Caddy supports the directive.</li>
 </ul>
@@ -194,7 +204,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2025-11-11 21:30:03</span>
+        <span>Built 2025-11-11 22:50:39</span>
       </div>
     </footer>
     <script>

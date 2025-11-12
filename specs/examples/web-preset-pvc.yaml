@@ -3,7 +3,7 @@ kind: App
 metadata:
   name: web-preset-pvc
 spec:
-  image: demo-blue:latest
+  image: mendhak/http-https-echo:37
   replicas: 2
   ports:
     - name: http

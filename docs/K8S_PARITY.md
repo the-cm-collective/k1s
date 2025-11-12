@@ -1,7 +1,7 @@
 K8s Parity and Alignment (MVP)
 
-Status summary (2025-11-11)
-- Exporter: Deployment/StatefulSet/Service/Ingress/HPA/PDB/SA/PVC/ConfigMap/Secret/NetworkPolicy ✓
+Status summary (2025-11-12)
+- Exporter: Deployment/StatefulSet/Service/Ingress/HPA/PDB/SA/PVC/ConfigMap/Secret/Role/RoleBinding/NetworkPolicy ✓
 - Probes: HTTP/TCP/exec + startupProbe; windowing and thresholds ✓
 - Security: runAs*, readOnlyRootFilesystem, cap drop, seccomp; AppArmor via annotation ✓
 - Services: ClusterIP with multi-port, NodePort support; validation for names/ports/nodePort ✓
@@ -77,13 +77,7 @@ Remote apply
 
 ## k3s High‑Priority Gaps (Q4 2025)
 
-- RBAC emitters (Role/RoleBinding) scoped to attached ServiceAccount.
-- Batch exporters: Job/CronJob with backoff and ttlSecondsAfterFinished.
-- TLS Secret generator (kubernetes.io/tls) from PEMs/`AE_TLS_DIR`; wire to Ingress tls.secretName.
-- `emptyDir` volumes: ephemeral storage support with medium selection.
-- Traefik ingress presets: opt‑in annotations for timeouts/proxy headers.
-- PDB percent strings on CLI: accept percentages to match exporter capability.
-- PodSecurity labels preset (Namespace): `pod-security.kubernetes.io/enforce`.
+- PodSecurity labels preset (Namespace): DONE via `--emit-namespace --psa-enforce`.
 - NetworkPolicy provider guidance: note enforcement dependency; provide web/backend presets.
 
 ## Open Gaps (non‑k3s specific)

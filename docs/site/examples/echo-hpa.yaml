@@ -3,7 +3,7 @@ kind: App
 metadata:
   name: echo-hpa
 spec:
-  image: demo-blue:latest
+  image: mendhak/http-https-echo:37
   replicas: 2
   ports:
     - name: http
@@ -15,6 +15,20 @@ spec:
         port: 8080
       initialDelaySeconds: 2
       periodSeconds: 5
+    liveness:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 5
+      timeoutSeconds: 1
+      periodSeconds: 10
+      failureThreshold: 3
+    startup:
+      httpGet:
+        path: /healthz
+        port: 8080
+      failureThreshold: 30
+      periodSeconds: 5
   resources:
     requests:
       cpu: 0.1
@@ -22,3 +36,24 @@ spec:
     limits:
       cpu: 0.5
       memory: 256Mi
+  security:
+    runAsUser: 1000
+    readOnlyRootFilesystem: true
+    dropCapabilities: ["NET_RAW"]
+    seccompProfileType: RuntimeDefault
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app: echo-hpa
+  networkPolicy:
+    policyTypes: ["Ingress", "Egress"]
+    ingress:
+      - {}
+    egress:
+      - {}
+  exportHints:
+    emitPDB: true
+    suppressImageMultiArchWarning: true

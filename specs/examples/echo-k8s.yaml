@@ -24,7 +24,7 @@ spec:
     spec:
       containers:
       - name: echo
-        image: demo-blue:latest
+        image: mendhak/http-https-echo:37
         env:
         - name: APP_NAME
           value: echo
