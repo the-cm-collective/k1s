@@ -584,7 +584,8 @@ def main(argv: List[str]) -> int:
             plt.savefig(alt / name, dpi=120)
         plt.close()
 
-    for scn in ["k3d", "k1s rootless", "k1s rootful"]:
+    # Re-enable k1nd timeline now that recent runs have valid PSS
+    for scn in ["k3d", "k1s rootless", "k1s rootful", "k1nd"]:
         render_legacy_for(scn)
 
     # New comparative charts
