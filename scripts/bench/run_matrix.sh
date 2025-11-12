@@ -48,7 +48,7 @@ warm_endpoints() {
   if [[ "$backend" == "podman" ]] && command -v podman >/dev/null 2>&1; then
     # Discover host ports for app containers via podman JSON, fallback to 'podman port'
     local eps
-    eps=$(python - "$app" << 'PY'
+    eps=$(python - "$app" <<- 'PY'
 import json, subprocess, sys
 app=sys.argv[1]
 try:
@@ -114,7 +114,7 @@ auto_label() {
     if command -v podman >/dev/null 2>&1; then
       oci=$(podman info --format '{{ .Host.OCIRuntime.Name }}' 2>/dev/null | tr -d '"' || true)
       if [[ -z "$oci" ]]; then
-        oci=$(podman info --format json 2>/dev/null | python - << 'PY'
+        oci=$(podman info --format json 2>/dev/null | python - <<- 'PY'
 import json, sys
 try:
     d=json.load(sys.stdin)
