@@ -177,9 +177,23 @@ class IngressService:
                 )  # type: ignore[arg-type]
             except TypeError:
                 try:
-                    site_path = self._manager.apply(manifest, upstream, readiness_path)  # type: ignore[arg-type]
+                    site_path = self._manager.apply(
+                        manifest, upstream, readiness_path
+                    )  # type: ignore[arg-type]
                 except TypeError:
                     site_path = self._manager.apply(manifest, upstream)
+            except Exception as exc:  # pragma: no cover - defensive
+                # Do not fail the reconcile when ingress writes are unavailable
+                # (e.g., dev stack down or dynsites dir not writable). Log and continue.
+                try:
+                    import logging as _log
+
+                    _log.getLogger(__name__).warning(
+                        "ingress apply skipped: %s", exc
+                    )
+                except Exception:
+                    pass
+                site_path = None
             self._last_sig[app] = sig
             self._dirty = True
         else:
