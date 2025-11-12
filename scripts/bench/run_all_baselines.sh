@@ -33,6 +33,10 @@ REPLICAS=${REPLICAS:-1,5,10}
 DURATION=${DURATION:-30}
 WAIT_READY_TRIES=${WAIT_READY_TRIES:-300}
 
+# Optional: disable specific suites
+# - Set DISABLE_K1ND=1 (or SKIP_K1ND=1) to skip the k1nd baseline stage.
+DISABLE_K1ND=${DISABLE_K1ND:-${SKIP_K1ND:-0}}
+
 # -------- Helpers --------
 log() { printf "[%s] %s\n" "$(date +%H:%M:%S)" "$*" >&2; }
 
@@ -287,14 +291,18 @@ else
 fi
 
 # -------- Suite: k1nd (labs-aio up/down) --------
-log "suite: k1nd"
-engines_clear_all
-PYTHONPATH=src AE_RUNTIME_BACKEND=docker AE_COLLECT_ENGINE=docker AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 \
-  WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k1nd \
-  LABEL_SUITE="$LBL_K1ND" REPLICAS="$REPLICAS" DURATION="$DURATION"
-# ensure compose stack torn down
-make labs-aio-down >/dev/null 2>&1 || true
-fix_perms
+if [[ "$DISABLE_K1ND" == "1" ]]; then
+  log "skipping suite: k1nd (DISABLE_K1ND=1)"
+else
+  log "suite: k1nd"
+  engines_clear_all
+  PYTHONPATH=src AE_RUNTIME_BACKEND=docker AE_COLLECT_ENGINE=docker AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 \
+    WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k1nd \
+    LABEL_SUITE="$LBL_K1ND" REPLICAS="$REPLICAS" DURATION="$DURATION"
+  # ensure compose stack torn down
+  make labs-aio-down >/dev/null 2>&1 || true
+  fix_perms
+fi
 
 # -------- Suite: k3d/k3s (sudo snapshots) --------
 log "suite: k3d/k3s"

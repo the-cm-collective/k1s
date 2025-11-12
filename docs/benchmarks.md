@@ -28,3 +28,10 @@ For quick commands and charts, see the end‑to‑end Make targets in each guide
   - Podman must pass `podman info`; if not, start `podman.socket`, enable lingering with `loginctl enable-linger "$USER"`, and run `podman system migrate`.
   - If not using plaintext secrets, ensure `sops --decrypt` works; scripts fail fast with guidance otherwise.
 - Outputs: `combined/combined.csv` and `charts/*.png`. The testing-memory-k1s page auto‑shows the latest results.
+
+## All Baselines Helper
+
+- Run all baseline suites (k1s rootless, k1s rootful, k1nd, k3d) with cleanup and docs refresh:
+  - `make bench-mem-e2e-baselines` (or CI-friendly: `make bench-mem-e2e-baselines-sudo`)
+- To skip the k1nd stage entirely, set an environment toggle:
+  - `DISABLE_K1ND=1 make bench-mem-e2e-baselines`  (alias: `SKIP_K1ND=1`)
