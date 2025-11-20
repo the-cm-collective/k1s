@@ -5,13 +5,14 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import docker
 from docker.errors import APIError, NotFound
 from docker.models.containers import Container
 
 from ae.controller.spec import AppManifest, PortSpec
+from ae.runtime.ports import choose_host_port
 
 from .base import ReplicaState, RuntimeAdapter, RuntimeResult
 from .registry import RegistryAuthProvider
@@ -41,6 +42,7 @@ class DockerRuntime(RuntimeAdapter):
         import os as _os
 
         self._network_name = _os.getenv("AE_DOCKER_NETWORK")
+        self._serial_service_rollout = _os.getenv("AE_SERIAL_SERVICE_ROLLOUT", "0") == "1"
 
     def ensure_app(
         self,
@@ -78,6 +80,18 @@ class DockerRuntime(RuntimeAdapter):
                 old_revision_containers.append(container)
 
         created = updated = removed = 0
+
+        strict_service = (
+            self._serial_service_rollout
+            and not keep_old
+            and getattr(manifest.spec, "service", None)
+            and manifest.spec.replicas == 1
+        )
+        if strict_service and old_revision_containers:
+            for container in list(old_revision_containers):
+                self._stop_and_remove(container)
+                removed += 1
+            old_revision_containers = []
 
         if any(replica_id not in containers_by_replica for replica_id in desired_replica_ids):
             self._registry.ensure_login(self._client, manifest.spec.image)
@@ -257,15 +271,18 @@ class DockerRuntime(RuntimeAdapter):
             # Optional multi-port publishing for single-replica services
             if getattr(manifest.spec.service, "ports", None):
                 svc_ports_list = list(manifest.spec.service.ports)
-        ports = self._port_mapping(
+        ports, svc_bindings = self._port_mapping(
             manifest.spec.ports,
+            app_name,
             service_port=svc_port,
             service_target=svc_target,
             service_ports=svc_ports_list,
         )
-        # Pre-flight conflict check for service stable port
-        if svc_port is not None:
-            self._ensure_host_port_free(app_name, int(svc_port))
+        # Pre-flight conflict check for any published service host ports. This only raises
+        # when another app already owns the same host port, allowing single-app rollouts
+        # to fall back to different ports when necessary.
+        for host_port in {hp for hp in svc_bindings.values() if hp is not None}:
+            self._ensure_host_port_free(app_name, int(host_port))
 
         # resource limits
         nano_cpus = None
@@ -461,6 +478,31 @@ class DockerRuntime(RuntimeAdapter):
                             raise RuntimeError(
                                 f"service.port {host_port} is already in use by container {c.name} (app '{other_app}')"
                             )
+
+    def _host_ports_in_use(self) -> Set[int]:
+        ports_in_use: Set[int] = set()
+        try:
+            containers = self._client.containers.list(all=True)
+        except APIError as exc:  # pragma: no cover - best effort
+            LOGGER.debug("failed to list containers for host-port scan: %s", exc)
+            return ports_in_use
+        for container in containers:
+            try:
+                bindings = (container.attrs or {}).get("NetworkSettings", {}).get("Ports", {}) or {}
+            except Exception:  # pragma: no cover - skip containers with unreadable attrs
+                continue
+            for values in bindings.values():
+                if not values:
+                    continue
+                for item in values:
+                    host_port = item.get("HostPort") if isinstance(item, dict) else None
+                    if host_port is None:
+                        continue
+                    try:
+                        ports_in_use.add(int(host_port))
+                    except (TypeError, ValueError):
+                        continue
+        return ports_in_use
 
     def _stop_and_remove(self, container: Container) -> None:
         try:
@@ -715,15 +757,20 @@ class DockerRuntime(RuntimeAdapter):
     def _port_mapping(
         self,
         ports: Iterable[PortSpec],
+        app_name: str,
         *,
         service_port: Optional[int] = None,
         service_target: Optional[int] = None,
         service_ports: Optional[Iterable] = None,
-    ) -> Dict[str, Optional[int]]:
+    ) -> Tuple[Dict[str, Optional[int]], Dict[int, Optional[int]]]:
         mapping: Dict[str, Optional[int]] = {}
         first_port = None
+        reserved: Set[int] = set()
+        blocked_ports: Set[int] = set()
+        if service_port is not None or service_ports is not None:
+            blocked_ports = self._host_ports_in_use()
         # If multi-port service mapping is provided, build quick lookup from target->host
-        svc_map: Dict[int, int] = {}
+        svc_map: Dict[int, Optional[int]] = {}
         if service_ports is not None:
             # Build container port name/number map
             try:
@@ -742,7 +789,24 @@ class DockerRuntime(RuntimeAdapter):
                     if tgt is None:
                         tgt = by_name.get(name) or by_num.get(int(portnum))
                     if tgt is not None and portnum is not None:
-                        svc_map[int(tgt)] = int(portnum)
+                        chosen, used_preferred = choose_host_port(
+                            int(portnum), reserved=reserved, blocked=blocked_ports
+                        )
+                        if chosen is None:
+                            LOGGER.warning(
+                                "service port %s for app %s is unavailable; skipping publish",
+                                portnum,
+                                app_name,
+                            )
+                            continue
+                        if not used_preferred:
+                            LOGGER.warning(
+                                "service port %s for app %s already in use; assigning %s",
+                                portnum,
+                                app_name,
+                                chosen,
+                            )
+                        svc_map[int(tgt)] = int(chosen)
                 except Exception:
                     continue
 
@@ -756,9 +820,28 @@ class DockerRuntime(RuntimeAdapter):
             elif service_port is not None:
                 target = service_target if service_target is not None else first_port
                 if port.container_port == target:
-                    host_port = int(service_port)
+                    preferred = int(service_port)
+                    chosen, used = choose_host_port(
+                        preferred, reserved=reserved, blocked=blocked_ports
+                    )
+                    if chosen is None:
+                        LOGGER.warning(
+                            "service port %s for app %s is unavailable; skipping publish",
+                            preferred,
+                            app_name,
+                        )
+                    else:
+                        if not used:
+                            LOGGER.warning(
+                                "service port %s for app %s already in use; assigning %s",
+                                preferred,
+                                app_name,
+                                chosen,
+                            )
+                        host_port = int(chosen)
+                        svc_map[int(port.container_port)] = int(chosen)
             mapping[key] = host_port
-        return mapping
+        return mapping, svc_map
 
     def _endpoint_from_ports(
         self, ports: Iterable[PortSpec], container: Container, *, preferred: Optional[int] = None

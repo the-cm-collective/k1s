@@ -51,6 +51,48 @@ This page prefers HTMX + SSE for live updates and uses a small `labs.js` helper 
 
 - <a id="open-dashboard" href="#" target="_blank" rel="noopener" class="hidden">Open Dashboard</a>
 
+### Helm Shim Demo (Watch Mode)
+
+<div class="helm-demo-box">
+  <div class="helm-demo-controls">
+    <button id="btn-helm-demo" class="btn-secondary" disabled>Run Helm Shim Demo</button>
+    <button id="btn-helm-demo-stop" class="btn-secondary" disabled>Stop</button>
+  </div>
+  <div id="helm-demo-status" class="helm-demo-status">Labs backend unavailable.</div>
+  <pre id="helm-demo-log" class="helm-demo-log hidden" aria-live="polite"></pre>
+</div>
+
+Want to watch a Helm deployment materialize inside the dashboard? Click “Run Helm Shim Demo” above (requires Labs token). Behind the scenes, the server runs the commands below; you can still run them manually if you prefer:
+
+```bash
+# 1) Start the API shim (stub runtime)
+AE_APISHIM_RUNTIME=stub PYTHONPATH=src \
+  python -m ae.apishim serve --host 127.0.0.1 --port 8445 --token helm-demo
+
+# 2) Generate a kubeconfig pointing at the shim
+PYTHONPATH=src python -m ae.apishim kubeconfig \
+  --server http://127.0.0.1:8445 --token helm-demo \
+  --context k1s-shim --insecure-skip-tls-verify > ~/.kube/helm-shim
+export KUBECONFIG=~/.kube/helm-shim
+
+# 3) Create namespace + sample chart and install it
+kubectl create namespace demo
+helm create demochart
+helm install demochart ./demochart -n demo --wait
+
+# (Optional) Inspect via k1s CLI while Helm is running
+PYTHONPATH=src python -m ae.cli status demochart --wide --events
+
+# 4) When finished, uninstall and clean up
+helm uninstall demochart -n demo && kubectl delete namespace demo
+```
+
+Back in the playground:
+
+1. Set Backend to `k1s-Host`, click `Start Session`, and use **Quick Links → Open Dashboard**.
+2. The `demochart` release appears under `demo`; sections **B–E** stream logs, events, ingress health, and nodePort hints while Helm reconciles.
+3. When you run `helm uninstall`, the dashboard reflects the teardown in real time.
+
 ## B. Apply Example
 
 Pick a sample and apply it. In read‑only mode the UI shows the exact CLI you can run locally.

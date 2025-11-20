@@ -13,14 +13,26 @@ import os
 
 
 def scenario_name(row: Dict[str, str]) -> str:
+    """Classify a snapshot row into a scenario name used by charts.
+
+    Prefer explicit metadata fields over brittle label token parsing.
+    Fallbacks preserve historical behavior.
+    """
     mode = (row.get("mode") or "").lower().strip() or "?"
     backend = (row.get("backend") or "").lower().strip() or "?"
-    label = row.get("label", "")
-    root_tag = "rootless" if "+rootless+" in label else ("priv" if "+priv+" in label else "?")
-    if mode == "k1s" and backend == "podman" and root_tag == "rootless":
-        return "k1s rootless"
-    if mode == "k1s" and backend == "podman" and root_tag == "priv":
-        return "k1s rootful"
+    # Rootless from metadata when available; tolerate various truthy strings
+    raw_rootless = str(row.get("rootless") or "").strip().lower()
+    is_rootless = raw_rootless in ("1", "true", "yes", "y")
+    # Historical fallback for older snapshots that encode rootless in label tokens
+    if not raw_rootless:
+        label = row.get("label", "") or ""
+        if "+rootless+" in label:
+            is_rootless = True
+        elif "+priv+" in label:
+            is_rootless = False
+
+    if mode == "k1s" and backend == "podman":
+        return "k1s rootless" if is_rootless else "k1s rootful"
     if mode == "k1s" and backend == "docker":
         return "k1nd"
     if mode == "k3s":

@@ -80,6 +80,51 @@ def test_health_manager_http_probe(monkeypatch):
     assert "readiness http 200" in report.replicas[0].readiness_message
 
 
+def test_health_manager_loopback_fallback(monkeypatch):
+    monkeypatch.setenv("AE_PROBE_LOOPBACK_FALLBACK", "host.docker.internal")
+
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            health=HealthSpec(
+                readiness=ProbeSpec.model_validate(
+                    {
+                        "httpGet": {"path": "/healthz", "port": 8080},
+                        "timeoutSeconds": 1,
+                    }
+                )
+            ),
+        ),
+    )
+
+    result = RuntimeResult(
+        revision=1,
+        created=1,
+        updated=0,
+        removed=0,
+        replica_states=[
+            ReplicaState(replica_id="demo-0", ready=False, endpoint="127.0.0.1:8080"),
+        ],
+    )
+
+    response = Response()
+    response.status_code = 200
+
+    def fake_get(url: str, timeout: int):  # noqa: ANN001
+        assert url == "http://host.docker.internal:8080/healthz"
+        return response
+
+    monkeypatch.setattr("ae.controller.health.get", fake_get)
+
+    report = HealthManager().evaluate(manifest, result)
+
+    assert report.ready_replicas == 1
+
+
 def test_health_manager_initial_delay(monkeypatch):
     from datetime import datetime, timedelta, timezone
 

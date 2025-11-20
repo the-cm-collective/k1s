@@ -15,6 +15,7 @@ services:
       - AE_DOCKER_NETWORK=dev_default
       - AE_DEMO_MODE=1
       - AE_SPECS_DIR=${AE_SPECS_DIR:-state/demo-specs}
+      - AE_PROBE_LOOPBACK_FALLBACK=host.docker.internal
     ports:
       - "9108:9108"
     extra_hosts:

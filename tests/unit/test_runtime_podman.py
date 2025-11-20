@@ -27,6 +27,10 @@ def test_create_container_removes_existing(monkeypatch):
     rt = PodmanRuntime()
     calls: list[list[str]] = []
 
+    monkeypatch.setattr(
+        "ae.runtime.podman_runtime.choose_host_port", lambda *_, **__: (8080, True)
+    )
+
     def fake_run(argv, allow_fail=False):  # noqa: ANN001
         calls.append(list(argv))
         # Simulate: container exists -> exit code 0 only for `container exists <name>`
@@ -54,11 +58,52 @@ def test_create_container_removes_existing(monkeypatch):
     assert any(" run -d --name ae-blue-rev3-0" in s for s in names)
 
 
+def test_podman_serial_service_rollout_removes_old(monkeypatch):
+    monkeypatch.setenv("AE_SERIAL_SERVICE_ROLLOUT", "1")
+    rt = PodmanRuntime()
+
+    calls = {"list": 0}
+
+    def fake_list(app):  # noqa: ANN001
+        calls["list"] += 1
+        labels = {
+            rt.APP_LABEL: "blue",
+            rt.REPLICA_LABEL: "blue-rev0-0" if calls["list"] == 1 else "blue-rev1-0",
+            rt.REVISION_LABEL: "0" if calls["list"] == 1 else "1",
+        }
+        entry = {
+            "Id": "old-id" if calls["list"] == 1 else "new-id",
+            "Config": {"Labels": labels},
+            "State": {"Status": "running"},
+        }
+        return [entry]
+
+    monkeypatch.setattr(rt, "_list_app_containers", fake_list)
+    monkeypatch.setattr(rt, "_image_exists", lambda *_, **__: True)
+    monkeypatch.setattr(rt, "_run_ok", lambda *_, **__: DummyResult(0, "[]"))
+    monkeypatch.setattr(rt, "_create_container", lambda *_, **__: None)
+    monkeypatch.setattr(rt, "_ensure_sidecars", lambda *_, **__: None)
+    monkeypatch.setattr(rt, "_find_by_label", lambda *_, **__: None)
+
+    removed_ids: list[str] = []
+    monkeypatch.setattr(rt, "_stop_and_remove", lambda cid: removed_ids.append(cid))
+
+    manifest = _manifest_single()
+    result = rt.ensure_app(manifest, revision=1)
+
+    assert removed_ids == ["old-id"]
+    assert result.removed >= 1
+
+
 def test_oci_runtime_flag_in_create(monkeypatch):
     # Ensure env is read at init time
     monkeypatch.setenv("AE_OCI_RUNTIME", "crun")
     rt = PodmanRuntime()
     calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        "ae.runtime.podman_runtime.choose_host_port", lambda *_, **__: (8080, True)
+    )
 
     def fake_run(argv, allow_fail=False):  # noqa: ANN001
         calls.append(list(argv))

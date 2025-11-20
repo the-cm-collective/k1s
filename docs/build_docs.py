@@ -854,20 +854,32 @@ def build_one(md_path: Path, out_path: Path) -> None:
                     inline_blocks: list[str] = []
                     copied: set[str] = set()
                     stale: list[str] = []
+                    # Optional: allow configuring or disabling staleness warnings
+                    try:
+                        _stale_disable = os.getenv("DOCS_CHART_STALENESS_DISABLE", "0") == "1"
+                        # Default to one week (7 days) if not set
+                        _stale_hours = int(os.getenv("DOCS_CHART_STALENESS_HOURS", "168"))
+                        if _stale_hours < 0:
+                            _stale_hours = 0
+                    except Exception:
+                        _stale_disable = False
+                        _stale_hours = 168
+
                     for cdir in charts_dirs:
                         for fname, title_txt in chart_map:
                             src = cdir / fname
                             dst = charts_out / fname
                             if src.exists() and fname not in copied:
                                 try:
-                                    try:
-                                        src_mtime = src.stat().st_mtime
-                                        now = time.time()
-                                        # Mark as stale if older than 6 hours
-                                        if (now - src_mtime) > (6 * 3600):
-                                            stale.append(fname)
-                                    except Exception:
-                                        pass
+                                    if not _stale_disable:
+                                        try:
+                                            src_mtime = src.stat().st_mtime
+                                            now = time.time()
+                                            # Mark as stale if older than configured hours (default 6)
+                                            if (now - src_mtime) > (_stale_hours * 3600):
+                                                stale.append(fname)
+                                        except Exception:
+                                            pass
                                     shutil.copy2(src, dst)
                                     copied.add(fname)
                                     inline_blocks.append(
@@ -901,15 +913,17 @@ def build_one(md_path: Path, out_path: Path) -> None:
                     except Exception:
                         pass
                     if inline_blocks:
-                        warn = (
-                            "<div style='margin:8px 0; padding:8px; border:1px solid var(--border); color:#f59e0b'>"
-                            + "Staleness warning: "
-                            + ", ".join(stale)
-                            + " are older than 6 hours; regenerate charts if this is unexpected."
-                            + "</div>"
-                            if stale
-                            else ""
-                        )
+                        warn = ""
+                        if stale:
+                            # Use singular/plural hours label and reflect configured threshold
+                            hrs_label = f"{_stale_hours} hour" + ("s" if _stale_hours != 1 else "")
+                            warn = (
+                                "<div style='margin:8px 0; padding:8px; border:1px solid var(--border); color:#f59e0b'>"
+                                + "Staleness warning: "
+                                + ", ".join(stale)
+                                + f" are older than {hrs_label}; regenerate charts if this is unexpected."
+                                + "</div>"
+                            )
                         parts.append("<h2>Charts</h2>" + warn + "".join(inline_blocks))
                 html_body += "\n" + "\n".join(parts)
     except Exception:

@@ -79,11 +79,14 @@ def summarize(snapshot_dir: Path) -> dict:
     rows: List[Row] = []
     app_b = 0
     sys_b = 0
+    seen_app: set[str] = set()
+    seen_sys: set[str] = set()
     for r in cont_rows:
         try:
             cid = r.get("container_id") or ""
             name = r.get("name") or ""
             pid = r.get("pid") or ""
+            cg_path = (r.get("cg_path") or r.get("cgroup_path") or "").strip()
             b = int(r.get("mem_current_bytes") or "-1")
         except Exception:
             continue
@@ -91,9 +94,19 @@ def summarize(snapshot_dir: Path) -> dict:
             continue
         app = _is_app(cid, name, inspect)
         if app:
-            app_b += b
+            if cg_path and cg_path in seen_app:
+                pass
+            else:
+                if cg_path:
+                    seen_app.add(cg_path)
+                app_b += b
         else:
-            sys_b += b
+            if cg_path and cg_path in seen_sys:
+                pass
+            else:
+                if cg_path:
+                    seen_sys.add(cg_path)
+                sys_b += b
         rows.append(Row(cid=cid, name=name, pid=pid, bytes=b, is_app=app))
 
     # Compare with summary.json if present

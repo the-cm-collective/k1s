@@ -9,6 +9,7 @@
     appApplied: false,
     statusMode: 'cluster', // 'cluster' | 'app'
   };
+  const helmDemo = { timer: null, running: false };
 
   function setText(id, txt, cls) {
     const el = typeof id === 'string' ? $(id) : id;
@@ -372,6 +373,7 @@
             } catch(_){}
           }
         }
+        try { refreshHelmDemoStatus(true); } catch(_){}
         return 'ok';
       }
       if (resp.status === 401 || resp.status === 403) {
@@ -382,6 +384,7 @@
         }
         banner('Labs require a token. Paste AE_LABS_TOKEN and click “Use Token”.', 'fail');
         try { fallbackToReadOnlyUI(); } catch(_){}
+        try { updateHelmDemoUI({ running: false, message: 'Labs token required.' }); } catch(_){}
         return 'auth';
       }
       state.orch.available = false;
@@ -390,6 +393,7 @@
         bs.innerHTML = `${bs.innerHTML} · Labs: <span class="pill fail">unavailable</span> · Mode: <code>${modePref}</code> · Read-only session available`;
       }
       try { fallbackToReadOnlyUI(); } catch(_){}
+      try { updateHelmDemoUI({ running: false, message: 'Labs backend unavailable.' }); } catch(_){}
       return 'unavail';
     } catch {
       state.orch.available = false;
@@ -399,7 +403,110 @@
         if (bs2) bs2.innerHTML = `${bs2.innerHTML} · Labs: <span class="pill fail">unavailable</span> · Mode: <code>${modePref}</code> · Read-only session available`;
       } catch {}
       try { fallbackToReadOnlyUI(); } catch(_){}
+      try { updateHelmDemoUI({ running: false, message: 'Labs backend unavailable.' }); } catch(_){}
       return 'error';
+    }
+  }
+
+  async function refreshHelmDemoStatus(quiet) {
+    const statusEl = document.getElementById('helm-demo-status');
+    if (!statusEl) return;
+    if (!state.orch.available) {
+      updateHelmDemoUI({ running: false, message: 'Labs backend unavailable.' });
+      return;
+    }
+    try {
+      const resp = await apiFetch(`/labs/helm-demo`, {
+        method: 'POST',
+        headers: labsHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ action: 'status' })
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      const data = await resp.json();
+      updateHelmDemoUI(data);
+    } catch (e) {
+      if (!quiet) banner(`Helm demo status error: ${e}`, 'fail');
+      updateHelmDemoUI({ running: false, message: 'Helm demo status unavailable.' });
+    }
+  }
+
+  async function startHelmDemo() {
+    if (!state.orch.available) {
+      banner('Labs backend unavailable — paste a token and start a session first.', 'fail');
+      return;
+    }
+    const btn = document.getElementById('btn-helm-demo');
+    await withButtonFeedback(btn, 'Starting Helm shim demo…', async () => {
+      const resp = await apiFetch(`/labs/helm-demo`, {
+        method: 'POST',
+        headers: labsHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ action: 'start' })
+      });
+      if (!resp.ok) {
+        banner(`Helm demo start failed: ${await resp.text()}`, 'fail');
+        return;
+      }
+      const data = await resp.json();
+      updateHelmDemoUI(data);
+      try { toast('Helm demo started', 'ok'); } catch(_){}
+    });
+  }
+
+  async function stopHelmDemo() {
+    const btn = document.getElementById('btn-helm-demo-stop');
+    await withButtonFeedback(btn, 'Stopping Helm demo…', async () => {
+      const resp = await apiFetch(`/labs/helm-demo`, {
+        method: 'POST',
+        headers: labsHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ action: 'stop' })
+      });
+      if (!resp.ok) {
+        banner(`Helm demo stop failed: ${await resp.text()}`, 'fail');
+        return;
+      }
+      const data = await resp.json();
+      updateHelmDemoUI(data);
+    });
+  }
+
+  function updateHelmDemoUI(data) {
+    const statusEl = document.getElementById('helm-demo-status');
+    const logEl = document.getElementById('helm-demo-log');
+    const runBtn = document.getElementById('btn-helm-demo');
+    const stopBtn = document.getElementById('btn-helm-demo-stop');
+    if (!statusEl) return;
+    const running = !!(data && data.running);
+    helmDemo.running = running;
+    let text = running ? 'Helm demo running…' : 'Helm demo idle.';
+    if (data) {
+      if (running && data.port) {
+        text = `Helm demo running (shim port ${data.port})`;
+      } else if (!running && data.exit_code !== undefined && data.exit_code !== null) {
+        text = data.exit_code === 0 ? 'Helm demo completed successfully.' : `Helm demo failed (exit ${data.exit_code}).`;
+      }
+      if (data.message) {
+        text += ` ${data.message}`;
+      }
+    }
+    statusEl.textContent = text;
+    if (logEl) {
+      const log = (data && data.log ? String(data.log) : '').trim();
+      if (log) {
+        logEl.textContent = log;
+        logEl.classList.remove('hidden');
+      } else {
+        logEl.textContent = '';
+        logEl.classList.add('hidden');
+      }
+    }
+    if (runBtn) runBtn.disabled = !state.orch.available || running;
+    if (stopBtn) stopBtn.disabled = !running;
+    if (helmDemo.timer) {
+      clearInterval(helmDemo.timer);
+      helmDemo.timer = null;
+    }
+    if (running) {
+      helmDemo.timer = setInterval(() => refreshHelmDemoStatus(true), 5000);
     }
   }
   window.k1sRecheckLabs = recheckLabs;
@@ -938,6 +1045,8 @@
         } catch(e){ banner(`Resume error: ${e}`, 'fail'); return; }
       });
     });
+    document.getElementById('btn-helm-demo')?.addEventListener('click', () => startHelmDemo());
+    document.getElementById('btn-helm-demo-stop')?.addEventListener('click', () => stopHelmDemo());
   }
 
   async function doScale(n){
@@ -1083,3 +1192,12 @@
     });
   } catch(_){}
 })();
+  function labsHeaders(extra) {
+    const headers = Object.assign({}, extra || {});
+    const tok = state.orch.token || (sessionStorage.getItem('labsToken')||'').trim();
+    if (tok) headers['Authorization'] = `Bearer ${tok}`;
+    return headers;
+  }
+
+    $('#btn-helm-demo')?.addEventListener('click', ()=> startHelmDemo());
+    $('#btn-helm-demo-stop')?.addEventListener('click', ()=> stopHelmDemo());

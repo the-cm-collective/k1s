@@ -17,6 +17,10 @@ import socketserver
 import threading
 from typing import Tuple
 import errno
+import os
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
 
 from ae.controller.state import SQLiteStateStore
 
@@ -108,6 +112,100 @@ _APP_ROLLOUT_OPS: dict[str, dict[str, int]] = {}
 _APP_CANARY_WEIGHT: dict[str, float] = {}
 _APP_CANARY_STEPS: dict[str, int] = {}
 
+_HELM_DEMO_LOCK = threading.RLock()
+_HELM_DEMO_STATE: dict[str, object] = {
+    "proc": None,
+    "log": Path(os.getenv("AE_LABS_HELM_LOG", "state/labs/helm-demo.log")),
+    "log_handle": None,
+    "port": int(os.getenv("AE_LABS_HELM_PORT", "8455") or 8455),
+    "token": os.getenv("AE_LABS_HELM_TOKEN", "helm-demo"),
+    "runtime": os.getenv("AE_LABS_HELM_RUNTIME", "stub"),
+    "started": None,
+}
+
+
+def _helm_demo_status() -> dict[str, object]:
+    with _HELM_DEMO_LOCK:
+        proc = _HELM_DEMO_STATE.get("proc")
+        log_path: Path = _HELM_DEMO_STATE["log"]  # type: ignore[index]
+        started = _HELM_DEMO_STATE.get("started")
+        running = bool(proc) and getattr(proc, "poll", lambda: None)() is None
+        exit_code = None
+        if proc and not running:
+            exit_code = proc.poll()
+        if not running and _HELM_DEMO_STATE.get("log_handle") is not None:
+            try:
+                _HELM_DEMO_STATE["log_handle"].close()  # type: ignore[union-attr]
+            except Exception:
+                pass
+            _HELM_DEMO_STATE["log_handle"] = None
+    log_tail = ""
+    try:
+        with log_path.open("r", encoding="utf-8", errors="ignore") as fh:
+            lines = fh.readlines()
+            tail = lines[-80:]
+            log_tail = "".join(tail)
+    except FileNotFoundError:
+        log_tail = ""
+    return {
+        "running": running,
+        "started": started,
+        "exit_code": exit_code,
+        "port": _HELM_DEMO_STATE.get("port"),
+        "runtime": _HELM_DEMO_STATE.get("runtime"),
+        "log": log_tail,
+    }
+
+
+def _helm_demo_start() -> dict[str, object]:
+    with _HELM_DEMO_LOCK:
+        proc = _HELM_DEMO_STATE.get("proc")
+        if proc and getattr(proc, "poll", lambda: None)() is None:
+            return _helm_demo_status() | {"message": "demo already running"}
+        root = Path(__file__).resolve().parents[2]
+        script = root / "scripts" / "helm_shim_demo.sh"
+        if not script.exists():
+            raise RuntimeError("scripts/helm_shim_demo.sh not found")
+        log_path: Path = _HELM_DEMO_STATE["log"]  # type: ignore[index]
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_handle = open(log_path, "w", encoding="utf-8")
+        env = os.environ.copy()
+        env.setdefault("PYTHONPATH", str(root / "src"))
+        env.setdefault("PORT", str(_HELM_DEMO_STATE.get("port")))
+        env.setdefault("TOKEN", str(_HELM_DEMO_STATE.get("token")))
+        env.setdefault("RUNTIME", str(_HELM_DEMO_STATE.get("runtime")))
+        env.setdefault("TMPDIR", str(log_path.parent))
+        proc = subprocess.Popen(
+            ["bash", str(script)],
+            cwd=root,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
+        _HELM_DEMO_STATE["proc"] = proc
+        _HELM_DEMO_STATE["log_handle"] = log_handle
+        _HELM_DEMO_STATE["started"] = datetime.now(timezone.utc).isoformat()
+    return _helm_demo_status()
+
+
+def _helm_demo_stop() -> dict[str, object]:
+    with _HELM_DEMO_LOCK:
+        proc = _HELM_DEMO_STATE.get("proc")
+        if proc and getattr(proc, "poll", lambda: None)() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        _HELM_DEMO_STATE["proc"] = None
+        handle = _HELM_DEMO_STATE.get("log_handle")
+        if handle:
+            try:
+                handle.close()
+            except Exception:
+                pass
+            _HELM_DEMO_STATE["log_handle"] = None
+    return _helm_demo_status()
+
 
 def set_reconcile_metrics(ts_seconds: float, duration_seconds: float) -> None:
     global _LAST_RECONCILE_TS, _LAST_RECONCILE_DURATION
@@ -188,6 +286,37 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             return _os.getenv("AE_LABS") == "1"
         except Exception:
             return False
+
+    def _labs_token_valid(self) -> bool:
+        if not self._labs_enabled():
+            return False
+        import os as _os
+
+        tok = (_os.getenv("AE_LABS_TOKEN") or "").strip()
+        if not tok:
+            return True
+        hdr = self.headers.get("Authorization", "")
+        if hdr == f"Bearer {tok}":
+            return True
+        return False
+
+    def _labs_request_authorized(self) -> bool:
+        if not self._labs_enabled():
+            return False
+        import os as _os, urllib.parse as _up
+
+        tok = (_os.getenv("AE_LABS_TOKEN") or "").strip()
+        if not tok:
+            return True
+        hdr = self.headers.get("Authorization", "")
+        if hdr == f"Bearer {tok}":
+            return True
+        _p, _, q = self.path.partition("?")
+        if q:
+            params = _up.parse_qs(q)
+            if (params.get("token") or [""])[0] == tok:
+                return True
+        return False
 
     def _maybe_cors(self) -> None:
         if not self._labs_enabled():
@@ -391,62 +520,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):  # type: ignore[override]
         path_only = self.path.split("?", 1)[0]
 
-        # Helper: does a presented Labs token (header or query) match?
-        def _labs_token_ok() -> bool:
-            try:
-                import os as _os, urllib.parse as _up
-
-                if not self._labs_enabled():
-                    return False
-                tok = (_os.getenv("AE_LABS_TOKEN") or "").strip()
-                if not tok:
-                    return False
-                hdr = self.headers.get("Authorization", "")
-                if hdr == f"Bearer {tok}":
-                    return True
-                _p, _, q = self.path.partition("?")
-                if q:
-                    params = _up.parse_qs(q)
-                    if (params.get("token") or [""])[0] == tok:
-                        return True
-            except Exception:
-                return False
-            return False
-
         # Labs SSE (dev-only): stream events/status to the playground
         if path_only.startswith("/labs/sse/"):
             if not self._labs_enabled():
                 self.send_response(404)
                 self.end_headers()
                 return
-            # Optional bearer for labs
-            try:
-                import os as _os, urllib.parse as _up
-
-                hdr = self.headers.get("Authorization", "")
-                labs_token = _os.getenv("AE_LABS_TOKEN") or ""
-                if labs_token:
-                    ok = False
-                    if hdr == f"Bearer {labs_token}":
-                        ok = True
-                    else:
-                        # Allow token via query string for SSE (EventSource/HTMX cannot set headers)
-                        _path, _, query = self.path.partition("?")
-                        params = _up.parse_qs(query)
-                        qtok = (params.get("token", [""]) or [""])[0]
-                        if qtok == labs_token:
-                            ok = True
-                    if not ok:
-                        # Distinguish between missing and wrong credential
-                        self._deny(
-                            401
-                            if not hdr
-                            and not (params.get("token") if "params" in locals() else False)
-                            else 403
-                        )
-                        return
-            except Exception:
-                pass
+            if not self._labs_request_authorized():
+                self._deny(401)
+                return
             if path_only == "/labs/sse/events":
                 self._handle_labs_sse_events()
                 return
@@ -461,6 +543,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 return
             self.send_response(404)
             self.end_headers()
+            return
+        if path_only == "/labs/helm-demo" and self._labs_enabled():
+            if not self._labs_request_authorized():
+                self._deny(401)
+                return
+            self._json_ok(_helm_demo_status())
             return
         # Metrics allowed without auth
         if path_only.startswith("/metrics"):
@@ -871,6 +959,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass
             self._json_ok({"session_id": sid, "backend": backend, "token": labs_token or None})
+            return
+        if path == "/labs/helm-demo":
+            action = str(payload.get("action") or "status").lower()
+            try:
+                if action == "start":
+                    self._json_ok(_helm_demo_start())
+                elif action == "stop":
+                    self._json_ok(_helm_demo_stop())
+                else:
+                    self._json_ok(_helm_demo_status())
+            except Exception as exc:  # pragma: no cover - defensive
+                self._json_error(500, str(exc))
             return
         # k3d ensure (auto-provision cluster)
         if path == "/labs/k3d/ensure":

@@ -980,6 +980,9 @@ def handle_registry(args: argparse.Namespace) -> int:
 
 
 def ingress_service_factory() -> IngressService | None:
+    if os.getenv("AE_DISABLE_INGRESS") == "1":
+        logging.getLogger(__name__).info("Ingress disabled via AE_DISABLE_INGRESS=1")
+        return None
     root = os.getenv("AE_CADDY_SITES")
     if root is not None and root.strip() == "":
         return None

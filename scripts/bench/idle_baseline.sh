@@ -180,7 +180,7 @@ if [[ ! -f "$summary_json" ]]; then
   app_b=0; sys_b=0
   if [[ -f "$snap_dir/raw/containers_mem.csv" ]]; then
     # sum mem_current_bytes; heuristic split by name prefix
-    while IFS=, read -r cid name pid mem; do
+    while IFS=, read -r cid name pid mem _rest; do
       [[ "$cid" == "container_id" ]] && continue
       [[ -z "$mem" ]] && continue
       [[ "$mem" -lt 0 ]] && continue
