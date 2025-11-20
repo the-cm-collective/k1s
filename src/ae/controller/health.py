@@ -56,6 +56,7 @@ class HealthManager:
         # (replica_id, probe_type) -> state
         self._state: dict[tuple[str, str], dict] = {}
         self._exec_cb = None
+        self._loopback_fallback = os.getenv("AE_PROBE_LOOPBACK_FALLBACK", "").strip()
 
     def set_exec_callback(self, fn):  # type: ignore[no-untyped-def]
         """Inject a callback taking (replica_id, command:list[str], timeout:int|None)->int."""
@@ -308,6 +309,41 @@ class HealthManager:
         self._state[key] = st
         return ProbeOutcome(bool(st["effective"]), msg)
 
+    def _split_endpoint(self, endpoint: str) -> tuple[str, Optional[str]]:
+        text = endpoint or ""
+        if text.startswith("["):
+            end = text.find("]")
+            if end != -1:
+                host = text[1:end]
+                rest = text[end + 1 :]
+                if rest.startswith(":"):
+                    return host, rest[1:]
+                return host, None
+        if ":" in text:
+            host, port = text.rsplit(":", 1)
+            return host, port
+        return text, None
+
+    def _format_endpoint(self, host: str, port: Optional[str]) -> str:
+        if not host:
+            return host if host else ""
+        needs_brackets = ":" in host and not host.startswith("[") and not host.endswith("]")
+        normalized = f"[{host}]" if needs_brackets else host
+        if port:
+            return f"{normalized}:{port}"
+        return normalized
+
+    def _rewrite_probe_host(self, host: str) -> str:
+        if not self._loopback_fallback:
+            return host
+        norm = host.strip("[] ").lower()
+        if not norm:
+            return host
+        loopback_hosts = {"", "localhost", "0.0.0.0", "::", "::1"}
+        if norm in loopback_hosts or norm.startswith("127."):
+            return self._loopback_fallback
+        return host
+
     def _evaluate_http_probe(
         self,
         replica: ReplicaState,
@@ -318,7 +354,10 @@ class HealthManager:
         if not replica.endpoint:
             return ProbeOutcome(False, f"{probe_type} endpoint missing")
 
-        url = f"http://{replica.endpoint}{path}"
+        host, port = self._split_endpoint(str(replica.endpoint))
+        host = self._rewrite_probe_host(host)
+        endpoint = self._format_endpoint(host, port)
+        url = f"http://{endpoint}{path}"
         try:
             timeout = max(probe.timeout_seconds, 1)
             response = get(url, timeout=timeout)
@@ -340,8 +379,8 @@ class HealthManager:
 
         if not replica.endpoint:
             return ProbeOutcome(False, f"{probe_type} endpoint missing")
-        # Prefer the replica's resolved endpoint; if it includes a host port mapping, use it.
-        host, _, ep_port = str(replica.endpoint).partition(":")
+        host, ep_port = self._split_endpoint(str(replica.endpoint))
+        host = self._rewrite_probe_host(host)
         target_port = int(ep_port or port)
         try:
             timeout = max(probe.timeout_seconds, 1)

@@ -1,4 +1,5 @@
 .PHONY: install test lint run loop dev-up dev-down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke
+.PHONY: shim-helm-demo
 
 install:
 	python -m pip install -e .[dev]
@@ -33,6 +34,11 @@ status-sample:
 
 logs-sample:
 		python -m ae.cli logs echo --tail 50
+
+shim-helm-demo:
+	@echo "[shim-helm-demo] PORT=$${PORT:-8445} TOKEN=$${TOKEN:-helm-demo} RUNTIME=$${RUNTIME:-stub}"
+	@PORT=$${PORT:-8445} TOKEN=$${TOKEN:-helm-demo} RUNTIME=$${RUNTIME:-stub} \
+		bash scripts/helm_shim_demo.sh
 
 # Render and validate Kubernetes YAML for examples (no cluster required)
 k8s-smoke:
@@ -208,18 +214,40 @@ bench-mem-e2e-k3s-sudo:
 
 # End-to-end: k1s matrix + rollout + combine + plot
 bench-mem-e2e-k1s:
-	@./scripts/bench/run_matrix.sh \
+	@./scripts/bench/podman_rootless_fix.sh
+	@PYTHONPATH=$${PYTHONPATH:-src} AE_COLLECT_PODMAN_SUDO=$${AE_COLLECT_PODMAN_SUDO:-0} ./scripts/bench/run_matrix.sh \
 		--label-suite $${LABEL_SUITE:-baseline} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
 		--replicas $${REPLICAS:-1,5,10} \
 		--duration $${DURATION:-30}
-	@./scripts/bench/run_rollout_k1s.sh \
+	@PYTHONPATH=$${PYTHONPATH:-src} AE_COLLECT_PODMAN_SUDO=$${AE_COLLECT_PODMAN_SUDO:-0} ./scripts/bench/run_rollout_k1s.sh \
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
 		--replicas $${ROLL_REPLICAS:-5} \
 		--duration $${DURATION:-30}
+	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
+	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+
+.PHONY: bench-mem-e2e-k1s-sudo
+# End-to-end: k1s matrix + rollout, but escalate snapshots with --sudo
+bench-mem-e2e-k1s-sudo:
+	@./scripts/bench/engines_clear.sh --confirm
+	@PYTHONPATH=$${PYTHONPATH:-src} AE_COLLECT_PODMAN_SUDO=$${AE_COLLECT_PODMAN_SUDO:-1} ./scripts/bench/run_matrix.sh \
+		--label-suite $${LABEL_SUITE:-baseline} \
+		--app $${APP:-specs/examples/echo.yaml} \
+		--app-name $${APP_NAME:-echo} \
+		--replicas $${REPLICAS:-1,5,10} \
+		--duration $${DURATION:-30} \
+		--sudo
+	@PYTHONPATH=$${PYTHONPATH:-src} AE_COLLECT_PODMAN_SUDO=$${AE_COLLECT_PODMAN_SUDO:-1} ./scripts/bench/run_rollout_k1s.sh \
+		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
+		--app $${APP:-specs/examples/echo.yaml} \
+		--app-name $${APP_NAME:-echo} \
+		--replicas $${ROLL_REPLICAS:-5} \
+		--duration $${DURATION:-30} \
+		--sudo
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 
@@ -229,15 +257,16 @@ bench-mem-e2e-k1s:
 # - Uses Docker on the host for preflights and container cgroup metrics
 # - Skips guard auto-start to avoid spawning a host controller
 bench-mem-e2e-k1nd:
+	@scripts/bench/k1nd_sanitize.sh pre
 	@$(MAKE) labs-aio-up
 	# Use a writable, isolated state DB for host-side CLI during k1nd runs
-	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_matrix.sh \
+	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_matrix.sh \
 		--label-suite $${LABEL_SUITE:-baseline} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
 		--replicas $${REPLICAS:-1,5,10} \
 		--duration $${DURATION:-30}
-	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
+	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
@@ -245,19 +274,21 @@ bench-mem-e2e-k1nd:
 		--duration $${DURATION:-30}
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+	@scripts/bench/k1nd_sanitize.sh post
 
 .PHONY: bench-mem-e2e-k1nd-sudo
 # Same as bench-mem-e2e-k1nd but runs snapshots with sudo to capture full PSS
 bench-mem-e2e-k1nd-sudo:
+	@scripts/bench/k1nd_sanitize.sh pre
 	@$(MAKE) labs-aio-up
-	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_matrix.sh \
+	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_matrix.sh \
 		--label-suite $${LABEL_SUITE:-baseline} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
 		--replicas $${REPLICAS:-1,5,10} \
 		--duration $${DURATION:-30} \
 		--sudo
-	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
+	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
@@ -266,29 +297,42 @@ bench-mem-e2e-k1nd-sudo:
 		--sudo
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+	@scripts/bench/k1nd_sanitize.sh post
 
 .PHONY: bench-mem-e2e-k1nd-quick
 # Fast profile: in-container CLI, no warm, shorter snapshots, fewer waits
 bench-mem-e2e-k1nd-quick:
+	@scripts/bench/k1nd_sanitize.sh pre
 	@$(MAKE) labs-aio-up
-    @AE_CLI_IN_CONTAINER=1 AE_BENCH_QUICK=1 SKIP_IDLE=$${SKIP_IDLE:-1} PRUNE_OLD=$${PRUNE_OLD:-1} SKIP_EXISTING=$${SKIP_EXISTING:-1} \
-	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} \
-	 AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} \
-	 AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_matrix.sh \
+	@AE_CLI_IN_CONTAINER=1 AE_BENCH_QUICK=1 SKIP_IDLE=$${SKIP_IDLE:-1} PRUNE_OLD=$${PRUNE_OLD:-1} SKIP_EXISTING=$${SKIP_EXISTING:-1} \
+		AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} \
+		AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
+		AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} \
+		AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} \
+		AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_matrix.sh \
 		--label-suite $${LABEL_SUITE:-baseline} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
 		--replicas $${REPLICAS:-1,5,10} \
-		--duration $${DURATION:-10}
-    @AE_CLI_IN_CONTAINER=1 AE_BENCH_QUICK=1 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} SKIP_EXISTING=$${SKIP_EXISTING:-1} \
-	 AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} \
-	 AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
+		--duration $${DURATION:-10} \
+		--sudo
+	@AE_CLI_IN_CONTAINER=1 AE_BENCH_QUICK=1 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} SKIP_EXISTING=$${SKIP_EXISTING:-1} \
+		AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} \
+		AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
+		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
+		--app $${APP:-specs/examples/echo.yaml} \
+		--app-name $${APP_NAME:-echo} \
+		--replicas $${ROLL_REPLICAS:-5} \
+		--duration $${DURATION:-10} \
+		--sudo
+	@scripts/bench/k1nd_sanitize.sh post
 
 .PHONY: bench-mem-e2e-k1nd-resume-rollout
 # Resume only the rollout stage (use the same LABEL_SUITE as the previous matrix stage)
 bench-mem-e2e-k1nd-resume-rollout:
+	@scripts/bench/k1nd_sanitize.sh pre
 	@$(MAKE) labs-aio-up
-	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} SKIP_EXISTING=$${SKIP_EXISTING:-1} \
+	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} SKIP_EXISTING=$${SKIP_EXISTING:-1} \
 	 AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} \
 	 AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
@@ -303,12 +347,41 @@ bench-mem-e2e-k1nd-resume-rollout:
 		--duration $${DURATION:-10}
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+	@scripts/bench/k1nd_sanitize.sh post
 
 .PHONY: bench-mem-e2e-k1nd-down
 # Same as bench-mem-e2e-k1nd but tears down the compose stack afterwards
 bench-mem-e2e-k1nd-down:
 	@$(MAKE) bench-mem-e2e-k1nd
 	@$(MAKE) labs-aio-down
+
+.PHONY: bench-mem-e2e-all bench-mem-e2e-minimal
+bench-mem-e2e-all:
+	@DURATION=$${DURATION:-30} \
+	 REPLICAS=$${REPLICAS:-1,5,10} \
+	 ROLL_REPLICAS=$${ROLL_REPLICAS:-5} \
+	 LABEL_ROOTFUL=$${LABEL_ROOTFUL:-r$$(date +%Y%m%d)+podman+rootful+cg2} \
+	 LABEL_ROOTLESS=$${LABEL_ROOTLESS:-r$$(date +%Y%m%d)+podman+rootless+cg2} \
+	 LABEL_K1ND=$${LABEL_K1ND:-r$$(date +%Y%m%d)+docker+k1nd} \
+	 BENCH_MANIFEST=$${APP:-specs/examples/echo.yaml} \
+	 ./scripts/bench/run_e2e_suite.sh --mode full --manifest $${APP:-specs/examples/echo.yaml}
+
+bench-mem-e2e-minimal:
+	@DURATION=$${DURATION:-10} \
+	 REPLICAS=$${REPLICAS:-1} \
+	 ROLL_REPLICAS=$${ROLL_REPLICAS:-2} \
+	 LABEL_ROOTFUL=$${LABEL_ROOTFUL:-r$$(date +%Y%m%d)+podman+rootful+cg2} \
+	 BENCH_MANIFEST=$${APP:-specs/examples/echo.yaml} \
+	 ./scripts/bench/run_e2e_suite.sh --mode minimal --manifest $${APP:-specs/examples/echo.yaml}
+
+.PHONY: bench-watch-runtime
+bench-watch-runtime:
+	@echo "[bench-watch] capturing podman/container debug output; press Ctrl+C to stop"
+	@sudo -E AE_BENCH_WATCH_APP=$${APP:-echo} \
+		AE_BENCH_WATCH_INTERVAL=$${INTERVAL:-10} \
+		AE_BENCH_WATCH_DIR=$${OUT_DIR:-state/bench-env/debug} \
+		AE_BENCH_CONTROLLER_LOG=$${CONTROLLER_LOG:-state/bench-env/controller.log} \
+		scripts/bench/runtime_watch.sh
 
 .PHONY: bench-mem-e2e-baselines bench-mem-e2e-baselines-sudo
 # Run all baseline suites (k1s rootless, k1s rootful, k1nd, k3d),
@@ -390,6 +463,29 @@ bench-mem-backfill-oci-latest:
 		if [ -z "$$LBL" ]; then echo "[oci-backfill-latest] no snapshots found" >&2; exit 0; fi; \
 		echo "[oci-backfill-latest] latest label=$$LBL" >&2; \
 		$(MAKE) bench-mem-backfill-oci LABEL="$$LBL*" $${OCI:+OCI=$$OCI} $${REBUILD_DOCS:+REBUILD_DOCS=$$REBUILD_DOCS}
+
+.PHONY: bench-mem-finalize-sudo
+# Finalize benchmarks after mixed non-root/root runs (run with sudo):
+# - Backfill OCI runtime into labels and metadata across ALL snapshots
+# - Recombine results and regenerate charts with a wider history window
+# - Rebuild docs with a one-week staleness threshold
+# - Normalize permissions back to the invoking user
+#
+# Usage:
+#   sudo make bench-mem-finalize-sudo
+# Optional env:
+#   PLOT_LATEST=500 (default) to include more history in legacy timelines
+#   DOCS_CHART_STALENESS_HOURS=168 (default) to tweak staleness window
+bench-mem-finalize-sudo:
+	@echo "[finalize] backfilling OCI across all snapshots" >&2
+	@sudo -E python scripts/bench/label_backfill.py "snapshots/*/*" --insert-into-label || true
+	@echo "[finalize] combining snapshots" >&2
+	@sudo -E python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
+	@echo "[finalize] plotting charts (PLOT_LATEST=$${PLOT_LATEST:-500})" >&2
+	@sudo -E env PLOT_LATEST=$${PLOT_LATEST:-500} python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+	@echo "[finalize] building docs (DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168})" >&2
+	@sudo -E env DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168} python docs/build_docs.py
+	@$(MAKE) bench-fix-perms
 
 .PHONY: docs-watch
 # Rebuild docs whenever combined/combined.csv changes

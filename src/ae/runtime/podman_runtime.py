@@ -8,16 +8,21 @@ of the system (ingress, status, events) continues to work unchanged.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import shlex
+import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Set
 
 from ae.controller.spec import AppManifest
 
 from .base import ReplicaState, RuntimeAdapter, RuntimeResult
+from .ports import choose_host_port
 
 
 @dataclass
@@ -25,6 +30,9 @@ class _RunResult:
     code: int
     out: str
     err: str
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class PodmanRuntime(RuntimeAdapter):
@@ -37,6 +45,13 @@ class PodmanRuntime(RuntimeAdapter):
         self._bin = os.getenv("AE_PODMAN_BIN", "podman")
         # Optional shared network for ingress to reach containers by DNS name
         self._network_name = os.getenv("AE_PODMAN_NETWORK")
+        self._serial_service_rollout = os.getenv("AE_SERIAL_SERVICE_ROLLOUT", "0") == "1"
+        self._podman_retry_max = max(0, int(os.getenv("AE_PODMAN_RETRY_MAX", "2")))
+        try:
+            self._podman_retry_delay = float(os.getenv("AE_PODMAN_RETRY_DELAY", "0.5"))
+        except Exception:
+            self._podman_retry_delay = 0.5
+        self._crun_path_re = re.compile(r"(/run/user/\d+/crun/[A-Za-z0-9_.-]+)")
         # Optional explicit OCI runtime override (e.g., "crun" or "runc").
         # When set, the adapter passes "--runtime=<value>" to all `podman run` calls.
         raw = os.getenv("AE_OCI_RUNTIME", "").strip()
@@ -111,6 +126,15 @@ class PodmanRuntime(RuntimeAdapter):
             svc_target = getattr(manifest.spec.service, "target_port", None)
             if getattr(manifest.spec.service, "ports", None):
                 svc_ports_list = list(manifest.spec.service.ports)
+
+        strict_service = (
+            self._serial_service_rollout and not keep_old and svc_port is not None
+        )
+        if strict_service and old:
+            for c in list(old):
+                self._stop_and_remove(c.get("Id", ""))
+                removed += 1
+            old = []
 
         for rid in desired_ids:
             c = by_replica.get(rid)
@@ -834,8 +858,17 @@ class PodmanRuntime(RuntimeAdapter):
             stop_timeout = 10
         cmd += ["--label", f"ae.stop_timeout={int(stop_timeout)}"]
 
-        # Resources: requests → soft reservations (cpu-shares, memory-reservation)
+        # Resources: limits/requests
+        # - limits.memory → hard cap (--memory)
+        # - requests.memory → soft reservation (--memory-reservation)
         try:
+            lims = getattr(getattr(manifest.spec, "resources", None), "limits", None)
+            if lims is not None and getattr(lims, "memory", None) is not None:
+                try:
+                    mem = str(getattr(lims, "memory"))
+                    cmd += ["--memory", mem]
+                except Exception:
+                    pass
             reqs = getattr(getattr(manifest.spec, "resources", None), "requests", None)
             if reqs is not None:
                 if getattr(reqs, "cpu", None) is not None:
@@ -862,6 +895,7 @@ class PodmanRuntime(RuntimeAdapter):
         # lets Caddy proxy via host alias inside the container.
         svc_port, svc_target, svc_ports_list = service
         published_any = False
+        reserved_ports: Set[int] = set()
         if svc_ports_list:
             # Publish each declared service port as host:container mapping
             # Resolve targetPort similarly to the exporter rules
@@ -890,14 +924,44 @@ class PodmanRuntime(RuntimeAdapter):
                             by_num.get(int(portnum)) if portnum is not None else None
                         )
                     if portnum is not None and tgt is not None:
-                        cmd += ["-p", f"{int(portnum)}:{int(tgt)}"]
+                        chosen, used_preferred = choose_host_port(int(portnum), reserved=reserved_ports)
+                        if chosen is None:
+                            LOGGER.warning(
+                                "service port %s for app %s is unavailable; skipping publish",
+                                portnum,
+                                app,
+                            )
+                            continue
+                        if not used_preferred:
+                            LOGGER.warning(
+                                "service port %s for app %s already in use; assigning %s",
+                                portnum,
+                                app,
+                                chosen,
+                            )
+                        cmd += ["-p", f"{int(chosen)}:{int(tgt)}"]
                         published_any = True
                 except Exception:
                     continue
         elif svc_port is not None:
             target = int(svc_target) if svc_target is not None else int(svc_port)
-            cmd += ["-p", f"{int(svc_port)}:{target}"]
-            published_any = True
+            chosen, used_preferred = choose_host_port(int(svc_port), reserved=reserved_ports)
+            if chosen is None:
+                LOGGER.warning(
+                    "service port %s for app %s is unavailable; skipping publish",
+                    svc_port,
+                    app,
+                )
+            else:
+                if not used_preferred:
+                    LOGGER.warning(
+                        "service port %s for app %s already in use; assigning %s",
+                        svc_port,
+                        app,
+                        chosen,
+                    )
+                cmd += ["-p", f"{int(chosen)}:{target}"]
+                published_any = True
         else:
             for p in manifest.spec.ports or []:
                 try:
@@ -949,7 +1013,9 @@ class PodmanRuntime(RuntimeAdapter):
                 if s_type:
                     st = str(s_type)
                     if st == "RuntimeDefault":
-                        cmd += ["--security-opt", "seccomp=runtime/default"]
+                        # Let Podman apply its default seccomp profile; do not pass the Kubernetes token
+                        # "runtime/default" because Podman expects an actual path.
+                        pass
                     elif st == "Unconfined":
                         cmd += ["--security-opt", "seccomp=unconfined"]
                     elif st == "Localhost" and s_local:
@@ -1058,16 +1124,42 @@ class PodmanRuntime(RuntimeAdapter):
         except Exception:
             return None
 
-    def _run_ok(self, argv: list[str], *, allow_fail: bool = False) -> _RunResult:
+    def _cleanup_crun_path(self, stderr: str) -> None:
+        match = self._crun_path_re.search(stderr or "")
+        if not match:
+            return
+        path = match.group(1)
         try:
-            cp = subprocess.run(
-                argv, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-            )
-            if cp.returncode != 0 and not allow_fail:
-                raise RuntimeError(f"podman failed: {' '.join(argv)} => {cp.stderr.strip()}")
-            return _RunResult(cp.returncode, cp.stdout or "", cp.stderr or "")
-        except FileNotFoundError:
-            raise RuntimeError("podman binary not found. Install Podman or set AE_PODMAN_BIN")
+            shutil.rmtree(path, ignore_errors=True)
+        except Exception:
+            pass
+
+    def _should_retry_podman(self, stderr: str) -> bool:
+        lowered = (stderr or "").lower()
+        return ("permission denied" in lowered and "crun" in lowered and "/run/user" in lowered)
+
+    def _run_ok(self, argv: list[str], *, allow_fail: bool = False) -> _RunResult:
+        retries = self._podman_retry_max if not allow_fail else 0
+        attempt = 0
+        while True:
+            try:
+                cp = subprocess.run(
+                    argv, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                )
+            except FileNotFoundError as exc:
+                raise RuntimeError("podman binary not found. Install Podman or set AE_PODMAN_BIN") from exc
+
+            if cp.returncode == 0 or allow_fail:
+                return _RunResult(cp.returncode, cp.stdout or "", cp.stderr or "")
+
+            stderr = cp.stderr or ""
+            if attempt < retries and self._should_retry_podman(stderr):
+                attempt += 1
+                self._cleanup_crun_path(stderr)
+                time.sleep(self._podman_retry_delay)
+                continue
+
+            raise RuntimeError(f"podman failed: {' '.join(argv)} => {stderr.strip()}")
 
     def _image_exists(self, name: str) -> bool:
         try:

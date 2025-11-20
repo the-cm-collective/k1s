@@ -269,7 +269,7 @@ log "suite: k1s rootless"
 engines_clear_all
 start_caddy_only || true
 build_demo_images_podman 0 || true
-PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_COLLECT_ENGINE=podman AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 \
+PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_COLLECT_ENGINE=podman AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 AE_COLLECT_PODMAN_SUDO=1 \
   WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k1s \
   LABEL_SUITE="$LBL_K1S_ROOTLESS" APP="$APP" APP_NAME="$APP_NAME" REPLICAS="$REPLICAS" DURATION="$DURATION"
 fix_perms
@@ -281,8 +281,8 @@ engines_clear_all
 if [[ "$USE_SUDO" == "1" ]]; then
   start_caddy_only || true
   build_demo_images_podman 1 || true
-  sudo -E PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_COLLECT_ENGINE=podman AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 \
-    WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k1s \
+  sudo -E PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_COLLECT_ENGINE=podman AE_COLLECT_PODMAN_SUDO=1 AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 \
+    WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k1s-sudo \
     LABEL_SUITE="$LBL_K1S_ROOTFUL" APP="$APP" APP_NAME="$APP_NAME" REPLICAS="$REPLICAS" DURATION="$DURATION"
   fix_perms
   stop_caddy_only || true

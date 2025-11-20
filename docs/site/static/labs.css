@@ -71,6 +71,11 @@ html[data-theme="light"] #banner{ background: rgba(255,255,255,0.70); }
 /* Logs/Events panels */
 #observe .panel, #logs-sse, #events-sse{max-height:360px;overflow:auto;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:13px}
 .log-entry{white-space:pre-wrap; word-break:break-word}
+.helm-demo-box{border:1px solid var(--border);padding:10px;margin:.75rem 0;border-radius:10px;background:var(--muted)}
+.helm-demo-controls{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+.helm-demo-status{font-size:.95rem;margin-bottom:6px;color:var(--fg)}
+.helm-demo-log{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:8px;max-height:200px;overflow:auto;background:#0f172a;color:#e2e8f0}
+html[data-theme='light'] .helm-demo-log{background:#f3f4f6;color:#0f172a}
 
 /* Better layout for control-heavy lists (labels + controls) */
 @supports(selector(:has(*))){

@@ -324,6 +324,10 @@ def aggregate(snapshot_dir: Path) -> Dict:
     # Containers
     containers = _read_containers_csv(raw)
     app_bytes = system_bytes = 0
+    # Track seen cgroup leaves to avoid double-counting when multiple containers
+    # share the same cgroup (common with rootless engines without full delegation).
+    seen_app_cg: set[str] = set()
+    seen_sys_cg: set[str] = set()
     if containers:
         # Attempt to classify app vs system using container inspect labels
         # Merge inspect from both docker and podman when available
@@ -348,6 +352,7 @@ def aggregate(snapshot_dir: Path) -> Dict:
             if mem < 0:
                 continue
             is_app = False
+            cg_path = (row.get("cg_path") or row.get("cgroup_path") or "").strip()
             # For k3s mode, treat all host-engine containers as system; rely on k3s extras for app
             if mode == "k3s":
                 is_app = False
@@ -364,9 +369,18 @@ def aggregate(snapshot_dir: Path) -> Dict:
                     name = (row.get("name") or "").lower()
                     if name.startswith("ae-") or "rev" in name:
                         is_app = True
+            # Deduplicate by cgroup path when present; fall back to naive sum
             if is_app:
+                if cg_path:
+                    if cg_path in seen_app_cg:
+                        continue
+                    seen_app_cg.add(cg_path)
                 app_bytes += mem
             else:
+                if cg_path:
+                    if cg_path in seen_sys_cg:
+                        continue
+                    seen_sys_cg.add(cg_path)
                 system_bytes += mem
 
     # k3s extras: prefer inner kubepods.sum if present and app_bytes not already populated

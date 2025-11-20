@@ -48,6 +48,8 @@ else
   ae() { python -m ae.cli "$@"; }
 fi
 
+info() { echo "[rollout] $*" >&2; }
+
 # Quick bench profile
 if [[ "${AE_BENCH_QUICK:-0}" == "1" ]]; then
   : "${DURATION:=5}"; export DURATION
@@ -171,6 +173,8 @@ fi
 
 wait_ready() {
   local name="$1"; local want="$2"; local tries=${WAIT_READY_TRIES:-120}
+  local delay=${WAIT_READY_DELAY:-2}
+  info "[rollout] wait_ready name=$name target=$want tries=$tries delay=${delay}s"
   while (( tries-- > 0 )); do
     local js
     if ! js=$(ae status "$name" --json 2>/dev/null); then sleep 2; continue; fi
@@ -178,7 +182,7 @@ wait_ready() {
     ready=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("ready_replicas",0))') || ready=0
     desired=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("desired_replicas",0))') || desired=0
     if [[ "$ready" == "$want" && "$desired" == "$want" ]]; then return 0; fi
-    sleep 2
+    sleep "$delay"
   done
   echo "timeout waiting for $name ready=$want" >&2
   return 1

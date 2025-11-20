@@ -14,6 +14,24 @@ label="manual"
 duration=30
 outroot="snapshots"
 
+podman_bin="${AE_PODMAN_BIN:-podman}"
+podman_prefix=()
+if [[ "${AE_COLLECT_PODMAN_SUDO:-${AE_PODMAN_SUDO:-0}}" == "1" ]]; then
+  podman_prefix=(sudo -E)
+fi
+
+podman_available() {
+  command -v "$podman_bin" >/dev/null 2>&1
+}
+
+podman_cmd() {
+  if [[ ${#podman_prefix[@]} -gt 0 ]]; then
+    "${podman_prefix[@]}" "$podman_bin" "$@"
+  else
+    "$podman_bin" "$@"
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --mode) mode="$2"; shift 2;;
@@ -51,7 +69,7 @@ detect_backend() {
     b="${AE_RUNTIME_BACKEND:-podman}"
   fi
   if [[ "$b" != "podman" && "$b" != "docker" && "$b" != "oci" ]]; then
-    if command -v podman >/dev/null 2>&1; then b=podman; elif command -v docker >/dev/null 2>&1; then b=docker; else b=unknown; fi
+    if podman_available; then b=podman; elif command -v docker >/dev/null 2>&1; then b=docker; else b=unknown; fi
   fi
   echo "$b"
 }
@@ -60,10 +78,10 @@ detect_oci_runtime() {
   local b; b=$(detect_backend)
   local oci=""
   if [[ "$b" == "podman" || "$b" == "oci" ]]; then
-    if command -v podman >/dev/null 2>&1; then
-      oci=$(podman info --format '{{ .Host.OCIRuntime.Name }}' 2>/dev/null | tr -d '"' || true)
+    if podman_available; then
+      oci=$(podman_cmd info --format '{{ .Host.OCIRuntime.Name }}' 2>/dev/null | tr -d '"' || true)
       if [[ -z "$oci" ]]; then
-        oci=$(podman info --format json 2>/dev/null | python - << 'PY'
+        oci=$(podman_cmd info --format json 2>/dev/null | python - << 'PY'
 import json, sys
 try:
     d=json.load(sys.stdin)
@@ -126,16 +144,15 @@ print(c)
 PY
 )"
 fi
-if [[ "$collect_engine" == "docker" ]] && command -v podman >/dev/null 2>&1; then
-  foreign_ae_containers="$(python - << 'PY'
-import json, subprocess, sys
+if [[ "$collect_engine" == "docker" ]] && podman_available; then
+  foreign_ae_containers="$(podman_cmd ps -a --format json 2>/dev/null | python - << 'PY'
+import json, sys
 try:
-    out = subprocess.run(['podman','ps','-a','--format','json'], capture_output=True, text=True, check=False).stdout
-    arr = json.loads(out or '[]')
+    arr = json.load(sys.stdin)
 except Exception:
     print(0); sys.exit(0)
 c=0
-for x in arr:
+for x in arr or []:
     labs=(x.get('Config') or {}).get('Labels') or (x.get('Labels') or {})
     name=(x.get('Name') or '').strip('/ ')
     if labs.get('ae.app') or name.startswith('ae-'):
@@ -218,15 +235,16 @@ log_step "process smaps/status captured"
 
 ## Containers (collect only from the selected engine to avoid contamination)
 {
-  echo "container_id,name,pid,mem_current_bytes"
+  # Include cg_path for downstream de-duplication in aggregation
+  echo "container_id,name,pid,mem_current_bytes,cg_path"
 } > "${outdir}/raw/containers_mem.csv"
 
 # Podman (only when selected)
-if [[ "$collect_engine" != "docker" ]] && command -v podman >/dev/null 2>&1; then
-  podman ps -a --format json > "${outdir}/raw/podman_ps.json" 2>/dev/null || true
-  ids=$(podman ps -aq 2>/dev/null || true)
+if [[ "$collect_engine" != "docker" ]] && podman_available; then
+  podman_cmd ps -a --format json > "${outdir}/raw/podman_ps.json" 2>/dev/null || true
+  ids=$(podman_cmd ps -aq 2>/dev/null || true)
   if [[ -n "${ids}" ]]; then
-    podman inspect --format json $ids > "${outdir}/raw/podman_inspect.json" 2>/dev/null || true
+    podman_cmd inspect --format json $ids > "${outdir}/raw/podman_inspect.json" 2>/dev/null || true
   fi
   python - "$outdir" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
 import json, os, sys
@@ -268,25 +286,26 @@ def cgroup_path_for_pid(pid: str, want: str = 'memory') -> Optional[str]:
     except Exception:
         return None
 
-def read_mem_bytes(pid: str) -> int:
+def read_mem_bytes_and_path(pid: str):
     try:
         cg = cgroup_path_for_pid(pid, 'memory')
         if not cg:
-            return -1
+            return -1, ''
         if detect_cgv2():
             mc = f"/sys/fs/cgroup{cg}/memory.current"
         else:
             mc = f"/sys/fs/cgroup/memory{cg}/memory.usage_in_bytes"
-        return int(open(mc, 'r').read().strip()) if os.path.exists(mc) else -1
+        val = int(open(mc, 'r').read().strip()) if os.path.exists(mc) else -1
+        return val, cg
     except Exception:
-        return -1
+        return -1, ''
 
 for c in data:
     cid = (c.get('Id', '') or '')[:12]
     name = (c.get('Name', '') or '').strip('/ ')
     pid = str(((c.get('State') or {}).get('Pid') or 0))
-    mem = read_mem_bytes(pid) if pid and pid != '0' else -1
-    print(f"{cid},{name},{pid},{mem}")
+    mem, cg = read_mem_bytes_and_path(pid) if pid and pid != '0' else (-1, '')
+    print(f"{cid},{name},{pid},{mem},{cg}")
 PY
 fi
 log_step "podman containers collected (if selected)"
@@ -339,25 +358,26 @@ def cgroup_path_for_pid(pid: str, want: str = 'memory') -> Optional[str]:
     except Exception:
         return None
 
-def read_mem_bytes(pid: str) -> int:
+def read_mem_bytes_and_path(pid: str):
     try:
         cg = cgroup_path_for_pid(pid, 'memory')
         if not cg:
-            return -1
+            return -1, ''
         if detect_cgv2():
             mc = f"/sys/fs/cgroup{cg}/memory.current"
         else:
             mc = f"/sys/fs/cgroup/memory{cg}/memory.usage_in_bytes"
-        return int(open(mc, 'r').read().strip()) if os.path.exists(mc) else -1
+        val = int(open(mc, 'r').read().strip()) if os.path.exists(mc) else -1
+        return val, cg
     except Exception:
-        return -1
+        return -1, ''
 
 for c in data:
     cid = c.get('Id','')[:12]
     name = (c.get('Name','') or '').strip('/ ')
     pid = str(((c.get('State') or {}).get('Pid') or 0))
-    mem = read_mem_bytes(pid) if pid and pid!='0' else -1
-    print(f"{cid},{name},{pid},{mem}")
+    mem, cg = read_mem_bytes_and_path(pid) if pid and pid!='0' else (-1, '')
+    print(f"{cid},{name},{pid},{mem},{cg}")
 PY
   fi
 fi
@@ -442,11 +462,11 @@ find "$base" -type d 2>/dev/null | while read d; do [ -f "$d/memory.current" ] |
   } 2>>"${outdir}/status.log"
 fi
 
-if [[ "$collect_engine" == "podman" ]] && ! command -v podman >/dev/null 2>&1; then
+if [[ "$collect_engine" == "podman" ]] && ! podman_available; then
   echo "[mem-snapshot] podman not found (engine_filter=podman); container metrics skipped." >&2
 elif [[ "$collect_engine" == "docker" ]] && ! command -v docker >/dev/null 2>&1; then
   echo "[mem-snapshot] docker not found (engine_filter=docker); container metrics skipped." >&2
-elif ! command -v podman >/dev/null 2>&1 && ! command -v docker >/dev/null 2>&1; then
+elif ! podman_available && ! command -v docker >/dev/null 2>&1; then
   echo "[mem-snapshot] docker/podman not found; container cgroup metrics will be skipped." >&2
 fi
 

@@ -88,6 +88,17 @@ Limitations:
 - Ingress support covers host/path backends; advanced annotations are ignored.
 - Runtime defaults to `stub`. Set `AE_APISHIM_RUNTIME=podman` (or docker) to run real containers.
 
+## Practical Compatibility & Gaps
+
+- **What works today**: stateless charts that stick to Deployments + Services + Ingress (and optional RBAC, PDB, HPA, CRDs). Helm’s CRUD/upgrade/rollback flows succeed, status/rollout semantics behave, and NodePorts/Ingress hostnames reach real pods (when Podman/Docker runtime is enabled). This covers the majority of “12-factor” style web/API charts.
+- **What partially works**: charts that ship CRDs but expect controllers/operators (Prometheus Operator, cert-manager) can install all API objects, yet the controller pods themselves won’t run unless you port their manifests to k1s (e.g., build an `App` or run the controller separately). CRDs are effectively inert without their controllers.
+- **Not yet supported**:
+  - Workload kinds: DaemonSets, StatefulSets with PVC templates, Jobs/CronJobs, Admission webhooks.
+  - Service meshes / per-pod sidecars (beyond what k1s already supports) – custom mutating webhooks won’t fire.
+  - Advanced ingress features (controller-specific annotations, canary weights, regex paths) and LB integrations.
+  - SSA (`kubectl apply --server-side`) – disable SSA per-context or per-command.
+- **k8s-like stage**: The shim now behaves like a single-node, Kubernetes-like API for stateless workloads. Expect ~70‑80% compatibility with common OSS charts (those that only need Deployment/Service/Ingress + RBAC/CRDs). Charts that depend on cluster-wide infrastructure (operators, admission webhooks, DaemonSets) still require a real Kubernetes cluster.
+
 ## One-command demo
 
 Prefer automation? Run the helper script (or Make target) to exercise the workflow end-to-end:

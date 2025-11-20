@@ -100,6 +100,20 @@ make bench-mem-e2e-k1nd-down LABEL_SUITE=baseline APP=specs/examples/echo.yaml R
 ```
 - Runs the same k1nd sequence and then executes `make labs-aio-down` to stop the compose stack.
 
+End-to-end (all suites, automated prep)
+```
+make bench-mem-e2e-all DURATION=30 REPLICAS=1,5,10 ROLL_REPLICAS=5
+```
+- Stops the dev/labs compose stacks, clones `specs/` into `state/bench-env/`, prunes every App manifest except the requested one (defaults to `specs/examples/echo.yaml`), and launches a dedicated controller against that sandbox.
+- Runs k1s rootful (snapshots elevated), k1s rootless, and k1nd in one shot, then backfills OCI labels, recombines, regenerates charts, and rebuilds docs. Only the snapshot helpers call `sudo`; the top-level `make` runs as your user.
+- Defaults: `OCI_RUNTIME=crun`, `AE_ENGINE_STRICT=1`, `AE_ALLOW_PLAINTEXT_SECRETS=1`, `PRUNE_OLD=1`. Override `LABEL_ROOTFUL`, `LABEL_ROOTLESS`, or `LABEL_K1ND` to tag the suites differently.
+
+Minimal smoke (rootful only)
+```
+make bench-mem-e2e-minimal DURATION=10 REPLICAS=1 ROLL_REPLICAS=2
+```
+- Uses the same prep/teardown scripts but only runs the k1s rootful matrix (single replica) plus a tiny rollout. Handy while iterating on manifests or Podman tuning before committing to the full matrix.
+
 Backfill OCI runtime into past snapshots
 ```
 make bench-mem-backfill-oci LABEL=r20251110+podman+rootless+cg2* REBUILD_DOCS=1
@@ -175,6 +189,27 @@ make bench-mem-e2e-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yam
   - Logs: controller auto-start logs at `/tmp/k1s_ctrl_bench.log`.
 
 - After run
-  - Combined table: `combined/combined.csv` and `combined/combined.json`.
+- Combined table: `combined/combined.csv` and `combined/combined.json`.
   - Charts: `charts/control_plane_pss.png`, `charts/system_cgroups.png`, `charts/per_pod_overhead.png`.
   - Docs page `testing-memory-k1s.html` auto-appends a “Latest Benchmarks (Auto)” section from `combined/combined.csv`.
+
+## Automated Prep/Teardown
+
+The helper scripts `scripts/bench/bench_env_prep.sh` and `scripts/bench/bench_env_teardown.sh` power both `make bench-mem-e2e-all` and `make bench-mem-e2e-minimal`:
+
+- Prep copies `specs/` into `state/bench-env/specs/`, removes every App manifest except the allowlist, and leaves shared configs/secrets intact so relative `configRefs` still work.
+- A dedicated controller (log + pid under `state/bench-env/`) watches only that sandbox, so background demos or labs can’t steal ports or replicas.
+- The scripts set `AE_SPECS_DIR`, `AE_STATE_DB`, `AE_CADDY_DIR`, and the primary manifest/app name in an env file; each benchmark stage sources it before calling `run_matrix.sh`/`run_rollout_k1s.sh`.
+- Teardown stops the sandbox controller and deletes `state/bench-env/` unless you set `BENCH_KEEP_ENV=1` to inspect artifacts.
+- If rootful Podman containers with the `ae.app` label are still running, prep lists them and asks whether to remove them (set `BENCH_AUTOCLEAN_PODMAN=1` to auto-approve in CI, or `=0` to refuse). This prevents stray demos from holding ports like 18080.
+- Ingress writes are disabled by default for benches (`BENCH_DISABLE_INGRESS=1`). Set `BENCH_DISABLE_INGRESS=0` if a scenario actually needs Caddy updates; otherwise the sandbox exports `AE_DISABLE_INGRESS=1` and skips writing to `ops/dev/caddy/*`, avoiding permission chatter.
+
+## All-in-one Run (sudo once)
+
+Run k1s rootful, k1s rootless, and k1nd in one go and rebuild docs:
+
+```
+sudo make bench-mem-e2e-all DURATION=30 REPLICAS=1,5,10 ROLL_REPLICAS=5
+```
+
+Defaults: `OCI_RUNTIME=crun`, `AE_ENGINE_STRICT=1`, `AE_ALLOW_PLAINTEXT_SECRETS=1`, `PRUNE_OLD=1`.

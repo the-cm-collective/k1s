@@ -10,6 +10,11 @@ from docker.errors import NotFound
 from ae.controller.spec import AppManifest, AppSpec, Metadata, PortSpec, ServiceSpec
 from ae.runtime.docker_runtime import DockerRuntime
 
+try:
+    from unittest import mock
+except ImportError:  # pragma: no cover - <3.8 legacy
+    import mock  # type: ignore
+
 
 @dataclass
 class FakeContainer:
@@ -230,13 +235,108 @@ def test_port_mapping_with_multi_service_ports():
             )
         }
     )
-    mapping = runtime._port_mapping(  # type: ignore[attr-defined]
-        manifest.spec.ports,
-        service_ports=list(manifest.spec.service.ports),  # type: ignore[arg-type]
-    )
+    with mock.patch.object(runtime, "_host_ports_in_use", return_value=set()):
+        with mock.patch(
+            "ae.runtime.docker_runtime.choose_host_port",
+            side_effect=lambda port, **_: (port, True),
+        ):
+            mapping, svc_map = runtime._port_mapping(  # type: ignore[attr-defined]
+                manifest.spec.ports,
+                manifest.metadata.name,
+                service_ports=list(manifest.spec.service.ports),  # type: ignore[arg-type]
+        )
     # Expect both container ports to be present with host ports matching service ports
     assert mapping.get("8080/tcp") == 8080
     assert mapping.get("9090/tcp") == 9090
+    assert svc_map.get(8080) == 8080
+    assert svc_map.get(9090) == 9090
+
+
+def test_port_mapping_falls_back_when_port_busy():
+    client = FakeDockerClient()
+    runtime = DockerRuntime(client=client)
+
+    manifest = make_manifest(replica_count=1)
+    manifest = manifest.model_copy(
+        update={
+            "spec": manifest.spec.model_copy(
+                update={
+                    "service": ServiceSpec(port=18080, targetPort=8080),
+                }
+            )
+        }
+    )
+
+    with mock.patch.object(runtime, "_host_ports_in_use", return_value=set()):
+        with mock.patch(
+            "ae.runtime.docker_runtime.choose_host_port", return_value=(18123, False)
+        ):
+            mapping, svc_map = runtime._port_mapping(  # type: ignore[attr-defined]
+                manifest.spec.ports,
+                manifest.metadata.name,
+                service_port=manifest.spec.service.port,  # type: ignore[arg-type]
+                service_target=manifest.spec.service.target_port,  # type: ignore[arg-type]
+            )
+
+    assert mapping.get("8080/tcp") == 18123
+    assert svc_map.get(8080) == 18123
+
+
+def test_port_mapping_skips_ports_already_in_use():
+    client = FakeDockerClient()
+    runtime = DockerRuntime(client=client)
+
+    manifest = make_manifest(replica_count=1)
+    manifest = manifest.model_copy(
+        update={
+            "spec": manifest.spec.model_copy(
+                update={"service": ServiceSpec(port=18080, targetPort=8080)}
+            )
+        }
+    )
+
+    def fake_choose_host_port(port, **kwargs):  # noqa: ANN001
+        blocked = kwargs.get("blocked") or set()
+        assert 18080 in blocked
+        if port in blocked:
+            return port + 1, False
+        return port, True
+
+    with mock.patch.object(runtime, "_host_ports_in_use", return_value={18080}):
+        with mock.patch(
+            "ae.runtime.docker_runtime.choose_host_port",
+            side_effect=fake_choose_host_port,
+        ):
+            mapping, svc_map = runtime._port_mapping(  # type: ignore[attr-defined]
+                manifest.spec.ports,
+                manifest.metadata.name,
+                service_port=manifest.spec.service.port,  # type: ignore[arg-type]
+                service_target=manifest.spec.service.target_port,  # type: ignore[arg-type]
+            )
+
+    assert mapping.get("8080/tcp") == 18081
+    assert svc_map.get(8080) == 18081
+
+
+def test_serial_service_rollout_removes_previous_revision(monkeypatch):
+    monkeypatch.setenv("AE_SERIAL_SERVICE_ROLLOUT", "1")
+    client = FakeDockerClient()
+    client.seed_container("demo", 0, revision=0)
+
+    runtime = DockerRuntime(client=client)
+    manifest = make_manifest(replica_count=1)
+    manifest = manifest.model_copy(
+        update={
+            "spec": manifest.spec.model_copy(
+                update={"service": ServiceSpec(port=18080, targetPort=8080)}
+            )
+        }
+    )
+
+    result = runtime.ensure_app(manifest, revision=1)
+
+    assert "demo-rev0-0" not in client.containers_by_replica
+    assert result.removed >= 1
 
 
 def test_endpoint_normalizes_anyaddr_to_loopback():
