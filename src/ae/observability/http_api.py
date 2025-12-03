@@ -2922,11 +2922,33 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         return tok ? { 'Authorization': 'Bearer ' + tok } : {};
       }
 
+      // Clear detail panels/logs when the selected app disappears
+      function clearDetailPanels(){
+        try { document.getElementById('d-app').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-image').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-ingress').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-replicas').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-rev').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-rev-status').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-service').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-rollout').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-secrets').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-storage').textContent = '-'; } catch(e){}
+        try {
+          var rbody = document.querySelector('#tbl-replicas tbody');
+          if (rbody) rbody.innerHTML = '';
+        } catch(e){}
+        try { if (elEvents) elEvents.innerHTML = '<div class="log-entry">No recent events</div>'; } catch(e){}
+        clearLogs();
+      }
+
       function refreshApps(){
         return fetchJSON('/status?limit=200').then(function(data){
           if (elAppsList) elAppsList.innerHTML = '';
-          lastStatuses = data.items || [];
-          data.items.forEach(function(s){
+          var items = data.items || [];
+          lastStatuses = items;
+          var names = items.map(function(s){ return s.app_name; });
+          items.forEach(function(s){
             // Use server-derived revision_status for the primary badge to avoid
             // drift with controller semantics (ready/progressing/degraded).
             var statusBadge = '';
@@ -2959,7 +2981,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             div.onclick = function(){ selectApp(s.app_name); };
             if (elAppsList) elAppsList.appendChild(div);
           });
-          if(!current && data.items.length){ selectApp(data.items[0].app_name); }
+          // If the currently viewed app was removed, fall back to the first available.
+          if (current && names.indexOf(current) === -1) {
+            current = null;
+            historyCache = null;
+            clearDetailPanels();
+            updateLogStreaming();
+            updateEventsStreaming();
+          }
+          if(!current && items.length){ selectApp(items[0].app_name); }
+          else if(!current && !items.length){ clearDetailPanels(); }
           renderGraphIfReady();
         });
       }

@@ -75,6 +75,7 @@ class RevisionInfo:
     spec_hash: str
     status: str
     image: str
+    created_at: datetime | None = None
 
 
 class SQLiteStateStore:
@@ -476,7 +477,7 @@ class SQLiteStateStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT revision, spec_hash, status, image
+                SELECT revision, spec_hash, status, image, created_at
                 FROM app_revisions
                 WHERE app_name = ?
                 ORDER BY revision DESC
@@ -486,11 +487,16 @@ class SQLiteStateStore:
             ).fetchone()
         if row is None:
             return None
+        try:
+            created = datetime.fromisoformat(row[4]) if row[4] else None
+        except Exception:
+            created = None
         return RevisionInfo(
             revision=row[0],
             spec_hash=row[1],
             status=row[2],
             image=row[3],
+            created_at=created,
         )
 
     def get_revision_manifest(self, app_name: str, revision: int) -> AppManifest:
@@ -511,7 +517,7 @@ class SQLiteStateStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT revision, spec_hash, status, image
+                SELECT revision, spec_hash, status, image, created_at
                 FROM app_revisions
                 WHERE app_name = ?
                 ORDER BY revision DESC
@@ -519,10 +525,22 @@ class SQLiteStateStore:
                 """,
                 (app_name, limit),
             ).fetchall()
-        return [
-            RevisionInfo(revision=row[0], spec_hash=row[1], status=row[2], image=row[3])
-            for row in rows
-        ]
+        result: list[RevisionInfo] = []
+        for row in rows:
+            try:
+                created = datetime.fromisoformat(row[4]) if row[4] else None
+            except Exception:
+                created = None
+            result.append(
+                RevisionInfo(
+                    revision=row[0],
+                    spec_hash=row[1],
+                    status=row[2],
+                    image=row[3],
+                    created_at=created,
+                )
+            )
+        return result
 
     def record_event(self, app_name: str, revision: int, event_type: str, message: str) -> None:
         created_at = datetime.now(timezone.utc).isoformat()
