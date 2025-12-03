@@ -219,6 +219,84 @@ Why: We already export portable Kubernetes YAML. These items tighten the experie
   - Scope: add opt‑in annotation preset for Traefik (timeouts, proxy headers) behind `--ingress-preset traefik`.
   - Acceptance: preset documented; does not alter defaults unless specified.
 
+---
+
+## Kubernetes API Shim (Helm/kubectl) — MVP
+
+Problem
+- Helm and kubectl expect a Kubernetes API server. k1s is not Kubernetes, so charts can’t be installed directly. We need a minimal API shim that accepts core Kubernetes objects and reconciles them into k1s, enabling `helm upgrade --install` and kubectl workflows for simple, non‑CRD charts.
+
+Goals (MVP)
+- Serve a small, correct slice of the Kubernetes API so Helm/kubectl work end‑to‑end for basic apps:
+  - Discovery: `/version`, `/api`, `/apis`, group/version resource lists.
+  - Core kinds (CRUD/list/watch): Namespaces, Secrets, ConfigMaps, ServiceAccounts, Services.
+  - apps/v1: Deployments (+ `/status`, `/scale`).
+  - networking.k8s.io/v1: Ingress.
+  - Helm release storage in `kube-system` via `Secret`/`ConfigMap`.
+  - Watches with ADDED/MODIFIED/DELETED notifications.
+
+Non‑Goals (MVP)
+- CRDs and admission webhooks, server‑side apply (SSA), full RBAC enforcement, exec/attach/logs/port‑forward, HPA, DaemonSet.
+
+Architecture
+- `apishim-server`: HTTPS listener that exposes the endpoints above; discovery + minimal OpenAPI v2; auth via existing k1s token (allow‑all authz for MVP).
+- SQLite object store keyed by `(group,version,resource,namespace,name)` with `metadata/spec/status` JSON columns.
+- `kube-adapter-controller`: watches stored objects and translates them to k1s `App` + Caddy ingress, then writes back Deployment status/conditions for `helm --wait`.
+- Virtual Endpoints/EndpointSlice views derived from k1s readiness to back Services.
+
+K8s → k1s Mapping (happy path)
+- Deployment → App: image, command/args, env/envFrom, ports, probes, resources, security, preStop; single‑container only for MVP; name prefixing `<ns>--<name>`.
+- Service: ClusterIP emulated locally; NodePort validated (30000–32767) and bound on host; selectors match Deployment template labels.
+- Ingress: rules to Caddy; `ingressClassName` passthrough (default `caddy`); TLS via `tls.secretName`.
+- Secret/ConfigMap/ServiceAccount: persisted as‑is for Helm and env/envFrom.
+
+Status & Conditions (contract for `--wait`)
+- Deployment: set `readyReplicas`, `availableReplicas`, `observedGeneration`; conditions `Available=True` when readyReplicas == spec.replicas, `Progressing` updates during reconcile and on timeout with Reason.
+
+Phases & Acceptance
+- Phase 0 — Discovery + Core Storage
+  - Endpoints live; CRUD+watch for NS/CM/Secret/SA; Helm can list releases; `kubectl get ns,cm,secret -A` works.
+- Phase 1 — Deployment/Service/Ingress + Status/Scale
+  - `helm upgrade --install <chart> --wait` completes for a simple, no‑CRD chart; `kubectl rollout status deploy/<name>` reports success; Ingress reachable via Caddy.
+- Phase 2 — Batch + Dry‑Run + Polish
+  - Add Job/CronJob, `--dry-run=server`, richer OpenAPI, clear 4xx/5xx errors; `helm uninstall` garbage‑collects derived k1s resources.
+
+Operational Notes
+- TLS: self‑signed for shim; provide kubeconfig helper.
+- SSA: return 415 with guidance (disable SSA) when `apply-patch` content‑type is used.
+- CRDs: reject with 403 and actionable message.
+
+Risks
+- CRD‑heavy charts are unsupported; document fallback via `helm template` + converter.
+- Multi‑container Pods rejected initially (422) with clear message; plan follow‑up for multi‑container support.
+
+Developer Checklist / TODO
+- [ ] apishim HTTP skeleton: `/healthz`, `/readyz`, `/version`, discovery trees.
+- [ ] SQLite object store + watch pub/sub; JSON merge‑patch support.
+- [ ] Namespaces/Secrets/ConfigMaps/ServiceAccounts CRUD + watch.
+- [ ] Deployments CRUD + `/status` + `/scale`; k1s App adapter; status propagation.
+- [ ] Services translation (ClusterIP/NodePort) + validation; virtual endpoints.
+- [ ] Ingress translation to Caddy + TLS secret wiring.
+- [ ] kubeconfig helper: `ae apishim kubeconfig`.
+- [ ] Helm smoke test: trivial chart install with `--wait`.
+- [ ] Error texts for SSA/CRDs/multi‑container.
+
+Getting Started (dev)
+```bash
+# Start shim (dev): serves on https://127.0.0.1:8445
+python -m ae.apishim serve --listen 127.0.0.1:8445 --dev-tls --token $(ae token)
+
+# Generate kubeconfig context
+python -m ae.apishim kubeconfig --server https://127.0.0.1:8445 --token $(ae token) > ~/.kube/config
+
+# Sanity
+kubectl --context k1s-apishim version && kubectl api-resources
+```
+
+References
+- Detailed design: `docs/design/api-shim.md`
+
+
 - PDB percent on CLI — DONE (2025-11-12)
   - Scope: allow percent strings for `--pdb-{min-available,max-unavailable}` to match exporter capability.
   - Acceptance: CLI validates integers or percent; exporter receives value verbatim.
