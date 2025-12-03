@@ -16,6 +16,8 @@ import os
 import time
 import signal
 from pathlib import Path
+from datetime import datetime
+import json, hashlib
 from typing import Iterable, List
 
 from ae.controller.reconciler import Reconciler
@@ -78,14 +80,8 @@ def _find_manifests(specs_dir: Path) -> List[Path]:
     return sorted(paths)
 
 
-def _load_all(paths: Iterable[Path]) -> List[AppManifest]:
-    """Load manifests, preferring a single file per app name.
-
-    If multiple files declare the same metadata.name, prefer the file whose
-    basename matches the app name (e.g., echo.yaml) over variant samples like
-    echo-rollout.yaml, echo-resources.yaml, etc. This prevents rapid spec
-    churn when multiple examples exist for the same app.
-    """
+def _load_all(paths: Iterable[Path]) -> dict[str, tuple[AppManifest, Path]]:
+    """Load manifests, preferring one file per app name and returning path for mtime."""
     selected: dict[str, tuple[AppManifest, Path]] = {}
     for path in paths:
         try:
@@ -101,7 +97,79 @@ def _load_all(paths: Iterable[Path]) -> List[AppManifest]:
         prefer_new = path.stem == name and cur[1].stem != name
         if prefer_new:
             selected[name] = (m, path)
-    return [mp[0] for mp in selected.values()]
+    return selected
+
+
+def _spec_hash(manifest: AppManifest) -> str:
+    payload = json.dumps(
+        manifest.model_dump(by_alias=True, exclude_none=True), sort_keys=True
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _merge_file_and_db_manifests(
+    file_map: dict[str, tuple[AppManifest, Path]],
+    store: SQLiteStateStore,
+    allowed: set[str] | None = None,
+) -> dict[str, tuple[AppManifest, Path | None]]:
+    """Prefer latest DB revision when it differs from on-disk spec, preserving file edits.
+
+    - If hashes match, keep file manifest.
+    - If hashes differ, choose the newer of file mtime vs DB revision.created_at.
+    - Include DB-only apps (e.g., labs sessions) subject to 'allowed' filter.
+    """
+    merged: dict[str, tuple[AppManifest, Path | None]] = dict(file_map)
+
+    def _db_created_ts(rev) -> float:
+        try:
+            ca = getattr(rev, "created_at", None)
+            if ca is None:
+                return 0.0
+            if isinstance(ca, datetime):
+                return ca.timestamp()
+            return datetime.fromisoformat(str(ca)).timestamp()
+        except Exception:
+            return 0.0
+
+    for status in store.list_status():
+        name = status.app_name
+        if allowed and name not in allowed:
+            continue
+        try:
+            revs = store.list_revisions(name, limit=1)
+            if not revs:
+                continue
+            rev = revs[0]
+            db_manifest = store.get_revision_manifest(name, rev.revision)
+            db_hash = rev.spec_hash or _spec_hash(db_manifest)
+        except Exception:
+            continue
+
+        entry = merged.get(name)
+        if entry is None:
+            merged[name] = (db_manifest, None)
+            continue
+
+        file_manifest, file_path = entry
+        try:
+            file_hash = _spec_hash(file_manifest)
+        except Exception:
+            file_hash = ""
+
+        if file_hash == db_hash:
+            continue
+
+        file_mtime = 0.0
+        try:
+            if file_path and file_path.exists():
+                file_mtime = file_path.stat().st_mtime
+        except Exception:
+            file_mtime = 0.0
+
+        if _db_created_ts(rev) >= file_mtime:
+            merged[name] = (db_manifest, None)
+
+    return merged
 
 
 def _make_reconciler() -> Reconciler:
@@ -673,45 +741,34 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             raise
 
     if args.once:
-        manifests = _load_all(_find_manifests(specs_dir))
-        # When in demo mode, strictly gate manifests to the AE_SPECS_DIR set.
+        manifest_map = _load_all(_find_manifests(specs_dir))
+        allowed: set[str] | None = None
+        # Demo gating for on-disk manifests
         try:
             from ae.observability.http_api import _demo_allowed_apps  # type: ignore
 
             demo_allowed = set(_demo_allowed_apps())
             if demo_allowed:
-                manifests = [m for m in manifests if m.metadata.name in demo_allowed]
+                manifest_map = {k: v for k, v in manifest_map.items() if k in demo_allowed}
+                allowed = demo_allowed if demo_allowed else None
         except Exception:
             pass
-        # Include DB-stored apps that aren't backed by files (e.g., labs sessions),
-        # but when running in demo mode restrict to the active demo scope (AE_SPECS_DIR)
-        # plus any Labs-applied apps tracked by the HTTP API.
+        # Merge with DB revisions (labs sessions, scaled manifests, etc.)
         try:
             store = state_store_from_env()
-            present = {m.metadata.name for m in manifests}
-            allowed: set[str] = set()
+            # Expand allowed set with labs apps when available
             try:
-                from ae.observability.http_api import _demo_allowed_apps, _LABS_APPS  # type: ignore
+                from ae.observability.http_api import _LABS_APPS  # type: ignore
 
-                demo_allowed = set(_demo_allowed_apps())
                 labs_allowed = set(_LABS_APPS)
-                allowed = demo_allowed | labs_allowed
+                union = (allowed or set()) | labs_allowed
+                allowed = union if union else None
             except Exception:
-                # If filters unavailable, default to unfiltered behavior
-                allowed = set()
-            for s in store.list_status():
-                if s.app_name in present:
-                    continue
-                if allowed and (s.app_name not in allowed):
-                    continue
-                try:
-                    man = store.get_revision_manifest(s.app_name, s.revision)
-                    manifests.append(man)
-                except Exception:
-                    continue
+                pass
+            manifest_map = _merge_file_and_db_manifests(manifest_map, store, allowed)
         except Exception:
             pass
-        _reconcile_all(reconciler, manifests)
+        _reconcile_all(reconciler, [mp[0] for mp in manifest_map.values()])
         return 0
 
     # loop mode
@@ -770,43 +827,33 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             do_full = changed or (now - last_full) >= max(1, int(args.interval))
             if do_full:
                 t0 = time.time()
-                manifests = _load_all(_find_manifests(specs_dir))
-                # When in demo mode, strictly gate manifests to the AE_SPECS_DIR set.
+                manifest_map = _load_all(_find_manifests(specs_dir))
+                allowed: set[str] | None = None
+                # Demo gating for on-disk manifests
                 try:
                     from ae.observability.http_api import _demo_allowed_apps  # type: ignore
 
                     demo_allowed = set(_demo_allowed_apps())
                     if demo_allowed:
-                        manifests = [m for m in manifests if m.metadata.name in demo_allowed]
+                        manifest_map = {k: v for k, v in manifest_map.items() if k in demo_allowed}
+                        allowed = demo_allowed if demo_allowed else None
                 except Exception:
                     pass
-                # Also reconcile DB-backed apps (session/labs) not present on disk.
-                # In demo mode, restrict to the active demo scope (AE_SPECS_DIR) plus Labs-applied apps.
+                # Merge DB revisions and include DB-only apps (labs/session), honoring allowed filter
                 try:
                     store = state_store_from_env()
-                    present = {m.metadata.name for m in manifests}
-                    allowed: set[str] = set()
                     try:
-                        from ae.observability.http_api import _demo_allowed_apps, _LABS_APPS  # type: ignore
+                        from ae.observability.http_api import _LABS_APPS  # type: ignore
 
-                        demo_allowed = set(_demo_allowed_apps())
                         labs_allowed = set(_LABS_APPS)
-                        allowed = demo_allowed | labs_allowed
+                        union = (allowed or set()) | labs_allowed
+                        allowed = union if union else None
                     except Exception:
-                        allowed = set()
-                    for s in store.list_status():
-                        if s.app_name in present:
-                            continue
-                        if allowed and (s.app_name not in allowed):
-                            continue
-                        try:
-                            man = store.get_revision_manifest(s.app_name, s.revision)
-                            manifests.append(man)
-                        except Exception:
-                            continue
+                        pass
+                    manifest_map = _merge_file_and_db_manifests(manifest_map, store, allowed)
                 except Exception:
                     pass
-                _reconcile_all(reconciler, manifests)
+                _reconcile_all(reconciler, [mp[0] for mp in manifest_map.values()])
                 t1 = time.time()
                 set_reconcile_metrics(ts_seconds=t1, duration_seconds=(t1 - t0))
                 last_full = now
