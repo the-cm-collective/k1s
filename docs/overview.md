@@ -5,6 +5,16 @@ k1s is a tiny, single‑node application engine that lets you declare apps in YA
 - Goal: simple, predictable rollouts for 1–3 services on a small VPS.
 - Non‑goals: multi‑node scheduling, CRDs, complex RBAC, full Kubernetes API.
 
+## Current State (Dec 2025)
+
+k1s now ships a Podman‑first controller with Docker fallback, Caddy ingress, SQLite state, and a thin `ae` CLI plus kubectl‑style `k1s` wrapper. Specs cover rolling deploys, health probes, config/secret projection (SOPS/age aware), storage, security context, observability, and a small HTTP API. Everything is packaged to stay comfortable on a 1‑CPU/2‑GB VPS while still feeling like day‑to‑day Kubernetes.
+
+Progress through mid‑November 2025 delivered multi‑container runtime with init containers, canary rollouts with persisted weights, strict health gating, HPA/PDB/PVC/ServiceAccount support, and `export-k8s` coverage for Deployment/StatefulSet/Ingress/Service plus optional HPA/PDB/SA/PVC/NetworkPolicy. Podman defaults to `crun` (2025‑11‑10) for faster startup and lower memory, RBAC emitters, Job/CronJob exporters, percent PDB flags, and PodSecurity label presets all landed on 2025‑11‑12.
+
+Compatibility is a first‑class focus: `export-k8s --validate` and `k1s k8s-check --policy strict` emit upstream‑clean YAML, and the in‑progress Kubernetes API shim targets Helm/kubectl workflows (discovery, core CRUD/watch, Deployment/Service/Ingress translation with status/scale) so more charts work unmodified than on other lightweight K8s‑like stacks.
+
+Footprint remains well below k3s. Recent bench runs in `combined/combined.csv` (2025‑12‑02) show k1s control‑plane PSS around 338–345 MB on Podman+crun (rootless), while comparable k3s runs from 2025‑11‑21 sit near 960–1,020 MB. Rollout snapshots hold the same ~3× gap, keeping us smaller than k3s while aiming for higher Kubernetes compatibility than other micro platforms.
+
 ## Features (High‑Level)
 
 - Declarative specs: `apiVersion: ae.dev/v1alpha1`, `kind: App`.
