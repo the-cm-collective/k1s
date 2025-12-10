@@ -6,10 +6,14 @@
 .fail{color:#ef4444}
 .pending{color:#9ca3af}
 .muted{opacity:.8}
+.scrollbar-hide{scrollbar-width:none;-ms-overflow-style:none}
+.scrollbar-hide::-webkit-scrollbar{width:0;height:0}
 .row{display:flex;gap:8px;align-items:center}
 .hidden{display:none}
 .ribbon{padding:6px 10px;border:1px solid var(--border);background:var(--muted);margin:.5rem 0;border-radius:6px}
 .ribbon{min-height:28px}
+.ribbon#banner{position:fixed;top:12px;left:50%;transform:translateX(-50%);width:min(960px,calc(100% - 32px));margin:0;z-index:300;box-shadow:0 6px 20px rgba(0,0,0,.18)}
+.ribbon#toast{position:fixed;top:12px;right:12px;margin:0;z-index:320;min-width:220px;box-shadow:0 6px 20px rgba(0,0,0,.18)}
 .ribbon .ok{font-weight:600}
 .ribbon .close-btn{float:right; cursor:pointer; padding:0 6px; border:1px solid var(--border); border-radius:4px; background:transparent}
 .ribbon .close-btn:hover{background:var(--border)}

@@ -16,6 +16,9 @@
       .container { max-width: 920px; }
       /* Make main content take remaining height so footer sits at bottom */
       .container { flex: 1 0 auto; }
+      /* Shared helper to allow scrolling without visible bars */
+      .scrollbar-hide { scrollbar-width: none; -ms-overflow-style: none; }
+      .scrollbar-hide::-webkit-scrollbar { width: 0; height: 0; }
     </style>
     <style>
       :root {
@@ -37,6 +40,8 @@
       body { background: var(--bg); color: var(--fg); }
       a { color: var(--link); }
       code, pre { background: var(--code-bg); border: 1px solid var(--border); }
+      pre { scrollbar-width: none; -ms-overflow-style: none; }
+      pre::-webkit-scrollbar { width: 0; height: 0; }
       nav { display: flex; align-items: center; gap: .75rem; margin-bottom: 1.25rem; }
       nav a { margin-right: 1rem; }
       .spacer { flex: 1 1 auto; }
@@ -113,6 +118,11 @@
 <li>Goal: simple, predictable rollouts for 1–3 services on a small VPS.</li>
 <li>Non‑goals: multi‑node scheduling, CRDs, complex RBAC, full Kubernetes API.</li>
 </ul>
+<h2>Current State (Dec 2025)</h2>
+<p>k1s now ships a Podman‑first controller with Docker fallback, Caddy ingress, SQLite state, and a thin <code>ae</code> CLI plus kubectl‑style <code>k1s</code> wrapper. Specs cover rolling deploys, health probes, config/secret projection (SOPS/age aware), storage, security context, observability, and a small HTTP API. Everything is packaged to stay comfortable on a 1‑CPU/2‑GB VPS while still feeling like day‑to‑day Kubernetes.</p>
+<p>Progress through mid‑November 2025 delivered multi‑container runtime with init containers, canary rollouts with persisted weights, strict health gating, HPA/PDB/PVC/ServiceAccount support, and <code>export-k8s</code> coverage for Deployment/StatefulSet/Ingress/Service plus optional HPA/PDB/SA/PVC/NetworkPolicy. Podman defaults to <code>crun</code> (2025‑11‑10) for faster startup and lower memory, RBAC emitters, Job/CronJob exporters, percent PDB flags, and PodSecurity label presets all landed on 2025‑11‑12.</p>
+<p>Compatibility is a first‑class focus: <code>export-k8s --validate</code> and <code>k1s k8s-check --policy strict</code> emit upstream‑clean YAML, and the in‑progress Kubernetes API shim targets Helm/kubectl workflows (discovery, core CRUD/watch, Deployment/Service/Ingress translation with status/scale) so more charts work unmodified than on other lightweight K8s‑like stacks.</p>
+<p>Footprint remains well below k3s. Recent bench runs in <code>combined/combined.csv</code> (2025‑12‑02) show k1s control‑plane PSS around 338–345 MB on Podman+crun (rootless), while comparable k3s runs from 2025‑11‑21 sit near 960–1,020 MB. Rollout snapshots hold the same ~3× gap, keeping us smaller than k3s while aiming for higher Kubernetes compatibility than other micro platforms.</p>
 <h2>Features (High‑Level)</h2>
 <ul>
 <li>Declarative specs: <code>apiVersion: ae.dev/v1alpha1</code>, <code>kind: App</code>.</li>
@@ -210,7 +220,7 @@ flowchart LR
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2025-12-03 12:24:20</span>
+        <span>Built 2025-12-10 10:26:18</span>
       </div>
     </footer>
     <script>

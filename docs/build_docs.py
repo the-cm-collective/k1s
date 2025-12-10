@@ -83,6 +83,9 @@ TEMPLATE = """<!doctype html>
       .container { max-width: 920px; }
       /* Make main content take remaining height so footer sits at bottom */
       .container { flex: 1 0 auto; }
+      /* Shared helper to allow scrolling without visible bars */
+      .scrollbar-hide { scrollbar-width: none; -ms-overflow-style: none; }
+      .scrollbar-hide::-webkit-scrollbar { width: 0; height: 0; }
     </style>
     <style>
       :root {
@@ -104,6 +107,8 @@ TEMPLATE = """<!doctype html>
       body { background: var(--bg); color: var(--fg); }
       a { color: var(--link); }
       code, pre { background: var(--code-bg); border: 1px solid var(--border); }
+      pre { scrollbar-width: none; -ms-overflow-style: none; }
+      pre::-webkit-scrollbar { width: 0; height: 0; }
       nav { display: flex; align-items: center; gap: .75rem; margin-bottom: 1.25rem; }
       nav a { margin-right: 1rem; }
       .spacer { flex: 1 1 auto; }

@@ -1062,7 +1062,33 @@
     setTimeout(verifyIngress, 1500);
   }
 
-  document.addEventListener('DOMContentLoaded', async () => {
+    document.addEventListener('DOMContentLoaded', async () => {
+    const followCtl = document.getElementById('follow-tail');
+    const shouldFollow = () => !followCtl || followCtl.checked;
+    const follow = (el) => { if (el && shouldFollow()) { try { el.scrollTop = el.scrollHeight; } catch(_){ } } };
+    const forceFollowAll = () => {
+      const ids = ['observe-logs','observe-events','logs-sse','events-sse'];
+      ids.forEach(id=>{
+        const el = document.getElementById(id);
+        if (el) { try { el.scrollTop = el.scrollHeight; } catch(_){ } }
+      });
+    };
+    // Auto-follow whenever content mutates
+    const attachAutoFollow = (id) => {
+      const el = document.getElementById(id);
+      if (!el || !window.MutationObserver) return;
+      const mo = new MutationObserver(() => follow(el));
+      mo.observe(el, { childList: true, subtree: true });
+      follow(el);
+    };
+    ['observe-logs','observe-events','logs-sse','events-sse'].forEach(attachAutoFollow);
+    if (followCtl) {
+      followCtl.addEventListener('change', () => {
+        if (followCtl.checked) {
+          requestAnimationFrame(forceFollowAll);
+        }
+      });
+    }
     // Ensure status has a visible default
     try { setText('#status-summary', 'n/a', 'pending'); } catch(_){}
     await initEnv();
@@ -1084,7 +1110,7 @@
             const msg = (e.message||'');
             return `<div class="log-entry"><code>${ts}</code> ${msg}</div>`;
           }).join('') || '<div class="log-entry">No recent events</div>';
-          try { box.scrollTop = box.scrollHeight; } catch(_){}
+          follow(box);
         }
       } catch {}
     }
@@ -1102,13 +1128,14 @@
             const box = document.getElementById('observe-logs');
             if (box) { box.innerHTML=''; box.classList.remove('hidden'); }
             const sseHide = document.getElementById('logs-sse'); if (sseHide) sseHide.classList.add('hidden');
+            requestAnimationFrame(forceFollowAll);
             esLogs.onmessage = (ev) => {
               if (!box) return;
               const div = document.createElement('div');
               div.className = 'log-entry';
               div.textContent = ev.data || '';
               box.appendChild(div);
-              box.scrollTop = box.scrollHeight;
+              follow(box);
             };
             esLogs.onerror = () => { /* retry by EventSource */ };
           } catch(e){ console.error('EventSource logs error', e); }
@@ -1129,7 +1156,7 @@
                   const msg = (e.message||'');
                   return `<div class="log-entry"><code>${ts}</code> ${msg}</div>`;
                 }).join('') || '<div class="log-entry">No recent events</div>';
-                try { box.scrollTop = box.scrollHeight; } catch(_){}
+                follow(box);
               }
             };
             esEvents.onerror = () => { try { if ((!API || API==='') && window.DOCS_API_BASE) { switchToDirectApi('events SSE error'); } } catch(_){} };
@@ -1180,13 +1207,16 @@
     // Copy API curl hint
     try { document.getElementById('api-curl-copy')?.addEventListener('click', copyApiCurlHint); } catch(_){}
   });
-  // Ensure HTMX-driven events panel auto-scrolls to bottom after swaps
+  // Ensure HTMX-driven events panel auto-scrolls to bottom after swaps (when follow is enabled)
   try {
     document.body.addEventListener('htmx:afterSwap', (evt) => {
       try {
         const tgt = evt.target;
         if (tgt && tgt.id === 'events-sse') {
-          tgt.scrollTop = tgt.scrollHeight;
+          const followCtl = document.getElementById('follow-tail');
+          if (!followCtl || followCtl.checked) {
+            tgt.scrollTop = tgt.scrollHeight;
+          }
         }
       } catch(_){}
     });
