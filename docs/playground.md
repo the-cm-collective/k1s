@@ -59,7 +59,7 @@ This page prefers HTMX + SSE for live updates and uses a small `labs.js` helper 
     <button id="btn-helm-demo-stop" class="btn-secondary" disabled>Stop</button>
   </div>
   <div id="helm-demo-status" class="helm-demo-status">Labs backend unavailable.</div>
-  <pre id="helm-demo-log" class="helm-demo-log hidden" aria-live="polite"></pre>
+  <pre id="helm-demo-log" class="helm-demo-log hidden scrollbar-hide" aria-live="polite"></pre>
 </div>
 
 Want to watch a Helm deployment materialize inside the dashboard? Click “Run Helm Shim Demo” above (requires Labs token). Behind the scenes, the server runs the commands below; you can still run them manually if you prefer:
@@ -130,12 +130,13 @@ Live feed of events and logs for your sample app. When sessions are enabled, thi
 
 <div id="observe">
   <button id="btn-observe-toggle" disabled>Start Tail</button>
-  <div id="observe-events" class="panel" aria-live="polite" aria-busy="true" data-source="events"></div>
-  <div id="observe-logs" class="panel" aria-live="polite" aria-busy="true" data-source="logs"></div>
+  <label style="margin-left:10px"><input type="checkbox" id="follow-tail" checked/> Follow tail</label>
+  <div id="observe-events" class="panel scrollbar-hide" aria-live="polite" aria-busy="true" data-source="events" style="height:220px;max-height:220px;overflow:auto;"></div>
+  <div id="observe-logs" class="panel scrollbar-hide" aria-live="polite" aria-busy="true" data-source="logs" style="height:220px;max-height:220px;overflow:auto;"></div>
   <!-- HTMX SSE variant for logs; labs.js will arm sse-connect once a session exists -->
-  <div id="logs-sse" class="panel hidden" hx-ext="sse" sse-connect="" sse-swap="message" hx-swap="beforeend"></div>
+  <div id="logs-sse" class="panel hidden scrollbar-hide" hx-ext="sse" sse-connect="" sse-swap="message" hx-swap="beforeend" style="height:220px;max-height:220px;overflow:auto;"></div>
   <!-- HTMX SSE variant for events; labs.js will arm sse-connect once a session exists -->
-  <div id="events-sse" class="panel hidden" hx-ext="sse" sse-connect="" sse-swap="message"></div>
+  <div id="events-sse" class="panel hidden scrollbar-hide" hx-ext="sse" sse-connect="" sse-swap="message" style="height:220px;max-height:220px;overflow:auto;"></div>
 </div>
 
 ## D. Scale & Rollout
