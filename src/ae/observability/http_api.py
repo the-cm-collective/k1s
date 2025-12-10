@@ -2577,8 +2577,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       body.apps-collapsed main { grid-template-columns: 16px 1fr; }
       #apps { position:relative; border-right:1px solid #8884; padding-right:8px; min-height:0; }
       body.apps-collapsed #apps { border-right:0; padding-right:0; }
-      #apps-list { display:block; overflow-y:auto; max-height: calc(100vh - 56px - 80px); scrollbar-width: none; -ms-overflow-style: none; }
-      #apps-list::-webkit-scrollbar { width:0; height:0; }
+      .scrollbar-hide { scrollbar-width: none; -ms-overflow-style: none; }
+      .scrollbar-hide::-webkit-scrollbar { width:0; height:0; }
+      #apps-list { display:block; overflow-y:auto; max-height: calc(100vh - 56px - 80px); }
       body.apps-collapsed #apps-list { display:none; }
       .app { padding:6px 8px; border-radius:6px; cursor:pointer; }
       .app.active { background:#1f2937; color:#e5e7eb; }
@@ -2589,7 +2590,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
       .row.stretch { align-items: stretch; flex-wrap: nowrap; overflow-x: hidden; }
       .row.stretch::-webkit-scrollbar { height:0; }
-      .row.stretch { scrollbar-width: none; -ms-overflow-style: none; }
       .card { border:1px solid #8884; border-radius:8px; padding:8px 10px; min-width:0; max-width:100%; overflow:hidden; }
       .card table { display:block; overflow:auto; white-space: nowrap; }
       .card pre { overflow:auto; }
@@ -2597,14 +2597,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       .row.stretch > .card { min-width: 0; }
       .detail-card { flex: 0 0 320px; }
       /* Reduce default Logs panel height by ~20% (294px → ~235px) */
-      .logbox { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; width:100%; box-sizing:border-box; height:235px; overflow:auto; overflow-x:auto; white-space: pre; background:#0001; padding:8px; border-radius:6px; scrollbar-width: none; -ms-overflow-style: none; }
-      .logbox::-webkit-scrollbar { width:0; height:0; }
-      .scrollcap { max-height:180px; overflow:auto; overflow-x:auto; white-space: normal; scrollbar-width: none; -ms-overflow-style: none; max-width:100%; width:100%; }
+      .logbox { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; width:100%; box-sizing:border-box; height:235px; overflow:auto; overflow-x:auto; white-space: pre; background:#0001; padding:8px; border-radius:6px; }
+      .scrollcap { max-height:180px; overflow:auto; overflow-x:auto; white-space: normal; max-width:100%; width:100%; }
       /* Ensure detail text uses compact line spacing */
       #desc { line-height: 1.3; min-height: 12em; max-height: none; overflow-y: hidden; }
       /* Match events panel baseline height to keep row stable */
       #events { min-height: 12em; }
-      .scrollcap::-webkit-scrollbar { width:0; height:0; }
       .log-entry { white-space: pre; }
       /* Ensure events panel never widens the layout; scroll inside */
       #events { max-width:100%; width:100%; overflow-x:auto; }
@@ -2663,12 +2661,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       </div>
     </header>
     <main>
-  <section id=\"apps\"><div id=\"apps-list\"></div><button id=\"apps-pane-toggle\" title=\"Collapse apps pane\" aria-pressed=\"false\" aria-label=\"Toggle apps panel\"><svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"0\" fill=\"none\"/><path d=\"M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z\"/></svg></button></section>
+  <section id=\"apps\"><div id=\"apps-list\" class=\"scrollbar-hide\"></div><button id=\"apps-pane-toggle\" title=\"Collapse apps pane\" aria-pressed=\"false\" aria-label=\"Toggle apps panel\"><svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"0\" fill=\"none\"/><path d=\"M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z\"/></svg></button></section>
       <section id=\"detail\">
         <h2>Application</h2>
         <div class=\"row stretch\">
           <div class=\"card detail-card\" style=\"display:flex; flex-direction:column;\">
-            <div id=\"desc\" class=\"scrollcap\">
+            <div id=\"desc\" class=\"scrollcap scrollbar-hide\">
             <div><strong>App:</strong> <span id=\"d-app\">-</span></div>
             <div><strong>Image:</strong> <span id=\"d-image\">-</span></div>
             <div><strong>Ingress:</strong> <span id=\"d-ingress\">-</span></div>
@@ -2682,13 +2680,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           </div>
           <div class=\"card\" style=\"flex:1; display:flex; flex-direction:column;\">
             <strong>Events</strong>
-            <div class=\"scrollcap\" id=\"events\"></div>
+            <div class=\"scrollcap scrollbar-hide\" id=\"events\"></div>
           </div>
         </div>
         <!-- Logs directly below Application/Events -->
         <div class=\"card\" style=\"margin-top:12px;\">
           <strong>Logs</strong>
-          <div id=\"logs\" class=\"logbox\" style=\"height:235px;\" hx-get=\"/dashboard/partials/logs\" hx-trigger=\"load, every 5s, refresh\" hx-include=\"#log-filter\" hx-swap=\"innerHTML\" hx-on::after-settle=\"this.scrollTop=this.scrollHeight\"></div>
+          <div id=\"logs\" class=\"logbox scrollbar-hide\" style=\"height:235px;\" hx-get=\"/dashboard/partials/logs\" hx-trigger=\"load, every 5s, refresh\" hx-include=\"#log-filter\" hx-swap=\"innerHTML\" hx-on::after-settle=\"this.scrollTop=this.scrollHeight\"></div>
         </div>
         <div class=\"card\" style=\"margin-top:12px;\"> 
           <strong>System</strong>
@@ -2696,7 +2694,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         </div>
         <div class=\"card\" style=\"margin-top:12px;\">
           <strong>Probe History</strong>
-          <div id=\"probe-history\" class=\"scrollcap\" style=\"max-height:220px;\"
+          <div id=\"probe-history\" class=\"scrollcap scrollbar-hide\" style=\"max-height:220px;\"
                hx-get=\"/dashboard/partials/probe-history\"
                hx-trigger=\"load, every 10s, refresh\"
                hx-include=\"#app-select\"
@@ -2775,7 +2773,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
               <strong>Plan Result</strong>
               <button type=\"button\" id=\"plan-copy\" title=\"Copy JSON to clipboard\">Copy</button>
             </div>
-            <pre id=\"plan-output\" class=\"logbox\" style=\"height:280px\"></pre>
+            <pre id=\"plan-output\" class=\"logbox scrollbar-hide\" style=\"height:280px\"></pre>
           </div>
         </div>
         
