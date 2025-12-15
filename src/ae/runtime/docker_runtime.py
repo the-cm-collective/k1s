@@ -41,7 +41,7 @@ class DockerRuntime(RuntimeAdapter):
         # Optional shared network so that ingress (Caddy) can reach containers by name
         import os as _os
 
-        self._network_name = _os.getenv("AE_DOCKER_NETWORK")
+        self._network_name = _os.getenv("AE_DOCKER_NETWORK") or _os.getenv("AE_NETWORK_NAME")
         self._serial_service_rollout = _os.getenv("AE_SERIAL_SERVICE_ROLLOUT", "0") == "1"
 
     def ensure_app(
@@ -51,9 +51,13 @@ class DockerRuntime(RuntimeAdapter):
         *,
         keep_old: bool = False,
         limit_create: int | None = None,
+        replica_ids: list[str] | None = None,
+        node_id: str | None = None,
     ) -> RuntimeResult:
         app_name = manifest.metadata.name
-        desired_replica_ids = self._desired_replica_ids(manifest, revision)
+        desired_replica_ids = list(replica_ids) if replica_ids is not None else self._desired_replica_ids(manifest, revision)
+        # Record node context so volume helpers can label ownership
+        self._current_node_id = node_id
 
         try:
             existing_containers = self._client.containers.list(
@@ -102,7 +106,7 @@ class DockerRuntime(RuntimeAdapter):
             if container is None:
                 if limit_create is not None and created >= int(limit_create):
                     continue
-                container = self._create_container(manifest, replica_id, revision)
+                container = self._create_container(manifest, replica_id, revision, node_id=node_id)
                 containers_by_replica[replica_id] = container
                 created += 1
             else:
@@ -255,7 +259,14 @@ class DockerRuntime(RuntimeAdapter):
         except APIError as exc:
             raise RuntimeError(f"Failed to pull image {image_ref}: {exc}") from exc
 
-    def _create_container(self, manifest: AppManifest, replica_id: str, revision: int) -> Container:
+    def _create_container(
+        self,
+        manifest: AppManifest,
+        replica_id: str,
+        revision: int,
+        *,
+        node_id: str | None = None,
+    ) -> Container:
         # replica_id pattern: <app>-rev<revision>-<index>
         app_name = manifest.metadata.name
         replica_suffix = replica_id.split("-")[-1]
@@ -353,6 +364,7 @@ class DockerRuntime(RuntimeAdapter):
                     self.REPLICA_LABEL: replica_id,
                     self.REVISION_LABEL: str(revision),
                     self.CONTAINER_LABEL: "main",
+                    **({"ae.node": str(node_id)} if node_id else {}),
                 },
                 "ports": ports if ports else None,
                 "restart_policy": {"Name": "unless-stopped"},
@@ -850,20 +862,22 @@ class DockerRuntime(RuntimeAdapter):
         # manifest. For readiness probing we prefer, in order: a published host
         # port matching the preferred probe port; otherwise a published 80/tcp;
         # otherwise a published 8080/tcp; otherwise the first published non‑443
-        # mapping; finally, if on a shared network, container DNS name.
+        # mapping; finally, if on a shared network, container IP/DNS.
 
         network_ports = container.attrs.get("NetworkSettings", {}).get("Ports", {}) or {}
 
         def _binding_to_endpoint(binding: dict) -> Optional[str]:
             host_ip = binding.get("HostIp", "127.0.0.1")
-            if host_ip in ("0.0.0.0", "::", "[::]"):
-                host_ip = "127.0.0.1"
+            # When containers run on remote nodes, loopback/0.0.0.0 is not reachable
+            # from the controller. Prefer an advertised node IP when provided.
+            if host_ip in ("0.0.0.0", "::", "[::]", "127.0.0.1", "::1", "[::1]"):
+                host_ip = os.getenv("AE_NODE_ADVERTISE_IP", host_ip)
             host_port = binding.get("HostPort")
             if host_port:
                 return f"{host_ip}:{host_port}"
             return None
 
-        # 1) Preferred probe port
+        # 0) Preferred probe port (host-published)
         if preferred is not None:
             binds = network_ports.get(f"{int(preferred)}/tcp")
             if binds:
@@ -878,13 +892,13 @@ class DockerRuntime(RuntimeAdapter):
                 return _binding_to_endpoint(binds[0])
             return None
 
-        # 2) Common HTTP ports
+        # 1) Common HTTP ports
         for cp in (80, 8080):
             ep = _pick_port(cp)
             if ep:
                 return ep
 
-        # 3) First published non‑443 mapping
+        # 2) First published non‑443 mapping
         for key, binds in network_ports.items():
             if not binds:
                 continue
@@ -898,7 +912,7 @@ class DockerRuntime(RuntimeAdapter):
             if ep:
                 return ep
 
-        # 4) Shared-network fallback using manifest-declared ports
+        # 3) Shared-network fallback using manifest-declared ports (same-host overlay only)
         if self._network_name:
             first = next(iter(ports or []), None)
             if first is not None:
@@ -1207,6 +1221,11 @@ class DockerRuntime(RuntimeAdapter):
                     labels={
                         "ae.app": app_name,
                         "ae.volume": str(name),
+                        **(
+                            {"ae.node": str(getattr(self, "_current_node_id", None))}
+                            if getattr(self, "_current_node_id", None)
+                            else {}
+                        ),
                     },
                 )
         except APIError as exc:  # pragma: no cover - depends on docker daemon

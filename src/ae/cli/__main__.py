@@ -6,6 +6,7 @@ import argparse
 import os
 from pathlib import Path
 from typing import Callable
+from datetime import datetime, timezone
 
 from ae.controller.health import HealthManager
 from ae.controller.reconciler import ReconcileReport, Reconciler
@@ -58,6 +59,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--wide", action="store_true", help="Show additional details like resources and volumes"
     )
     status_parser.add_argument("--json", action="store_true", help="Emit JSON instead of text")
+    status_parser.add_argument(
+        "--watch",
+        type=int,
+        default=None,
+        help="Poll every N seconds until desired replicas are ready (returns nonzero on timeout)",
+    )
+    status_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        help="Maximum seconds to watch before exiting nonzero (requires --watch)",
+    )
 
     logs_parser = subparsers.add_parser("logs", help="Tail application logs")
     logs_parser.add_argument("name", help="Application name")
@@ -89,6 +102,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     exec_parser.add_argument("--timeout", type=int, default=None, help="Timeout seconds")
     exec_parser.add_argument("cmd", nargs=argparse.REMAINDER, help="Command to execute after --")
+
+    nodes_parser = subparsers.add_parser("nodes", help="List or describe nodes")
+    nodes_parser.add_argument("name", nargs="?", help="Node id to describe (omit to list)")
+    nodes_parser.add_argument("--cordon", action="store_true", help="Mark node unschedulable")
+    nodes_parser.add_argument("--uncordon", action="store_true", help="Clear cordon on node")
+    nodes_parser.add_argument(
+        "--drain",
+        action="store_true",
+        help="Cordon node and evict workloads best-effort via the node agent",
+    )
 
     rollback_parser = subparsers.add_parser("rollback", help="Rollback an application revision")
     rollback_parser.add_argument("name", help="Application name")
@@ -158,6 +181,9 @@ def build_parser() -> argparse.ArgumentParser:
     events_parser = subparsers.add_parser("events", help="Show recent events")
     events_parser.add_argument("name", help="Application name")
     events_parser.add_argument("--limit", type=int, default=20)
+
+    services_parser = subparsers.add_parser("services", help="List Services (cluster IPs/endpoints)")
+    services_parser.add_argument("--json", action="store_true", help="Emit JSON output")
 
     history_parser = subparsers.add_parser("history", help="Show recent probe evaluations")
     history_parser.add_argument("name", help="Application name")
@@ -1104,6 +1130,7 @@ def main(argv: list[str] | None = None) -> int:
         "metrics": lambda ns: handle_metrics(ns, store),
         "events": lambda ns: handle_events(ns, store, args),
         "history": lambda ns: handle_history(ns, store, args),
+        "services": lambda ns: handle_services(ns, store),
         "delete": lambda ns: handle_delete(ns, store, runtime, ingress_service, args),
         "scale": lambda ns: handle_scale(ns, store, reconciler, args),
         "backup": lambda ns: handle_backup(ns),
@@ -1117,6 +1144,7 @@ def main(argv: list[str] | None = None) -> int:
         "k8s-check": handle_k8s_check,
         "registry": handle_registry,
         "verify-image": handle_verify_image,
+        "nodes": lambda ns: handle_nodes(ns, store, runtime),
     }
 
     handler = command_handlers.get(args.command)
@@ -1236,6 +1264,121 @@ def handle_secret(ns: argparse.Namespace) -> int:
             return 1
     print(f"Unsupported secret command: {ns.secret_cmd}")
     return 1
+
+
+def _fmt_labels(labels: dict) -> str:
+    if not labels:
+        return "-"
+    return ",".join(f"{k}={v}" for k, v in sorted(labels.items()))
+
+
+def _fmt_taints(taints: list) -> str:
+    if not taints:
+        return "-"
+    parts = []
+    for t in taints:
+        if isinstance(t, dict):
+            key = t.get("key") or ""
+            eff = t.get("effect") or ""
+            val = t.get("value")
+            if val:
+                parts.append(f"{key}={val}:{eff}")
+            else:
+                parts.append(f"{key}:{eff}")
+    return ",".join(parts) if parts else "-"
+
+def _node_status_with_staleness(status, *, grace_seconds: int = 40) -> str:  # type: ignore[no-untyped-def]
+    if status is None:
+        return "Unknown"
+    st = status.status or "Unknown"
+    try:
+        age = (datetime.now(timezone.utc) - status.seen_at).total_seconds()
+        if age > grace_seconds and st == "Ready":
+            return f"NotReady (stale {int(age)}s)"
+    except Exception:
+        return st
+    return st
+
+
+def handle_nodes(
+    ns: argparse.Namespace, store: SQLiteStateStore, runtime: RuntimeAdapter | None = None
+) -> int:
+    # Mutating operations: cordon/uncordon/drain
+    if getattr(ns, "cordon", False) or getattr(ns, "uncordon", False) or getattr(
+        ns, "drain", False
+    ):
+        if not getattr(ns, "name", None):
+            print("node name is required for cordon/uncordon/drain")
+            return 2
+        res = store.get_node(ns.name)
+        if res is None:
+            print(f"node {ns.name} not found")
+            return 1
+        node, _status = res
+        if getattr(ns, "uncordon", False):
+            store.cordon_node(node.node_id, False)
+            print(f"uncordoned {node.node_id}")
+            return 0
+        # cordon or drain
+        store.cordon_node(node.node_id, True)
+        if getattr(ns, "drain", False) and node.endpoint and runtime is not None:
+            try:
+                from ae.runtime import RemoteRuntime
+
+                rr = RemoteRuntime(node.endpoint, runtime)
+                infos = rr.list_containers_info()
+                apps = {
+                    (info.get("labels") or {}).get("ae.app")
+                    for info in infos
+                    if (info.get("labels") or {}).get("ae.app")
+                }
+                for app in apps:
+                    try:
+                        rr.remove_app(str(app))
+                    except Exception:
+                        pass
+                print(
+                    f"drained {node.node_id}: evicted {len(apps)} app(s); node cordoned for reschedule"
+                )
+                return 0
+            except Exception as exc:  # noqa: BLE001
+                print(f"cordoned {node.node_id} (drain best-effort failed: {exc})")
+                return 1
+        print(f"cordoned {node.node_id}")
+        return 0
+
+    if getattr(ns, "name", None):
+        res = store.get_node(ns.name)
+        if res is None:
+            print(f"node {ns.name} not found")
+            return 1
+        node, status = res
+        print(f"node {node.node_id}")
+        print(f"  name:     {node.name or '-'}")
+        print(f"  backend:  {node.backend or '-'}")
+        print(f"  endpoint: {node.endpoint or '-'}")
+        print(f"  podCIDR:  {node.pod_cidr or '-'}")
+        print(f"  wgPubkey: {node.wg_pubkey or '-'}")
+        print(f"  labels:   {_fmt_labels(node.labels)}")
+        print(f"  taints:   {_fmt_taints(node.taints)}")
+        print(f"  cordoned: {'yes' if getattr(node, 'cordoned', False) else 'no'}")
+        if status:
+            ts = status.seen_at.strftime("%Y-%m-%d %H:%M:%S %Z")
+            print(f"  status:   {_node_status_with_staleness(status)} (seen {ts})")
+        else:
+            print("  status:   <none>")
+        return 0
+
+    rows = store.list_nodes()
+    if not rows:
+        print("No nodes registered.")
+        return 0
+    for node, status in rows:
+        st = _node_status_with_staleness(status)
+        print(
+            f"{node.node_id}: status={st} cordoned={'yes' if getattr(node, 'cordoned', False) else 'no'} backend={node.backend or '-'} endpoint={node.endpoint or '-'} labels={_fmt_labels(node.labels)}"
+        )
+    return 0
 
 
 def handle_delete(
@@ -1831,78 +1974,98 @@ def handle_status(
         if status is None:
             print(f"No status recorded for {args.name}")
             return 1
-        if args.json:
-            print(_status_to_json(status, store, include_details=args.wide))
-            return 0
-        print(format_status(status))
-        if args.wide:
-            try:
-                manifest = store.get_revision_manifest(args.name, status.revision)
-                res = manifest.spec.resources
-                vols = manifest.spec.volumes
-                if res and res.limits:
-                    cpu = res.limits.cpu if res.limits.cpu is not None else "-"
-                    mem = res.limits.memory if res.limits.memory is not None else "-"
-                    print(f"    resources: limits cpu={cpu}, memory={mem}")
-                # Crashloop hint based on recent events
+        def _print_status_block(st: AppStatus) -> None:
+            if args.json:
+                print(_status_to_json(st, store, include_details=args.wide))
+                return
+            print(format_status(st))
+            if args.wide:
                 try:
-                    events = store.list_events(args.name, limit=10)
-                    if any(e.event_type == "CrashLoopDetected" for e in events):
-                        print(
-                            "    crashloop: recent CrashLoopDetected events present (see 'ae events' for details)"
-                        )
+                    manifest = store.get_revision_manifest(args.name, st.revision)
+                    res = manifest.spec.resources
+                    vols = manifest.spec.volumes
+                    if res and res.limits:
+                        cpu = res.limits.cpu if res.limits.cpu is not None else "-"
+                        mem = res.limits.memory if res.limits.memory is not None else "-"
+                        print(f"    resources: limits cpu={cpu}, memory={mem}")
+                    try:
+                        events = store.list_events(args.name, limit=10)
+                        if any(e.event_type == "CrashLoopDetected" for e in events):
+                            print("    crashloop: recent CrashLoopDetected events present (see 'ae events')")
+                    except Exception:
+                        pass
+                    if vols:
+                        print(f"    volumes: {len(vols)} mounts")
+                    storage = getattr(manifest.spec, "storage", []) or []
+                    if storage:
+                        st_str = ", ".join(f"{s.name}:{s.mount_path}" for s in storage)
+                        print(f"    storage: {st_str}")
                 except Exception:
                     pass
-                if vols:
-                    print(f"    volumes: {len(vols)} mounts")
-            except Exception:
-                pass
-        replicas = store.list_replicas(args.name)
-        for replica in replicas:
-            print(
-                f"  - {replica.replica_id}: ready={replica.ready} "
-                f"live={replica.live} status={replica.status} | "
-                f"readiness={replica.readiness_message}; "
-                f"liveness={replica.liveness_message}"
-            )
-        if args.history and args.history > 0:
-            history = store.get_probe_history(args.name, args.history)
-            for entry in history:
-                timestamp = entry.check_time.strftime("%Y-%m-%d %H:%M:%S")
+            replicas = store.list_replicas(args.name)
+            for replica in replicas:
                 print(
-                    f"    history {timestamp} {entry.replica_id}: ready={entry.ready} "
-                    f"live={entry.live} | readiness={entry.readiness_message}; "
-                    f"liveness={entry.liveness_message}"
+                    f"  - {replica.replica_id}: ready={replica.ready} "
+                    f"live={replica.live} status={replica.status} | "
+                    f"readiness={replica.readiness_message}; "
+                    f"liveness={replica.liveness_message}"
                 )
-        if args.events:
-            events = store.list_events(args.name, limit=10)
-            if not events:
-                print("    no events recorded")
-            else:
-                for event in events:
-                    timestamp = event.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            if args.history and args.history > 0:
+                history = store.get_probe_history(args.name, args.history)
+                for entry in history:
+                    timestamp = entry.check_time.strftime("%Y-%m-%d %H:%M:%S")
                     print(
-                        f"    event {timestamp} rev={event.revision} "
-                        f"{event.event_type}: {event.message}"
+                        f"    history {timestamp} {entry.replica_id}: ready={entry.ready} "
+                        f"live={entry.live} | readiness={entry.readiness_message}; "
+                        f"liveness={entry.liveness_message}"
                     )
-        # When --wide, include per-container runtime info if runtime is available
-        if args.wide and runtime is not None:
-            try:
-                infos = runtime.list_containers_info()  # type: ignore[attr-defined]
-            except Exception:
-                infos = []
-            if infos:
-                filtered = [c for c in infos if (c.get('labels') or {}).get('ae.app') == args.name]
-                if filtered:
-                    print("  containers:")
-                    for c in filtered:
-                        labs = c.get("labels") or {}
-                        role = labs.get("ae.container", "") or "main"
-                        ports = ",".join(str(p) for p in (c.get("host_ports") or []))
+            if args.events:
+                events = store.list_events(args.name, limit=10)
+                if not events:
+                    print("    no events recorded")
+                else:
+                    for event in events:
+                        timestamp = event.created_at.strftime("%Y-%m-%d %H:%M:%S")
                         print(
-                            f"    - {c.get('name')} role={role} restarts={int(c.get('restart_count', 0))}"
-                            + (f" ports=[{ports}]" if ports else "")
+                            f"    event {timestamp} rev={event.revision} "
+                            f"{event.event_type}: {event.message}"
                         )
+            if args.wide and runtime is not None:
+                try:
+                    infos = runtime.list_containers_info()  # type: ignore[attr-defined]
+                except Exception:
+                    infos = []
+                if infos:
+                    filtered = [c for c in infos if (c.get('labels') or {}).get('ae.app') == args.name]
+                    if filtered:
+                        print("  containers:")
+                        for c in filtered:
+                            labs = c.get("labels") or {}
+                            role = labs.get("ae.container", "") or "main"
+                            ports = ",".join(str(p) for p in (c.get("host_ports") or []))
+                            print(
+                                f"    - {c.get('name')} role={role} restarts={int(c.get('restart_count', 0))}"
+                                + (f" ports=[{ports}]" if ports else "")
+                            )
+
+        if args.watch:
+            import time
+
+            start = time.time()
+            while True:
+                _print_status_block(status)
+                ready = status.ready_replicas >= status.desired_replicas
+                if ready:
+                    return 0
+                if args.timeout and (time.time() - start) > args.timeout:
+                    return 1
+                time.sleep(args.watch)
+                status = store.get_status(args.name)
+                if status is None:
+                    print(f"No status recorded for {args.name}")
+                    return 1
+        else:
+            _print_status_block(status)
         return 0
     statuses = store.list_status()
     if not statuses:
@@ -2449,6 +2612,40 @@ def handle_events(
         print(f"{timestamp} rev={event.revision} {event.event_type}: {event.message}")
     return 0
 
+
+def handle_services(args: argparse.Namespace, store: SQLiteStateStore) -> int:
+    rows = store.list_services()
+    if args.json:
+        import json as _json
+
+        def _as_dict(s):
+            ports = getattr(s, "ports", None)
+            if ports is None:
+                detail = store.get_service(s.app_name)
+                ports = getattr(detail, "ports", {}) if detail else {}
+            return {
+                "app_name": s.app_name,
+                "cluster_ip": s.cluster_ip,
+                "ports": ports,
+                "created_at": getattr(s, "created_at", None),
+            }
+
+        print(_json.dumps([_as_dict(s) for s in rows], indent=2))
+        return 0
+    if not rows:
+        print("No services recorded.")
+        return 0
+    for svc in rows:
+        ports = getattr(svc, "ports", None)
+        if ports is None:
+            detail = store.get_service(svc.app_name)
+            ports = getattr(detail, "ports", {}) if detail else {}
+        port_str = ", ".join(
+            f"{p.get('name','')}:{p.get('port')}->{p.get('targetPort')}"
+            for p in (ports or {}).get("ports", [])
+        )
+        print(f"{svc.app_name}: ip={svc.cluster_ip} ports={port_str}")
+    return 0
 
 def handle_history(
     args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace

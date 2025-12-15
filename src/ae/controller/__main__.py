@@ -15,14 +15,17 @@ import argparse
 import os
 import time
 import signal
+import socket
 from pathlib import Path
 from datetime import datetime
 import json, hashlib
 from typing import Iterable, List
 
+from ae.controller.state import SQLiteStateStore
 from ae.controller.reconciler import Reconciler
 from ae.controller.spec import AppManifest, ManifestError, load_manifest
 from ae.observability.http_api import start_http_api, set_reconcile_metrics
+from ae.controller.agent_api import start_agent_api
 from ae.observability.logging import configure_logging
 from ae.cli.__main__ import (
     state_store_from_env,
@@ -34,6 +37,57 @@ from ae.cli.__main__ import (
     registry_auth_factory,
     format_report,
 )
+
+
+def service_controller_factory(store: SQLiteStateStore):
+    """Optional Service VIP controller (disabled by default)."""
+    if os.getenv("AE_ENABLE_SERVICE_PROXY", "0") != "1":
+        return None
+    try:
+        from ae.network import DockerBridgeProvider, OverlayProvider, ServiceController
+
+        provider_name = os.getenv("AE_SERVICE_PROVIDER", "bridge").lower()
+        if provider_name in {"overlay", "kubeproxy"}:
+            provider = OverlayProvider(
+                store,
+                network_name=os.getenv("AE_OVERLAY_NET", "ae-overlay"),
+                service_cidr=os.getenv("AE_SERVICE_IP_POOL", "10.241.0.0/16"),
+                proxy_image=os.getenv("AE_SERVICE_PROXY_IMAGE", "haproxy:2.9-alpine"),
+                docker_bin=os.getenv("AE_DOCKER_BIN", "docker"),
+                manage_network=os.getenv("AE_OVERLAY_MANAGE_NETWORK", "1") == "1",
+            )
+        else:
+            provider = DockerBridgeProvider(
+                store,
+                network_name=os.getenv("AE_NETWORK_NAME", "ae-net"),
+                network_subnet=os.getenv("AE_NETWORK_SUBNET", os.getenv("AE_DOCKER_NETWORK_SUBNET", "")) or None,
+                service_cidr=os.getenv("AE_SERVICE_IP_POOL", "10.241.0.0/16"),
+                proxy_image=os.getenv("AE_SERVICE_PROXY_IMAGE", "haproxy:2.9-alpine"),
+                docker_bin=os.getenv("AE_DOCKER_BIN", "docker"),
+            )
+        return ServiceController(provider, store)
+    except Exception:
+        return None
+
+
+def _register_local_node(store: SQLiteStateStore, runtime_backend: str) -> None:
+    """Best-effort local node registration for single-controller setups."""
+    try:
+        node_id = os.getenv("AE_NODE_ID", socket.gethostname())
+        name = os.getenv("AE_NODE_NAME", node_id)
+        store.upsert_node(
+            node_id,
+            name=name,
+            labels={"role": "controller"},
+            taints=[],
+            backend=runtime_backend,
+            endpoint=None,
+            pod_cidr=None,
+            wg_pubkey=None,
+        )
+        store.record_heartbeat(node_id, "Ready")
+    except Exception:
+        pass
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -175,11 +229,20 @@ def _merge_file_and_db_manifests(
 def _make_reconciler() -> Reconciler:
     store = state_store_from_env()
     registry_auth = registry_auth_factory()
-    runtime = runtime_factory(registry_auth=registry_auth)
+    base_runtime = runtime_factory(registry_auth=registry_auth)
+    agent_url = os.getenv("AE_AGENT_URL")
+    try:
+        from ae.runtime import RemoteRuntime
+
+        runtime = RemoteRuntime(agent_url, base_runtime)
+    except Exception:
+        runtime = base_runtime
     health = health_manager_factory()
     ingress = ingress_service_factory()
     secrets = secret_manager_factory()
     configs = config_manager_factory()
+    svc_controller = service_controller_factory(store)
+    _register_local_node(store, runtime.__class__.__name__.lower())
     return Reconciler(
         runtime,
         store,
@@ -187,6 +250,7 @@ def _make_reconciler() -> Reconciler:
         ingress_service=ingress,
         secret_manager=secrets,
         config_manager=configs,
+        service_controller=svc_controller,
     )
 
 
@@ -247,6 +311,20 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
     # Build reconciler (runtime, ingress, secrets, store)
     reconciler = _make_reconciler()
+    agent_api_server = None
+    try:
+        agent_port = int(os.getenv("AE_AGENT_API_PORT", os.getenv("AE_AGENT_PORT", "0") or 0))
+    except Exception:
+        agent_port = 0
+    if agent_port > 0:
+        try:
+            agent_host = os.getenv("AE_AGENT_API_HOST", "0.0.0.0")
+            agent_token = os.getenv("AE_AGENT_API_TOKEN")
+            agent_api_server = start_agent_api(state_store_from_env(), host=agent_host, port=agent_port, token=agent_token)
+        except Exception as exc:
+            import logging as _log
+
+            _log.getLogger(__name__).warning("failed to start agent API: %s", exc)
 
     # Initialize HTTP API server (metrics/status/events) and optional mutators if requested
     api_server = None

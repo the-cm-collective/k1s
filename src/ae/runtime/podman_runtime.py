@@ -44,7 +44,7 @@ class PodmanRuntime(RuntimeAdapter):
     def __init__(self) -> None:
         self._bin = os.getenv("AE_PODMAN_BIN", "podman")
         # Optional shared network for ingress to reach containers by DNS name
-        self._network_name = os.getenv("AE_PODMAN_NETWORK")
+        self._network_name = os.getenv("AE_PODMAN_NETWORK") or os.getenv("AE_NETWORK_NAME")
         self._serial_service_rollout = os.getenv("AE_SERIAL_SERVICE_ROLLOUT", "0") == "1"
         self._podman_retry_max = max(0, int(os.getenv("AE_PODMAN_RETRY_MAX", "2")))
         try:
@@ -77,9 +77,16 @@ class PodmanRuntime(RuntimeAdapter):
         *,
         keep_old: bool = False,
         limit_create: int | None = None,
+        replica_ids: list[str] | None = None,
+        node_id: str | None = None,
     ) -> RuntimeResult:
         app = manifest.metadata.name
-        desired_ids = [f"{app}-rev{revision}-{i}" for i in range(manifest.spec.replicas)]
+        desired_ids = (
+            list(replica_ids)
+            if replica_ids is not None
+            else [f"{app}-rev{revision}-{i}" for i in range(manifest.spec.replicas)]
+        )
+        self._current_node_id = node_id
 
         # Find existing containers for this app
         existing = self._list_app_containers(app)
@@ -142,7 +149,11 @@ class PodmanRuntime(RuntimeAdapter):
                 if limit_create is not None and created >= int(limit_create):
                     continue
                 self._create_container(
-                    manifest, rid, revision, service=(svc_port, svc_target, svc_ports_list)
+                    manifest,
+                    rid,
+                    revision,
+                    service=(svc_port, svc_target, svc_ports_list),
+                    node_id=node_id,
                 )
                 # If a shared network is configured, connect the new container to it
                 if self._network_name:
@@ -295,6 +306,19 @@ class PodmanRuntime(RuntimeAdapter):
                         if port:
                             endpoint = f"{(c.get('Name', '').lstrip('/'))}:{port}"
                             break
+                if endpoint is None and self._network_name:
+                    try:
+                        nets = (c.get("NetworkSettings") or {}).get("Networks") or {}
+                        netinfo = nets.get(self._network_name) or {}
+                        ipaddr = netinfo.get("IPAddress")
+                        if ipaddr:
+                            p = preferred_port or 0
+                            if p == 0 and manifest.spec.ports:
+                                p = int(getattr(manifest.spec.ports[0], "container_port", 0))
+                            if p:
+                                endpoint = f"{ipaddr}:{p}"
+                    except Exception:
+                        pass
             except Exception:
                 pass
             states.append(
@@ -705,15 +729,19 @@ class PodmanRuntime(RuntimeAdapter):
             except Exception:
                 pass
             if not exists:
+                labels = [
+                    f"{self.APP_LABEL}={app_name}",
+                    f"ae.volume={name}",
+                ]
+                node_label = getattr(self, "_current_node_id", None)
+                if node_label:
+                    labels.append(f"ae.node={node_label}")
                 self._run_ok(
                     [
                         self._bin,
                         "volume",
                         "create",
-                        "--label",
-                        f"{self.APP_LABEL}={app_name}",
-                        "--label",
-                        f"ae.volume={name}",
+                        *sum([["--label", lbl] for lbl in labels], []),
                         vol,
                     ],
                     allow_fail=False,
@@ -823,6 +851,7 @@ class PodmanRuntime(RuntimeAdapter):
         revision: int,
         *,
         service: tuple[int | None, int | None, list | None] = (None, None, None),
+        node_id: str | None = None,
     ) -> None:
         app = manifest.metadata.name
         suffix = replica_id.split("-")[-1]
@@ -852,6 +881,8 @@ class PodmanRuntime(RuntimeAdapter):
             "--restart",
             "unless-stopped",
         ]
+        if node_id:
+            cmd += ["--label", f"ae.node={node_id}"]
         try:
             stop_timeout = int(getattr(manifest.spec, "termination_grace_period_seconds", 10) or 10)
         except Exception:

@@ -1,0 +1,333 @@
+"""Minimal HTTP agent wrapping a RuntimeAdapter (Phase 1 skeleton).
+
+Phase 2: adds controller heartbeats for Ready/NotReady surfacing.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import socket
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+from ae.controller.spec import AppManifest
+from ae.runtime import RuntimeAdapter, RuntimeResult, ReplicaState
+import requests
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _json_response(handler: BaseHTTPRequestHandler, status: int, body: dict) -> None:
+    payload = json.dumps(body).encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(payload)))
+    handler.end_headers()
+    handler.wfile.write(payload)
+
+
+def _parse_manifest(payload: dict) -> AppManifest:
+    return AppManifest.model_validate(payload)
+
+
+class AgentHandler(BaseHTTPRequestHandler):
+    runtime: RuntimeAdapter = None  # type: ignore[assignment]
+
+    def log_message(self, format: str, *args) -> None:  # noqa: A003 - BaseHTTPRequestHandler API
+        LOGGER.info("%s - %s", self.address_string(), format % args)
+
+    def do_POST(self) -> None:  # noqa: N802 - stdlib naming
+        length = int(self.headers.get("Content-Length", "0"))
+        payload = {}
+        if length:
+            raw = self.rfile.read(length)
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except Exception:
+                _json_response(self, 400, {"error": "invalid json"})
+                return
+
+        try:
+            if self.path == "/v1/ensure_app":
+                manifest = _parse_manifest(payload.get("manifest", {}))
+                result = self.runtime.ensure_app(
+                    manifest,
+                    int(payload.get("revision", 0)),
+                    keep_old=bool(payload.get("keep_old", False)),
+                    limit_create=payload.get("limit_create"),
+                    replica_ids=payload.get("replica_ids"),
+                    node_id=payload.get("node_id"),
+                )
+                _json_response(self, 200, _result_to_dict(result))
+                return
+            if self.path == "/v1/remove_app":
+                removed = self.runtime.remove_app(payload.get("app", ""))
+                _json_response(self, 200, {"removed": removed})
+                return
+            if self.path == "/v1/remove_old":
+                removed = self.runtime.remove_old_revisions(
+                    payload.get("app", ""), int(payload.get("keep_revision", 0))
+                )
+                _json_response(self, 200, {"removed": removed})
+                return
+            if self.path == "/v1/exec":
+                rc = self.runtime.exec(
+                    payload.get("replica_id", ""),
+                    payload.get("command", []),
+                    timeout=payload.get("timeout"),
+                )
+                _json_response(self, 200, {"exit_code": rc})
+                return
+            if self.path == "/v1/ensure_volumes":
+                self.runtime.ensure_storage_volumes(
+                    payload.get("app", ""), payload.get("volumes", [])
+                )
+                _json_response(self, 200, {"ok": True})
+                return
+            if self.path == "/v1/remove_volumes":
+                removed = self.runtime.remove_storage_volumes(
+                    payload.get("app", ""), payload.get("names", [])
+                )
+                _json_response(self, 200, {"removed": removed})
+                return
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("agent error on %s", self.path)
+            _json_response(self, 500, {"error": str(exc)})
+            return
+
+        _json_response(self, 404, {"error": "unknown endpoint"})
+
+    def do_GET(self) -> None:  # noqa: N802 - stdlib naming
+        try:
+            if self.path.startswith("/v1/containers"):
+                items = self.runtime.list_containers_info()
+                _json_response(self, 200, {"containers": items})
+                return
+            if self.path.startswith("/v1/logs"):
+                import urllib.parse as _u
+
+                qs = _u.urlparse(self.path).query
+                params = dict(_u.parse_qsl(qs))
+                rid = params.get("replica_id", "")
+                tail = params.get("tail")
+                tail_i = int(tail) if tail else None
+                since = params.get("since")
+                since_i = int(since) if since else None
+                lines = list(
+                    self.runtime.read_logs(rid, follow=False, tail=tail_i, since=since_i) or []
+                )
+                _json_response(self, 200, {"lines": lines})
+                return
+            if self.path.startswith("/v1/volumes"):
+                import urllib.parse as _u
+
+                qs = _u.urlparse(self.path).query
+                params = dict(_u.parse_qsl(qs))
+                app = params.get("app")
+                vols = self.runtime.list_storage_volumes(app)
+                _json_response(self, 200, {"volumes": vols})
+                return
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("agent error on %s", self.path)
+            _json_response(self, 500, {"error": str(exc)})
+            return
+        _json_response(self, 404, {"error": "unknown endpoint"})
+
+
+def _result_to_dict(res: RuntimeResult) -> dict:
+    return {
+        "revision": res.revision,
+        "created": res.created,
+        "updated": res.updated,
+        "removed": res.removed,
+        "replica_states": [
+            {
+                "replica_id": r.replica_id,
+                "ready": r.ready,
+                "status": r.status,
+                "endpoint": r.endpoint,
+            }
+            for r in res.replica_states
+        ],
+    }
+
+
+def _parse_labels(raw: str | None) -> dict:
+    if not raw:
+        return {}
+    labels = {}
+    for part in raw.split(","):
+        if not part.strip():
+            continue
+        if "=" in part:
+            k, v = part.split("=", 1)
+            labels[k.strip()] = v.strip()
+        else:
+            labels[part.strip()] = ""
+    return labels
+
+
+def _start_heartbeat_loop(
+    controller_url: str | None,
+    node_id: str,
+    name: str,
+    backend: str,
+    endpoint: str | None,
+    labels: dict | None,
+    taints: list | None,
+    token: str | None,
+    interval: int,
+    pod_cidr: str | None = None,
+    wg_pubkey: str | None = None,
+) -> None:
+    if not controller_url:
+        LOGGER.info("heartbeat disabled (AE_CONTROLLER_URL not set)")
+        return
+
+    def _loop():
+        while True:
+            payload = {
+                "node_id": node_id,
+                "name": name,
+                "backend": backend,
+                "endpoint": endpoint,
+                "labels": labels or {},
+                "taints": taints or [],
+                "status": "Ready",
+                "pod_cidr": pod_cidr,
+                "wg_pubkey": wg_pubkey,
+            }
+            try:
+                headers = {}
+                if token:
+                    headers["X-Agent-Token"] = token
+                requests.post(
+                    controller_url.rstrip("/") + "/v1/heartbeat",
+                    json=payload,
+                    headers=headers,
+                    timeout=5,
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.debug("heartbeat send failed: %s", exc)
+            time.sleep(max(1, interval))
+
+    threading.Thread(target=_loop, daemon=True, name="agent-heartbeat").start()
+
+
+def serve(
+    runtime: RuntimeAdapter,
+    host: str = "0.0.0.0",
+    port: int = 9109,
+    *,
+    controller_url: str | None = None,
+    node_id: str | None = None,
+    node_name: str | None = None,
+    node_labels: dict | None = None,
+    node_taints: list | None = None,
+    heartbeat_interval: int = 10,
+    node_endpoint: str | None = None,
+    pod_cidr: str | None = None,
+    wg_pubkey: str | None = None,
+    token: str | None = None,
+    ensure_pod_net: bool = False,
+    pod_bridge: str = "ae0",
+    wg_config: str | None = None,
+) -> None:
+    if ensure_pod_net and pod_cidr:
+        try:
+            from ae.node.net_helper import ensure_pod_bridge, apply_wireguard
+
+            ensure_pod_bridge(pod_bridge, pod_cidr)
+            if wg_config:
+                apply_wireguard(wg_config)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("overlay setup failed: %s", exc)
+
+    _start_heartbeat_loop(
+        controller_url,
+        node_id or socket.gethostname(),
+        node_name or node_id or socket.gethostname(),
+        runtime.__class__.__name__.replace("Runtime", "").lower(),
+        node_endpoint,
+        node_labels,
+        node_taints,
+        token,
+        heartbeat_interval,
+        pod_cidr=pod_cidr,
+        wg_pubkey=wg_pubkey,
+    )
+    AgentHandler.runtime = runtime
+    server = HTTPServer((host, port), AgentHandler)
+    LOGGER.info("ae.node agent listening on %s:%s", host, port)
+    server.serve_forever()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="ae.node", description="k1s node agent (phase 1 skeleton)")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=int(__import__("os").getenv("AE_NODE_PORT", "9109")))
+    parser.add_argument("--controller-url", default=os.getenv("AE_CONTROLLER_URL"))
+    parser.add_argument(
+        "--heartbeat-interval",
+        type=int,
+        default=int(os.getenv("AE_AGENT_HEARTBEAT_SECONDS", "10") or 10),
+        help="seconds between heartbeats to the controller",
+    )
+    parser.add_argument(
+        "--advertise-endpoint",
+        default=os.getenv("AE_AGENT_ENDPOINT"),
+        help="optional controller-facing endpoint for this agent (host:port)",
+    )
+    parser.add_argument(
+        "--runtime-backend",
+        choices=["podman", "docker"],
+        default=__import__("os").getenv("AE_RUNTIME_BACKEND", "podman"),
+    )
+    parser.add_argument(
+        "--ensure-pod-net",
+        action="store_true",
+        help="attempt to configure pod bridge/WireGuard from env",
+    )
+    parser.add_argument(
+        "--pod-bridge",
+        default=os.getenv("AE_POD_BRIDGE", "ae0"),
+        help="bridge device for pod CIDR (used when --ensure-pod-net)",
+    )
+    args = parser.parse_args(argv)
+
+    from ae.runtime import DockerRuntime, PodmanRuntime
+
+    runtime = PodmanRuntime() if args.runtime_backend == "podman" else DockerRuntime()
+    node_id = os.getenv("AE_NODE_ID", socket.gethostname())
+    node_name = os.getenv("AE_NODE_NAME", node_id)
+    node_labels = _parse_labels(os.getenv("AE_NODE_LABELS"))
+    node_taints = []
+    token = os.getenv("AE_AGENT_TOKEN")
+    endpoint = args.advertise_endpoint or f"http://{socket.gethostname()}:{args.port}"
+    serve(
+        runtime,
+        host=args.host,
+        port=args.port,
+        controller_url=args.controller_url,
+        node_id=node_id,
+        node_name=node_name,
+        node_labels=node_labels,
+        node_taints=node_taints,
+        heartbeat_interval=args.heartbeat_interval,
+        node_endpoint=endpoint,
+        token=token,
+        pod_cidr=os.getenv("AE_POD_CIDR"),
+        wg_pubkey=os.getenv("AE_WG_PUBKEY"),
+        ensure_pod_net=args.ensure_pod_net or bool(int(os.getenv("AE_AGENT_CONFIGURE_OVERLAY", "0"))),
+        pod_bridge=args.pod_bridge,
+        wg_config=os.getenv("AE_WG_CONFIG"),
+    )
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

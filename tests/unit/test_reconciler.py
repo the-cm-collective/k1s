@@ -10,8 +10,10 @@ from ae.controller.spec import (
     Metadata,
     SecretEnvMapping,
     SecretRef,
+    ServiceSpec,
 )
-from ae.controller.state import SQLiteStateStore
+from ae.controller.state import SQLiteStateStore, ServiceEndpoint
+from ae.controller.health import HealthReport, ReplicaHealth
 from ae.runtime.base import ReplicaState, RuntimeAdapter, RuntimeResult
 
 
@@ -199,6 +201,73 @@ def test_reconciler_with_ingress(tmp_path: Path) -> None:
     assert status.revision >= 1
     events = state.list_events("demo", limit=5)
     assert any(event.event_type == "IngressConfigured" for event in events)
+
+
+def test_select_upstreams_prefers_service_vip(tmp_path: Path) -> None:
+    runtime = StubRuntime()
+    state = SQLiteStateStore(tmp_path / "state.db")
+    reconciler = Reconciler(runtime=runtime, state_store=state)
+
+    app = "demo"
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name=app),
+        spec=AppSpec(
+            image="alpine:3.20",
+            service=ServiceSpec(port=8080),
+            ingress=IngressSpec(host="demo.local", path="/"),
+        ),
+    )
+
+    state.upsert_service(
+        app,
+        "10.241.0.10",
+        {"ports": [{"name": "http", "port": 8080, "targetPort": 8080, "protocol": "TCP"}]},
+    )
+    state.upsert_service_endpoints(
+        app,
+        [
+            ServiceEndpoint(
+                app_name=app,
+                port=8080,
+                ip="10.42.0.12",
+                target_port=8080,
+                ready=True,
+            )
+        ],
+    )
+
+    runtime_result = RuntimeResult(
+        revision=1,
+        created=0,
+        updated=0,
+        removed=0,
+        replica_states=[
+            ReplicaState(
+                replica_id="demo-rev1-0",
+                ready=True,
+                status="running",
+                endpoint="10.42.0.12:8080",
+            )
+        ],
+    )
+    health_report = HealthReport(
+        ready_replicas=1,
+        live_replicas=1,
+        replicas=[
+            ReplicaHealth(
+                replica_id="demo-rev1-0",
+                ready=True,
+                live=True,
+                readiness_message="ok",
+                liveness_message="ok",
+            )
+        ],
+    )
+
+    upstreams = reconciler._select_upstreams(manifest, runtime_result, health_report)
+    assert upstreams == ["10.241.0.10:8080"]
 
 
 def test_reconciler_applies_secrets(tmp_path: Path) -> None:

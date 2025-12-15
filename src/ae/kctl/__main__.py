@@ -27,6 +27,7 @@ from ae.observability.logging import configure_logging
 from ae.controller.reconciler import Reconciler
 from ae.controller.state import SQLiteStateStore
 from ae.ingress.service import IngressService
+from ae.controller.__main__ import service_controller_factory
 
 
 # ----------------------------
@@ -143,8 +144,14 @@ def _setup() -> tuple[SQLiteStateStore, Reconciler, object]:
     health = health_manager_factory()
     ingress = ingress_service_factory()
     secrets = secret_manager_factory()
+    svc_controller = service_controller_factory(store)
     reconciler = Reconciler(
-        runtime, store, health_manager=health, ingress_service=ingress, secret_manager=secrets
+        runtime,
+        store,
+        health_manager=health,
+        ingress_service=ingress,
+        secret_manager=secrets,
+        service_controller=svc_controller,
     )
     return store, reconciler, runtime
 
