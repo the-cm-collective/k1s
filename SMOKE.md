@@ -75,6 +75,22 @@ Troubleshooting
 - Caddy reload: check controller logs; you can also run
   `docker exec dev-caddy-1 caddy reload --config /etc/caddy/Caddyfile`.
 
+## Multi-node Smoke (Phase 7)
+- Bring up the controller with overlay + agent API (`ops/dev/multinode-lab.sh -h` shows the env needed).
+- Start at least one worker agent with `--ensure-pod-net` and the matching `AE_AGENT_TOKEN`.
+- Apply the multi-node sample:
+  ```
+  export AE_STATE_DB=/home/ae/state/controller.db  # when running inside the controller VM
+  python3 -m ae.cli apply -f specs/examples/echo-multinode.yaml
+  python3 -m ae.cli nodes list
+  python3 -m ae.cli status echo-mn --watch 5 --timeout 120
+```
+- Verify Service VIP routing: `python3 -m ae.cli services --json | jq -r '.[0].cluster_ip'` then
+  `curl http://<cluster-ip>:8080/healthz` from the controller host.
+- Quick regression: `pytest tests/integration/test_multinode_agent_flow.py`.
+  - Service VIP sanity: `pytest tests/integration/test_service_vip_routing.py` (requires docker-enabled env).
+- QEMU helper shortcut: `RUN_SMOKE=1 AE_TOKEN=dev-token ops/ci/multinode-qemu.sh start` runs apply → watch → VIP curl → kill worker1 agent → re-watch → VIP curl, then leaves the lab up for inspection.
+
 ## K8s Export Smoke
 
 Validate the exporter renders portable YAML and passes basic validation without a cluster.

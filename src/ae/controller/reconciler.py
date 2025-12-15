@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,7 @@ from .state import SQLiteStateStore
 from ae.ingress.service import IngressService
 from ae.secrets import SecretManager
 from ae.config.manager import ConfigManager
+from ae.controller.scheduler import Scheduler
 
 
 @dataclass(slots=True)
@@ -43,6 +45,7 @@ class Reconciler:
         ingress_service: IngressService | None = None,
         secret_manager: SecretManager | None = None,
         config_manager: ConfigManager | None = None,
+        service_controller=None,
     ) -> None:
         self._runtime = runtime
         self._state_store = state_store
@@ -50,11 +53,13 @@ class Reconciler:
         self._ingress_service = ingress_service
         self._secret_manager = secret_manager
         self._config_manager = config_manager or ConfigManager()
+        self._service_controller = service_controller
+        self._scheduler = Scheduler(self._state_store)
+        self._runtime_cache: dict[str, RuntimeAdapter] = {}
+        self._base_runtime = getattr(runtime, "_local", runtime)
         # Inject exec callback for exec probes
         try:
-            self._health_manager.set_exec_callback(
-                lambda rid, cmd, t: self._runtime.exec(rid, cmd, timeout=t)
-            )
+            self._health_manager.set_exec_callback(self._exec_across_runtimes)
         except Exception:
             pass
         # Track last seen restart counts per container/app to detect crash loops
@@ -62,6 +67,62 @@ class Reconciler:
         self._last_restart_ts: dict[str, float] = {}
         # Create cooldowns: app -> unix timestamp until which we avoid creating new replicas
         self._create_cooldown_until: dict[str, float] = {}
+
+    def _runtime_for_agent(self, agent_url: str | None) -> RuntimeAdapter:
+        """Return a runtime bound to the target agent URL (cached)."""
+        if not agent_url:
+            return self._runtime
+        cached = self._runtime_cache.get(agent_url)
+        if cached:
+            return cached
+        try:
+            from ae.runtime import RemoteRuntime
+
+            base = getattr(self._runtime, "_local", self._base_runtime)
+            rt = RemoteRuntime(agent_url, base)
+            self._runtime_cache[agent_url] = rt
+            return rt
+        except Exception:
+            return self._runtime
+
+    def _exec_across_runtimes(self, replica_id: str, command: list[str], timeout: int | None) -> int:
+        """Try exec across known runtimes (local + cached remote)."""
+        runtimes = [self._runtime] + list(self._runtime_cache.values())
+        for rt in runtimes:
+            try:
+                return int(rt.exec(replica_id, command, timeout=timeout))  # type: ignore[arg-type]
+            except Exception:
+                continue
+        return 127
+
+    def _ensure_on_runtime(
+        self,
+        runtime: RuntimeAdapter,
+        manifest: AppManifest,
+        revision: int,
+        *,
+        keep_old: bool,
+        limit_create: int | None,
+        replica_ids: list[str] | None,
+        node_id: str | None,
+    ) -> RuntimeResult:
+        """Call ensure_app with backward-compatible fallbacks for older runtimes."""
+        try:
+            return runtime.ensure_app(  # type: ignore[arg-type]
+                manifest,
+                revision,
+                keep_old=keep_old,
+                limit_create=limit_create,
+                replica_ids=replica_ids,
+                node_id=node_id,
+            )
+        except TypeError:
+            try:
+                return runtime.ensure_app(  # type: ignore[arg-type]
+                    manifest, revision, keep_old=keep_old, limit_create=limit_create
+                )
+            except TypeError:
+                return runtime.ensure_app(manifest, revision)  # type: ignore[arg-type]
 
     def reconcile_manifest_path(self, path: Path) -> ReconcileReport:
         """Load a manifest from disk and reconcile it."""
@@ -201,15 +262,78 @@ class Reconciler:
         until = float(self._create_cooldown_until.get(manifest.metadata.name, 0.0) or 0.0)
         if until > now_ts:
             limit_create = 0
+
+        placements, schedule_warnings = self._scheduler.plan(manifest_for_runtime, revision)
+        for w in schedule_warnings:
+            try:
+                self._state_store.record_event(
+                    manifest.metadata.name, revision, "ScheduleWarning", w
+                )
+            except Exception:
+                pass
+
         # Keep old replicas during rollout to respect surge/unavailable; we'll remove them after readiness check
-        try:
-            result = self._runtime.ensure_app(  # type: ignore[arg-type]
-                manifest_for_runtime, revision, keep_old=True, limit_create=limit_create
+        aggregate_states: list = []
+        created = updated = removed = 0
+        runtimes_used: list[RuntimeAdapter] = []
+        remaining_limit = limit_create
+        for placement in placements:
+            # Ensure replica_ids are unique per app/revision (avoid duplicate scheduling across nodes)
+            replica_ids = list(dict.fromkeys(getattr(placement, "replica_ids", []) or []))
+            runtime = self._runtime_for_agent(getattr(placement, "agent_url", None))
+            if runtime not in runtimes_used:
+                runtimes_used.append(runtime)
+            per_limit = None
+            if remaining_limit is not None:
+                per_limit = max(0, remaining_limit)
+            # Record storage binding to the chosen node (best-effort)
+            if getattr(manifest_for_runtime.spec, "storage", None) and getattr(
+                placement, "node", None
+            ):
+                try:
+                    for s in manifest_for_runtime.spec.storage:
+                        self._state_store.upsert_storage_binding(
+                            manifest_for_runtime.metadata.name,
+                            getattr(s, "name", ""),
+                            placement.node.node_id,  # type: ignore[union-attr]
+                            getattr(s, "retention", None),
+                        )
+                except Exception:
+                    pass
+            res = self._ensure_on_runtime(
+                runtime,
+                manifest_for_runtime,
+                revision,
+                keep_old=True,
+                limit_create=per_limit,
+                replica_ids=replica_ids,
+                node_id=getattr(getattr(placement, "node", None), "node_id", None),
             )
-        except TypeError:
-            # Compatibility with runtimes/tests that don't accept new kwargs
-            result = self._runtime.ensure_app(manifest_for_runtime, revision)  # type: ignore[arg-type]
+            created += res.created
+            updated += res.updated
+            removed += res.removed
+            aggregate_states.extend(res.replica_states)
+            if remaining_limit is not None:
+                remaining_limit = max(0, remaining_limit - res.created)
+
+        result = RuntimeResult(
+            revision=revision,
+            created=created,
+            updated=updated,
+            removed=removed,
+            replica_states=aggregate_states,
+        )
         health_report = self._health_manager.evaluate(manifest, result)
+        # Service/IPAM: prefer Service VIPs when controller is available
+        if self._service_controller:
+            try:
+                self._service_controller.reconcile(
+                    manifest_for_runtime, result, health_report
+                )
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "service reconcile failed for %s: %s", manifest.metadata.name, exc
+                )
         # Record probe backoff metrics from messages
         try:
             from ae.observability.http_api import record_probe_backoff  # type: ignore
@@ -324,7 +448,9 @@ class Reconciler:
                     self._run_prestop_on_old(manifest, keep_revision=revision)
                 except Exception:
                     pass
-                removed_old = self._runtime.remove_old_revisions(manifest.metadata.name, revision)
+                removed_old = self._remove_old_revisions_all(
+                    manifest.metadata.name, revision, runtimes_used
+                )
                 if removed_old > 0:
                     self._state_store.record_event(
                         manifest.metadata.name,
@@ -409,10 +535,10 @@ class Reconciler:
         )
 
     def _run_prestop_on_old(self, manifest: AppManifest, *, keep_revision: int) -> None:
-        """Execute lifecycle.preStop (exec) on old replicas before removal.
+        """Execute lifecycle.preStop on old replicas before removal.
 
-        Best-effort: only handles exec handlers. Uses terminationGracePeriodSeconds as timeout.
-        Emits PreStopExec events with outcome per replica.
+        Best-effort: supports exec/http/tcp handlers. Uses terminationGracePeriodSeconds as
+        timeout. Emits PreStop* events with outcome per replica.
         """
         lc = getattr(manifest.spec, "lifecycle", None)
         handler = getattr(lc, "pre_stop", None) if lc else None
@@ -467,7 +593,6 @@ class Reconciler:
                     import requests as _req
 
                     path = str(handler.http_get.path or "/")  # type: ignore[union-attr]
-                    # Best-effort: use the first published host port if present
                     host_ports = (it or {}).get("host_ports") or []
                     if host_ports:
                         url = f"http://127.0.0.1:{int(host_ports[0])}{path}"
@@ -510,6 +635,22 @@ class Reconciler:
                     )
                 except Exception:
                     pass
+
+    def _remove_old_revisions_all(
+        self, app_name: str, revision: int, runtimes: list[RuntimeAdapter] | None
+    ) -> int:
+        """Remove old revision containers across all runtimes used in this reconcile."""
+        total = 0
+        seen: set[int] = set()
+        for rt in (list(runtimes or []) + [self._runtime]):
+            if id(rt) in seen:
+                continue
+            seen.add(id(rt))
+            try:
+                total += int(rt.remove_old_revisions(app_name, revision))
+            except Exception:
+                pass
+        return total
 
     def _run_rollout_hook(self, manifest, runtime_result, hook) -> tuple[bool, str | None]:  # noqa: ANN001
         """Execute a rollout hook against the new revision.
@@ -639,6 +780,29 @@ class Reconciler:
         result: RuntimeResult,
         health_report: HealthReport,
     ) -> list[str]:
+        # Prefer Service VIP when recorded and ready backends exist
+        try:
+            svc = self._state_store.get_service(manifest.metadata.name)
+        except Exception:
+            svc = None
+
+        if svc and manifest.spec.service:
+            svc_port = None
+            try:
+                if manifest.spec.service.ports:
+                    svc_port = int(manifest.spec.service.ports[0].port)
+                elif manifest.spec.service.port:
+                    svc_port = int(manifest.spec.service.port)
+            except Exception:
+                svc_port = None
+            if svc_port:
+                try:
+                    eps = self._state_store.list_service_endpoints(manifest.metadata.name)
+                except Exception:
+                    eps = []
+                if any(ep.ready for ep in eps):
+                    return [f"{svc.cluster_ip}:{svc_port}"]
+
         states_by_id = {state.replica_id: state for state in result.replica_states}
 
         # Prefer only ready endpoints; defer ingress changes until at least one
@@ -649,7 +813,11 @@ class Reconciler:
                 continue
             state = states_by_id.get(replica.replica_id)
             if state and state.endpoint:
-                ready_eps.append(state.endpoint)
+                host, port = self._split_host_port(state.endpoint)
+                if host in {"127.0.0.1", "localhost"} or (host and host.startswith("127.")):
+                    continue
+                if host and port:
+                    ready_eps.append(f"{host}:{port}")
         # When canary is enabled, include previous revision endpoints to split traffic
         try:
             ro = getattr(manifest.spec, "rollout", {}) or {}
@@ -695,6 +863,17 @@ class Reconciler:
         # No ready endpoints yet: return empty to keep previous ingress
         # configuration intact until readiness is achieved.
         return []
+
+    def _split_host_port(self, endpoint: str) -> tuple[str | None, int | None]:
+        """Parse host:port strings, tolerating IPv6 bracket notation."""
+        try:
+            if endpoint.startswith("["):
+                host, port = endpoint.rsplit("]:", 1)
+                return host.lstrip("["), int(port)
+            host, port = endpoint.rsplit(":", 1)
+            return host, int(port)
+        except Exception:
+            return None, None
 
     def _compute_spec_hash(self, manifest: AppManifest) -> str:
         payload = json.dumps(

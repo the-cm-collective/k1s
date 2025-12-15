@@ -631,6 +631,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if path_only == "/status" or path_only == "/status/":
             self._handle_status_list()
             return
+        if path_only in ("/nodes", "/nodes/"):
+            self._handle_nodes()
+            return
         if path_only.startswith("/status/"):
             # Enforce read scope for single-app read if configured
             app = self.path.split("/", 2)[2].split("?", 1)[0]
@@ -2387,6 +2390,44 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "next": str(next_cursor) if next_cursor is not None else None,
         }
         self._json_ok(payload)
+
+    def _handle_nodes(self) -> None:
+        import os as _os
+        from datetime import datetime, timezone
+
+        try:
+            grace = int(_os.getenv("AE_NODE_NOTREADY_AFTER", "40") or 40)
+        except Exception:
+            grace = 40
+        items = []
+        for node, status in self.store.list_nodes():
+            seen_at = status.seen_at if status else None
+            stale = False
+            if seen_at:
+                try:
+                    stale = (datetime.now(timezone.utc) - seen_at).total_seconds() > grace
+                except Exception:
+                    stale = False
+            st = status.status if status else "Unknown"
+            if stale and st == "Ready":
+                st = "NotReady"
+            items.append(
+                {
+                    "node_id": node.node_id,
+                    "name": node.name,
+                    "backend": node.backend,
+                    "endpoint": node.endpoint,
+                    "labels": node.labels,
+                    "taints": node.taints,
+                    "pod_cidr": node.pod_cidr,
+                    "wg_pubkey": node.wg_pubkey,
+                    "cordoned": bool(getattr(node, "cordoned", False)),
+                    "status": st,
+                    "seen_at": seen_at.isoformat() if seen_at else None,
+                    "stale": stale,
+                }
+            )
+        self._json_ok({"nodes": items, "count": len(items), "stale_after_seconds": grace})
 
     def _handle_status_single(self, app: str) -> None:
         # Support optional query on the path segment (e.g., "<app>?details=1")
