@@ -19,15 +19,20 @@ class StubRuntime(RuntimeAdapter):
         *,
         keep_old: bool = False,
         limit_create: int | None = None,
+        replica_ids: list[str] | None = None,
+        node_id: str | None = None,
     ) -> RuntimeResult:
-        desired = manifest.spec.replicas
+        desired = len(replica_ids) if replica_ids is not None else manifest.spec.replicas
         now = datetime.now(timezone.utc)
         count = desired if limit_create is None else max(0, min(desired, limit_create))
         replica_states = []
-        for idx in range(count):
+        rid_list = (
+            list(replica_ids) if replica_ids is not None else [f"{manifest.metadata.name}-rev{revision}-{i}" for i in range(desired)]
+        )
+        for idx, rid in enumerate(rid_list[:count]):
             replica_states.append(
                 ReplicaState(
-                    replica_id=f"{manifest.metadata.name}-rev{revision}-{idx}",
+                    replica_id=rid,
                     ready=True,
                     status="running",
                     endpoint=f"127.0.0.1:{9000 + idx}",

@@ -26,6 +26,7 @@ watch = [
 [project.scripts]
 ae = "ae.cli.__main__:main"
 k1s = "ae.kctl.__main__:main"
+ae-node = "ae.node.server:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

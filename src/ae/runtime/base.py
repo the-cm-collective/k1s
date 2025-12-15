@@ -41,6 +41,8 @@ class RuntimeAdapter(Protocol):
         *,
         keep_old: bool = False,
         limit_create: int | None = None,
+        replica_ids: list[str] | None = None,
+        node_id: str | None = None,
     ) -> RuntimeResult:
         """Ensure the runtime matches the manifest."""
 
