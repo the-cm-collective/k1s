@@ -68,6 +68,71 @@ class AppEvent:
 
 
 @dataclass(slots=True)
+class ServiceRecord:
+    """Service-level metadata such as ClusterIP and exposed ports."""
+
+    app_name: str
+    cluster_ip: str
+    ports: dict
+
+
+@dataclass(slots=True)
+class ServiceEndpoint:
+    """Endpoint backing a Service port."""
+
+    app_name: str
+    port: int
+    ip: str
+    target_port: int
+    ready: bool
+
+
+@dataclass(slots=True)
+class ServiceListItem:
+    """Brief view used for IP allocation."""
+
+    app_name: str
+    cluster_ip: str
+
+
+@dataclass(slots=True)
+class StorageBinding:
+    """Mapping of a persistent volume to the node that owns it."""
+
+    app_name: str
+    volume_name: str
+    node_id: str
+    retention: str | None
+    created_at: datetime
+
+
+@dataclass(slots=True)
+class NodeRecord:
+    """Registered node information."""
+
+    node_id: str
+    name: str | None
+    labels: dict
+    taints: list
+    backend: str | None
+    endpoint: str | None
+    pod_cidr: str | None
+    wg_pubkey: str | None
+    cordoned: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class NodeStatus:
+    """Latest heartbeat/status for a node."""
+
+    node_id: str
+    status: str
+    seen_at: datetime
+
+
+@dataclass(slots=True)
 class RevisionInfo:
     """Information about a stored application revision."""
 
@@ -87,7 +152,7 @@ class SQLiteStateStore:
 
     def _initialize(self) -> None:
         with self._connect() as conn:
-            if not self._schema_matches(
+            needs_reset = not self._schema_matches(
                 conn,
                 "app_status",
                 [
@@ -116,10 +181,76 @@ class SQLiteStateStore:
                     "readiness_message",
                     "liveness_message",
                 ],
-            ):
+            )
+            if needs_reset:
                 conn.execute("DROP TABLE IF EXISTS probe_history")
                 conn.execute("DROP TABLE IF EXISTS replica_status")
                 conn.execute("DROP TABLE IF EXISTS app_status")
+
+            # Service tables are additive; drop and recreate only if schema mismatches.
+            if not self._schema_matches(
+                conn,
+                "services",
+                [
+                    "app_name",
+                    "cluster_ip",
+                    "ports",
+                    "created_at",
+                ],
+            ):
+                conn.execute("DROP TABLE IF EXISTS services")
+            if not self._schema_matches(
+                conn,
+                "service_endpoints",
+                [
+                    "app_name",
+                    "port",
+                    "ip",
+                    "target_port",
+                    "ready",
+                ],
+            ):
+                conn.execute("DROP TABLE IF EXISTS service_endpoints")
+            if not self._schema_matches(
+                conn,
+                "nodes",
+                [
+                    "node_id",
+                    "name",
+                    "labels",
+                    "taints",
+                    "backend",
+                    "endpoint",
+                    "pod_cidr",
+                    "wg_pubkey",
+                    "cordoned",
+                    "created_at",
+                    "updated_at",
+                ],
+            ):
+                conn.execute("DROP TABLE IF EXISTS nodes")
+            if not self._schema_matches(
+                conn,
+                "node_heartbeats",
+                [
+                    "node_id",
+                    "status",
+                    "seen_at",
+                ],
+            ):
+                conn.execute("DROP TABLE IF EXISTS node_heartbeats")
+            if not self._schema_matches(
+                conn,
+                "storage_bindings",
+                [
+                    "app_name",
+                    "volume_name",
+                    "node_id",
+                    "retention",
+                    "created_at",
+                ],
+            ):
+                conn.execute("DROP TABLE IF EXISTS storage_bindings")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS app_status (
@@ -201,6 +332,67 @@ class SQLiteStateStore:
                     step REAL NOT NULL,
                     max REAL NOT NULL,
                     updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS services (
+                    app_name TEXT PRIMARY KEY,
+                    cluster_ip TEXT NOT NULL,
+                    ports TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS service_endpoints (
+                    app_name TEXT NOT NULL,
+                    port INTEGER NOT NULL,
+                    ip TEXT NOT NULL,
+                    target_port INTEGER NOT NULL,
+                    ready INTEGER NOT NULL,
+                    PRIMARY KEY (app_name, port, ip)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS nodes (
+                    node_id TEXT PRIMARY KEY,
+                    name TEXT,
+                    labels TEXT DEFAULT '{}',
+                    taints TEXT DEFAULT '[]',
+                    backend TEXT,
+                    endpoint TEXT,
+                    pod_cidr TEXT,
+                    wg_pubkey TEXT,
+                    cordoned INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS node_heartbeats (
+                    node_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    seen_at TEXT NOT NULL,
+                    PRIMARY KEY (node_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS storage_bindings (
+                    app_name TEXT NOT NULL,
+                    volume_name TEXT NOT NULL,
+                    node_id TEXT NOT NULL,
+                    retention TEXT,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (app_name, volume_name)
                 )
                 """
             )
@@ -648,6 +840,339 @@ class SQLiteStateStore:
             )
             conn.commit()
 
+    # --- Services / Service IPAM -------------------------------------------
+
+    def upsert_service(self, app_name: str, cluster_ip: str, ports: dict) -> None:
+        """Persist or update service metadata (ClusterIP + ports)."""
+        created_at = datetime.now(timezone.utc).isoformat()
+        ports_json = json.dumps(ports, sort_keys=True)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO services(app_name, cluster_ip, ports, created_at)
+                VALUES(?,?,?,?)
+                ON CONFLICT(app_name) DO UPDATE SET cluster_ip=excluded.cluster_ip, ports=excluded.ports
+                """,
+                (app_name, cluster_ip, ports_json, created_at),
+            )
+            conn.commit()
+
+    def delete_service(self, app_name: str) -> None:
+        """Remove service metadata and endpoints for an app."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM service_endpoints WHERE app_name = ?", (app_name,))
+            conn.execute("DELETE FROM services WHERE app_name = ?", (app_name,))
+            conn.commit()
+
+    def get_service(self, app_name: str) -> ServiceRecord | None:
+        """Return service metadata if present."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT cluster_ip, ports FROM services WHERE app_name = ?", (app_name,)
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            ports = json.loads(row[1]) if row[1] else {}
+        except json.JSONDecodeError:
+            ports = {}
+        return ServiceRecord(app_name=app_name, cluster_ip=row[0], ports=ports)
+
+    def upsert_service_endpoints(
+        self, app_name: str, endpoints: list[ServiceEndpoint]
+    ) -> None:
+        """Replace endpoints for an app."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM service_endpoints WHERE app_name = ?", (app_name,))
+            rows = [
+                (ep.app_name, ep.port, ep.ip, ep.target_port, int(ep.ready))
+                for ep in endpoints
+            ]
+            if rows:
+                conn.executemany(
+                    """
+                    INSERT INTO service_endpoints(app_name, port, ip, target_port, ready)
+                    VALUES(?,?,?,?,?)
+                    """,
+                    rows,
+                )
+            conn.commit()
+
+    def list_service_endpoints(self, app_name: str) -> list[ServiceEndpoint]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT app_name, port, ip, target_port, ready
+                FROM service_endpoints
+                WHERE app_name = ?
+                ORDER BY port, ip
+                """,
+                (app_name,),
+            ).fetchall()
+        return [
+            ServiceEndpoint(
+                app_name=row[0],
+                port=int(row[1]),
+                ip=row[2],
+                target_port=int(row[3]),
+                ready=bool(row[4]),
+            )
+            for row in rows
+        ]
+
+    def list_services(self) -> list[ServiceListItem]:
+        """List all services stored (cluster IP allocation helper)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT app_name, cluster_ip FROM services ORDER BY app_name"
+            ).fetchall()
+        return [ServiceListItem(app_name=row[0], cluster_ip=row[1]) for row in rows]
+
+    # --- Nodes / heartbeats ---------------------------------------------
+
+    def upsert_node(
+        self,
+        node_id: str,
+        *,
+        name: str | None = None,
+        labels: dict | None = None,
+        taints: list | None = None,
+        backend: str | None = None,
+        endpoint: str | None = None,
+        pod_cidr: str | None = None,
+        wg_pubkey: str | None = None,
+        cordoned: bool | None = None,
+    ) -> None:
+        if cordoned is None:
+            cordoned = self._get_node_cordoned(node_id)
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO nodes(node_id, name, labels, taints, backend, endpoint, pod_cidr, wg_pubkey, cordoned, created_at, updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(node_id) DO UPDATE SET
+                    name=excluded.name,
+                    labels=excluded.labels,
+                    taints=excluded.taints,
+                    backend=excluded.backend,
+                    endpoint=excluded.endpoint,
+                    pod_cidr=excluded.pod_cidr,
+                    wg_pubkey=excluded.wg_pubkey,
+                    cordoned=excluded.cordoned,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    node_id,
+                    name,
+                    json.dumps(labels or {}, sort_keys=True),
+                    json.dumps(taints or [], sort_keys=True),
+                    backend,
+                    endpoint,
+                    pod_cidr,
+                    wg_pubkey,
+                    int(bool(cordoned)),
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+
+    def record_heartbeat(self, node_id: str, status: str) -> None:
+        seen = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO node_heartbeats(node_id, status, seen_at)
+                VALUES(?,?,?)
+                ON CONFLICT(node_id) DO UPDATE SET status=excluded.status, seen_at=excluded.seen_at
+                """,
+                (node_id, status, seen),
+            )
+            conn.commit()
+
+    def _get_node_cordoned(self, node_id: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT cordoned FROM nodes WHERE node_id = ?",
+                (node_id,),
+            ).fetchone()
+        return bool(row[0]) if row is not None else False
+
+    def cordon_node(self, node_id: str, cordoned: bool = True) -> bool:
+        """Mark a node as (un)cordoned for scheduling purposes."""
+        with self._connect() as conn:
+            res = conn.execute(
+                "UPDATE nodes SET cordoned = ? WHERE node_id = ?",
+                (int(bool(cordoned)), node_id),
+            )
+            conn.commit()
+            return res.rowcount > 0
+
+    def list_nodes(self) -> list[tuple[NodeRecord, NodeStatus | None]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT n.node_id, n.name, n.labels, n.taints, n.backend, n.endpoint, n.pod_cidr, n.wg_pubkey, n.created_at, n.updated_at,
+                       n.cordoned, hb.status, hb.seen_at
+                FROM nodes n
+                LEFT JOIN node_heartbeats hb ON hb.node_id = n.node_id
+                ORDER BY n.node_id
+                """
+            ).fetchall()
+        result: list[tuple[NodeRecord, NodeStatus | None]] = []
+        for row in rows:
+            labels = {}
+            taints = []
+            try:
+                labels = json.loads(row[2] or "{}")
+            except Exception:
+                labels = {}
+            try:
+                taints = json.loads(row[3] or "[]")
+            except Exception:
+                taints = []
+            try:
+                created = datetime.fromisoformat(row[8])
+            except Exception:
+                created = datetime.fromtimestamp(0, tz=timezone.utc)
+            try:
+                updated = datetime.fromisoformat(row[9])
+            except Exception:
+                updated = datetime.fromtimestamp(0, tz=timezone.utc)
+            node = NodeRecord(
+                node_id=row[0],
+                name=row[1],
+                labels=labels,
+                taints=taints,
+                backend=row[4],
+                endpoint=row[5],
+                pod_cidr=row[6],
+                wg_pubkey=row[7],
+                cordoned=bool(row[10]),
+                created_at=created,
+                updated_at=updated,
+            )
+            status = None
+            if row[11] is not None:
+                try:
+                    seen_at = datetime.fromisoformat(row[12])
+                except Exception:
+                    seen_at = datetime.fromtimestamp(0, tz=timezone.utc)
+                status = NodeStatus(node_id=row[0], status=row[11], seen_at=seen_at)
+            result.append((node, status))
+        return result
+
+    def get_node(self, node_id: str) -> tuple[NodeRecord, NodeStatus | None] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT n.node_id, n.name, n.labels, n.taints, n.backend, n.endpoint, n.pod_cidr, n.wg_pubkey, n.created_at, n.updated_at,
+                       n.cordoned, hb.status, hb.seen_at
+                FROM nodes n
+                LEFT JOIN node_heartbeats hb ON hb.node_id = n.node_id
+                WHERE n.node_id = ?
+                """,
+                (node_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        labels = {}
+        taints = []
+        try:
+            labels = json.loads(row[2] or "{}")
+        except Exception:
+            labels = {}
+        try:
+            taints = json.loads(row[3] or "[]")
+        except Exception:
+            taints = []
+        try:
+            created = datetime.fromisoformat(row[8])
+        except Exception:
+            created = datetime.fromtimestamp(0, tz=timezone.utc)
+        try:
+            updated = datetime.fromisoformat(row[9])
+        except Exception:
+            updated = datetime.fromtimestamp(0, tz=timezone.utc)
+        node = NodeRecord(
+            node_id=row[0],
+            name=row[1],
+            labels=labels,
+            taints=taints,
+            backend=row[4],
+            endpoint=row[5],
+            pod_cidr=row[6],
+            wg_pubkey=row[7],
+            cordoned=bool(row[10]),
+            created_at=created,
+            updated_at=updated,
+        )
+        status = None
+        if row[11] is not None:
+            try:
+                seen_at = datetime.fromisoformat(row[12])
+            except Exception:
+                seen_at = datetime.fromtimestamp(0, tz=timezone.utc)
+            status = NodeStatus(node_id=row[0], status=row[11], seen_at=seen_at)
+        return node, status
+
+    # --- Storage bindings ----------------------------------------------
+
+    def upsert_storage_binding(
+        self, app_name: str, volume_name: str, node_id: str, retention: str | None = None
+    ) -> None:
+        """Record that a persistent volume resides on a specific node."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO storage_bindings(app_name, volume_name, node_id, retention, created_at)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(app_name, volume_name) DO UPDATE SET
+                    node_id=excluded.node_id,
+                    retention=excluded.retention,
+                    created_at=excluded.created_at
+                """,
+                (app_name, volume_name, node_id, retention, now),
+            )
+            conn.commit()
+
+    def list_storage_bindings(self, app_name: str) -> list[StorageBinding]:
+        """Return recorded bindings for an app's persistent volumes."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT app_name, volume_name, node_id, retention, created_at
+                FROM storage_bindings
+                WHERE app_name = ?
+                ORDER BY volume_name
+                """,
+                (app_name,),
+            ).fetchall()
+        out: list[StorageBinding] = []
+        for row in rows:
+            try:
+                created = datetime.fromisoformat(row[4])
+            except Exception:
+                created = datetime.fromtimestamp(0, tz=timezone.utc)
+            out.append(
+                StorageBinding(
+                    app_name=row[0],
+                    volume_name=row[1],
+                    node_id=row[2],
+                    retention=row[3],
+                    created_at=created,
+                )
+            )
+        return out
+
+    def delete_storage_bindings(self, app_name: str) -> None:
+        """Remove all bindings for an app (e.g., on delete)."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM storage_bindings WHERE app_name = ?", (app_name,))
+            conn.commit()
+
     # --- Admin / maintenance helpers ---
     def delete_app_state(self, app_name: str, *, purge_history: bool = False) -> None:
         """Remove status and replica rows for an app. Optionally purge events and revisions.
@@ -657,6 +1182,7 @@ class SQLiteStateStore:
         with self._connect() as conn:
             conn.execute("DELETE FROM replica_status WHERE app_name = ?", (app_name,))
             conn.execute("DELETE FROM app_status WHERE app_name = ?", (app_name,))
+            conn.execute("DELETE FROM storage_bindings WHERE app_name = ?", (app_name,))
             if purge_history:
                 conn.execute("DELETE FROM app_events WHERE app_name = ?", (app_name,))
                 conn.execute("DELETE FROM app_revisions WHERE app_name = ?", (app_name,))
