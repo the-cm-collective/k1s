@@ -8,7 +8,7 @@
       "type": "stat",
       "title": "Ready Apps",
       "datasource": { "type": "prometheus", "uid": "PROM" },
-      "targets": [ { "expr": "ae_apps_ready", "refId": "A" } ],
+      "targets": [{ "expr": "ae_apps_ready", "refId": "A" }],
       "options": {
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
         "colorMode": "value",
@@ -22,7 +22,7 @@
       "type": "stat",
       "title": "Total Apps",
       "datasource": { "type": "prometheus", "uid": "PROM" },
-      "targets": [ { "expr": "ae_apps_total", "refId": "A" } ],
+      "targets": [{ "expr": "ae_apps_total", "refId": "A" }],
       "options": {
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
         "colorMode": "value",
@@ -33,6 +33,34 @@
       "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 }
     },
     {
+      "type": "stat",
+      "title": "Ready Nodes",
+      "datasource": { "type": "prometheus", "uid": "PROM" },
+      "targets": [{ "expr": "ae_nodes_ready", "refId": "A" }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "Total Nodes",
+      "datasource": { "type": "prometheus", "uid": "PROM" },
+      "targets": [{ "expr": "ae_nodes_total", "refId": "A" }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 4 }
+    },
+    {
       "type": "timeseries",
       "title": "Replicas (ready vs total)",
       "datasource": { "type": "prometheus", "uid": "PROM" },
@@ -40,7 +68,21 @@
         { "expr": "ae_replicas_ready", "refId": "A" },
         { "expr": "ae_replicas_total", "refId": "B" }
       ],
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 }
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Service endpoints ready (per app)",
+      "datasource": { "type": "prometheus", "uid": "PROM" },
+      "targets": [{ "expr": "sum by (app) (ae_service_endpoints_ready)", "refId": "A" }],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Node heartbeat age (s)",
+      "datasource": { "type": "prometheus", "uid": "PROM" },
+      "targets": [{ "expr": "ae_node_last_seen_seconds", "refId": "A" }],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 }
     }
   ]
 }
