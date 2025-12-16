@@ -487,6 +487,46 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 pass
             names = [s.app_name for s in statuses]
 
+            # Nodes snapshot (heartbeat freshness, cordon)
+            _nodes = []
+            try:
+                import os as _os
+                from datetime import datetime as _dt, timezone as _tz
+
+                grace = int(_os.getenv("AE_NODE_NOTREADY_AFTER", "40") or 40)
+                now = _dt.now(_tz.utc)
+                for node, status in store.list_nodes():
+                    seen_at = getattr(status, "seen_at", None)
+                    age = None
+                    if seen_at:
+                        try:
+                            age = (now - seen_at).total_seconds()
+                        except Exception:
+                            age = None
+                    st = str(status.status if status else "unknown").lower()
+                    stale = False
+                    if age is not None and age > grace:
+                        stale = True
+                        if st == "ready":
+                            st = "notready"
+                    _nodes.append(
+                        {
+                            "id": node.node_id,
+                            "name": node.name,
+                            "labels": node.labels,
+                            "taints": node.taints,
+                            "backend": node.backend,
+                            "endpoint": node.endpoint,
+                            "pod_cidr": node.pod_cidr,
+                            "cordoned": bool(getattr(node, "cordoned", False)),
+                            "status": st,
+                            "stale": stale,
+                            "last_seen_seconds": age,
+                        }
+                    )
+            except Exception:
+                _nodes = []
+
             # Ingress snapshot (paths exist only if manager is configured)
             ing = None
             try:
@@ -608,6 +648,14 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             return {
                 "ingress": ing,
                 "services": services,
+                "service_endpoints": {
+                    s.app_name: {
+                        "total": len(store.list_service_endpoints(s.app_name)),
+                        "ready": sum(1 for e in store.list_service_endpoints(s.app_name) if e.ready),
+                    }
+                    for s in store.list_services()
+                },
+                "nodes": _nodes,
                 "containers": containers,
                 "volumes": volumes,
                 "cooldown": cooldowns,
