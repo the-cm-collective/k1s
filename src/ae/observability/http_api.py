@@ -1719,6 +1719,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "# HELP ae_replicas_live Live replicas",
             "# TYPE ae_replicas_live gauge",
             f"ae_replicas_live {snap.live_replicas}",
+            "# HELP ae_nodes_total Total registered nodes",
+            "# TYPE ae_nodes_total gauge",
+            f"ae_nodes_total {getattr(snap, 'total_nodes', 0)}",
+            "# HELP ae_nodes_ready Ready nodes (within staleness window)",
+            "# TYPE ae_nodes_ready gauge",
+            f"ae_nodes_ready {getattr(snap, 'ready_nodes', 0)}",
+            "# HELP ae_nodes_stale Nodes missing heartbeats or not Ready",
+            "# TYPE ae_nodes_stale gauge",
+            f"ae_nodes_stale {getattr(snap, 'stale_nodes', 0)}",
+            "# HELP ae_services_total Services with allocated cluster IPs",
+            "# TYPE ae_services_total gauge",
+            f"ae_services_total {getattr(snap, 'total_services', 0)}",
         ]
         # Per-app series metadata (declared once before samples)
         lines += [
@@ -1737,6 +1749,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "# TYPE ae_ready_replicas gauge",
             "# HELP ae_live_replicas Live replicas per app (alias)",
             "# TYPE ae_live_replicas gauge",
+            "# HELP ae_node_status Node condition (one-hot by status)",
+            "# TYPE ae_node_status gauge",
+            "# HELP ae_node_last_seen_seconds Age in seconds since last heartbeat",
+            "# TYPE ae_node_last_seen_seconds gauge",
+            "# HELP ae_node_stale Node heartbeat stale flag (1=stale)",
+            "# TYPE ae_node_stale gauge",
+            "# HELP ae_service_info Service info with cluster IP",
+            "# TYPE ae_service_info gauge",
+            "# HELP ae_service_endpoints_total Service endpoints observed (per service)",
+            "# TYPE ae_service_endpoints_total gauge",
+            "# HELP ae_service_endpoints_ready Ready service endpoints (per service)",
+            "# TYPE ae_service_endpoints_ready gauge",
+            "# HELP ae_service_port_endpoints_ready Ready endpoints by service port",
+            "# TYPE ae_service_port_endpoints_ready gauge",
+            "# HELP ae_service_port_endpoints_total Total endpoints by service port",
+            "# TYPE ae_service_port_endpoints_total gauge",
+            "# HELP ae_service_endpoint_ready Ready flag for individual service endpoint",
+            "# TYPE ae_service_endpoint_ready gauge",
         ]
         # Token expiry metrics
         import os as _os
@@ -1807,6 +1837,65 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     val = 1 if r.ready else 0
                     lines.append(
                         f'ae_replica_ready{{app="{s0.app_name}",replica="{r.replica_id}"}} {val}'
+                    )
+        except Exception:
+            pass
+        # Node metrics (status, staleness, last heartbeat age)
+        try:
+            import os as _os
+            from datetime import datetime as _dt, timezone as _tz
+
+            grace = int(_os.getenv("AE_NODE_NOTREADY_AFTER", "40") or 40)
+            now = _dt.now(_tz.utc)
+            for node, status in self.store.list_nodes():
+                seen_at = getattr(status, "seen_at", None)
+                last_age = None
+                if seen_at:
+                    try:
+                        last_age = (now - seen_at).total_seconds()
+                    except Exception:
+                        last_age = None
+                st = str(status.status if status else "unknown").lower()
+                stale = False
+                if last_age is not None and last_age > grace and st == "ready":
+                    st = "notready"
+                if last_age is not None and last_age > grace:
+                    stale = True
+                cordoned = bool(getattr(node, "cordoned", False))
+                labels = f'node="{node.node_id}",name="{node.name or ""}",cordoned="{str(cordoned).lower()}"'
+                lines.append(f'ae_node_status{{{labels},status="{st}"}} 1')
+                lines.append(f'ae_node_stale{{{labels}}} {"1" if stale else "0"}')
+                if last_age is not None:
+                    lines.append(f'ae_node_last_seen_seconds{{{labels}}} {last_age}')
+        except Exception:
+            pass
+        # Service/VIP metrics
+        try:
+            from collections import defaultdict
+
+            services = self.store.list_services()
+            for svc in services:
+                labels = f'app="{svc.app_name}",cluster_ip="{svc.cluster_ip}"'
+                lines.append(f'ae_service_info{{{labels}}} 1')
+                eps = self.store.list_service_endpoints(svc.app_name)
+                lines.append(f'ae_service_endpoints_total{{app="{svc.app_name}"}} {len(eps)}')
+                ready_eps = sum(1 for e in eps if e.ready)
+                lines.append(f'ae_service_endpoints_ready{{app="{svc.app_name}"}} {ready_eps}')
+                port_ready = defaultdict(int)
+                port_total = defaultdict(int)
+                for ep in eps:
+                    port_ready[ep.port] += 1 if ep.ready else 0
+                    port_total[ep.port] += 1
+                    lines.append(
+                        f'ae_service_endpoint_ready{{app="{svc.app_name}",port="{ep.port}",ip="{ep.ip}",target_port="{ep.target_port}"}} {1 if ep.ready else 0}'
+                    )
+                for port, val in port_ready.items():
+                    lines.append(
+                        f'ae_service_port_endpoints_ready{{app="{svc.app_name}",port="{port}"}} {val}'
+                    )
+                for port, val in port_total.items():
+                    lines.append(
+                        f'ae_service_port_endpoints_total{{app="{svc.app_name}",port="{port}"}} {val}'
                     )
         except Exception:
             pass
