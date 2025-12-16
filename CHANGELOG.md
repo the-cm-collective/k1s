@@ -10,6 +10,7 @@
 - **CLI/HTTP API:** `ae services` and `ae nodes` subcommands; status/history JSON/watch tweaks; HTTP API exposes `/nodes` and richer status for dashboards. New console script `ae-node` registered in `pyproject.toml`.
 - **Multinode lab & CI assets:** QEMU/libvirt lab scripts (`ops/ci/multinode-qemu.sh`, `ops/dev/multinode-lab.sh`), default test key under `ops/ci/keys/`, overlay-enabled smoke option, and sample `specs/examples/echo-multinode.yaml`. New docs `MULTINODE-TEST.md`, `docs/multinode-lab.md`, and site rebuild covering the workflow.
 - **Test coverage:** Integration suites for agent flow and service VIP routing; unit suites for scheduler, agent API, pod CIDR allocator, docker provider, node state, and reconciler updates.
+- **Observability:** Prometheus now exports node inventory/heartbeat and service endpoint readiness metrics; controller-health Grafana board shows Ready/Total nodes, heartbeat age, and service endpoint readiness for multi-node runs.
 
 ### Changed
 - Docker runtime now prefers host-published endpoints using `AE_NODE_ADVERTISE_IP` when containers run on remote nodes; podman runtime gains parity fixes. Service endpoints are deduplicated to avoid SQLite UNIQUE violations when multiple replicas share targets.
@@ -18,4 +19,3 @@
 
 ### Fixed
 - QEMU CI script waits for cloud-init, retries repo mounts, installs pip before invoking ae binaries, and optionally runs a full smoke (apply → VIP curl → kill worker → reschedule → curl). Helper adds host key support for remote SSH kills and expands overlay disk defaults.
-
