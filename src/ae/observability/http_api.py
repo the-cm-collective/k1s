@@ -2915,6 +2915,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             <table id=\"tbl-services\"><thead><tr><th>App</th><th>Port</th><th>Target</th><th>Replicas</th></tr></thead><tbody></tbody></table>
           </div>
           <div class=\"card\" style=\"flex:1;\">
+            <strong>Nodes</strong>
+            <table id=\"tbl-nodes\"><thead><tr><th>Name</th><th>Status</th><th>Cordoned</th><th>Last Seen (s)</th></tr></thead><tbody></tbody></table>
+          </div>
+          <div class=\"card\" style=\"flex:1;\">
             <strong>Ingress</strong>
             <table id=\"tbl-ingress\"><thead><tr><th>App</th><th>Host</th><th>Config Path</th><th>Exists</th></tr></thead><tbody></tbody></table>
           </div>
@@ -3405,18 +3409,29 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         var lastDur = sys.controller && sys.controller.last_reconcile_duration != null ? (Number(sys.controller.last_reconcile_duration).toFixed(3) + 's') : '-';
         var ingressSites = (sys.ingress && sys.ingress.sites) ? sys.ingress.sites.length : 0;
         var services = (sys.services || []).length;
+        var serviceReady = 0;
+        try {
+          var se = sys.service_endpoints || {};
+          Object.keys(se).forEach(function(k){ serviceReady += Number(se[k].ready||0); });
+        } catch(e){}
         var volumes = (sys.volumes || []).length;
         var containers = (sys.containers || []);
         var containerCount = containers.length;
         var restartSum = containers.reduce(function(acc, c){ return acc + (Number(c.restart_count||0)||0); }, 0);
+        var nodes = sys.nodes || [];
+        var readyNodes = nodes.filter(function(n){ return String(n.status||'').toLowerCase()==='ready' && !n.stale; }).length;
+        var staleNodes = nodes.filter(function(n){ return n.stale; }).length;
         var pills = [
           {k:'Last Reconcile', v:lastTs},
           {k:'Duration', v:lastDur},
           {k:'Ingress Sites', v:String(ingressSites)},
           {k:'Services', v:String(services)},
+          {k:'Service Endpoints Ready', v:String(serviceReady)},
           {k:'Volumes', v:String(volumes)},
           {k:'Containers', v:String(containerCount)},
           {k:'Restarts', v:String(restartSum)},
+          {k:'Nodes', v: readyNodes + ' / ' + nodes.length},
+          {k:'Stale Nodes', v: String(staleNodes)},
           {k:'Mutations', v: (sys.rbac && sys.rbac.mutations_enabled) ? 'enabled' : 'disabled'},
         ];
         try {
@@ -3495,6 +3510,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var ibody = document.querySelector('#tbl-ingress tbody');
           if(ibody){ ibody.innerHTML = ((sys.ingress&&sys.ingress.sites)||[]).map(function(r){
             return '<tr><td>'+escapeHtml(r.app||'')+'</td><td>'+escapeHtml((r.host||'')||'-')+'</td><td>'+escapeHtml(String(r.path||''))+'</td><td>'+(r.exists?'yes':'no')+'</td></tr>';
+          }).join(''); }
+          var nbody = document.querySelector('#tbl-nodes tbody');
+          if(nbody){ nbody.innerHTML = (sys.nodes||[]).map(function(n){
+            var st = String(n.status||'').toLowerCase();
+            var stale = n.stale ? ' (stale)' : '';
+            var age = n.last_seen_seconds!=null ? Math.round(n.last_seen_seconds) : '-';
+            return '<tr><td>'+escapeHtml(n.name||n.id||'')+'</td><td>'+escapeHtml(st)+stale+'</td><td>'+(n.cordoned?'yes':'no')+'</td><td>'+age+'</td></tr>';
           }).join(''); }
           var vbody = document.querySelector('#tbl-vols tbody');
           if(vbody){ vbody.innerHTML = (sys.volumes||[]).map(function(v){
