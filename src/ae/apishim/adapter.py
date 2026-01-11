@@ -498,10 +498,10 @@ class AdapterWorker(threading.Thread):
         return target_key, ingress_spec
 
 
-def build_adapter(store: ObjectStore) -> AdapterWorker:
+def build_adapter(store: ObjectStore, runtime: RuntimeAdapter | None = None) -> AdapterWorker:
     db_path = os.getenv("AE_STATE_DB", "state/controller.db")
     state = SQLiteStateStore(Path(db_path))  # type: ignore[name-defined]
-    runtime = _runtime_from_env()
+    runtime = runtime or _runtime_from_env()
     # Minimal reconciler wiring; skip ingress/secrets/config extras for MVP
     from ae.controller.health import HealthManager
 
