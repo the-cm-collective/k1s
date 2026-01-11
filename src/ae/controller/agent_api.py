@@ -18,6 +18,10 @@ try:  # Optional: Phase 3 pod CIDR allocator
     from ae.network.pod_cidr import PodCIDRAllocator
 except Exception:  # pragma: no cover - allocator optional
     PodCIDRAllocator = None  # type: ignore
+try:
+    from ae.security.ca import issue_cert
+except Exception:  # pragma: no cover
+    issue_cert = None  # type: ignore
 
 LOGGER = logging.getLogger(__name__)
 
@@ -83,7 +87,7 @@ def make_handler(
         def do_POST(self) -> None:  # noqa: N802 - stdlib naming
             if not self._auth_ok():
                 return self._unauthorized()
-            if self.path != "/v1/heartbeat":
+            if self.path not in {"/v1/heartbeat", "/v1/bootstrap"}:
                 _json(self, 404, {"error": "not found"})
                 return
             try:
@@ -96,6 +100,31 @@ def make_handler(
             except Exception:
                 _json(self, 400, {"error": "invalid json"})
                 return
+
+            if self.path == "/v1/bootstrap":
+                if issue_cert is None:
+                    _json(self, 500, {"error": "ca helper unavailable"})
+                    return
+                node_id = str(payload.get("node_id") or "").strip()
+                if not node_id:
+                    _json(self, 400, {"error": "node_id required"})
+                    return
+                try:
+                    crt, key, ca = issue_cert(node_id)
+                    _json(
+                        self,
+                        200,
+                        {
+                            "cert": crt.read_text(encoding="utf-8"),
+                            "key": key.read_text(encoding="utf-8"),
+                            "ca": ca.read_text(encoding="utf-8"),
+                        },
+                    )
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.exception("bootstrap failed for %s", node_id)
+                    _json(self, 500, {"error": str(exc)})
+                    return
 
             node_id = str(payload.get("node_id") or payload.get("id") or "").strip()
             status = str(payload.get("status") or "Ready")

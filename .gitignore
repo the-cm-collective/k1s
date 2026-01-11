@@ -26,3 +26,4 @@ ops/dev/caddy/sites/green.caddy
 coverage.xml
 htmlcov/
 *.mp4
+.cache
