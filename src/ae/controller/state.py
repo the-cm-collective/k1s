@@ -417,10 +417,10 @@ class SQLiteStateStore:
     def _schema_matches(
         self, conn: sqlite3.Connection, table: str, expected_columns: list[str]
     ) -> bool:
-            info = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-                (table,),
-            ).fetchone()
+        info = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
         if info is None:
             return False
         columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
