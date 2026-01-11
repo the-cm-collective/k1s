@@ -1,0 +1,27 @@
+groups:
+  - name: multinode-health
+    rules:
+      - alert: NodeHeartbeatsStale
+        expr: ae_nodes_stale > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "One or more nodes missing heartbeats"
+          description: "ae_nodes_stale is {{ $value }}. Check agent connectivity or overlay."
+      - alert: ServiceNoReadyEndpoints
+        expr: ae_service_endpoints_ready == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service has zero ready endpoints"
+          description: "Service {{$labels.app}} has no ready endpoints."
+      - alert: OverlayNotConfigured
+        expr: ae_overlay_configured == 0
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "Overlay/VIP dataplane disabled"
+          description: "Overlay provider not enabled (ae_overlay_configured=0); VIP routing may be unavailable."

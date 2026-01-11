@@ -1731,6 +1731,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "# HELP ae_services_total Services with allocated cluster IPs",
             "# TYPE ae_services_total gauge",
             f"ae_services_total {getattr(snap, 'total_services', 0)}",
+            "# HELP ae_overlay_configured Overlay/VIP dataplane enabled (1=yes)",
+            "# TYPE ae_overlay_configured gauge",
+            f"ae_overlay_configured {1 if os.getenv('AE_SERVICE_PROVIDER', '').lower() == 'overlay' and os.getenv('AE_ENABLE_SERVICE_PROXY', '0') == '1' else 0}",
         ]
         # Per-app series metadata (declared once before samples)
         lines += [
