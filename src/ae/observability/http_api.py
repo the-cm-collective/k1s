@@ -2855,6 +2855,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 <style>
                   .node text { font-size:12px; pointer-events:none; }
                   .node.system rect { fill:#e5e7eb; stroke:#6b7280; }
+                  .node.worker rect { fill:#e0f2fe; stroke:#0284c7; }
+                  .node.worker.stale rect { fill:#fee2e2; stroke:#ef4444; }
+                  .node.worker.cordoned rect { fill:#fef3c7; stroke:#f59e0b; }
                   .node.app rect { fill:#dbeafe; stroke:#3b82f6; }
                   .node.pod circle { fill:#e5e7eb; stroke:#6b7280; }
                   .node.pod.ready circle { fill:#dcfce7; stroke:#16a34a; }
@@ -3582,6 +3585,20 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         function addNode(id, label, type, x, y, meta){ var n={id:id,label:label,type:type,x:x,y:y,meta:meta||{}}; nodes.push(n); nodeById[id]=n; return n; }
 
         var hasIngress = !!(sys.ingress && (sys.ingress.sites||[]).length);
+        // Worker nodes row
+        var workerY = topY;
+        var workerGap = 140;
+        (sys.nodes||[]).forEach(function(n, idx){
+          var st = String(n.status||'').toLowerCase();
+          var cls = 'worker';
+          if (n.stale) cls += ' stale';
+          if (n.cordoned) cls += ' cordoned';
+          var x = padX + idx * workerGap + 40;
+          addNode('node:'+n.id, n.name||n.id, cls, x, workerY, {status:st, stale:n.stale, cordoned:n.cordoned});
+        });
+
+        // Shift system nodes down if workers present
+        if ((sys.nodes||[]).length > 0){ topY += 50; midY += 50; }
         addNode('dns', 'DNS', 'system', padX + 160, topY);
         addNode('ingress', 'Ingress', 'system', padX + 360, topY);
         addNode('controller', 'Controller', 'system', padX + 160, midY);
@@ -3619,6 +3636,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if (hasIngress) link('dns','ingress','flow');
         link('controller','runtime','flow');
         if (hasIngress) link('controller','ingress','flow');
+        (sys.nodes||[]).forEach(function(n){
+          link('controller','node:'+n.id,'');
+          link('runtime','node:'+n.id,'');
+        });
         var sites = (sys.ingress && sys.ingress.sites) || [];
         var appsWithIngress = new Set(sites.map(function(s){ return s.app; }));
         appsWithIngress.forEach(function(name){ link('ingress','app:'+name,'flow'); });
