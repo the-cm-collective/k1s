@@ -19,6 +19,8 @@ DEFAULT_ROOT = Path("state/tls")
 CA_KEY = "agent-ca.key"
 CA_CRT = "agent-ca.crt"
 ISSUED = "issued.json"
+REVOKED = "revoked.json"
+USED_TOKENS = "used_tokens.json"
 
 
 def _ensure_root(root: Path) -> None:
@@ -162,3 +164,52 @@ def _record_issue(root: Path, crt_path: Path, node_id: str, days: int) -> None:
             data = []
     data.append(rec)
     issued_path.write_text(json.dumps(data, indent=2))
+
+
+def record_used_token(token: str, root: Path | str = DEFAULT_ROOT) -> None:
+    root = Path(root)
+    used_path = root / USED_TOKENS
+    data = []
+    if used_path.exists():
+        try:
+            data = json.loads(used_path.read_text())
+        except Exception:
+            data = []
+    data.append(token)
+    used_path.write_text(json.dumps(data, indent=2))
+
+
+def token_used(token: str, root: Path | str = DEFAULT_ROOT) -> bool:
+    path = Path(root) / USED_TOKENS
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text())
+        return token in data
+    except Exception:
+        return False
+
+
+def revoke_serial(serial: str, root: Path | str = DEFAULT_ROOT) -> None:
+    root = Path(root)
+    path = root / REVOKED
+    data = []
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+        except Exception:
+            data = []
+    if serial not in data:
+        data.append(serial)
+    path.write_text(json.dumps(data, indent=2))
+
+
+def is_revoked(serial: str, root: Path | str = DEFAULT_ROOT) -> bool:
+    path = Path(root) / REVOKED
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text())
+        return serial in data
+    except Exception:
+        return False

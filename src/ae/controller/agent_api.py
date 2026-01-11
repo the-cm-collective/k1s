@@ -19,11 +19,19 @@ try:  # Optional: Phase 3 pod CIDR allocator
 except Exception:  # pragma: no cover - allocator optional
     PodCIDRAllocator = None  # type: ignore
 try:
-    from ae.security.ca import issue_cert
+    from ae.security.ca import (
+        issue_cert,
+        is_revoked,
+        record_used_token,
+        token_used,
+    )
     from ae.security.tokens import verify_token
 except Exception:  # pragma: no cover
     issue_cert = None  # type: ignore
     verify_token = None  # type: ignore
+    is_revoked = None  # type: ignore
+    record_used_token = None  # type: ignore
+    token_used = None  # type: ignore
 
 LOGGER = logging.getLogger(__name__)
 
@@ -133,11 +141,16 @@ def make_handler(
                         if claimed != node_id:
                             _json(self, 401, {"error": "token node mismatch"})
                             return
+                        if token_used and token_used(join):
+                            _json(self, 401, {"error": "token already used"})
+                            return
                     except Exception as exc:
                         _json(self, 401, {"error": f"invalid token: {exc}"})
                         return
                 try:
                     crt, key, ca = issue_cert(node_id)
+                    if record_used_token:
+                        record_used_token(join)
                     _json(
                         self,
                         200,
@@ -187,6 +200,17 @@ def make_handler(
                     pod_cidr=pod_cidr,
                     wg_pubkey=wg_pubkey,
                 )
+                # If mTLS client cert presented and revoked, reject
+                try:
+                    if is_revoked is not None and hasattr(self.connection, "getpeercert"):
+                        cert = self.connection.getpeercert()  # type: ignore[attr-defined]
+                        if cert:
+                            serial = cert.get("serialNumber")
+                            if serial and is_revoked(serial):
+                                _json(self, 401, {"error": "certificate revoked"})
+                                return
+                except Exception:
+                    pass
                 store.record_heartbeat(node_id, status)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("heartbeat failed for %s", node_id)
