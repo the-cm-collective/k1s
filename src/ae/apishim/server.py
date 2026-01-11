@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from .store import ObjectStore, K8sObject
 from ae.controller.state import SQLiteStateStore
+from ae.runtime import DockerRuntime, PodmanRuntime, StubRuntime, RemoteRuntime, RuntimeAdapter
 from .adapter import build_adapter
 
 
@@ -443,6 +444,14 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "kind": "Node",
                             "verbs": ["get", "list"],
                         },
+                        {
+                            "name": "pods",
+                            "singularName": "",
+                            "namespaced": True,
+                            "kind": "Pod",
+                            "verbs": ["get", "list"],
+                            "shortNames": ["po"],
+                        },
                     ],
                 }
             )
@@ -665,6 +674,65 @@ class ShimHandler(BaseHTTPRequestHandler):
                 self._not_found()
                 return
             self._ok(ep)
+            return
+
+        # Pods (projected from runtime containers)
+        if plural == "pods":
+            containers = []
+            try:
+                containers = self.server.runtime.list_containers_info()  # type: ignore[attr-defined]
+            except Exception:
+                containers = []
+            now_rv = int(time.time() * 1000)
+            pod_objs = []
+            for c in containers:
+                labels = c.get("labels", {}) or {}
+                c_ns = labels.get("ae.namespace") or "default"
+                if ns and c_ns != ns:
+                    continue
+                pod_objs.append(_pod_obj(c, now_rv, labels.get("ae.node")))
+            if name is None:
+                self._ok(
+                    {
+                        "kind": "PodList",
+                        "apiVersion": "v1",
+                        "metadata": {"resourceVersion": str(now_rv)},
+                        "items": pod_objs,
+                    }
+                )
+                return
+            for p in pod_objs:
+                if p["metadata"]["name"] == name:
+                    self._ok(p)
+                    return
+            self._not_found()
+            return
+        # Pod logs (simple text, no streaming)
+        m_logs = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/log$", path)
+        if m_logs:
+            ns, pod_name = m_logs.group(1), m_logs.group(2)
+            tail = q.get("tailLines", ["100"])[0]
+            try:
+                tail_i = int(tail)
+            except Exception:
+                tail_i = 100
+            try:
+                lines = list(self.server.runtime.read_logs(pod_name, follow=False, tail=tail_i))  # type: ignore[attr-defined]
+                body = "".join(lines)
+                data = body.encode("utf-8", errors="ignore")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            except Exception as exc:
+                self._json_status(HTTPStatus.INTERNAL_SERVER_ERROR, reason="InternalError", message=str(exc))
+            return
+        # Pod exec (POST JSON: {command:[...], timeoutSeconds?})
+        m_exec = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/exec$", path)
+        if m_exec:
+            self.send_response(HTTPStatus.METHOD_NOT_ALLOWED)
+            self.end_headers()
             return
 
         # Nodes (projected from controller state)
@@ -944,6 +1012,25 @@ class ShimHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or "0")
         body = self.rfile.read(length)
         doc = _read_json(body)
+
+        # Pod exec (JSON {command:[], timeoutSeconds?})
+        m_exec = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/exec$", self.path)
+        if m_exec:
+            cmd = doc.get("command") or doc.get("cmd")
+            timeout = doc.get("timeoutSeconds") or doc.get("timeout")
+            if not isinstance(cmd, list) or not cmd:
+                self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="command must be a non-empty list")
+                return
+            try:
+                rc = int(
+                    self.server.runtime.exec(  # type: ignore[attr-defined]
+                        m_exec.group(2), [str(c) for c in cmd], timeout=int(timeout) if timeout else None
+                    )
+                )
+                self._ok({"kind": "Status", "status": "Success", "code": 200, "metadata": {}, "details": {"exitCode": rc}})
+            except Exception as exc:
+                self._json_status(HTTPStatus.INTERNAL_SERVER_ERROR, reason="InternalError", message=str(exc))
+            return
 
         plural, ns, name = _ns_name(self.path)
         if plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}:
@@ -2113,6 +2200,55 @@ def _node_obj(record, status, rv: int) -> Dict[str, Any]:
     return {"apiVersion": "v1", "kind": "Node", "metadata": meta, "status": node_status}
 
 
+def _runtime_from_env() -> RuntimeAdapter:
+    backend = (os.getenv("AE_APISHIM_RUNTIME") or os.getenv("AE_RUNTIME_BACKEND") or "stub").lower()
+    if backend in {"stub", "test"}:
+        return StubRuntime()
+    if backend in {"podman", "oci"}:
+        try:
+            return PodmanRuntime()
+        except Exception:
+            return DockerRuntime()
+    if backend == "remote":
+        return RemoteRuntime()
+    return DockerRuntime()
+
+
+def _pod_obj(container: dict, rv: int, node_name: Optional[str]) -> Dict[str, Any]:
+    labels = container.get("labels", {}) or {}
+    app = labels.get("ae.app") or "app"
+    replica_id = labels.get("ae.replica_id") or container.get("name") or "replica"
+    ns = "default"
+    meta = {
+        "name": replica_id,
+        "namespace": ns,
+        "labels": labels,
+        "resourceVersion": str(rv),
+    }
+    status = {
+        "phase": "Running",
+        "podIP": None,
+        "hostIP": None,
+        "containerStatuses": [
+            {
+                "name": labels.get("ae.container", "main"),
+                "ready": True,
+                "restartCount": int(container.get("restart_count", 0) or 0),
+                "state": {"running": {"startedAt": None}},
+            }
+        ],
+    }
+    if node_name:
+        meta["nodeName"] = node_name
+    return {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": meta,
+        "spec": {"nodeName": node_name},
+        "status": status,
+    }
+
+
 class ShimServer(HTTPServer):
     def __init__(self, server_address: Tuple[str, int], token: Optional[str]) -> None:
         super().__init__(server_address, ShimHandler)
@@ -2122,10 +2258,11 @@ class ShimServer(HTTPServer):
         db_path = Path(os.getenv("AE_STATE_DB", "state/controller.db"))
         self.state = SQLiteStateStore(db_path)
         ShimHandler.state = self.state  # type: ignore[assignment]
+        self.runtime = _runtime_from_env()
         self._bootstrap_crds()
         # Start adapter worker to reconcile apps/v1 Deployments into k1s
         try:
-            self._adapter = build_adapter(self.store)
+            self._adapter = build_adapter(self.store, runtime=self.runtime)
             self._adapter.start()
         except Exception:
             self._adapter = None
