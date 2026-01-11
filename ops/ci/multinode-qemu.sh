@@ -264,7 +264,7 @@ start_stack() {
 
   for ip in "$WK1_IP" "$WK2_IP"; do
     ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$SSH_KEY_PATH" "ae@$ip" \
-      "AE_CONTROLLER_URL=http://${CTRL_IP}:9110 AE_AGENT_TOKEN=${AE_TOKEN} AE_NODE_ID=${ip//./-} AE_NODE_NAME=${ip//./-} AE_NODE_ADVERTISE_IP=${ip} AE_AGENT_ENDPOINT=http://${ip}:9109 AE_AGENT_HEARTBEAT_SECONDS=10 AE_AGENT_CONFIGURE_OVERLAY=${ENABLE_OVERLAY} AE_NETWORK_NAME=ae-net AE_DOCKER_NETWORK=ae-net AE_POD_CIDR=10.42.$((RANDOM%250)).0/24 nohup python3 -m ae.node.server --runtime-backend docker --port 9109 --advertise-endpoint http://${ip}:9109 > /home/ae/agent.log 2>&1 & echo \$! > /home/ae/agent.pid"
+      "AE_CONTROLLER_URL=https://${CTRL_IP}:9110 AE_CONTROLLER_TLS_CA=/mnt/host/state/tls/agent-ca.crt AE_CONTROLLER_TLS_CERT=/mnt/host/state/tls/${ip//./-}.crt AE_CONTROLLER_TLS_KEY=/mnt/host/state/tls/${ip//./-}.key AE_AGENT_TOKEN=${AE_TOKEN} AE_NODE_ID=${ip//./-} AE_NODE_NAME=${ip//./-} AE_NODE_ADVERTISE_IP=${ip} AE_AGENT_ENDPOINT=https://${ip}:9109 AE_AGENT_HEARTBEAT_SECONDS=10 AE_AGENT_CONFIGURE_OVERLAY=${ENABLE_OVERLAY} AE_NETWORK_NAME=ae-net AE_DOCKER_NETWORK=ae-net AE_POD_CIDR=10.42.$((RANDOM%250)).0/24 AE_AGENT_TLS_CERT=/mnt/host/state/tls/${ip//./-}.crt AE_AGENT_TLS_KEY=/mnt/host/state/tls/${ip//./-}.key AE_AGENT_CLIENT_CA=/mnt/host/state/tls/agent-ca.crt AE_AGENT_REQUIRE_CLIENT_CERT=1 nohup python3 -m ae.node.server --runtime-backend docker --port 9109 --advertise-endpoint https://${ip}:9109 > /home/ae/agent.log 2>&1 & echo \$! > /home/ae/agent.pid"
   done
 
   echo "Stack started. Controller at ${CTRL_IP}:9110"
