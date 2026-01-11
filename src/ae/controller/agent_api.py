@@ -102,6 +102,14 @@ def make_handler(
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib naming
             if self.path in ("/healthz", "/readyz"):
+                try:
+                    if is_revoked is not None and hasattr(self.connection, "getpeercert"):
+                        cert = self.connection.getpeercert()  # type: ignore[attr-defined]
+                        if cert and cert.get("serialNumber") and is_revoked(cert["serialNumber"]):
+                            _json(self, 401, {"error": "certificate revoked"})
+                            return
+                except Exception:
+                    pass
                 _json(self, 200, {"ok": True})
                 return
             if self.path.startswith("/v1/nodes"):
@@ -190,17 +198,7 @@ def make_handler(
                     LOGGER.warning("pod CIDR allocation failed for %s: %s", node_id, exc)
 
             try:
-                store.upsert_node(
-                    node_id,
-                    name=name,
-                    labels=labels,
-                    taints=taints,
-                    backend=backend,
-                    endpoint=endpoint,
-                    pod_cidr=pod_cidr,
-                    wg_pubkey=wg_pubkey,
-                )
-                # If mTLS client cert presented and revoked, reject
+                # If mTLS client cert presented and revoked, reject early
                 try:
                     if is_revoked is not None and hasattr(self.connection, "getpeercert"):
                         cert = self.connection.getpeercert()  # type: ignore[attr-defined]
@@ -211,6 +209,16 @@ def make_handler(
                                 return
                 except Exception:
                     pass
+                store.upsert_node(
+                    node_id,
+                    name=name,
+                    labels=labels,
+                    taints=taints,
+                    backend=backend,
+                    endpoint=endpoint,
+                    pod_cidr=pod_cidr,
+                    wg_pubkey=wg_pubkey,
+                )
                 store.record_heartbeat(node_id, status)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("heartbeat failed for %s", node_id)
