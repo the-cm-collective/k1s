@@ -11,8 +11,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 import time
 import json as _jsonlib
+from pathlib import Path
 
 from .store import ObjectStore, K8sObject
+from ae.controller.state import SQLiteStateStore
 from .adapter import build_adapter
 
 
@@ -415,6 +417,21 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
                             "shortNames": ["svc"],
                         },
+                        {
+                            "name": "endpoints",
+                            "singularName": "",
+                            "namespaced": True,
+                            "kind": "Endpoints",
+                            "verbs": ["get", "list"],
+                            "shortNames": ["ep"],
+                        },
+                        {
+                            "name": "nodes",
+                            "singularName": "",
+                            "namespaced": False,
+                            "kind": "Node",
+                            "verbs": ["get", "list"],
+                        },
                     ],
                 }
             )
@@ -597,7 +614,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                         items = self.server.store.list_all("", "v1", plural)  # type: ignore[attr-defined]
                     else:
                         items = self.server.store.list("", "v1", plural, ns)  # type: ignore[attr-defined]
-                self._ok({"kind": f"{_kind(plural)}List", "apiVersion": "v1", "items": [_to_obj(i) for i in items]})
+                self._ok(_list_with_rv(items, _to_obj, kind=_kind(plural), api_version="v1"))
                 return
             else:
                 # GET
@@ -607,6 +624,56 @@ class ShimHandler(BaseHTTPRequestHandler):
                     return
                 self._ok(_to_obj(obj))
                 return
+        # Endpoints (projected from controller state)
+        if plural == "endpoints":
+            if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
+                self.send_response(HTTPStatus.NOT_IMPLEMENTED)
+                self.end_headers()
+                return
+            if name is None:
+                # list endpoints within namespace (or all)
+                svcs = (
+                    self.server.store.list_all("", "v1", "services")  # type: ignore[attr-defined]
+                    if ns is None
+                    else self.server.store.list("", "v1", "services", ns)  # type: ignore[attr-defined]
+                )
+                items: List[Dict[str, Any]] = []
+                for svc in svcs:
+                    ep = _endpoints_for_service(self.server.state, svc)  # type: ignore[attr-defined]
+                    if ep:
+                        items.append(ep)
+                rv = max((int(i["metadata"].get("resourceVersion", "0")) for i in items), default=0)
+                self._ok({"kind": "EndpointsList", "apiVersion": "v1", "metadata": {"resourceVersion": str(rv)}, "items": items})
+                return
+            svc = self.server.store.get("", "v1", "services", ns, name)  # type: ignore[attr-defined]
+            if not svc:
+                self._not_found()
+                return
+            ep = _endpoints_for_service(self.server.state, svc)  # type: ignore[attr-defined]
+            if not ep:
+                self._not_found()
+                return
+            self._ok(ep)
+            return
+
+        # Nodes (projected from controller state)
+        if path == "/api/v1/nodes":
+            nodes = self.server.state.list_nodes()  # type: ignore[attr-defined]
+            now_rv = int(time.time() * 1000)
+            items = []
+            for idx, (rec, st) in enumerate(nodes, start=1):
+                items.append(_node_obj(rec, st, now_rv + idx))
+            self._ok({"kind": "NodeList", "apiVersion": "v1", "metadata": {"resourceVersion": str(now_rv)}, "items": items})
+            return
+        if path.startswith("/api/v1/nodes/"):
+            node_name = path.split("/")[-1]
+            nodes = self.server.state.list_nodes()  # type: ignore[attr-defined]
+            for rec, st in nodes:
+                if node_name in {rec.node_id, rec.name or ""}:
+                    self._ok(_node_obj(rec, st, int(time.time() * 1000)))
+                    return
+            self._not_found()
+            return
 
         # apps/v1 deployments
         if path.startswith("/apis/apps/v1"):
@@ -638,11 +705,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                         else self.server.store.list("apps", "v1", "deployments", d_ns)  # type: ignore[attr-defined]
                     )
                     self._ok(
-                        {
-                            "kind": "DeploymentList",
-                            "apiVersion": "apps/v1",
-                            "items": [_to_deployment(i) for i in items],
-                        }
+                        _list_with_rv(items, _to_deployment, kind="Deployment", api_version="apps/v1")
                     )
                     return
                 else:
@@ -696,13 +759,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                         if n_ns is None
                         else self.server.store.list("networking.k8s.io", "v1", "ingresses", n_ns)  # type: ignore[attr-defined]
                     )
-                    self._ok(
-                        {
-                            "kind": "IngressList",
-                            "apiVersion": "networking.k8s.io/v1",
-                            "items": [_to_ingress(i) for i in items],
-                        }
-                    )
+                    self._ok(_list_with_rv(items, _to_ingress, kind="Ingress", api_version="networking.k8s.io/v1"))
                     return
                 else:
                     obj = self.server.store.get("networking.k8s.io", "v1", "ingresses", n_ns, n_name)  # type: ignore[attr-defined]
@@ -1689,6 +1746,7 @@ def _to_obj(o: K8sObject) -> Dict[str, Any]:
     meta.setdefault("name", o.name)
     if o.namespace:
         meta.setdefault("namespace", o.namespace)
+    meta.setdefault("resourceVersion", str(o.resource_version))
     return {
         "apiVersion": _api_version(o.group, o.version),
         "kind": _kind(o.resource),
@@ -1707,6 +1765,7 @@ def _to_deployment(o: K8sObject) -> Dict[str, Any]:
     meta.setdefault("name", o.name)
     if o.namespace:
         meta.setdefault("namespace", o.namespace)
+    meta.setdefault("resourceVersion", str(o.resource_version))
     # attach/ensure generation
     gen_val = meta.get("generation")
     try:
@@ -1767,6 +1826,7 @@ def _to_ingress(o: K8sObject) -> Dict[str, Any]:
     meta.setdefault("name", o.name)
     if o.namespace:
         meta.setdefault("namespace", o.namespace)
+    meta.setdefault("resourceVersion", str(o.resource_version))
     out = {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "Ingress",
@@ -1776,6 +1836,16 @@ def _to_ingress(o: K8sObject) -> Dict[str, Any]:
     if o.status:
         out["status"] = o.status
     return out
+
+
+def _list_with_rv(items: List[K8sObject], transform, *, kind: str, api_version: str) -> Dict[str, Any]:
+    rv = max((i.resource_version for i in items), default=0)
+    return {
+        "kind": f"{kind}List",
+        "apiVersion": api_version,
+        "metadata": {"resourceVersion": str(rv)},
+        "items": [transform(i) for i in items],
+    }
 
 
 def _to_crd(o: K8sObject) -> Dict[str, Any]:
@@ -1841,6 +1911,7 @@ def _to_generic(group: str, version: str, kind: str, resource: str):
         meta.setdefault("name", o.name)
         if o.namespace:
             meta.setdefault("namespace", o.namespace)
+        meta.setdefault("resourceVersion", str(o.resource_version))
         body: Dict[str, Any] = {
             "apiVersion": _api_version(group, version),
             "kind": kind,
@@ -1952,11 +2023,92 @@ def _valid_name(name: str) -> bool:
     return _DNS1123_RE.match(name) is not None
 
 
+def _service_target(svc: K8sObject) -> Optional[str]:
+    spec = svc.spec or {}
+    selector = spec.get("selector") or {}
+    if not selector:
+        selector = (spec.get("selector") or {}).get("matchLabels") or {}
+    return (
+        selector.get("app")
+        or selector.get("app.kubernetes.io/name")
+        or svc.metadata.get("labels", {}).get("app")
+        or svc.metadata.get("annotations", {}).get("apishim.k1s.dev/app")
+        or svc.metadata.get("name")
+    )
+
+
+def _endpoints_for_service(state: SQLiteStateStore, svc: K8sObject) -> Optional[Dict[str, Any]]:
+    target = _service_target(svc)
+    if not target:
+        return None
+    app_name = f"{svc.namespace}--{target}" if svc.namespace else target
+    endpoints = state.list_service_endpoints(app_name)
+    ports_spec = []
+    for p in svc.spec.get("ports", []):
+        ports_spec.append(
+            {
+                "name": p.get("name"),
+                "port": p.get("port"),
+                "protocol": p.get("protocol", "TCP"),
+            }
+        )
+    ready_addrs = []
+    not_ready = []
+    for ep in endpoints:
+        entry = {"ip": ep.ip}
+        if ep.ready:
+            ready_addrs.append(entry)
+        else:
+            not_ready.append(entry)
+    meta = {
+        "name": svc.name,
+        "namespace": svc.namespace,
+        "resourceVersion": str(svc.resource_version),
+    }
+    body = {
+        "apiVersion": "v1",
+        "kind": "Endpoints",
+        "metadata": meta,
+        "subsets": [
+            {
+                "addresses": ready_addrs or [],
+                "notReadyAddresses": not_ready or [],
+                "ports": ports_spec,
+            }
+        ],
+    }
+    return body
+
+
+def _node_obj(record, status, rv: int) -> Dict[str, Any]:
+    meta = {
+        "name": record.name or record.node_id,
+        "resourceVersion": str(rv),
+        "labels": record.labels or {},
+    }
+    conditions: List[Dict[str, Any]] = []
+    if status:
+        conditions.append(
+            {
+                "type": "Ready",
+                "status": "True" if status.status == "ready" else "False",
+                "lastHeartbeatTime": status.seen_at.isoformat(),
+                "reason": "AgentHeartbeat",
+            }
+        )
+    else:
+        conditions.append({"type": "Ready", "status": "Unknown"})
+    node_status = {"conditions": conditions}
+    return {"apiVersion": "v1", "kind": "Node", "metadata": meta, "status": node_status}
+
+
 class ShimServer(HTTPServer):
     def __init__(self, server_address: Tuple[str, int], token: Optional[str]) -> None:
         super().__init__(server_address, ShimHandler)
         self.store = ObjectStore()
-        ShimHandler.token_required = token
+        ShimHandler.token_required = token or os.getenv("AE_APISHIM_TOKEN")
+        db_path = Path(os.getenv("AE_STATE_DB", "state/controller.db"))
+        self.state = SQLiteStateStore(db_path)
         self._bootstrap_crds()
         # Start adapter worker to reconcile apps/v1 Deployments into k1s
         try:
@@ -1977,7 +2129,10 @@ class ShimServer(HTTPServer):
 def run_server(host: str = "127.0.0.1", port: int = 8445, token: Optional[str] = None, tls: bool = False) -> None:
     if os.getenv("AE_APISHIM_ENABLE") != "1":
         raise RuntimeError("apishim disabled: set AE_APISHIM_ENABLE=1 to start the shim server")
-    httpd = ShimServer((host, port), token)
+    tok = token or os.getenv("AE_APISHIM_TOKEN")
+    if not tok:
+        raise RuntimeError("AE_APISHIM_TOKEN must be set (or --token) to start the shim server")
+    httpd = ShimServer((host, port), tok)
     if tls:
         # Dev TLS: requires user-provided cert/key via env or skip.
         cert_file = os.getenv("AE_APISHIM_TLS_CERT")
