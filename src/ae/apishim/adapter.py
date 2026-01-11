@@ -441,7 +441,7 @@ class AdapterWorker(threading.Thread):
         if not result:
             dep_key = None
             with self._lock:
-                dep_key = self._ingress_owner_map.pop((ing.namespace, ing.name), None)
+                dep_key = self._ingress_owner_map.pop((obj.namespace, obj.name), None)
                 if dep_key:
                     self._ingress_specs.pop(dep_key, None)
             if dep_key:
@@ -450,7 +450,7 @@ class AdapterWorker(threading.Thread):
         dep_key, ingress_spec = result
         with self._lock:
             self._ingress_specs[dep_key] = ingress_spec
-            self._ingress_owner_map[(ing.namespace, ing.name)] = dep_key
+            self._ingress_owner_map[(obj.namespace, obj.name)] = dep_key
         self._trigger_reconcile(dep_key[0], dep_key[1])
 
     def _ingress_spec_for(

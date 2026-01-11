@@ -1975,6 +1975,8 @@ class ShimServer(HTTPServer):
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8445, token: Optional[str] = None, tls: bool = False) -> None:
+    if os.getenv("AE_APISHIM_ENABLE") != "1":
+        raise RuntimeError("apishim disabled: set AE_APISHIM_ENABLE=1 to start the shim server")
     httpd = ShimServer((host, port), token)
     if tls:
         # Dev TLS: requires user-provided cert/key via env or skip.

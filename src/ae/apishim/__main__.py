@@ -10,6 +10,8 @@ from .server import run_server
 
 def cmd_serve(args: argparse.Namespace) -> int:
     token = args.token or os.getenv("AE_APISHIM_TOKEN")
+    if os.getenv("AE_APISHIM_ENABLE") != "1":
+        raise SystemExit("AE_APISHIM_ENABLE=1 required to run the API shim")
     run_server(host=args.host, port=args.port, token=token, tls=args.tls)
     return 0
 
@@ -67,4 +69,3 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
-
