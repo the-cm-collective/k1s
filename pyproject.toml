@@ -25,6 +25,7 @@ watch = [
 
 [project.scripts]
 ae = "ae.cli.__main__:main"
+ae-rotate-certs = "ae.cli.rotate_certs:main"
 k1s = "ae.kctl.__main__:main"
 ae-node = "ae.node.server:main"
 
