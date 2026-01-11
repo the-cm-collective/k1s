@@ -92,6 +92,20 @@ labs-up:
 labs-down:
 	docker compose -f ops/dev/labs-compose.yaml down
 
+.PHONY: apishim-smoke
+apishim-smoke:
+	@echo "[apishim-smoke] starting shim on 127.0.0.1:8445 with token=smoke"
+	@AE_APISHIM_ENABLE=1 AE_APISHIM_TOKEN=smoke PYTHONPATH=src \
+	  python -m ae.apishim serve --host 127.0.0.1 --port 8445 --token smoke >/tmp/apishim-smoke.log 2>&1 & \
+	  pid=$$!; \
+	  sleep 2; \
+	  curl -fsS -H "Authorization: Bearer smoke" http://127.0.0.1:8445/healthz >/dev/null; \
+	  rc=$$?; \
+	  kill $$pid >/dev/null 2>&1 || true; \
+	  wait $$pid >/dev/null 2>&1 || true; \
+	  if [ $$rc -eq 0 ]; then echo "[apishim-smoke] ok"; else echo "[apishim-smoke] FAILED (see /tmp/apishim-smoke.log)"; fi; \
+	  exit $$rc
+
 labs-aio-up:
 	docker compose -f ops/dev/labs-aio.yaml up -d
 
