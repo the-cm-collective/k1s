@@ -271,6 +271,19 @@ class Reconciler:
                 )
             except Exception:
                 pass
+        # Persist placement hints before reconcile (so dashboard can render)
+        try:
+            node_rows: list[tuple[str, str]] = []
+            for pl in placements:
+                node_id = getattr(getattr(pl, "node", None), "node_id", None)
+                if not node_id:
+                    continue
+                for rid in getattr(pl, "replica_ids", []) or []:
+                    node_rows.append((rid, node_id))
+            if node_rows:
+                self._state_store.set_replica_nodes(manifest.metadata.name, node_rows)
+        except Exception:
+            pass
 
         # Keep old replicas during rollout to respect surge/unavailable; we'll remove them after readiness check
         aggregate_states: list = []

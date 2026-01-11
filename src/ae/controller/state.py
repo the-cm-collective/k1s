@@ -299,6 +299,17 @@ class SQLiteStateStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS replica_nodes (
+                    app_name TEXT NOT NULL,
+                    replica_id TEXT NOT NULL,
+                    node_id TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (app_name, replica_id)
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS app_revisions (
                     app_name TEXT NOT NULL,
                     revision INTEGER NOT NULL,
@@ -406,10 +417,10 @@ class SQLiteStateStore:
     def _schema_matches(
         self, conn: sqlite3.Connection, table: str, expected_columns: list[str]
     ) -> bool:
-        info = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-            (table,),
-        ).fetchone()
+            info = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            ).fetchone()
         if info is None:
             return False
         columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
@@ -463,6 +474,9 @@ class SQLiteStateStore:
                 "DELETE FROM replica_status WHERE app_name = ?",
                 (manifest.metadata.name,),
             )
+
+            # Clean existing placements for this app; will be repopulated below
+            conn.execute("DELETE FROM replica_nodes WHERE app_name = ?", (manifest.metadata.name,))
 
             rows = [
                 (
@@ -521,6 +535,31 @@ class SQLiteStateStore:
                         """,
                         (manifest.metadata.name, replica.replica_id),
                     )
+            # Persist placement mapping when runtime result contains node_id hints
+            node_rows = []
+            for rs in runtime_result.replica_states:
+                node_id = getattr(rs, "node_id", None)
+                if not node_id:
+                    continue
+                node_rows.append(
+                    (
+                        manifest.metadata.name,
+                        rs.replica_id,
+                        node_id,
+                        timestamp,
+                    )
+                )
+            if node_rows:
+                conn.executemany(
+                    """
+                    INSERT INTO replica_nodes(app_name, replica_id, node_id, updated_at)
+                    VALUES(?,?,?,?)
+                    ON CONFLICT(app_name, replica_id) DO UPDATE SET
+                        node_id=excluded.node_id,
+                        updated_at=excluded.updated_at
+                    """,
+                    node_rows,
+                )
             conn.execute(
                 """
                 UPDATE app_revisions
@@ -605,6 +644,34 @@ class SQLiteStateStore:
             )
             for row in rows
         ]
+
+    def list_replica_nodes(self, app_name: str) -> list[tuple[str, str]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT replica_id, node_id
+                FROM replica_nodes
+                WHERE app_name = ?
+                ORDER BY replica_id
+                """,
+                (app_name,),
+            ).fetchall()
+        return [(row[0], row[1]) for row in rows]
+
+    def set_replica_nodes(self, app_name: str, placements: list[tuple[str, str]]) -> None:
+        """Replace placement mapping for an app."""
+        ts = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute("DELETE FROM replica_nodes WHERE app_name = ?", (app_name,))
+            if placements:
+                conn.executemany(
+                    """
+                    INSERT INTO replica_nodes(app_name, replica_id, node_id, updated_at)
+                    VALUES(?,?,?,?)
+                    """,
+                    [(app_name, rid, nid, ts) for rid, nid in placements],
+                )
+            conn.commit()
 
     def get_probe_history(self, app_name: str, limit: int) -> list[ProbeHistoryEntry]:
         with self._connect() as conn:
