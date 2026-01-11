@@ -20,8 +20,10 @@ except Exception:  # pragma: no cover - allocator optional
     PodCIDRAllocator = None  # type: ignore
 try:
     from ae.security.ca import issue_cert
+    from ae.security.tokens import verify_token
 except Exception:  # pragma: no cover
     issue_cert = None  # type: ignore
+    verify_token = None  # type: ignore
 
 LOGGER = logging.getLogger(__name__)
 
@@ -124,6 +126,16 @@ def make_handler(
                 if not node_id:
                     _json(self, 400, {"error": "node_id required"})
                     return
+                join = str(payload.get("join_token") or "").strip()
+                if verify_token is not None:
+                    try:
+                        claimed, _ = verify_token(join)
+                        if claimed != node_id:
+                            _json(self, 401, {"error": "token node mismatch"})
+                            return
+                    except Exception as exc:
+                        _json(self, 401, {"error": f"invalid token: {exc}"})
+                        return
                 try:
                     crt, key, ca = issue_cert(node_id)
                     _json(
