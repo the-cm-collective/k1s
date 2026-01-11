@@ -70,7 +70,22 @@ def make_handler(
         def _auth_ok(self) -> bool:
             if not token:
                 return True
-            return self.headers.get("X-Agent-Token") == token
+            if self.headers.get("X-Agent-Token") != token:
+                return False
+            # Optional token expiry check
+            import os as _os
+            from datetime import datetime as _dt, timezone as _tz
+
+            exp = (_os.getenv("AE_AGENT_TOKEN_EXPIRES") or "").strip()
+            if not exp:
+                return True
+            try:
+                dt = _dt.fromisoformat(exp[:-1] + "+00:00") if exp.endswith("Z") else _dt.fromisoformat(exp)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=_tz.utc)
+                return _dt.now(_tz.utc) < dt
+            except Exception:
+                return True
 
         def _unauthorized(self) -> None:
             _json(self, 401, {"error": "unauthorized"})
@@ -179,6 +194,10 @@ def start_agent_api(
     port: int = 9110,
     *,
     token: str | None = None,
+    tls_cert: str | None = None,
+    tls_key: str | None = None,
+    client_ca: str | None = None,
+    require_client_cert: bool = False,
 ) -> HTTPServer:
     """Start the agent API server in a daemon thread."""
     # Optional Pod CIDR allocator (Phase 3)
@@ -192,6 +211,16 @@ def start_agent_api(
 
     handler = make_handler(store, token, allocator)
     server = HTTPServer((host, int(port)), handler)
+    if tls_cert and tls_key:
+        import ssl
+
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(tls_cert, tls_key)
+        if client_ca:
+            ctx.load_verify_locations(client_ca)
+            if require_client_cert:
+                ctx.verify_mode = ssl.CERT_REQUIRED
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
     thread = threading.Thread(target=server.serve_forever, name="agent-api", daemon=True)
     thread.start()
     LOGGER.info("Agent API listening on %s:%s", host, port)
