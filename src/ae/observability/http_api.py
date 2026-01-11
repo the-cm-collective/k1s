@@ -1941,6 +1941,20 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         )
                     except Exception:
                         continue
+                # Overlay health (WireGuard)
+                try:
+                    ov = sysinfo.get("overlay") or {}
+                    peers = ov.get("peers")
+                    if peers is not None:
+                        lines.append(f'ae_overlay_peers {int(peers)}')
+                    hs = ov.get("latest_handshake_seconds")
+                    if hs is not None:
+                        lines.append(f'ae_overlay_latest_handshake_seconds {float(hs)}')
+                    mtu = ov.get("mtu")
+                    if mtu is not None:
+                        lines.append(f'ae_overlay_mtu {int(mtu)}')
+                except Exception:
+                    pass
             # Agent cert expiry metrics (if issued.json present)
             try:
                 import json as _j
