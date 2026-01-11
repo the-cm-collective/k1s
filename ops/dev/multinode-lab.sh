@@ -44,6 +44,10 @@ AE_POD_CIDR_POOL=\${AE_POD_CIDR_POOL:-10.42.0.0/16} \\
 AE_POD_CIDR_MASK=\${AE_POD_CIDR_MASK:-24} \\
 AE_AGENT_API_PORT=\${AE_AGENT_API_PORT:-9110} \\
 AE_AGENT_API_TOKEN=\${AE_AGENT_API_TOKEN:-changeme} \\
+AE_AGENT_API_TLS_CERT=\${AE_AGENT_API_TLS_CERT:-} \\
+AE_AGENT_API_TLS_KEY=\${AE_AGENT_API_TLS_KEY:-} \\
+AE_AGENT_API_CLIENT_CA=\${AE_AGENT_API_CLIENT_CA:-} \\
+AE_AGENT_API_REQUIRE_CLIENT_CERT=\${AE_AGENT_API_REQUIRE_CLIENT_CERT:-0} \\
 python -m ae.controller --loop --specs specs/ --metrics-port 9108
 EOF
 
@@ -56,6 +60,9 @@ AE_NODE_ID=<node-name> \
 AE_NODE_LABELS=role=worker \
 AE_AGENT_ENDPOINT=http://<node-host>:9109 \
 AE_AGENT_HEARTBEAT_SECONDS=10 \
+AE_CONTROLLER_TLS_CA=<path-to-ca> \
+AE_CONTROLLER_TLS_CERT=<node-cert> \
+AE_CONTROLLER_TLS_KEY=<node-key> \
 AE_POD_CIDR=<cidr-assigned-or-empty> \
 AE_WG_CONFIG="$(cat /etc/wireguard/wg0.conf)" \
 python -m ae.node --runtime-backend podman --port 9109 --ensure-pod-net
@@ -70,4 +77,3 @@ echo "Notes:"
 echo "- Pod CIDRs are auto-assigned on first heartbeat if AE_POD_CIDR is empty."
 echo "- WireGuard config is not generated here; supply one per node via AE_WG_CONFIG."
 echo "- This script is a helper; adapt for real labs/CI."
-
