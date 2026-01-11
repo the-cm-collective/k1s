@@ -113,6 +113,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Cordon node and evict workloads best-effort via the node agent",
     )
 
+    certs_parser = subparsers.add_parser("certs", help="List issued/revoked agent certs")
+    certs_parser.add_argument("--root", default=None, help="TLS dir (default AE_TLS_DIR or state/tls)")
+    certs_parser.add_argument("--json", action="store_true", help="Emit JSON")
+
     rollback_parser = subparsers.add_parser("rollback", help="Rollback an application revision")
     rollback_parser.add_argument("name", help="Application name")
     rollback_parser.add_argument(
@@ -1145,6 +1149,7 @@ def main(argv: list[str] | None = None) -> int:
         "registry": handle_registry,
         "verify-image": handle_verify_image,
         "nodes": lambda ns: handle_nodes(ns, store, runtime),
+        "certs": handle_certs,
     }
 
     handler = command_handlers.get(args.command)
@@ -3588,6 +3593,48 @@ def handle_verify_image(args: argparse.Namespace) -> int:
     else:
         print(summary)
     return 0 if ok else (proc.returncode or 1)
+
+
+def handle_certs(args: argparse.Namespace) -> int:
+    import json as _json
+    import os
+    from pathlib import Path
+    from ae.security import is_revoked
+
+    root = Path(args.root) if args.root else Path(os.getenv("AE_TLS_DIR", "state/tls"))
+    issued_path = root / "issued.json"
+    revoked_path = root / "revoked.json"
+    issued = []
+    revoked = []
+    try:
+        if issued_path.exists():
+            issued = _json.loads(issued_path.read_text())
+    except Exception as exc:  # noqa: BLE001
+        print(f"failed to read {issued_path}: {exc}")
+    try:
+        if revoked_path.exists():
+            revoked = _json.loads(revoked_path.read_text())
+    except Exception:
+        revoked = []
+    if getattr(args, "json", False):
+        print(_json.dumps({"root": str(root), "issued": issued, "revoked": revoked}, indent=2))
+        return 0
+    print(f"TLS dir: {root}")
+    print("Issued certs:")
+    if not issued:
+        print("  (none)")
+    else:
+        for item in issued:
+            nid = item.get("node_id")
+            serial = item.get("serial", "")
+            exp = item.get("expires_at", "")
+            status = "revoked" if (is_revoked and serial and is_revoked(serial, root=root)) else ""
+            print(f"  node={nid} serial={serial} expires={exp} {status}")
+    if revoked:
+        print("Revoked serials:")
+        for s in revoked:
+            print(f"  {s}")
+    return 0
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
