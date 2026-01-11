@@ -71,6 +71,7 @@ def issue_cert(
     key_path = root / f"{node_id}.key"
     csr_path = root / f"{node_id}.csr"
     crt_path = root / f"{node_id}.crt"
+    serial_path = root / "agent-ca.srl"
 
     # Generate key + CSR
     subprocess.run(
@@ -107,6 +108,8 @@ def issue_cert(
                 str(ca_crt),
                 "-CAkey",
                 str(ca_key),
+                "-CAserial",
+                str(serial_path),
                 "-CAcreateserial",
                 "-out",
                 str(crt_path),
