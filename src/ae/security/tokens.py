@@ -28,6 +28,8 @@ def _db64(data: str) -> bytes:
 
 def issue_token(node_id: str, expires_at: datetime, *, secret: str | None = None) -> str:
     secret = secret or DEFAULT_SECRET
+    if not secret:
+        raise ValueError("join secret not configured (AE_AGENT_JOIN_SECRET)")
     nonce = secrets.token_bytes(8)
     exp = int(expires_at.replace(tzinfo=timezone.utc).timestamp())
     body = f"{node_id}:{exp}:{_b64(nonce)}".encode()
