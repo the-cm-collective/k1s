@@ -320,7 +320,16 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         try:
             agent_host = os.getenv("AE_AGENT_API_HOST", "0.0.0.0")
             agent_token = os.getenv("AE_AGENT_API_TOKEN")
-            agent_api_server = start_agent_api(state_store_from_env(), host=agent_host, port=agent_port, token=agent_token)
+            agent_api_server = start_agent_api(
+                state_store_from_env(),
+                host=agent_host,
+                port=agent_port,
+                token=agent_token,
+                tls_cert=os.getenv("AE_AGENT_API_TLS_CERT"),
+                tls_key=os.getenv("AE_AGENT_API_TLS_KEY"),
+                client_ca=os.getenv("AE_AGENT_API_CLIENT_CA"),
+                require_client_cert=os.getenv("AE_AGENT_API_REQUIRE_CLIENT_CERT", "0") == "1",
+            )
         except Exception as exc:
             import logging as _log
 

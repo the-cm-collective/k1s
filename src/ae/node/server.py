@@ -183,6 +183,9 @@ def _start_heartbeat_loop(
     interval: int,
     pod_cidr: str | None = None,
     wg_pubkey: str | None = None,
+    ca_file: str | None = None,
+    client_cert: str | None = None,
+    client_key: str | None = None,
 ) -> None:
     if not controller_url:
         LOGGER.info("heartbeat disabled (AE_CONTROLLER_URL not set)")
@@ -205,12 +208,16 @@ def _start_heartbeat_loop(
                 headers = {}
                 if token:
                     headers["X-Agent-Token"] = token
-                requests.post(
-                    controller_url.rstrip("/") + "/v1/heartbeat",
-                    json=payload,
-                    headers=headers,
-                    timeout=5,
-                )
+                kwargs = {
+                    "json": payload,
+                    "headers": headers,
+                    "timeout": 5,
+                }
+                if ca_file:
+                    kwargs["verify"] = ca_file
+                if client_cert and client_key:
+                    kwargs["cert"] = (client_cert, client_key)
+                requests.post(controller_url.rstrip("/") + "/v1/heartbeat", **kwargs)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.debug("heartbeat send failed: %s", exc)
             time.sleep(max(1, interval))
@@ -240,6 +247,9 @@ def serve(
     tls_key: str | None = None,
     client_ca: str | None = None,
     require_client_cert: bool = False,
+    controller_ca: str | None = None,
+    controller_client_cert: str | None = None,
+    controller_client_key: str | None = None,
 ) -> None:
     if ensure_pod_net and pod_cidr:
         try:
@@ -263,6 +273,9 @@ def serve(
         heartbeat_interval,
         pod_cidr=pod_cidr,
         wg_pubkey=wg_pubkey,
+        ca_file=controller_ca,
+        client_cert=controller_client_cert,
+        client_key=controller_client_key,
     )
     AgentHandler.runtime = runtime
     server = HTTPServer((host, port), AgentHandler)
@@ -322,6 +335,9 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         default=os.getenv("AE_AGENT_REQUIRE_CLIENT_CERT", "0") == "1",
     )
+    parser.add_argument("--controller-ca", default=os.getenv("AE_CONTROLLER_TLS_CA"))
+    parser.add_argument("--controller-client-cert", default=os.getenv("AE_CONTROLLER_TLS_CERT"))
+    parser.add_argument("--controller-client-key", default=os.getenv("AE_CONTROLLER_TLS_KEY"))
     args = parser.parse_args(argv)
 
     from ae.runtime import DockerRuntime, PodmanRuntime
@@ -354,6 +370,9 @@ def main(argv: list[str] | None = None) -> int:
         tls_key=args.tls_key,
         client_ca=args.client_ca,
         require_client_cert=args.require_client_cert,
+        controller_ca=args.controller_ca,
+        controller_client_cert=args.controller_client_cert,
+        controller_client_key=args.controller_client_key,
     )
     return 0
 
