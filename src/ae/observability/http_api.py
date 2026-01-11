@@ -3614,21 +3614,22 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         var gap = (W - padX*2) / Math.max(1, cols); // actual center-to-center gap used
         var byApp = {};
         apps.forEach(function(s){ byApp[s.app_name]=s; });
+        var placements = sys.placements || {};
         apps.forEach(function(s, i){
           var col = i % cols;
           var row = Math.floor(i / cols);
           var x = padX + gap*col + gap*0.5;
           var appY = (midY + 90) + row * (nodeH + podOffsetY + rowGap);
           addNode('app:'+s.app_name, s.app_name, 'app', x, appY, {app:s.app_name, ready:s.ready_replicas, desired:s.desired_replicas, rev:s.revision, status:s.revision_status, row:row, col:col, idx:i});
-          var desired = Math.max(0, Number(s.desired_replicas||0));
-          var ready = Math.max(0, Number(s.ready_replicas||0));
-          var pods = Math.min(desired, 12);
-          for (var k=0;k<pods;k++){
-            var px = x - (pods-1)*10/2 + k*10;
+          var reps = placements[s.app_name] || [];
+          reps.slice(0,12).forEach(function(p, idx){
             var podY = appY + podOffsetY;
-            var state=(k<ready?'ready':'pending');
-            addNode('pod:'+s.app_name+':'+k, state, 'pod', px, podY, {app:s.app_name, podIndex:k, state:state});
-          }
+            var nid = p.node_id ? ('node:'+p.node_id) : null;
+            var nodePos = nid && nodeById[nid] ? nodeById[nid] : null;
+            var px = nodePos ? nodePos.x : (x - (reps.length-1)*10/2 + idx*10);
+            var state = p.ready ? 'ready' : 'pending';
+            addNode('pod:'+s.app_name+':'+idx, state, 'pod', px, podY, {app:s.app_name, podIndex:idx, state:state, node:p.node_id});
+          });
         });
 
         var links = [];

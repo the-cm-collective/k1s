@@ -536,6 +536,30 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             except Exception:
                 _nodes = []
 
+            # Placements: map replica_id -> node for dashboard
+            placements: dict[str, list[dict]] = {}
+            for s in statuses:
+                try:
+                    repl_nodes = {rid: nid for rid, nid in store.list_replica_nodes(s.app_name)}
+                except Exception:
+                    repl_nodes = {}
+                try:
+                    reps = store.list_replicas(s.app_name)
+                except Exception:
+                    reps = []
+                entries = []
+                for r in reps:
+                    entries.append(
+                        {
+                            "replica_id": r.replica_id,
+                            "node_id": repl_nodes.get(r.replica_id),
+                            "ready": bool(r.ready),
+                            "live": bool(r.live),
+                            "status": r.status,
+                        }
+                    )
+                placements[s.app_name] = entries
+
             # Ingress snapshot (paths exist only if manager is configured)
             ing = None
             try:
@@ -665,6 +689,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     for s in store.list_services()
                 },
                 "nodes": _nodes,
+                "placements": placements,
                 "containers": containers,
                 "volumes": volumes,
                 "cooldown": cooldowns,
