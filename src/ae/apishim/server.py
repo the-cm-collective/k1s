@@ -12,6 +12,7 @@ from urllib.parse import urlparse, parse_qs
 import time
 import json as _jsonlib
 from pathlib import Path
+from dataclasses import dataclass
 
 from .store import ObjectStore, K8sObject
 from ae.controller.state import SQLiteStateStore
@@ -74,17 +75,27 @@ def _ns_name(path: str) -> Tuple[str, Optional[str], Optional[str]]:
 
 class ShimHandler(BaseHTTPRequestHandler):
     server_version = "k1s-apishim"
-    token_required: Optional[str] = os.getenv("AE_APISHIM_TOKEN")
+    admin_token: Optional[str] = os.getenv("AE_APISHIM_TOKEN")
+    read_token: Optional[str] = os.getenv("AE_APISHIM_READ_TOKEN")
     store: ObjectStore
+    state: "SQLiteStateStore"
+    client_cert_required: bool = False
     crd_registry: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
     crd_index: Dict[str, List[Tuple[str, str, str]]] = {}
     crd_lock = threading.RLock()
 
-    def _authz(self) -> bool:
-        if not self.token_required:
+    def _authz(self, role: str = "read") -> bool:
+        admin = self.admin_token
+        reader = self.read_token
+        if not admin and not reader:
             return True
         hdr = self.headers.get("Authorization", "")
-        if hdr.startswith("Bearer ") and hdr[7:] == self.token_required:
+        tok = hdr[7:] if hdr.startswith("Bearer ") else ""
+        if role == "write":
+            ok = tok and tok == admin
+        else:
+            ok = tok and (tok == admin or tok == reader)
+        if ok:
             return True
         self.send_response(HTTPStatus.UNAUTHORIZED)
         self.send_header("WWW-Authenticate", "Bearer")
@@ -271,7 +282,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             return cls.crd_registry.get((group, version, plural))
 
     def do_GET(self) -> None:  # noqa: N802
-        if not self._authz():
+        if not self._authz(role="read"):
             return
 
         parsed = urlparse(self.path)
@@ -928,7 +939,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         self._not_found()
 
     def do_POST(self) -> None:  # noqa: N802
-        if not self._authz():
+        if not self._authz(role="write"):
             return
         length = int(self.headers.get("Content-Length", "0") or "0")
         body = self.rfile.read(length)
@@ -2106,9 +2117,11 @@ class ShimServer(HTTPServer):
     def __init__(self, server_address: Tuple[str, int], token: Optional[str]) -> None:
         super().__init__(server_address, ShimHandler)
         self.store = ObjectStore()
-        ShimHandler.token_required = token or os.getenv("AE_APISHIM_TOKEN")
+        ShimHandler.admin_token = token or os.getenv("AE_APISHIM_TOKEN")
+        ShimHandler.read_token = os.getenv("AE_APISHIM_READ_TOKEN")
         db_path = Path(os.getenv("AE_STATE_DB", "state/controller.db"))
         self.state = SQLiteStateStore(db_path)
+        ShimHandler.state = self.state  # type: ignore[assignment]
         self._bootstrap_crds()
         # Start adapter worker to reconcile apps/v1 Deployments into k1s
         try:
@@ -2141,6 +2154,11 @@ def run_server(host: str = "127.0.0.1", port: int = 8445, token: Optional[str] =
             raise RuntimeError("TLS requested but AE_APISHIM_TLS_CERT/KEY not set")
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(certfile=cert_file, keyfile=key_file)
+        client_ca = os.getenv("AE_APISHIM_TLS_CLIENT_CA")
+        if client_ca:
+            ctx.load_verify_locations(cafile=client_ca)
+            ctx.verify_mode = ssl.CERT_REQUIRED
+            ShimHandler.client_cert_required = True
         httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
     try:
         httpd.serve_forever()
