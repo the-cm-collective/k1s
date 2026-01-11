@@ -48,16 +48,29 @@ jobs:
           curl -Lo kubectl https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl
           chmod +x kubectl
           sudo mv kubectl /usr/local/bin/kubectl
-      - name: Create 2-node kind cluster
+      - name: Run host-based 2-node smoke (controller + 2 agents)
+        env:
+          AE_TOKEN: ci-token
         run: |
-          cat > kind.yaml <<'EOF'
-          kind: Cluster
-          apiVersion: kind.x-k8s.io/v1alpha4
-          nodes:
-          - role: control-plane
-          - role: worker
-          EOF
-          kind create cluster --config kind.yaml
-      - name: Run overlay VIP smoke (kind placeholder)
-        run: |
-          echo "TODO: integrate controller/agent pods; placeholder to keep job green"
+          set -euo pipefail
+          # Start controller
+          AE_ENABLE_SERVICE_PROXY=0 \
+          AE_AGENT_API_PORT=9110 \
+          AE_AGENT_API_TOKEN=$AE_TOKEN \
+          AE_STATE_DB=/tmp/ae-controller.db \
+          python -m ae.controller --loop --specs specs/examples --metrics-port 9108 > /tmp/controller.log 2>&1 &
+          CTRL_PID=$!
+          echo "controller pid=$CTRL_PID"
+          sleep 2
+          # Start two agents on distinct ports
+          AE_CONTROLLER_URL=http://127.0.0.1:9110 AE_AGENT_TOKEN=$AE_TOKEN AE_NODE_ID=node-a AE_NODE_LABELS=role=worker AE_AGENT_ENDPOINT=http://127.0.0.1:19109 python -m ae.node --runtime-backend docker --host 127.0.0.1 --port 19109 > /tmp/agent-a.log 2>&1 &
+          A_PID=$!
+          AE_CONTROLLER_URL=http://127.0.0.1:9110 AE_AGENT_TOKEN=$AE_TOKEN AE_NODE_ID=node-b AE_NODE_LABELS=role=worker AE_AGENT_ENDPOINT=http://127.0.0.1:19110 python -m ae.node --runtime-backend docker --host 127.0.0.1 --port 19110 > /tmp/agent-b.log 2>&1 &
+          B_PID=$!
+          sleep 5
+          # Apply sample app and wait for readiness
+          python -m ae.cli apply -f specs/examples/echo-multinode.yaml
+          python -m ae.cli status echo-mn --watch 120 --timeout 180
+          python -m ae.cli events echo-mn | tail -n 20
+          # Cleanup
+          kill $A_PID $B_PID $CTRL_PID || true
