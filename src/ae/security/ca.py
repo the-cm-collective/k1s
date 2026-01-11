@@ -61,6 +61,7 @@ def issue_cert(
     *,
     root: Path | str = DEFAULT_ROOT,
     days: int = 365,
+    ca_secret: str | None = None,
 ) -> tuple[Path, Path, Path]:
     """Return (cert, key, ca) paths for the issued node cert."""
     root = Path(root)
