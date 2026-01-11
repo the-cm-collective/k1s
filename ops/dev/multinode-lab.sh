@@ -47,6 +47,9 @@ AE_NODE_ID=<node-name> \
 AE_NODE_LABELS=role=worker \
 AE_AGENT_ENDPOINT=http://<node-host>:9109 \
 AE_AGENT_HEARTBEAT_SECONDS=10 \
+AE_CONTROLLER_TLS_CA=<path-to-ca> \
+AE_CONTROLLER_TLS_CERT=<node-cert> \
+AE_CONTROLLER_TLS_KEY=<node-key> \
 AE_POD_CIDR=<cidr-assigned-or-empty> \
 AE_WG_CONFIG="$(cat /etc/wireguard/wg0.conf)" \
 python -m ae.node --runtime-backend podman --port 9109 --ensure-pod-net
@@ -61,4 +64,3 @@ echo "Notes:"
 echo "- Pod CIDRs are auto-assigned on first heartbeat if AE_POD_CIDR is empty."
 echo "- WireGuard config is not generated here; supply one per node via AE_WG_CONFIG."
 echo "- This script is a helper; adapt for real labs/CI."
-
