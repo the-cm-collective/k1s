@@ -25,3 +25,27 @@ groups:
         annotations:
           summary: "Overlay/VIP dataplane disabled"
           description: "Overlay provider not enabled (ae_overlay_configured=0); VIP routing may be unavailable."
+      - alert: OverlayNoPeers
+        expr: ae_overlay_peers == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Overlay has zero peers"
+          description: "WireGuard overlay reports 0 peers (ae_overlay_peers)."
+      - alert: OverlayHandshakeStale
+        expr: ae_overlay_latest_handshake_seconds > 120
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Overlay handshakes are stale"
+          description: "Latest WireGuard handshake is older than 120s."
+      - alert: OverlayMtuLow
+        expr: ae_overlay_mtu < 1400
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "Overlay MTU below 1400"
+          description: "WireGuard interface MTU is {{ $value }} (<1400); may indicate tunneling overhead or fragmentation."
