@@ -1941,6 +1941,31 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         )
                     except Exception:
                         continue
+            # Agent cert expiry metrics (if issued.json present)
+            try:
+                import json as _j
+                from pathlib import Path as _P
+                from datetime import datetime as _dt, timezone as _tz
+
+                issued_path = _P(os.getenv("AE_TLS_DIR", "state/tls")) / "issued.json"
+                if issued_path.exists():
+                    data = _j.loads(issued_path.read_text())
+                    now = _dt.now(_tz.utc)
+                    for item in data or []:
+                        node = item.get("node_id") or ""
+                        exp_s = item.get("expires_at")
+                        if not node or not exp_s:
+                            continue
+                        try:
+                            exp_dt = _dt.fromisoformat(exp_s)
+                            if exp_dt.tzinfo is None:
+                                exp_dt = exp_dt.replace(tzinfo=_tz.utc)
+                            secs = (exp_dt - now).total_seconds()
+                            lines.append(f'ae_agent_cert_expiry_seconds{{node="{node}"}} {secs}')
+                        except Exception:
+                            continue
+            except Exception:
+                pass
         except Exception:
             pass
         # Probe backoff seconds
@@ -3427,6 +3452,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         var nodes = sys.nodes || [];
         var readyNodes = nodes.filter(function(n){ return String(n.status||'').toLowerCase()==='ready' && !n.stale; }).length;
         var staleNodes = nodes.filter(function(n){ return n.stale; }).length;
+        var ov = sys.overlay || {};
         var pills = [
           {k:'Last Reconcile', v:lastTs},
           {k:'Duration', v:lastDur},
@@ -3438,6 +3464,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           {k:'Restarts', v:String(restartSum)},
           {k:'Nodes', v: readyNodes + ' / ' + nodes.length},
           {k:'Stale Nodes', v: String(staleNodes)},
+          {k:'Overlay Peers', v: ov.peers!=null ? String(ov.peers) : '-'},
+          {k:'Overlay OK', v: ov.ok ? 'yes' : 'no'},
           {k:'Mutations', v: (sys.rbac && sys.rbac.mutations_enabled) ? 'enabled' : 'disabled'},
         ];
         try {

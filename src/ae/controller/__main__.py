@@ -627,6 +627,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     volumes = runtime.list_storage_volumes() or []  # type: ignore[attr-defined]
                 except Exception:
                     volumes = []
+            # Overlay health (WireGuard)
+            ov = None
+            try:
+                from ae.network.overlay_health import wireguard_health
+                ov = wireguard_health()
+            except Exception:
+                ov = None
 
             # Create cooldowns (seconds remaining) if available
             cooldowns = {}
@@ -692,6 +699,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 "placements": placements,
                 "containers": containers,
                 "volumes": volumes,
+                "overlay": ov,
                 "cooldown": cooldowns,
                 "docs": docs,
                 "api": api,
