@@ -236,6 +236,10 @@ def serve(
     ensure_pod_net: bool = False,
     pod_bridge: str = "ae0",
     wg_config: str | None = None,
+    tls_cert: str | None = None,
+    tls_key: str | None = None,
+    client_ca: str | None = None,
+    require_client_cert: bool = False,
 ) -> None:
     if ensure_pod_net and pod_cidr:
         try:
@@ -262,7 +266,20 @@ def serve(
     )
     AgentHandler.runtime = runtime
     server = HTTPServer((host, port), AgentHandler)
-    LOGGER.info("ae.node agent listening on %s:%s", host, port)
+    if tls_cert and tls_key:
+        import ssl
+
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(tls_cert, tls_key)
+        if client_ca:
+            ctx.load_verify_locations(client_ca)
+            if require_client_cert:
+                ctx.verify_mode = ssl.CERT_REQUIRED
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        scheme = "https"
+    else:
+        scheme = "http"
+    LOGGER.info("ae.node agent listening on %s://%s:%s", scheme, host, port)
     server.serve_forever()
 
 
@@ -297,6 +314,14 @@ def main(argv: list[str] | None = None) -> int:
         default=os.getenv("AE_POD_BRIDGE", "ae0"),
         help="bridge device for pod CIDR (used when --ensure-pod-net)",
     )
+    parser.add_argument("--tls-cert", default=os.getenv("AE_AGENT_TLS_CERT"))
+    parser.add_argument("--tls-key", default=os.getenv("AE_AGENT_TLS_KEY"))
+    parser.add_argument("--client-ca", default=os.getenv("AE_AGENT_CLIENT_CA"))
+    parser.add_argument(
+        "--require-client-cert",
+        action="store_true",
+        default=os.getenv("AE_AGENT_REQUIRE_CLIENT_CERT", "0") == "1",
+    )
     args = parser.parse_args(argv)
 
     from ae.runtime import DockerRuntime, PodmanRuntime
@@ -325,6 +350,10 @@ def main(argv: list[str] | None = None) -> int:
         ensure_pod_net=args.ensure_pod_net or bool(int(os.getenv("AE_AGENT_CONFIGURE_OVERLAY", "0"))),
         pod_bridge=args.pod_bridge,
         wg_config=os.getenv("AE_WG_CONFIG"),
+        tls_cert=args.tls_cert,
+        tls_key=args.tls_key,
+        client_ca=args.client_ca,
+        require_client_cert=args.require_client_cert,
     )
     return 0
 
