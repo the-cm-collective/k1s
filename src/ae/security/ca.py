@@ -216,3 +216,8 @@ def is_revoked(serial: str, root: Path | str = DEFAULT_ROOT) -> bool:
         return serial in data
     except Exception:
         return False
+
+
+def revoke_from_file(serial_file: str, root: Path | str = DEFAULT_ROOT) -> None:
+    serial = Path(serial_file).read_text().strip()
+    revoke_serial(serial, root=root)
