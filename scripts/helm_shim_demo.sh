@@ -37,7 +37,7 @@ cleanup() {
 trap cleanup EXIT
 
 export PYTHONPATH
-AE_APISHIM_RUNTIME="$RUNTIME" python -m ae.apishim serve \
+AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME="$RUNTIME" python -m ae.apishim serve \
   --host 127.0.0.1 --port "$PORT" --token "$TOKEN" >"$LOG_PATH" 2>&1 &
 SHIM_PID=$!
 

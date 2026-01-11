@@ -1,0 +1,61 @@
+# API Compatibility Roadmap (review draft)
+
+This document captures the staged plan to make k1s surface a Kubernetes‑compatible API for common tooling (kubectl, ingress controllers, service meshes). Each phase is incremental and shippable; later phases build on earlier ones.
+
+## Phase 0 — Document & guardrails (current)
+- Capture scope, risks, and non‑goals; keep shim behind a feature flag (`AE_APISHIM_ENABLE`).
+- Ensure shim runs in dev/CI with bearer token + optional TLS, no cluster impact by default.
+- Deliverables: this roadmap; smoke target that starts `ae.apishim serve` and answers `/health`.
+
+## Phase 1 — Kubectl “get/apply” happy path
+- Harden discovery: `/api`, `/apis`, preferred versions, correct `resourceVersion` on list/watch, bookmarks, list‑continue stubs.
+- Auth baseline: bearer token required by default; optional mTLS for kubeconfig; minimal RBAC scaffold (cluster‑admin only).
+- Objects: Deployments, Services, Ingresses, Namespaces, Roles/RoleBindings, CRDs (already), plus Nodes and Endpoints/EndpointSlice projected from controller state/runtime.
+- Status: real replicas/ready counts from controller state; Service `status.loadBalancer` and ClusterIP/VIP data.
+- Deliverables: `kubectl get/describe` works for the above kinds; `kubectl apply -f deployment.yaml` creates/updates an app; `kubectl get endpoints` shows VIP backends; CI job exercising apply+watch.
+
+## Phase 2 — Pods as first‑class citizens
+- Project Pods/ReplicaSets from runtime placements; include conditions, restartCount, containerStatuses.
+- Exec/logs/port‑forward passthrough to agent runtimes; enforce auth/role gating.
+- Support scale‑to‑0 semantics (delete Pods, keep Deployment) and propagate status.
+- Deliverables: `kubectl logs/exec/port-forward` on pod names; `kubectl rollout status` on deployments; watch stability under churn.
+
+## Phase 3 — Services fidelity & scheduling hints
+- NodePort/ClusterIP parity: deterministic port allocation, collision handling, VIP + overlay awareness; EndpointSlice as source of truth.
+- Respect topology hints when available; expose node labels/zones derived from controller/agent info.
+- Ingress status reflects live VIP/host routing; optional external DNS annotations pass‑through.
+- Deliverables: `kubectl port-forward svc/...` works; service discovery validated in multinode tests; ingress controllers can watch and reconcile.
+
+## Phase 4 — Workload breadth and controllers
+- Add Jobs/CronJobs, StatefulSets, DaemonSets translations (where feasible) with status/ownerRefs.
+- HorizontalPodAutoscaler object backed by our autoscaling; emit status to match K8s expectations.
+- Events: surface controller/agent events to `/api/v1/events`; emit rollout, probe, and overlay notices.
+- Deliverables: basic helm charts that expect these kinds render and run; HPA status visible; events stream consumable by `kubectl get events`.
+
+## Phase 5 — AuthZ, SSA, patch semantics
+- Implement Role/RoleBinding enforcement; optional ServiceAccounts + projected tokens.
+- Support JSONPatch/mergePatch; scoped server‑side apply (SSA) for supported kinds; manage `managedFields`.
+- Admission/validation hooks for custom App CRD (optional) to keep native k1s schema authoritative.
+- Deliverables: `kubectl auth can-i` works; SSA usable by controllers that expect it (ingress controllers, cert‑manager‑style tools).
+
+## Phase 6 — Reliability, storage, and scale
+- Move shim object storage off SQLite to primary state store or Postgres backend to avoid drift and enable HA.
+- Improve watch scalability (per‑resource queues, backpressure, timeouts) and add metrics/tracing.
+- Conformance subset: target the “Kubernetes API conformance lite” we define; document exclusions.
+- Deliverables: soak tests under churn; dashboard panel for shim health; failover of shim without object loss.
+
+## Phase 7 — Polish and ecosystem integration
+- Helm friendliness: richer discovery, dry‑run/server‑side validation support; better error surfaces.
+- CRD parity for k1s App (optional) with conversion webhook; docs + samples for migration.
+- Backwards compatibility policy and versioning of the shim.
+- Deliverables: published compatibility matrix; release note gate that runs kubectl/helm smoke; docs for kubeconfig and auth modes.
+
+## Non‑goals (for now)
+- Full upstream conformance certification.
+- Aggregated API servers, PSP/PodSecurity admission, or CSI/CNI plugins.
+- Cloud load balancer provisioning.
+
+## Success metrics
+- `kubectl get/apply/describe/logs/exec` succeeds against multinode lab.
+- CI shim job green across node churn and overlay failover.
+- Dashboard shows shim health and API errors <1% over soak.
