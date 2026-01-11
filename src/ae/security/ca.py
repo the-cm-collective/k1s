@@ -12,10 +12,13 @@ from __future__ import annotations
 import subprocess
 import tempfile
 from pathlib import Path
+import json
+from datetime import datetime, timedelta, timezone
 
 DEFAULT_ROOT = Path("state/tls")
 CA_KEY = "agent-ca.key"
 CA_CRT = "agent-ca.crt"
+ISSUED = "issued.json"
 
 
 def _ensure_root(root: Path) -> None:
@@ -122,4 +125,39 @@ def issue_cert(
         csr_path.unlink()
     except Exception:
         pass
+    try:
+        _record_issue(root, crt_path, node_id, days)
+    except Exception:
+        pass
     return crt_path, key_path, ca_crt
+
+
+def _record_issue(root: Path, crt_path: Path, node_id: str, days: int) -> None:
+    """Persist issued cert metadata for revocation/rotation bookkeeping."""
+    issued_path = root / ISSUED
+    try:
+        serial = (
+            subprocess.check_output(
+                ["openssl", "x509", "-in", str(crt_path), "-noout", "-serial"],
+                text=True,
+            )
+            .strip()
+            .split("=", 1)[-1]
+        )
+    except Exception:
+        serial = ""
+    rec = {
+        "node_id": node_id,
+        "serial": serial,
+        "cert": crt_path.name,
+        "issued_at": datetime.now(timezone.utc).isoformat(),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=days)).isoformat(),
+    }
+    data = []
+    if issued_path.exists():
+        try:
+            data = json.loads(issued_path.read_text())
+        except Exception:
+            data = []
+    data.append(rec)
+    issued_path.write_text(json.dumps(data, indent=2))
