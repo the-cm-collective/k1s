@@ -143,6 +143,16 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
 ```
 
 Tip: Set `AE_TLS_DIR` so `tlsSecretName` can resolve; otherwise plan warns and the controller falls back to Caddy internal TLS.
+
+## TLS and agent certs (multinode)
+- Controller agent API can serve HTTPS and require client certs:
+  - `AE_AGENT_API_TLS_CERT` / `AE_AGENT_API_TLS_KEY`
+  - `AE_AGENT_API_CLIENT_CA` and `AE_AGENT_API_REQUIRE_CLIENT_CERT=1`
+- Agents use mTLS to heartbeat to the controller:
+  - `AE_CONTROLLER_TLS_CA` (CA bundle), `AE_CONTROLLER_TLS_CERT` / `AE_CONTROLLER_TLS_KEY`
+- Join tokens are HMACed with `AE_AGENT_JOIN_SECRET`; bootstrap is single-use and recorded. Issued certs live in `state/tls/issued.json`; revoked serials in `state/tls/revoked.json`.
+- Rotate/reissue: `ae-rotate-certs --node-id <node>` writes a new cert/key/CA bundle and a join token; deploy to the node and restart `ae-node`.
+- Observe status: `ae certs` lists issued/revoked certs; `/metrics` exposes `ae_agent_cert_expiry_seconds{node=...}`. Revoked certs cause heartbeats to be rejected when mTLS is enabled.
 ## Install as a Service (systemd)
 
 Quick install
