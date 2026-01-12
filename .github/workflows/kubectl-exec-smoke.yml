@@ -76,6 +76,25 @@ jobs:
           echo "pod not ready"
           kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -o wide
           exit 1
+      - name: Verify pod status fields
+        env:
+          TOKEN: "ci-token"
+        run: |
+          POD=$(kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].metadata.name}')
+          kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pod "$POD" -o json | python - <<'PY'
+import json,sys
+doc=json.load(sys.stdin)
+st=doc["status"]
+cs=st.get("containerStatuses",[])
+assert cs, "missing containerStatuses"
+c0=cs[0]
+assert c0.get("ready") is True, "container not ready"
+assert "restartCount" in c0, "restartCount missing"
+conds={c["type"]:c["status"] for c in st.get("conditions",[])}
+assert conds.get("Ready")=="True", "pod Ready condition false"
+assert conds.get("ContainersReady")=="True", "ContainersReady false"
+print("status ok")
+PY
       - name: Exec smoke (stdout)
         env:
           TOKEN: "ci-token"
@@ -84,6 +103,15 @@ jobs:
           OUT=$(kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify exec "$POD" -- sh -c "echo hello-exec")
           echo "exec output: $OUT"
           test "$OUT" = "hello-exec"
+      - name: Exec non-zero exit code
+        env:
+          TOKEN: "ci-token"
+        run: |
+          POD=$(kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].metadata.name}')
+          set +e
+          kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify exec "$POD" -- sh -c "exit 37"
+          RC=$?
+          if [ $RC -ne 37 ]; then echo "expected rc 37 got $RC"; exit 1; fi
       - name: Exec deny with read token
         env:
           TOKEN: "read-token"

@@ -3299,6 +3299,18 @@ def _pod_obj(container: dict, rv: int, node_name: Optional[str]) -> Dict[str, An
         "labels": labels,
         "resourceVersion": str(rv),
     }
+    running = bool(container.get("running", False))
+    restart_count = int(container.get("restart_count", 0) or 0)
+    started_at = container.get("started_at") or None
+    state_obj: Dict[str, Any]
+    if running:
+        state_obj = {"running": {"startedAt": started_at}}
+        phase = "Running"
+        ready = True
+    else:
+        state_obj = {"waiting": {"reason": "ContainerCreating"}}
+        phase = "Pending"
+        ready = False
     status = {
         "phase": "Running",
         "podIP": container.get("pod_ip"),
@@ -3306,18 +3318,20 @@ def _pod_obj(container: dict, rv: int, node_name: Optional[str]) -> Dict[str, An
         "containerStatuses": [
             {
                 "name": labels.get("ae.container", "main"),
-                "ready": bool(container.get("running", False)),
-                "restartCount": int(container.get("restart_count", 0) or 0),
-                "state": {
-                    "running": {"startedAt": container.get("started_at")}
-                    if container.get("running")
-                    else {"terminated": {"exitCode": 1}}
-                },
+                "ready": ready,
+                "restartCount": restart_count,
+                "state": state_obj,
             }
+        ],
+        "conditions": [
+            {"type": "PodScheduled", "status": "True"},
+            {"type": "Ready", "status": "True" if ready else "False"},
+            {"type": "ContainersReady", "status": "True" if ready else "False"},
         ],
     }
     if node_name:
         meta["nodeName"] = node_name
+    status["phase"] = phase
     return {
         "apiVersion": "v1",
         "kind": "Pod",
