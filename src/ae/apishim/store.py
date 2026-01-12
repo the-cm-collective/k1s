@@ -216,6 +216,7 @@ class ObjectStore:
         namespace: Optional[str],
         heartbeat_seconds: Optional[int] = None,
         allow_bookmarks: bool = False,
+        since_rv: Optional[int] = None,
     ):
         # None namespace means cluster-wide watch for namespaced resources
         ns_key = "*" if namespace is None else (namespace or "")
@@ -224,19 +225,21 @@ class ObjectStore:
         with self._lock:
             self._watchers.setdefault(key, []).append(q)
 
-        last_rv = 0
+        last_rv = since_rv or 0
         try:
             # initial state as ADDED events
             items = self.list_all(group, version, resource) if namespace is None else self.list(group, version, resource, namespace)
             for obj in items:
-                last_rv = max(last_rv, obj.resource_version)
-                yield ("ADDED", obj)
+                if obj.resource_version >= last_rv:
+                    last_rv = max(last_rv, obj.resource_version)
+                    yield ("ADDED", obj)
             while True:
                 try:
                     ev = q.get(timeout=heartbeat_seconds or 10_000_000)  # very long if no heartbeat
                     et, o = ev
-                    last_rv = max(last_rv, o.resource_version)
-                    yield ev
+                    if o.resource_version >= last_rv:
+                        last_rv = max(last_rv, o.resource_version)
+                        yield ev
                 except queue.Empty:
                     if allow_bookmarks and heartbeat_seconds:
                         # Emit a bookmark-like event
