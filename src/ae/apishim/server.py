@@ -296,6 +296,13 @@ class ShimHandler(BaseHTTPRequestHandler):
         error_streams: dict[int, int] = {}  # stream_id -> data_stream sid
         upstream_cache: dict[int, socket.socket] = {}
         host_by_port = target_hosts_by_port or {}
+        # Build round-robin host cycles per port when multiple endpoints exist
+        host_cycle: dict[int, List[str]] = {}
+        for p, h in host_by_port.items():
+            if isinstance(h, list):
+                host_cycle[p] = list(h)
+            else:
+                host_cycle[p] = [h]
 
         def read_exact(sock, n: int) -> bytes | None:
             buf = b""
@@ -427,7 +434,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                             if port not in target_ports and target_ports[0] != 0:
                                 send_rst(sid, code=2)
                                 continue
-                            host_for_port = host_by_port.get(port, target_host)
+                            choices = host_cycle.get(port) or [host_by_port.get(port, target_host)]
+                            # simple round-robin by rotating list
+                            host_for_port = choices[0]
+                            if len(choices) > 1:
+                                choices.append(choices.pop(0))
+                                host_cycle[port] = choices
                             if stype == "data":
                                 data_streams[sid] = port
                                 stream_windows[sid] = window_size
@@ -1108,6 +1120,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                         payload = read_exact(conn, length) or b""
                         if stream_id in data_streams and payload:
                             port = data_streams[stream_id]
+                            choices = host_cycle.get(port) or [host_by_port.get(port, target_host)]
+                            host_sel = choices[0]
+                            if len(choices) > 1:
+                                choices.append(choices.pop(0))
+                                host_cycle[port] = choices
                             # Enforce flow control window
                             wnd = stream_windows.get(stream_id, window_size)
                             if wnd <= 0:
@@ -1116,7 +1133,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 continue
                             if stream_id not in upstream_cache:
                                 try:
-                                    upstream_cache[stream_id] = socket.create_connection((host_by_port.get(port, target_host), port), timeout=5.0)
+                                    upstream_cache[stream_id] = socket.create_connection((host_sel, port), timeout=5.0)
                                     upstream_cache[stream_id].settimeout(0.05)
                                 except Exception:
                                     upstream_cache.pop(stream_id, None)
@@ -1851,7 +1868,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     if plural == "services":
                         doc = _to_obj(obj)
                         prov_ip = _provider_cluster_ip(self.server.state, obj)  # type: ignore[attr-defined]
-                        doc["status"] = _service_lb_status(doc.get("spec", {}), doc.get("status", {}) or {}, prov_ip)
+                        doc = _merge_provider_service(self.server.state, doc, obj)  # type: ignore[attr-defined]
                         return doc
                     return _to_obj(obj)
 
@@ -1876,9 +1893,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     self._not_found()
                     return
                 if plural == "services":
-                    doc = _to_obj(obj)
-                    prov_ip = _provider_cluster_ip(self.server.state, obj)  # type: ignore[attr-defined]
-                    doc["status"] = _service_lb_status(doc.get("spec", {}), doc.get("status", {}) or {}, prov_ip)
+                    doc = _merge_provider_service(self.server.state, _to_obj(obj), obj)  # type: ignore[attr-defined]
                     self._ok(doc)
                     return
                 self._ok(_to_obj(obj))
@@ -2171,11 +2186,12 @@ class ShimHandler(BaseHTTPRequestHandler):
             upgrade = (self.headers.get("Upgrade") or "").lower()
             if upgrade.startswith("spdy"):
                 # choose endpoint per target port to spread load
-                ep_map = {}
+                ep_map: dict[int, list[str]] = {}
                 for tp in target_ports:
-                    ep_ip = _pick_endpoint_ip(eps_raw, key=str(tp))
-                    if ep_ip:
-                        ep_map[tp] = ep_ip
+                    # include all ready endpoints for port spread
+                    port_ips = [ep.ip for ep in eps_raw if ep.ready] or [ep.ip for ep in eps_raw]
+                    if port_ips:
+                        ep_map[tp] = port_ips
                 # fallback: single target_ip if map empty
                 self._handle_port_forward_spdy(target_ip, target_ports, ep_map if ep_map else None)
             elif upgrade == "websocket":
@@ -3960,6 +3976,46 @@ def _provider_cluster_ip(state: SQLiteStateStore, svc: K8sObject) -> Optional[st
         return rec.cluster_ip if rec else None
     except Exception:
         return None
+
+
+def _provider_ports(state: SQLiteStateStore, svc: K8sObject) -> dict:
+    """Fetch provider-recorded port info (including nodePort) for a service, keyed by port name/number."""
+    app_name = _service_app_name(svc)
+    if not app_name:
+        return {}
+    try:
+        rec = state.get_service(app_name)  # type: ignore[attr-defined]
+    except Exception:
+        rec = None
+    if not rec or not rec.ports:
+        return {}
+    return rec.ports
+
+
+def _merge_provider_service(state: SQLiteStateStore, doc: Dict[str, Any], svc_obj: K8sObject) -> Dict[str, Any]:
+    """Augment service spec/status with provider allocations (clusterIP/nodePort)."""
+    spec = doc.get("spec") or {}
+    status = doc.get("status") or {}
+    prov_ip = _provider_cluster_ip(state, svc_obj)
+    if prov_ip:
+        if spec.get("clusterIP") in {None, "", "None"}:
+            spec["clusterIP"] = prov_ip
+        status = _service_lb_status(spec, status, prov_ip)
+    # fill nodePorts from provider record if missing
+    prov_ports = _provider_ports(state, svc_obj)
+    if prov_ports and spec.get("ports"):
+        new_ports = []
+        for p in spec.get("ports", []):
+            p = dict(p)
+            key = p.get("name") or str(p.get("port"))
+            rec = prov_ports.get(key) or prov_ports.get(str(key))
+            if rec and p.get("nodePort") is None and rec.get("nodePort") is not None:
+                p["nodePort"] = rec["nodePort"]
+            new_ports.append(p)
+        spec["ports"] = new_ports
+    doc["spec"] = spec
+    doc["status"] = _service_lb_status(spec, status, prov_ip)
+    return doc
 
 
 def _node_zone_for_ip(state: SQLiteStateStore, ip: str) -> tuple[Optional[str], Optional[str]]:
