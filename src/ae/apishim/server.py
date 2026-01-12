@@ -233,6 +233,30 @@ class ShimHandler(BaseHTTPRequestHandler):
             conn.sendall(bytes(header))
             stream_windows[stream_id] = stream_windows.get(stream_id, window_size) + delta
 
+        def send_ping(opaque: bytes = b"\x00\x00\x00\x01") -> None:
+            header = bytearray()
+            header += b"\x80\x03"
+            header += (0x06).to_bytes(2, "big")  # PING
+            header += b"\x00"
+            header += (4).to_bytes(3, "big")
+            header += opaque[:4]
+            conn.sendall(bytes(header))
+
+        def send_settings(settings: dict[int, int]) -> None:
+            # SETTINGS frame: type=0x04
+            payload = bytearray()
+            payload += len(settings).to_bytes(4, "big")
+            for sid, val in settings.items():
+                payload.append(0)  # flags per setting (0)
+                payload += sid.to_bytes(2, "big")
+                payload += val.to_bytes(4, "big")
+            header = bytearray()
+            header += b"\x80\x03"
+            header += (0x04).to_bytes(2, "big")
+            header += b"\x00"
+            header += len(payload).to_bytes(3, "big")
+            conn.sendall(bytes(header) + payload)
+
         def send_rst(stream_id: int, code: int = 2) -> None:
             # RST_STREAM: type=0x03, status code (e.g., 2=PROTOCOL_ERROR)
             header = bytearray()
@@ -276,6 +300,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             return headers
 
         try:
+            # Send initial SETTINGS to advertise window
+            send_settings({0x04: window_size})  # SETTINGS_INITIAL_WINDOW_SIZE
             while True:
                 # Client -> server SPDY frames
                 try:
@@ -309,6 +335,22 @@ class ShimHandler(BaseHTTPRequestHandler):
                             elif stype == "error":
                                 error_streams[sid] = data_streams.get(sid - 1, target_port)
                         # ignore others
+                        elif frame_type == 4:  # SETTINGS
+                            # Update initial window if provided (id 0x04)
+                            try:
+                                num = int.from_bytes(payload[0:4], "big")
+                                idx = 4
+                                for _ in range(num):
+                                    if idx + 8 > len(payload):
+                                        break
+                                    _flags = payload[idx]
+                                    sid_setting = int.from_bytes(payload[idx + 1:idx + 3], "big")
+                                    val = int.from_bytes(payload[idx + 3:idx + 7], "big")
+                                    idx += 8
+                                    if sid_setting == 0x04:
+                                        window_size = val
+                            except Exception:
+                                pass
                         elif frame_type == 9:  # WINDOW_UPDATE
                             if len(payload) >= 8:
                                 sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
