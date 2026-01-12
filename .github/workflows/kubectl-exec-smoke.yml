@@ -103,6 +103,13 @@ PY
           OUT=$(kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify exec "$POD" -- sh -c "echo hello-exec")
           echo "exec output: $OUT"
           test "$OUT" = "hello-exec"
+      - name: Exec resize (TTY)
+        env:
+          TOKEN: "ci-token"
+        run: |
+          POD=$(kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].metadata.name}')
+          # kubectl automatically sends a resize after attach; we just ensure it doesn't fail
+          kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify exec -ti "$POD" -- sh -c "stty size"
       - name: Exec non-zero exit code
         env:
           TOKEN: "ci-token"
