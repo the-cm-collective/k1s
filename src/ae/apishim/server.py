@@ -81,6 +81,7 @@ class ShimHandler(BaseHTTPRequestHandler):
     server_version = "k1s-apishim"
     admin_token: Optional[str] = os.getenv("AE_APISHIM_TOKEN")
     read_token: Optional[str] = os.getenv("AE_APISHIM_READ_TOKEN")
+    rbac_enabled: bool = os.getenv("AE_APISHIM_RBAC", "0") == "1"
     store: ObjectStore
     state: "SQLiteStateStore"
     client_cert_required: bool = False
@@ -95,10 +96,15 @@ class ShimHandler(BaseHTTPRequestHandler):
             return True
         hdr = self.headers.get("Authorization", "")
         tok = hdr[7:] if hdr.startswith("Bearer ") else ""
+        ok = False
         if role == "write":
             ok = tok and tok == admin
-        else:
+        elif role == "read":
             ok = tok and (tok == admin or tok == reader)
+        elif role == "rbac-read":
+            ok = tok and (tok == admin or tok == reader)
+        elif role == "rbac-write":
+            ok = tok and tok == admin
         if ok:
             return True
         self.send_response(HTTPStatus.UNAUTHORIZED)
