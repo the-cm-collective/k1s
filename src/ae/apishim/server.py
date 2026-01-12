@@ -107,12 +107,17 @@ class ShimHandler(BaseHTTPRequestHandler):
         hdr = self.headers.get("Authorization", "")
         tok = hdr[7:] if hdr.startswith("Bearer ") else ""
         ok = False
+        role_name = None
+        if tok and tok == admin:
+            role_name = "admin"
+        elif tok and tok == reader:
+            role_name = "read"
         if role == "write":
-            ok = tok and tok == admin
+            ok = role_name == "admin"
         elif role == "read":
-            ok = tok and (tok == admin or tok == reader)
+            ok = role_name in {"admin", "read"}
         elif role in {"rbac-read", "rbac-write"}:
-            ok = tok and (tok == admin or tok == reader)
+            ok = role_name in {"admin", "read"}
         if ok:
             return True
         self.send_response(HTTPStatus.UNAUTHORIZED)
@@ -136,6 +141,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             role = "read"
         if role is None:
             return False
+        # Check specific then wildcard
         allowed = self.rbac_policies.get((verb, resource)) or self.rbac_policies.get((verb, "*"))
         return bool(allowed and role in allowed)
 
@@ -1140,6 +1146,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                     return
                 self._ok(_to_obj(obj))
                 return
+            # Mutations
+            if self.command in {"POST", "PUT", "PATCH", "DELETE"}:
+                verb = {"POST": "create", "PUT": "update", "PATCH": "patch", "DELETE": "delete"}[self.command]
+                if not self._rbac_allows(verb, plural):
+                    self._deny(403)
+                    return
+        if plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}:
+            # Mutations
+            pass
         # Endpoints (projected from controller state)
         if plural == "endpoints":
             if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
@@ -1384,6 +1399,9 @@ class ShimHandler(BaseHTTPRequestHandler):
             if n_plural == "ingresses":
                 if n_name is None:
                     if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
+                        if not self._rbac_allows("watch", "ingresses"):
+                            self._deny(403)
+                            return
                         self.send_response(HTTPStatus.OK)
                         self.send_header("Content-Type", "application/json")
                         self.send_header("Cache-Control", "no-store")
@@ -1402,6 +1420,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                         except BrokenPipeError:
                             pass
                         return
+                    if not self._rbac_allows("list", "ingresses"):
+                        self._deny(403)
+                        return
                     items = (
                         self.server.store.list_all("networking.k8s.io", "v1", "ingresses")  # type: ignore[attr-defined]
                         if n_ns is None
@@ -1415,6 +1436,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     self._ok(_list_with_rv(items, _to_ingress, kind="Ingress", api_version="networking.k8s.io/v1", limit=limit if limit > 0 else None, continue_token=cont))
                     return
                 else:
+                    if not self._rbac_allows("get", "ingresses"):
+                        self._deny(403)
+                        return
                     obj = self.server.store.get("networking.k8s.io", "v1", "ingresses", n_ns, n_name)  # type: ignore[attr-defined]
                     if not obj:
                         self._not_found()
