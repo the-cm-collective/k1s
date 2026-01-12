@@ -861,8 +861,16 @@ class ShimHandler(BaseHTTPRequestHandler):
                 self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="ports query param required")
                 return
             target_host = "127.0.0.1"
-            if self.headers.get("Upgrade", "").lower() == "websocket":
+            upgrade = (self.headers.get("Upgrade") or "").lower()
+            if upgrade == "websocket":
                 self._handle_port_forward_ws(target_host, target_port)
+            elif upgrade.startswith("spdy"):
+                # SPDY/3.1 not implemented yet; hint and fail fast
+                self._json_status(
+                    HTTPStatus.UPGRADE_REQUIRED,
+                    reason="UpgradeRequired",
+                    message="SPDY port-forward not yet supported; use WebSocket upgrade or NodePort/VIP",
+                )
             else:
                 self._json_status(
                     HTTPStatus.NOT_IMPLEMENTED,
