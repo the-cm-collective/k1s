@@ -192,9 +192,17 @@ class ShimHandler(BaseHTTPRequestHandler):
             b"/xmlapplication/xhtmltext/plainpublicprivatemax-agegztcomparallel bytesruning"
         )
         dctx = zlib.decompressobj(zdict=SPDY_DICT)
-        data_stream_id: int | None = None
-        error_stream_id: int | None = None
+        data_streams: dict[int, int] = {}  # sid -> target_port
+        error_streams: set[int] = set()
         window_size = 1 << 20  # 1MiB default
+        ports: list[int] = []
+        try:
+            ports = [int(p) for p in (self.headers.get("X-Stream-Port", "") or "").split(",") if p.strip()]
+        except Exception:
+            ports = []
+        if not ports:
+            ports = [target_port]
+        upstream_cache: dict[int, socket.socket] = {}
 
         def read_exact(sock, n: int) -> bytes | None:
             buf = b""
@@ -264,48 +272,72 @@ class ShimHandler(BaseHTTPRequestHandler):
                             sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
                             headers = parse_syn_stream(payload)
                             stype = headers.get("streamtype", "").lower()
+                            port = target_port
+                            try:
+                                if headers.get("port"):
+                                    port = int(headers["port"])
+                                elif headers.get("streamname"):
+                                    port = int(headers["streamname"])
+                            except Exception:
+                                port = target_port
                             if stype == "data":
-                                data_stream_id = sid
+                                data_streams[sid] = port
                             elif stype == "error":
-                                error_stream_id = sid
+                                error_streams.add(sid)
                         # ignore others
                     else:
                         stream_id = int.from_bytes(hdr[0:4], "big") & 0x7FFFFFFF
                         flags = hdr[4]
                         length = int.from_bytes(hdr[5:8], "big")
                         payload = read_exact(conn, length) or b""
-                        if data_stream_id is not None and stream_id == data_stream_id and payload:
+                        if stream_id in data_streams and payload:
+                            port = data_streams[stream_id]
+                            if stream_id not in upstream_cache:
+                                try:
+                                    upstream_cache[stream_id] = socket.create_connection((target_host, port), timeout=5.0)
+                                    upstream_cache[stream_id].settimeout(0.05)
+                                except Exception:
+                                    upstream_cache.pop(stream_id, None)
+                                    continue
                             try:
-                                upstream.sendall(payload)
+                                upstream_cache[stream_id].sendall(payload)
                             except Exception:
                                 break
-                            # window update back to client
                             try:
                                 send_window_update(stream_id, len(payload))
                             except Exception:
                                 pass
 
                 # Server -> client data
-                try:
-                    resp = upstream.recv(4096)
-                    if resp:
-                        if data_stream_id is not None:
-                            send_data_frame(data_stream_id, resp, flags=0)
+                for sid, sock_up in list(upstream_cache.items()):
+                    try:
+                        resp = sock_up.recv(4096)
+                        if resp:
+                            send_data_frame(sid, resp, flags=0)
                             try:
-                                send_window_update(data_stream_id, len(resp))
+                                send_window_update(sid, len(resp))
                             except Exception:
                                 pass
-                    else:
-                        break
-                except socket.timeout:
-                    pass
-                except Exception:
-                    break
+                        else:
+                            upstream_cache.pop(sid, None)
+                            try:
+                                sock_up.close()
+                            except Exception:
+                                pass
+                    except socket.timeout:
+                        continue
+                    except Exception:
+                        upstream_cache.pop(sid, None)
+                        try:
+                            sock_up.close()
+                        except Exception:
+                            pass
         finally:
-            try:
-                upstream.close()
-            except Exception:
-                pass
+            for s in upstream_cache.values():
+                try:
+                    s.close()
+                except Exception:
+                    pass
             try:
                 conn.close()
             except Exception:
