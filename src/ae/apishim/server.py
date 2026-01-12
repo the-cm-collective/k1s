@@ -726,13 +726,22 @@ class ShimHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
             except Exception as exc:
-                self._json_status(HTTPStatus.INTERNAL_SERVER_ERROR, reason="InternalError", message=str(exc))
+            self._json_status(HTTPStatus.INTERNAL_SERVER_ERROR, reason="InternalError", message=str(exc))
             return
         # Pod exec (POST JSON: {command:[...], timeoutSeconds?})
         m_exec = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/exec$", path)
         if m_exec:
             self.send_response(HTTPStatus.METHOD_NOT_ALLOWED)
             self.end_headers()
+            return
+        # Port-forward (not supported yet)
+        m_pf = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/portforward$", path)
+        if m_pf:
+            self._json_status(
+                HTTPStatus.NOT_IMPLEMENTED,
+                reason="NotImplemented",
+                message="port-forward not yet supported; use service nodePort/VIP instead",
+            )
             return
 
         # Nodes (projected from controller state)
@@ -1030,6 +1039,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                 self._ok({"kind": "Status", "status": "Success", "code": 200, "metadata": {}, "details": {"exitCode": rc}})
             except Exception as exc:
                 self._json_status(HTTPStatus.INTERNAL_SERVER_ERROR, reason="InternalError", message=str(exc))
+            return
+        # Port-forward stub
+        m_pf = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/portforward$", self.path)
+        if m_pf:
+            self._json_status(
+                HTTPStatus.NOT_IMPLEMENTED,
+                reason="NotImplemented",
+                message="port-forward not yet supported; use service nodePort/VIP instead",
+            )
             return
 
         plural, ns, name = _ns_name(self.path)
