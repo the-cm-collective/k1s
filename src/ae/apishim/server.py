@@ -82,6 +82,16 @@ class ShimHandler(BaseHTTPRequestHandler):
     admin_token: Optional[str] = os.getenv("AE_APISHIM_TOKEN")
     read_token: Optional[str] = os.getenv("AE_APISHIM_READ_TOKEN")
     rbac_enabled: bool = os.getenv("AE_APISHIM_RBAC", "0") == "1"
+    # Simple in-memory RBAC rules: (verb, resource) -> allowed roles
+    rbac_policies: dict[tuple[str, str], set[str]] = {
+        ("get", "*"): {"admin", "read"},
+        ("list", "*"): {"admin", "read"},
+        ("watch", "*"): {"admin", "read"},
+        ("create", "*"): {"admin"},
+        ("update", "*"): {"admin"},
+        ("patch", "*"): {"admin"},
+        ("delete", "*"): {"admin"},
+    }
     store: ObjectStore
     state: "SQLiteStateStore"
     client_cert_required: bool = False
@@ -101,10 +111,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             ok = tok and tok == admin
         elif role == "read":
             ok = tok and (tok == admin or tok == reader)
-        elif role == "rbac-read":
+        elif role in {"rbac-read", "rbac-write"}:
             ok = tok and (tok == admin or tok == reader)
-        elif role == "rbac-write":
-            ok = tok and tok == admin
         if ok:
             return True
         self.send_response(HTTPStatus.UNAUTHORIZED)
@@ -115,6 +123,21 @@ class ShimHandler(BaseHTTPRequestHandler):
             message="missing/invalid bearer token",
         )
         return False
+
+    def _rbac_allows(self, verb: str, resource: str) -> bool:
+        if not self.rbac_enabled:
+            return True
+        hdr = self.headers.get("Authorization", "")
+        tok = hdr[7:] if hdr.startswith("Bearer ") else ""
+        role = None
+        if tok and tok == self.admin_token:
+            role = "admin"
+        elif tok and tok == self.read_token:
+            role = "read"
+        if role is None:
+            return False
+        allowed = self.rbac_policies.get((verb, resource)) or self.rbac_policies.get((verb, "*"))
+        return bool(allowed and role in allowed)
 
     def _ok(self, payload: Dict[str, Any]) -> None:
         data = _json(payload)
@@ -1067,6 +1090,9 @@ class ShimHandler(BaseHTTPRequestHandler):
             if name is None:
                 # watch support on LIST endpoints
                 if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
+                    if not self._rbac_allows("watch", plural):
+                        self._deny(403)
+                        return
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Cache-Control", "no-store")
@@ -1086,6 +1112,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                         pass
                     return
                 # LIST
+                if not self._rbac_allows("list", plural):
+                    self._deny(403)
+                    return
                 try:
                     limit = int(q.get("limit", ["0"])[0] or 0)
                 except Exception:
@@ -1102,6 +1131,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return
             else:
                 # GET
+                if not self._rbac_allows("get", plural):
+                    self._deny(403)
+                    return
                 obj = self.server.store.get("", "v1", plural, None if plural == "namespaces" else ns, name)  # type: ignore[attr-defined]
                 if not obj:
                     self._not_found()
@@ -1283,6 +1315,9 @@ class ShimHandler(BaseHTTPRequestHandler):
             if d_plural == "deployments":
                 if d_name is None:
                     if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
+                        if not self._rbac_allows("watch", "deployments"):
+                            self._deny(403)
+                            return
                         self.send_response(HTTPStatus.OK)
                         self.send_header("Content-Type", "application/json")
                         self.send_header("Cache-Control", "no-store")
@@ -1301,6 +1336,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                         except BrokenPipeError:
                             pass
                         return
+                    if not self._rbac_allows("list", "deployments"):
+                        self._deny(403)
+                        return
                     try:
                         limit = int(q.get("limit", ["0"])[0] or 0)
                     except Exception:
@@ -1316,6 +1354,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     )
                     return
                 else:
+                    if not self._rbac_allows("get", "deployments"):
+                        self._deny(403)
+                        return
                     obj = self.server.store.get("apps", "v1", "deployments", d_ns, d_name)  # type: ignore[attr-defined]
                     if not obj:
                         self._not_found()
