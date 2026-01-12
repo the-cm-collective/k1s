@@ -195,6 +195,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         data_streams: dict[int, int] = {}  # sid -> target_port
         error_streams: dict[int, int] = {}  # sid -> data_stream sid
         window_size = 1 << 20  # 1MiB default
+        stream_windows: dict[int, int] = {}
         ports: list[int] = []
         try:
             ports = [int(p) for p in (self.headers.get("X-Stream-Port", "") or "").split(",") if p.strip()]
@@ -230,6 +231,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             header += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
             header += (delta & 0x7FFFFFFF).to_bytes(4, "big")
             conn.sendall(bytes(header))
+            stream_windows[stream_id] = stream_windows.get(stream_id, window_size) + delta
 
         def send_rst(stream_id: int, code: int = 2) -> None:
             # RST_STREAM: type=0x03, status code (e.g., 2=PROTOCOL_ERROR)
@@ -303,6 +305,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 port = target_port
                             if stype == "data":
                                 data_streams[sid] = port
+                                stream_windows[sid] = window_size
                             elif stype == "error":
                                 error_streams[sid] = data_streams.get(sid - 1, target_port)
                         # ignore others
@@ -313,6 +316,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                         payload = read_exact(conn, length) or b""
                         if stream_id in data_streams and payload:
                             port = data_streams[stream_id]
+                            # Enforce flow control window
+                            wnd = stream_windows.get(stream_id, window_size)
+                            if wnd <= 0:
+                                # Drop data until window update arrives
+                                continue
                             if stream_id not in upstream_cache:
                                 try:
                                     upstream_cache[stream_id] = socket.create_connection((target_host, port), timeout=5.0)
@@ -322,6 +330,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                                     continue
                             try:
                                 upstream_cache[stream_id].sendall(payload)
+                                stream_windows[stream_id] = max(0, wnd - len(payload))
                             except Exception:
                                 break
                             try:
