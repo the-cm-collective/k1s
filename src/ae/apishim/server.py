@@ -193,6 +193,8 @@ class ShimHandler(BaseHTTPRequestHandler):
         )
         dctx = zlib.decompressobj(zdict=SPDY_DICT)
         data_stream_id: int | None = None
+        error_stream_id: int | None = None
+        window_size = 1 << 20  # 1MiB default
 
         def read_exact(sock, n: int) -> bytes | None:
             buf = b""
@@ -209,6 +211,17 @@ class ShimHandler(BaseHTTPRequestHandler):
             header.append(flags & 0xFF)
             header += len(payload).to_bytes(3, "big")
             conn.sendall(bytes(header) + payload)
+
+        def send_window_update(stream_id: int, delta: int) -> None:
+            # Control frame: C bit + version 3 + type 0x09 (WINDOW_UPDATE)
+            header = bytearray()
+            header += b"\x80\x03"          # control + version
+            header += (0x09).to_bytes(2, "big")
+            header += b"\x00"              # flags
+            header += (8).to_bytes(3, "big")  # length
+            header += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
+            header += (delta & 0x7FFFFFFF).to_bytes(4, "big")
+            conn.sendall(bytes(header))
 
         def parse_syn_stream(payload: bytes) -> dict[str, str]:
             headers: dict[str, str] = {}
@@ -250,8 +263,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                         if frame_type == 1:  # SYN_STREAM
                             sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
                             headers = parse_syn_stream(payload)
-                            if headers.get("streamtype", "").lower() == "data":
+                            stype = headers.get("streamtype", "").lower()
+                            if stype == "data":
                                 data_stream_id = sid
+                            elif stype == "error":
+                                error_stream_id = sid
                         # ignore others
                     else:
                         stream_id = int.from_bytes(hdr[0:4], "big") & 0x7FFFFFFF
@@ -263,6 +279,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 upstream.sendall(payload)
                             except Exception:
                                 break
+                            # window update back to client
+                            try:
+                                send_window_update(stream_id, len(payload))
+                            except Exception:
+                                pass
 
                 # Server -> client data
                 try:
@@ -270,6 +291,10 @@ class ShimHandler(BaseHTTPRequestHandler):
                     if resp:
                         if data_stream_id is not None:
                             send_data_frame(data_stream_id, resp, flags=0)
+                            try:
+                                send_window_update(data_stream_id, len(resp))
+                            except Exception:
+                                pass
                     else:
                         break
                 except socket.timeout:
