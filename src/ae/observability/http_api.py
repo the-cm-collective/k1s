@@ -386,6 +386,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 return True
 
         have_any = any([admin, scaler, reader])
+        rbac = os.getenv("AE_API_RBAC", "0") == "1"
         if not have_any:
             # No tokens configured: allow reads; other methods are handled separately
             return role in {"read", ""}
@@ -442,6 +443,35 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
         required = {"": 0, "read": 1, "scale": 2, "admin": 3}.get(role, 0)
         return level >= required
+
+    def _rbac_allows(self, verb: str, app: str | None = None) -> bool:
+        import os
+
+        if os.getenv("AE_API_RBAC", "0") != "1":
+            return True
+        auth = self.headers.get("Authorization", "")
+        token = auth.split(" ", 1)[1] if auth.startswith("Bearer ") else ""
+        admin = os.getenv("AE_API_ADMIN_TOKEN")
+        scaler = os.getenv("AE_API_SCALER_TOKEN")
+        reader = os.getenv("AE_API_READ_TOKEN")
+        role = ""
+        if token and admin and token == admin:
+            role = "admin"
+        elif token and scaler and token == scaler:
+            role = "scale"
+        elif token and reader and token == reader:
+            role = "read"
+        policy = {
+            "get": {"admin", "scale", "read"},
+            "list": {"admin", "scale", "read"},
+            "watch": {"admin", "scale", "read"},
+            "create": {"admin"},
+            "update": {"admin", "scale"},
+            "patch": {"admin", "scale"},
+            "delete": {"admin"},
+        }
+        allowed = policy.get(verb, {"admin"})
+        return role in allowed
 
     # Role/scope helpers -------------------------------------------------
     def _presented_role(self) -> str:
@@ -806,7 +836,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 if not app:
                     self._json_error(400, "manifest missing metadata.name for scope check")
                     return
-                if role != "admin" or not self._scope_allows("admin", app):
+                if role != "admin" or not self._scope_allows("admin", app) or not self._rbac_allows("create", app):
                     self._json_error(403, "token scope denies apply to target app")
                     return
                 report = self.apply_fn(payload)  # type: ignore[misc]
@@ -831,6 +861,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 if role not in {"admin", "scale"} or not self._scope_allows(role, app):
                     self._json_error(403, "token scope denies scale for target app")
                     return
+                if not self._rbac_allows("update", app):
+                    self._json_error(403, "rbac denies scale for target app")
+                    return
                 report = self.scale_fn(app, replicas)  # type: ignore[misc]
                 self._json_ok(report)
             except Exception as exc:  # pragma: no cover - defensive
@@ -852,6 +885,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 if role != "admin" or not self._scope_allows("admin", app):
                     self._json_error(403, "token scope denies delete for target app")
                     return
+                if not self._rbac_allows("delete", app):
+                    self._json_error(403, "rbac denies delete for target app")
+                    return
                 result = self.delete_fn(app, purge)  # type: ignore[misc]
                 self._json_ok(result)
             except Exception as exc:  # pragma: no cover
@@ -864,6 +900,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 self._json_error(400, "missing app name in path")
                 return
             try:
+                if not self._rbac_allows("update", app):
+                    self._json_error(403, "rbac denies rollout pause")
+                    return
                 out = self.rollout_pause_fn(app)  # type: ignore[misc]
                 self._json_ok(out)
             except Exception as exc:  # pragma: no cover
@@ -876,6 +915,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 self._json_error(400, "missing app name in path")
                 return
             try:
+                if not self._rbac_allows("update", app):
+                    self._json_error(403, "rbac denies rollout resume")
+                    return
                 out = self.rollout_resume_fn(app)  # type: ignore[misc]
                 self._json_ok(out)
             except Exception as exc:  # pragma: no cover
