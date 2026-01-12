@@ -2227,14 +2227,18 @@ def _pod_obj(container: dict, rv: int, node_name: Optional[str]) -> Dict[str, An
     }
     status = {
         "phase": "Running",
-        "podIP": None,
-        "hostIP": None,
+        "podIP": container.get("pod_ip"),
+        "hostIP": container.get("host_ip"),
         "containerStatuses": [
             {
                 "name": labels.get("ae.container", "main"),
-                "ready": True,
+                "ready": bool(container.get("running", False)),
                 "restartCount": int(container.get("restart_count", 0) or 0),
-                "state": {"running": {"startedAt": None}},
+                "state": {
+                    "running": {"startedAt": container.get("started_at")}
+                    if container.get("running")
+                    else {"terminated": {"exitCode": 1}}
+                },
             }
         ],
     }
