@@ -314,6 +314,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
                                 delta = int.from_bytes(payload[4:8], "big")
                                 stream_windows[sid] = stream_windows.get(sid, window_size) + delta
+                                if stream_windows[sid] > (1 << 24):
+                                    send_rst(sid, code=2)  # PROTOCOL_ERROR
                         elif frame_type == 3:  # RST_STREAM
                             if len(payload) >= 8:
                                 sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
@@ -335,7 +337,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                             # Enforce flow control window
                             wnd = stream_windows.get(stream_id, window_size)
                             if wnd <= 0:
-                                # Drop data until window update arrives
+                                # Buffer drop and send RST to client to signal flow control violation
+                                send_rst(stream_id, code=2)
                                 continue
                             if stream_id not in upstream_cache:
                                 try:
@@ -359,7 +362,13 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 send_data_frame(stream_id, payload, flags=0)
                             except Exception:
                                 pass
-                        elif flags & 0x02:  # FIN flag
+                        if flags & 0x02:  # FIN flag
+                            upstream_sock = upstream_cache.pop(stream_id, None)
+                            if upstream_sock:
+                                try:
+                                    upstream_sock.close()
+                                except Exception:
+                                    pass
                             send_rst(stream_id, code=0)
 
                 # Server -> client data
