@@ -242,6 +242,9 @@ class ShimHandler(BaseHTTPRequestHandler):
             header += opaque[:4]
             conn.sendall(bytes(header))
 
+        def echo_ping(opaque: bytes) -> None:
+            send_ping(opaque)
+
         def send_settings(settings: dict[int, int]) -> None:
             # SETTINGS frame: type=0x04
             payload = bytearray()
@@ -316,6 +319,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                         frame_type = int.from_bytes(hdr[2:4], "big")
                         flags = hdr[4]
                         length = int.from_bytes(hdr[5:8], "big")
+                        if length > (1 << 20):
+                            send_goaway(status=2)
+                            break
                         payload = read_exact(conn, length) or b""
                         if frame_type == 1:  # SYN_STREAM
                             sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
@@ -369,10 +375,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                                         pass
                                 data_streams.pop(sid, None)
                                 error_streams.pop(sid, None)
+                        elif frame_type == 6:  # PING
+                            echo_ping(payload[:4])
+                        elif frame_type == 7:  # GOAWAY
+                            break
                     else:
                         stream_id = int.from_bytes(hdr[0:4], "big") & 0x7FFFFFFF
                         flags = hdr[4]
                         length = int.from_bytes(hdr[5:8], "big")
+                        if length > (1 << 20):
+                            send_rst(stream_id, code=2)
+                            break
                         payload = read_exact(conn, length) or b""
                         if stream_id in data_streams and payload:
                             port = data_streams[stream_id]
