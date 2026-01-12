@@ -13,6 +13,9 @@ import time
 import json as _jsonlib
 from pathlib import Path
 from dataclasses import dataclass
+import base64
+import hashlib
+import socket
 
 from .store import ObjectStore, K8sObject
 from ae.controller.state import SQLiteStateStore
@@ -133,6 +136,113 @@ class ShimHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    # ---------------- WebSocket port-forward (best-effort) ----------------
+    def _handle_port_forward_ws(self, target_host: str, target_port: int) -> None:
+        key = self.headers.get("Sec-WebSocket-Key")
+        if not key:
+            self.send_response(HTTPStatus.BAD_REQUEST)
+            self.end_headers()
+            return
+        accept_seed = (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("utf-8")
+        accept = base64.b64encode(hashlib.sha1(accept_seed).digest()).decode("utf-8")
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        try:
+            upstream = socket.create_connection((target_host, target_port), timeout=5.0)
+        except Exception:
+            try:
+                self.connection.close()
+            except Exception:
+                pass
+            return
+
+        def recv_frame(sock) -> bytes | None:
+            hdr = sock.recv(2)
+            if len(hdr) < 2:
+                return None
+            opcode = hdr[0] & 0x0F
+            masked = hdr[1] & 0x80
+            length = hdr[1] & 0x7F
+            if length == 126:
+                ext = sock.recv(2)
+                if len(ext) < 2:
+                    return None
+                length = int.from_bytes(ext, "big")
+            elif length == 127:
+                ext = sock.recv(8)
+                if len(ext) < 8:
+                    return None
+                length = int.from_bytes(ext, "big")
+            mask = b""
+            if masked:
+                mask = sock.recv(4)
+                if len(mask) < 4:
+                    return None
+            payload = b""
+            while len(payload) < length:
+                chunk = sock.recv(length - len(payload))
+                if not chunk:
+                    break
+                payload += chunk
+            if len(payload) < length:
+                return None
+            if masked and mask:
+                payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            if opcode == 8:  # close
+                return None
+            return payload
+
+        def send_frame(sock, data: bytes) -> None:
+            hdr = bytearray()
+            hdr.append(0x82)  # FIN + binary
+            l = len(data)
+            if l < 126:
+                hdr.append(l)
+            elif l < (1 << 16):
+                hdr.append(126)
+                hdr += l.to_bytes(2, "big")
+            else:
+                hdr.append(127)
+                hdr += l.to_bytes(8, "big")
+            sock.sendall(bytes(hdr) + data)
+
+        self.connection.settimeout(0.2)
+        upstream.settimeout(0.2)
+        try:
+            while True:
+                try:
+                    data = recv_frame(self.connection)
+                    if data is None:
+                        break
+                    if data:
+                        upstream.sendall(data)
+                except socket.timeout:
+                    pass
+                except Exception:
+                    break
+                try:
+                    resp = upstream.recv(4096)
+                    if resp:
+                        send_frame(self.connection, resp)
+                    else:
+                        break
+                except socket.timeout:
+                    pass
+                except Exception:
+                    break
+        finally:
+            try:
+                upstream.close()
+            except Exception:
+                pass
+            try:
+                self.connection.close()
+            except Exception:
+                pass
 
     def _stream_watch(
         self,
@@ -726,7 +836,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
             except Exception as exc:
-            self._json_status(HTTPStatus.INTERNAL_SERVER_ERROR, reason="InternalError", message=str(exc))
+                self._json_status(HTTPStatus.INTERNAL_SERVER_ERROR, reason="InternalError", message=str(exc))
             return
         # Pod exec (POST JSON: {command:[...], timeoutSeconds?})
         m_exec = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/exec$", path)
@@ -737,11 +847,24 @@ class ShimHandler(BaseHTTPRequestHandler):
         # Port-forward (not supported yet)
         m_pf = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/portforward$", path)
         if m_pf:
-            self._json_status(
-                HTTPStatus.NOT_IMPLEMENTED,
-                reason="NotImplemented",
-                message="port-forward not yet supported; use service nodePort/VIP instead",
-            )
+            # Attempt WebSocket upgrade for simple TCP tunneling. Clients like kubectl use SPDY;
+            # this is a best-effort fallback for custom tools.
+            qs = parse_qs(parsed.query)
+            ports = qs.get("ports") or []
+            try:
+                target_port = int(ports[0])
+            except Exception:
+                self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="ports query param required")
+                return
+            target_host = "127.0.0.1"
+            if self.headers.get("Upgrade", "").lower() == "websocket":
+                self._handle_port_forward_ws(target_host, target_port)
+            else:
+                self._json_status(
+                    HTTPStatus.NOT_IMPLEMENTED,
+                    reason="NotImplemented",
+                    message="port-forward requires WebSocket Upgrade; kubectl SPDY not supported yet",
+                )
             return
 
         # Nodes (projected from controller state)
@@ -1046,7 +1169,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             self._json_status(
                 HTTPStatus.NOT_IMPLEMENTED,
                 reason="NotImplemented",
-                message="port-forward not yet supported; use service nodePort/VIP instead",
+                message="port-forward requires WebSocket Upgrade; kubectl SPDY not supported yet",
             )
             return
 
