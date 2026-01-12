@@ -1,0 +1,107 @@
+name: kubectl-exec-smoke
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+jobs:
+  exec:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e .[dev]
+      - name: Install kubectl
+        run: |
+          curl -L https://dl.k8s.io/release/v1.30.3/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl
+          chmod +x /usr/local/bin/kubectl
+      - name: Start apishim (docker runtime)
+        env:
+          AE_APISHIM_ENABLE: "1"
+          AE_APISHIM_TOKEN: "ci-token"
+          AE_APISHIM_READ_TOKEN: "read-token"
+          AE_RUNTIME_BACKEND: "docker"
+          AE_APISHIM_RBAC: "1"
+          AE_APISHIM_RBAC_EVAL: "0"
+          PYTHONPATH: "src"
+        run: |
+          python -m ae.apishim serve --host 127.0.0.1 --port 8446 --token "$AE_APISHIM_TOKEN" >/tmp/apishim-exec.log 2>&1 &
+          echo $! >/tmp/apishim-exec.pid
+          sleep 3
+      - name: Apply deployment
+        env:
+          TOKEN: "ci-token"
+        run: |
+          cat <<'YAML' > /tmp/exec-deploy.yaml
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: exec-echo
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: exec-echo
+            template:
+              metadata:
+                labels:
+                  app: exec-echo
+              spec:
+                containers:
+                - name: main
+                  image: busybox:1.36
+                  command: ["sh", "-c", "sleep 300"]
+          YAML
+          kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify --validate=false apply -f /tmp/exec-deploy.yaml
+      - name: Wait for pod Ready
+        env:
+          TOKEN: "ci-token"
+        run: |
+          for i in $(seq 1 30); do
+            PHASE=$(kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
+            READY=$(kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].status.containerStatuses[0].ready}' 2>/dev/null || echo "false")
+            if [ "$PHASE" = "Running" ] && [ "$READY" = "true" ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "pod not ready"
+          kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -o wide
+          exit 1
+      - name: Exec smoke (stdout)
+        env:
+          TOKEN: "ci-token"
+        run: |
+          POD=$(kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].metadata.name}')
+          OUT=$(kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify exec "$POD" -- sh -c "echo hello-exec")
+          echo "exec output: $OUT"
+          test "$OUT" = "hello-exec"
+      - name: Exec deny with read token
+        env:
+          TOKEN: "read-token"
+        run: |
+          set +e
+          POD=$(kubectl --server=http://127.0.0.1:8446 --token=ci-token --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].metadata.name}')
+          kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify exec "$POD" -- sh -c "echo nope"
+          RC=$?
+          if [ $RC -eq 0 ]; then
+            echo "expected exec denial for read token"; exit 1; fi
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== apishim ==="; cat /tmp/apishim-exec.log || true
+          docker ps -a || true
+          docker logs $(docker ps -aq --filter label=ae.app=default--exec-echo | head -1) || true
+      - name: Cleanup
+        if: always()
+        run: |
+          kubectl --server=http://127.0.0.1:8446 --token=ci-token --insecure-skip-tls-verify delete -f /tmp/exec-deploy.yaml || true
+          if [ -f /tmp/apishim-exec.pid ]; then kill $(cat /tmp/apishim-exec.pid) 2>/dev/null || true; fi
