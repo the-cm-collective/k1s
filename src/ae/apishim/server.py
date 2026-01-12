@@ -193,7 +193,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         )
         dctx = zlib.decompressobj(zdict=SPDY_DICT)
         data_streams: dict[int, int] = {}  # sid -> target_port
-        error_streams: set[int] = set()
+        error_streams: dict[int, int] = {}  # sid -> data_stream sid
         window_size = 1 << 20  # 1MiB default
         ports: list[int] = []
         try:
@@ -229,6 +229,27 @@ class ShimHandler(BaseHTTPRequestHandler):
             header += (8).to_bytes(3, "big")  # length
             header += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
             header += (delta & 0x7FFFFFFF).to_bytes(4, "big")
+            conn.sendall(bytes(header))
+
+        def send_rst(stream_id: int, code: int = 2) -> None:
+            # RST_STREAM: type=0x03, status code (e.g., 2=PROTOCOL_ERROR)
+            header = bytearray()
+            header += b"\x80\x03"
+            header += (0x03).to_bytes(2, "big")
+            header += b"\x00"
+            header += (8).to_bytes(3, "big")
+            header += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
+            header += (code & 0x7FFFFFFF).to_bytes(4, "big")
+            conn.sendall(bytes(header))
+
+        def send_goaway(last_stream: int = 0, status: int = 0) -> None:
+            header = bytearray()
+            header += b"\x80\x03"
+            header += (0x07).to_bytes(2, "big")  # GOAWAY
+            header += b"\x00"
+            header += (8).to_bytes(3, "big")
+            header += (last_stream & 0x7FFFFFFF).to_bytes(4, "big")
+            header += (status & 0x7FFFFFFF).to_bytes(4, "big")
             conn.sendall(bytes(header))
 
         def parse_syn_stream(payload: bytes) -> dict[str, str]:
@@ -283,7 +304,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                             if stype == "data":
                                 data_streams[sid] = port
                             elif stype == "error":
-                                error_streams.add(sid)
+                                error_streams[sid] = data_streams.get(sid - 1, target_port)
                         # ignore others
                     else:
                         stream_id = int.from_bytes(hdr[0:4], "big") & 0x7FFFFFFF
@@ -307,6 +328,16 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 send_window_update(stream_id, len(payload))
                             except Exception:
                                 pass
+                        elif stream_id in error_streams and payload:
+                            # stderr payload: forward to stdout stream as annotation
+                            sid_out = error_streams.get(stream_id)
+                            if sid_out and sid_out in data_streams:
+                                try:
+                                    send_data_frame(sid_out, payload, flags=0)
+                                except Exception:
+                                    pass
+                        elif flags & 0x02:  # FIN flag
+                            send_rst(stream_id, code=0)
 
                 # Server -> client data
                 for sid, sock_up in list(upstream_cache.items()):
@@ -333,6 +364,10 @@ class ShimHandler(BaseHTTPRequestHandler):
                         except Exception:
                             pass
         finally:
+            try:
+                send_goaway(last_stream=max(data_streams.keys()) if data_streams else 0, status=0)
+            except Exception:
+                pass
             for s in upstream_cache.values():
                 try:
                     s.close()
