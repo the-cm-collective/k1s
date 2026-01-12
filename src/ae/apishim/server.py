@@ -305,7 +305,16 @@ class ShimHandler(BaseHTTPRequestHandler):
         try:
             # Send initial SETTINGS to advertise window
             send_settings({0x04: window_size})  # SETTINGS_INITIAL_WINDOW_SIZE
+            last_ping = time.time()
             while True:
+                # keepalive ping every 10s
+                now = time.time()
+                if now - last_ping > 10:
+                    try:
+                        send_ping()
+                    except Exception:
+                        break
+                    last_ping = now
                 # Client -> server SPDY frames
                 try:
                     hdr = conn.recv(8)
@@ -564,6 +573,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         query: Dict[str, List[str]],
         transform,
     ) -> None:
+        # Watches use latest observed rv; no pagination
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
