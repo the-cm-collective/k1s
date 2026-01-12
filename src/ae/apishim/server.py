@@ -5,17 +5,18 @@ import os
 import re
 import ssl
 import threading
+import time
+import base64
+import hashlib
+import socket
+import ipaddress
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
-import time
 import json as _jsonlib
 from pathlib import Path
 from dataclasses import dataclass
-import base64
-import hashlib
-import socket
 
 from .store import ObjectStore, K8sObject
 from ae.controller.state import SQLiteStateStore
@@ -90,6 +91,8 @@ class ShimHandler(BaseHTTPRequestHandler):
         ("watch", "*"): {"admin", "read"},
         ("create", "*"): {"admin"},
         ("create", "pods/exec"): {"admin"},
+        ("create", "pods/portforward"): {"admin"},
+        ("create", "services/portforward"): {"admin"},
         ("update", "*"): {"admin"},
         ("patch", "*"): {"admin"},
         ("delete", "*"): {"admin"},
@@ -252,18 +255,303 @@ class ShimHandler(BaseHTTPRequestHandler):
             return
 
     # ---------------- SPDY/3.1 port-forward (kubectl) ----------------
-    def _handle_port_forward_spdy(self, target_host: str, target_port: int) -> None:
-        # Accept upgrade
+    def _handle_port_forward_spdy(self, target_host: str, target_ports: list[int], target_hosts_by_port: Optional[dict[int, str]] = None) -> None:
+        """Implements the SPDY/3.1 port-forward protocol used by kubectl.
+
+        Each data stream carries raw TCP bytes to a target port advertised in
+        SYN_STREAM headers ("port" or "streamname"). Error streams mirror the
+        port-specific error channel. We allow ports from `target_ports` only to
+        avoid surprising exposure when kubectl requests multiple ports.
+        """
+
+        # Accept upgrade after basic validation
         self.send_response(101, "Switching Protocols")
         self.send_header("Connection", "Upgrade")
         self.send_header("Upgrade", self.headers.get("Upgrade", "SPDY/3.1"))
         self.end_headers()
+
         conn = self.connection
         conn.settimeout(0.05)
+
+        if not target_ports:
+            target_ports = [0]
+
+        SPDY_DICT = (
+            b"optionsgetheadpostputdeletetraceacceptaccept-charsetaccept-encodingaccept-language"
+            b"authorizationexpectfromhostif-modified-sinceif-matchif-none-matchif-rangeif-unmodified-"
+            b"sincemax-forwardsproxy-authorizationrange refererteuser-agent100101200201202203204205206"
+            b"300301302303304305306307400401402403404405406407408409410411412413414415416417500501502"
+            b"503504505accept-rangesageetaglocationproxy-authenticatepublicretry-afterservervarywarning"
+            b"www-authenticateallowcontent-basecontent-encodingcache-controlconnectiondatetrailertransfer"
+            b"-encodingupgradeviawarningcontent-languagecontent-lengthcontent-locationcontent-md5content-"
+            b"rangecontent-typeetagexpireslast-modifiedset-cookieMondayTuesdayWednesdayThursdayFridaySaturday"
+            b"SundayJanFebMarAprMayJunJulAugSepOctNovDecchunkedtext/htmlimage/pngimage/jpgimage/gifapplication"
+            b"/xmlapplication/xhtmltext/plainpublicprivatemax-agegztcomparallel bytesruning"
+        )
+        dctx = zlib.decompressobj(zdict=SPDY_DICT)
+
+        window_size = 1 << 20  # 1MiB default
+        stream_windows: dict[int, int] = {}
+        data_streams: dict[int, int] = {}  # stream_id -> target_port
+        error_streams: dict[int, int] = {}  # stream_id -> data_stream sid
+        upstream_cache: dict[int, socket.socket] = {}
+        host_by_port = target_hosts_by_port or {}
+
+        def read_exact(sock, n: int) -> bytes | None:
+            buf = b""
+            while len(buf) < n:
+                chunk = sock.recv(n - len(buf))
+                if not chunk:
+                    return None
+                buf += chunk
+            return buf
+
+        def send_data_frame(stream_id: int, payload: bytes, flags: int = 0) -> None:
+            header = bytearray()
+            header += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
+            header.append(flags & 0xFF)
+            header += len(payload).to_bytes(3, "big")
+            conn.sendall(bytes(header) + payload)
+
+        def send_window_update(stream_id: int, delta: int) -> None:
+            header = bytearray()
+            header += b"\x80\x03"
+            header += (0x09).to_bytes(2, "big")
+            header += b"\x00"
+            header += (8).to_bytes(3, "big")
+            header += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
+            header += (delta & 0x7FFFFFFF).to_bytes(4, "big")
+            conn.sendall(bytes(header))
+            stream_windows[stream_id] = stream_windows.get(stream_id, window_size) + delta
+
+        def send_ping(opaque: bytes = b"\x00\x00\x00\x01") -> None:
+            header = bytearray()
+            header += b"\x80\x03"
+            header += (0x06).to_bytes(2, "big")
+            header += b"\x00"
+            header += (4).to_bytes(3, "big")
+            header += opaque[:4]
+            conn.sendall(bytes(header))
+
+        def send_settings(settings: dict[int, int]) -> None:
+            payload = bytearray()
+            payload += len(settings).to_bytes(4, "big")
+            for sid, val in settings.items():
+                payload.append(0)
+                payload += sid.to_bytes(2, "big")
+                payload += val.to_bytes(4, "big")
+            header = bytearray()
+            header += b"\x80\x03"
+            header += (0x04).to_bytes(2, "big")
+            header += b"\x00"
+            header += len(payload).to_bytes(3, "big")
+            conn.sendall(bytes(header) + payload)
+
+        def send_rst(stream_id: int, code: int = 2) -> None:
+            header = bytearray()
+            header += b"\x80\x03"
+            header += (0x03).to_bytes(2, "big")
+            header += b"\x00"
+            header += (8).to_bytes(3, "big")
+            header += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
+            header += (code & 0x7FFFFFFF).to_bytes(4, "big")
+            conn.sendall(bytes(header))
+
+        def send_goaway(last_stream: int = 0, status: int = 0) -> None:
+            header = bytearray()
+            header += b"\x80\x03"
+            header += (0x07).to_bytes(2, "big")
+            header += b"\x00"
+            header += (8).to_bytes(3, "big")
+            header += (last_stream & 0x7FFFFFFF).to_bytes(4, "big")
+            header += (status & 0x7FFFFFFF).to_bytes(4, "big")
+            conn.sendall(bytes(header))
+
+        def parse_syn_stream(payload: bytes) -> dict[str, str]:
+            headers: dict[str, str] = {}
+            if len(payload) < 10:
+                return headers
+            header_block = payload[10:]
+            try:
+                decompressed = dctx.decompress(header_block)
+                import io
+
+                f = io.BytesIO(decompressed)
+                num = int.from_bytes(f.read(4), "big")
+                for _ in range(num):
+                    nlen = int.from_bytes(f.read(4), "big")
+                    name = f.read(nlen).decode("utf-8", "ignore")
+                    vlen = int.from_bytes(f.read(4), "big")
+                    value = f.read(vlen).decode("utf-8", "ignore")
+                    headers[name] = value
+            except Exception:
+                return headers
+            return headers
+
         try:
-            upstream = socket.create_connection((target_host, target_port), timeout=5.0)
-            upstream.settimeout(0.05)
-        except Exception:
+            send_settings({0x04: window_size})  # advertise window
+            last_ping = time.time()
+            while True:
+                now = time.time()
+                if now - last_ping > 10:
+                    try:
+                        send_ping()
+                    except Exception:
+                        break
+                    last_ping = now
+
+                try:
+                    hdr = conn.recv(8)
+                except socket.timeout:
+                    hdr = None
+                if hdr:
+                    if len(hdr) < 8:
+                        break
+                    is_control = (hdr[0] & 0x80) != 0
+                    if is_control:
+                        frame_type = int.from_bytes(hdr[2:4], "big")
+                        flags = hdr[4]
+                        length = int.from_bytes(hdr[5:8], "big")
+                        if length > (1 << 20):
+                            send_goaway(status=2)
+                            break
+                        payload = read_exact(conn, length) or b""
+                        if frame_type == 1:  # SYN_STREAM
+                            sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
+                            headers = parse_syn_stream(payload)
+                            stype = headers.get("streamtype", "").lower()
+                            try:
+                                port = int(headers.get("port") or headers.get("streamname") or target_ports[0])
+                            except Exception:
+                                port = target_ports[0]
+                            if port not in target_ports and target_ports[0] != 0:
+                                send_rst(sid, code=2)
+                                continue
+                            host_for_port = host_by_port.get(port, target_host)
+                            if stype == "data":
+                                data_streams[sid] = port
+                                stream_windows[sid] = window_size
+                            elif stype == "error":
+                                error_streams[sid] = data_streams.get(sid - 1, port)
+                        elif frame_type == 4:  # SETTINGS
+                            try:
+                                num = int.from_bytes(payload[0:4], "big")
+                                idx = 4
+                                for _ in range(num):
+                                    if idx + 8 > len(payload):
+                                        break
+                                    _flags = payload[idx]
+                                    sid_setting = int.from_bytes(payload[idx + 1:idx + 3], "big")
+                                    val = int.from_bytes(payload[idx + 3:idx + 7], "big")
+                                    idx += 8
+                                    if sid_setting == 0x04:
+                                        window_size = val
+                            except Exception:
+                                pass
+                        elif frame_type == 9:  # WINDOW_UPDATE
+                            if len(payload) >= 8:
+                                sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
+                                delta = int.from_bytes(payload[4:8], "big")
+                                stream_windows[sid] = stream_windows.get(sid, window_size) + delta
+                                if stream_windows[sid] > (1 << 24):
+                                    send_rst(sid, code=2)
+                        elif frame_type == 3:  # RST_STREAM
+                            if len(payload) >= 8:
+                                sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
+                                upstream_sock = upstream_cache.pop(sid, None)
+                                if upstream_sock:
+                                    try:
+                                        upstream_sock.close()
+                                    except Exception:
+                                        pass
+                                data_streams.pop(sid, None)
+                                error_streams.pop(sid, None)
+                        elif frame_type == 6:  # PING
+                            send_ping(payload[:4])
+                        elif frame_type == 7:  # GOAWAY
+                            break
+                        if flags & 0x01:  # FIN on control frame
+                            continue
+                    else:
+                        stream_id = int.from_bytes(hdr[0:4], "big") & 0x7FFFFFFF
+                        flags = hdr[4]
+                        length = int.from_bytes(hdr[5:8], "big")
+                        if length > (1 << 20):
+                            send_rst(stream_id, code=2)
+                            break
+                        payload = read_exact(conn, length) or b""
+                        if stream_id in data_streams and payload:
+                            port = data_streams[stream_id]
+                            wnd = stream_windows.get(stream_id, window_size)
+                            if wnd <= 0:
+                                send_rst(stream_id, code=2)
+                                continue
+                            if stream_id not in upstream_cache:
+                                try:
+                                    upstream_cache[stream_id] = socket.create_connection((target_host, port), timeout=5.0)
+                                    upstream_cache[stream_id].settimeout(0.05)
+                                except Exception:
+                                    upstream_cache.pop(stream_id, None)
+                                    continue
+                            try:
+                                upstream_cache[stream_id].sendall(payload)
+                                stream_windows[stream_id] = max(0, wnd - len(payload))
+                            except Exception:
+                                send_rst(stream_id, code=2)
+                                continue
+                            try:
+                                send_window_update(stream_id, len(payload))
+                            except Exception:
+                                pass
+                        if flags & 0x02:  # FIN
+                            upstream_sock = upstream_cache.pop(stream_id, None)
+                            if upstream_sock:
+                                try:
+                                    upstream_sock.close()
+                                except Exception:
+                                    pass
+                            send_rst(stream_id, code=0)
+
+                # Pull from upstream sockets and forward to client
+                for sid, sock_up in list(upstream_cache.items()):
+                    try:
+                        resp = sock_up.recv(4096)
+                        if resp:
+                            send_data_frame(sid, resp, flags=0)
+                            try:
+                                send_window_update(sid, len(resp))
+                            except Exception:
+                                pass
+                        else:
+                            upstream_cache.pop(sid, None)
+                            try:
+                                sock_up.close()
+                            except Exception:
+                                pass
+                            for esid, dport in list(error_streams.items()):
+                                if data_streams.get(sid) == dport:
+                                    try:
+                                        send_data_frame(esid, b"", flags=0x01)
+                                    except Exception:
+                                        pass
+                    except socket.timeout:
+                        continue
+                    except Exception:
+                        upstream_cache.pop(sid, None)
+                        try:
+                            sock_up.close()
+                        except Exception:
+                            pass
+        finally:
+            try:
+                send_goaway(last_stream=max(data_streams.keys()) if data_streams else 0, status=0)
+            except Exception:
+                pass
+            for s in upstream_cache.values():
+                try:
+                    s.close()
+                except Exception:
+                    pass
             try:
                 conn.close()
             except Exception:
@@ -828,7 +1116,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 continue
                             if stream_id not in upstream_cache:
                                 try:
-                                    upstream_cache[stream_id] = socket.create_connection((target_host, port), timeout=5.0)
+                                    upstream_cache[stream_id] = socket.create_connection((host_by_port.get(port, target_host), port), timeout=5.0)
                                     upstream_cache[stream_id].settimeout(0.05)
                                 except Exception:
                                     upstream_cache.pop(stream_id, None)
@@ -1026,12 +1314,38 @@ class ShimHandler(BaseHTTPRequestHandler):
         except BrokenPipeError:
             pass
 
+    def _stream_fake_watch(self, objs: List[Dict[str, Any]], kind: str, api_version: str) -> None:
+        """Minimal watch emulation for derived resources like EndpointSlice."""
+        try:
+            for obj in objs:
+                ev = {"type": "ADDED", "object": obj}
+                self.wfile.write(json.dumps(ev, separators=(",", ":")).encode("utf-8") + b"\n")
+            # bookmark at end
+            rv = max((int(o.get("metadata", {}).get("resourceVersion", "0")) for o in objs), default=0)
+            bm = {"type": "BOOKMARK", "object": {"kind": kind, "apiVersion": api_version, "metadata": {"resourceVersion": str(rv)}}}
+            self.wfile.write(json.dumps(bm, separators=(",", ":")).encode("utf-8") + b"\n")
+            self.wfile.flush()
+        except BrokenPipeError:
+            pass
+
     def _serve_dynamic_group_discovery(self, path: str) -> bool:
         m_group = re.match(r"^/apis/([^/]+)$", path)
         if m_group:
             group = m_group.group(1)
             versions = self._crd_versions_for_group(group)
             if not versions:
+                if group == "discovery.k8s.io":
+                    self._ok(
+                        {
+                            "kind": "APIGroup",
+                            "apiVersion": "v1",
+                            "name": "discovery.k8s.io",
+                            "versions": [{"groupVersion": "discovery.k8s.io/v1", "version": "v1"}],
+                            "preferredVersion": {"groupVersion": "discovery.k8s.io/v1", "version": "v1"},
+                            "serverAddressByClientCIDRs": [],
+                        }
+                    )
+                    return True
                 return False
             payload = {
                 "kind": "APIGroup",
@@ -1046,6 +1360,24 @@ class ShimHandler(BaseHTTPRequestHandler):
         m_version = re.match(r"^/apis/([^/]+)/([^/]+)$", path)
         if m_version:
             group, version = m_version.group(1), m_version.group(2)
+            if group == "discovery.k8s.io" and version == "v1":
+                self._ok(
+                    {
+                        "kind": "APIResourceList",
+                        "apiVersion": "discovery.k8s.io/v1",
+                        "groupVersion": "discovery.k8s.io/v1",
+                        "resources": [
+                            {
+                                "name": "endpointslices",
+                                "singularName": "endpointslice",
+                                "namespaced": True,
+                                "kind": "EndpointSlice",
+                                "verbs": ["get", "list"],
+                            }
+                        ],
+                    }
+                )
+                return True
             resources = self._crd_resources_for(group, version)
             if not resources:
                 return False
@@ -1180,6 +1512,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 "groupVersion": "networking.k8s.io/v1",
                                 "version": "v1",
                             },
+                        },
+                        {
+                            "name": "discovery.k8s.io",
+                            "versions": [{"groupVersion": "discovery.k8s.io/v1", "version": "v1"}],
+                            "preferredVersion": {"groupVersion": "discovery.k8s.io/v1", "version": "v1"},
                         },
                         {
                             "name": "rbac.authorization.k8s.io",
@@ -1510,7 +1847,24 @@ class ShimHandler(BaseHTTPRequestHandler):
                         items = self.server.store.list_all("", "v1", plural)  # type: ignore[attr-defined]
                     else:
                         items = self.server.store.list("", "v1", plural, ns)  # type: ignore[attr-defined]
-                self._ok(_list_with_rv(items, _to_obj, kind=_kind(plural), api_version="v1", limit=limit if limit > 0 else None, continue_token=cont))
+                def _transform(obj: K8sObject) -> Dict[str, Any]:
+                    if plural == "services":
+                        doc = _to_obj(obj)
+                        prov_ip = _provider_cluster_ip(self.server.state, obj)  # type: ignore[attr-defined]
+                        doc["status"] = _service_lb_status(doc.get("spec", {}), doc.get("status", {}) or {}, prov_ip)
+                        return doc
+                    return _to_obj(obj)
+
+                self._ok(
+                    _list_with_rv(
+                        items,
+                        _transform,
+                        kind=_kind(plural),
+                        api_version="v1",
+                        limit=limit if limit > 0 else None,
+                        continue_token=cont,
+                    )
+                )
                 return
             else:
                 # GET
@@ -1520,6 +1874,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                 obj = self.server.store.get("", "v1", plural, None if plural == "namespaces" else ns, name)  # type: ignore[attr-defined]
                 if not obj:
                     self._not_found()
+                    return
+                if plural == "services":
+                    doc = _to_obj(obj)
+                    prov_ip = _provider_cluster_ip(self.server.state, obj)  # type: ignore[attr-defined]
+                    doc["status"] = _service_lb_status(doc.get("spec", {}), doc.get("status", {}) or {}, prov_ip)
+                    self._ok(doc)
                     return
                 self._ok(_to_obj(obj))
                 return
@@ -1747,35 +2107,107 @@ class ShimHandler(BaseHTTPRequestHandler):
                     message="exec requires SPDY/3.1 upgrade used by kubectl",
                 )
                 return
-        # Port-forward (not supported yet)
-        m_pf = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/portforward$", path)
-        if m_pf:
-            # Attempt WebSocket upgrade for simple TCP tunneling. Clients like kubectl use SPDY;
-            # this is a best-effort fallback for custom tools.
+        # Service port-forward
+        m_pf_svc = re.match(r"^/api/v1/namespaces/([^/]+)/services/([^/]+)/portforward$", path)
+        if m_pf_svc:
+            if not self._rbac_allows("create", "services/portforward"):
+                self._deny(403)
+                return
+            ns = m_pf_svc.group(1)
+            svc_name = m_pf_svc.group(2)
+            svc = self.server.store.get("", "v1", "services", ns, svc_name)  # type: ignore[attr-defined]
+            if not svc:
+                self._not_found()
+                return
+            ep = _endpoints_for_service(self.server.state, svc)  # type: ignore[attr-defined]
+            subsets = (ep or {}).get("subsets") or []
+            addresses = subsets[0].get("addresses") if subsets else None
+            app_name = _service_app_name(svc)
+            eps_raw = self.server.state.list_service_endpoints(app_name) if app_name else []  # type: ignore[attr-defined]
+            target_ip = _pick_endpoint_ip(eps_raw, key=",".join(str(p) for p in target_ports) if target_ports else None)
+            if not target_ip:
+                self._json_status(HTTPStatus.SERVICE_UNAVAILABLE, reason="NoEndpoints", message="no ready endpoints for service")
+                return
             qs = parse_qs(parsed.query)
-            ports = qs.get("ports") or []
-            try:
-                target_port = int(ports[0])
-            except Exception:
+            ports_q = qs.get("ports") or []
+            svc_ports = svc.spec.get("ports", []) if svc.spec else []
+
+            def _resolve_port(pval: str) -> Optional[int]:
+                for sp in svc_ports:
+                    if str(sp.get("port")) == pval or sp.get("name") == pval:
+                        tp = sp.get("targetPort", sp.get("port"))
+                        if isinstance(tp, int):
+                            return tp
+                        try:
+                            return int(tp)
+                        except Exception:
+                            try:
+                                return int(sp.get("port"))
+                            except Exception:
+                                return None
+                try:
+                    return int(pval)
+                except Exception:
+                    return None
+
+            target_ports: list[int] = []
+            for p in ports_q:
+                rp = _resolve_port(p)
+                if rp:
+                    target_ports.append(rp)
+            if not target_ports and svc_ports:
+                # default to first port/targetPort
+                tp = svc_ports[0].get("targetPort", svc_ports[0].get("port"))
+                try:
+                    target_ports.append(int(tp))
+                except Exception:
+                    try:
+                        target_ports.append(int(svc_ports[0].get("port")))
+                    except Exception:
+                        pass
+            if not target_ports:
                 self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="ports query param required")
                 return
+            upgrade = (self.headers.get("Upgrade") or "").lower()
+            if upgrade.startswith("spdy"):
+                # choose endpoint per target port to spread load
+                ep_map = {}
+                for tp in target_ports:
+                    ep_ip = _pick_endpoint_ip(eps_raw, key=str(tp))
+                    if ep_ip:
+                        ep_map[tp] = ep_ip
+                # fallback: single target_ip if map empty
+                self._handle_port_forward_spdy(target_ip, target_ports, ep_map if ep_map else None)
+            elif upgrade == "websocket":
+                self._handle_port_forward_ws(target_ip, target_ports[0])
+            else:
+                self._json_status(HTTPStatus.UPGRADE_REQUIRED, reason="UpgradeRequired", message="port-forward requires SPDY/3.1 used by kubectl")
+            return
+        # Port-forward
+        m_pf = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/portforward$", path)
+        if m_pf:
+            if not self._rbac_allows("create", "pods/portforward"):
+                self._deny(403)
+                return
+            qs = parse_qs(parsed.query)
+            ports_q = qs.get("ports") or []
             target_host = "127.0.0.1"
             upgrade = (self.headers.get("Upgrade") or "").lower()
+            target_ports: list[int] = []
+            for p in ports_q:
+                try:
+                    target_ports.append(int(p))
+                except Exception:
+                    pass
+            if not target_ports:
+                self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="ports query param required")
+                return
             if upgrade == "websocket":
-                self._handle_port_forward_ws(target_host, target_port)
+                self._handle_port_forward_ws(target_host, target_ports[0])
             elif upgrade.startswith("spdy"):
-                # SPDY/3.1 not implemented yet; hint and fail fast
-                self._json_status(
-                    HTTPStatus.UPGRADE_REQUIRED,
-                    reason="UpgradeRequired",
-                    message="SPDY port-forward not yet supported; use WebSocket upgrade or NodePort/VIP",
-                )
+                self._handle_port_forward_spdy(target_host, target_ports)
             else:
-                self._json_status(
-                    HTTPStatus.NOT_IMPLEMENTED,
-                    reason="NotImplemented",
-                    message="port-forward requires WebSocket Upgrade; kubectl SPDY not supported yet",
-                )
+                self._json_status(HTTPStatus.UPGRADE_REQUIRED, reason="UpgradeRequired", message="port-forward requires SPDY/3.1 used by kubectl")
             return
 
         # Nodes (projected from controller state)
@@ -1885,7 +2317,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                             heartbeat = int(q.get("heartbeatSeconds", ["0"]) [0] or 0) or None
                             allow_bm = q.get("allowWatchBookmarks", ["0"]) [0] in ("1", "true", "True")
                             for ev_type, obj in self.server.store.watch("networking.k8s.io", "v1", "ingresses", n_ns, heartbeat_seconds=heartbeat, allow_bookmarks=allow_bm):  # type: ignore[attr-defined]
-                                line = json.dumps({"type": ev_type, "object": _to_ingress(obj)}, separators=(",", ":")).encode("utf-8") + b"\n"
+                                line = json.dumps({"type": ev_type, "object": _to_ingress(obj, self.server.state)}, separators=(",", ":")).encode("utf-8") + b"\n"  # type: ignore[attr-defined]
                                 self.wfile.write(line)
                                 self.wfile.flush()
                                 if timeout is not None and timeout > 0 and (time.time() - start) >= timeout:
@@ -1906,7 +2338,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     except Exception:
                         limit = 0
                     cont = q.get("continue", [""])[0] or None
-                    self._ok(_list_with_rv(items, _to_ingress, kind="Ingress", api_version="networking.k8s.io/v1", limit=limit if limit > 0 else None, continue_token=cont))
+                    self._ok(_list_with_rv(items, lambda o: _to_ingress(o, self.server.state), kind="Ingress", api_version="networking.k8s.io/v1", limit=limit if limit > 0 else None, continue_token=cont))  # type: ignore[attr-defined]
                     return
                 else:
                     if not self._rbac_allows("get", "ingresses"):
@@ -1916,8 +2348,83 @@ class ShimHandler(BaseHTTPRequestHandler):
                     if not obj:
                         self._not_found()
                         return
-                    self._ok(_to_ingress(obj))
+                    self._ok(_to_ingress(obj, self.server.state))  # type: ignore[attr-defined]
                     return
+
+        # discovery.k8s.io EndpointSlice (projected)
+        if path.startswith("/apis/discovery.k8s.io/v1"):
+            e_plural, e_ns, e_name = _gv_ns_name(path, "discovery.k8s.io", "v1", "endpointslices")
+            if e_plural == "endpointslices":
+                if e_name is None:
+                    if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
+                        if not self._rbac_allows("watch", "endpointslices"):
+                            self._deny(403)
+                            return
+                        # We don't persist slices; emulate watch with list + bookmark
+                        items = []
+                        svcs = (
+                            self.server.store.list_all("", "v1", "services")  # type: ignore[attr-defined]
+                            if e_ns is None
+                            else self.server.store.list("", "v1", "services", e_ns)  # type: ignore[attr-defined]
+                        )
+                        for svc in svcs:
+                            eps = _endpointslice_for_service(self.server.state, svc)  # type: ignore[attr-defined]
+                            if eps:
+                                items.append(eps)
+                        self._stream_fake_watch(items, kind="EndpointSlice", api_version="discovery.k8s.io/v1")
+                        return
+                    if not self._rbac_allows("list", "endpointslices"):
+                        self._deny(403)
+                        return
+                    svcs = (
+                        self.server.store.list_all("", "v1", "services")  # type: ignore[attr-defined]
+                        if e_ns is None
+                        else self.server.store.list("", "v1", "services", e_ns)  # type: ignore[attr-defined]
+                    )
+                    items = []
+                    for svc in svcs:
+                        eps = _endpointslice_for_service(self.server.state, svc)  # type: ignore[attr-defined]
+                        if eps:
+                            items.append(eps)
+                    rv = max((int(i["metadata"].get("resourceVersion", "0")) for i in items), default=0)
+                    try:
+                        limit = int(q.get("limit", ["0"])[0] or 0)
+                    except Exception:
+                        limit = 0
+                    cont = q.get("continue", [""])[0] or None
+                    selected = items
+                    cont_token = None
+                    if cont:
+                        for idx, obj in enumerate(items):
+                            if obj["metadata"].get("name") == cont:
+                                selected = items[idx + 1 :]
+                                break
+                    if limit > 0 and len(selected) > limit:
+                        cont_token = selected[limit]["metadata"].get("name")
+                        selected = selected[:limit]
+                    meta = {"resourceVersion": str(rv)}
+                    if cont_token:
+                        meta["continue"] = cont_token
+                    self._ok({"kind": "EndpointSliceList", "apiVersion": "discovery.k8s.io/v1", "metadata": meta, "items": selected})
+                    return
+                if not self._rbac_allows("get", "endpointslices"):
+                    self._deny(403)
+                    return
+                svc_name = None
+                if "-" in e_name:
+                    svc_name = "-".join(e_name.split("-")[:-1]) or None
+                if not svc_name:
+                    svc_name = e_name
+                svc = self.server.store.get("", "v1", "services", e_ns, svc_name)  # type: ignore[attr-defined]
+                if not svc:
+                    self._not_found()
+                    return
+                eps = _endpointslice_for_service(self.server.state, svc)  # type: ignore[attr-defined]
+                if not eps:
+                    self._not_found()
+                    return
+                self._ok(eps)
+                return
 
         # apiextensions CRDs
         if path.startswith("/apis/apiextensions.k8s.io/v1"):
@@ -2080,12 +2587,14 @@ class ShimHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         if not self._authz(role="write"):
             return
+        parsed = urlparse(self.path)
+        path = parsed.path
         length = int(self.headers.get("Content-Length", "0") or "0")
         body = self.rfile.read(length)
         doc = _read_json(body)
 
         # Pod exec (JSON {command:[], timeoutSeconds?})
-        m_exec = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/exec$", self.path)
+        m_exec = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/exec$", path)
         if m_exec:
             cmd = doc.get("command") or doc.get("cmd")
             timeout = doc.get("timeoutSeconds") or doc.get("timeout")
@@ -2102,17 +2611,103 @@ class ShimHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._json_status(HTTPStatus.INTERNAL_SERVER_ERROR, reason="InternalError", message=str(exc))
             return
-        # Port-forward stub
-        m_pf = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/portforward$", self.path)
+        # Pod port-forward (kubectl uses POST + SPDY upgrade)
+        m_pf = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/portforward$", path)
         if m_pf:
-            self._json_status(
-                HTTPStatus.NOT_IMPLEMENTED,
-                reason="NotImplemented",
-                message="port-forward requires WebSocket Upgrade; kubectl SPDY not supported yet",
-            )
+            if not self._rbac_allows("create", "pods/portforward"):
+                self._deny(403)
+                return
+            qs = parse_qs(parsed.query)
+            ports_q = qs.get("ports") or []
+            target_ports: list[int] = []
+            for p in ports_q:
+                try:
+                    target_ports.append(int(p))
+                except Exception:
+                    pass
+            if not target_ports:
+                self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="ports query param required")
+                return
+            target_host = "127.0.0.1"
+            upgrade = (self.headers.get("Upgrade") or "").lower()
+            if upgrade.startswith("spdy"):
+                self._handle_port_forward_spdy(target_host, target_ports)
+            elif upgrade == "websocket":
+                self._handle_port_forward_ws(target_host, target_ports[0])
+            else:
+                self._json_status(HTTPStatus.UPGRADE_REQUIRED, reason="UpgradeRequired", message="port-forward requires SPDY/3.1 used by kubectl")
+            return
+        # Service port-forward POST
+        m_pf_svc = re.match(r"^/api/v1/namespaces/([^/]+)/services/([^/]+)/portforward$", path)
+        if m_pf_svc:
+            if not self._rbac_allows("create", "services/portforward"):
+                self._deny(403)
+                return
+            ns = m_pf_svc.group(1)
+            svc_name = m_pf_svc.group(2)
+            svc = self.server.store.get("", "v1", "services", ns, svc_name)  # type: ignore[attr-defined]
+            if not svc:
+                self._not_found()
+                return
+            ep = _endpoints_for_service(self.server.state, svc)  # type: ignore[attr-defined]
+            subsets = (ep or {}).get("subsets") or []
+            addresses = subsets[0].get("addresses") if subsets else None
+            target_ip = (addresses[0].get("ip") if addresses else None) if addresses else None
+            if not target_ip and subsets:
+                nr = subsets[0].get("notReadyAddresses") or []
+                target_ip = (nr[0].get("ip") if nr else None) if nr else None
+            if not target_ip:
+                self._json_status(HTTPStatus.SERVICE_UNAVAILABLE, reason="NoEndpoints", message="no ready endpoints for service")
+                return
+            qs = parse_qs(parsed.query)
+            ports_q = qs.get("ports") or []
+            svc_ports = svc.spec.get("ports", []) if svc.spec else []
+
+            def _resolve_port(pval: str) -> Optional[int]:
+                for sp in svc_ports:
+                    if str(sp.get("port")) == pval or sp.get("name") == pval:
+                        tp = sp.get("targetPort", sp.get("port"))
+                        if isinstance(tp, int):
+                            return tp
+                        try:
+                            return int(tp)
+                        except Exception:
+                            try:
+                                return int(sp.get("port"))
+                            except Exception:
+                                return None
+                try:
+                    return int(pval)
+                except Exception:
+                    return None
+
+            target_ports: list[int] = []
+            for p in ports_q:
+                rp = _resolve_port(p)
+                if rp:
+                    target_ports.append(rp)
+            if not target_ports and svc_ports:
+                tp = svc_ports[0].get("targetPort", svc_ports[0].get("port"))
+                try:
+                    target_ports.append(int(tp))
+                except Exception:
+                    try:
+                        target_ports.append(int(svc_ports[0].get("port")))
+                    except Exception:
+                        pass
+            if not target_ports:
+                self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="ports query param required")
+                return
+            upgrade = (self.headers.get("Upgrade") or "").lower()
+            if upgrade.startswith("spdy"):
+                self._handle_port_forward_spdy(target_ip, target_ports)
+            elif upgrade == "websocket":
+                self._handle_port_forward_ws(target_ip, target_ports[0])
+            else:
+                self._json_status(HTTPStatus.UPGRADE_REQUIRED, reason="UpgradeRequired", message="port-forward requires SPDY/3.1 used by kubectl")
             return
 
-        plural, ns, name = _ns_name(self.path)
+        plural, ns, name = _ns_name(path)
         if plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}:
             md = doc.get("metadata") or {}
             name_in = md.get("name") or name
@@ -2128,6 +2723,78 @@ class ShimHandler(BaseHTTPRequestHandler):
             if ns_in is not None and not _valid_name(ns_in):
                 self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.namespace (DNS-1123 label)")
                 return
+            spec_in = doc.get("data") if plural in {"configmaps", "secrets"} else (doc.get("spec") or {})
+            status_in = doc.get("status") or {}
+            # Service enrichments: allocate clusterIP/nodePort if missing and validate collisions
+            if plural == "services":
+                spec_in = dict(spec_in or {})
+                existing_svcs = self.server.store.list_all("", "v1", "services")  # type: ignore[attr-defined]
+                existing_cluster_ips = {s.spec.get("clusterIP") for s in existing_svcs if s.spec.get("clusterIP")}
+                # include provider allocations to avoid clashes across restart
+                try:
+                    existing_cluster_ips |= {s.cluster_ip for s in self.server.state.list_services()}  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+                existing_nodeports = set()
+                for s in existing_svcs:
+                    for p in s.spec.get("ports", []) if s.spec else []:
+                        npv = p.get("nodePort")
+                        if npv is not None:
+                            try:
+                                existing_nodeports.add(int(npv))
+                            except Exception:
+                                pass
+                # include controller-recorded nodePorts
+                try:
+                    for srec in self.server.state.list_services():  # type: ignore[attr-defined]
+                        for _, port_cfg in (srec.ports or {}).items():
+                            npv = port_cfg.get("nodePort")
+                            if npv is not None:
+                                try:
+                                    existing_nodeports.add(int(npv))
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+                svc_type = (spec_in.get("type") or "ClusterIP") or "ClusterIP"
+                # clusterIP allocation unless headless/ExternalName
+                if svc_type != "ExternalName" and spec_in.get("clusterIP") not in {"None", None}:
+                    if spec_in.get("clusterIP") is None:
+                        spec_in["clusterIP"] = _alloc_cluster_ip(ns_in, name_in, existing_cluster_ips)
+                    else:
+                        cip = str(spec_in.get("clusterIP"))
+                        if cip in existing_cluster_ips:
+                            self._json_status(HTTPStatus.CONFLICT, reason="AlreadyExists", message=f"clusterIP {cip} already allocated")
+                            return
+                # nodePort allocation for NodePort/LoadBalancer
+                if svc_type in {"NodePort", "LoadBalancer"}:
+                    ports = spec_in.get("ports") or []
+                    new_ports = []
+                    for p in ports:
+                        p = dict(p)
+                        np = p.get("nodePort")
+                        if np is not None:
+                            try:
+                                np_i = int(np)
+                            except Exception:
+                                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="nodePort must be integer")
+                                return
+                            if np_i in existing_nodeports:
+                                self._json_status(HTTPStatus.CONFLICT, reason="AlreadyExists", message=f"nodePort {np_i} already allocated")
+                                return
+                            existing_nodeports.add(np_i)
+                            p["nodePort"] = np_i
+                        else:
+                            np_alloc = _alloc_nodeport(existing_nodeports, f"{ns_in}/{name_in}/{p.get('name')}/{p.get('port')}")
+                            p["nodePort"] = np_alloc
+                            existing_nodeports.add(np_alloc)
+                        new_ports.append(p)
+                    spec_in["ports"] = new_ports
+                status_in = status_in or {}
+                if svc_type in {"LoadBalancer", "NodePort"}:
+                    if "status" not in status_in or not status_in:
+                        status_in = {"loadBalancer": {"ingress": []}}
+                status_in = _service_lb_status(spec_in, status_in, None)  # provider IP may not exist yet during create
             created = self.server.store.upsert(  # type: ignore[attr-defined]
                 "",
                 "v1",
@@ -2135,8 +2802,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                 ns_in,
                 name_in,
                 metadata=_normalize_metadata(md, name_in, ns_in, plural),
-                spec=doc.get("data") if plural in {"configmaps", "secrets"} else (doc.get("spec") or {}),
-                status=doc.get("status") or {},
+                spec=spec_in,
+                status=status_in,
             )
             self.send_response(HTTPStatus.CREATED)
             out = _json(_to_obj(created))
@@ -2999,7 +3666,37 @@ def _to_scale(o: K8sObject) -> Dict[str, Any]:
     }
 
 
-def _to_ingress(o: K8sObject) -> Dict[str, Any]:
+def _ingress_vip(state: SQLiteStateStore, ing: K8sObject) -> Optional[str]:
+    """Best-effort: use first backend service to derive VIP/clusterIP."""
+    spec = ing.spec or {}
+    svc_name = None
+    try:
+        if spec.get("defaultBackend", {}).get("service"):
+            svc_name = spec["defaultBackend"]["service"].get("name")
+        if not svc_name:
+            for rule in spec.get("rules", []):
+                paths = (rule.get("http") or {}).get("paths") or []
+                if paths:
+                    backend = paths[0].get("backend", {})
+                    svc = backend.get("service", {})
+                    svc_name = svc.get("name")
+                    if svc_name:
+                        break
+    except Exception:
+        svc_name = None
+    if not svc_name:
+        return None
+    try:
+        svc_obj = state.get("", "v1", "services", ing.namespace, svc_name)  # type: ignore[attr-defined]
+    except Exception:
+        svc_obj = None
+    if svc_obj:
+        prov_ip = _provider_cluster_ip(state, svc_obj)  # type: ignore[arg-type]
+        return prov_ip or svc_obj.spec.get("clusterIP") or None
+    return None
+
+
+def _to_ingress(o: K8sObject, state: Optional[SQLiteStateStore] = None) -> Dict[str, Any]:
     meta = dict(o.metadata)
     meta.setdefault("name", o.name)
     if o.namespace:
@@ -3011,8 +3708,18 @@ def _to_ingress(o: K8sObject) -> Dict[str, Any]:
         "metadata": meta,
         "spec": dict(o.spec),
     }
-    if o.status:
-        out["status"] = o.status
+    status = dict(o.status or {})
+    if state is not None:
+        vip = _ingress_vip(state, o)
+        if vip:
+            lb = status.get("loadBalancer") or {}
+            ingress = lb.get("ingress") or []
+            if not any(entry.get("ip") == vip for entry in ingress):
+                ingress.append({"ip": vip})
+            lb["ingress"] = ingress
+            status["loadBalancer"] = lb
+    if status:
+        out["status"] = status
     return out
 
 
@@ -3236,11 +3943,127 @@ def _service_target(svc: K8sObject) -> Optional[str]:
     )
 
 
-def _endpoints_for_service(state: SQLiteStateStore, svc: K8sObject) -> Optional[Dict[str, Any]]:
-    target = _service_target(svc)
-    if not target:
+def _service_app_name(svc: K8sObject) -> Optional[str]:
+    tgt = _service_target(svc)
+    if not tgt:
         return None
-    app_name = f"{svc.namespace}--{target}" if svc.namespace else target
+    return f"{svc.namespace}--{tgt}" if svc.namespace else tgt
+
+
+def _provider_cluster_ip(state: SQLiteStateStore, svc: K8sObject) -> Optional[str]:
+    """Fetch cluster IP allocated by the network provider (if recorded in controller state)."""
+    app_name = _service_app_name(svc)
+    if not app_name:
+        return None
+    try:
+        rec = state.get_service(app_name)  # type: ignore[attr-defined]
+        return rec.cluster_ip if rec else None
+    except Exception:
+        return None
+
+
+def _node_zone_for_ip(state: SQLiteStateStore, ip: str) -> tuple[Optional[str], Optional[str]]:
+    """Best-effort mapping from pod IP to node name/zone using node podCIDR labels."""
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+    except Exception:
+        return (None, None)
+    try:
+        nodes = state.list_nodes()  # type: ignore[attr-defined]
+    except Exception:
+        nodes = []
+    for rec, _st in nodes:
+        try:
+            if rec.pod_cidr and ip_obj in ipaddress.ip_network(rec.pod_cidr):
+                zone = (rec.labels or {}).get("topology.kubernetes.io/zone") or (rec.labels or {}).get("failure-domain.beta.kubernetes.io/zone")
+                name = rec.name or rec.node_id
+                return (name, zone)
+        except Exception:
+            continue
+    return (None, None)
+
+
+def _alloc_cluster_ip(ns: Optional[str], name: str, existing: set[str]) -> str:
+    """Deterministically allocate a ClusterIP in 10.96.0.0/16 avoiding collisions."""
+    base_int = 0x0A600000  # 10.96.0.0
+    mask = 0xFFFF
+    h = hash(f"{ns or ''}/{name}") & mask
+    for offset in range(mask):
+        ip_int = base_int + ((h + offset) & mask)
+        # skip network/broadcast-ish low addrs
+        if ip_int & 0xFF in {0, 255}:
+            continue
+        ip = ".".join(str((ip_int >> (8 * i)) & 0xFF) for i in reversed(range(4)))
+        if ip not in existing:
+            return ip
+    # fallback, shouldn't happen
+    return "10.96.255.254"
+
+
+def _alloc_nodeport(existing: set[int], seed: str) -> int:
+    NP_MIN, NP_MAX = 30000, 32767
+    span = NP_MAX - NP_MIN + 1
+    h = abs(hash(seed)) % span
+    for offset in range(span):
+        cand = NP_MIN + ((h + offset) % span)
+        if cand not in existing:
+            return cand
+    return NP_MIN
+
+
+def _service_lb_status(spec: Dict[str, Any], status: Dict[str, Any], provider_ip: Optional[str] = None) -> Dict[str, Any]:
+    """Ensure loadBalancer status is present for LB/NodePort services."""
+    svc_type = (spec.get("type") or "ClusterIP") or "ClusterIP"
+    status = dict(status or {})
+    if svc_type in {"LoadBalancer", "NodePort"}:
+        lb = status.get("loadBalancer") or {}
+        ingress = lb.get("ingress") or []
+        # Preserve existing ingress if set
+        if not ingress:
+            # loadBalancerIP hint
+            lb_ip = spec.get("loadBalancerIP")
+            if lb_ip:
+                ingress.append({"ip": lb_ip})
+            # externalIPs as ingress hints
+            for ext in spec.get("externalIPs") or []:
+                if isinstance(ext, str):
+                    ingress.append({"ip": ext})
+            # fall back to clusterIP so clients see a reachable address
+            if not ingress:
+                ip = provider_ip or spec.get("clusterIP")
+                if ip and ip not in {"None", None}:
+                    ingress = [{"ip": ip}]
+        # Add externalIPs as ingress hints
+        else:
+            for ext in spec.get("externalIPs") or []:
+                if isinstance(ext, str):
+                    ingress.append({"ip": ext})
+        lb["ingress"] = ingress
+        status["loadBalancer"] = lb
+    return status
+
+
+def _pick_endpoint_ip(endpoints: list[ServiceEndpoint], key: Optional[str] = None) -> Optional[str]:
+    """Choose a ready endpoint IP if available; fall back to first.
+
+    Selection is keyed (e.g., port list) for stable-ish distribution.
+    """
+    ready = [ep.ip for ep in endpoints if ep.ready]
+    candidates = ready or [ep.ip for ep in endpoints]
+    if not candidates:
+        return None
+    salt = key or ""
+    try:
+        idx = abs(hash(salt)) % len(candidates)
+    except Exception:
+        idx = int(time.time() * 1000) % len(candidates)
+    return candidates[idx]
+
+
+def _endpoints_for_service(state: SQLiteStateStore, svc: K8sObject) -> Optional[Dict[str, Any]]:
+    app_name = _service_app_name(svc)
+    if not app_name:
+        return None
     endpoints = state.list_service_endpoints(app_name)
     ports_spec = []
     for p in svc.spec.get("ports", []):
@@ -3275,6 +4098,68 @@ def _endpoints_for_service(state: SQLiteStateStore, svc: K8sObject) -> Optional[
                 "ports": ports_spec,
             }
         ],
+    }
+    return body
+
+
+def _endpointslice_for_service(state: SQLiteStateStore, svc: K8sObject) -> Optional[Dict[str, Any]]:
+    """Project a single EndpointSlice per Service using controller endpoints."""
+    target = _service_target(svc)
+    if not target:
+        return None
+    app_name = f"{svc.namespace}--{target}" if svc.namespace else target
+    endpoints = state.list_service_endpoints(app_name)
+    if not endpoints:
+        return None
+    ready_eps = []
+    not_ready_eps = []
+    for ep in endpoints:
+        node_name, zone = _node_zone_for_ip(state, ep.ip)
+        entry = {
+            "addresses": [ep.ip],
+            "conditions": {"ready": bool(ep.ready)},
+            "targetRef": {
+                "kind": "Pod",
+                "name": ep.pod_name or ep.app_name,
+                "namespace": svc.namespace,
+            },
+        }
+        if node_name:
+            entry["nodeName"] = node_name
+        if zone:
+            entry["zone"] = zone
+            entry["hints"] = {"forZones": [{"name": zone}]}
+        if ep.ready:
+            ready_eps.append(entry)
+        else:
+            not_ready_eps.append(entry)
+    ports_spec = []
+    for p in svc.spec.get("ports", []):
+        ports_spec.append(
+            {
+                "name": p.get("name"),
+                "port": p.get("port"),
+                "protocol": p.get("protocol", "TCP"),
+                "appProtocol": p.get("appProtocol"),
+            }
+        )
+    name_suffix = svc.metadata.get("resourceVersion") or svc.resource_version
+    slice_name = f"{svc.name}-{name_suffix}"
+    meta = {
+        "name": slice_name,
+        "namespace": svc.namespace,
+        "labels": {
+            "kubernetes.io/service-name": svc.name,
+        },
+        "resourceVersion": str(svc.resource_version),
+    }
+    body = {
+        "apiVersion": "discovery.k8s.io/v1",
+        "kind": "EndpointSlice",
+        "metadata": meta,
+        "addressType": "IPv4",
+        "ports": ports_spec,
+        "endpoints": ready_eps + not_ready_eps,
     }
     return body
 
