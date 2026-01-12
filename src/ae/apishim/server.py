@@ -89,6 +89,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         ("list", "*"): {"admin", "read"},
         ("watch", "*"): {"admin", "read"},
         ("create", "*"): {"admin"},
+        ("create", "pods/exec"): {"admin"},
         ("update", "*"): {"admin"},
         ("patch", "*"): {"admin"},
         ("delete", "*"): {"admin"},
@@ -263,6 +264,337 @@ class ShimHandler(BaseHTTPRequestHandler):
             upstream = socket.create_connection((target_host, target_port), timeout=5.0)
             upstream.settimeout(0.05)
         except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    # ---------------- SPDY/3.1 exec/attach (kubectl exec) ----------------
+    def _handle_exec_spdy(
+        self,
+        *,
+        pod_name: str,
+        command: list[str],
+        container: str | None,
+        tty: bool,
+        want_stdin: bool,
+        want_stdout: bool,
+        want_stderr: bool,
+    ) -> None:
+        # Try to open an attached exec session on the runtime (docker/podman only for now)
+        exec_sock = None
+        exec_id = None
+        if hasattr(self.server.runtime, "exec_attach"):  # type: ignore[attr-defined]
+            try:
+                exec_sock, exec_id = self.server.runtime.exec_attach(  # type: ignore[attr-defined]
+                    pod_name, command, container=container, tty=tty
+                )
+                exec_sock.settimeout(0.05)
+            except Exception:
+                exec_sock = None
+        if exec_sock is None:
+            self._json_status(
+                HTTPStatus.NOT_IMPLEMENTED,
+                reason="NotImplemented",
+                message="Streaming exec not available for this runtime",
+            )
+            return
+
+        # Accept upgrade after we know we can serve it
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Upgrade", self.headers.get("Upgrade", "SPDY/3.1"))
+        self.end_headers()
+
+        conn = self.connection
+        conn.settimeout(0.05)
+
+        SPDY_DICT = (
+            b"optionsgetheadpostputdeletetraceacceptaccept-charsetaccept-encodingaccept-language"
+            b"authorizationexpectfromhostif-modified-sinceif-matchif-none-matchif-rangeif-unmodified-"
+            b"sincemax-forwardsproxy-authorizationrange refererteuser-agent100101200201202203204205206"
+            b"300301302303304305306307400401402403404405406407408409410411412413414415416417500501502"
+            b"503504505accept-rangesageetaglocationproxy-authenticatepublicretry-afterservervarywarning"
+            b"www-authenticateallowcontent-basecontent-encodingcache-controlconnectiondatetrailertransfer"
+            b"-encodingupgradeviawarningcontent-languagecontent-lengthcontent-locationcontent-md5content-"
+            b"rangecontent-typeetagexpireslast-modifiedset-cookieMondayTuesdayWednesdayThursdayFridaySaturday"
+            b"SundayJanFebMarAprMayJunJulAugSepOctNovDecchunkedtext/htmlimage/pngimage/jpgimage/gifapplication"
+            b"/xmlapplication/xhtmltext/plainpublicprivatemax-agegztcomparallel bytesruning"
+        )
+        dctx = zlib.decompressobj(zdict=SPDY_DICT)
+
+        stream_ids: dict[str, int] = {}  # streamtype -> sid
+        window_size = 1 << 20
+        stream_windows: dict[int, int] = {}
+        resize_sid: int | None = None
+
+        def read_exact(sock, n: int) -> bytes | None:
+            buf = b""
+            while len(buf) < n:
+                chunk = sock.recv(n - len(buf))
+                if not chunk:
+                    return None
+                buf += chunk
+            return buf
+
+        def send_data_frame(stream_id: int, payload: bytes, flags: int = 0) -> None:
+            header = bytearray()
+            header += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
+            header.append(flags & 0xFF)
+            header += len(payload).to_bytes(3, "big")
+            conn.sendall(bytes(header) + payload)
+
+        def send_window_update(stream_id: int, delta: int) -> None:
+            header = bytearray()
+            header += b"\x80\x03"
+            header += (0x09).to_bytes(2, "big")
+            header += b"\x00"
+            header += (8).to_bytes(3, "big")
+            header += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
+            header += (delta & 0x7FFFFFFF).to_bytes(4, "big")
+            conn.sendall(bytes(header))
+            stream_windows[stream_id] = stream_windows.get(stream_id, window_size) + delta
+
+        def send_ping(opaque: bytes = b"\x00\x00\x00\x01") -> None:
+            header = bytearray()
+            header += b"\x80\x03"
+            header += (0x06).to_bytes(2, "big")
+            header += b"\x00"
+            header += (4).to_bytes(3, "big")
+            header += opaque[:4]
+            conn.sendall(bytes(header))
+
+        def send_rst(stream_id: int, code: int = 2) -> None:
+            header = bytearray()
+            header += b"\x80\x03"
+            header += (0x03).to_bytes(2, "big")
+            header += b"\x00"
+            header += (8).to_bytes(3, "big")
+            header += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
+            header += (code & 0x7FFFFFFF).to_bytes(4, "big")
+            conn.sendall(bytes(header))
+
+        def send_goaway(last_stream: int = 0, status: int = 0) -> None:
+            header = bytearray()
+            header += b"\x80\x03"
+            header += (0x07).to_bytes(2, "big")
+            header += b"\x00"
+            header += (8).to_bytes(3, "big")
+            header += (last_stream & 0x7FFFFFFF).to_bytes(4, "big")
+            header += (status & 0x7FFFFFFF).to_bytes(4, "big")
+            conn.sendall(bytes(header))
+
+        def parse_syn_stream(payload: bytes) -> dict[str, str]:
+            headers: dict[str, str] = {}
+            if len(payload) < 10:
+                return headers
+            header_block = payload[10:]
+            try:
+                decompressed = dctx.decompress(header_block)
+                import io
+
+                f = io.BytesIO(decompressed)
+                num = int.from_bytes(f.read(4), "big")
+                for _ in range(num):
+                    nlen = int.from_bytes(f.read(4), "big")
+                    name = f.read(nlen).decode("utf-8", "ignore")
+                    vlen = int.from_bytes(f.read(4), "big")
+                    value = f.read(vlen).decode("utf-8", "ignore")
+                    headers[name] = value
+            except Exception:
+                return headers
+            return headers
+
+        def demux_exec_frame(frame: bytes) -> tuple[int, bytes] | None:
+            # Docker multiplexed attach header: 1 byte stream, 3 bytes zero, 4 bytes length
+            if len(frame) < 8:
+                return None
+            stream_type = frame[0]
+            size = int.from_bytes(frame[4:8], "big")
+            if size == 0:
+                return None
+            data = frame[8:8 + size]
+            if len(data) < size:
+                return None
+            return stream_type, data
+
+        last_ping = time.time()
+        try:
+            exec_buf = b""
+            while True:
+                now = time.time()
+                if now - last_ping > 10:
+                    try:
+                        send_ping()
+                    except Exception:
+                        break
+                    last_ping = now
+
+                # Read SPDY control/data frames from client
+                try:
+                    hdr = conn.recv(8)
+                except socket.timeout:
+                    hdr = None
+                if hdr:
+                    if len(hdr) < 8:
+                        break
+                    is_control = (hdr[0] & 0x80) != 0
+                    if is_control:
+                        frame_type = int.from_bytes(hdr[2:4], "big")
+                        flags = hdr[4]
+                        length = int.from_bytes(hdr[5:8], "big")
+                        if length > (1 << 20):
+                            send_goaway(status=2)
+                            break
+                        payload = read_exact(conn, length) or b""
+                        if frame_type == 1:  # SYN_STREAM registers channels
+                            sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
+                            headers = parse_syn_stream(payload)
+                            stype = headers.get("streamtype", "").lower()
+                            stream_ids[stype] = sid
+                            stream_windows[sid] = window_size
+                            if stype == "resize":
+                                resize_sid = sid
+                        elif frame_type == 4:  # SETTINGS
+                            try:
+                                num = int.from_bytes(payload[0:4], "big")
+                                idx = 4
+                                for _ in range(num):
+                                    if idx + 8 > len(payload):
+                                        break
+                                    _flags = payload[idx]
+                                    sid_setting = int.from_bytes(payload[idx + 1:idx + 3], "big")
+                                    val = int.from_bytes(payload[idx + 3:idx + 7], "big")
+                                    idx += 8
+                                    if sid_setting == 0x04:
+                                        window_size = val
+                            except Exception:
+                                pass
+                        elif frame_type == 9:  # WINDOW_UPDATE
+                            if len(payload) >= 8:
+                                sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
+                                delta = int.from_bytes(payload[4:8], "big")
+                                stream_windows[sid] = stream_windows.get(sid, window_size) + delta
+                        elif frame_type == 3:  # RST_STREAM
+                            if len(payload) >= 8:
+                                sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
+                                if sid == stream_ids.get("stdin"):
+                                    try:
+                                        exec_sock.shutdown(socket.SHUT_WR)
+                                    except Exception:
+                                        pass
+                        elif frame_type == 6:  # PING
+                            conn.sendall(hdr + payload)  # echo
+                        elif frame_type == 7:  # GOAWAY
+                            break
+                    else:
+                        stream_id = int.from_bytes(hdr[0:4], "big") & 0x7FFFFFFF
+                        flags = hdr[4]
+                        length = int.from_bytes(hdr[5:8], "big")
+                        payload = read_exact(conn, length) or b""
+                        # STDIN frames
+                        if stream_id == stream_ids.get("stdin") and want_stdin and payload:
+                            try:
+                                exec_sock.sendall(payload)
+                            except Exception:
+                                pass
+                        elif resize_sid is not None and stream_id == resize_sid:
+                            # Handle resize payload JSON {"Width":x,"Height":y}
+                            try:
+                                doc = json.loads(payload.decode("utf-8", "ignore"))
+                                h = int(doc.get("Height")) if doc.get("Height") is not None else None
+                                w = int(doc.get("Width")) if doc.get("Width") is not None else None
+                                if hasattr(self.server.runtime, "exec_resize"):  # type: ignore[attr-defined]
+                                    try:
+                                        self.server.runtime.exec_resize(exec_id or "", height=h, width=w)  # type: ignore[attr-defined]
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                        if flags & 0x02:  # FIN from client
+                            if stream_id == stream_ids.get("stdin"):
+                                try:
+                                    exec_sock.shutdown(socket.SHUT_WR)
+                                except Exception:
+                                    pass
+
+                # Read from exec socket and forward to stdout/stderr
+                try:
+                    chunk = exec_sock.recv(4096)
+                except socket.timeout:
+                    chunk = None
+                except Exception:
+                    chunk = b""
+                if chunk:
+                    exec_buf += chunk
+                    if tty:
+                        if want_stdout:
+                            sid = stream_ids.get("stdout")
+                            if sid:
+                                send_data_frame(sid, chunk, flags=0)
+                                try:
+                                    send_window_update(sid, len(chunk))
+                                except Exception:
+                                    pass
+                    else:
+                        while True:
+                            if len(exec_buf) < 8:
+                                break
+                            size = int.from_bytes(exec_buf[4:8], "big")
+                            frame_len = 8 + size
+                            if len(exec_buf) < frame_len:
+                                break
+                            frame = exec_buf[:frame_len]
+                            exec_buf = exec_buf[frame_len:]
+                            dm = demux_exec_frame(frame)
+                            if dm:
+                                stype, data = dm
+                                if stype == 1 and want_stdout:
+                                    sid = stream_ids.get("stdout")
+                                elif stype == 2 and want_stderr:
+                                    sid = stream_ids.get("stderr")
+                                else:
+                                    sid = None
+                                if sid and data:
+                                    send_data_frame(sid, data, flags=0)
+                                    try:
+                                        send_window_update(sid, len(data))
+                                    except Exception:
+                                        pass
+                elif chunk == b"":
+                    break
+
+        finally:
+            # Send exit status over error stream if present
+            exit_code = 0
+            try:
+                if exec_id and hasattr(self.server.runtime, "exec_exit_code"):  # type: ignore[attr-defined]
+                    exit_code = int(getattr(self.server.runtime, "exec_exit_code")(exec_id))  # type: ignore[attr-defined]
+            except Exception:
+                exit_code = 0
+            err_sid = stream_ids.get("error")
+            if err_sid:
+                status_obj = {
+                    "metadata": {},
+                    "status": "Success",
+                    "message": "",
+                    "reason": "",
+                    "code": exit_code,
+                    "details": {"exitCode": exit_code},
+                }
+                try:
+                    send_data_frame(err_sid, json.dumps(status_obj, separators=(",", ":")).encode("utf-8"), flags=0x02)
+                except Exception:
+                    pass
+            try:
+                send_goaway(last_stream=max(stream_ids.values()) if stream_ids else 0, status=0)
+            except Exception:
+                pass
+            if exec_sock:
+                try:
+                    exec_sock.close()
+                except Exception:
+                    pass
             try:
                 conn.close()
             except Exception:
@@ -1292,33 +1624,102 @@ class ShimHandler(BaseHTTPRequestHandler):
                     return
             self._not_found()
             return
-        # Pod logs (simple text, no streaming)
+        # Pod logs (text; supports follow/tail/timestamps)
         m_logs = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/log$", path)
         if m_logs:
             ns, pod_name = m_logs.group(1), m_logs.group(2)
             tail = q.get("tailLines", ["100"])[0]
+            follow = q.get("follow", ["false"])[0].lower() in ("1", "true", "yes")
+            timestamps = q.get("timestamps", ["false"])[0].lower() in ("1", "true", "yes")
+            since = q.get("sinceSeconds", [None])[0]
+            since_i: int | None
             try:
                 tail_i = int(tail)
             except Exception:
                 tail_i = 100
             try:
-                lines = list(self.server.runtime.read_logs(pod_name, follow=False, tail=tail_i))  # type: ignore[attr-defined]
-                body = "".join(lines)
-                data = body.encode("utf-8", errors="ignore")
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "text/plain")
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
+                since_i = int(since) if since is not None else None
+            except Exception:
+                since_i = None
+
+            def _emit(line: str) -> bytes:
+                if timestamps:
+                    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    line_ts = f"{now} {line}"
+                else:
+                    line_ts = line
+                return line_ts.encode("utf-8", errors="ignore")
+
+            try:
+                if follow:
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "text/plain")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    for ln in self.server.runtime.read_logs(pod_name, follow=True, tail=tail_i, since=since_i):  # type: ignore[attr-defined]
+                        try:
+                            data = _emit(ln)
+                            if not data.endswith(b"\n"):
+                                data += b"\n"
+                            self.wfile.write(data)
+                            self.wfile.flush()
+                        except BrokenPipeError:
+                            break
+                    return
+                else:
+                    lines = list(self.server.runtime.read_logs(pod_name, follow=False, tail=tail_i, since=since_i))  # type: ignore[attr-defined]
+                    body = b"".join([_emit(ln) for ln in lines])
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "text/plain")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
             except Exception as exc:
                 self._json_status(HTTPStatus.INTERNAL_SERVER_ERROR, reason="InternalError", message=str(exc))
-            return
-        # Pod exec (POST JSON: {command:[...], timeoutSeconds?})
+                return
+        # Pod exec (kubectl uses SPDY upgrade)
         m_exec = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/exec$", path)
         if m_exec:
-            self.send_response(HTTPStatus.METHOD_NOT_ALLOWED)
-            self.end_headers()
-            return
+            if not self._rbac_allows("create", "pods/exec"):
+                self._deny(403)
+                return
+            qs = parse_qs(parsed.query)
+            cmd = qs.get("command") or []
+            if not cmd:
+                self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="command query param is required")
+                return
+            upgrade = (self.headers.get("Upgrade") or "").lower()
+            if upgrade.startswith("spdy"):
+                container = (qs.get("container") or [None])[0]
+                tty = (qs.get("tty") or ["false"])[0].lower() in ("1", "true", "yes")
+                want_stdin = (qs.get("stdin") or ["false"])[0].lower() in ("1", "true", "yes")
+                want_stdout = (qs.get("stdout") or ["true"])[0].lower() in ("1", "true", "yes")
+                want_stderr = (qs.get("stderr") or ["true"])[0].lower() in ("1", "true", "yes")
+                self._handle_exec_spdy(
+                    pod_name=m_exec.group(2),
+                    command=[c for c in cmd],
+                    container=container,
+                    tty=tty,
+                    want_stdin=want_stdin,
+                    want_stdout=want_stdout,
+                    want_stderr=want_stderr,
+                )
+                return
+            elif upgrade == "websocket":
+                self._json_status(
+                    HTTPStatus.UPGRADE_REQUIRED,
+                    reason="UpgradeRequired",
+                    message="kubectl exec requires SPDY/3.1; websocket exec not implemented",
+                )
+                return
+            else:
+                self._json_status(
+                    HTTPStatus.UPGRADE_REQUIRED,
+                    reason="UpgradeRequired",
+                    message="exec requires SPDY/3.1 upgrade used by kubectl",
+                )
+                return
         # Port-forward (not supported yet)
         m_pf = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/portforward$", path)
         if m_pf:

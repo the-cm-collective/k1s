@@ -122,6 +122,47 @@ class RemoteRuntime(RuntimeAdapter):
         resp = self._request("POST", "/v1/exec", json=payload, timeout=timeout or 30)
         return int(resp.json().get("exit_code", 1))
 
+    def exec_attach(
+        self, replica_id: str, command: list[str], *, container: str | None = None, tty: bool = False
+    ):
+        # Use HTTP Upgrade to tunnel raw exec stream through agent
+        import http.client
+        from urllib.parse import urlparse
+
+        url = urlparse(self._base_url)
+        port = url.port or (443 if url.scheme == "https" else 80)
+        conn_cls = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
+        conn = conn_cls(url.hostname, port, timeout=30)
+        payload = _json.dumps({"replica_id": replica_id, "command": command, "container": container, "tty": tty})
+        headers = {
+            "Connection": "Upgrade",
+            "Upgrade": "ae-exec",
+            "Content-Type": "application/json",
+            "Content-Length": str(len(payload)),
+        }
+        if self._auth_header:
+            headers["Authorization"] = self._auth_header
+        conn.putrequest("POST", "/v1/exec_attach")
+        for k, v in headers.items():
+            conn.putheader(k, v)
+        conn.endheaders()
+        conn.send(payload.encode("utf-8"))
+        resp = conn.getresponse()
+        if resp.status != 101:
+            raise RuntimeError(f"exec_attach upgrade failed: {resp.status} {resp.reason}")
+        # Hijack the underlying socket; http.client leaves it on resp.fp
+        raw = resp.fp.raw
+        sock = raw
+        exec_id = resp.getheader("X-Exec-Id")
+        sock.settimeout(0.05)
+        return sock, exec_id
+
+    def exec_exit_code(self, exec_id: str) -> int:
+        if self._use_local():
+            return self._local.exec_exit_code(exec_id)
+        resp = self._request("POST", "/v1/exec_inspect", json={"exec_id": exec_id}, timeout=10)
+        return int(resp.json().get("exit_code", 0))
+
     def ensure_storage_volumes(self, app_name: str, volumes: list[dict]) -> None:
         if self._use_local():
             return self._local.ensure_storage_volumes(app_name, volumes)

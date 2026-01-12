@@ -580,6 +580,116 @@ class PodmanRuntime(RuntimeAdapter):
         except Exception:
             return 1
 
+    # Streaming exec for Podman (uses `podman exec --interactive --tty --attach` via varlink-less HTTP API)
+    def exec_attach(
+        self, replica_id: str, command: list[str], *, container: str | None = None, tty: bool = False
+    ):
+        # Locate container by replica_id label
+        cid = None
+        try:
+            labels = [f"label={self.REPLICA_LABEL}={replica_id}"]
+            if container:
+                labels.append(f"label={self.CONTAINER_LABEL}={container}")
+            cmd_list = [
+                self._bin,
+                "ps",
+                "-a",
+                *sum([["--filter", x] for x in labels], []),
+                "--format",
+                "{{.ID}}",
+            ]
+            res = self._run_capture(cmd_list, allow_fail=True)
+            cid = (res.out or "").strip().splitlines()[0]
+        except Exception:
+            cid = None
+        if not cid:
+            raise RuntimeError("Replica not found for exec")
+
+        # Use podman-remote exec attach over `podman system service --time=0` (HTTP API)
+        # Fallback to stdio hijack via `podman exec --interactive --tty` and a pty.
+        # Here we rely on `podman exec` with `--interactive` and `--tty` when requested,
+        # attaching to a pseudo-tty and returning its master fd as a socket-like object.
+        import pty
+        import os
+
+        master, slave = pty.openpty()
+        argv = [self._bin, "exec", "--interactive"]
+        if tty:
+            argv.append("--tty")
+        argv.append(cid)
+        argv.extend([str(x) for x in command])
+        proc = subprocess.Popen(
+            argv,
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            close_fds=True,
+        )
+        os.close(slave)
+
+        class _FDAsSocket:
+            def __init__(self, fd, proc):
+                self._fd = fd
+                self._proc = proc
+                os.set_blocking(fd, False)
+
+            def recv(self, n: int) -> bytes:
+                try:
+                    return os.read(self._fd, n)
+                except BlockingIOError:
+                    return b""
+
+            def sendall(self, data: bytes) -> None:
+                os.write(self._fd, data)
+
+            def settimeout(self, _t: float) -> None:
+                return
+
+            def close(self) -> None:
+                try:
+                    os.close(self._fd)
+                except Exception:
+                    pass
+                try:
+                    self._proc.terminate()
+                except Exception:
+                    pass
+
+        return _FDAsSocket(master, proc), f"{cid}:{proc.pid}"
+
+    def exec_resize(self, exec_id: str, *, height: int | None = None, width: int | None = None) -> None:
+        # best-effort: send SIGWINCH to the exec process when using pty
+        try:
+            if ":" in exec_id:
+                _cid, pid_s = exec_id.split(":", 1)
+                pid = int(pid_s)
+                import fcntl
+                import termios
+                import struct
+                import os
+
+                if height and width:
+                    winsize = struct.pack("HHHH", height, width, 0, 0)
+                    with open(f"/proc/{pid}/fd/0", "wb", closefd=False) as f:
+                        fcntl.ioctl(f, termios.TIOCSWINSZ, winsize)
+        except Exception:
+            return
+
+    def exec_exit_code(self, exec_id: str) -> int:
+        try:
+            if ":" in exec_id:
+                _cid, pid_s = exec_id.split(":", 1)
+                pid = int(pid_s)
+                _, sts = os.waitpid(pid, os.WNOHANG)
+                if sts == 0:
+                    return 0
+                if os.WIFEXITED(sts):
+                    return int(os.WEXITSTATUS(sts))
+                return 0
+        except Exception:
+            return 0
+        return 0
+
     def remove_app(self, app_name: str) -> int:
         removed = 0
         for c in self._list_app_containers(app_name):
