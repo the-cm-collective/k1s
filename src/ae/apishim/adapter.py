@@ -172,14 +172,20 @@ class AdapterWorker(threading.Thread):
                 "updatedReplicas": st_row.live_replicas,
                 "readyReplicas": st_row.ready_replicas,
                 "availableReplicas": st_row.ready_replicas,
+                "unavailableReplicas": max(0, st_row.desired_replicas - st_row.ready_replicas),
                 "conditions": [
                     {
                         "type": "Available",
                         "status": "True" if st_row.ready_replicas >= st_row.desired_replicas else "False",
                         "reason": "MinimumReplicasAvailable",
                     },
-                    {"type": "Progressing", "status": "True", "reason": "NewReplicaSetAvailable"},
+                    {
+                        "type": "Progressing",
+                        "status": "True",
+                        "reason": "NewReplicaSetAvailable" if st_row.revision_status == "live" else st_row.revision_status or "Progressing",
+                    },
                 ],
+                "observedGeneration": st_row.revision,
             }
             self._store.upsert(
                 "apps", "v1", "deployments", dep.namespace, dep.name, dep.metadata, dep.spec, status=st
