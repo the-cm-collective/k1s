@@ -82,6 +82,7 @@ class ShimHandler(BaseHTTPRequestHandler):
     admin_token: Optional[str] = os.getenv("AE_APISHIM_TOKEN")
     read_token: Optional[str] = os.getenv("AE_APISHIM_READ_TOKEN")
     rbac_enabled: bool = os.getenv("AE_APISHIM_RBAC", "0") == "1"
+    rbac_eval_roles: bool = os.getenv("AE_APISHIM_RBAC_EVAL", "0") == "1"
     # Simple in-memory RBAC rules: (verb, resource) -> allowed roles
     rbac_policies: dict[tuple[str, str], set[str]] = {
         ("get", "*"): {"admin", "read"},
@@ -141,9 +142,53 @@ class ShimHandler(BaseHTTPRequestHandler):
             role = "read"
         if role is None:
             return False
-        # Check specific then wildcard
-        allowed = self.rbac_policies.get((verb, resource)) or self.rbac_policies.get((verb, "*"))
-        return bool(allowed and role in allowed)
+        # Static policy fallback
+        if not self.rbac_eval_roles:
+            allowed = self.rbac_policies.get((verb, resource)) or self.rbac_policies.get((verb, "*"))
+            return bool(allowed and role in allowed)
+        # Role/RoleBinding evaluation
+        user = role
+        namespace = None
+        # Collect role rules from bindings
+        allowed_verbs: set[str] = set()
+        try:
+            # RoleBindings (namespaced)
+            for rb in self.store.list_all("rbac.authorization.k8s.io", "v1", "rolebindings"):  # type: ignore[attr-defined]
+                if namespace and rb.namespace and rb.namespace != namespace:
+                    continue
+                subjects = (rb.spec or {}).get("subjects", [])
+                if not any(s.get("kind") == "User" and s.get("name") == user for s in subjects):
+                    continue
+                ref = (rb.spec or {}).get("roleRef", {})
+                rname = ref.get("name")
+                if not rname:
+                    continue
+                role_obj = self.store.get("rbac.authorization.k8s.io", "v1", "roles", rb.namespace, rname)  # type: ignore[attr-defined]
+                if role_obj:
+                    for rule in (role_obj.spec or {}).get("rules", []):
+                        if resource in rule.get("resources", []) or "*" in rule.get("resources", []):
+                            allowed_verbs.update(rule.get("verbs", []))
+            # ClusterRoleBindings
+            for crb in self.store.list_all("rbac.authorization.k8s.io", "v1", "clusterrolebindings"):  # type: ignore[attr-defined]
+                subjects = (crb.spec or {}).get("subjects", [])
+                if not any(s.get("kind") == "User" and s.get("name") == user for s in subjects):
+                    continue
+                ref = (crb.spec or {}).get("roleRef", {})
+                rname = ref.get("name")
+                if not rname:
+                    continue
+                crobj = self.store.get("rbac.authorization.k8s.io", "v1", "clusterroles", None, rname)  # type: ignore[attr-defined]
+                if crobj:
+                    for rule in (crobj.spec or {}).get("rules", []):
+                        if resource in rule.get("resources", []) or "*" in rule.get("resources", []):
+                            allowed_verbs.update(rule.get("verbs", []))
+        except Exception:
+            return False
+        if not allowed_verbs:
+            # fallback to static if no rules matched
+            allowed = self.rbac_policies.get((verb, resource)) or self.rbac_policies.get((verb, "*"))
+            return bool(allowed and role in allowed)
+        return verb in allowed_verbs
 
     def _ok(self, payload: Dict[str, Any]) -> None:
         data = _json(payload)
