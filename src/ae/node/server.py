@@ -82,6 +82,71 @@ class AgentHandler(BaseHTTPRequestHandler):
                 )
                 _json_response(self, 200, {"exit_code": rc})
                 return
+            if self.path == "/v1/exec_attach":
+                # Upgrade to raw stream and proxy between client and runtime exec socket
+                rid = payload.get("replica_id", "")
+                cmd = payload.get("command", [])
+                container = payload.get("container")
+                tty = bool(payload.get("tty", False))
+                try:
+                    sock, exec_id = self.runtime.exec_attach(rid, cmd, container=container, tty=tty)
+                except Exception as exc:  # noqa: BLE001
+                    _json_response(self, 501, {"error": f"exec_attach unsupported: {exc}"})
+                    return
+                self.send_response(101, "Switching Protocols")
+                self.send_header("Connection", "Upgrade")
+                self.send_header("Upgrade", "ae-exec")
+                if exec_id:
+                    self.send_header("X-Exec-Id", str(exec_id))
+                self.end_headers()
+                client_sock = self.connection
+                client_sock.settimeout(0.05)
+                sock.settimeout(0.05)
+                try:
+                    while True:
+                        try:
+                            data = client_sock.recv(4096)
+                        except socket.timeout:
+                            data = None
+                        if data:
+                            sock.sendall(data)
+                        try:
+                            resp = sock.recv(4096)
+                        except socket.timeout:
+                            resp = None
+                        if resp:
+                            client_sock.sendall(resp)
+                        if data == b"" or resp == b"":
+                            break
+                finally:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+                    try:
+                        client_sock.close()
+                    except Exception:
+                        pass
+                return
+            if self.path == "/v1/exec_resize":
+                exec_id = payload.get("exec_id", "")
+                h = payload.get("height")
+                w = payload.get("width")
+                try:
+                    self.runtime.exec_resize(exec_id, height=h, width=w)
+                except Exception:
+                    pass
+                _json_response(self, 200, {"ok": True})
+                return
+            if self.path == "/v1/exec_inspect":
+                exec_id = payload.get("exec_id", "")
+                code = 0
+                try:
+                    code = int(self.runtime.exec_exit_code(exec_id))
+                except Exception:
+                    code = 0
+                _json_response(self, 200, {"exit_code": code})
+                return
             if self.path == "/v1/ensure_volumes":
                 self.runtime.ensure_storage_volumes(
                     payload.get("app", ""), payload.get("volumes", [])
