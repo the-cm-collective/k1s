@@ -728,6 +728,47 @@ class DockerRuntime(RuntimeAdapter):
         except APIError:
             return 1
 
+    # Streaming exec/attach for kubectl exec (SPDY)
+    def exec_attach(
+        self, replica_id: str, command: list[str], *, container: str | None = None, tty: bool = False
+    ):
+        """Return (socket, exec_id) for an attached exec session."""
+        target = None
+        try:
+            filters = {"label": [f"{self.REPLICA_LABEL}={replica_id}"]}
+            if container:
+                filters["label"].append(f"{self.CONTAINER_LABEL}={container}")
+            containers = self._client.containers.list(all=True, filters=filters)
+            if containers:
+                target = containers[0]
+        except APIError:
+            target = None
+        if target is None:
+            raise RuntimeError("Replica not found for exec")
+        exec_id = self._client.api.exec_create(
+            target.id,
+            cmd=command,
+            stdin=True,
+            stdout=True,
+            stderr=not tty,
+            tty=tty,
+        )
+        sock = self._client.api.exec_start(exec_id, tty=tty, stream=True, socket=True, demux=False)
+        return sock, exec_id
+
+    def exec_resize(self, exec_id: str, *, height: int | None = None, width: int | None = None) -> None:
+        try:
+            self._client.api.exec_resize(exec_id, height=height, width=width)
+        except APIError:
+            return
+
+    def exec_exit_code(self, exec_id: str) -> int:
+        try:
+            info = self._client.api.exec_inspect(exec_id)
+            return int(info.get("ExitCode", 0))
+        except APIError:
+            return 0
+
     def _build_state(self, manifest: AppManifest, container: Container) -> ReplicaState:
         self._reload(container)
         labels = container.labels or {}

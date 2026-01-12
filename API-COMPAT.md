@@ -8,6 +8,7 @@ This document captures the staged plan to make k1s surface a Kubernetes‑compat
 - Deliverables: this roadmap; smoke target that starts `ae.apishim serve` and answers `/health`.
 
 ## Phase 1 — Kubectl “get/apply” happy path
+(status: functionally complete; VIP/loadBalancer status polish remains)
 - Harden discovery: `/api`, `/apis`, preferred versions, correct `resourceVersion` on list/watch, bookmarks, list‑continue stubs.
 - Auth baseline: bearer token required by default; optional mTLS for kubeconfig; minimal RBAC scaffold (cluster‑admin only).
 - Objects: Deployments, Services, Ingresses, Namespaces, Roles/RoleBindings, CRDs (already), plus Nodes and Endpoints/EndpointSlice projected from controller state/runtime.
@@ -15,10 +16,17 @@ This document captures the staged plan to make k1s surface a Kubernetes‑compat
 - Deliverables: `kubectl get/describe` works for the above kinds; `kubectl apply -f deployment.yaml` creates/updates an app; `kubectl get endpoints` shows VIP backends; CI job exercising apply+watch.
 
 ## Phase 2 — Pods as first‑class citizens
+(status: in progress — port-forward working; logs follow added; exec still non-interactive)
 - Project Pods/ReplicaSets from runtime placements; include conditions, restartCount, containerStatuses.
-- Exec/logs/port‑forward passthrough to agent runtimes; enforce auth/role gating.
+- Exec/logs/port-forward passthrough to agent runtimes; enforce auth/role gating.
 - Support scale‑to‑0 semantics (delete Pods, keep Deployment) and propagate status.
 - Deliverables: `kubectl logs/exec/port-forward` on pod names; `kubectl rollout status` on deployments; watch stability under churn.
+
+Phase 2 next steps to go green:
+- Implement kubectl-compatible exec/attach (SPDY channel streams) backed by runtime streaming support (Docker/Podman exec attach). Requires extending RuntimeAdapter to stream stdin/stdout/stderr and mapping channel.k8s.io over SPDY.
+- Add streaming logs `follow`/`tail`/timestamps (now done) to match kubectl expectations.
+- Populate pod status fields from runtime (conditions, restartCount, containerStatuses) and roll status into deployments/replicasets so rollout status works.
+- Honor scale-to-0 by deleting pods while keeping deployment objects and reflecting status.
 
 ## Phase 3 — Services fidelity & scheduling hints
 - NodePort/ClusterIP parity: deterministic port allocation, collision handling, VIP + overlay awareness; EndpointSlice as source of truth.
