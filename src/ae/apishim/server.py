@@ -160,6 +160,132 @@ class ShimHandler(BaseHTTPRequestHandler):
                 pass
             return
 
+    # ---------------- SPDY/3.1 port-forward (kubectl) ----------------
+    def _handle_port_forward_spdy(self, target_host: str, target_port: int) -> None:
+        # Accept upgrade
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Upgrade", self.headers.get("Upgrade", "SPDY/3.1"))
+        self.end_headers()
+        conn = self.connection
+        conn.settimeout(0.05)
+        try:
+            upstream = socket.create_connection((target_host, target_port), timeout=5.0)
+            upstream.settimeout(0.05)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return
+
+        SPDY_DICT = (
+            b"optionsgetheadpostputdeletetraceacceptaccept-charsetaccept-encodingaccept-language"
+            b"authorizationexpectfromhostif-modified-sinceif-matchif-none-matchif-rangeif-unmodified-"
+            b"sincemax-forwardsproxy-authorizationrange refererteuser-agent100101200201202203204205206"
+            b"300301302303304305306307400401402403404405406407408409410411412413414415416417500501502"
+            b"503504505accept-rangesageetaglocationproxy-authenticatepublicretry-afterservervarywarning"
+            b"www-authenticateallowcontent-basecontent-encodingcache-controlconnectiondatetrailertransfer"
+            b"-encodingupgradeviawarningcontent-languagecontent-lengthcontent-locationcontent-md5content-"
+            b"rangecontent-typeetagexpireslast-modifiedset-cookieMondayTuesdayWednesdayThursdayFridaySaturday"
+            b"SundayJanFebMarAprMayJunJulAugSepOctNovDecchunkedtext/htmlimage/pngimage/jpgimage/gifapplication"
+            b"/xmlapplication/xhtmltext/plainpublicprivatemax-agegztcomparallel bytesruning"
+        )
+        dctx = zlib.decompressobj(zdict=SPDY_DICT)
+        data_stream_id: int | None = None
+
+        def read_exact(sock, n: int) -> bytes | None:
+            buf = b""
+            while len(buf) < n:
+                chunk = sock.recv(n - len(buf))
+                if not chunk:
+                    return None
+                buf += chunk
+            return buf
+
+        def send_data_frame(stream_id: int, payload: bytes, flags: int = 0) -> None:
+            header = bytearray()
+            header += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
+            header.append(flags & 0xFF)
+            header += len(payload).to_bytes(3, "big")
+            conn.sendall(bytes(header) + payload)
+
+        def parse_syn_stream(payload: bytes) -> dict[str, str]:
+            headers: dict[str, str] = {}
+            if len(payload) < 10:
+                return headers
+            header_block = payload[10:]
+            try:
+                decompressed = dctx.decompress(header_block)
+                import io
+
+                f = io.BytesIO(decompressed)
+                num = int.from_bytes(f.read(4), "big")
+                for _ in range(num):
+                    nlen = int.from_bytes(f.read(4), "big")
+                    name = f.read(nlen).decode("utf-8", "ignore")
+                    vlen = int.from_bytes(f.read(4), "big")
+                    value = f.read(vlen).decode("utf-8", "ignore")
+                    headers[name] = value
+            except Exception:
+                return headers
+            return headers
+
+        try:
+            while True:
+                # Client -> server SPDY frames
+                try:
+                    hdr = conn.recv(8)
+                except socket.timeout:
+                    hdr = None
+                if hdr:
+                    if len(hdr) < 8:
+                        break
+                    is_control = (hdr[0] & 0x80) != 0
+                    if is_control:
+                        frame_type = int.from_bytes(hdr[2:4], "big")
+                        flags = hdr[4]
+                        length = int.from_bytes(hdr[5:8], "big")
+                        payload = read_exact(conn, length) or b""
+                        if frame_type == 1:  # SYN_STREAM
+                            sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
+                            headers = parse_syn_stream(payload)
+                            if headers.get("streamtype", "").lower() == "data":
+                                data_stream_id = sid
+                        # ignore others
+                    else:
+                        stream_id = int.from_bytes(hdr[0:4], "big") & 0x7FFFFFFF
+                        flags = hdr[4]
+                        length = int.from_bytes(hdr[5:8], "big")
+                        payload = read_exact(conn, length) or b""
+                        if data_stream_id is not None and stream_id == data_stream_id and payload:
+                            try:
+                                upstream.sendall(payload)
+                            except Exception:
+                                break
+
+                # Server -> client data
+                try:
+                    resp = upstream.recv(4096)
+                    if resp:
+                        if data_stream_id is not None:
+                            send_data_frame(data_stream_id, resp, flags=0)
+                    else:
+                        break
+                except socket.timeout:
+                    pass
+                except Exception:
+                    break
+        finally:
+            try:
+                upstream.close()
+            except Exception:
+                pass
+            try:
+                conn.close()
+            except Exception:
+                pass
+
         def recv_frame(sock) -> bytes | None:
             hdr = sock.recv(2)
             if len(hdr) < 2:
