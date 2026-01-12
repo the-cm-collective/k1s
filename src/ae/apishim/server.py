@@ -1589,6 +1589,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                 containers = self.server.runtime.list_containers_info()  # type: ignore[attr-defined]
             except Exception:
                 containers = []
+            # enrich with controller replica/node info when available
+            replica_info: dict[str, tuple[str | None, bool, bool, str, str, str]] = {}
+            try:
+                # Build once for all apps to avoid N+1 queries
+                for app in { (c.get("labels", {}) or {}).get("ae.app") for c in containers }:
+                    if not app:
+                        continue
+                    for rid, node_id, ready, live, status, rmsg, lmsg in self.server.state.list_replica_nodes(app):  # type: ignore[attr-defined]
+                        replica_info[rid] = (node_id, ready, live, status, rmsg, lmsg)
+            except Exception:
+                replica_info = {}
             now_rv = int(time.time() * 1000)
             pod_objs = []
             for c in containers:
@@ -1596,7 +1607,23 @@ class ShimHandler(BaseHTTPRequestHandler):
                 c_ns = labels.get("ae.namespace") or "default"
                 if ns and c_ns != ns:
                     continue
-                pod_objs.append(_pod_obj(c, now_rv, labels.get("ae.node")))
+                rid = labels.get("ae.replica_id") or c.get("name")
+                rep_info = replica_info.get(str(rid))
+                node_name = labels.get("ae.node") or (rep_info[0] if rep_info else None)
+                pod_obj = _pod_obj(c, now_rv, node_name)
+                if rep_info:
+                    pod_obj["status"]["hostIP"] = node_name
+                    # reflect readiness/live from controller status if available
+                    cs = pod_obj["status"]["containerStatuses"][0]
+                    cs["ready"] = bool(rep_info[1])
+                    pod_obj["status"]["conditions"] = [
+                        {"type": "PodScheduled", "status": "True"},
+                        {"type": "Ready", "status": "True" if rep_info[1] else "False"},
+                        {"type": "ContainersReady", "status": "True" if rep_info[1] else "False"},
+                    ]
+                    if not rep_info[1]:
+                        cs["state"] = {"waiting": {"reason": rep_info[3] or "Pending", "message": rep_info[4]}}
+                pod_objs.append(pod_obj)
             if name is None:
                 try:
                     limit = int(q.get("limit", ["0"])[0] or 0)
@@ -3311,6 +3338,16 @@ def _pod_obj(container: dict, rv: int, node_name: Optional[str]) -> Dict[str, An
         state_obj = {"waiting": {"reason": "ContainerCreating"}}
         phase = "Pending"
         ready = False
+    # capture last state if present
+    last_state = {}
+    if container.get("last_exit_code") is not None:
+        last_state = {
+            "terminated": {
+                "exitCode": int(container.get("last_exit_code", 0)),
+                "reason": container.get("last_reason") or "Completed",
+                "finishedAt": container.get("last_finished_at"),
+            }
+        }
     status = {
         "phase": "Running",
         "podIP": container.get("pod_ip"),
@@ -3321,6 +3358,7 @@ def _pod_obj(container: dict, rv: int, node_name: Optional[str]) -> Dict[str, An
                 "ready": ready,
                 "restartCount": restart_count,
                 "state": state_obj,
+                "lastState": last_state,
             }
         ],
         "conditions": [
