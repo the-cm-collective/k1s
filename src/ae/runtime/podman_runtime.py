@@ -794,6 +794,8 @@ class PodmanRuntime(RuntimeAdapter):
             labels = (it.get("Config") or {}).get("Labels") or {}
             host_ports: list[int] = []
             restarts = 0
+            started_at = None
+            running = (it.get("State") or "").lower() == "running"
             try:
                 insp = self._run_ok(
                     [self._bin, "inspect", it.get("Id", ""), "--format", "json"], allow_fail=True
@@ -816,6 +818,7 @@ class PodmanRuntime(RuntimeAdapter):
                         rc = st.get("RestartCount", 0)
                         if isinstance(rc, (int, float)):
                             restarts = int(rc)
+                        started_at = st.get("StartedAt")
                     except Exception:
                         restarts = 0
             except Exception:
@@ -826,6 +829,9 @@ class PodmanRuntime(RuntimeAdapter):
                     "labels": labels,
                     "host_ports": host_ports,
                     "restart_count": restarts,
+                    "started_at": started_at,
+                    "running": bool(running),
+                    "pod_ip": None,
                 }
             )
         return out
