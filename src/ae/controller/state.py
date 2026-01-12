@@ -649,14 +649,15 @@ class SQLiteStateStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT replica_id, node_id
-                FROM replica_nodes
-                WHERE app_name = ?
-                ORDER BY replica_id
+                SELECT rs.replica_id, rn.node_id, rs.ready, rs.live, rs.status, rs.readiness_message, rs.liveness_message
+                FROM replica_status rs
+                LEFT JOIN replica_nodes rn ON rs.app_name = rn.app_name AND rs.replica_id = rn.replica_id
+                WHERE rs.app_name = ?
+                ORDER BY rs.replica_id
                 """,
                 (app_name,),
             ).fetchall()
-        return [(row[0], row[1]) for row in rows]
+        return [(row[0], row[1], row[2], row[3], row[4], row[5], row[6]) for row in rows]
 
     def set_replica_nodes(self, app_name: str, placements: list[tuple[str, str]]) -> None:
         """Replace placement mapping for an app."""
