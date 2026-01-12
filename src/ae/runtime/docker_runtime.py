@@ -1149,7 +1149,7 @@ class DockerRuntime(RuntimeAdapter):
             return None
 
     def list_containers_info(self) -> list[dict]:  # type: ignore[override]
-        """List running containers with published host ports for conflict checks."""
+        """List running containers with published host ports and basic status."""
         out: list[dict] = []
         try:
             containers = self._client.containers.list(all=True)
@@ -1175,12 +1175,18 @@ class DockerRuntime(RuntimeAdapter):
                     if isinstance(state.get("RestartCount", 0), (int, float))
                     else 0
                 )
+                started_at = state.get("StartedAt") or None
+                running = state.get("Running", False)
+                ip = (c.attrs or {}).get("NetworkSettings", {}).get("IPAddress") or None
                 out.append(
                     {
                         "name": c.name,
                         "labels": c.labels or {},
                         "host_ports": ports,
                         "restart_count": restarts,
+                        "started_at": started_at,
+                        "running": bool(running),
+                        "pod_ip": ip,
                     }
                 )
             except Exception:
@@ -1190,6 +1196,9 @@ class DockerRuntime(RuntimeAdapter):
                         "labels": {},
                         "host_ports": [],
                         "restart_count": 0,
+                        "started_at": None,
+                        "running": False,
+                        "pod_ip": None,
                     }
                 )
         return out
