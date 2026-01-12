@@ -1053,6 +1053,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     limit = int(q.get("limit", ["0"])[0] or 0)
                 except Exception:
                     limit = 0
+                cont = q.get("continue", [""])[0] or None
                 if plural == "namespaces":
                     items = self.server.store.list("", "v1", "namespaces", None)  # type: ignore[attr-defined]
                 else:
@@ -1060,7 +1061,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                         items = self.server.store.list_all("", "v1", plural)  # type: ignore[attr-defined]
                     else:
                         items = self.server.store.list("", "v1", plural, ns)  # type: ignore[attr-defined]
-                self._ok(_list_with_rv(items, _to_obj, kind=_kind(plural), api_version="v1", limit=limit if limit > 0 else None))
+                self._ok(_list_with_rv(items, _to_obj, kind=_kind(plural), api_version="v1", limit=limit if limit > 0 else None, continue_token=cont))
                 return
             else:
                 # GET
@@ -1089,7 +1090,25 @@ class ShimHandler(BaseHTTPRequestHandler):
                     if ep:
                         items.append(ep)
                 rv = max((int(i["metadata"].get("resourceVersion", "0")) for i in items), default=0)
-                self._ok({"kind": "EndpointsList", "apiVersion": "v1", "metadata": {"resourceVersion": str(rv)}, "items": items})
+                try:
+                    limit = int(q.get("limit", ["0"])[0] or 0)
+                except Exception:
+                    limit = 0
+                cont = q.get("continue", [""])[0] or None
+                selected = items
+                cont_token = None
+                if cont:
+                    for idx, obj in enumerate(items):
+                        if obj["metadata"].get("name") == cont:
+                            selected = items[idx + 1 :]
+                            break
+                if limit > 0 and len(selected) > limit:
+                    cont_token = selected[limit]["metadata"].get("name")
+                    selected = selected[:limit]
+                meta = {"resourceVersion": str(rv)}
+                if cont_token:
+                    meta["continue"] = cont_token
+                self._ok({"kind": "EndpointsList", "apiVersion": "v1", "metadata": meta, "items": selected})
                 return
             svc = self.server.store.get("", "v1", "services", ns, name)  # type: ignore[attr-defined]
             if not svc:
@@ -1118,14 +1137,25 @@ class ShimHandler(BaseHTTPRequestHandler):
                     continue
                 pod_objs.append(_pod_obj(c, now_rv, labels.get("ae.node")))
             if name is None:
-                self._ok(
-                    {
-                        "kind": "PodList",
-                        "apiVersion": "v1",
-                        "metadata": {"resourceVersion": str(now_rv)},
-                        "items": pod_objs,
-                    }
-                )
+                try:
+                    limit = int(q.get("limit", ["0"])[0] or 0)
+                except Exception:
+                    limit = 0
+                cont = q.get("continue", [""])[0] or None
+                selected = pod_objs
+                cont_token = None
+                if cont:
+                    for idx, obj in enumerate(pod_objs):
+                        if obj["metadata"].get("name") == cont:
+                            selected = pod_objs[idx + 1 :]
+                            break
+                if limit > 0 and len(selected) > limit:
+                    cont_token = selected[limit]["metadata"].get("name")
+                    selected = selected[:limit]
+                meta = {"resourceVersion": str(now_rv)}
+                if cont_token:
+                    meta["continue"] = cont_token
+                self._ok({"kind": "PodList", "apiVersion": "v1", "metadata": meta, "items": selected})
                 return
             for p in pod_objs:
                 if p["metadata"]["name"] == name:
@@ -1238,13 +1268,14 @@ class ShimHandler(BaseHTTPRequestHandler):
                         limit = int(q.get("limit", ["0"])[0] or 0)
                     except Exception:
                         limit = 0
+                    cont = q.get("continue", [""])[0] or None
                     items = (
                         self.server.store.list_all("apps", "v1", "deployments")  # type: ignore[attr-defined]
                         if d_ns is None
                         else self.server.store.list("apps", "v1", "deployments", d_ns)  # type: ignore[attr-defined]
                     )
                     self._ok(
-                        _list_with_rv(items, _to_deployment, kind="Deployment", api_version="apps/v1", limit=limit if limit > 0 else None)
+                        _list_with_rv(items, _to_deployment, kind="Deployment", api_version="apps/v1", limit=limit if limit > 0 else None, continue_token=cont)
                     )
                     return
                 else:
@@ -1302,7 +1333,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                         limit = int(q.get("limit", ["0"])[0] or 0)
                     except Exception:
                         limit = 0
-                    self._ok(_list_with_rv(items, _to_ingress, kind="Ingress", api_version="networking.k8s.io/v1", limit=limit if limit > 0 else None))
+                    cont = q.get("continue", [""])[0] or None
+                    self._ok(_list_with_rv(items, _to_ingress, kind="Ingress", api_version="networking.k8s.io/v1", limit=limit if limit > 0 else None, continue_token=cont))
                     return
                 else:
                     obj = self.server.store.get("networking.k8s.io", "v1", "ingresses", n_ns, n_name)  # type: ignore[attr-defined]
@@ -2416,9 +2448,15 @@ def _list_with_rv(
     kind: str,
     api_version: str,
     limit: Optional[int] = None,
+    continue_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     selected = items
     cont_token: Optional[str] = None
+    if continue_token:
+        for idx, it in enumerate(items):
+            if getattr(it, "name", None) == continue_token:
+                selected = items[idx + 1 :]
+                break
     if isinstance(limit, int) and limit > 0 and len(items) > limit:
         selected = items[:limit]
         cont_token = items[limit].name if len(items) > limit else None
