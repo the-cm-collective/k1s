@@ -3992,15 +3992,31 @@ def _provider_ports(state: SQLiteStateStore, svc: K8sObject) -> dict:
     return rec.ports
 
 
+def _provider_vip(state: SQLiteStateStore, svc: K8sObject) -> Optional[str]:
+    """Return overlay/proxy VIP if recorded by the network provider."""
+    app_name = _service_app_name(svc)
+    if not app_name:
+        return None
+    try:
+        rec = state.get_service(app_name)  # type: ignore[attr-defined]
+    except Exception:
+        rec = None
+    # Prefer cluster_ip recorded in provider; that is our VIP
+    if rec and getattr(rec, "cluster_ip", None):
+        return rec.cluster_ip
+    return None
+
+
 def _merge_provider_service(state: SQLiteStateStore, doc: Dict[str, Any], svc_obj: K8sObject) -> Dict[str, Any]:
     """Augment service spec/status with provider allocations (clusterIP/nodePort)."""
     spec = doc.get("spec") or {}
     status = doc.get("status") or {}
     prov_ip = _provider_cluster_ip(state, svc_obj)
+    vip = _provider_vip(state, svc_obj) or prov_ip
     if prov_ip:
         if spec.get("clusterIP") in {None, "", "None"}:
             spec["clusterIP"] = prov_ip
-        status = _service_lb_status(spec, status, prov_ip)
+        status = _service_lb_status(spec, status, vip)
     # fill nodePorts from provider record if missing
     prov_ports = _provider_ports(state, svc_obj)
     if prov_ports and spec.get("ports"):
@@ -4076,6 +4092,9 @@ def _service_lb_status(spec: Dict[str, Any], status: Dict[str, Any], provider_ip
         ingress = lb.get("ingress") or []
         # Preserve existing ingress if set
         if not ingress:
+            # provider VIP first
+            if provider_ip:
+                ingress.append({"ip": provider_ip})
             # loadBalancerIP hint
             lb_ip = spec.get("loadBalancerIP")
             if lb_ip:
@@ -4086,7 +4105,7 @@ def _service_lb_status(spec: Dict[str, Any], status: Dict[str, Any], provider_ip
                     ingress.append({"ip": ext})
             # fall back to clusterIP so clients see a reachable address
             if not ingress:
-                ip = provider_ip or spec.get("clusterIP")
+                ip = spec.get("clusterIP")
                 if ip and ip not in {"None", None}:
                     ingress = [{"ip": ip}]
         # Add externalIPs as ingress hints
