@@ -620,12 +620,13 @@ class ShimHandler(BaseHTTPRequestHandler):
             return cls.crd_registry.get((group, version, plural))
 
     def do_GET(self) -> None:  # noqa: N802
-        if not self._authz(role="read"):
-            return
-
         parsed = urlparse(self.path)
         path = parsed.path
         q = parse_qs(parsed.query)
+        # Allow unauthenticated discovery/OpenAPI for kubectl validation
+        if path not in {"/openapi/v2", "/swagger.json", "/api", "/apis", "/version"}:
+            if not self._authz(role="read"):
+                return
 
         if path == "/healthz" or path == "/readyz":
             self._ok({"status": "ok"})
