@@ -30,11 +30,11 @@ This document captures the staged plan to make k1s surface a Kubernetes‑compat
 - Deliverables: `kubectl port-forward svc/...` works; service discovery validated in multinode tests; ingress controllers can watch and reconcile.
 
 Phase 3 action items:
-- Service projection: ensure ClusterIP/NodePort allocation table with collision checks; surface `spec.clusterIP`, `spec.ports[].nodePort`, and `status.loadBalancer.ingress`. (clusterIP/nodePort allocation now in apishim; LB status still stubbed.)
+- Service projection: ensure ClusterIP/NodePort allocation table with collision checks; surface `spec.clusterIP`, `spec.ports[].nodePort`, and `status.loadBalancer.ingress`. (clusterIP/nodePort allocation now in apishim; LB status pulls provider clusterIP/loadBalancerIP/externalIPs.)
 - EndpointSlice fidelity: generate slices from controller placements; include `hints.forZones` where node labels provide zone info. (now includes nodeName/zone when pod IP matches node podCIDR; basic watch emulation)
 - Port-forward svc: reuse SPDY handler to forward to service VIP/backend selection. (Done: selects ready endpoints first; hash-based spread per port list; still single-endpoint target)
-- Ingress status: populate `status.loadBalancer.ingress`/`ip` and optional hostnames based on VIP; add annotations passthrough. (basic VIP propagation via backend service clusterIP/provider IP)
-- Tests: multinode service discovery (VIP + nodeport) and `kubectl port-forward svc/...` CI job.
+- Ingress status: populate `status.loadBalancer.ingress`/`ip` and optional hostnames based on VIP; add annotations passthrough. (VIP propagation via backend service clusterIP/provider IP)
+- Tests: multinode service discovery (VIP + nodeport) and `kubectl port-forward svc/...` CI job. (new GH workflow multinode-svc-portforward)
 
 ## Phase 4 — Workload breadth and controllers
 - Add Jobs/CronJobs, StatefulSets, DaemonSets translations (where feasible) with status/ownerRefs.
