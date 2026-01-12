@@ -309,6 +309,22 @@ class ShimHandler(BaseHTTPRequestHandler):
                             elif stype == "error":
                                 error_streams[sid] = data_streams.get(sid - 1, target_port)
                         # ignore others
+                        elif frame_type == 9:  # WINDOW_UPDATE
+                            if len(payload) >= 8:
+                                sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
+                                delta = int.from_bytes(payload[4:8], "big")
+                                stream_windows[sid] = stream_windows.get(sid, window_size) + delta
+                        elif frame_type == 3:  # RST_STREAM
+                            if len(payload) >= 8:
+                                sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
+                                upstream_sock = upstream_cache.pop(sid, None)
+                                if upstream_sock:
+                                    try:
+                                        upstream_sock.close()
+                                    except Exception:
+                                        pass
+                                data_streams.pop(sid, None)
+                                error_streams.pop(sid, None)
                     else:
                         stream_id = int.from_bytes(hdr[0:4], "big") & 0x7FFFFFFF
                         flags = hdr[4]
@@ -338,13 +354,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                             except Exception:
                                 pass
                         elif stream_id in error_streams and payload:
-                            # stderr payload: forward to stdout stream as annotation
-                            sid_out = error_streams.get(stream_id)
-                            if sid_out and sid_out in data_streams:
-                                try:
-                                    send_data_frame(sid_out, payload, flags=0)
-                                except Exception:
-                                    pass
+                            # stderr payload: forward to error stream (stream_id)
+                            try:
+                                send_data_frame(stream_id, payload, flags=0)
+                            except Exception:
+                                pass
                         elif flags & 0x02:  # FIN flag
                             send_rst(stream_id, code=0)
 
@@ -364,6 +378,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 sock_up.close()
                             except Exception:
                                 pass
+                            for esid, dport in list(error_streams.items()):
+                                if data_streams.get(sid) == dport:
+                                    try:
+                                        send_data_frame(esid, b"", flags=0x01)  # FIN on error stream
+                                    except Exception:
+                                        pass
                     except socket.timeout:
                         continue
                     except Exception:
