@@ -137,6 +137,16 @@ class ShimHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _max_rv_for(self, group: str, version: str, resource: str, namespace: Optional[str]) -> int:
+        try:
+            if namespace is None:
+                items = self.server.store.list_all(group, version, resource)  # type: ignore[attr-defined]
+            else:
+                items = self.server.store.list(group, version, resource, namespace)  # type: ignore[attr-defined]
+            return max((i.resource_version for i in items), default=0)
+        except Exception:
+            return 0
+
     # ---------------- WebSocket port-forward (best-effort) ----------------
     def _handle_port_forward_ws(self, target_host: str, target_port: int) -> None:
         key = self.headers.get("Sec-WebSocket-Key")
@@ -583,7 +593,18 @@ class ShimHandler(BaseHTTPRequestHandler):
             timeout = int(query.get("timeoutSeconds", ["0"])[0] or 0) or None
             heartbeat = int(query.get("heartbeatSeconds", ["0"])[0] or 0) or None
             allow_bm = query.get("allowWatchBookmarks", ["0"])[0] in ("1", "true", "True")
-            for ev_type, obj in self.server.store.watch(group, version, resource, namespace, heartbeat_seconds=heartbeat, allow_bookmarks=allow_bm):  # type: ignore[attr-defined]
+            rv_param = query.get("resourceVersion", [""])[0] or None
+            # Emit initial bookmark if requested/allowed
+            if allow_bm:
+                try:
+                    current = self._max_rv_for(group, version, resource, namespace)
+                except Exception:
+                    current = 0
+                initial_rv = rv_param if rv_param else str(current)
+                bm = {"type": "BOOKMARK", "object": {"metadata": {"resourceVersion": str(initial_rv)}}}
+                self.wfile.write(json.dumps(bm, separators=(",", ":")).encode("utf-8") + b"\n")
+                self.wfile.flush()
+            for ev_type, obj in self.server.store.watch(group, version, resource, namespace, heartbeat_seconds=heartbeat, allow_bookmarks=allow_bm, since_rv=int(rv_param) if rv_param and rv_param.isdigit() else None):  # type: ignore[attr-defined]
                 body = {"type": ev_type, "object": transform(obj)}
                 line = json.dumps(body, separators=(",", ":")).encode("utf-8") + b"\n"
                 self.wfile.write(line)
