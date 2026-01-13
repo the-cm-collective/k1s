@@ -13,6 +13,16 @@ from ae.controller.health import HealthManager, HealthReport, ReplicaHealth
 from ae.controller.spec import AppManifest, VolumeSpec, load_manifest
 from ae.runtime import RuntimeAdapter, RuntimeResult
 
+
+def _record_event_metric_safe(name: str) -> None:
+    """Best-effort metric hook used by reconciler events."""
+    try:
+        from ae.observability.http_api import record_event_metric  # type: ignore
+
+        record_event_metric(name)
+    except Exception:
+        pass
+
 from .state import SQLiteStateStore
 from ae.ingress.service import IngressService
 from ae.secrets import SecretManager
@@ -60,6 +70,10 @@ class Reconciler:
         # Inject exec callback for exec probes
         try:
             self._health_manager.set_exec_callback(self._exec_across_runtimes)
+        except Exception:
+            pass
+        try:
+            self._health_manager.set_event_callback(self._on_probe_event)
         except Exception:
             pass
         # Track last seen restart counts per container/app to detect crash loops
@@ -142,6 +156,8 @@ class Reconciler:
             "ApplyStarted",
             f"Reconciling revision {revision}",
         )
+        _record_event_metric_safe("apply_start")
+        _record_event_metric_safe("apply_start")
 
         # Apply config/secret projections. Be resilient to secret errors so a
         # single bad SOPS file does not crash the controller under load.
@@ -184,6 +200,7 @@ class Reconciler:
                             self._state_store.record_event(
                                 manifest.metadata.name, revision, "InitStart", f"container={name}"
                             )
+                            _record_event_metric_safe("init_start")
                     except Exception:
                         pass
                 results = self._runtime.run_init_containers(manifest_for_runtime)  # type: ignore[attr-defined]
@@ -195,6 +212,7 @@ class Reconciler:
                             "InitDone",
                             f"container={name} rc={rc} {msg or ''}",
                         )
+                        _record_event_metric_safe("init_done")
                     except Exception:
                         pass
         except Exception:
@@ -536,6 +554,19 @@ class Reconciler:
             "ApplyCompleted",
             f"Revision {revision} status {revision_status}",
         )
+        if health_report.ready_replicas < manifest.spec.replicas:
+            try:
+                self._state_store.record_event(
+                    manifest.metadata.name,
+                    revision,
+                    "RolloutProgressing",
+                    f"{health_report.ready_replicas}/{manifest.spec.replicas} replicas ready",
+                )
+            except Exception:
+                pass
+            _record_event_metric_safe("rollout_progressing")
+        else:
+            _record_event_metric_safe("rollout_complete")
         return ReconcileReport(
             app_name=manifest.metadata.name,
             created=result.created,
@@ -963,6 +994,20 @@ class Reconciler:
         merged_env = [{"name": k, "value": v} for k, v in sorted(env_map.items())]
         updated_spec = manifest.spec.model_copy(update={"env": merged_env})
         return manifest.model_copy(update={"spec": updated_spec})
+
+    def _on_probe_event(self, replica_id: str, probe_type: str, success: bool, message: str) -> None:
+        """Hook from HealthManager when probe effective status changes."""
+        app_name = replica_id.split("-", 1)[0] if "-" in replica_id else replica_id
+        try:
+            self._state_store.record_event(
+                app_name,
+                0,
+                f"{probe_type.capitalize()}{'OK' if success else 'Fail'}",
+                f"{replica_id}: {message}",
+            )
+            _record_event_metric_safe(f"{probe_type}_{'ok' if success else 'fail'}")
+        except Exception:
+            pass
 
     def _prepare_file_projections(self, manifest: AppManifest, revision: int) -> Path | None:
         """Write config and secret key/value pairs into files for the app.

@@ -78,6 +78,10 @@ def _ns_name(path: str) -> Tuple[str, Optional[str], Optional[str]]:
     return ("", None, None)
 
 
+def _app_name(ns: Optional[str], name: str) -> str:
+    return f"{ns}--{name}" if ns else name
+
+
 class ShimHandler(BaseHTTPRequestHandler):
     server_version = "k1s-apishim"
     admin_token: Optional[str] = os.getenv("AE_APISHIM_TOKEN")
@@ -1610,6 +1614,13 @@ class ShimHandler(BaseHTTPRequestHandler):
                     "groupVersion": "v1",
                     "resources": [
                         {
+                            "name": "events",
+                            "singularName": "",
+                            "namespaced": True,
+                            "kind": "Event",
+                            "verbs": ["get", "list", "watch", "create"],
+                        },
+                        {
                             "name": "namespaces",
                             "singularName": "",
                             "namespaced": False,
@@ -1682,6 +1693,36 @@ class ShimHandler(BaseHTTPRequestHandler):
                     "groupVersion": "apps/v1",
                     "resources": [
                         {
+                            "name": "statefulsets",
+                            "singularName": "",
+                            "namespaced": True,
+                            "kind": "StatefulSet",
+                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "shortNames": ["sts"],
+                        },
+                        {
+                            "name": "statefulsets/status",
+                            "singularName": "",
+                            "namespaced": True,
+                            "kind": "StatefulSet",
+                            "verbs": ["get", "patch", "update"],
+                        },
+                        {
+                            "name": "daemonsets",
+                            "singularName": "",
+                            "namespaced": True,
+                            "kind": "DaemonSet",
+                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "shortNames": ["ds"],
+                        },
+                        {
+                            "name": "daemonsets/status",
+                            "singularName": "",
+                            "namespaced": True,
+                            "kind": "DaemonSet",
+                            "verbs": ["get", "patch", "update"],
+                        },
+                        {
                             "name": "deployments",
                             "singularName": "",
                             "namespaced": True,
@@ -1701,6 +1742,44 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "singularName": "",
                             "namespaced": True,
                             "kind": "Scale",
+                            "verbs": ["get", "patch", "update"],
+                        },
+                    ],
+                }
+            )
+            return
+        if path == "/apis/batch/v1":
+            self._ok(
+                {
+                    "kind": "APIResourceList",
+                    "groupVersion": "batch/v1",
+                    "resources": [
+                        {
+                            "name": "jobs",
+                            "singularName": "",
+                            "namespaced": True,
+                            "kind": "Job",
+                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                        },
+                        {
+                            "name": "jobs/status",
+                            "singularName": "",
+                            "namespaced": True,
+                            "kind": "Job",
+                            "verbs": ["get", "patch", "update"],
+                        },
+                        {
+                            "name": "cronjobs",
+                            "singularName": "",
+                            "namespaced": True,
+                            "kind": "CronJob",
+                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                        },
+                        {
+                            "name": "cronjobs/status",
+                            "singularName": "",
+                            "namespaced": True,
+                            "kind": "CronJob",
                             "verbs": ["get", "patch", "update"],
                         },
                     ],
@@ -2225,6 +2304,56 @@ class ShimHandler(BaseHTTPRequestHandler):
             else:
                 self._json_status(HTTPStatus.UPGRADE_REQUIRED, reason="UpgradeRequired", message="port-forward requires SPDY/3.1 used by kubectl")
             return
+        # Events (lightweight list/watch sourced from controller events, empty fallback)
+        m_events = re.match(r"^/api/v1(?:/namespaces/([^/]+))?/events(?:/([^/]+))?$", path)
+        if m_events:
+            ns = m_events.group(1)
+            name = m_events.group(2)
+            if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                # No persisted watch stream yet; emit bookmark-only
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                try:
+                    rv = int(time.time() * 1000)
+                    line = json.dumps(
+                        {
+                            "type": "BOOKMARK",
+                            "object": {"kind": "Event", "apiVersion": "v1", "metadata": {"resourceVersion": str(rv)}},
+                        },
+                        separators=(",", ":"),
+                    ).encode("utf-8") + b"\n"
+                    self.wfile.write(line)
+                    self.wfile.flush()
+                except BrokenPipeError:
+                    pass
+                return
+            # best-effort pull from controller events by namespace
+            items = []
+            try:
+                deps = (
+                    self.server.store.list_all("apps", "v1", "deployments")  # type: ignore[attr-defined]
+                    if ns is None
+                    else self.server.store.list("apps", "v1", "deployments", ns)  # type: ignore[attr-defined]
+                )
+                # include jobs for batch events
+                jobs = (
+                    self.server.store.list_all("batch", "v1", "jobs")  # type: ignore[attr-defined]
+                    if ns is None
+                    else self.server.store.list("batch", "v1", "jobs", ns)  # type: ignore[attr-defined]
+                )
+                for dep in deps + jobs:
+                    app_name = _app_name(dep.namespace, dep.name)
+                    for ev in self.server.state.list_events(app_name, limit=50):  # type: ignore[attr-defined]
+                        if name and ev.message != name:
+                            continue
+                        items.append(_to_event(dep.namespace or "default", dep.name, ev))
+            except Exception:
+                items = []
+            rv = int(time.time() * 1000)
+            self._ok({"kind": "EventList", "apiVersion": "v1", "metadata": {"resourceVersion": str(rv)}, "items": items})
+            return
 
         # Nodes (projected from controller state)
         if path == "/api/v1/nodes":
@@ -2306,6 +2435,87 @@ class ShimHandler(BaseHTTPRequestHandler):
                     return
                 self._ok(_to_deployment(obj))
                 return
+            if d_plural == "statefulsets":
+                transform = _to_statefulset
+                if d_name is None:
+                    if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                        if not self._rbac_allows("watch", "statefulsets"):
+                            self._deny(403)
+                            return
+                        self._stream_watch("apps", "v1", "statefulsets", d_ns, q, transform=transform)
+                        return
+                    if not self._rbac_allows("list", "statefulsets"):
+                        self._deny(403)
+                        return
+                    items = (
+                        self.server.store.list_all("apps", "v1", "statefulsets")  # type: ignore[attr-defined]
+                        if d_ns is None
+                        else self.server.store.list("apps", "v1", "statefulsets", d_ns)  # type: ignore[attr-defined]
+                    )
+                    try:
+                        limit = int(q.get("limit", ["0"])[0] or 0)
+                    except Exception:
+                        limit = 0
+                    cont = q.get("continue", [""])[0] or None
+                    self._ok(_list_with_rv(items, transform, kind="StatefulSet", api_version="apps/v1", limit=limit if limit > 0 else None, continue_token=cont))
+                    return
+                else:
+                    if not self._rbac_allows("get", "statefulsets"):
+                        self._deny(403)
+                        return
+                    obj = self.server.store.get("apps", "v1", "statefulsets", d_ns, d_name)  # type: ignore[attr-defined]
+                    if not obj:
+                        self._not_found()
+                        return
+                    self._ok(transform(obj))
+                    return
+            if d_plural == "statefulsets/status" and d_name:
+                obj = self.server.store.get("apps", "v1", "statefulsets", d_ns, d_name)  # type: ignore[attr-defined]
+                if not obj:
+                    self._not_found()
+                    return
+                self._ok(_to_statefulset(obj))
+                return
+            if d_plural == "daemonsets":
+                if d_name is None:
+                    if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                        if not self._rbac_allows("watch", "daemonsets"):
+                            self._deny(403)
+                            return
+                        self._stream_watch("apps", "v1", "daemonsets", d_ns, q, transform=lambda o: _to_daemonset(o))
+                        return
+                    if not self._rbac_allows("list", "daemonsets"):
+                        self._deny(403)
+                        return
+                    items = (
+                        self.server.store.list_all("apps", "v1", "daemonsets")  # type: ignore[attr-defined]
+                        if d_ns is None
+                        else self.server.store.list("apps", "v1", "daemonsets", d_ns)  # type: ignore[attr-defined]
+                    )
+                    self._ok(_list_with_rv(items, lambda o: _to_daemonset(o), kind="DaemonSet", api_version="apps/v1"))
+                    return
+                else:
+                    if not self._rbac_allows("get", "daemonsets"):
+                        self._deny(403)
+                        return
+                    obj = self.server.store.get("apps", "v1", "daemonsets", d_ns, d_name)  # type: ignore[attr-defined]
+                    if not obj:
+                        self._not_found()
+                        return
+                    desired = None
+                    try:
+                        desired = len([n for n, _ in self.server.state.list_nodes()])  # type: ignore[attr-defined]
+                    except Exception:
+                        desired = None
+                    self._ok(_to_daemonset(obj, desired=desired))
+                    return
+            if d_plural == "daemonsets/status" and d_name:
+                obj = self.server.store.get("apps", "v1", "daemonsets", d_ns, d_name)  # type: ignore[attr-defined]
+                if not obj:
+                    self._not_found()
+                    return
+                self._ok(_to_daemonset(obj))
+                return
             if d_plural == "deployments/scale" and d_name:
                 obj = self.server.store.get("apps", "v1", "deployments", d_ns, d_name)  # type: ignore[attr-defined]
                 if not obj:
@@ -2366,6 +2576,74 @@ class ShimHandler(BaseHTTPRequestHandler):
                         return
                     self._ok(_to_ingress(obj, self.server.state))  # type: ignore[attr-defined]
                     return
+
+        # batch/v1 Jobs and CronJobs (stored passthrough with synthesized status)
+        if path.startswith("/apis/batch/v1"):
+            b_plural, b_ns, b_name = _batch_ns_name(path)
+            if b_plural == "jobs":
+                transform = _to_job
+                if b_name is None:
+                    if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                        if not self._rbac_allows("watch", "jobs"):
+                            self._deny(403)
+                            return
+                        self._stream_watch("batch", "v1", "jobs", b_ns, q, transform=transform)
+                        return
+                    if not self._rbac_allows("list", "jobs"):
+                        self._deny(403)
+                        return
+                    items = (
+                        self.server.store.list_all("batch", "v1", "jobs")  # type: ignore[attr-defined]
+                        if b_ns is None
+                        else self.server.store.list("batch", "v1", "jobs", b_ns)  # type: ignore[attr-defined]
+                    )
+                    self._ok(_list_with_rv(items, transform, kind="Job", api_version="batch/v1"))
+                    return
+                obj = self.server.store.get("batch", "v1", "jobs", b_ns, b_name)  # type: ignore[attr-defined]
+                if not obj:
+                    self._not_found()
+                    return
+                self._ok(transform(obj))
+                return
+            if b_plural == "jobs/status" and b_name:
+                obj = self.server.store.get("batch", "v1", "jobs", b_ns, b_name)  # type: ignore[attr-defined]
+                if not obj:
+                    self._not_found()
+                    return
+                self._ok(_to_job(obj))
+                return
+            if b_plural == "cronjobs":
+                transform = _to_cronjob
+                if b_name is None:
+                    if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                        if not self._rbac_allows("watch", "cronjobs"):
+                            self._deny(403)
+                            return
+                        self._stream_watch("batch", "v1", "cronjobs", b_ns, q, transform=transform)
+                        return
+                    if not self._rbac_allows("list", "cronjobs"):
+                        self._deny(403)
+                        return
+                    items = (
+                        self.server.store.list_all("batch", "v1", "cronjobs")  # type: ignore[attr-defined]
+                        if b_ns is None
+                        else self.server.store.list("batch", "v1", "cronjobs", b_ns)  # type: ignore[attr-defined]
+                    )
+                    self._ok(_list_with_rv(items, transform, kind="CronJob", api_version="batch/v1"))
+                    return
+                obj = self.server.store.get("batch", "v1", "cronjobs", b_ns, b_name)  # type: ignore[attr-defined]
+                if not obj:
+                    self._not_found()
+                    return
+                self._ok(transform(obj))
+                return
+            if b_plural == "cronjobs/status" and b_name:
+                obj = self.server.store.get("batch", "v1", "cronjobs", b_ns, b_name)  # type: ignore[attr-defined]
+                if not obj:
+                    self._not_found()
+                    return
+                self._ok(_to_cronjob(obj))
+                return
 
         # discovery.k8s.io EndpointSlice (projected)
         if path.startswith("/apis/discovery.k8s.io/v1"):
@@ -2583,20 +2861,20 @@ class ShimHandler(BaseHTTPRequestHandler):
             if h_plural == "horizontalpodautoscalers":
                 if h_name is None:
                     if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
-                        self._stream_watch("autoscaling", "v2", "horizontalpodautoscalers", h_ns, q, transform=_to_generic("autoscaling", "v2", "HorizontalPodAutoscaler", "horizontalpodautoscalers"))
+                        self._stream_watch("autoscaling", "v2", "horizontalpodautoscalers", h_ns, q, transform=lambda o: _to_hpa(o, self.server.store))  # type: ignore[attr-defined]
                         return
                     items = (
                         self.server.store.list_all("autoscaling", "v2", "horizontalpodautoscalers")  # type: ignore[attr-defined]
                         if h_ns is None
                         else self.server.store.list("autoscaling", "v2", "horizontalpodautoscalers", h_ns)  # type: ignore[attr-defined]
                     )
-                    self._ok({"kind": "HorizontalPodAutoscalerList", "apiVersion": "autoscaling/v2", "items": [_to_generic("autoscaling", "v2", "HorizontalPodAutoscaler", "horizontalpodautoscalers")(i) for i in items]})
+                    self._ok({"kind": "HorizontalPodAutoscalerList", "apiVersion": "autoscaling/v2", "items": [_to_hpa(i, self.server.store) for i in items]})  # type: ignore[attr-defined]
                     return
                 obj = self.server.store.get("autoscaling", "v2", "horizontalpodautoscalers", h_ns, h_name)  # type: ignore[attr-defined]
                 if not obj:
                     self._not_found()
                     return
-                self._ok(_to_generic("autoscaling", "v2", "HorizontalPodAutoscaler", "horizontalpodautoscalers")(obj))
+                self._ok(_to_hpa(obj, self.server.store))  # type: ignore[attr-defined]
                 return
         self._not_found()
 
@@ -2859,6 +3137,54 @@ class ShimHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(out)
                 return
+            if d_plural == "statefulsets":
+                md = doc.get("metadata") or {}
+                name_in = md.get("name") or d_name
+                ns_in = md.get("namespace") or d_ns
+                if not name_in or not _valid_name(name_in) or not ns_in or not _valid_name(ns_in):
+                    self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata")
+                    return
+                created = self.server.store.upsert(  # type: ignore[attr-defined]
+                    "apps",
+                    "v1",
+                    "statefulsets",
+                    ns_in,
+                    name_in,
+                    metadata=_normalize_metadata(md, name_in, ns_in, "statefulsets"),
+                    spec=doc.get("spec") or {},
+                    status=_synthesize_deploy_status(doc.get("spec") or {}, doc.get("status") or {}),
+                )
+                self.send_response(HTTPStatus.CREATED)
+                out = _json(_to_statefulset(created))
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+                return
+            if d_plural == "daemonsets":
+                md = doc.get("metadata") or {}
+                name_in = md.get("name") or d_name
+                ns_in = md.get("namespace") or d_ns
+                if not name_in or not _valid_name(name_in) or not ns_in or not _valid_name(ns_in):
+                    self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata")
+                    return
+                created = self.server.store.upsert(  # type: ignore[attr-defined]
+                    "apps",
+                    "v1",
+                    "daemonsets",
+                    ns_in,
+                    name_in,
+                    metadata=_normalize_metadata(md, name_in, ns_in, "daemonsets"),
+                    spec=doc.get("spec") or {},
+                    status=doc.get("status") or {},
+                )
+                self.send_response(HTTPStatus.CREATED)
+                out = _json(_to_daemonset(created))
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+                return
         # networking.k8s.io/v1 ingresses
         if self.path.startswith("/apis/networking.k8s.io/v1"):
             n_plural, n_ns, n_name = _net_ns_name(self.path)
@@ -2884,6 +3210,34 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )
                 self.send_response(HTTPStatus.CREATED)
                 out = _json(_to_ingress(created))
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+                return
+
+        # batch/v1 jobs/cronjobs
+        if self.path.startswith("/apis/batch/v1"):
+            b_plural, b_ns, b_name = _batch_ns_name(self.path)
+            if b_plural in {"jobs", "cronjobs"}:
+                md = doc.get("metadata") or {}
+                name_in = md.get("name") or b_name
+                ns_in = md.get("namespace") or b_ns
+                if not name_in or not _valid_name(name_in) or not ns_in or not _valid_name(ns_in):
+                    self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata")
+                    return
+                created = self.server.store.upsert(  # type: ignore[attr-defined]
+                    "batch",
+                    "v1",
+                    b_plural,
+                    ns_in,
+                    name_in,
+                    metadata=_normalize_metadata(md, name_in, ns_in, b_plural),
+                    spec=doc.get("spec") or {},
+                    status=doc.get("status") or {},
+                )
+                self.send_response(HTTPStatus.CREATED)
+                out = _json(_to_job(created) if b_plural == "jobs" else _to_cronjob(created))
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(out)))
                 self.end_headers()
@@ -3123,6 +3477,38 @@ class ShimHandler(BaseHTTPRequestHandler):
                     return
                 self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="spec.replicas must be >= 0")
                 return
+            if d_plural == "statefulsets" and d_name:
+                md = doc.get("metadata") or {}
+                name_in = md.get("name") or d_name
+                ns_in = md.get("namespace") or d_ns
+                updated = self.server.store.upsert(  # type: ignore[attr-defined]
+                    "apps",
+                    "v1",
+                    "statefulsets",
+                    ns_in,
+                    name_in,
+                    metadata=_normalize_metadata(md, name_in, ns_in, "statefulsets"),
+                    spec=doc.get("spec") or {},
+                    status=_synthesize_deploy_status(doc.get("spec") or {}, doc.get("status") or {}),
+                )
+                self._ok(_to_statefulset(updated))
+                return
+            if d_plural == "daemonsets" and d_name:
+                md = doc.get("metadata") or {}
+                name_in = md.get("name") or d_name
+                ns_in = md.get("namespace") or d_ns
+                updated = self.server.store.upsert(  # type: ignore[attr-defined]
+                    "apps",
+                    "v1",
+                    "daemonsets",
+                    ns_in,
+                    name_in,
+                    metadata=_normalize_metadata(md, name_in, ns_in, "daemonsets"),
+                    spec=doc.get("spec") or {},
+                    status=doc.get("status") or {},
+                )
+                self._ok(_to_daemonset(updated))
+                return
         if self.path.startswith("/apis/networking.k8s.io/v1"):
             n_plural, n_ns, n_name = _net_ns_name(self.path)
             if n_plural == "ingresses" and n_name:
@@ -3163,6 +3549,24 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return
         if self._handle_custom_resource_put(doc):
             return
+        if self.path.startswith("/apis/batch/v1"):
+            b_plural, b_ns, b_name = _batch_ns_name(self.path)
+            if b_plural in {"jobs", "cronjobs"} and b_name:
+                md = doc.get("metadata") or {}
+                name_in = md.get("name") or b_name
+                ns_in = md.get("namespace") or b_ns
+                updated = self.server.store.upsert(  # type: ignore[attr-defined]
+                    "batch",
+                    "v1",
+                    b_plural,
+                    ns_in,
+                    name_in,
+                    metadata=_normalize_metadata(md, name_in, ns_in, b_plural),
+                    spec=doc.get("spec") or {},
+                    status=doc.get("status") or {},
+                )
+                self._ok(_to_job(updated) if b_plural == "jobs" else _to_cronjob(updated))
+                return
         if self.path.startswith("/apis/rbac.authorization.k8s.io/v1"):
             for plural, kind in (("roles", "Role"), ("rolebindings", "RoleBinding")):
                 r_plural, r_ns, r_name = _gv_ns_name(self.path, "rbac.authorization.k8s.io", "v1", plural)
@@ -3235,7 +3639,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     spec=_spec_payload("horizontalpodautoscalers", doc),
                     status=doc.get("status") or {},
                 )
-                self._ok(_to_generic("autoscaling", "v2", "HorizontalPodAutoscaler", "horizontalpodautoscalers")(updated))
+                self._ok(_to_hpa(updated, self.server.store))  # type: ignore[attr-defined]
                 return
         self._not_found()
 
@@ -3294,6 +3698,11 @@ class ShimHandler(BaseHTTPRequestHandler):
 
     def _patch_extended_resources(self, ctype: str, patch: Dict[str, Any]) -> bool:
         specs = [
+            ("apps", "v1", "deployments", "Deployment"),
+            ("apps", "v1", "statefulsets", "StatefulSet"),
+            ("apps", "v1", "daemonsets", "DaemonSet"),
+            ("batch", "v1", "jobs", "Job"),
+            ("batch", "v1", "cronjobs", "CronJob"),
             ("rbac.authorization.k8s.io", "v1", "roles", "Role"),
             ("rbac.authorization.k8s.io", "v1", "rolebindings", "RoleBinding"),
             ("rbac.authorization.k8s.io", "v1", "clusterroles", "ClusterRole"),
@@ -3301,6 +3710,14 @@ class ShimHandler(BaseHTTPRequestHandler):
             ("policy", "v1", "poddisruptionbudgets", "PodDisruptionBudget"),
             ("autoscaling", "v2", "horizontalpodautoscalers", "HorizontalPodAutoscaler"),
         ]
+        transform_map = {
+            ("apps", "v1", "deployments"): _to_deployment,
+            ("apps", "v1", "statefulsets"): _to_statefulset,
+            ("apps", "v1", "daemonsets"): _to_daemonset,
+            ("batch", "v1", "jobs"): _to_job,
+            ("batch", "v1", "cronjobs"): _to_cronjob,
+            ("autoscaling", "v2", "horizontalpodautoscalers"): lambda o: _to_hpa(o, self.server.store),  # type: ignore[attr-defined]
+        }
         for group, version, res, kind in specs:
             if not self.path.startswith(f"/apis/{group}/{version}"):
                 continue
@@ -3312,7 +3729,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if not obj:
                     self._not_found()
                     return True
-                base = _to_generic(group, version, kind, res)(obj)
+                base = transform_map.get((group, version, res), _to_generic(group, version, kind, res))(obj)  # type: ignore[arg-type]
                 merged = self._apply_patch_merge(base, patch, ctype)
                 if merged is None:
                     return True
@@ -3328,7 +3745,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     spec=_spec_payload(res, merged),
                     status=merged.get("status") or {},
                 )  # type: ignore[attr-defined]
-                self._ok(_to_generic(group, version, kind, res)(updated))
+                self._ok(transform_map.get((group, version, res), _to_generic(group, version, kind, res))(updated))  # type: ignore[arg-type]
                 return True
             plural, ns, name = _gv_ns_name(self.path, group, version, res)
             if plural != res or not name:
@@ -3337,7 +3754,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             if not obj:
                 self._not_found()
                 return True
-            base = _to_generic(group, version, kind, res)(obj)
+            base = transform_map.get((group, version, res), _to_generic(group, version, kind, res))(obj)  # type: ignore[arg-type]
             merged = self._apply_patch_merge(base, patch, ctype)
             if merged is None:
                 return True
@@ -3354,7 +3771,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 spec=_spec_payload(res, merged),
                 status=merged.get("status") or {},
             )  # type: ignore[attr-defined]
-            self._ok(_to_generic(group, version, kind, res)(updated))
+            self._ok(transform_map.get((group, version, res), _to_generic(group, version, kind, res))(updated))  # type: ignore[arg-type]
             return True
         return False
 
@@ -3668,6 +4085,108 @@ def _synthesize_deploy_status(spec: Dict[str, Any], base_status: Dict[str, Any])
     return status
 
 
+def _to_statefulset(o: K8sObject) -> Dict[str, Any]:
+    meta = dict(o.metadata)
+    meta.setdefault("name", o.name)
+    if o.namespace:
+        meta.setdefault("namespace", o.namespace)
+    meta.setdefault("resourceVersion", str(o.resource_version))
+    gen = meta.get("generation")
+    try:
+        meta["generation"] = int(gen) if gen is not None else 1
+    except Exception:
+        meta["generation"] = 1
+    status = _synthesize_deploy_status(o.spec, o.status)
+    # StatefulSet fields differ slightly
+    status.setdefault("readyReplicas", status.get("availableReplicas", 0))
+    status.setdefault("currentReplicas", status.get("updatedReplicas", status.get("replicas", 0)))
+    status.setdefault("currentRevision", meta.get("generation"))
+    status.setdefault("updateRevision", meta.get("generation"))
+    return {
+        "apiVersion": "apps/v1",
+        "kind": "StatefulSet",
+        "metadata": meta,
+        "spec": dict(o.spec),
+        "status": status,
+    }
+
+
+def _to_daemonset(o: K8sObject, *, desired: int | None = None) -> Dict[str, Any]:
+    meta = dict(o.metadata)
+    meta.setdefault("name", o.name)
+    if o.namespace:
+        meta.setdefault("namespace", o.namespace)
+    meta.setdefault("resourceVersion", str(o.resource_version))
+    gen = meta.get("generation")
+    try:
+        meta["generation"] = int(gen) if gen is not None else 1
+    except Exception:
+        meta["generation"] = 1
+    replicas = desired if desired is not None else int(o.spec.get("replicas", 1))
+    st = dict(o.status or {})
+    st.setdefault("desiredNumberScheduled", replicas)
+    st.setdefault("currentNumberScheduled", replicas)
+    st.setdefault("numberReady", replicas)
+    st.setdefault("numberAvailable", replicas)
+    st.setdefault("updatedNumberScheduled", replicas)
+    st.setdefault(
+        "conditions",
+        [
+            {"type": "Ready", "status": "True"},
+            {"type": "Available", "status": "True"},
+        ],
+    )
+    return {
+        "apiVersion": "apps/v1",
+        "kind": "DaemonSet",
+        "metadata": meta,
+        "spec": dict(o.spec),
+        "status": st,
+    }
+
+
+def _to_job(o: K8sObject) -> Dict[str, Any]:
+    meta = dict(o.metadata)
+    meta.setdefault("name", o.name)
+    if o.namespace:
+        meta.setdefault("namespace", o.namespace)
+    meta.setdefault("resourceVersion", str(o.resource_version))
+    status = dict(o.status or {})
+    completions = int(o.spec.get("completions", o.spec.get("parallelism", 1) or 1))
+    status.setdefault("active", 0)
+    status.setdefault("succeeded", status.get("succeeded", 0))
+    status.setdefault("failed", status.get("failed", 0))
+    status.setdefault("conditions", [])
+    if status.get("succeeded", 0) >= completions:
+        status["conditions"] = [{"type": "Complete", "status": "True"}]
+    return {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": meta,
+        "spec": dict(o.spec),
+        "status": status,
+    }
+
+
+def _to_cronjob(o: K8sObject) -> Dict[str, Any]:
+    meta = dict(o.metadata)
+    meta.setdefault("name", o.name)
+    if o.namespace:
+        meta.setdefault("namespace", o.namespace)
+    meta.setdefault("resourceVersion", str(o.resource_version))
+    status = dict(o.status or {})
+    status.setdefault("active", [])
+    status.setdefault("lastScheduleTime", status.get("lastScheduleTime"))
+    status.setdefault("lastSuccessfulTime", status.get("lastSuccessfulTime"))
+    return {
+        "apiVersion": "batch/v1",
+        "kind": "CronJob",
+        "metadata": meta,
+        "spec": dict(o.spec),
+        "status": status,
+    }
+
+
 def _to_scale(o: K8sObject) -> Dict[str, Any]:
     meta = {"name": o.name}
     if o.namespace:
@@ -3679,6 +4198,76 @@ def _to_scale(o: K8sObject) -> Dict[str, Any]:
         "metadata": meta,
         "spec": {"replicas": replicas},
         "status": {"replicas": replicas, "selector": ""},
+    }
+
+
+def _to_hpa(o: K8sObject, store: ObjectStore) -> Dict[str, Any]:
+    meta = dict(o.metadata)
+    meta.setdefault("name", o.name)
+    if o.namespace:
+        meta.setdefault("namespace", o.namespace)
+    meta.setdefault("resourceVersion", str(o.resource_version))
+    status = dict(o.status or {})
+    # Best-effort scaleTargetRef resolution for status
+    spec = o.spec or {}
+    target = spec.get("scaleTargetRef", {}) if isinstance(spec, dict) else {}
+    target_name = target.get("name")
+    target_kind = (target.get("kind") or "").lower()
+    target_group = target.get("apiVersion", "")
+    current_replicas = status.get("currentReplicas")
+    desired = status.get("desiredReplicas")
+    try:
+        if target_kind == "deployment":
+            obj = store.get("apps", "v1", "deployments", o.namespace, target_name)  # type: ignore[arg-type]
+            if obj:
+                current_replicas = current_replicas or int(obj.spec.get("replicas", 1))
+                desired = desired or int(obj.spec.get("replicas", 1))
+        elif target_kind == "statefulset":
+            obj = store.get("apps", "v1", "statefulsets", o.namespace, target_name)  # type: ignore[arg-type]
+            if obj:
+                current_replicas = current_replicas or int(obj.spec.get("replicas", 1))
+                desired = desired or int(obj.spec.get("replicas", 1))
+    except Exception:
+        pass
+    status.setdefault("currentReplicas", current_replicas or 0)
+    status.setdefault("desiredReplicas", desired or status.get("currentReplicas", 0))
+    status.setdefault("conditions", status.get("conditions", []))
+    status.setdefault("currentMetrics", status.get("currentMetrics", []))
+    # simple backoff to avoid flapping: mark 'AbleToScale' condition true if we have any target
+    if not any(c.get("type") == "AbleToScale" for c in status["conditions"]):
+        status["conditions"].append({"type": "AbleToScale", "status": "True"})
+    return {
+        "apiVersion": "autoscaling/v2",
+        "kind": "HorizontalPodAutoscaler",
+        "metadata": meta,
+        "spec": spec,
+        "status": status,
+    }
+
+
+def _to_event(namespace: str, obj_name: str, ev: "AppEvent") -> Dict[str, Any]:  # type: ignore[name-defined]
+    ts = ev.created_at.isoformat()
+    involved = {
+        "kind": "Deployment",
+        "name": obj_name,
+        "namespace": namespace,
+        "uid": f"{namespace}-{obj_name}",
+    }
+    return {
+        "apiVersion": "v1",
+        "kind": "Event",
+        "metadata": {
+            "name": f"{obj_name}.{int(ev.created_at.timestamp())}",
+            "namespace": namespace,
+            "creationTimestamp": ts,
+        },
+        "involvedObject": involved,
+        "reason": ev.event_type,
+        "message": ev.message,
+        "type": ev.event_type.upper() if ev.event_type else "Normal",
+        "eventTime": ts,
+        "firstTimestamp": ts,
+        "lastTimestamp": ts,
     }
 
 
@@ -3791,9 +4380,27 @@ def _apps_ns_name(path: str) -> Tuple[str, Optional[str], Optional[str]]:
     m = re.match(r"^/apis/apps/v1/namespaces/([^/]+)/deployments/([^/]+)/(status|scale)$", path)
     if m:
         return (f"deployments/{m.group(3)}", m.group(1), m.group(2))
+    m = re.match(r"^/apis/apps/v1/namespaces/([^/]+)/statefulsets(?:/([^/]+))?$", path)
+    if m:
+        return ("statefulsets", m.group(1), m.group(2))
+    m = re.match(r"^/apis/apps/v1/namespaces/([^/]+)/statefulsets/([^/]+)/(status|scale)$", path)
+    if m:
+        return (f"statefulsets/{m.group(3)}", m.group(1), m.group(2))
+    m = re.match(r"^/apis/apps/v1/namespaces/([^/]+)/daemonsets(?:/([^/]+))?$", path)
+    if m:
+        return ("daemonsets", m.group(1), m.group(2))
+    m = re.match(r"^/apis/apps/v1/namespaces/([^/]+)/daemonsets/([^/]+)/(status)$", path)
+    if m:
+        return (f"daemonsets/{m.group(3)}", m.group(1), m.group(2))
     m = re.match(r"^/apis/apps/v1/deployments(?:/([^/]+))?$", path)
     if m:
         return ("deployments", None, m.group(1))
+    m = re.match(r"^/apis/apps/v1/statefulsets(?:/([^/]+))?$", path)
+    if m:
+        return ("statefulsets", None, m.group(1))
+    m = re.match(r"^/apis/apps/v1/daemonsets(?:/([^/]+))?$", path)
+    if m:
+        return ("daemonsets", None, m.group(1))
     return ("", None, None)
 
 
@@ -3816,6 +4423,28 @@ def _gv_ns_name(path: str, group: str, version: str, plural: str) -> Tuple[str, 
     m = re.match(pattern_all, path)
     if m:
         return (plural, None, m.group(1))
+    return ("", None, None)
+
+
+def _batch_ns_name(path: str) -> Tuple[str, Optional[str], Optional[str]]:
+    m = re.match(r"^/apis/batch/v1/namespaces/([^/]+)/jobs(?:/([^/]+))?$", path)
+    if m:
+        return ("jobs", m.group(1), m.group(2))
+    m = re.match(r"^/apis/batch/v1/namespaces/([^/]+)/jobs/([^/]+)/(status)$", path)
+    if m:
+        return (f"jobs/{m.group(3)}", m.group(1), m.group(2))
+    m = re.match(r"^/apis/batch/v1/namespaces/([^/]+)/cronjobs(?:/([^/]+))?$", path)
+    if m:
+        return ("cronjobs", m.group(1), m.group(2))
+    m = re.match(r"^/apis/batch/v1/namespaces/([^/]+)/cronjobs/([^/]+)/(status)$", path)
+    if m:
+        return (f"cronjobs/{m.group(3)}", m.group(1), m.group(2))
+    m = re.match(r"^/apis/batch/v1/jobs(?:/([^/]+))?$", path)
+    if m:
+        return ("jobs", None, m.group(1))
+    m = re.match(r"^/apis/batch/v1/cronjobs(?:/([^/]+))?$", path)
+    if m:
+        return ("cronjobs", None, m.group(1))
     return ("", None, None)
 
 
