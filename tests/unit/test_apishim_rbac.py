@@ -347,3 +347,28 @@ def test_serviceaccount_token_auth(monkeypatch, store):
     handler.wfile = BytesIO()
     handler.do_GET()
     assert 200 in handler.responses
+
+
+def test_expired_sa_token_denied(monkeypatch, store):
+    monkeypatch.setenv("AE_APISHIM_RBAC", "1")
+    shim_server.ShimHandler.rbac_enabled = True
+    shim_server.ShimHandler.rbac_eval_roles = True
+    shim_server.ShimHandler.admin_token = "a"
+    shim_server.ShimHandler.read_token = None
+    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda self: None)
+    # insert expired token
+    expired_token = "old"
+    shim_server.ShimHandler.sa_tokens[expired_token] = ("default", "default", 0)
+    req = make_handler("/api/v1/namespaces", headers={"Authorization": f"Bearer {expired_token}"})
+    handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
+    handler.path = req.path
+    handler.command = req.command
+    handler.headers = req.headers
+    handler.server = SimpleNamespace(store=store, state=store, runtime=None)
+    handler.store = store
+    handler.state = None
+    handler.request_version = "HTTP/1.1"
+    handler.requestline = f"{handler.command} {handler.path} HTTP/1.1"
+    handler.wfile = BytesIO()
+    handler.do_GET()
+    assert 401 in handler.responses or 403 in handler.responses
