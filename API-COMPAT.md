@@ -37,10 +37,11 @@ Phase 3 action items:
 - Tests: multinode service discovery (VIP + nodeport) and `kubectl port-forward svc/...` CI job. (new GH workflow multinode-svc-portforward)
 
 ## Phase 4 — Workload breadth and controllers
-- Add Jobs/CronJobs, StatefulSets, DaemonSets translations (where feasible) with status/ownerRefs.
-- HorizontalPodAutoscaler object backed by our autoscaling; emit status to match K8s expectations.
-- Events: surface controller/agent events to `/api/v1/events`; emit rollout, probe, and overlay notices.
-- Deliverables: basic helm charts that expect these kinds render and run; HPA status visible; events stream consumable by `kubectl get events`.
+(status: near complete — adapter reconciles StatefulSets/DaemonSets/Jobs; CronJobs fire with ownerRefs; HPA now drives autoscaling with status/currentMetrics; events include probe/rollout/overlay/job signals)
+- Add Jobs/CronJobs, StatefulSets, DaemonSets translations (where feasible) with status/ownerRefs. *(Implemented; unit coverage exercises status + ownerRefs under stub runtime.)*
+- HorizontalPodAutoscaler object backed by our autoscaling; emit status to match K8s expectations. *(Implemented with min/max, cooldown, CPU/memory utilization/averageValue, currentMetrics, lastScaleTime.)*
+- Events: surface controller/agent events to `/api/v1/events`; emit rollout, probe, and overlay notices. *(Implemented; overlay event hook in ServiceController; probe events emitted on health changes.)*
+- Deliverables: basic helm charts that expect these kinds render and run; HPA status visible; events stream consumable by `kubectl get events`. *(Covered by helm-shim-smoke CI workflow exercising Deployment+HPA+StatefulSet+DaemonSet+Job+CronJob on stub runtime.)*
 
 ## Phase 5 — AuthZ, SSA, patch semantics
 - Implement Role/RoleBinding enforcement; optional ServiceAccounts + projected tokens.
