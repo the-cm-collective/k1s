@@ -8,6 +8,7 @@ import threading
 import time
 import base64
 import secrets
+import time
 import hashlib
 import socket
 import ipaddress
@@ -197,6 +198,59 @@ def _update_managed_fields(md: Dict[str, Any], api_version: str, manager: str, o
     return md
 
 
+def _inject_sa_projection(spec: Dict[str, Any]) -> Dict[str, Any]:
+    tpl = spec.get("template") or {}
+    pod_spec = tpl.get("spec") if tpl else spec.get("podSpec") or spec.get("spec")
+    if pod_spec is None:
+        # assume pod-level spec already
+        pod_spec = spec
+    volumes = list(pod_spec.get("volumes") or [])
+    mounts_added = False
+    vol_name = "k1s-sa-token"
+    has_vol = any(v.get("name") == vol_name for v in volumes)
+    if not has_vol:
+        volumes.append(
+            {
+                "name": vol_name,
+                "projected": {
+                    "sources": [
+                        {
+                            "serviceAccountToken": {
+                                "path": "token",
+                                "expirationSeconds": 3600,
+                                "audience": "apishim",
+                            }
+                        }
+                    ]
+                },
+            }
+        )
+        pod_spec["volumes"] = volumes
+    containers = pod_spec.get("containers") or []
+    for c in containers:
+        vms = list(c.get("volumeMounts") or [])
+        if not any(vm.get("name") == vol_name for vm in vms):
+            vms.append(
+                {
+                    "name": vol_name,
+                    "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                    "readOnly": True,
+                }
+            )
+            c["volumeMounts"] = vms
+            mounts_added = True
+    if containers and not mounts_added:
+        # nothing changed but ensure containers list set back
+        pod_spec["containers"] = containers
+    pod_spec.setdefault("automountServiceAccountToken", True)
+    if tpl:
+        tpl["spec"] = pod_spec
+        spec["template"] = tpl
+    else:
+        spec = pod_spec
+    return spec
+
+
 @dataclass
 class Principal:
     username: str
@@ -211,8 +265,9 @@ class ShimHandler(BaseHTTPRequestHandler):
     read_token: Optional[str] = os.getenv("AE_APISHIM_READ_TOKEN")
     rbac_enabled: bool = os.getenv("AE_APISHIM_RBAC", "0") == "1"
     rbac_eval_roles: bool = os.getenv("AE_APISHIM_RBAC_EVAL", "0") == "1"
-    sa_tokens: dict[str, tuple[str, str]] = {}
+    sa_tokens: dict[str, tuple[str, str, float]] = {}
     sa_tokens_lock = threading.RLock()
+    sa_token_ttl: int = int(os.getenv("AE_APISHIM_SA_TOKEN_TTL", "3600") or "3600")
     # Simple in-memory RBAC rules: (verb, resource) -> allowed roles
     rbac_policies: dict[tuple[str, str], set[str]] = {
         ("get", "*"): {"admin", "read"},
@@ -251,7 +306,12 @@ class ShimHandler(BaseHTTPRequestHandler):
             with self.sa_tokens_lock:
                 sa = self.sa_tokens.get(tok)
             if sa:
-                ns, name = sa
+                ns, name, exp_ts = sa
+                if exp_ts < time.time():
+                    # expired; drop it
+                    with self.sa_tokens_lock:
+                        self.sa_tokens.pop(tok, None)
+                    return Principal(username="system:unauthenticated", groups={"system:unauthenticated"}, token_role=None, token=None)
                 username = f"system:serviceaccount:{ns}:{name}"
                 groups = {
                     "system:authenticated",
@@ -301,8 +361,9 @@ class ShimHandler(BaseHTTPRequestHandler):
 
     def _issue_sa_token(self, namespace: str, name: str) -> str:
         token = secrets.token_urlsafe(32)
+        exp_ts = time.time() + self.sa_token_ttl
         with self.sa_tokens_lock:
-            self.sa_tokens[token] = (namespace, name)
+            self.sa_tokens[token] = (namespace, name, exp_ts)
         return token
 
     def _rbac_allows(self, verb: str, resource: str, namespace: Optional[str] = None) -> bool:
@@ -2164,6 +2225,26 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if not obj:
                     self._not_found()
                     return
+                # refresh SA token if missing/expired
+                if plural == "serviceaccounts":
+                    md = dict(obj.metadata)
+                    anns = md.setdefault("annotations", {})
+                    tok = anns.get("ae.apishim/token")
+                    exp = float(anns.get("ae.apishim/token-exp", "0") or 0)
+                    if not tok or exp < time.time():
+                        tok = self._issue_sa_token(ns or "default", name)
+                        anns["ae.apishim/token"] = tok
+                        anns["ae.apishim/token-exp"] = str(int(time.time() + self.sa_token_ttl))
+                        obj = self.server.store.upsert(  # type: ignore[attr-defined]
+                            "",
+                            "v1",
+                            plural,
+                            None if plural == "namespaces" else ns,
+                            name,
+                            metadata=md,
+                            spec=obj.spec,
+                            status=obj.status,
+                        )
                 if plural == "services":
                     doc = _merge_provider_service(self.server.state, _to_obj(obj), obj)  # type: ignore[attr-defined]
                     self._ok(doc)
@@ -3238,6 +3319,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 annotations = md.setdefault("annotations", {})
                 token = self._issue_sa_token(ns_in or "default", name_in)
                 annotations.setdefault("ae.apishim/token", token)
+                annotations.setdefault("ae.apishim/token-exp", str(int(time.time() + self.sa_token_ttl)))
             if plural == "services":
                 spec_in = dict(spec_in or {})
                 existing_svcs = self.server.store.list_all("", "v1", "services")  # type: ignore[attr-defined]
@@ -3338,6 +3420,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if not ns_in or not _valid_name(ns_in):
                     self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.namespace (DNS-1123 label)")
                     return
+                spec_in = doc.get("spec") or {}
+                spec_in = _inject_sa_projection(spec_in)
                 created = self.server.store.upsert(  # type: ignore[attr-defined]
                     "apps",
                     "v1",
@@ -3345,7 +3429,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     ns_in,
                     name_in,
                     metadata=_normalize_metadata(md, name_in, ns_in, "deployments"),
-                    spec=doc.get("spec") or {},
+                    spec=spec_in,
                     status=_synthesize_deploy_status(doc.get("spec") or {}, doc.get("status") or {}),
                 )
                 self.send_response(HTTPStatus.CREATED)
@@ -3362,6 +3446,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if not name_in or not _valid_name(name_in) or not ns_in or not _valid_name(ns_in):
                     self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata")
                     return
+                spec_in = _inject_sa_projection(doc.get("spec") or {})
                 created = self.server.store.upsert(  # type: ignore[attr-defined]
                     "apps",
                     "v1",
@@ -3369,7 +3454,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     ns_in,
                     name_in,
                     metadata=_normalize_metadata(md, name_in, ns_in, "statefulsets"),
-                    spec=doc.get("spec") or {},
+                    spec=spec_in,
                     status=_synthesize_deploy_status(doc.get("spec") or {}, doc.get("status") or {}),
                 )
                 self.send_response(HTTPStatus.CREATED)
@@ -3386,6 +3471,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if not name_in or not _valid_name(name_in) or not ns_in or not _valid_name(ns_in):
                     self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata")
                     return
+                spec_in = _inject_sa_projection(doc.get("spec") or {})
                 created = self.server.store.upsert(  # type: ignore[attr-defined]
                     "apps",
                     "v1",
@@ -3393,7 +3479,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     ns_in,
                     name_in,
                     metadata=_normalize_metadata(md, name_in, ns_in, "daemonsets"),
-                    spec=doc.get("spec") or {},
+                    spec=spec_in,
                     status=doc.get("status") or {},
                 )
                 self.send_response(HTTPStatus.CREATED)
@@ -3444,6 +3530,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if not name_in or not _valid_name(name_in) or not ns_in or not _valid_name(ns_in):
                     self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata")
                     return
+                spec_in = _inject_sa_projection(doc.get("spec") or {})
                 created = self.server.store.upsert(  # type: ignore[attr-defined]
                     "batch",
                     "v1",
@@ -3451,7 +3538,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     ns_in,
                     name_in,
                     metadata=_normalize_metadata(md, name_in, ns_in, b_plural),
-                    spec=doc.get("spec") or {},
+                    spec=spec_in,
                     status=doc.get("status") or {},
                 )
                 self.send_response(HTTPStatus.CREATED)
@@ -3961,6 +4048,16 @@ class ShimHandler(BaseHTTPRequestHandler):
                     md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Apply")
                 elif ctype in ("application/merge-patch+json", "application/strategic-merge-patch+json"):
                     md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Update")
+                if res in {"deployments", "statefulsets", "daemonsets", "jobs"}:
+                    spec_body = merged.get("spec") or {}
+                    merged["spec"] = _inject_sa_projection(spec_body)
+                if res == "cronjobs":
+                    cj_spec = merged.get("spec") or {}
+                    jt = cj_spec.get("jobTemplate") or {}
+                    jspec = _inject_sa_projection(jt.get("spec") or {})
+                    jt["spec"] = jspec
+                    cj_spec["jobTemplate"] = jt
+                    merged["spec"] = cj_spec
                 name_eff = md.get("name") or name
                 updated = self.server.store.upsert(
                     group,
@@ -3990,6 +4087,16 @@ class ShimHandler(BaseHTTPRequestHandler):
                 md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Apply")
             elif ctype in ("application/merge-patch+json", "application/strategic-merge-patch+json"):
                 md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Update")
+            if res in {"deployments", "statefulsets", "daemonsets", "jobs"}:
+                spec_body = merged.get("spec") or {}
+                merged["spec"] = _inject_sa_projection(spec_body)
+            if res == "cronjobs":
+                cj_spec = merged.get("spec") or {}
+                jt = cj_spec.get("jobTemplate") or {}
+                jspec = _inject_sa_projection(jt.get("spec") or {})
+                jt["spec"] = jspec
+                cj_spec["jobTemplate"] = jt
+                merged["spec"] = cj_spec
             name_eff = md.get("name") or name
             ns_eff = md.get("namespace") or ns
             updated = self.server.store.upsert(
@@ -5196,40 +5303,17 @@ def _pod_obj(container: dict, rv: int, node_name: Optional[str]) -> Dict[str, An
         meta["nodeName"] = node_name
     status["phase"] = phase
     sa_name = labels.get("ae.service_account") or "default"
-    vol_name = "k1s-sa-token"
-    spec: Dict[str, Any] = {
-        "nodeName": node_name,
-        "serviceAccountName": sa_name,
-        "automountServiceAccountToken": True,
-        "volumes": [
-            {
-                "name": vol_name,
-                "projected": {
-                    "sources": [
-                        {
-                            "serviceAccountToken": {
-                                "path": "token",
-                                "expirationSeconds": 3600,
-                                "audience": "apishim",
-                            }
-                        }
-                    ]
-                },
-            }
-        ],
-        "containers": [
-            {
-                "name": labels.get("ae.container", "main"),
-                "volumeMounts": [
-                    {
-                        "name": vol_name,
-                        "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
-                        "readOnly": True,
-                    }
-                ],
-            }
-        ],
-    }
+    spec: Dict[str, Any] = _inject_sa_projection(
+        {
+            "nodeName": node_name,
+            "serviceAccountName": sa_name,
+            "containers": [
+                {
+                    "name": labels.get("ae.container", "main"),
+                }
+            ],
+        }
+    )
     return {
         "apiVersion": "v1",
         "kind": "Pod",
