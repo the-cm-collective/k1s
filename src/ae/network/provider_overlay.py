@@ -20,6 +20,7 @@ import tempfile
 from typing import Dict, List, Tuple
 
 from ae.controller.state import SQLiteStateStore
+from ae.network.overlay_health import wireguard_health
 
 from .provider import NetworkProvider
 
@@ -234,3 +235,9 @@ class OverlayProvider(NetworkProvider):
             )
         return "\n".join(lines) + "\n"
 
+    def overlay_health(self) -> dict:
+        """Expose overlay/WireGuard health (best-effort)."""
+        try:
+            return wireguard_health()
+        except Exception:
+            return {"ok": False}
