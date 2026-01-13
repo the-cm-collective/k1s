@@ -126,3 +126,47 @@ def test_apply_patch_sets_managed_fields(tmp_path, monkeypatch):
     mfields = obj.metadata.get("managedFields")
     assert mfields
     assert any(mf.get("manager") == "kubectl" for mf in mfields)
+
+
+def test_deployment_injects_sa_projection(tmp_path, monkeypatch):
+    store = ObjectStore(tmp_path / "apishim.db")
+    monkeypatch.setenv("AE_APISHIM_TOKEN", "a")
+    shim_server.ShimHandler.admin_token = "a"
+    shim_server.ShimHandler.read_token = None
+    shim_server.ShimHandler.rbac_enabled = False
+    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda self: None)
+    body = json.dumps(
+        {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo", "namespace": "default"},
+            "spec": {
+                "serviceAccountName": "demo-sa",
+                "template": {"spec": {"containers": [{"name": "c", "image": "nginx"}]}},
+            },
+        }
+    ).encode()
+    req = make_handler(
+        "/apis/apps/v1/namespaces/default/deployments",
+        method="POST",
+        headers={"Authorization": "Bearer a", "Content-Type": "application/json"},
+        body=body,
+    )
+    handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
+    handler.path = req.path
+    handler.command = req.command
+    handler.headers = req.headers
+    handler.server = SimpleNamespace(store=store, state=store, runtime=None)
+    handler.store = store
+    handler.state = None
+    handler.request_version = "HTTP/1.1"
+    handler.requestline = f"{handler.command} {handler.path} HTTP/1.1"
+    handler.rfile = BytesIO(body)
+    handler.wfile = BytesIO()
+    handler.do_POST()
+    obj = store.get("apps", "v1", "deployments", "default", "demo")
+    tpl_spec = (obj.spec.get("template") or {}).get("spec") or {}
+    vols = tpl_spec.get("volumes") or []
+    assert any(v.get("projected") for v in vols)
+    cmounts = tpl_spec.get("containers")[0].get("volumeMounts")
+    assert cmounts and any(vm.get("mountPath") == "/var/run/secrets/kubernetes.io/serviceaccount" for vm in cmounts)
