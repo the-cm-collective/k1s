@@ -57,10 +57,16 @@ class HealthManager:
         self._state: dict[tuple[str, str], dict] = {}
         self._exec_cb = None
         self._loopback_fallback = os.getenv("AE_PROBE_LOOPBACK_FALLBACK", "").strip()
+        # optional callback: (replica_id, probe_type, success, message)
+        self._event_cb = None
 
     def set_exec_callback(self, fn):  # type: ignore[no-untyped-def]
         """Inject a callback taking (replica_id, command:list[str], timeout:int|None)->int."""
         self._exec_cb = fn
+
+    def set_event_callback(self, fn):  # type: ignore[no-untyped-def]
+        """Inject a callback taking (replica_id, probe_type, success, message)."""
+        self._event_cb = fn
 
     def evaluate(self, manifest: AppManifest, result: RuntimeResult) -> HealthReport:
         replicas: list[ReplicaHealth] = []
@@ -169,6 +175,7 @@ class HealthManager:
         now = datetime.now(timezone.utc)
 
         if probe is None:
+            prev_effective = st.get("effective", default_success)
             st.update(
                 {
                     "succ": 1 if default_success else 0,
@@ -179,6 +186,8 @@ class HealthManager:
                 }
             )
             self._state[key] = st
+            if prev_effective != default_success:
+                self._emit_probe_event(replica.replica_id, probe_type, default_success, f"{probe_type} default {'ok' if default_success else 'pending'}")
             return ProbeOutcome(
                 success=default_success,
                 message=f"{probe_type} default {'ok' if default_success else 'pending'}",
@@ -261,6 +270,7 @@ class HealthManager:
                 message=f"{probe_type} no-op {'ok' if default_success else 'pending'}",
             )
 
+        prev_effective = st.get("effective", default_success)
         # Update streaks and compute effective result using thresholds
         if outcome.success:
             st["succ"] = int(st.get("succ", 0)) + 1
@@ -282,6 +292,8 @@ class HealthManager:
                 need = max(1, int(probe.success_threshold))
                 msg = f"{probe_type} waiting successThreshold ({st['succ']}/{need})"
             self._state[key] = st
+            if st["effective"] != prev_effective:
+                self._emit_probe_event(replica.replica_id, probe_type, st["effective"], msg)
             return ProbeOutcome(st["effective"], msg)
 
         # Failure requires failureThreshold consecutive fails; otherwise retain previous effective
@@ -307,7 +319,17 @@ class HealthManager:
             # Keep previous effective decision but annotate
             msg = f"{probe_type} transient fail ({st['fail']}/{need_fail})"
         self._state[key] = st
+        if st.get("effective", False) != prev_effective:
+            self._emit_probe_event(replica.replica_id, probe_type, bool(st.get("effective", False)), msg)
         return ProbeOutcome(bool(st["effective"]), msg)
+
+    def _emit_probe_event(self, replica_id: str, probe_type: str, success: bool, message: str) -> None:
+        if self._event_cb is None:
+            return
+        try:
+            self._event_cb(replica_id, probe_type, success, message)
+        except Exception:
+            pass
 
     def _split_endpoint(self, endpoint: str) -> tuple[str, Optional[str]]:
         text = endpoint or ""
