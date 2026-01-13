@@ -7,6 +7,7 @@ import ssl
 import threading
 import time
 import base64
+import secrets
 import hashlib
 import socket
 import ipaddress
@@ -109,6 +110,8 @@ class ShimHandler(BaseHTTPRequestHandler):
     read_token: Optional[str] = os.getenv("AE_APISHIM_READ_TOKEN")
     rbac_enabled: bool = os.getenv("AE_APISHIM_RBAC", "0") == "1"
     rbac_eval_roles: bool = os.getenv("AE_APISHIM_RBAC_EVAL", "0") == "1"
+    sa_tokens: dict[str, tuple[str, str]] = {}
+    sa_tokens_lock = threading.RLock()
     # Simple in-memory RBAC rules: (verb, resource) -> allowed roles
     rbac_policies: dict[tuple[str, str], set[str]] = {
         ("get", "*"): {"admin", "read"},
@@ -143,6 +146,18 @@ class ShimHandler(BaseHTTPRequestHandler):
             username = "reader"
             groups = {"system:authenticated", "read"}
             token_role = "read"
+        else:
+            with self.sa_tokens_lock:
+                sa = self.sa_tokens.get(tok)
+            if sa:
+                ns, name = sa
+                username = f"system:serviceaccount:{ns}:{name}"
+                groups = {
+                    "system:authenticated",
+                    "system:serviceaccounts",
+                    f"system:serviceaccounts:{ns}",
+                }
+                token_role = None
         return Principal(username=username, groups=groups, token_role=token_role, token=tok)
 
     def _authz(self, role: str = "read") -> bool:
@@ -182,6 +197,12 @@ class ShimHandler(BaseHTTPRequestHandler):
             return {"allowed": False, "denied": True, "reason": "missing verb/resource"}
         allowed = self._rbac_allows(verb, resource, namespace)
         return {"allowed": allowed, "denied": not allowed, "reason": "rbac: allowed" if allowed else "rbac: forbidden"}
+
+    def _issue_sa_token(self, namespace: str, name: str) -> str:
+        token = secrets.token_urlsafe(32)
+        with self.sa_tokens_lock:
+            self.sa_tokens[token] = (namespace, name)
+        return token
 
     def _rbac_allows(self, verb: str, resource: str, namespace: Optional[str] = None) -> bool:
         if not self.rbac_enabled:
@@ -3112,6 +3133,10 @@ class ShimHandler(BaseHTTPRequestHandler):
             spec_in = doc.get("data") if plural in {"configmaps", "secrets"} else (doc.get("spec") or {})
             status_in = doc.get("status") or {}
             # Service enrichments: allocate clusterIP/nodePort if missing and validate collisions
+            if plural == "serviceaccounts":
+                annotations = md.setdefault("annotations", {})
+                token = self._issue_sa_token(ns_in or "default", name_in)
+                annotations.setdefault("ae.apishim/token", token)
             if plural == "services":
                 spec_in = dict(spec_in or {})
                 existing_svcs = self.server.store.list_all("", "v1", "services")  # type: ignore[attr-defined]
