@@ -51,7 +51,7 @@ Phase 3 action items:
 
 Phase 5 action items:
 - RBAC enforcement path: hook Role/ClusterRole + (Cluster)RoleBinding evaluation into the apishim request pipeline and return K8s-style 403s when denied; keep dev token cluster-admin.
-- ServiceAccounts + projected tokens: persist ServiceAccount objects, issue short-lived bearer tokens per SA/namespace, wire token authenticator, and project tokens into rendered Pod specs. *(tokens now minted on SA create; projection still pending).*
+- ServiceAccounts + projected tokens: persist ServiceAccount objects, issue short-lived bearer tokens per SA/namespace, wire token authenticator, and project tokens into rendered Pod specs. *(tokens minted on SA create and projected via automount volume in pod specs; rotation/TTL + pod injection still minimal).*
 - Patch semantics: add JSONPatch and mergePatch handlers for supported kinds with correct content-type negotiation and status errors.
 - SSA + managedFields: honor `fieldManager`/`force`, track managedFields per object in shim storage, and surface conflicts on overlapping fields.
 - App CRD admission: validating hook to keep native App schema authoritative; reject or warn on incompatible native objects.
