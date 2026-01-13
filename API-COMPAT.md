@@ -51,9 +51,9 @@ Phase 3 action items:
 
 Phase 5 action items:
 - RBAC enforcement path: hook Role/ClusterRole + (Cluster)RoleBinding evaluation into the apishim request pipeline and return K8s-style 403s when denied; keep dev token cluster-admin.
-- ServiceAccounts + projected tokens: persist ServiceAccount objects, issue short-lived bearer tokens per SA/namespace, wire token authenticator, and project tokens into rendered Pod specs. *(tokens minted on SA create and projected via automount volume in pod specs; rotation/TTL + pod injection still minimal).*
-- Patch semantics: add JSONPatch and mergePatch handlers for supported kinds with correct content-type negotiation and status errors.
-- SSA + managedFields: honor `fieldManager`/`force`, track managedFields per object in shim storage, and surface conflicts on overlapping fields.
+- ServiceAccounts + projected tokens: persist ServiceAccount objects, issue short-lived bearer tokens per SA/namespace, wire token authenticator, and project tokens into rendered Pod specs. *(tokens minted on SA create, auto-projected into workloads/pod projections; TTL/rotation handled in-memory; pod template injection in place.)*
+- Patch semantics: add JSONPatch and mergePatch handlers for supported kinds with correct content-type negotiation and status errors. *(json/merge/apply supported; json-patch added with unit coverage.)*
+- SSA + managedFields: honor `fieldManager`/`force`, track managedFields per object in shim storage, and surface conflicts on overlapping fields. *(apply content-types record managedFields; conflict detection still TODO.)*
 - App CRD admission: validating hook to keep native App schema authoritative; reject or warn on incompatible native objects.
 - CLI parity: implement `kubectl auth can-i` via a SubjectAccessReview-equivalent endpoint bound to RBAC evaluation.
 - Tests/CI: unit matrix for RBAC decisions and patch/SSA behavior; integration smoke that exercises can-i, JSONPatch/mergePatch, and SSA apply flows against the stub runtime.
