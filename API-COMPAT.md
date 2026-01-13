@@ -49,6 +49,15 @@ Phase 3 action items:
 - Admission/validation hooks for custom App CRD (optional) to keep native k1s schema authoritative.
 - Deliverables: `kubectl auth can-i` works; SSA usable by controllers that expect it (ingress controllers, cert‑manager‑style tools).
 
+Phase 5 action items:
+- RBAC enforcement path: hook Role/ClusterRole + (Cluster)RoleBinding evaluation into the apishim request pipeline and return K8s-style 403s when denied; keep dev token cluster-admin.
+- ServiceAccounts + projected tokens: persist ServiceAccount objects, issue short-lived bearer tokens per SA/namespace, wire token authenticator, and project tokens into rendered Pod specs.
+- Patch semantics: add JSONPatch and mergePatch handlers for supported kinds with correct content-type negotiation and status errors.
+- SSA + managedFields: honor `fieldManager`/`force`, track managedFields per object in shim storage, and surface conflicts on overlapping fields.
+- App CRD admission: validating hook to keep native App schema authoritative; reject or warn on incompatible native objects.
+- CLI parity: implement `kubectl auth can-i` via a SubjectAccessReview-equivalent endpoint bound to RBAC evaluation.
+- Tests/CI: unit matrix for RBAC decisions and patch/SSA behavior; integration smoke that exercises can-i, JSONPatch/mergePatch, and SSA apply flows against the stub runtime.
+
 ## Phase 6 — Reliability, storage, and scale
 - Move shim object storage off SQLite to primary state store or Postgres backend to avoid drift and enable HA.
 - Improve watch scalability (per‑resource queues, backpressure, timeouts) and add metrics/tracing.
