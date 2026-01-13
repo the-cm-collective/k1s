@@ -10,6 +10,8 @@ from ae.apishim.store import ObjectStore, K8sObject
 
 def make_handler(path: str, method: str = "GET", headers=None, body: bytes = b""):
     headers = headers or {}
+    if body and "Content-Length" not in headers:
+        headers["Content-Length"] = str(len(body))
 
     class DummySocket:
         def __init__(self, body: bytes):
@@ -58,6 +60,10 @@ def store(tmp_path):
 def test_apishim_rbac_allow_get_with_admin_token(monkeypatch, store):
     monkeypatch.setenv("AE_APISHIM_RBAC", "1")
     monkeypatch.setenv("AE_APISHIM_TOKEN", "a")
+    shim_server.ShimHandler.rbac_enabled = True
+    shim_server.ShimHandler.rbac_eval_roles = False
+    shim_server.ShimHandler.admin_token = "a"
+    shim_server.ShimHandler.read_token = None
     req = make_handler("/api/v1/namespaces")
     handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
     handler.path = req.path
@@ -76,6 +82,10 @@ def test_apishim_rbac_allow_get_with_admin_token(monkeypatch, store):
 def test_apishim_rbac_deny_get_without_token(monkeypatch, store):
     monkeypatch.setenv("AE_APISHIM_RBAC", "1")
     monkeypatch.delenv("AE_APISHIM_TOKEN", raising=False)
+    shim_server.ShimHandler.rbac_enabled = True
+    shim_server.ShimHandler.rbac_eval_roles = False
+    shim_server.ShimHandler.admin_token = None
+    shim_server.ShimHandler.read_token = None
     req = make_handler("/api/v1/namespaces")
     handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
     handler.path = req.path
@@ -96,6 +106,10 @@ def test_apishim_rbac_eval_rolebinding(monkeypatch, store):
     monkeypatch.setenv("AE_APISHIM_RBAC", "1")
     monkeypatch.setenv("AE_APISHIM_RBAC_EVAL", "1")
     monkeypatch.setenv("AE_APISHIM_TOKEN", "a")
+    shim_server.ShimHandler.rbac_enabled = True
+    shim_server.ShimHandler.rbac_eval_roles = True
+    shim_server.ShimHandler.admin_token = "a"
+    shim_server.ShimHandler.read_token = None
     # Create a role and rolebinding permitting list on services
     role = K8sObject("rbac.authorization.k8s.io", "v1", "roles", "default", "viewer", {"name": "viewer", "namespace": "default"}, {"rules": [{"verbs": ["list"], "resources": ["services"]}]}, {}, 1)
     store.upsert("rbac.authorization.k8s.io", "v1", "roles", "default", "viewer", role.metadata, role.spec)
@@ -121,6 +135,10 @@ def test_apishim_rbac_exec_requires_admin(monkeypatch, store):
     monkeypatch.setenv("AE_APISHIM_TOKEN", "a")
     # reader token
     monkeypatch.setenv("AE_APISHIM_READ_TOKEN", "r")
+    shim_server.ShimHandler.rbac_enabled = True
+    shim_server.ShimHandler.rbac_eval_roles = False
+    shim_server.ShimHandler.admin_token = "a"
+    shim_server.ShimHandler.read_token = "r"
     # admin allowed
     req = make_handler("/api/v1/namespaces/default/pods/p1/exec?command=sh", headers={"Authorization": "Bearer a"})
     handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
@@ -149,3 +167,112 @@ def test_apishim_rbac_exec_requires_admin(monkeypatch, store):
     handler2.wfile = BytesIO()
     handler2.do_GET()
     assert 403 in handler2.responses or 401 in handler2.responses
+
+
+def test_subject_access_review_allows(monkeypatch, store):
+    monkeypatch.setenv("AE_APISHIM_RBAC", "1")
+    monkeypatch.setenv("AE_APISHIM_RBAC_EVAL", "1")
+    monkeypatch.setenv("AE_APISHIM_TOKEN", "a")
+    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda self: None)
+    shim_server.ShimHandler.rbac_enabled = True
+    shim_server.ShimHandler.rbac_eval_roles = True
+    shim_server.ShimHandler.admin_token = "a"
+    shim_server.ShimHandler.read_token = None
+    role = K8sObject(
+        "rbac.authorization.k8s.io",
+        "v1",
+        "roles",
+        "default",
+        "viewer",
+        {"name": "viewer", "namespace": "default"},
+        {"rules": [{"verbs": ["list"], "resources": ["services"]}]},
+        {},
+        1,
+    )
+    store.upsert("rbac.authorization.k8s.io", "v1", "roles", "default", "viewer", role.metadata, role.spec)
+    rb = K8sObject(
+        "rbac.authorization.k8s.io",
+        "v1",
+        "rolebindings",
+        "default",
+        "bind",
+        {"name": "bind", "namespace": "default"},
+        {"subjects": [{"kind": "User", "name": "admin"}], "roleRef": {"name": "viewer"}},
+        {},
+        2,
+    )
+    store.upsert("rbac.authorization.k8s.io", "v1", "rolebindings", "default", "bind", rb.metadata, rb.spec)
+    body = json.dumps(
+        {
+            "apiVersion": "authorization.k8s.io/v1",
+            "kind": "SubjectAccessReview",
+            "spec": {"resourceAttributes": {"verb": "list", "resource": "services", "namespace": "default"}},
+        }
+    ).encode()
+    req = make_handler(
+        "/apis/authorization.k8s.io/v1/subjectaccessreviews",
+        method="POST",
+        headers={"Authorization": "Bearer a"},
+        body=body,
+    )
+    handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
+    handler.path = req.path
+    handler.command = req.command
+    handler.headers = req.headers
+    handler.server = SimpleNamespace(store=store, state=store, runtime=None)
+    handler.store = store
+    handler.state = None
+    handler.request_version = "HTTP/1.1"
+    handler.requestline = f"{handler.command} {handler.path} HTTP/1.1"
+    handler.rfile = BytesIO(body)
+    handler.wfile = BytesIO()
+    handler.do_POST()
+    assert 201 in handler.responses
+    raw = handler.wfile.getvalue()
+    payload = raw.split(b"\r\n\r\n")[-1] if raw else raw
+    status = json.loads(payload.decode())
+    assert status["status"]["allowed"] is True
+    assert status["status"]["denied"] is False
+
+
+def test_subject_access_review_denied(monkeypatch, store):
+    monkeypatch.setenv("AE_APISHIM_RBAC", "1")
+    monkeypatch.setenv("AE_APISHIM_RBAC_EVAL", "1")
+    monkeypatch.setenv("AE_APISHIM_TOKEN", "a")
+    monkeypatch.setenv("AE_APISHIM_READ_TOKEN", "r")
+    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda self: None)
+    shim_server.ShimHandler.rbac_enabled = True
+    shim_server.ShimHandler.rbac_eval_roles = True
+    shim_server.ShimHandler.admin_token = "a"
+    shim_server.ShimHandler.read_token = "r"
+    body = json.dumps(
+        {
+            "apiVersion": "authorization.k8s.io/v1",
+            "kind": "SubjectAccessReview",
+            "spec": {"resourceAttributes": {"verb": "delete", "resource": "services", "namespace": "default"}},
+        }
+    ).encode()
+    req = make_handler(
+        "/apis/authorization.k8s.io/v1/subjectaccessreviews",
+        method="POST",
+        headers={"Authorization": "Bearer r"},
+        body=body,
+    )
+    handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
+    handler.path = req.path
+    handler.command = req.command
+    handler.headers = req.headers
+    handler.server = SimpleNamespace(store=store, state=store, runtime=None)
+    handler.store = store
+    handler.state = None
+    handler.request_version = "HTTP/1.1"
+    handler.requestline = f"{handler.command} {handler.path} HTTP/1.1"
+    handler.rfile = BytesIO(body)
+    handler.wfile = BytesIO()
+    handler.do_POST()
+    assert 201 in handler.responses
+    raw = handler.wfile.getvalue()
+    payload = raw.split(b"\r\n\r\n")[-1] if raw else raw
+    status = json.loads(payload.decode())
+    assert status["status"]["allowed"] is False
+    assert status["status"]["denied"] is True
