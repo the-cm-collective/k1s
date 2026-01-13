@@ -35,6 +35,7 @@ RESERVED_GROUPS = {
     "apps",
     "networking.k8s.io",
     "rbac.authorization.k8s.io",
+    "authorization.k8s.io",
     "policy",
     "autoscaling",
     "apiextensions.k8s.io",
@@ -82,6 +83,26 @@ def _app_name(ns: Optional[str], name: str) -> str:
     return f"{ns}--{name}" if ns else name
 
 
+def _rule_matches(resource: str, resources: List[str] | None) -> bool:
+    if not resources:
+        return False
+    if resource in resources or "*" in resources:
+        return True
+    # allow subresource match like pods/log against pods/*
+    if "/" in resource:
+        prefix = resource.split("/")[0] + "/*"
+        return prefix in resources
+    return False
+
+
+@dataclass
+class Principal:
+    username: str
+    groups: set[str]
+    token_role: Optional[str]
+    token: Optional[str]
+
+
 class ShimHandler(BaseHTTPRequestHandler):
     server_version = "k1s-apishim"
     admin_token: Optional[str] = os.getenv("AE_APISHIM_TOKEN")
@@ -108,19 +129,30 @@ class ShimHandler(BaseHTTPRequestHandler):
     crd_index: Dict[str, List[Tuple[str, str, str]]] = {}
     crd_lock = threading.RLock()
 
+    def _parse_principal(self) -> Principal:
+        hdr = self.headers.get("Authorization", "")
+        tok = hdr[7:] if hdr.startswith("Bearer ") else ""
+        username = "system:unauthenticated"
+        groups: set[str] = {"system:unauthenticated"}
+        token_role: Optional[str] = None
+        if tok and tok == self.admin_token:
+            username = "admin"
+            groups = {"system:authenticated", "admin"}
+            token_role = "admin"
+        elif tok and tok == self.read_token:
+            username = "reader"
+            groups = {"system:authenticated", "read"}
+            token_role = "read"
+        return Principal(username=username, groups=groups, token_role=token_role, token=tok)
+
     def _authz(self, role: str = "read") -> bool:
         admin = self.admin_token
         reader = self.read_token
         if not admin and not reader:
             return True
-        hdr = self.headers.get("Authorization", "")
-        tok = hdr[7:] if hdr.startswith("Bearer ") else ""
+        principal = self._parse_principal()
+        role_name = principal.token_role
         ok = False
-        role_name = None
-        if tok and tok == admin:
-            role_name = "admin"
-        elif tok and tok == reader:
-            role_name = "read"
         if role == "write":
             ok = role_name == "admin"
         elif role == "read":
@@ -138,16 +170,24 @@ class ShimHandler(BaseHTTPRequestHandler):
         )
         return False
 
-    def _rbac_allows(self, verb: str, resource: str) -> bool:
+    def _eval_subject_access_review(self, spec: Dict[str, Any]) -> Dict[str, Any]:
+        res_attr = (spec or {}).get("resourceAttributes") or {}
+        verb = (res_attr.get("verb") or "").lower()
+        resource = res_attr.get("resource") or ""
+        subres = res_attr.get("subresource")
+        namespace = res_attr.get("namespace")
+        if subres:
+            resource = f"{resource}/{subres}"
+        if not verb or not resource:
+            return {"allowed": False, "denied": True, "reason": "missing verb/resource"}
+        allowed = self._rbac_allows(verb, resource, namespace)
+        return {"allowed": allowed, "denied": not allowed, "reason": "rbac: allowed" if allowed else "rbac: forbidden"}
+
+    def _rbac_allows(self, verb: str, resource: str, namespace: Optional[str] = None) -> bool:
         if not self.rbac_enabled:
             return True
-        hdr = self.headers.get("Authorization", "")
-        tok = hdr[7:] if hdr.startswith("Bearer ") else ""
-        role = None
-        if tok and tok == self.admin_token:
-            role = "admin"
-        elif tok and tok == self.read_token:
-            role = "read"
+        principal = self._parse_principal()
+        role = principal.token_role
         if role is None:
             return False
         # Static policy fallback
@@ -155,8 +195,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             allowed = self.rbac_policies.get((verb, resource)) or self.rbac_policies.get((verb, "*"))
             return bool(allowed and role in allowed)
         # Role/RoleBinding evaluation
-        user = role
-        namespace = None
+        user = principal.username
+        groups = principal.groups
         # Collect role rules from bindings
         allowed_verbs: set[str] = set()
         try:
@@ -165,7 +205,10 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if namespace and rb.namespace and rb.namespace != namespace:
                     continue
                 subjects = (rb.spec or {}).get("subjects", [])
-                if not any(s.get("kind") == "User" and s.get("name") == user for s in subjects):
+                if not any(
+                    (s.get("kind") == "User" and s.get("name") == user)
+                    or (s.get("kind") == "Group" and s.get("name") in groups)
+                for s in subjects):
                     continue
                 ref = (rb.spec or {}).get("roleRef", {})
                 rname = ref.get("name")
@@ -174,12 +217,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                 role_obj = self.store.get("rbac.authorization.k8s.io", "v1", "roles", rb.namespace, rname)  # type: ignore[attr-defined]
                 if role_obj:
                     for rule in (role_obj.spec or {}).get("rules", []):
-                        if resource in rule.get("resources", []) or "*" in rule.get("resources", []):
+                        if _rule_matches(resource, rule.get("resources", [])):
                             allowed_verbs.update(rule.get("verbs", []))
             # ClusterRoleBindings
             for crb in self.store.list_all("rbac.authorization.k8s.io", "v1", "clusterrolebindings"):  # type: ignore[attr-defined]
                 subjects = (crb.spec or {}).get("subjects", [])
-                if not any(s.get("kind") == "User" and s.get("name") == user for s in subjects):
+                if not any(
+                    (s.get("kind") == "User" and s.get("name") == user)
+                    or (s.get("kind") == "Group" and s.get("name") in groups)
+                for s in subjects):
                     continue
                 ref = (crb.spec or {}).get("roleRef", {})
                 rname = ref.get("name")
@@ -188,7 +234,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 crobj = self.store.get("rbac.authorization.k8s.io", "v1", "clusterroles", None, rname)  # type: ignore[attr-defined]
                 if crobj:
                     for rule in (crobj.spec or {}).get("rules", []):
-                        if resource in rule.get("resources", []) or "*" in rule.get("resources", []):
+                        if _rule_matches(resource, rule.get("resources", [])):
                             allowed_verbs.update(rule.get("verbs", []))
         except Exception:
             return False
@@ -224,6 +270,9 @@ class ShimHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def _deny(self, code: int = HTTPStatus.FORBIDDEN, message: str = "forbidden") -> None:
+        self._json_status(int(code), reason="Forbidden" if int(code) == 403 else "Unauthorized", message=message)
 
     def _max_rv_for(self, group: str, version: str, resource: str, namespace: Optional[str]) -> int:
         try:
@@ -1550,6 +1599,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                             },
                         },
                         {
+                            "name": "authorization.k8s.io",
+                            "versions": [{"groupVersion": "authorization.k8s.io/v1", "version": "v1"}],
+                            "preferredVersion": {"groupVersion": "authorization.k8s.io/v1", "version": "v1"},
+                        },
+                        {
                             "name": "policy",
                             "versions": [{"groupVersion": "policy/v1", "version": "v1"}],
                             "preferredVersion": {"groupVersion": "policy/v1", "version": "v1"},
@@ -1838,6 +1892,23 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "kind": "ClusterRoleBinding",
                             "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
                         },
+                    ],
+                }
+            )
+            return
+        if path == "/apis/authorization.k8s.io/v1":
+            self._ok(
+                {
+                    "kind": "APIResourceList",
+                    "groupVersion": "authorization.k8s.io/v1",
+                    "resources": [
+                        {
+                            "name": "subjectaccessreviews",
+                            "singularName": "",
+                            "namespaced": False,
+                            "kind": "SubjectAccessReview",
+                            "verbs": ["create"],
+                        }
                     ],
                 }
             )
@@ -2879,13 +2950,34 @@ class ShimHandler(BaseHTTPRequestHandler):
         self._not_found()
 
     def do_POST(self) -> None:  # noqa: N802
-        if not self._authz(role="write"):
-            return
         parsed = urlparse(self.path)
         path = parsed.path
+        # SubjectAccessReview should be callable by read tokens; other POSTs require write/admin.
+        if path.startswith("/apis/authorization.k8s.io/"):
+            if not self._authz(role="read"):
+                return
+        else:
+            if not self._authz(role="write"):
+                return
         length = int(self.headers.get("Content-Length", "0") or "0")
         body = self.rfile.read(length)
         doc = _read_json(body)
+
+        if path.startswith("/apis/authorization.k8s.io/v1/subjectaccessreviews"):
+            status = self._eval_subject_access_review(doc.get("spec") or {})
+            resp = {
+                "apiVersion": "authorization.k8s.io/v1",
+                "kind": "SubjectAccessReview",
+                "spec": doc.get("spec") or {},
+                "status": status,
+            }
+            out = _json(resp)
+            self.send_response(HTTPStatus.CREATED)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+            return
 
         # Pod exec (JSON {command:[], timeoutSeconds?})
         m_exec = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/exec$", path)
