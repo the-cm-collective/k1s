@@ -18,6 +18,7 @@ class ServiceController:
     def __init__(self, provider: NetworkProvider, store: SQLiteStateStore) -> None:
         self._provider = provider
         self._store = store
+        self._overlay_status: dict[str, str] = {}
 
     def reconcile(
         self,
@@ -46,6 +47,9 @@ class ServiceController:
         self._store.upsert_service(app, cluster_ip, ports)
         self._store.upsert_service_endpoints(app, backends["records"])
         self._provider.update_service_endpoints(app, backends["by_port"])
+        overlay_info = self._overlay_health()
+        if overlay_info is not None:
+            self._record_overlay_event(app, runtime_result.revision, overlay_info)
         return cluster_ip
 
     # ---------------- internal helpers ----------------
@@ -165,3 +169,32 @@ class ServiceController:
             return host, int(port)
         except Exception:
             return None, None
+
+    def _overlay_health(self) -> dict | None:
+        """Optional overlay health surface from the provider."""
+        try:
+            fn = getattr(self._provider, "overlay_health", None)
+            if callable(fn):
+                return fn()
+        except Exception:
+            return None
+        return None
+
+    def _record_overlay_event(self, app: str, revision: int, health: dict) -> None:
+        status = "ok" if bool(health.get("ok")) else "degraded"
+        if self._overlay_status.get(app) == status:
+            return
+        self._overlay_status[app] = status
+        msg_parts = []
+        if "peers" in health:
+            msg_parts.append(f"peers={health.get('peers')}")
+        if "latest_handshake_seconds" in health and health.get("latest_handshake_seconds") is not None:
+            msg_parts.append(f"latest_hs={health.get('latest_handshake_seconds')}s")
+        if "mtu" in health and health.get("mtu") is not None:
+            msg_parts.append(f"mtu={health.get('mtu')}")
+        msg = " ".join(msg_parts) if msg_parts else "overlay status changed"
+        event_type = "OverlayReady" if status == "ok" else "OverlayDegraded"
+        try:
+            self._store.record_event(app, int(revision or 0), event_type, msg)
+        except Exception:
+            pass

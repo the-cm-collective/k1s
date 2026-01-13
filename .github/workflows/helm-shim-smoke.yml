@@ -1,0 +1,41 @@
+name: helm-shim-smoke
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+jobs:
+  helm-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e .[dev]
+      - name: Install kubectl
+        run: |
+          curl -L https://dl.k8s.io/release/v1.30.3/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl
+          chmod +x /usr/local/bin/kubectl
+      - name: Install helm
+        run: |
+          curl -L https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz -o /tmp/helm.tgz
+          tar -xzf /tmp/helm.tgz -C /tmp
+          mv /tmp/linux-amd64/helm /usr/local/bin/helm
+          chmod +x /usr/local/bin/helm
+      - name: Run Helm shim demo (stub runtime)
+        env:
+          RUNTIME: stub
+          PYTHONPATH: src
+        run: |
+          bash scripts/helm_shim_demo.sh
+      - name: Show shim logs on failure
+        if: failure()
+        run: |
+          find /tmp -name "shim.log" -print -exec cat {} \;
