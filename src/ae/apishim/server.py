@@ -18,6 +18,7 @@ from urllib.parse import urlparse, parse_qs
 import json as _jsonlib
 from pathlib import Path
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from .store import ObjectStore, K8sObject
 from ae.controller.state import SQLiteStateStore
@@ -94,6 +95,106 @@ def _rule_matches(resource: str, resources: List[str] | None) -> bool:
         prefix = resource.split("/")[0] + "/*"
         return prefix in resources
     return False
+
+
+def _json_pointer_tokens(path: str) -> List[str]:
+    if not path.startswith("/"):
+        raise ValueError("pointer must start with /")
+    if path == "/":
+        return []
+    return [p.replace("~1", "/").replace("~0", "~") for p in path.lstrip("/").split("/")]
+
+
+def _json_pointer_get(doc: Any, path: str) -> Any:
+    ref = doc
+    for tok in _json_pointer_tokens(path):
+        if isinstance(ref, list):
+            idx = int(tok) if tok != "-" else len(ref)
+            ref = ref[idx]
+        elif isinstance(ref, dict):
+            ref = ref[tok]
+        else:
+            raise KeyError
+    return ref
+
+
+def _json_pointer_set(doc: Any, path: str, value: Any) -> Any:
+    if path == "" or path == "/":
+        return value
+    ref = doc
+    tokens = _json_pointer_tokens(path)
+    for tok in tokens[:-1]:
+        if isinstance(ref, list):
+            idx = int(tok) if tok != "-" else len(ref)
+            while idx >= len(ref):
+                ref.append({})
+            if not isinstance(ref[idx], (dict, list)):
+                ref[idx] = {}
+            ref = ref[idx]
+        else:
+            if tok not in ref or not isinstance(ref[tok], (dict, list)):
+                ref[tok] = {}
+            ref = ref[tok]
+    last = tokens[-1]
+    if isinstance(ref, list):
+        idx = int(last) if last != "-" else len(ref)
+        if idx == len(ref):
+            ref.append(value)
+        else:
+            ref[idx] = value
+    else:
+        ref[last] = value
+    return doc
+
+
+def _json_pointer_remove(doc: Any, path: str) -> Any:
+    tokens = _json_pointer_tokens(path)
+    if not tokens:
+        return None
+    ref = doc
+    for tok in tokens[:-1]:
+        if isinstance(ref, list):
+            ref = ref[int(tok)]
+        else:
+            ref = ref[tok]
+    last = tokens[-1]
+    if isinstance(ref, list):
+        del ref[int(last)]
+    else:
+        ref.pop(last, None)
+    return doc
+
+
+def _apply_json_patch(doc: Dict[str, Any], ops: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    target = _jsonlib.loads(_jsonlib.dumps(doc))
+    try:
+        for op in ops:
+            action = (op.get("op") or "").lower()
+            path = op.get("path") or ""
+            if action in {"add", "replace"}:
+                target = _json_pointer_set(target, path, op.get("value"))
+            elif action == "remove":
+                target = _json_pointer_remove(target, path)
+            else:
+                raise ValueError(f"unsupported op {action}")
+        return target
+    except Exception:
+        return None
+
+
+def _update_managed_fields(md: Dict[str, Any], api_version: str, manager: str, operation: str = "Apply") -> Dict[str, Any]:
+    managed = list(md.get("managedFields") or [])
+    managed.append(
+        {
+            "manager": manager,
+            "operation": operation,
+            "apiVersion": api_version,
+            "time": datetime.now(timezone.utc).isoformat(),
+            "fieldsType": "FieldsV1",
+        }
+    )
+    md["managedFields"] = managed
+    return md
 
 
 @dataclass
@@ -3763,29 +3864,29 @@ class ShimHandler(BaseHTTPRequestHandler):
     def do_PATCH(self) -> None:  # noqa: N802
         if not self._authz():
             return
+        parsed = urlparse(self.path)
+        path = parsed.path
+        q = parse_qs(parsed.query)
+        field_manager = q.get("fieldManager", ["kubectl"])[0] or "kubectl"
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
         length = int(self.headers.get("Content-Length", "0") or "0")
         body = self.rfile.read(length)
         patch = _read_json(body)
-        plural, ns, name = _ns_name(self.path)
+        plural, ns, name = _ns_name(path)
         if plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"} and name:
             obj = self.server.store.get("", "v1", plural, None if plural == "namespaces" else ns, name)  # type: ignore[attr-defined]
             if not obj:
                 self._not_found()
                 return
             base = _to_obj(obj)
-            if ctype in ("application/merge-patch+json", "application/strategic-merge-patch+json"):
-                merged = _merge_dict(base, patch)
-            elif ctype in ("application/json", ""):
-                merged = patch  # full doc replace
-            else:
-                self._json_status(
-                    HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
-                    reason="UnsupportedMediaType",
-                    message="only merge/strategic-merge or json supported",
-                )
+            merged = self._apply_patch_merge(base, patch, ctype)
+            if merged is None:
                 return
             md = merged.get("metadata") or {}
+            if ctype.startswith("application/apply-patch"):
+                md = _update_managed_fields(md, "v1", field_manager, "Apply")
+            elif ctype in ("application/merge-patch+json", "application/strategic-merge-patch+json"):
+                md = _update_managed_fields(md, "v1", field_manager, "Update")
             spec_or_data = merged.get("data") if plural in {"configmaps", "secrets"} else merged.get("spec")
             name_eff = md.get("name") or name
             ns_eff = None if plural == "namespaces" else (md.get("namespace") or ns)
@@ -3807,13 +3908,18 @@ class ShimHandler(BaseHTTPRequestHandler):
             )
             self._ok(_to_obj(updated))
             return
-        if self._handle_custom_resource_patch(ctype, patch):
-            return
-        if self._patch_extended_resources(ctype, patch):
-            return
+        orig_path = self.path
+        self.path = path
+        try:
+            if self._handle_custom_resource_patch(ctype, patch):
+                return
+            if self._patch_extended_resources(ctype, patch, field_manager):
+                return
+        finally:
+            self.path = orig_path
         self._not_found()
 
-    def _patch_extended_resources(self, ctype: str, patch: Dict[str, Any]) -> bool:
+    def _patch_extended_resources(self, ctype: str, patch: Any, field_manager: str) -> bool:
         specs = [
             ("apps", "v1", "deployments", "Deployment"),
             ("apps", "v1", "statefulsets", "StatefulSet"),
@@ -3851,6 +3957,10 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if merged is None:
                     return True
                 md = merged.get("metadata") or {}
+                if ctype.startswith("application/apply-patch"):
+                    md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Apply")
+                elif ctype in ("application/merge-patch+json", "application/strategic-merge-patch+json"):
+                    md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Update")
                 name_eff = md.get("name") or name
                 updated = self.server.store.upsert(
                     group,
@@ -3876,6 +3986,10 @@ class ShimHandler(BaseHTTPRequestHandler):
             if merged is None:
                 return True
             md = merged.get("metadata") or {}
+            if ctype.startswith("application/apply-patch"):
+                md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Apply")
+            elif ctype in ("application/merge-patch+json", "application/strategic-merge-patch+json"):
+                md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Update")
             name_eff = md.get("name") or name
             ns_eff = md.get("namespace") or ns
             updated = self.server.store.upsert(
@@ -3893,16 +4007,21 @@ class ShimHandler(BaseHTTPRequestHandler):
         return False
 
     def _apply_patch_merge(
-        self, base: Dict[str, Any], patch: Dict[str, Any], ctype: str
+        self, base: Dict[str, Any], patch: Any, ctype: str
     ) -> Dict[str, Any] | None:
-        if ctype in ("application/merge-patch+json", "application/strategic-merge-patch+json"):
+        if ctype == "application/json-patch+json":
+            merged = _apply_json_patch(base, patch if isinstance(patch, list) else [])
+            if merged is None:
+                self._json_status(HTTPStatus.BAD_REQUEST, reason="Invalid", message="invalid json patch")
+            return merged
+        if ctype in ("application/merge-patch+json", "application/strategic-merge-patch+json", "application/apply-patch+yaml", "application/apply-patch+json"):
             return _merge_dict(base, patch)
         if ctype in ("application/json", ""):
-            return patch
+            return patch if isinstance(patch, dict) else None
         self._json_status(
             HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
             reason="UnsupportedMediaType",
-            message="only merge/strategic-merge or json supported",
+            message="only merge/strategic-merge, json, apply, or json-patch supported",
         )
         return None
 
@@ -5076,11 +5195,46 @@ def _pod_obj(container: dict, rv: int, node_name: Optional[str]) -> Dict[str, An
     if node_name:
         meta["nodeName"] = node_name
     status["phase"] = phase
+    sa_name = labels.get("ae.service_account") or "default"
+    vol_name = "k1s-sa-token"
+    spec: Dict[str, Any] = {
+        "nodeName": node_name,
+        "serviceAccountName": sa_name,
+        "automountServiceAccountToken": True,
+        "volumes": [
+            {
+                "name": vol_name,
+                "projected": {
+                    "sources": [
+                        {
+                            "serviceAccountToken": {
+                                "path": "token",
+                                "expirationSeconds": 3600,
+                                "audience": "apishim",
+                            }
+                        }
+                    ]
+                },
+            }
+        ],
+        "containers": [
+            {
+                "name": labels.get("ae.container", "main"),
+                "volumeMounts": [
+                    {
+                        "name": vol_name,
+                        "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                        "readOnly": True,
+                    }
+                ],
+            }
+        ],
+    }
     return {
         "apiVersion": "v1",
         "kind": "Pod",
         "metadata": meta,
-        "spec": {"nodeName": node_name},
+        "spec": spec,
         "status": status,
     }
 
