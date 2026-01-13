@@ -276,3 +276,74 @@ def test_subject_access_review_denied(monkeypatch, store):
     status = json.loads(payload.decode())
     assert status["status"]["allowed"] is False
     assert status["status"]["denied"] is True
+
+
+def test_serviceaccount_token_auth(monkeypatch, store):
+    monkeypatch.setenv("AE_APISHIM_RBAC", "1")
+    monkeypatch.setenv("AE_APISHIM_RBAC_EVAL", "1")
+    shim_server.ShimHandler.rbac_enabled = True
+    shim_server.ShimHandler.rbac_eval_roles = True
+    shim_server.ShimHandler.admin_token = "a"
+    shim_server.ShimHandler.read_token = None
+    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda self: None)
+    # create Role allowing list configmaps
+    role = K8sObject(
+        "rbac.authorization.k8s.io",
+        "v1",
+        "roles",
+        "default",
+        "cm-reader",
+        {"name": "cm-reader", "namespace": "default"},
+        {"rules": [{"verbs": ["list"], "resources": ["configmaps"]}]},
+        {},
+        1,
+    )
+    store.upsert("rbac.authorization.k8s.io", "v1", "roles", "default", "cm-reader", role.metadata, role.spec)
+    # create serviceaccount via shim to mint token
+    sa_body = json.dumps({"apiVersion": "v1", "kind": "ServiceAccount", "metadata": {"name": "default", "namespace": "default"}}).encode()
+    req_sa = make_handler("/api/v1/namespaces/default/serviceaccounts", method="POST", headers={"Authorization": "Bearer a"}, body=sa_body)
+    handler_sa = shim_server.ShimHandler(req_sa, ("127.0.0.1", 0), None)
+    handler_sa.path = req_sa.path
+    handler_sa.command = req_sa.command
+    handler_sa.headers = req_sa.headers
+    handler_sa.server = SimpleNamespace(store=store, state=store, runtime=None)
+    handler_sa.store = store
+    handler_sa.state = None
+    handler_sa.request_version = "HTTP/1.1"
+    handler_sa.requestline = f"{handler_sa.command} {handler_sa.path} HTTP/1.1"
+    handler_sa.rfile = BytesIO(sa_body)
+    handler_sa.wfile = BytesIO()
+    handler_sa.do_POST()
+    sa_obj = store.get("", "v1", "serviceaccounts", "default", "default")
+    token = (sa_obj.metadata.get("annotations") or {}).get("ae.apishim/token")
+    assert token
+    # bind role to serviceaccount
+    rb = K8sObject(
+        "rbac.authorization.k8s.io",
+        "v1",
+        "rolebindings",
+        "default",
+        "bind-sa",
+        {"name": "bind-sa", "namespace": "default"},
+        {
+            "subjects": [{"kind": "ServiceAccount", "name": "default", "namespace": "default"}],
+            "roleRef": {"name": "cm-reader"},
+        },
+        {},
+        2,
+    )
+    store.upsert("rbac.authorization.k8s.io", "v1", "rolebindings", "default", "bind-sa", rb.metadata, rb.spec)
+    # attempt list configmaps with SA token
+    req = make_handler("/api/v1/namespaces/default/configmaps", headers={"Authorization": f"Bearer {token}"})
+    handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
+    handler.path = req.path
+    handler.command = req.command
+    handler.headers = req.headers
+    handler.server = SimpleNamespace(store=store, state=store, runtime=None)
+    handler.store = store
+    handler.state = None
+    handler.request_version = "HTTP/1.1"
+    handler.requestline = f"{handler.command} {handler.path} HTTP/1.1"
+    handler.wfile = BytesIO()
+    handler.do_GET()
+    assert 200 in handler.responses
