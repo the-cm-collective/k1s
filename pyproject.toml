@@ -7,9 +7,13 @@ name = "ae"
 version = "0.1.0"
 description = "Minimal application engine controller prototype"
 readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.11"
 authors = [{name = "k1s contributors"}]
 dynamic = ["dependencies"]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+]
 
 [project.optional-dependencies]
 dev = [
