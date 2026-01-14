@@ -61,11 +61,13 @@
     </style>
     <style>
       /* Base layout aligned to dashboard palette */
-      html, body { height: 100%; }
+      html { height: 100%; }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
-        margin: 2rem;
+        margin: 0;
+        padding: 2rem;
         line-height: 1.55;
+        box-sizing: border-box;
         min-height: 100vh;
         display: flex;
         flex-direction: column;
@@ -208,7 +210,9 @@
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
+      <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
@@ -226,6 +230,9 @@
 <li>Aggregated:</li>
 <li><code>ae_apps_total</code>, <code>ae_apps_ready</code>, <code>ae_apps_progressing</code>, <code>ae_apps_degraded</code></li>
 <li><code>ae_replicas_total</code>, <code>ae_replicas_ready</code>, <code>ae_replicas_live</code></li>
+<li>Nodes/Services:</li>
+<li><code>ae_nodes_total</code>, <code>ae_nodes_ready</code>, <code>ae_nodes_stale</code></li>
+<li><code>ae_services_total</code> plus per-service <code>cluster_ip</code>, <code>provider</code>, and port labels</li>
 <li>Per-app:</li>
 <li><code>ae_app_desired_replicas{app=&quot;&lt;name&gt;&quot;}</code></li>
 <li><code>ae_app_ready_replicas{app=&quot;&lt;name&gt;&quot;}</code></li>
@@ -233,19 +240,24 @@
 <li>Per-replica:</li>
 <li><code>ae_replica_ready{app=&quot;&lt;name&gt;&quot;,replica=&quot;&lt;id&gt;&quot;}</code> 0/1</li>
 </ul>
+<p>API shim (when enabled)</p>
+<ul>
+<li><code>apishim_watchers{group,version,resource,namespace}</code> — active watch streams</li>
+<li><code>apishim_watch_queue_depth{...}</code> — queue depth per watch key</li>
+<li><code>apishim_watch_events_enqueued_total{...}</code> / <code>_dropped_total{...}</code> — backpressure counters</li>
+<li><code>apishim_watch_broadcasts_total{...}</code> — publish attempts per watch key</li>
+<li><code>apishim_store_backend_info{backend=&quot;sqlite|postgres&quot;}</code> — storage backend in use</li>
+<li>For HA shims on Postgres, the same metrics surface on each instance (shared store, per-process queues).</li>
+</ul>
 <h3>Logs Endpoint</h3>
 <p>Tail logs over HTTP (READ role if tokens configured):</p>
-<pre><code>
-GET /logs/&lt;app&gt;?container=&lt;id|idx&gt;&amp;tail=N&amp;since=&lt;seconds&gt;&amp;follow=1
-</code></pre>
+<pre><code>GET /logs/&lt;app&gt;?container=&lt;id|idx&gt;&amp;tail=N&amp;since=&lt;seconds&gt;&amp;follow=1</code></pre>
 <ul>
 <li>When <code>follow=1</code>, the response streams plain text lines.</li>
 <li>Without follow, the response is JSON: <code>{ &quot;lines&quot;: [ ... ] }</code>.</li>
 </ul>
 <p>Remote CLI example:</p>
-<pre><code>
-ae --server http://&lt;ip&gt;:9108 --token readtoken logs echo --tail 100
-</code></pre>
+<pre><code>ae --server http://&lt;ip&gt;:9108 --token readtoken logs echo --tail 100</code></pre>
 <p>See <code>docs/runbook.md</code> for the “Remote CLI over LAN” section and auth token setup.</p>
 <h3>Grafana Examples</h3>
 <ul>
@@ -254,8 +266,7 @@ ae --server http://&lt;ip&gt;:9108 --token readtoken logs echo --tail 100
 <li><code>docs/grafana/apps-overview.json</code> — per-app readiness time series and status table</li>
 </ul>
 <p>You can also embed a single panel JSON (e.g., stat showing ready apps):</p>
-<pre><code>
-{
+<pre><code>{
   &quot;type&quot;: &quot;stat&quot;,
   &quot;title&quot;: &quot;Ready Apps&quot;,
   &quot;datasource&quot;: { &quot;type&quot;: &quot;prometheus&quot;, &quot;uid&quot;: &quot;PROM&quot; },
@@ -266,14 +277,14 @@ ae --server http://&lt;ip&gt;:9108 --token readtoken logs echo --tail 100
     &quot;graphMode&quot;: &quot;none&quot;
   },
   &quot;gridPos&quot;: { &quot;h&quot;: 4, &quot;w&quot;: 6, &quot;x&quot;: 0, &quot;y&quot;: 0 }
-}
-</code></pre>
+}</code></pre>
 <h3>Demo Dashboard (/dashboard)</h3>
 <ul>
 <li>Adds a System snapshot sourced from <code>GET /system</code>:</li>
 <li>Controller: last reconcile timestamp and duration</li>
+<li>Nodes: Ready/stale counts plus table of node status/cordon</li>
 <li>Ingress: configured site blocks and existence flag</li>
-<li>Services: declared <code>service.port</code>/<code>targetPort</code> per app</li>
+<li>Services: declared <code>service.port</code>/<code>targetPort</code> per app and VIP/provider info</li>
 <li>Storage: container‑engine named volumes created for apps (PV‑lite)</li>
 <li>RBAC: shows whether mutations are enabled and tokens are configured (never reveals secrets)</li>
 </ul>
@@ -283,15 +294,13 @@ ae --server http://&lt;ip&gt;:9108 --token readtoken logs echo --tail 100
 </ul>
 <h3>System API</h3>
 <p><code>GET /system</code> returns a JSON object combining controller stats and optional runtime/ingress snapshots, for example:</p>
-<pre><code>
-{
+<pre><code>{
   &quot;controller&quot;: { &quot;last_reconcile_timestamp&quot;: 1698000000.0, &quot;last_reconcile_duration&quot;: 0.245, &quot;apps&quot;: { &quot;echo&quot;: {&quot;reconciles&quot;: 12, &quot;duration_sum&quot;: 2.3, &quot;ops&quot;: {&quot;created&quot;: 1}}}},
   &quot;rbac&quot;: { &quot;mutations_enabled&quot;: false, &quot;read_token_configured&quot;: false, &quot;scaler_token_configured&quot;: false, &quot;admin_token_configured&quot;: false },
   &quot;ingress&quot;: { &quot;dirty&quot;: false, &quot;sites&quot;: [{&quot;app&quot;: &quot;echo&quot;, &quot;host&quot;: &quot;echo.local&quot;, &quot;path&quot;: &quot;/path/to/echo.caddy&quot;, &quot;exists&quot;: true}] },
   &quot;services&quot;: [{ &quot;app&quot;: &quot;echo&quot;, &quot;port&quot;: 8080, &quot;target_port&quot;: 8080, &quot;replicas&quot;: 1 }],
   &quot;volumes&quot;: [{ &quot;name&quot;: &quot;ae-echo-data&quot;, &quot;labels&quot;: {&quot;ae.app&quot;: &quot;echo&quot;}, &quot;driver&quot;: &quot;local&quot;, &quot;mountpoint&quot;: &quot;/var/lib/docker/volumes/...&quot; }]
-}
-</code></pre>
+}</code></pre>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -299,7 +308,7 @@ ae --server http://&lt;ip&gt;:9108 --token readtoken logs echo --tail 100
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-13 17:21:28</span>
+        <span>Built 2026-01-14 14:58:55</span>
       </div>
     </footer>
     <script>

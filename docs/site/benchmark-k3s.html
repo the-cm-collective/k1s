@@ -61,11 +61,13 @@
     </style>
     <style>
       /* Base layout aligned to dashboard palette */
-      html, body { height: 100%; }
+      html { height: 100%; }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
-        margin: 2rem;
+        margin: 0;
+        padding: 2rem;
         line-height: 1.55;
+        box-sizing: border-box;
         min-height: 100vh;
         display: flex;
         flex-direction: column;
@@ -208,7 +210,9 @@
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
+      <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
@@ -235,34 +239,24 @@
 <li>Optional: Podman or Docker installed (for container cgroup memory)</li>
 </ul>
 <h2>Bring up k3s (k3d)</h2>
-<pre><code>
-make bench-k3s-up K3S_NAME=bench
-</code></pre>
+<pre><code>make bench-k3s-up K3S_NAME=bench</code></pre>
 <p>This exposes ports 80/443 for Traefik; the provided Ingress uses host <code>echo.localtest.me</code>.</p>
 <h2>Run Scenarios (k3s)</h2>
 <ul>
-<pre><code>
-make bench-mem-matrix-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yaml REPLICAS=1,5,10 DURATION=30
-</code></pre>
+<pre><code>make bench-mem-matrix-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yaml REPLICAS=1,5,10 DURATION=30</code></pre>
 <li>Idle + scale‑out matrix:</li>
-<pre><code>
-make bench-mem-rollout-k3s LABEL_SUITE=baseline-roll DEPLOY=echo NS=default REPLICAS=5 DURATION=30
-</code></pre>
+<pre><code>make bench-mem-rollout-k3s LABEL_SUITE=baseline-roll DEPLOY=echo NS=default REPLICAS=5 DURATION=30</code></pre>
 <li>Rollout (during vs post):</li>
 </ul>
 <h2>Run Scenarios (k1s)</h2>
 <ul>
-<pre><code>
-make bench-mem-matrix-k1s LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30
-make bench-mem-rollout-k1s LABEL_SUITE=baseline-roll APP=specs/examples/echo.yaml REPLICAS=5 DURATION=30
-</code></pre>
+<pre><code>make bench-mem-matrix-k1s LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30
+make bench-mem-rollout-k1s LABEL_SUITE=baseline-roll APP=specs/examples/echo.yaml REPLICAS=5 DURATION=30</code></pre>
 <li>Matrix and rollout (in a separate terminal, controller running):</li>
 </ul>
 <h2>Combine and Plot</h2>
-<pre><code>
-make bench-mem-combine GLOB=&#x27;snapshots/*/*&#x27;
-make bench-mem-plot CSV=combined/combined.csv OUTDIR=charts
-</code></pre>
+<pre><code>make bench-mem-combine GLOB=&#x27;snapshots/*/*&#x27;
+make bench-mem-plot CSV=combined/combined.csv OUTDIR=charts</code></pre>
 <p>Charts include control‑plane PSS, system cgroup memory, and approximate per‑pod overhead.</p>
 <h2>Caveats</h2>
 <ul>
@@ -271,9 +265,7 @@ make bench-mem-plot CSV=combined/combined.csv OUTDIR=charts
 <li>You can bypass preflight checks with <code>SKIP_GUARDS=1</code> in CI.</li>
 </ul>
 <h2>Teardown</h2>
-<pre><code>
-make bench-k3s-down K3S_NAME=bench
-</code></pre>
+<pre><code>make bench-k3s-down K3S_NAME=bench</code></pre>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -281,7 +273,7 @@ make bench-k3s-down K3S_NAME=bench
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-13 17:21:28</span>
+        <span>Built 2026-01-14 14:58:55</span>
       </div>
     </footer>
     <script>

@@ -8,8 +8,10 @@ Base URL: `http://<host>:<port>`
 - GET `/metrics`
   - Content-Type: `text/plain; version=0.0.4`
   - Prometheus text format gauges:
-    - `ae_apps_total`, `ae_apps_ready`, `ae_apps_progressing`, `ae_apps_degraded`
-    - `ae_replicas_total`, `ae_replicas_ready`, `ae_replicas_live`
+    - Apps/replicas: `ae_apps_total`, `ae_apps_ready`, `ae_apps_progressing`, `ae_apps_degraded`, `ae_replicas_total`, `ae_replicas_ready`, `ae_replicas_live`
+    - Nodes: `ae_nodes_total`, `ae_nodes_ready`, `ae_nodes_stale`
+    - Services: `ae_services_total` plus per-service labels (ClusterIP, provider)
+    - Shim/backends: `apishim_*` metrics (watchers, queue depth, backend) when the API shim is enabled
 
 - GET `/status`
   - Content-Type: `application/json`
@@ -33,6 +35,10 @@ Base URL: `http://<host>:<port>`
   - 200 OK: JSON object (same shape as items in `/status`)
   - 404 Not Found: when no status exists
 
+- GET `/nodes`
+  - 200 OK: `{ "nodes": [ { node_id, name, backend, endpoint, labels, taints, pod_cidr, cordoned, status, seen_at, stale }, ... ], "count": N, "stale_after_seconds": 40 }`
+  - Requires READ token when auth is configured.
+
 - GET `/events/<app>?limit=N`
   - 200 OK: JSON array of recent events for `<app>`
   - Example item:
@@ -46,13 +52,18 @@ Base URL: `http://<host>:<port>`
     }
     ```
 
+- GET `/system` and `/dashboard`
+  - Aggregate snapshot for the dashboard UI including nodes, services, storage volumes, and token/mutation flags.
+
 Notes
 - This API is read-only by design; mutating operations happen via the CLI.
-- The API shares the controller’s SQLite store; results are eventually consistent with reconcile intervals.
+- The API shares the controller’s SQLite/Postgres store; results are eventually consistent with reconcile intervals.
+- When any token is set, all GETs require at least the READ token.
 
 Extras
 - GET `/openapi.json` — Minimal OpenAPI 3 document for the read-only endpoints.
 - GET `/docs` — Lightweight HTML that lists available paths by fetching `/openapi.json`.
+
 Mutations (opt-in; dev only)
 
 - Enable by setting env `AE_API_MUTATIONS=1` on the controller process. Optionally set `AE_API_TOKEN` and send `Authorization: Bearer <token>` on requests.
@@ -83,6 +94,7 @@ Endpoints
 - GET `/status/<app>` — JSON status object
 - GET `/events/<app>?limit=N&cursor=...` — Paginated recent events
   - Response: `{ items: [...], next: "cursor" | null }`
+- GET `/nodes` — Node inventory and staleness info
 - POST `/scale/<app>` — Body: `{ "replicas": <int> }` (requires scaler/admin)
 - POST `/delete/<app>?purge=1` — Delete app (requires admin)
 - Logs: GET `/logs/<app>?container=&tail=&since=&follow=` (requires READ)

@@ -6,6 +6,7 @@ This single page gets a new contributor or user from a fresh clone to a running 
 - Python 3.11+
 - Podman (preferred) or Docker installed and running
 - Optional (for ingress/docs via Caddy and Prometheus): `docker compose` or `podman compose`
+- Optional (for multi-node lab): two Linux hosts/VMs with WireGuard tools and rootful networking
 
 ## Option A — Zero‑to‑Demo (automated)
 This script provisions a local demo stack, serves docs, starts the controller API, and applies sample apps.
@@ -36,6 +37,7 @@ python -m ae.cli logs blue --tail 50
 Tips
 - Need only docs + API? Use `./scripts/init_demo.sh --docs-only -y`.
 - Prefer Make: `make demo ARGS="--demo-standard -y -d"` and `make demo-down` (see `Makefile:1`).
+- Want to try multi-node? Run `make demo ARGS="--demo-multinode -y"` once you have a second host/VM reachable (see Option C below).
 
 ## Option B — Manual Quickstart (hands‑on)
 Follow this if you want to see each moving part.
@@ -73,64 +75,16 @@ k1s describe app/echo
 k1s logs app/echo --follow --tail 100
 ```
 
-## Using the `ae` CLI (greatest hits)
-- Apply/inspect lifecycle:
+Optional: start the Kubernetes API shim for kubectl/helm parity
 ```
-ae apply -f <manifest.yaml>
-ae status [<app>] --wide --events --json
-ae logs <app> --follow --tail 100
-ae revisions <app>
-ae rollback <app> [--to N]
-ae delete <app> [--purge]
+AE_APISHIM_TOKEN=devtoken python -m ae.apishim serve --host 127.0.0.1 --port 8445
+kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods
 ```
-- Planning and K8s helpers:
-```
-ae plan -f specs/examples/echo.yaml --verbose --json
-ae export-k8s -f specs/examples/echo.yaml --namespace demo --preset web-hardened --validate -o specs/examples/echo-k8s.yaml
-ae k8s-check -f specs/examples/echo.yaml --policy strict
-```
-- Registries and TLS:
-```
-ae registry login ghcr --username <u> --token <pat>
-ae registry list
-ae tls sync --name mycert --input path/to/k8s-secret.yaml
-ae tls verify --name mycert --json
-```
+Shim capabilities and gaps live in `docs/apishim-compatibility-matrix.md`.
 
-## Remote CLI & Tokens (optional)
-Generate API tokens and point the CLI at a remote controller.
-```
-python -m ae.cli api tokens --generate --ttl-hours 24 -o .env.api
-source .env.api
-ae --server http://<controller-ip>:9108 --token $AE_API_READ_TOKEN status
-```
-Details: `README.md:67` and token management in `docs/runbook.md:1`.
+## Option C — Multi-node Lab (controller + worker)
+Use this when you want to validate the overlay Service VIP path and scheduler on two hosts.
 
-## Documentation Map (most useful first)
-- High‑level overview: `docs/overview.md:1`
-- Operations runbook: `docs/runbook.md:1`
-- HTTP API reference: `docs/http-api.md:1`
-- Ingress & TLS: `docs/ingress.md:1`
-- Demo modes: `docs/demo-modes.md:1`
-- Examples index: `docs/examples.md:1`
-- Architecture deep dive: `docs/architecture.md:1`
-
-## Where things live in the repo
-- Controller daemon entry: `src/ae/controller/__main__.py:1`
-- CLIs: `src/ae/cli/__main__.py:1`, `src/ae/kctl/__main__.py:1`
-- Ingress (Caddy): `src/ae/ingress/`, site fragments under `ops/dev/caddy/sites/`
-- Runtimes: `src/ae/runtime/` (Podman default, Docker optional)
-- Observability/API: `src/ae/observability/`
-- Specs & samples: `specs/`, `specs/examples/`
-- Dev stack compose: `ops/dev/docker-compose.yaml:1`
-
-## Troubleshooting
-- If Caddy HTTPS ports 8443/8888 are busy, the demo auto‑picks free ports and prints them.
-- To rebuild docs locally: `make docs` (builder at `docs/build_docs.py:1`).
-- Teardown and reset demo: `./scripts/init_demo.sh --down -y`.
-
-Happy shipping!
-Want a stricter baseline? Try the hardened demo (non‑root, read‑only, startup/liveness, PDB, PSA labels, NP default‑deny):
+1) Controller (host A):
 ```
-./scripts/init_demo.sh --demo-hardened -y
-```
+AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay AE_AGENT_API_TOKEN=REDACTED

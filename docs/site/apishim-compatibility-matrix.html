@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Configs Secrets</title>
+    <title>Apishim Compatibility Matrix</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs/%3E%3Crect width='64' height='64' rx='12' fill='%23096ad9'/%3E%3Cpath d='M16 45h32M16 19h32M16 32h32' stroke='white' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E"/>
     <style>
       :root {
@@ -223,78 +223,43 @@
       <a href="playground.html">Playground</a>
     </nav>
     <div class="container">
-    <h2>Configs and Secrets</h2>
-<p>This page explains how k1s projects values from configs and sealed secrets into containers — as environment variables and (optionally) as files.</p>
-<h3>Merge Order</h3>
+    <h1>API Shim Compatibility Matrix (2026-01-14)</h1>
+<p>Legend: ✅ supported; ⚠️ partial/limited; 🚧 planned.</p>
+<h2>Core resources</h2>
 <ul>
-<li><code>configRefs</code> &lt; <code>secretRefs</code> &lt; <code>spec.env</code></li>
-<li>Manifest <code>env</code> wins last and can override values coming from configs/secrets.</li>
+<li>Namespaces, ConfigMaps, Secrets, ServiceAccounts: ✅ CRUD, watch, managedFields apply/patch.</li>
+<li>Services: ✅ ClusterIP/NodePort allocation; LB status projection; EndpointSlice + topology hints; svc port-forward.</li>
+<li>Endpoints/EndpointSlice: ✅ virtualized from controller state.</li>
+<li>Ingress (v1): ✅ status.loadBalancer from VIP/clusterIP; annotations passthrough; no canary/regex.</li>
 </ul>
-<h3>Environment Projection</h3>
-<pre><code>spec:
-  configRefs:
-    - name: app-config
-      path: configs/app-config.yaml   # YAML or JSON mapping
-      env:
-        - { name: APP_MODE,  key: mode }
-        - { name: APP_COLOR, key: color }
-  secretRefs:
-    - name: demo-secret
-      path: specs/examples/demo-secret.sops.yaml
-      env:
-        - { name: API_TOKEN, key: token }
-  env:
-    - { name: APP_MODE, value: demo-override }  # overrides config/secret</code></pre>
-<p>For local demos without SOPS, set <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> (or run <code>./scripts/init_demo.sh --with-secrets-env</code>).</p>
-<h3>Sealing the sample secret (SOPS/age)</h3>
-<p>If you prefer to use a real sealed secret for the examples:</p>
+<h2>Workloads</h2>
 <ul>
-<li>Ensure you have an age recipient:</li>
-<li>EITHER create an age identity (private key) at <code>~/.config/ae/keys.txt</code> using <code>age-keygen -o ~/.config/ae/keys.txt</code> (preferred),</li>
-<li>OR set <code>AE_AGE_RECIPIENT=age1...</code> to your public recipient directly.</li>
-<li>Seal the demo secret:</li>
-<li><code>make secrets-seal-demo</code> (runs <code>scripts/seal_demo_secret.sh</code>)</li>
-<li>Verify decryption works locally:</li>
-<li><code>sops --decrypt specs/examples/demo-secret.sops.yaml | yq</code> (should show a <code>token</code> field)</li>
+<li>Deployments, ReplicaSets (virtual), Pods (projected): ✅ status/conditions, logs/exec/port-forward.</li>
+<li>StatefulSet, DaemonSet, Job, CronJob: ✅ create/update/delete, status, ownerRefs.</li>
+<li>HorizontalPodAutoscaler v2: ✅ currentMetrics/status; backs k1s autoscaling.</li>
 </ul>
-<p>Notes:</p>
+<h2>AuthN/AuthZ</h2>
 <ul>
-<li>The controller attempts to decrypt via <code>sops --decrypt</code>. In dev, you can bypass sealing by setting <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> (or by starting the demo with <code>--with-secrets-env</code>).</li>
-<li>If decryption fails at runtime, the controller records an <code>AppEvent</code> with type <code>SecretError</code> and continues; use <code>ae events &lt;app&gt;</code> to inspect.</li>
+<li>Tokens: ✅ bearer tokens required by default; optional AE_APISHIM_ALLOW_ANON=1 for local dev.</li>
+<li>RBAC: ✅ Role/ClusterRole + (Cluster)RoleBinding evaluation; SubjectAccessReview endpoint; static fallback.</li>
+<li>ServiceAccount tokens: ✅ issued and injected into projected pods.</li>
 </ul>
-<h3>File Projection</h3>
-<p>At reconcile time, k1s writes key/value files under:</p>
+<h2>Mutations &amp; patching</h2>
 <ul>
-<li>Host: <code>state/projections/&lt;app&gt;-rev&lt;revision&gt;/{config,secret}/...</code></li>
-<li>Container (mounted RO): <code>/var/run/ae/config/&lt;app&gt;</code></li>
+<li>apply (SSA): ✅ with managedFields tracking and conflict detection.</li>
+<li>mergePatch/jsonPatch: ✅ content-type negotiation enforced.</li>
+<li>Validation: ⚠️ basic DNS-1123 and service port/nodePort checks; no schema admission for custom fields.</li>
 </ul>
-<p>You can either project all keys by default, or select keys and filenames:</p>
-<pre><code>spec:
-  configRefs:
-    - name: app-config
-      path: configs/app-config.yaml
-      files:
-        - { key: mode,  file: config/app_mode.txt }
-        - { key: color, file: config/app_color.txt }
-  secretRefs:
-    - name: demo-secret
-      path: specs/examples/demo-secret.sops.yaml
-      files:
-        - { key: token, file: secret/token }</code></pre>
-<p>Inside the container this produces, for example:</p>
+<h2>Discovery &amp; tooling</h2>
 <ul>
-<li><code>/var/run/ae/config/&lt;app&gt;/config/app_mode.txt</code></li>
-<li><code>/var/run/ae/config/&lt;app&gt;/secret/token</code></li>
+<li>Discovery endpoints (/api, /apis, preferred versions): ✅</li>
+<li>OpenAPI: ✅ enriched <code>/openapi/v2</code> covering core workloads/services/HPA/ingress; <code>/openapi/v3</code> mirrors v2. Helm/kubectl dry-run validated in CI; drift guard compares committed specs.</li>
+<li>Port-forward: ✅ pods and services (SPDY/WebSocket) selecting ready endpoints first.</li>
 </ul>
-<h3>CLI Helpers</h3>
+<h2>Not covered</h2>
 <ul>
-<li><code>ae config validate -f configs/app-config.yaml</code> — list top-level keys.</li>
-<li><code>ae secret validate -f specs/examples/demo-secret.sops.yaml</code> — list decrypted keys.</li>
-</ul>
-<h3>Notes</h3>
-<ul>
-<li>For production, use SOPS/age and keep plaintext disabled (do not set <code>AE_ALLOW_PLAINTEXT_SECRETS</code>).</li>
-<li>File projection is additive; you can still mount your own volumes.</li>
+<li>Aggregated API servers, metrics.k8s.io, PodSecurity admission, CSI/CNI plugins, cloud LoadBalancers.</li>
+<li>Full conformance test suite (targeting “lite” subset only).</li>
 </ul>
     </div>
     <footer class="site-footer">
