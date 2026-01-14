@@ -93,6 +93,44 @@ spec:
     protocol: TCP
 YAML
           kubectl --server=http://127.0.0.1:8445 --token=$TOKEN --insecure-skip-tls-verify --validate=false apply -f /tmp/echo-svc.yaml
+      - name: Assert service status and ingress projection
+        env:
+          TOKEN: "ci-token"
+        run: |
+          set -euo pipefail
+          K="kubectl --server=http://127.0.0.1:8445 --token=$TOKEN --insecure-skip-tls-verify"
+          CLUSTER_IP=$($K get svc echo-svc -o jsonpath='{.spec.clusterIP}')
+          LB_IP=$($K get svc echo-svc -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          echo "clusterIP=${CLUSTER_IP} lb_ip=${LB_IP}"
+          [ "$CLUSTER_IP" = "10.96.0.50" ] || (echo "unexpected clusterIP $CLUSTER_IP" && exit 1)
+          [ "$LB_IP" = "10.96.0.50" ] || (echo "unexpected loadBalancer ip $LB_IP" && exit 1)
+          cat <<'YAML' >/tmp/echo-ing.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: echo
+  namespace: default
+spec:
+  defaultBackend:
+    service:
+      name: echo-svc
+      port:
+        number: 8080
+YAML
+          $K apply -f /tmp/echo-ing.yaml
+          ING_IP=$($K get ingress echo -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          echo "ingress ip=${ING_IP}"
+          [ "$ING_IP" = "10.96.0.50" ]
+      - name: Watch stability (svc)
+        env:
+          TOKEN: "ci-token"
+        run: |
+          set -euo pipefail
+          kubectl --server=http://127.0.0.1:8445 --token=$TOKEN --insecure-skip-tls-verify get svc echo-svc -w --output-watch-events --request-timeout=8s > /tmp/svc-watch.log
+          if ! [ -s /tmp/svc-watch.log ]; then
+            echo "watch stream was empty"
+            exit 1
+          fi
       - name: Port-forward service twice and assert backends alternate
         env:
           TOKEN: "ci-token"
