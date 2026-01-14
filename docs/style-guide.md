@@ -9,6 +9,7 @@ The dashboard UI defines the official k1s look. Use these tokens when styling do
 - **Warning:** `#f59e0b` on `#f59e0b33`.
 - **Danger:** `#ef4444` on `#ef444433`.
 - **Neutrals:** base `#0f172a` (page), surface `#111827`, panel `#1f2937`, border `#334155`/`#8884`, text `#e5e7eb`, muted text `#9ca3af`.
+- **Links:** dark `#5a86c9` (hover `#7aa0e8`); light `#2f59b9` (hover `#3b63c5`).
 - **Utility accents:** selection glow `#60a5fa`, selected state `#1f2937`, table lines `#8884`.
 
 ## CSS Tokens (drop into docs)
@@ -38,6 +39,8 @@ The dashboard UI defines the official k1s look. Use these tokens when styling do
   --k1s-radius: 8px;
   --k1s-radius-pill: 999px;
   --k1s-gap: 12px;
+  --link: #5a86c9;
+  --link-hover: #7aa0e8;
 }
 ```
 
