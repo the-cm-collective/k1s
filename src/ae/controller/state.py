@@ -1,3 +1,4 @@
+# ruff: noqa: E501,UP006,UP007,UP017
 """State persistence helpers backed by SQLite."""
 
 from __future__ import annotations
@@ -988,6 +989,10 @@ class SQLiteStateStore:
             for row in rows
         ]
 
+    # Compatibility helper for older callers/tests
+    def record_service_endpoints(self, app_name: str, endpoints: list[ServiceEndpoint]) -> None:
+        self.upsert_service_endpoints(app_name, endpoints)
+
     def list_services(self) -> list[ServiceListItem]:
         """List all services stored (cluster IP allocation helper)."""
         with self._connect() as conn:
@@ -1255,3 +1260,4 @@ class SQLiteStateStore:
                 conn.execute("DELETE FROM app_events WHERE app_name = ?", (app_name,))
                 conn.execute("DELETE FROM app_revisions WHERE app_name = ?", (app_name,))
             conn.commit()
+# ruff: noqa

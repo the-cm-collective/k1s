@@ -1,5 +1,5 @@
+from ae.controller.spec import AppManifest, AppSpec, Metadata, ServiceSpec
 from ae.runtime.podman_runtime import PodmanRuntime
-from ae.controller.spec import AppManifest, Metadata, AppSpec, ServiceSpec
 
 
 class DummyResult:
@@ -32,6 +32,7 @@ def test_create_container_removes_existing(monkeypatch):
     )
 
     def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
         calls.append(list(argv))
         # Simulate: container exists -> exit code 0 only for `container exists <name>`
         if argv[:3] == [rt._bin, "container", "exists"]:
@@ -43,7 +44,7 @@ def test_create_container_removes_existing(monkeypatch):
 
     monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
     # Avoid invoking actual volume helpers
-    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *a, **k: None)
+    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *_a, **_k: None)
 
     m = _manifest_single()
     # Call the private helper to focus the behavior
@@ -64,7 +65,7 @@ def test_podman_serial_service_rollout_removes_old(monkeypatch):
 
     calls = {"list": 0}
 
-    def fake_list(app):  # noqa: ANN001
+    def fake_list(_app):  # noqa: ANN001
         calls["list"] += 1
         labels = {
             rt.APP_LABEL: "blue",
@@ -81,9 +82,9 @@ def test_podman_serial_service_rollout_removes_old(monkeypatch):
     monkeypatch.setattr(rt, "_list_app_containers", fake_list)
     monkeypatch.setattr(rt, "_image_exists", lambda *_, **__: True)
     monkeypatch.setattr(rt, "_run_ok", lambda *_, **__: DummyResult(0, "[]"))
-    monkeypatch.setattr(rt, "_create_container", lambda *_, **__: None)
-    monkeypatch.setattr(rt, "_ensure_sidecars", lambda *_, **__: None)
-    monkeypatch.setattr(rt, "_find_by_label", lambda *_, **__: None)
+    monkeypatch.setattr(rt, "_create_container", lambda *_a, **_k: None)
+    monkeypatch.setattr(rt, "_ensure_sidecars", lambda *_a, **_k: None)
+    monkeypatch.setattr(rt, "_find_by_label", lambda *_a, **_k: None)
 
     removed_ids: list[str] = []
     monkeypatch.setattr(rt, "_stop_and_remove", lambda cid: removed_ids.append(cid))
@@ -106,6 +107,7 @@ def test_oci_runtime_flag_in_create(monkeypatch):
     )
 
     def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
         calls.append(list(argv))
         # Behave as non-existing container, and no local images
         if argv[:3] == [rt._bin, "container", "exists"]:
@@ -115,7 +117,7 @@ def test_oci_runtime_flag_in_create(monkeypatch):
         return DummyResult(0)
 
     monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
-    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *a, **k: None)
+    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *_a, **_k: None)
 
     m = _manifest_single()
     rt._create_container(m, "blue-rev1-0", 1, service=(8080, 8080, None))
@@ -148,17 +150,18 @@ def test_oci_runtime_flag_in_init_containers(monkeypatch):
         def __init__(self):
             self.returncode = 0
 
-    def fake_popen(argv, **kwargs):  # noqa: ANN001
+    def fake_popen(argv, **_kwargs):  # noqa: ANN001
         # We only intercept subprocess.run used by init containers here
         captured.append(list(argv))
         return P()
 
     # Avoid volume creation and image lookup side effects
-    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *a, **k: None)
-    monkeypatch.setattr(rt, "_image_exists", lambda *a, **k: True)
+    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *_a, **_k: None)
+    monkeypatch.setattr(rt, "_image_exists", lambda *_a, **_k: True)
     monkeypatch.setattr("subprocess.run", fake_popen)
 
     res = rt.run_init_containers(m)
     assert res and res[0][1] == 0
     # Ensure the run argv contains --runtime crun
     assert any(c[:2] == [rt._bin, "run"] and "--runtime" in c and "crun" in c for c in captured), f"--runtime crun missing in: {captured}"
+# ruff: noqa: E501

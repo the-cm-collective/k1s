@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from ae.controller.state import SQLiteStateStore, ServiceEndpoint
+from ae.controller.state import ServiceEndpoint, SQLiteStateStore
 from ae.network.provider_overlay import OverlayProvider
 
 
@@ -34,3 +34,4 @@ def test_overlay_provider_renders_endpoints():
         cfg = provider._render_haproxy("echo-mn", ip, {80: [("10.42.0.2", 8080), ("10.42.1.3", 8080)]})
         assert "10.42.0.2:8080" in cfg
         assert "10.42.1.3:8080" in cfg
+# ruff: noqa: E501

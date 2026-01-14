@@ -2,8 +2,6 @@
 
 from pathlib import Path
 
-import pytest
-
 from ae.controller.spec import AppManifest, AppSpec, IngressSpec, Metadata
 from ae.ingress.caddy import CaddyIngressManager
 from ae.ingress.service import IngressService
@@ -25,7 +23,7 @@ def build_manifest() -> AppManifest:
 def test_caddy_manager_writes_site(tmp_path, monkeypatch):
     calls = []
 
-    def fake_run(args, check, stdout, stderr):  # noqa: ANN001 - mimic subprocess signature
+    def fake_run(args, **_kwargs):  # noqa: ANN001 - mimic subprocess signature
         calls.append(args)
 
         class Result:
@@ -50,7 +48,7 @@ def test_caddy_manager_writes_site(tmp_path, monkeypatch):
 
 
 def test_ingress_service_apply(tmp_path, monkeypatch):
-    monkeypatch.setattr("ae.ingress.caddy.subprocess.run", lambda *args, **kwargs: None)
+    monkeypatch.setattr("ae.ingress.caddy.subprocess.run", lambda *_args, **_kwargs: None)
     manager = CaddyIngressManager(config_root=tmp_path / "sites", caddy_binary="caddy")
     service = IngressService(manager)
     manifest = build_manifest()
@@ -62,7 +60,7 @@ def test_ingress_service_apply(tmp_path, monkeypatch):
 
 
 def test_caddy_multi_path(tmp_path, monkeypatch):
-    monkeypatch.setattr("ae.ingress.caddy.subprocess.run", lambda *args, **kwargs: None)
+    monkeypatch.setattr("ae.ingress.caddy.subprocess.run", lambda *_args, **_kwargs: None)
     manager = CaddyIngressManager(config_root=tmp_path / "sites", caddy_binary="caddy")
     m = build_manifest()
     # Inject multi-paths
@@ -81,7 +79,7 @@ def test_caddy_multi_path(tmp_path, monkeypatch):
 
 
 def test_caddy_byo_tls(tmp_path, monkeypatch):
-    monkeypatch.setattr("ae.ingress.caddy.subprocess.run", lambda *args, **kwargs: None)
+    monkeypatch.setattr("ae.ingress.caddy.subprocess.run", lambda *_args, **_kwargs: None)
     manager = CaddyIngressManager(config_root=tmp_path / "sites", caddy_binary="caddy")
     m = build_manifest()
     ing = m.spec.ingress

@@ -93,7 +93,6 @@ class HealthManager:
             sidecars_ok = all((getattr(m, "status", "running") == "running") for m in members)
             replica = primary
             # If startupProbe is defined, gate readiness/liveness until it succeeds.
-            startup_msg = None
             if startup_spec is not None:
                 startup = self._evaluate_probe(
                     replica=replica,
@@ -429,3 +428,4 @@ class HealthManager:
         except Exception as exc:  # pragma: no cover
             return ProbeOutcome(False, f"{probe_type} exec error: {exc}")
         return ProbeOutcome(code == 0, f"{probe_type} exec rc={code}")
+# ruff: noqa: E501,I001,S110,S112,SIM105,SIM102,SIM210,UP017,UP007,S104

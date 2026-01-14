@@ -1,6 +1,4 @@
-import types
 
-import pytest
 
 
 class FakeResp:
@@ -20,6 +18,7 @@ def test_http_helpers_get(monkeypatch):
     from ae.cli.__main__ import _http_get_json
 
     def fake_get(url, headers, timeout):  # noqa: ANN001
+        _ = timeout
         assert "Authorization" in headers
         assert url.endswith("/status")
         return FakeResp({"items": []})
@@ -34,7 +33,8 @@ def test_http_helpers_get(monkeypatch):
 def test_http_helpers_post(monkeypatch):
     from ae.cli.__main__ import _http_post_json
 
-    def fake_post(url, headers, json, timeout):  # noqa: ANN001
+    def fake_post(_url, headers, json, timeout):  # noqa: ANN001
+        _ = timeout
         assert "Authorization" in headers
         assert json == {"replicas": 2}
         return FakeResp({"replicas": 2, "revision": 1, "status": "ready"})
@@ -44,3 +44,4 @@ def test_http_helpers_post(monkeypatch):
     monkeypatch.setattr(requests, "post", fake_post)
     data = _http_post_json("http://127.0.0.1:9108", "/scale/echo", {"replicas": 2}, token="t")
     assert data["replicas"] == 2
+# ruff: noqa: S106

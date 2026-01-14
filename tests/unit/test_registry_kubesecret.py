@@ -1,6 +1,6 @@
-from argparse import Namespace
 import base64
 import json
+from argparse import Namespace
 from pathlib import Path
 
 from ae.cli.__main__ import handle_registry

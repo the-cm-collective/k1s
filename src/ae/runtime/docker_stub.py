@@ -22,12 +22,16 @@ class StubRuntime(RuntimeAdapter):
         replica_ids: list[str] | None = None,
         node_id: str | None = None,
     ) -> RuntimeResult:
+        _ = (keep_old, node_id)
         desired = len(replica_ids) if replica_ids is not None else manifest.spec.replicas
-        now = datetime.now(timezone.utc)
+        # timezone.utc to remain compatible with current runtime; lint suppressed.
+        now = datetime.now(timezone.utc)  # noqa: UP017
         count = desired if limit_create is None else max(0, min(desired, limit_create))
         replica_states = []
         rid_list = (
-            list(replica_ids) if replica_ids is not None else [f"{manifest.metadata.name}-rev{revision}-{i}" for i in range(desired)]
+            list(replica_ids)
+            if replica_ids is not None
+            else [f"{manifest.metadata.name}-rev{revision}-{i}" for i in range(desired)]
         )
         for idx, rid in enumerate(rid_list[:count]):
             replica_states.append(
@@ -55,6 +59,7 @@ class StubRuntime(RuntimeAdapter):
         tail: int | None = None,
         since: int | None = None,
     ):
+        _ = (tail, since)
         # Deterministic, small output for tests
         if follow:
             # emit a finite small stream for tests
@@ -64,7 +69,9 @@ class StubRuntime(RuntimeAdapter):
             yield f"{replica_id}: recent log line"
 
     def remove_app(self, app_name: str) -> int:  # type: ignore[override]
+        _ = app_name
         return 0
 
     def remove_old_revisions(self, app_name: str, keep_revision: int) -> int:  # type: ignore[override]
+        _ = (app_name, keep_revision)
         return 0

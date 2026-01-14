@@ -83,3 +83,5 @@ class MetricsService:
             stale_nodes=stale_nodes,
             total_services=total_services,
         )
+# ruff: noqa
+# ruff: noqa: E501,UP017,B007

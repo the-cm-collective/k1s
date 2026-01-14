@@ -1,7 +1,6 @@
-from types import SimpleNamespace
 from ae.controller.health import HealthManager
-from ae.controller.spec import AppManifest, AppSpec, Metadata, HealthSpec, ProbeSpec
-from ae.runtime.base import RuntimeResult, ReplicaState
+from ae.controller.spec import AppManifest, AppSpec, HealthSpec, Metadata, ProbeSpec
+from ae.runtime.base import ReplicaState, RuntimeResult
 
 
 class DummyResp:
@@ -44,7 +43,8 @@ def test_readiness_success_threshold(monkeypatch):
     # Make requests.get return 200 twice
     calls = {"n": 0}
 
-    def fake_get(url, timeout):  # noqa: ANN001
+    def fake_get(_url, timeout):  # noqa: ANN001
+        _ = timeout
         calls["n"] += 1
         return DummyResp(200)
 
@@ -92,7 +92,8 @@ def test_readiness_failure_threshold(monkeypatch):
     # Simulate 500 then 500; readiness should only flip to false after two consecutive failures
     codes = iter([200, 500, 500])
 
-    def fake_get(url, timeout):  # noqa: ANN001
+    def fake_get(_url, timeout):  # noqa: ANN001
+        _ = timeout
         return DummyResp(next(codes))
 
     import ae.controller.health as mod

@@ -1,4 +1,3 @@
-import pytest
 
 from ae.runtime import ports
 
@@ -25,7 +24,7 @@ def test_choose_host_port_falls_back_when_busy(monkeypatch):
 
 
 def test_choose_host_port_respects_reserved(monkeypatch):
-    monkeypatch.setattr(ports, "_port_is_free", lambda port: True)
+    monkeypatch.setattr(ports, "_port_is_free", lambda _port: True)
     reserved = {12345}
     chosen, used_preferred = ports.choose_host_port(12345, reserved=reserved, search_span=3)
     assert chosen == 12346
@@ -34,7 +33,7 @@ def test_choose_host_port_respects_reserved(monkeypatch):
 
 
 def test_choose_host_port_respects_blocked(monkeypatch):
-    monkeypatch.setattr(ports, "_port_is_free", lambda port: True)
+    monkeypatch.setattr(ports, "_port_is_free", lambda _port: True)
     blocked = {12345, 12346}
     chosen, used_preferred = ports.choose_host_port(12345, blocked=blocked, search_span=5)
     assert chosen == 12344

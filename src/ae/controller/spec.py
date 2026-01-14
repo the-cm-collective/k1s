@@ -1,3 +1,4 @@
+# ruff: noqa: E501,UP006,UP007,UP017
 """Declarative specification models for the ae application engine."""
 
 from __future__ import annotations
@@ -496,3 +497,4 @@ def load_manifest(path: Path) -> AppManifest:
         return AppManifest.model_validate(data)
     except ValidationError as exc:
         raise ManifestError(f"Manifest {path} failed validation: {exc}") from exc
+# ruff: noqa

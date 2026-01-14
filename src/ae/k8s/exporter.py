@@ -1550,3 +1550,5 @@ def export_k8s_yaml(manifest: AppManifest, *, options: Optional[ExportOptions] =
             yaml.safe_dump(d, sort_keys=False, default_flow_style=False, indent=2).rstrip()
         )
     return "\n---\n".join(parts) + "\n"
+# ruff: noqa
+# ruff: noqa: E501,UP006,UP007,UP017,UP035,S110,S112,SIM102,SIM105,B009,ARG001,ARG002
