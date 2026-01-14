@@ -86,6 +86,7 @@ def test_apishim_rbac_deny_get_without_token(monkeypatch, store):
     shim_server.ShimHandler.rbac_eval_roles = False
     shim_server.ShimHandler.admin_token = None
     shim_server.ShimHandler.read_token = None
+    shim_server.ShimHandler.allow_anonymous = False
     req = make_handler("/api/v1/namespaces")
     handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
     handler.path = req.path
@@ -99,6 +100,29 @@ def test_apishim_rbac_deny_get_without_token(monkeypatch, store):
     handler.wfile = BytesIO()
     handler.do_GET()
     assert 401 in handler.responses or 403 in handler.responses
+
+
+def test_apishim_allow_anonymous(monkeypatch, store):
+    monkeypatch.delenv("AE_APISHIM_TOKEN", raising=False)
+    monkeypatch.setenv("AE_APISHIM_ALLOW_ANON", "1")
+    shim_server.ShimHandler.rbac_enabled = False
+    shim_server.ShimHandler.rbac_eval_roles = False
+    shim_server.ShimHandler.admin_token = None
+    shim_server.ShimHandler.read_token = None
+    monkeypatch.setattr(shim_server.ShimHandler, "allow_anonymous", True)
+    req = make_handler("/api/v1/namespaces")
+    handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
+    handler.path = req.path
+    handler.command = req.command
+    handler.headers = req.headers
+    handler.server = SimpleNamespace(store=store, state=store, runtime=None)
+    handler.store = store
+    handler.state = None
+    handler.request_version = "HTTP/1.1"
+    handler.requestline = f"{handler.command} {handler.path} HTTP/1.1"
+    handler.wfile = BytesIO()
+    handler.do_GET()
+    assert 200 in handler.responses
 
 
 def test_apishim_rbac_eval_rolebinding(monkeypatch, store):

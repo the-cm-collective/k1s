@@ -14,6 +14,14 @@ Prometheus-style text at `/metrics` includes aggregated gauges and labeled serie
 - Per-replica:
   - `ae_replica_ready{app="<name>",replica="<id>"}` 0/1
 
+API shim (when enabled)
+- `apishim_watchers{group,version,resource,namespace}` — active watch streams
+- `apishim_watch_queue_depth{...}` — queue depth per watch key
+- `apishim_watch_events_enqueued_total{...}` / `_dropped_total{...}` — backpressure counters
+- `apishim_watch_broadcasts_total{...}` — publish attempts per watch key
+- `apishim_store_backend_info{backend="sqlite|postgres"}` — storage backend in use
+- For HA shims on Postgres, the same metrics surface on each instance (shared store, per-process queues).
+
 ### Logs Endpoint
 
 Tail logs over HTTP (READ role if tokens configured):
