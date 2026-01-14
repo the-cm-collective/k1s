@@ -81,13 +81,13 @@ Phase 5 action items:
 ### Phase 7 current status (2026-01-14)
 - Discovery/OpenAPI: `/openapi/v2` now includes richer shapes (Service ports + external/loadBalancer/ipFamily fields, Deployment/DaemonSet/StatefulSet conditions, Job/CronJob/HPA status); `/openapi/v3` now mirrors `/openapi/v2` and is treated as authoritative. CI guards drift via `scripts/validate-openapi.sh` (helm-dryrun-openapi workflow), Helm/kubectl dry-run is exercised in CI, and OpenAPI artifacts are published. A lightweight fixture check (`scripts/validate-openapi-fixtures.py`) validates the schemas against the shipped sample manifests.
 - Compatibility matrix: published at `docs/apishim-compatibility-matrix.md`; release gate runs helm shim smoke and uploads the matrix + OpenAPI artifacts and emits a release-note snippet.
-- Pending: extend schemas to cover k1s App CRDs and PodDisruptionBudget, and add a live-cluster spot-check (kubectl get/watch) alongside the fixture run; keep the matrix/OpenAPI links in formal release notes and website docs.
+- Pending: broaden the spot-check to a non-stub cluster (kind/dev lab) and keep the compatibility matrix/OpenAPI links synced with website docs and release notes.
 
-#### Phase 7.1 — OpenAPI validation hardening (next)
-- Add schemas for the k1s `App` CRD and policy/v1 PodDisruptionBudget so sample manifests stop skipping and validate end-to-end.
-- Run the fixture validator plus a live-cluster spot-check (kubectl get/watch for Service/Deployment/HPA with status) before promoting releases; record results in CI artifacts.
-- Fold `scripts/validate-openapi-fixtures.py` into the OpenAPI drift workflow to keep sample manifests aligned with exported schemas.
-- Keep release notes linking the compatibility matrix and both OpenAPI exports; mark `/openapi/v3` as an authoritative endpoint in user-facing docs.
+#### Phase 7.1 — OpenAPI validation hardening (complete)
+- Added schemas for the k1s `App` CRD and policy/v1 PodDisruptionBudget so sample manifests validate end-to-end instead of being skipped.
+- Wired `scripts/validate-openapi-fixtures.py` into the OpenAPI drift guard and release workflows (runs against freshly generated `/openapi/v2`).
+- Release workflow now validates fixtures and performs a kubectl spot-check (apply/get/watch for Deployment/Service/HPA) against the running shim, uploading logs alongside the OpenAPI/compatibility artifacts.
+- `/openapi/v3` remains the authoritative mirror of `/openapi/v2` and is called out in release notes and docs; compatibility matrix links are included in the release summary artifacts.
 
 ## Non‑goals (for now)
 - Full upstream conformance certification.
