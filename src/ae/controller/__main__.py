@@ -488,9 +488,11 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 statuses = []
             # Restrict to demo apps when AE_DEMO_MODE=1
             try:
-                from ae.observability.http_api import _demo_allowed_apps
+                from ae.observability.http_api import _LABS_APPS, _demo_allowed_apps
 
-                allowed = _demo_allowed_apps()
+                demo_allowed = set(_demo_allowed_apps())
+                labs_allowed = set(_LABS_APPS)
+                allowed = demo_allowed | labs_allowed
                 if allowed:
                     statuses = [s for s in statuses if s.app_name in allowed]
             except Exception:
