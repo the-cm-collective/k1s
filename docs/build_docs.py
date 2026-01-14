@@ -200,7 +200,7 @@ TEMPLATE = """<!doctype html>
       .theme-fab {
         position: fixed;
         right: 18px;
-        bottom: 88px;
+        bottom: 110px;
         width: 52px;
         height: 52px;
         border-radius: 50%;
