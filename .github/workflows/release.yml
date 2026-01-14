@@ -68,6 +68,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .[dev]
+      - name: Install kubectl
+        run: |
+          curl -L https://dl.k8s.io/release/v1.30.3/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl
+          chmod +x /usr/local/bin/kubectl
       - name: Start apishim (stub) and export OpenAPI
         env:
           AE_APISHIM_ENABLE: "1"
@@ -81,6 +85,24 @@ jobs:
           mkdir -p /tmp/openapi
           curl -fsS -H "Authorization: Bearer $AE_APISHIM_TOKEN" http://127.0.0.1:8445/openapi/v2 -o /tmp/openapi/openapi-v2.json
           curl -fsS -H "Authorization: Bearer $AE_APISHIM_TOKEN" http://127.0.0.1:8445/openapi/v3 -o /tmp/openapi/openapi-v3.json
+      - name: Validate sample fixtures against live OpenAPI
+        env:
+          PYTHONPATH: src
+        run: |
+          set -euo pipefail
+          python scripts/validate-openapi-fixtures.py --spec /tmp/openapi/openapi-v2.json | tee /tmp/openapi/fixture-validate.log
+      - name: Spot-check kubectl get/watch
+        env:
+          TOKEN: "release-token"
+        run: |
+          set -euo pipefail
+          K="kubectl --server=http://127.0.0.1:8445 --token=$TOKEN --insecure-skip-tls-verify"
+          $K apply -f specs/examples/echo-k8s.yaml
+          $K get deployment echo -n demo -o yaml > /tmp/openapi/deployment.yaml
+          $K get service echo -n demo -o yaml > /tmp/openapi/service.yaml
+          $K get hpa echo -n demo -o yaml > /tmp/openapi/hpa.yaml
+          # quick watch to ensure streaming path stays healthy
+          $K get deployment -n demo --watch --timeout=5s -o name > /tmp/openapi/watch.txt || true
       - name: Upload OpenAPI artifacts
         uses: actions/upload-artifact@v4
         with:
