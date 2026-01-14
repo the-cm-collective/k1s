@@ -146,9 +146,9 @@ TEMPLATE = """<!doctype html>
         display: flex;
         align-items: center;
         flex-wrap: wrap;
-        gap: .65rem;
+        gap: .6rem;
         margin: 0 auto 1.25rem auto;
-        width: clamp(320px, 95vw, 1500px);
+        width: clamp(320px, 95vw, 1800px);
         padding: 10px 12px;
         background: var(--k1s-panel);
         border: 1px solid var(--k1s-border);
