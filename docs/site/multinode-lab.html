@@ -132,7 +132,7 @@
       .theme-fab {
         position: fixed;
         right: 18px;
-        bottom: 110px;
+        bottom: 140px;
         width: 52px;
         height: 52px;
         border-radius: 50%;
@@ -160,7 +160,7 @@
       html[data-theme="light"] .theme-fab .icon-moon { display: none; }
       html[data-theme="dark"] .theme-fab .icon-moon { display: block; }
       @media (max-height: 740px) {
-        .theme-fab { bottom: 18px; }
+        .theme-fab { bottom: 32px; }
       }
       code, pre {
         background: var(--code-bg);
@@ -173,8 +173,41 @@
         overflow-x: auto;
         scrollbar-width: none;
         -ms-overflow-style: none;
+        position: relative;
       }
       pre::-webkit-scrollbar { width: 0; height: 0; }
+      pre.has-copy { padding-top: 32px; }
+      .copy-btn {
+        position: absolute;
+        top: 8px;
+        right: 10px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 9px;
+        border-radius: 8px;
+        border: 1px solid var(--k1s-border);
+        background: var(--k1s-surface);
+        color: var(--fg);
+        font-size: 12px;
+        line-height: 1;
+        cursor: pointer;
+        box-shadow: 0 8px 22px rgba(0,0,0,0.24);
+        opacity: 0;
+        transition: opacity .14s ease, transform .12s ease, background .12s ease, border-color .12s ease;
+        z-index: 1;
+      }
+      pre:hover .copy-btn,
+      pre:focus-within .copy-btn {
+        opacity: .96;
+      }
+      .copy-btn:hover {
+        background: var(--k1s-panel);
+        border-color: var(--k1s-border-soft);
+      }
+      .copy-btn:active { transform: translateY(0); }
+      .copy-btn svg { width: 16px; height: 16px; fill: currentColor; }
+      .copy-btn.copied { color: var(--k1s-success); border-color: var(--k1s-success); }
       h1 { margin-top: 0; font-size: 28px; letter-spacing: 0.01em; }
       h2 { margin-top: 1.5em; font-size: 20px; }
       h3 { margin-top: 1.1em; font-size: 17px; }
@@ -258,6 +291,62 @@
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
     <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>
+      // Attach copy buttons to all code blocks client-side
+      (function() {
+        function addButtons() {
+          var blocks = document.querySelectorAll('pre > code');
+          blocks.forEach(function(code) {
+            var pre = code.parentElement;
+            if (pre.dataset.hasCopy) return;
+            pre.dataset.hasCopy = '1';
+            pre.classList.add('has-copy');
+
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'copy-btn';
+            btn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1Zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2Zm0 16H8V7h11v14Z"/></svg><span>Copy</span>';
+
+            btn.addEventListener('click', function() {
+              var text = code.textContent || '';
+              var setState = function(ok) {
+                btn.classList.toggle('copied', ok);
+                btn.lastChild.textContent = ok ? 'Copied!' : 'Copy';
+                setTimeout(function() {
+                  btn.classList.remove('copied');
+                  btn.lastChild.textContent = 'Copy';
+                }, 1400);
+              };
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(function() { setState(true); }, function() { setState(false); });
+              } else {
+                try {
+                  var ta = document.createElement('textarea');
+                  ta.value = text;
+                  ta.style.position = 'fixed';
+                  ta.style.opacity = '0';
+                  document.body.appendChild(ta);
+                  ta.select();
+                  document.execCommand('copy');
+                  document.body.removeChild(ta);
+                  setState(true);
+                } catch (e) {
+                  setState(false);
+                }
+              }
+            });
+
+            pre.style.position = 'relative';
+            pre.insertBefore(btn, code);
+          });
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', addButtons);
+        } else {
+          addButtons();
+        }
+      })();
+    </script>
     
   </head>
   <body>
@@ -310,7 +399,7 @@ AE_AGENT_API_TOKEN=REDACTED"site-footer">
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-14 15:35:58</span>
+        <span>Built 2026-01-14 15:47:16</span>
       </div>
     </footer>
     <script>
