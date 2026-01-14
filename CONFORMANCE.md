@@ -128,3 +128,10 @@ Phase 5 action items:
   2) Add annotation-driven feature mapping (`service.beta.kubernetes.io/*`) for the first provider.
   3) Dogfood on kind+MetalLB and an OpenStack lab; capture artifacts in CI (opt-in lane) and feed back into `/openapi/v2` status expectations.
   4) Evaluate GCP/AWS controllers after the interface stabilizes; document per-cloud IAM roles and failure modes.
+
+### kind + MetalLB (portable L4 path)
+- Topology: kind (Docker) cluster with MetalLB controller + speaker in L2/ARP mode announcing VIPs on the kind bridge.
+- Address pool: derive from `docker network inspect kind` (e.g., reserve `172.18.255.200-250` inside the kind subnet) to avoid host collisions on CI runners.
+- Flow: install MetalLB, apply IPAddressPool + L2Advertisement, then create a Service `type: LoadBalancer`; MetalLB assigns an IP that is reachable from the runner. Curl the assigned IP:port to verify.
+- Integration with shim: add a MetalLB provider to mirror the assigned ingress IP into `status.loadBalancer` (and ingress annotations), while keeping Caddy/Envoy for L7. Use this as the first implementation of the `LoadBalancerProvider` interface.
+- CI lane sketch: spin up kind, install MetalLB with generated pool/adverts, run apishim (Postgres/stub) and apply a demo LB Service; assert ingress IP populated and reachable. Publish the assigned IP + logs as artifacts.
