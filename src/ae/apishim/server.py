@@ -375,6 +375,437 @@ def _inject_sa_projection(spec: dict[str, Any]) -> dict[str, Any]:
     return spec
 
 
+def _swagger_doc() -> dict[str, Any]:
+    # Minimal swagger doc for kubectl/helm discovery and --dry-run=server
+    schemas = {
+        "io.k8s.api.meta.v1.ObjectMeta": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "namespace": {"type": "string"},
+                "labels": {"type": "object", "additionalProperties": {"type": "string"}},
+                "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.core.v1.LoadBalancerIngress": {
+            "type": "object",
+            "properties": {
+                "ip": {"type": "string"},
+                "hostname": {"type": "string"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.core.v1.LoadBalancerStatus": {
+            "type": "object",
+            "properties": {
+                "ingress": {
+                    "type": "array",
+                    "items": {"$ref": "#/definitions/io.k8s.api.core.v1.LoadBalancerIngress"},
+                }
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.core.v1.ServiceStatus": {
+            "type": "object",
+            "properties": {
+                "loadBalancer": {"$ref": "#/definitions/io.k8s.api.core.v1.LoadBalancerStatus"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.core.v1.ConfigMap": {
+            "type": "object",
+            "properties": {
+                "apiVersion": {"type": "string"},
+                "kind": {"type": "string"},
+                "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                "data": {"type": "object", "additionalProperties": {"type": "string"}},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.core.v1.Secret": {
+            "type": "object",
+            "properties": {
+                "apiVersion": {"type": "string"},
+                "kind": {"type": "string"},
+                "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                "data": {"type": "object"},
+                "type": {"type": "string"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.core.v1.ServiceAccount": {
+            "type": "object",
+            "properties": {
+                "apiVersion": {"type": "string"},
+                "kind": {"type": "string"},
+                "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                "secrets": {"type": "array", "items": {"type": "object"}},
+                "imagePullSecrets": {"type": "array", "items": {"type": "object"}},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.core.v1.ServicePort": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "protocol": {"type": "string"},
+                "port": {"type": "integer"},
+                "targetPort": {"type": ["integer", "string"]},
+                "nodePort": {"type": "integer"},
+                "appProtocol": {"type": "string"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.core.v1.Service": {
+            "type": "object",
+            "properties": {
+                "apiVersion": {"type": "string"},
+                "kind": {"type": "string"},
+                "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                "spec": {
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string"},
+                        "clusterIP": {"type": "string"},
+                        "clusterIPs": {"type": "array", "items": {"type": "string"}},
+                        "ipFamilies": {"type": "array", "items": {"type": "string"}},
+                        "ipFamilyPolicy": {"type": "string"},
+                        "externalIPs": {"type": "array", "items": {"type": "string"}},
+                        "loadBalancerIP": {"type": "string"},
+                        "loadBalancerSourceRanges": {"type": "array", "items": {"type": "string"}},
+                        "externalTrafficPolicy": {"type": "string"},
+                        "sessionAffinity": {"type": "string"},
+                        "sessionAffinityConfig": {"type": "object", "additionalProperties": True},
+                        "selector": {"type": "object", "additionalProperties": {"type": "string"}},
+                        "ports": {
+                            "type": "array",
+                            "items": {"$ref": "#/definitions/io.k8s.api.core.v1.ServicePort"},
+                        },
+                    },
+                    "additionalProperties": True,
+                },
+                "status": {"$ref": "#/definitions/io.k8s.api.core.v1.ServiceStatus"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.apps.v1.DeploymentCondition": {
+            "type": "object",
+            "properties": {
+                "type": {"type": "string"},
+                "status": {"type": "string"},
+                "reason": {"type": "string"},
+                "message": {"type": "string"},
+                "lastUpdateTime": {"type": "string", "format": "date-time"},
+                "lastTransitionTime": {"type": "string", "format": "date-time"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.apps.v1.DeploymentStatus": {
+            "type": "object",
+            "properties": {
+                "replicas": {"type": "integer"},
+                "readyReplicas": {"type": "integer"},
+                "availableReplicas": {"type": "integer"},
+                "unavailableReplicas": {"type": "integer"},
+                "updatedReplicas": {"type": "integer"},
+                "observedGeneration": {"type": "integer"},
+                "conditions": {
+                    "type": "array",
+                    "items": {"$ref": "#/definitions/io.k8s.api.apps.v1.DeploymentCondition"},
+                },
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.apps.v1.Deployment": {
+            "type": "object",
+            "properties": {
+                "apiVersion": {"type": "string"},
+                "kind": {"type": "string"},
+                "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                "spec": {"type": "object", "additionalProperties": True},
+                "status": {"$ref": "#/definitions/io.k8s.api.apps.v1.DeploymentStatus"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.apps.v1.StatefulSetCondition": {
+            "type": "object",
+            "properties": {
+                "type": {"type": "string"},
+                "status": {"type": "string"},
+                "reason": {"type": "string"},
+                "message": {"type": "string"},
+                "lastTransitionTime": {"type": "string", "format": "date-time"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.apps.v1.StatefulSetStatus": {
+            "type": "object",
+            "properties": {
+                "replicas": {"type": "integer"},
+                "readyReplicas": {"type": "integer"},
+                "updatedReplicas": {"type": "integer"},
+                "currentReplicas": {"type": "integer"},
+                "observedGeneration": {"type": "integer"},
+                "availableReplicas": {"type": "integer"},
+                "currentRevision": {"type": "string"},
+                "updateRevision": {"type": "string"},
+                "conditions": {
+                    "type": "array",
+                    "items": {"$ref": "#/definitions/io.k8s.api.apps.v1.StatefulSetCondition"},
+                },
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.apps.v1.StatefulSet": {
+            "type": "object",
+            "properties": {
+                "apiVersion": {"type": "string"},
+                "kind": {"type": "string"},
+                "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                "spec": {"type": "object", "additionalProperties": True},
+                "status": {"$ref": "#/definitions/io.k8s.api.apps.v1.StatefulSetStatus"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.apps.v1.DaemonSetCondition": {
+            "type": "object",
+            "properties": {
+                "type": {"type": "string"},
+                "status": {"type": "string"},
+                "reason": {"type": "string"},
+                "message": {"type": "string"},
+                "lastTransitionTime": {"type": "string", "format": "date-time"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.apps.v1.DaemonSetStatus": {
+            "type": "object",
+            "properties": {
+                "desiredNumberScheduled": {"type": "integer"},
+                "currentNumberScheduled": {"type": "integer"},
+                "numberAvailable": {"type": "integer"},
+                "numberReady": {"type": "integer"},
+                "updatedNumberScheduled": {"type": "integer"},
+                "observedGeneration": {"type": "integer"},
+                "numberMisscheduled": {"type": "integer"},
+                "collisionCount": {"type": "integer"},
+                "conditions": {
+                    "type": "array",
+                    "items": {"$ref": "#/definitions/io.k8s.api.apps.v1.DaemonSetCondition"},
+                },
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.apps.v1.DaemonSet": {
+            "type": "object",
+            "properties": {
+                "apiVersion": {"type": "string"},
+                "kind": {"type": "string"},
+                "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                "spec": {"type": "object", "additionalProperties": True},
+                "status": {"$ref": "#/definitions/io.k8s.api.apps.v1.DaemonSetStatus"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.batch.v1.JobStatus": {
+            "type": "object",
+            "properties": {
+                "active": {"type": "integer"},
+                "succeeded": {"type": "integer"},
+                "failed": {"type": "integer"},
+                "startTime": {"type": "string", "format": "date-time"},
+                "completionTime": {"type": "string", "format": "date-time"},
+                "uncountedTerminatedPods": {"type": "object", "additionalProperties": True},
+                "conditions": {"type": "array", "items": {"type": "object"}},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.batch.v1.Job": {
+            "type": "object",
+            "properties": {
+                "apiVersion": {"type": "string"},
+                "kind": {"type": "string"},
+                "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                "spec": {"type": "object", "additionalProperties": True},
+                "status": {"$ref": "#/definitions/io.k8s.api.batch.v1.JobStatus"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.batch.v1.CronJobStatus": {
+            "type": "object",
+            "properties": {
+                "active": {"type": "array", "items": {"type": "object"}},
+                "lastScheduleTime": {"type": "string", "format": "date-time"},
+                "lastSuccessfulTime": {"type": "string", "format": "date-time"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.batch.v1.CronJob": {
+            "type": "object",
+            "properties": {
+                "apiVersion": {"type": "string"},
+                "kind": {"type": "string"},
+                "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                "spec": {"type": "object", "additionalProperties": True},
+                "status": {"$ref": "#/definitions/io.k8s.api.batch.v1.CronJobStatus"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.autoscaling.v2.MetricStatus": {
+            "type": "object",
+            "properties": {
+                "type": {"type": "string"},
+                "resource": {"type": "object", "additionalProperties": True},
+                "pods": {"type": "object", "additionalProperties": True},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.autoscaling.v2.HorizontalPodAutoscalerStatus": {
+            "type": "object",
+            "properties": {
+                "currentReplicas": {"type": "integer"},
+                "desiredReplicas": {"type": "integer"},
+                "currentMetrics": {
+                    "type": "array",
+                    "items": {"$ref": "#/definitions/io.k8s.api.autoscaling.v2.MetricStatus"},
+                },
+                "lastScaleTime": {"type": "string", "format": "date-time"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.autoscaling.v2.HorizontalPodAutoscaler": {
+            "type": "object",
+            "properties": {
+                "apiVersion": {"type": "string"},
+                "kind": {"type": "string"},
+                "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                "spec": {"type": "object", "additionalProperties": True},
+                "status": {"$ref": "#/definitions/io.k8s.api.autoscaling.v2.HorizontalPodAutoscalerStatus"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.rbac.v1.Role": {
+            "type": "object",
+            "properties": {
+                "apiVersion": {"type": "string"},
+                "kind": {"type": "string"},
+                "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                "rules": {"type": "array", "items": {"type": "object"}},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.rbac.v1.RoleBinding": {
+            "type": "object",
+            "properties": {
+                "apiVersion": {"type": "string"},
+                "kind": {"type": "string"},
+                "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.rbac.v1.ClusterRole": {
+            "type": "object",
+            "properties": {
+                "apiVersion": {"type": "string"},
+                "kind": {"type": "string"},
+                "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.rbac.v1.ClusterRoleBinding": {
+            "type": "object",
+            "properties": {
+                "apiVersion": {"type": "string"},
+                "kind": {"type": "string"},
+                "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.networking.v1.IngressStatus": {
+            "type": "object",
+            "properties": {
+                "loadBalancer": {"$ref": "#/definitions/io.k8s.api.core.v1.LoadBalancerStatus"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.networking.v1.Ingress": {
+            "type": "object",
+            "properties": {
+                "apiVersion": {"type": "string"},
+                "kind": {"type": "string"},
+                "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                "spec": {"type": "object", "additionalProperties": True},
+                "status": {"$ref": "#/definitions/io.k8s.api.networking.v1.IngressStatus"},
+            },
+            "additionalProperties": True,
+        },
+        "io.k8s.api.authorization.v1.SubjectAccessReview": {
+            "type": "object",
+            "properties": {
+                "apiVersion": {"type": "string"},
+                "kind": {"type": "string"},
+                "spec": {"type": "object", "additionalProperties": True},
+            },
+            "additionalProperties": True,
+        },
+    }
+    doc = {
+        "swagger": "2.0",
+        "info": {"title": "k1s apishim", "version": "0.1.0"},
+        "produces": ["application/json"],
+        "schemes": ["http"],
+        "paths": {
+            "/api/v1/namespaces": {"get": {}, "post": {}},
+            "/api/v1/namespaces/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/api/v1/namespaces/{namespace}/configmaps": {"get": {}, "post": {}},
+            "/api/v1/namespaces/{namespace}/configmaps/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/api/v1/namespaces/{namespace}/secrets": {"get": {}, "post": {}},
+            "/api/v1/namespaces/{namespace}/secrets/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/api/v1/namespaces/{namespace}/serviceaccounts": {"get": {}, "post": {}},
+            "/api/v1/namespaces/{namespace}/serviceaccounts/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/api/v1/namespaces/{namespace}/services": {"get": {}, "post": {}},
+            "/api/v1/namespaces/{namespace}/services/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/apps/v1/namespaces/{namespace}/deployments": {"get": {}, "post": {}},
+            "/apis/apps/v1/namespaces/{namespace}/deployments/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/apps/v1/namespaces/{namespace}/statefulsets": {"get": {}, "post": {}},
+            "/apis/apps/v1/namespaces/{namespace}/statefulsets/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/apps/v1/namespaces/{namespace}/daemonsets": {"get": {}, "post": {}},
+            "/apis/apps/v1/namespaces/{namespace}/daemonsets/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/batch/v1/namespaces/{namespace}/jobs": {"get": {}, "post": {}},
+            "/apis/batch/v1/namespaces/{namespace}/jobs/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/batch/v1/namespaces/{namespace}/cronjobs": {"get": {}, "post": {}},
+            "/apis/batch/v1/namespaces/{namespace}/cronjobs/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers": {"get": {}, "post": {}},
+            "/apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/rbac.authorization.k8s.io/v1/clusterroles": {"get": {}, "post": {}},
+            "/apis/rbac.authorization.k8s.io/v1/clusterroles/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings": {"get": {}, "post": {}},
+            "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/roles": {"get": {}, "post": {}},
+            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/roles/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/rolebindings": {"get": {}, "post": {}},
+            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/rolebindings/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/networking.k8s.io/v1/namespaces/{namespace}/ingresses": {"get": {}, "post": {}},
+            "/apis/networking.k8s.io/v1/namespaces/{namespace}/ingresses/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/authorization.k8s.io/v1/subjectaccessreviews": {"post": {}},
+        },
+        "definitions": schemas,
+    }
+    return doc
+
+
+def _openapi_v3_stub() -> dict[str, Any]:
+    doc = _swagger_doc()
+    return {
+        "openapi": "3.0.0",
+        "info": doc.get("info", {}),
+        "paths": doc.get("paths", {}),
+        "components": {"schemas": doc.get("definitions", {})},
+        "x-k1s-note": "OpenAPI v3 mirrors /openapi/v2 and is kept authoritative alongside it",
+    }
+
+
 @dataclass
 class Principal:
     username: str
@@ -387,6 +818,7 @@ class ShimHandler(BaseHTTPRequestHandler):
     server_version = "k1s-apishim"
     admin_token: str | None = os.getenv("AE_APISHIM_TOKEN")
     read_token: str | None = os.getenv("AE_APISHIM_READ_TOKEN")
+    allow_anonymous: bool = os.getenv("AE_APISHIM_ALLOW_ANON", "0") == "1"
     rbac_enabled: bool = os.getenv("AE_APISHIM_RBAC", "0") == "1"
     rbac_eval_roles: bool = os.getenv("AE_APISHIM_RBAC_EVAL", "0") == "1"
     sa_tokens: dict[str, tuple[str, str, float]] = {}
@@ -449,7 +881,10 @@ class ShimHandler(BaseHTTPRequestHandler):
         admin = self.admin_token
         reader = self.read_token
         if not admin and not reader:
-            return True
+            if self.allow_anonymous:
+                return True
+            self._deny(HTTPStatus.UNAUTHORIZED, "missing/invalid bearer token")
+            return False
         principal = self._parse_principal()
         role_name = principal.token_role
         ok = False
@@ -1476,6 +1911,17 @@ class ShimHandler(BaseHTTPRequestHandler):
         if path == "/healthz" or path == "/readyz":
             self._ok({"status": "ok"})
             return
+        if path == "/metrics":
+            metrics_txt = ""
+            if hasattr(self.server, "store"):  # type: ignore[attr-defined]
+                metrics_txt = self.server.store.render_metrics()  # type: ignore[attr-defined]
+            data = metrics_txt.encode()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if path == "/version":
             self._ok(K8S_VERSION)
             return
@@ -1568,14 +2014,10 @@ class ShimHandler(BaseHTTPRequestHandler):
             self._ok({"groups": groups})
             return
         if path in ("/openapi/v2", "/swagger.json"):
-            # Minimal swagger stub for client-go consumers
-            doc = {
-                "swagger": "2.0",
-                "info": {"title": "k1s apishim", "version": "0.1.0"},
-                "paths": {},
-                "definitions": {},
-            }
-            self._ok(doc)
+            self._ok(_swagger_doc())
+            return
+        if path == "/openapi/v3":
+            self._ok(_openapi_v3_stub())
             return
         if path == "/api/v1":
             self._ok(
@@ -5149,13 +5591,17 @@ def _pod_obj(container: dict, rv: int, node_name: str | None) -> dict[str, Any]:
 
 
 class ShimServer(HTTPServer):
-    def __init__(self, server_address: tuple[str, int], token: str | None) -> None:
+    def __init__(self, server_address: tuple[str, int], token: str | None, allow_anonymous: bool = False) -> None:
         super().__init__(server_address, ShimHandler)
-        self.store = ObjectStore()
+        dsn = os.getenv("AE_APISHIM_DSN")
+        db_path = Path(os.getenv("AE_APISHIM_DB", "state/apishim.db"))
+        self.store = ObjectStore(db_path=db_path, dsn=dsn)
         ShimHandler.admin_token = token or os.getenv("AE_APISHIM_TOKEN")
         ShimHandler.read_token = os.getenv("AE_APISHIM_READ_TOKEN")
+        ShimHandler.allow_anonymous = allow_anonymous
+        state_dsn = os.getenv("AE_STATE_DSN")
         db_path = Path(os.getenv("AE_STATE_DB", "state/controller.db"))
-        self.state = SQLiteStateStore(db_path)
+        self.state = SQLiteStateStore(db_path if not state_dsn else None, dsn=state_dsn)
         ShimHandler.state = self.state  # type: ignore[assignment]
         self.runtime = _runtime_from_env()
         self._bootstrap_crds()
@@ -5175,13 +5621,14 @@ class ShimServer(HTTPServer):
             ShimHandler._register_crd(obj)
 
 
-def run_server(host: str = "127.0.0.1", port: int = 8445, token: str | None = None, tls: bool = False) -> None:
+def run_server(host: str = "127.0.0.1", port: int = 8445, token: str | None = None, tls: bool = False, allow_anonymous: bool = False) -> None:
     if os.getenv("AE_APISHIM_ENABLE") != "1":
         raise RuntimeError("apishim disabled: set AE_APISHIM_ENABLE=1 to start the shim server")
+    allow_anonymous = allow_anonymous or os.getenv("AE_APISHIM_ALLOW_ANON", "0") == "1"
     tok = token or os.getenv("AE_APISHIM_TOKEN")
-    if not tok:
-        raise RuntimeError("AE_APISHIM_TOKEN must be set (or --token) to start the shim server")
-    httpd = ShimServer((host, port), tok)
+    if not tok and not allow_anonymous:
+        raise RuntimeError("AE_APISHIM_TOKEN must be set (or --token) to start the shim server (or set AE_APISHIM_ALLOW_ANON=1 for dev)")
+    httpd = ShimServer((host, port), tok, allow_anonymous=allow_anonymous)
     if tls:
         # Dev TLS: requires user-provided cert/key via env or skip.
         cert_file = os.getenv("AE_APISHIM_TLS_CERT")
