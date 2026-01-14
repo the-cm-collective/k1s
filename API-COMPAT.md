@@ -89,6 +89,12 @@ Phase 5 action items:
 - Release workflow now validates fixtures and performs a kubectl spot-check (apply/get/watch for Deployment/Service/HPA) against the running shim, uploading logs alongside the OpenAPI/compatibility artifacts.
 - `/openapi/v3` remains the authoritative mirror of `/openapi/v2` and is called out in release notes and docs; compatibility matrix links are included in the release summary artifacts.
 
+#### Phase 7.2 — Live cluster gate + doc linkage (next)
+- Add a live-cluster CI lane (kind or dev lab kubeconfig) that runs kubectl/helm dry-run + watch churn against the shim with Postgres enabled, and publishes artifacts (watch logs, events, OpenAPI snapshots) alongside existing release outputs.
+- Promote the fixture validator + live gate to a release-blocking check; keep skips only for sealed secrets and document why.
+- Wire the compatibility matrix and OpenAPI links into the website/docs nav and release-note template; ensure `/openapi/v3` is the documented primary endpoint.
+- Extend sample coverage to include a PDB-emitting App manifest and a minimal App+HPA example rendered through the exporter, validating both in the live gate.
+
 ## Non‑goals (for now)
 - Full upstream conformance certification.
 - Aggregated API servers, PSP/PodSecurity admission, or CSI/CNI plugins.
