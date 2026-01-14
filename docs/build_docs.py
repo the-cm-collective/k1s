@@ -147,6 +147,7 @@ TEMPLATE = """<!doctype html>
         align-items: center;
         flex-wrap: wrap;
         gap: .6rem;
+        justify-content: center;
         margin: 0 auto 1.25rem auto;
         width: clamp(320px, 95vw, 1800px);
         padding: 10px 12px;
@@ -244,7 +245,12 @@ TEMPLATE = """<!doctype html>
       a { color: var(--link); }
       a:hover { color: var(--link-hover); }
       a:focus-visible { outline: 2px solid var(--k1s-highlight); outline-offset: 2px; border-radius: 4px; }
-      .container { max-width: 980px; flex: 1 0 auto; }
+      .container {
+        width: min(100%, 1200px);
+        max-width: 1200px;
+        margin: 0 auto;
+        flex: 1 0 auto;
+      }
       .card {
         border: 1px solid var(--k1s-border);
         background: var(--k1s-card-bg);
