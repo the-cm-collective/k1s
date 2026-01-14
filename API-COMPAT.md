@@ -102,8 +102,8 @@ Phase 5 action items:
 - Fidelity: add a non-stub runtime path (docker/podman) in the live gate when runner capacity permits to exercise exec/logs and service status; keep Postgres storage enabled for resourceVersion stability.
 
 ## Non‑goals (for now)
-- Aggregated API servers, PSP/PodSecurity admission, or CSI/CNI plugins.
-- Cloud load balancer provisioning.
+- Aggregated API servers, PSP/PodSecurity admission, or CSI/CNI plugins. These would require extra control-plane components, admission/webhook plumbing, and host kernel capabilities (CNI/CSI) that we deliberately avoid to keep the shim lean. PSA alignment and a basic storage story may appear under the conformance-lite track, but full plugin ecosystems stay deferred.
+- Cloud load balancer provisioning. We do not run cloud-provider controllers; the networking model centers on Service VIPs/overlay plus Caddy. We project `status.loadBalancer` from our VIP/provider IPs for compatibility, but do not create external L4/L7 balancers; operators can front the shim with their own proxy if needed.
 
 ## Success metrics
 - `kubectl get/apply/describe/logs/exec` succeeds against multinode lab.
