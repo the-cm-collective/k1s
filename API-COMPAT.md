@@ -102,7 +102,6 @@ Phase 5 action items:
 - Fidelity: add a non-stub runtime path (docker/podman) in the live gate when runner capacity permits to exercise exec/logs and service status; keep Postgres storage enabled for resourceVersion stability.
 
 ## Non‑goals (for now)
-- Full upstream conformance certification.
 - Aggregated API servers, PSP/PodSecurity admission, or CSI/CNI plugins.
 - Cloud load balancer provisioning.
 
@@ -110,3 +109,9 @@ Phase 5 action items:
 - `kubectl get/apply/describe/logs/exec` succeeds against multinode lab.
 - CI shim job green across node churn and overlay failover.
 - Dashboard shows shim health and API errors <1% over soak.
+
+## Conformance outlook (aspirational)
+- Status: shim is kubectl/helm-compatible for our targeted subset (core CRUD, workloads, Services/Ingress, HPA, RBAC/SSA, OpenAPI v2/v3) but not yet ready for upstream Kubernetes conformance.
+- Major gaps: Pod Security Admission + admission webhooks; NetworkPolicy enforcement; PV/PVC/StorageClass/CSI semantics; Node/Lease objects with kubelet-style heartbeats/evictions; metrics.k8s.io; full exec/log/port-forward parity under churn; webhook/SSA edge cases and managedFields accuracy; aggregated APIs.
+- Path to evaluate: run Sonobuoy conformance against kind/dev lab to get a fail list; define and publish a “conformance-lite” profile with documented exclusions while we close highest-value gaps.
+- Path to close: implement PSA + webhook plumbing; add NetworkPolicy enforcement; deliver a minimal storage story (static PV/PVC + provisioner stub with reclaim/accessMode/volumeMode fidelity); surface Node/Lease and eviction behaviors; expose metrics-server-compatible endpoints; harden streaming/watch semantics and SSA/managedFields; iterate test→fix with shrinking skip list.
