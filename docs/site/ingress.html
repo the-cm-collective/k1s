@@ -61,11 +61,13 @@
     </style>
     <style>
       /* Base layout aligned to dashboard palette */
-      html, body { height: 100%; }
+      html { height: 100%; }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
-        margin: 2rem;
+        margin: 0;
+        padding: 2rem;
         line-height: 1.55;
+        box-sizing: border-box;
         min-height: 100vh;
         display: flex;
         flex-direction: column;
@@ -208,7 +210,9 @@
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
+      <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
@@ -275,6 +279,7 @@
 <li>For containers, the ingress manager will adapt loopback upstreams to the correct host alias: <code>host.docker.internal</code> (Docker) or <code>host.containers.internal</code> (Podman).</li>
 <li>To enable active health checks in Caddy, set <code>AE_CADDY_ACTIVE_HEALTH=1</code> and configure a readiness probe in the manifest.</li>
 <li>AppArmor &amp; Seccomp: When exporting to K8s, the engine maps <code>spec.security.seccompProfile*</code> to the container <code>securityContext.seccompProfile</code> and sets an AppArmor annotation on the Pod template. Ensure your cluster supports AppArmor (e.g., apparmor_parser present and profiles loaded). On some local clusters (Kind/MicroK8s), you may need to enable AppArmor and allow custom profiles.</li>
+<li>Multi-node overlay: When <code>AE_SERVICE_PROVIDER=overlay</code> is enabled, Caddy upstreams point at Service VIPs on the overlay network. Attach the Caddy host/container to <code>AE_OVERLAY_NET</code> or add routes so VIPs are reachable.</li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -283,7 +288,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-13 17:21:28</span>
+        <span>Built 2026-01-14 14:58:55</span>
       </div>
     </footer>
     <script>

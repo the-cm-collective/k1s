@@ -61,11 +61,13 @@
     </style>
     <style>
       /* Base layout aligned to dashboard palette */
-      html, body { height: 100%; }
+      html { height: 100%; }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
-        margin: 2rem;
+        margin: 0;
+        padding: 2rem;
         line-height: 1.55;
+        box-sizing: border-box;
         min-height: 100vh;
         display: flex;
         flex-direction: column;
@@ -208,7 +210,9 @@
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
+      <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
@@ -225,6 +229,10 @@
 <p>The primary unit of deployment. Defined by an <code>App</code> manifest with a desired image, replicas, ports, health checks, and optional ingress/secrets/resources.</p>
 <h2>Replica</h2>
 <p>An individual container instance belonging to an app revision. Replica IDs follow the pattern <code>&lt;app&gt;-rev&lt;revision&gt;-&lt;index&gt;</code> (e.g., <code>echo-rev3-0</code>).</p>
+<h2>Node</h2>
+<p>A registered worker (or the controller host) that can run replicas. Nodes send heartbeats, advertise labels/taints, and expose a runtime endpoint that the controller uses for ensure/logs/exec/probes. Nodes can be cordoned or drained via <code>ae nodes</code>.</p>
+<h2>Service VIP</h2>
+<p>A stable virtual IP allocated from the Service CIDR and fronted by the overlay provider. Ingress prefers VIPs when ready endpoints exist; hostPorts remain for single-node edge cases.</p>
 <h2>Revision</h2>
 <p>An immutable snapshot of desired state computed from the manifest spec hash. A new revision is created when the manifest content changes.</p>
 <ul>
@@ -232,17 +240,19 @@
 <li>Used for rollbacks: <code>ae rollback &lt;app&gt; [--to &lt;rev&gt;]</code>.</li>
 </ul>
 <h2>Reconcile</h2>
-<p>The controller compares the desired state from specs to the observed state (container runtime + SQLite) and performs the operations needed to converge.</p>
+<p>The controller compares the desired state from specs to the observed state (SQLite/Postgres + node inventory + runtimes) and performs the operations needed to converge.</p>
 <ul>
-<li>Creates missing replicas (pulling images as needed).</li>
+<li>Schedules replicas onto Ready nodes that match <code>nodeSelector</code>/tolerations/topology spread. Storage pinning keeps retained volumes on a single node.</li>
+<li>Creates or updates containers via the node agent runtime (pulling images as needed); falls back to the local runtime when no nodes are eligible.</li>
 <li>Removes containers from older revisions after the new revision is live.</li>
-<li>Updates ingress to a healthy upstream once readiness passes.</li>
+<li>Allocates Service VIPs and updates ingress to healthy upstreams once readiness passes.</li>
 </ul>
 <h2>Health</h2>
 <ul>
 <li>Readiness: Determines whether a replica should receive traffic (2xx HTTP implies success).</li>
 <li>Liveness: Indicates the replica is still alive (defaults to true if not specified).</li>
 <li>Initial delay: Allows the app to boot before probes start.</li>
+<li>Startup probes gate readiness/liveness until they succeed; lifecycle hooks (postStart/preStop) run around replica start/stop.</li>
 </ul>
 <h2>Status</h2>
 <p>Per‑app aggregate status is one of:</p>
@@ -252,39 +262,44 @@
 <li>degraded: no replicas present for the current revision</li>
 </ul>
 <p>CLI examples:</p>
-<pre><code>
-ae status myapp --wide --events
-</code></pre>
+<pre><code>ae status myapp --wide --events</code></pre>
 <h2>Events</h2>
 <p>Lightweight audit trail for changes and noteworthy events:</p>
 <ul>
 <li>ApplyStarted, ApplyCompleted</li>
 <li>IngressConfigured, IngressRemoved</li>
-<li>(future) ReadinessFailed, RolloutFailed</li>
+<li>NodeRegistered, NodeCordon, NodeUncordon</li>
+<li>ServiceVIPAllocated, ServiceVIPRemoved</li>
+<li>Readiness/rollout failures when health gates trip</li>
 </ul>
 <p>Inspect with:</p>
-<pre><code>
-ae events myapp --limit 20
-</code></pre>
+<pre><code>ae events myapp --limit 20</code></pre>
 <h2>Rollouts</h2>
-<p>Single‑node rolling replace with <code>maxUnavailable=0, maxSurge=1</code> semantics:</p>
-<p>1. Start a new replica for the next revision. 2. Wait for readiness. 3. Switch ingress to the new endpoint. 4. Stop and remove old revision containers.</p>
+<p>Rolling replace with <code>maxUnavailable=0, maxSurge=1</code> semantics across one or more nodes:</p>
+<p>1. Start a new replica for the next revision. 2. Wait for readiness. 3. Switch ingress to the new Service VIP endpoints (or hostPort when VIP disabled). 4. Stop and remove old revision containers.</p>
 <p>Rollback uses the recorded manifest for the target revision:</p>
-<pre><code>
-ae rollback myapp --to 3
-</code></pre>
+<pre><code>ae rollback myapp --to 3</code></pre>
 <h2>Resources &amp; Volumes</h2>
 <ul>
 <li>CPU/memory limits map to engine flags (Docker nano_cpus; Podman/Docker <code>--cpus</code>, memory quantities → bytes).</li>
 <li>Volumes map to hostPath → bind mount (ro/rw). <code>spec.storage</code> creates named engine volumes per app.</li>
+<li>Storage volumes are bound to the node that first creates them; scheduler pins retained volumes to that node.</li>
 </ul>
 <h2>Ingress</h2>
 <p>For apps with <code>spec.ingress</code>, the controller writes a Caddy site snippet and reloads the proxy. When Caddy runs in a container, loopback upstreams are rewritten to the host alias: <code>host.docker.internal</code> (Docker) or <code>host.containers.internal</code> (Podman).</p>
+<p>In multi-node runs, ingress prefers Service VIPs supplied by the overlay provider so upstream selection is node-agnostic.</p>
 <h2>HTTP API</h2>
 <p>Read‑only status/metrics/events published at:</p>
 <ul>
 <li><code>/metrics</code>, <code>/status</code>, <code>/status/&lt;app&gt;</code>, <code>/events/&lt;app&gt;</code></li>
+<li><code>/nodes</code> for node inventory + heartbeat staleness</li>
+<li><code>/system</code> + <code>/dashboard</code> for a quick UI snapshot</li>
 <li><code>/openapi.json</code> and a tiny docs page at <code>/docs</code></li>
+</ul>
+<p>Kubernetes API shim (optional):</p>
+<ul>
+<li><code>python -m ae.apishim serve --token &lt;bearer&gt;</code> exposes <code>/api</code>, <code>/apis</code>, <code>/openapi/v2|v3</code> with SSA/patch and port-forward.</li>
+<li>Works with kubectl/helm for Deployments/StatefulSets/DaemonSets/Jobs/CronJobs/Ingress/Services/HPA/RBAC; see <code>docs/apishim-compatibility-matrix.md</code> for coverage.</li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -293,7 +308,7 @@ ae rollback myapp --to 3
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-13 17:21:28</span>
+        <span>Built 2026-01-14 14:58:55</span>
       </div>
     </footer>
     <script>

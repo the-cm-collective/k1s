@@ -1,33 +1,33 @@
 # k1s Overview
 
-k1s is a tiny, single‑node application engine that lets you declare apps in YAML, run them with a container runtime (Podman preferred; Docker supported), and expose them via Caddy. It aims to give you the everyday ergonomics of a small Kubernetes subset without the operational weight.
+k1s is a small, multi‑node application engine that now supports a controller + worker agents, Service VIPs over an overlay network, and a Kubernetes‑compatible API shim. You can declare apps in YAML, run them on one or more hosts (Podman preferred; Docker supported), and expose them through Caddy or your own proxy while keeping resource usage low.
 
-- Goal: simple, predictable rollouts for 1–3 services on a small VPS.
-- Non‑goals: multi‑node scheduling, CRDs, complex RBAC, full Kubernetes API.
+- Goal: predictable rollouts and Kubernetes‑style ergonomics on 1–4 nodes without a heavyweight control plane.
+- Non‑goal: full upstream conformance or cloud‑provider controllers; we target a curated “compatibility” subset instead.
 
-## Current State (Dec 2025)
+## Current State (Jan 2026)
 
-k1s now ships a Podman‑first controller with Docker fallback, Caddy ingress, SQLite state, and a thin `ae` CLI plus kubectl‑style `k1s` wrapper. Specs cover rolling deploys, health probes, config/secret projection (SOPS/age aware), storage, security context, observability, and a small HTTP API. Everything is packaged to stay comfortable on a 1‑CPU/2‑GB VPS while still feeling like day‑to‑day Kubernetes.
-
-Progress through mid‑November 2025 delivered multi‑container runtime with init containers, canary rollouts with persisted weights, strict health gating, HPA/PDB/PVC/ServiceAccount support, and `export-k8s` coverage for Deployment/StatefulSet/Ingress/Service plus optional HPA/PDB/SA/PVC/NetworkPolicy. Podman defaults to `crun` (2025‑11‑10) for faster startup and lower memory, RBAC emitters, Job/CronJob exporters, percent PDB flags, and PodSecurity label presets all landed on 2025‑11‑12.
-
-Compatibility is a first‑class focus: `export-k8s --validate` and `k1s k8s-check --policy strict` emit upstream‑clean YAML, and the in‑progress Kubernetes API shim targets Helm/kubectl workflows (discovery, core CRUD/watch, Deployment/Service/Ingress translation with status/scale) so more charts work unmodified than on other lightweight K8s‑like stacks.
-
-Footprint remains well below k3s. Recent bench runs in `combined/combined.csv` (2025‑12‑02) show k1s control‑plane PSS around 338–345 MB on Podman+crun (rootless), while comparable k3s runs from 2025‑11‑21 sit near 960–1,020 MB. Rollout snapshots hold the same ~3× gap, keeping us smaller than k3s while aiming for higher Kubernetes compatibility than other micro platforms.
+- Multi‑node: controller manages registered nodes with heartbeats, cordon/drain, and a minimal scheduler that respects `nodeSelector`, taints/tolerations, topology spread, and storage pinning. Agents expose runtime exec/logs/probes over mTLS; Service VIPs ride a WireGuard/VXLAN overlay with HAProxy provider. HostPorts are still supported for single‑node edge cases.
+- Networking/Ingress: Service CIDR + overlay provider (`AE_SERVICE_PROVIDER=overlay`) with ClusterIP allocation, EndpointSlice projection, and Caddy templates that prefer Service VIPs. Bridge provider remains for single‑node or no‑overlay labs.
+- State: SQLite by default; Postgres supported for shim HA and multi‑node durability (`AE_STATE_DSN` / `AE_APISHIM_DSN`).
+- API surface: native HTTP API plus the Kubernetes API shim (`ae.apishim serve`) covering Deployments/StatefulSets/DaemonSets/Jobs/CronJobs/Ingress/Service/HPA/RBAC with SSA/patch support. Compatibility matrix and OpenAPI v2/v3 artifacts ship in `docs/apishim-compatibility-matrix.md` and CI.
+- Tooling: `k1s` kubectl‑style wrapper, `ae nodes` for inventory/cordon, `ae plan` for placement hints, `export-k8s` and `k8s-report` for parity/compliance, dashboard at `/dashboard`, and `/nodes` + enriched `/metrics` for node/service visibility.
+- Footprint: stays well below k3s while adding overlay + shim; recent lab runs keep controller+agent PSS under ~450 MB on Podman+crun.
 
 ## Features (High‑Level)
 
 - Declarative specs: `apiVersion: ae.dev/v1alpha1`, `kind: App`.
+- Multi‑node scheduler: Ready node filtering, cordon/drain, nodeSelector + tolerations + topology spread, storage pinning, and overlay Service VIPs.
 - Rolling deploys and rollback with health gates; pause/resume via `ae rollout`.
-- Probes: HTTP, TCP, and Exec with initial delays/timeouts.
-- Ingress via Caddy site fragments + reload; TLS via BYO certs or k8s‑style secrets.
-- Configs and Secrets: project keys to env and files (SOPS/age supported).
-- Storage: per‑app named volumes (PV‑lite) with `retention: Retain|Delete`.
-- Security: runAsUser/runAsGroup, readOnlyRootFilesystem, dropCapabilities.
+- Probes: HTTP/TCP/Exec plus startup probes and lifecycle hooks.
+- Ingress via Caddy site fragments + reload; TLS via BYO secrets or k8s‑style secrets; upstreams prefer Service VIPs.
+- Configs and Secrets: project keys to env and files (SOPS/age supported); envFrom/file projections honored by exporter and shim.
+- Storage: per‑app named volumes (retain/delete) with node affinity; emptyDir support.
+- Security: runAsUser/runAsGroup, readOnlyRootFilesystem, cap drop, seccomp/AppArmor.
 - Registry auth from `~/.config/ae/registries.yaml`.
-- Events and metrics; CLI snapshot and Prometheus text endpoint.
-- CLIs: `ae` (native) and `k1s` (kubectl‑like wrapper).
-- HTTP API (read‑mostly): `/metrics`, `/health`, `/status`, `/status/<app>`, `/events/<app>`, `/logs/<app>`, `/openapi.json`, `/docs`, `/dashboard`.
+- Observability: Prometheus metrics with node/service gauges, events, `/nodes`, `/system`, dashboard.
+- CLIs: `ae` (native), `k1s` (kubectl‑like wrapper), `ae nodes` for inventory, `ae plan` for placement, `ae tls` helpers.
+- Kubernetes API shim: `ae.apishim serve` with RBAC/SSA/patch, OpenAPI v2/v3, port-forward for pods/services, compatibility matrix.
 - K8s helpers: `export-k8s`, `k8s-check`, and `k8s-report` for parity/compliance.
 
 ### Architecture at a Glance (Diagram)
@@ -35,19 +35,25 @@ Footprint remains well below k3s. Recent bench runs in `combined/combined.csv` (
 ```mermaid
 flowchart LR
   A[Specs/*.yaml] -->|load| C[Controller]
-  C -->|ensure| R[(Container Runtime)]
-  C -->|health| H[Probes]
-  C -->|write| S[(SQLite State)]
+  C -->|schedule| SCH[Scheduler]
+  SCH -->|place| N1[Node Agent]
+  SCH -->|place| N2[Node Agent]
+  C -->|write| S[(SQLite/Postgres)]
+  C -->|service VIPs| SV[Service Controller]
+  SV -->|overlay endpoints| O[Overlay/HAProxy]
   C -->|render+reload| I[Caddy Ingress]
-  C -->|expose| API[HTTP API: /status /metrics]
-  CLI[ae / k1s CLI] -->|reads| S
-  CLI -->|apply/rollback| C
+  N1 -->|ensure/exec/logs| R1[(Runtime)]
+  N2 -->|ensure/exec/logs| R2[(Runtime)]
+  C -->|expose| API[HTTP API + API Shim]
+  CLI[ae / k1s CLI] -->|apply/rollback| C
+  CLI -->|kubectl/helm| API
 ```
 
 ## Requirements
 
 - Python 3.11+
 - Podman (preferred) or Docker
+- Optional: WireGuard tools for overlay, Postgres for HA shim/multi-node durability
 - Optional: Caddy (for ingress), SOPS/age (for secrets), watchdog (for live file watch)
 
 ## Install
@@ -57,10 +63,12 @@ flowchart LR
 
 ## Getting Started
 
-1) Start the controller loop
+1) Start the controller loop (single-node)
 
 - Polling only: `python -m ae.controller --loop --specs specs/ --metrics-port 9108`
 - With file watch (if `watchdog` installed): `python -m ae.controller --loop --watch --specs specs/ --metrics-port 9108`
+
+Multi-node lab (two hosts): follow `docs/multinode-lab.md` or run `ops/dev/multinode-lab.sh -h` for flags. Ensure `AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay` on the controller and start `ae.node` on each worker with `--ensure-pod-net`.
 
 2) Apply a sample app
 
@@ -81,6 +89,8 @@ flowchart LR
 
 - JSON and metrics: `curl :9108/status`, `curl :9108/metrics`
 - OpenAPI and docs: `curl :9108/openapi.json`, open `http://localhost:9108/docs`
+- Nodes: `curl :9108/nodes` (with tokens if configured) for inventory/heartbeat state
+- Dashboard: `http://localhost:9108/dashboard`
 
 ## Configuration (Quick Reference)
 
@@ -90,20 +100,27 @@ flowchart LR
 - AE_REGISTRY_CONFIG: registry credentials file (default `~/.config/ae/registries.yaml`)
 - AE_ALLOW_PLAINTEXT_SECRETS=1: allow bypassing SOPS (dev only)
 - AE_LOG_LEVEL: logging level (DEBUG/INFO/…)
+- AE_AGENT_API_TOKEN / AE_AGENT_API_PORT: controller → agent auth/port
+- AE_SERVICE_PROVIDER / AE_OVERLAY_NET / AE_SERVICE_IP_POOL: Service VIP provider + overlay settings
+- AE_APISHIM_TOKEN / AE_APISHIM_DSN: Kubernetes API shim auth + backing store
 
 ## Project Layout
 
-- src/ae/controller: reconcile loop, state, health, spec models
-- src/ae/runtime: Podman (default) and Docker adapters, registry auth, stub runtime
+- src/ae/controller: reconcile loop, scheduler, state, health, spec models
+- src/ae/runtime: Podman (default) and Docker adapters, RemoteRuntime client for agents
+- src/ae/node: node agent entrypoint wrapping runtime and probes/logs/exec
 - src/ae/ingress: Caddy templating + reload
+- src/ae/network: Service/VIP providers (overlay/bridge)
 - src/ae/cli and src/ae/kctl: CLIs (`ae`, `k1s`)
+- src/ae/apishim: Kubernetes API shim (kubectl/helm compatibility)
 - src/ae/observability: metrics, HTTP API, logging
 - specs/: example manifests and secrets
-- docs/: runbook, HTTP API, testing, this overview
+- docs/: runbook, HTTP/API shim, testing, this overview
 
 ## Further Reading
 
 - Runbook: `docs/runbook.md`
 - End-to-End Guide: `docs/e2e.md`
 - HTTP API: `docs/http-api.md`
+- Kubernetes API shim + compatibility matrix: `CONFORMANCE.md`, `docs/apishim-compatibility-matrix.md`
 - Architecture (detailed): `docs/architecture.md`

@@ -1,22 +1,18 @@
 # Multi-Node Operation Plan
 
-Status: December 14, 2025 — the engine is single-node only (Podman default, Docker fallback) with Caddy ingress and a local SQLite store. This doc reviews what exists today and lays out a staged path to run workloads across multiple nodes.
+Status: January 14, 2026 — controller + node agents, overlay Service VIPs, scheduler, and RemoteRuntime are implemented. Multi-node labs run today (controller + >=1 workers); remaining work is mainly CI soak and hardening noted in Phase 7.
 
 ---
 
-## Current State (single node)
-- Control plane: one `ae.controller` process; no leader election or node inventory. State lives in `state/controller.db` (SQLite) and is mutated only by the local controller.
-- Runtime: `PodmanRuntime` (default) and `DockerRuntime` drive containers on the same host. They optionally join a local bridge (`AE_PODMAN_NETWORK` / `AE_DOCKER_NETWORK`) to let Caddy reach replicas by DNS alias. No concept of remote hosts or node-scoped capacity.
-- Scheduling/placement: none. Specs carry `affinity`/`tolerations`/`topologySpreadConstraints` only for Kubernetes export; the runtime ignores them.
-- Networking & Services:
-  - For multi-replica apps, ingress load balances ready endpoints using per-replica host ports or container DNS on the shared bridge.
-  - `spec.service.port` is honored only when `replicas == 1`; otherwise host ports are ephemeral and L4 load-balancing is delegated to an external proxy (see `docs/l4-services.md`).
-  - No ClusterIP emulation, IPAM, or overlay; everything assumes one host namespace.
-- Ingress: single Caddy instance (host or container) on the control node. Upstreams are 127.0.0.1:<hostPort> or container DNS on the shared bridge. No cross-node routing.
-- Health: controller-side HTTP/TCP/exec probes against local endpoints. Exec probes rely on local runtime access.
-- Storage: per-app Docker/Podman volumes on the host; no remote mounts or placement awareness.
-- Observability/API: metrics/events/status served from the controller. CLI can point to a remote controller over HTTP, but nodes are not first-class objects.
-- Prior art: `docs/CLUSTERIP.md` defines a phased plan for Service VIPs (Phase 1–3) but is not implemented in code.
+## Current State (Jan 2026)
+- Control plane: single `ae.controller` with SQLite by default; Postgres supported for shim/HA labs. Maintains node inventory + heartbeats and schedules replicas to Ready nodes; RemoteRuntime proxies to node agents.
+- Runtime/agents: `PodmanRuntime` (default) and `DockerRuntime` run under the node agent (`python -m ae.node`). Agents expose ensure/exec/logs/probes and optional overlay setup; controller falls back to local runtime when no nodes are eligible.
+- Scheduling/placement: scheduler respects `nodeSelector`, taints/tolerations, topology spread, and storage pinning; supports cordon/uncordon/drain via `ae nodes`.
+- Networking & Services: Service CIDR with overlay provider (`AE_SERVICE_PROVIDER=overlay`) using HAProxy VIPs on the overlay network; EndpointSlice projection and VIP-aware ingress; hostPorts remain for single-node edge cases.
+- Ingress: single Caddy on controller, upstreaming to Service VIPs when ready endpoints exist; per-node ingress remains a documented option only.
+- Health: controller orchestrates readiness/liveness/startup probes; exec/TCP probes and CLI exec/logs are proxied through agents.
+- Storage: per-app Podman/Docker volumes with retention; scheduler pins retained volumes to the node that created them.
+- Observability/API: `/nodes`, node/service gauges in `/metrics`, dashboard shows node readiness and VIPs; CLI supports `ae nodes list|describe|cordon`.
 
 ---
 

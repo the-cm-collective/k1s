@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Configs Secrets</title>
+    <title>Multinode Lab</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs/%3E%3Crect width='64' height='64' rx='12' fill='%23096ad9'/%3E%3Cpath d='M16 45h32M16 19h32M16 32h32' stroke='white' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E"/>
     <style>
       :root {
@@ -223,81 +223,24 @@
       <a href="playground.html">Playground</a>
     </nav>
     <div class="container">
-    <h2>Configs and Secrets</h2>
-<p>This page explains how k1s projects values from configs and sealed secrets into containers — as environment variables and (optionally) as files.</p>
-<h3>Merge Order</h3>
+    <h1>Multi-node Lab Walkthrough (Phase 7)</h1>
+<p>Use this quickstart to exercise the multi-node path on two Linux hosts (one controller + one worker). It mirrors the Phase 7 smoke the CI job will run.</p>
+<h2>Prereqs</h2>
 <ul>
-<li><code>configRefs</code> &lt; <code>secretRefs</code> &lt; <code>spec.env</code></li>
-<li>Manifest <code>env</code> wins last and can override values coming from configs/secrets.</li>
+<li>Two hosts (or VMs) with Python 3.11+, Podman or Docker, WireGuard tools (<code>wg</code>, <code>wg-quick</code>), and passwordless SSH between them for convenience.</li>
+<li>Rootful networking on both nodes (rootless overlay is not supported); a small privileged helper is required to attach WireGuard.</li>
+<li>Controller host exposes TCP 9110 (agent API) and UDP 51820 (or your chosen WireGuard port).</li>
+<li>Clone this repo on the controller; worker only needs <code>ae</code> installed plus the <code>ae-node</code> entrypoint.</li>
 </ul>
-<h3>Environment Projection</h3>
-<pre><code>spec:
-  configRefs:
-    - name: app-config
-      path: configs/app-config.yaml   # YAML or JSON mapping
-      env:
-        - { name: APP_MODE,  key: mode }
-        - { name: APP_COLOR, key: color }
-  secretRefs:
-    - name: demo-secret
-      path: specs/examples/demo-secret.sops.yaml
-      env:
-        - { name: API_TOKEN, key: token }
-  env:
-    - { name: APP_MODE, value: demo-override }  # overrides config/secret</code></pre>
-<p>For local demos without SOPS, set <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> (or run <code>./scripts/init_demo.sh --with-secrets-env</code>).</p>
-<h3>Sealing the sample secret (SOPS/age)</h3>
-<p>If you prefer to use a real sealed secret for the examples:</p>
-<ul>
-<li>Ensure you have an age recipient:</li>
-<li>EITHER create an age identity (private key) at <code>~/.config/ae/keys.txt</code> using <code>age-keygen -o ~/.config/ae/keys.txt</code> (preferred),</li>
-<li>OR set <code>AE_AGE_RECIPIENT=age1...</code> to your public recipient directly.</li>
-<li>Seal the demo secret:</li>
-<li><code>make secrets-seal-demo</code> (runs <code>scripts/seal_demo_secret.sh</code>)</li>
-<li>Verify decryption works locally:</li>
-<li><code>sops --decrypt specs/examples/demo-secret.sops.yaml | yq</code> (should show a <code>token</code> field)</li>
-</ul>
-<p>Notes:</p>
-<ul>
-<li>The controller attempts to decrypt via <code>sops --decrypt</code>. In dev, you can bypass sealing by setting <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> (or by starting the demo with <code>--with-secrets-env</code>).</li>
-<li>If decryption fails at runtime, the controller records an <code>AppEvent</code> with type <code>SecretError</code> and continues; use <code>ae events &lt;app&gt;</code> to inspect.</li>
-</ul>
-<h3>File Projection</h3>
-<p>At reconcile time, k1s writes key/value files under:</p>
-<ul>
-<li>Host: <code>state/projections/&lt;app&gt;-rev&lt;revision&gt;/{config,secret}/...</code></li>
-<li>Container (mounted RO): <code>/var/run/ae/config/&lt;app&gt;</code></li>
-</ul>
-<p>You can either project all keys by default, or select keys and filenames:</p>
-<pre><code>spec:
-  configRefs:
-    - name: app-config
-      path: configs/app-config.yaml
-      files:
-        - { key: mode,  file: config/app_mode.txt }
-        - { key: color, file: config/app_color.txt }
-  secretRefs:
-    - name: demo-secret
-      path: specs/examples/demo-secret.sops.yaml
-      files:
-        - { key: token, file: secret/token }</code></pre>
-<p>Inside the container this produces, for example:</p>
-<ul>
-<li><code>/var/run/ae/config/&lt;app&gt;/config/app_mode.txt</code></li>
-<li><code>/var/run/ae/config/&lt;app&gt;/secret/token</code></li>
-</ul>
-<h3>CLI Helpers</h3>
-<ul>
-<li><code>ae config validate -f configs/app-config.yaml</code> — list top-level keys.</li>
-<li><code>ae secret validate -f specs/examples/demo-secret.sops.yaml</code> — list decrypted keys.</li>
-</ul>
-<h3>Notes</h3>
-<ul>
-<li>For production, use SOPS/age and keep plaintext disabled (do not set <code>AE_ALLOW_PLAINTEXT_SECRETS</code>).</li>
-<li>File projection is additive; you can still mount your own volumes.</li>
-</ul>
-    </div>
-    <footer class="site-footer">
+<h2>Bring up the controller</h2>
+<pre><code>AE_ENABLE_SERVICE_PROXY=1 \
+AE_SERVICE_PROVIDER=overlay \
+AE_OVERLAY_NET=${AE_OVERLAY_NET:-ae-overlay} \
+AE_SERVICE_IP_POOL=${AE_SERVICE_IP_POOL:-10.241.0.0/16} \
+AE_POD_CIDR_POOL=${AE_POD_CIDR_POOL:-10.42.0.0/16} \
+AE_POD_CIDR_MASK=${AE_POD_CIDR_MASK:-24} \
+AE_AGENT_API_PORT=${AE_AGENT_API_PORT:-9110} \
+AE_AGENT_API_TOKEN=REDACTED"site-footer">
       <div class="container inner">
         <span>k1s Documentation</span>
         <span class="spacer"></span>

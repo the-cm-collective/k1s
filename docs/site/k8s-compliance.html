@@ -61,11 +61,13 @@
     </style>
     <style>
       /* Base layout aligned to dashboard palette */
-      html, body { height: 100%; }
+      html { height: 100%; }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
-        margin: 2rem;
+        margin: 0;
+        padding: 2rem;
         line-height: 1.55;
+        box-sizing: border-box;
         min-height: 100vh;
         display: flex;
         flex-direction: column;
@@ -208,7 +210,9 @@
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
+      <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
@@ -241,24 +245,23 @@
 <li>This adds server-side dry-run and applies the exported YAML to the cluster, waiting for the Deployment rollout; results are included in the score.</li>
 </ul>
 <p>The compliance status and per-sample details render below when a report is present.</p>
-<h2>Current Coverage Summary (2025-11-12)</h2>
+<h2>Current Coverage Summary (2026-01-14)</h2>
 <ul>
-<li>Workloads: Deployment (apps/v1), StatefulSet, Job, and CronJob supported; DaemonSet not emitted.</li>
-<li>Pod/Container: env pairs; env via configMapKeyRef/secretKeyRef; readiness/liveness (HTTP/TCP/exec); resources requests/limits; securityContext (runAsUser/runAsGroup/readOnlyRootFilesystem/cap drop/seccomp); AppArmor via annotation; terminationGracePeriodSeconds; priorityClassName.</li>
-<li>Service: ClusterIP with multi-port mapping; NodePort/LoadBalancer honored; nodePort validated (30000–32767); externalIPs passthrough.</li>
-<li>Ingress: networking.k8s.io/v1 Prefix paths; multi-path; TLS default on with optional secretName; ingressClassName optional.</li>
-<li>Policy/Autoscaling/Accounts: PDB (policy/v1; integers or percent), HPA (autoscaling/v2 CPU/memory utilization or memory AverageValue), ServiceAccount attach/emit, Role/RoleBinding emit when a ServiceAccount is attached, NetworkPolicy passthrough.</li>
-<li>Scheduling: affinity/tolerations/topologySpreadConstraints/priorityClassName passed to Pod template.</li>
-<li>Validation/Tooling: <code>ae export-k8s --validate</code>, <code>ae k8s-check --policy strict</code>, <code>ae k8s-report</code> (kubeconform + optional kubectl dry-run/apply).</li>
+<li>Workloads: Deployment/StatefulSet/DaemonSet/Job/CronJob supported; shim mirrors status/scale.</li>
+<li>Pod/Container: env/envFrom; readiness/liveness/startup probes; lifecycle hooks; resources requests/limits; securityContext (runAs*/fsGroup/readOnlyRootFilesystem/cap drop/seccomp/AppArmor); terminationGracePeriodSeconds; priorityClassName.</li>
+<li>Service: ClusterIP/NodePort/LoadBalancer with multi-port mapping, nodePort validation, externalIPs, sessionAffinity; EndpointSlice projection with topology hints; service port-forward supported by shim.</li>
+<li>Ingress: networking.k8s.io/v1 Prefix paths with TLS and ingressClassName; status.loadBalancer populated from Service VIP/provider IPs.</li>
+<li>Policy/Autoscaling/Accounts: PDB (int/percent), HPA v2 (CPU/memory utilization/averageValue), ServiceAccount tokens, Role/RoleBinding emit/enforce in shim, NetworkPolicy passthrough.</li>
+<li>Scheduling: affinity/tolerations/topologySpreadConstraints/nodeSelector/priorityClassName passed to Pod templates; scheduler in k1s honors selectors/tolerations/topology spread and storage pinning.</li>
+<li>Validation/Tooling: <code>ae export-k8s --validate</code>, <code>ae k8s-check --policy strict</code>, <code>ae k8s-report</code>, OpenAPI v2/v3 drift guard + fixtures, compatibility matrix (<code>docs/apishim-compatibility-matrix.md</code>).</li>
 </ul>
 <h3>Notable Gaps vs. Kubernetes</h3>
 <ul>
-<li>StartupProbe and lifecycle hooks (postStart/preStop) not modeled.</li>
-<li><code>envFrom</code>, <code>imagePullSecrets</code>, and <code>imagePullPolicy</code> not modeled.</li>
-<li>HPA advanced behaviors (scale policies) not supported.</li>
-<li>Service sessionAffinity/healthCheckNodePort and advanced Ingress annotations not emitted.</li>
-<li>Config/Secret volume mounts not modeled (env/key refs only); PVC <code>storageClassName</code> and accessModes are fixed.</li>
-<li>RBAC: namespaced Role + RoleBinding emitted when a ServiceAccount is attached. ClusterRole/ClusterRoleBinding remain out of scope for now.</li>
+<li>NetworkPolicy enforcement depends on your CNI when exporting; k1s runtime does not enforce policies.</li>
+<li>PodSecurityAdmission/admission webhooks are not implemented; exporter can emit PSA labels only.</li>
+<li>PV/PVC/StorageClass/CSI provisioning beyond exported manifests; k1s runtime relies on retained named volumes.</li>
+<li>metrics.k8s.io/metrics-server and aggregated APIs are out of scope.</li>
+<li>Advanced Ingress features (regex, weighted/canary annotations, multiple backends per rule) remain out of scope for now.</li>
 </ul>
 <h2>NetworkPolicy Provider Notes (k3s)</h2>
 <ul>
@@ -270,15 +273,15 @@
 </ul>
 <h3>Gap Tracker (create issues and check off when done)</h3>
 <ul>
-<li>[ ] Add <code>startupProbe</code> to spec and exporter; update <code>k8s-check</code> guidance.</li>
-<li>[ ] Support <code>envFrom</code> for ConfigMap/Secret; exporter maps to envFrom.</li>
-<li>[ ] Support <code>imagePullSecrets</code> and <code>imagePullPolicy</code> in spec/exporter.</li>
-<li>[x] Allow PDB percentage values and validate exclusivity with integers. (2025-11-12)</li>
+<li>[x] Add <code>startupProbe</code> to spec and exporter; update <code>k8s-check</code> guidance.</li>
+<li>[x] Support <code>envFrom</code> for ConfigMap/Secret; exporter maps to envFrom.</li>
+<li>[x] Support <code>imagePullSecrets</code> and <code>imagePullPolicy</code> in spec/exporter.</li>
+<li>[x] Allow PDB percentage values and validate exclusivity with integers.</li>
 <li>[ ] Add HPA scaleUp/scaleDown behavior knobs (stabilizationWindow, policies).</li>
 <li>[ ] Model Config/Secret volume mounts and mountPaths; exporter emits volumes/volumeMounts.</li>
 <li>[ ] PVC <code>storageClassName</code> and <code>accessModes</code> selection flags; document defaults.</li>
-<li>[ ] Service sessionAffinity and healthCheckNodePort (behind explicit flag).</li>
-<li>[x] Optional RBAC emission for a ServiceAccount (Role/RoleBinding presets). (2025-11-12)</li>
+<li>[ ] Service healthCheckNodePort and advanced Ingress annotations (behind explicit flag).</li>
+<li>[ ] RBAC: broaden exporter coverage for ClusterRole/ClusterRoleBinding presets.</li>
 </ul>
 <hr/>
 <h2>K8s Compliance Status</h2>
@@ -292,7 +295,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-13 17:21:28</span>
+        <span>Built 2026-01-14 14:58:55</span>
       </div>
     </footer>
     <script>

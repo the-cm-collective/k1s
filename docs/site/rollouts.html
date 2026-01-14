@@ -61,11 +61,13 @@
     </style>
     <style>
       /* Base layout aligned to dashboard palette */
-      html, body { height: 100%; }
+      html { height: 100%; }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
-        margin: 2rem;
+        margin: 0;
+        padding: 2rem;
         line-height: 1.55;
+        box-sizing: border-box;
         min-height: 100vh;
         display: flex;
         flex-direction: column;
@@ -208,7 +210,9 @@
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
+      <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
@@ -222,8 +226,7 @@
     <h2>Rollout Policy</h2>
 <p>Apps can specify a rollout policy to influence how replicas are created and how old revisions are removed during an update.</p>
 <h3>Fields</h3>
-<pre><code>
-spec:
+<pre><code>spec:
   rollout:
     strategy: ordered | parallel | canary   # default: parallel
     maxSurge: 1                             # keep old replicas temporarily (default: 1)
@@ -231,8 +234,7 @@ spec:
     pause: true|false                       # pause rollout without changing runtime
     # canary options
     weight: 1                               # bias first upstream Nx in ingress (canary)
-    auto: { start: 1, step: 2, intervalSeconds: 60, max: 10 }  # controller‑tracked ramp
-</code></pre>
+    auto: { start: 1, step: 2, intervalSeconds: 60, max: 10 }  # controller‑tracked ramp</code></pre>
 <h3>Semantics</h3>
 <ul>
 <li>strategy=ordered:</li>
@@ -262,15 +264,11 @@ spec:
 <p>Ingress uses a “prefer first” policy by default. The controller writes the new revision endpoints first, so traffic prefers the new revision as soon as it becomes ready; old replicas are removed once readiness satisfies the policy. For canary rollouts, use <code>rollout.weight</code> (and optional <code>rollout.auto</code>) to bias and ramp traffic.</p>
 <h3>Demo</h3>
 <p>Apply a two-step ordered rollout for <code>echo</code>:</p>
-<pre><code>
-./scripts/init_demo.sh --demo-rollout -y -d
-</code></pre>
+<pre><code>./scripts/init_demo.sh --demo-rollout -y -d</code></pre>
 <p>This applies <code>specs/examples/echo.yaml</code> then <code>specs/examples/echo-rollout.yaml</code> with rollout <code>{ strategy: ordered, maxSurge: 1, maxUnavailable: 0 }</code>.</p>
 <p>Pause/resume:</p>
-<pre><code>
-ae rollout pause echo
-ae rollout resume echo
-</code></pre>
+<pre><code>ae rollout pause echo
+ae rollout resume echo</code></pre>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -278,7 +276,7 @@ ae rollout resume echo
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-13 17:21:28</span>
+        <span>Built 2026-01-14 14:58:55</span>
       </div>
     </footer>
     <script>

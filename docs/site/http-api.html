@@ -61,11 +61,13 @@
     </style>
     <style>
       /* Base layout aligned to dashboard palette */
-      html, body { height: 100%; }
+      html { height: 100%; }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
-        margin: 2rem;
+        margin: 0;
+        padding: 2rem;
         line-height: 1.55;
+        box-sizing: border-box;
         min-height: 100vh;
         display: flex;
         flex-direction: column;
@@ -208,7 +210,9 @@
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
+      <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
@@ -226,15 +230,16 @@
 <li>GET <code>/metrics</code></li>
 <li>Content-Type: <code>text/plain; version=0.0.4</code></li>
 <li>Prometheus text format gauges:</li>
-<li><code>ae_apps_total</code>, <code>ae_apps_ready</code>, <code>ae_apps_progressing</code>, <code>ae_apps_degraded</code></li>
-<li><code>ae_replicas_total</code>, <code>ae_replicas_ready</code>, <code>ae_replicas_live</code></li>
+<li>Apps/replicas: <code>ae_apps_total</code>, <code>ae_apps_ready</code>, <code>ae_apps_progressing</code>, <code>ae_apps_degraded</code>, <code>ae_replicas_total</code>, <code>ae_replicas_ready</code>, <code>ae_replicas_live</code></li>
+<li>Nodes: <code>ae_nodes_total</code>, <code>ae_nodes_ready</code>, <code>ae_nodes_stale</code></li>
+<li>Services: <code>ae_services_total</code> plus per-service labels (ClusterIP, provider)</li>
+<li>Shim/backends: <code>apishim_*</code> metrics (watchers, queue depth, backend) when the API shim is enabled</li>
 </ul>
 <ul>
 <li>GET <code>/status</code></li>
 <li>Content-Type: <code>application/json</code></li>
 <li>200 OK: JSON array of app status objects</li>
-<pre><code>
-    {
+<pre><code>    {
       &quot;app_name&quot;: &quot;echo&quot;,
       &quot;desired_replicas&quot;: 1,
       &quot;ready_replicas&quot;: 1,
@@ -244,8 +249,7 @@
       &quot;image&quot;: &quot;alpine:3.20&quot;,
       &quot;ingress_host&quot;: &quot;echo.localtest.me&quot;,
       &quot;ingress_path&quot;: &quot;/&quot;
-    }
-</code></pre>
+    }</code></pre>
 <li>Example item:</li>
 </ul>
 <ul>
@@ -254,30 +258,38 @@
 <li>404 Not Found: when no status exists</li>
 </ul>
 <ul>
+<li>GET <code>/nodes</code></li>
+<li>200 OK: <code>{ &quot;nodes&quot;: [ { node_id, name, backend, endpoint, labels, taints, pod_cidr, cordoned, status, seen_at, stale }, ... ], &quot;count&quot;: N, &quot;stale_after_seconds&quot;: 40 }</code></li>
+<li>Requires READ token when auth is configured.</li>
+</ul>
+<ul>
 <li>GET <code>/events/&lt;app&gt;?limit=N</code></li>
 <li>200 OK: JSON array of recent events for <code>&lt;app&gt;</code></li>
-<pre><code>
-    {
+<pre><code>    {
       &quot;app_name&quot;: &quot;echo&quot;,
       &quot;revision&quot;: 3,
       &quot;event_type&quot;: &quot;ApplyCompleted&quot;,
       &quot;message&quot;: &quot;Revision 3 status ready&quot;,
       &quot;created_at&quot;: &quot;2025-10-23T12:34:56+00:00&quot;
-    }
-</code></pre>
+    }</code></pre>
 <li>Example item:</li>
+</ul>
+<ul>
+<li>GET <code>/system</code> and <code>/dashboard</code></li>
+<li>Aggregate snapshot for the dashboard UI including nodes, services, storage volumes, and token/mutation flags.</li>
 </ul>
 <p>Notes</p>
 <ul>
 <li>This API is read-only by design; mutating operations happen via the CLI.</li>
-<li>The API shares the controller’s SQLite store; results are eventually consistent with reconcile intervals.</li>
+<li>The API shares the controller’s SQLite/Postgres store; results are eventually consistent with reconcile intervals.</li>
+<li>When any token is set, all GETs require at least the READ token.</li>
 </ul>
 <p>Extras</p>
 <ul>
 <li>GET <code>/openapi.json</code> — Minimal OpenAPI 3 document for the read-only endpoints.</li>
-<p>Mutations (opt-in; dev only)</p>
 <li>GET <code>/docs</code> — Lightweight HTML that lists available paths by fetching <code>/openapi.json</code>.</li>
 </ul>
+<p>Mutations (opt-in; dev only)</p>
 <ul>
 <li>Enable by setting env <code>AE_API_MUTATIONS=1</code> on the controller process. Optionally set <code>AE_API_TOKEN</code> and send <code>Authorization: Bearer &lt;token&gt;</code> on requests.</li>
 </ul>
@@ -309,6 +321,7 @@
 <li>GET <code>/status/&lt;app&gt;</code> — JSON status object</li>
 <li>GET <code>/events/&lt;app&gt;?limit=N&amp;cursor=...</code> — Paginated recent events</li>
 <li>Response: <code>{ items: [...], next: &quot;cursor&quot; | null }</code></li>
+<li>GET <code>/nodes</code> — Node inventory and staleness info</li>
 <li>POST <code>/scale/&lt;app&gt;</code> — Body: <code>{ &quot;replicas&quot;: &lt;int&gt; }</code> (requires scaler/admin)</li>
 <li>POST <code>/delete/&lt;app&gt;?purge=1</code> — Delete app (requires admin)</li>
 <li>Logs: GET <code>/logs/&lt;app&gt;?container=&amp;tail=&amp;since=&amp;follow=</code> (requires READ)</li>
@@ -321,7 +334,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-13 17:21:28</span>
+        <span>Built 2026-01-14 14:58:55</span>
       </div>
     </footer>
     <script>

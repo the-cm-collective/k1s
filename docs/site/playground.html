@@ -61,11 +61,13 @@
     </style>
     <style>
       /* Base layout aligned to dashboard palette */
-      html, body { height: 100%; }
+      html { height: 100%; }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
-        margin: 2rem;
+        margin: 0;
+        padding: 2rem;
         line-height: 1.55;
+        box-sizing: border-box;
         min-height: 100vh;
         display: flex;
         flex-direction: column;
@@ -200,12 +202,12 @@
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
     <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-    <link rel="stylesheet" href="static/labs.css?v=1768353688"/>
+    <link rel="stylesheet" href="static/labs.css?v=1768431535"/>
 <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
 <script>window.DOCS_LABS_TOKEN='';</script>
 <script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>
-<script defer src="static/labs.js?v=1768353688"></script>
+<script defer src="static/labs.js?v=1768431535"></script>
   </head>
   <body>
     <nav>
@@ -213,7 +215,9 @@
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
+      <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
@@ -250,23 +254,7 @@
 <li><button id="btn-start-session" class="btn-primary">Start Session</button></li>
 <li>Session: <span id="session-id">(none)</span></li>
 </ul>
-<div id="env-notes"></div> <div id="backend-status" class="ribbon muted"></div>
-<div class="status-bar">
-  <span class="status-label">Direct API curl:</span>
-  <div class="api-curl">
-    <code id="api-curl"></code>
-    <button id="api-curl-copy" disabled>Copy</button>
-  </div>
-  <span class="status-label">Status:</span>
-  <div class="status-stack">
-    <span id="status-summary" class="pending" hx-ext="sse" sse-connect="" sse-swap="message">n/a</span>
-    <div class="status-toggle" role="group" aria-label="Status scope">
-      <button id="status-mode-app" type="button" aria-pressed="false" title="Focus on the app from this session">App</button>
-      <button id="status-mode-cluster" type="button" class="is-active" aria-pressed="true" title="Show totals across all apps">Cluster</button>
-    </div>
-  </div>
-  <span id="status-mode-note" class="status-note nudge">Cluster shows totals across all apps. Switch to App after applying an example.</span>
-</div>
+<div id="env-notes"></div> <div id="backend-status" class="ribbon muted"></div> <div class="status-bar">   <span class="status-label">Direct API curl:</span>   <div class="api-curl">     <code id="api-curl"></code>     <button id="api-curl-copy" disabled>Copy</button>   </div>   <span class="status-label">Status:</span>   <div class="status-stack">     <span id="status-summary" class="pending" hx-ext="sse" sse-connect="" sse-swap="message">n/a</span>     <div class="status-toggle" role="group" aria-label="Status scope">       <button id="status-mode-app" type="button" aria-pressed="false" title="Focus on the app from this session">App</button>       <button id="status-mode-cluster" type="button" class="is-active" aria-pressed="true" title="Show totals across all apps">Cluster</button>     </div>   </div>   <span id="status-mode-note" class="status-note nudge">Cluster shows totals across all apps. Switch to App after applying an example.</span> </div>
 <!-- Global banner for errors and important notices --> <div id="banner" class="ribbon hidden"></div>
 <!-- Labs token controls are now part of the Backend row, above Start Session -->
 <h3>k3d Controls (k3s backend)</h3>
@@ -281,8 +269,7 @@
 <h3>Helm Shim Demo (Watch Mode)</h3>
 <div class="helm-demo-box">   <div class="helm-demo-controls">     <button id="btn-helm-demo" class="btn-secondary" disabled>Run Helm Shim Demo</button>     <button id="btn-helm-demo-stop" class="btn-secondary" disabled>Stop</button>   </div>   <div id="helm-demo-status" class="helm-demo-status">Labs backend unavailable.</div>   <pre id="helm-demo-log" class="helm-demo-log hidden scrollbar-hide" aria-live="polite"></pre> </div>
 <p>Want to watch a Helm deployment materialize inside the dashboard? Click “Run Helm Shim Demo” above (requires Labs token). Behind the scenes, the server runs the commands below; you can still run them manually if you prefer:</p>
-<pre><code>
-# 1) Start the API shim (stub runtime)
+<pre><code># 1) Start the API shim (stub runtime)
 AE_APISHIM_RUNTIME=stub PYTHONPATH=src \
   python -m ae.apishim serve --host 127.0.0.1 --port 8445 --token helm-demo
 
@@ -301,8 +288,7 @@ helm install demochart ./demochart -n demo --wait
 PYTHONPATH=src python -m ae.cli status demochart --wide --events
 
 # 4) When finished, uninstall and clean up
-helm uninstall demochart -n demo &amp;&amp; kubectl delete namespace demo
-</code></pre>
+helm uninstall demochart -n demo &amp;&amp; kubectl delete namespace demo</code></pre>
 <p>Back in the playground:</p>
 <p>1. Set Backend to <code>k1s-Host</code>, click <code>Start Session</code>, and use **Quick Links → Open Dashboard**. 2. The <code>demochart</code> release appears under <code>demo</code>; sections **B–E** stream logs, events, ingress health, and nodePort hints while Helm reconciles. 3. When you run <code>helm uninstall</code>, the dashboard reflects the teardown in real time.</p>
 <h2>B. Apply Example</h2>
@@ -349,22 +335,18 @@ helm uninstall demochart -n demo &amp;&amp; kubectl delete namespace demo
 <li><button id="btn-canary-10" disabled>Canary 10%</button></li>
 </ul>
 <p>CLI (fallback):</p>
-<pre><code>
-# Scale using the CLI
+<pre><code># Scale using the CLI
 python -m ae.cli scale &lt;app&gt; --replicas 2
 python -m ae.cli scale &lt;app&gt; --replicas 3
 
 # Pause/resume an in‑progress rollout
 python -m ae.cli rollout pause &lt;app&gt;
-python -m ae.cli rollout resume &lt;app&gt;
-</code></pre>
+python -m ae.cli rollout resume &lt;app&gt;</code></pre>
 <p>Canary via YAML (conceptual):</p>
-<pre><code>
-spec:
+<pre><code>spec:
   rollout:
     strategy: canary
-    weight: 10   # send ~10% of traffic to the canary
-</code></pre>
+    weight: 10   # send ~10% of traffic to the canary</code></pre>
 <h4>Notes</h4>
 <ul>
 <li>Scaling edits only <code>spec.replicas</code>; the current image revision stays the same.</li>
@@ -409,7 +391,7 @@ spec:
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-13 17:21:28</span>
+        <span>Built 2026-01-14 14:58:55</span>
       </div>
     </footer>
     <script>

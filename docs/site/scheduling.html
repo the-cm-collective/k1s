@@ -61,11 +61,13 @@
     </style>
     <style>
       /* Base layout aligned to dashboard palette */
-      html, body { height: 100%; }
+      html { height: 100%; }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
-        margin: 2rem;
+        margin: 0;
+        padding: 2rem;
         line-height: 1.55;
+        box-sizing: border-box;
         min-height: 100vh;
         display: flex;
         flex-direction: column;
@@ -208,7 +210,9 @@
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
+      <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
@@ -219,24 +223,34 @@
       <a href="playground.html">Playground</a>
     </nav>
     <div class="container">
-    <h2>Scheduling &amp; Placement (Planner)</h2>
-<p>Use the <code>plan</code> command to dry-run an apply and check for placement conflicts.</p>
-<h3>Dry Run</h3>
-<pre><code>
-ae plan -f specs/examples/echo.yaml
-</code></pre>
-<p>Output includes replica count, rollout strategy, and host port conflict checks for <code>spec.service.port</code> (single-replica apps) using the runtime’s published ports. Use <code>--verbose</code> for a replica placement plan (replica IDs, storage mounts, and network hints).</p>
-<h3>Spec Fields (K8s export)</h3>
+    <h2>Scheduling &amp; Placement</h2>
+<p>The controller includes a lightweight scheduler for multi-node runs. It:</p>
 <ul>
-<li><code>spec.affinity</code>: passed through to Deployment template (<code>spec.template.spec.affinity</code>).</li>
-<li><code>spec.tolerations[]</code>: passed through to <code>spec.template.spec.tolerations</code>.</li>
-<li><code>spec.topologySpreadConstraints[]</code>: passed through to <code>spec.template.spec.topologySpreadConstraints</code>.</li>
+<li>Filters nodes by readiness/staleness (<code>AE_NODE_NOTREADY_AFTER</code>), cordon state, <code>nodeSelector</code>, and taints/tolerations.</li>
+<li>Pins all replicas to a single node when <code>spec.storage</code> is declared (retained volumes stay on the node that created them).</li>
+<li>Spreads across eligible nodes round-robin by default; honors <code>topologySpreadConstraints</code> when a topology key is present.</li>
+<li>Falls back to the local runtime when no nodes are eligible (emits a planner warning).</li>
 </ul>
-<p>Notes</p>
+<h3>Planner Dry Run</h3>
+<pre><code>ae plan -f specs/examples/echo-multinode.yaml --verbose</code></pre>
+<p>Verbose output shows replica IDs, chosen nodes/endpoints, storage bindings, and Service VIP hints. Warnings include stale nodes, missing labels for selectors, or hostPort use when VIPs are enabled.</p>
+<h3>Managing Nodes</h3>
 <ul>
-<li>These fields are exported as-is to K8s; validation is minimal to keep the engine lean.</li>
-<li>For multi-replica apps, <code>k8s-check --policy strict</code> recommends anti-affinity or topology spread.</li>
+<li>List/describe: <code>ae nodes list</code>, <code>ae nodes &lt;node-id&gt;</code></li>
+<li>Cordon/uncordon: <code>ae nodes &lt;node-id&gt; --cordon</code> / <code>--uncordon</code></li>
+<li>Drain (best-effort evict via agent): <code>ae nodes &lt;node-id&gt; --drain</code></li>
+<li>Node labels: set on the agent via env <code>AE_NODE_LABELS=role=worker,zone=az1</code>. Taints are respected when present on node records (planner will require tolerations).</li>
 </ul>
+<h3>Spec knobs that affect placement</h3>
+<ul>
+<li><code>spec.nodeSelector</code> — must match node labels.</li>
+<li><code>spec.tolerations[]</code> — must tolerate taints.</li>
+<li><code>spec.topologySpreadConstraints[]</code> — best-effort balancing by <code>topologyKey</code>.</li>
+<li><code>spec.affinity</code> and <code>spec.priorityClassName</code> — stored/exported; affinity is a soft hint for the scheduler today.</li>
+<li><code>spec.storage[]</code> — enables storage pinning to a single node.</li>
+</ul>
+<h3>K8s Export</h3>
+<p><code>affinity</code>, <code>tolerations</code>, <code>topologySpreadConstraints</code>, <code>priorityClassName</code>, and <code>nodeSelector</code> are passed through to the Deployment/StatefulSet template. Use <code>ae k8s-check --policy strict</code> for validation and <code>ae k8s-report</code> to score parity.</p>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -244,7 +258,7 @@ ae plan -f specs/examples/echo.yaml
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-13 17:21:28</span>
+        <span>Built 2026-01-14 14:58:55</span>
       </div>
     </footer>
     <script>
