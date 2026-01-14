@@ -2,17 +2,18 @@ from pathlib import Path
 
 from ae.controller.spec import (
     HTTPGetProbe,
-    TCPSocketProbe,
-    load_manifest,
     PortSpec,
     ProbeSpec,
     ServiceSpec,
+    TCPSocketProbe,
+    load_manifest,
 )
-from ae.k8s.exporter import ExportOptions, export_k8s_docs, export_k8s_yaml
 from ae.k8s.check import k8s_portability_issues
+from ae.k8s.exporter import ExportOptions, export_k8s_docs, export_k8s_yaml
 
 
 def test_export_k8s_minimal_echo(tmp_path: Path) -> None:
+    _ = tmp_path
     man = load_manifest(Path("specs/examples/echo.yaml"))
     opts = ExportOptions(namespace="demo", ingress_class_name="traefik", service_port=80)
     docs = export_k8s_docs(man, options=opts)
@@ -253,7 +254,7 @@ def test_hpa_guard_allows_override_flag() -> None:
 def test_service_type_nodeport_with_explicit_nodeports() -> None:
     man = load_manifest(Path("specs/examples/echo.yaml"))
     # Multi-port with NodePort service type and explicit nodePorts
-    from ae.controller.spec import ServiceSpec, PortSpec
+    from ae.controller.spec import PortSpec, ServiceSpec
 
     man = man.model_copy(
         update={
@@ -799,3 +800,4 @@ def test_export_default_network_policy_generation() -> None:
     assert any(any(p.get("port") == 53 for p in e.get("ports", [])) for e in egs)
     assert any(any(p.get("port") == 80 for p in e.get("ports", [])) for e in egs)
     assert any(any(p.get("port") == 443 for p in e.get("ports", [])) for e in egs)
+# ruff: noqa: E501

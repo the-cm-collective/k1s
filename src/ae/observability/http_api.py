@@ -11,14 +11,13 @@ Endpoints:
 
 from __future__ import annotations
 
+import errno
 import http.server
 import json
-import socketserver
-import threading
-from typing import Tuple
-import errno
 import os
+import socketserver
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -168,7 +167,7 @@ def _helm_demo_start() -> dict[str, object]:
             raise RuntimeError("scripts/helm_shim_demo.sh not found")
         log_path: Path = _HELM_DEMO_STATE["log"]  # type: ignore[index]
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_handle = open(log_path, "w", encoding="utf-8")
+        log_handle = open(log_path, "w", encoding="utf-8")  # noqa: SIM115 - keep handle open for proc output
         env = os.environ.copy()
         env.setdefault("PYTHONPATH", str(root / "src"))
         env.setdefault("PORT", str(_HELM_DEMO_STATE.get("port")))
@@ -278,6 +277,14 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     rollout_pause_fn = None  # type: ignore[var-annotated]
     rollout_resume_fn = None  # type: ignore[var-annotated]
 
+    def send_response(self, code: int, message=None):  # type: ignore[override]
+        super().send_response(code, message)
+        try:
+            if hasattr(self.request, "responses"):
+                self.request.responses.append(code)
+        except Exception:
+            pass
+
     # --- Dev CORS helpers (used by the labs playground) ----------------
     def _labs_enabled(self) -> bool:
         try:
@@ -303,7 +310,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     def _labs_request_authorized(self) -> bool:
         if not self._labs_enabled():
             return False
-        import os as _os, urllib.parse as _up
+        import os as _os
+        import urllib.parse as _up
 
         tok = (_os.getenv("AE_LABS_TOKEN") or "").strip()
         if not tok:
@@ -386,7 +394,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 return True
 
         have_any = any([admin, scaler, reader])
-        rbac = os.getenv("AE_API_RBAC", "0") == "1"
         if not have_any:
             # No tokens configured: allow reads; other methods are handled separately
             return role in {"read", ""}
@@ -405,7 +412,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             import os as _os
 
             warn_hours = float(_os.getenv("AE_API_TOKEN_WARN_HOURS", "24"))
-            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+            from datetime import datetime as _dt
+            from datetime import timedelta as _td
+            from datetime import timezone as _tz
 
             def _warn_if(role: str, env: str) -> None:
                 global _TOKEN_WARNED
@@ -444,7 +453,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         required = {"": 0, "read": 1, "scale": 2, "admin": 3}.get(role, 0)
         return level >= required
 
-    def _rbac_allows(self, verb: str, app: str | None = None) -> bool:
+    def _rbac_allows(self, verb: str, _app: str | None = None) -> bool:
         import os
 
         if os.getenv("AE_API_RBAC", "0") != "1":
@@ -520,7 +529,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         - AE_API_SCALER_SCOPE
         - AE_API_READ_SCOPE (not currently enforced for reads)
         """
-        import os, fnmatch
+        import fnmatch
+        import os
 
         key = {
             "admin": "AE_API_ADMIN_SCOPE",
@@ -610,7 +620,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             check = None
         if check and not self._require_role("read"):
             # Allow Labs token to satisfy read-only GETs (SSE and JSON) in dev
-            if _labs_token_ok():
+            if self._labs_token_valid():
                 pass
             else:
                 self._deny(401 if not self.headers.get("Authorization") else 403)
@@ -667,7 +677,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if path_only.startswith("/status/"):
             # Enforce read scope for single-app read if configured
             app = self.path.split("/", 2)[2].split("?", 1)[0]
-            role = self._presented_role()
             import os as _os
 
             if _os.getenv("AE_API_READ_SCOPE") and not self._scope_allows("read", app):
@@ -677,7 +686,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             return
         if path_only.startswith("/events/"):
             app = self.path.split("/", 2)[2].split("?", 1)[0]
-            role = self._presented_role()
             import os as _os
 
             if _os.getenv("AE_API_READ_SCOPE") and not self._scope_allows("read", app):
@@ -776,7 +784,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 from ae.controller.spec import AppManifest as _AppManifest
                 man = _AppManifest.model_validate(payload)
                 # Options (optional) under payload["options"]
-                from ae.k8s.exporter import export_k8s_yaml as _export, ExportOptions as _Opts
+                from ae.k8s.exporter import ExportOptions as _Opts
+                from ae.k8s.exporter import export_k8s_yaml as _export
 
                 opts_payload = payload.get("options") or {}
                 opts = _Opts(**opts_payload) if isinstance(opts_payload, dict) else _Opts()
@@ -929,7 +938,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
     # --- Labs playground micro-API (dev only, opt-in) ------------------
     def _handle_labs_post(self) -> None:
-        import os as _os, secrets as _secrets
+        import os as _os
+        import secrets as _secrets
 
         if not self._labs_enabled():
             self._json_error(404, "labs disabled")
@@ -1096,8 +1106,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 self._json_error(404, "apply not available")
                 return
             try:
-                import yaml as _yaml
                 from pathlib import Path as _Path
+
+                import yaml as _yaml
 
                 sess = str(payload.get("session_id") or "")
                 ex = str(payload.get("example") or "echo")
@@ -1404,8 +1415,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     self._json_error(400, "bad url")
                     return
                 import time as _t
-                import requests as _req
                 from urllib.parse import urlparse as _urlparse
+
+                import requests as _req
 
                 verify_path = "state/certs/combined-dev-ca.pem"
                 # Use the already-imported _os rather than os to avoid NameError
@@ -1416,7 +1428,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 u = _urlparse(url)
                 host = (u.hostname or "").lower()
                 scheme = (u.scheme or "https").lower()
-                port = u.port or (8443 if scheme == "https" else 8888)
                 candidates = [
                     "127.0.0.1",
                     "host.docker.internal",
@@ -1519,8 +1530,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             self._json_ok(rep)
                             return
                     # Fallback to curated example
-                    import yaml as _yaml
                     from pathlib import Path as _Path
+
+                    import yaml as _yaml
 
                     sess = str(payload.get("session_id") or "")
                     src = _Path("specs/examples/echo-rollout.yaml")
@@ -1548,7 +1560,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self._json_error(404, "unknown labs endpoint")
 
     def _handle_labs_sse_events(self) -> None:
-        import urllib.parse as _up, time as _t, json as _json
+        import json as _json
+        import time as _t
+        import urllib.parse as _up
 
         _path, _, query = self.path.partition("?")
         params = _up.parse_qs(query)
@@ -1597,7 +1611,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 pass
 
     def _handle_labs_sse_status(self) -> None:
-        import urllib.parse as _up, time as _t, json as _json
+        import json as _json
+        import time as _t
+        import urllib.parse as _up
 
         _path, _, query = self.path.partition("?")
         params = _up.parse_qs(query)
@@ -1644,7 +1660,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 pass
 
     def _handle_labs_sse_events_html(self) -> None:
-        import urllib.parse as _up, time as _t, json as _json
+        import json as _json
+        import time as _t
+        import urllib.parse as _up
 
         _path, _, query = self.path.partition("?")
         params = _up.parse_qs(query)
@@ -1698,7 +1716,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 pass
 
     def _handle_labs_sse_status_badge(self) -> None:
-        import urllib.parse as _up, time as _t, json as _json
+        import time as _t
+        import urllib.parse as _up
 
         _path, _, query = self.path.partition("?")
         params = _up.parse_qs(query)
@@ -1815,7 +1834,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         ]
         # Token expiry metrics
         import os as _os
-        from datetime import datetime as _dt, timezone as _tz
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
 
         def _expiry_seconds(env: str):
             val = _os.getenv(env)
@@ -1850,7 +1870,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             statuses = _filter_statuses_for_demo(statuses)
             # Optional read scope filtering when a read-capable token is presented
             try:
-                import os as _os, fnmatch as _fn
+                import fnmatch as _fn
+                import os as _os
 
                 scope = (_os.getenv("AE_API_READ_SCOPE") or "").strip()
                 role = self._presented_role()
@@ -1888,7 +1909,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         # Node metrics (status, staleness, last heartbeat age)
         try:
             import os as _os
-            from datetime import datetime as _dt, timezone as _tz
+            from datetime import datetime as _dt
+            from datetime import timezone as _tz
 
             grace = int(_os.getenv("AE_NODE_NOTREADY_AFTER", "40") or 40)
             now = _dt.now(_tz.utc)
@@ -2000,8 +2022,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             # Agent cert expiry metrics (if issued.json present)
             try:
                 import json as _j
+                from datetime import datetime as _dt
+                from datetime import timezone as _tz
                 from pathlib import Path as _P
-                from datetime import datetime as _dt, timezone as _tz
 
                 issued_path = _P(os.getenv("AE_TLS_DIR", "state/tls")) / "issued.json"
                 if issued_path.exists():
@@ -2475,8 +2498,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             self._json_error(400, "missing name query param")
             return
         try:
-            from ae.ingress.tls_sync import TlsSecretResolver
             import os
+
+            from ae.ingress.tls_sync import TlsSecretResolver
 
             tls_root = Path(root) if root else Path(os.getenv("AE_TLS_DIR", "state/tls"))
             res = TlsSecretResolver(tls_root).resolve(name)
@@ -2500,7 +2524,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         statuses = _filter_statuses_for_demo(statuses)
         # Optional read scope filtering when a read-capable token is presented
         try:
-            import os as _os, fnmatch as _fn
+            import fnmatch as _fn
+            import os as _os
 
             scope = (_os.getenv("AE_API_READ_SCOPE") or "").strip()
             role = self._presented_role()
@@ -2711,7 +2736,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def log_message(self, fmt: str, *args):  # quiet
+    def log_message(self, _fmt: str, *_args):  # quiet
         return
 
     def _handle_docs(self) -> None:
@@ -4224,7 +4249,7 @@ def start_http_api(
     plan_fn=None,
     rollout_pause_fn=None,
     rollout_resume_fn=None,
-) -> Tuple[socketserver.TCPServer, int, threading.Thread]:
+) -> tuple[socketserver.TCPServer, int, threading.Thread]:
     """Start the HTTP API on the given port.
 
     If port == 0, the OS selects a free port. Returns (server, assigned_port, thread).
@@ -4268,3 +4293,4 @@ def start_http_api(
     thread = threading.Thread(target=httpd.serve_forever, name="ae-http-api", daemon=True)
     thread.start()
     return httpd, assigned, thread
+# ruff: noqa: E501,S603,S607,S110,S112,SIM105,SIM108,SIM118,SIM210,S104,UP017,UP038,E741,B023,C401,UP035,E402,UP034

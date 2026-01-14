@@ -1,17 +1,27 @@
+# ruff: noqa: E501,S603,S607,S110,S112,SIM102,SIM105,SIM114,SIM210,C401,C414,S104,S105,UP017,UP038
 """Command-line interface for the ae orchestrator."""
 
 from __future__ import annotations
 
 import argparse
+import logging
 import os
+import shutil
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
-from datetime import datetime, timezone
 
+from ae import __version__ as AE_VERSION
+from ae import build_info as AE_BUILD_INFO
+from ae.config.manager import ConfigManager
 from ae.controller.health import HealthManager
-from ae.controller.reconciler import ReconcileReport, Reconciler
-from ae.controller.state import AppStatus, SQLiteStateStore, RevisionInfo
+from ae.controller.reconciler import Reconciler, ReconcileReport
+from ae.controller.state import AppStatus, SQLiteStateStore
 from ae.ingress import CaddyIngressManager, IngressService
+from ae.k8s.check import k8s_portability_issues
+from ae.k8s.exporter import ExportOptions, export_k8s_yaml
+from ae.k8s.presets import apply_preset
+from ae.k8s.validate import validate_documents
 from ae.observability import MetricsService
 from ae.observability.logging import configure_logging
 from ae.runtime import (
@@ -21,15 +31,7 @@ from ae.runtime import (
     RuntimeAdapter,
     StubRuntime,
 )
-import logging, shutil
 from ae.secrets import SecretManager
-from ae.config.manager import ConfigManager
-from ae import __version__ as AE_VERSION
-from ae import build_info as AE_BUILD_INFO
-from ae.k8s.exporter import ExportOptions, export_k8s_yaml
-from ae.k8s.check import k8s_portability_issues
-from ae.k8s.presets import apply_preset
-from ae.k8s.validate import validate_documents
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -133,7 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
     # registry helpers
     registry_parser = subparsers.add_parser("registry", help="Manage registry credentials")
     reg_sub = registry_parser.add_subparsers(dest="registry_cmd", required=True)
-    reg_list = reg_sub.add_parser("list", help="List configured registries")
+    reg_sub.add_parser("list", help="List configured registries")
     reg_login = reg_sub.add_parser("login", help="Login to a registry and store credentials")
     reg_login.add_argument(
         "provider", choices=["ghcr", "gcr", "ecr", "custom"], help="Registry provider"
@@ -756,6 +758,7 @@ def handle_registry(args: argparse.Namespace) -> int:
     if cmd == "kubesecret":
         import base64 as _b64
         import json as _json
+
         import yaml as _yaml
         prov = RegistryAuthProvider()
         entries = prov.list_registries()
@@ -808,11 +811,11 @@ def handle_registry(args: argparse.Namespace) -> int:
             print(f"{host}: {user}")
         return 0
     if cmd == "login":
-        provider = str(getattr(args, "provider"))
-        reg = getattr(args, "registry", None)
-        user = getattr(args, "username", None)
-        pw = getattr(args, "password", None)
-        token = getattr(args, "token", None)
+        provider = str(args.provider)
+        reg = args.registry
+        user = args.username
+        pw = args.password
+        token = args.token
         # Provider-specific defaults
         if provider == "ghcr":
             host = reg or "ghcr.io"
@@ -823,7 +826,9 @@ def handle_registry(args: argparse.Namespace) -> int:
                 try:
                     import subprocess as sp
 
-                    cp = sp.run(["gh", "auth", "token"], capture_output=True, text=True, check=True)
+                    cp = sp.run(
+                        ["gh", "auth", "token"], capture_output=True, text=True, check=True
+                    )  # noqa: S603,S607 - fixed gh binary; shell disabled
                     p = (cp.stdout or "").strip()
                 except Exception:
                     p = p
@@ -873,7 +878,7 @@ def handle_registry(args: argparse.Namespace) -> int:
                         capture_output=True,
                         text=True,
                         check=True,
-                    )
+                    )  # noqa: S603,S607 - aws CLI; shell disabled; region controlled
                     p = (cp.stdout or "").strip()
                 except Exception as exc:  # noqa: BLE001
                     print(f"error: aws CLI failed to fetch ECR password: {exc}")
@@ -895,7 +900,7 @@ def handle_registry(args: argparse.Namespace) -> int:
                         capture_output=True,
                         text=True,
                         check=True,
-                    )
+                    )  # noqa: S603,S607 - gcloud CLI; shell disabled
                     token = (cp.stdout or "").strip()
                 except Exception as exc:  # noqa: BLE001
                     print(f"error: gcloud failed to print access token: {exc}")
@@ -936,7 +941,10 @@ def handle_registry(args: argparse.Namespace) -> int:
 
                         try:
                             cp = sp.run(
-                                ["gh", "auth", "token"], capture_output=True, text=True, check=True
+                                ["gh", "auth", "token"],
+                                capture_output=True,
+                                text=True,
+                                check=True,
                             )
                             new_tok = (cp.stdout or "").strip()
                         except Exception:
@@ -963,7 +971,7 @@ def handle_registry(args: argparse.Namespace) -> int:
                                 capture_output=True,
                                 text=True,
                                 check=True,
-                            )
+                            )  # noqa: S603,S607 - gcloud CLI; shell disabled
                             tok = (cp.stdout or "").strip()
                             if tok:
                                 _registry_save(host, "oauth2accesstoken", tok)
@@ -990,7 +998,7 @@ def handle_registry(args: argparse.Namespace) -> int:
                                 capture_output=True,
                                 text=True,
                                 check=True,
-                            )
+                            )  # noqa: S603,S607 - aws CLI; shell disabled; region controlled
                             pw_new = (cp.stdout or "").strip()
                             if pw_new:
                                 _registry_save(host, "AWS", pw_new)
@@ -1130,7 +1138,7 @@ def main(argv: list[str] | None = None) -> int:
         "rollout": lambda ns: handle_rollout(ns, store, reconciler),
         "api": handle_api,
         "tls": handle_tls,
-        "registry": lambda ns: handle_registry(ns, registry_auth),
+        "registry": handle_registry,
         "metrics": lambda ns: handle_metrics(ns, store),
         "events": lambda ns: handle_events(ns, store, args),
         "history": lambda ns: handle_history(ns, store, args),
@@ -1138,15 +1146,14 @@ def main(argv: list[str] | None = None) -> int:
         "delete": lambda ns: handle_delete(ns, store, runtime, ingress_service, args),
         "scale": lambda ns: handle_scale(ns, store, reconciler, args),
         "backup": lambda ns: handle_backup(ns),
-        "version": lambda ns: handle_version(),
-        "config": lambda ns: handle_config(ns),
-        "secret": lambda ns: handle_secret(ns),
+        "version": lambda _ns: handle_version(),
+        "config": lambda _ns: handle_config(_ns),
+        "secret": lambda _ns: handle_secret(_ns),
         "volumes": lambda ns: handle_volumes(ns, runtime),
         "examples": handle_examples,
         "plan": lambda ns: handle_plan(ns, runtime),
         "export-k8s": handle_export_k8s,
         "k8s-check": handle_k8s_check,
-        "registry": handle_registry,
         "verify-image": handle_verify_image,
         "nodes": lambda ns: handle_nodes(ns, store, runtime),
         "certs": handle_certs,
@@ -1215,10 +1222,7 @@ def handle_secret(ns: argparse.Namespace) -> int:
 
         mgr = SecretManager()
         # Use SecretRef adapter to reuse decrypt
-        from ae.controller.spec import SecretRef, SecretEnvMapping
 
-        dummy = SecretRef(name="cli", path=str(ns.file), env=[SecretEnvMapping(name="_", key="_")])
-        # Call decrypt privately to get mapping
         try:
             data = mgr._decrypt(ns.file)  # type: ignore[arg-type]
         except Exception as exc:  # noqa: BLE001
@@ -1245,7 +1249,10 @@ def handle_secret(ns: argparse.Namespace) -> int:
         import subprocess as sp
 
         try:
-            sp.run([sops, "-e", "-o", str(ns.output), str(ns.input)], check=True)
+            sp.run(
+                [sops, "-e", "-o", str(ns.output), str(ns.input)],
+                check=True,
+            )  # noqa: S603,S607 - sops binary resolved; shell disabled
             print(f"encrypted → {ns.output}")
             return 0
         except sp.CalledProcessError as exc:
@@ -1261,7 +1268,10 @@ def handle_secret(ns: argparse.Namespace) -> int:
         import subprocess as sp
 
         try:
-            sp.run([sops, "-d", "-o", str(ns.output), str(ns.input)], check=True)
+            sp.run(
+                [sops, "-d", "-o", str(ns.output), str(ns.input)],
+                check=True,
+            )  # noqa: S603,S607 - sops binary resolved; shell disabled
             print(f"decrypted → {ns.output}")
             return 0
         except sp.CalledProcessError as exc:
@@ -1297,7 +1307,7 @@ def _node_status_with_staleness(status, *, grace_seconds: int = 40) -> str:  # t
         return "Unknown"
     st = status.status or "Unknown"
     try:
-        age = (datetime.now(timezone.utc) - status.seen_at).total_seconds()
+        age = (datetime.now(UTC) - status.seen_at).total_seconds()
         if age > grace_seconds and st == "Ready":
             return f"NotReady (stale {int(age)}s)"
     except Exception:
@@ -1514,7 +1524,6 @@ def handle_examples(args: argparse.Namespace) -> int:
 def handle_backup(args: argparse.Namespace) -> int:
     import os
     import tarfile
-    from datetime import datetime
 
     def _resolve_db() -> str:
         if getattr(args, "db", None):
@@ -1570,7 +1579,6 @@ def handle_backup(args: argparse.Namespace) -> int:
         return 0
 
     if args.backup_cmd == "verify":
-        import io
 
         src = args.input
         with tarfile.open(src, "r:gz") as tar:
@@ -1593,29 +1601,26 @@ def handle_backup(args: argparse.Namespace) -> int:
 
 
 def handle_k8s_report(args: argparse.Namespace) -> int:
-    from datetime import datetime, timezone
     import json
     import shutil
     import tempfile
+    from datetime import datetime
+
     from ae.controller.spec import load_manifest
 
     # Build export options (with preset)
-    if getattr(args, "np_preset", None) == "web":
-        setattr(args, "emit_np", True)
-        setattr(args, "np_deny_ingress", True)
-        setattr(args, "np_deny_egress", True)
-        setattr(args, "np_allow_dns", True)
-        setattr(args, "np_allow_web", True)
-    elif getattr(args, "np_preset", None) == "backend":
-        setattr(args, "emit_np", True)
-        setattr(args, "np_deny_ingress", True)
-        setattr(args, "np_deny_egress", True)
-        setattr(args, "np_allow_dns", True)
-    elif getattr(args, "np_preset", None) == "backend":
-        setattr(args, "emit_np", True)
-        setattr(args, "np_deny_ingress", True)
-        setattr(args, "np_deny_egress", True)
-        setattr(args, "np_allow_dns", True)
+    preset = getattr(args, "np_preset", None)
+    if preset == "web":
+        args.emit_np = True
+        args.np_deny_ingress = True
+        args.np_deny_egress = True
+        args.np_allow_dns = True
+        args.np_allow_web = True
+    elif preset == "backend":
+        args.emit_np = True
+        args.np_deny_ingress = True
+        args.np_deny_egress = True
+        args.np_allow_dns = True
     opts = ExportOptions(
         namespace=str(args.namespace),
         ingress_class_name=str(args.ingress_class) if args.ingress_class else None,
@@ -1682,7 +1687,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                         capture_output=True,
                         text=True,
                         check=False,
-                    )
+                    )  # noqa: S603,S607 - kubeconform binary vetted by shutil.which
                     kc_res["ok"] = proc.returncode == 0
                     kc_res["summary"] = proc.stdout.strip() or proc.stderr.strip()
                 except Exception as exc:  # noqa: BLE001
@@ -1713,7 +1718,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                         capture_output=True,
                         text=True,
                         check=False,
-                    )
+                    )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
                     dr_res["ok"] = proc.returncode == 0
                     dr_res["output"] = (proc.stdout or proc.stderr).strip()
                 except Exception as exc:  # noqa: BLE001
@@ -1745,7 +1750,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                     [kubectl_bin, "create", "namespace", str(args.namespace)],
                     capture_output=True,
                     text=True,
-                )
+                )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
             except Exception:
                 pass
             with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
@@ -1757,10 +1762,8 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                         capture_output=True,
                         text=True,
                         check=False,
-                    )
+                    )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
                     # Try to find the Deployment name(s) from parsed docs
-                    deploys = [k for k in (entry.get("kinds") or []) if k == "Deployment"]
-                    # Fallback: use manifest name
                     dep_name = manifest.metadata.name
                     # rollout status (best effort)
                     rs = sp.run(
@@ -1776,7 +1779,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                         capture_output=True,
                         text=True,
                         check=False,
-                    )
+                    )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
                     online["ok"] = ap.returncode == 0 and rs.returncode == 0
                     online["details"] = {
                         "apply_rc": ap.returncode,
@@ -1859,7 +1862,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
         grade = "needs-attention"
 
     report = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "samples_count": len(results),
         "overall_score": overall,
         "grade": grade,
@@ -2128,7 +2131,7 @@ def handle_api(args: argparse.Namespace) -> int:
         getattr(args, "generate", False) or getattr(args, "rotate", False)
     ):
         import secrets
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         admin = secrets.token_hex(16)
         scaler = secrets.token_hex(16)
@@ -2144,7 +2147,7 @@ def handle_api(args: argparse.Namespace) -> int:
 
         def _exp(hours):
             return (
-                (datetime.now(timezone.utc) + timedelta(hours=int(hours)))
+                (datetime.now(UTC) + timedelta(hours=int(hours)))
                 .isoformat()
                 .replace("+00:00", "Z")
             )
@@ -2174,7 +2177,7 @@ def handle_api(args: argparse.Namespace) -> int:
             import json as _json
 
             payload = {
-                "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 "admin": {"token": admin, "expires": admin_exp},
                 "scaler": {"token": scaler, "expires": scaler_exp},
                 "read": {"token": reader, "expires": read_exp},
@@ -2189,8 +2192,9 @@ def handle_api(args: argparse.Namespace) -> int:
 def handle_tls(args: argparse.Namespace) -> int:
     # tls sync: copy optional input and resolve to PEM
     if args.tls_cmd == "sync":
-        from ae.ingress.tls_sync import TlsSecretResolver
         import os
+
+        from ae.ingress.tls_sync import TlsSecretResolver
 
         root = Path(args.root) if args.root else Path(os.getenv("AE_TLS_DIR", "state/tls"))
         root.mkdir(parents=True, exist_ok=True)
@@ -2218,8 +2222,9 @@ def handle_tls(args: argparse.Namespace) -> int:
         return 0
     # tls verify: check resolvability only
     if args.tls_cmd == "verify":
-        from ae.ingress.tls_sync import TlsSecretResolver
         import os
+
+        from ae.ingress.tls_sync import TlsSecretResolver
 
         root = Path(args.root) if args.root else Path(os.getenv("AE_TLS_DIR", "state/tls"))
         resolver = TlsSecretResolver(root)
@@ -2244,10 +2249,12 @@ def handle_tls(args: argparse.Namespace) -> int:
         return 0
     # tls kubesecret: emit kubernetes.io/tls Secret YAML from resolved PEMs
     if args.tls_cmd == "kubesecret":
-        from ae.ingress.tls_sync import TlsSecretResolver
-        import os
         import base64 as _b64
+        import os
+
         import yaml as _yaml
+
+        from ae.ingress.tls_sync import TlsSecretResolver
 
         root = Path(args.root) if args.root else Path(os.getenv("AE_TLS_DIR", "state/tls"))
         resolver = TlsSecretResolver(root)
@@ -2368,7 +2375,7 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
         print(f"No replicas available for {args.name}")
         return 1
     timeout = getattr(args, "timeout", None)
-    cmd = list(getattr(args, "cmd", []) or [])
+    cmd = list(args.cmd or [])
     if cmd and cmd[0] == "--":
         cmd = cmd[1:]
     if not cmd:
@@ -2379,7 +2386,7 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
         # If runtime supports container-scoped exec, use it
         if hasattr(runtime, "exec_for_container"):
             try:
-                rc = int(getattr(runtime, "exec_for_container")(args.name, cname, cmd, timeout=timeout))
+                rc = int(runtime.exec_for_container(args.name, cname, cmd, timeout=timeout))
                 return rc
             except Exception as exc:  # noqa: BLE001
                 print(f"exec failed: {exc}")
@@ -2492,7 +2499,6 @@ def _parse_rfc3339_to_epoch(value: str | None) -> int | None:
         return None
     try:
         import datetime as _dt
-        from datetime import timezone as _tz
 
         s = value.strip()
         # Support trailing Z or offset like +00:00
@@ -2500,7 +2506,7 @@ def _parse_rfc3339_to_epoch(value: str | None) -> int | None:
             s = s[:-1] + "+00:00"
         dt = _dt.datetime.fromisoformat(s)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=_tz.utc)
+            dt = dt.replace(tzinfo=_dt.UTC)
         return int(dt.timestamp())
     except Exception:
         return None
@@ -2569,19 +2575,10 @@ def handle_metrics(args: argparse.Namespace, store: SQLiteStateStore) -> int:
         return 0
 
     print(
-        "apps total={total} ready={ready} progressing={progressing} degraded={degraded}".format(
-            total=snapshot.total_apps,
-            ready=snapshot.ready_apps,
-            progressing=snapshot.progressing_apps,
-            degraded=snapshot.degraded_apps,
-        )
+        f"apps total={snapshot.total_apps} ready={snapshot.ready_apps} progressing={snapshot.progressing_apps} degraded={snapshot.degraded_apps}"
     )
     print(
-        "replicas total={total} ready={ready} live={live}".format(
-            total=snapshot.total_replicas,
-            ready=snapshot.ready_replicas,
-            live=snapshot.live_replicas,
-        )
+        f"replicas total={snapshot.total_replicas} ready={snapshot.ready_replicas} live={snapshot.live_replicas}"
     )
     return 0
 
@@ -2668,14 +2665,18 @@ def handle_history(
             if getattr(args, "json", False):
                 import json as _json
                 if since_secs or since_ts:
+                    import time
                     cutoff = (time.time() - since_secs) if since_secs else float(since_ts)
+
                     def _keep(h):
                         try:
                             import datetime as _dt
+
                             t = _dt.datetime.fromisoformat(h.get("check_time", "").replace("Z", "+00:00")).timestamp()
                             return t >= float(cutoff)
                         except Exception:
                             return True
+
                     items = [h for h in (items or []) if _keep(h)][:limit]
                 print(_json.dumps(items, indent=2))
                 return 0
@@ -2684,6 +2685,7 @@ def handle_history(
                 return 0
             rep = getattr(args, "replica", None)
             import time
+
             cutoff = None
             if since_secs:
                 cutoff = time.time() - since_secs
@@ -3049,7 +3051,7 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
                     "targetPort": getattr(svc, "target_port", None),
                 }
             if getattr(svc, "type", None):
-                diagnostics["service"]["type"] = str(getattr(svc, "type"))
+                diagnostics["service"]["type"] = str(svc.type)
         except Exception:
             pass
 
@@ -3117,7 +3119,7 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
                     continue
                 if ("exec" not in h) and ("tcp" not in h):
                     warnings.append(f"rollout.hooks.{name} must contain 'exec' or 'tcp'")
-                if "exec" in h and not isinstance(h.get("exec"), (list, tuple)):
+                if "exec" in h and not isinstance(h.get("exec"), list | tuple):
                     warnings.append(f"rollout.hooks.{name}.exec must be a list of args")
                 if "tcp" in h:
                     try:
@@ -3167,7 +3169,7 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
                     continue
                 if ("exec" not in h) and ("tcp" not in h):
                     warnings.append(f"rollout.hooks.{name} must contain 'exec' or 'tcp'")
-                if "exec" in h and not isinstance(h.get("exec"), (list, tuple)):
+                if "exec" in h and not isinstance(h.get("exec"), list | tuple):
                     warnings.append(f"rollout.hooks.{name}.exec must be a list of args")
                 if "tcp" in h:
                     try:
@@ -3417,8 +3419,9 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
             return 2
     # Split output into individual files when requested
     if getattr(args, "split", None):
-        from ae.k8s.exporter import export_k8s_docs
         import yaml as _yaml
+
+        from ae.k8s.exporter import export_k8s_docs
         outdir: Path = args.split
         outdir.mkdir(parents=True, exist_ok=True)
         docs = export_k8s_docs(man, options=opts)
@@ -3501,7 +3504,7 @@ def handle_k8s_check(args: argparse.Namespace) -> int:
     try:
         if bool(getattr(args, "emit", False)) or bool(getattr(args, "kubeconform", False)):
             # Build export with default options for validation
-            from ae.k8s.exporter import export_k8s_yaml, ExportOptions
+            from ae.k8s.exporter import ExportOptions, export_k8s_yaml
 
             yaml_text = export_k8s_yaml(man, options=ExportOptions(namespace="default"))
             if bool(getattr(args, "emit", False)):
@@ -3545,9 +3548,9 @@ def handle_verify_image(args: argparse.Namespace) -> int:
     Supports key-based and keyless verification. Prints a one-line summary
     and returns an appropriate exit code. With --json, emits { ok, image, summary }.
     """
+    import json as _json
     import shutil
     import subprocess as sp
-    import json as _json
 
     cosign_bin = getattr(args, "cosign_bin", "cosign")
     cosign_path = shutil.which(cosign_bin)
@@ -3573,7 +3576,9 @@ def handle_verify_image(args: argparse.Namespace) -> int:
     cmd += [str(args.image)]
 
     try:
-        proc = sp.run(cmd, capture_output=True, text=True, check=False)
+        proc = sp.run(
+            cmd, capture_output=True, text=True, check=False
+        )  # noqa: S603,S607 - cosign path vetted via shutil.which; shell disabled
     except Exception as exc:  # noqa: BLE001
         summary = f"cosign failed to start: {exc}"
         if getattr(args, "json", False):
@@ -3599,6 +3604,7 @@ def handle_certs(args: argparse.Namespace) -> int:
     import json as _json
     import os
     from pathlib import Path
+
     from ae.security import is_revoked
 
     root = Path(args.root) if args.root else Path(os.getenv("AE_TLS_DIR", "state/tls"))
@@ -3639,14 +3645,3 @@ def handle_certs(args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
     raise SystemExit(main())
-    # Requests strictness: warn when requests are missing
-    res = getattr(manifest.spec, "resources", None)
-    req = getattr(res, "requests", None) if res else None
-    if not (req and getattr(req, "cpu", None)):
-        warnings.append(
-            "no resources.requests.cpu; set at least 100m for portability and HPA readiness"
-        )
-    if not (req and getattr(req, "memory", None)):
-        warnings.append(
-            "no resources.requests.memory; set a baseline (e.g., 128Mi) for scheduling consistency"
-        )

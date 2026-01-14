@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from ae.controller.state import SQLiteStateStore
 
@@ -30,12 +30,21 @@ def test_upsert_and_get_node(tmp_path):
     assert isinstance(node.created_at, datetime)
     assert status is not None
     assert status.status == "Ready"
-    assert status.seen_at.tzinfo == timezone.utc
+    assert status.seen_at.tzinfo == UTC
 
 
 def test_list_nodes_returns_status(tmp_path):
     store = SQLiteStateStore(tmp_path / "state.db")
-    store.upsert_node("n1", name=None, labels=None, taints=None, backend=None, endpoint=None, pod_cidr=None, wg_pubkey=None)
+    store.upsert_node(
+        "n1",
+        name=None,
+        labels=None,
+        taints=None,
+        backend=None,
+        endpoint=None,
+        pod_cidr=None,
+        wg_pubkey=None,
+    )
     store.record_heartbeat("n1", "NotReady")
 
     items = store.list_nodes()

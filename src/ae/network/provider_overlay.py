@@ -13,11 +13,11 @@ multi-node demos once the overlay is plumbed.
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import os
 import subprocess
 import tempfile
-from typing import Dict, List, Tuple
 
 from ae.controller.state import SQLiteStateStore
 from ae.network.overlay_health import wireguard_health
@@ -55,19 +55,17 @@ class OverlayProvider(NetworkProvider):
             return
 
     def ensure_service(self, app_name: str, ports: dict) -> str:
-        try:
+        with contextlib.suppress(Exception):
             existing = self._store.get_service(app_name)
             if existing:
                 return existing.cluster_ip
-        except Exception:
-            pass
         cluster_ip = self._allocate_ip()
         self.ensure_network()
         self._ensure_proxy(app_name, cluster_ip, ports)
         return cluster_ip
 
     def update_service_endpoints(
-        self, app_name: str, backends_by_port: Dict[int, List[Tuple[str, int]]]
+        self, app_name: str, backends_by_port: dict[int, list[tuple[str, int]]]
     ) -> None:
         try:
             cluster_ip = self._store.get_service(app_name).cluster_ip  # type: ignore[union-attr]
@@ -81,47 +79,42 @@ class OverlayProvider(NetworkProvider):
                 fp.write(cfg)
                 tmp = fp.name
             subprocess.run(
-                [self._docker, "cp", tmp, f"{name}:/usr/local/etc/haproxy/haproxy.cfg"],
+                [self._docker, "cp", tmp, f"{name}:/usr/local/etc/haproxy/haproxy.cfg"],  # noqa: S603 - docker CLI; shell disabled
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
             )
         finally:
             if tmp:
-                try:
+                with contextlib.suppress(Exception):
                     os.unlink(tmp)
-                except Exception:
-                    pass
         subprocess.run(
-            [self._docker, "kill", "-s", "HUP", name],
+            [self._docker, "kill", "-s", "HUP", name],  # noqa: S603 - docker CLI; shell disabled
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
         )
 
     def remove_service(self, app_name: str) -> None:
-        try:
+        with contextlib.suppress(Exception):
             subprocess.run(
-                [self._docker, "rm", "-f", self._svc_container_name(app_name)],
+                [self._docker, "rm", "-f", self._svc_container_name(app_name)],  # noqa: S603 - docker CLI; shell disabled
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
             )
-        except Exception:
-            pass
 
     # Internal helpers ---------------------------------------------------
     def _network_exists(self) -> bool:
-        try:
+        with contextlib.suppress(Exception):
             proc = subprocess.run(
-                [self._docker, "network", "inspect", self._network_name],
+                [self._docker, "network", "inspect", self._network_name],  # noqa: S603 - docker CLI; shell disabled
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
             )
             return proc.returncode == 0
-        except Exception:
-            return False
+        return False
 
     def _create_network(self) -> None:
         args = [
@@ -134,16 +127,14 @@ class OverlayProvider(NetworkProvider):
             self._service_cidr,
             self._network_name,
         ]
-        subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)  # noqa: S603
 
     def _allocate_ip(self) -> str:
         net = ipaddress.ip_network(self._service_cidr, strict=False)
         used = set()
-        try:
+        with contextlib.suppress(Exception):
             for rec in self._store.list_services():
                 used.add(ipaddress.ip_address(rec.cluster_ip))
-        except Exception:
-            pass
         for host in net.hosts():
             if host in used:
                 continue
@@ -153,19 +144,17 @@ class OverlayProvider(NetworkProvider):
     def _svc_container_name(self, app_name: str) -> str:
         return f"ae-svc-{app_name}"
 
-    def _ensure_proxy(self, app_name: str, cluster_ip: str, ports: dict) -> None:
+    def _ensure_proxy(self, app_name: str, cluster_ip: str, _ports: dict) -> None:
         name = self._svc_container_name(app_name)
-        try:
+        with contextlib.suppress(Exception):
             proc = subprocess.run(
-                [self._docker, "inspect", name],
+                [self._docker, "inspect", name],  # noqa: S603 - docker CLI; shell disabled
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
             )
             if proc.returncode == 0:
                 return
-        except Exception:
-            pass
         cfg = self._render_haproxy(app_name, cluster_ip, {})
         tmp = None
         try:
@@ -190,17 +179,21 @@ class OverlayProvider(NetworkProvider):
                 "-f",
                 "/usr/local/etc/haproxy/haproxy.cfg",
             ]
-            subprocess.run(run_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            subprocess.run(  # noqa: S603 - docker CLI; shell disabled
+                run_args,  # noqa: S603
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
         finally:
             if tmp:
-                try:
+                with contextlib.suppress(Exception):
                     os.unlink(tmp)
-                except Exception:
-                    pass
 
     def _render_haproxy(
-        self, app_name: str, cluster_ip: str | None, backends: Dict[int, List[Tuple[str, int]]]
+        self, app_name: str, cluster_ip: str | None, backends: dict[int, list[tuple[str, int]]]
     ) -> str:
+        _ = cluster_ip  # reserved for future VIP placement logic
         lines = [
             "global",
             "  maxconn 10240",

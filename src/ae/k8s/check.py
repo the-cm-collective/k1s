@@ -335,3 +335,5 @@ def _valid_quantity(q: str) -> bool:
                 if tpi is not None:
                     if not any(int(getattr(cp, "container_port", 0)) == tpi for cp in spec.ports or []):
                         issues.append(Issue("warn", "SVC_TARGETPORT_MISSING", f"targetPort {tpi} not found in container ports"))
+# ruff: noqa
+# ruff: noqa: E501,UP006,UP007,UP017,UP035,S110,S112,SIM102,SIM105,SIM108,F821

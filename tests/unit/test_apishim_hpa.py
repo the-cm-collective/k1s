@@ -6,9 +6,8 @@ from ae.controller.health import HealthManager, HealthReport
 from ae.controller.reconciler import Reconciler
 from ae.controller.spec import ServiceSpec
 from ae.controller.state import SQLiteStateStore
-from ae.runtime import RuntimeResult, StubRuntime
 from ae.network.service_controller import ServiceController
-import pytest
+from ae.runtime import RuntimeResult, StubRuntime
 
 
 def _make_adapter(tmp_path):
@@ -29,7 +28,7 @@ def test_hpa_scales_up_on_cpu(tmp_path, monkeypatch):
         "selector": {"matchLabels": {"app": "demo"}},
         "template": {"metadata": {"labels": {"app": "demo"}}, "spec": {"containers": [{"name": "demo", "image": "busybox"}]}},
     }
-    dep_obj = store.upsert("apps", "v1", "deployments", "default", "demo", dep_md, dep_spec, {})
+    store.upsert("apps", "v1", "deployments", "default", "demo", dep_md, dep_spec, {})
 
     hpa_spec = {
         "minReplicas": 1,
@@ -48,7 +47,7 @@ def test_hpa_scales_up_on_cpu(tmp_path, monkeypatch):
     monkeypatch.setattr(
         adapter,
         "_collect_metrics_for_app",
-        lambda app_name: {"cpu_util": 80.0, "mem_util": None, "mem_bytes": None},
+        lambda _app_name: {"cpu_util": 80.0, "mem_util": None, "mem_bytes": None},
     )
 
     adapter._apply_hpa(hpa_obj)
@@ -91,7 +90,7 @@ def test_hpa_scales_on_memory_average_value(tmp_path, monkeypatch):
     monkeypatch.setattr(
         adapter,
         "_collect_metrics_for_app",
-        lambda app_name: {"cpu_util": None, "mem_util": None, "mem_bytes": 400 * 1024 * 1024},
+        lambda _app_name: {"cpu_util": None, "mem_util": None, "mem_bytes": 400 * 1024 * 1024},
     )
 
     adapter._apply_hpa(hpa_obj)
@@ -134,7 +133,7 @@ def test_hpa_cooldown_blocks_rapid_scale(tmp_path, monkeypatch):
     monkeypatch.setattr(
         adapter,
         "_collect_metrics_for_app",
-        lambda app_name: {"cpu_util": 90.0, "mem_util": None, "mem_bytes": None},
+        lambda _app_name: {"cpu_util": 90.0, "mem_util": None, "mem_bytes": None},
     )
     # Pretend we just scaled a moment ago
     import time as _t
@@ -159,13 +158,13 @@ class _OverlayProviderStub:
     def ensure_network(self):
         return
 
-    def ensure_service(self, app_name: str, ports: dict) -> str:
+    def ensure_service(self, _app_name: str, _ports: dict) -> str:
         return "10.0.0.2"
 
-    def update_service_endpoints(self, app_name: str, backends: dict):
+    def update_service_endpoints(self, _app_name: str, _backends: dict):
         return
 
-    def remove_service(self, app_name: str):
+    def remove_service(self, _app_name: str):
         return
 
     def overlay_health(self):
@@ -199,3 +198,4 @@ def test_overlay_events_emitted_on_status_change(tmp_path):
     ev_obj = _to_event("default", "demo", events[0])
     assert ev_obj["metadata"]["namespace"] == "default"
     assert ev_obj["reason"] in {"OverlayReady", "OverlayDegraded"}
+# ruff: noqa: E501

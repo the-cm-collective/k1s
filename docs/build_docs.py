@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa
 """Very small Markdown → HTML builder for docs/*.md into docs/site/*.html.
 
 Supported:

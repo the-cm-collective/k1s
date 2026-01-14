@@ -112,14 +112,22 @@ class RuntimeAdapter(Protocol):
 
     # Optional streaming exec (stdin/stdout/stderr) for kubectl exec
     def exec_attach(
-        self, replica_id: str, command: list[str], *, container: str | None = None, tty: bool = False
+        self,
+        replica_id: str,
+        command: list[str],
+        *,
+        container: str | None = None,
+        tty: bool = False,
     ):  # pragma: no cover - optional; implementations provide coverage
         ...
 
-    def exec_resize(self, exec_id: str, *, height: int | None = None, width: int | None = None) -> None:  # pragma: no cover
+    def exec_resize(
+        self, exec_id: str, *, height: int | None = None, width: int | None = None
+    ) -> None:  # pragma: no cover
         """Optionally resize a TTY exec session."""
         ...
 
     def exec_exit_code(self, exec_id: str) -> int:  # pragma: no cover
         """Optionally return exit code for a completed exec session."""
+        _ = exec_id
         return 0

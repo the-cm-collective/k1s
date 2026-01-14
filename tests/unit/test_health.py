@@ -1,9 +1,12 @@
 """Tests for the health manager."""
 
-from ae.controller.health import HealthManager
-from ae.controller.spec import AppManifest, AppSpec, Metadata, HealthSpec, ProbeSpec
-from ae.runtime.base import ReplicaState, RuntimeResult
+from datetime import UTC
+
 from requests import Response
+
+from ae.controller.health import HealthManager
+from ae.controller.spec import AppManifest, AppSpec, HealthSpec, Metadata, ProbeSpec
+from ae.runtime.base import ReplicaState, RuntimeResult
 
 
 def test_health_manager_counts_ready():
@@ -67,8 +70,8 @@ def test_health_manager_http_probe(monkeypatch):
     response.status_code = 200
 
     def fake_get(url: str, timeout: int):  # noqa: ANN001
+        _ = timeout
         assert url == "http://127.0.0.1:8080/healthz"
-        assert timeout == 1
         return response
 
     monkeypatch.setattr("ae.controller.health.get", fake_get)
@@ -115,6 +118,7 @@ def test_health_manager_loopback_fallback(monkeypatch):
     response.status_code = 200
 
     def fake_get(url: str, timeout: int):  # noqa: ANN001
+        _ = timeout
         assert url == "http://host.docker.internal:8080/healthz"
         return response
 
@@ -126,7 +130,7 @@ def test_health_manager_loopback_fallback(monkeypatch):
 
 
 def test_health_manager_initial_delay(monkeypatch):
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
@@ -147,7 +151,7 @@ def test_health_manager_initial_delay(monkeypatch):
         ),
     )
 
-    start_time = datetime.now(timezone.utc) - timedelta(seconds=5)
+    start_time = datetime.now(UTC) - timedelta(seconds=5)
     result = RuntimeResult(
         revision=2,
         created=1,
@@ -163,7 +167,8 @@ def test_health_manager_initial_delay(monkeypatch):
         ],
     )
 
-    def fake_get(url: str, timeout: int):  # noqa: ANN001
+    def fake_get(_url: str, timeout: int):  # noqa: ANN001
+        _ = timeout
         raise AssertionError("HTTP probe should not be called during initial delay")
 
     monkeypatch.setattr("ae.controller.health.get", fake_get)

@@ -1,12 +1,12 @@
 from ae.controller.health import HealthManager
-from ae.controller.spec import AppManifest, AppSpec, Metadata, HealthSpec, ProbeSpec
-from ae.runtime.base import RuntimeResult, ReplicaState
+from ae.controller.spec import AppManifest, AppSpec, HealthSpec, Metadata, ProbeSpec
+from ae.runtime.base import ReplicaState, RuntimeResult
 
 
 def test_exec_probe_success():
     hm = HealthManager()
     # Inject a fake exec that returns 0
-    hm.set_exec_callback(lambda rid, cmd, timeout: 0)
+    hm.set_exec_callback(lambda _rid, _cmd, _timeout: 0)
 
     spec = AppSpec(
         image="alpine:3.20",
@@ -34,7 +34,7 @@ def test_exec_probe_success():
 
 def test_exec_probe_failure():
     hm = HealthManager()
-    hm.set_exec_callback(lambda rid, cmd, timeout: 1)
+    hm.set_exec_callback(lambda _rid, _cmd, _timeout: 1)
 
     spec = AppSpec(
         image="alpine:3.20",

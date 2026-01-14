@@ -1,3 +1,4 @@
+# ruff: noqa: E501,I001,E401,S110,S112,SIM105,SIM102,SIM114,B009,B904,UP017,UP006
 """Controller daemon entry point.
 
 Usage:
@@ -16,10 +17,10 @@ import os
 import time
 import signal
 import socket
+from collections.abc import Iterable
 from pathlib import Path
 from datetime import datetime
 import json, hashlib
-from typing import Iterable, List
 
 from ae.controller.state import SQLiteStateStore
 from ae.controller.reconciler import Reconciler
@@ -124,8 +125,8 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _find_manifests(specs_dir: Path) -> List[Path]:
-    paths: List[Path] = []
+def _find_manifests(specs_dir: Path) -> list[Path]:
+    paths: list[Path] = []
     if not specs_dir.exists():
         return paths
     for p in specs_dir.rglob("*.y*"):
@@ -311,16 +312,16 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
     # Build reconciler (runtime, ingress, secrets, store)
     reconciler = _make_reconciler()
-    agent_api_server = None
+    _agent_api_server = None
     try:
         agent_port = int(os.getenv("AE_AGENT_API_PORT", os.getenv("AE_AGENT_PORT", "0") or 0))
     except Exception:
         agent_port = 0
     if agent_port > 0:
         try:
-            agent_host = os.getenv("AE_AGENT_API_HOST", "0.0.0.0")
+            agent_host = os.getenv("AE_AGENT_API_HOST", "0.0.0.0")  # noqa: S104 - agent API must be reachable by nodes
             agent_token = os.getenv("AE_AGENT_API_TOKEN")
-            agent_api_server = start_agent_api(
+            _agent_api_server = start_agent_api(
                 state_store_from_env(),
                 host=agent_host,
                 port=agent_port,
@@ -494,8 +495,6 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     statuses = [s for s in statuses if s.app_name in allowed]
             except Exception:
                 pass
-            names = [s.app_name for s in statuses]
-
             # Nodes snapshot (heartbeat freshness, cordon)
             _nodes = []
             try:
@@ -540,7 +539,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             placements: dict[str, list[dict]] = {}
             for s in statuses:
                 try:
-                    repl_nodes = {rid: nid for rid, nid in store.list_replica_nodes(s.app_name)}
+                    repl_nodes = dict(store.list_replica_nodes(s.app_name))
                 except Exception:
                     repl_nodes = {}
                 try:
@@ -658,7 +657,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 url = f"http://127.0.0.1:{dport}/"
                 ok = False
                 try:
-                    with _ur.urlopen(url, timeout=1) as r:  # nosec - local health probe
+                    with _ur.urlopen(url, timeout=1) as r:  # noqa: S310 - local health probe
                         ok = int(getattr(r, "status", 200)) >= 200
                 except Exception:
                     ok = False
@@ -676,7 +675,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     url = f"http://127.0.0.1:{port}/health"
                     ok = False
                     try:
-                        with _ur.urlopen(url, timeout=1) as r:  # nosec - local health probe
+                        with _ur.urlopen(url, timeout=1) as r:  # noqa: S310 - local self-check
                             ok = int(getattr(r, "status", 200)) >= 200
                     except Exception:
                         ok = False

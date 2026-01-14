@@ -1,3 +1,4 @@
+# ruff: noqa: E501,I001,S110,S112,SIM105,UP017
 """Lightweight controller-side API for node agents (heartbeats, node info).
 
 This server is intentionally minimal and runs alongside the controller to
@@ -11,7 +12,6 @@ import json
 import logging
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Callable
 
 from ae.controller.state import SQLiteStateStore
 try:  # Optional: Phase 3 pod CIDR allocator
@@ -69,7 +69,7 @@ def _serialize_nodes(store: SQLiteStateStore) -> list[dict]:
 def make_handler(
     store: SQLiteStateStore,
     token: str | None = None,
-    cidr_allocator: "PodCIDRAllocator | None" = None,
+    cidr_allocator: PodCIDRAllocator | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     """Factory so tests can spin a server without global state."""
 
@@ -234,7 +234,7 @@ def make_handler(
 
 def start_agent_api(
     store: SQLiteStateStore,
-    host: str = "0.0.0.0",
+    host: str = "0.0.0.0",  # noqa: S104 - exposed for node agents
     port: int = 9110,
     *,
     token: str | None = None,

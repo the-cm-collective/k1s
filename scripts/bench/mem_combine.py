@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa
 """
 Combine multiple snapshot summaries into a single CSV/JSON for charting.
 

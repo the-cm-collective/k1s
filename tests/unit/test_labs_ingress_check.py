@@ -52,7 +52,7 @@ def _make_handler(
     return h, wfile, status
 
 
-def test_labs_ingress_check_rejects_non_home_arpa(monkeypatch) -> None:  # noqa: D401
+def test_labs_ingress_check_rejects_non_home_arpa() -> None:  # noqa: D401
     # Non-home.arpa host should be rejected by guard without network access
     h, wfile, status = _make_handler("/labs/ingress_check", {"url": "https://example.com/"})
     _ApiHandler._handle_labs_post(h)  # type: ignore[arg-type]
@@ -61,7 +61,7 @@ def test_labs_ingress_check_rejects_non_home_arpa(monkeypatch) -> None:  # noqa:
     assert "error" in data
 
 
-def test_labs_ingress_check_returns_json_on_network_failure(monkeypatch) -> None:  # noqa: D401
+def test_labs_ingress_check_returns_json_on_network_failure() -> None:  # noqa: D401
     # A dev host triggers a request; even if it fails, handler must return 200 with a JSON payload
     h, wfile, status = _make_handler(
         "/labs/ingress_check", {"url": "https://docs.home.arpa:8443/health"}
@@ -70,3 +70,4 @@ def test_labs_ingress_check_returns_json_on_network_failure(monkeypatch) -> None
     assert status and status[0] == 200
     data = json.loads(wfile.getvalue().decode("utf-8") or "{}")
     assert set(["ok", "code", "elapsed_ms"]).issubset(set(data.keys()))
+# ruff: noqa: C405

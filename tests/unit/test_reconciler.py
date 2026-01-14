@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-from ae.controller.reconciler import ReconcileReport, Reconciler
+from ae.controller.health import HealthReport, ReplicaHealth
+from ae.controller.reconciler import Reconciler, ReconcileReport
 from ae.controller.spec import (
     AppManifest,
     AppSpec,
@@ -12,8 +13,7 @@ from ae.controller.spec import (
     SecretRef,
     ServiceSpec,
 )
-from ae.controller.state import SQLiteStateStore, ServiceEndpoint
-from ae.controller.health import HealthReport, ReplicaHealth
+from ae.controller.state import ServiceEndpoint, SQLiteStateStore
 from ae.runtime.base import ReplicaState, RuntimeAdapter, RuntimeResult
 
 
@@ -46,7 +46,7 @@ class FailingLivenessRuntime(RuntimeAdapter):
     probes fail because the port isn't yet published/ready.
     """
 
-    def ensure_app(self, manifest: AppManifest, revision: int) -> RuntimeResult:  # type: ignore[override]
+    def ensure_app(self, _manifest: AppManifest, revision: int, **_kwargs) -> RuntimeResult:  # type: ignore[override]
         return RuntimeResult(
             revision=revision,
             created=1,
@@ -54,7 +54,7 @@ class FailingLivenessRuntime(RuntimeAdapter):
             removed=0,
             replica_states=[
                 ReplicaState(
-                    replica_id=f"{manifest.metadata.name}-rev{revision}-0",
+                    replica_id=f"{_manifest.metadata.name}-rev{revision}-0",
                     ready=False,
                     status="created",
                     endpoint=None,
@@ -65,7 +65,7 @@ class FailingLivenessRuntime(RuntimeAdapter):
 
 def test_status_progressing_when_replica_present_but_liveness_failing(tmp_path: Path) -> None:
     # Manifest with an HTTP liveness probe so live=false when endpoint is None
-    from ae.controller.spec import AppSpec, Metadata, AppManifest, HealthSpec, ProbeSpec
+    from ae.controller.spec import AppManifest, AppSpec, HealthSpec, Metadata, ProbeSpec
 
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
@@ -97,7 +97,7 @@ class CreateButEmptyStatesRuntime(RuntimeAdapter):
     an immediate `ps/inspect` does not include the new container.
     """
 
-    def ensure_app(self, manifest: AppManifest, revision: int) -> RuntimeResult:  # type: ignore[override]
+    def ensure_app(self, _manifest: AppManifest, revision: int) -> RuntimeResult:  # type: ignore[override]
         return RuntimeResult(
             revision=revision,
             created=1,
@@ -108,7 +108,7 @@ class CreateButEmptyStatesRuntime(RuntimeAdapter):
 
 
 def test_status_progressing_when_created_but_states_empty(tmp_path: Path) -> None:
-    from ae.controller.spec import AppSpec, Metadata, AppManifest
+    from ae.controller.spec import AppManifest, AppSpec, Metadata
 
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
@@ -275,7 +275,7 @@ def test_reconciler_applies_secrets(tmp_path: Path) -> None:
     state = SQLiteStateStore(tmp_path / "state.db")
 
     class StubSecrets:
-        def load_env(self, refs):  # noqa: ANN001
+        def load_env(self, _refs):  # noqa: ANN001
             return {"SECRET_VALUE": "hunter2"}
 
     reconciler = Reconciler(
@@ -305,3 +305,4 @@ def test_reconciler_applies_secrets(tmp_path: Path) -> None:
     assert runtime.last_manifest is not None
     env_map = {item["name"]: item["value"] for item in runtime.last_manifest.spec.env}
     assert env_map["SECRET_VALUE"] == "hunter2"
+# ruff: noqa: S105
