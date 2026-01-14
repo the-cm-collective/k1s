@@ -151,6 +151,7 @@ TEMPLATE = """<!doctype html>
         margin: 0 auto 1.25rem auto;
         width: min(100%, 1320px);
         padding: 10px 16px;
+        box-sizing: border-box;
         background: var(--k1s-panel);
         border: 1px solid var(--k1s-border);
         border-radius: 14px;
