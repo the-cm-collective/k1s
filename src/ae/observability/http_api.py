@@ -2130,7 +2130,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         }
         # In demo mode, restrict controller app counters to allowed apps from specs
         try:
-            allowed_apps = _demo_allowed_apps()
+            demo_allowed = set(_demo_allowed_apps())
+            labs_allowed = set(_LABS_APPS)
+            allowed_apps = demo_allowed | labs_allowed
             if allowed_apps:
                 ctrl["apps"] = {k: v for k, v in ctrl["apps"].items() if k in allowed_apps}
         except Exception:
@@ -2805,20 +2807,21 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     <link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='28' fill='%234f46e5'/%3E%3Ctext x='32' y='40' font-size='28' text-anchor='middle' fill='white' font-family='sans-serif'%3Ek%3C/text%3E%3C/svg%3E\" />
     <script src=\"https://unpkg.com/htmx.org@1.9.12\" integrity=\"sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2\" crossorigin=\"anonymous\"></script>
     <style>
-      :root { color-scheme: light dark; }
+      :root { color-scheme: light dark; --header-h: 60px; }
       body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; overflow-x:hidden; }
-      header { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; background:#0a0a0a10; position:sticky; top:0; backdrop-filter: blur(4px); }
+      header { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; background:#0a0a0a10; position:sticky; top:0; backdrop-filter: blur(4px); z-index: 40; }
       h1 { margin:0; font-size: 18px; }
-      main { display:grid; grid-template-columns: 210px 1fr; gap:12px; padding:12px 12px 48px; overflow-x:hidden; }
+      main { display:grid; grid-template-columns: 1fr; gap:12px; padding:12px 12px 48px; overflow-x:hidden; align-items:start; margin-left:222px; transition: margin-left .15s ease; }
       #detail { min-width:0; overflow:hidden; }
       #apps { width:210px; }
       /* Collapsible left apps pane */
-      body.apps-collapsed main { grid-template-columns: 16px 1fr; }
-      #apps { position:relative; border-right:1px solid #8884; padding-right:8px; min-height:0; }
+      body.apps-collapsed main { margin-left: 22px; }
+      /* Apps rail fixed under the header; independent scroll */
+      #apps { position:fixed; left:0; top: calc(var(--header-h, 60px)); border-right:1px solid #8884; padding:0 8px 0 0; min-height:0; height: calc(100vh - var(--header-h, 60px)); background: transparent; box-sizing: border-box; }
       body.apps-collapsed #apps { border-right:0; padding-right:0; }
       .scrollbar-hide { scrollbar-width: none; -ms-overflow-style: none; }
       .scrollbar-hide::-webkit-scrollbar { width:0; height:0; }
-      #apps-list { display:block; overflow-y:auto; max-height: calc(100vh - 56px - 80px); }
+      #apps-list { display:block; overflow-y:auto; height: calc(100vh - (var(--header-h, 60px)) - 12px); }
       body.apps-collapsed #apps-list { display:none; }
       .app { padding:6px 8px; border-radius:6px; cursor:pointer; }
       .app.active { background:#1f2937; color:#e5e7eb; }
@@ -3073,6 +3076,23 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       var lastStatuses = [];
       var graphHover = null;
       var graphPathMode = (localStorage.getItem('graph_path_mode') || 'orth'); // 'orth' or 'straight'
+      // Keep apps rail aligned under the header
+      function syncHeaderHeight(){
+        try {
+          var hdr = document.querySelector('header');
+          if (!hdr) return;
+          var apps = document.getElementById('apps');
+          var list = document.getElementById('apps-list');
+          var h = hdr.getBoundingClientRect().height || hdr.offsetHeight || 60;
+          document.documentElement.style.setProperty('--header-h', (h) + 'px');
+          // Fixed rail already uses CSS calc with var(--header-h); no per-element top needed
+          if (list) {
+            var listHeight = Math.max(120, Math.floor(window.innerHeight - h - 12));
+            list.style.height = listHeight + 'px';
+          }
+        } catch(e){}
+      }
+      try { syncHeaderHeight(); window.addEventListener('resize', syncHeaderHeight); } catch(e){}
 
       // Token helpers
       var tokInput = document.getElementById('auth-token');
