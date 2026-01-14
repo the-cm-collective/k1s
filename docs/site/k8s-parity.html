@@ -61,11 +61,13 @@
     </style>
     <style>
       /* Base layout aligned to dashboard palette */
-      html, body { height: 100%; }
+      html { height: 100%; }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
-        margin: 2rem;
+        margin: 0;
+        padding: 2rem;
         line-height: 1.55;
+        box-sizing: border-box;
         min-height: 100vh;
         display: flex;
         flex-direction: column;
@@ -208,7 +210,9 @@
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
+      <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
@@ -220,66 +224,54 @@
     </nav>
     <div class="container">
     <p>K8s Parity and Alignment (MVP)</p>
-<p>Status summary (2025-11-12)</p>
+<p>Status summary (2026-01-14)</p>
 <ul>
-<li>Exporter: Deployment/StatefulSet/Service/Ingress/HPA/PDB/SA/PVC/ConfigMap/Secret/Role/RoleBinding/NetworkPolicy ✓</li>
-<li>Probes: HTTP/TCP/exec + startupProbe; windowing and thresholds ✓</li>
-<li>Security: runAs*, readOnlyRootFilesystem, cap drop, seccomp; AppArmor via annotation ✓</li>
-<li>Services: ClusterIP with multi-port, NodePort support; validation for names/ports/nodePort ✓</li>
-<li>Ingress: v1 with Prefix pathType default; TLS with secretName; ingressClassName passthrough ✓</li>
-<li>Scheduling: affinity/tolerations/topology spread/priorityClassName/nodeSelector ✓</li>
-<li>API writes: CLI + optional HTTP API mutations (token‑gated) ✓</li>
+<li>Exporter/shim: Deployments, StatefulSets, DaemonSets, Jobs, CronJobs, Services (ClusterIP/NodePort/LoadBalancer + externalIPs/sessionAffinity), Ingress v1, HPA v2, PDB, ServiceAccount + Role/RoleBinding, ConfigMap/Secret env + envFrom/file projections, imagePullPolicy/imagePullSecrets, startupProbe/lifecycle, seccomp/AppArmor, priorityClassName/affinity/tolerations/topologySpread/nodeSelector, SSA/patch (merge/json/apply) with managedFields.</li>
+<li>Runtime/networking: Service CIDR + overlay provider with ClusterIP allocation and EndpointSlice projection; port-forward for pods/services; exec/logs proxied via agents; scheduler honors nodeSelector/taints/tolerations/topology spread and storage pinning.</li>
+<li>Discovery/OpenAPI: Enriched <code>/openapi/v2</code> + <code>/openapi/v3</code> published in CI with fixture validation; compatibility matrix lives at <code>docs/apishim-compatibility-matrix.md</code>; live gate exercises kubectl/helm apply/watch/port-forward against the shim.</li>
 </ul>
 <p>Security &amp; Policies</p>
 <ul>
-<li>Seccomp/AppArmor: container <code>securityContext.seccompProfile</code> supported (RuntimeDefault/Localhost/Unconfined); AppArmor profile via Pod template annotation <code>container.apparmor.security.beta.kubernetes.io/&lt;container&gt;</code>.</li>
+<li>Seccomp/AppArmor: container <code>securityContext.seccompProfile</code> supported (RuntimeDefault/Localhost/Unconfined); AppArmor via Pod template annotation <code>container.apparmor.security.beta.kubernetes.io/&lt;container&gt;</code>.</li>
+<li>PodSecurity labels/presets are emitted by the exporter when requested; PSA admission itself is not enforced by k1s.</li>
+<li>RBAC: shim enforces Role/ClusterRole + (Cluster)RoleBinding; SubjectAccessReview endpoint available. Controller HTTP API uses READ/SCALER/ADMIN tokens.</li>
 </ul>
-<p>Example (security snippet)</p>
-<pre><code>
-spec:
-  security:
-    runAsUser: 1000
-    readOnlyRootFilesystem: true
-    dropCapabilities: [&quot;NET_RAW&quot;]
-    seccompProfileType: RuntimeDefault  # or Localhost
-    seccompLocalhostProfile: profiles/echo.json  # when type=Localhost
-    apparmorProfile: localhost/echo-profile     # or runtime/default, unconfined
-</code></pre>
-<p>Service Types</p>
+<p>Service Types and VIPs</p>
 <ul>
-<li>NodePort/LoadBalancer: exporter supports <code>service.type</code> and per-port <code>nodePort</code> (validated in the default range 30000–32767). Out-of-range values raise a validation error.</li>
-<li>Validation also checks for duplicate <code>name</code>, <code>port</code>, and <code>nodePort</code> entries within a Service and raises a validation error when found.</li>
-<li>externalIPs: exporter passes through <code>service.externalIPs</code> for ClusterIP/NodePort Services. Note: reachability depends on your environment (cloud L2/L3 or bare metal with MetalLB/ARP/NDP). This is not a load balancer; traffic routing to those IPs must exist outside the manifest.</li>
+<li>ClusterIP/NodePort/LoadBalancer supported in exporter/shim; nodePort validated.</li>
+<li>Service VIPs allocated from the Service CIDR and backed by the overlay provider; ingress templates prefer VIPs over hostPorts for multi-node routing.</li>
+<li>externalIPs pass-through for ClusterIP/NodePort. Reachability depends on your environment (MetalLB/cloud LB if needed).</li>
 </ul>
 <p>Checklist</p>
 <ul>
-<li>Use stable APIs and portable features where analogous:</li>
-<li>Readiness/liveness/startup probes present (HTTP/TCP/exec).</li>
-<li>Resources.requests/limits modeled; strict policy available.</li>
-<li>Non-root security context encouraged; defaults available.</li>
-<li>Graceful termination via terminationGracePeriodSeconds and preStop support.</li>
-<li>Ingress flips only after ≥1 ready replica.</li>
-<li>Storage: PVCs; stateful demo available.</li>
+<li>Use readiness/liveness/startup probes.</li>
+<li>Provide <code>resources.requests/limits</code>; enable <code>--policy strict</code> in <code>ae k8s-check</code>.</li>
+<li>Add topology spread or anti-affinity for multi-replica apps.</li>
+<li>Keep storage retained volumes single-node or attach PVCs when exporting to Kubernetes.</li>
+<li>Prefer Service VIP + ingress over hostPorts for HA; reserve hostPorts only for single-node edges.</li>
 </ul>
 <p>Verification notes</p>
 <ul>
-<li>Docker and Podman paths validated by unit/integration tests and demos.</li>
-<li>Echo variants exercise readiness, ingress, storage.</li>
-<li>Dashboard provides live logs and status snapshots.</li>
+<li>Exporter validated with <code>ae export-k8s --validate</code> + <code>ae k8s-check --policy strict</code>.</li>
+<li>Shim gates: kubectl/helm apply/get/watch/port-forward exercised in CI (live gate) with OpenAPI drift guard.</li>
+<li>Multi-node overlay path covered by integration tests and lab script (<code>docs/multinode-lab.md</code>).</li>
 </ul>
-<p>Roadmap (selected)</p>
+<p>Compliance Summary (2026-01-14)</p>
 <ul>
-<li>RBAC emitters tied to ServiceAccount.</li>
-<li>Job/CronJob exporters for batch.</li>
-<li>TLS Secret helper and Traefik ingress presets.</li>
-<p>Examples</p>
-<li><code>emptyDir</code> ephemeral volumes.</li>
-<li>TCP readiness probe (spec):</li>
-<li>readiness: { tcpSocket: { port: 8080 }, successThreshold: 2, failureThreshold: 2 }</li>
-<li>SecuritySpec:</li>
-<li>security: { runAsUser: 1000, runAsGroup: 1000, readOnlyRootFilesystem: true, dropCapabilities: [&quot;NET_RAW&quot;] }</li>
-<li>Exec readiness probe (spec):</li>
-<li>readiness: { exec: { command: [&quot;sh&quot;, &quot;-c&quot;, &quot;true&quot;] }, timeoutSeconds: 1 }</li>
+<li>Workloads: Deployment/StatefulSet/DaemonSet/Job/CronJob supported; scale/rollback via shim and exporter.</li>
+<li>Pod/Container: env/envFrom; readiness/liveness/startup probes; lifecycle hooks; resources; securityContext (runAs*/fsGroup/readOnlyRootFilesystem/cap drop/seccomp/AppArmor); priorityClassName; imagePullPolicy/imagePullSecrets.</li>
+<li>Service: ClusterIP/NodePort/LoadBalancer; multi-port mapping; externalIPs; sessionAffinity; EndpointSlice projection with topology hints; service port-forward works for shim/exported Services.</li>
+<li>Ingress: networking.k8s.io/v1 with TLS, ingressClassName, status.loadBalancer from VIP/provider IPs.</li>
+<li>Policy/Autoscaling/Accounts: PDB (int/percent), HPA v2 (CPU/memory value/averageValue), ServiceAccount tokens injected by shim, Role/RoleBinding emit/enforce, NetworkPolicy pass-through.</li>
+<li>Scheduling: affinity/tolerations/topologySpreadConstraints/nodeSelector exported; scheduler respects selectors/tolerations/topology spread and node readiness/cordon.</li>
+<li>Validation/Tooling: <code>ae export-k8s --validate</code>, <code>ae k8s-check --policy strict</code>, <code>ae k8s-report</code>, OpenAPI fixture validation, compatibility matrix.</li>
+</ul>
+<p>Current gaps</p>
+<ul>
+<li>NetworkPolicy enforcement depends on your CNI (k1s runtime does not enforce policies).</li>
+<li>PodSecurityAdmission/webhook/OPA policies not implemented.</li>
+<li>PersistentVolume/StorageClass/CSI not managed; use retained named volumes in k1s or PVCs in exported manifests.</li>
+<li>metrics.k8s.io and aggregated API servers are out of scope.</li>
 </ul>
 <p>Demo manifests</p>
 <ul>
@@ -295,33 +287,6 @@ spec:
 <li>Enable mutations and token, then:</li>
 <li><code>ae --server https://api.home.arpa:8443 --token &lt;admin&gt; apply -f specs/examples/echo-sec.yaml</code></li>
 </ul>
-<h2>Compliance Summary (2025-11-11)</h2>
-<ul>
-<li>Stable APIs only: apps/v1, v1, networking.k8s.io/v1, policy/v1, autoscaling/v2.</li>
-<li>Deployment and StatefulSet export; Services (multi-port, NodePort/LoadBalancer), Ingress v1 with TLS.</li>
-<li>Probes (HTTP/TCP/exec/startup), resources, securityContext (+seccomp/AppArmor), SA/PDB/HPA/NetworkPolicy supported as described.</li>
-<li>Single-node runtime diverges from ClusterIP semantics; exporter YAML remains upstream-compatible.</li>
-</ul>
-<h2>k3s High‑Priority Gaps (Q4 2025)</h2>
-<ul>
-<li>PodSecurity labels preset (Namespace): DONE via <code>--emit-namespace --psa-enforce</code>.</li>
-<li>NetworkPolicy provider guidance: note enforcement dependency; provide web/backend presets.</li>
-</ul>
-<h2>Open Gaps (non‑k3s specific)</h2>
-<ul>
-<li>Service healthCheckNodePort.</li>
-<li>Advanced Ingress features (regex, weighted/canary annotations, multiple backends per rule).</li>
-<li>Ephemeral containers.</li>
-<li>RBAC resources for richer roles (ClusterRole/ClusterRoleBinding) and admission webhooks/CRDs (out of scope).</li>
-</ul>
-<h2>Compliance Baseline</h2>
-<ul>
-<li>Latest report JSON lives at <code>docs/site/k8s_status.json</code>.</li>
-<li>Regenerate locally:</li>
-<li><code>python -m ae.cli k8s-report --samples specs/examples/echo.yaml specs/examples/multi-replica-echo.yaml specs/examples/echo-hpa.yaml --run-dry-run -o docs/site/k8s_status.json</code></li>
-<li><code>python docs/build_docs.py</code></li>
-<li>Open <code>docs/site/k8s-parity.html</code>.</li>
-</ul>
 <hr/>
 <h2>K8s Compliance Status</h2>
 <p><strong>Score:</strong> 100.0/100 &nbsp; <strong>Grade:</strong> excellent &nbsp; <strong>Samples:</strong> 3</p>
@@ -334,7 +299,7 @@ spec:
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-13 17:21:28</span>
+        <span>Built 2026-01-14 14:58:55</span>
       </div>
     </footer>
     <script>

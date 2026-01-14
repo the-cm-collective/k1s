@@ -7,6 +7,9 @@ Prometheus-style text at `/metrics` includes aggregated gauges and labeled serie
 - Aggregated:
   - `ae_apps_total`, `ae_apps_ready`, `ae_apps_progressing`, `ae_apps_degraded`
   - `ae_replicas_total`, `ae_replicas_ready`, `ae_replicas_live`
+- Nodes/Services:
+  - `ae_nodes_total`, `ae_nodes_ready`, `ae_nodes_stale`
+  - `ae_services_total` plus per-service `cluster_ip`, `provider`, and port labels
 - Per-app:
   - `ae_app_desired_replicas{app="<name>"}`
   - `ae_app_ready_replicas{app="<name>"}`
@@ -69,8 +72,9 @@ You can also embed a single panel JSON (e.g., stat showing ready apps):
 
 - Adds a System snapshot sourced from `GET /system`:
   - Controller: last reconcile timestamp and duration
+  - Nodes: Ready/stale counts plus table of node status/cordon
   - Ingress: configured site blocks and existence flag
-  - Services: declared `service.port`/`targetPort` per app
+  - Services: declared `service.port`/`targetPort` per app and VIP/provider info
   - Storage: container‑engine named volumes created for apps (PV‑lite)
   - RBAC: shows whether mutations are enabled and tokens are configured (never reveals secrets)
 

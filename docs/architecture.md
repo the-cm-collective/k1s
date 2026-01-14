@@ -4,19 +4,23 @@ This document describes k1s in depth: components, data model, reconcile algorith
 
 ## Scope and Principles
 
-- Single node. All containers run on one host via Podman (OCI) by default; Docker is a fallback when Podman is unavailable.
+- Multi-node first. Controller manages one or more nodes via agents; Podman (OCI) is preferred, Docker is the fallback when Podman is unavailable.
 - Declarative spec → idempotent reconcile. The controller continuously applies desired state and converges.
 - Small surface. Prefer composition over features; leave seams to extend later.
 - Fail well. A crash restarts cleanly; reconcile rebuilds reality from Docker + SQLite.
 
 ## Components
 
-- Controller (src/ae/controller): orchestrates reconcile, writes state, emits events.
-- Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback.
-- Ingress (src/ae/ingress): writes Caddy site fragments and triggers reloads.
-- Health (src/ae/controller/health.py): readiness/liveness/exec/tcp evaluation.
-- State store (src/ae/controller/state.py): SQLite schema and queries (+ canary rollout state).
+- Controller (src/ae/controller): orchestrates reconcile, scheduling, service VIPs, state, and events.
+- Scheduler (src/ae/controller/scheduler.py): chooses Ready nodes honoring `nodeSelector`, taints/tolerations, topology spread, and storage pinning.
+- Node agent (src/ae/node): exposes runtime ensure/logs/exec/probes for the controller over HTTP/mTLS; reports heartbeats.
+- Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback; RemoteRuntime client proxies to agents.
+- Service/overlay (src/ae/network): allocates Service CIDR VIPs and wires overlay providers (HAProxy overlay or bridge).
+- Ingress (src/ae/ingress): writes Caddy site fragments and triggers reloads (prefers Service VIP upstreams).
+- Health (src/ae/controller/health.py): readiness/liveness/exec/tcp evaluation (startup probe aware).
+- State store (src/ae/controller/state.py): SQLite schema and queries (+ nodes/services/storage tables; Postgres supported).
 - Secrets (src/ae/secrets) and Configs (src/ae/config): SOPS/age integration, env and file projection.
+- API shim (src/ae/apishim): Kubernetes-compatible API for kubectl/helm with SSA/patch and port-forward.
 - Observability (src/ae/observability): metrics snapshot, HTTP API, dashboard, logging helpers.
 - CLI (src/ae/cli) + kubectl‑like wrapper (src/ae/kctl).
 
@@ -31,9 +35,10 @@ Ordering
 - Load manifests (YAML → Pydantic models).
 - Inject configs/secrets into env; project selected keys into files mounted read‑only.
 - Compute revision: hash the spec; reuse the latest revision if hash unchanged; otherwise increment.
-- Runtime ensure: create/update/remove containers to match replicas (respect rollout policy).
+- Plan placements: scheduler picks Ready nodes that match selectors/tolerations/topology; storage pinning keeps retained volumes on one node; falls back to local runtime if none are eligible.
+- Runtime ensure: create/update/remove containers on each placement (respect rollout policy) via node agent RemoteRuntime.
 - Health gate: evaluate readiness/liveness/exec/tcp; decide revision status ready/progressing/degraded/paused.
-- Ingress: prefer‑first routing to new revision; optional canary weight/auto progression; remove ingress when omitted.
+- Ingress: prefer Service VIP upstreams; optional canary weight/auto progression; remove ingress when omitted.
 - Persist: write app status, replicas, probe history, canary state, and revision record; emit events.
 
 Idempotency & Diff
@@ -47,10 +52,19 @@ for manifest in manifests:
   manifest = apply_configs_and_secrets(manifest)
   projection_root = prepare_file_projections(manifest, rev)
   rev = store.prepare_revision(spec_hash)
-  result = runtime.ensure_app(manifest, rev, keep_old=True, limit_create=...)  # per rollout
+  placements, warnings = scheduler.plan(manifest, rev)
+  aggregate = []
+  for placement in placements:
+    res = runtime.ensure_app(
+      manifest, rev, keep_old=True,
+      limit_create=..., replica_ids=placement.replica_ids,
+      node_id=placement.node.node_id if placement.node else None
+    )
+    aggregate.append(res)
+  result = merge_results(aggregate)
   health = health.evaluate(manifest, result)
-  ingress.apply/remove based on health/spec (+ canary weight)
-  store.record_snapshot(manifest, result, health, rev, status)
+  ingress.apply/remove based on health/spec (+ canary weight; prefers Service VIPs)
+  store.record_snapshot(manifest, result, health, rev, status, placements, warnings)
   events.emit(ApplyCompleted)
 ```
 
@@ -60,14 +74,20 @@ Sequence Diagram
 sequenceDiagram
   participant CLI as ae CLI
   participant C as Controller
+  participant SCH as Scheduler
+  participant A as Node Agent
   participant R as Runtime (Podman/Docker)
   participant H as Health
   participant I as Ingress
   participant S as SQLite
 
   CLI->>C: apply(manifest)
-  C->>R: ensure_app(manifest, rev)
-  R-->>C: RuntimeResult(replica states)
+  C->>SCH: plan placements(nodeSelector/tolerations/storage)
+  SCH-->>C: placements (+warnings)
+  C->>A: ensure_app(manifest, rev, placements)
+  A->>R: ensure/exec/logs
+  R-->>A: RuntimeResult(replica states)
+  A-->>C: Replica states
   C->>H: evaluate(manifest, result)
   H-->>C: HealthReport(ready/live)
   alt ingress configured
@@ -88,25 +108,26 @@ Top‑level
 - `spec`: see below
 
 Spec fields (src/ae/controller/spec.py)
-- `image: str`
-- `command: [str]?`
-- `env: [{name, value}]` (merged with configs/secrets)
-- `replicas: int>=1`
-- `ports: [{name, containerPort}]`
-- `service: { port, targetPort? }` (stable host port when replicas==1)
-- `health.readiness|liveness`: HTTP, TCP, or Exec probes with `initialDelaySeconds`, `timeoutSeconds`, `periodSeconds`, thresholds
-- `ingress: { host, path: '/', paths: [...], tls: bool, tlsSecretName?, tlsCertPath?, tlsKeyPath? }`
-- `secretRefs|configRefs: [{ name, path, env: [{name, key}], files: [{key, file}] }]`
-- `rollout: { strategy: ordered|parallel|canary, maxSurge, maxUnavailable, pause?, weight?, auto?{start,step,intervalSeconds,max} }`
-- `security: { runAsUser?, runAsGroup?, readOnlyRootFilesystem?, dropCapabilities[] }`
-- `resources: { requests?, limits?: { cpu: float cores, memory: quantity } }`
-- `volumes: [{ hostPath, mountPath, readOnly? }]`
-- `storage: [{ name, mountPath, retention: Retain|Delete }]`
-- `terminationGracePeriodSeconds: int (default 10)`
+- `image`, `command`, `args`, `env[]`, `envFrom` (via config/secret refs)
+- `replicas: int>=1`; `ports: [{name, containerPort}]`
+- `service`: single `port/targetPort` or `ports[]` plus `type` (ClusterIP/NodePort/LoadBalancer), `nodePort`, `externalIPs`, and optional `sessionAffinity`; runtime uses Service VIPs when available.
+- `health.readiness|liveness|startup`: HTTP/TCP/Exec probes with thresholds/periods; startup gates other probes.
+- `lifecycle`: postStart/preStop handlers (exec/http/tcp).
+- `ingress`: `host`, `path` or `paths[]`, `tls`, `tlsSecretName`, `tlsCertPath`, `tlsKeyPath`, `ingressClassName`.
+- `secretRefs|configRefs`: env, file projections, and optional `envFrom`; supports SOPS/age.
+- `rollout`: strategy ordered|parallel|canary, surge/unavailable, pause, weight, auto canary ramp (`start/step/intervalSeconds/max`).
+- `security`: runAsUser/runAsGroup/fsGroup, readOnlyRootFilesystem, dropCapabilities, seccomp/AppArmor.
+- `resources`: requests/limits for cpu/memory.
+- `volumes`: hostPath bind mounts; `storage`: named volumes with `retention`; `emptyDirs` with medium selection.
+- `imagePullPolicy`, `imagePullSecrets[]`.
+- Scheduling: `nodeSelector`, `tolerations[]`, `affinity`, `topologySpreadConstraints`, `priorityClassName`.
+- Policy/export: `networkPolicy`, `podSecurity`, `dnsPolicy/config`, `hostname`, `subdomain`, `hostAliases`, `enableServiceLinks`, `shareProcessNamespace`, `hostNetwork|PID|IPC`, `setHostnameAsFQDN`.
+- `terminationGracePeriodSeconds` (default 10).
 
 Notes
 - CPU limits map to Docker `nano_cpus`; memory to `mem_limit` (K/M/G, KiB/MiB/GiB supported).
-- Volumes map to bind mounts with ro/rw.
+- Volumes map to bind mounts with ro/rw; retained storage is bound to the node that first creates it.
+- Service VIPs are allocated from `AE_SERVICE_IP_POOL` and backed by the overlay provider; hostPorts remain for single-node use or when VIPs are disabled.
 
 Example
 ```yaml
@@ -133,6 +154,11 @@ Tables (created in src/ae/controller/state.py)
 - app_revisions(app_name, revision, spec_hash, spec_json, image, created_at, status)
 - app_events(id, app_name, revision, event_type, message, created_at)
 - rollout_canary(app_name PK, weight, next_step_at, step, max, updated_at)
+- nodes(node_id PK, name, labels json, taints json, endpoint, backend, pod_cidr, wg_pubkey, cordoned)
+- node_status(node_id FK, status, seen_at)
+- services(service_name PK, app_name, cluster_ip, provider, ports json, annotations json)
+- service_endpoints(service_name FK, replica_id, ip, port, ready, node_id)
+- storage_bindings(app_name, volume_name, node_id, created_at)
 
 Query surfaces
 - `list_status()`, `get_status(app)`
@@ -141,6 +167,8 @@ Query surfaces
 - `list_events(app, limit)`
 
 ## Runtime: Container Engine (Podman/Docker)
+
+The controller talks to local Podman/Docker when no nodes are eligible; in multi-node runs it proxies through RemoteRuntime to each node agent endpoint. Agents enforce auth via `AE_AGENT_API_TOKEN` and optionally mTLS.
 
 Labels
 - `ae.app=<name>`
@@ -172,6 +200,7 @@ Auth
 - Reloads via `caddy reload --config <file|dir>`, optionally inside a container via `docker|podman exec` (controlled by `AE_CONTAINER_CLI`).
 - When Caddy runs in a container, loopback upstreams are rewritten to the host alias: `host.docker.internal` (Docker) or `host.containers.internal` (Podman).
 - Optional active health checks can be enabled with `AE_CADDY_ACTIVE_HEALTH=1` when readiness probe is configured.
+- With Service VIPs enabled (`AE_SERVICE_PROVIDER=overlay`), site fragments upstream to the ClusterIP; ensure the Caddy host/container is attached to the overlay network or has routes to the Service CIDR.
 
 ## Health
 

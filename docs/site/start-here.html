@@ -61,11 +61,13 @@
     </style>
     <style>
       /* Base layout aligned to dashboard palette */
-      html, body { height: 100%; }
+      html { height: 100%; }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
-        margin: 2rem;
+        margin: 0;
+        padding: 2rem;
         line-height: 1.55;
+        box-sizing: border-box;
         min-height: 100vh;
         display: flex;
         flex-direction: column;
@@ -208,7 +210,9 @@
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
+      <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
@@ -226,13 +230,12 @@
 <li>Python 3.11+</li>
 <li>Podman (preferred) or Docker installed and running</li>
 <li>Optional (for ingress/docs via Caddy and Prometheus): <code>docker compose</code> or <code>podman compose</code></li>
+<li>Optional (for multi-node lab): two Linux hosts/VMs with WireGuard tools and rootful networking</li>
 </ul>
 <h2>Option A — Zero‑to‑Demo (automated)</h2>
 <p>This script provisions a local demo stack, serves docs, starts the controller API, and applies sample apps.</p>
 <p>1) Run the demo initializer (adds hosts; Ctrl‑C safe):</p>
-<pre><code>
-./scripts/init_demo.sh --demo-standard -y
-</code></pre>
+<pre><code>./scripts/init_demo.sh --demo-standard -y</code></pre>
 <ul>
 <li>Script reference: <code>scripts/init_demo.sh:1</code></li>
 <li>Flags map: <code>docs/demo-modes.md:1</code></li>
@@ -244,91 +247,88 @@
 <li>Sample apps: https://blue.home.arpa:8443/ and https://green.home.arpa:8443/</li>
 </ul>
 <p>3) Inspect via CLI while the demo runs:</p>
-<pre><code>
-python -m ae.cli status --wide
-python -m ae.cli logs blue --tail 50
-</code></pre>
+<pre><code>python -m ae.cli status --wide
+python -m ae.cli logs blue --tail 50</code></pre>
 <p>4) Tear down when done (stops stack, cleans containers; keeps state):</p>
-<pre><code>
-./scripts/init_demo.sh --down -y
-</code></pre>
+<pre><code>./scripts/init_demo.sh --down -y</code></pre>
 <p>Tips</p>
 <ul>
 <li>Need only docs + API? Use <code>./scripts/init_demo.sh --docs-only -y</code>.</li>
 <li>Prefer Make: <code>make demo ARGS=&quot;--demo-standard -y -d&quot;</code> and <code>make demo-down</code> (see <code>Makefile:1</code>).</li>
+<li>Want to try multi-node? Run <code>make demo ARGS=&quot;--demo-multinode -y&quot;</code> once you have a second host/VM reachable (see Option C below).</li>
 </ul>
 <h2>Option B — Manual Quickstart (hands‑on)</h2>
 <p>Follow this if you want to see each moving part.</p>
 <p>1) Install the package (editable dev mode):</p>
-<pre><code>
-python -m pip install -e .[dev]
+<pre><code>python -m pip install -e .[dev]
 # Optional: file watching for instant reconciles on spec changes
-python -m pip install -e .[watch]
-</code></pre>
+python -m pip install -e .[watch]</code></pre>
 <p>2) Start ingress/docs fixtures (optional but recommended):</p>
-<pre><code>
-docker compose -f ops/dev/docker-compose.yaml up -d
-</code></pre>
+<pre><code>docker compose -f ops/dev/docker-compose.yaml up -d</code></pre>
 <ul>
 <li>Compose file: <code>ops/dev/docker-compose.yaml:1</code></li>
 </ul>
 <p>3) Run the controller with API + file watch:</p>
-<pre><code>
-python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch
-</code></pre>
+<pre><code>python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch</code></pre>
 <p>4) Apply and inspect a sample app:</p>
-<pre><code>
-python -m ae.cli apply -f specs/examples/echo.yaml
+<pre><code>python -m ae.cli apply -f specs/examples/echo.yaml
 python -m ae.cli status echo --wide --events
-python -m ae.cli logs echo --tail 50
-</code></pre>
+python -m ae.cli logs echo --tail 50</code></pre>
 <ul>
 <li>Samples live under: <code>specs/examples/</code></li>
 </ul>
 <p>5) Kubectl‑like wrapper (optional):</p>
-<pre><code>
-k1s get apps
+<pre><code>k1s get apps
 k1s describe app/echo
-k1s logs app/echo --follow --tail 100
-</code></pre>
+k1s logs app/echo --follow --tail 100</code></pre>
+<p>Optional: start the Kubernetes API shim for kubectl/helm parity</p>
+<pre><code>AE_APISHIM_TOKEN=devtoken python -m ae.apishim serve --host 127.0.0.1 --port 8445
+kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code></pre>
+<p>Shim capabilities and gaps live in <code>docs/apishim-compatibility-matrix.md</code>.</p>
+<h2>Option C — Multi-node Lab (controller + worker)</h2>
+<p>Use this when you want to validate the overlay Service VIP path and scheduler on two hosts.</p>
+<p>1) Controller (host A):</p>
+<pre><code>AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay AE_AGENT_API_TOKEN=changeme \
+python -m ae.controller --loop --specs specs/ --metrics-port 9108</code></pre>
+<p>2) Worker agent (host B):</p>
+<pre><code>AE_CONTROLLER_URL=http://&lt;controller-host&gt;:9110 AE_AGENT_TOKEN=changeme \
+AE_NODE_ID=worker-1 python -m ae.node --runtime-backend podman --port 9109 --ensure-pod-net</code></pre>
+<p>3) Apply and observe:</p>
+<pre><code>python -m ae.cli apply -f specs/examples/echo-multinode.yaml
+ae nodes list
+ae status echo-mn --watch</code></pre>
+<p>Full walkthrough and WireGuard tips: <code>docs/multinode-lab.md</code> or <code>ops/dev/multinode-lab.sh -h</code>.</p>
 <h2>Using the <code>ae</code> CLI (greatest hits)</h2>
 <ul>
-<pre><code>
-ae apply -f &lt;manifest.yaml&gt;
+<pre><code>ae apply -f &lt;manifest.yaml&gt;
 ae status [&lt;app&gt;] --wide --events --json
 ae logs &lt;app&gt; --follow --tail 100
 ae revisions &lt;app&gt;
 ae rollback &lt;app&gt; [--to N]
-ae delete &lt;app&gt; [--purge]
-</code></pre>
+ae delete &lt;app&gt; [--purge]</code></pre>
 <li>Apply/inspect lifecycle:</li>
-<pre><code>
-ae plan -f specs/examples/echo.yaml --verbose --json
+<pre><code>ae plan -f specs/examples/echo.yaml --verbose --json
 ae export-k8s -f specs/examples/echo.yaml --namespace demo --preset web-hardened --validate -o specs/examples/echo-k8s.yaml
-ae k8s-check -f specs/examples/echo.yaml --policy strict
-</code></pre>
+ae k8s-check -f specs/examples/echo.yaml --policy strict</code></pre>
 <li>Planning and K8s helpers:</li>
-<pre><code>
-ae registry login ghcr --username &lt;u&gt; --token &lt;pat&gt;
+<pre><code>ae registry login ghcr --username &lt;u&gt; --token &lt;pat&gt;
 ae registry list
 ae tls sync --name mycert --input path/to/k8s-secret.yaml
-ae tls verify --name mycert --json
-</code></pre>
+ae tls verify --name mycert --json</code></pre>
 <li>Registries and TLS:</li>
 </ul>
 <h2>Remote CLI &amp; Tokens (optional)</h2>
 <p>Generate API tokens and point the CLI at a remote controller.</p>
-<pre><code>
-python -m ae.cli api tokens --generate --ttl-hours 24 -o .env.api
+<pre><code>python -m ae.cli api tokens --generate --ttl-hours 24 -o .env.api
 source .env.api
-ae --server http://&lt;controller-ip&gt;:9108 --token $AE_API_READ_TOKEN status
-</code></pre>
+ae --server http://&lt;controller-ip&gt;:9108 --token $AE_API_READ_TOKEN status</code></pre>
 <p>Details: <code>README.md:67</code> and token management in <code>docs/runbook.md:1</code>.</p>
 <h2>Documentation Map (most useful first)</h2>
 <ul>
 <li>High‑level overview: <code>docs/overview.md:1</code></li>
 <li>Operations runbook: <code>docs/runbook.md:1</code></li>
 <li>HTTP API reference: <code>docs/http-api.md:1</code></li>
+<li>Kubernetes API shim compatibility: <code>docs/apishim-compatibility-matrix.md:1</code></li>
 <li>Ingress &amp; TLS: <code>docs/ingress.md:1</code></li>
 <li>Demo modes: <code>docs/demo-modes.md:1</code></li>
 <li>Examples index: <code>docs/examples.md:1</code></li>
@@ -351,9 +351,7 @@ ae --server http://&lt;controller-ip&gt;:9108 --token $AE_API_READ_TOKEN status
 <li>Teardown and reset demo: <code>./scripts/init_demo.sh --down -y</code>.</li>
 </ul>
 <p>Happy shipping! Want a stricter baseline? Try the hardened demo (non‑root, read‑only, startup/liveness, PDB, PSA labels, NP default‑deny):</p>
-<pre><code>
-./scripts/init_demo.sh --demo-hardened -y
-</code></pre>
+<pre><code>./scripts/init_demo.sh --demo-hardened -y</code></pre>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -361,7 +359,7 @@ ae --server http://&lt;controller-ip&gt;:9108 --token $AE_API_READ_TOKEN status
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-13 17:21:28</span>
+        <span>Built 2026-01-14 14:58:55</span>
       </div>
     </footer>
     <script>

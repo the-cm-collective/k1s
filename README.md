@@ -1,8 +1,10 @@
 # k1s Minimal Application Engine
 
-Work-in-progress controller and CLI for a lightweight single-node deployment engine.
+Lightweight multi-node application engine with a Kubernetes-compatible API shim.
 
 - Design and roadmap: see `FEAT.md`.
+- Multi-node architecture and lab: `MULTINODE.md`, `docs/multinode-lab.md`.
+- API compatibility and shim status: `CONFORMANCE.md`, `docs/apishim-compatibility-matrix.md`.
 - Operations runbook: see `docs/runbook.md`.
 - Ingress/TLS details: see `docs/ingress.md`.
 - End-to-end walkthrough: see `docs/e2e.md`.
@@ -60,6 +62,19 @@ Multi-container tips:
 - Add sidecars under `spec.containers` and init containers under `spec.initContainers`.
 - Use `ae logs <app> --container <name>` and `ae exec <app> --container <name> -- <cmd>` to target a specific container.
 - Config/Secret file projections are mounted at `/var/run/ae/config/<app>`; sidecars can add custom `projectionMounts` to bind specific subpaths to custom mount points.
+
+Multi-node lab (controller + agents + overlay Service VIPs):
+- Controller: `AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay AE_AGENT_API_TOKEN=changeme python -m ae.controller --loop --specs specs/ --metrics-port 9108`
+- Worker agent on another host: `AE_CONTROLLER_URL=http://<controller>:9110 AE_AGENT_TOKEN=$AE_AGENT_API_TOKEN python -m ae.node --runtime-backend podman --port 9109 --ensure-pod-net`
+- Apply the multi-node sample: `python -m ae.cli apply -f specs/examples/echo-multinode.yaml`
+- Inspect nodes/placement: `ae nodes list`, `ae status echo-mn --wide --events`
+- Full walkthrough: `docs/multinode-lab.md`
+
+Kubernetes API shim (kubectl/helm):
+- Start shim (Postgres or SQLite): `AE_APISHIM_TOKEN=devtoken python -m ae.apishim serve --host 127.0.0.1 --port 8445`
+- Point kubectl: `kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods`
+- Port-forward and apply work for Deployments/Services/Ingress/HPA/StatefulSet/DaemonSet/Job/CronJob.
+- Compatibility matrix and open gaps: `docs/apishim-compatibility-matrix.md`, `CONFORMANCE.md`.
 
 ## Kubernetes Export Quick Start
 

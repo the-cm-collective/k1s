@@ -61,11 +61,13 @@
     </style>
     <style>
       /* Base layout aligned to dashboard palette */
-      html, body { height: 100%; }
+      html { height: 100%; }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
-        margin: 2rem;
+        margin: 0;
+        padding: 2rem;
         line-height: 1.55;
+        box-sizing: border-box;
         min-height: 100vh;
         display: flex;
         flex-direction: column;
@@ -208,7 +210,9 @@
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
+      <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
@@ -222,13 +226,11 @@
     <h2>Storage (PV-lite)</h2>
 <p>Use <code>spec.storage</code> to declare named persistent volumes for an app. The controller creates a container‑engine named volume per entry and mounts it into the container.</p>
 <h3>Spec</h3>
-<pre><code>
-spec:
+<pre><code>spec:
   storage:
     - name: data
       mountPath: /var/lib/app
-      retention: Retain   # or Delete
-</code></pre>
+      retention: Retain   # or Delete</code></pre>
 <ul>
 <li>name: logical name for the volume; the engine volume will be named <code>ae-&lt;app&gt;-&lt;name&gt;</code></li>
 <li>mountPath: container path where the volume is mounted</li>
@@ -236,14 +238,10 @@ spec:
 </ul>
 <h3>CLI</h3>
 <p>List volumes:</p>
-<pre><code>
-ae volumes list          # all app volumes
-#ae volumes list --app echo
-</code></pre>
+<pre><code>ae volumes list          # all app volumes
+#ae volumes list --app echo</code></pre>
 <p>Delete with purge (removes storage volumes with retention=Delete):</p>
-<pre><code>
-ae delete echo --purge
-</code></pre>
+<pre><code>ae delete echo --purge</code></pre>
 <h3>Notes</h3>
 <ul>
 <li>HostPath binds under <code>spec.volumes</code> still work for simple dev paths.</li>
@@ -257,13 +255,11 @@ ae delete echo --purge
 <li><code>ae delete &lt;app&gt; --purge</code></li>
 </ul>
 <p>Example with <code>retention: Delete</code> (see <code>specs/examples/echo-storage-delete.yaml</code>):</p>
-<pre><code>
-spec:
+<pre><code>spec:
   storage:
     - name: data
       mountPath: /var/lib/echo
-      retention: Delete
-</code></pre>
+      retention: Delete</code></pre>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -271,7 +267,7 @@ spec:
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-13 17:21:28</span>
+        <span>Built 2026-01-14 14:58:55</span>
       </div>
     </footer>
     <script>
