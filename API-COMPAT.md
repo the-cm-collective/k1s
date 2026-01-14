@@ -94,6 +94,13 @@ Phase 5 action items:
 - Live gate landed: `scripts/ci/apishim-live-openapi.sh` drives kubectl/helm dry-run plus short watch churn against a Postgres-backed shim, capturing live `/openapi/v2` + `/openapi/v3`, fixture validation logs, and object snapshots. `.github/workflows/apishim-live-openapi.yml` publishes these artifacts on push/PR. The gate can point at a supplied kubeconfig (kind/dev lab) via `APISHIM_LIVE_KUBECONFIG(_B64)` or pull a kind kubeconfig by name with `APISHIM_KIND_CLUSTER`.
 - Next steps: make the live gate release-blocking, surface the compatibility matrix/OpenAPI links in docs navigation and the release-note template, and extend sample coverage to include a PDB-emitting App manifest plus an App+HPA exporter render validated by the gate.
 
+#### Phase 7.3 — Release gate + site wiring (next)
+- Promotion: make `apishim-live-openapi` required on `main` and release tags; fail the release if fixture validation or live kubectl/helm checks fail (skips allowed only for sealed secrets with justification).
+- Coverage: run the live gate against both the local Postgres-backed shim and an external kubeconfig (kind/dev lab) nightly to catch drift across Kubernetes minor versions; publish artifacts per run.
+- Samples: add the PDB-emitting App manifest and App+HPA exporter render to the validated set (live gate + fixtures) and document them in `specs/examples/`.
+- Docs/release notes: wire compatibility matrix + `/openapi/v3` links into the docs navigation and release-note template; mark `/openapi/v3` as the primary endpoint and keep `/openapi/v2` as a compatibility mirror.
+- Fidelity: add a non-stub runtime path (docker/podman) in the live gate when runner capacity permits to exercise exec/logs and service status; keep Postgres storage enabled for resourceVersion stability.
+
 ## Non‑goals (for now)
 - Full upstream conformance certification.
 - Aggregated API servers, PSP/PodSecurity admission, or CSI/CNI plugins.
