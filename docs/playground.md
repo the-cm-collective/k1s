@@ -30,11 +30,21 @@ This page prefers HTMX + SSE for live updates and uses a small `labs.js` helper 
 
 <div id="env-notes"></div>
 <div id="backend-status" class="ribbon muted"></div>
-- Direct API curl: <code id="api-curl"></code> <button id="api-curl-copy" disabled>Copy</button>
-<div class="row">Status:
-  <span id="status-summary" class="pending" hx-ext="sse" sse-connect="" sse-swap="message">n/a</span>
-  <button id="status-mode-cluster" title="Show totals across all apps">Cluster</button>
-  <button id="status-mode-app" title="Show the selected app">App</button>
+<div class="status-bar">
+  <span class="status-label">Direct API curl:</span>
+  <div class="api-curl">
+    <code id="api-curl"></code>
+    <button id="api-curl-copy" disabled>Copy</button>
+  </div>
+  <span class="status-label">Status:</span>
+  <div class="status-stack">
+    <span id="status-summary" class="pending" hx-ext="sse" sse-connect="" sse-swap="message">n/a</span>
+    <div class="status-toggle" role="group" aria-label="Status scope">
+      <button id="status-mode-app" type="button" aria-pressed="false" title="Focus on the app from this session">App</button>
+      <button id="status-mode-cluster" type="button" class="is-active" aria-pressed="true" title="Show totals across all apps">Cluster</button>
+    </div>
+  </div>
+  <span id="status-mode-note" class="status-note nudge">Cluster shows totals across all apps. Switch to App after applying an example.</span>
 </div>
 
 <!-- Global banner for errors and important notices -->
