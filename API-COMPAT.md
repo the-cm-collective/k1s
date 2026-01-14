@@ -60,7 +60,7 @@ Phase 5 action items:
 
 ## Current gaps and next steps (as of 2026-01-14)
 - **Phase 6 rollout in progress:** Shim and controller can target Postgres via `AE_APISHIM_DSN`/`AE_STATE_DSN`; migrations preserve resourceVersions; HA shim with shared Postgres validated in CI. Remaining: production-grade watch propagation metrics across shim replicas and soak tests under churn.
-- **Phase 7 polish outstanding:** Compatibility matrix + kubeconfig/auth docs + helm smoke gate are in place; OpenAPI v2 now covers common kinds with schemas for dry-run. Remaining polish: richer schemas (status shapes), OpenAPI v3/export, and ensuring release notes link the compatibility matrix.
+- **Phase 7 polish in flight:** Compatibility matrix + kubeconfig/auth docs + helm smoke gate are in place; OpenAPI v2/ v3 and schemas are richer with fixture validation and live gate coverage. Remaining polish: promote the live gate to release-blocking, wire compat/OpenAPI links into docs + release notes, and round out sample coverage.
 
 ### Auth defaults (dev toggle)
 - Bearer token is now required by default; shim refuses to start without `AE_APISHIM_TOKEN` unless explicitly started with `AE_APISHIM_ALLOW_ANON=1` or `python -m ae.apishim serve --allow-anonymous` for local experiments.
@@ -90,9 +90,9 @@ Phase 5 action items:
 - Release workflow now validates fixtures and performs a kubectl spot-check (apply/get/watch for Deployment/Service/HPA) against the running shim, uploading logs alongside the OpenAPI/compatibility artifacts.
 - `/openapi/v3` remains the authoritative mirror of `/openapi/v2` and is called out in release notes and docs; compatibility matrix links are included in the release summary artifacts.
 
-#### Phase 7.2 — Live cluster gate + doc linkage (in progress)
+#### Phase 7.2 — Live cluster gate + doc linkage (complete)
 - Live gate landed: `scripts/ci/apishim-live-openapi.sh` drives kubectl/helm dry-run plus short watch churn against a Postgres-backed shim, capturing live `/openapi/v2` + `/openapi/v3`, fixture validation logs, and object snapshots. `.github/workflows/apishim-live-openapi.yml` publishes these artifacts on push/PR. The gate can point at a supplied kubeconfig (kind/dev lab) via `APISHIM_LIVE_KUBECONFIG(_B64)` or pull a kind kubeconfig by name with `APISHIM_KIND_CLUSTER`.
-- Next steps: make the live gate release-blocking, surface the compatibility matrix/OpenAPI links in docs navigation and the release-note template, and extend sample coverage to include a PDB-emitting App manifest plus an App+HPA exporter render validated by the gate.
+- Follow-ups promoted to Phase 7.3: release-blocking promotion, docs/release-note wiring, and expanded sample set validated by the gate.
 
 #### Phase 7.3 — Release gate + site wiring (next)
 - Promotion: make `apishim-live-openapi` required on `main` and release tags; fail the release if fixture validation or live kubectl/helm checks fail (skips allowed only for sealed secrets with justification).
