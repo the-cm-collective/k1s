@@ -147,7 +147,8 @@ TEMPLATE = """<!doctype html>
         align-items: center;
         flex-wrap: wrap;
         gap: .65rem;
-        margin-bottom: 1.25rem;
+        margin: 0 auto 1.25rem auto;
+        width: min(100%, 1100px);
         padding: 10px 12px;
         background: var(--k1s-panel);
         border: 1px solid var(--k1s-border);
