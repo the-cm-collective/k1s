@@ -1,14 +1,20 @@
 # ruff: noqa: E501,UP006,UP007,UP017
-"""State persistence helpers backed by SQLite."""
+"""State persistence helpers backed by SQLite (default) or Postgres (optional)."""
 
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+try:  # Optional Postgres backend
+    import psycopg
+except Exception:  # pragma: no cover - optional dependency
+    psycopg = None  # type: ignore
 
 from ae.controller.health import HealthReport
 from ae.controller.spec import AppManifest
@@ -145,10 +151,16 @@ class RevisionInfo:
 
 
 class SQLiteStateStore:
-    """Minimal SQLite-backed store for reconcile snapshots."""
+    """Minimal state store; sqlite by default, Postgres via AE_STATE_DSN or dsn=."""
 
-    def __init__(self, db_path: Path) -> None:
-        self._db_path = db_path
+    def __init__(self, db_path: Path | None = None, *, dsn: str | None = None) -> None:
+        self._dsn = dsn or os.getenv("AE_STATE_DSN")
+        self._db_path = db_path or Path("state/controller.db")
+        self.backend = "sqlite"
+        if self._dsn:
+            if psycopg is None:
+                raise RuntimeError("psycopg is required for Postgres state store (install psycopg[binary])")
+            self.backend = "postgres"
         self._initialize()
 
     def _initialize(self) -> None:
@@ -252,6 +264,7 @@ class SQLiteStateStore:
                 ],
             ):
                 conn.execute("DROP TABLE IF EXISTS storage_bindings")
+            auto_inc = "INTEGER PRIMARY KEY AUTOINCREMENT" if self.backend == "sqlite" else "SERIAL PRIMARY KEY"
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS app_status (
@@ -287,7 +300,7 @@ class SQLiteStateStore:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS probe_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id %s,
                     app_name TEXT NOT NULL,
                     replica_id TEXT NOT NULL,
                     check_time TEXT NOT NULL,
@@ -297,6 +310,7 @@ class SQLiteStateStore:
                     liveness_message TEXT NOT NULL
                 )
                 """
+                % auto_inc
             )
             conn.execute(
                 """
@@ -326,7 +340,7 @@ class SQLiteStateStore:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS app_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id %s,
                     app_name TEXT NOT NULL,
                     revision INTEGER NOT NULL,
                     event_type TEXT NOT NULL,
@@ -334,6 +348,7 @@ class SQLiteStateStore:
                     created_at TEXT NOT NULL
                 )
                 """
+                % auto_inc
             )
             conn.execute(
                 """
@@ -410,22 +425,28 @@ class SQLiteStateStore:
             )
             conn.commit()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+    def _connect(self):
+        if self.backend == "sqlite":
+            conn = sqlite3.connect(self._db_path)
+            conn.execute("PRAGMA foreign_keys = ON")
+            return conn
+        raw = psycopg.connect(self._dsn)  # type: ignore[arg-type]
+        return _PgCompatConnection(raw)
 
     def _schema_matches(
-        self, conn: sqlite3.Connection, table: str, expected_columns: list[str]
+        self, conn, table: str, expected_columns: list[str]
     ) -> bool:
-        info = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-            (table,),
-        ).fetchone()
-        if info is None:
-            return False
-        columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
-        return columns == expected_columns
+        if self.backend == "sqlite":
+            info = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            ).fetchone()
+            if info is None:
+                return False
+            columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+            return columns == expected_columns
+        # For Postgres we skip strict schema match; rely on CREATE IF NOT EXISTS.
+        return True
 
     def record_snapshot(
         self,
@@ -1260,4 +1281,45 @@ class SQLiteStateStore:
                 conn.execute("DELETE FROM app_events WHERE app_name = ?", (app_name,))
                 conn.execute("DELETE FROM app_revisions WHERE app_name = ?", (app_name,))
             conn.commit()
+
+
+class _PgCompatConnection:
+    """Light wrapper to allow sqlite-style '?' placeholders on psycopg connections."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql: str, params=()):
+        sql = sql.replace("?", "%s")
+        cur = self._conn.cursor()
+        cur.execute(sql, params)
+        return cur
+
+    def executemany(self, sql: str, seq):
+        sql = sql.replace("?", "%s")
+        cur = self._conn.cursor()
+        cur.executemany(sql, seq)
+        return cur
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        self._conn.rollback()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if exc_type is None:
+                self._conn.commit()
+            else:
+                self._conn.rollback()
+        finally:
+            self._conn.close()
+        return False
 # ruff: noqa
