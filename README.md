@@ -110,3 +110,7 @@ ae --server http://<controller-ip>:9108 --token admintoken delete echo --purge
 ```
 
 See `docs/runbook.md` → “Remote CLI over LAN” for details and curl examples.
+
+## License
+
+This project is licensed under the Apache License, Version 2.0. See `LICENSE` for full terms, including the patent grant and redistribution requirements.
