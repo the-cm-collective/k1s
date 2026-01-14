@@ -23,7 +23,7 @@ This document captures the staged plan to make k1s surface a Kubernetes‑compat
 - Deliverables: `kubectl logs/exec/port-forward` on pod names; `kubectl rollout status` on deployments; watch stability under churn.
 
 ## Phase 3 — Services fidelity & scheduling hints
-(status: in progress — svc port-forward + EndpointSlice + clusterIP/nodePort allocation implemented; endpoint selection prefers ready endpoints; zone hints added; LB status honors loadBalancerIP/externalIPs/provider IPs)
+(status: functionally complete — svc port-forward + EndpointSlice + clusterIP/nodePort allocation implemented; endpoint selection prefers ready endpoints; zone hints added; LB status honors loadBalancerIP/externalIPs/provider IPs)
 - NodePort/ClusterIP parity: deterministic port allocation, collision handling, VIP + overlay awareness; EndpointSlice as source of truth.
 - Respect topology hints when available; expose node labels/zones derived from controller/agent info.
 - Ingress status reflects live VIP/host routing; optional external DNS annotations pass‑through.
@@ -50,13 +50,21 @@ Phase 3 action items:
 - Deliverables: `kubectl auth can-i` works; SSA usable by controllers that expect it (ingress controllers, cert‑manager‑style tools).
 
 Phase 5 action items:
-- RBAC enforcement path: hook Role/ClusterRole + (Cluster)RoleBinding evaluation into the apishim request pipeline and return K8s-style 403s when denied; keep dev token cluster-admin.
+- RBAC enforcement path: hook Role/ClusterRole + (Cluster)RoleBinding evaluation into the apishim request pipeline and return K8s-style 403s when denied; keep dev token cluster-admin. *(implemented with SubjectAccessReview projection; defaults still allow unauthenticated when no tokens configured.)*
 - ServiceAccounts + projected tokens: persist ServiceAccount objects, issue short-lived bearer tokens per SA/namespace, wire token authenticator, and project tokens into rendered Pod specs. *(tokens minted on SA create, auto-projected into workloads/pod projections; TTL/rotation handled in-memory; pod template injection in place.)*
 - Patch semantics: add JSONPatch and mergePatch handlers for supported kinds with correct content-type negotiation and status errors. *(json/merge/apply supported; json-patch added with unit coverage.)*
-- SSA + managedFields: honor `fieldManager`/`force`, track managedFields per object in shim storage, and surface conflicts on overlapping fields. *(apply content-types record managedFields; conflict detection still TODO.)*
+- SSA + managedFields: honor `fieldManager`/`force`, track managedFields per object in shim storage, and surface conflicts on overlapping fields. *(implemented; conflict 409s covered in unit tests.)*
 - App CRD admission: validating hook to keep native App schema authoritative; reject or warn on incompatible native objects.
-- CLI parity: implement `kubectl auth can-i` via a SubjectAccessReview-equivalent endpoint bound to RBAC evaluation.
-- Tests/CI: unit matrix for RBAC decisions and patch/SSA behavior; integration smoke that exercises can-i, JSONPatch/mergePatch, and SSA apply flows against the stub runtime.
+- CLI parity: implement `kubectl auth can-i` via a SubjectAccessReview-equivalent endpoint bound to RBAC evaluation. *(endpoint present; no e2e CI yet.)*
+- Tests/CI: unit matrix for RBAC decisions and patch/SSA behavior; add integration smoke that exercises can-i, JSONPatch/mergePatch, and SSA apply flows against the stub runtime. *(covered by `apishim-ssa-rbac` CI workflow.)*
+
+## Current gaps and next steps (as of 2026-01-14)
+- **Phase 6 rollout in progress:** Shim and controller can target Postgres via `AE_APISHIM_DSN`/`AE_STATE_DSN`; migrations preserve resourceVersions; HA shim with shared Postgres validated in CI. Remaining: production-grade watch propagation metrics across shim replicas and soak tests under churn.
+- **Phase 7 polish outstanding:** Compatibility matrix + kubeconfig/auth docs + helm smoke gate are in place; OpenAPI v2 now covers common kinds with schemas for dry-run. Remaining polish: richer schemas (status shapes), OpenAPI v3/export, and ensuring release notes link the compatibility matrix.
+
+### Auth defaults (dev toggle)
+- Bearer token is now required by default; shim refuses to start without `AE_APISHIM_TOKEN` unless explicitly started with `AE_APISHIM_ALLOW_ANON=1` or `python -m ae.apishim serve --allow-anonymous` for local experiments.
+- Requests without a bearer token receive `401 Unauthorized` (or `403` when RBAC blocks a verb). Document this flow in kubeconfig examples and keep dev overrides scoped to local testing.
 
 ## Phase 6 — Reliability, storage, and scale
 - Move shim object storage off SQLite to primary state store or Postgres backend to avoid drift and enable HA.
@@ -65,10 +73,21 @@ Phase 5 action items:
 - Deliverables: soak tests under churn; dashboard panel for shim health; failover of shim without object loss.
 
 ## Phase 7 — Polish and ecosystem integration
-- Helm friendliness: richer discovery, dry‑run/server‑side validation support; better error surfaces.
+- Helm friendliness: richer discovery, dry-run/server-side validation support; better error surfaces.
 - CRD parity for k1s App (optional) with conversion webhook; docs + samples for migration.
 - Backwards compatibility policy and versioning of the shim.
 - Deliverables: published compatibility matrix; release note gate that runs kubectl/helm smoke; docs for kubeconfig and auth modes.
+
+### Phase 7 current status (2026-01-14)
+- Discovery/OpenAPI: `/openapi/v2` now includes richer shapes (Service ports + external/loadBalancer/ipFamily fields, Deployment/DaemonSet/StatefulSet conditions, Job/CronJob/HPA status); `/openapi/v3` now mirrors `/openapi/v2` and is treated as authoritative. CI guards drift via `scripts/validate-openapi.sh` (helm-dryrun-openapi workflow), Helm/kubectl dry-run is exercised in CI, and OpenAPI artifacts are published. A lightweight fixture check (`scripts/validate-openapi-fixtures.py`) validates the schemas against the shipped sample manifests.
+- Compatibility matrix: published at `docs/apishim-compatibility-matrix.md`; release gate runs helm shim smoke and uploads the matrix + OpenAPI artifacts and emits a release-note snippet.
+- Pending: extend schemas to cover k1s App CRDs and PodDisruptionBudget, and add a live-cluster spot-check (kubectl get/watch) alongside the fixture run; keep the matrix/OpenAPI links in formal release notes and website docs.
+
+#### Phase 7.1 — OpenAPI validation hardening (next)
+- Add schemas for the k1s `App` CRD and policy/v1 PodDisruptionBudget so sample manifests stop skipping and validate end-to-end.
+- Run the fixture validator plus a live-cluster spot-check (kubectl get/watch for Service/Deployment/HPA with status) before promoting releases; record results in CI artifacts.
+- Fold `scripts/validate-openapi-fixtures.py` into the OpenAPI drift workflow to keep sample manifests aligned with exported schemas.
+- Keep release notes linking the compatibility matrix and both OpenAPI exports; mark `/openapi/v3` as an authoritative endpoint in user-facing docs.
 
 ## Non‑goals (for now)
 - Full upstream conformance certification.
