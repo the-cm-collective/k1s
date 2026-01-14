@@ -103,7 +103,7 @@ Phase 5 action items:
 
 ## Non‑goals (for now)
 - Aggregated API servers, PSP/PodSecurity admission, or CSI/CNI plugins. These would require extra control-plane components, admission/webhook plumbing, and host kernel capabilities (CNI/CSI) that we deliberately avoid to keep the shim lean. PSA alignment and a basic storage story may appear under the conformance-lite track, but full plugin ecosystems stay deferred.
-- Cloud load balancer provisioning. We do not run cloud-provider controllers; the networking model centers on Service VIPs/overlay plus Caddy. We project `status.loadBalancer` from our VIP/provider IPs for compatibility, but do not create external L4/L7 balancers; operators can front the shim with their own proxy if needed.
+- Cloud load balancer provisioning. We do not run cloud-provider controllers; the networking model centers on Service VIPs/overlay plus Caddy. We project `status.loadBalancer` from our VIP/provider IPs for compatibility, but do not create external L4/L7 balancers; operators can front the shim with their own proxy if needed. A future path is outlined below.
 
 ## Success metrics
 - `kubectl get/apply/describe/logs/exec` succeeds against multinode lab.
@@ -115,3 +115,16 @@ Phase 5 action items:
 - Major gaps: Pod Security Admission + admission webhooks; NetworkPolicy enforcement; PV/PVC/StorageClass/CSI semantics; Node/Lease objects with kubelet-style heartbeats/evictions; metrics.k8s.io; full exec/log/port-forward parity under churn; webhook/SSA edge cases and managedFields accuracy; aggregated APIs.
 - Path to evaluate: run Sonobuoy conformance against kind/dev lab to get a fail list; define and publish a “conformance-lite” profile with documented exclusions while we close highest-value gaps.
 - Path to close: implement PSA + webhook plumbing; add NetworkPolicy enforcement; deliver a minimal storage story (static PV/PVC + provisioner stub with reclaim/accessMode/volumeMode fidelity); surface Node/Lease and eviction behaviors; expose metrics-server-compatible endpoints; harden streaming/watch semantics and SSA/managedFields; iterate test→fix with shrinking skip list.
+
+## Cloud load balancer trajectory (OpenStack/GCP/AWS)
+- Current stance: k1s projects `status.loadBalancer` from internal VIP/provider IPs for compatibility; Caddy fronts L7 ingress; no external L4/L7 balancers are provisioned.
+- Options:
+  - Provider interface + MetalLB-style backend (BGP/ARP) for on-prem/OpenStack where we can advertise VIPs; minimal cloud permissions required.
+  - Cloud-specific controllers (OpenStack Octavia, GCP TCP/HTTP(S), AWS NLB/ALB/Classic) using per-cloud credentials; map Service annotations to provider features (preserve source ranges, health checks, SSL policies).
+  - Gateway/L7: keep Caddy/Envoy as ingress with optional cloud LB in front for static IP; use DNS automation to publish the assigned VIP/hostname.
+- Prereqs: credential/config surface (e.g., `~/.config/ae/registries.yaml` analog for cloud creds), Service-class annotations, IPAM alignment between Service CIDR and provider, reconcile + retry loops with rate/backoff per cloud API.
+- Suggested next steps:
+  1) Define a `LoadBalancerProvider` interface with a no-op/default and a MetalLB/OpenStack Octavia implementation.
+  2) Add annotation-driven feature mapping (`service.beta.kubernetes.io/*`) for the first provider.
+  3) Dogfood on kind+MetalLB and an OpenStack lab; capture artifacts in CI (opt-in lane) and feed back into `/openapi/v2` status expectations.
+  4) Evaluate GCP/AWS controllers after the interface stabilizes; document per-cloud IAM roles and failure modes.
