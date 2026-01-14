@@ -66,6 +66,21 @@ API tokens
      - `AE_API_ADMIN_SCOPE="payments-*"` (admin token can only mutate apps prefixed payments-)
      - `AE_API_SCALER_SCOPE="echo,web-*"` (scaler token can scale only echo and web-* apps)
 
+API shim (kubectl/helm)
+- Start shim locally: `AE_APISHIM_ENABLE=1 AE_APISHIM_TOKEN=changeme python -m ae.apishim serve --host 127.0.0.1 --port 8445` (add `--allow-anonymous` only for dev). Postgres backend: set `AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname`; default is SQLite at `AE_APISHIM_DB` (`state/apishim.db`).
+- Kubeconfig helper: `python -m ae.apishim kubeconfig --server http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN --insecure-skip-tls-verify > ~/.kube/k1s-apishim.yaml`.
+- Storage migration: `python -m ae.apishim migrate --source state/apishim.db --target $AE_APISHIM_DSN` copies objects while preserving resourceVersion between SQLite and Postgres.
+- Shim metrics: `/metrics` (token required unless anonymous allowed) exposes `apishim_watch_*` counters/gauges for watch queue depth, enqueued, dropped, streams started, and `apishim_store_backend_info`.
+- Helm/kubectl dry-run: shim serves `/openapi/v2` with enriched schemas and `/openapi/v3` mirroring it; both are exported during release and attached as artifacts.
+
+Controller state store
+- Default: SQLite at `state/controller.db`.
+- Postgres: set `AE_STATE_DSN=postgresql://user:pass@host:5432/dbname` (shim and controller share the same DSN when present). SQLite path can still be overridden via `AE_STATE_DB` for single-node dev.
+
+Release notes quick links
+- Compatibility matrix: `docs/apishim-compatibility-matrix.md` (uploaded with releases)
+- OpenAPI artifacts: `/openapi/v2` and `/openapi/v3` are exported during release and attached as `openapi-schemas`.
+
 Observability
 - Controller dashboard/API: `http://127.0.0.1:9108` when `--metrics-port` is set.
 - Prometheus metrics at `/metrics` (text), recent events via `/events/<app>`.
