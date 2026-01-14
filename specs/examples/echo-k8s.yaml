@@ -5,7 +5,8 @@ metadata:
   namespace: demo
   labels:
     app: echo
-data: null
+data: {}
+# Set to empty map to satisfy strict OpenAPI object typing in validation
 ---
 apiVersion: apps/v1
 kind: Deployment
