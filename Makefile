@@ -76,7 +76,18 @@ uninstall-docs-service:
 
 .PHONY: docs
 docs:
-	python docs/build_docs.py
+	@SNAP_ROOT=$${SNAP_ROOT:-snapshots}; \
+	if find "$$SNAP_ROOT" -maxdepth 2 -name summary.json -print -quit 2>/dev/null | grep -q .; then \
+	  python scripts/bench/mem_combine.py $${GLOB:-$$SNAP_ROOT/*/*}; \
+	else \
+	  echo "[docs] no snapshots under $$SNAP_ROOT; skipping mem_combine"; \
+	fi
+	@if test -f $${CSV:-combined/combined.csv}; then \
+	  python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}; \
+	else \
+	  echo "[docs] missing combined/combined.csv; skipping chart regeneration"; \
+	fi
+	@python docs/build_docs.py
 
 .PHONY: labs-k3d-up labs-k3d-down
 labs-k3d-up:
