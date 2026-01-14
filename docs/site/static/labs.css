@@ -9,6 +9,16 @@
 .scrollbar-hide{scrollbar-width:none;-ms-overflow-style:none}
 .scrollbar-hide::-webkit-scrollbar{width:0;height:0}
 .row{display:flex;gap:8px;align-items:center}
+.status-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:.35rem 0}
+.status-label{font-weight:600;color:var(--fg)}
+.status-bar .api-curl{display:flex;gap:8px;align-items:center;flex:1 1 360px;min-width:280px}
+.status-bar .api-curl code{white-space:nowrap;display:block;overflow:auto;max-width:100%;padding:2px 6px;border-radius:6px;border:1px solid var(--border);background:var(--k1s-card-bg, var(--muted))}
+.status-stack{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.status-toggle{display:inline-flex;gap:4px;border:1px solid var(--border);border-radius:10px;padding:2px;background:var(--k1s-card-bg, var(--muted));box-shadow:0 1px 4px rgba(0,0,0,.06)}
+.status-toggle button{border:1px solid transparent;background:transparent;padding:6px 10px;border-radius:8px;min-width:82px}
+.status-toggle button.is-active{background:var(--k1s-panel, #1f2937);border-color:var(--k1s-border, #334155);color:var(--k1s-text, #e5e7eb);box-shadow:0 0 0 1px var(--k1s-border, #334155) inset}
+.status-toggle button:focus-visible{outline:2px solid var(--k1s-primary, #2563eb);outline-offset:2px}
+.status-note{flex:1 1 100%}
 .hidden{display:none}
 .ribbon{padding:6px 10px;border:1px solid var(--border);background:var(--k1s-card-bg, var(--muted));margin:.5rem 0;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.10)}
 .ribbon{min-height:28px}

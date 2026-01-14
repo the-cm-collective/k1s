@@ -606,7 +606,7 @@
     try { setText('#ingress-curl',''); const b=document.getElementById('ingress-curl-copy'); if (b) b.disabled=true; } catch(_){}
     try { setHostsHint(''); } catch(_){}
     // Reset status to cluster-wide summary and refresh
-    try { state.statusMode = 'cluster'; refreshStatusNow(); } catch(_){}
+    try { setStatusMode('cluster'); refreshStatusNow(); } catch(_){}
     // Disable action buttons now that we have no session
     try { wireControls(); } catch(_){}
     // Show neutral session indicator
@@ -755,6 +755,27 @@
   function refreshStatusNow(){
     if (state.statusMode === 'app') { refreshAppSummary(); }
     else { refreshClusterSummary(); }
+  }
+
+  function setStatusMode(mode){
+    state.statusMode = mode;
+    try {
+      const appBtn = document.getElementById('status-mode-app');
+      const clusterBtn = document.getElementById('status-mode-cluster');
+      const note = document.getElementById('status-mode-note');
+      const isApp = mode === 'app';
+      if (appBtn && clusterBtn) {
+        appBtn.classList.toggle('is-active', isApp);
+        clusterBtn.classList.toggle('is-active', !isApp);
+        appBtn.setAttribute('aria-pressed', isApp ? 'true' : 'false');
+        clusterBtn.setAttribute('aria-pressed', (!isApp).toString());
+      }
+      if (note) {
+        note.textContent = isApp
+          ? 'App shows readiness for the example you applied.'
+          : 'Cluster shows totals across all apps. Switch to App after applying an example.';
+      }
+    } catch(_){}
   }
   // Example YAML loader (served from /examples/*.yaml by docs build)
   async function loadExampleYaml(name){
@@ -945,7 +966,7 @@
       try { setText('#ingress-curl',''); const b=document.getElementById('ingress-curl-copy'); if (b) b.disabled=true; } catch(_){}
       try { setHostsHint(''); } catch(_){}
       // Reset status to cluster-wide summary and refresh
-      try { state.statusMode = 'cluster'; refreshStatusNow(); } catch(_){}
+      try { setStatusMode('cluster'); refreshStatusNow(); } catch(_){}
       // Disable action buttons now that we have no session
       try { wireControls(); } catch(_){}
       setText('#session-id','(none)');
@@ -1005,8 +1026,9 @@
     // Also wire standard listener
     $('#btn-use-token')?.addEventListener('click', handleUseToken);
     // Status mode toggles
-    $('#status-mode-cluster')?.addEventListener('click', ()=>{ state.statusMode='cluster'; refreshStatusNow(); });
-    $('#status-mode-app')?.addEventListener('click', ()=>{ state.statusMode='app'; refreshStatusNow(); });
+    $('#status-mode-cluster')?.addEventListener('click', ()=>{ setStatusMode('cluster'); refreshStatusNow(); });
+    $('#status-mode-app')?.addEventListener('click', ()=>{ setStatusMode('app'); refreshStatusNow(); });
+    try { setStatusMode(state.statusMode || 'cluster'); } catch(_){}
     // Enter key triggers Use Token
     try { const t = document.getElementById('labs-token'); if (t) t.addEventListener('keydown', (e)=>{ if (e.key === 'Enter') { e.preventDefault(); document.getElementById('btn-use-token')?.click(); }}); } catch(_){ }
     // k3d ensure
