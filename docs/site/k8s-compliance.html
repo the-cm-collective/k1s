@@ -79,6 +79,7 @@
         align-items: center;
         flex-wrap: wrap;
         gap: .6rem;
+        justify-content: center;
         margin: 0 auto 1.25rem auto;
         width: clamp(320px, 95vw, 1800px);
         padding: 10px 12px;
@@ -176,7 +177,12 @@
       a { color: var(--link); }
       a:hover { color: var(--link-hover); }
       a:focus-visible { outline: 2px solid var(--k1s-highlight); outline-offset: 2px; border-radius: 4px; }
-      .container { max-width: 980px; flex: 1 0 auto; }
+      .container {
+        width: min(100%, 1200px);
+        max-width: 1200px;
+        margin: 0 auto;
+        flex: 1 0 auto;
+      }
       .card {
         border: 1px solid var(--k1s-border);
         background: var(--k1s-card-bg);
@@ -349,7 +355,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-14 15:16:56</span>
+        <span>Built 2026-01-14 15:19:44</span>
       </div>
     </footer>
     <script>
