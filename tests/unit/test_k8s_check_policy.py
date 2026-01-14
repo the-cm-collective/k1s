@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from ae.controller.spec import load_manifest
-from ae.k8s.check import k8s_portability_issues, apply_policy
 from ae.cli.__main__ import main
+from ae.controller.spec import load_manifest
+from ae.k8s.check import apply_policy, k8s_portability_issues
 
 
 def test_policy_escalation_to_strict() -> None:
@@ -32,7 +32,7 @@ def test_canary_single_replica_warns() -> None:
     assert "CANARY_SINGLE_REPLICA" in codes
 
 
-def test_hpa_assumptions_validation(tmp_path, monkeypatch, capsys) -> None:
+def test_hpa_assumptions_validation(tmp_path) -> None:
     # manifest without CPU/Memory requests
     man_path = tmp_path / "echo.yaml"
     man_path.write_text(
@@ -85,7 +85,7 @@ def test_hpa_mem_value_invalid(tmp_path) -> None:
 
 
 def test_startup_probe_hint_emitted() -> None:
-    from ae.controller.spec import AppManifest, AppSpec, Metadata, HealthSpec, ProbeSpec
+    from ae.controller.spec import AppManifest, AppSpec, HealthSpec, Metadata, ProbeSpec
     man = AppManifest(
         apiVersion="ae.dev/v1alpha1",
         kind="App",
@@ -103,7 +103,7 @@ def test_startup_probe_hint_emitted() -> None:
 
 
 def test_prestop_short_grace_warns() -> None:
-    from ae.controller.spec import AppManifest, AppSpec, Metadata, HealthSpec, ProbeSpec
+    from ae.controller.spec import AppManifest, AppSpec, Metadata
     man = AppManifest(
         apiVersion="ae.dev/v1alpha1",
         kind="App",
@@ -120,7 +120,7 @@ def test_prestop_short_grace_warns() -> None:
 
 
 def test_qos_limits_without_requests_warns() -> None:
-    from ae.controller.spec import AppManifest, AppSpec, Metadata, ResourcesSpec, ResourceQuantities
+    from ae.controller.spec import AppManifest, AppSpec, Metadata, ResourceQuantities, ResourcesSpec
     man = AppManifest(
         apiVersion="ae.dev/v1alpha1",
         kind="App",

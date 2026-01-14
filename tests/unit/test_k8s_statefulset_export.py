@@ -5,6 +5,7 @@ from ae.k8s.exporter import ExportOptions, export_k8s_docs
 
 
 def test_statefulset_export_with_storage_and_headless_service(tmp_path: Path) -> None:
+    _ = tmp_path
     man = load_manifest(Path("specs/examples/echo.yaml"))
     # Add a storage item to trigger volumeClaimTemplates
     man = man.model_copy(

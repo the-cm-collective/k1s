@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from typing import Optional
 
 from .server import run_server
 
@@ -45,7 +44,7 @@ users:
     return 0
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m ae.apishim", description="k1s Kubernetes API shim")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -53,11 +52,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", default=8445, type=int)
     s.add_argument("--token", default=None, help="Bearer token (or AE_APISHIM_TOKEN env)")
-    s.add_argument("--tls", action="store_true", help="Enable TLS (requires AE_APISHIM_TLS_CERT/KEY)")
+    s.add_argument(
+        "--tls",
+        action="store_true",
+        help="Enable TLS (requires AE_APISHIM_TLS_CERT/KEY)",
+    )
     s.set_defaults(func=cmd_serve)
 
     k = sub.add_parser("kubeconfig", help="Emit a kubeconfig pointing to the shim")
-    k.add_argument("--server", required=True, help="Shim server URL, e.g. https://127.0.0.1:8445 or http://...")
+    k.add_argument(
+        "--server",
+        required=True,
+        help="Shim server URL, e.g. https://127.0.0.1:8445 or http://...",
+    )
     k.add_argument("--token", default=None, help="Bearer token (or AE_APISHIM_TOKEN env)")
     k.add_argument("--context", default="k1s-apishim")
     k.add_argument("--insecure-skip-tls-verify", action="store_true")

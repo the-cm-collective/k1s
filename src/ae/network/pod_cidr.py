@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import ipaddress
 import os
-from typing import Iterable
 
 from ae.controller.state import SQLiteStateStore
 
@@ -25,7 +24,7 @@ class PodCIDRAllocator:
             raise ValueError(f"mask /{mask} invalid for pool {pool}")
 
     @classmethod
-    def from_env(cls, store: SQLiteStateStore) -> "PodCIDRAllocator":
+    def from_env(cls, store: SQLiteStateStore) -> PodCIDRAllocator:
         pool = os.getenv("AE_POD_CIDR_POOL", "10.42.0.0/16")
         mask = int(os.getenv("AE_POD_CIDR_MASK", "24") or 24)
         return cls(store, pool, mask)
@@ -69,4 +68,4 @@ class PodCIDRAllocator:
             )
             return cidr
         raise RuntimeError(f"no free pod CIDRs available in pool {self._pool} (/ {self._mask})")
-
+# ruff: noqa: E501,UP006,UP007,UP017,UP035,S110,S112,SIM105

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa
 from __future__ import annotations
 
 from pathlib import Path

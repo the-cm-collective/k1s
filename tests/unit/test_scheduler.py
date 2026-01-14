@@ -1,8 +1,8 @@
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 
 from ae.controller.scheduler import Scheduler
 from ae.controller.spec import AppManifest, AppSpec, Metadata
-from ae.controller.state import SQLiteStateStore, NodeRecord, NodeStatus
+from ae.controller.state import SQLiteStateStore
 
 
 def _manifest(name: str = "app", replicas: int = 3) -> AppManifest:
@@ -19,7 +19,7 @@ def _store_with_nodes(tmp_path):
     return store
 
 
-def test_scheduler_round_robin(tmp_path, monkeypatch):
+def test_scheduler_round_robin(tmp_path):
     store = _store_with_nodes(tmp_path)
     store.upsert_node("n1", name="n1", labels={"zone": "a"}, taints=[], backend="podman", endpoint="http://n1:9109")
     store.upsert_node("n2", name="n2", labels={"zone": "b"}, taints=[], backend="podman", endpoint="http://n2:9109")
@@ -86,7 +86,7 @@ def test_scheduler_skips_when_bound_node_unavailable(tmp_path):
     assert any("bound to node n2" in w for w in warnings)
 
 
-def test_scheduler_filters_cordoned_and_stale(tmp_path, monkeypatch):
+def test_scheduler_filters_cordoned_and_stale(tmp_path):
     store = _store_with_nodes(tmp_path)
     store.upsert_node("n1", name="n1", labels={}, taints=[], backend="podman", endpoint="http://n1:9109")
     store.cordon_node("n1", True)
@@ -97,7 +97,7 @@ def test_scheduler_filters_cordoned_and_stale(tmp_path, monkeypatch):
     store.record_heartbeat("n3", "Ready")
     # Manually mark stale by manipulating seen_at
     with store._connect() as conn:  # type: ignore[attr-defined]
-        ts = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
+        ts = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()
         conn.execute("UPDATE node_heartbeats SET seen_at=? WHERE node_id='n3'", (ts,))
         conn.commit()
     sched = Scheduler(store)
@@ -138,3 +138,4 @@ def test_scheduler_spread_ignored_when_label_missing(tmp_path):
     assert len(placements) == 2
     total = sum(len(p.replica_ids) for p in placements)
     assert total == 3
+# ruff: noqa: E501

@@ -11,7 +11,7 @@ import base64
 import hmac
 import os
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime
 from hashlib import sha256
 
 DEFAULT_SECRET = os.getenv("AE_AGENT_JOIN_SECRET", "")
@@ -31,7 +31,7 @@ def issue_token(node_id: str, expires_at: datetime, *, secret: str | None = None
     if not secret:
         raise ValueError("join secret not configured (AE_AGENT_JOIN_SECRET)")
     nonce = secrets.token_bytes(8)
-    exp = int(expires_at.replace(tzinfo=timezone.utc).timestamp())
+    exp = int(expires_at.replace(tzinfo=datetime.UTC).timestamp())
     body = f"{node_id}:{exp}:{_b64(nonce)}".encode()
     sig = hmac.new(secret.encode(), body, sha256).digest()
     return _b64(body + b":" + sig)
@@ -45,13 +45,13 @@ def verify_token(token: str, *, secret: str | None = None) -> tuple[str, datetim
         raise ValueError("invalid token format")
     node_id = parts[0].decode()
     exp = int(parts[1].decode())
-    nonce = parts[2]
+    _nonce = parts[2]
     sig = parts[3]
     body = b":".join([parts[0], parts[1], parts[2]])
     want = hmac.new(secret.encode(), body, sha256).digest()
     if not hmac.compare_digest(sig, want):
         raise ValueError("bad signature")
-    expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
-    if datetime.now(timezone.utc) > expires_at:
+    expires_at = datetime.fromtimestamp(exp, tz=datetime.UTC)
+    if datetime.now(datetime.UTC) > expires_at:
         raise ValueError("token expired")
     return node_id, expires_at

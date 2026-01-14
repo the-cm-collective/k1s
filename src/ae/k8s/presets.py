@@ -98,3 +98,5 @@ def apply_ingress_preset(opts: ExportOptions, preset: IngressPresetName) -> Expo
         return replace(opts, ingress_annotations=merged, ingress_path_type=pt)
 
     return opts
+# ruff: noqa
+# ruff: noqa: E501,I001

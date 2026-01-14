@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from contextlib import closing
 import socket
-from typing import Iterable, Optional, Set, Tuple
+from collections.abc import Iterable
+from contextlib import closing, suppress
 
 _PORT_MIN = 1
 _PORT_MAX = 65535
@@ -23,17 +23,13 @@ def _port_candidates(preferred: int, span: int) -> Iterable[int]:
 def _port_is_free(port: int) -> bool:
     """Return True if the port can be bound on the host."""
     families = []
-    try:
-        families.append((socket.AF_INET, ("0.0.0.0", port)))
-    except OSError:
-        pass
-    try:
-        families.append((socket.AF_INET6, ("::", port)))
-    except OSError:
-        pass
+    with suppress(OSError):
+        families.append((socket.AF_INET, ("0.0.0.0", port)))  # noqa: S104
+    with suppress(OSError):
+        families.append((socket.AF_INET6, ("::", port)))  # noqa: S104
     # Fall back to AF_INET only when IPv6 is unavailable
     if not families:
-        families.append((socket.AF_INET, ("0.0.0.0", port)))
+        families.append((socket.AF_INET, ("0.0.0.0", port)))  # noqa: S104
     for family, addr in families:
         try:
             with closing(socket.socket(family, socket.SOCK_STREAM)) as sock:
@@ -45,12 +41,12 @@ def _port_is_free(port: int) -> bool:
 
 
 def choose_host_port(
-    preferred: Optional[int],
+    preferred: int | None,
     *,
-    reserved: Optional[Set[int]] = None,
-    blocked: Optional[Set[int]] = None,
+    reserved: set[int] | None = None,
+    blocked: set[int] | None = None,
     search_span: int = _DEFAULT_SEARCH_SPAN,
-) -> Tuple[Optional[int], bool]:
+) -> tuple[int | None, bool]:
     """Pick an available host port, preferring `preferred` when possible.
 
     Returns (port, used_preferred). If no port could be reserved, returns (None, False).

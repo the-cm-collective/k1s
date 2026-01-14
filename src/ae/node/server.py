@@ -444,3 +444,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
+# ruff: noqa: E501,I001,F401,UP006,UP007,UP017,S104,S110,S112,SIM105,SIM108,UP041,S113

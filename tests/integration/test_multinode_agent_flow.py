@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Iterable
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Iterable
+
+import pytest
 
 from ae.controller.health import HealthManager
 from ae.controller.reconciler import Reconciler
@@ -31,10 +33,10 @@ class DummyLocalRuntime(RuntimeAdapter):
         manifest: AppManifest,
         revision: int,
         *,
-        keep_old: bool = False,
-        limit_create: int | None = None,
+        _keep_old: bool = False,
+        _limit_create: int | None = None,
         replica_ids: list[str] | None = None,
-        node_id: str | None = None,
+        _node_id: str | None = None,
     ) -> RuntimeResult:
         self.ensure_calls += 1
         rids = replica_ids or [
@@ -51,36 +53,38 @@ class DummyLocalRuntime(RuntimeAdapter):
             ],
         )
 
-    def remove_app(self, app_name: str) -> int:  # pragma: no cover - not used here
+    def remove_app(self, _app_name: str) -> int:  # pragma: no cover - not used here
         return 0
 
-    def remove_old_revisions(self, app_name: str, keep_revision: int) -> int:
+    def remove_old_revisions(self, _app_name: str, _keep_revision: int) -> int:
         self.remove_old_calls += 1
         return 0
 
     def read_logs(
         self,
-        replica_id: str,
+        _replica_id: str,
         *,
-        follow: bool = False,
-        tail: int | None = None,
-        since: int | None = None,
+        _follow: bool = False,
+        _tail: int | None = None,
+        _since: int | None = None,
     ) -> Iterable[str]:  # pragma: no cover - not used here
         return iter([])
 
-    def ensure_storage_volumes(self, app_name: str, volumes: list[dict]) -> None:  # pragma: no cover
+    def ensure_storage_volumes(
+        self, _app_name: str, _volumes: list[dict]
+    ) -> None:  # pragma: no cover
         return None
 
-    def remove_storage_volumes(self, app_name: str, names: list[str]) -> int:  # pragma: no cover
+    def remove_storage_volumes(self, _app_name: str, _names: list[str]) -> int:  # pragma: no cover
         return 0
 
-    def list_storage_volumes(self, app_name: str | None = None) -> list[dict]:  # pragma: no cover
+    def list_storage_volumes(self, _app_name: str | None = None) -> list[dict]:  # pragma: no cover
         return []
 
     def list_containers_info(self) -> list[dict]:  # pragma: no cover
         return []
 
-    def exec(self, replica_id: str, command: list[str], *, timeout: int | None = None) -> int:
+    def exec(self, _replica_id: str, _command: list[str], *, _timeout: int | None = None) -> int:
         return 0
 
 
@@ -129,7 +133,7 @@ def _start_agent(node_id: str):
 
             return self._json({"error": "not found"}, status=404)
 
-        def log_message(self, fmt, *args):  # noqa: ANN001
+        def log_message(self, _fmt, *_args):  # noqa: ANN001
             return  # Silence noisy stdout during tests
 
     try:

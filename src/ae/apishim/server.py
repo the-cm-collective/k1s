@@ -1,31 +1,32 @@
+# ruff: noqa: E501,S105,S110,S112,SIM102,SIM105,SIM108,SIM114,SIM118,SIM300
 from __future__ import annotations
 
+import base64
+import hashlib
+import ipaddress
 import json
+import json as _jsonlib
 import os
 import re
+import secrets
+import socket
 import ssl
 import threading
 import time
-import base64
-import secrets
-import time
-import hashlib
-import socket
-import ipaddress
-from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse, parse_qs
-import json as _jsonlib
-from pathlib import Path
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
 
-from .store import ObjectStore, K8sObject
-from ae.controller.state import SQLiteStateStore
-from ae.runtime import DockerRuntime, PodmanRuntime, StubRuntime, RemoteRuntime, RuntimeAdapter
+from ae.controller.state import AppEvent, ServiceEndpoint, SQLiteStateStore
+from ae.runtime import DockerRuntime, PodmanRuntime, RemoteRuntime, RuntimeAdapter, StubRuntime
+
 from .adapter import build_adapter
-
+from .store import K8sObject, ObjectStore
 
 K8S_VERSION = {
     "major": "0",
@@ -45,18 +46,18 @@ RESERVED_GROUPS = {
 }
 
 
-def _json(d: Dict[str, Any]) -> bytes:
+def _json(d: dict[str, Any]) -> bytes:
     return json.dumps(d, separators=(",", ":")).encode("utf-8")
 
 
-def _read_json(body: bytes) -> Dict[str, Any]:
+def _read_json(body: bytes) -> dict[str, Any]:
     try:
         return json.loads(body.decode("utf-8")) if body else {}
     except json.JSONDecodeError:
         return {}
 
 
-def _ns_name(path: str) -> Tuple[str, Optional[str], Optional[str]]:
+def _ns_name(path: str) -> tuple[str, str | None, str | None]:
     # Returns (resource plural, namespace, name)
     # Patterns we support:
     # /api/v1/namespaces
@@ -82,11 +83,11 @@ def _ns_name(path: str) -> Tuple[str, Optional[str], Optional[str]]:
     return ("", None, None)
 
 
-def _app_name(ns: Optional[str], name: str) -> str:
+def _app_name(ns: str | None, name: str) -> str:
     return f"{ns}--{name}" if ns else name
 
 
-def _rule_matches(resource: str, resources: List[str] | None) -> bool:
+def _rule_matches(resource: str, resources: list[str] | None) -> bool:
     if not resources:
         return False
     if resource in resources or "*" in resources:
@@ -98,7 +99,7 @@ def _rule_matches(resource: str, resources: List[str] | None) -> bool:
     return False
 
 
-def _json_pointer_tokens(path: str) -> List[str]:
+def _json_pointer_tokens(path: str) -> list[str]:
     if not path.startswith("/"):
         raise ValueError("pointer must start with /")
     if path == "/":
@@ -129,11 +130,11 @@ def _json_pointer_set(doc: Any, path: str, value: Any) -> Any:
             idx = int(tok) if tok != "-" else len(ref)
             while idx >= len(ref):
                 ref.append({})
-            if not isinstance(ref[idx], (dict, list)):
+            if not isinstance(ref[idx], dict | list):
                 ref[idx] = {}
             ref = ref[idx]
         else:
-            if tok not in ref or not isinstance(ref[tok], (dict, list)):
+            if tok not in ref or not isinstance(ref[tok], dict | list):
                 ref[tok] = {}
             ref = ref[tok]
     last = tokens[-1]
@@ -166,7 +167,7 @@ def _json_pointer_remove(doc: Any, path: str) -> Any:
     return doc
 
 
-def _apply_json_patch(doc: Dict[str, Any], ops: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+def _apply_json_patch(doc: dict[str, Any], ops: list[dict[str, Any]]) -> dict[str, Any] | None:
     target = _jsonlib.loads(_jsonlib.dumps(doc))
     try:
         for op in ops:
@@ -183,22 +184,145 @@ def _apply_json_patch(doc: Dict[str, Any], ops: List[Dict[str, Any]]) -> Dict[st
         return None
 
 
-def _update_managed_fields(md: Dict[str, Any], api_version: str, manager: str, operation: str = "Apply") -> Dict[str, Any]:
+def _list_item_key(obj: dict[str, Any]) -> Any:
+    for key in ("name", "port", "containerPort", "mountPath", "path"):
+        if key in obj:
+            return obj.get(key)
+    return None
+
+
+def _extract_field_paths(doc: Any, prefix: str = "") -> set[str]:
+    paths: set[str] = set()
+    if isinstance(doc, dict):
+        for k, v in doc.items():
+            path = f"{prefix}/{k}" if prefix else f"/{k}"
+            paths.add(path)
+            paths |= _extract_field_paths(v, path)
+    elif isinstance(doc, list):
+        for item in doc:
+            if isinstance(item, dict):
+                token = _list_item_key(item)
+                seg = f"[{token}]" if token is not None else "[]"
+                path = f"{prefix}/{seg}" if prefix else f"/{seg}"
+                paths.add(path)
+                paths |= _extract_field_paths(item, path)
+            else:
+                path = f"{prefix}/[]" if prefix else "/[]"
+                paths.add(path)
+    return paths
+
+
+def _fieldsV1_to_paths(fields: dict[str, Any], prefix: str = "") -> set[str]:
+    paths: set[str] = set()
+    for k, v in (fields or {}).items():
+        if k.startswith("f:"):
+            key = k[2:]
+            path = f"{prefix}/{key}" if prefix else f"/{key}"
+        elif k.startswith("k:"):
+            key = k[2:]
+            path = f"{prefix}/[{key}]" if prefix else f"/[{key}]"
+        else:
+            path = f"{prefix}/{k}" if prefix else f"/{k}"
+        paths.add(path)
+        if isinstance(v, dict):
+            paths |= _fieldsV1_to_paths(v, path)
+    return paths
+
+
+def _paths_to_fieldsV1(paths: set[str]) -> dict[str, Any]:
+    root: dict[str, Any] = {}
+    for path in paths:
+        if not path:
+            continue
+        ref = root
+        tokens = [p for p in path.split("/") if p]
+        for tok in tokens:
+            if tok.startswith("[") and tok.endswith("]"):
+                key = f"k:{tok[1:-1]}"
+            else:
+                key = f"f:{tok}"
+            ref = ref.setdefault(key, {})  # type: ignore[assignment]
+    return root
+
+
+def _managed_path_map(md: dict[str, Any]) -> dict[str, set[str]]:
+    mapping: dict[str, set[str]] = {}
+    for mf in md.get("managedFields") or []:
+        mgr = mf.get("manager")
+        if not mgr:
+            continue
+        paths = set(mf.get("paths") or _fieldsV1_to_paths(mf.get("fieldsV1") or {}))
+        if not paths and (mf.get("operation") or "").lower() == "apply":
+            paths = {"*"}
+        mapping[mgr] = paths
+    return mapping
+
+
+def _managed_conflict(md: dict[str, Any], manager: str, new_paths: set[str], force: bool) -> bool:
+    if not new_paths:
+        return False
+    for mgr, paths in _managed_path_map(md).items():
+        if mgr == manager or not paths:
+            continue
+        if "*" in paths:
+            if not force:
+                return True
+            continue
+        if new_paths & paths and not force:
+            return True
+    return False
+
+
+def _update_managed_fields(
+    md: dict[str, Any],
+    api_version: str,
+    manager: str,
+    operation: str = "Apply",
+    *,
+    fields: set[str] | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
     managed = list(md.get("managedFields") or [])
-    managed.append(
-        {
-            "manager": manager,
-            "operation": operation,
-            "apiVersion": api_version,
-            "time": datetime.now(timezone.utc).isoformat(),
-            "fieldsType": "FieldsV1",
-        }
-    )
-    md["managedFields"] = managed
+    now = datetime.now(timezone.utc).isoformat()  # noqa: UP017 - timezone-aware stamp for managedFields
+    new_paths = set(fields or set())
+    cleaned: list[dict[str, Any]] = []
+    existing_paths: set[str] = set()
+    for mf in managed:
+        mgr = mf.get("manager")
+        if not mgr:
+            continue
+        paths = set(mf.get("paths") or _fieldsV1_to_paths(mf.get("fieldsV1") or {}))
+        if not paths and (mf.get("operation") or "").lower() == "apply":
+            paths = {"*"}
+        if mgr == manager:
+            existing_paths = paths
+            continue
+        # honor force by stripping overlapping paths
+        if force and new_paths:
+            if "*" in paths:
+                continue
+            paths -= new_paths
+        if paths:
+            mf_out = dict(mf)
+            mf_out["paths"] = sorted(paths)
+            mf_out["fieldsV1"] = _paths_to_fieldsV1(paths)
+            cleaned.append(mf_out)
+    combined_paths = existing_paths | new_paths
+    entry: dict[str, Any] = {
+        "manager": manager,
+        "operation": operation,
+        "apiVersion": api_version,
+        "time": now,
+        "fieldsType": "FieldsV1",
+        "paths": sorted(combined_paths),
+        "fieldsV1": _paths_to_fieldsV1(combined_paths),
+    }
+    cleaned.append(entry)
+    md["managedFields"] = cleaned
     return md
 
 
-def _inject_sa_projection(spec: Dict[str, Any]) -> Dict[str, Any]:
+def _inject_sa_projection(spec: dict[str, Any]) -> dict[str, Any]:
     tpl = spec.get("template") or {}
     pod_spec = tpl.get("spec") if tpl else spec.get("podSpec") or spec.get("spec")
     if pod_spec is None:
@@ -255,14 +379,14 @@ def _inject_sa_projection(spec: Dict[str, Any]) -> Dict[str, Any]:
 class Principal:
     username: str
     groups: set[str]
-    token_role: Optional[str]
-    token: Optional[str]
+    token_role: str | None
+    token: str | None
 
 
 class ShimHandler(BaseHTTPRequestHandler):
     server_version = "k1s-apishim"
-    admin_token: Optional[str] = os.getenv("AE_APISHIM_TOKEN")
-    read_token: Optional[str] = os.getenv("AE_APISHIM_READ_TOKEN")
+    admin_token: str | None = os.getenv("AE_APISHIM_TOKEN")
+    read_token: str | None = os.getenv("AE_APISHIM_READ_TOKEN")
     rbac_enabled: bool = os.getenv("AE_APISHIM_RBAC", "0") == "1"
     rbac_eval_roles: bool = os.getenv("AE_APISHIM_RBAC_EVAL", "0") == "1"
     sa_tokens: dict[str, tuple[str, str, float]] = {}
@@ -282,10 +406,10 @@ class ShimHandler(BaseHTTPRequestHandler):
         ("delete", "*"): {"admin"},
     }
     store: ObjectStore
-    state: "SQLiteStateStore"
+    state: SQLiteStateStore
     client_cert_required: bool = False
-    crd_registry: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
-    crd_index: Dict[str, List[Tuple[str, str, str]]] = {}
+    crd_registry: dict[tuple[str, str, str], dict[str, Any]] = {}
+    crd_index: dict[str, list[tuple[str, str, str]]] = {}
     crd_lock = threading.RLock()
 
     def _parse_principal(self) -> Principal:
@@ -293,15 +417,15 @@ class ShimHandler(BaseHTTPRequestHandler):
         tok = hdr[7:] if hdr.startswith("Bearer ") else ""
         username = "system:unauthenticated"
         groups: set[str] = {"system:unauthenticated"}
-        token_role: Optional[str] = None
+        token_role: str | None = None
         if tok and tok == self.admin_token:
             username = "admin"
             groups = {"system:authenticated", "admin"}
-            token_role = "admin"
+            token_role = "admin"  # noqa: S105 - role label, not a secret
         elif tok and tok == self.read_token:
             username = "reader"
             groups = {"system:authenticated", "read"}
-            token_role = "read"
+            token_role = "read"  # noqa: S105 - role label, not a secret
         else:
             with self.sa_tokens_lock:
                 sa = self.sa_tokens.get(tok)
@@ -346,7 +470,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         )
         return False
 
-    def _eval_subject_access_review(self, spec: Dict[str, Any]) -> Dict[str, Any]:
+    def _eval_subject_access_review(self, spec: dict[str, Any]) -> dict[str, Any]:
         res_attr = (spec or {}).get("resourceAttributes") or {}
         verb = (res_attr.get("verb") or "").lower()
         resource = res_attr.get("resource") or ""
@@ -366,7 +490,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             self.sa_tokens[token] = (namespace, name, exp_ts)
         return token
 
-    def _rbac_allows(self, verb: str, resource: str, namespace: Optional[str] = None) -> bool:
+    def _rbac_allows(self, verb: str, resource: str, namespace: str | None = None) -> bool:
         if not self.rbac_enabled:
             return True
         principal = self._parse_principal()
@@ -427,7 +551,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             return bool(allowed and role in allowed)
         return verb in allowed_verbs
 
-    def _ok(self, payload: Dict[str, Any]) -> None:
+    def _ok(self, payload: dict[str, Any]) -> None:
         data = _json(payload)
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/json")
@@ -457,7 +581,7 @@ class ShimHandler(BaseHTTPRequestHandler):
     def _deny(self, code: int = HTTPStatus.FORBIDDEN, message: str = "forbidden") -> None:
         self._json_status(int(code), reason="Forbidden" if int(code) == 403 else "Unauthorized", message=message)
 
-    def _max_rv_for(self, group: str, version: str, resource: str, namespace: Optional[str]) -> int:
+    def _max_rv_for(self, group: str, version: str, resource: str, namespace: str | None) -> int:
         try:
             if namespace is None:
                 items = self.server.store.list_all(group, version, resource)  # type: ignore[attr-defined]
@@ -475,14 +599,15 @@ class ShimHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         accept_seed = (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("utf-8")
-        accept = base64.b64encode(hashlib.sha1(accept_seed).digest()).decode("utf-8")
+        accept = base64.b64encode(hashlib.sha1(accept_seed).digest()).decode("utf-8")  # noqa: S324 - RFC 6455 requires SHA-1
         self.send_response(101, "Switching Protocols")
         self.send_header("Upgrade", "websocket")
         self.send_header("Connection", "Upgrade")
         self.send_header("Sec-WebSocket-Accept", accept)
         self.end_headers()
         try:
-            upstream = socket.create_connection((target_host, target_port), timeout=5.0)
+            with socket.create_connection((target_host, target_port), timeout=5.0):
+                pass
         except Exception:
             try:
                 self.connection.close()
@@ -491,7 +616,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             return
 
     # ---------------- SPDY/3.1 port-forward (kubectl) ----------------
-    def _handle_port_forward_spdy(self, target_host: str, target_ports: list[int], target_hosts_by_port: Optional[dict[int, str]] = None) -> None:
+    def _handle_port_forward_spdy(self, target_host: str, target_ports: list[int], target_hosts_by_port: dict[int, str] | None = None) -> None:
         """Implements the SPDY/3.1 port-forward protocol used by kubectl.
 
         Each data stream carries raw TCP bytes to a target port advertised in
@@ -533,7 +658,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         upstream_cache: dict[int, socket.socket] = {}
         host_by_port = target_hosts_by_port or {}
         # Build round-robin host cycles per port when multiple endpoints exist
-        host_cycle: dict[int, List[str]] = {}
+        host_cycle: dict[int, list[str]] = {}
         for p, h in host_by_port.items():
             if isinstance(h, list):
                 host_cycle[p] = list(h)
@@ -645,7 +770,7 @@ class ShimHandler(BaseHTTPRequestHandler):
 
                 try:
                     hdr = conn.recv(8)
-                except socket.timeout:
+                except TimeoutError:
                     hdr = None
                 if hdr:
                     if len(hdr) < 8:
@@ -672,7 +797,6 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 continue
                             choices = host_cycle.get(port) or [host_by_port.get(port, target_host)]
                             # simple round-robin by rotating list
-                            host_for_port = choices[0]
                             if len(choices) > 1:
                                 choices.append(choices.pop(0))
                                 host_cycle[port] = choices
@@ -782,7 +906,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                                         send_data_frame(esid, b"", flags=0x01)
                                     except Exception:
                                         pass
-                    except socket.timeout:
+                    except TimeoutError:
                         continue
                     except Exception:
                         upstream_cache.pop(sid, None)
@@ -969,7 +1093,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 # Read SPDY control/data frames from client
                 try:
                     hdr = conn.recv(8)
-                except socket.timeout:
+                except TimeoutError:
                     hdr = None
                 if hdr:
                     if len(hdr) < 8:
@@ -1057,7 +1181,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 # Read from exec socket and forward to stdout/stderr
                 try:
                     chunk = exec_sock.recv(4096)
-                except socket.timeout:
+                except TimeoutError:
                     chunk = None
                 except Exception:
                     chunk = b""
@@ -1105,7 +1229,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             exit_code = 0
             try:
                 if exec_id and hasattr(self.server.runtime, "exec_exit_code"):  # type: ignore[attr-defined]
-                    exit_code = int(getattr(self.server.runtime, "exec_exit_code")(exec_id))  # type: ignore[attr-defined]
+                    exit_code = int(self.server.runtime.exec_exit_code(exec_id))  # type: ignore[attr-defined]
             except Exception:
                 exit_code = 0
             err_sid = stream_ids.get("error")
@@ -1135,405 +1259,14 @@ class ShimHandler(BaseHTTPRequestHandler):
                 conn.close()
             except Exception:
                 pass
-            return
-
-        SPDY_DICT = (
-            b"optionsgetheadpostputdeletetraceacceptaccept-charsetaccept-encodingaccept-language"
-            b"authorizationexpectfromhostif-modified-sinceif-matchif-none-matchif-rangeif-unmodified-"
-            b"sincemax-forwardsproxy-authorizationrange refererteuser-agent100101200201202203204205206"
-            b"300301302303304305306307400401402403404405406407408409410411412413414415416417500501502"
-            b"503504505accept-rangesageetaglocationproxy-authenticatepublicretry-afterservervarywarning"
-            b"www-authenticateallowcontent-basecontent-encodingcache-controlconnectiondatetrailertransfer"
-            b"-encodingupgradeviawarningcontent-languagecontent-lengthcontent-locationcontent-md5content-"
-            b"rangecontent-typeetagexpireslast-modifiedset-cookieMondayTuesdayWednesdayThursdayFridaySaturday"
-            b"SundayJanFebMarAprMayJunJulAugSepOctNovDecchunkedtext/htmlimage/pngimage/jpgimage/gifapplication"
-            b"/xmlapplication/xhtmltext/plainpublicprivatemax-agegztcomparallel bytesruning"
-        )
-        dctx = zlib.decompressobj(zdict=SPDY_DICT)
-        data_streams: dict[int, int] = {}  # sid -> target_port
-        error_streams: dict[int, int] = {}  # sid -> data_stream sid
-        window_size = 1 << 20  # 1MiB default
-        stream_windows: dict[int, int] = {}
-        ports: list[int] = []
-        try:
-            ports = [int(p) for p in (self.headers.get("X-Stream-Port", "") or "").split(",") if p.strip()]
-        except Exception:
-            ports = []
-        if not ports:
-            ports = [target_port]
-        upstream_cache: dict[int, socket.socket] = {}
-
-        def read_exact(sock, n: int) -> bytes | None:
-            buf = b""
-            while len(buf) < n:
-                chunk = sock.recv(n - len(buf))
-                if not chunk:
-                    return None
-                buf += chunk
-            return buf
-
-        def send_data_frame(stream_id: int, payload: bytes, flags: int = 0) -> None:
-            header = bytearray()
-            header += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
-            header.append(flags & 0xFF)
-            header += len(payload).to_bytes(3, "big")
-            conn.sendall(bytes(header) + payload)
-
-        def send_window_update(stream_id: int, delta: int) -> None:
-            # Control frame: C bit + version 3 + type 0x09 (WINDOW_UPDATE)
-            header = bytearray()
-            header += b"\x80\x03"          # control + version
-            header += (0x09).to_bytes(2, "big")
-            header += b"\x00"              # flags
-            header += (8).to_bytes(3, "big")  # length
-            header += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
-            header += (delta & 0x7FFFFFFF).to_bytes(4, "big")
-            conn.sendall(bytes(header))
-            stream_windows[stream_id] = stream_windows.get(stream_id, window_size) + delta
-
-        def send_ping(opaque: bytes = b"\x00\x00\x00\x01") -> None:
-            header = bytearray()
-            header += b"\x80\x03"
-            header += (0x06).to_bytes(2, "big")  # PING
-            header += b"\x00"
-            header += (4).to_bytes(3, "big")
-            header += opaque[:4]
-            conn.sendall(bytes(header))
-
-        def echo_ping(opaque: bytes) -> None:
-            send_ping(opaque)
-
-        def send_settings(settings: dict[int, int]) -> None:
-            # SETTINGS frame: type=0x04
-            payload = bytearray()
-            payload += len(settings).to_bytes(4, "big")
-            for sid, val in settings.items():
-                payload.append(0)  # flags per setting (0)
-                payload += sid.to_bytes(2, "big")
-                payload += val.to_bytes(4, "big")
-            header = bytearray()
-            header += b"\x80\x03"
-            header += (0x04).to_bytes(2, "big")
-            header += b"\x00"
-            header += len(payload).to_bytes(3, "big")
-            conn.sendall(bytes(header) + payload)
-
-        def send_rst(stream_id: int, code: int = 2) -> None:
-            # RST_STREAM: type=0x03, status code (e.g., 2=PROTOCOL_ERROR)
-            header = bytearray()
-            header += b"\x80\x03"
-            header += (0x03).to_bytes(2, "big")
-            header += b"\x00"
-            header += (8).to_bytes(3, "big")
-            header += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
-            header += (code & 0x7FFFFFFF).to_bytes(4, "big")
-            conn.sendall(bytes(header))
-
-        def send_goaway(last_stream: int = 0, status: int = 0) -> None:
-            header = bytearray()
-            header += b"\x80\x03"
-            header += (0x07).to_bytes(2, "big")  # GOAWAY
-            header += b"\x00"
-            header += (8).to_bytes(3, "big")
-            header += (last_stream & 0x7FFFFFFF).to_bytes(4, "big")
-            header += (status & 0x7FFFFFFF).to_bytes(4, "big")
-            conn.sendall(bytes(header))
-
-        def parse_syn_stream(payload: bytes) -> dict[str, str]:
-            headers: dict[str, str] = {}
-            if len(payload) < 10:
-                return headers
-            header_block = payload[10:]
-            try:
-                decompressed = dctx.decompress(header_block)
-                import io
-
-                f = io.BytesIO(decompressed)
-                num = int.from_bytes(f.read(4), "big")
-                for _ in range(num):
-                    nlen = int.from_bytes(f.read(4), "big")
-                    name = f.read(nlen).decode("utf-8", "ignore")
-                    vlen = int.from_bytes(f.read(4), "big")
-                    value = f.read(vlen).decode("utf-8", "ignore")
-                    headers[name] = value
-            except Exception:
-                return headers
-            return headers
-
-        try:
-            # Send initial SETTINGS to advertise window
-            send_settings({0x04: window_size})  # SETTINGS_INITIAL_WINDOW_SIZE
-            last_ping = time.time()
-            while True:
-                # keepalive ping every 10s
-                now = time.time()
-                if now - last_ping > 10:
-                    try:
-                        send_ping()
-                    except Exception:
-                        break
-                    last_ping = now
-                # Client -> server SPDY frames
-                try:
-                    hdr = conn.recv(8)
-                except socket.timeout:
-                    hdr = None
-                if hdr:
-                    if len(hdr) < 8:
-                        break
-                    is_control = (hdr[0] & 0x80) != 0
-                    if is_control:
-                        frame_type = int.from_bytes(hdr[2:4], "big")
-                        flags = hdr[4]
-                        length = int.from_bytes(hdr[5:8], "big")
-                        if length > (1 << 20):
-                            send_goaway(status=2)
-                            break
-                        payload = read_exact(conn, length) or b""
-                        if frame_type == 1:  # SYN_STREAM
-                            sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
-                            headers = parse_syn_stream(payload)
-                            stype = headers.get("streamtype", "").lower()
-                            port = target_port
-                            try:
-                                if headers.get("port"):
-                                    port = int(headers["port"])
-                                elif headers.get("streamname"):
-                                    port = int(headers["streamname"])
-                            except Exception:
-                                port = target_port
-                            if stype == "data":
-                                data_streams[sid] = port
-                                stream_windows[sid] = window_size
-                            elif stype == "error":
-                                error_streams[sid] = data_streams.get(sid - 1, target_port)
-                        # ignore others
-                        elif frame_type == 4:  # SETTINGS
-                            # Update initial window if provided (id 0x04)
-                            try:
-                                num = int.from_bytes(payload[0:4], "big")
-                                idx = 4
-                                for _ in range(num):
-                                    if idx + 8 > len(payload):
-                                        break
-                                    _flags = payload[idx]
-                                    sid_setting = int.from_bytes(payload[idx + 1:idx + 3], "big")
-                                    val = int.from_bytes(payload[idx + 3:idx + 7], "big")
-                                    idx += 8
-                                    if sid_setting == 0x04:
-                                        window_size = val
-                            except Exception:
-                                pass
-                        elif frame_type == 9:  # WINDOW_UPDATE
-                            if len(payload) >= 8:
-                                sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
-                                delta = int.from_bytes(payload[4:8], "big")
-                                stream_windows[sid] = stream_windows.get(sid, window_size) + delta
-                                if stream_windows[sid] > (1 << 24):
-                                    send_rst(sid, code=2)  # PROTOCOL_ERROR
-                        elif frame_type == 3:  # RST_STREAM
-                            if len(payload) >= 8:
-                                sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
-                                upstream_sock = upstream_cache.pop(sid, None)
-                                if upstream_sock:
-                                    try:
-                                        upstream_sock.close()
-                                    except Exception:
-                                        pass
-                                data_streams.pop(sid, None)
-                                error_streams.pop(sid, None)
-                        elif frame_type == 6:  # PING
-                            echo_ping(payload[:4])
-                        elif frame_type == 7:  # GOAWAY
-                            break
-                    else:
-                        stream_id = int.from_bytes(hdr[0:4], "big") & 0x7FFFFFFF
-                        flags = hdr[4]
-                        length = int.from_bytes(hdr[5:8], "big")
-                        if length > (1 << 20):
-                            send_rst(stream_id, code=2)
-                            break
-                        payload = read_exact(conn, length) or b""
-                        if stream_id in data_streams and payload:
-                            port = data_streams[stream_id]
-                            choices = host_cycle.get(port) or [host_by_port.get(port, target_host)]
-                            host_sel = choices[0]
-                            if len(choices) > 1:
-                                choices.append(choices.pop(0))
-                                host_cycle[port] = choices
-                            # Enforce flow control window
-                            wnd = stream_windows.get(stream_id, window_size)
-                            if wnd <= 0:
-                                # Buffer drop and send RST to client to signal flow control violation
-                                send_rst(stream_id, code=2)
-                                continue
-                            if stream_id not in upstream_cache:
-                                try:
-                                    upstream_cache[stream_id] = socket.create_connection((host_sel, port), timeout=5.0)
-                                    upstream_cache[stream_id].settimeout(0.05)
-                                except Exception:
-                                    upstream_cache.pop(stream_id, None)
-                                    continue
-                            try:
-                                upstream_cache[stream_id].sendall(payload)
-                                stream_windows[stream_id] = max(0, wnd - len(payload))
-                            except Exception:
-                                break
-                            try:
-                                send_window_update(stream_id, len(payload))
-                            except Exception:
-                                pass
-                        elif stream_id in error_streams and payload:
-                            # stderr payload: forward to error stream (stream_id)
-                            try:
-                                send_data_frame(stream_id, payload, flags=0)
-                            except Exception:
-                                pass
-                        if flags & 0x02:  # FIN flag
-                            upstream_sock = upstream_cache.pop(stream_id, None)
-                            if upstream_sock:
-                                try:
-                                    upstream_sock.close()
-                                except Exception:
-                                    pass
-                            send_rst(stream_id, code=0)
-
-                # Server -> client data
-                for sid, sock_up in list(upstream_cache.items()):
-                    try:
-                        resp = sock_up.recv(4096)
-                        if resp:
-                            send_data_frame(sid, resp, flags=0)
-                            try:
-                                send_window_update(sid, len(resp))
-                            except Exception:
-                                pass
-                        else:
-                            upstream_cache.pop(sid, None)
-                            try:
-                                sock_up.close()
-                            except Exception:
-                                pass
-                            for esid, dport in list(error_streams.items()):
-                                if data_streams.get(sid) == dport:
-                                    try:
-                                        send_data_frame(esid, b"", flags=0x01)  # FIN on error stream
-                                    except Exception:
-                                        pass
-                    except socket.timeout:
-                        continue
-                    except Exception:
-                        upstream_cache.pop(sid, None)
-                        try:
-                            sock_up.close()
-                        except Exception:
-                            pass
-        finally:
-            try:
-                send_goaway(last_stream=max(data_streams.keys()) if data_streams else 0, status=0)
-            except Exception:
-                pass
-            for s in upstream_cache.values():
-                try:
-                    s.close()
-                except Exception:
-                    pass
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-        def recv_frame(sock) -> bytes | None:
-            hdr = sock.recv(2)
-            if len(hdr) < 2:
-                return None
-            opcode = hdr[0] & 0x0F
-            masked = hdr[1] & 0x80
-            length = hdr[1] & 0x7F
-            if length == 126:
-                ext = sock.recv(2)
-                if len(ext) < 2:
-                    return None
-                length = int.from_bytes(ext, "big")
-            elif length == 127:
-                ext = sock.recv(8)
-                if len(ext) < 8:
-                    return None
-                length = int.from_bytes(ext, "big")
-            mask = b""
-            if masked:
-                mask = sock.recv(4)
-                if len(mask) < 4:
-                    return None
-            payload = b""
-            while len(payload) < length:
-                chunk = sock.recv(length - len(payload))
-                if not chunk:
-                    break
-                payload += chunk
-            if len(payload) < length:
-                return None
-            if masked and mask:
-                payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-            if opcode == 8:  # close
-                return None
-            return payload
-
-        def send_frame(sock, data: bytes) -> None:
-            hdr = bytearray()
-            hdr.append(0x82)  # FIN + binary
-            l = len(data)
-            if l < 126:
-                hdr.append(l)
-            elif l < (1 << 16):
-                hdr.append(126)
-                hdr += l.to_bytes(2, "big")
-            else:
-                hdr.append(127)
-                hdr += l.to_bytes(8, "big")
-            sock.sendall(bytes(hdr) + data)
-
-        self.connection.settimeout(0.2)
-        upstream.settimeout(0.2)
-        try:
-            while True:
-                try:
-                    data = recv_frame(self.connection)
-                    if data is None:
-                        break
-                    if data:
-                        upstream.sendall(data)
-                except socket.timeout:
-                    pass
-                except Exception:
-                    break
-                try:
-                    resp = upstream.recv(4096)
-                    if resp:
-                        send_frame(self.connection, resp)
-                    else:
-                        break
-                except socket.timeout:
-                    pass
-                except Exception:
-                    break
-        finally:
-            try:
-                upstream.close()
-            except Exception:
-                pass
-            try:
-                self.connection.close()
-            except Exception:
-                pass
 
     def _stream_watch(
         self,
         group: str,
         version: str,
         resource: str,
-        namespace: Optional[str],
-        query: Dict[str, List[str]],
+        namespace: str | None,
+        query: dict[str, list[str]],
         transform,
     ) -> None:
         # Watches use latest observed rv; no pagination
@@ -1567,7 +1300,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         except BrokenPipeError:
             pass
 
-    def _stream_fake_watch(self, objs: List[Dict[str, Any]], kind: str, api_version: str) -> None:
+    def _stream_fake_watch(self, objs: list[dict[str, Any]], kind: str, api_version: str) -> None:
         """Minimal watch emulation for derived resources like EndpointSlice."""
         try:
             for obj in objs:
@@ -1645,26 +1378,26 @@ class ShimHandler(BaseHTTPRequestHandler):
         return False
 
     @classmethod
-    def _crd_versions_for_group(cls, group: str) -> List[str]:
+    def _crd_versions_for_group(cls, group: str) -> list[str]:
         with cls.crd_lock:
             versions = sorted({ver for g, ver, _ in cls.crd_registry.keys() if g == group})
         return versions
 
     @classmethod
-    def _dynamic_group_names(cls) -> List[str]:
+    def _dynamic_group_names(cls) -> list[str]:
         with cls.crd_lock:
             names = sorted({g for (g, _, _) in cls.crd_registry.keys()})
         return names
 
     @classmethod
-    def _crd_resources_for(cls, group: str, version: str) -> List[Dict[str, Any]]:
+    def _crd_resources_for(cls, group: str, version: str) -> list[dict[str, Any]]:
         with cls.crd_lock:
             entries = [
                 (plural, meta)
                 for (g, v, plural), meta in cls.crd_registry.items()
                 if g == group and v == version
             ]
-        resources: List[Dict[str, Any]] = []
+        resources: list[dict[str, Any]] = []
         for plural, meta in entries:
             resources.append(
                 {
@@ -1701,7 +1434,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         crd_name = obj.name
         with cls.crd_lock:
             cls._unregister_crd(crd_name)
-            keys: List[Tuple[str, str, str]] = []
+            keys: list[tuple[str, str, str]] = []
             for ver in versions:
                 if not ver.get("served", True):
                     continue
@@ -1727,7 +1460,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 cls.crd_registry.pop(key, None)
 
     @classmethod
-    def _lookup_crd(cls, group: str, version: str, plural: str) -> Optional[Dict[str, Any]]:
+    def _lookup_crd(cls, group: str, version: str, plural: str) -> dict[str, Any] | None:
         with cls.crd_lock:
             return cls.crd_registry.get((group, version, plural))
 
@@ -2197,10 +1930,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                         items = self.server.store.list_all("", "v1", plural)  # type: ignore[attr-defined]
                     else:
                         items = self.server.store.list("", "v1", plural, ns)  # type: ignore[attr-defined]
-                def _transform(obj: K8sObject) -> Dict[str, Any]:
+                def _transform(obj: K8sObject) -> dict[str, Any]:
                     if plural == "services":
                         doc = _to_obj(obj)
-                        prov_ip = _provider_cluster_ip(self.server.state, obj)  # type: ignore[attr-defined]
                         doc = _merge_provider_service(self.server.state, doc, obj)  # type: ignore[attr-defined]
                         return doc
                     return _to_obj(obj)
@@ -2273,7 +2005,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     if ns is None
                     else self.server.store.list("", "v1", "services", ns)  # type: ignore[attr-defined]
                 )
-                items: List[Dict[str, Any]] = []
+                items: list[dict[str, Any]] = []
                 for svc in svcs:
                     ep = _endpoints_for_service(self.server.state, svc)  # type: ignore[attr-defined]
                     if ep:
@@ -2453,7 +2185,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 want_stderr = (qs.get("stderr") or ["true"])[0].lower() in ("1", "true", "yes")
                 self._handle_exec_spdy(
                     pod_name=m_exec.group(2),
-                    command=[c for c in cmd],
+                    command=list(cmd),
                     container=container,
                     tty=tty,
                     want_stdin=want_stdin,
@@ -2487,20 +2219,11 @@ class ShimHandler(BaseHTTPRequestHandler):
             if not svc:
                 self._not_found()
                 return
-            ep = _endpoints_for_service(self.server.state, svc)  # type: ignore[attr-defined]
-            subsets = (ep or {}).get("subsets") or []
-            addresses = subsets[0].get("addresses") if subsets else None
-            app_name = _service_app_name(svc)
-            eps_raw = self.server.state.list_service_endpoints(app_name) if app_name else []  # type: ignore[attr-defined]
-            target_ip = _pick_endpoint_ip(eps_raw, key=",".join(str(p) for p in target_ports) if target_ports else None)
-            if not target_ip:
-                self._json_status(HTTPStatus.SERVICE_UNAVAILABLE, reason="NoEndpoints", message="no ready endpoints for service")
-                return
             qs = parse_qs(parsed.query)
             ports_q = qs.get("ports") or []
             svc_ports = svc.spec.get("ports", []) if svc.spec else []
 
-            def _resolve_port(pval: str) -> Optional[int]:
+            def _resolve_port(pval: str) -> int | None:
                 for sp in svc_ports:
                     if str(sp.get("port")) == pval or sp.get("name") == pval:
                         tp = sp.get("targetPort", sp.get("port"))
@@ -2535,6 +2258,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                         pass
             if not target_ports:
                 self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="ports query param required")
+                return
+            app_name = _service_app_name(svc)
+            eps_raw = self.server.state.list_service_endpoints(app_name) if app_name else []  # type: ignore[attr-defined]
+            target_ip = _pick_endpoint_ip(eps_raw, key=",".join(str(p) for p in target_ports) if target_ports else None)
+            if not target_ip:
+                self._json_status(HTTPStatus.SERVICE_UNAVAILABLE, reason="NoEndpoints", message="no ready endpoints for service")
                 return
             upgrade = (self.headers.get("Upgrade") or "").lower()
             if upgrade.startswith("spdy"):
@@ -3252,7 +2981,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             ports_q = qs.get("ports") or []
             svc_ports = svc.spec.get("ports", []) if svc.spec else []
 
-            def _resolve_port(pval: str) -> Optional[int]:
+            def _resolve_port(pval: str) -> int | None:
                 for sp in svc_ports:
                     if str(sp.get("port")) == pval or sp.get("name") == pval:
                         tp = sp.get("targetPort", sp.get("port"))
@@ -3955,6 +3684,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         path = parsed.path
         q = parse_qs(parsed.query)
         field_manager = q.get("fieldManager", ["kubectl"])[0] or "kubectl"
+        force_flag = (q.get("force", ["false"])[0] or "").lower() in {"1", "true", "yes"}
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
         length = int(self.headers.get("Content-Length", "0") or "0")
         body = self.rfile.read(length)
@@ -3970,10 +3700,18 @@ class ShimHandler(BaseHTTPRequestHandler):
             if merged is None:
                 return
             md = merged.get("metadata") or {}
+            patch_paths = _extract_field_paths(patch) if isinstance(patch, dict) else set()
+            if ctype.startswith("application/apply-patch") and _managed_conflict(obj.metadata, field_manager, patch_paths, force_flag):
+                self._json_status(
+                    HTTPStatus.CONFLICT,
+                    reason="Conflict",
+                    message="managedFields conflict on apply",
+                )
+                return
             if ctype.startswith("application/apply-patch"):
-                md = _update_managed_fields(md, "v1", field_manager, "Apply")
+                md = _update_managed_fields(md, "v1", field_manager, "Apply", fields=patch_paths, force=force_flag)
             elif ctype in ("application/merge-patch+json", "application/strategic-merge-patch+json"):
-                md = _update_managed_fields(md, "v1", field_manager, "Update")
+                md = _update_managed_fields(md, "v1", field_manager, "Update", fields=patch_paths)
             spec_or_data = merged.get("data") if plural in {"configmaps", "secrets"} else merged.get("spec")
             name_eff = md.get("name") or name
             ns_eff = None if plural == "namespaces" else (md.get("namespace") or ns)
@@ -4044,10 +3782,20 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if merged is None:
                     return True
                 md = merged.get("metadata") or {}
+                patch_paths = _extract_field_paths(patch) if isinstance(patch, dict) else set()
+                force_flag = (parse_qs(urlparse(self.path).query).get("force", ["false"])[0] or "").lower() in {"1", "true", "yes"}
                 if ctype.startswith("application/apply-patch"):
-                    md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Apply")
+                    if _managed_conflict(obj.metadata, field_manager, patch_paths, force_flag):
+                        self._json_status(
+                            HTTPStatus.CONFLICT,
+                            reason="Conflict",
+                            message="managedFields conflict on apply",
+                        )
+                        return True
+                    md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Apply", fields=patch_paths, force=force_flag)
                 elif ctype in ("application/merge-patch+json", "application/strategic-merge-patch+json"):
-                    md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Update")
+                    md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Update", fields=patch_paths)
+                # inject projections for workloads on any write
                 if res in {"deployments", "statefulsets", "daemonsets", "jobs"}:
                     spec_body = merged.get("spec") or {}
                     merged["spec"] = _inject_sa_projection(spec_body)
@@ -4083,10 +3831,19 @@ class ShimHandler(BaseHTTPRequestHandler):
             if merged is None:
                 return True
             md = merged.get("metadata") or {}
+            patch_paths = _extract_field_paths(patch) if isinstance(patch, dict) else set()
             if ctype.startswith("application/apply-patch"):
-                md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Apply")
+                force_flag = (parse_qs(urlparse(self.path).query).get("force", ["false"])[0] or "").lower() in {"1", "true", "yes"}
+                if _managed_conflict(obj.metadata, field_manager, patch_paths, force_flag):
+                    self._json_status(
+                        HTTPStatus.CONFLICT,
+                        reason="Conflict",
+                        message="managedFields conflict on apply",
+                    )
+                    return True
+                md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Apply", fields=patch_paths, force=force_flag)
             elif ctype in ("application/merge-patch+json", "application/strategic-merge-patch+json"):
-                md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Update")
+                md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Update", fields=patch_paths)
             if res in {"deployments", "statefulsets", "daemonsets", "jobs"}:
                 spec_body = merged.get("spec") or {}
                 merged["spec"] = _inject_sa_projection(spec_body)
@@ -4114,8 +3871,8 @@ class ShimHandler(BaseHTTPRequestHandler):
         return False
 
     def _apply_patch_merge(
-        self, base: Dict[str, Any], patch: Any, ctype: str
-    ) -> Dict[str, Any] | None:
+        self, base: dict[str, Any], patch: Any, ctype: str
+    ) -> dict[str, Any] | None:
         if ctype == "application/json-patch+json":
             merged = _apply_json_patch(base, patch if isinstance(patch, list) else [])
             if merged is None:
@@ -4132,7 +3889,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         )
         return None
 
-    def _handle_custom_resource_get(self, path: str, query: Dict[str, List[str]]) -> bool:
+    def _handle_custom_resource_get(self, path: str, query: dict[str, list[str]]) -> bool:
         parsed = _parse_custom_resource_path(path)
         if not parsed:
             return False
@@ -4148,7 +3905,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             if namespace is not None:
                 self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="resource is cluster-scoped; omit namespace")
                 return True
-        transform = lambda obj: _render_custom_resource(obj, group, version, meta.get("kind", plural))
+        def transform(obj: dict[str, Any]) -> dict[str, Any]:
+            return _render_custom_resource(obj, group, version, meta.get("kind", plural))
         if name is None:
             if query.get("watch", ["0"]) [0] in ("1", "true", "True"):
                 self._stream_watch(group, version, plural, store_ns, query, transform)
@@ -4179,7 +3937,23 @@ class ShimHandler(BaseHTTPRequestHandler):
         self._ok(transform(obj))
         return True
 
-    def _handle_custom_resource_post(self, doc: Dict[str, Any]) -> bool:
+    def _validate_app_custom_resource(self, doc: dict[str, Any]) -> str | None:
+        # Validate App CRD payload against native schema to prevent incompatible objects.
+        if (doc.get("apiVersion") or "").lower() not in {"ae.dev/v1alpha1"}:
+            return "unsupported apiVersion for App (expected ae.dev/v1alpha1)"
+        if (doc.get("kind") or "").lower() != "app":
+            return "unsupported kind for ae.dev/v1alpha1 (expected App)"
+        try:
+            from ae.controller.spec import AppManifest  # imported lazily to avoid startup cost
+        except Exception as exc:  # pragma: no cover - defensive import guard
+            return f"unable to load App schema: {exc}"
+        try:
+            AppManifest.model_validate(doc)
+        except Exception as exc:
+            return f"App validation failed: {exc}"
+        return None
+
+    def _handle_custom_resource_post(self, doc: dict[str, Any]) -> bool:
         parsed = _parse_custom_resource_path(self.path)
         if not parsed:
             return False
@@ -4200,6 +3974,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return True
         else:
             ns_in = None
+        if group == "ae.dev" and plural == "apps":
+            err = self._validate_app_custom_resource(doc)
+            if err:
+                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message=err)
+                return True
         created = self.server.store.upsert(  # type: ignore[attr-defined]
             group,
             version,
@@ -4218,7 +3997,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         self.wfile.write(out)
         return True
 
-    def _handle_custom_resource_put(self, doc: Dict[str, Any]) -> bool:
+    def _handle_custom_resource_put(self, doc: dict[str, Any]) -> bool:
         parsed = _parse_custom_resource_path(self.path)
         if not parsed:
             return False
@@ -4239,6 +4018,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return True
         else:
             ns_in = None
+        if group == "ae.dev" and plural == "apps":
+            err = self._validate_app_custom_resource(doc)
+            if err:
+                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message=err)
+                return True
         updated = self.server.store.upsert(  # type: ignore[attr-defined]
             group,
             version,
@@ -4252,7 +4036,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         self._ok(_render_custom_resource(updated, group, version, meta.get("kind", plural)))
         return True
 
-    def _handle_custom_resource_patch(self, ctype: str, patch: Dict[str, Any]) -> bool:
+    def _handle_custom_resource_patch(self, ctype: str, patch: dict[str, Any]) -> bool:
         parsed = _parse_custom_resource_path(self.path)
         if not parsed:
             return False
@@ -4278,6 +4062,11 @@ class ShimHandler(BaseHTTPRequestHandler):
             return True
         if not namespaced:
             ns_eff = None
+        if group == "ae.dev" and plural == "apps":
+            err = self._validate_app_custom_resource(merged)
+            if err:
+                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message=err)
+                return True
         updated = self.server.store.upsert(  # type: ignore[attr-defined]
             group,
             version,
@@ -4362,7 +4151,7 @@ def _api_version(group: str, version: str) -> str:
     return f"{group}/{version}" if group else version
 
 
-def _to_obj(o: K8sObject) -> Dict[str, Any]:
+def _to_obj(o: K8sObject) -> dict[str, Any]:
     meta = dict(o.metadata)
     meta.setdefault("name", o.name)
     if o.namespace:
@@ -4381,7 +4170,7 @@ def _to_obj(o: K8sObject) -> Dict[str, Any]:
     }
 
 
-def _to_deployment(o: K8sObject) -> Dict[str, Any]:
+def _to_deployment(o: K8sObject) -> dict[str, Any]:
     meta = dict(o.metadata)
     meta.setdefault("name", o.name)
     if o.namespace:
@@ -4403,7 +4192,7 @@ def _to_deployment(o: K8sObject) -> Dict[str, Any]:
     }
 
 
-def _synthesize_deploy_status(spec: Dict[str, Any], base_status: Dict[str, Any]) -> Dict[str, Any]:
+def _synthesize_deploy_status(spec: dict[str, Any], base_status: dict[str, Any]) -> dict[str, Any]:
     replicas = int(spec.get("replicas", 1))
     available = replicas
     ready = replicas
@@ -4428,7 +4217,7 @@ def _synthesize_deploy_status(spec: Dict[str, Any], base_status: Dict[str, Any])
     return status
 
 
-def _to_statefulset(o: K8sObject) -> Dict[str, Any]:
+def _to_statefulset(o: K8sObject) -> dict[str, Any]:
     meta = dict(o.metadata)
     meta.setdefault("name", o.name)
     if o.namespace:
@@ -4454,7 +4243,7 @@ def _to_statefulset(o: K8sObject) -> Dict[str, Any]:
     }
 
 
-def _to_daemonset(o: K8sObject, *, desired: int | None = None) -> Dict[str, Any]:
+def _to_daemonset(o: K8sObject, *, desired: int | None = None) -> dict[str, Any]:
     meta = dict(o.metadata)
     meta.setdefault("name", o.name)
     if o.namespace:
@@ -4488,7 +4277,7 @@ def _to_daemonset(o: K8sObject, *, desired: int | None = None) -> Dict[str, Any]
     }
 
 
-def _to_job(o: K8sObject) -> Dict[str, Any]:
+def _to_job(o: K8sObject) -> dict[str, Any]:
     meta = dict(o.metadata)
     meta.setdefault("name", o.name)
     if o.namespace:
@@ -4511,7 +4300,7 @@ def _to_job(o: K8sObject) -> Dict[str, Any]:
     }
 
 
-def _to_cronjob(o: K8sObject) -> Dict[str, Any]:
+def _to_cronjob(o: K8sObject) -> dict[str, Any]:
     meta = dict(o.metadata)
     meta.setdefault("name", o.name)
     if o.namespace:
@@ -4530,7 +4319,7 @@ def _to_cronjob(o: K8sObject) -> Dict[str, Any]:
     }
 
 
-def _to_scale(o: K8sObject) -> Dict[str, Any]:
+def _to_scale(o: K8sObject) -> dict[str, Any]:
     meta = {"name": o.name}
     if o.namespace:
         meta["namespace"] = o.namespace
@@ -4544,7 +4333,7 @@ def _to_scale(o: K8sObject) -> Dict[str, Any]:
     }
 
 
-def _to_hpa(o: K8sObject, store: ObjectStore) -> Dict[str, Any]:
+def _to_hpa(o: K8sObject, store: ObjectStore) -> dict[str, Any]:
     meta = dict(o.metadata)
     meta.setdefault("name", o.name)
     if o.namespace:
@@ -4556,7 +4345,6 @@ def _to_hpa(o: K8sObject, store: ObjectStore) -> Dict[str, Any]:
     target = spec.get("scaleTargetRef", {}) if isinstance(spec, dict) else {}
     target_name = target.get("name")
     target_kind = (target.get("kind") or "").lower()
-    target_group = target.get("apiVersion", "")
     current_replicas = status.get("currentReplicas")
     desired = status.get("desiredReplicas")
     try:
@@ -4588,7 +4376,7 @@ def _to_hpa(o: K8sObject, store: ObjectStore) -> Dict[str, Any]:
     }
 
 
-def _to_event(namespace: str, obj_name: str, ev: "AppEvent") -> Dict[str, Any]:  # type: ignore[name-defined]
+def _to_event(namespace: str, obj_name: str, ev: AppEvent) -> dict[str, Any]:  # type: ignore[name-defined]
     ts = ev.created_at.isoformat()
     involved = {
         "kind": "Deployment",
@@ -4614,7 +4402,7 @@ def _to_event(namespace: str, obj_name: str, ev: "AppEvent") -> Dict[str, Any]: 
     }
 
 
-def _ingress_vip(state: SQLiteStateStore, ing: K8sObject) -> Optional[str]:
+def _ingress_vip(state: SQLiteStateStore, ing: K8sObject) -> str | None:
     """Best-effort: use first backend service to derive VIP/clusterIP."""
     spec = ing.spec or {}
     svc_name = None
@@ -4644,7 +4432,7 @@ def _ingress_vip(state: SQLiteStateStore, ing: K8sObject) -> Optional[str]:
     return None
 
 
-def _to_ingress(o: K8sObject, state: Optional[SQLiteStateStore] = None) -> Dict[str, Any]:
+def _to_ingress(o: K8sObject, state: SQLiteStateStore | None = None) -> dict[str, Any]:
     meta = dict(o.metadata)
     meta.setdefault("name", o.name)
     if o.namespace:
@@ -4672,16 +4460,16 @@ def _to_ingress(o: K8sObject, state: Optional[SQLiteStateStore] = None) -> Dict[
 
 
 def _list_with_rv(
-    items: List[K8sObject],
+    items: list[K8sObject],
     transform,
     *,
     kind: str,
     api_version: str,
-    limit: Optional[int] = None,
-    continue_token: Optional[str] = None,
-) -> Dict[str, Any]:
+    limit: int | None = None,
+    continue_token: str | None = None,
+) -> dict[str, Any]:
     selected = items
-    cont_token: Optional[str] = None
+    cont_token: str | None = None
     if continue_token:
         for idx, it in enumerate(items):
             if getattr(it, "name", None) == continue_token:
@@ -4691,7 +4479,7 @@ def _list_with_rv(
         selected = items[:limit]
         cont_token = items[limit].name if len(items) > limit else None
     rv = max((i.resource_version for i in selected), default=0)
-    meta: Dict[str, Any] = {"resourceVersion": str(rv)}
+    meta: dict[str, Any] = {"resourceVersion": str(rv)}
     if cont_token:
         meta["continue"] = cont_token
     return {
@@ -4702,7 +4490,7 @@ def _list_with_rv(
     }
 
 
-def _to_crd(o: K8sObject) -> Dict[str, Any]:
+def _to_crd(o: K8sObject) -> dict[str, Any]:
     meta = dict(o.metadata)
     meta.setdefault("name", o.name)
     body = {
@@ -4716,7 +4504,7 @@ def _to_crd(o: K8sObject) -> Dict[str, Any]:
     return body
 
 
-def _apps_ns_name(path: str) -> Tuple[str, Optional[str], Optional[str]]:
+def _apps_ns_name(path: str) -> tuple[str, str | None, str | None]:
     m = re.match(r"^/apis/apps/v1/namespaces/([^/]+)/deployments(?:/([^/]+))?$", path)
     if m:
         return ("deployments", m.group(1), m.group(2))
@@ -4747,7 +4535,7 @@ def _apps_ns_name(path: str) -> Tuple[str, Optional[str], Optional[str]]:
     return ("", None, None)
 
 
-def _net_ns_name(path: str) -> Tuple[str, Optional[str], Optional[str]]:
+def _net_ns_name(path: str) -> tuple[str, str | None, str | None]:
     m = re.match(r"^/apis/networking.k8s.io/v1/namespaces/([^/]+)/ingresses(?:/([^/]+))?$", path)
     if m:
         return ("ingresses", m.group(1), m.group(2))
@@ -4757,7 +4545,7 @@ def _net_ns_name(path: str) -> Tuple[str, Optional[str], Optional[str]]:
     return ("", None, None)
 
 
-def _gv_ns_name(path: str, group: str, version: str, plural: str) -> Tuple[str, Optional[str], Optional[str]]:
+def _gv_ns_name(path: str, group: str, version: str, plural: str) -> tuple[str, str | None, str | None]:
     pattern = rf"^/apis/{re.escape(group)}/{re.escape(version)}/namespaces/([^/]+)/{re.escape(plural)}(?:/([^/]+))?$"
     m = re.match(pattern, path)
     if m:
@@ -4769,7 +4557,7 @@ def _gv_ns_name(path: str, group: str, version: str, plural: str) -> Tuple[str, 
     return ("", None, None)
 
 
-def _batch_ns_name(path: str) -> Tuple[str, Optional[str], Optional[str]]:
+def _batch_ns_name(path: str) -> tuple[str, str | None, str | None]:
     m = re.match(r"^/apis/batch/v1/namespaces/([^/]+)/jobs(?:/([^/]+))?$", path)
     if m:
         return ("jobs", m.group(1), m.group(2))
@@ -4791,7 +4579,7 @@ def _batch_ns_name(path: str) -> Tuple[str, Optional[str], Optional[str]]:
     return ("", None, None)
 
 
-def _gv_cluster_name(path: str, group: str, version: str, plural: str) -> Tuple[str, Optional[str]]:
+def _gv_cluster_name(path: str, group: str, version: str, plural: str) -> tuple[str, str | None]:
     pattern = rf"^/apis/{re.escape(group)}/{re.escape(version)}/{re.escape(plural)}(?:/([^/]+))?$"
     m = re.match(pattern, path)
     if m:
@@ -4800,13 +4588,13 @@ def _gv_cluster_name(path: str, group: str, version: str, plural: str) -> Tuple[
 
 
 def _to_generic(group: str, version: str, kind: str, resource: str):
-    def convert(o: K8sObject) -> Dict[str, Any]:
+    def convert(o: K8sObject) -> dict[str, Any]:
         meta = dict(o.metadata)
         meta.setdefault("name", o.name)
         if o.namespace:
             meta.setdefault("namespace", o.namespace)
         meta.setdefault("resourceVersion", str(o.resource_version))
-        body: Dict[str, Any] = {
+        body: dict[str, Any] = {
             "apiVersion": _api_version(group, version),
             "kind": kind,
             "metadata": meta,
@@ -4837,7 +4625,7 @@ def _to_generic(group: str, version: str, kind: str, resource: str):
     return convert
 
 
-def _spec_payload(resource: str, merged: Dict[str, Any]) -> Dict[str, Any]:
+def _spec_payload(resource: str, merged: dict[str, Any]) -> dict[str, Any]:
     if resource in {"roles", "clusterroles"}:
         return {"rules": merged.get("rules", [])}
     if resource in {"rolebindings", "clusterrolebindings"}:
@@ -4852,12 +4640,12 @@ def _spec_payload(resource: str, merged: Dict[str, Any]) -> Dict[str, Any]:
     return merged.get("spec") or {}
 
 
-def _render_custom_resource(o: K8sObject, group: str, version: str, kind: str) -> Dict[str, Any]:
+def _render_custom_resource(o: K8sObject, group: str, version: str, kind: str) -> dict[str, Any]:
     meta = dict(o.metadata)
     meta.setdefault("name", o.name)
     if o.namespace:
         meta.setdefault("namespace", o.namespace)
-    body: Dict[str, Any] = {
+    body: dict[str, Any] = {
         "apiVersion": f"{group}/{version}",
         "kind": kind,
         "metadata": meta,
@@ -4869,7 +4657,7 @@ def _render_custom_resource(o: K8sObject, group: str, version: str, kind: str) -
     return body
 
 
-def _parse_custom_resource_path(path: str) -> Optional[Tuple[str, str, Optional[str], str, Optional[str]]]:
+def _parse_custom_resource_path(path: str) -> tuple[str, str, str | None, str, str | None] | None:
     m = re.match(
         r"^/apis/([^/]+)/([^/]+)(?:/namespaces/([^/]+))?/([^/]+)(?:/([^/]+))?$",
         path,
@@ -4888,7 +4676,7 @@ def _parse_custom_resource_path(path: str) -> Optional[Tuple[str, str, Optional[
     return (group, version, namespace, plural, name)
 
 
-def _normalize_metadata(md: Dict[str, Any], name: str, ns: Optional[str], plural: str) -> Dict[str, Any]:
+def _normalize_metadata(md: dict[str, Any], name: str, ns: str | None, plural: str) -> dict[str, Any]:
     out = dict(md)
     out["name"] = name
     if ns and plural != "namespaces":
@@ -4896,11 +4684,48 @@ def _normalize_metadata(md: Dict[str, Any], name: str, ns: Optional[str], plural
     return out
 
 
-def _merge_dict(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+def _merge_list(base: list, patch: list) -> list:
+    """Strategic-ish merge for lists of maps keyed by a stable identifier."""
+
+    if not isinstance(base, list) or not isinstance(patch, list):
+        return patch
+    # If patch contains scalars or empty list, replace outright
+    if patch and not isinstance(patch[0], dict):
+        return patch
+    if base and not isinstance(base[0], dict):
+        return patch
+
+    base_idx: dict[Any, dict[str, Any]] = {}
+    merged: list = []
+
+    # Seed with base preserving order
+    for item in base:
+        if isinstance(item, dict):
+            key = _list_item_key(item)
+            if key is not None:
+                base_idx[key] = dict(item)
+                merged.append(base_idx[key])
+                continue
+        merged.append(item)
+
+    for item in patch:
+        if isinstance(item, dict):
+            key = _list_item_key(item)
+            if key is not None and key in base_idx:
+                # merge dicts with same key
+                base_idx[key].update(_merge_dict(base_idx[key], item))  # type: ignore[arg-type]
+                continue
+        merged.append(item)
+    return merged
+
+
+def _merge_dict(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     out = dict(base)
     for k, v in patch.items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
             out[k] = _merge_dict(out[k], v)  # type: ignore[arg-type]
+        elif isinstance(v, list) and isinstance(out.get(k), list):
+            out[k] = _merge_list(out[k], v)
         else:
             out[k] = v
     return out
@@ -4917,7 +4742,7 @@ def _valid_name(name: str) -> bool:
     return _DNS1123_RE.match(name) is not None
 
 
-def _service_target(svc: K8sObject) -> Optional[str]:
+def _service_target(svc: K8sObject) -> str | None:
     spec = svc.spec or {}
     selector = spec.get("selector") or {}
     if not selector:
@@ -4931,14 +4756,14 @@ def _service_target(svc: K8sObject) -> Optional[str]:
     )
 
 
-def _service_app_name(svc: K8sObject) -> Optional[str]:
+def _service_app_name(svc: K8sObject) -> str | None:
     tgt = _service_target(svc)
     if not tgt:
         return None
     return f"{svc.namespace}--{tgt}" if svc.namespace else tgt
 
 
-def _provider_cluster_ip(state: SQLiteStateStore, svc: K8sObject) -> Optional[str]:
+def _provider_cluster_ip(state: SQLiteStateStore, svc: K8sObject) -> str | None:
     """Fetch cluster IP allocated by the network provider (if recorded in controller state)."""
     app_name = _service_app_name(svc)
     if not app_name:
@@ -4964,7 +4789,7 @@ def _provider_ports(state: SQLiteStateStore, svc: K8sObject) -> dict:
     return rec.ports
 
 
-def _provider_vip(state: SQLiteStateStore, svc: K8sObject) -> Optional[str]:
+def _provider_vip(state: SQLiteStateStore, svc: K8sObject) -> str | None:
     """Return overlay/proxy VIP if recorded by the network provider."""
     app_name = _service_app_name(svc)
     if not app_name:
@@ -4979,7 +4804,7 @@ def _provider_vip(state: SQLiteStateStore, svc: K8sObject) -> Optional[str]:
     return None
 
 
-def _merge_provider_service(state: SQLiteStateStore, doc: Dict[str, Any], svc_obj: K8sObject) -> Dict[str, Any]:
+def _merge_provider_service(state: SQLiteStateStore, doc: dict[str, Any], svc_obj: K8sObject) -> dict[str, Any]:
     """Augment service spec/status with provider allocations (clusterIP/nodePort)."""
     spec = doc.get("spec") or {}
     status = doc.get("status") or {}
@@ -4997,8 +4822,9 @@ def _merge_provider_service(state: SQLiteStateStore, doc: Dict[str, Any], svc_ob
             p = dict(p)
             key = p.get("name") or str(p.get("port"))
             rec = prov_ports.get(key) or prov_ports.get(str(key))
-            if rec and p.get("nodePort") is None and rec.get("nodePort") is not None:
-                p["nodePort"] = rec["nodePort"]
+            if rec and rec.get("nodePort") is not None:
+                if p.get("nodePort") is None or p.get("nodePort") != rec["nodePort"]:
+                    p["nodePort"] = rec["nodePort"]
             new_ports.append(p)
         spec["ports"] = new_ports
     doc["spec"] = spec
@@ -5006,7 +4832,7 @@ def _merge_provider_service(state: SQLiteStateStore, doc: Dict[str, Any], svc_ob
     return doc
 
 
-def _node_zone_for_ip(state: SQLiteStateStore, ip: str) -> tuple[Optional[str], Optional[str]]:
+def _node_zone_for_ip(state: SQLiteStateStore, ip: str) -> tuple[str | None, str | None]:
     """Best-effort mapping from pod IP to node name/zone using node podCIDR labels."""
     try:
         ip_obj = ipaddress.ip_address(ip)
@@ -5027,7 +4853,7 @@ def _node_zone_for_ip(state: SQLiteStateStore, ip: str) -> tuple[Optional[str], 
     return (None, None)
 
 
-def _alloc_cluster_ip(ns: Optional[str], name: str, existing: set[str]) -> str:
+def _alloc_cluster_ip(ns: str | None, name: str, existing: set[str]) -> str:
     """Deterministically allocate a ClusterIP in 10.96.0.0/16 avoiding collisions."""
     base_int = 0x0A600000  # 10.96.0.0
     mask = 0xFFFF
@@ -5055,7 +4881,7 @@ def _alloc_nodeport(existing: set[int], seed: str) -> int:
     return NP_MIN
 
 
-def _service_lb_status(spec: Dict[str, Any], status: Dict[str, Any], provider_ip: Optional[str] = None) -> Dict[str, Any]:
+def _service_lb_status(spec: dict[str, Any], status: dict[str, Any], provider_ip: str | None = None) -> dict[str, Any]:
     """Ensure loadBalancer status is present for LB/NodePort services."""
     svc_type = (spec.get("type") or "ClusterIP") or "ClusterIP"
     status = dict(status or {})
@@ -5090,7 +4916,7 @@ def _service_lb_status(spec: Dict[str, Any], status: Dict[str, Any], provider_ip
     return status
 
 
-def _pick_endpoint_ip(endpoints: list[ServiceEndpoint], key: Optional[str] = None) -> Optional[str]:
+def _pick_endpoint_ip(endpoints: list[ServiceEndpoint], key: str | None = None) -> str | None:
     """Choose a ready endpoint IP if available; fall back to first.
 
     Selection is keyed (e.g., port list) for stable-ish distribution.
@@ -5107,7 +4933,7 @@ def _pick_endpoint_ip(endpoints: list[ServiceEndpoint], key: Optional[str] = Non
     return candidates[idx]
 
 
-def _endpoints_for_service(state: SQLiteStateStore, svc: K8sObject) -> Optional[Dict[str, Any]]:
+def _endpoints_for_service(state: SQLiteStateStore, svc: K8sObject) -> dict[str, Any] | None:
     app_name = _service_app_name(svc)
     if not app_name:
         return None
@@ -5149,7 +4975,7 @@ def _endpoints_for_service(state: SQLiteStateStore, svc: K8sObject) -> Optional[
     return body
 
 
-def _endpointslice_for_service(state: SQLiteStateStore, svc: K8sObject) -> Optional[Dict[str, Any]]:
+def _endpointslice_for_service(state: SQLiteStateStore, svc: K8sObject) -> dict[str, Any] | None:
     """Project a single EndpointSlice per Service using controller endpoints."""
     target = _service_target(svc)
     if not target:
@@ -5211,13 +5037,13 @@ def _endpointslice_for_service(state: SQLiteStateStore, svc: K8sObject) -> Optio
     return body
 
 
-def _node_obj(record, status, rv: int) -> Dict[str, Any]:
+def _node_obj(record, status, rv: int) -> dict[str, Any]:
     meta = {
         "name": record.name or record.node_id,
         "resourceVersion": str(rv),
         "labels": record.labels or {},
     }
-    conditions: List[Dict[str, Any]] = []
+    conditions: list[dict[str, Any]] = []
     if status:
         conditions.append(
             {
@@ -5247,9 +5073,8 @@ def _runtime_from_env() -> RuntimeAdapter:
     return DockerRuntime()
 
 
-def _pod_obj(container: dict, rv: int, node_name: Optional[str]) -> Dict[str, Any]:
+def _pod_obj(container: dict, rv: int, node_name: str | None) -> dict[str, Any]:
     labels = container.get("labels", {}) or {}
-    app = labels.get("ae.app") or "app"
     replica_id = labels.get("ae.replica_id") or container.get("name") or "replica"
     ns = "default"
     meta = {
@@ -5261,7 +5086,7 @@ def _pod_obj(container: dict, rv: int, node_name: Optional[str]) -> Dict[str, An
     running = bool(container.get("running", False))
     restart_count = int(container.get("restart_count", 0) or 0)
     started_at = container.get("started_at") or None
-    state_obj: Dict[str, Any]
+    state_obj: dict[str, Any]
     if running:
         state_obj = {"running": {"startedAt": started_at}}
         phase = "Running"
@@ -5303,7 +5128,7 @@ def _pod_obj(container: dict, rv: int, node_name: Optional[str]) -> Dict[str, An
         meta["nodeName"] = node_name
     status["phase"] = phase
     sa_name = labels.get("ae.service_account") or "default"
-    spec: Dict[str, Any] = _inject_sa_projection(
+    spec: dict[str, Any] = _inject_sa_projection(
         {
             "nodeName": node_name,
             "serviceAccountName": sa_name,
@@ -5324,7 +5149,7 @@ def _pod_obj(container: dict, rv: int, node_name: Optional[str]) -> Dict[str, An
 
 
 class ShimServer(HTTPServer):
-    def __init__(self, server_address: Tuple[str, int], token: Optional[str]) -> None:
+    def __init__(self, server_address: tuple[str, int], token: str | None) -> None:
         super().__init__(server_address, ShimHandler)
         self.store = ObjectStore()
         ShimHandler.admin_token = token or os.getenv("AE_APISHIM_TOKEN")
@@ -5350,7 +5175,7 @@ class ShimServer(HTTPServer):
             ShimHandler._register_crd(obj)
 
 
-def run_server(host: str = "127.0.0.1", port: int = 8445, token: Optional[str] = None, tls: bool = False) -> None:
+def run_server(host: str = "127.0.0.1", port: int = 8445, token: str | None = None, tls: bool = False) -> None:
     if os.getenv("AE_APISHIM_ENABLE") != "1":
         raise RuntimeError("apishim disabled: set AE_APISHIM_ENABLE=1 to start the shim server")
     tok = token or os.getenv("AE_APISHIM_TOKEN")

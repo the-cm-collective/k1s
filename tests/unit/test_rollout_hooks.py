@@ -1,47 +1,50 @@
 import socket
 import threading
+
 from ae.controller.reconciler import Reconciler
-from ae.runtime.base import RuntimeAdapter, RuntimeResult, ReplicaState
+from ae.runtime.base import ReplicaState, RuntimeAdapter, RuntimeResult
 
 
 class FakeRuntime(RuntimeAdapter):  # type: ignore[misc]
     def __init__(self, rc: int = 0):
         self._rc = rc
 
-    def ensure_app(self, manifest, revision, *, keep_old=False, limit_create=None):  # type: ignore[no-untyped-def]
+    def ensure_app(self, _manifest, revision, *, keep_old=False, limit_create=None):  # type: ignore[no-untyped-def]
+        _ = (keep_old, limit_create)
         return RuntimeResult(revision=revision, created=0, updated=0, removed=0, replica_states=[])
 
-    def read_logs(self, replica_id, *, follow=False, tail=None, since=None):  # type: ignore[no-untyped-def]
+    def read_logs(self, _replica_id, *, _follow=False, _tail=None, _since=None):  # type: ignore[no-untyped-def]
         return []
 
-    def remove_app(self, app_name: str) -> int:  # type: ignore[override]
+    def remove_app(self, _app_name: str) -> int:  # type: ignore[override]
         return 0
 
-    def remove_old_revisions(self, app_name: str, keep_revision: int) -> int:  # type: ignore[override]
+    def remove_old_revisions(self, _app_name: str, _keep_revision: int) -> int:  # type: ignore[override]
         return 0
 
-    def ensure_storage_volumes(self, app_name: str, volumes: list[dict]) -> None:  # type: ignore[override]
+    def ensure_storage_volumes(self, _app_name: str, _volumes: list[dict]) -> None:  # type: ignore[override]
         return None
 
-    def remove_storage_volumes(self, app_name: str, names: list[str]) -> int:  # type: ignore[override]
+    def remove_storage_volumes(self, _app_name: str, _names: list[str]) -> int:  # type: ignore[override]
         return 0
 
-    def list_storage_volumes(self, app_name: str | None = None) -> list[dict]:  # type: ignore[override]
+    def list_storage_volumes(self, _app_name: str | None = None) -> list[dict]:  # type: ignore[override]
         return []
 
     def list_containers_info(self) -> list[dict]:  # type: ignore[override]
         return []
 
-    def exec(self, replica_id: str, command: list[str], *, timeout: int | None = None) -> int:  # type: ignore[override]
+    def exec(self, _replica_id: str, _command: list[str], *, timeout: int | None = None) -> int:  # type: ignore[override]
+        _ = timeout
         return int(self._rc)
 
 
 def _reconciler_with_rep(replica_ready=True, endpoint="127.0.0.1:9", rc=0):
     rt = FakeRuntime(rc=rc)
-    from ae.controller.state import SQLiteStateStore
     from ae.config.manager import ConfigManager
-    from ae.secrets import SecretManager
     from ae.controller.health import HealthManager
+    from ae.controller.state import SQLiteStateStore
+    from ae.secrets import SecretManager
 
     store = SQLiteStateStore(":memory:")
     reconciler = Reconciler(
@@ -135,3 +138,4 @@ def test_hook_tcp_failure():
         m, rr, {"name": "preSwitch", "tcp": {"port": 9}, "timeoutSeconds": 1}
     )
     assert ok is False
+# ruff: noqa: SIM105,S110

@@ -1,12 +1,10 @@
-import time
 
 from ae.apishim.adapter import AdapterWorker
 from ae.apishim.store import K8sObject, ObjectStore
-from ae.controller.health import HealthManager, HealthReport
+from ae.controller.health import HealthManager
 from ae.controller.reconciler import Reconciler
-from ae.controller.spec import ServiceSpec
 from ae.controller.state import SQLiteStateStore
-from ae.runtime import RuntimeResult, StubRuntime
+from ae.runtime import StubRuntime
 
 
 def _make_adapter(tmp_path):
@@ -102,3 +100,4 @@ def test_cronjob_fires_job_with_owner_reference(tmp_path):
     assert owner_refs and owner_refs[0].get("kind") == "CronJob"
     cj_status = store.get("batch", "v1", "cronjobs", "default", "cron").status
     assert cj_status.get("lastScheduleTime") is not None
+# ruff: noqa: E501

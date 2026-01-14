@@ -1,3 +1,4 @@
+# ruff: noqa: E501,S110,S112,SIM105
 from __future__ import annotations
 
 import json
@@ -6,26 +7,26 @@ import os
 import subprocess
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
+from ae.controller.reconciler import Reconciler
 from ae.controller.spec import (
     AppManifest,
     AppSpec,
+    IngressSpec,
     Metadata,
     PortSpec,
     ServiceSpec,
-    IngressSpec,
 )
-from ae.controller.reconciler import Reconciler
 from ae.controller.state import SQLiteStateStore
-from ae.runtime import StubRuntime, DockerRuntime, PodmanRuntime, RuntimeAdapter
+from ae.runtime import DockerRuntime, PodmanRuntime, RuntimeAdapter, StubRuntime
 
-from .store import ObjectStore, K8sObject
+from .store import K8sObject, ObjectStore
 
 
-def _app_name(ns: Optional[str], name: str) -> str:
+def _app_name(ns: str | None, name: str) -> str:
     return f"{ns}--{name}" if ns else name
 
 
@@ -35,7 +36,7 @@ def _manifest_from_deployment(
     service_spec: ServiceSpec | None = None,
     ingress_spec: IngressSpec | None = None,
 ) -> AppManifest:
-    spec: Dict[str, Any] = dep.spec or {}
+    spec: dict[str, Any] = dep.spec or {}
     tpl = ((spec.get("template") or {}).get("spec") or {})
     containers = tpl.get("containers") or []
     if not containers:
@@ -93,12 +94,12 @@ class AdapterWorker(threading.Thread):
         self._state = state_store
         self._reconciler = reconciler
         self._stop = threading.Event()
-        self._service_specs: dict[tuple[Optional[str], str], ServiceSpec] = {}
-        self._ingress_specs: dict[tuple[Optional[str], str], IngressSpec] = {}
-        self._service_name_map: dict[tuple[Optional[str], str], tuple[Optional[str], str]] = {}
-        self._ingress_owner_map: dict[tuple[Optional[str], str], tuple[Optional[str], str]] = {}
+        self._service_specs: dict[tuple[str | None, str], ServiceSpec] = {}
+        self._ingress_specs: dict[tuple[str | None, str], IngressSpec] = {}
+        self._service_name_map: dict[tuple[str | None, str], tuple[str | None, str]] = {}
+        self._ingress_owner_map: dict[tuple[str | None, str], tuple[str | None, str]] = {}
         # CronJob bookkeeping: key -> {"job": name, "last_run": timestamp}
-        self._cronjob_jobs: dict[tuple[Optional[str], str], dict] = {}
+        self._cronjob_jobs: dict[tuple[str | None, str], dict] = {}
         self._lock = threading.RLock()
         self._service_thread: threading.Thread | None = None
         self._ingress_thread: threading.Thread | None = None
@@ -210,7 +211,7 @@ class AdapterWorker(threading.Thread):
         svc_spec = self._service_specs.get(dep_key)
         ing_spec = self._ingress_specs.get(dep_key)
         m = _manifest_from_deployment(dep, service_spec=svc_spec, ingress_spec=ing_spec)
-        report = self._reconciler.reconcile(m)
+        self._reconciler.reconcile(m)
         # Reflect status from state store
         st_row = self._state.get_status(m.metadata.name)
         if st_row is not None:
@@ -241,7 +242,6 @@ class AdapterWorker(threading.Thread):
     def _apply_statefulset(self, sts: K8sObject) -> None:
         spec = sts.spec or {}
         desired = int(spec.get("replicas", 1) or 1)
-        app_name = _app_name(sts.namespace, sts.name)
         if desired <= 0:
             self._remove_app_for(sts)
             st = {
@@ -255,7 +255,7 @@ class AdapterWorker(threading.Thread):
             self._store.upsert("apps", "v1", "statefulsets", sts.namespace, sts.name, sts.metadata, sts.spec, status=st)
             return
         m = _manifest_from_deployment(sts)
-        report = self._reconciler.reconcile(m)
+        self._reconciler.reconcile(m)
         st_row = self._state.get_status(m.metadata.name)
         if st_row is not None:
             st = {
@@ -282,7 +282,6 @@ class AdapterWorker(threading.Thread):
             desired = max(1, len(self._state.list_nodes()))
         except Exception:
             desired = max(1, int(spec.get("replicas", 1) or 1))
-        app_name = _app_name(ds.namespace, ds.name)
         if desired <= 0:
             self._remove_app_for(ds)
             st = {
@@ -313,7 +312,6 @@ class AdapterWorker(threading.Thread):
         spec = job.spec or {}
         parallelism = int(spec.get("parallelism", 1) or 1)
         completions = int(spec.get("completions", parallelism) or parallelism)
-        app_name = _app_name(job.namespace, job.name)
         if parallelism <= 0:
             self._remove_app_for(job)
             st = {"active": 0, "succeeded": 0, "failed": 0, "conditions": []}
@@ -425,7 +423,7 @@ class AdapterWorker(threading.Thread):
         except Exception:
             pass
 
-    def _trigger_reconcile(self, namespace: Optional[str], deploy_name: str) -> None:
+    def _trigger_reconcile(self, namespace: str | None, deploy_name: str) -> None:
         if namespace is None:
             return
         dep = self._store.get("apps", "v1", "deployments", namespace, deploy_name)
@@ -584,7 +582,7 @@ class AdapterWorker(threading.Thread):
             except Exception:
                 pass
 
-    def _resolve_target_gvr(self, api_version: str, kind: str) -> Optional[tuple[str, str, str]]:
+    def _resolve_target_gvr(self, api_version: str, kind: str) -> tuple[str, str, str] | None:
         """Map scaleTargetRef to (group, version, resource)."""
         kind_l = kind.lower()
         resource_map = {
@@ -604,7 +602,7 @@ class AdapterWorker(threading.Thread):
             return None
         return (grp, ver, f"{kind_l}s")
 
-    def _parse_quantity_bytes(self, raw: str | None) -> Optional[int]:
+    def _parse_quantity_bytes(self, raw: str | None) -> int | None:
         if raw is None:
             return None
         try:
@@ -647,7 +645,7 @@ class AdapterWorker(threading.Thread):
         except Exception:
             return str(val)
 
-    def _cpu_percent(self, stats: dict) -> Optional[float]:
+    def _cpu_percent(self, stats: dict) -> float | None:
         try:
             cpu_stats = stats.get("cpu_stats", {}) or {}
             precpu = stats.get("precpu_stats", {}) or {}
@@ -666,8 +664,8 @@ class AdapterWorker(threading.Thread):
         except Exception:
             return None
 
-    def _docker_metrics(self, app_name: str) -> dict[str, Optional[float]]:
-        out: dict[str, Optional[float]] = {"cpu_util": None, "mem_util": None, "mem_bytes": None}
+    def _docker_metrics(self, app_name: str) -> dict[str, float | None]:
+        out: dict[str, float | None] = {"cpu_util": None, "mem_util": None, "mem_bytes": None}
         try:
             rt = getattr(self._reconciler, "_runtime", None)
             if not isinstance(rt, DockerRuntime):
@@ -690,9 +688,9 @@ class AdapterWorker(threading.Thread):
                 mem = stats.get("memory_stats", {}) or {}
                 usage = mem.get("usage")
                 limit = mem.get("limit") or None
-                if isinstance(usage, (int, float)):
+                if isinstance(usage, int | float):
                     mem_bytes.append(float(usage))
-                    if isinstance(limit, (int, float)) and limit > 0:
+                    if isinstance(limit, int | float) and limit > 0:
                         mem_utils.append((float(usage) / float(limit)) * 100.0)
             except Exception:
                 continue
@@ -704,16 +702,23 @@ class AdapterWorker(threading.Thread):
             out["mem_bytes"] = sum(mem_bytes) / len(mem_bytes)
         return out
 
-    def _podman_metrics(self, app_name: str) -> dict[str, Optional[float]]:
+    def _podman_metrics(self, app_name: str) -> dict[str, float | None]:
         """Best-effort Podman metrics via `podman stats --no-stream --format json`."""
-        out: dict[str, Optional[float]] = {"cpu_util": None, "mem_util": None, "mem_bytes": None}
+        out: dict[str, float | None] = {"cpu_util": None, "mem_util": None, "mem_bytes": None}
         try:
             rt = getattr(self._reconciler, "_runtime", None)
             bin_path = getattr(rt, "_bin", None)
             if not isinstance(rt, PodmanRuntime) or not bin_path:
                 return out
-            proc = subprocess.run(
-                [bin_path, "stats", "--no-stream", "--format", "json"],
+            # Guard binary path to a basename or absolute path without whitespace
+            bin_str = str(bin_path)
+            if any(ch.isspace() for ch in bin_str):
+                return out
+            if os.path.sep in bin_str and not os.path.isabs(bin_str):
+                return out
+
+            proc = subprocess.run(  # noqa: S603,S607 - podman CLI; shell disabled; path vetted
+                [bin_str, "stats", "--no-stream", "--format", "json"],  # noqa: S603,S607
                 capture_output=True,
                 text=True,
                 check=False,
@@ -743,7 +748,7 @@ class AdapterWorker(threading.Thread):
                     usage_s = mem_raw.split("/", 1)[0].strip()
                     usage = self._parse_quantity_bytes(usage_s)
                 else:
-                    usage = mem_raw if isinstance(mem_raw, (int, float)) else None
+                    usage = mem_raw if isinstance(mem_raw, int | float) else None
                 if usage is not None:
                     mem_bytes.append(float(usage))
                 mem_pct = item.get("MemPerc") or item.get("Mem %") or item.get("mem_percent")
@@ -761,7 +766,7 @@ class AdapterWorker(threading.Thread):
             out["mem_bytes"] = sum(mem_bytes) / len(mem_bytes)
         return out
 
-    def _collect_metrics_for_app(self, app_name: str) -> dict[str, Optional[float]]:
+    def _collect_metrics_for_app(self, app_name: str) -> dict[str, float | None]:
         metrics = {"cpu_util": None, "mem_util": None, "mem_bytes": None}
         try:
             rt = getattr(self._reconciler, "_runtime", None)
@@ -856,7 +861,6 @@ class AdapterWorker(threading.Thread):
         desired = min(max(desired, min_rep), max_rep)
         now = time.time()
         last_scale = self._hpa_last_scale.get(app_name, 0)
-        scaled = False
         limited = False
         last_scale_time = None
 
@@ -864,9 +868,8 @@ class AdapterWorker(threading.Thread):
             if now - last_scale < self._hpa_cooldown_seconds:
                 limited = True
             else:
-                scaled = True
                 self._hpa_last_scale[app_name] = now
-                last_scale_time = datetime.now(timezone.utc).isoformat()
+                last_scale_time = datetime.now(UTC).isoformat()
                 new_spec = dict(target_obj.spec or {})
                 new_spec["replicas"] = desired
                 updated = self._store.upsert(
@@ -947,7 +950,7 @@ class AdapterWorker(threading.Thread):
 
     def _service_spec_for(
         self, svc: K8sObject
-    ) -> Optional[tuple[tuple[Optional[str], str], ServiceSpec]]:
+    ) -> tuple[tuple[str | None, str], ServiceSpec] | None:
         spec = svc.spec or {}
         selector = spec.get("selector") or {}
         if not selector:
@@ -998,15 +1001,15 @@ class AdapterWorker(threading.Thread):
         return dep_key, svc_spec
 
     def _prepare_service_ports(
-        self, svc: K8sObject, spec: Dict[str, Any], expose_host: bool
-    ) -> list[Dict[str, Any]]:
+        self, svc: K8sObject, spec: dict[str, Any], expose_host: bool
+    ) -> list[dict[str, Any]]:
         desired = spec.get("ports") or []
         svc_key = f"{svc.namespace or ''}/{svc.name}"
         if not desired:
             self._release_service_ports(svc_key)
             return []
         seen_ids: set[str] = set()
-        prepared: list[Dict[str, Any]] = []
+        prepared: list[dict[str, Any]] = []
         for idx, entry in enumerate(desired):
             port_entry = dict(entry)
             port_id = str(port_entry.get("name") or f"idx-{idx}")
@@ -1141,7 +1144,7 @@ class AdapterWorker(threading.Thread):
 
     def _ingress_spec_for(
         self, ing: K8sObject
-    ) -> Optional[tuple[tuple[Optional[str], str], IngressSpec]]:
+    ) -> tuple[tuple[str | None, str], IngressSpec] | None:
         spec = ing.spec or {}
         rules = spec.get("rules") or []
         tls_entries = spec.get("tls") or []

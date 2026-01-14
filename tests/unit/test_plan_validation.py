@@ -31,7 +31,8 @@ spec:
     f = write_manifest(tmp_path, man)
     args = SimpleNamespace(file=f, verbose=False, strict=True, json=True)
     # Stash stdout
-    import io, sys
+    import io
+    import sys
 
     buf = io.StringIO()
     old = sys.stdout
@@ -63,7 +64,8 @@ spec:
 """
     f = write_manifest(tmp_path, man)
     args = SimpleNamespace(file=f, verbose=False, strict=True, json=True)
-    import io, sys
+    import io
+    import sys
 
     buf = io.StringIO()
     old = sys.stdout

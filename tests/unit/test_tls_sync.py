@@ -1,11 +1,11 @@
-from pathlib import Path
 import base64
+from pathlib import Path
 
-from ae.ingress.tls_sync import TlsSecretResolver
 from ae.controller.spec import AppManifest, AppSpec, IngressSpec, Metadata
+from ae.controller.state import SQLiteStateStore
 from ae.ingress.caddy import CaddyIngressManager
 from ae.ingress.service import IngressService
-from ae.controller.state import SQLiteStateStore
+from ae.ingress.tls_sync import TlsSecretResolver
 
 
 def make_secret_yaml(tmpdir: Path, name: str, crt_text: str, key_text: str) -> Path:
@@ -43,7 +43,7 @@ def test_ingress_service_uses_resolved_tls(tmp_path, monkeypatch):
     make_secret_yaml(tmp_path, name, "CERTDATA", "KEYDATA")
     monkeypatch.setenv("AE_TLS_DIR", str(tmp_path))
     # Manager
-    monkeypatch.setattr("ae.ingress.caddy.subprocess.run", lambda *args, **kwargs: None)
+    monkeypatch.setattr("ae.ingress.caddy.subprocess.run", lambda *_args, **_kwargs: None)
     manager = CaddyIngressManager(config_root=tmp_path / "sites", caddy_binary="caddy")
     svc = IngressService(manager)
     # Manifest with tlsSecretName only
@@ -67,7 +67,7 @@ def test_ingress_service_emits_event_when_tls_secret_missing(tmp_path, monkeypat
     # No secret files present
     monkeypatch.setenv("AE_TLS_DIR", str(tmp_path))
     # Fake reload
-    monkeypatch.setattr("ae.ingress.caddy.subprocess.run", lambda *args, **kwargs: None)
+    monkeypatch.setattr("ae.ingress.caddy.subprocess.run", lambda *_args, **_kwargs: None)
     manager = CaddyIngressManager(config_root=tmp_path / "sites", caddy_binary="caddy")
     store = SQLiteStateStore(tmp_path / "state.db")
     svc = IngressService(manager, store=store)

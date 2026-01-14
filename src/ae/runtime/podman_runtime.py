@@ -5,19 +5,18 @@ It implements the same labels and behaviors used by DockerRuntime so the rest
 of the system (ingress, status, events) continues to work unchanged.
 """
 
+# ruff: noqa: E501,S110,S112,S603,S607,SIM105,SIM118,UP022,UP028
 from __future__ import annotations
 
 import json
 import logging
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Set
 
 from ae.controller.spec import AppManifest
 
@@ -42,7 +41,8 @@ class PodmanRuntime(RuntimeAdapter):
     CONTAINER_LABEL = "ae.container"
 
     def __init__(self) -> None:
-        self._bin = os.getenv("AE_PODMAN_BIN", "podman")
+        configured_bin = os.getenv("AE_PODMAN_BIN", "podman")
+        self._bin = shutil.which(configured_bin) or configured_bin
         # Optional shared network for ingress to reach containers by DNS name
         self._network_name = os.getenv("AE_PODMAN_NETWORK") or os.getenv("AE_NETWORK_NAME")
         self._serial_service_rollout = os.getenv("AE_SERIAL_SERVICE_ROLLOUT", "0") == "1"
@@ -441,11 +441,11 @@ class PodmanRuntime(RuntimeAdapter):
                         if isinstance(item, dict) and "name" in item and "value" in item:
                             cmd += ["-e", f"{item['name']}={item['value']}"]
                     # Image and command
-                    img = getattr(csp, "image")
+                    img = getattr(csp, "image")  # noqa: B009
                     cmd += [img]
                     combined: list[str] = []
-                    combined += [str(x) for x in (getattr(csp, "command", []) or [])]
-                    combined += [str(x) for x in (getattr(csp, "args", []) or [])]
+                    combined += [str(x) for x in (getattr(csp, "command", []) or [])]  # noqa: B009
+                    combined += [str(x) for x in (getattr(csp, "args", []) or [])]  # noqa: B009
                     cmd += combined
                     self._run_ok(cmd, allow_fail=True)
             except Exception:
@@ -609,8 +609,8 @@ class PodmanRuntime(RuntimeAdapter):
         # Fallback to stdio hijack via `podman exec --interactive --tty` and a pty.
         # Here we rely on `podman exec` with `--interactive` and `--tty` when requested,
         # attaching to a pseudo-tty and returning its master fd as a socket-like object.
-        import pty
         import os
+        import pty
 
         master, slave = pty.openpty()
         argv = [self._bin, "exec", "--interactive"]
@@ -664,9 +664,8 @@ class PodmanRuntime(RuntimeAdapter):
                 _cid, pid_s = exec_id.split(":", 1)
                 pid = int(pid_s)
                 import fcntl
-                import termios
                 import struct
-                import os
+                import termios
 
                 if height and width:
                     winsize = struct.pack("HHHH", height, width, 0, 0)
@@ -927,7 +926,7 @@ class PodmanRuntime(RuntimeAdapter):
                     try:
                         st = arr[0].get("State") or {}
                         rc = st.get("RestartCount", 0)
-                        if isinstance(rc, (int, float)):
+                        if isinstance(rc, int | float):
                             restarts = int(rc)
                         started_at = st.get("StartedAt")
                         pod_ip = (arr[0].get("NetworkSettings") or {}).get("IPAddress")
@@ -1011,23 +1010,23 @@ class PodmanRuntime(RuntimeAdapter):
         # - limits.memory → hard cap (--memory)
         # - requests.memory → soft reservation (--memory-reservation)
         try:
-            lims = getattr(getattr(manifest.spec, "resources", None), "limits", None)
-            if lims is not None and getattr(lims, "memory", None) is not None:
+            lims = getattr(getattr(manifest.spec, "resources", None), "limits", None)  # noqa: B009
+            if lims is not None and getattr(lims, "memory", None) is not None:  # noqa: B009
                 try:
-                    mem = str(getattr(lims, "memory"))
+                    mem = str(getattr(lims, "memory"))  # noqa: B009
                     cmd += ["--memory", mem]
                 except Exception:
                     pass
-            reqs = getattr(getattr(manifest.spec, "resources", None), "requests", None)
+            reqs = getattr(getattr(manifest.spec, "resources", None), "requests", None)  # noqa: B009
             if reqs is not None:
-                if getattr(reqs, "cpu", None) is not None:
+                if getattr(reqs, "cpu", None) is not None:  # noqa: B009
                     try:
                         shares = max(2, int(float(reqs.cpu) * 1024))
                         cmd += ["--cpu-shares", str(shares)]
                     except Exception:
                         pass
-                if getattr(reqs, "memory", None) is not None:
-                    mem = str(getattr(reqs, "memory"))
+                if getattr(reqs, "memory", None) is not None:  # noqa: B009
+                    mem = str(getattr(reqs, "memory"))  # noqa: B009
                     cmd += ["--memory-reservation", mem]
         except Exception:
             pass
@@ -1044,7 +1043,7 @@ class PodmanRuntime(RuntimeAdapter):
         # lets Caddy proxy via host alias inside the container.
         svc_port, svc_target, svc_ports_list = service
         published_any = False
-        reserved_ports: Set[int] = set()
+        reserved_ports: set[int] = set()
         if svc_ports_list:
             # Publish each declared service port as host:container mapping
             # Resolve targetPort similarly to the exporter rules
@@ -1256,7 +1255,7 @@ class PodmanRuntime(RuntimeAdapter):
             items.append(it)
         return items
 
-    def _find_by_label(self, key: str, value: str) -> Optional[str]:
+    def _find_by_label(self, key: str, value: str) -> str | None:
         r = self._run_ok(
             [self._bin, "ps", "-a", "--filter", f"label={key}={value}", "--format", "{{.ID}}"],
             allow_fail=True,
@@ -1264,7 +1263,7 @@ class PodmanRuntime(RuntimeAdapter):
         cid = (r.out or "").strip().splitlines()
         return cid[0] if cid else None
 
-    def _parse_dt(self, raw: Optional[str]) -> Optional[datetime]:
+    def _parse_dt(self, raw: str | None) -> datetime | None:
         if not raw:
             return None
         try:

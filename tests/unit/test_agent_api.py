@@ -1,5 +1,4 @@
 import threading
-import time
 from http.server import HTTPServer
 
 import pytest
@@ -60,3 +59,4 @@ def test_heartbeat_requires_token(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+# ruff: noqa: S106

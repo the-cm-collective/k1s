@@ -1,6 +1,6 @@
 from ae.controller.health import HealthManager
-from ae.controller.spec import AppManifest, AppSpec, Metadata, HealthSpec, ProbeSpec
-from ae.runtime.base import RuntimeResult, ReplicaState
+from ae.controller.spec import AppManifest, AppSpec, HealthSpec, Metadata, ProbeSpec
+from ae.runtime.base import ReplicaState, RuntimeResult
 
 
 def test_tcp_probe_success(monkeypatch):
@@ -33,7 +33,8 @@ def test_tcp_probe_success(monkeypatch):
         def __exit__(self, *args):
             return False
 
-    def fake_conn(addr, timeout=1):  # noqa: ANN001
+    def fake_conn(_addr, timeout=1):  # noqa: ANN001
+        _ = timeout
         return OKSock()
 
     import socket as _socket
@@ -67,7 +68,8 @@ def test_tcp_probe_failure(monkeypatch):
         ],
     )
 
-    def fake_conn(addr, timeout=1):  # noqa: ANN001
+    def fake_conn(_addr, timeout=1):  # noqa: ANN001
+        _ = timeout
         raise OSError("connection refused")
 
     import socket as _socket

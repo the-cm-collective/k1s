@@ -1,9 +1,9 @@
 from pathlib import Path
 
+from ae.controller.health import HealthManager
 from ae.controller.reconciler import Reconciler
 from ae.controller.spec import AppManifest, AppSpec, Metadata, PortSpec
 from ae.controller.state import SQLiteStateStore
-from ae.controller.health import HealthManager
 
 
 class DummyRuntime:
@@ -12,7 +12,7 @@ class DummyRuntime:
 
     def ensure_app(self, manifest, revision, *, keep_old=False, limit_create=None):  # noqa: ANN001
         self.calls.append((keep_old, limit_create))
-        from ae.runtime.base import RuntimeResult, ReplicaState
+        from ae.runtime.base import ReplicaState, RuntimeResult
 
         states = []
         if limit_create is None or limit_create > 0:

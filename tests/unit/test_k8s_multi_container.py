@@ -8,8 +8,14 @@ def test_export_multi_container_and_initcontainers() -> None:
     man = load_manifest(Path("specs/examples/echo.yaml"))
     c1 = {"name": "web", "image": man.spec.image, "ports": man.spec.ports, "env": man.spec.env}
     # Sidecar includes per-container health and lifecycle to verify parity
-    from ae.controller.spec import ProbeSpec, TCPSocketProbe, HealthSpec, LifecycleSpec, LifecycleHandler
     from ae.controller.spec import AppSpec as _AppSpec
+    from ae.controller.spec import (
+        HealthSpec,
+        LifecycleHandler,
+        LifecycleSpec,
+        ProbeSpec,
+        TCPSocketProbe,
+    )
     c2 = _AppSpec.ContainerSpec(
         name="sidecar",
         image=man.spec.image,
@@ -56,3 +62,4 @@ def test_projection_mounts_per_init_container() -> None:
     # Ensure subPath mounts were created targeting the projected volume
     assert any(m.get("name") == vname and m.get("subPath") == "config/app_mode.txt" for m in mounts)
     assert any(m.get("name") == vname and m.get("subPath") == "secret/token" and m.get("readOnly") for m in mounts)
+# ruff: noqa: E501

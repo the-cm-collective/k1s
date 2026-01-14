@@ -49,7 +49,7 @@ class StubIngressManager:
         self.removed: list[str] = []
         self.reloads = 0
 
-    def apply(self, manifest: AppManifest, upstream: str) -> IngressResult:
+    def apply(self, manifest: AppManifest, _upstream: str) -> IngressResult:
         result = IngressResult(
             app_name=manifest.metadata.name,
             host=manifest.spec.ingress.host if manifest.spec.ingress else None,
@@ -69,7 +69,7 @@ class StubSecretManager(SecretManager):
     def __init__(self) -> None:  # type: ignore[override]
         super().__init__(allow_plaintext=True)
 
-    def load_env(self, refs):  # noqa: ANN001
+    def load_env(self, _refs):  # noqa: ANN001
         return {"SECRET_VALUE": "hunter2"}
 
 
@@ -132,3 +132,4 @@ def test_reconcile_emits_events_and_metrics(tmp_path: Path) -> None:
 
     revisions = state.list_revisions("demo", limit=5)
     assert len(revisions) >= 2
+# ruff: noqa: S108

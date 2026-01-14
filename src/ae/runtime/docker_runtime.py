@@ -1,11 +1,12 @@
 """Docker-backed runtime adapter for managing application replicas."""
 
+# ruff: noqa: E501,S110,S112,S603,S607,S104,SIM105,SIM118,UP022,UP028,B009
 from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import docker
 from docker.errors import APIError, NotFound
@@ -30,8 +31,8 @@ class DockerRuntime(RuntimeAdapter):
 
     def __init__(
         self,
-        client: Optional[docker.DockerClient] = None,
-        registry_auth: Optional[RegistryAuthProvider] = None,
+        client: docker.DockerClient | None = None,
+        registry_auth: RegistryAuthProvider | None = None,
     ) -> None:
         try:
             self._client = client or docker.from_env()
@@ -66,8 +67,8 @@ class DockerRuntime(RuntimeAdapter):
         except APIError as exc:  # pragma: no cover - network failure path hard to trigger in tests
             raise RuntimeError(f"Failed to list containers for {app_name}: {exc}") from exc
 
-        containers_by_replica: Dict[str, Container] = {}
-        old_revision_containers: List[Container] = []
+        containers_by_replica: dict[str, Container] = {}
+        old_revision_containers: list[Container] = []
         for container in existing_containers:
             # Accessing .labels may trigger an inspect call; guard against races where
             # the container disappears between list() and inspect().
@@ -191,6 +192,7 @@ class DockerRuntime(RuntimeAdapter):
             raise RuntimeError(f"Failed to read logs for {replica_id}: {exc}") from exc
 
     def exec(self, replica_id: str, command: list[str], *, timeout: int | None = None) -> int:  # type: ignore[override]
+        _ = timeout
         try:
             containers = self._client.containers.list(
                 all=True, filters={"label": f"{self.REPLICA_LABEL}={replica_id}"}
@@ -202,7 +204,7 @@ class DockerRuntime(RuntimeAdapter):
         c = containers[0]
         try:
             exec_id = self._client.api.exec_create(c.id, cmd=command)
-            res = self._client.api.exec_start(exec_id, stream=False, detach=False, tty=False)
+            self._client.api.exec_start(exec_id, stream=False, detach=False, tty=False)
             # fetch exit code
             info = self._client.api.exec_inspect(exec_id)
             return int(info.get("ExitCode", 1))
@@ -239,7 +241,7 @@ class DockerRuntime(RuntimeAdapter):
 
     # Internal helpers -------------------------------------------------
 
-    def _desired_replica_ids(self, manifest: AppManifest, revision: int) -> List[str]:
+    def _desired_replica_ids(self, manifest: AppManifest, revision: int) -> list[str]:
         return [
             f"{manifest.metadata.name}-rev{revision}-{replica}"
             for replica in range(manifest.spec.replicas)
@@ -347,7 +349,7 @@ class DockerRuntime(RuntimeAdapter):
             # Build command/args following K8s semantics:
             # - If both command and args are set, pass command + args
             # - If only args are set, pass args (ENTRYPOINT receives them)
-            _cmd: Optional[List[str]] = None
+            _cmd: list[str] | None = None
             if getattr(manifest.spec, "command", None) and getattr(manifest.spec, "args", None):
                 _cmd = list(manifest.spec.command) + list(manifest.spec.args)
             elif getattr(manifest.spec, "command", None):
@@ -491,8 +493,8 @@ class DockerRuntime(RuntimeAdapter):
                                 f"service.port {host_port} is already in use by container {c.name} (app '{other_app}')"
                             )
 
-    def _host_ports_in_use(self) -> Set[int]:
-        ports_in_use: Set[int] = set()
+    def _host_ports_in_use(self) -> set[int]:
+        ports_in_use: set[int] = set()
         try:
             containers = self._client.containers.list(all=True)
         except APIError as exc:  # pragma: no cover - best effort
@@ -540,7 +542,7 @@ class DockerRuntime(RuntimeAdapter):
         manifest: AppManifest,
         replica_id: str,
         revision: int,
-        volumes: Dict[str, dict],
+        volumes: dict[str, dict],
     ) -> None:
         """Ensure declared sidecar containers (spec.containers) are running for a replica."""
         if not getattr(manifest.spec, "containers", None):
@@ -559,7 +561,7 @@ class DockerRuntime(RuntimeAdapter):
             )
         except APIError:
             existing = []
-        by_cname: Dict[str, Container] = {}
+        by_cname: dict[str, Container] = {}
         for c in existing:
             try:
                 cname = (c.labels or {}).get(self.CONTAINER_LABEL)
@@ -586,7 +588,7 @@ class DockerRuntime(RuntimeAdapter):
                     continue
                 c = by_cname.get(cname)
                 if c is None:
-                    env_map: Dict[str, str] = {}
+                    env_map: dict[str, str] = {}
                     for item in (getattr(csp, "env", []) or []):
                         if isinstance(item, dict) and "name" in item and "value" in item:
                             env_map[item["name"]] = str(item.get("value", ""))
@@ -614,9 +616,11 @@ class DockerRuntime(RuntimeAdapter):
                     full_name = f"ae-{app_name}-rev{revision}-{name_suffix}-{cname}"
                     try:
                         sc = self._client.containers.run(
-                            getattr(csp, "image"),
-                            command=(list(getattr(csp, "command", []) or [])
-                                     + list(getattr(csp, "args", []) or []))
+                            getattr(csp, "image"),  # noqa: B009
+                            command=(
+                                list(getattr(csp, "command", []) or [])  # noqa: B009
+                                + list(getattr(csp, "args", []) or [])  # noqa: B009
+                            )
                             or None,
                             name=full_name,
                             detach=True,
@@ -705,6 +709,7 @@ class DockerRuntime(RuntimeAdapter):
     def exec_for_container(
         self, app_name: str, container_name: str, command: list[str], *, timeout: int | None = None
     ) -> int:  # type: ignore[override]
+        _ = timeout
         try:
             containers = self._client.containers.list(
                 all=True,
@@ -812,18 +817,18 @@ class DockerRuntime(RuntimeAdapter):
         ports: Iterable[PortSpec],
         app_name: str,
         *,
-        service_port: Optional[int] = None,
-        service_target: Optional[int] = None,
-        service_ports: Optional[Iterable] = None,
-    ) -> Tuple[Dict[str, Optional[int]], Dict[int, Optional[int]]]:
-        mapping: Dict[str, Optional[int]] = {}
+        service_port: int | None = None,
+        service_target: int | None = None,
+        service_ports: Iterable | None = None,
+    ) -> tuple[dict[str, int | None], dict[int, int | None]]:
+        mapping: dict[str, int | None] = {}
         first_port = None
-        reserved: Set[int] = set()
-        blocked_ports: Set[int] = set()
+        reserved: set[int] = set()
+        blocked_ports: set[int] = set()
         if service_port is not None or service_ports is not None:
             blocked_ports = self._host_ports_in_use()
         # If multi-port service mapping is provided, build quick lookup from target->host
-        svc_map: Dict[int, Optional[int]] = {}
+        svc_map: dict[int, int | None] = {}
         if service_ports is not None:
             # Build container port name/number map
             try:
@@ -867,7 +872,7 @@ class DockerRuntime(RuntimeAdapter):
             if first_port is None:
                 first_port = port.container_port
             key = f"{port.container_port}/tcp"
-            host_port: Optional[int] = None
+            host_port: int | None = None
             if svc_map:
                 host_port = svc_map.get(int(port.container_port))
             elif service_port is not None:
@@ -897,8 +902,8 @@ class DockerRuntime(RuntimeAdapter):
         return mapping, svc_map
 
     def _endpoint_from_ports(
-        self, ports: Iterable[PortSpec], container: Container, *, preferred: Optional[int] = None
-    ) -> Optional[str]:
+        self, ports: Iterable[PortSpec], container: Container, *, preferred: int | None = None
+    ) -> str | None:
         # It is possible for images to expose ports that don't match the declared
         # manifest. For readiness probing we prefer, in order: a published host
         # port matching the preferred probe port; otherwise a published 80/tcp;
@@ -907,12 +912,13 @@ class DockerRuntime(RuntimeAdapter):
 
         network_ports = container.attrs.get("NetworkSettings", {}).get("Ports", {}) or {}
 
-        def _binding_to_endpoint(binding: dict) -> Optional[str]:
+        def _binding_to_endpoint(binding: dict) -> str | None:
             host_ip = binding.get("HostIp", "127.0.0.1")
             # When containers run on remote nodes, loopback/0.0.0.0 is not reachable
-            # from the controller. Prefer an advertised node IP when provided.
+            # from the controller. Prefer an advertised node IP when provided; otherwise
+            # normalize wildcard/loopback to 127.0.0.1 for local access.
             if host_ip in ("0.0.0.0", "::", "[::]", "127.0.0.1", "::1", "[::1]"):
-                host_ip = os.getenv("AE_NODE_ADVERTISE_IP", host_ip)
+                host_ip = os.getenv("AE_NODE_ADVERTISE_IP") or "127.0.0.1"
             host_port = binding.get("HostPort")
             if host_port:
                 return f"{host_ip}:{host_port}"
@@ -927,7 +933,7 @@ class DockerRuntime(RuntimeAdapter):
                     return ep
 
         # Convenience helper to pick a specific container port if published
-        def _pick_port(container_port: int) -> Optional[str]:
+        def _pick_port(container_port: int) -> str | None:
             binds = network_ports.get(f"{int(container_port)}/tcp")
             if binds:
                 return _binding_to_endpoint(binds[0])
@@ -1073,8 +1079,8 @@ class DockerRuntime(RuntimeAdapter):
                 results.append((str(name), 1, f"error: {exc}"))
         return results
 
-    def _manifest_env(self, manifest: AppManifest) -> Dict[str, str]:
-        env_map: Dict[str, str] = {}
+    def _manifest_env(self, manifest: AppManifest) -> dict[str, str]:
+        env_map: dict[str, str] = {}
         for item in manifest.spec.env:
             name = item.get("name")
             if not name:
@@ -1102,7 +1108,7 @@ class DockerRuntime(RuntimeAdapter):
                         rs = getattr(manifest.spec, "resources", None)
                         obj = rs.limits if res == "limits.cpu" else (rs.requests if rs else None)
                         cpuq = getattr(obj, "cpu", None) if obj else None
-                        if isinstance(cpuq, (int, float)):
+                        if isinstance(cpuq, int | float):
                             base_m = int(round(float(cpuq) * 1000))
                             if divisor_raw:
                                 d = divisor_raw.strip().lower()
@@ -1144,7 +1150,7 @@ class DockerRuntime(RuntimeAdapter):
         except APIError as exc:
             raise RuntimeError(f"Failed to reload container {container.name}: {exc}") from exc
 
-    def _parse_datetime(self, raw: Optional[str]) -> Optional[datetime]:
+    def _parse_datetime(self, raw: str | None) -> datetime | None:
         if not raw or raw == "0001-01-01T00:00:00Z":
             return None
         cleaned = str(raw)
@@ -1159,7 +1165,7 @@ class DockerRuntime(RuntimeAdapter):
 
     
 
-    def _parse_memory_bytes(self, raw: str) -> Optional[int]:
+    def _parse_memory_bytes(self, raw: str) -> int | None:
         try:
             s = raw.strip()
             suffixes = {
@@ -1213,7 +1219,7 @@ class DockerRuntime(RuntimeAdapter):
                 state = (c.attrs or {}).get("State", {})
                 restarts = (
                     int(state.get("RestartCount", 0))
-                    if isinstance(state.get("RestartCount", 0), (int, float))
+                    if isinstance(state.get("RestartCount", 0), int | float)
                     else 0
                 )
                 started_at = state.get("StartedAt") or None

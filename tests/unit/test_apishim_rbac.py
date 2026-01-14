@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from ae.apishim import server as shim_server
-from ae.apishim.store import ObjectStore, K8sObject
+from ae.apishim.store import K8sObject, ObjectStore
 
 
 def make_handler(path: str, method: str = "GET", headers=None, body: bytes = b""):
@@ -39,7 +39,7 @@ def make_handler(path: str, method: str = "GET", headers=None, body: bytes = b""
             self.responses = []
             self._body = body
             self.wfile = SimpleNamespace(write=lambda b: self.responses.append(b))
-        def send_response(self, code, message=None):
+        def send_response(self, code, _message=None):
             self.responses.append(code)
         def send_header(self, k, v):
             pass
@@ -173,7 +173,7 @@ def test_subject_access_review_allows(monkeypatch, store):
     monkeypatch.setenv("AE_APISHIM_RBAC", "1")
     monkeypatch.setenv("AE_APISHIM_RBAC_EVAL", "1")
     monkeypatch.setenv("AE_APISHIM_TOKEN", "a")
-    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda self: None)
+    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda _self: None)
     shim_server.ShimHandler.rbac_enabled = True
     shim_server.ShimHandler.rbac_eval_roles = True
     shim_server.ShimHandler.admin_token = "a"
@@ -240,7 +240,7 @@ def test_subject_access_review_denied(monkeypatch, store):
     monkeypatch.setenv("AE_APISHIM_RBAC_EVAL", "1")
     monkeypatch.setenv("AE_APISHIM_TOKEN", "a")
     monkeypatch.setenv("AE_APISHIM_READ_TOKEN", "r")
-    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda self: None)
+    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda _self: None)
     shim_server.ShimHandler.rbac_enabled = True
     shim_server.ShimHandler.rbac_eval_roles = True
     shim_server.ShimHandler.admin_token = "a"
@@ -285,7 +285,7 @@ def test_serviceaccount_token_auth(monkeypatch, store):
     shim_server.ShimHandler.rbac_eval_roles = True
     shim_server.ShimHandler.admin_token = "a"
     shim_server.ShimHandler.read_token = None
-    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda self: None)
+    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda _self: None)
     # create Role allowing list configmaps
     role = K8sObject(
         "rbac.authorization.k8s.io",
@@ -355,7 +355,7 @@ def test_expired_sa_token_denied(monkeypatch, store):
     shim_server.ShimHandler.rbac_eval_roles = True
     shim_server.ShimHandler.admin_token = "a"
     shim_server.ShimHandler.read_token = None
-    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda self: None)
+    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda _self: None)
     # insert expired token
     expired_token = "old"
     shim_server.ShimHandler.sa_tokens[expired_token] = ("default", "default", 0)
@@ -372,3 +372,4 @@ def test_expired_sa_token_denied(monkeypatch, store):
     handler.wfile = BytesIO()
     handler.do_GET()
     assert 401 in handler.responses or 403 in handler.responses
+# ruff: noqa: S105,E501

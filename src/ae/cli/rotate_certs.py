@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import argparse
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
-from ae.security import issue_token, issue_cert
+from ae.security import issue_cert, issue_token
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="ae.rotate-certs", description="Issue a new agent cert for a node")
+    parser = argparse.ArgumentParser(
+        prog="ae.rotate-certs", description="Issue a new agent cert for a node"
+    )
     parser.add_argument("--node-id", default=os.getenv("AE_NODE_ID"))
     parser.add_argument("--days", type=int, default=365)
     parser.add_argument("--join-secret", default=os.getenv("AE_AGENT_JOIN_SECRET"))
@@ -21,7 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.join_secret:
         print("join secret required (AE_AGENT_JOIN_SECRET)")
         return 1
-    exp = datetime.now(timezone.utc) + timedelta(days=args.days)
+    exp = datetime.now(datetime.UTC) + timedelta(days=args.days)
     token = issue_token(args.node_id, exp, secret=args.join_secret)
     crt, key, ca = issue_cert(args.node_id, root=args.root, days=args.days)
     print("issued new cert")

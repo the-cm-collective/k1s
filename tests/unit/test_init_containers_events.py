@@ -9,8 +9,8 @@ class DummyRuntimeWithInit:
     def __init__(self):
         self.calls = []
 
-    def ensure_app(self, manifest, revision, *, keep_old=False, limit_create=None):  # noqa: ANN001
-        from ae.runtime.base import RuntimeResult, ReplicaState
+    def ensure_app(self, manifest, revision, *, _keep_old=False, _limit_create=None):  # noqa: ANN001
+        from ae.runtime.base import ReplicaState, RuntimeResult
 
         self.calls.append("ensure")
         return RuntimeResult(
@@ -28,7 +28,7 @@ class DummyRuntimeWithInit:
             ],
         )
 
-    def run_init_containers(self, manifest):  # noqa: ANN001
+    def run_init_containers(self, _manifest):  # noqa: ANN001
         return [("init", 0, "ok")]
 
 
@@ -46,3 +46,4 @@ def test_init_containers_emit_events(tmp_path: Path) -> None:
     events = store.list_events("echo")
     codes = [e.event_type for e in events]
     assert any(t in codes for t in ("InitStart", "InitDone"))
+# ruff: noqa: E501

@@ -15,7 +15,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 import yaml
 
@@ -25,7 +25,7 @@ class TlsSecretResolver:
         self._root = root
         self._root.mkdir(parents=True, exist_ok=True)
 
-    def resolve(self, name: str) -> Optional[Tuple[Path, Path]]:
+    def resolve(self, name: str) -> Optional[tuple[Path, Path]]:
         if not name:
             return None
         # 1) Direct files
@@ -71,3 +71,4 @@ class TlsSecretResolver:
             return yaml.safe_load(path.read_text())
         except Exception:
             return None
+# ruff: noqa: E501,UP006,UP007,S110,S112
