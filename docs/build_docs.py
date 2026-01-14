@@ -145,11 +145,11 @@ TEMPLATE = """<!doctype html>
       nav {
         display: flex;
         align-items: center;
-        flex-wrap: nowrap;
-        gap: .55rem;
+        flex-wrap: wrap;
+        gap: .6rem;
         justify-content: center;
         margin: 0 auto 1.25rem auto;
-        width: min(100%, 1360px);
+        width: min(100%, 1320px);
         padding: 10px 16px;
         background: var(--k1s-panel);
         border: 1px solid var(--k1s-border);
@@ -160,13 +160,7 @@ TEMPLATE = """<!doctype html>
         z-index: 10;
         backdrop-filter: blur(6px);
         -webkit-backdrop-filter: blur(6px);
-        overflow-x: auto;
-        scrollbar-width: thin;
-        -ms-overflow-style: auto;
       }
-      nav::-webkit-scrollbar { height: 8px; }
-      nav::-webkit-scrollbar-thumb { background: var(--k1s-border); border-radius: 999px; }
-      nav::-webkit-scrollbar-track { background: transparent; }
       nav a {
         display: inline-flex;
         align-items: center;
@@ -252,8 +246,8 @@ TEMPLATE = """<!doctype html>
       a:hover { color: var(--link-hover); }
       a:focus-visible { outline: 2px solid var(--k1s-highlight); outline-offset: 2px; border-radius: 4px; }
       .container {
-        width: min(100%, 1360px);
-        max-width: 1360px;
+        width: min(100%, 1320px);
+        max-width: 1320px;
         margin: 0 auto;
         flex: 1 0 auto;
       }
