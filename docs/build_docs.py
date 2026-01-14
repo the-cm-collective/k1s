@@ -103,7 +103,8 @@ TEMPLATE = """<!doctype html>
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
         --muted: var(--k1s-panel);
-        --link: var(--k1s-primary);
+        --link: #5a86c9;
+        --link-hover: #7aa0e8;
         --code-bg: #1b1b1b;
         --border: var(--k1s-border);
       }
@@ -121,7 +122,8 @@ TEMPLATE = """<!doctype html>
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
         --muted: var(--k1s-panel);
-        --link: var(--k1s-primary);
+        --link: #2f59b9;
+        --link-hover: #3b63c5;
         --border: var(--k1s-border);
       }
     </style>
@@ -155,7 +157,7 @@ TEMPLATE = """<!doctype html>
         -webkit-backdrop-filter: blur(6px);
       }
       nav a { margin-right: 0.25rem; color: var(--link); font-weight: 500; }
-      nav a:hover { color: var(--k1s-highlight); }
+      nav a:hover { color: var(--link-hover); }
       .spacer { flex: 1 1 auto; }
       button#theme-toggle,
       button#api-mode-toggle {
@@ -189,6 +191,7 @@ TEMPLATE = """<!doctype html>
       h2 { margin-top: 1.5em; font-size: 20px; }
       h3 { margin-top: 1.1em; font-size: 17px; }
       a { color: var(--link); }
+      a:hover { color: var(--link-hover); }
       a:focus-visible { outline: 2px solid var(--k1s-highlight); outline-offset: 2px; border-radius: 4px; }
       .container { max-width: 980px; flex: 1 0 auto; }
       .card {
