@@ -20,24 +20,23 @@ Online (cluster-backed) checks
 
 The compliance status and per-sample details render below when a report is present.
 
-## Current Coverage Summary (2025-11-12)
+## Current Coverage Summary (2026-01-14)
 
-- Workloads: Deployment (apps/v1), StatefulSet, Job, and CronJob supported; DaemonSet not emitted.
-- Pod/Container: env pairs; env via configMapKeyRef/secretKeyRef; readiness/liveness (HTTP/TCP/exec); resources requests/limits; securityContext (runAsUser/runAsGroup/readOnlyRootFilesystem/cap drop/seccomp); AppArmor via annotation; terminationGracePeriodSeconds; priorityClassName.
-- Service: ClusterIP with multi-port mapping; NodePort/LoadBalancer honored; nodePort validated (30000–32767); externalIPs passthrough.
-- Ingress: networking.k8s.io/v1 Prefix paths; multi-path; TLS default on with optional secretName; ingressClassName optional.
-- Policy/Autoscaling/Accounts: PDB (policy/v1; integers or percent), HPA (autoscaling/v2 CPU/memory utilization or memory AverageValue), ServiceAccount attach/emit, Role/RoleBinding emit when a ServiceAccount is attached, NetworkPolicy passthrough.
-- Scheduling: affinity/tolerations/topologySpreadConstraints/priorityClassName passed to Pod template.
-- Validation/Tooling: `ae export-k8s --validate`, `ae k8s-check --policy strict`, `ae k8s-report` (kubeconform + optional kubectl dry-run/apply).
+- Workloads: Deployment/StatefulSet/DaemonSet/Job/CronJob supported; shim mirrors status/scale.
+- Pod/Container: env/envFrom; readiness/liveness/startup probes; lifecycle hooks; resources requests/limits; securityContext (runAs*/fsGroup/readOnlyRootFilesystem/cap drop/seccomp/AppArmor); terminationGracePeriodSeconds; priorityClassName.
+- Service: ClusterIP/NodePort/LoadBalancer with multi-port mapping, nodePort validation, externalIPs, sessionAffinity; EndpointSlice projection with topology hints; service port-forward supported by shim.
+- Ingress: networking.k8s.io/v1 Prefix paths with TLS and ingressClassName; status.loadBalancer populated from Service VIP/provider IPs.
+- Policy/Autoscaling/Accounts: PDB (int/percent), HPA v2 (CPU/memory utilization/averageValue), ServiceAccount tokens, Role/RoleBinding emit/enforce in shim, NetworkPolicy passthrough.
+- Scheduling: affinity/tolerations/topologySpreadConstraints/nodeSelector/priorityClassName passed to Pod templates; scheduler in k1s honors selectors/tolerations/topology spread and storage pinning.
+- Validation/Tooling: `ae export-k8s --validate`, `ae k8s-check --policy strict`, `ae k8s-report`, OpenAPI v2/v3 drift guard + fixtures, compatibility matrix (`docs/apishim-compatibility-matrix.md`).
 
 ### Notable Gaps vs. Kubernetes
 
-- StartupProbe and lifecycle hooks (postStart/preStop) not modeled.
-- `envFrom`, `imagePullSecrets`, and `imagePullPolicy` not modeled.
- - HPA advanced behaviors (scale policies) not supported.
-- Service sessionAffinity/healthCheckNodePort and advanced Ingress annotations not emitted.
-- Config/Secret volume mounts not modeled (env/key refs only); PVC `storageClassName` and accessModes are fixed.
- - RBAC: namespaced Role + RoleBinding emitted when a ServiceAccount is attached. ClusterRole/ClusterRoleBinding remain out of scope for now.
+- NetworkPolicy enforcement depends on your CNI when exporting; k1s runtime does not enforce policies.
+- PodSecurityAdmission/admission webhooks are not implemented; exporter can emit PSA labels only.
+- PV/PVC/StorageClass/CSI provisioning beyond exported manifests; k1s runtime relies on retained named volumes.
+- metrics.k8s.io/metrics-server and aggregated APIs are out of scope.
+- Advanced Ingress features (regex, weighted/canary annotations, multiple backends per rule) remain out of scope for now.
 
 ## NetworkPolicy Provider Notes (k3s)
 
@@ -49,12 +48,12 @@ The compliance status and per-sample details render below when a report is prese
 
 ### Gap Tracker (create issues and check off when done)
 
-- [ ] Add `startupProbe` to spec and exporter; update `k8s-check` guidance.
-- [ ] Support `envFrom` for ConfigMap/Secret; exporter maps to envFrom.
-- [ ] Support `imagePullSecrets` and `imagePullPolicy` in spec/exporter.
-- [x] Allow PDB percentage values and validate exclusivity with integers. (2025-11-12)
+- [x] Add `startupProbe` to spec and exporter; update `k8s-check` guidance.
+- [x] Support `envFrom` for ConfigMap/Secret; exporter maps to envFrom.
+- [x] Support `imagePullSecrets` and `imagePullPolicy` in spec/exporter.
+- [x] Allow PDB percentage values and validate exclusivity with integers.
 - [ ] Add HPA scaleUp/scaleDown behavior knobs (stabilizationWindow, policies).
 - [ ] Model Config/Secret volume mounts and mountPaths; exporter emits volumes/volumeMounts.
 - [ ] PVC `storageClassName` and `accessModes` selection flags; document defaults.
-- [ ] Service sessionAffinity and healthCheckNodePort (behind explicit flag).
-- [x] Optional RBAC emission for a ServiceAccount (Role/RoleBinding presets). (2025-11-12)
+- [ ] Service healthCheckNodePort and advanced Ingress annotations (behind explicit flag).
+- [ ] RBAC: broaden exporter coverage for ClusterRole/ClusterRoleBinding presets.

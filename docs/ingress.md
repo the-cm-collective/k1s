@@ -47,3 +47,4 @@ Notes
 - For containers, the ingress manager will adapt loopback upstreams to the correct host alias: `host.docker.internal` (Docker) or `host.containers.internal` (Podman).
 - To enable active health checks in Caddy, set `AE_CADDY_ACTIVE_HEALTH=1` and configure a readiness probe in the manifest.
 - AppArmor & Seccomp: When exporting to K8s, the engine maps `spec.security.seccompProfile*` to the container `securityContext.seccompProfile` and sets an AppArmor annotation on the Pod template. Ensure your cluster supports AppArmor (e.g., apparmor_parser present and profiles loaded). On some local clusters (Kind/MicroK8s), you may need to enable AppArmor and allow custom profiles.
+- Multi-node overlay: When `AE_SERVICE_PROVIDER=overlay` is enabled, Caddy upstreams point at Service VIPs on the overlay network. Attach the Caddy host/container to `AE_OVERLAY_NET` or add routes so VIPs are reachable.

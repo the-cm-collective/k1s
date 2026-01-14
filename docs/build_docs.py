@@ -129,11 +129,13 @@ TEMPLATE = """<!doctype html>
     </style>
     <style>
       /* Base layout aligned to dashboard palette */
-      html, body { height: 100%; }
+      html { height: 100%; }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
-        margin: 2rem;
+        margin: 0;
+        padding: 2rem;
         line-height: 1.55;
+        box-sizing: border-box;
         min-height: 100vh;
         display: flex;
         flex-direction: column;
@@ -276,7 +278,9 @@ TEMPLATE = """<!doctype html>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="architecture.html">Architecture</a>
+      <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
+      <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
@@ -362,6 +366,7 @@ def md_to_html(md: str, *, allow_raw_html: bool = False) -> str:
     out: list[str] = []
     in_code = False
     code_lang = ""
+    code_buf: list[str] | None = None
     in_list = False
     li_buf: list[str] | None = None
 
@@ -392,27 +397,27 @@ def md_to_html(md: str, *, allow_raw_html: bool = False) -> str:
         if in_code:
             if line.strip().startswith("```"):
                 # close
+                # Join buffered code lines without inserting a leading newline
+                content = "\n".join(code_buf or [])
                 if code_lang == "mermaid":
-                    out.append("</pre>")
+                    out.append(f"<pre class=\"mermaid\">{content}</pre>")
                 else:
-                    out.append("</code></pre>")
+                    out.append(f"<pre><code>{content}</code></pre>")
                 in_code = False
                 code_lang = ""
+                code_buf = None
             else:
-                if code_lang == "mermaid":
-                    out.append(html.escape(line))
-                else:
-                    out.append(html.escape(line))
+                # Preserve original code lines; escape HTML either way
+                if code_buf is None:
+                    code_buf = []
+                code_buf.append(html.escape(line))
             continue
 
         if line.strip().startswith("```"):
             flush_paragraph(para_buf)
             lang = line.strip()[3:].strip().lower()
             code_lang = lang
-            if lang == "mermaid":
-                out.append('<pre class="mermaid">')
-            else:
-                out.append("<pre><code>")
+            code_buf = []
             in_code = True
             continue
 
@@ -1091,9 +1096,11 @@ def main() -> None:
         "start-here.md": "start-here.html",
         "overview.md": "overview.html",
         "architecture.md": "architecture.html",
+        "multinode-lab.md": "multinode-lab.html",
         "http-api.md": "http-api.html",
         "ingress.md": "ingress.html",
         "api-auth.md": "api-auth.html",
+        "apishim-compatibility-matrix.md": "apishim-compatibility-matrix.html",
         "concepts.md": "concepts.html",
         "benchmarks.md": "benchmarks.html",
         "testing-memory-k1s.md": "testing-memory-k1s.html",
@@ -1117,7 +1124,9 @@ def main() -> None:
   <li><a href="start-here.html">Start Here (Onboarding)</a></li>
   <li><a href="overview.html">Overview</a></li>
   <li><a href="architecture.html">Architecture</a></li>
+  <li><a href="multinode-lab.html">Multi-Node Lab</a></li>
   <li><a href="http-api.html">HTTP API</a></li>
+  <li><a href="apishim-compatibility-matrix.html">API Shim Compatibility</a></li>
   <li><a href="ingress.html">Ingress</a></li>
   <li><a href="api-auth.html">API Auth</a></li>
   <li><a href="concepts.html">Concepts</a></li>

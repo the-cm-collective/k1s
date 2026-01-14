@@ -25,6 +25,7 @@ Remote CLI usage
 Security notes
 - For production, place the API behind TLS (Caddy) and use client auth or network ACLs.
 - Prefer short-lived tokens and minimal roles for automation.
+- Kubernetes API shim tokens: `AE_APISHIM_TOKEN` is required by default for `python -m ae.apishim serve`; set `AE_APISHIM_ALLOW_ANON=1` only for local labs. Shim RBAC evaluates Role/ClusterRole bindings and exposes a `SubjectAccessReview`-compatible endpoint.
 
 Registry Auth (private images)
 - Credentials are stored at `~/.config/ae/registries.yaml` and used by the runtime before pulls.

@@ -6,6 +6,7 @@ This single page gets a new contributor or user from a fresh clone to a running 
 - Python 3.11+
 - Podman (preferred) or Docker installed and running
 - Optional (for ingress/docs via Caddy and Prometheus): `docker compose` or `podman compose`
+- Optional (for multi-node lab): two Linux hosts/VMs with WireGuard tools and rootful networking
 
 ## Option A — Zero‑to‑Demo (automated)
 This script provisions a local demo stack, serves docs, starts the controller API, and applies sample apps.
@@ -36,6 +37,7 @@ python -m ae.cli logs blue --tail 50
 Tips
 - Need only docs + API? Use `./scripts/init_demo.sh --docs-only -y`.
 - Prefer Make: `make demo ARGS="--demo-standard -y -d"` and `make demo-down` (see `Makefile:1`).
+- Want to try multi-node? Run `make demo ARGS="--demo-multinode -y"` once you have a second host/VM reachable (see Option C below).
 
 ## Option B — Manual Quickstart (hands‑on)
 Follow this if you want to see each moving part.
@@ -72,6 +74,37 @@ k1s get apps
 k1s describe app/echo
 k1s logs app/echo --follow --tail 100
 ```
+
+Optional: start the Kubernetes API shim for kubectl/helm parity
+```
+AE_APISHIM_TOKEN=devtoken python -m ae.apishim serve --host 127.0.0.1 --port 8445
+kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods
+```
+Shim capabilities and gaps live in `docs/apishim-compatibility-matrix.md`.
+
+## Option C — Multi-node Lab (controller + worker)
+Use this when you want to validate the overlay Service VIP path and scheduler on two hosts.
+
+1) Controller (host A):
+```
+AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay AE_AGENT_API_TOKEN=changeme \
+python -m ae.controller --loop --specs specs/ --metrics-port 9108
+```
+
+2) Worker agent (host B):
+```
+AE_CONTROLLER_URL=http://<controller-host>:9110 AE_AGENT_TOKEN=changeme \
+AE_NODE_ID=worker-1 python -m ae.node --runtime-backend podman --port 9109 --ensure-pod-net
+```
+
+3) Apply and observe:
+```
+python -m ae.cli apply -f specs/examples/echo-multinode.yaml
+ae nodes list
+ae status echo-mn --watch
+```
+
+Full walkthrough and WireGuard tips: `docs/multinode-lab.md` or `ops/dev/multinode-lab.sh -h`.
 
 ## Using the `ae` CLI (greatest hits)
 - Apply/inspect lifecycle:
@@ -110,6 +143,7 @@ Details: `README.md:67` and token management in `docs/runbook.md:1`.
 - High‑level overview: `docs/overview.md:1`
 - Operations runbook: `docs/runbook.md:1`
 - HTTP API reference: `docs/http-api.md:1`
+- Kubernetes API shim compatibility: `docs/apishim-compatibility-matrix.md:1`
 - Ingress & TLS: `docs/ingress.md:1`
 - Demo modes: `docs/demo-modes.md:1`
 - Examples index: `docs/examples.md:1`
