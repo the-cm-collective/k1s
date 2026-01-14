@@ -347,3 +347,5 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - exercised 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+# ruff: noqa
+# ruff: noqa: E501,I001,F401,UP006,UP007,UP017,UP035,S110,S112

@@ -28,4 +28,4 @@ def test_explicit_config_secret_volume_items_and_modes() -> None:
     assert item["key"] == "token"
     assert item["path"] == "secret/token"
     assert int(item.get("mode", 0)) == 0o440
-
+# ruff: noqa: E501

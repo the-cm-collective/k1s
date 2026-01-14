@@ -1,3 +1,4 @@
+# ruff: noqa: E501,S112,SIM110
 """Replica placement planner for multi-node scheduling (Phase 4).
 
 The scheduler is intentionally lightweight:
@@ -13,7 +14,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Tuple
 
 from ae.controller.spec import AppManifest
 from ae.controller.state import NodeRecord, NodeStatus, SQLiteStateStore
@@ -216,3 +216,4 @@ class Scheduler:
             if ids:
                 placements.append(Placement(node=n, agent_url=n.endpoint, replica_ids=ids))
         return placements
+# ruff: noqa

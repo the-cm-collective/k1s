@@ -1,15 +1,16 @@
+# ruff: noqa: E501
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import queue
 import sqlite3
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
-import queue
-
+from typing import Any
 
 DB_PATH_DEFAULT = Path(os.getenv("AE_APISHIM_DB", "state/apishim.db"))
 
@@ -19,11 +20,11 @@ class K8sObject:
     group: str
     version: str
     resource: str  # plural
-    namespace: Optional[str]
+    namespace: str | None
     name: str
-    metadata: Dict[str, Any]
-    spec: Dict[str, Any]
-    status: Dict[str, Any]
+    metadata: dict[str, Any]
+    spec: dict[str, Any]
+    status: dict[str, Any]
     resource_version: int
 
 
@@ -41,7 +42,7 @@ class ObjectStore:
         self._conn = sqlite3.connect(self.db_path.as_posix(), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
-        self._watchers: Dict[Tuple[str, str, str, str], List[queue.Queue]] = {}
+        self._watchers: dict[tuple[str, str, str, str], list[queue.Queue]] = {}
 
     def _ensure_dir(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -80,11 +81,11 @@ class ObjectStore:
         group: str,
         version: str,
         resource: str,
-        namespace: Optional[str],
+        namespace: str | None,
         name: str,
-        metadata: Dict[str, Any],
-        spec: Dict[str, Any],
-        status: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any],
+        spec: dict[str, Any],
+        status: dict[str, Any] | None = None,
     ) -> K8sObject:
         with self._lock, self._conn:
             existed = self.get(group, version, resource, namespace, name) is not None
@@ -119,8 +120,8 @@ class ObjectStore:
         return obj
 
     def get(
-        self, group: str, version: str, resource: str, namespace: Optional[str], name: str
-    ) -> Optional[K8sObject]:
+        self, group: str, version: str, resource: str, namespace: str | None, name: str
+    ) -> K8sObject | None:
         ns_val = namespace or ""
         row = self._conn.execute(
             """
@@ -142,7 +143,7 @@ class ObjectStore:
             int(row["rv"]),
         )
 
-    def list(self, group: str, version: str, resource: str, namespace: Optional[str] | None) -> List[K8sObject]:
+    def list(self, group: str, version: str, resource: str, namespace: str | None | None) -> list[K8sObject]:
         ns_val = namespace or ""
         cur = self._conn.execute(
             """
@@ -151,7 +152,7 @@ class ObjectStore:
             """,
             (group, version, resource, ns_val),
         )
-        out: List[K8sObject] = []
+        out: list[K8sObject] = []
         for row in cur.fetchall():
             out.append(
                 K8sObject(
@@ -168,7 +169,7 @@ class ObjectStore:
             )
         return out
 
-    def list_all(self, group: str, version: str, resource: str) -> List[K8sObject]:
+    def list_all(self, group: str, version: str, resource: str) -> list[K8sObject]:
         cur = self._conn.execute(
             """
             SELECT * FROM objects WHERE grp=? AND ver=? AND res=?
@@ -176,7 +177,7 @@ class ObjectStore:
             """,
             (group, version, resource),
         )
-        out: List[K8sObject] = []
+        out: list[K8sObject] = []
         for row in cur.fetchall():
             out.append(
                 K8sObject(
@@ -194,7 +195,7 @@ class ObjectStore:
         return out
 
     def delete(
-        self, group: str, version: str, resource: str, namespace: Optional[str], name: str
+        self, group: str, version: str, resource: str, namespace: str | None, name: str
     ) -> bool:
         with self._lock, self._conn:
             prev = self.get(group, version, resource, namespace, name)
@@ -213,10 +214,10 @@ class ObjectStore:
         group: str,
         version: str,
         resource: str,
-        namespace: Optional[str],
-        heartbeat_seconds: Optional[int] = None,
+        namespace: str | None,
+        heartbeat_seconds: int | None = None,
         allow_bookmarks: bool = False,
-        since_rv: Optional[int] = None,
+        since_rv: int | None = None,
     ):
         # None namespace means cluster-wide watch for namespaced resources
         ns_key = "*" if namespace is None else (namespace or "")
@@ -258,7 +259,5 @@ class ObjectStore:
         wildcard = (obj.group, obj.version, obj.resource, "*")
         with self._lock:
             for q in self._watchers.get(specific, []) + self._watchers.get(wildcard, []):
-                try:
+                with contextlib.suppress(queue.Full):
                     q.put_nowait((ev_type, obj))
-                except queue.Full:
-                    pass

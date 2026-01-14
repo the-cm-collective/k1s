@@ -162,7 +162,7 @@ spec:
     assert "Rolled back echo" in output
 
 
-def test_api_tokens_with_ttl_and_state(tmp_path, monkeypatch, capsys):
+def test_api_tokens_with_ttl_and_state(tmp_path):
     dest = tmp_path / ".env.api"
     state = tmp_path / "tokens.json"
     exit_code = main(
@@ -175,7 +175,7 @@ def test_api_tokens_with_ttl_and_state(tmp_path, monkeypatch, capsys):
     assert "generated_at" in payload and "admin" in payload
 
 
-def test_examples_write_multiport(tmp_path, capsys):
+def test_examples_write_multiport(tmp_path):
     from ae.cli.__main__ import main as _main
 
     out_path = tmp_path / "echo-mp.yaml"

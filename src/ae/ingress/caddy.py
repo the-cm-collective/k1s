@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 from string import Template
-import os
-from typing import Iterable, List, Optional, Sequence, Union
 
 from ae.controller.spec import AppManifest, IngressSpec
 
@@ -42,19 +43,20 @@ class CaddyIngressManager:
         container_cli: str = "docker",
     ) -> None:
         self._config_root = config_root
-        self._caddy_binary = caddy_binary
+        self._caddy_binary = shutil.which(caddy_binary) or caddy_binary
         self._config_file = config_file
         self._container = container
         self._reload_timeout = reload_timeout
         # Which container CLI to use when reloading inside a container (docker|podman)
-        self._container_cli = container_cli or "docker"
+        resolved_cli = container_cli or "docker"
+        self._container_cli = shutil.which(resolved_cli) or resolved_cli
         self._config_root.mkdir(parents=True, exist_ok=True)
 
     def apply(
         self,
         manifest: AppManifest,
-        upstream: Union[str, Sequence[str]],
-        readiness_path: Optional[str] = None,
+        upstream: str | Sequence[str],
+        readiness_path: str | None = None,
         prefer_first: bool = True,
         first_weight: int = 1,
     ) -> Path:
@@ -78,9 +80,10 @@ class CaddyIngressManager:
 
     def reload(self) -> None:
         config_path = str(self._config_file or self._config_root)
-        cmd: List[str]
-        # Validate Caddyfile via 'caddy adapt' before reloading to avoid crashing/restarting container
-        adapt_cmd: List[str]
+        cmd: list[str]
+        # Validate Caddyfile via 'caddy adapt' before reloads to avoid crashing/restarting
+        # the container
+        adapt_cmd: list[str]
         if self._container:
             adapt_cmd = [
                 self._container_cli,
@@ -110,8 +113,8 @@ class CaddyIngressManager:
                 kwargs["timeout"] = self._reload_timeout
             # Run adapt first only when inside container
             if self._container:
-                subprocess.run(adapt_cmd, **kwargs)
-            subprocess.run(cmd, **kwargs)
+                subprocess.run(adapt_cmd, **kwargs)  # noqa: S603,S607 - fixed binaries; shell disabled
+            subprocess.run(cmd, **kwargs)  # noqa: S603,S607 - fixed binaries; shell disabled
         except FileNotFoundError as exc:
             missing = self._caddy_binary if not self._container else self._container_cli
             raise RuntimeError(f"Caddy reload dependency not found: {missing}") from exc
@@ -137,16 +140,13 @@ class CaddyIngressManager:
     def _render_site(
         self,
         ingress: IngressSpec,
-        upstreams: Union[str, Sequence[str]],
-        readiness_path: Optional[str],
+        upstreams: str | Sequence[str],
+        readiness_path: str | None,
         prefer_first: bool,
         first_weight: int,
     ) -> str:
         host = ingress.host
-        if isinstance(upstreams, str):
-            ups_list = [upstreams]
-        else:
-            ups_list = list(upstreams)
+        ups_list = [upstreams] if isinstance(upstreams, str) else list(upstreams)
 
         targets: list[str] = []
         env_host_alias = os.getenv("AE_CADDY_HOST_ALIAS", "").strip()
@@ -159,7 +159,7 @@ class CaddyIngressManager:
                     host_part, port_part = up.split(":", 1)
                 except ValueError:
                     host_part, port_part = up, ""
-                if host_part in {"127.0.0.1", "0.0.0.0"} and port_part:
+                if host_part in {"127.0.0.1", "0.0.0.0"} and port_part:  # noqa: S104 - loopback mapping for container access
                     # Prefer Podman alias when using podman; otherwise use Docker alias.
                     host_alias = env_host_alias or (
                         "host.containers.internal"
@@ -185,9 +185,8 @@ class CaddyIngressManager:
             targets.append(target)
 
         # Optional weighting: duplicate the first upstream N times to bias selection
-        if prefer_first:
-            if first_weight > 1 and targets:
-                targets = [targets[0]] * int(first_weight) + targets[1:]
+        if prefer_first and first_weight > 1 and targets:
+            targets = [targets[0]] * int(first_weight) + targets[1:]
         upstreams_str = " ".join(targets)
         health_block = ""
         if readiness_path and os.getenv("AE_CADDY_ACTIVE_HEALTH") == "1":
@@ -239,10 +238,7 @@ class CaddyIngressManager:
         # TLS block: prefer BYO cert/key when provided; else use internal
         cert = getattr(ingress, "tls_cert_path", None)
         key = getattr(ingress, "tls_key_path", None)
-        if cert and key:
-            tls_block = f"tls {cert} {key}"
-        else:
-            tls_block = "tls internal"
+        tls_block = f"tls {cert} {key}" if cert and key else "tls internal"
         return SITE_TEMPLATE.substitute(host=host, routes=routes, tls_block=tls_block)
 
     def _site_path(self, app_name: str) -> Path:

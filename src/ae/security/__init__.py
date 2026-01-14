@@ -18,3 +18,4 @@ __all__ = [
     "revoke_serial",
     "is_revoked",
 ]
+# ruff: noqa: I001

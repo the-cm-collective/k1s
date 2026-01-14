@@ -12,3 +12,4 @@ def test_inject_topology_spread_when_replicas_gt1() -> None:
     tsc = dep["spec"]["template"]["spec"].get("topologySpreadConstraints", [])
     assert tsc and tsc[0].get("topologyKey") == "kubernetes.io/hostname"
     assert tsc[0].get("labelSelector", {}).get("matchLabels", {}).get("app") == man.metadata.name
+# ruff: noqa: E501

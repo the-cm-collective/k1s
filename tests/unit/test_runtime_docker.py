@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
 
 from docker.errors import NotFound
 
@@ -13,14 +12,14 @@ from ae.runtime.docker_runtime import DockerRuntime
 try:
     from unittest import mock
 except ImportError:  # pragma: no cover - <3.8 legacy
-    import mock  # type: ignore
+    from unittest import mock  # type: ignore
 
 
 @dataclass
 class FakeContainer:
-    client: "FakeDockerClient"
+    client: FakeDockerClient
     name: str
-    labels: Dict[str, str]
+    labels: dict[str, str]
     host_port: int
 
     def __post_init__(self) -> None:
@@ -50,6 +49,7 @@ class FakeContainer:
         self.reload()
 
     def stop(self, timeout: int = 10) -> None:  # noqa: D401 - interface match
+        _ = timeout
         self.status = "exited"
         self.reload()
 
@@ -58,12 +58,13 @@ class FakeContainer:
 
 
 class FakeContainerManager:
-    def __init__(self, client: "FakeDockerClient") -> None:
+    def __init__(self, client: FakeDockerClient) -> None:
         self._client = client
 
     def list(
-        self, all: bool = True, filters: Optional[Dict[str, str]] = None
-    ) -> List[FakeContainer]:
+        self, all: bool = True, filters: dict[str, str] | None = None
+    ) -> list[FakeContainer]:
+        _ = all
         containers = list(self._client.containers_by_replica.values())
         if not filters:
             return containers
@@ -88,6 +89,7 @@ class FakeContainerManager:
         ports=None,
         restart_policy=None,
     ):  # noqa: ANN001,D401 - mimic docker
+        _ = (image, command, detach, environment, ports, restart_policy)
         replica_id = labels.get("ae.replica_id")
         host_port = self._client.allocate_port()
         container = FakeContainer(
@@ -101,10 +103,10 @@ class FakeContainerManager:
 
 
 class FakeImages:
-    def __init__(self, client: "FakeDockerClient") -> None:
+    def __init__(self, client: FakeDockerClient) -> None:
         self._client = client
-        self.pulled: List[str] = []
-        self._local: Dict[str, str] = {}
+        self.pulled: list[str] = []
+        self._local: dict[str, str] = {}
 
     def get(self, image: str):  # noqa: ANN001 - mimic docker
         if image not in self._local:
@@ -120,7 +122,7 @@ class FakeDockerClient:
     def __init__(self) -> None:
         self.images = FakeImages(self)
         self.containers = FakeContainerManager(self)
-        self.containers_by_replica: Dict[str, FakeContainer] = {}
+        self.containers_by_replica: dict[str, FakeContainer] = {}
         self._next_port = 32000
         self.logins: list[tuple[str, str, str]] = []
 
@@ -235,15 +237,14 @@ def test_port_mapping_with_multi_service_ports():
             )
         }
     )
-    with mock.patch.object(runtime, "_host_ports_in_use", return_value=set()):
-        with mock.patch(
-            "ae.runtime.docker_runtime.choose_host_port",
-            side_effect=lambda port, **_: (port, True),
-        ):
-            mapping, svc_map = runtime._port_mapping(  # type: ignore[attr-defined]
-                manifest.spec.ports,
-                manifest.metadata.name,
-                service_ports=list(manifest.spec.service.ports),  # type: ignore[arg-type]
+    with mock.patch.object(runtime, "_host_ports_in_use", return_value=set()), mock.patch(
+        "ae.runtime.docker_runtime.choose_host_port",
+        side_effect=lambda port, **_: (port, True),
+    ):
+        mapping, svc_map = runtime._port_mapping(  # type: ignore[attr-defined]
+            manifest.spec.ports,
+            manifest.metadata.name,
+            service_ports=list(manifest.spec.service.ports),  # type: ignore[arg-type]
         )
     # Expect both container ports to be present with host ports matching service ports
     assert mapping.get("8080/tcp") == 8080
@@ -267,16 +268,15 @@ def test_port_mapping_falls_back_when_port_busy():
         }
     )
 
-    with mock.patch.object(runtime, "_host_ports_in_use", return_value=set()):
-        with mock.patch(
-            "ae.runtime.docker_runtime.choose_host_port", return_value=(18123, False)
-        ):
-            mapping, svc_map = runtime._port_mapping(  # type: ignore[attr-defined]
-                manifest.spec.ports,
-                manifest.metadata.name,
-                service_port=manifest.spec.service.port,  # type: ignore[arg-type]
-                service_target=manifest.spec.service.target_port,  # type: ignore[arg-type]
-            )
+    with mock.patch.object(runtime, "_host_ports_in_use", return_value=set()), mock.patch(
+        "ae.runtime.docker_runtime.choose_host_port", return_value=(18123, False)
+    ):
+        mapping, svc_map = runtime._port_mapping(  # type: ignore[attr-defined]
+            manifest.spec.ports,
+            manifest.metadata.name,
+            service_port=manifest.spec.service.port,  # type: ignore[arg-type]
+            service_target=manifest.spec.service.target_port,  # type: ignore[arg-type]
+        )
 
     assert mapping.get("8080/tcp") == 18123
     assert svc_map.get(8080) == 18123
@@ -302,17 +302,16 @@ def test_port_mapping_skips_ports_already_in_use():
             return port + 1, False
         return port, True
 
-    with mock.patch.object(runtime, "_host_ports_in_use", return_value={18080}):
-        with mock.patch(
-            "ae.runtime.docker_runtime.choose_host_port",
-            side_effect=fake_choose_host_port,
-        ):
-            mapping, svc_map = runtime._port_mapping(  # type: ignore[attr-defined]
-                manifest.spec.ports,
-                manifest.metadata.name,
-                service_port=manifest.spec.service.port,  # type: ignore[arg-type]
-                service_target=manifest.spec.service.target_port,  # type: ignore[arg-type]
-            )
+    with mock.patch.object(runtime, "_host_ports_in_use", return_value={18080}), mock.patch(
+        "ae.runtime.docker_runtime.choose_host_port",
+        side_effect=fake_choose_host_port,
+    ):
+        mapping, svc_map = runtime._port_mapping(  # type: ignore[attr-defined]
+            manifest.spec.ports,
+            manifest.metadata.name,
+            service_port=manifest.spec.service.port,  # type: ignore[arg-type]
+            service_target=manifest.spec.service.target_port,  # type: ignore[arg-type]
+        )
 
     assert mapping.get("8080/tcp") == 18081
     assert svc_map.get(8080) == 18081
@@ -349,7 +348,7 @@ def test_endpoint_normalizes_anyaddr_to_loopback():
     # Seed a container and rewrite HostIp to the wildcard address that Docker uses
     client.seed_container("demo", 0, revision=1)
     container = client.containers_by_replica["demo-rev1-0"]
-    container.attrs["NetworkSettings"]["Ports"]["8080/tcp"][0]["HostIp"] = "0.0.0.0"
+    container.attrs["NetworkSettings"]["Ports"]["8080/tcp"][0]["HostIp"] = "0.0.0.0"  # noqa: S104
 
     endpoint = runtime._endpoint_from_ports(manifest.spec.ports, container)  # type: ignore[attr-defined]
 
@@ -358,10 +357,10 @@ def test_endpoint_normalizes_anyaddr_to_loopback():
     assert endpoint.startswith("127.0.0.1:")
 
 
-def tmp_registry_config(client: FakeDockerClient):  # noqa: ANN001
+def tmp_registry_config(_client: FakeDockerClient):  # noqa: ANN001
     class StubAuth:
-        def ensure_login(self, docker_client, image: str) -> None:  # noqa: ANN001
-            docker_client.login(registry="ghcr.io", username="user", password="pass")
+        def ensure_login(self, docker_client, _image: str) -> None:  # noqa: ANN001
+            docker_client.login(registry="ghcr.io", username="user", password="pass")  # noqa: S106
 
         def list_registries(self):  # noqa: D401
             return {"ghcr.io": {"username": "user", "password": "pass"}}

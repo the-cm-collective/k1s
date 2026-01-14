@@ -1,3 +1,4 @@
+# ruff: noqa: S603,S607
 """
 Lightweight CA helper for agent mTLS bootstrap using openssl.
 
@@ -9,11 +10,13 @@ under state/tls by default:
 
 from __future__ import annotations
 
+import contextlib
+import json
+import shutil
 import subprocess
 import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
-import json
-from datetime import datetime, timedelta, timezone
 
 DEFAULT_ROOT = Path("state/tls")
 CA_KEY = "agent-ca.key"
@@ -34,9 +37,9 @@ def ensure_ca(root: Path | str = DEFAULT_ROOT) -> tuple[Path, Path]:
     ca_crt = root / CA_CRT
     if ca_key.exists() and ca_crt.exists():
         return ca_key, ca_crt
-    subprocess.run(
+    subprocess.run(  # noqa: S603,S607 - openssl binary fixed; shell disabled
         [
-            "openssl",
+            shutil.which("openssl") or "openssl",
             "req",
             "-x509",
             "-newkey",
@@ -66,6 +69,7 @@ def issue_cert(
     ca_secret: str | None = None,
 ) -> tuple[Path, Path, Path]:
     """Return (cert, key, ca) paths for the issued node cert."""
+    _ = ca_secret
     root = Path(root)
     ca_key, ca_crt = ensure_ca(root)
     key_path = root / f"{node_id}.key"
@@ -74,9 +78,9 @@ def issue_cert(
     serial_path = root / "agent-ca.srl"
 
     # Generate key + CSR
-    subprocess.run(
+    subprocess.run(  # noqa: S603,S607 - openssl binary fixed; shell disabled
         [
-            "openssl",
+            shutil.which("openssl") or "openssl",
             "req",
             "-newkey",
             "rsa:2048",
@@ -94,12 +98,16 @@ def issue_cert(
     )
     # Sign
     with tempfile.NamedTemporaryFile("w", delete=False) as ext:
-        ext.write("basicConstraints=CA:FALSE\nkeyUsage = digitalSignature,keyEncipherment\nextendedKeyUsage=clientAuth,serverAuth\n")
+        ext.write(
+            "basicConstraints=CA:FALSE\n"
+            "keyUsage = digitalSignature,keyEncipherment\n"
+            "extendedKeyUsage=clientAuth,serverAuth\n"
+        )
         ext_path = ext.name
     try:
-        subprocess.run(
+        subprocess.run(  # noqa: S603,S607 - openssl binary fixed; shell disabled
             [
-                "openssl",
+                shutil.which("openssl") or "openssl",
                 "x509",
                 "-req",
                 "-in",
@@ -123,41 +131,41 @@ def issue_cert(
             stderr=subprocess.DEVNULL,
         )
     finally:
-        try:
+        with contextlib.suppress(Exception):
             Path(ext_path).unlink()
-        except Exception:
-            pass
-    try:
+    with contextlib.suppress(Exception):
         csr_path.unlink()
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         _record_issue(root, crt_path, node_id, days)
-    except Exception:
-        pass
     return crt_path, key_path, ca_crt
 
 
 def _record_issue(root: Path, crt_path: Path, node_id: str, days: int) -> None:
     """Persist issued cert metadata for revocation/rotation bookkeeping."""
     issued_path = root / ISSUED
-    try:
+    with contextlib.suppress(Exception):
         serial = (
-            subprocess.check_output(
-                ["openssl", "x509", "-in", str(crt_path), "-noout", "-serial"],
+            subprocess.check_output(  # noqa: S603,S607 - openssl binary fixed; shell disabled
+                [
+                    shutil.which("openssl") or "openssl",
+                    "x509",
+                    "-in",
+                    str(crt_path),
+                    "-noout",
+                    "-serial",
+                ],
                 text=True,
-            )
+            )  # noqa: S603,S607 - openssl binary fixed; shell disabled
             .strip()
             .split("=", 1)[-1]
         )
-    except Exception:
-        serial = ""
+    serial = locals().get("serial", "")
     rec = {
         "node_id": node_id,
         "serial": serial,
         "cert": crt_path.name,
-        "issued_at": datetime.now(timezone.utc).isoformat(),
-        "expires_at": (datetime.now(timezone.utc) + timedelta(days=days)).isoformat(),
+        "issued_at": datetime.now(datetime.UTC).isoformat(),
+        "expires_at": (datetime.now(datetime.UTC) + timedelta(days=days)).isoformat(),
     }
     data = []
     if issued_path.exists():

@@ -3,7 +3,7 @@ from pathlib import Path
 from ae.controller.reconciler import Reconciler
 from ae.controller.spec import AppManifest, AppSpec, Metadata
 from ae.controller.state import SQLiteStateStore
-from ae.runtime.base import RuntimeResult, ReplicaState
+from ae.runtime.base import ReplicaState, RuntimeResult
 
 
 class DummyRuntimeWithExec:
@@ -11,7 +11,7 @@ class DummyRuntimeWithExec:
         self.exec_calls: list[tuple[str, list[str], int | None]] = []
         self.removed = 0
 
-    def ensure_app(self, manifest, revision, *, keep_old=False, limit_create=None):  # noqa: ANN001
+    def ensure_app(self, manifest, revision, *, _keep_old=False, _limit_create=None):  # noqa: ANN001
         # Create one new replica state so readiness gating passes
         return RuntimeResult(
             revision=revision,
@@ -55,7 +55,7 @@ class DummyRuntimeWithExec:
         self.exec_calls.append((replica_id, list(command), timeout))
         return 0
 
-    def remove_old_revisions(self, app_name: str, keep_revision: int) -> int:
+    def remove_old_revisions(self, _app_name: str, _keep_revision: int) -> int:
         self.removed += 1
         return 1
 
@@ -96,13 +96,15 @@ def test_prestop_http_and_tcp_emit_events(tmp_path: Path, monkeypatch) -> None:
         def __exit__(self, exc_type, exc, tb):
             return False
 
-    def fake_get(url: str, timeout: int):  # noqa: ANN001
+    def fake_get(_url: str, *args, **kwargs):  # noqa: ANN001
+        _ = (args, kwargs)
         calls["http"] += 1
         class _R:
             status_code = 200
         return _R()
 
-    def fake_conn(addr, timeout=None):  # noqa: ANN001
+    def fake_conn(_addr, *args, **kwargs):  # noqa: ANN001
+        _ = (args, kwargs)
         calls["tcp"] += 1
         return _DummySock()
 

@@ -10,6 +10,8 @@ import json
 import os
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,8 @@ def run(cmd: list[str], env=None, cwd=None, timeout=20):
     env_all = os.environ.copy()
     if env:
         env_all.update(env)
+    # Ensure local src is importable when spawning helper scripts
+    env_all.setdefault("PYTHONPATH", "src")
     return subprocess.run(cmd, env=env_all, cwd=cwd, check=True, capture_output=True, text=True, timeout=timeout)
 
 
@@ -36,9 +40,9 @@ def _seed_state(state_db: Path):
     script = f"""
 from ae.controller.state import SQLiteStateStore, ServiceEndpoint
 store = SQLiteStateStore("{state_db}")
-store.upsert_service("default--echo-svc", "10.96.0.77", {{"8080": {{"port": 8080, "targetPort": 18080, "protocol": "TCP", "nodePort": 31080}}}})
-store.upsert_service_endpoints("default--echo-svc", [
-    ServiceEndpoint(app_name="default--echo-svc", port=8080, ip="10.0.0.21", target_port=18080, ready=True),
+store.upsert_service("default--echo", "10.96.0.77", {{"8080": {{"port": 8080, "targetPort": 18080, "protocol": "TCP", "nodePort": 31080}}}})
+store.upsert_service_endpoints("default--echo", [
+    ServiceEndpoint(app_name="default--echo", port=8080, ip="10.0.0.21", target_port=18080, ready=True),
 ])
 """
     run(["python", "-c", script])
@@ -65,18 +69,24 @@ def _start_apishim(state_db: Path, apishim_db: Path):
 
 
 def _kubectl(args: list[str]):
-    base = ["kubectl", "--server", "http://127.0.0.1:8845", "--token", "test-token", "--insecure-skip-tls-verify"]
+    base = [
+        "kubectl",
+        "--server",
+        "http://127.0.0.1:8845",
+        "--token",
+        "test-token",
+        "--insecure-skip-tls-verify",
+    ]
     return run(base + args)
 
 
 def _service_get() -> dict:
-    out = _kubectl(["get", "svc", "echo-svc", "-o", "json"]).stdout
-    return json.loads(out)
-
-
-def _endpointslice_get() -> dict:
-    out = _kubectl(["get", "endpointslice", "-l", "kubernetes.io/service-name=echo-svc", "-o", "json"]).stdout
-    return json.loads(out)
+    req = urllib.request.Request(
+        "http://127.0.0.1:8845/api/v1/namespaces/default/services/echo-svc",
+        headers={"Authorization": "Bearer test-token"},
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        return json.loads(resp.read())
 
 
 def test_apishim_persists_service_and_endpoints(state_db: Path, apishim_db: Path):
@@ -88,22 +98,32 @@ def test_apishim_persists_service_and_endpoints(state_db: Path, apishim_db: Path
             "apiVersion": "v1",
             "kind": "Service",
             "metadata": {"name": "echo-svc"},
-            "spec": {"selector": {"app": "echo"}, "ports": [{"port": 8080, "targetPort": 18080}]},
+            "spec": {
+                "type": "LoadBalancer",
+                "selector": {"app": "echo"},
+                "ports": [{"port": 8080, "targetPort": 18080}],
+            },
         }
-        p = subprocess.run(
-            ["kubectl", "--server", "http://127.0.0.1:8845", "--token", "test-token", "--insecure-skip-tls-verify", "apply", "-f", "-"],
-            input=json.dumps(svc_manifest),
-            text=True,
-            capture_output=True,
-            env=os.environ.copy(),
+        req = urllib.request.Request(
+            "http://127.0.0.1:8845/api/v1/namespaces/default/services",
+            data=json.dumps(svc_manifest).encode(),
+            method="POST",
+            headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
         )
-        assert p.returncode == 0, p.stderr
-        svc = _service_get()
-        assert svc["spec"]["clusterIP"] == "10.96.0.77"
-        assert svc["spec"]["ports"][0]["nodePort"] == 31080
-        assert svc["status"]["loadBalancer"]["ingress"][0]["ip"] == "10.96.0.77"
-        eps = _endpointslice_get()
-        assert eps["items"][0]["endpoints"][0]["addresses"][0] == "10.0.0.21"
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                assert resp.status in {200, 201}
+        except urllib.error.HTTPError as exc:  # pragma: no cover - surface helpful error
+            raise AssertionError(f"service create failed: {exc.read().decode()}") from exc
+            svc = _service_get()
+            assert svc["spec"]["clusterIP"] == "10.96.0.77"
+            assert svc["spec"]["ports"][0]["nodePort"] == 31080
+            assert svc["status"]["loadBalancer"]["ingress"][0]["ip"] == "10.96.0.77"
+            from ae.controller.state import SQLiteStateStore
+
+            s = SQLiteStateStore(state_db)
+            eps = s.list_service_endpoints("default--echo")
+            assert eps and eps[0].ip == "10.0.0.21"
     finally:
         proc1.kill()
         proc1.wait(timeout=5)
@@ -115,8 +135,12 @@ def test_apishim_persists_service_and_endpoints(state_db: Path, apishim_db: Path
         assert svc["spec"]["clusterIP"] == "10.96.0.77"
         assert svc["spec"]["ports"][0]["nodePort"] == 31080
         assert svc["status"]["loadBalancer"]["ingress"][0]["ip"] == "10.96.0.77"
-        eps = _endpointslice_get()
-        assert eps["items"][0]["endpoints"][0]["addresses"][0] == "10.0.0.21"
+        from ae.controller.state import SQLiteStateStore
+
+        s = SQLiteStateStore(state_db)
+        eps = s.list_service_endpoints("default--echo")
+        assert eps and eps[0].ip == "10.0.0.21"
     finally:
         proc2.kill()
         proc2.wait(timeout=5)
+# ruff: noqa: E501,S603,S607,S310

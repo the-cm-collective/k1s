@@ -1,4 +1,6 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+
+from requests import Response
 
 from ae.controller.health import HealthManager
 from ae.controller.spec import (
@@ -9,7 +11,6 @@ from ae.controller.spec import (
     ProbeSpec,
 )
 from ae.runtime.base import ReplicaState, RuntimeResult
-from requests import Response
 
 
 def test_startup_gates_liveness_and_readiness(monkeypatch):
@@ -28,18 +29,24 @@ def test_startup_gates_liveness_and_readiness(monkeypatch):
             ),
         ),
     )
-    start_time = datetime.now(timezone.utc) - timedelta(seconds=5)
+    start_time = datetime.now(UTC) - timedelta(seconds=5)
     result = RuntimeResult(
         revision=1,
         created=1,
         updated=0,
         removed=0,
         replica_states=[
-            ReplicaState(replica_id="demo-0", ready=False, endpoint="127.0.0.1:8080", started_at=start_time),
+            ReplicaState(
+                replica_id="demo-0",
+                ready=False,
+                endpoint="127.0.0.1:8080",
+                started_at=start_time,
+            ),
         ],
     )
 
-    def fake_get(url: str, timeout: int):  # noqa: ANN001
+    def fake_get(_url: str, timeout: int):  # noqa: ANN001
+        _ = timeout
         raise AssertionError("HTTP probes should be gated by startup and not invoked yet")
 
     monkeypatch.setattr("ae.controller.health.get", fake_get)
@@ -55,7 +62,7 @@ def test_startup_gates_liveness_and_readiness(monkeypatch):
 def test_startup_pass_enables_probes(monkeypatch):
     # startup exec succeeds immediately -> readiness/liveness are evaluated
     hm = HealthManager()
-    hm.set_exec_callback(lambda rid, cmd, t: 0)
+    hm.set_exec_callback(lambda _rid, _cmd, _t: 0)
 
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
@@ -81,9 +88,11 @@ def test_startup_pass_enables_probes(monkeypatch):
         ],
     )
 
-    ok = Response(); ok.status_code = 200
+    ok = Response()
+    ok.status_code = 200
 
-    def fake_get(url: str, timeout: int):  # noqa: ANN001
+    def fake_get(_url: str, timeout: int):  # noqa: ANN001
+        _ = timeout
         return ok
 
     monkeypatch.setattr("ae.controller.health.get", fake_get)

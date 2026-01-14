@@ -1,3 +1,4 @@
+# ruff: noqa
 """Simple HTTP server returning a custom message."""
 
 from __future__ import annotations

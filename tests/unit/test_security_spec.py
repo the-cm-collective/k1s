@@ -2,7 +2,8 @@ from ae.controller.spec import AppManifest, AppSpec, Metadata, SecuritySpec
 from ae.runtime.podman_runtime import PodmanRuntime
 
 
-def test_podman_security_flags_mapping(monkeypatch, tmp_path):
+def test_podman_security_flags_mapping(tmp_path, monkeypatch):
+    _ = tmp_path
     # Prepare manifest with security context
     spec = AppSpec(
         image="alpine:3.20",
@@ -21,6 +22,7 @@ def test_podman_security_flags_mapping(monkeypatch, tmp_path):
     recorded = {"cmds": []}
 
     def fake_run_ok(argv, *, allow_fail=False):  # type: ignore[override]
+        _ = allow_fail
         recorded["cmds"].append(argv)
         # Synthesize minimal responses for queries
         if argv[:3] == [runtime._bin, "ps", "-a"] and "--format" in argv:

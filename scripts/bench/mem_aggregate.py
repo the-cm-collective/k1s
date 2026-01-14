@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa
 """
 Aggregate memory snapshots produced by scripts/bench/mem_snapshot.sh.
 

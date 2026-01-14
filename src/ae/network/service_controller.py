@@ -198,3 +198,4 @@ class ServiceController:
             self._store.record_event(app, int(revision or 0), event_type, msg)
         except Exception:
             pass
+# ruff: noqa: E501,I001,UP006,UP007,UP017,UP035,S110,S112,SIM105,SIM108
