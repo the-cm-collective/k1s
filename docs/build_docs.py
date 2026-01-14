@@ -200,7 +200,7 @@ TEMPLATE = """<!doctype html>
       .theme-fab {
         position: fixed;
         right: 18px;
-        bottom: 18px;
+        bottom: 88px;
         width: 52px;
         height: 52px;
         border-radius: 50%;
@@ -227,6 +227,9 @@ TEMPLATE = """<!doctype html>
       html[data-theme="light"] .theme-fab .icon-sun { display: block; }
       html[data-theme="light"] .theme-fab .icon-moon { display: none; }
       html[data-theme="dark"] .theme-fab .icon-moon { display: block; }
+      @media (max-height: 740px) {
+        .theme-fab { bottom: 18px; }
+      }
       code, pre {
         background: var(--code-bg);
         border: 1px solid var(--border);
