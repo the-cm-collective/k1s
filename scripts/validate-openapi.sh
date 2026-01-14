@@ -27,6 +27,11 @@ gen "$TMP_DIR/openapi-v2.json" "_swagger_doc"
 gen "$TMP_DIR/openapi-v3.json" "_openapi_v3_stub"
 
 fail=0
+if ! python "$REPO_ROOT/scripts/validate-openapi-fixtures.py" --spec "$TMP_DIR/openapi-v2.json"; then
+  echo "::error file=scripts/validate-openapi-fixtures.py::Fixture manifest validation failed"
+  fail=1
+fi
+
 for f in openapi-v2.json openapi-v3.json; do
   ref="$OUT_DIR/$f"
   new="$TMP_DIR/$f"
