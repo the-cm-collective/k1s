@@ -10,6 +10,7 @@ validation against manifests in specs/examples/ and samples/.
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -20,15 +21,14 @@ from jsonschema import Draft4Validator, RefResolver, ValidationError
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-OPENAPI_PATH = REPO_ROOT / "docs/openapi/openapi-v2.json"
-MANIFEST_DIRS = [
+DEFAULT_MANIFEST_DIRS = [
     REPO_ROOT / "specs" / "examples",
     REPO_ROOT / "samples",
 ]
 
 
-def load_openapi() -> dict:
-    with OPENAPI_PATH.open("r", encoding="utf-8") as fh:
+def load_openapi(path: Path) -> dict:
+    with path.open("r", encoding="utf-8") as fh:
         return json.load(fh)
 
 
@@ -90,11 +90,14 @@ def iter_manifests(paths: Iterable[Path]):
                     yield path, idx, doc
 
 
-def validate_docs(gvk_map: Dict[Tuple[str, str, str], str], openapi: dict) -> int:
+def validate_docs(
+    gvk_map: Dict[Tuple[str, str, str], str],
+    openapi: dict,
+    manifest_paths: Iterable[Path] = DEFAULT_MANIFEST_DIRS,
+) -> int:
     resolver = RefResolver.from_schema(openapi)
     errors = 0
-
-    for path, idx, doc in iter_manifests(MANIFEST_DIRS):
+    for path, idx, doc in iter_manifests(manifest_paths):
         api_version = str(doc.get("apiVersion", ""))
         kind = str(doc.get("kind", ""))
 
@@ -120,10 +123,33 @@ def validate_docs(gvk_map: Dict[Tuple[str, str, str], str], openapi: dict) -> in
     return errors
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Validate manifests against generated OpenAPI v2 schema."
+    )
+    parser.add_argument(
+        "--spec",
+        type=Path,
+        default=REPO_ROOT / "docs/openapi/openapi-v2.json",
+        help="Path to OpenAPI v2 JSON (defaults to docs/openapi/openapi-v2.json)",
+    )
+    parser.add_argument(
+        "--manifests",
+        type=Path,
+        nargs="*",
+        default=DEFAULT_MANIFEST_DIRS,
+        help="Manifest directories/files to validate",
+    )
+    return parser.parse_args()
+
+
 def main() -> int:
-    openapi = load_openapi()
+    args = parse_args()
+    openapi = load_openapi(args.spec)
     gvk_map = build_gvk_map(openapi)
-    errors = validate_docs(gvk_map, openapi)
+    # allow overriding manifest paths via CLI
+    manifest_paths = args.manifests or DEFAULT_MANIFEST_DIRS
+    errors = validate_docs(gvk_map, openapi, manifest_paths)
 
     if errors:
         print(f"\nValidation failed for {errors} manifest(s).")
