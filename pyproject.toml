@@ -22,6 +22,7 @@ dev = [
     "mypy>=1.11",
     "ruff>=0.6",
     "pre-commit>=3.8",
+    "jsonschema>=4.22",
 ]
 watch = [
     "watchdog>=3.0",
