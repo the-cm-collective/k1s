@@ -691,7 +691,7 @@ if [[ ${WITH_SECRETS_ENV:-0} -eq 1 ]]; then
   log "Secrets env enabled (AE_ALLOW_PLAINTEXT_SECRETS=1; SOPS_AGE_KEY_FILE=${SOPS_AGE_KEY_FILE})"
 fi
 # Mark this run as demo-init so components can quiet benign warnings
-# Force AE_DEMO_MODE=1 for demos regardless of a pre-set env (prevents scope being disabled)
+# Force AE_DEMO_MODE=1 for demos regardless of a pre-set env (demo-aware filtering is opt-in)
 export AE_DEMO_MODE=1
 export AE_DEMO_FILTER=${AE_DEMO_FILTER:-0}
 export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
@@ -739,7 +739,7 @@ export AE_DOCKER_NETWORK=${AE_DOCKER_NETWORK}
 export AE_CONTAINER_CLI=${AE_CONTAINER_CLI}
 export AE_ALLOW_PLAINTEXT_SECRETS=${AE_ALLOW_PLAINTEXT_SECRETS}
 export SOPS_AGE_KEY_FILE=${SOPS_AGE_KEY_FILE:-}
-# Force demo scoping for the controller/dashboard
+# Demo-aware filtering is opt-in; default is unfiltered.
 export AE_DEMO_MODE=1
 export AE_DEMO_FILTER=${AE_DEMO_FILTER}
 export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
