@@ -90,21 +90,36 @@ jobs:
       - name: Start apishim (stub runtime)
         env:
           AE_APISHIM_ENABLE: "1"
-          AE_APISHIM_TOKEN: "ci-token"
+          AE_APISHIM_ALLOW_ANON: "1"
           AE_RUNTIME_BACKEND: "stub"
           PYTHONPATH: "src"
+          NO_PROXY: "127.0.0.1,localhost"
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
         run: |
-          python -m ae.apishim serve --host 127.0.0.1 --port 8445 --token "$AE_APISHIM_TOKEN" >/tmp/apishim-openapi.log 2>&1 &
+          python -m ae.apishim serve --host 127.0.0.1 --port 8445 --allow-anonymous >/tmp/apishim-openapi.log 2>&1 &
           echo $! >/tmp/apishim.pid
           sleep 3
       - name: Render chart and dry-run server apply
         env:
-          TOKEN: "ci-token"
+          NO_PROXY: "127.0.0.1,localhost"
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
         run: |
           set -euo pipefail
           WORKDIR=$(mktemp -d /tmp/helm-dryrun-XXXX)
           helm create "$WORKDIR/chart" >/dev/null
-          K="kubectl --server=http://127.0.0.1:8445 --token=$TOKEN --insecure-skip-tls-verify"
+          rm -f "$WORKDIR/chart"/templates/{deployment.yaml,service.yaml,serviceaccount.yaml,tests/test-connection.yaml}
+          cat >"$WORKDIR/chart/templates/configmap.yaml" <<'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-config
+  namespace: default
+data:
+  hello: world
+EOF
+          K="kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify"
           $K get --raw /openapi/v2 >/tmp/openapi.json
           helm template demo "$WORKDIR/chart" > /tmp/chart.yaml
           $K apply --dry-run=server --validate=false -f /tmp/chart.yaml
