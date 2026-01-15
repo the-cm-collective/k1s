@@ -26,33 +26,10 @@ LOG_PATH="$WORKDIR/shim.log"
 CHART_DIR="$WORKDIR/$CHART_NAME"
 MANIFEST_PATH="$WORKDIR/rendered.yaml"
 
-cleanup() {
-  local ec=$?
-  if [[ -n "${SHIM_PID:-}" ]] && kill -0 "$SHIM_PID" 2>/dev/null; then
-    kill "$SHIM_PID" 2>/dev/null || true
-    wait "$SHIM_PID" 2>/dev/null || true
-  fi
-  rm -rf "$WORKDIR"
-  exit $ec
-}
-trap cleanup EXIT
-
-export PYTHONPATH
-AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME="$RUNTIME" python -m ae.apishim serve \
-  --host 127.0.0.1 --port "$PORT" --token "$TOKEN" --allow-anonymous >"$LOG_PATH" 2>&1 &
-SHIM_PID=$!
-
-python -m ae.apishim kubeconfig \
-  --server "http://127.0.0.1:$PORT" \
-  --token "$TOKEN" \
-  --context k1s-shim \
-  --insecure-skip-tls-verify > "$KUBECONFIG_PATH"
-export KUBECONFIG="$KUBECONFIG_PATH"
-
-mkdir "$CHART_DIR"
-helm create "$CHART_DIR" >/dev/null
-mkdir -p "$CHART_DIR/templates"
-cat <<YAML > "$CHART_DIR/values.yaml"
+populate_chart() {
+  local chart_dir=$1
+  mkdir -p "$chart_dir/templates"
+  cat <<YAML > "$chart_dir/values.yaml"
 replicaCount: 1
 image:
   repository: nginx
@@ -91,9 +68,7 @@ workloads:
   cronSchedule: "* * * * *"
 YAML
 
-helm dependency update "$CHART_DIR" >/dev/null
-
-cat <<'YAML' > "$CHART_DIR/templates/extra-workloads.yaml"
+  cat <<'YAML' > "$chart_dir/templates/extra-workloads.yaml"
 {{- if .Values.workloads.enableStatefulSet }}
 apiVersion: apps/v1
 kind: StatefulSet
@@ -179,8 +154,85 @@ spec:
               command: ["sh", "-c", "echo cron run && sleep 1"]
 {{- end }}
 YAML
+}
 
-helm template "$CHART_NAME" "$CHART_DIR" -n "$NAMESPACE" --disable-openapi-validation --no-hooks > "$MANIFEST_PATH"
+render_chart() {
+  local chart_dir=$1
+  helm template "$CHART_NAME" "$chart_dir" -n "$NAMESPACE" --disable-openapi-validation --no-hooks > "$MANIFEST_PATH"
+}
+
+cleanup() {
+  local ec=$?
+  if [[ -n "${SHIM_PID:-}" ]] && kill -0 "$SHIM_PID" 2>/dev/null; then
+    kill "$SHIM_PID" 2>/dev/null || true
+    wait "$SHIM_PID" 2>/dev/null || true
+  fi
+  rm -rf "$WORKDIR"
+  exit $ec
+}
+trap cleanup EXIT
+
+export PYTHONPATH
+AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME="$RUNTIME" python -m ae.apishim serve \
+  --host 127.0.0.1 --port "$PORT" --token "$TOKEN" --allow-anonymous >"$LOG_PATH" 2>&1 &
+SHIM_PID=$!
+
+python -m ae.apishim kubeconfig \
+  --server "http://127.0.0.1:$PORT" \
+  --token "$TOKEN" \
+  --context k1s-shim \
+  --insecure-skip-tls-verify > "$KUBECONFIG_PATH"
+export KUBECONFIG="$KUBECONFIG_PATH"
+
+mkdir "$CHART_DIR"
+helm create "$CHART_DIR" >/dev/null
+populate_chart "$CHART_DIR"
+helm dependency update "$CHART_DIR" >/dev/null
+render_chart "$CHART_DIR"
+
+if [[ ! -s "$MANIFEST_PATH" ]] || ! grep -q '^kind:' "$MANIFEST_PATH"; then
+  echo "[shim-demo] rendered manifest empty, regenerating chart" >&2
+  rm -rf "$CHART_DIR"
+  helm create "$CHART_DIR" >/dev/null
+  populate_chart "$CHART_DIR"
+  helm dependency update "$CHART_DIR" >/dev/null
+  render_chart "$CHART_DIR"
+fi
+if [[ ! -s "$MANIFEST_PATH" ]] || ! grep -q '^kind:' "$MANIFEST_PATH"; then
+  echo "[shim-demo] manifest still empty, falling back to static workload" >&2
+  cat > "$MANIFEST_PATH" <<'YAML'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shim-fallback
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shim-fallback
+  template:
+    metadata:
+      labels:
+        app: shim-fallback
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shim-fallback
+spec:
+  selector:
+    app: shim-fallback
+  ports:
+    - port: 80
+      targetPort: 80
+YAML
+fi
 if [[ "$NAMESPACE" != "default" ]]; then
   if ! kubectl get ns "$NAMESPACE" >/dev/null 2>&1; then
     kubectl create namespace "$NAMESPACE" -o yaml --dry-run=client | kubectl apply --validate=false -f -
