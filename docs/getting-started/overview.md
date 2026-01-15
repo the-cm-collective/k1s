@@ -10,7 +10,7 @@ k1s is a small, multi‑node application engine that now supports a controller +
 - Multi‑node: controller manages registered nodes with heartbeats, cordon/drain, and a minimal scheduler that respects `nodeSelector`, taints/tolerations, topology spread, and storage pinning. Agents expose runtime exec/logs/probes over mTLS; Service VIPs ride a WireGuard/VXLAN overlay with HAProxy provider. HostPorts are still supported for single‑node edge cases.
 - Networking/Ingress: Service CIDR + overlay provider (`AE_SERVICE_PROVIDER=overlay`) with ClusterIP allocation, EndpointSlice projection, and Caddy templates that prefer Service VIPs. Bridge provider remains for single‑node or no‑overlay labs.
 - State: SQLite by default; Postgres supported for shim HA and multi‑node durability (`AE_STATE_DSN` / `AE_APISHIM_DSN`).
-- API surface: native HTTP API plus the Kubernetes API shim (`ae.apishim serve`) covering Deployments/StatefulSets/DaemonSets/Jobs/CronJobs/Ingress/Service/HPA/RBAC with SSA/patch support. Compatibility matrix and OpenAPI v2/v3 artifacts ship in `docs/apishim-compatibility-matrix.md` and CI.
+- API surface: native HTTP API plus the Kubernetes API shim (`ae.apishim serve`) covering Deployments/StatefulSets/DaemonSets/Jobs/CronJobs/Ingress/Service/HPA/RBAC with SSA/patch support. Compatibility matrix and OpenAPI v2/v3 artifacts ship in `docs/reference/apishim-compatibility-matrix.md` and CI.
 - Tooling: `k1s` kubectl‑style wrapper, `ae nodes` for inventory/cordon, `ae plan` for placement hints, `export-k8s` and `k8s-report` for parity/compliance, dashboard at `/dashboard`, and `/nodes` + enriched `/metrics` for node/service visibility.
 - Footprint: stays well below k3s while adding overlay + shim; recent lab runs keep controller+agent PSS under ~450 MB on Podman+crun.
 
@@ -68,7 +68,7 @@ flowchart LR
 - Polling only: `python -m ae.controller --loop --specs specs/ --metrics-port 9108`
 - With file watch (if `watchdog` installed): `python -m ae.controller --loop --watch --specs specs/ --metrics-port 9108`
 
-Multi-node lab (two hosts): follow `docs/multinode-lab.md` or run `ops/dev/multinode-lab.sh -h` for flags. Ensure `AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay` on the controller and start `ae.node` on each worker with `--ensure-pod-net`.
+Multi-node lab (two hosts): follow `docs/guides/multinode-lab.md` or run `ops/dev/multinode-lab.sh -h` for flags. Ensure `AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay` on the controller and start `ae.node` on each worker with `--ensure-pod-net`.
 
 2) Apply a sample app
 
@@ -119,8 +119,8 @@ Multi-node lab (two hosts): follow `docs/multinode-lab.md` or run `ops/dev/multi
 
 ## Further Reading
 
-- Runbook: `docs/runbook.md`
-- End-to-End Guide: `docs/e2e.md`
-- HTTP API: `docs/http-api.md`
-- Kubernetes API shim + compatibility matrix: `CONFORMANCE.md`, `docs/apishim-compatibility-matrix.md`
-- Architecture (detailed): `docs/architecture.md`
+- Runbook: `docs/ops/runbook.md`
+- End-to-End Guide: `docs/guides/e2e.md`
+- HTTP API: `docs/reference/http-api.md`
+- Kubernetes API shim + compatibility matrix: `CONFORMANCE.md`, `docs/reference/apishim-compatibility-matrix.md`
+- Architecture (detailed): `docs/reference/architecture.md`

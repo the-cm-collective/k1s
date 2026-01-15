@@ -89,7 +89,7 @@ Prerequisites:
 Environment variables you can override:
   - VENV_DIR (default .venv-demo)
   - DOCS_PORT (default 9109)
-  - AE_STATE_DB, AE_SPECS_DIR, AE_CADDY_* (see docs/runbook.md)
+  - AE_STATE_DB, AE_SPECS_DIR, AE_CADDY_* (see docs/ops/runbook.md)
 
 Endpoints after setup:
   - Apps via Caddy: https://blue.home.arpa:8443/ (multi‑arch echo) and https://green.home.arpa:8443/ (local build)
@@ -693,6 +693,7 @@ fi
 # Mark this run as demo-init so components can quiet benign warnings
 # Force AE_DEMO_MODE=1 for demos regardless of a pre-set env (prevents scope being disabled)
 export AE_DEMO_MODE=1
+export AE_DEMO_FILTER=${AE_DEMO_FILTER:-0}
 export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
 # Prefer crun for Podman/OCI demos when available, unless user overrode
 if [[ "${AE_RUNTIME_BACKEND}" == "podman" || "${AE_RUNTIME_BACKEND}" == "oci" ]]; then
@@ -740,6 +741,7 @@ export AE_ALLOW_PLAINTEXT_SECRETS=${AE_ALLOW_PLAINTEXT_SECRETS}
 export SOPS_AGE_KEY_FILE=${SOPS_AGE_KEY_FILE:-}
 # Force demo scoping for the controller/dashboard
 export AE_DEMO_MODE=1
+export AE_DEMO_FILTER=${AE_DEMO_FILTER}
 export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
 export AE_OCI_RUNTIME=${AE_OCI_RUNTIME:-}
 export API_PORT=${API_PORT}

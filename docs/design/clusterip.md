@@ -150,7 +150,7 @@ Testing
 
 5) Spec and validation
 - [ ] Extend `ServiceSpec` with controller‑owned `clusterIP/clusterIPs` (ignored on input) in `src/ae/controller/spec.py`.
-- [ ] Document Service semantics in `docs/networking.md`.
+- [ ] Document Service semantics in `docs/reference/architecture.md`.
 
 6) Tests and demos
 - [ ] Add integration tests for Service IP routing and rollouts.
@@ -169,4 +169,3 @@ Testing
 
 - Feature flag the Service controller and proxy (`AE_ENABLE_SERVICE_PROXY=0` by default until stable).
 - On disable, controller reverts ingress to direct replica endpoints and deletes proxy containers; state tables remain for forensics.
-

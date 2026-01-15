@@ -3,11 +3,11 @@
 Lightweight multi-node application engine with a Kubernetes-compatible API shim.
 
 - Design and roadmap: see `FEAT.md`.
-- Multi-node architecture and lab: `docs/adr/0004-multinode-architecture-scope.md`, `docs/multinode-lab.md`.
-- API compatibility and shim status: `CONFORMANCE.md`, `docs/apishim-compatibility-matrix.md`.
-- Operations runbook: see `docs/runbook.md`.
-- Ingress/TLS details: see `docs/ingress.md`.
-- End-to-end walkthrough: see `docs/e2e.md`.
+- Multi-node architecture and lab: `docs/adr/0007-multinode-architecture-scope.md`, `docs/guides/multinode-lab.md`.
+- API compatibility and shim status: `CONFORMANCE.md`, `docs/reference/apishim-compatibility-matrix.md`.
+- Operations runbook: see `docs/ops/runbook.md`.
+- Ingress/TLS details: see `docs/reference/ingress.md`.
+- End-to-end walkthrough: see `docs/guides/e2e.md`.
 
 Quick token generation with expiry
 - Generate API tokens that expire in 24 hours and write them to a file of exports you can `source`:
@@ -56,7 +56,7 @@ k1s describe app/echo
 k1s logs app/echo --follow --tail 100
 ```
 
-API endpoints (when started with `--metrics-port`): see `docs/http-api.md`.
+API endpoints (when started with `--metrics-port`): see `docs/reference/http-api.md`.
 
 Multi-container tips:
 - Add sidecars under `spec.containers` and init containers under `spec.initContainers`.

@@ -42,7 +42,7 @@ Remote CLI example:
 ae --server http://<ip>:9108 --token readtoken logs echo --tail 100
 ```
 
-See `docs/runbook.md` for the “Remote CLI over LAN” section and auth token setup.
+See `docs/ops/runbook.md` for the “Remote CLI over LAN” section and auth token setup.
 
 
 ### Grafana Examples

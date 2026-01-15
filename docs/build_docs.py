@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ruff: noqa
-"""Very small Markdown → HTML builder for docs/*.md into docs/site/*.html.
+"""Very small Markdown → HTML builder for docs/**/*.md into docs/site/*.html.
 
 Supported:
 - #, ##, ... ###### headings
@@ -422,6 +422,7 @@ TEMPLATE = """<!doctype html>
       <a href="index.html">Home</a>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
+      <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
@@ -682,9 +683,9 @@ def md_to_html(md: str, *, allow_raw_html: bool = False) -> str:
 def build_one(md_path: Path, out_path: Path) -> None:
     allow_raw = md_path.name == "playground.md"
     html_body = md_to_html(md_path.read_text(encoding="utf-8"), allow_raw_html=allow_raw)
-    # Inject K8s compliance status if building parity/compliance pages and a report exists
+    # Inject K8s compliance status if building the compliance page and a report exists
     try:
-        if md_path.name in {"K8S_PARITY.md", "k8s-compliance.md"}:
+        if md_path.name == "k8s-compliance.md":
             status_path = OUT / "k8s_status.json"
             if status_path.exists():
                 import json
@@ -721,9 +722,9 @@ def build_one(md_path: Path, out_path: Path) -> None:
         except Exception:
             pass
 
-    # Inject latest memory benchmark summary into the k1s memory testing page
+    # Inject latest memory benchmark summary into the benchmarks page
     try:
-        if md_path.name == "testing-memory-k1s.md":
+        if md_path.name == "memory.md":
             # Look for outputs at repo root: ./combined and ./charts
             repo_root = ROOT.parent
             combined_csv = repo_root / "combined" / "combined.csv"
@@ -1246,29 +1247,25 @@ def main() -> None:
     except Exception:
         pass
     mapping = {
-        "start-here.md": "start-here.html",
-        "overview.md": "overview.html",
-        "architecture.md": "architecture.html",
-        "multinode-lab.md": "multinode-lab.html",
-        "http-api.md": "http-api.html",
-        "ingress.md": "ingress.html",
-        "api-auth.md": "api-auth.html",
-        "apishim-compatibility-matrix.md": "apishim-compatibility-matrix.html",
-        "concepts.md": "concepts.html",
-        "benchmarks.md": "benchmarks.html",
-        "testing-memory-k1s.md": "testing-memory-k1s.html",
-        "benchmark-k3s.md": "benchmark-k3s.html",
-        "configs-secrets.md": "configs-secrets.html",
-        "demo-modes.md": "demo-modes.html",
-        "rollouts.md": "rollouts.html",
-        "storage.md": "storage.html",
-        "observability.md": "observability.html",
-        "examples.md": "examples.html",
-        "scheduling.md": "scheduling.html",
-        "e2e.md": "e2e.html",
-        "K8S_PARITY.md": "k8s-parity.html",
-        "k8s-compliance.md": "k8s-compliance.html",
-        "playground.md": "playground.html",
+        "getting-started/start-here.md": "start-here.html",
+        "getting-started/overview.md": "overview.html",
+        "reference/architecture.md": "architecture.html",
+        "guides/multinode-lab.md": "multinode-lab.html",
+        "reference/http-api.md": "http-api.html",
+        "reference/ingress.md": "ingress.html",
+        "reference/api-auth.md": "api-auth.html",
+        "reference/apishim-compatibility-matrix.md": "apishim-compatibility-matrix.html",
+        "getting-started/concepts.md": "concepts.html",
+        "benchmarks/memory.md": "benchmarks.html",
+        "reference/configs-secrets.md": "configs-secrets.html",
+        "guides/demos-examples.md": "examples.html",
+        "reference/rollouts.md": "rollouts.html",
+        "reference/storage.md": "storage.html",
+        "reference/observability.md": "observability.html",
+        "reference/scheduling.md": "scheduling.html",
+        "guides/e2e.md": "e2e.html",
+        "reference/k8s-compliance.md": "k8s-compliance.html",
+        "guides/playground.md": "playground.html",
     }
     # index
     index = f"""
@@ -1276,6 +1273,7 @@ def main() -> None:
 <ul>
   <li><a href="start-here.html">Start Here (Onboarding)</a></li>
   <li><a href="overview.html">Overview</a></li>
+  <li><a href="examples.html">Demos &amp; Examples</a></li>
   <li><a href="architecture.html">Architecture</a></li>
   <li><a href="multinode-lab.html">Multi-Node Lab</a></li>
   <li><a href="http-api.html">HTTP API</a></li>
@@ -1284,15 +1282,12 @@ def main() -> None:
   <li><a href="api-auth.html">API Auth</a></li>
   <li><a href="concepts.html">Concepts</a></li>
   <li><a href="configs-secrets.html">Configs &amp; Secrets</a></li>
-  <li><a href="demo-modes.html">Demo Modes</a></li>
   <li><a href="rollouts.html">Rollouts</a></li>
   <li><a href="storage.html">Storage</a></li>
   <li><a href="observability.html">Observability</a></li>
   <li><a href="benchmarks.html">Benchmarks</a></li>
-  <li><a href="examples.html">Examples</a></li>
   <li><a href="scheduling.html">Scheduling</a></li>
   <li><a href="e2e.html">End-to-End Guide</a></li>
-  <li><a href="k8s-parity.html">K8s Parity</a></li>
   <li><a href="k8s-compliance.html">K8s Compliance Status</a></li>
   <li><a href="playground.html">Interactive Lab Playground</a></li>
   <li><a href="/dashboard" target="_blank" rel="noopener">Live Demo Dashboard</a></li>

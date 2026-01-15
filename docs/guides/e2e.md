@@ -125,10 +125,10 @@ CI Conformance (reference)
 - GitHub workflow `.github/workflows/k8s-conformance.yaml` bootstraps Kind and k3s, exports hardened samples, `kubectl apply --dry-run=server`, and validates with `kubeconform -strict`.
 
 Where to next
-- Runbook: `docs/runbook.md`
-- Ingress/TLS: `docs/ingress.md`
-- HTTP API: `docs/http-api.md`
-- Architecture: `docs/architecture.md`
+- Runbook: `docs/ops/runbook.md`
+- Ingress/TLS: `docs/reference/ingress.md`
+- HTTP API: `docs/reference/http-api.md`
+- Architecture: `docs/reference/architecture.md`
 
 Quick E2E Target
 - Run the multi-port end-to-end smoke test (applies demo, checks status, curls ingress):

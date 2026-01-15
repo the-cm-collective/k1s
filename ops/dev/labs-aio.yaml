@@ -14,6 +14,7 @@ services:
       # Ensure new app containers join the compose network for fast, in-container probes
       - AE_DOCKER_NETWORK=dev_default
       - AE_DEMO_MODE=1
+      - AE_DEMO_FILTER=0
       - AE_SPECS_DIR=${AE_SPECS_DIR:-state/demo-specs}
       - AE_PROBE_LOOPBACK_FALLBACK=host.docker.internal
     ports:
