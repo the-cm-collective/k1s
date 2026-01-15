@@ -975,14 +975,27 @@ class AdapterWorker(threading.Thread):
                 svc_port = int(entry.get("port"))
             except Exception:
                 continue
-            node_port = entry.get("nodePort")
-            tgt = entry.get("targetPort")
-            host_port = int(node_port) if node_port is not None and expose_host else None
+            node_port_raw = entry.get("nodePort")
+            try:
+                node_port = int(node_port_raw) if node_port_raw is not None else None
+            except Exception:
+                node_port = None
+            tgt_raw = entry.get("targetPort", svc_port)
+            tgt_val: int | None
+            if isinstance(tgt_raw, int):
+                tgt_val = tgt_raw
+            else:
+                try:
+                    tgt_val = int(tgt_raw)
+                except Exception:
+                    # Fallback: when targetPort is a named port (e.g., "http"), just reuse service port
+                    tgt_val = svc_port
+            host_port = node_port if node_port is not None and expose_host else None
             svc_ports.append(
                 ServiceSpec.ServicePort(
                     name=entry.get("name") or f"port-{idx}",
                     port=int(host_port or svc_port),
-                    target_port=tgt,
+                    target_port=tgt_val,
                     protocol=entry.get("protocol", "TCP"),
                     node_port=node_port if expose_host else None,
                 )
