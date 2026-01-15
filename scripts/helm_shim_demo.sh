@@ -58,6 +58,8 @@ image:
   tag: "1.27"
 service:
   type: NodePort
+  port: 80
+  targetPort: 80
   # Leave nodePort unset to let the shim allocate within AE_APISHIM_NODEPORT range
 resources: {}
 ingress:
