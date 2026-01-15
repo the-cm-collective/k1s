@@ -49,14 +49,17 @@ store.upsert_service_endpoints("default--echo", [
 
 
 def _start_apishim(state_db: Path, apishim_db: Path):
-    env = {
-        "AE_APISHIM_ENABLE": "1",
-        "AE_APISHIM_TOKEN": "test-token",
-        "AE_APISHIM_DB": str(apishim_db),
-        "AE_STATE_DB": str(state_db),
-        "AE_APISHIM_RUNTIME": "stub",
-        "PYTHONPATH": "src",
-    }
+    env = os.environ.copy()
+    env.update(
+        {
+            "AE_APISHIM_ENABLE": "1",
+            "AE_APISHIM_TOKEN": "test-token",
+            "AE_APISHIM_DB": str(apishim_db),
+            "AE_STATE_DB": str(state_db),
+            "AE_APISHIM_RUNTIME": "stub",
+            "PYTHONPATH": "src",
+        }
+    )
     proc = subprocess.Popen(
         ["python", "-m", "ae.apishim", "serve", "--host", "127.0.0.1", "--port", "8845", "--token", "test-token"],
         env=env,
