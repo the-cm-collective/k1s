@@ -3,7 +3,7 @@
 Lightweight multi-node application engine with a Kubernetes-compatible API shim.
 
 - Design and roadmap: see `FEAT.md`.
-- Multi-node architecture and lab: `MULTINODE.md`, `docs/multinode-lab.md`.
+- Multi-node architecture and lab: `docs/adr/0004-multinode-architecture-scope.md`, `docs/multinode-lab.md`.
 - API compatibility and shim status: `CONFORMANCE.md`, `docs/apishim-compatibility-matrix.md`.
 - Operations runbook: see `docs/runbook.md`.
 - Ingress/TLS details: see `docs/ingress.md`.
