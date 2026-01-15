@@ -13,6 +13,11 @@ jobs:
   portforward:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      NO_PROXY: "127.0.0.1,localhost"
+      no_proxy: "127.0.0.1,localhost"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
     steps:
       - name: Trust Gitea cert (or disable verify)
         run: |
