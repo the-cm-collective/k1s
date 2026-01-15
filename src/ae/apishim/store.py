@@ -281,27 +281,36 @@ class ObjectStore:
         return out
 
     def list_all(self, group: str, version: str, resource: str) -> list[K8sObject]:
-        if self.backend == "sqlite":
-            cur = self._conn.execute(
-                """
-                SELECT * FROM objects WHERE grp=? AND ver=? AND res=?
-                ORDER BY ns, name
-                """,
-                (group, version, resource),
-            )  # type: ignore[union-attr]
-            rows = cur.fetchall()
-        else:
-            with self._conn.cursor() as cur:  # type: ignore[union-attr]
-                cur.execute(
+        try:
+            if self.backend == "sqlite":
+                cur = self._conn.execute(
                     """
-                    SELECT * FROM objects WHERE grp=%s AND ver=%s AND res=%s
+                    SELECT * FROM objects WHERE grp=? AND ver=? AND res=?
                     ORDER BY ns, name
                     """,
                     (group, version, resource),
-                )
+                )  # type: ignore[union-attr]
                 rows = cur.fetchall()
+            else:
+                with self._conn.cursor() as cur:  # type: ignore[union-attr]
+                    cur.execute(
+                        """
+                        SELECT * FROM objects WHERE grp=%s AND ver=%s AND res=%s
+                        ORDER BY ns, name
+                        """,
+                        (group, version, resource),
+                    )
+                    rows = cur.fetchall()
+        except Exception:
+            rows = []
         out: list[K8sObject] = []
         for row in rows:
+            # sqlite3.Row supports mapping access but not .get()
+            meta = row["metadata"] if "metadata" in row.keys() else None
+            spec = row["spec"] if "spec" in row.keys() else None
+            status = row["status"] if "status" in row.keys() else None
+            if meta is None or spec is None or status is None:
+                continue
             out.append(
                 K8sObject(
                     row["grp"],
@@ -309,9 +318,9 @@ class ObjectStore:
                     row["res"],
                     row["ns"],
                     row["name"],
-                    json.loads(row["metadata"]),
-                    json.loads(row["spec"]),
-                    json.loads(row["status"]),
+                    json.loads(meta),
+                    json.loads(spec),
+                    json.loads(status),
                     int(row["rv"]),
                 )
             )

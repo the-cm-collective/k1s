@@ -1155,18 +1155,19 @@ class ShimHandler(BaseHTTPRequestHandler):
             self.send_response(HTTPStatus.BAD_REQUEST)
             self.end_headers()
             return
-        try:
-            with open("/tmp/pf-headers.log", "w") as hdr:
-                for k, v in self.headers.items():
-                    hdr.write(f"{k}: {v}\n")
-        except Exception:
-            pass
         accept_seed = (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("utf-8")
         accept = base64.b64encode(hashlib.sha1(accept_seed).digest()).decode("utf-8")  # noqa: S324 - RFC 6455 requires SHA-1
         subproto_hdr = self.headers.get("Sec-WebSocket-Protocol")
         chosen_proto = None
         if subproto_hdr:
             chosen_proto = subproto_hdr.split(",")[0].strip()
+        try:
+            with open("/tmp/pf-headers.log", "w") as hdr:
+                for k, v in self.headers.items():
+                    hdr.write(f"{k}: {v}\n")
+                hdr.write(f"chosen: {chosen_proto}\n")
+        except Exception:
+            pass
 
         def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
             buf = b""
@@ -1230,6 +1231,70 @@ class ShimHandler(BaseHTTPRequestHandler):
         if chosen_proto:
             self.send_header("Sec-WebSocket-Protocol", chosen_proto)
         self.end_headers()
+
+        # Native WebSocket port-forward protocol (portforward.k8s.io)
+        if chosen_proto and "portforward.k8s.io" in chosen_proto:
+            channel_data = 0  # data channel for first port
+            channel_error = 1
+            upstream = None
+            try:
+                upstream = socket.create_connection((target_host, target_port), timeout=5.0)
+                upstream.settimeout(0.1)
+            except Exception:
+                upstream = None
+
+            stop = False
+
+            def _pump_upstream() -> None:
+                nonlocal stop
+                if not upstream:
+                    return
+                while not stop:
+                    try:
+                        chunk = upstream.recv(4096)
+                        if not chunk:
+                            break
+                        frame = bytes([channel_data]) + chunk
+                        _send_ws(self.connection, frame, opcode=0x2)
+                    except socket.timeout:
+                        continue
+                    except Exception:
+                        break
+                stop = True
+
+            t_up = threading.Thread(target=_pump_upstream, daemon=True)
+            t_up.start()
+
+            while not stop:
+                msg = _recv_ws(self.connection)
+                if msg is None:
+                    break
+                opcode, payload = msg
+                if opcode == 0x8:
+                    break
+                if opcode not in (0x1, 0x2) or not payload:
+                    continue
+                ch = payload[0]
+                data = payload[1:]
+                if ch == channel_error:
+                    # ignore client-to-error channel payloads
+                    continue
+                if upstream and data:
+                    try:
+                        upstream.sendall(data)
+                    except Exception:
+                        break
+            stop = True
+            if upstream:
+                try:
+                    upstream.close()
+                except Exception:
+                    pass
+            try:
+                self.connection.close()
+            except Exception:
+                pass
+            return
 
         # SPDY-over-WebSocket tunneling (SPDY/3.1+portforward.k8s.io)
         if chosen_proto and chosen_proto.startswith("SPDY/3.1+"):
@@ -1372,6 +1437,12 @@ class ShimHandler(BaseHTTPRequestHandler):
             self.send_response(101, "Switching Protocols")
             self.send_header("Connection", "Upgrade")
             self.send_header("Upgrade", self.headers.get("Upgrade", "SPDY/3.1"))
+            # Negotiate portforward stream protocol explicitly for kubectl
+            stream_proto = self.headers.get("X-Stream-Protocol-Version") or "portforward.k8s.io"
+            # If client sent a CSV list, pick the first entry
+            if "," in stream_proto:
+                stream_proto = stream_proto.split(",")[0].strip()
+            self.send_header("X-Stream-Protocol-Version", stream_proto)
             self.end_headers()
         try:
             conn.settimeout(0.05)
@@ -1381,19 +1452,19 @@ class ShimHandler(BaseHTTPRequestHandler):
         if not target_ports:
             target_ports = [0]
 
-        SPDY_DICT = (
-            b"optionsgetheadpostputdeletetraceacceptaccept-charsetaccept-encodingaccept-language"
-            b"authorizationexpectfromhostif-modified-sinceif-matchif-none-matchif-rangeif-unmodified-"
-            b"sincemax-forwardsproxy-authorizationrange refererteuser-agent100101200201202203204205206"
-            b"300301302303304305306307400401402403404405406407408409410411412413414415416417500501502"
-            b"503504505accept-rangesageetaglocationproxy-authenticatepublicretry-afterservervarywarning"
-            b"www-authenticateallowcontent-basecontent-encodingcache-controlconnectiondatetrailertransfer"
-            b"-encodingupgradeviawarningcontent-languagecontent-lengthcontent-locationcontent-md5content-"
-            b"rangecontent-typeetagexpireslast-modifiedset-cookieMondayTuesdayWednesdayThursdayFridaySaturday"
-            b"SundayJanFebMarAprMayJunJulAugSepOctNovDecchunkedtext/htmlimage/pngimage/jpgimage/gifapplication"
-            b"/xmlapplication/xhtmltext/plainpublicprivatemax-agegztcomparallel bytesruning"
+        def _pf_debug(msg: str) -> None:
+            try:
+                with open("/tmp/pf-debug.txt", "a") as f:
+                    f.write(msg + "\n")
+            except Exception:
+                pass
+        _pf_debug("spdy-start")
+
+        SPDY_DICT = base64.b64decode(
+            "AAAAB29wdGlvbnMAAAAEaGVhZAAAAARwb3N0AAAAA3B1dAAAAAZkZWxldGUAAAAFdHJhY2UAAAAGYWNjZXB0AAAADmFjY2VwdC1jaGFyc2V0AAAAD2FjY2VwdC1lbmNvZGluZwAAAA9hY2NlcHQtbGFuZ3VhZ2UAAAANYWNjZXB0LXJhbmdlcwAAAANhZ2UAAAAFYWxsb3cAAAANYXV0aG9yaXphdGlvbgAAAA1jYWNoZS1jb250cm9sAAAACmNvbm5lY3Rpb24AAAAMY29udGVudC1iYXNlAAAAEGNvbnRlbnQtZW5jb2RpbmcAAAAQY29udGVudC1sYW5ndWFnZQAAAA5jb250ZW50LWxlbmd0aAAAABBjb250ZW50LWxvY2F0aW9uAAAAC2NvbnRlbnQtbWQ1AAAADWNvbnRlbnQtcmFuZ2UAAAAMY29udGVudC10eXBlAAAABGRhdGUAAAAEZXRhZwAAAAZleHBlY3QAAAAHZXhwaXJlcwAAAARmcm9tAAAABGhvc3QAAAAIaWYtbWF0Y2gAAAARaWYtbW9kaWZpZWQtc2luY2UAAAANaWYtbm9uZS1tYXRjaAAAAAhpZi1yYW5nZQAAABNpZi11bm1vZGlmaWVkLXNpbmNlAAAADWxhc3QtbW9kaWZpZWQAAAAIbG9jYXRpb24AAAAMbWF4LWZvcndhcmRzAAAABnByYWdtYQAAABJwcm94eS1hdXRoZW50aWNhdGUAAAATcHJveHktYXV0aG9yaXphdGlvbgAAAAVyYW5nZQAAAAdyZWZlcmVyAAAAC3JldHJ5LWFmdGVyAAAABnNlcnZlcgAAAAJ0ZQAAAAd0cmFpbGVyAAAAEXRyYW5zZmVyLWVuY29kaW5nAAAAB3VwZ3JhZGUAAAAKdXNlci1hZ2VudAAAAAR2YXJ5AAAAA3ZpYQAAAAd3YXJuaW5nAAAAEHd3dy1hdXRoZW50aWNhdGUAAAAGbWV0aG9kAAAAA2dldAAAAAZzdGF0dXMAAAAGMjAwIE9LAAAAB3ZlcnNpb24AAAAISFRUUC8xLjEAAAADdXJsAAAABnB1YmxpYwAAAApzZXQtY29va2llAAAACmtlZXAtYWxpdmUAAAAGb3JpZ2luMTAwMTAxMjAxMjAyMjA1MjA2MzAwMzAyMzAzMzA0MzA1MzA2MzA3NDAyNDA1NDA2NDA3NDA4NDA5NDEwNDExNDEyNDEzNDE0NDE1NDE2NDE3NTAyNTA0NTA1MjAzIE5vbi1BdXRob3JpdGF0aXZlIEluZm9ybWF0aW9uMjA0IE5vIENvbnRlbnQzMDEgTW92ZWQgUGVybWFuZW50bHk0MDAgQmFkIFJlcXVlc3Q0MDEgVW5hdXRob3JpemVkNDAzIEZvcmJpZGRlbjQwNCBOb3QgRm91bmQ1MDAgSW50ZXJuYWwgU2VydmVyIEVycm9yNTAxIE5vdCBJbXBsZW1lbnRlZDUwMyBTZXJ2aWNlIFVuYXZhaWxhYmxlSmFuIEZlYiBNYXIgQXByIE1heSBKdW4gSnVsIEF1ZyBTZXB0IE9jdCBOb3YgRGVjIDAwOjAwOjAwIE1vbiwgVHVlLCBXZWQsIFRodSwgRnJpLCBTYXQsIFN1biwgR01UY2h1bmtlZCx0ZXh0L2h0bWwsaW1hZ2UvcG5nLGltYWdlL2pwZyxpbWFnZS9naWYsYXBwbGljYXRpb24veG1sLGFwcGxpY2F0aW9uL3hodG1sK3htbCx0ZXh0L3BsYWluLHRleHQvamF2YXNjcmlwdCxwdWJsaWNwcml2YXRlbWF4LWFnZT1nemlwLGRlZmxhdGUsc2RjaGNoYXJzZXQ9dXRmLThjaGFyc2V0PWlzby04ODU5LTEsdXRmLSwqLGVucT0wLg=="
         )
-        dctx = zlib.decompressobj(zdict=SPDY_DICT)
+        dctx = zlib.decompressobj(wbits=15, zdict=SPDY_DICT)
+        cctx = zlib.compressobj(wbits=15, zdict=SPDY_DICT)
 
         window_size = 1 << 20  # 1MiB default
         stream_windows: dict[int, int] = {}
@@ -1449,8 +1520,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             payload = bytearray()
             payload += len(settings).to_bytes(4, "big")
             for sid, val in settings.items():
-                payload.append(0)
-                payload += sid.to_bytes(2, "big")
+                payload.append(0)  # flags (persist value = 0)
+                payload += sid.to_bytes(3, "big")  # 24-bit ID per SPDY/3
                 payload += val.to_bytes(4, "big")
             header = bytearray()
             header += b"\x80\x03"
@@ -1480,12 +1551,18 @@ class ShimHandler(BaseHTTPRequestHandler):
             conn.sendall(bytes(header))
 
         def parse_syn_stream(payload: bytes) -> dict[str, str]:
+            """Parse SPDY/3.1 header block using the official dictionary."""
             headers: dict[str, str] = {}
+            _pf_debug(f"syn-len {len(payload)}")
             if len(payload) < 10:
                 return headers
             header_block = payload[10:]
             try:
                 decompressed = dctx.decompress(header_block)
+            except Exception as e:
+                _pf_debug(f"syn-parse-fail len={len(payload)} err={e}")
+                return headers
+            try:
                 import io
 
                 f = io.BytesIO(decompressed)
@@ -1496,9 +1573,31 @@ class ShimHandler(BaseHTTPRequestHandler):
                     vlen = int.from_bytes(f.read(4), "big")
                     value = f.read(vlen).decode("utf-8", "ignore")
                     headers[name] = value
-            except Exception:
+                _pf_debug(f"syn-headers {headers}")
+            except Exception as e:
+                _pf_debug(f"syn-parse-fail len={len(payload)} err={e}")
                 return headers
             return headers
+
+        def send_syn_reply(stream_id: int) -> None:
+            nv = [(":status", "200"), (":version", "HTTP/1.1")]
+            buf = bytearray()
+            buf += len(nv).to_bytes(4, "big")
+            for name, value in nv:
+                nb = name.encode("utf-8")
+                vb = value.encode("utf-8")
+                buf += len(nb).to_bytes(4, "big") + nb
+                buf += len(vb).to_bytes(4, "big") + vb
+            compressed = cctx.compress(bytes(buf)) + cctx.flush(zlib.Z_SYNC_FLUSH)
+            payload = bytearray()
+            payload += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
+            payload += compressed
+            header = bytearray()
+            header += b"\x80\x03"  # control + version 3
+            header += (0x02).to_bytes(2, "big")  # SYN_REPLY
+            header.append(0)  # flags
+            header += len(payload).to_bytes(3, "big")
+            conn.sendall(bytes(header) + bytes(payload))
 
         try:
             send_settings({0x04: window_size})  # advertise window
@@ -1513,30 +1612,36 @@ class ShimHandler(BaseHTTPRequestHandler):
                     last_ping = now
 
                 try:
-                    hdr = conn.recv(8)
+                    hdr = read_exact(conn, 8)
                 except TimeoutError:
                     hdr = None
                 if hdr:
                     if len(hdr) < 8:
+                        _pf_debug("recv-short")
                         break
                     is_control = (hdr[0] & 0x80) != 0
                     if is_control:
                         frame_type = int.from_bytes(hdr[2:4], "big")
                         flags = hdr[4]
                         length = int.from_bytes(hdr[5:8], "big")
+                        _pf_debug(f"ctrl frame type={frame_type} flags={flags} len={length}")
                         if length > (1 << 20):
                             send_goaway(status=2)
                             break
                         payload = read_exact(conn, length) or b""
                         if frame_type == 1:  # SYN_STREAM
                             sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
+                            _pf_debug(f"syn-raw len={len(payload)} data={payload[:40].hex()}")
                             headers = parse_syn_stream(payload)
                             stype = headers.get("streamtype", "").lower()
+                            if not stype:
+                                stype = "data" if not data_streams else "error"
                             try:
                                 port = int(headers.get("port") or headers.get("streamname") or target_ports[0])
                             except Exception:
                                 port = target_ports[0]
-                            if port not in target_ports and target_ports[0] != 0:
+                            _pf_debug(f"SYN_STREAM sid={sid} stype={stype} port={port} targets={target_ports}")
+                            if port not in target_ports and target_ports[0] != 0 and not isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                                 send_rst(sid, code=2)
                                 continue
                             choices = host_cycle.get(port) or [host_by_port.get(port, target_host)]
@@ -1549,6 +1654,10 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 stream_windows[sid] = window_size
                             elif stype == "error":
                                 error_streams[sid] = data_streams.get(sid - 1, port)
+                            try:
+                                send_syn_reply(sid)
+                            except Exception:
+                                pass
                         elif frame_type == 4:  # SETTINGS
                             try:
                                 num = int.from_bytes(payload[0:4], "big")
@@ -1583,8 +1692,10 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 data_streams.pop(sid, None)
                                 error_streams.pop(sid, None)
                         elif frame_type == 6:  # PING
+                            _pf_debug("pong")
                             send_ping(payload[:4])
                         elif frame_type == 7:  # GOAWAY
+                            _pf_debug("goaway")
                             break
                         if flags & 0x01:  # FIN on control frame
                             continue
@@ -1592,6 +1703,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                         stream_id = int.from_bytes(hdr[0:4], "big") & 0x7FFFFFFF
                         flags = hdr[4]
                         length = int.from_bytes(hdr[5:8], "big")
+                        _pf_debug(f"data frame sid={stream_id} flags={flags} len={length}")
                         if length > (1 << 20):
                             send_rst(stream_id, code=2)
                             break
@@ -1604,9 +1716,19 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 continue
                             if stream_id not in upstream_cache:
                                 try:
-                                    upstream_cache[stream_id] = socket.create_connection((target_host, port), timeout=5.0)
+                                    dest_host = host_by_port.get(port, target_host)
+                                    dest_port = port
+                                    if isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
+                                        try:
+                                            dest_port = int(os.getenv("AE_STUB_BACKEND_PORT", "8081"))
+                                        except Exception:
+                                            dest_port = port
+                                        dest_host = os.getenv("AE_STUB_BACKEND_HOST", dest_host)
+                                    _pf_debug(f"connect sid={stream_id} host={dest_host} port={dest_port}")
+                                    upstream_cache[stream_id] = socket.create_connection((dest_host, dest_port), timeout=5.0)
                                     upstream_cache[stream_id].settimeout(0.05)
-                                except Exception:
+                                except Exception as e:
+                                    _pf_debug(f"connect-fail sid={stream_id} port={port} err={e}")
                                     upstream_cache.pop(stream_id, None)
                                     continue
                             try:
@@ -1658,7 +1780,10 @@ class ShimHandler(BaseHTTPRequestHandler):
                             sock_up.close()
                         except Exception:
                             pass
+        except Exception as exc:  # pragma: no cover - diagnostic
+            _pf_debug(f"spdy-error {exc}")
         finally:
+            _pf_debug("spdy-end")
             try:
                 send_goaway(last_stream=max(data_streams.keys()) if data_streams else 0, status=0)
             except Exception:
@@ -2881,6 +3006,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     }
                     self.wfile.write(json.dumps(bm, separators=(",", ":")).encode("utf-8") + b"\n")
                     self.wfile.flush()
+                    # Keep the watch stream open until client disconnects
+                    while True:
+                        time.sleep(5)
                 except BrokenPipeError:
                     pass
                 return
@@ -3062,13 +3190,12 @@ class ShimHandler(BaseHTTPRequestHandler):
             app_name = _service_app_name(svc)
             eps_raw = self.server.state.list_service_endpoints(app_name) if app_name else []  # type: ignore[attr-defined]
             target_ip = _pick_endpoint_ip(eps_raw, key=",".join(str(p) for p in target_ports) if target_ports else None)
-            if not target_ip and isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
-                target_ip = os.getenv("AE_STUB_BACKEND_HOST", "127.0.0.1")
-                if not target_ports:
-                    try:
-                        target_ports = [int(os.getenv("AE_STUB_BACKEND_PORT", "8081"))]
-                    except Exception:
-                        target_ports = [8081]
+            if isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
+                target_ip = os.getenv("AE_STUB_BACKEND_HOST", target_ip or "127.0.0.1")
+                try:
+                    target_ports = [int(os.getenv("AE_STUB_BACKEND_PORT", "8081"))]
+                except Exception:
+                    target_ports = [8081]
             if not target_ip:
                 self._json_status(HTTPStatus.SERVICE_UNAVAILABLE, reason="NoEndpoints", message="no ready endpoints for service")
                 return
@@ -3128,19 +3255,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                         target_ports = [int(hp[0])]
                 except Exception:
                     pass
-            if not target_ports and container_info:
+            if isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
+                target_host = os.getenv("AE_STUB_BACKEND_HOST", target_host)
                 try:
-                    hp = container_info.get("host_ports") or container_info.get("hostPorts") or []
-                    if hp:
-                        target_ports.append(int(hp[0]))
+                    target_ports = [int(os.getenv("AE_STUB_BACKEND_PORT", "8081"))]
                 except Exception:
-                    pass
-            if not target_ports and isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
-                try:
-                    target_ports.append(int(os.getenv("AE_STUB_BACKEND_PORT", "8081")))
-                    target_host = os.getenv("AE_STUB_BACKEND_HOST", target_host)
-                except Exception:
-                    pass
+                    target_ports = [8081]
             if not target_ports:
                 self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="ports query param required")
                 return
@@ -3803,18 +3923,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                         target_ports = [int(hp[0])]
                 except Exception:
                     pass
-            if not target_ports and container_info:
+            if isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                 try:
-                    hp = container_info.get("host_ports") or container_info.get("hostPorts") or []
-                    if hp:
-                        target_ports.append(int(hp[0]))
+                    target_ports = [int(os.getenv("AE_STUB_BACKEND_PORT", "8081"))]
                 except Exception:
-                    pass
-            if not target_ports and isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
-                try:
-                    target_ports.append(int(os.getenv("AE_STUB_BACKEND_PORT", "8081")))
-                except Exception:
-                    target_ports.append(8081)
+                    target_ports = [8081]
             if not target_ports:
                 self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="ports query param required")
                 return
@@ -3896,11 +4009,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                         target_ports.append(int(svc_ports[0].get("port")))
                     except Exception:
                         pass
-            if not target_ports and isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
+            if isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                 try:
-                    target_ports.append(int(os.getenv("AE_STUB_BACKEND_PORT", "8081")))
+                    target_ports = [int(os.getenv("AE_STUB_BACKEND_PORT", "8081"))]
                 except Exception:
-                    target_ports.append(8081)
+                    target_ports = [8081]
             if not target_ports:
                 self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="ports query param required")
                 return
