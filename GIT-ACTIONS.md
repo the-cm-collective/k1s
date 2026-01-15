@@ -13,6 +13,7 @@
 - `apishim-smoke.yml`: runs the shim anonymously with proxies cleared and switches the smoke manifest to a single ConfigMap with server-side dry-run, avoiding proxy-induced 401s and unsupported workload objects in the stub runtime.
 - `ci.yml`: unit tests now run with `AE_RUNTIME_BACKEND=stub` and proxies cleared so Docker/Podman aren’t required on the runner and TLS-proxy issues don’t derail CLI tests.
 - `tools/plan_ci.sh`: planner gating now excludes multi-doc/secret/k8s export samples (planner only accepts single-app docs) and runs without `--strict` so security hardening hints stay as warnings instead of failing CI.
+- `scripts/helm_shim_demo.sh`: hardens chart scaffolding by creating `templates/` explicitly before writing extra workloads, preventing intermittent “No such file or directory” failures in `helm-shim-smoke`.
 
 ## Other workflow assessments (unchanged files)
 - Docker/privileged needed: `kubectl-exec-smoke.yml`, `e2e-multiport.yml`, `multinode-smoke.yml`, `release.yml` (container job). Ensure runner has Docker socket or is privileged.
