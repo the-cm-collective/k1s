@@ -50,6 +50,7 @@ export KUBECONFIG="$KUBECONFIG_PATH"
 
 mkdir "$CHART_DIR"
 helm create "$CHART_DIR" >/dev/null
+mkdir -p "$CHART_DIR/templates"
 cat <<YAML > "$CHART_DIR/values.yaml"
 replicaCount: 1
 image:
