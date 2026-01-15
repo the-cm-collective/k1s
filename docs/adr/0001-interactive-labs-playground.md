@@ -19,5 +19,5 @@ Owners: docs/observability
 3) Embedded terminal: deferred due to complexity and security surface.
 
 ## Consequences
-- Canonical docs live in `docs/playground.md`, `docs/static/labs.js`, and `docs/runbook.md`.
+- Canonical docs live in `docs/guides/playground.md`, `docs/static/labs.js`, and `docs/ops/runbook.md`.
 - Mutable actions remain opt-in and token-gated; public docs stay read-only by default.

@@ -76,8 +76,8 @@ Want to watch a Helm deployment materialize inside the dashboard? Click “Run H
 
 ```bash
 # 1) Start the API shim (stub runtime)
-AE_APISHIM_RUNTIME=stub PYTHONPATH=src \
-  python -m ae.apishim serve --host 127.0.0.1 --port 8445 --token helm-demo
+AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME=stub AE_APISHIM_TOKEN=helm-demo PYTHONPATH=src \
+  python -m ae.apishim serve --host 127.0.0.1 --port 8445
 
 # 2) Generate a kubeconfig pointing at the shim
 PYTHONPATH=src python -m ae.apishim kubeconfig \
@@ -86,21 +86,21 @@ PYTHONPATH=src python -m ae.apishim kubeconfig \
 export KUBECONFIG=~/.kube/helm-shim
 
 # 3) Create namespace + sample chart and install it
-kubectl create namespace demo
+kubectl create namespace demo-helm
 helm create demochart
-helm install demochart ./demochart -n demo --wait
+helm install demochart ./demochart -n demo-helm --wait
 
 # (Optional) Inspect via k1s CLI while Helm is running
-PYTHONPATH=src python -m ae.cli status demochart --wide --events
+PYTHONPATH=src python -m ae.cli status demo-helm--demochart --wide --events
 
 # 4) When finished, uninstall and clean up
-helm uninstall demochart -n demo && kubectl delete namespace demo
+helm uninstall demochart -n demo-helm && kubectl delete namespace demo-helm
 ```
 
 Back in the playground:
 
 1. Set Backend to `k1s-Host`, click `Start Session`, and use **Quick Links → Open Dashboard**.
-2. The `demochart` release appears under `demo`; sections **B–E** stream logs, events, ingress health, and nodePort hints while Helm reconciles.
+2. The release appears as `demo-helm--demochart` (namespace `demo-helm`); sections **B–E** stream logs, events, ingress health, and nodePort hints while Helm reconciles.
 3. When you run `helm uninstall`, the dashboard reflects the teardown in real time.
 
 ## B. Apply Example
@@ -185,19 +185,21 @@ spec:
 #### Notes
 - Scaling edits only `spec.replicas`; the current image revision stays the same.
 - Canary weights bias routing between the old and new revision; readiness gates still apply before traffic shifts.
+- Canary actions bump replicas to at least 2 so the dashboard shows a distinct canary revision.
 - To fully roll forward, increase weight gradually (see section "F. Rollout Controls"). To roll back, set weight to 0 or re‑apply the previous image.
 
 ### Verifiers
 
 - Events show scaling: <span id="v-scale-events" data-v="pending">pending</span>
 - Metrics present for app: <span id="v-scale-metrics" data-v="pending">pending</span>
+- Canary routes to revision: <span id="canary-revision">n/a</span> (base: <span id="canary-base">n/a</span>)
 
 ## E. Ingress Test
 
 - Open App: <a id="ingress-link" href="#" target="_blank" rel="noopener">(disabled)</a>
 - Last check: <span id="ingress-check">n/a</span>
 - DNS hint: <code id="ingress-hosts-hint"></code> <button id="ingress-hosts-copy" disabled>Copy</button>
-- Direct curl (no hosts): <code id="ingress-curl"></code> <button id="ingress-curl-copy" disabled>Copy</button>
+- Direct curl (no hosts):<br/><code id="ingress-curl"></code> <button id="ingress-curl-copy" disabled>Copy</button>
 
 ## F. Rollout Controls
 

@@ -1,4 +1,4 @@
-# ADR 0006 — API shim storage and watch scalability
+# ADR 0009 — API shim storage and watch scalability
 
 Date: 2026-01-14
 Status: Proposed

@@ -28,7 +28,22 @@ The compliance status and per-sample details render below when a report is prese
 - Ingress: networking.k8s.io/v1 Prefix paths with TLS and ingressClassName; status.loadBalancer populated from Service VIP/provider IPs.
 - Policy/Autoscaling/Accounts: PDB (int/percent), HPA v2 (CPU/memory utilization/averageValue), ServiceAccount tokens, Role/RoleBinding emit/enforce in shim, NetworkPolicy passthrough.
 - Scheduling: affinity/tolerations/topologySpreadConstraints/nodeSelector/priorityClassName passed to Pod templates; scheduler in k1s honors selectors/tolerations/topology spread and storage pinning.
-- Validation/Tooling: `ae export-k8s --validate`, `ae k8s-check --policy strict`, `ae k8s-report`, OpenAPI v2/v3 drift guard + fixtures, compatibility matrix (`docs/apishim-compatibility-matrix.md`).
+- Runtime/Networking: Service CIDR + overlay provider with ClusterIP allocation, EndpointSlice projection, port-forward for pods/services, exec/logs via agents.
+- Discovery/Tooling: OpenAPI v2/v3 drift guard + fixtures, kubectl/helm apply/watch/port-forward gates in CI, compatibility matrix (`apishim-compatibility-matrix.html`).
+
+## Parity Checklist
+
+- Use readiness/liveness/startup probes.
+- Provide `resources.requests/limits`; enable `--policy strict` in `ae k8s-check`.
+- Add topology spread or anti-affinity for multi-replica apps.
+- Keep retained volumes single-node or use PVCs when exporting to Kubernetes.
+- Prefer Service VIP + ingress over hostPorts for HA; reserve hostPorts for single-node edges.
+
+## Verification Notes
+
+- Exporter validated with `ae export-k8s --validate` + `ae k8s-check --policy strict`.
+- Shim gates: kubectl/helm apply/get/watch/port-forward exercised in CI with OpenAPI drift guard.
+- Multi-node overlay path covered by integration tests and the multi-node lab guide.
 
 ### Notable Gaps vs. Kubernetes
 
@@ -37,6 +52,20 @@ The compliance status and per-sample details render below when a report is prese
 - PV/PVC/StorageClass/CSI provisioning beyond exported manifests; k1s runtime relies on retained named volumes.
 - metrics.k8s.io/metrics-server and aggregated APIs are out of scope.
 - Advanced Ingress features (regex, weighted/canary annotations, multiple backends per rule) remain out of scope for now.
+
+## Demo Manifests
+
+- `specs/examples/echo-sec.yaml`: non-root + read-only root filesystem + HTTP readiness + ingress.
+  - Apply: `python -m ae.cli apply -f specs/examples/echo-sec.yaml`
+- `specs/examples/echo-tcp.yaml`: TCP readiness with thresholds + ingress.
+  - Apply: `python -m ae.cli apply -f specs/examples/echo-tcp.yaml`
+- `specs/examples/echo-exec.yaml`: Exec readiness probe + ingress.
+  - Apply: `python -m ae.cli apply -f specs/examples/echo-exec.yaml`
+
+## Remote Apply
+
+- Enable mutations and token, then:
+  - `ae --server https://api.home.arpa:8443 --token <admin> apply -f specs/examples/echo-sec.yaml`
 
 ## NetworkPolicy Provider Notes (k3s)
 

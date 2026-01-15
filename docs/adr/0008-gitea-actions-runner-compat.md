@@ -1,4 +1,4 @@
-# ADR 0005 — Gitea Actions runner compatibility (Node 16)
+# ADR 0008 — Gitea Actions runner compatibility (Node 16)
 
 Date: 2026-01-14
 Status: Accepted (temporary)

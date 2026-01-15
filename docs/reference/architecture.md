@@ -24,6 +24,11 @@ This document describes k1s in depth: components, data model, reconcile algorith
 - Observability (src/ae/observability): metrics snapshot, HTTP API, dashboard, logging helpers.
 - CLI (src/ae/cli) + kubectl‑like wrapper (src/ae/kctl).
 
+## State Store Notes
+
+- SQLite schema changes should be documented here alongside the state store design.
+- For implementation details, see `src/ae/controller/state.py` and related ADRs.
+
 ## Reconcile Loop
 
 Triggers

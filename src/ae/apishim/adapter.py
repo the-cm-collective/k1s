@@ -422,6 +422,11 @@ class AdapterWorker(threading.Thread):
             self._reconciler._runtime.remove_app(app_name)  # type: ignore[attr-defined]
         except Exception:
             pass
+        try:
+            # Purge controller state so deleted shim objects don't linger in the dashboard.
+            self._state.delete_app_state(app_name, purge_history=True)
+        except Exception:
+            pass
 
     def _trigger_reconcile(self, namespace: str | None, deploy_name: str) -> None:
         if namespace is None:
