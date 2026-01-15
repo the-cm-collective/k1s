@@ -1148,30 +1148,216 @@ class ShimHandler(BaseHTTPRequestHandler):
 
     # ---------------- WebSocket port-forward (best-effort) ----------------
     def _handle_port_forward_ws(self, target_host: str, target_port: int) -> None:
+        """Minimal WebSocket port-forward bridge (single connection, multi-port)."""
+
         key = self.headers.get("Sec-WebSocket-Key")
         if not key:
             self.send_response(HTTPStatus.BAD_REQUEST)
             self.end_headers()
             return
+        try:
+            with open("/tmp/pf-headers.log", "w") as hdr:
+                for k, v in self.headers.items():
+                    hdr.write(f"{k}: {v}\n")
+        except Exception:
+            pass
         accept_seed = (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("utf-8")
         accept = base64.b64encode(hashlib.sha1(accept_seed).digest()).decode("utf-8")  # noqa: S324 - RFC 6455 requires SHA-1
+        subproto_hdr = self.headers.get("Sec-WebSocket-Protocol")
+        chosen_proto = None
+        if subproto_hdr:
+            chosen_proto = subproto_hdr.split(",")[0].strip()
+
+        def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
+            buf = b""
+            while len(buf) < n:
+                chunk = sock.recv(n - len(buf))
+                if not chunk:
+                    return None
+                buf += chunk
+            return buf
+
+        def _recv_ws(sock: socket.socket) -> tuple[int, bytes] | None:
+            try:
+                hdr = _recv_exact(sock, 2)
+                if not hdr:
+                    return None
+                opcode = hdr[0] & 0x0F
+                masked = bool(hdr[1] & 0x80)
+                length = hdr[1] & 0x7F
+                if length == 126:
+                    ext = _recv_exact(sock, 2)
+                    if ext is None:
+                        return None
+                    length = int.from_bytes(ext, "big")
+                elif length == 127:
+                    ext = _recv_exact(sock, 8)
+                    if ext is None:
+                        return None
+                    length = int.from_bytes(ext, "big")
+                mask = _recv_exact(sock, 4) if masked else b""
+                payload = _recv_exact(sock, length) if length else b""
+                if payload is None:
+                    return None
+                if masked and mask:
+                    payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+                return opcode, payload
+            except Exception:
+                return None
+
+        def _send_ws(sock: socket.socket, payload: bytes, opcode: int = 0x2) -> None:
+            try:
+                header = bytearray()
+                header.append(0x80 | (opcode & 0x0F))
+                l = len(payload)
+                if l < 126:
+                    header.append(l)
+                elif l < (1 << 16):
+                    header.append(126)
+                    header.extend(l.to_bytes(2, "big"))
+                else:
+                    header.append(127)
+                    header.extend(l.to_bytes(8, "big"))
+                sock.sendall(header + payload)
+            except Exception:
+                pass
+
+        # Handshake
         self.send_response(101, "Switching Protocols")
         self.send_header("Upgrade", "websocket")
         self.send_header("Connection", "Upgrade")
         self.send_header("Sec-WebSocket-Accept", accept)
+        if chosen_proto:
+            self.send_header("Sec-WebSocket-Protocol", chosen_proto)
         self.end_headers()
-        try:
-            with socket.create_connection((target_host, target_port), timeout=5.0):
-                pass
-        except Exception:
+
+        # SPDY-over-WebSocket tunneling (SPDY/3.1+portforward.k8s.io)
+        if chosen_proto and chosen_proto.startswith("SPDY/3.1+"):
+            class WsConn:
+                def __init__(self, sock, recv_fn, send_fn):
+                    self._sock = sock
+                    self._recv_fn = recv_fn
+                    self._send_fn = send_fn
+                    self._buf = b""
+
+                def settimeout(self, t: float) -> None:  # pragma: no cover - best-effort
+                    try:
+                        self._sock.settimeout(t)
+                    except Exception:
+                        pass
+
+                def recv(self, n: int) -> bytes:
+                    while len(self._buf) < n:
+                        msg = self._recv_fn(self._sock)
+                        if msg is None:
+                            return b""
+                        opcode, payload = msg
+                        if opcode == 0x8:
+                            return b""
+                        if opcode not in (0x1, 0x2) or not payload:
+                            continue
+                        self._buf += payload
+                    out, self._buf = self._buf[:n], self._buf[n:]
+                    return out
+
+                def sendall(self, data: bytes) -> None:
+                    self._send_fn(self._sock, data, opcode=0x2)
+
+            ws_conn = WsConn(self.connection, _recv_ws, _send_ws)
             try:
-                self.connection.close()
-            except Exception:
-                pass
+                self._handle_port_forward_spdy(target_host, [target_port], conn_override=ws_conn, suppress_handshake=True)
+            finally:
+                try:
+                    self.connection.close()
+                except Exception:
+                    pass
             return
 
+        # Per-port upstream sockets
+        upstream_socks: dict[int, socket.socket] = {}
+        stop = False
+
+        def _get_upstream(port: int) -> socket.socket | None:
+            if port in upstream_socks:
+                return upstream_socks[port]
+            try:
+                s = socket.create_connection((target_host, port), timeout=5.0)
+                s.settimeout(0.1)
+                upstream_socks[port] = s
+                return s
+            except Exception:
+                return None
+
+        def _pump_from_client() -> None:
+            nonlocal stop
+            while not stop:
+                msg = _recv_ws(self.connection)
+                if msg is None:
+                    break
+                opcode, payload = msg
+                if opcode == 0x8:  # close
+                    stop = True
+                    break
+                if opcode not in (0x1, 0x2) or len(payload) < 2:
+                    continue
+                try:
+                    with open("/tmp/pf-debug.log", "ab") as dbg:
+                        dbg.write(payload + b"\n")
+                except Exception:
+                    pass
+                port = int.from_bytes(payload[:2], "big")
+                data = payload[2:]
+                sock = _get_upstream(port or target_port)
+                if sock and data:
+                    try:
+                        sock.sendall(data)
+                    except Exception:
+                        stop = True
+                        break
+
+        def _pump_to_client(port: int, sock: socket.socket) -> None:
+            nonlocal stop
+            while not stop:
+                try:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    frame = port.to_bytes(2, "big") + chunk
+                    _send_ws(self.connection, frame, opcode=0x2)
+                except socket.timeout:
+                    continue
+                except Exception:
+                    break
+
+        # Start client->upstream pump
+        t_client = threading.Thread(target=_pump_from_client, daemon=True)
+        t_client.start()
+
+        # Keep reading from upstream sockets that exist; create one for initial target_port
+        first_sock = _get_upstream(target_port)
+        threads: list[threading.Thread] = []
+        if first_sock:
+            t = threading.Thread(target=_pump_to_client, args=(target_port, first_sock), daemon=True)
+            t.start()
+            threads.append(t)
+        # Join while client pump alive
+        try:
+            t_client.join(timeout=5)
+        except Exception:
+            pass
+        stop = True
+        for s in upstream_socks.values():
+            try:
+                s.close()
+            except Exception:
+                pass
+        try:
+            self.connection.close()
+        except Exception:
+            pass
+
     # ---------------- SPDY/3.1 port-forward (kubectl) ----------------
-    def _handle_port_forward_spdy(self, target_host: str, target_ports: list[int], target_hosts_by_port: dict[int, str] | None = None) -> None:
+    def _handle_port_forward_spdy(self, target_host: str, target_ports: list[int], target_hosts_by_port: dict[int, str] | None = None, *, conn_override=None, suppress_handshake: bool = False) -> None:
         """Implements the SPDY/3.1 port-forward protocol used by kubectl.
 
         Each data stream carries raw TCP bytes to a target port advertised in
@@ -1180,14 +1366,17 @@ class ShimHandler(BaseHTTPRequestHandler):
         avoid surprising exposure when kubectl requests multiple ports.
         """
 
-        # Accept upgrade after basic validation
-        self.send_response(101, "Switching Protocols")
-        self.send_header("Connection", "Upgrade")
-        self.send_header("Upgrade", self.headers.get("Upgrade", "SPDY/3.1"))
-        self.end_headers()
-
-        conn = self.connection
-        conn.settimeout(0.05)
+        conn = conn_override or self.connection
+        if not suppress_handshake:
+            # Accept upgrade after basic validation
+            self.send_response(101, "Switching Protocols")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Upgrade", self.headers.get("Upgrade", "SPDY/3.1"))
+            self.end_headers()
+        try:
+            conn.settimeout(0.05)
+        except Exception:
+            pass
 
         if not target_ports:
             target_ports = [0]
@@ -2616,6 +2805,27 @@ class ShimHandler(BaseHTTPRequestHandler):
                 containers = self.server.runtime.list_containers_info()  # type: ignore[attr-defined]
             except Exception:
                 containers = []
+            label_sel = q.get("labelSelector", [""])[0] or ""
+
+            def _match_labels(labels: dict[str, Any]) -> bool:
+                if not label_sel:
+                    return True
+                for expr in label_sel.split(","):
+                    expr = expr.strip()
+                    if not expr:
+                        continue
+                    if "!=" in expr:
+                        key, val = expr.split("!=", 1)
+                        if labels.get(key) == val:
+                            return False
+                        continue
+                    if "=" in expr:
+                        key, val = expr.split("=", 1)
+                        if labels.get(key) != val:
+                            return False
+                        continue
+                    # Unsupported selector semantics -> best-effort pass
+                return True
             # enrich with controller replica/node info when available
             replica_info: dict[str, tuple[str | None, bool, bool, str, str, str]] = {}
             try:
@@ -2634,6 +2844,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                 c_ns = labels.get("ae.namespace") or "default"
                 if ns and c_ns != ns:
                     continue
+                if not _match_labels(labels):
+                    continue
                 rid = labels.get("ae.replica_id") or c.get("name")
                 rep_info = replica_info.get(str(rid))
                 node_name = labels.get("ae.node") or (rep_info[0] if rep_info else None)
@@ -2651,6 +2863,27 @@ class ShimHandler(BaseHTTPRequestHandler):
                     if not rep_info[1]:
                         cs["state"] = {"waiting": {"reason": rep_info[3] or "Pending", "message": rep_info[4]}}
                 pod_objs.append(pod_obj)
+            if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                if not self._rbac_allows("watch", "pods"):
+                    self._deny(403)
+                    return
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                try:
+                    for p in pod_objs:
+                        ev = {"type": "ADDED", "object": p}
+                        self.wfile.write(json.dumps(ev, separators=(",", ":")).encode("utf-8") + b"\n")
+                    bm = {
+                        "type": "BOOKMARK",
+                        "object": {"kind": "Pod", "apiVersion": "v1", "metadata": {"resourceVersion": str(now_rv)}},
+                    }
+                    self.wfile.write(json.dumps(bm, separators=(",", ":")).encode("utf-8") + b"\n")
+                    self.wfile.flush()
+                except BrokenPipeError:
+                    pass
+                return
             if name is None:
                 try:
                     limit = int(q.get("limit", ["0"])[0] or 0)
@@ -2829,6 +3062,13 @@ class ShimHandler(BaseHTTPRequestHandler):
             app_name = _service_app_name(svc)
             eps_raw = self.server.state.list_service_endpoints(app_name) if app_name else []  # type: ignore[attr-defined]
             target_ip = _pick_endpoint_ip(eps_raw, key=",".join(str(p) for p in target_ports) if target_ports else None)
+            if not target_ip and isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
+                target_ip = os.getenv("AE_STUB_BACKEND_HOST", "127.0.0.1")
+                if not target_ports:
+                    try:
+                        target_ports = [int(os.getenv("AE_STUB_BACKEND_PORT", "8081"))]
+                    except Exception:
+                        target_ports = [8081]
             if not target_ip:
                 self._json_status(HTTPStatus.SERVICE_UNAVAILABLE, reason="NoEndpoints", message="no ready endpoints for service")
                 return
@@ -2856,12 +3096,49 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return
             qs = parse_qs(parsed.query)
             ports_q = qs.get("ports") or []
+            pod_name = m_pf.group(2)
             target_host = "127.0.0.1"
+            container_info = None
+            try:
+                for c in self.server.runtime.list_containers_info():  # type: ignore[attr-defined]
+                    labels = c.get("labels", {}) or {}
+                    if labels.get("ae.replica_id") == pod_name or c.get("name") == pod_name:
+                        container_info = c
+                        break
+            except Exception:
+                container_info = None
+            if container_info:
+                target_host = (
+                    container_info.get("pod_ip")
+                    or container_info.get("host_ip")
+                    or container_info.get("hostIP")
+                    or target_host
+                )
             upgrade = (self.headers.get("Upgrade") or "").lower()
             target_ports: list[int] = []
             for p in ports_q:
                 try:
                     target_ports.append(int(p))
+                except Exception:
+                    pass
+            if container_info:
+                try:
+                    hp = container_info.get("host_ports") or container_info.get("hostPorts") or []
+                    if hp:
+                        target_ports = [int(hp[0])]
+                except Exception:
+                    pass
+            if not target_ports and container_info:
+                try:
+                    hp = container_info.get("host_ports") or container_info.get("hostPorts") or []
+                    if hp:
+                        target_ports.append(int(hp[0]))
+                except Exception:
+                    pass
+            if not target_ports and isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
+                try:
+                    target_ports.append(int(os.getenv("AE_STUB_BACKEND_PORT", "8081")))
+                    target_host = os.getenv("AE_STUB_BACKEND_HOST", target_host)
                 except Exception:
                     pass
             if not target_ports:
@@ -3503,16 +3780,54 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return
             qs = parse_qs(parsed.query)
             ports_q = qs.get("ports") or []
+            pod_name = m_pf.group(2)
+            container_info = None
+            try:
+                for c in self.server.runtime.list_containers_info():  # type: ignore[attr-defined]
+                    labels = c.get("labels", {}) or {}
+                    if labels.get("ae.replica_id") == pod_name or c.get("name") == pod_name:
+                        container_info = c
+                        break
+            except Exception:
+                container_info = None
             target_ports: list[int] = []
             for p in ports_q:
                 try:
                     target_ports.append(int(p))
                 except Exception:
                     pass
+            if container_info:
+                try:
+                    hp = container_info.get("host_ports") or container_info.get("hostPorts") or []
+                    if hp:
+                        target_ports = [int(hp[0])]
+                except Exception:
+                    pass
+            if not target_ports and container_info:
+                try:
+                    hp = container_info.get("host_ports") or container_info.get("hostPorts") or []
+                    if hp:
+                        target_ports.append(int(hp[0]))
+                except Exception:
+                    pass
+            if not target_ports and isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
+                try:
+                    target_ports.append(int(os.getenv("AE_STUB_BACKEND_PORT", "8081")))
+                except Exception:
+                    target_ports.append(8081)
             if not target_ports:
                 self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="ports query param required")
                 return
             target_host = "127.0.0.1"
+            if container_info:
+                target_host = (
+                    container_info.get("pod_ip")
+                    or container_info.get("host_ip")
+                    or container_info.get("hostIP")
+                    or target_host
+                )
+            elif isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
+                target_host = os.getenv("AE_STUB_BACKEND_HOST", target_host)
             upgrade = (self.headers.get("Upgrade") or "").lower()
             if upgrade.startswith("spdy"):
                 self._handle_port_forward_spdy(target_host, target_ports)
@@ -3540,6 +3855,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             if not target_ip and subsets:
                 nr = subsets[0].get("notReadyAddresses") or []
                 target_ip = (nr[0].get("ip") if nr else None) if nr else None
+            if not target_ip and isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
+                target_ip = os.getenv("AE_STUB_BACKEND_HOST", "127.0.0.1")
             if not target_ip:
                 self._json_status(HTTPStatus.SERVICE_UNAVAILABLE, reason="NoEndpoints", message="no ready endpoints for service")
                 return
@@ -3579,6 +3896,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                         target_ports.append(int(svc_ports[0].get("port")))
                     except Exception:
                         pass
+            if not target_ports and isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
+                try:
+                    target_ports.append(int(os.getenv("AE_STUB_BACKEND_PORT", "8081")))
+                except Exception:
+                    target_ports.append(8081)
             if not target_ports:
                 self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="ports query param required")
                 return
