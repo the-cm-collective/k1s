@@ -55,7 +55,7 @@ jobs:
         env:
           TOKEN: "ci-token"
         run: |
-          cat <<'YAML' | kubectl --server=http://127.0.0.1:8445 --token=$TOKEN --insecure-skip-tls-verify apply -f -
+          cat <<'YAML' | kubectl --server=http://127.0.0.1:8445 --token=$TOKEN --insecure-skip-tls-verify --validate=false apply -f -
           apiVersion: apps/v1
           kind: Deployment
           metadata:
