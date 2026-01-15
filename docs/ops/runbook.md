@@ -11,8 +11,8 @@ Setup
   - Curated demo/specs: set `AE_SPECS_DIR` and use Make targets that respect it:
     - `AE_SPECS_DIR=state/demo-specs make loop` (watches only the curated set)
     - `AE_SPECS_DIR=state/demo-specs make run` (single reconcile pass)
-- Tip: `scripts/init_demo.sh` seeds `state/demo-specs` and exports `AE_SPECS_DIR` + `AE_DEMO_MODE=1` so only the selected demo apps are reconciled.
-  - Set `AE_DEMO_FILTER=0` to show all apps in the dashboard (including manually applied YAML/Helm apps).
+- Tip: `scripts/init_demo.sh` seeds `state/demo-specs` and exports `AE_SPECS_DIR` + `AE_DEMO_MODE=1` for demo runs.
+  - Demo scoping is disabled by default; set `AE_DEMO_FILTER=1` to restrict the dashboard to demo + Labs apps.
   - Reset state quickly when switching contexts: `./scripts/init_demo.sh --reset` (deletes `state/controller.db` and `state/projections/`).
 - SOPS/age (secrets):
   - Generate an age identity: `mkdir -p ~/.config/ae && age-keygen -o ~/.config/ae/keys.txt && chmod 600 ~/.config/ae/keys.txt`
@@ -97,8 +97,8 @@ Dashboard reload vs. restart
 - Scope of apps shown and reconciled
   - The controller respects `AE_SPECS_DIR` for the active specs root. To avoid reconciling every sample under `specs/`, set `AE_SPECS_DIR` to a curated folder (e.g., `state/demo-specs`).
   - Updated Make targets and bench scripts auto‑honor `AE_SPECS_DIR`. If unset, they fall back to `specs/`.
-  - `AE_DEMO_MODE=1` narrows the dashboard to apps discovered under `AE_SPECS_DIR` (plus any Labs‑applied apps) when `AE_DEMO_FILTER` is enabled.
-  - Set `AE_DEMO_FILTER=0` to disable dashboard filtering in demo mode.
+  - `AE_DEMO_MODE=1` enables demo-aware filtering when `AE_DEMO_FILTER=1` (apps under `AE_SPECS_DIR` plus Labs).
+  - Default is unfiltered; set `AE_DEMO_FILTER=1` to enable dashboard filtering in demo mode.
 - Viewing via docs host proxy? If you changed Caddy site files, restart the docs stack:
   - `make dev-down && make dev-up` (or `docker compose -f ops/dev/labs-compose.yaml restart caddy`).
 - After any of the above, hard‑refresh the browser (Shift+Reload) to ensure the latest HTML/JS loads.
