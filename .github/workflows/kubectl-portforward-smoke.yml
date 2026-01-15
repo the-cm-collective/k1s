@@ -53,16 +53,14 @@ jobs:
       - name: Start apishim (stub runtime)
         env:
           AE_APISHIM_ENABLE: "1"
-          AE_APISHIM_TOKEN: "ci-token"
+          AE_APISHIM_ALLOW_ANON: "1"
           AE_RUNTIME_BACKEND: "stub"
           PYTHONPATH: "src"
         run: |
-          python -m ae.apishim serve --host 127.0.0.1 --port 8445 --token "$AE_APISHIM_TOKEN" >/tmp/apishim-ci.log 2>&1 &
+          python -m ae.apishim serve --host 127.0.0.1 --port 8445 --allow-anonymous >/tmp/apishim-ci.log 2>&1 &
           echo $! >/tmp/apishim.pid
           sleep 3
       - name: Apply manifest (skip validation)
-        env:
-          TOKEN: "ci-token"
         run: |
           cat <<'YAML' > /tmp/pf-deploy.yaml
           apiVersion: apps/v1
@@ -83,7 +81,7 @@ jobs:
                 - name: web
                   image: nginx:1.25-alpine
                   ports:
-                  - containerPort: 8081
+                  - containerPort: 80
           ---
           apiVersion: v1
           kind: Service
@@ -93,15 +91,13 @@ jobs:
             selector:
               app: pf-echo
             ports:
-            - port: 8081
-              targetPort: 8081
+            - port: 80
+              targetPort: 80
           YAML
-          kubectl --server=http://127.0.0.1:8445 --token=$TOKEN --insecure-skip-tls-verify --validate=false apply -f /tmp/pf-deploy.yaml
+          kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify --validate=false apply -f /tmp/pf-deploy.yaml
       - name: Port-forward and curl
-        env:
-          TOKEN: "ci-token"
         run: |
-          kubectl --server=http://127.0.0.1:8445 --token=$TOKEN --insecure-skip-tls-verify --validate=false port-forward deploy/pf-echo 18080:8081 >/tmp/pf.log 2>&1 &
+          kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify --validate=false port-forward deploy/pf-echo 18080:80 >/tmp/pf.log 2>&1 &
           PF_PID=$!
           sleep 3
           curl -fsS http://127.0.0.1:18080 >/dev/null
