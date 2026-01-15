@@ -8,23 +8,31 @@ on:
       - "tests/**"
       - ".github/workflows/apishim-ssa-rbac.yml"
 
+concurrency:
+  group: port-8445-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ssa-rbac:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
         with:
           python-version: "3.12"
+      - name: Prepare user bin path
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Install deps
         run: |
           python -m pip install -U pip
           python -m pip install -e .[dev]
       - name: Install kubectl
         run: |
-          curl -L https://dl.k8s.io/release/v1.30.3/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl
-          chmod +x /usr/local/bin/kubectl
+          curl -L https://dl.k8s.io/release/v1.30.3/bin/linux/amd64/kubectl -o "$HOME/.local/bin/kubectl"
+          chmod +x "$HOME/.local/bin/kubectl"
       - name: Start apishim (stub runtime with RBAC)
         env:
           AE_APISHIM_ENABLE: "1"
