@@ -13,6 +13,7 @@
 - `apishim-smoke.yml`: runs the shim anonymously with proxies cleared and switches the smoke manifest to a single ConfigMap with server-side dry-run, avoiding proxy-induced 401s and unsupported workload objects in the stub runtime.
 - `ci.yml`: unit tests now run with `AE_RUNTIME_BACKEND=stub` and proxies cleared so Docker/Podman aren’t required on the runner and TLS-proxy issues don’t derail CLI tests.
 - `tools/plan_ci.sh`: planner gating now excludes multi-doc/secret/k8s export samples (planner only accepts single-app docs) and runs without `--strict` so security hardening hints stay as warnings instead of failing CI.
+  - Extended skip list to cover k3s multi-doc examples to avoid YAML parse failures during CI gating.
 - `scripts/helm_shim_demo.sh`: hardens chart scaffolding by creating `templates/` explicitly before writing extra workloads, preventing intermittent “No such file or directory” failures in `helm-shim-smoke`.
 - `kubectl-portforward-smoke.yml`: shim runs anonymously with proxies cleared; the smoke manifest uses port 80 and kubectl no longer sends a bearer token, fixing 401s and port mismatch during dry-run apply/port-forward.
 - `apishim-live-openapi.yml`: aligned with Node16 runner (checkout@v3/setup-python@v4), added Gitea cert-trust, non-root installs for kubectl/helm/kind, and kubeconfig materialization now falls back to `KUBECONFIG_B64` when `APISHIM_LIVE_KUBECONFIG_B64` is absent.
