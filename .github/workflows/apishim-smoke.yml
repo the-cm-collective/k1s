@@ -14,7 +14,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Trust Gitea cert (or disable verify)
+        run: |
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+          fi
       - uses: actions/checkout@v3
+        env:
+          GIT_SSL_NO_VERIFY: "true"
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
