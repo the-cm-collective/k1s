@@ -4219,7 +4219,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         for l in lines:
             s = l.decode("utf-8", "replace") if isinstance(l, (bytes, bytearray)) else str(l)
             lowered = s.lower()
-            if "no container with name or id" in lowered and "no such container" in lowered:
+            if "no container with name or id" in lowered or "no such container" in lowered:
                 continue
             if filt and (filt not in s.lower()):
                 continue
@@ -4272,7 +4272,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 else:
                     s = str(line).rstrip("\n")
                 lowered = s.lower()
-                if "no container with name or id" in lowered and "no such container" in lowered:
+                if "no container with name or id" in lowered or "no such container" in lowered:
                     continue
                 out = ("data: " + s + "\n\n").encode("utf-8", "replace")
                 self.wfile.write(out)
@@ -4375,7 +4375,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         for l in lines:
             s = l.decode("utf-8", "replace") if isinstance(l, (bytes, bytearray)) else str(l)
             lowered = s.lower()
-            if "no container with name or id" in lowered and "no such container" in lowered:
+            if "no container with name or id" in lowered or "no such container" in lowered:
                 continue
             filtered.append(s)
         self._json_ok(
