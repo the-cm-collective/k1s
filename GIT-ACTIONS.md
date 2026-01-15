@@ -11,6 +11,7 @@
 - Added an optional “Trust Gitea cert” pre-step before checkout: if `GITEA_CA_B64` is provided it is written to a temp CA file and wired via git `sslCAInfo`; otherwise ssl verification is disabled for the Gitea origin to stop fetch failures on self-signed certs. `GIT_SSL_NO_VERIFY` is set on checkout as a backstop.
 - `helm-dryrun-openapi.yml`: the shim now runs with `AE_APISHIM_ALLOW_ANON=1` (no bearer token needed) and the test chart is pared down to a single ConfigMap to avoid unsupported Deployment/TestHook endpoints in the stub runtime; localhost proxy vars are cleared so 127.0.0.1 traffic never routes through a corporate proxy.
 - `apishim-smoke.yml`: runs the shim anonymously with proxies cleared and switches the smoke manifest to a single ConfigMap with server-side dry-run, avoiding proxy-induced 401s and unsupported workload objects in the stub runtime.
+- `ci.yml`: unit tests now run with `AE_RUNTIME_BACKEND=stub` and proxies cleared so Docker/Podman aren’t required on the runner and TLS-proxy issues don’t derail CLI tests.
 
 ## Other workflow assessments (unchanged files)
 - Docker/privileged needed: `kubectl-exec-smoke.yml`, `e2e-multiport.yml`, `multinode-smoke.yml`, `release.yml` (container job). Ensure runner has Docker socket or is privileged.
