@@ -475,9 +475,14 @@ class PodmanRuntime(RuntimeAdapter):
                 pass
         # Fallback to well-known container name if label lookup fails
         if not cid:
-            if follow:
-                return
             cid = f"ae-{replica_id}"
+            if follow:
+                try:
+                    probe = self._run_ok([self._bin, "container", "exists", cid], allow_fail=True)
+                    if probe.code != 0:
+                        return
+                except Exception:
+                    return
         cmd = [self._bin, "logs"]
         if tail is not None:
             cmd += ["--tail", str(int(tail))]
@@ -494,7 +499,7 @@ class PodmanRuntime(RuntimeAdapter):
                 ) as proc:  # type: ignore
                     if proc.stdout is not None:
                         for line in proc.stdout:
-                            if "no container with name or ID" in line and "no such container" in line:
+                            if "no container with name or ID" in line or "no such container" in line:
                                 return
                             yield line.rstrip("\n")
             except Exception:
@@ -548,7 +553,7 @@ class PodmanRuntime(RuntimeAdapter):
                 ) as proc:  # type: ignore
                     if proc.stdout is not None:
                         for line in proc.stdout:
-                            if "no container with name or ID" in line and "no such container" in line:
+                            if "no container with name or ID" in line or "no such container" in line:
                                 return
                             yield line.rstrip("\n")
             except Exception:
