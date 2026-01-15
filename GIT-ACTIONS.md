@@ -15,6 +15,7 @@
 - `tools/plan_ci.sh`: planner gating now excludes multi-doc/secret/k8s export samples (planner only accepts single-app docs) and runs without `--strict` so security hardening hints stay as warnings instead of failing CI.
 - `scripts/helm_shim_demo.sh`: hardens chart scaffolding by creating `templates/` explicitly before writing extra workloads, preventing intermittent “No such file or directory” failures in `helm-shim-smoke`.
 - `kubectl-portforward-smoke.yml`: shim runs anonymously with proxies cleared; the smoke manifest uses port 80 and kubectl no longer sends a bearer token, fixing 401s and port mismatch during dry-run apply/port-forward.
+- `apishim-live-openapi.yml`: aligned with Node16 runner (checkout@v3/setup-python@v4), added Gitea cert-trust, non-root installs for kubectl/helm/kind, and kubeconfig materialization now falls back to `KUBECONFIG_B64` when `APISHIM_LIVE_KUBECONFIG_B64` is absent.
 
 ## Other workflow assessments (unchanged files)
 - Docker/privileged needed: `kubectl-exec-smoke.yml`, `e2e-multiport.yml`, `multinode-smoke.yml`, `release.yml` (container job). Ensure runner has Docker socket or is privileged.
