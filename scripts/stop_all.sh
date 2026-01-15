@@ -59,5 +59,14 @@ if [[ -n "${ids}" ]]; then
   "$BIN" rm -f $ids >/dev/null 2>&1 || true
 fi
 
-log "Cleanup complete"
+log "Removing service proxy containers (name=ae-svc-*)"
+for bin in docker podman; do
+  if command -v "$bin" >/dev/null 2>&1; then
+    svc_ids=$("$bin" ps -aq --filter 'name=ae-svc-' || true)
+    if [[ -n "${svc_ids}" ]]; then
+      "$bin" rm -f $svc_ids >/dev/null 2>&1 || true
+    fi
+  fi
+done
 
+log "Cleanup complete"
