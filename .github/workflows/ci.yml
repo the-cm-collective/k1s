@@ -34,6 +34,11 @@ jobs:
           python -m pip install -e .[dev]
 
       - name: Unit tests
+        env:
+          AE_RUNTIME_BACKEND: stub
+          NO_PROXY: "127.0.0.1,localhost"
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
         run: pytest --maxfail=1 --disable-warnings -q
 
       - name: Planner gating (strict)
