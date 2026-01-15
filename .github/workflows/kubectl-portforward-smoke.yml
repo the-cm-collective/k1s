@@ -96,8 +96,6 @@ jobs:
           YAML
           kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify --validate=false apply -f /tmp/pf-deploy.yaml
       - name: Port-forward and curl
-        env:
-          KUBECTL_PORT_FORWARD_WEBSOCKETS: "false"
         run: |
           kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify port-forward deploy/pf-echo 18080:80 >/tmp/pf.log 2>&1 &
           PF_PID=$!
