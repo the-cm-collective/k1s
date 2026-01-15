@@ -24,6 +24,10 @@ for f in "${files[@]}"; do
       echo "[plan-ci] skipping $f (not a single-doc app manifest)"
       continue
       ;;
+    *k3s*.yaml|*k3s*.yml)
+      echo "[plan-ci] skipping $f (k3s multi-doc example)"
+      continue
+      ;;
   esac
   echo "[plan-ci] checking $f"
   if ! python -m ae.cli plan --json -f "$f"; then
