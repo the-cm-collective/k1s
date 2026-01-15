@@ -20,6 +20,10 @@ jobs:
   live-openapi:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      NO_PROXY: "127.0.0.1,localhost"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
     services:
       postgres:
         image: postgres:15
@@ -39,9 +43,20 @@ jobs:
       APISHIM_LIVE_NAMESPACE: apishim-live
       APISHIM_KIND_CLUSTER: ${{ vars.APISHIM_KIND_CLUSTER }}
       APISHIM_LIVE_KUBECONFIG_B64: ${{ secrets.APISHIM_LIVE_KUBECONFIG_B64 }}
+      KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Trust Gitea cert (or disable verify)
+        run: |
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+          fi
+      - uses: actions/checkout@v3
+        env:
+          GIT_SSL_NO_VERIFY: "true"
+      - uses: actions/setup-python@v4
         with:
           python-version: "3.12"
       - name: Install deps
@@ -50,22 +65,43 @@ jobs:
           python -m pip install -e .[dev]
       - name: Install kubectl
         run: |
-          curl -L https://dl.k8s.io/release/v1.30.3/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl
-          chmod +x /usr/local/bin/kubectl
+          mkdir -p "$HOME/.local/bin"
+          curl -L https://dl.k8s.io/release/v1.30.3/bin/linux/amd64/kubectl -o "$HOME/.local/bin/kubectl"
+          chmod +x "$HOME/.local/bin/kubectl"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Install helm
         run: |
-          curl -L https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz -o /tmp/helm.tgz
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          for url in \
+            https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz \
+            https://storage.googleapis.com/kubernetes-helm/helm-v3.14.4-linux-amd64.tar.gz; do
+            if curl -fL --retry 5 --retry-delay 2 --retry-connrefused "$url" -o /tmp/helm.tgz; then
+              break
+            fi
+          done
+          if [ ! -s /tmp/helm.tgz ]; then
+            echo "failed to download helm after retries" >&2
+            exit 1
+          fi
           tar -xzf /tmp/helm.tgz -C /tmp
-          mv /tmp/linux-amd64/helm /usr/local/bin/helm
-          chmod +x /usr/local/bin/helm
+          mv /tmp/linux-amd64/helm "$HOME/.local/bin/helm"
+          chmod +x "$HOME/.local/bin/helm"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Install kind (optional)
         run: |
-          curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
-          chmod +x /usr/local/bin/kind
+          mkdir -p "$HOME/.local/bin"
+          curl -Lo "$HOME/.local/bin/kind" https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+          chmod +x "$HOME/.local/bin/kind"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Materialize provided kubeconfig (optional)
-        if: env.APISHIM_LIVE_KUBECONFIG_B64 != ''
+        if: env.APISHIM_LIVE_KUBECONFIG_B64 != '' || env.KUBECONFIG_B64 != ''
         run: |
-          echo "$APISHIM_LIVE_KUBECONFIG_B64" | base64 -d > /tmp/live-kubeconfig
+          src="${APISHIM_LIVE_KUBECONFIG_B64:-${KUBECONFIG_B64:-}}"
+          if [ -z "$src" ]; then
+            exit 0
+          fi
+          echo "$src" | base64 -d > /tmp/live-kubeconfig
           echo "APISHIM_LIVE_KUBECONFIG=/tmp/live-kubeconfig" >> $GITHUB_ENV
       - name: Run live OpenAPI gate
         env:
