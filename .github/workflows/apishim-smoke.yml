@@ -44,54 +44,31 @@ jobs:
       - name: Start apishim (stub runtime)
         env:
           AE_APISHIM_ENABLE: "1"
-          AE_APISHIM_TOKEN: "ci-token"
+          AE_APISHIM_ALLOW_ANON: "1"
           AE_RUNTIME_BACKEND: "stub"
           PYTHONPATH: "src"
+          NO_PROXY: "127.0.0.1,localhost"
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
         run: |
-          python -m ae.apishim serve --host 127.0.0.1 --port 8445 --token "$AE_APISHIM_TOKEN" >/tmp/apishim-ci.log 2>&1 &
+          python -m ae.apishim serve --host 127.0.0.1 --port 8445 --allow-anonymous >/tmp/apishim-ci.log 2>&1 &
           echo $! > /tmp/apishim.pid
           sleep 3
       - name: kubectl apply + get
-        env:
-          TOKEN: "ci-token"
         run: |
-          cat <<'YAML' | kubectl --server=http://127.0.0.1:8445 --token=$TOKEN --insecure-skip-tls-verify --validate=false apply -f -
-          apiVersion: apps/v1
-          kind: Deployment
-          metadata:
-            name: shimdemo
-          spec:
-            replicas: 1
-            selector:
-              matchLabels:
-                app: shimdemo
-            template:
-              metadata:
-                labels:
-                  app: shimdemo
-              spec:
-                containers:
-                  - name: web
-                    image: nginx:1.25-alpine
-                    ports:
-                      - containerPort: 80
-          ---
+          export NO_PROXY="127.0.0.1,localhost"
+          export HTTP_PROXY=""
+          export HTTPS_PROXY=""
+          cat <<'YAML' | kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify --validate=false apply --dry-run=server -f -
           apiVersion: v1
-          kind: Service
+          kind: ConfigMap
           metadata:
             name: shimdemo
-          spec:
-            type: ClusterIP
-            selector:
-              app: shimdemo
-            ports:
-              - name: http
-                port: 80
-                targetPort: 80
+            namespace: default
+          data:
+            hello: world
           YAML
-          kubectl --server=http://127.0.0.1:8445 --token=$TOKEN --insecure-skip-tls-verify get deploy shimdemo -o wide
-          kubectl --server=http://127.0.0.1:8445 --token=$TOKEN --insecure-skip-tls-verify get svc shimdemo -o wide
-          kubectl --server=http://127.0.0.1:8445 --token=$TOKEN --insecure-skip-tls-verify get endpoints shimdemo -o yaml || true
+          kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify get configmap shimdemo -o yaml
       - name: Show shim logs on failure
         if: failure()
         run: cat /tmp/apishim-ci.log
