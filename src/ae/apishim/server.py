@@ -5105,7 +5105,8 @@ class ShimHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802
         if not self._authz():
             return
-        plural, ns, name = _ns_name(self.path)
+        path = urlparse(self.path).path
+        plural, ns, name = _ns_name(path)
         if plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"} and name:
             ok = self.server.store.delete("", "v1", plural, None if plural == "namespaces" else ns, name)  # type: ignore[attr-defined]
             if not ok:
@@ -5116,9 +5117,30 @@ class ShimHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"{}")
             return
-        if self.path.startswith("/apis/apiextensions.k8s.io/v1"):
+        if path.startswith("/apis/batch/v1"):
+            b_plural, b_ns, b_name = _batch_ns_name(path)
+            if b_plural in {"jobs", "cronjobs"}:
+                if b_name:
+                    ok = self.server.store.delete("batch", "v1", b_plural, b_ns, b_name)  # type: ignore[attr-defined]
+                    if not ok:
+                        self._not_found()
+                        return
+                else:
+                    items = (
+                        self.server.store.list_all("batch", "v1", b_plural)  # type: ignore[attr-defined]
+                        if b_ns is None
+                        else self.server.store.list("batch", "v1", b_plural, b_ns)  # type: ignore[attr-defined]
+                    )
+                    for obj in items:
+                        self.server.store.delete("batch", "v1", b_plural, obj.namespace or None, obj.name)  # type: ignore[attr-defined]
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b"{}")
+                return
+        if path.startswith("/apis/apiextensions.k8s.io/v1"):
             crd_plural, crd_name = _gv_cluster_name(
-                self.path, "apiextensions.k8s.io", "v1", "customresourcedefinitions"
+                path, "apiextensions.k8s.io", "v1", "customresourcedefinitions"
             )
             if crd_plural == "customresourcedefinitions" and crd_name:
                 ok = self.server.store.delete("apiextensions.k8s.io", "v1", "customresourcedefinitions", None, crd_name)  # type: ignore[attr-defined]

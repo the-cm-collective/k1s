@@ -1,4 +1,4 @@
-# ADR 0004 — Multi-node architecture and scope
+# ADR 0007 — Multi-node architecture and scope
 
 Date: 2025-12-16
 Status: Accepted
@@ -21,4 +21,4 @@ Owners: controller/runtime/network
 ## Consequences
 - Scheduler honors `nodeSelector`, taints/tolerations, and storage pinning; NotReady nodes are skipped with reschedule limits.
 - Remote exec/logs/probes go through the agent; HTTP/TCP probes prefer Service VIPs.
-- Docs and labs live in `docs/multinode-lab.md` and `ops/dev/multinode-lab.sh`.
+- Docs and labs live in `docs/guides/multinode-lab.md` and `ops/dev/multinode-lab.sh`.

@@ -1,4 +1,4 @@
-# ADR 0002 — k1nd memory benchmark run notes (2025-11-12)
+# ADR 0005 — k1nd memory benchmark run notes (2025-11-12)
 
 Date: 2025-11-12
 Status: Informational

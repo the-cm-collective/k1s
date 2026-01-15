@@ -246,11 +246,10 @@ ae export-k8s -f specs/examples/echo.yaml --namespace demo --preset web-hardened
 ## Benchmarks & Idle Baselines
 
 - Memory footprints for control plane and per‑pod overhead with Podman vs Docker and k3s
-- See `docs/benchmarks.md`, `docs/benchmark-k3s.md`, and `docs/testing-memory-k1s.md`
+- See `docs/benchmarks/memory.md` for the consolidated benchmarks guide.
 
 ## Closing Thoughts
 
 k1s aims to be “just enough orchestration” for a single host: familiar, observable, and safe by default. It won’t replace Kubernetes at scale — but it can replace ad‑hoc shell scripts and fragile Compose stacks where you want health checks, rollouts, and a small, understandable control plane.
 
 Explore the docs, run a demo, and tell us what you build with it.
-

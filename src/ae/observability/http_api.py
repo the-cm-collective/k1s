@@ -28,13 +28,23 @@ from ae.controller.state import SQLiteStateStore
 # in the active specs directory (AE_SPECS_DIR). This keeps the dashboard
 # scoped to the selected demo and avoids surfacing historical apps from the
 # state DB.
+def _demo_filter_enabled() -> bool:
+    try:
+        raw = str(os.getenv("AE_DEMO_FILTER", "") or "").strip().lower()
+        if raw in {"0", "false", "no", "off"}:
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def _demo_allowed_apps() -> set[str]:
     try:
         import os as _os
         from pathlib import Path as _Path
 
         # Only filter when explicitly in demo mode
-        if _os.getenv("AE_DEMO_MODE") != "1":
+        if _os.getenv("AE_DEMO_MODE") != "1" or not _demo_filter_enabled():
             return set()
         specs_root = _os.getenv("AE_SPECS_DIR") or ""
         if not specs_root:
@@ -65,18 +75,33 @@ def _demo_allowed_apps() -> set[str]:
 
 def _filter_statuses_for_demo(items):
     try:
+        if not _demo_filter_enabled():
+            return items
         # Compute the allowed app set from the active demo specs and any Labs-applied apps.
         demo_allowed = set(_demo_allowed_apps())
         try:
             labs_allowed = set(_LABS_APPS)
         except Exception:
             labs_allowed = set()
+        try:
+            prefix_allowed = set(_LABS_APP_PREFIXES)
+        except Exception:
+            prefix_allowed = set()
+        if os.getenv("AE_DEMO_MODE") != "1":
+            prefix_allowed = set()
         allowed = demo_allowed | labs_allowed
-        if not allowed:
+        if not allowed and not prefix_allowed:
             # No demo scope and no labs apps tracked: do not filter.
             return items
-        # Restrict to the allowed set.
-        subset = [s for s in items if getattr(s, "app_name", None) in allowed]
+        # Restrict to the allowed set or allowed prefixes.
+        subset = [
+            s
+            for s in items
+            if (
+                getattr(s, "app_name", None) in allowed
+                or any(str(getattr(s, "app_name", "")).startswith(p) for p in prefix_allowed)
+            )
+        ]
         if subset:
             return subset
         # If a demo scope exists (apps declared under AE_SPECS_DIR), strictly enforce it
@@ -100,6 +125,8 @@ _APP_RECONCILE_SUM: dict[str, float] = {}
 _APP_RECONCILE_COUNT: dict[str, int] = {}
 # Track labs-applied app names so demo filters include them
 _LABS_APPS: set[str] = set()
+# Prefixes to allow in demo-scoped dashboards (e.g., helm shim demo namespace).
+_LABS_APP_PREFIXES: set[str] = set()
 # Crashloop flags: app -> unix timestamp until which the flag is considered active
 _APP_CRASHLOOP_UNTIL: dict[str, float] = {}
 # Hook observations: (app, hook, type) -> (duration_seconds: float, success: bool)
@@ -119,6 +146,8 @@ _HELM_DEMO_STATE: dict[str, object] = {
     "port": int(os.getenv("AE_LABS_HELM_PORT", "8455") or 8455),
     "token": os.getenv("AE_LABS_HELM_TOKEN", "helm-demo"),
     "runtime": os.getenv("AE_LABS_HELM_RUNTIME", "stub"),
+    "namespace": os.getenv("AE_LABS_HELM_NAMESPACE", "demo-helm"),
+    "chart": os.getenv("AE_LABS_HELM_CHART", "demochart"),
     "started": None,
 }
 
@@ -161,9 +190,17 @@ def _helm_demo_start() -> dict[str, object]:
         proc = _HELM_DEMO_STATE.get("proc")
         if proc and getattr(proc, "poll", lambda: None)() is None:
             return _helm_demo_status() | {"message": "demo already running"}
-        root = Path(__file__).resolve().parents[2]
-        script = root / "scripts" / "helm_shim_demo.sh"
-        if not script.exists():
+        # Locate repo root (dev-only). Walk parents so this still works if paths shift.
+        script = None
+        root = None
+        here = Path(__file__).resolve()
+        for candidate in [here] + list(here.parents):
+            maybe = candidate / "scripts" / "helm_shim_demo.sh"
+            if maybe.exists():
+                script = maybe
+                root = candidate
+                break
+        if script is None or root is None:
             raise RuntimeError("scripts/helm_shim_demo.sh not found")
         log_path: Path = _HELM_DEMO_STATE["log"]  # type: ignore[index]
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -173,7 +210,16 @@ def _helm_demo_start() -> dict[str, object]:
         env.setdefault("PORT", str(_HELM_DEMO_STATE.get("port")))
         env.setdefault("TOKEN", str(_HELM_DEMO_STATE.get("token")))
         env.setdefault("RUNTIME", str(_HELM_DEMO_STATE.get("runtime")))
+        env.setdefault("NAMESPACE", str(_HELM_DEMO_STATE.get("namespace")))
+        env.setdefault("CHART_NAME", str(_HELM_DEMO_STATE.get("chart")))
         env.setdefault("TMPDIR", str(log_path.parent))
+        # Allow shim demo apps to show up on demo-scoped dashboards.
+        try:
+            ns = str(_HELM_DEMO_STATE.get("namespace") or "")
+            if ns:
+                _LABS_APP_PREFIXES.add(f"{ns}--")
+        except Exception:
+            pass
         proc = subprocess.Popen(
             ["bash", str(script)],
             cwd=root,
@@ -1347,6 +1393,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 self._json_error(404, "reset not available")
                 return
             try:
+                logger.info("labs reset requested")
                 sess = str(payload.get("session_id") or "")
                 # Prefer tracked labs apps that match the session suffix; fallback to echo-<sess>
                 try:
@@ -1385,6 +1432,39 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             pass
                     except Exception:
                         continue
+                # Also clean up any helm shim demo apps by namespace prefix.
+                try:
+                    ns = str(_HELM_DEMO_STATE.get("namespace") or "demo-helm")
+                    if ns:
+                        prefix = f"{ns}--"
+                        try:
+                            names = [s.app_name for s in self.store.list_status()]
+                        except Exception:
+                            names = []
+                        helm_candidates = [n for n in names if n.startswith(prefix)]
+                        if helm_candidates:
+                            logger.info("labs reset removing helm demo apps: %s", ", ".join(helm_candidates))
+                        for app in helm_candidates:
+                            try:
+                                res = self.delete_fn(app, True)  # type: ignore[misc]
+                                removed.append(res)
+                                try:
+                                    _LABS_APPS.discard(app)
+                                except Exception:
+                                    pass
+                            except Exception:
+                                continue
+                        try:
+                            _LABS_APP_PREFIXES.discard(prefix)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                # Ensure the shim demo process is stopped so it doesn't reapply.
+                try:
+                    _helm_demo_stop()
+                except Exception:
+                    pass
                 self._json_ok({"removed": removed})
             except Exception as exc:  # pragma: no cover
                 self._json_error(500, str(exc))
@@ -1512,6 +1592,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     return
                 try:
                     weight = int(payload.get("weight") or 10)
+                    base_revision = None
                     if app:
                         # Try to fetch current manifest and patch rollout strategy/weight
                         try:
@@ -1519,14 +1600,34 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         except Exception:
                             revs = []
                         if revs:
+                            base_revision = revs[0].revision
                             man = self.store.get_revision_manifest(app, revs[0].revision)  # type: ignore[attr-defined]
                             data = man.model_dump(by_alias=True)
                             spec = data.setdefault("spec", {})
+                            try:
+                                cur_rep = int(spec.get("replicas", 1) or 1)
+                            except Exception:
+                                cur_rep = 1
+                            if cur_rep < 2:
+                                spec["replicas"] = 2
                             rollout = dict(spec.get("rollout") or {})
                             rollout["strategy"] = "canary"
                             rollout["weight"] = int(weight)
                             spec["rollout"] = rollout
+                            try:
+                                import time as _t
+
+                                meta = data.setdefault("metadata", {})
+                                anns = dict(meta.get("annotations") or {})
+                                anns["labs.k1s.dev/canary-stamp"] = str(int(_t.time()))
+                                meta["annotations"] = anns
+                            except Exception:
+                                pass
                             rep = self.apply_fn(data)  # type: ignore[misc]
+                            if isinstance(rep, dict):
+                                if base_revision is not None:
+                                    rep["base_revision"] = int(base_revision)
+                                rep["canary_weight"] = int(weight)
                             self._json_ok(rep)
                             return
                     # Fallback to curated example
@@ -1548,7 +1649,26 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     ro["strategy"] = "canary"
                     ro["weight"] = int(weight)
                     spec["rollout"] = ro
+                    try:
+                        cur_rep = int(spec.get("replicas", 1) or 1)
+                    except Exception:
+                        cur_rep = 1
+                    if cur_rep < 2:
+                        spec["replicas"] = 2
+                    try:
+                        import time as _t
+
+                        meta = data.setdefault("metadata", {})
+                        anns = dict(meta.get("annotations") or {})
+                        anns["labs.k1s.dev/canary-stamp"] = str(int(_t.time()))
+                        meta["annotations"] = anns
+                    except Exception:
+                        pass
                     rep = self.apply_fn(data)  # type: ignore[misc]
+                    if isinstance(rep, dict):
+                        if base_revision is not None:
+                            rep["base_revision"] = int(base_revision)
+                        rep["canary_weight"] = int(weight)
                     self._json_ok(rep)
                 except Exception as exc:
                     self._json_error(500, str(exc))
@@ -4098,6 +4218,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         out: list[str] = []
         for l in lines:
             s = l.decode("utf-8", "replace") if isinstance(l, (bytes, bytearray)) else str(l)
+            lowered = s.lower()
+            if "no container with name or id" in lowered and "no such container" in lowered:
+                continue
             if filt and (filt not in s.lower()):
                 continue
             ts, msg = self._split_ts(s)
@@ -4148,6 +4271,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     s = line.decode("utf-8", "replace").rstrip("\n")
                 else:
                     s = str(line).rstrip("\n")
+                lowered = s.lower()
+                if "no container with name or id" in lowered and "no such container" in lowered:
+                    continue
                 out = ("data: " + s + "\n\n").encode("utf-8", "replace")
                 self.wfile.write(out)
                 self.wfile.flush()
@@ -4245,13 +4371,17 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         except Exception as exc:
             self._json_error(500, str(exc))
             return
+        filtered: list[str] = []
+        for l in lines:
+            s = l.decode("utf-8", "replace") if isinstance(l, (bytes, bytearray)) else str(l)
+            lowered = s.lower()
+            if "no container with name or id" in lowered and "no such container" in lowered:
+                continue
+            filtered.append(s)
         self._json_ok(
             {
                 "app": app,
-                "lines": [
-                    (l.decode("utf-8", "replace") if isinstance(l, (bytes, bytearray)) else str(l))
-                    for l in lines
-                ],
+                "lines": filtered,
             }
         )
 

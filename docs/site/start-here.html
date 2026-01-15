@@ -438,6 +438,102 @@ k1s logs app/echo --follow --tail 100</code></pre>
 <pre><code>AE_APISHIM_TOKEN=devtoken python -m ae.apishim serve --host 127.0.0.1 --port 8445
 kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code></pre>
 <p>Shim capabilities and gaps live in <code>docs/apishim-compatibility-matrix.md</code>.</p>
+<h2>Makefile Helper Commands</h2>
+<p>Run with <code>make &lt;target&gt;</code>. You can override defaults via <code>VAR=value make &lt;target&gt;</code>.</p>
+<p>Setup and quality</p>
+<ul>
+<li><code>make install</code>: install dev dependencies (<code>pip -e .[dev]</code>).</li>
+<li><code>make watch</code>: install file-watching extras (<code>pip -e .[watch]</code>).</li>
+<li><code>make test</code>: run unit tests (<code>pytest -q</code>).</li>
+<li><code>make lint</code>: run <code>ruff check</code> + <code>mypy src/ae</code>.</li>
+<li><code>make wheel</code>: build a wheel into <code>dist/</code>.</li>
+</ul>
+<p>Local dev and samples</p>
+<ul>
+<li><code>make dev-up</code> / <code>make dev-down</code>: start/stop dev Docker Compose stack.</li>
+<li><code>make loop</code>: controller reconcile loop (watch mode).</li>
+<li><code>make run</code>: single reconcile pass.</li>
+<li><code>make apply-sample</code>: apply <code>specs/examples/echo.yaml</code>.</li>
+<li><code>make status-sample</code>: status for <code>echo</code>.</li>
+<li><code>make logs-sample</code>: logs for <code>echo</code>.</li>
+<li><code>make k8s-smoke</code>: export + validate sample Kubernetes YAML (no cluster required).</li>
+<li><code>make start-here</code>: build docs and open <code>docs/site/start-here.html</code>.</li>
+<li><code>make haproxy-update</code>: regenerate HAProxy config from controller API.</li>
+<li><code>make haproxy-watch</code>: watch/reload HAProxy config from controller API.</li>
+<li><code>make install-systemd</code> / <code>make uninstall-systemd</code>: install/remove systemd units.</li>
+<li><code>make install-docs-service</code> / <code>make uninstall-docs-service</code>: install/remove docs service.</li>
+<li><code>make secrets-seal-demo</code>: run the sealed-secret demo helper.</li>
+</ul>
+<p>Docs, labs, and playground</p>
+<ul>
+<li><code>make docs</code>: combine snapshots (if present), regenerate charts, build docs.</li>
+<li><code>make docs-watch</code>: rebuild docs when <code>combined/combined.csv</code> changes.</li>
+<li><code>make labs-up</code> / <code>make labs-down</code>: dev labs stack (docs + controller via compose).</li>
+<li><code>make labs-aio-up</code> / <code>make labs-aio-down</code>: all-in-one labs stack.</li>
+<li><code>make labs-k3d-up</code> / <code>make labs-k3d-down</code>: bring up/down local k3d cluster for labs.</li>
+<li><code>make apishim-smoke</code>: quick API shim health check on port 8445.</li>
+<li><code>make shim-helm-demo</code>: run the helm shim demo helper.</li>
+</ul>
+<p>Demo workflows</p>
+<ul>
+<li><code>make demo</code>: run <code>scripts/init_demo.sh</code> (defaults to <code>--demo-configs</code>).</li>
+<li><code>make demo-help</code>: show demo script help.</li>
+<li><code>make demo-down</code>: tear down demo stacks.</li>
+<li><code>make demo-hardened</code>: run hardened demo flow.</li>
+<li><code>make demo-reset</code>: reset demo/labs state and prune volumes.</li>
+<li><code>make dashboard-reload</code>: reload controller under the dashboard supervisor.</li>
+<li><code>make dashboard-restart</code>: restart the supervisor and reload.</li>
+</ul>
+<p>Integration and e2e</p>
+<ul>
+<li><code>make integ-test</code>: integration tests (<code>pytest -q tests/integration/</code>).</li>
+<li><code>make e2e</code> / <code>make e2e-multiport</code>: run the multiport e2e script.</li>
+</ul>
+<p>Benchmarks (memory + runtime tooling)</p>
+<ul>
+<li><code>make bench-mem-k1s</code>: snapshot k1s memory.</li>
+<li><code>make bench-mem-k3s</code>: snapshot k3s memory.</li>
+<li><code>make bench-mem-agg</code>: aggregate latest snapshot under a label.</li>
+<li><code>make bench-mem-matrix-k1s</code>: run k1s replica matrix snapshots.</li>
+<li><code>make bench-mem-combine</code>: combine snapshots into <code>combined/*</code>.</li>
+<li><code>make bench-mem-verify</code>: verify a snapshot and print per-container split.</li>
+<li><code>make bench-k3s-up</code> / <code>make bench-k3s-down</code>: manage a k3s bench cluster.</li>
+<li><code>make bench-mem-matrix-k3s</code>: run k3s replica matrix snapshots.</li>
+<li><code>make bench-mem-rollout-k1s</code>: run k1s rollout snapshots.</li>
+<li><code>make bench-mem-rollout-k3s</code>: run k3s rollout snapshots.</li>
+<li><code>make bench-mem-plot</code>: render benchmark charts.</li>
+<li><code>make bench-mem-e2e-k3s-sudo</code>: full k3s e2e (matrix + rollout + charts) with sudo.</li>
+<li><code>make bench-mem-e2e-k1s</code>: full k1s e2e (matrix + rollout + charts).</li>
+<li><code>make bench-mem-e2e-k1s-sudo</code>: k1s e2e with sudo snapshots.</li>
+<li><code>make bench-mem-e2e-k1nd</code>: k1nd (k1s-in-Docker) e2e.</li>
+<li><code>make bench-mem-e2e-k1nd-sudo</code>: k1nd e2e with sudo snapshots.</li>
+<li><code>make bench-mem-e2e-k1nd-quick</code>: fast k1nd profile.</li>
+<li><code>make bench-mem-e2e-k1nd-resume-rollout</code>: resume only the rollout phase.</li>
+<li><code>make bench-mem-e2e-k1nd-down</code>: k1nd e2e then tear down compose.</li>
+<li><code>make bench-mem-e2e-all</code>: run all baseline suites.</li>
+<li><code>make bench-mem-e2e-minimal</code>: minimal baseline suite.</li>
+<li><code>make bench-watch-runtime</code>: live runtime debug snapshotter.</li>
+<li><code>make bench-mem-e2e-baselines</code>: run baseline suite matrix.</li>
+<li><code>make bench-mem-e2e-baselines-sudo</code>: baseline suite with sudo.</li>
+<li><code>make bench-mem-docs</code>: combine + plot + rebuild docs.</li>
+<li><code>make bench-fix-perms</code>: normalize artifact permissions.</li>
+<li><code>make bench-mem-backfill</code>: backfill missing summary.json + rebuild docs.</li>
+<li><code>make bench-engines-clear</code>: stop/remove all containers (dangerous).</li>
+<li><code>make bench-mem-backfill-oci</code>: add OCI runtime metadata and recompute charts.</li>
+<li><code>make bench-mem-backfill-oci-latest</code>: backfill OCI metadata for latest label only.</li>
+<li><code>make bench-mem-finalize-sudo</code>: finalize benchmarks and normalize perms (sudo).</li>
+<li><code>make bench-mem-e2e-k3s</code>: full k3s e2e (matrix + rollout + charts).</li>
+<li><code>make bench-mem-idle-k1s</code>: idle baseline snapshot for k1s.</li>
+<li><code>make bench-mem-idle-k3s</code>: idle baseline snapshot for k3s.</li>
+</ul>
+<p>Images and containers</p>
+<ul>
+<li><code>make image-docker</code>: build controller image with Dockerfile.</li>
+<li><code>make image-podman</code>: build controller image with Containerfile.</li>
+<li><code>make push-docker</code> / <code>make push-podman</code>: push controller image.</li>
+<li><code>make docker-build-controller</code>: build controller image (ops/images/controller.Dockerfile).</li>
+<li><code>make docker-run-controller</code>: run controller container with specs/state mounts.</li>
+</ul>
 <h2>Option C — Multi-node Lab (controller + worker)</h2>
 <p>Use this when you want to validate the overlay Service VIP path and scheduler on two hosts.</p>
 <p>1) Controller (host A):</p>
@@ -447,7 +543,7 @@ kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-14 15:47:15</span>
+        <span>Built 2026-01-15 15:09:49</span>
       </div>
     </footer>
     <script>

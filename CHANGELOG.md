@@ -8,7 +8,7 @@
 - **Service VIP dataplane:** Service controller and Docker/overlay providers allocate ClusterIPs, run per-Service HAProxy sidecars, and program endpoints from health + runtime state (skips loopback, deduplicates targets). Optional overlay provider targets WireGuard-backed networks.
 - **Pod networking helpers:** Pod CIDR allocator (env-gated) and node-side bridge/WireGuard helper to plumb pod networks in lab/overlay scenarios.
 - **CLI/HTTP API:** `ae services` and `ae nodes` subcommands; status/history JSON/watch tweaks; HTTP API exposes `/nodes` and richer status for dashboards. New console script `ae-node` registered in `pyproject.toml`.
-- **Multinode lab & CI assets:** QEMU/libvirt lab scripts (`ops/ci/multinode-qemu.sh`, `ops/dev/multinode-lab.sh`), default test key under `ops/ci/keys/`, overlay-enabled smoke option, and sample `specs/examples/echo-multinode.yaml`. New docs `docs/adr/0003-multinode-ci-qemu-smoke.md`, `docs/multinode-lab.md`, and site rebuild covering the workflow.
+- **Multinode lab & CI assets:** QEMU/libvirt lab scripts (`ops/ci/multinode-qemu.sh`, `ops/dev/multinode-lab.sh`), default test key under `ops/ci/keys/`, overlay-enabled smoke option, and sample `specs/examples/echo-multinode.yaml`. New docs `docs/adr/0006-multinode-ci-qemu-smoke.md`, `docs/guides/multinode-lab.md`, and site rebuild covering the workflow.
 - **Test coverage:** Integration suites for agent flow and service VIP routing; unit suites for scheduler, agent API, pod CIDR allocator, docker provider, node state, and reconciler updates.
 - **Observability:** Prometheus now exports node inventory/heartbeat and service endpoint readiness metrics; controller-health Grafana board shows Ready/Total nodes, heartbeat age, and service endpoint readiness for multi-node runs.
 - **Kubernetes API shim parity:** apishim now exposes pods/logs/exec/port-forward, nodes/endpoints, and HPA; supports RBAC evaluation (Role/RoleBinding + SubjectAccessReview), serviceaccount token minting + projection, JSONPatch/Apply, read/admin tokens, and list/watch continue tokens with resourceVersion handling.
@@ -18,7 +18,7 @@
 - **Security & TLS:** mTLS bootstrap for agents, join-token verification with single-use + revocation tracking, CA serial persistence, and cert rotation/revocation helpers (`ae rotate-certs`, `ae-rotate-certs`).
 - **Multinode observability:** overlay health metrics/alerts plus dashboard node inventory and per-node pod placement.
 - **CI workflows:** apishim smoke/HA/postgres/SSA-RBAC workflows, helm shim dry-run/smoke, kubectl exec/port-forward smokes, multinode/port-forward/overlay workflows, podman CI, and expanded release artifacts.
-- **Benchmarks & docs:** new memory benchmark pipeline and k3s comparison tooling; docs additions for conformance, multinode, benchmarks, and TLS/mTLS runbook notes (plus ADR `docs/adr/0002-k1nd-memory-benchmark-notes.md`); docs site refresh with nav/layout tweaks, code-block copy pills, and expanded examples.
+- **Benchmarks & docs:** new memory benchmark pipeline and k3s comparison tooling; docs additions for conformance, multinode, benchmarks, and TLS/mTLS runbook notes (plus ADR `docs/adr/0005-k1nd-memory-benchmark-notes.md`); docs site refresh with nav/layout tweaks, code-block copy pills, and expanded examples.
 
 ### Changed
 - Docker runtime now prefers host-published endpoints using `AE_NODE_ADVERTISE_IP` when containers run on remote nodes; podman runtime gains parity fixes. Service endpoints are deduplicated to avoid SQLite UNIQUE violations when multiple replicas share targets.

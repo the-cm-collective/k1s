@@ -37,7 +37,7 @@ python -m ae.cli apply -f specs/examples/echo.yaml
 open http://127.0.0.1:9108/dashboard
 ```
 
-Docs: see `docs/observability.md` and `docs/http-api.md`.
+Docs: see `docs/reference/observability.md` and `docs/reference/http-api.md`.
 
 ## 2) Labs Playground (Interactive)
 
@@ -55,7 +55,7 @@ make demo ARGS="--docs-only -y -d"  # or use ./scripts/init_demo.sh --docs-only 
 open https://docs.home.arpa:8443/playground
 ```
 
-Docs: `docs/playground.md`. Demo flags: `scripts/init_demo.sh --labs[ --labs-token <T>]`.
+Docs: `docs/guides/playground.md`. Demo flags: `scripts/init_demo.sh --labs[ --labs-token <T>]`.
 
 ## 3) PV‑Lite Storage + Volumes CLI
 
@@ -78,7 +78,7 @@ python -m ae.cli volumes list --app echo  # or omit --app for all
 python -m ae.cli delete echo --purge      # removes volumes with retention: Delete
 ```
 
-Docs: `docs/storage.md`.
+Docs: `docs/reference/storage.md`.
 
 ## 4) HTTP API: RBAC and Dev Mutations
 
@@ -101,7 +101,7 @@ python -m ae.cli --server http://127.0.0.1:9108 --token scaletok scale echo --re
 python -m ae.cli --server http://127.0.0.1:9108 --token scaletok logs echo --tail 100
 ```
 
-Docs: `docs/http-api.md`, `docs/api-auth.md`.
+Docs: `docs/reference/http-api.md`, `docs/reference/api-auth.md`.
 
 ## 5) L4 Services: TCP Patterns + HAProxy Watcher
 
@@ -120,7 +120,7 @@ make haproxy-update APP=tcp-echo
 make haproxy-watch APP=tcp-echo   # continuous
 ```
 
-Docs and scripts: `docs/l4-services.md`, `scripts/dev/update_haproxy_from_api.py`, `scripts/dev/watch_haproxy.py`.
+Docs and scripts: `docs/guides/l4-services.md`, `scripts/dev/update_haproxy_from_api.py`, `scripts/dev/watch_haproxy.py`.
 
 ## 6) Rollouts: Ordered, Parallel, Canary (with Auto Ramps)
 
@@ -142,7 +142,7 @@ Pause/resume without changing runtime state:
 python -m ae.cli rollout pause echo && python -m ae.cli rollout resume echo
 ```
 
-Docs: `docs/rollouts.md`.
+Docs: `docs/reference/rollouts.md`.
 
 ## 7) Kubernetes Parity: Export, Check, Report
 
@@ -157,7 +157,7 @@ python -m ae.cli k8s-report --run-dry-run -o docs/site/k8s_status.json
 python docs/build_docs.py
 ```
 
-Docs: `docs/k8s-compliance.md`, `docs/k8s-compliance.md` (coverage summary), and `docs/K8S_PARITY.md`/`docs/k8s-compliance.md` pages on the site.
+Docs: `docs/reference/k8s-compliance.md` (coverage summary and compliance status).
 
 ## 8) Registry Auth + Image Verification
 
@@ -172,7 +172,7 @@ python -m ae.cli registry list
 python -m ae.cli verify-image ghcr.io/org/app:1.2.3 --certificate-identity your@id --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-Docs: `docs/api-auth.md` (registry section).
+Docs: `docs/reference/api-auth.md` (registry section).
 
 ## 9) Demos and Docs Refresh
 
@@ -188,11 +188,10 @@ The demo script gained clearer flags and prints direct links to Swagger, ReDoc, 
 
 Docs pages touched recently:
 
-- `docs/observability.md`, `docs/http-api.md`, `docs/playground.md`, `docs/l4-services.md`, `docs/storage.md`, `docs/rollouts.md`, `docs/k8s-compliance.md`.
+- `docs/reference/observability.md`, `docs/reference/http-api.md`, `docs/guides/playground.md`, `docs/guides/l4-services.md`, `docs/reference/storage.md`, `docs/reference/rollouts.md`, `docs/reference/k8s-compliance.md`.
 
 ## What’s Next
 
 From the FEAT tracker: packaging (controller container + wheels), stricter presets for production via `k8s-check`, and more metrics (reconcile histograms and canary step counters) with sample Grafana panels.
 
 As always, feedback is welcome. If you try the Playground or the dev demos, let us know what workflows you want to see next.
-

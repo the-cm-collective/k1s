@@ -64,8 +64,9 @@ workloads:
   enableStatefulSet: true
   enableDaemonSet: true
   enableJob: true
-  enableCronJob: true
-  cronSchedule: "* * * * *"
+  enableCronJob: false
+  # If enabled for debugging, keep the interval conservative to avoid rapid job spam.
+  cronSchedule: "0 * * * *"
 YAML
 
   cat <<'YAML' > "$chart_dir/templates/extra-workloads.yaml"
@@ -138,7 +139,7 @@ metadata:
   name: {{ include "demochart.fullname" . }}-cron
   labels: {{- include "demochart.labels" . | nindent 4 }}
   annotations:
-    cronjob.k1s.dev/intervalSeconds: "0"
+    cronjob.k1s.dev/intervalSeconds: "3600"
 spec:
   schedule: "{{ .Values.workloads.cronSchedule }}"
   jobTemplate:
@@ -182,6 +183,7 @@ python -m ae.apishim kubeconfig \
   --token "$TOKEN" \
   --context k1s-shim \
   --insecure-skip-tls-verify > "$KUBECONFIG_PATH"
+chmod 600 "$KUBECONFIG_PATH"
 export KUBECONFIG="$KUBECONFIG_PATH"
 
 mkdir "$CHART_DIR"
@@ -238,6 +240,9 @@ if [[ "$NAMESPACE" != "default" ]]; then
     kubectl create namespace "$NAMESPACE" -o yaml --dry-run=client | kubectl apply --validate=false -f -
   fi
 fi
+# Clean up any prior demo jobs/cronjobs to avoid clutter (especially from older cron demos).
+kubectl -n "$NAMESPACE" delete cronjob --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
+kubectl -n "$NAMESPACE" delete jobs --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
 kubectl -n "$NAMESPACE" --validate=false apply -f "$MANIFEST_PATH"
 kubectl -n "$NAMESPACE" get deploy,svc,ing
 kubectl -n "$NAMESPACE" get statefulset,daemonset,job,cronjob,hpa
@@ -245,7 +250,9 @@ kubectl -n "$NAMESPACE" get statefulset,daemonset,job,cronjob,hpa
 ASSIGNED_PORT=$(kubectl -n "$NAMESPACE" get svc "$CHART_NAME" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "n/a")
 echo "[shim-demo] service nodePort: $ASSIGNED_PORT"
 
-kubectl -n "$NAMESPACE" delete -f "$MANIFEST_PATH" --ignore-not-found >/dev/null 2>&1 || true
+kubectl -n "$NAMESPACE" delete -f "$MANIFEST_PATH" --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
+kubectl -n "$NAMESPACE" delete cronjob --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
+kubectl -n "$NAMESPACE" delete jobs --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
 if [[ "$NAMESPACE" != "default" ]]; then
   kubectl delete namespace "$NAMESPACE" >/dev/null 2>&1 || true
 fi

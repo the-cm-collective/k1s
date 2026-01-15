@@ -7,6 +7,9 @@
     orch: { available: false, token: null },
     appName: 'echo',
     appApplied: false,
+    canaryRevision: null,
+    canaryBaseRevision: null,
+    canaryWeight: null,
     statusMode: 'cluster', // 'cluster' | 'app'
   };
   const helmDemo = { timer: null, running: false };
@@ -16,6 +19,24 @@
     if (!el) return;
     el.textContent = txt;
     if (cls) { el.className = cls; }
+  }
+
+  function setCanaryInfo(rev, base, weight) {
+    state.canaryRevision = rev ?? null;
+    state.canaryBaseRevision = base ?? null;
+    state.canaryWeight = weight ?? null;
+    try {
+      const revEl = document.getElementById('canary-revision');
+      if (revEl) revEl.textContent = (rev != null ? `rev ${rev}` : 'n/a');
+    } catch(_){}
+    try {
+      const baseEl = document.getElementById('canary-base');
+      if (baseEl) baseEl.textContent = (base != null ? `rev ${base}` : 'n/a');
+    } catch(_){}
+  }
+
+  function clearCanaryInfo() {
+    setCanaryInfo(null, null, null);
   }
 
   async function jsonGet(url) {
@@ -59,6 +80,13 @@
       }
       throw e;
     }
+  }
+
+  function labsHeaders(extra) {
+    const headers = Object.assign({}, extra || {});
+    const tok = state.orch.token || (sessionStorage.getItem('labsToken')||'').trim();
+    if (tok) headers['Authorization'] = `Bearer ${tok}`;
+    return headers;
   }
 
   async function switchToDirectApi(reason){
@@ -897,6 +925,7 @@
             const out = await resp.json();
             if (out && out.app) { state.appName = out.app; }
             state.appApplied = true;
+            clearCanaryInfo();
           } catch(_) { state.appApplied = true; }
           // Immediate, visible feedback like dashboard header
           try { banner(`Apply accepted for “${state.appName}” — reconciling…`, 'ok', 6000); } catch(_){}
@@ -925,15 +954,15 @@
       const btn = e.currentTarget || document.getElementById('btn-reset');
       await withButtonFeedback(btn, 'Resetting session…', async ()=>{
       const prev = state.sessionId;
-      // Attempt server cleanup when orchestrator is available and we have a session
-      if (state.orch.available && prev) {
+      // Attempt server cleanup when orchestrator is available (session optional)
+      if (state.orch.available) {
         try {
           const r = await apiFetch(`/labs/reset`, {
             method: 'POST',
             headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
             body: JSON.stringify({ session_id: prev })
           });
-          if (!r.ok) { banner(`Reset failed: ${await r.text()}`, 'fail'); return; }
+          if (!r.ok && r.status !== 404) { banner(`Reset failed: ${await r.text()}`, 'fail'); return; }
         } catch(e){ banner(`Reset error: ${e}`, 'fail'); return; }
       }
       // Local UI/session clear regardless of backend availability
@@ -962,6 +991,7 @@
       try { const lg = document.getElementById('observe-logs'); if (lg) lg.textContent = ''; } catch(_){}
       try { setText('#v-apply-events','n/a','pending'); } catch(_){}
       try { setText('#v-apply-ready','n/a','pending'); } catch(_){}
+      try { clearCanaryInfo(); } catch(_){}
       try { setText('#ingress-check','n/a','pending'); } catch(_){}
       try { setText('#ingress-curl',''); const b=document.getElementById('ingress-curl-copy'); if (b) b.disabled=true; } catch(_){}
       try { setHostsHint(''); } catch(_){}
@@ -976,11 +1006,16 @@
       if (!state.orch.available) return;
       const btn = e.currentTarget || document.getElementById('btn-canary-10');
       await withButtonFeedback(btn, 'Applying canary…', async ()=>{
-        await apiFetch(`/labs/rollout`, {
+        const resp = await apiFetch(`/labs/rollout`, {
           method: 'POST',
           headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
           body: JSON.stringify({ session_id: state.sessionId, action: 'canary', app: state.appName })
         });
+        if (!resp.ok) { banner(`Canary failed: ${await resp.text()}`, 'fail'); return; }
+        try {
+          const out = await resp.json();
+          if (out) { setCanaryInfo(out.revision ?? null, out.base_revision ?? null, out.canary_weight ?? null); }
+        } catch(_){}
         setTimeout(verifyApply, 800);
         try { toast('Canary applied (default weight)', 'ok'); } catch (_){ }
       });
@@ -996,10 +1031,15 @@
       const weight = (document.getElementById('canary-weight')||{value:'3'}).value;
       const btn = e.currentTarget || document.getElementById('btn-canary-apply');
       await withButtonFeedback(btn, `Applying canary ${weight}%…`, async ()=>{
-        await apiFetch(`/labs/rollout`, {
+        const resp = await apiFetch(`/labs/rollout`, {
           method: 'POST', headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
           body: JSON.stringify({ session_id: state.sessionId, action: 'canary', app: state.appName, weight: Number(weight)||3 })
         });
+        if (!resp.ok) { banner(`Canary failed: ${await resp.text()}`, 'fail'); return; }
+        try {
+          const out = await resp.json();
+          if (out) { setCanaryInfo(out.revision ?? null, out.base_revision ?? null, out.canary_weight ?? null); }
+        } catch(_){}
         setTimeout(verifyApply, 800);
         try { toast(`Canary weight ${weight} applied`, 'ok'); } catch(_){ }
       });
@@ -1244,12 +1284,3 @@
     });
   } catch(_){}
 })();
-  function labsHeaders(extra) {
-    const headers = Object.assign({}, extra || {});
-    const tok = state.orch.token || (sessionStorage.getItem('labsToken')||'').trim();
-    if (tok) headers['Authorization'] = `Bearer ${tok}`;
-    return headers;
-  }
-
-    $('#btn-helm-demo')?.addEventListener('click', ()=> startHelmDemo());
-    $('#btn-helm-demo-stop')?.addEventListener('click', ()=> stopHelmDemo());
