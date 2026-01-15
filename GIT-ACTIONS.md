@@ -8,6 +8,7 @@
 - Action versions: `checkout@v3`, `setup-python@v4` to stay Node16-compatible until the runner is rebuilt.
 - Added a shared concurrency group `port-8445-${{ github.ref }}` to the apishim/helm/portforward workflows to avoid 127.0.0.1:8445 port collisions during parallel pushes.
 - CLI installs (kubectl/helm) now go to `$HOME/.local/bin` and are added to PATH, removing the need for sudo/root on the runner.
+- Added an optional “Trust Gitea cert” pre-step before checkout: if `GITEA_CA_B64` is provided it is written to a temp CA file and wired via git `sslCAInfo`; otherwise ssl verification is disabled for the Gitea origin to stop fetch failures on self-signed certs. `GIT_SSL_NO_VERIFY` is set on checkout as a backstop.
 
 ## Other workflow assessments (unchanged files)
 - Docker/privileged needed: `kubectl-exec-smoke.yml`, `e2e-multiport.yml`, `multinode-smoke.yml`, `release.yml` (container job). Ensure runner has Docker socket or is privileged.
