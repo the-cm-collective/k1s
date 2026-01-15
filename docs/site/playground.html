@@ -347,12 +347,12 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="static/labs.css?v=1768434436"/>
+    <link rel="stylesheet" href="static/labs.css?v=1768518589"/>
 <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-<script>window.DOCS_LABS_TOKEN='';</script>
+<script>window.DOCS_LABS_TOKEN='D34DB33F';</script>
 <script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>
-<script defer src="static/labs.js?v=1768434436"></script>
+<script defer src="static/labs.js?v=1768518589"></script>
   </head>
   <body>
     <nav>
@@ -423,8 +423,8 @@
 <div class="helm-demo-box">   <div class="helm-demo-controls">     <button id="btn-helm-demo" class="btn-secondary" disabled>Run Helm Shim Demo</button>     <button id="btn-helm-demo-stop" class="btn-secondary" disabled>Stop</button>   </div>   <div id="helm-demo-status" class="helm-demo-status">Labs backend unavailable.</div>   <pre id="helm-demo-log" class="helm-demo-log hidden scrollbar-hide" aria-live="polite"></pre> </div>
 <p>Want to watch a Helm deployment materialize inside the dashboard? Click “Run Helm Shim Demo” above (requires Labs token). Behind the scenes, the server runs the commands below; you can still run them manually if you prefer:</p>
 <pre><code># 1) Start the API shim (stub runtime)
-AE_APISHIM_RUNTIME=stub PYTHONPATH=src \
-  python -m ae.apishim serve --host 127.0.0.1 --port 8445 --token helm-demo
+AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME=stub AE_APISHIM_TOKEN=helm-demo PYTHONPATH=src \
+  python -m ae.apishim serve --host 127.0.0.1 --port 8445
 
 # 2) Generate a kubeconfig pointing at the shim
 PYTHONPATH=src python -m ae.apishim kubeconfig \
@@ -433,17 +433,17 @@ PYTHONPATH=src python -m ae.apishim kubeconfig \
 export KUBECONFIG=~/.kube/helm-shim
 
 # 3) Create namespace + sample chart and install it
-kubectl create namespace demo
+kubectl create namespace demo-helm
 helm create demochart
-helm install demochart ./demochart -n demo --wait
+helm install demochart ./demochart -n demo-helm --wait
 
 # (Optional) Inspect via k1s CLI while Helm is running
-PYTHONPATH=src python -m ae.cli status demochart --wide --events
+PYTHONPATH=src python -m ae.cli status demo-helm--demochart --wide --events
 
 # 4) When finished, uninstall and clean up
-helm uninstall demochart -n demo &amp;&amp; kubectl delete namespace demo</code></pre>
+helm uninstall demochart -n demo-helm &amp;&amp; kubectl delete namespace demo-helm</code></pre>
 <p>Back in the playground:</p>
-<p>1. Set Backend to <code>k1s-Host</code>, click <code>Start Session</code>, and use **Quick Links → Open Dashboard**. 2. The <code>demochart</code> release appears under <code>demo</code>; sections **B–E** stream logs, events, ingress health, and nodePort hints while Helm reconciles. 3. When you run <code>helm uninstall</code>, the dashboard reflects the teardown in real time.</p>
+<p>1. Set Backend to <code>k1s-Host</code>, click <code>Start Session</code>, and use **Quick Links → Open Dashboard**. 2. The release appears as <code>demo-helm--demochart</code> (namespace <code>demo-helm</code>); sections **B–E** stream logs, events, ingress health, and nodePort hints while Helm reconciles. 3. When you run <code>helm uninstall</code>, the dashboard reflects the teardown in real time.</p>
 <h2>B. Apply Example</h2>
 <p>Pick a sample and apply it. In read‑only mode the UI shows the exact CLI you can run locally.</p>
 <ul>
@@ -504,19 +504,21 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
 <ul>
 <li>Scaling edits only <code>spec.replicas</code>; the current image revision stays the same.</li>
 <li>Canary weights bias routing between the old and new revision; readiness gates still apply before traffic shifts.</li>
+<li>Canary actions bump replicas to at least 2 so the dashboard shows a distinct canary revision.</li>
 <li>To fully roll forward, increase weight gradually (see section "F. Rollout Controls"). To roll back, set weight to 0 or re‑apply the previous image.</li>
 </ul>
 <h3>Verifiers</h3>
 <ul>
 <li>Events show scaling: <span id="v-scale-events" data-v="pending">pending</span></li>
 <li>Metrics present for app: <span id="v-scale-metrics" data-v="pending">pending</span></li>
+<li>Canary routes to revision: <span id="canary-revision">n/a</span> (base: <span id="canary-base">n/a</span>)</li>
 </ul>
 <h2>E. Ingress Test</h2>
 <ul>
 <li>Open App: <a id="ingress-link" href="#" target="_blank" rel="noopener">(disabled)</a></li>
 <li>Last check: <span id="ingress-check">n/a</span></li>
 <li>DNS hint: <code id="ingress-hosts-hint"></code> <button id="ingress-hosts-copy" disabled>Copy</button></li>
-<li>Direct curl (no hosts): <code id="ingress-curl"></code> <button id="ingress-curl-copy" disabled>Copy</button></li>
+<li>Direct curl (no hosts):<br/><code id="ingress-curl"></code> <button id="ingress-curl-copy" disabled>Copy</button></li>
 </ul>
 <h2>F. Rollout Controls</h2>
 <p>Advanced controls you can ignore on your first run. Use the slider to choose a small weight, then "Apply" to shift a portion of traffic to the canary image.</p>
@@ -544,7 +546,7 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-14 15:47:16</span>
+        <span>Built 2026-01-15 15:09:49</span>
       </div>
     </footer>
     <script>

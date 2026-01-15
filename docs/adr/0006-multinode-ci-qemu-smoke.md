@@ -1,4 +1,4 @@
-# ADR 0003 — Multi-node CI smoke via QEMU/libvirt
+# ADR 0006 — Multi-node CI smoke via QEMU/libvirt
 
 Date: 2025-12-15
 Status: Accepted

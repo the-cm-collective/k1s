@@ -1,13 +1,21 @@
-## Demo Modes
+# Demos & Examples
+
+This guide summarizes the demo modes and example manifests available in `specs/examples/`.
+
+Tip
+- When running demos that read secrets, pass `--with-secrets-env` to `init_demo.sh` to export `AE_ALLOW_PLAINTEXT_SECRETS=1` and `SOPS_AGE_KEY_FILE=~/.config/ae/keys.txt` for the session.
+
+## Demo script overview
 
 The init script can stand up different demo combinations. Use the flags below
 to control which apps are applied. Add `-y` to auto-add hosts and `-d` to attach
 logs (Ctrl-C to exit).
-For secrets-friendly runs, add `--with-secrets-env` to export `AE_ALLOW_PLAINTEXT_SECRETS=1` and `SOPS_AGE_KEY_FILE`.
+
+## Demo modes
 
 ### Standard Demo (blue/green)
 
-- Apps: blue and green services behind TLS via Caddy
+- Apps: blue and green services behind TLS via Caddy.
 - Command:
   - `./scripts/init_demo.sh --demo-standard -y`
   - `make demo ARGS="--demo-standard -y -d"`
@@ -18,15 +26,15 @@ For secrets-friendly runs, add `--with-secrets-env` to export `AE_ALLOW_PLAINTEX
 ### Configs & Secrets Demo (echo)
 
 - Shows `configRefs` and `secretRefs` → env and file projections.
-- Projections (host): `state/projections/echo-revN/{config,secret}/...`
-- Mounted RO (container): `/var/run/ae/config/echo`
+- Files: `configs/app-config.yaml`, `specs/examples/demo-secret.sops.yaml`
 - Command:
   - `./scripts/init_demo.sh --with-secrets-env --demo-configs -y`
   - `make demo` (defaults to `-y --demo-configs`)
 
 ### Multi-Replica Echo (echo-mr)
 
-- Shows Caddy load-balancing across multiple replicas on a shared container network.
+- Shows Caddy load-balancing across replicas on a shared container network.
+- File: `specs/examples/multi-replica-echo.yaml`
 - Command:
   - `./scripts/init_demo.sh --demo-echo-mr -y`
   - `make demo ARGS="--demo-echo-mr -y -d"`
@@ -49,6 +57,23 @@ For secrets-friendly runs, add `--with-secrets-env` to export `AE_ALLOW_PLAINTEX
   - `make demo ARGS="--demo-hardened -y -d"`
 - Endpoint: `https://echo-hardened.home.arpa:8443/`
 
+### Rollout Demo
+
+- Ordered rollout for `echo` with default prefer-first routing:
+  - `./scripts/init_demo.sh --demo-rollout -y -d`
+  - Optional canary: set `spec.rollout.strategy: canary` with `weight` (and `auto` for ramps).
+
+### Storage (PV-lite)
+
+- Applies an `echo` app with a named volume mounted at `/var/lib/echo`.
+- Command:
+  - `./scripts/init_demo.sh --demo-storage -y`
+  - `make demo ARGS="--demo-storage -y -d"`
+- Inspect volumes:
+  - `ae volumes list --app echo`
+- Delete with purge to remove volumes marked `retention: Delete`:
+  - `ae delete echo --purge`
+
 ### Docs Only
 
 - Starts the docs server and API; does not apply any apps.
@@ -68,12 +93,6 @@ For secrets-friendly runs, add `--with-secrets-env` to export `AE_ALLOW_PLAINTEX
 - `make demo-down` — tear down demo
 - `make integ-test` — run integration tests (set `AE_INTEG_RUNTIME=podman` or `docker`)
 
-### Rollout Demo
-
-- Ordered rollout for `echo` with default prefer-first routing:
-  - `./scripts/init_demo.sh --demo-rollout -y -d`
-  - Optional canary: set `spec.rollout.strategy: canary` with `weight` (and `auto` for ramps).
-
 ### Notes
 
 - Caddy HTTP: `:8888`, HTTPS: `:8443`.
@@ -82,14 +101,20 @@ For secrets-friendly runs, add `--with-secrets-env` to export `AE_ALLOW_PLAINTEX
   - Dashboard lives under the API host: `https://api.home.arpa:8443/dashboard` (or `http://127.0.0.1:9108/dashboard` directly).
 - Health checks are disabled by default for compatibility; enable with `AE_CADDY_ACTIVE_HEALTH=1` if your Caddy supports the directive.
 
+## Example manifests (standalone)
 
-### Storage (PV-lite)
+### Multi-Port Service (HTTP + Metrics)
 
-- Applies an `echo` app with a named volume mounted at `/var/lib/echo`.
-- Command:
-  - `./scripts/init_demo.sh --demo-storage -y`
-  - `make demo ARGS="--demo-storage -y -d"`
-- Inspect volumes:
-  - `ae volumes list --app echo`
-- Delete with purge to remove volumes marked `retention: Delete`:
-  - `ae delete echo --purge`
+- File: `specs/examples/echo-multiport.yaml`
+- Notes:
+  - Exporter emits multiple Service ports; Ingress routes to the `http` port.
+  - Docker/Podman publish all declared `service.ports[]` when `replicas=1`.
+  - You can also generate the example via CLI: `ae examples write --type multiport -o specs/examples/echo-multiport.yaml`
+
+### Security Hardening (seccomp + AppArmor)
+
+- File: `specs/examples/echo-sec-adv.yaml`
+- Notes:
+  - Default preset uses `seccompProfileType: RuntimeDefault`.
+  - For a Localhost profile, place the profile file and set `seccompLocalhostProfile` accordingly.
+  - AppArmor annotation is set to `localhost/echo-profile`; adjust based on your cluster policy.

@@ -1,6 +1,7 @@
 # Memory Overhead Benchmarks
 
 This guide describes how to profile and compare memory overhead for k1s versus k3s on a single host.
+It consolidates the k1s memory profiling and k3s comparison workflows in one place.
 
 Goals
 - Separate app memory from control-plane/system overhead.
@@ -18,6 +19,8 @@ Outputs
 - `snapshots/<label>/<timestamp>/raw/*`: raw text and JSON (ps, free, vmstat, smaps_rollup, docker/podman inspect, per‑container memory CSV).
 - `summary.json`: totals and breakdowns for processes, container cgroups, host system cgroups, and MemAvailable before/after from `free -b`.
 - `summary.csv`: one‑line rollup: total PSS, control‑plane PSS, app/system container bytes, host system cgroup bytes.
+- `combined/combined.{json,csv}`: merged rollups across labels (for charts and reports).
+- `charts/*.png`: control‑plane/system charts and per‑pod overhead plots.
 
 Quick start
 1) Take a snapshot (k1s):
@@ -51,7 +54,10 @@ Tips for consistency
 - Keep ingress enabled or disabled across both systems for apples-to-apples.
 - Allow a 2-minute warm-up before snapshotting busy scenarios.
 - If Podman/Docker is not installed, snapshots still run but container-level cgroup metrics are skipped (process PSS totals are still reported).
- - CI or advanced users can bypass safety checks by setting `SKIP_GUARDS=1` in the environment.
+- CI or advanced users can bypass safety checks by setting `SKIP_GUARDS=1` in the environment.
+
+OCI runtime note
+- Using Podman (`AE_RUNTIME_BACKEND=podman`) typically reduces idle control‑plane footprint on long‑lived hosts compared to Docker. Keep the runtime consistent across runs when comparing results.
 
 Interpreting results
 - Process PSS approximates unique+fair‑share memory for control‑plane processes.
@@ -191,7 +197,7 @@ make bench-mem-e2e-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yam
 - After run
 - Combined table: `combined/combined.csv` and `combined/combined.json`.
   - Charts: `charts/control_plane_pss.png`, `charts/system_cgroups.png`, `charts/per_pod_overhead.png`.
-  - Docs page `testing-memory-k1s.html` auto-appends a “Latest Benchmarks (Auto)” section from `combined/combined.csv`.
+- Docs page `benchmarks.html` auto-appends a “Latest Benchmarks (Auto)” section from `combined/combined.csv`.
 
 ## Automated Prep/Teardown
 

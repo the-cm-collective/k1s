@@ -488,13 +488,24 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 statuses = []
             # Restrict to demo apps when AE_DEMO_MODE=1
             try:
-                from ae.observability.http_api import _LABS_APPS, _demo_allowed_apps
+                from ae.observability.http_api import _LABS_APPS, _LABS_APP_PREFIXES, _demo_allowed_apps, _demo_filter_enabled
 
-                demo_allowed = set(_demo_allowed_apps())
-                labs_allowed = set(_LABS_APPS)
-                allowed = demo_allowed | labs_allowed
-                if allowed:
-                    statuses = [s for s in statuses if s.app_name in allowed]
+                if _demo_filter_enabled():
+                    demo_allowed = set(_demo_allowed_apps())
+                    labs_allowed = set(_LABS_APPS)
+                    prefix_allowed = set(_LABS_APP_PREFIXES)
+                    if os.getenv("AE_DEMO_MODE") != "1":
+                        prefix_allowed = set()
+                    allowed = demo_allowed | labs_allowed
+                    if allowed or prefix_allowed:
+                        statuses = [
+                            s
+                            for s in statuses
+                            if (
+                                s.app_name in allowed
+                                or any(str(s.app_name).startswith(p) for p in prefix_allowed)
+                            )
+                        ]
             except Exception:
                 pass
             # Nodes snapshot (heartbeat freshness, cordon)

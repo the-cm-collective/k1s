@@ -3,11 +3,11 @@
 Lightweight multi-node application engine with a Kubernetes-compatible API shim.
 
 - Design and roadmap: see `FEAT.md`.
-- Multi-node architecture and lab: `docs/adr/0004-multinode-architecture-scope.md`, `docs/multinode-lab.md`.
-- API compatibility and shim status: `CONFORMANCE.md`, `docs/apishim-compatibility-matrix.md`.
-- Operations runbook: see `docs/runbook.md`.
-- Ingress/TLS details: see `docs/ingress.md`.
-- End-to-end walkthrough: see `docs/e2e.md`.
+- Multi-node architecture and lab: `docs/adr/0007-multinode-architecture-scope.md`, `docs/guides/multinode-lab.md`.
+- API compatibility and shim status: `CONFORMANCE.md`, `docs/reference/apishim-compatibility-matrix.md`.
+- Operations runbook: see `docs/ops/runbook.md`.
+- Ingress/TLS details: see `docs/reference/ingress.md`.
+- End-to-end walkthrough: see `docs/guides/e2e.md`.
 
 Quick token generation with expiry
 - Generate API tokens that expire in 24 hours and write them to a file of exports you can `source`:
@@ -56,7 +56,7 @@ k1s describe app/echo
 k1s logs app/echo --follow --tail 100
 ```
 
-API endpoints (when started with `--metrics-port`): see `docs/http-api.md`.
+API endpoints (when started with `--metrics-port`): see `docs/reference/http-api.md`.
 
 Multi-container tips:
 - Add sidecars under `spec.containers` and init containers under `spec.initContainers`.
@@ -68,13 +68,104 @@ Multi-node lab (controller + agents + overlay Service VIPs):
 - Worker agent on another host: `AE_CONTROLLER_URL=http://<controller>:9110 AE_AGENT_TOKEN=$AE_AGENT_API_TOKEN python -m ae.node --runtime-backend podman --port 9109 --ensure-pod-net`
 - Apply the multi-node sample: `python -m ae.cli apply -f specs/examples/echo-multinode.yaml`
 - Inspect nodes/placement: `ae nodes list`, `ae status echo-mn --wide --events`
-- Full walkthrough: `docs/multinode-lab.md`
+- Full walkthrough: `docs/guides/multinode-lab.md`
 
 Kubernetes API shim (kubectl/helm):
 - Start shim (Postgres or SQLite): `AE_APISHIM_TOKEN=devtoken python -m ae.apishim serve --host 127.0.0.1 --port 8445`
 - Point kubectl: `kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods`
 - Port-forward and apply work for Deployments/Services/Ingress/HPA/StatefulSet/DaemonSet/Job/CronJob.
-- Compatibility matrix and open gaps: `docs/apishim-compatibility-matrix.md`, `CONFORMANCE.md`.
+- Compatibility matrix and open gaps: `docs/reference/apishim-compatibility-matrix.md`, `CONFORMANCE.md`.
+
+## Makefile Helper Commands
+
+Run with `make <target>`. You can override defaults via `VAR=value make <target>`.
+
+Setup and quality
+- `make install`: install dev dependencies (`pip -e .[dev]`).
+- `make watch`: install file-watching extras (`pip -e .[watch]`).
+- `make test`: run unit tests (`pytest -q`).
+- `make lint`: run `ruff check` + `mypy src/ae`.
+- `make wheel`: build a wheel into `dist/`.
+
+Local dev and samples
+- `make dev-up` / `make dev-down`: start/stop dev Docker Compose stack.
+- `make loop`: controller reconcile loop (watch mode).
+- `make run`: single reconcile pass.
+- `make apply-sample`: apply `specs/examples/echo.yaml`.
+- `make status-sample`: status for `echo`.
+- `make logs-sample`: logs for `echo`.
+- `make k8s-smoke`: export + validate sample Kubernetes YAML (no cluster required).
+- `make start-here`: build docs and open `docs/site/start-here.html`.
+- `make haproxy-update`: regenerate HAProxy config from controller API.
+- `make haproxy-watch`: watch/reload HAProxy config from controller API.
+- `make install-systemd` / `make uninstall-systemd`: install/remove systemd units.
+- `make install-docs-service` / `make uninstall-docs-service`: install/remove docs service.
+- `make secrets-seal-demo`: run the sealed-secret demo helper.
+
+Docs, labs, and playground
+- `make docs`: combine snapshots (if present), regenerate charts, build docs.
+- `make docs-watch`: rebuild docs when `combined/combined.csv` changes.
+- `make labs-up` / `make labs-down`: dev labs stack (docs + controller via compose).
+- `make labs-aio-up` / `make labs-aio-down`: all-in-one labs stack.
+- `make labs-k3d-up` / `make labs-k3d-down`: bring up/down local k3d cluster for labs.
+- `make apishim-smoke`: quick API shim health check on port 8445.
+- `make shim-helm-demo`: run the helm shim demo helper.
+
+Demo workflows
+- `make demo`: run `scripts/init_demo.sh` (defaults to `--demo-configs`).
+- `make demo-help`: show demo script help.
+- `make demo-down`: tear down demo stacks.
+- `make demo-hardened`: run hardened demo flow.
+- `make demo-reset`: reset demo/labs state and prune volumes.
+- `make dashboard-reload`: reload controller under the dashboard supervisor.
+- `make dashboard-restart`: restart the supervisor and reload.
+
+Integration and e2e
+- `make integ-test`: integration tests (`pytest -q tests/integration/`).
+- `make e2e` / `make e2e-multiport`: run the multiport e2e script.
+
+Benchmarks (memory + runtime tooling)
+- `make bench-mem-k1s`: snapshot k1s memory.
+- `make bench-mem-k3s`: snapshot k3s memory.
+- `make bench-mem-agg`: aggregate latest snapshot under a label.
+- `make bench-mem-matrix-k1s`: run k1s replica matrix snapshots.
+- `make bench-mem-combine`: combine snapshots into `combined/*`.
+- `make bench-mem-verify`: verify a snapshot and print per-container split.
+- `make bench-k3s-up` / `make bench-k3s-down`: manage a k3s bench cluster.
+- `make bench-mem-matrix-k3s`: run k3s replica matrix snapshots.
+- `make bench-mem-rollout-k1s`: run k1s rollout snapshots.
+- `make bench-mem-rollout-k3s`: run k3s rollout snapshots.
+- `make bench-mem-plot`: render benchmark charts.
+- `make bench-mem-e2e-k3s-sudo`: full k3s e2e (matrix + rollout + charts) with sudo.
+- `make bench-mem-e2e-k1s`: full k1s e2e (matrix + rollout + charts).
+- `make bench-mem-e2e-k1s-sudo`: k1s e2e with sudo snapshots.
+- `make bench-mem-e2e-k1nd`: k1nd (k1s-in-Docker) e2e.
+- `make bench-mem-e2e-k1nd-sudo`: k1nd e2e with sudo snapshots.
+- `make bench-mem-e2e-k1nd-quick`: fast k1nd profile.
+- `make bench-mem-e2e-k1nd-resume-rollout`: resume only the rollout phase.
+- `make bench-mem-e2e-k1nd-down`: k1nd e2e then tear down compose.
+- `make bench-mem-e2e-all`: run all baseline suites.
+- `make bench-mem-e2e-minimal`: minimal baseline suite.
+- `make bench-watch-runtime`: live runtime debug snapshotter.
+- `make bench-mem-e2e-baselines`: run baseline suite matrix.
+- `make bench-mem-e2e-baselines-sudo`: baseline suite with sudo.
+- `make bench-mem-docs`: combine + plot + rebuild docs.
+- `make bench-fix-perms`: normalize artifact permissions.
+- `make bench-mem-backfill`: backfill missing summary.json + rebuild docs.
+- `make bench-engines-clear`: stop/remove all containers (dangerous).
+- `make bench-mem-backfill-oci`: add OCI runtime metadata and recompute charts.
+- `make bench-mem-backfill-oci-latest`: backfill OCI metadata for latest label only.
+- `make bench-mem-finalize-sudo`: finalize benchmarks and normalize perms (sudo).
+- `make bench-mem-e2e-k3s`: full k3s e2e (matrix + rollout + charts).
+- `make bench-mem-idle-k1s`: idle baseline snapshot for k1s.
+- `make bench-mem-idle-k3s`: idle baseline snapshot for k3s.
+
+Images and containers
+- `make image-docker`: build controller image with Dockerfile.
+- `make image-podman`: build controller image with Containerfile.
+- `make push-docker` / `make push-podman`: push controller image.
+- `make docker-build-controller`: build controller image (ops/images/controller.Dockerfile).
+- `make docker-run-controller`: run controller container with specs/state mounts.
 
 ## Kubernetes Export Quick Start
 
@@ -85,18 +176,18 @@ Kubernetes API shim (kubectl/helm):
 - Harden NetworkPolicy quickly:
   - `python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --np-preset web --validate > k8s.yaml`
   - `python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --np-preset backend --validate > k8s.yaml`
-- See `docs/k8s-export.md` for supported fields: startupProbe, image pull options, env/envFrom, projected volumes, PDB/HPA, pod-level security, and more.
+- See `docs/reference/k8s-export.md` for supported fields: startupProbe, image pull options, env/envFrom, projected volumes, PDB/HPA, pod-level security, and more.
 
 ## Documentation
 
-- Start here onboarding: `docs/start-here.md`
-- High-level overview and getting started: `docs/overview.md`
-- Technical architecture and reference: `docs/architecture.md`
-- HTTP API reference and UI docs: `docs/http-api.md`
-- Configs & Secrets: `docs/configs-secrets.md`
-- Demo Modes (flags for init script and Make): `docs/demo-modes.md`
-- End-to-end test process: `docs/e2e.md`
-- CI examples: `docs/ci-gh-actions.md`
+- Start here onboarding: `docs/getting-started/start-here.md`
+- High-level overview and getting started: `docs/getting-started/overview.md`
+- Technical architecture and reference: `docs/reference/architecture.md`
+- HTTP API reference and UI docs: `docs/reference/http-api.md`
+- Configs & Secrets: `docs/reference/configs-secrets.md`
+- Demo Modes (flags for init script and Make): `docs/guides/demos-examples.md`
+- End-to-end test process: `docs/guides/e2e.md`
+- CI examples: `docs/ops/ci-gh-actions.md`
 
 ## Remote CLI (over LAN)
 
@@ -124,7 +215,7 @@ ae --server http://<controller-ip>:9108 --token scaletoken scale echo --replicas
 ae --server http://<controller-ip>:9108 --token admintoken delete echo --purge
 ```
 
-See `docs/runbook.md` → “Remote CLI over LAN” for details and curl examples.
+See `docs/ops/runbook.md` → “Remote CLI over LAN” for details and curl examples.
 
 ## License
 

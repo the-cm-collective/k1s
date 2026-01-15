@@ -333,11 +333,12 @@ class ObjectStore:
             prev = self.get(group, version, resource, namespace, name)
             ns_val = namespace or ""
             if self.backend == "sqlite":
-                cur = self._conn.execute(  # type: ignore[union-attr]
-                    "DELETE FROM objects WHERE grp=? AND ver=? AND res=? AND ns=? AND name=?",
-                    (group, version, resource, ns_val, name),
-                )
-                ok = cur.rowcount > 0
+                with self._conn:  # type: ignore[union-attr]
+                    cur = self._conn.execute(  # type: ignore[union-attr]
+                        "DELETE FROM objects WHERE grp=? AND ver=? AND res=? AND ns=? AND name=?",
+                        (group, version, resource, ns_val, name),
+                    )
+                    ok = cur.rowcount > 0
             else:
                 with self._conn.cursor() as cur:  # type: ignore[union-attr]
                     cur.execute(
