@@ -62,6 +62,11 @@ jobs:
       - name: Run Helm shim demo (stub runtime)
         env:
           RUNTIME: stub
+          AE_APISHIM_ALLOW_ANON: "1"
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          NO_PROXY: "127.0.0.1,localhost"
+          TOKEN: "helm-demo"
           PYTHONPATH: src
         run: |
           bash scripts/helm_shim_demo.sh
