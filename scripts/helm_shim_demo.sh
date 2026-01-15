@@ -18,12 +18,13 @@ PORT=${PORT:-8445}
 TOKEN=${TOKEN:-helm-demo}
 RUNTIME=${RUNTIME:-stub}
 CHART_NAME=${CHART_NAME:-demochart}
-NAMESPACE=${NAMESPACE:-demo}
+NAMESPACE=${NAMESPACE:-demo-helm}
 TMPDIR=${TMPDIR:-/tmp}
 WORKDIR="$(mktemp -d "$TMPDIR/helm-shim-XXXX")"
 KUBECONFIG_PATH="$WORKDIR/kubeconfig"
 LOG_PATH="$WORKDIR/shim.log"
 CHART_DIR="$WORKDIR/$CHART_NAME"
+MANIFEST_PATH="$WORKDIR/rendered.yaml"
 
 cleanup() {
   local ec=$?
@@ -56,6 +57,10 @@ replicaCount: 1
 image:
   repository: nginx
   tag: "1.27"
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
 service:
   type: NodePort
   port: 80
@@ -175,14 +180,22 @@ spec:
 {{- end }}
 YAML
 
-helm install "$CHART_NAME" "$CHART_DIR" -n "$NAMESPACE" --create-namespace --wait
+helm template "$CHART_NAME" "$CHART_DIR" -n "$NAMESPACE" --disable-openapi-validation --no-hooks > "$MANIFEST_PATH"
+if [[ "$NAMESPACE" != "default" ]]; then
+  if ! kubectl get ns "$NAMESPACE" >/dev/null 2>&1; then
+    kubectl create namespace "$NAMESPACE" -o yaml --dry-run=client | kubectl apply --validate=false -f -
+  fi
+fi
+kubectl -n "$NAMESPACE" --validate=false apply -f "$MANIFEST_PATH"
 kubectl -n "$NAMESPACE" get deploy,svc,ing
 kubectl -n "$NAMESPACE" get statefulset,daemonset,job,cronjob,hpa
 
 ASSIGNED_PORT=$(kubectl -n "$NAMESPACE" get svc "$CHART_NAME" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "n/a")
 echo "[shim-demo] service nodePort: $ASSIGNED_PORT"
 
-helm uninstall "$CHART_NAME" -n "$NAMESPACE"
-kubectl delete namespace "$NAMESPACE" >/dev/null
+kubectl -n "$NAMESPACE" delete -f "$MANIFEST_PATH" --ignore-not-found >/dev/null 2>&1 || true
+if [[ "$NAMESPACE" != "default" ]]; then
+  kubectl delete namespace "$NAMESPACE" >/dev/null 2>&1 || true
+fi
 
 echo "\nRun completed. Logs: $LOG_PATH"
