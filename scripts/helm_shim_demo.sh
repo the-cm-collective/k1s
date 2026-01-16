@@ -19,6 +19,8 @@ TOKEN=${TOKEN:-helm-demo}
 RUNTIME=${RUNTIME:-stub}
 CHART_NAME=${CHART_NAME:-demochart}
 NAMESPACE=${NAMESPACE:-demo-helm}
+HELM_TEMPLATE_ONLY=${HELM_TEMPLATE_ONLY:-0}
+HELM_TIMEOUT=${HELM_TIMEOUT:-120s}
 TMPDIR=${TMPDIR:-/tmp}
 WORKDIR="$(mktemp -d "$TMPDIR/helm-shim-XXXX")"
 KUBECONFIG_PATH="$WORKDIR/kubeconfig"
@@ -162,6 +164,13 @@ render_chart() {
   helm template "$CHART_NAME" "$chart_dir" -n "$NAMESPACE" --disable-openapi-validation --no-hooks > "$MANIFEST_PATH"
 }
 
+is_true() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 cleanup() {
   local ec=$?
   if [[ -n "${SHIM_PID:-}" ]] && kill -0 "$SHIM_PID" 2>/dev/null; then
@@ -190,19 +199,27 @@ mkdir "$CHART_DIR"
 helm create "$CHART_DIR" >/dev/null
 populate_chart "$CHART_DIR"
 helm dependency update "$CHART_DIR" >/dev/null
-render_chart "$CHART_DIR"
 
-if [[ ! -s "$MANIFEST_PATH" ]] || ! grep -q '^kind:' "$MANIFEST_PATH"; then
-  echo "[shim-demo] rendered manifest empty, regenerating chart" >&2
-  rm -rf "$CHART_DIR"
-  helm create "$CHART_DIR" >/dev/null
-  populate_chart "$CHART_DIR"
-  helm dependency update "$CHART_DIR" >/dev/null
-  render_chart "$CHART_DIR"
+if [[ "$NAMESPACE" != "default" ]]; then
+  if ! kubectl get ns "$NAMESPACE" >/dev/null 2>&1; then
+    kubectl create namespace "$NAMESPACE" -o yaml --dry-run=client | kubectl apply --validate=false -f -
+  fi
 fi
-if [[ ! -s "$MANIFEST_PATH" ]] || ! grep -q '^kind:' "$MANIFEST_PATH"; then
-  echo "[shim-demo] manifest still empty, falling back to static workload" >&2
-  cat > "$MANIFEST_PATH" <<'YAML'
+
+if is_true "$HELM_TEMPLATE_ONLY"; then
+  render_chart "$CHART_DIR"
+
+  if [[ ! -s "$MANIFEST_PATH" ]] || ! grep -q '^kind:' "$MANIFEST_PATH"; then
+    echo "[shim-demo] rendered manifest empty, regenerating chart" >&2
+    rm -rf "$CHART_DIR"
+    helm create "$CHART_DIR" >/dev/null
+    populate_chart "$CHART_DIR"
+    helm dependency update "$CHART_DIR" >/dev/null
+    render_chart "$CHART_DIR"
+  fi
+  if [[ ! -s "$MANIFEST_PATH" ]] || ! grep -q '^kind:' "$MANIFEST_PATH"; then
+    echo "[shim-demo] manifest still empty, falling back to static workload" >&2
+    cat > "$MANIFEST_PATH" <<'YAML'
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -234,25 +251,54 @@ spec:
     - port: 80
       targetPort: 80
 YAML
-fi
-if [[ "$NAMESPACE" != "default" ]]; then
-  if ! kubectl get ns "$NAMESPACE" >/dev/null 2>&1; then
-    kubectl create namespace "$NAMESPACE" -o yaml --dry-run=client | kubectl apply --validate=false -f -
+  fi
+
+  # Clean up any prior demo jobs/cronjobs to avoid clutter (especially from older cron demos).
+  kubectl -n "$NAMESPACE" delete cronjob --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
+  kubectl -n "$NAMESPACE" delete jobs --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
+  kubectl -n "$NAMESPACE" --validate=false apply -f "$MANIFEST_PATH"
+  kubectl -n "$NAMESPACE" get deploy,svc,ing
+  kubectl -n "$NAMESPACE" get statefulset,daemonset,job,cronjob,hpa
+
+  ASSIGNED_PORT=$(kubectl -n "$NAMESPACE" get svc "$CHART_NAME" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "n/a")
+  echo "[shim-demo] service nodePort: $ASSIGNED_PORT"
+
+  kubectl -n "$NAMESPACE" delete -f "$MANIFEST_PATH" --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
+  kubectl -n "$NAMESPACE" delete cronjob --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
+  kubectl -n "$NAMESPACE" delete jobs --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
+else
+  helm uninstall "$CHART_NAME" -n "$NAMESPACE" --wait --timeout "$HELM_TIMEOUT" >/dev/null 2>&1 || true
+  echo "[shim-demo] helm install $CHART_NAME"
+  helm install "$CHART_NAME" "$CHART_DIR" -n "$NAMESPACE" --wait --timeout "$HELM_TIMEOUT" --disable-openapi-validation
+  helm ls -n "$NAMESPACE"
+  helm history "$CHART_NAME" -n "$NAMESPACE"
+  kubectl -n "$NAMESPACE" get deploy,svc,ing
+  kubectl -n "$NAMESPACE" get statefulset,daemonset,job,cronjob,hpa
+
+  echo "[shim-demo] helm upgrade $CHART_NAME (replicaCount=2)"
+  helm upgrade "$CHART_NAME" "$CHART_DIR" -n "$NAMESPACE" --set replicaCount=2 --wait --timeout "$HELM_TIMEOUT" --disable-openapi-validation
+  helm history "$CHART_NAME" -n "$NAMESPACE"
+  REV_COUNT=$(helm history "$CHART_NAME" -n "$NAMESPACE" | awk 'NR>1 {count++} END{print count+0}')
+  if [[ "$REV_COUNT" -lt 2 ]]; then
+    echo "[shim-demo] expected at least 2 Helm revisions, got $REV_COUNT" >&2
+    exit 1
+  fi
+
+  ASSIGNED_PORT=$(kubectl -n "$NAMESPACE" get svc "$CHART_NAME" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "n/a")
+  echo "[shim-demo] service nodePort: $ASSIGNED_PORT"
+
+  echo "[shim-demo] helm uninstall $CHART_NAME"
+  helm uninstall "$CHART_NAME" -n "$NAMESPACE" --wait --timeout "$HELM_TIMEOUT"
+  if helm ls -n "$NAMESPACE" -q | grep -qx "$CHART_NAME"; then
+    echo "[shim-demo] release still present after uninstall" >&2
+    exit 1
+  fi
+  if kubectl -n "$NAMESPACE" get secrets,configmaps -o name 2>/dev/null | grep -q "sh.helm.release.v1.${CHART_NAME}.v"; then
+    echo "[shim-demo] release records still present after uninstall" >&2
+    exit 1
   fi
 fi
-# Clean up any prior demo jobs/cronjobs to avoid clutter (especially from older cron demos).
-kubectl -n "$NAMESPACE" delete cronjob --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
-kubectl -n "$NAMESPACE" delete jobs --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
-kubectl -n "$NAMESPACE" --validate=false apply -f "$MANIFEST_PATH"
-kubectl -n "$NAMESPACE" get deploy,svc,ing
-kubectl -n "$NAMESPACE" get statefulset,daemonset,job,cronjob,hpa
 
-ASSIGNED_PORT=$(kubectl -n "$NAMESPACE" get svc "$CHART_NAME" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "n/a")
-echo "[shim-demo] service nodePort: $ASSIGNED_PORT"
-
-kubectl -n "$NAMESPACE" delete -f "$MANIFEST_PATH" --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
-kubectl -n "$NAMESPACE" delete cronjob --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
-kubectl -n "$NAMESPACE" delete jobs --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
 if [[ "$NAMESPACE" != "default" ]]; then
   kubectl delete namespace "$NAMESPACE" >/dev/null 2>&1 || true
 fi
