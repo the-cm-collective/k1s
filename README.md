@@ -1,8 +1,13 @@
 # k1s Minimal Application Engine
 
-Lightweight multi-node application engine with a Kubernetes-compatible API shim.
+It started out of both basic necessity and general curiosity. I tend to push things—usually too far—and this was no exception. We needed a lightweight Kubernetes-like system for low-resource environments, and we wanted to learn how Kubernetes actually works. We feel we’ve achieved both, and it has become a great learning tool for understanding application engines in general.
 
-- Design and roadmap: see `FEAT.md`.
+After all, application engines are the heart of the modern web. While they can be daunting and complex, we provide an integrated dashboard to visualize the stack and a playground page to help new users learn the basics. We also hope this is useful to anyone who needs a lightweight Kubernetes-like system for their own projects or lab experiments.
+
+What is k1s? In short, it’s a lightweight multi-node application engine with a Kubernetes-compatible API shim. It provides a subset of full Kubernetes functionality with a much smaller footprint and lower resource requirements, and it’s designed to run on a single node or multiple nodes.
+
+## Documentation
+
 - Multi-node architecture and lab: `docs/adr/0007-multinode-architecture-scope.md`, `docs/guides/multinode-lab.md`.
 - API compatibility and shim status: `docs/wip/conformance.md`, `docs/reference/apishim-compatibility-matrix.md`.
 - Operations runbook: see `docs/ops/runbook.md`.

@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased (2026-01-15)
+## Unreleased (2026-01-16)
+
+### Added
+- TBD
+
+## 0.1.0a1 - 2026-01-16
 
 ### Added
 - **Node agent + remote runtime:** new `ae-node` HTTP agent and `RemoteRuntime` adapter so the controller can delegate workload lifecycle and log/exec calls to remote nodes; agent sends heartbeats to the controller’s agent API with labels/taints, optional pod CIDR/WireGuard metadata.
