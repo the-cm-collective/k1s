@@ -354,6 +354,7 @@
       <a href="index.html">Home</a>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
+      <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
@@ -391,7 +392,7 @@
 <pre><code>./scripts/init_demo.sh --demo-standard -y</code></pre>
 <ul>
 <li>Script reference: <code>scripts/init_demo.sh:1</code></li>
-<li>Flags map: <code>docs/demo-modes.md:1</code></li>
+<li>Flags map: <code>docs/guides/demos-examples.md:1</code></li>
 </ul>
 <p>2) Open endpoints:</p>
 <ul>
@@ -437,7 +438,7 @@ k1s logs app/echo --follow --tail 100</code></pre>
 <p>Optional: start the Kubernetes API shim for kubectl/helm parity</p>
 <pre><code>AE_APISHIM_TOKEN=devtoken python -m ae.apishim serve --host 127.0.0.1 --port 8445
 kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code></pre>
-<p>Shim capabilities and gaps live in <code>docs/apishim-compatibility-matrix.md</code>.</p>
+<p>Shim capabilities and gaps live in <code>docs/reference/apishim-compatibility-matrix.md</code>.</p>
 <h2>Makefile Helper Commands</h2>
 <p>Run with <code>make &lt;target&gt;</code>. You can override defaults via <code>VAR=value make &lt;target&gt;</code>.</p>
 <p>Setup and quality</p>
@@ -543,7 +544,7 @@ kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-15 15:09:49</span>
+        <span>Built 2026-01-15 16:48:40</span>
       </div>
     </footer>
     <script>
