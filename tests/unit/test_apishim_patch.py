@@ -394,4 +394,46 @@ def test_deployment_injects_sa_projection(tmp_path, monkeypatch):
     assert any(v.get("projected") for v in vols)
     cmounts = tpl_spec.get("containers")[0].get("volumeMounts")
     assert cmounts and any(vm.get("mountPath") == "/var/run/secrets/kubernetes.io/serviceaccount" for vm in cmounts)
+
+
+def test_secret_type_roundtrip(tmp_path, monkeypatch):
+    store = ObjectStore(tmp_path / "apishim.db")
+    monkeypatch.setenv("AE_APISHIM_TOKEN", "a")
+    shim_server.ShimHandler.admin_token = "a"
+    shim_server.ShimHandler.read_token = None
+    shim_server.ShimHandler.rbac_enabled = False
+    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda _self: None)
+    body = json.dumps(
+        {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {"name": "release", "namespace": "demo"},
+            "type": "helm.sh/release.v1",
+            "data": {"release": "ZXhhbXBsZQ=="},
+        }
+    ).encode()
+    req = make_handler(
+        "/api/v1/namespaces/demo/secrets",
+        method="POST",
+        headers={"Authorization": "Bearer a", "Content-Type": "application/json"},
+        body=body,
+    )
+    handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
+    handler.path = req.path
+    handler.command = req.command
+    handler.headers = req.headers
+    handler.server = SimpleNamespace(store=store, state=store, runtime=None)
+    handler.store = store
+    handler.state = None
+    handler.request_version = "HTTP/1.1"
+    handler.requestline = f"{handler.command} {handler.path} HTTP/1.1"
+    handler.rfile = BytesIO(body)
+    handler.wfile = BytesIO()
+    handler.do_POST()
+    obj = store.get("", "v1", "secrets", "demo", "release")
+    assert obj
+    anns = (obj.metadata.get("annotations") or {})
+    assert anns.get("ae.apishim/secret-type") == "helm.sh/release.v1"
+    out = shim_server._to_obj(obj)
+    assert out.get("type") == "helm.sh/release.v1"
 # ruff: noqa: S105,E501
