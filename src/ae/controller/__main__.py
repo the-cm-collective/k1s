@@ -6,8 +6,9 @@ Usage:
   python -m ae.controller --once --specs specs/
   python -m ae.controller --loop --interval 5 --specs specs/ --metrics-port 9108
 
-Polls the specs directory for manifests and reconciles all apps either once or
-on a fixed interval. Optionally serves a tiny Prometheus text endpoint.
+Imports manifests from the specs directory into the registry (source of truth),
+then reconciles all registered apps either once or on a fixed interval. Optionally
+serves a tiny Prometheus text endpoint.
 """
 
 from __future__ import annotations
@@ -98,7 +99,11 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument(
         "--loop", action="store_true", help="Run continuously and reconcile on an interval"
     )
-    p.add_argument("--specs", default=os.getenv("AE_SPECS_DIR", "specs"), help="Specs directory")
+    p.add_argument(
+        "--specs",
+        default=os.getenv("AE_SPECS_DIR", "specs"),
+        help="Specs directory to import into the registry (source of truth)",
+    )
     # Lower default polling interval to improve readiness after apply
     p.add_argument(
         "--interval",
@@ -153,6 +158,19 @@ def _load_all(paths: Iterable[Path]) -> dict[str, tuple[AppManifest, Path]]:
         if prefer_new:
             selected[name] = (m, path)
     return selected
+
+
+def _import_specs(specs_dir: Path, store: SQLiteStateStore, source: str = "specs") -> None:
+    try:
+        manifest_map = _load_all(_find_manifests(specs_dir))
+    except Exception:
+        return
+    for manifest, _path in manifest_map.values():
+        try:
+            labels = getattr(getattr(manifest, "metadata", None), "labels", None)
+            store.register_app(manifest, source=source, labels=labels)
+        except Exception:
+            continue
 
 
 def _spec_hash(manifest: AppManifest) -> str:
@@ -314,6 +332,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
     # Build reconciler (runtime, ingress, secrets, store)
     reconciler = _make_reconciler()
+    store = state_store_from_env()
     _agent_api_server = None
     try:
         agent_port = int(os.getenv("AE_AGENT_API_PORT", os.getenv("AE_AGENT_PORT", "0") or 0))
@@ -341,8 +360,6 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     # Initialize HTTP API server (metrics/status/events) and optional mutators if requested
     api_server = None
     if args.metrics_port and args.metrics_port > 0:
-        store = state_store_from_env()
-
         # Optional mutators wired via closures and gated at handler level
         def _scale(app: str, replicas: int):  # noqa: ANN001
             revs = store.list_revisions(app, limit=1)
@@ -351,6 +368,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             manifest = store.get_revision_manifest(app, revs[0].revision)
             new_spec = manifest.spec.model_copy(update={"replicas": int(replicas)})
             updated = manifest.model_copy(update={"spec": new_spec})
+            try:
+                existing = store.get_registered_entry(app)
+                src = existing.source if existing else "api"
+                lbls = existing.labels if existing else None
+                store.register_app(updated, source=src, labels=lbls)
+            except Exception:
+                pass
 
             # First reconcile immediately
             report = reconciler.reconcile(updated)
@@ -394,10 +418,14 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     ingress.reload()
                 except Exception:
                     pass
+            try:
+                store.delete_registered_app(app)
+            except Exception:
+                pass
             store.delete_app_state(app, purge_history=bool(purge))
             return {"app": app, "removed": removed, "purged": bool(purge)}
 
-        def _apply(payload: dict):  # noqa: ANN001
+        def _apply(payload: dict, source: str | None = None, labels: dict | None = None):  # noqa: ANN001
             # Accept an App manifest JSON and reconcile
             from ae.controller.spec import AppManifest
 
@@ -405,6 +433,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 manifest = AppManifest.model_validate(payload)
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(f"invalid manifest: {exc}")
+            try:
+                existing = store.get_registered_entry(manifest.metadata.name)
+                src = source or (existing.source if existing else "api")
+                lbls = labels if labels is not None else (existing.labels if existing else None)
+                store.register_app(manifest, source=src, labels=lbls)
+            except Exception:
+                pass
             # First reconcile immediately
             report = reconciler.reconcile(manifest)
 
@@ -852,6 +887,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 ro["pause"] = True
                 new_spec = man.spec.model_copy(update={"rollout": ro})
                 updated = man.model_copy(update={"spec": new_spec})
+                try:
+                    existing = store.get_registered_entry(app)
+                    src = existing.source if existing else "api"
+                    lbls = existing.labels if existing else None
+                    store.register_app(updated, source=src, labels=lbls)
+                except Exception:
+                    pass
                 report = reconciler.reconcile(updated)
                 # Best-effort fast-follow burst to surface "paused" promptly
                 try:
@@ -878,6 +920,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 ro["pause"] = False
                 new_spec = man.spec.model_copy(update={"rollout": ro})
                 updated = man.model_copy(update={"spec": new_spec})
+                try:
+                    existing = store.get_registered_entry(app)
+                    src = existing.source if existing else "api"
+                    lbls = existing.labels if existing else None
+                    store.register_app(updated, source=src, labels=lbls)
+                except Exception:
+                    pass
                 report = reconciler.reconcile(updated)
                 try:
                     store.record_event(app, report.revision, "RolloutResumed", "Rollout resumed")
@@ -923,34 +972,15 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             raise
 
     if args.once:
-        manifest_map = _load_all(_find_manifests(specs_dir))
-        allowed: set[str] | None = None
-        # Demo gating for on-disk manifests
         try:
-            from ae.observability.http_api import _demo_allowed_apps  # type: ignore
-
-            demo_allowed = set(_demo_allowed_apps())
-            if demo_allowed:
-                manifest_map = {k: v for k, v in manifest_map.items() if k in demo_allowed}
-                allowed = demo_allowed if demo_allowed else None
+            _import_specs(specs_dir, store, source="specs")
         except Exception:
             pass
-        # Merge with DB revisions (labs sessions, scaled manifests, etc.)
         try:
-            store = state_store_from_env()
-            # Expand allowed set with labs apps when available
-            try:
-                from ae.observability.http_api import _LABS_APPS  # type: ignore
-
-                labs_allowed = set(_LABS_APPS)
-                union = (allowed or set()) | labs_allowed
-                allowed = union if union else None
-            except Exception:
-                pass
-            manifest_map = _merge_file_and_db_manifests(manifest_map, store, allowed)
+            entries = store.list_registered_apps()
         except Exception:
-            pass
-        _reconcile_all(reconciler, [mp[0] for mp in manifest_map.values()])
+            entries = []
+        _reconcile_all(reconciler, [entry.manifest for entry in entries])
         return 0
 
     # loop mode
@@ -1009,33 +1039,15 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             do_full = changed or (now - last_full) >= max(1, int(args.interval))
             if do_full:
                 t0 = time.time()
-                manifest_map = _load_all(_find_manifests(specs_dir))
-                allowed: set[str] | None = None
-                # Demo gating for on-disk manifests
                 try:
-                    from ae.observability.http_api import _demo_allowed_apps  # type: ignore
-
-                    demo_allowed = set(_demo_allowed_apps())
-                    if demo_allowed:
-                        manifest_map = {k: v for k, v in manifest_map.items() if k in demo_allowed}
-                        allowed = demo_allowed if demo_allowed else None
+                    _import_specs(specs_dir, store, source="specs")
                 except Exception:
                     pass
-                # Merge DB revisions and include DB-only apps (labs/session), honoring allowed filter
                 try:
-                    store = state_store_from_env()
-                    try:
-                        from ae.observability.http_api import _LABS_APPS  # type: ignore
-
-                        labs_allowed = set(_LABS_APPS)
-                        union = (allowed or set()) | labs_allowed
-                        allowed = union if union else None
-                    except Exception:
-                        pass
-                    manifest_map = _merge_file_and_db_manifests(manifest_map, store, allowed)
+                    entries = store.list_registered_apps()
                 except Exception:
-                    pass
-                _reconcile_all(reconciler, [mp[0] for mp in manifest_map.values()])
+                    entries = []
+                _reconcile_all(reconciler, [entry.manifest for entry in entries])
                 t1 = time.time()
                 set_reconcile_metrics(ts_seconds=t1, duration_seconds=(t1 - t0))
                 last_full = now

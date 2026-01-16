@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +38,18 @@ class AppStatus:
     removed: int
     ingress_host: str | None = None
     ingress_path: str | None = None
+
+
+@dataclass(slots=True)
+class RegistryEntry:
+    """Registered desired-state manifest for reconciliation."""
+
+    app_name: str
+    manifest: AppManifest
+    spec_hash: str
+    source: str
+    labels: dict
+    updated_at: datetime
 
 
 @dataclass(slots=True)
@@ -280,6 +293,18 @@ class SQLiteStateStore:
                     removed INTEGER NOT NULL,
                     ingress_host TEXT,
                     ingress_path TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_registry (
+                    app_name TEXT PRIMARY KEY,
+                    spec_hash TEXT NOT NULL,
+                    spec_json TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    labels TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 )
                 """
             )
@@ -754,6 +779,150 @@ class SQLiteStateStore:
             )
             conn.commit()
         return next_revision, True
+
+    def _manifest_hash(self, manifest: AppManifest) -> str:
+        payload = json.dumps(
+            manifest.model_dump(by_alias=True, exclude_none=True),
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def register_app(
+        self,
+        manifest: AppManifest,
+        *,
+        source: str | None = None,
+        labels: dict | None = None,
+    ) -> None:
+        spec_json = json.dumps(manifest.model_dump(by_alias=True), sort_keys=True)
+        spec_hash = self._manifest_hash(manifest)
+        updated_at = datetime.now(timezone.utc).isoformat()
+        existing_source = None
+        existing_labels: dict | None = None
+        if source is None or labels is None:
+            try:
+                with self._connect() as conn:
+                    row = conn.execute(
+                        "SELECT source, labels FROM app_registry WHERE app_name = ?",
+                        (manifest.metadata.name,),
+                    ).fetchone()
+                if row is not None:
+                    existing_source = row[0]
+                    try:
+                        existing_labels = json.loads(row[1] or "{}")
+                        if not isinstance(existing_labels, dict):
+                            existing_labels = {}
+                    except Exception:
+                        existing_labels = {}
+            except Exception:
+                existing_source = None
+                existing_labels = None
+        labels_json = json.dumps(
+            labels if labels is not None else (existing_labels or {}),
+            sort_keys=True,
+        )
+        source_val = str(source or existing_source or "unknown")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO app_registry(app_name, spec_hash, spec_json, source, labels, updated_at)
+                VALUES(?,?,?,?,?,?)
+                ON CONFLICT(app_name) DO UPDATE SET
+                    spec_hash=excluded.spec_hash,
+                    spec_json=excluded.spec_json,
+                    source=excluded.source,
+                    labels=excluded.labels,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    manifest.metadata.name,
+                    spec_hash,
+                    spec_json,
+                    source_val,
+                    labels_json,
+                    updated_at,
+                ),
+            )
+            conn.commit()
+
+    def list_registered_apps(self) -> list[RegistryEntry]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT app_name, spec_hash, spec_json, source, labels, updated_at
+                FROM app_registry
+                ORDER BY app_name
+                """
+            ).fetchall()
+        entries: list[RegistryEntry] = []
+        for row in rows:
+            entry = self._registry_entry_from_row(row)
+            if entry is not None:
+                entries.append(entry)
+        return entries
+
+    def list_registered_app_names(self) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT app_name FROM app_registry ORDER BY app_name"
+            ).fetchall()
+        return [row[0] for row in rows]
+
+    def get_registered_entry(self, app_name: str) -> RegistryEntry | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT app_name, spec_hash, spec_json, source, labels, updated_at
+                FROM app_registry
+                WHERE app_name = ?
+                """,
+                (app_name,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._registry_entry_from_row(row)
+
+    def get_registered_manifest(self, app_name: str) -> AppManifest | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT spec_json FROM app_registry WHERE app_name = ?",
+                (app_name,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            return AppManifest.model_validate_json(row[0])
+        except Exception:
+            return None
+
+    def delete_registered_app(self, app_name: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM app_registry WHERE app_name = ?", (app_name,))
+            conn.commit()
+
+    def _registry_entry_from_row(self, row) -> RegistryEntry | None:
+        try:
+            manifest = AppManifest.model_validate_json(row[2])
+        except Exception:
+            return None
+        try:
+            labels = json.loads(row[4] or "{}")
+            if not isinstance(labels, dict):
+                labels = {}
+        except Exception:
+            labels = {}
+        try:
+            updated = datetime.fromisoformat(row[5]) if row[5] else datetime.now(timezone.utc)
+        except Exception:
+            updated = datetime.now(timezone.utc)
+        return RegistryEntry(
+            app_name=row[0],
+            manifest=manifest,
+            spec_hash=row[1],
+            source=row[3],
+            labels=labels,
+            updated_at=updated,
+        )
 
     def _get_latest_revision(self, app_name: str) -> Optional[RevisionInfo]:
         with self._connect() as conn:

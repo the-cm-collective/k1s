@@ -32,7 +32,7 @@ populate_chart() {
   cat <<YAML > "$chart_dir/values.yaml"
 replicaCount: 1
 image:
-  repository: nginx
+  repository: docker.io/nginx
   tag: "1.27"
 serviceAccount:
   create: true
@@ -128,7 +128,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: job
-          image: busybox:1.36
+          image: docker.io/busybox:1.36
           command: ["sh", "-c", "echo job run && sleep 1"]
 {{- end }}
 ---
@@ -151,7 +151,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: cron
-              image: busybox:1.36
+              image: docker.io/busybox:1.36
               command: ["sh", "-c", "echo cron run && sleep 1"]
 {{- end }}
 YAML
@@ -219,7 +219,7 @@ spec:
     spec:
       containers:
         - name: web
-          image: nginx:1.27
+          image: docker.io/nginx:1.27
           ports:
             - containerPort: 80
 ---
