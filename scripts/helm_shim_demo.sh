@@ -239,12 +239,13 @@ if [[ -z "$APISHIM_SERVER" ]]; then
   if [[ "$HELM_SHIM_TLS" != "0" ]]; then
     APISHIM_SERVER="https://127.0.0.1:$PORT"
     AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME="$RUNTIME" \
+      AE_APISHIM_DB="$WORKDIR/apishim.db" \
       AE_APISHIM_TLS_CERT="$CERT_PATH" AE_APISHIM_TLS_KEY="$KEY_PATH" \
       python -m ae.apishim serve --host 127.0.0.1 --port "$PORT" --token "$TOKEN" --tls \
       >"$LOG_PATH" 2>&1 &
   else
     APISHIM_SERVER="http://127.0.0.1:$PORT"
-    AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME="$RUNTIME" python -m ae.apishim serve \
+    AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME="$RUNTIME" AE_APISHIM_DB="$WORKDIR/apishim.db" python -m ae.apishim serve \
       --host 127.0.0.1 --port "$PORT" --token "$TOKEN" --allow-anonymous >"$LOG_PATH" 2>&1 &
   fi
   SHIM_PID=$!
@@ -346,6 +347,22 @@ else
   helm history "$CHART_NAME" -n "$NAMESPACE"
   REV_COUNT=$(helm history "$CHART_NAME" -n "$NAMESPACE" | awk 'NR>1 {count++} END{print count+0}')
   if [[ "$REV_COUNT" -lt 2 ]]; then
+    {
+      set +e
+      echo "[shim-demo][debug] helm env:"
+      helm env
+      echo "[shim-demo][debug] helm history (raw):"
+      helm history "$CHART_NAME" -n "$NAMESPACE"
+      echo "[shim-demo][debug] helm ls:"
+      helm ls -n "$NAMESPACE"
+      echo "[shim-demo][debug] kubeconfig:"
+      kubectl config view --minify || true
+      echo "[shim-demo][debug] secrets/configmaps:"
+      kubectl -n "$NAMESPACE" get secrets,configmaps -o name || true
+      echo "[shim-demo][debug] core workloads:"
+      kubectl -n "$NAMESPACE" get deploy,svc,ing,statefulset,daemonset,job,cronjob,hpa || true
+      set -e
+    }
     echo "[shim-demo] expected at least 2 Helm revisions, got $REV_COUNT" >&2
     exit 1
   fi
