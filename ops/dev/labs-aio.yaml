@@ -6,9 +6,12 @@ services:
     volumes:
       - ../..:/workspace
       - /var/run/docker.sock:/var/run/docker.sock
+    env_file:
+      - ../../state/labs/apishim.env
     environment:
       - AE_LABS=1
       - AE_API_MUTATIONS=1
+      - AE_LABS_HELM_SERVER=http://apishim:${APISHIM_PORT:-8445}
       # Local-only: allow plaintext secrets during dev/bench runs
       - AE_ALLOW_PLAINTEXT_SECRETS=1
       # Ensure new app containers join the compose network for fast, in-container probes
@@ -17,10 +20,31 @@ services:
       - AE_DEMO_FILTER=0
       - AE_SPECS_DIR=${AE_SPECS_DIR:-state/demo-specs}
       - AE_PROBE_LOOPBACK_FALLBACK=host.docker.internal
+      - AE_APISHIM_DSN=${AE_APISHIM_DSN:-}
+      - AE_STATE_DSN=${AE_STATE_DSN:-}
     ports:
       - "9108:9108"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+  apishim:
+    image: python:3.12-slim
+    working_dir: /workspace
+    command: bash -lc "python -m pip install -e . && AE_APISHIM_ENABLE=1 python -m ae.apishim serve --host 0.0.0.0 --port 8445"
+    volumes:
+      - ../..:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    env_file:
+      - ../../state/labs/apishim.env
+    environment:
+      - AE_APISHIM_ENABLE=1
+      - AE_APISHIM_RUNTIME=${AE_APISHIM_RUNTIME:-stub}
+      - AE_APISHIM_ALLOW_ANON=0
+      - AE_APISHIM_RBAC=1
+      - AE_APISHIM_RBAC_EVAL=0
+      - AE_APISHIM_DSN=${AE_APISHIM_DSN:-}
+      - AE_STATE_DSN=${AE_STATE_DSN:-}
+    ports:
+      - "127.0.0.1:${APISHIM_PORT:-8445}:8445"
   caddy:
     image: caddy:2.8
     depends_on:
@@ -35,3 +59,15 @@ services:
       - ../../docs/site:/srv/docs:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+  postgres:
+    image: postgres:16
+    profiles:
+      - postgres
+    environment:
+      - POSTGRES_USER=shim
+      - POSTGRES_PASSWORD=shim
+      - POSTGRES_DB=shim
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ../../state/postgres:/var/lib/postgresql/data

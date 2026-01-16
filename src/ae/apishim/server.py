@@ -6504,7 +6504,7 @@ class ShimServer(HTTPServer):
         self._bootstrap_crds()
         # Start adapter worker to reconcile apps/v1 Deployments into k1s
         try:
-            self._adapter = build_adapter(self.store, runtime=self.runtime)
+            self._adapter = build_adapter(self.store, runtime=self.runtime, state_store=self.state)
             self._adapter.start()
         except Exception:
             self._adapter = None
