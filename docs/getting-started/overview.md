@@ -122,5 +122,5 @@ Multi-node lab (two hosts): follow `docs/guides/multinode-lab.md` or run `ops/de
 - Runbook: `docs/ops/runbook.md`
 - End-to-End Guide: `docs/guides/e2e.md`
 - HTTP API: `docs/reference/http-api.md`
-- Kubernetes API shim + compatibility matrix: `CONFORMANCE.md`, `docs/reference/apishim-compatibility-matrix.md`
+- Kubernetes API shim + compatibility matrix: `docs/wip/conformance.md`, `docs/reference/apishim-compatibility-matrix.md`
 - Architecture (detailed): `docs/reference/architecture.md`

@@ -4,10 +4,50 @@ Lightweight multi-node application engine with a Kubernetes-compatible API shim.
 
 - Design and roadmap: see `FEAT.md`.
 - Multi-node architecture and lab: `docs/adr/0007-multinode-architecture-scope.md`, `docs/guides/multinode-lab.md`.
-- API compatibility and shim status: `CONFORMANCE.md`, `docs/reference/apishim-compatibility-matrix.md`.
+- API compatibility and shim status: `docs/wip/conformance.md`, `docs/reference/apishim-compatibility-matrix.md`.
 - Operations runbook: see `docs/ops/runbook.md`.
 - Ingress/TLS details: see `docs/reference/ingress.md`.
 - End-to-end walkthrough: see `docs/guides/e2e.md`.
+
+## Kubernetes Alignment Matrix (Operator View)
+
+Legend: Green = aligned/supported; Yellow = partial/best-effort; Red = out-of-scope; N/A = not applicable.
+
+Columns: Runtime = k1s engine behavior; Shim = Kubernetes API shim (kubectl/helm); Export = `ae export-k8s` YAML.
+
+Matrix updated: 2026-01-16 (see `docs/site/k8s_status.json`).
+
+| Area | Capability | Runtime | Shim | Export | Operator notes |
+| --- | --- | --- | --- | --- | --- |
+| API & tooling | kubectl get/apply/watch | N/A | Green | N/A | CI smoke gates cover apply/watch and OpenAPI drift. |
+| API & tooling | SSA + JSON/merge patch | N/A | Green | N/A | managedFields + conflict detection supported. |
+| API & tooling | OpenAPI v2/v3 | N/A | Green | N/A | v3 mirrors v2; schemas validated in CI. |
+| Workloads | Deployment/ReplicaSet/Pod semantics | Green | Green | Green | status/conditions + logs/exec/port-forward. |
+| Workloads | StatefulSet/DaemonSet/Job/CronJob semantics | Yellow | Yellow | Green | stored + best-effort status; emulated as Deployment-like apps. |
+| Workloads | HPA v2 | Green | Green | Green | backed by k1s autoscaling with status/currentMetrics. |
+| Networking | Service (ClusterIP/NodePort/LB status) | Green | Green | Green | VIP/overlay-aware; EndpointSlice projection. |
+| Networking | Ingress v1 (basic) | Green | Green | Green | no regex/canary/advanced annotations. |
+| Networking | NetworkPolicy enforcement | Red | Red | Yellow | export emits NP; enforcement depends on CNI (k3s default flannel doesn’t enforce). |
+| Security/Auth | Tokens + RBAC | N/A | Green | Green | RBAC enforced in shim; export emits Role/RoleBinding presets. |
+| Security/Auth | ServiceAccount tokens | N/A | Green | Green | shim issues SA tokens; exporter emits SA + bindings. |
+| Security/Auth | PodSecurity admission/webhooks | Red | Red | Yellow | exporter can emit PSA namespace labels only. |
+| Storage | PV/PVC/StorageClass/CSI semantics | Red | Red | Yellow | exporter can emit PVCs/volumeClaimTemplates only. |
+| Observability | Logs/exec/port-forward | Green | Green | N/A | pod + service port-forward supported in shim. |
+| Observability | Events API | Green | Green | N/A | controller/agent events surfaced to `/api/v1/events`. |
+| Observability | metrics.k8s.io / aggregated APIs | Red | Red | N/A | out-of-scope. |
+| Scheduling | nodeSelector/taints/tolerations/topology spread | Green | Green | Green | honored by scheduler; passed through on export. |
+| Nodes | Inventory/cordon/drain | Green | Yellow | N/A | `ae nodes` supports cordon/drain; shim projects Nodes but no kubelet. |
+| Operator workflow | Helm install/upgrade/uninstall (stateless charts) | N/A | Yellow | N/A | good for Deploy/Service/Ingress + RBAC/HPA/PDB; operators/controllers out-of-scope. |
+| Operator workflow | Rollout control (pause/resume/canary ramp) | Green | N/A | N/A | k1s-native rollout policy with canary weights. |
+
+### k1s-specific operator features (not part of upstream Kubernetes; not available in k3s by default)
+
+- `ae k8s-check` portability checks and `ae k8s-report` compliance JSON embedded in docs.
+- `ae export-k8s` presets (`web-hardened`, `web-strict`) + strict validation for portable YAML.
+- Caddy site-fragment ingress with `ae tls` helpers for k8s-style TLS secrets.
+- `ae plan` placement hints and `ae nodes` inventory/cordon/drain workflows.
+- Rollout policy with canary weights + auto-ramp persisted in state.
+- Built-in `/dashboard`, `/nodes`, and enriched `/metrics` endpoints.
 
 Quick token generation with expiry
 - Generate API tokens that expire in 24 hours and write them to a file of exports you can `source`:
