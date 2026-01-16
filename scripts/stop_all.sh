@@ -51,7 +51,14 @@ if ss -ltnp 2>/dev/null | awk '$4 ~ /:9108$/ {exit 0} END{exit 1}'; then
 fi
 
 log "Stopping dev compose stack (caddy, prometheus)"
-"$BIN" compose -f ops/dev/docker-compose.yaml down >/dev/null 2>&1 || true
+DEV_COMPOSE_FILES=(-f ops/dev/docker-compose.yaml)
+if [[ -f ops/dev/docker-compose.cache.override.yml ]]; then
+  DEV_COMPOSE_FILES+=(-f ops/dev/docker-compose.cache.override.yml)
+fi
+"$BIN" compose "${DEV_COMPOSE_FILES[@]}" down >/dev/null 2>&1 || true
+if "$BIN" ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^dev-registry-1$'; then
+  "$BIN" rm -f dev-registry-1 >/dev/null 2>&1 || true
+fi
 
 log "Stopping labs compose stacks (labs-aio, labs-compose)"
 "$BIN" compose -f ops/dev/labs-aio.yaml down >/dev/null 2>&1 || true
