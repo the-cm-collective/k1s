@@ -2757,6 +2757,21 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "kind": "Scale",
                             "verbs": ["get", "patch", "update"],
                         },
+                        {
+                            "name": "replicasets",
+                            "singularName": "",
+                            "namespaced": True,
+                            "kind": "ReplicaSet",
+                            "verbs": ["get", "list", "watch"],
+                            "shortNames": ["rs"],
+                        },
+                        {
+                            "name": "replicasets/status",
+                            "singularName": "",
+                            "namespaced": True,
+                            "kind": "ReplicaSet",
+                            "verbs": ["get", "patch", "update"],
+                        },
                     ],
                 }
             )
@@ -3553,6 +3568,55 @@ class ShimHandler(BaseHTTPRequestHandler):
                     return
                 self._ok(_to_deployment(obj))
                 return
+            if d_plural == "replicasets":
+                if d_name is None:
+                    label_sel, field_sel = _selector_values_from_query(q)
+                    if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                        self.send_response(HTTPStatus.OK)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Cache-Control", "no-store")
+                        self.end_headers()
+                        try:
+                            rv = int(time.time() * 1000)
+                            line = json.dumps(
+                                {
+                                    "type": "BOOKMARK",
+                                    "object": {"kind": "ReplicaSet", "apiVersion": "apps/v1", "metadata": {"resourceVersion": str(rv)}},
+                                },
+                                separators=(",", ":"),
+                            ).encode("utf-8") + b"\n"
+                            self.wfile.write(line)
+                            self.wfile.flush()
+                        except BrokenPipeError:
+                            pass
+                        return
+                    if not self._rbac_allows("list", "replicasets"):
+                        self._deny(403)
+                        return
+                    deps = (
+                        self.server.store.list_all("apps", "v1", "deployments")  # type: ignore[attr-defined]
+                        if d_ns is None
+                        else self.server.store.list("apps", "v1", "deployments", d_ns)  # type: ignore[attr-defined]
+                    )
+                    rs_items = [_replicaset_from_deployment(dep) for dep in deps]
+                    rs_items = _filter_k8s_items(rs_items, label_sel, field_sel)
+                    self._ok(_list_with_rv(rs_items, _to_replicaset, kind="ReplicaSet", api_version="apps/v1"))
+                    return
+                if not self._rbac_allows("get", "replicasets"):
+                    self._deny(403)
+                    return
+                deps = (
+                    self.server.store.list_all("apps", "v1", "deployments")  # type: ignore[attr-defined]
+                    if d_ns is None
+                    else self.server.store.list("apps", "v1", "deployments", d_ns)  # type: ignore[attr-defined]
+                )
+                for dep in deps:
+                    rs_obj = _replicaset_from_deployment(dep)
+                    if rs_obj.name == d_name:
+                        self._ok(_to_replicaset(rs_obj))
+                        return
+                self._not_found()
+                return
             if d_plural == "statefulsets":
                 transform = _to_statefulset
                 if d_name is None:
@@ -4239,11 +4303,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                     pass
                 svc_type = (spec_in.get("type") or "ClusterIP") or "ClusterIP"
                 # clusterIP allocation unless headless/ExternalName
-                if svc_type != "ExternalName" and spec_in.get("clusterIP") not in {"None", None}:
-                    if spec_in.get("clusterIP") is None:
+                cluster_ip = spec_in.get("clusterIP")
+                if svc_type != "ExternalName" and cluster_ip != "None":
+                    if not cluster_ip:
                         spec_in["clusterIP"] = _alloc_cluster_ip(ns_in, name_in, existing_cluster_ips)
                     else:
-                        cip = str(spec_in.get("clusterIP"))
+                        cip = str(cluster_ip)
                         if cip in existing_cluster_ips:
                             self._json_status(HTTPStatus.CONFLICT, reason="AlreadyExists", message=f"clusterIP {cip} already allocated")
                             return
@@ -5257,10 +5322,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         if not ok:
             self._not_found()
             return True
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(b"{}")
+        self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
         return True
 
     def do_DELETE(self) -> None:  # noqa: N802
@@ -5273,10 +5335,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             if not ok:
                 self._not_found()
                 return
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(b"{}")
+            self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
             return
         if path.startswith("/apis/batch/v1"):
             b_plural, b_ns, b_name = _batch_ns_name(path)
@@ -5294,10 +5353,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     )
                     for obj in items:
                         self.server.store.delete("batch", "v1", b_plural, obj.namespace or None, obj.name)  # type: ignore[attr-defined]
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(b"{}")
+                self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
                 return
         if path.startswith("/apis/apps/v1"):
             d_plural, d_ns, d_name = _apps_ns_name(path)
@@ -5315,10 +5371,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     )
                     for obj in items:
                         self.server.store.delete("apps", "v1", d_plural, obj.namespace or None, obj.name)  # type: ignore[attr-defined]
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(b"{}")
+                self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
                 return
         if path.startswith("/apis/networking.k8s.io/v1"):
             n_plural, n_ns, n_name = _net_ns_name(path)
@@ -5336,10 +5389,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     )
                     for obj in items:
                         self.server.store.delete("networking.k8s.io", "v1", n_plural, obj.namespace or None, obj.name)  # type: ignore[attr-defined]
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(b"{}")
+                self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
                 return
         if path.startswith("/apis/autoscaling/v2"):
             a_plural, a_ns, a_name = _gv_ns_name(path, "autoscaling", "v2", "horizontalpodautoscalers")
@@ -5357,10 +5407,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     )
                     for obj in items:
                         self.server.store.delete("autoscaling", "v2", a_plural, obj.namespace or None, obj.name)  # type: ignore[attr-defined]
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(b"{}")
+                self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
                 return
         if path.startswith("/apis/apiextensions.k8s.io/v1"):
             crd_plural, crd_name = _gv_cluster_name(
@@ -5372,10 +5419,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     self._not_found()
                     return
                 self._unregister_crd(crd_name)
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(b"{}")
+                self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
                 return
         if self._handle_custom_resource_delete():
             return
@@ -5457,12 +5501,17 @@ def _to_deployment(o: K8sObject) -> dict[str, Any]:
     except Exception:
         gen = 1
     meta["generation"] = gen
+    spec = dict(o.spec)
+    if spec.get("replicas") is None:
+        spec["replicas"] = int((o.status or {}).get("replicas", 1) or 1)
+    status = _synthesize_deploy_status(spec, o.status)
+    status["observedGeneration"] = meta["generation"]
     return {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
         "metadata": meta,
-        "spec": dict(o.spec),
-        "status": _synthesize_deploy_status(o.spec, o.status),
+        "spec": spec,
+        "status": status,
     }
 
 
@@ -5508,6 +5557,7 @@ def _to_statefulset(o: K8sObject) -> dict[str, Any]:
     status.setdefault("currentReplicas", status.get("updatedReplicas", status.get("replicas", 0)))
     status.setdefault("currentRevision", meta.get("generation"))
     status.setdefault("updateRevision", meta.get("generation"))
+    status["observedGeneration"] = meta["generation"]
     return {
         "apiVersion": "apps/v1",
         "kind": "StatefulSet",
@@ -5535,6 +5585,7 @@ def _to_daemonset(o: K8sObject, *, desired: int | None = None) -> dict[str, Any]
     st.setdefault("numberReady", replicas)
     st.setdefault("numberAvailable", replicas)
     st.setdefault("updatedNumberScheduled", replicas)
+    st["observedGeneration"] = meta["generation"]
     st.setdefault(
         "conditions",
         [
@@ -5548,6 +5599,91 @@ def _to_daemonset(o: K8sObject, *, desired: int | None = None) -> dict[str, Any]
         "metadata": meta,
         "spec": dict(o.spec),
         "status": st,
+    }
+
+
+def _replicaset_name(dep_name: str) -> str:
+    suffix = "-rs"
+    max_len = 253
+    if len(dep_name) + len(suffix) <= max_len:
+        return f"{dep_name}{suffix}"
+    return f"{dep_name[: max_len - len(suffix)]}{suffix}"
+
+
+def _replicaset_labels(spec: dict[str, Any]) -> dict[str, str]:
+    selector = spec.get("selector") or {}
+    if isinstance(selector, dict):
+        match_labels = selector.get("matchLabels")
+        if isinstance(match_labels, dict):
+            return {str(k): str(v) for k, v in match_labels.items()}
+        return {str(k): str(v) for k, v in selector.items() if not isinstance(v, dict)}
+    return {}
+
+
+def _replicaset_from_deployment(dep: K8sObject) -> K8sObject:
+    name = _replicaset_name(dep.name)
+    meta = dict(dep.metadata or {})
+    meta["name"] = name
+    if dep.namespace:
+        meta["namespace"] = dep.namespace
+    meta.setdefault("uid", _stable_uid(dep.namespace, name, "replicasets"))
+    labels = dict(meta.get("labels") or {})
+    labels.update(_replicaset_labels(dep.spec or {}))
+    meta["labels"] = labels
+    annotations = dict(meta.get("annotations") or {})
+    annotations.setdefault("deployment.kubernetes.io/revision", "1")
+    meta["annotations"] = annotations
+    owner_uid = (dep.metadata or {}).get("uid")
+    if owner_uid:
+        meta["ownerReferences"] = [
+            {
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "name": dep.name,
+                "uid": owner_uid,
+                "controller": True,
+                "blockOwnerDeletion": True,
+            }
+        ]
+    rs_spec = {
+        "replicas": int((dep.spec or {}).get("replicas", 1) or 1),
+        "selector": (dep.spec or {}).get("selector") or {},
+        "template": (dep.spec or {}).get("template") or {},
+    }
+    gen = meta.get("generation")
+    try:
+        gen = int(gen) if gen is not None else 1
+    except Exception:
+        gen = 1
+    rs_status = {
+        "replicas": rs_spec["replicas"],
+        "readyReplicas": rs_spec["replicas"],
+        "availableReplicas": rs_spec["replicas"],
+        "observedGeneration": gen,
+    }
+    return K8sObject("apps", "v1", "replicasets", dep.namespace, name, meta, rs_spec, rs_status, dep.resource_version)
+
+
+def _to_replicaset(o: K8sObject) -> dict[str, Any]:
+    meta = dict(o.metadata or {})
+    meta.setdefault("name", o.name)
+    if o.namespace:
+        meta.setdefault("namespace", o.namespace)
+    meta.setdefault("resourceVersion", str(o.resource_version))
+    gen_val = meta.get("generation")
+    try:
+        gen = int(gen_val) if gen_val is not None else 1
+    except Exception:
+        gen = 1
+    meta["generation"] = gen
+    status = dict(o.status or {})
+    status.setdefault("observedGeneration", gen)
+    return {
+        "apiVersion": "apps/v1",
+        "kind": "ReplicaSet",
+        "metadata": meta,
+        "spec": dict(o.spec),
+        "status": status,
     }
 
 
@@ -5802,6 +5938,9 @@ def _apps_ns_name(path: str) -> tuple[str, str | None, str | None]:
     m = re.match(r"^/apis/apps/v1/namespaces/([^/]+)/daemonsets/([^/]+)/(status)$", path)
     if m:
         return (f"daemonsets/{m.group(3)}", m.group(1), m.group(2))
+    m = re.match(r"^/apis/apps/v1/namespaces/([^/]+)/replicasets(?:/([^/]+))?$", path)
+    if m:
+        return ("replicasets", m.group(1), m.group(2))
     m = re.match(r"^/apis/apps/v1/deployments(?:/([^/]+))?$", path)
     if m:
         return ("deployments", None, m.group(1))
@@ -5811,6 +5950,9 @@ def _apps_ns_name(path: str) -> tuple[str, str | None, str | None]:
     m = re.match(r"^/apis/apps/v1/daemonsets(?:/([^/]+))?$", path)
     if m:
         return ("daemonsets", None, m.group(1))
+    m = re.match(r"^/apis/apps/v1/replicasets(?:/([^/]+))?$", path)
+    if m:
+        return ("replicasets", None, m.group(1))
     return ("", None, None)
 
 
@@ -5955,11 +6097,17 @@ def _parse_custom_resource_path(path: str) -> tuple[str, str, str | None, str, s
     return (group, version, namespace, plural, name)
 
 
+def _stable_uid(ns: str | None, name: str, plural: str) -> str:
+    seed = f"{plural}:{ns or ''}:{name}"
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()
+
+
 def _normalize_metadata(md: dict[str, Any], name: str, ns: str | None, plural: str) -> dict[str, Any]:
     out = dict(md)
     out["name"] = name
     if ns and plural != "namespaces":
         out["namespace"] = ns
+    out.setdefault("uid", _stable_uid(ns, name, plural))
     return out
 
 

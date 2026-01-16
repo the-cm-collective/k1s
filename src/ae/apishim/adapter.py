@@ -380,7 +380,12 @@ class AdapterWorker(threading.Thread):
             st = {"replicas": 0, "updatedReplicas": 0, "readyReplicas": 0, "availableReplicas": 0,
                   "conditions": [{"type": "Available", "status": "False", "reason": "ScaledDown"},
                                   {"type": "Progressing", "status": "False", "reason": "ScaledDown"}]}
-            self._store.upsert("apps", "v1", "deployments", dep.namespace, dep.name, dep.metadata, dep.spec, status=st)
+            try:
+                still_exists = self._store.get("apps", "v1", "deployments", dep.namespace, dep.name) is not None
+            except Exception:
+                still_exists = False
+            if still_exists:
+                self._store.upsert_if_not_deleted("apps", "v1", "deployments", dep.namespace, dep.name, dep.metadata, dep.spec, status=st)
             return
 
         dep_key = (dep.namespace, dep.name)
@@ -419,9 +424,14 @@ class AdapterWorker(threading.Thread):
                 ],
                 "observedGeneration": st_row.revision,
             }
-            self._store.upsert(
-                "apps", "v1", "deployments", dep.namespace, dep.name, dep.metadata, dep.spec, status=st
-            )
+            try:
+                still_exists = self._store.get("apps", "v1", "deployments", dep.namespace, dep.name) is not None
+            except Exception:
+                still_exists = False
+            if still_exists:
+                self._store.upsert_if_not_deleted(
+                    "apps", "v1", "deployments", dep.namespace, dep.name, dep.metadata, dep.spec, status=st
+                )
 
     def _apply_statefulset(self, sts: K8sObject) -> None:
         spec = sts.spec or {}
@@ -436,7 +446,12 @@ class AdapterWorker(threading.Thread):
                 "currentRevision": sts.metadata.get("generation", 1),
                 "updateRevision": sts.metadata.get("generation", 1),
             }
-            self._store.upsert("apps", "v1", "statefulsets", sts.namespace, sts.name, sts.metadata, sts.spec, status=st)
+            try:
+                still_exists = self._store.get("apps", "v1", "statefulsets", sts.namespace, sts.name) is not None
+            except Exception:
+                still_exists = False
+            if still_exists:
+                self._store.upsert_if_not_deleted("apps", "v1", "statefulsets", sts.namespace, sts.name, sts.metadata, sts.spec, status=st)
             return
         dep_key = (sts.namespace, sts.name)
         svc_spec = self._service_specs.get(dep_key)
@@ -467,7 +482,12 @@ class AdapterWorker(threading.Thread):
                     }
                 ],
             }
-            self._store.upsert("apps", "v1", "statefulsets", sts.namespace, sts.name, sts.metadata, sts.spec, status=st)
+            try:
+                still_exists = self._store.get("apps", "v1", "statefulsets", sts.namespace, sts.name) is not None
+            except Exception:
+                still_exists = False
+            if still_exists:
+                self._store.upsert_if_not_deleted("apps", "v1", "statefulsets", sts.namespace, sts.name, sts.metadata, sts.spec, status=st)
 
     def _apply_daemonset(self, ds: K8sObject) -> None:
         spec = ds.spec or {}
@@ -485,7 +505,12 @@ class AdapterWorker(threading.Thread):
                 "numberReady": 0,
                 "numberAvailable": 0,
             }
-            self._store.upsert("apps", "v1", "daemonsets", ds.namespace, ds.name, ds.metadata, ds.spec, status=st)
+            try:
+                still_exists = self._store.get("apps", "v1", "daemonsets", ds.namespace, ds.name) is not None
+            except Exception:
+                still_exists = False
+            if still_exists:
+                self._store.upsert_if_not_deleted("apps", "v1", "daemonsets", ds.namespace, ds.name, ds.metadata, ds.spec, status=st)
             return
         spec_mod = dict(spec)
         spec_mod["replicas"] = desired
@@ -512,7 +537,12 @@ class AdapterWorker(threading.Thread):
                 "numberAvailable": st_row.ready_replicas,
                 "updatedNumberScheduled": st_row.live_replicas,
             }
-            self._store.upsert("apps", "v1", "daemonsets", ds.namespace, ds.name, ds.metadata, spec_mod, status=st)
+            try:
+                still_exists = self._store.get("apps", "v1", "daemonsets", ds.namespace, ds.name) is not None
+            except Exception:
+                still_exists = False
+            if still_exists:
+                self._store.upsert_if_not_deleted("apps", "v1", "daemonsets", ds.namespace, ds.name, ds.metadata, spec_mod, status=st)
 
     def _apply_job(self, job: K8sObject) -> None:
         spec = job.spec or {}
@@ -521,7 +551,12 @@ class AdapterWorker(threading.Thread):
         if parallelism <= 0:
             self._remove_app_for(job)
             st = {"active": 0, "succeeded": 0, "failed": 0, "conditions": []}
-            self._store.upsert("batch", "v1", "jobs", job.namespace, job.name, job.metadata, job.spec, status=st)
+            try:
+                still_exists = self._store.get("batch", "v1", "jobs", job.namespace, job.name) is not None
+            except Exception:
+                still_exists = False
+            if still_exists:
+                self._store.upsert_if_not_deleted("batch", "v1", "jobs", job.namespace, job.name, job.metadata, job.spec, status=st)
             return
         # Treat Job as short-lived deployment with desired replicas=parallelism
         spec_mod = dict(spec)
@@ -596,7 +631,12 @@ class AdapterWorker(threading.Thread):
             "failed": failed,
             "conditions": conditions,
         }
-        self._store.upsert("batch", "v1", "jobs", job.namespace, job.name, job.metadata, job.spec, status=st)
+        try:
+            still_exists = self._store.get("batch", "v1", "jobs", job.namespace, job.name) is not None
+        except Exception:
+            still_exists = False
+        if still_exists:
+            self._store.upsert_if_not_deleted("batch", "v1", "jobs", job.namespace, job.name, job.metadata, job.spec, status=st)
 
     def _apply_cronjob(self, cj: K8sObject) -> None:
         spec = cj.spec or {}
