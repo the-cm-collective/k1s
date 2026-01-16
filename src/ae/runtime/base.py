@@ -18,6 +18,8 @@ class ReplicaState:
     status: str = "running"
     endpoint: str | None = None
     started_at: datetime | None = None
+    exit_code: int | None = None
+    finished_at: datetime | None = None
 
 
 @dataclass(slots=True)

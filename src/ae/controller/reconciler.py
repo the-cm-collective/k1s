@@ -948,6 +948,29 @@ class Reconciler:
         that period as "progressing" avoids misleading degraded states during
         normal warm-up while still surfacing real outages (no replicas present).
         """
+        is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
+        if is_job:
+            desired = max(1, int(manifest.spec.replicas))
+            succeeded = 0
+            failed = 0
+            running = 0
+            for rs in runtime_result.replica_states:
+                if getattr(rs, "status", "") == "running":
+                    running += 1
+                rc = getattr(rs, "exit_code", None)
+                if rc is None:
+                    continue
+                if rc == 0:
+                    succeeded += 1
+                else:
+                    failed += 1
+            if succeeded >= desired:
+                return "ready"
+            if failed > 0 and running == 0:
+                return "degraded"
+            if len(report.replicas) > 0 or (runtime_result.created + runtime_result.updated) > 0:
+                return "progressing"
+            return "degraded"
         desired = max(1, int(manifest.spec.replicas))
         if report.ready_replicas >= desired:
             return "ready"

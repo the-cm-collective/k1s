@@ -36,6 +36,7 @@ class StubRuntime(RuntimeAdapter):
     ) -> RuntimeResult:
         _ = (keep_old, node_id)
         desired = len(replica_ids) if replica_ids is not None else manifest.spec.replicas
+        is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
         # timezone.utc to remain compatible with current runtime; lint suppressed.
         now = datetime.now(timezone.utc)  # noqa: UP017
         count = desired if limit_create is None else max(0, min(desired, limit_create))
@@ -56,13 +57,18 @@ class StubRuntime(RuntimeAdapter):
             namespace_label = self._default_namespace
         for idx, rid in enumerate(rid_list[:count]):
             host_port = self._backend_port + idx
+            status = "exited" if is_job else "running"
+            exit_code = 0 if is_job else None
+            finished_at = now if is_job else None
             replica_states.append(
                 ReplicaState(
                     replica_id=rid,
-                    ready=True,
-                    status="running",
+                    ready=True if is_job else True,
+                    status=status,
                     endpoint=f"{self._backend_host}:{host_port}",
                     started_at=now,
+                    exit_code=exit_code,
+                    finished_at=finished_at,
                 )
             )
             containers.append(
