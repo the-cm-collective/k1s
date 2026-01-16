@@ -22,12 +22,33 @@ NAMESPACE=${NAMESPACE:-demo-helm}
 APISHIM_SERVER=${APISHIM_SERVER:-}
 HELM_TEMPLATE_ONLY=${HELM_TEMPLATE_ONLY:-0}
 HELM_TIMEOUT=${HELM_TIMEOUT:-120s}
+HELM_SHIM_TLS=${HELM_SHIM_TLS:-1}
+HELM_SHIM_TLS_DAYS=${HELM_SHIM_TLS_DAYS:-3}
 TMPDIR=${TMPDIR:-/tmp}
 WORKDIR="$(mktemp -d "$TMPDIR/helm-shim-XXXX")"
 KUBECONFIG_PATH="$WORKDIR/kubeconfig"
 LOG_PATH="$WORKDIR/shim.log"
 CHART_DIR="$WORKDIR/$CHART_NAME"
 MANIFEST_PATH="$WORKDIR/rendered.yaml"
+CERT_DIR="$WORKDIR/certs"
+CERT_PATH="$CERT_DIR/apishim.crt"
+KEY_PATH="$CERT_DIR/apishim.key"
+
+# Ensure local shim requests are not routed through proxies.
+if [[ -n "${NO_PROXY:-}" ]]; then
+  if [[ "$NO_PROXY" != *"127.0.0.1"* ]]; then
+    export NO_PROXY="${NO_PROXY},127.0.0.1,localhost"
+  fi
+else
+  export NO_PROXY="127.0.0.1,localhost"
+fi
+
+if [[ "$HELM_SHIM_TLS" != "0" ]]; then
+  need openssl
+  mkdir -p "$CERT_DIR"
+  openssl req -x509 -newkey rsa:2048 -sha256 -days "$HELM_SHIM_TLS_DAYS" -nodes \
+    -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=127.0.0.1" >/dev/null 2>&1
+fi
 
 populate_chart() {
   local chart_dir=$1
@@ -172,6 +193,36 @@ is_true() {
   esac
 }
 
+wait_for_shim() {
+  local url="${APISHIM_SERVER%/}/version"
+  local deadline=$((SECONDS + 20))
+  while (( SECONDS < deadline )); do
+    if python - "$url" <<'PY'
+import ssl
+import sys
+import urllib.request
+
+url = sys.argv[1]
+ctx = ssl._create_unverified_context() if url.startswith("https://") else None
+try:
+    with urllib.request.urlopen(url, timeout=1, context=ctx) as resp:
+        if resp.status != 200:
+            raise SystemExit(1)
+        body = resp.read().decode("utf-8", "ignore")
+        if "k1s-shim" not in body:
+            raise SystemExit(1)
+except Exception:
+    raise SystemExit(1)
+PY
+    then
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "[shim-demo] shim not ready at $APISHIM_SERVER (check $LOG_PATH)" >&2
+  exit 1
+}
+
 cleanup() {
   local ec=$?
   if [[ -n "${SHIM_PID:-}" ]] && kill -0 "$SHIM_PID" 2>/dev/null; then
@@ -185,13 +236,22 @@ trap cleanup EXIT
 
 export PYTHONPATH
 if [[ -z "$APISHIM_SERVER" ]]; then
-  APISHIM_SERVER="http://127.0.0.1:$PORT"
-  AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME="$RUNTIME" python -m ae.apishim serve \
-    --host 127.0.0.1 --port "$PORT" --token "$TOKEN" >"$LOG_PATH" 2>&1 &
+  if [[ "$HELM_SHIM_TLS" != "0" ]]; then
+    APISHIM_SERVER="https://127.0.0.1:$PORT"
+    AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME="$RUNTIME" \
+      AE_APISHIM_TLS_CERT="$CERT_PATH" AE_APISHIM_TLS_KEY="$KEY_PATH" \
+      python -m ae.apishim serve --host 127.0.0.1 --port "$PORT" --token "$TOKEN" --tls \
+      >"$LOG_PATH" 2>&1 &
+  else
+    APISHIM_SERVER="http://127.0.0.1:$PORT"
+    AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME="$RUNTIME" python -m ae.apishim serve \
+      --host 127.0.0.1 --port "$PORT" --token "$TOKEN" --allow-anonymous >"$LOG_PATH" 2>&1 &
+  fi
   SHIM_PID=$!
 else
   echo "[shim-demo] using external shim at $APISHIM_SERVER"
 fi
+wait_for_shim
 
 python -m ae.apishim kubeconfig \
   --server "$APISHIM_SERVER" \

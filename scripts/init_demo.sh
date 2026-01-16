@@ -216,6 +216,86 @@ prompt_yes_no_hosts() {
   prompt_yes_no "$1" "${2:-Y}"
 }
 
+read_env_file_var() {
+  # Read key=value from an env file without executing it.
+  local key="$1"
+  local file="$2"
+  if [[ ! -f "$file" ]]; then
+    return 1
+  fi
+  awk -F= -v k="$key" '
+    $1 ~ "^[[:space:]]*"k"[[:space:]]*$" {
+      sub(/^[[:space:]]*[^=]+[[:space:]]*=[[:space:]]*/, "", $0)
+      gsub(/^[[:space:]]*"/, "", $0)
+      gsub(/"[[:space:]]*$/, "", $0)
+      gsub(/^[[:space:]]*'\''/, "", $0)
+      gsub(/'\''[[:space:]]*$/, "", $0)
+      print $0
+      exit
+    }
+  ' "$file"
+}
+
+port_open() {
+  local host="$1"
+  local port="$2"
+  local py="python3"
+  if ! command -v "$py" >/dev/null 2>&1; then
+    py="python"
+  fi
+  "$py" - "$host" "$port" <<'PY'
+import socket
+import sys
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.settimeout(0.3)
+try:
+    sock.connect((host, port))
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+finally:
+    try:
+        sock.close()
+    except Exception:
+        pass
+PY
+}
+
+token_valid() {
+  local scheme="$1"
+  local host="$2"
+  local port="$3"
+  local token="$4"
+  if [[ -z "$token" ]]; then
+    return 1
+  fi
+  local py="python3"
+  if ! command -v "$py" >/dev/null 2>&1; then
+    py="python"
+  fi
+  "$py" - "$scheme" "$host" "$port" "$token" <<'PY'
+import sys
+import urllib.request
+import ssl
+
+scheme = sys.argv[1]
+host = sys.argv[2]
+port = int(sys.argv[3])
+token = sys.argv[4]
+url = f"{scheme}://{host}:{port}/api/v1/namespaces"
+req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+try:
+    ctx = ssl._create_unverified_context() if scheme == "https" else None
+    with urllib.request.urlopen(req, timeout=0.6, context=ctx) as resp:
+        sys.exit(0 if resp.status == 200 else 1)
+except Exception:
+    sys.exit(1)
+PY
+}
+
 if [[ $DOWN_FLAG -eq 1 ]]; then
   log "Tearing down demo environment"
   # Stop controller if running
@@ -259,6 +339,9 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
     STACK_COMPOSE_DOWN=("$STACK_BIN_DOWN" compose)
     log "Stopping dev ${STACK_BIN_DOWN} compose stack (caddy, prometheus)"
     "${STACK_COMPOSE_DOWN[@]}" -f ops/dev/docker-compose.yaml down || true
+    log "Stopping ${STACK_BIN_DOWN} labs stacks (labs-aio, labs-compose)"
+    "${STACK_COMPOSE_DOWN[@]}" -f ops/dev/labs-aio.yaml down || true
+    "${STACK_COMPOSE_DOWN[@]}" -f ops/dev/labs-compose.yaml down || true
     # Remove demo app containers
     log "Removing demo app containers (label=ae.app)"
     ids=$("$STACK_BIN_DOWN" ps -aq --filter "label=ae.app" || true)
@@ -270,6 +353,10 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
   if [[ -d state/caddy ]]; then
     log "Clearing dynamic Caddy sites under state/caddy/*.caddy"
     rm -f state/caddy/*.caddy 2>/dev/null || true
+  fi
+  if [[ -d state/labs ]]; then
+    log "Clearing Labs shim artifacts under state/labs/"
+    rm -f state/labs/helm-demo.log state/labs/apishim.env 2>/dev/null || true
   fi
   # Optional full reset of controller state/caches on --down --reset
   if [[ $RESET_FLAG -eq 1 ]]; then
@@ -342,6 +429,10 @@ if [[ $RESET_FLAG -eq 1 ]]; then
   if [[ -d state/caddy ]]; then
     log "Clearing dynamic Caddy sites under state/caddy/*.caddy"
     rm -f state/caddy/*.caddy 2>/dev/null || true
+  fi
+  if [[ -d state/labs ]]; then
+    log "Clearing Labs shim artifacts under state/labs/"
+    rm -f state/labs/helm-demo.log state/labs/apishim.env 2>/dev/null || true
   fi
   log "Reset complete. Continuing with setup..."
 fi
@@ -729,6 +820,41 @@ rm -f "${AE_CADDY_SITES}"/*.caddy 2>/dev/null || true
 # Ensure app containers join the dev compose network so Caddy can resolve them by name (docker path)
 export AE_DOCKER_NETWORK=${AE_DOCKER_NETWORK:-dev_default}
 
+# If a labs-aio apishim is running locally, wire helm demo to reuse it.
+if [[ ${LABS_ENABLE:-0} -eq 1 ]]; then
+  LABS_APISHIM_ENV="state/labs/apishim.env"
+  if [[ -f "$LABS_APISHIM_ENV" ]]; then
+    LABS_HELM_TOKEN="$(read_env_file_var "AE_LABS_HELM_TOKEN" "$LABS_APISHIM_ENV" || true)"
+    if [[ -z "$LABS_HELM_TOKEN" ]]; then
+      LABS_HELM_TOKEN="$(read_env_file_var "AE_APISHIM_TOKEN" "$LABS_APISHIM_ENV" || true)"
+    fi
+    APISHIM_PORT=${APISHIM_PORT:-8455}
+    if [[ -n "$LABS_HELM_TOKEN" ]] && port_open "127.0.0.1" "$APISHIM_PORT"; then
+      if token_valid "https" "127.0.0.1" "$APISHIM_PORT" "$LABS_HELM_TOKEN"; then
+        export AE_LABS_HELM_SERVER="https://127.0.0.1:${APISHIM_PORT}"
+        export AE_LABS_HELM_TOKEN="$LABS_HELM_TOKEN"
+        log "Detected apishim on ${AE_LABS_HELM_SERVER}; helm demo will reuse it."
+      elif token_valid "http" "127.0.0.1" "$APISHIM_PORT" "$LABS_HELM_TOKEN"; then
+        export AE_LABS_HELM_SERVER="http://127.0.0.1:${APISHIM_PORT}"
+        export AE_LABS_HELM_TOKEN="$LABS_HELM_TOKEN"
+        log "Detected apishim on ${AE_LABS_HELM_SERVER}; helm demo will reuse it."
+      else
+        log "Found apishim.env but token rejected by ${APISHIM_PORT}; helm demo will start a local shim."
+      fi
+    fi
+  fi
+fi
+
+# Preserve optional helm demo overrides for env.sh
+LABS_HELM_SERVER_LINE=""
+LABS_HELM_TOKEN_LINE=""
+if [[ -n "${AE_LABS_HELM_SERVER:-}" ]]; then
+  LABS_HELM_SERVER_LINE="export AE_LABS_HELM_SERVER=${AE_LABS_HELM_SERVER}"
+fi
+if [[ -n "${AE_LABS_HELM_TOKEN:-}" ]]; then
+  LABS_HELM_TOKEN_LINE="export AE_LABS_HELM_TOKEN=${AE_LABS_HELM_TOKEN}"
+fi
+
 # Write env helper for manual shells (after exports)
 mkdir -p state
 cat > state/env.sh <<ENV
@@ -753,6 +879,8 @@ if [[ ${LABS_ENABLE:-0} -eq 1 ]]; then
   # Ensure sessionized hosts to avoid Caddy host collisions from multiple echo-* apps
   export AE_LABS_SESSION_HOSTS=${AE_LABS_SESSION_HOSTS:-1}
 fi
+${LABS_HELM_SERVER_LINE}
+${LABS_HELM_TOKEN_LINE}
 export AE_DOCS_PORT=${DOCS_PORT:-9109}
 # Canonical dev CA bundle for tools/SDKs (if built by init)
 if [ -f "state/certs/combined-dev-ca.pem" ]; then
