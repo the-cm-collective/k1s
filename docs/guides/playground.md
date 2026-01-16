@@ -75,17 +75,22 @@ This page prefers HTMX + SSE for live updates and uses a small `labs.js` helper 
 Want to watch a Helm deployment materialize inside the dashboard? Click “Run Helm Shim Demo” above (requires Labs token). Behind the scenes, the server runs the commands below; you can still run them manually if you prefer:
 
 ```bash
-# 1) Start the API shim (stub runtime)
-AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME=stub AE_APISHIM_TOKEN=helm-demo PYTHONPATH=src \
-  python -m ae.apishim serve --host 127.0.0.1 --port 8445
+# 1) Create a self-signed cert (dev-only)
+openssl req -x509 -newkey rsa:2048 -sha256 -days 3 -nodes \
+  -keyout /tmp/helm-shim.key -out /tmp/helm-shim.crt -subj "/CN=127.0.0.1"
 
-# 2) Generate a kubeconfig pointing at the shim
+# 2) Start the API shim (stub runtime) with TLS
+AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME=stub AE_APISHIM_TOKEN=helm-demo \
+  AE_APISHIM_TLS_CERT=/tmp/helm-shim.crt AE_APISHIM_TLS_KEY=/tmp/helm-shim.key \
+  PYTHONPATH=src python -m ae.apishim serve --host 127.0.0.1 --port 8445 --tls
+
+# 3) Generate a kubeconfig pointing at the shim
 PYTHONPATH=src python -m ae.apishim kubeconfig \
-  --server http://127.0.0.1:8445 --token helm-demo \
+  --server https://127.0.0.1:8445 --token helm-demo \
   --context k1s-shim --insecure-skip-tls-verify > ~/.kube/helm-shim
 export KUBECONFIG=~/.kube/helm-shim
 
-# 3) Create namespace + sample chart and install it
+# 4) Create namespace + sample chart and install it
 kubectl create namespace demo-helm
 helm create demochart
 helm install demochart ./demochart -n demo-helm --wait
