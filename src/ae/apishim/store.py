@@ -56,6 +56,8 @@ class ObjectStore:
         self._metrics_streams_started: dict[tuple[str, str, str, str], int] = defaultdict(int)
         self._metrics_broadcasts: dict[tuple[str, str, str, str], int] = defaultdict(int)
         self.backend = "sqlite"
+        self._tombstones: dict[tuple[str, str, str, str, str], float] = {}
+        self._tombstone_ttl = int(os.getenv("AE_APISHIM_TOMBSTONE_TTL", "15") or "15")
         self._conn = None
         self._dsn = dsn or os.getenv("AE_APISHIM_DSN")
         if self._dsn:
@@ -138,6 +140,21 @@ class ObjectStore:
             row = cur.fetchone()
             return int(row["rv"])
 
+    def _tombstone_key(self, group: str, version: str, resource: str, namespace: str | None, name: str) -> tuple[str, str, str, str, str]:
+        return (group, version, resource, namespace or "", name)
+
+    def _tombstone_active(self, key: tuple[str, str, str, str, str], now: float | None = None) -> bool:
+        if not self._tombstones:
+            return False
+        now = now or time.time()
+        exp = self._tombstones.get(key)
+        if exp is None:
+            return False
+        if exp <= now:
+            self._tombstones.pop(key, None)
+            return False
+        return True
+
     def upsert(
         self,
         group: str,
@@ -151,6 +168,79 @@ class ObjectStore:
         resource_version: int | None = None,
     ) -> K8sObject:
         with self._lock:
+            existed = self.get(group, version, resource, namespace, name) is not None
+            rv = resource_version or self._next_rv()
+            now = self._now()
+            status = status or {}
+            ns_val = namespace or ""
+            if self.backend == "sqlite":
+                with self._conn:  # type: ignore[union-attr]
+                    self._conn.execute(
+                        """
+                        INSERT INTO objects (grp, ver, res, ns, name, metadata, spec, status, rv, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(grp, ver, res, ns, name)
+                        DO UPDATE SET metadata=excluded.metadata, spec=excluded.spec, status=excluded.status,
+                                      rv=excluded.rv, updated_at=excluded.updated_at
+                        """,
+                        (
+                            group,
+                            version,
+                            resource,
+                            ns_val,
+                            name,
+                            json.dumps(metadata, separators=(",", ":")),
+                            json.dumps(spec, separators=(",", ":")),
+                            json.dumps(status, separators=(",", ":")),
+                            rv,
+                            now,
+                            now,
+                        ),
+                    )
+            else:
+                with self._conn.cursor() as cur:  # type: ignore[union-attr]
+                    cur.execute(
+                        """
+                        INSERT INTO objects (grp, ver, res, ns, name, metadata, spec, status, rv, created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT(grp, ver, res, ns, name)
+                        DO UPDATE SET metadata=excluded.metadata, spec=excluded.spec, status=excluded.status,
+                                      rv=excluded.rv, updated_at=excluded.updated_at
+                        """,
+                        (
+                            group,
+                            version,
+                            resource,
+                            ns_val,
+                            name,
+                            json.dumps(metadata, separators=(",", ":")),
+                            json.dumps(spec, separators=(",", ":")),
+                            json.dumps(status, separators=(",", ":")),
+                            rv,
+                            now,
+                            now,
+                        ),
+                    )
+        obj = K8sObject(group, version, resource, namespace, name, metadata, spec, status, rv)
+        self._publish(obj, "MODIFIED" if existed else "ADDED")
+        return obj
+
+    def upsert_if_not_deleted(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+        metadata: dict[str, Any],
+        spec: dict[str, Any],
+        status: dict[str, Any] | None = None,
+        resource_version: int | None = None,
+    ) -> K8sObject | None:
+        key = self._tombstone_key(group, version, resource, namespace, name)
+        with self._lock:
+            if self._tombstone_active(key):
+                return None
             existed = self.get(group, version, resource, namespace, name) is not None
             rv = resource_version or self._next_rv()
             now = self._now()
@@ -331,6 +421,8 @@ class ObjectStore:
     ) -> bool:
         with self._lock:
             prev = self.get(group, version, resource, namespace, name)
+            if self._tombstone_ttl > 0:
+                self._tombstones[self._tombstone_key(group, version, resource, namespace, name)] = self._now() + self._tombstone_ttl
             ns_val = namespace or ""
             if self.backend == "sqlite":
                 with self._conn:  # type: ignore[union-attr]
