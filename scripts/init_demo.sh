@@ -589,7 +589,7 @@ else
   docker build -t demo-green:latest samples/servers/green || true
 fi
 
-log "Starting local Caddy and Prometheus stack"
+log "Starting local dev stack"
 # Pick ports (prefer defaults, fall back if busy)
 pick_port() {
   local preferred=$1
@@ -663,6 +663,25 @@ mkdir -p ops/dev/caddy/sites
 find ops/dev/caddy/sites -maxdepth 1 -type f -name '*.caddy' \
   ! -name 'docs.caddy' ! -name 'api.caddy' -print -delete 2>/dev/null || true
 # Controller writes dynamic sites under state/caddy (mounted as /etc/caddy/dynsites)
+if [[ "${AE_USE_REGISTRY_CACHE}" == "1" && -f ops/dev/docker-compose.cache.override.yml ]]; then
+  log "Starting local registry cache"
+  ${STACK_COMPOSE[@]} "${DEV_COMPOSE_FILES_WITH_CACHE[@]}" up -d registry || true
+  registry_host="${AE_REGISTRY_HOST%:*}"
+  registry_port="${AE_REGISTRY_HOST##*:}"
+  if [[ "$registry_host" == "$registry_port" ]]; then
+    registry_host="127.0.0.1"
+    registry_port="${AE_REGISTRY_PORT:-5001}"
+  fi
+  for _ in {1..25}; do
+    if port_open "$registry_host" "$registry_port"; then
+      break
+    fi
+    sleep 0.2
+  done
+  if ! port_open "$registry_host" "$registry_port"; then
+    log "Registry cache not reachable at ${registry_host}:${registry_port} (image pulls may fail)"
+  fi
+fi
   if ! ${STACK_COMPOSE[@]} "${DEV_COMPOSE_FILES[@]}" up -d; then
     if [[ "$STACK_BIN" == "podman" ]]; then
       log "Compose up failed; retrying after Podman/systemd remedial steps"
