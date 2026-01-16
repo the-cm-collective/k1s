@@ -257,10 +257,12 @@ def _make_reconciler() -> Reconciler:
 
 def _reconcile_all(reconciler: Reconciler, manifests: Iterable[AppManifest]) -> None:
     import time as _t
-    from ae.observability.http_api import record_app_reconcile
+    from ae.observability.http_api import record_app_reconcile, _labs_is_blocked
     import logging as _log
 
     for m in manifests:
+        if _labs_is_blocked(m.metadata.name):
+            continue
         t0 = _t.time()
         try:
             report = reconciler.reconcile(m)
