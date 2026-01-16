@@ -377,7 +377,7 @@
       </svg>
     </button>
     <div class="container">
-    <h1>API Shim Compatibility Matrix (2026-01-14)</h1>
+    <h1>API Shim Compatibility Matrix (2026-01-16)</h1>
 <p>Legend: ✅ supported; ⚠️ partial/limited; 🚧 planned.</p>
 <h2>Core resources</h2>
 <ul>
@@ -389,7 +389,7 @@
 <h2>Workloads</h2>
 <ul>
 <li>Deployments, ReplicaSets (virtual), Pods (projected): ✅ status/conditions, logs/exec/port-forward.</li>
-<li>StatefulSet, DaemonSet, Job, CronJob: ✅ create/update/delete, status, ownerRefs.</li>
+<li>StatefulSet, DaemonSet, Job, CronJob: ⚠️ stored + best-effort status; treated as Deployment-like apps (no PVC templates, no job completion, no CronJob scheduling, no one-per-node scheduling).</li>
 <li>HorizontalPodAutoscaler v2: ✅ currentMetrics/status; backs k1s autoscaling.</li>
 </ul>
 <h2>AuthN/AuthZ</h2>
@@ -422,7 +422,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-16 00:57:33</span>
+        <span>Built 2026-01-16 08:47:34</span>
       </div>
     </footer>
     <script>

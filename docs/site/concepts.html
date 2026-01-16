@@ -453,7 +453,7 @@
 <p>Kubernetes API shim (optional):</p>
 <ul>
 <li><code>python -m ae.apishim serve --token &lt;bearer&gt;</code> exposes <code>/api</code>, <code>/apis</code>, <code>/openapi/v2|v3</code> with SSA/patch and port-forward.</li>
-<li>Works with kubectl/helm for Deployments/StatefulSets/DaemonSets/Jobs/CronJobs/Ingress/Services/HPA/RBAC; see <code>docs/reference/apishim-compatibility-matrix.md</code> for coverage.</li>
+<li>Works with kubectl/helm for Deployments/Services/Ingress/HPA/RBAC; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated (see <code>docs/reference/apishim-compatibility-matrix.md</code>).</li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -462,7 +462,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-16 00:57:33</span>
+        <span>Built 2026-01-16 08:47:34</span>
       </div>
     </footer>
     <script>

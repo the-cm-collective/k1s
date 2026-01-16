@@ -1,4 +1,4 @@
-# API Shim Compatibility Matrix (2026-01-14)
+# API Shim Compatibility Matrix (2026-01-16)
 
 Legend: ✅ supported; ⚠️ partial/limited; 🚧 planned.
 
@@ -10,7 +10,7 @@ Legend: ✅ supported; ⚠️ partial/limited; 🚧 planned.
 
 ## Workloads
 - Deployments, ReplicaSets (virtual), Pods (projected): ✅ status/conditions, logs/exec/port-forward.
-- StatefulSet, DaemonSet, Job, CronJob: ✅ create/update/delete, status, ownerRefs.
+- StatefulSet, DaemonSet, Job, CronJob: ⚠️ stored + best-effort status; treated as Deployment-like apps (no PVC templates, no job completion, no CronJob scheduling, no one-per-node scheduling).
 - HorizontalPodAutoscaler v2: ✅ currentMetrics/status; backs k1s autoscaling.
 
 ## AuthN/AuthZ
