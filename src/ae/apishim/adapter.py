@@ -30,6 +30,51 @@ def _app_name(ns: str | None, name: str) -> str:
     return f"{ns}--{name}" if ns else name
 
 
+def _resolve_port_value(port: Any, ports_by_name: dict[str, int]) -> int | None:
+    if port is None:
+        return None
+    if isinstance(port, int):
+        return port
+    if isinstance(port, str):
+        if port.isdigit():
+            return int(port)
+        if port in ports_by_name:
+            return ports_by_name[port]
+    return None
+
+
+def _probe_from_k8s(raw: dict | None, ports_by_name: dict[str, int]) -> dict | None:
+    if not raw or not isinstance(raw, dict):
+        return None
+    out: dict[str, Any] = {}
+    http = raw.get("httpGet") or raw.get("http_get") or {}
+    if isinstance(http, dict) and http:
+        port = _resolve_port_value(http.get("port"), ports_by_name)
+        if port is not None:
+            out["httpGet"] = {"path": http.get("path", "/"), "port": int(port)}
+    exec_spec = raw.get("exec") or {}
+    if isinstance(exec_spec, dict) and exec_spec.get("command"):
+        out["exec"] = {"command": [str(x) for x in exec_spec.get("command") or []]}
+    tcp = raw.get("tcpSocket") or raw.get("tcp_socket") or {}
+    if isinstance(tcp, dict) and tcp:
+        port = _resolve_port_value(tcp.get("port"), ports_by_name)
+        if port is not None:
+            out["tcpSocket"] = {"port": int(port)}
+    for key in (
+        "initialDelaySeconds",
+        "timeoutSeconds",
+        "periodSeconds",
+        "successThreshold",
+        "failureThreshold",
+    ):
+        if key in raw:
+            try:
+                out[key] = int(raw.get(key))
+            except Exception:
+                continue
+    return out or None
+
+
 def _manifest_from_deployment(
     dep: K8sObject,
     *,
@@ -41,6 +86,7 @@ def _manifest_from_deployment(
     containers = tpl.get("containers") or []
     if not containers:
         # Minimal placeholder to satisfy schema; image required
+        c0: dict[str, Any] = {}
         image = "busybox:latest"
         ports: list[PortSpec] = []
     else:
@@ -54,12 +100,85 @@ def _manifest_from_deployment(
                 continue
             name = p.get("name") or f"p{port_num}"
             ports.append(PortSpec(name=name, containerPort=port_num))
+    ports_by_name = {p.name: int(p.container_port) for p in ports if getattr(p, "name", None)}
+    command = [str(x) for x in (c0.get("command") or [])]
+    args = [str(x) for x in (c0.get("args") or [])]
+    env: list[dict[str, str]] = []
+    for item in c0.get("env") or []:
+        if isinstance(item, dict) and "name" in item and "value" in item:
+            env.append({"name": str(item["name"]), "value": str(item.get("value") or "")})
+    working_dir = c0.get("workingDir")
+    resources: dict[str, Any] | None = None
+    if isinstance(c0.get("resources"), dict):
+        res = c0.get("resources") or {}
+        if res.get("requests") or res.get("limits"):
+            resources = {}
+            if res.get("requests"):
+                req = res.get("requests") or {}
+                resources["requests"] = {
+                    k: v for k, v in req.items() if k in {"cpu", "memory"}
+                }
+            if res.get("limits"):
+                lim = res.get("limits") or {}
+                resources["limits"] = {
+                    k: v for k, v in lim.items() if k in {"cpu", "memory"}
+                }
+            if resources.get("requests") == {}:
+                resources.pop("requests", None)
+            if resources.get("limits") == {}:
+                resources.pop("limits", None)
+            if not resources:
+                resources = None
+    security: dict[str, Any] | None = None
+    sec = c0.get("securityContext") or {}
+    if isinstance(sec, dict) and sec:
+        security = {}
+        if sec.get("runAsUser") is not None:
+            security["run_as_user"] = sec.get("runAsUser")
+        if sec.get("runAsGroup") is not None:
+            security["run_as_group"] = sec.get("runAsGroup")
+        if sec.get("readOnlyRootFilesystem") is not None:
+            security["read_only_root"] = bool(sec.get("readOnlyRootFilesystem"))
+        caps = (sec.get("capabilities") or {}).get("drop") if isinstance(sec.get("capabilities"), dict) else None
+        if caps:
+            security["drop_caps"] = list(caps)
+        seccomp = sec.get("seccompProfile") if isinstance(sec.get("seccompProfile"), dict) else None
+        if seccomp:
+            if seccomp.get("type"):
+                security["seccomp_type"] = seccomp.get("type")
+            if seccomp.get("localhostProfile"):
+                security["seccomp_localhost_profile"] = seccomp.get("localhostProfile")
+        if not security:
+            security = None
+    health: dict[str, Any] | None = None
+    readiness = _probe_from_k8s(c0.get("readinessProbe"), ports_by_name)
+    liveness = _probe_from_k8s(c0.get("livenessProbe"), ports_by_name)
+    startup = _probe_from_k8s(c0.get("startupProbe"), ports_by_name)
+    if readiness or liveness or startup:
+        health = {}
+        if readiness:
+            health["readiness"] = readiness
+        if liveness:
+            health["liveness"] = liveness
+        if startup:
+            health["startup"] = startup
 
     replicas = int(spec.get("replicas", 1) or 1)
     # Ensure >=1 for manifest schema; scale-to-0 handled by adapter
     m_replicas = max(1, replicas)
 
-    app_spec = AppSpec(image=image, replicas=m_replicas, ports=ports)
+    app_spec = AppSpec(
+        image=image,
+        replicas=m_replicas,
+        ports=ports,
+        command=command or None,
+        args=args or None,
+        env=env,
+        working_dir=working_dir,
+        resources=resources,
+        security=security,
+        health=health,
+    )
     if service_spec is not None:
         app_spec = app_spec.model_copy(update={"service": service_spec})
     if ingress_spec is not None:
@@ -357,10 +476,30 @@ class AdapterWorker(threading.Thread):
         spec_mod["replicas"] = parallelism
         job_mod = K8sObject(job.group, job.version, job.resource, job.namespace, job.name, job.metadata, spec_mod, job.status, job.resource_version)
         m = _manifest_from_deployment(job_mod)
+        # Mark workload as job and carry backoff/ttl hints
+        spec_updates: dict[str, Any] = {"workload": "job"}
+        if spec.get("backoffLimit") is not None:
+            try:
+                spec_updates["job_backoff_limit"] = int(spec.get("backoffLimit"))
+            except Exception:
+                pass
+        if spec.get("ttlSecondsAfterFinished") is not None:
+            try:
+                spec_updates["job_ttl_seconds_after_finished"] = int(
+                    spec.get("ttlSecondsAfterFinished")
+                )
+            except Exception:
+                pass
+        m = m.model_copy(update={"spec": m.spec.model_copy(update=spec_updates)})
         try:
-            labels = job.metadata.get("labels") or None
+            labels = dict(job.metadata.get("labels") or {})
         except Exception:
-            labels = None
+            labels = {}
+        labels.setdefault("ae.workload", "job")
+        try:
+            m = m.model_copy(update={"metadata": m.metadata.model_copy(update={"labels": labels})})
+        except Exception:
+            pass
         try:
             self._state.register_app(m, source="apishim", labels=labels)
         except Exception:
@@ -368,10 +507,24 @@ class AdapterWorker(threading.Thread):
         self._reconciler.reconcile(m)
         st_row = self._state.get_status(m.metadata.name)
         succeeded = 0
-        ready = 0
-        if st_row is not None:
-            ready = st_row.ready_replicas
-            succeeded = min(ready, completions)
+        failed = 0
+        active = 0
+        try:
+            reps = self._state.list_replicas(m.metadata.name)
+        except Exception:
+            reps = []
+        if reps:
+            for r in reps:
+                if r.status == "running":
+                    active += 1
+                if r.exit_code is None:
+                    continue
+                if r.exit_code == 0:
+                    succeeded += 1
+                else:
+                    failed += 1
+        elif st_row is not None:
+            succeeded = min(int(st_row.ready_replicas or 0), completions)
         conditions = []
         if succeeded >= completions:
             conditions.append({"type": "Complete", "status": "True"})
@@ -379,10 +532,16 @@ class AdapterWorker(threading.Thread):
                 self._state.record_event(m.metadata.name, st_row.revision if st_row else 0, "Complete", f"Job {job.name} succeeded")  # type: ignore[arg-type]
             except Exception:
                 pass
+        elif failed > 0 and active == 0:
+            conditions.append({"type": "Failed", "status": "True"})
+            try:
+                self._state.record_event(m.metadata.name, st_row.revision if st_row else 0, "Failed", f"Job {job.name} failed")  # type: ignore[arg-type]
+            except Exception:
+                pass
         st = {
-            "active": max(0, parallelism - succeeded),
+            "active": active if reps else max(0, parallelism - succeeded),
             "succeeded": succeeded,
-            "failed": 0,
+            "failed": failed,
             "conditions": conditions,
         }
         self._store.upsert("batch", "v1", "jobs", job.namespace, job.name, job.metadata, job.spec, status=st)

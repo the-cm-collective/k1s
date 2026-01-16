@@ -8,6 +8,7 @@ the provided `local_runtime` to preserve single-node behavior.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 import requests
 
@@ -171,12 +172,30 @@ class RemoteRuntime(RuntimeAdapter):
 def _runtime_result_from_json(data: dict) -> RuntimeResult:
     reps = []
     for item in data.get("replica_states", []):
+        exit_code = item.get("exit_code", None)
+        if exit_code is None:
+            exit_code = item.get("exitCode", None)
+        try:
+            exit_code = int(exit_code) if exit_code is not None else None
+        except Exception:
+            exit_code = None
+        finished_raw = item.get("finished_at", None)
+        if finished_raw is None:
+            finished_raw = item.get("finishedAt", None)
+        finished_at = None
+        if finished_raw:
+            try:
+                finished_at = datetime.fromisoformat(str(finished_raw).rstrip("Z"))
+            except Exception:
+                finished_at = None
         reps.append(
             ReplicaState(
                 replica_id=item.get("replica_id", ""),
                 ready=bool(item.get("ready")),
                 status=item.get("status", "unknown"),
                 endpoint=item.get("endpoint"),
+                exit_code=exit_code,
+                finished_at=finished_at,
             )
         )
     return RuntimeResult(

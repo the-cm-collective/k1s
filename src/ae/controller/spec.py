@@ -372,6 +372,11 @@ class AppSpec(BaseModel):
     """Workload specification."""
 
     image: str
+    workload: Literal["service", "job"] = Field(default="service")
+    job_backoff_limit: Optional[int] = Field(default=None, alias="jobBackoffLimit")
+    job_ttl_seconds_after_finished: Optional[int] = Field(
+        default=None, alias="jobTtlSecondsAfterFinished"
+    )
     command: Optional[List[str]] = None
     args: Optional[List[str]] = None
     env: List[dict[str, str]] = Field(default_factory=list)
