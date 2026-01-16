@@ -1,0 +1,30 @@
+services:
+  registry:
+    image: registry:2
+    ports:
+      - "${AE_REGISTRY_PORT:-5001}:5000"
+    environment:
+      REGISTRY_PROXY_REMOTEURL: ${AE_REGISTRY_REMOTEURL:-https://registry-1.docker.io}
+      REGISTRY_PROXY_USERNAME: ${AE_REGISTRY_USERNAME:-}
+      REGISTRY_PROXY_PASSWORD: ${AE_REGISTRY_PASSWORD:-}
+      REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /var/lib/registry
+    volumes:
+      - ../../state/registry:/var/lib/registry
+
+  caddy:
+    image: ${AE_REGISTRY_HOST:-localhost:5001}/library/caddy:2.8
+    pull_policy: if_not_present
+    depends_on:
+      - registry
+
+  prometheus:
+    image: ${AE_REGISTRY_HOST:-localhost:5001}/prom/prometheus:v2.53.0
+    pull_policy: if_not_present
+    depends_on:
+      - registry
+
+  haproxy:
+    image: ${AE_REGISTRY_HOST:-localhost:5001}/library/haproxy:lts
+    pull_policy: if_not_present
+    depends_on:
+      - registry
