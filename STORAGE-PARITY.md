@@ -389,6 +389,29 @@ Required for most charts:
 Optional (common for backup/restore charts):
 - snapshot.storage.k8s.io/v1: VolumeSnapshot, VolumeSnapshotClass
 
+Snapshot scope note:
+- We do not implement VolumeSnapshot by default in the “complete” target, but if
+  you need Helm charts that depend on snapshots (e.g., Velero plugins, CSI backup
+  tooling), add:
+  - snapshot.storage.k8s.io/v1 CRDs
+  - external-snapshotter sidecar
+  - controller logic for snapshot status conditions
+
+### apishim OpenAPI Coverage (Storage)
+
+Minimum objects and endpoints (list/watch + CRUD):
+- core/v1:
+  - PersistentVolume
+  - PersistentVolumeClaim
+- storage.k8s.io/v1:
+  - StorageClass
+  - CSIDriver
+  - CSINode
+  - CSIStorageCapacity
+  - VolumeAttachment
+- snapshot.storage.k8s.io/v1 (optional):
+  - VolumeSnapshot
+  - VolumeSnapshotClass
 ---
 
 ## 8) Compatibility Matrix (Target)
