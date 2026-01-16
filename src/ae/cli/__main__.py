@@ -1191,7 +1191,22 @@ def handle_apply(
             print(f"remote apply failed: {exc}")
             return 1
     # Local apply path
-    report = reconciler.reconcile_manifest_path(args.file)
+    from ae.controller.spec import ManifestError, load_manifest
+
+    try:
+        manifest = load_manifest(args.file)
+    except ManifestError as exc:
+        print(f"failed to read manifest: {exc}")
+        return 1
+    try:
+        store = state_store_from_env()
+        existing = store.get_registered_entry(manifest.metadata.name)
+        src = existing.source if existing else "cli"
+        lbls = existing.labels if existing else getattr(manifest.metadata, "labels", None)
+        store.register_app(manifest, source=src, labels=lbls)
+    except Exception:
+        pass
+    report = reconciler.reconcile(manifest)
     print(format_report(report))
     return 0
 
@@ -1443,6 +1458,10 @@ def handle_delete(
                         pass
         except Exception:
             pass
+    try:
+        store.delete_registered_app(name)
+    except Exception:
+        pass
     store.delete_app_state(name, purge_history=bool(args.purge))
     print(
         f"deleted {name}: removed={removed} containers{' (purged history)' if args.purge else ''}"
@@ -1478,6 +1497,13 @@ def handle_scale(
     manifest = store.get_revision_manifest(name, latest[0].revision)
     updated_spec = manifest.spec.model_copy(update={"replicas": int(args.replicas)})
     new_manifest = manifest.model_copy(update={"spec": updated_spec})
+    try:
+        existing = store.get_registered_entry(name)
+        src = existing.source if existing else "cli"
+        lbls = existing.labels if existing else getattr(new_manifest.metadata, "labels", None)
+        store.register_app(new_manifest, source=src, labels=lbls)
+    except Exception:
+        pass
     report = reconciler.reconcile(new_manifest)
     print(
         f"scaled {name} to replicas={args.replicas}: rev={report.revision}({report.revision_status}) "
@@ -2119,6 +2145,13 @@ def handle_rollout(
     rollout["pause"] = True if args.rollout_cmd == "pause" else False
     new_spec = man.spec.model_copy(update={"rollout": rollout})
     updated = man.model_copy(update={"spec": new_spec})
+    try:
+        existing = store.get_registered_entry(app)
+        src = existing.source if existing else "cli"
+        lbls = existing.labels if existing else getattr(updated.metadata, "labels", None)
+        store.register_app(updated, source=src, labels=lbls)
+    except Exception:
+        pass
     report = reconciler.reconcile(updated)
     print(
         f"rollout {args.rollout_cmd} {app}: rev={report.revision} status={report.revision_status} ready={report.ready_replicas}/{new_spec.replicas}"

@@ -290,6 +290,10 @@ def handle_delete_k1s(
             ingress.reload()
         except Exception:
             pass
+    try:
+        store.delete_registered_app(ref.name)
+    except Exception:
+        pass
     store.delete_app_state(ref.name, purge_history=bool(getattr(ns, "purge", False)))
     print(f"deleted {ref.name}: removed={removed} containers")
     return 0
@@ -306,6 +310,13 @@ def handle_scale_k1s(
     manifest = store.get_revision_manifest(ref.name, revs[0].revision)
     new_spec = manifest.spec.model_copy(update={"replicas": int(ns.replicas)})
     updated = manifest.model_copy(update={"spec": new_spec})
+    try:
+        existing = store.get_registered_entry(ref.name)
+        src = existing.source if existing else "kctl"
+        lbls = existing.labels if existing else getattr(updated.metadata, "labels", None)
+        store.register_app(updated, source=src, labels=lbls)
+    except Exception:
+        pass
     report = reconciler.reconcile(updated)
     print(
         f"scaled {ref.name} to replicas={ns.replicas}: rev={report.revision}({report.revision_status})"

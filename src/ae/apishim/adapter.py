@@ -64,7 +64,12 @@ def _manifest_from_deployment(
         app_spec = app_spec.model_copy(update={"service": service_spec})
     if ingress_spec is not None:
         app_spec = app_spec.model_copy(update={"ingress": ingress_spec})
-    meta = Metadata(name=_app_name(dep.namespace, dep.name))
+    meta_labels = None
+    try:
+        meta_labels = dep.metadata.get("labels") or None
+    except Exception:
+        meta_labels = None
+    meta = Metadata(name=_app_name(dep.namespace, dep.name), labels=meta_labels)
     return AppManifest(apiVersion="ae.dev/v1alpha1", kind="App", metadata=meta, spec=app_spec)
 
 
@@ -182,6 +187,8 @@ class AdapterWorker(threading.Thread):
                     break
                 if ev in {"ADDED", "MODIFIED"}:
                     self._apply_deployment(obj)
+                elif ev == "DELETED":
+                    self._remove_app_for(obj)
         finally:
             self._stop.set()
             try:
@@ -200,6 +207,10 @@ class AdapterWorker(threading.Thread):
                 self._reconciler._runtime.remove_app(app_name)  # type: ignore[attr-defined]
             except Exception:
                 pass
+            try:
+                self._state.delete_registered_app(app_name)
+            except Exception:
+                pass
             # Update synthesized status to zeros
             st = {"replicas": 0, "updatedReplicas": 0, "readyReplicas": 0, "availableReplicas": 0,
                   "conditions": [{"type": "Available", "status": "False", "reason": "ScaledDown"},
@@ -211,6 +222,14 @@ class AdapterWorker(threading.Thread):
         svc_spec = self._service_specs.get(dep_key)
         ing_spec = self._ingress_specs.get(dep_key)
         m = _manifest_from_deployment(dep, service_spec=svc_spec, ingress_spec=ing_spec)
+        try:
+            labels = dep.metadata.get("labels") or None
+        except Exception:
+            labels = None
+        try:
+            self._state.register_app(m, source="apishim", labels=labels)
+        except Exception:
+            pass
         self._reconciler.reconcile(m)
         # Reflect status from state store
         st_row = self._state.get_status(m.metadata.name)
@@ -255,6 +274,14 @@ class AdapterWorker(threading.Thread):
             self._store.upsert("apps", "v1", "statefulsets", sts.namespace, sts.name, sts.metadata, sts.spec, status=st)
             return
         m = _manifest_from_deployment(sts)
+        try:
+            labels = sts.metadata.get("labels") or None
+        except Exception:
+            labels = None
+        try:
+            self._state.register_app(m, source="apishim", labels=labels)
+        except Exception:
+            pass
         self._reconciler.reconcile(m)
         st_row = self._state.get_status(m.metadata.name)
         if st_row is not None:
@@ -296,6 +323,14 @@ class AdapterWorker(threading.Thread):
         spec_mod["replicas"] = desired
         ds_mod = K8sObject(ds.group, ds.version, ds.resource, ds.namespace, ds.name, ds.metadata, spec_mod, ds.status, ds.resource_version)
         m = _manifest_from_deployment(ds_mod)
+        try:
+            labels = ds.metadata.get("labels") or None
+        except Exception:
+            labels = None
+        try:
+            self._state.register_app(m, source="apishim", labels=labels)
+        except Exception:
+            pass
         self._reconciler.reconcile(m)
         st_row = self._state.get_status(m.metadata.name)
         if st_row is not None:
@@ -322,6 +357,14 @@ class AdapterWorker(threading.Thread):
         spec_mod["replicas"] = parallelism
         job_mod = K8sObject(job.group, job.version, job.resource, job.namespace, job.name, job.metadata, spec_mod, job.status, job.resource_version)
         m = _manifest_from_deployment(job_mod)
+        try:
+            labels = job.metadata.get("labels") or None
+        except Exception:
+            labels = None
+        try:
+            self._state.register_app(m, source="apishim", labels=labels)
+        except Exception:
+            pass
         self._reconciler.reconcile(m)
         st_row = self._state.get_status(m.metadata.name)
         succeeded = 0
@@ -420,6 +463,10 @@ class AdapterWorker(threading.Thread):
         app_name = _app_name(obj.namespace, obj.name)
         try:
             self._reconciler._runtime.remove_app(app_name)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        try:
+            self._state.delete_registered_app(app_name)
         except Exception:
             pass
         try:
