@@ -1,6 +1,7 @@
 services:
   registry:
-    image: registry:2
+    image: ${AE_REGISTRY_IMAGE:-registry:2}
+    pull_policy: if_not_present
     ports:
       - "${AE_REGISTRY_PORT:-5001}:5000"
     environment:
