@@ -4067,30 +4067,38 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         // Worker nodes row
         var workerY = topY;
         var workerGap = 140;
+        var workerCount = (sys.nodes||[]).length;
+        var workerRowWidth = (workerCount > 1) ? ((workerCount - 1) * workerGap) : 0;
+        var workerStartX = (W - workerRowWidth) / 2;
+        if (workerStartX < (padX + nodeW/2)) workerStartX = padX + nodeW/2;
         (sys.nodes||[]).forEach(function(n, idx){
           var st = String(n.status||'').toLowerCase();
           var cls = 'worker';
           if (n.stale) cls += ' stale';
           if (n.cordoned) cls += ' cordoned';
-          var x = padX + idx * workerGap + 40;
+          var x = workerStartX + idx * workerGap;
           addNode('node:'+n.id, n.name||n.id, cls, x, workerY, {status:st, stale:n.stale, cordoned:n.cordoned});
         });
 
         // Shift system nodes down if workers present
         if ((sys.nodes||[]).length > 0){ topY += 50; midY += 50; }
-        addNode('dns', 'DNS', 'system', padX + 160, topY);
-        addNode('ingress', 'Ingress', 'system', padX + 360, topY);
-        addNode('controller', 'Controller', 'system', padX + 160, midY);
-        addNode('runtime', 'Runtime', 'system', padX + 360, midY);
-
         var apps = (statuses||[]).slice();
-        // Calculate columns based on available width and minimum center-to-center gap
-        var minCenterGap = nodeW + minXGap; // 120px default
-        var colsCap = Math.max(1, Math.floor((W - padX*2) / Math.max(1, minCenterGap)));
-        // Reduce the max-per-row by 2 to create more breathing room
-        var cols = Math.max(1, Math.min(apps.length, Math.max(1, colsCap - 2)));
-        var rows = Math.max(1, Math.ceil(apps.length / cols));
-        var gap = (W - padX*2) / Math.max(1, cols); // actual center-to-center gap used
+        var appCount = apps.length;
+        // Grid layout: system column + app columns, centered within the graph bounds
+        var minCenterGap = nodeW + minXGap; // minimum center-to-center gap
+        var maxCenterGap = 200; // prevent over-stretching on wide viewports
+        var availableSpan = Math.max(1, W - padX*2 - nodeW);
+        var colsCap = Math.max(1, Math.floor(availableSpan / Math.max(1, minCenterGap)) - 1);
+        var cols = Math.max(1, Math.min(appCount || 1, colsCap));
+        var rows = Math.max(1, Math.ceil(appCount / cols));
+        var gap = availableSpan / Math.max(1, cols + 1);
+        if (gap > maxCenterGap) gap = maxCenterGap;
+        var baseX = (W - (cols + 1) * gap) / 2;
+
+        addNode('dns', 'DNS', 'system', baseX, topY);
+        addNode('ingress', 'Ingress', 'system', baseX + gap, topY);
+        addNode('controller', 'Controller', 'system', baseX, midY);
+        addNode('runtime', 'Runtime', 'system', baseX + gap, midY);
         var byApp = {};
         apps.forEach(function(s){ byApp[s.app_name]=s; });
         var placements = sys.placements || {};
@@ -4098,7 +4106,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var info = splitAppName(s.app_name);
           var col = i % cols;
           var row = Math.floor(i / cols);
-          var x = padX + gap*col + gap*0.5;
+          var x = baseX + gap * (2 + col);
           var appY = (midY + 90) + row * (nodeH + podOffsetY + rowGap);
           addNode('app:'+s.app_name, info.name, 'app', x, appY, {app:s.app_name, app_short: info.name, ns: info.namespace, ready:s.ready_replicas, desired:s.desired_replicas, rev:s.revision, status:s.revision_status, row:row, col:col, idx:i});
           var reps = placements[s.app_name] || [];
