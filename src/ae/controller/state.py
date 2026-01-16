@@ -62,6 +62,8 @@ class ReplicaStatus:
     status: str
     readiness_message: str
     liveness_message: str
+    exit_code: int | None = None
+    finished_at: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -206,6 +208,8 @@ class SQLiteStateStore:
                     "status",
                     "readiness_message",
                     "liveness_message",
+                    "exit_code",
+                    "finished_at",
                 ],
             )
             if needs_reset:
@@ -318,6 +322,8 @@ class SQLiteStateStore:
                     status TEXT NOT NULL,
                     readiness_message TEXT NOT NULL,
                     liveness_message TEXT NOT NULL,
+                    exit_code INTEGER,
+                    finished_at TEXT,
                     PRIMARY KEY (app_name, replica_id)
                 )
                 """
@@ -525,25 +531,27 @@ class SQLiteStateStore:
             # Clean existing placements for this app; will be repopulated below
             conn.execute("DELETE FROM replica_nodes WHERE app_name = ?", (manifest.metadata.name,))
 
-            rows = [
-                (
-                    manifest.metadata.name,
-                    replica.replica_id,
-                    int(replica.ready),
-                    int(replica.live),
-                    state_by_id.get(replica.replica_id, None).status
-                    if state_by_id.get(replica.replica_id)
-                    else "unknown",
-                    replica.readiness_message,
-                    replica.liveness_message,
+            rows = []
+            for replica in health_report.replicas:
+                state = state_by_id.get(replica.replica_id)
+                rows.append(
+                    (
+                        manifest.metadata.name,
+                        replica.replica_id,
+                        int(replica.ready),
+                        int(replica.live),
+                        state.status if state else "unknown",
+                        replica.readiness_message,
+                        replica.liveness_message,
+                        state.exit_code if state else None,
+                        state.finished_at.isoformat() if state and state.finished_at else None,
+                    )
                 )
-                for replica in health_report.replicas
-            ]
             if rows:
                 conn.executemany(
                     """
-                    INSERT INTO replica_status(app_name, replica_id, ready, live, status, readiness_message, liveness_message)
-                    VALUES(?,?,?,?,?,?,?)
+                    INSERT INTO replica_status(app_name, replica_id, ready, live, status, readiness_message, liveness_message, exit_code, finished_at)
+                    VALUES(?,?,?,?,?,?,?,?,?)
                     """,
                     rows,
                 )
@@ -673,24 +681,34 @@ class SQLiteStateStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT replica_id, ready, live, status, readiness_message, liveness_message
+                SELECT replica_id, ready, live, status, readiness_message, liveness_message, exit_code, finished_at
                 FROM replica_status
                 WHERE app_name = ?
                 ORDER BY replica_id
                 """,
                 (app_name,),
             ).fetchall()
-        return [
-            ReplicaStatus(
-                replica_id=row[0],
-                ready=bool(row[1]),
-                live=bool(row[2]),
-                status=row[3],
-                readiness_message=row[4],
-                liveness_message=row[5],
+        items: list[ReplicaStatus] = []
+        for row in rows:
+            finished_at = None
+            if row[7]:
+                try:
+                    finished_at = datetime.fromisoformat(row[7])
+                except Exception:
+                    finished_at = None
+            items.append(
+                ReplicaStatus(
+                    replica_id=row[0],
+                    ready=bool(row[1]),
+                    live=bool(row[2]),
+                    status=row[3],
+                    readiness_message=row[4],
+                    liveness_message=row[5],
+                    exit_code=row[6] if row[6] is not None else None,
+                    finished_at=finished_at,
+                )
             )
-            for row in rows
-        ]
+        return items
 
     def list_replica_nodes(self, app_name: str) -> list[tuple[str, str]]:
         with self._connect() as conn:

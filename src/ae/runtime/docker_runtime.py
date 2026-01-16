@@ -28,6 +28,7 @@ class DockerRuntime(RuntimeAdapter):
     REPLICA_LABEL = "ae.replica_id"
     REVISION_LABEL = "ae.revision"
     CONTAINER_LABEL = "ae.container"
+    JOB_ATTEMPT_LABEL = "ae.job_attempt"
 
     def __init__(
         self,
@@ -59,6 +60,14 @@ class DockerRuntime(RuntimeAdapter):
         desired_replica_ids = list(replica_ids) if replica_ids is not None else self._desired_replica_ids(manifest, revision)
         # Record node context so volume helpers can label ownership
         self._current_node_id = node_id
+        is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
+        job_backoff_limit = None
+        if is_job:
+            try:
+                raw_limit = getattr(manifest.spec, "job_backoff_limit", None)
+                job_backoff_limit = int(raw_limit) if raw_limit is not None else 6
+            except Exception:
+                job_backoff_limit = 6
 
         try:
             existing_containers = self._client.containers.list(
@@ -107,11 +116,46 @@ class DockerRuntime(RuntimeAdapter):
             if container is None:
                 if limit_create is not None and created >= int(limit_create):
                     continue
-                container = self._create_container(manifest, replica_id, revision, node_id=node_id)
+                container = self._create_container(
+                    manifest, replica_id, revision, node_id=node_id, attempt=0
+                )
                 containers_by_replica[replica_id] = container
                 created += 1
             else:
                 self._reload(container)
+                if is_job:
+                    state = container.attrs.get("State", {}) if getattr(container, "attrs", None) else {}
+                    status = state.get("Status", container.status)
+                    exit_code = state.get("ExitCode", None)
+                    try:
+                        exit_code = int(exit_code) if exit_code is not None else None
+                    except Exception:
+                        exit_code = None
+                    attempt = 0
+                    try:
+                        attempt = int((container.labels or {}).get(self.JOB_ATTEMPT_LABEL, 0))
+                    except Exception:
+                        attempt = 0
+                    if status != "running":
+                        if exit_code == 0:
+                            continue
+                        if exit_code is not None:
+                            if job_backoff_limit is not None and attempt >= job_backoff_limit:
+                                continue
+                            try:
+                                self._stop_and_remove(container)
+                            except Exception:
+                                pass
+                            container = self._create_container(
+                                manifest,
+                                replica_id,
+                                revision,
+                                node_id=node_id,
+                                attempt=attempt + 1,
+                            )
+                            containers_by_replica[replica_id] = container
+                            updated += 1
+                            continue
                 if container.status != "running":
                     try:
                         container.start()
@@ -268,6 +312,7 @@ class DockerRuntime(RuntimeAdapter):
         revision: int,
         *,
         node_id: str | None = None,
+        attempt: int = 0,
     ) -> Container:
         # replica_id pattern: <app>-rev<revision>-<index>
         app_name = manifest.metadata.name
@@ -356,20 +401,24 @@ class DockerRuntime(RuntimeAdapter):
                 _cmd = list(manifest.spec.command)
             elif getattr(manifest.spec, "args", None):
                 _cmd = list(manifest.spec.args)
+            is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
+            labels = {
+                self.APP_LABEL: manifest.metadata.name,
+                self.REPLICA_LABEL: replica_id,
+                self.REVISION_LABEL: str(revision),
+                self.CONTAINER_LABEL: "main",
+                **({"ae.node": str(node_id)} if node_id else {}),
+            }
+            if is_job:
+                labels[self.JOB_ATTEMPT_LABEL] = str(int(attempt))
             kwargs = {
                 "command": _cmd or None,
                 "name": name,
                 "detach": True,
                 "environment": env if env else None,
-                "labels": {
-                    self.APP_LABEL: manifest.metadata.name,
-                    self.REPLICA_LABEL: replica_id,
-                    self.REVISION_LABEL: str(revision),
-                    self.CONTAINER_LABEL: "main",
-                    **({"ae.node": str(node_id)} if node_id else {}),
-                },
+                "labels": labels,
                 "ports": ports if ports else None,
-                "restart_policy": {"Name": "unless-stopped"},
+                "restart_policy": {"Name": "no"} if is_job else {"Name": "unless-stopped"},
             }
             # Security context mapping
             sec = getattr(manifest.spec, "security", None)
@@ -781,8 +830,21 @@ class DockerRuntime(RuntimeAdapter):
 
         state = container.attrs.get("State", {})
         status = state.get("Status", container.status)
+        exit_code = None
+        try:
+            raw_exit = state.get("ExitCode", None)
+            exit_code = int(raw_exit) if raw_exit is not None else None
+        except Exception:
+            exit_code = None
+        finished_at = self._parse_datetime(state.get("FinishedAt"))
         ready = False
-        if "Health" in state:
+        is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
+        if is_job:
+            if status == "running":
+                ready = False
+            else:
+                ready = exit_code == 0
+        elif "Health" in state:
             ready = state["Health"].get("Status") == "healthy"
         else:
             ready = status == "running"
@@ -810,6 +872,8 @@ class DockerRuntime(RuntimeAdapter):
             status=status,
             endpoint=endpoint,
             started_at=started_at,
+            exit_code=exit_code,
+            finished_at=finished_at,
         )
 
     def _port_mapping(
