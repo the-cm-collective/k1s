@@ -158,6 +158,10 @@ demo-help:
 demo-down:
 	./scripts/init_demo.sh --down -y
 
+.PHONY: reg-cache-reset
+reg-cache-reset:
+	./scripts/init_demo.sh --reset-registry-cache -y
+
 .PHONY: demo-hardened
 demo-hardened:
 	./scripts/init_demo.sh --demo-hardened -y -d
