@@ -49,6 +49,7 @@ Options:
   --no-supervisor  Start controller once (no restart loop)
   -d, --debug  Attach logs to console for troubleshooting (blocks; Ctrl-C to exit)
   --reset      Delete controller state DB and projections (clean slate)
+  --reset-registry-cache  Clear the local registry cache (state/registry) before start
   --bind-all   Bind local helpers (docs server) to 0.0.0.0 instead of 127.0.0.1 for LAN access
   --with-secrets-env  Export AE_ALLOW_PLAINTEXT_SECRETS=1 and SOPS_AGE_KEY_FILE=$HOME/.config/ae/keys.txt for this demo run
   --demo-configs   Apply the configs/secrets demo (echo) and enable plaintext secrets for local run
@@ -90,6 +91,9 @@ Environment variables you can override:
   - VENV_DIR (default .venv-demo)
   - DOCS_PORT (default 9109)
   - AE_STATE_DB, AE_SPECS_DIR, AE_CADDY_* (see docs/ops/runbook.md)
+  - AE_USE_REGISTRY_CACHE (default 1) to enable local pull-through cache for dev stack
+  - AE_REGISTRY_PORT (default 5001), AE_REGISTRY_HOST (default localhost:${AE_REGISTRY_PORT})
+  - AE_REGISTRY_USERNAME/AE_REGISTRY_PASSWORD/AE_REGISTRY_REMOTEURL for upstream registry auth
 
 Endpoints after setup:
   - Apps via Caddy: https://blue.home.arpa:8443/ (multi‑arch echo) and https://green.home.arpa:8443/ (local build)
@@ -103,10 +107,12 @@ USAGE
 # Parse flags (supports combining with --down)
 DOWN_FLAG=0
 RESET_FLAG=0
+RESET_REGISTRY_CACHE=0
 NO_CONTROLLER=0
 API_PORT=${API_PORT:-9108}
 # Runtime backend (default to podman/OCI if not set)
 AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-podman}
+AE_USE_REGISTRY_CACHE=${AE_USE_REGISTRY_CACHE:-1}
 NO_SUPERVISOR=0
 DEBUG_ATTACH=0
 DEMO_CONFIGS=0
@@ -128,6 +134,16 @@ LABS_TOKEN=${LABS_TOKEN:-}
 WITH_SECRETS_ENV=0
 # Default location for the curated demo specs set (controller watches this)
 DEMO_SPECS_DIR=${DEMO_SPECS_DIR:-state/demo-specs}
+
+# Compose file list for dev stack (optionally include registry cache override)
+DEV_COMPOSE_FILES=(-f ops/dev/docker-compose.yaml)
+DEV_COMPOSE_FILES_WITH_CACHE=("${DEV_COMPOSE_FILES[@]}")
+if [[ -f ops/dev/docker-compose.cache.override.yml ]]; then
+  DEV_COMPOSE_FILES_WITH_CACHE=(-f ops/dev/docker-compose.yaml -f ops/dev/docker-compose.cache.override.yml)
+  if [[ "${AE_USE_REGISTRY_CACHE}" == "1" ]]; then
+    DEV_COMPOSE_FILES=("${DEV_COMPOSE_FILES_WITH_CACHE[@]}")
+  fi
+fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h|help)
@@ -136,6 +152,8 @@ while [[ $# -gt 0 ]]; do
       DOWN_FLAG=1 ;;
     --reset|reset)
       RESET_FLAG=1 ;;
+    --reset-registry-cache)
+      RESET_REGISTRY_CACHE=1 ;;
     -y|--yes)
       AUTO_HOSTS=Y ;;
     -n|--no)
@@ -338,7 +356,7 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
     fi
     STACK_COMPOSE_DOWN=("$STACK_BIN_DOWN" compose)
     log "Stopping dev ${STACK_BIN_DOWN} compose stack (caddy, prometheus)"
-    "${STACK_COMPOSE_DOWN[@]}" -f ops/dev/docker-compose.yaml down || true
+    "${STACK_COMPOSE_DOWN[@]}" "${DEV_COMPOSE_FILES_WITH_CACHE[@]}" down || true
     log "Stopping ${STACK_BIN_DOWN} labs stacks (labs-aio, labs-compose)"
     "${STACK_COMPOSE_DOWN[@]}" -f ops/dev/labs-aio.yaml down || true
     "${STACK_COMPOSE_DOWN[@]}" -f ops/dev/labs-compose.yaml down || true
@@ -368,6 +386,10 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
       log "Removing projected config/state under state/projections/"
       rm -rf state/projections 2>/dev/null || true
     fi
+  fi
+  if [[ $RESET_REGISTRY_CACHE -eq 1 ]]; then
+    log "Removing local registry cache under state/registry"
+    rm -rf state/registry 2>/dev/null || true
   fi
   # Optionally remove hosts entries
   if prompt_yes_no_hosts "Remove hosts entries for ${HOSTS[*]} from /etc/hosts?" N; then
@@ -506,6 +528,18 @@ if [[ -z "${STACK_BIN:-}" ]]; then
 fi
 STACK_COMPOSE=("$STACK_BIN" compose)
 
+# Optional cache reset before (re)starting the dev stack.
+if [[ $RESET_REGISTRY_CACHE -eq 1 ]]; then
+  if [[ -f ops/dev/docker-compose.cache.override.yml ]]; then
+    log "Resetting local registry cache (state/registry)"
+    ${STACK_COMPOSE[@]} "${DEV_COMPOSE_FILES_WITH_CACHE[@]}" stop registry >/dev/null 2>&1 || true
+    ${STACK_COMPOSE[@]} "${DEV_COMPOSE_FILES_WITH_CACHE[@]}" rm -f -s registry >/dev/null 2>&1 || true
+    rm -rf state/registry 2>/dev/null || true
+  else
+    log "Registry cache override not found; skipping registry cache reset"
+  fi
+fi
+
 # Select host network alias for container->host routing
 if [[ "$STACK_BIN" == "podman" ]]; then
   HOST_ALIAS=host.containers.internal
@@ -588,8 +622,20 @@ fi
 if [[ "$CADDY_HTTP_PORT" != "8888" || "$CADDY_HTTPS_PORT" != "8443" ]]; then
   log "Caddy ports mapped to HTTP=${CADDY_HTTP_PORT}, HTTPS=${CADDY_HTTPS_PORT}"
 fi
+if [[ "${AE_USE_REGISTRY_CACHE}" == "1" && -f ops/dev/docker-compose.cache.override.yml ]]; then
+  export AE_REGISTRY_PORT=${AE_REGISTRY_PORT:-$(pick_port 5001)}
+  export AE_REGISTRY_HOST=${AE_REGISTRY_HOST:-localhost:${AE_REGISTRY_PORT}}
+  if [[ "${AE_REGISTRY_PORT}" != "5001" ]]; then
+    log "Registry cache default port 5001 busy; using ${AE_REGISTRY_PORT}"
+  fi
+  log "Using local registry cache at ${AE_REGISTRY_HOST}"
+fi
 # Ensure state directories exist with liberal perms for rootless Podman
 mkdir -p state/caddy-data state/caddy docs/site || true
+if [[ "${AE_USE_REGISTRY_CACHE}" == "1" && -f ops/dev/docker-compose.cache.override.yml ]]; then
+  mkdir -p state/registry || true
+  chmod -R 0777 state/registry || true
+fi
 # Ensure Caddy can write to /data even under rootless runtimes; if the directory is
 # not writable (e.g., created by root from a previous run), replace it with a fresh one.
 chmod -R 0777 state/caddy-data state/caddy || true
@@ -617,7 +663,7 @@ mkdir -p ops/dev/caddy/sites
 find ops/dev/caddy/sites -maxdepth 1 -type f -name '*.caddy' \
   ! -name 'docs.caddy' ! -name 'api.caddy' -print -delete 2>/dev/null || true
 # Controller writes dynamic sites under state/caddy (mounted as /etc/caddy/dynsites)
-  if ! ${STACK_COMPOSE[@]} -f ops/dev/docker-compose.yaml up -d; then
+  if ! ${STACK_COMPOSE[@]} "${DEV_COMPOSE_FILES[@]}" up -d; then
     if [[ "$STACK_BIN" == "podman" ]]; then
       log "Compose up failed; retrying after Podman/systemd remedial steps"
       # Reset failed user units and prune any orphaned artifacts
@@ -628,10 +674,10 @@ find ops/dev/caddy/sites -maxdepth 1 -type f -name '*.caddy' \
       podman system prune -f >/dev/null 2>&1 || true
       podman rm -f dev-caddy-1 dev-prometheus-1 >/dev/null 2>&1 || true
       sleep 1
-      ${STACK_COMPOSE[@]} -f ops/dev/docker-compose.yaml up -d
+      ${STACK_COMPOSE[@]} "${DEV_COMPOSE_FILES[@]}" up -d
     else
       # Non-Podman path: rethrow
-      ${STACK_COMPOSE[@]} -f ops/dev/docker-compose.yaml up -d
+      ${STACK_COMPOSE[@]} "${DEV_COMPOSE_FILES[@]}" up -d
     fi
   fi
 
@@ -699,7 +745,7 @@ PY
       # If CA not present yet, fix perms and try once more (Podman rootless often needs this)
       chmod -R 0777 state/caddy-data || true
       sleep 1
-      ${STACK_COMPOSE[@]} -f ops/dev/docker-compose.yaml restart caddy || true
+      ${STACK_COMPOSE[@]} "${DEV_COMPOSE_FILES[@]}" restart caddy || true
       sleep 1
       if [[ -s "${ROOT_CA_HOST}" ]]; then
         cp -f "${ROOT_CA_HOST}" state/certs/caddy-local-root.crt || true
