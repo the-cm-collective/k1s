@@ -3077,7 +3077,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       .row.stretch { align-items: stretch; flex-wrap: nowrap; overflow-x: hidden; }
       .row.stretch::-webkit-scrollbar { height:0; }
       .card { border:1px solid #8884; border-radius:8px; padding:8px 10px; min-width:0; max-width:100%; overflow:hidden; }
-      .card table { display:block; overflow:auto; white-space: nowrap; }
+      .card table { display:block; overflow:auto; white-space: nowrap; scrollbar-width: none; -ms-overflow-style: none; }
+      .card table::-webkit-scrollbar { width:0; height:0; }
       .card pre { overflow:auto; }
       /* Ensure flex children can shrink and let inner boxes scroll */
       .row.stretch > .card { min-width: 0; }
