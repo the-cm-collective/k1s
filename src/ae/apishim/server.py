@@ -6303,8 +6303,22 @@ def _merge_provider_service(state: SQLiteStateStore, store: ObjectStore | None, 
     prov_ip = _provider_cluster_ip(state, svc_obj, store)
     vip = _provider_vip(state, svc_obj, store) or prov_ip
     if prov_ip:
-        if spec.get("clusterIP") in {None, "", "None"}:
+        svc_type = (spec.get("type") or "ClusterIP") or "ClusterIP"
+        # Prefer provider allocation unless service is explicitly headless/ExternalName.
+        if svc_type != "ExternalName" and spec.get("clusterIP") != "None":
             spec["clusterIP"] = prov_ip
+            # keep clusterIPs aligned when present
+            if isinstance(spec.get("clusterIPs"), list):
+                spec["clusterIPs"] = [prov_ip]
+        # If loadBalancer ingress is present but disagrees with provider IP, reset it.
+        if svc_type in {"LoadBalancer", "NodePort"}:
+            lb = status.get("loadBalancer") if isinstance(status, dict) else None
+            ingress = lb.get("ingress") if isinstance(lb, dict) else None
+            if ingress:
+                ingress_ips = {str(i.get("ip")) for i in ingress if isinstance(i, dict) and i.get("ip")}
+                if vip and str(vip) not in ingress_ips:
+                    status = dict(status or {})
+                    status["loadBalancer"] = {}
         status = _service_lb_status(spec, status, vip)
     # fill nodePorts from provider record if missing
     prov_ports = _provider_ports(state, svc_obj, store)
