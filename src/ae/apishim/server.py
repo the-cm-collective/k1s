@@ -1142,12 +1142,11 @@ class ShimHandler(BaseHTTPRequestHandler):
             return True
         if self.allow_anonymous:
             return True
-        self.send_response(HTTPStatus.UNAUTHORIZED)
-        self.send_header("WWW-Authenticate", "Bearer")
         self._json_status(
             HTTPStatus.UNAUTHORIZED,
             reason="Unauthorized",
             message="missing/invalid bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
         )
         return False
 
@@ -1243,7 +1242,14 @@ class ShimHandler(BaseHTTPRequestHandler):
     def _not_found(self, msg: str = "not found") -> None:
         self._json_status(HTTPStatus.NOT_FOUND, reason="NotFound", message=msg)
 
-    def _json_status(self, code: int, *, reason: str, message: str) -> None:
+    def _json_status(
+        self,
+        code: int,
+        *,
+        reason: str,
+        message: str,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         body = {
             "kind": "Status",
             "apiVersion": "v1",
@@ -1255,6 +1261,9 @@ class ShimHandler(BaseHTTPRequestHandler):
         data = _json(body)
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        if headers:
+            for key, value in headers.items():
+                self.send_header(str(key), str(value))
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)

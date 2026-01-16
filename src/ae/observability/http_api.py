@@ -178,6 +178,29 @@ _HELM_DEMO_STATE: dict[str, object] = {
 }
 
 
+def _port_available(host: str, port: int) -> bool:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        except Exception:
+            pass
+        try:
+            sock.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
+def _pick_free_port(host: str = "127.0.0.1") -> int:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        return int(sock.getsockname()[1])
+
+
 def _labs_block_app(app: str) -> None:
     if not app:
         return
@@ -264,12 +287,19 @@ def _helm_demo_start() -> dict[str, object]:
         log_handle = open(log_path, "w", encoding="utf-8")  # noqa: SIM115 - keep handle open for proc output
         env = os.environ.copy()
         env.setdefault("PYTHONPATH", str(root / "src"))
-        env.setdefault("PORT", str(_HELM_DEMO_STATE.get("port")))
+        helm_server = os.getenv("AE_LABS_HELM_SERVER", "").strip()
+        port_note = ""
+        port = int(_HELM_DEMO_STATE.get("port") or 8455)
+        if not helm_server and not _port_available("127.0.0.1", port):
+            fallback = _pick_free_port("127.0.0.1")
+            _HELM_DEMO_STATE["port"] = fallback
+            port_note = f"port {port} busy; using {fallback}"
+            port = fallback
+        env.setdefault("PORT", str(port))
         env.setdefault("TOKEN", str(_HELM_DEMO_STATE.get("token")))
         env.setdefault("RUNTIME", str(_HELM_DEMO_STATE.get("runtime")))
         env.setdefault("NAMESPACE", str(_HELM_DEMO_STATE.get("namespace")))
         env.setdefault("CHART_NAME", str(_HELM_DEMO_STATE.get("chart")))
-        helm_server = os.getenv("AE_LABS_HELM_SERVER", "").strip()
         if helm_server:
             env.setdefault("APISHIM_SERVER", helm_server)
             try:
@@ -298,7 +328,10 @@ def _helm_demo_start() -> dict[str, object]:
         _HELM_DEMO_STATE["proc"] = proc
         _HELM_DEMO_STATE["log_handle"] = log_handle
         _HELM_DEMO_STATE["started"] = datetime.now(timezone.utc).isoformat()
-    return _helm_demo_status()
+    status = _helm_demo_status()
+    if port_note:
+        status["message"] = port_note
+    return status
 
 
 def _helm_demo_stop() -> dict[str, object]:

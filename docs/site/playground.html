@@ -347,12 +347,12 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="static/labs.css?v=1768582054"/>
+    <link rel="stylesheet" href="static/labs.css?v=1768592234"/>
 <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-<script>window.DOCS_LABS_TOKEN='';</script>
+<script>window.DOCS_LABS_TOKEN='D34DB33F';</script>
 <script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>
-<script defer src="static/labs.js?v=1768582054"></script>
+<script defer src="static/labs.js?v=1768592234"></script>
   </head>
   <body>
     <nav>
@@ -423,17 +423,22 @@
 <h3>Helm Shim Demo (Watch Mode)</h3>
 <div class="helm-demo-box">   <div class="helm-demo-controls">     <button id="btn-helm-demo" class="btn-secondary" disabled>Run Helm Shim Demo</button>     <button id="btn-helm-demo-stop" class="btn-secondary" disabled>Stop</button>   </div>   <div id="helm-demo-status" class="helm-demo-status">Labs backend unavailable.</div>   <pre id="helm-demo-log" class="helm-demo-log hidden scrollbar-hide" aria-live="polite"></pre> </div>
 <p>Want to watch a Helm deployment materialize inside the dashboard? Click “Run Helm Shim Demo” above (requires Labs token). Behind the scenes, the server runs the commands below; you can still run them manually if you prefer:</p>
-<pre><code># 1) Start the API shim (stub runtime)
-AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME=stub AE_APISHIM_TOKEN=helm-demo PYTHONPATH=src \
-  python -m ae.apishim serve --host 127.0.0.1 --port 8445
+<pre><code># 1) Create a self-signed cert (dev-only)
+openssl req -x509 -newkey rsa:2048 -sha256 -days 3 -nodes \
+  -keyout /tmp/helm-shim.key -out /tmp/helm-shim.crt -subj "/CN=127.0.0.1"
 
-# 2) Generate a kubeconfig pointing at the shim
+# 2) Start the API shim (stub runtime) with TLS
+AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME=stub AE_APISHIM_TOKEN=helm-demo \
+  AE_APISHIM_TLS_CERT=/tmp/helm-shim.crt AE_APISHIM_TLS_KEY=/tmp/helm-shim.key \
+  PYTHONPATH=src python -m ae.apishim serve --host 127.0.0.1 --port 8445 --tls
+
+# 3) Generate a kubeconfig pointing at the shim
 PYTHONPATH=src python -m ae.apishim kubeconfig \
-  --server http://127.0.0.1:8445 --token helm-demo \
+  --server https://127.0.0.1:8445 --token helm-demo \
   --context k1s-shim --insecure-skip-tls-verify &gt; ~/.kube/helm-shim
 export KUBECONFIG=~/.kube/helm-shim
 
-# 3) Create namespace + sample chart and install it
+# 4) Create namespace + sample chart and install it
 kubectl create namespace demo-helm
 helm create demochart
 helm install demochart ./demochart -n demo-helm --wait
@@ -547,7 +552,7 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-16 08:47:34</span>
+        <span>Built 2026-01-16 11:37:14</span>
       </div>
     </footer>
     <script>
