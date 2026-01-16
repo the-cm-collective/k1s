@@ -53,6 +53,10 @@ fi
 log "Stopping dev compose stack (caddy, prometheus)"
 "$BIN" compose -f ops/dev/docker-compose.yaml down >/dev/null 2>&1 || true
 
+log "Stopping labs compose stacks (labs-aio, labs-compose)"
+"$BIN" compose -f ops/dev/labs-aio.yaml down >/dev/null 2>&1 || true
+"$BIN" compose -f ops/dev/labs-compose.yaml down >/dev/null 2>&1 || true
+
 log "Removing demo app containers (label=ae.app)"
 ids=$("$BIN" ps -aq --filter 'label=ae.app' || true)
 if [[ -n "${ids}" ]]; then
@@ -68,5 +72,8 @@ for bin in docker podman; do
     fi
   fi
 done
+
+log "Clearing Labs shim artifacts (state/labs)"
+rm -f state/labs/helm-demo.log state/labs/apishim.env >/dev/null 2>&1 || true
 
 log "Cleanup complete"

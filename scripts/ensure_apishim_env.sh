@@ -88,3 +88,17 @@ AE_LABS_HELM_TOKEN=${token}
 EOF
 chmod 600 "$ENV_FILE"
 log "Wrote $ENV_FILE (tokens generated or sourced securely)."
+
+CERT_FILE="${APISHIM_CERT_FILE:-$ROOT_DIR/state/labs/apishim.crt}"
+KEY_FILE="${APISHIM_KEY_FILE:-$ROOT_DIR/state/labs/apishim.key}"
+if [[ ! -s "$CERT_FILE" || ! -s "$KEY_FILE" ]]; then
+  if command -v openssl >/dev/null 2>&1; then
+    mkdir -p "$(dirname "$CERT_FILE")"
+    openssl req -x509 -newkey rsa:2048 -sha256 -days 3 -nodes \
+      -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=apishim" >/dev/null 2>&1
+    chmod 600 "$KEY_FILE" "$CERT_FILE"
+    log "Wrote $CERT_FILE and $KEY_FILE (self-signed, dev only)."
+  else
+    log "openssl not found; skipping apishim TLS cert generation."
+  fi
+fi
