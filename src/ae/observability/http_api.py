@@ -269,6 +269,17 @@ def _helm_demo_start() -> dict[str, object]:
         env.setdefault("RUNTIME", str(_HELM_DEMO_STATE.get("runtime")))
         env.setdefault("NAMESPACE", str(_HELM_DEMO_STATE.get("namespace")))
         env.setdefault("CHART_NAME", str(_HELM_DEMO_STATE.get("chart")))
+        helm_server = os.getenv("AE_LABS_HELM_SERVER", "").strip()
+        if helm_server:
+            env.setdefault("APISHIM_SERVER", helm_server)
+            try:
+                import urllib.parse as _up
+
+                parsed = _up.urlparse(helm_server)
+                if parsed.port:
+                    _HELM_DEMO_STATE["port"] = parsed.port
+            except Exception:
+                pass
         env.setdefault("TMPDIR", str(log_path.parent))
         # Allow shim demo apps to show up on demo-scoped dashboards.
         try:

@@ -96,7 +96,7 @@ labs-k3d-up:
 labs-k3d-down:
 	@./scripts/lab_k3d.sh down --name $${K3D_NAME:-k1s-labs}
 
-.PHONY: labs-up labs-down labs-aio-up labs-aio-down
+.PHONY: labs-up labs-down labs-aio-up labs-aio-down labs-apishim-env
 labs-up:
 	docker compose -f ops/dev/labs-compose.yaml up -d
 
@@ -118,10 +118,34 @@ apishim-smoke:
 	  exit $$rc
 
 labs-aio-up:
-	docker compose -f ops/dev/labs-aio.yaml up -d
+	@./scripts/ensure_apishim_env.sh
+	@if [ "$${AE_LABS_USE_POSTGRES:-0}" = "1" ]; then \
+	  if [ -z "$${AE_APISHIM_DSN:-}" ] && [ -z "$${AE_STATE_DSN:-}" ]; then \
+	    export AE_APISHIM_DSN="postgresql://shim:shim@postgres:5432/shim"; \
+	    export AE_STATE_DSN="postgresql://shim:shim@postgres:5432/shim"; \
+	  fi; \
+	  docker compose --profile postgres -f ops/dev/labs-aio.yaml up -d postgres; \
+	  for i in $$(seq 1 30); do \
+	    if docker compose --profile postgres -f ops/dev/labs-aio.yaml exec -T postgres pg_isready -U shim -d shim >/dev/null 2>&1; then \
+	      break; \
+	    fi; \
+	    sleep 1; \
+	  done; \
+	  docker compose --profile postgres -f ops/dev/labs-aio.yaml up -d; \
+	else \
+	  docker compose -f ops/dev/labs-aio.yaml up -d; \
+	fi
 
 labs-aio-down:
 	docker compose -f ops/dev/labs-aio.yaml down
+
+labs-apishim-env:
+	@if [ ! -f state/labs/apishim.env ]; then \
+	  echo "[labs] state/labs/apishim.env not found; run make labs-aio-up first."; \
+	  exit 1; \
+	fi
+	@echo "[labs] apishim tokens (dev only):"
+	@cat state/labs/apishim.env
 
 .PHONY: demo demo-down integ-test
 demo:
