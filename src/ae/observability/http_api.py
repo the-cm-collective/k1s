@@ -3285,7 +3285,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                   .node.worker .node-shape { fill:#e0f2fe; stroke:#0284c7; }
                   .node.worker.stale .node-shape { fill:#fee2e2; stroke:#ef4444; }
                   .node.worker.cordoned .node-shape { fill:#fef3c7; stroke:#f59e0b; }
-                  .node.app .node-shape { fill:#f5f5f5; stroke:var(--ns-color, #3b82f6); }
+                  .node.app .node-shape { fill:var(--ns-color, #3b82f6); stroke:var(--ns-color, #3b82f6); }
                   .node.app .ns-stripe { fill:var(--ns-color, #3b82f6); opacity:.35; }
                   .node.pod circle { fill:#e5e7eb; stroke:#6b7280; }
                   .label-chip { fill:rgba(8,12,18,0.85); stroke:rgba(255,255,255,0.18); stroke-width:0.8; }
@@ -3515,6 +3515,61 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         }
         var hue = hashHue(n);
         return { color: 'hsl(' + hue + ', 70%, 55%)', tint: 'hsla(' + hue + ', 70%, 20%, 0.18)' };
+      }
+
+      function clamp(n, lo, hi){ return Math.min(hi, Math.max(lo, n)); }
+
+      function parseHslColor(str){
+        var m = String(str || '').match(/hsla?\(\s*([0-9.]+)\s*,\s*([0-9.]+)%\s*,\s*([0-9.]+)%/i);
+        if (!m) return null;
+        return { h: parseFloat(m[1]), s: parseFloat(m[2]), l: parseFloat(m[3]) };
+      }
+
+      function hexToRgb(str){
+        var hex = String(str || '').trim().replace(/^#/, '');
+        if (hex.length === 3){
+          hex = hex[0]+hex[0] + hex[1]+hex[1] + hex[2]+hex[2];
+        }
+        if (hex.length !== 6) return null;
+        var num = parseInt(hex, 16);
+        if (Number.isNaN(num)) return null;
+        return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+      }
+
+      function rgbToHsl(r, g, b){
+        r /= 255; g /= 255; b /= 255;
+        var max = Math.max(r, g, b), min = Math.min(r, g, b);
+        var h = 0, s = 0, l = (max + min) / 2;
+        if (max !== min){
+          var d = max - min;
+          s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+          switch (max) {
+            case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+            case g: h = (b - r) / d + 2; break;
+            case b: h = (r - g) / d + 4; break;
+          }
+          h *= 60;
+        }
+        return { h: h, s: s * 100, l: l * 100 };
+      }
+
+      function shadeHsl(color, deltaL){
+        var hsl = parseHslColor(color);
+        if (!hsl){
+          var rgb = String(color || '').trim().startsWith('#') ? hexToRgb(color) : null;
+          if (rgb) hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+        }
+        if (!hsl) return String(color || '');
+        var l = clamp(hsl.l + deltaL, 0, 100);
+        return 'hsl(' + Math.round(hsl.h) + ', ' + Math.round(hsl.s) + '%, ' + Math.round(l) + '%)';
+      }
+
+      function namespaceGradient(ns){
+        var c = namespaceColors(ns);
+        return {
+          top: shadeHsl(c.color, 8),
+          bottom: shadeHsl(c.color, -8)
+        };
       }
 
       function renderNamespacePill(ns){
@@ -4212,6 +4267,36 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if(!gNodes||!gLinks) return;
         gNodes.innerHTML = '';
         gLinks.innerHTML = '';
+        var defs = svg.querySelector('defs');
+        if (defs) {
+          Array.from(defs.querySelectorAll('linearGradient[data-app-grad="1"]')).forEach(function(el){
+            if (el && el.parentNode) el.parentNode.removeChild(el);
+          });
+        }
+
+        function ensureAppGradient(ns){
+          if (!defs) return null;
+          var key = String(ns || 'default').toLowerCase().replace(/[^a-z0-9_-]+/g, '_');
+          var gradId = 'app-grad-' + key;
+          var existing = defs.querySelector('#' + gradId);
+          if (existing) return gradId;
+          var colors = namespaceGradient(ns);
+          var grad = document.createElementNS('http://www.w3.org/2000/svg','linearGradient');
+          grad.setAttribute('id', gradId);
+          grad.setAttribute('data-app-grad', '1');
+          grad.setAttribute('x1','0'); grad.setAttribute('y1','0');
+          grad.setAttribute('x2','0'); grad.setAttribute('y2','1');
+          var stop1 = document.createElementNS('http://www.w3.org/2000/svg','stop');
+          stop1.setAttribute('offset','0%');
+          stop1.setAttribute('stop-color', colors.top);
+          var stop2 = document.createElementNS('http://www.w3.org/2000/svg','stop');
+          stop2.setAttribute('offset','100%');
+          stop2.setAttribute('stop-color', colors.bottom);
+          grad.appendChild(stop1);
+          grad.appendChild(stop2);
+          defs.appendChild(grad);
+          return gradId;
+        }
 
         // Resize the canvas height dynamically to fit all rows
         var totalHeight = (midY + 90) + (rows-1) * (nodeH + podOffsetY + rowGap) + podOffsetY + padY;
@@ -4423,6 +4508,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             var rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
             rect.setAttribute('width','80'); rect.setAttribute('height','32'); rect.setAttribute('rx','6'); rect.setAttribute('ry','6');
             rect.setAttribute('class','node-shape');
+            if(n.type==='app' && n.meta && n.meta.ns){
+              var gradId = ensureAppGradient(n.meta.ns);
+              if (gradId) rect.setAttribute('fill', 'url(#' + gradId + ')');
+              else rect.setAttribute('fill', nsc && nsc.color ? nsc.color : '#3b82f6');
+            }
             g.appendChild(rect);
             if(n.type==='app' && n.meta && n.meta.ns){
               var stripe = document.createElementNS('http://www.w3.org/2000/svg','rect');
