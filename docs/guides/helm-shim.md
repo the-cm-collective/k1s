@@ -68,7 +68,7 @@ helm history demo -n demo
 helm uninstall demo -n demo
 ```
 
-## Supported features (Nov 2025)
+## Supported features (Jan 2026)
 
 | Resource | CRUD | Watch | Notes |
 | --- | --- | --- | --- |
@@ -83,6 +83,10 @@ helm uninstall demo -n demo
 
 Limitations:
 
+- Jobs: accepted but no real completion semantics; status is best-effort and may never reach `Complete`.
+- CronJobs: accepted but not scheduled; no per-run Job objects are created.
+- StatefulSets: treated like Deployments; no PVC template support and no stable ordinal identity.
+- DaemonSets: treated like Deployments; desired replicas are approximated (not one-per-node).
 - CRDs install, but controllers/webhooks from charts are not run.
 - Services only expose host ports when `type` is `NodePort`/`LoadBalancer` with `nodePort` set.
 - Ingress support covers host/path backends; advanced annotations are ignored.
@@ -93,7 +97,8 @@ Limitations:
 - **What works today**: stateless charts that stick to Deployments + Services + Ingress (and optional RBAC, PDB, HPA, CRDs). Helm’s CRUD/upgrade/rollback flows succeed, status/rollout semantics behave, and NodePorts/Ingress hostnames reach real pods (when Podman/Docker runtime is enabled). This covers the majority of “12-factor” style web/API charts.
 - **What partially works**: charts that ship CRDs but expect controllers/operators (Prometheus Operator, cert-manager) can install all API objects, yet the controller pods themselves won’t run unless you port their manifests to k1s (e.g., build an `App` or run the controller separately). CRDs are effectively inert without their controllers.
 - **Not yet supported**:
-  - Workload kinds: DaemonSets, StatefulSets with PVC templates, Jobs/CronJobs, Admission webhooks.
+  - Workloads that rely on real Job/CronJob completion or StatefulSet/DaemonSet semantics (see limitations above).
+  - Admission webhooks.
   - Service meshes / per-pod sidecars (beyond what k1s already supports) – custom mutating webhooks won’t fire.
   - Advanced ingress features (controller-specific annotations, canary weights, regex paths) and LB integrations.
   - SSA (`kubectl apply --server-side`) – disable SSA per-context or per-command.

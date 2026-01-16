@@ -30,6 +30,52 @@ def _app_name(ns: str | None, name: str) -> str:
     return f"{ns}--{name}" if ns else name
 
 
+def _service_selector(spec: dict[str, Any]) -> dict[str, str]:
+    raw = spec.get("selector") or {}
+    selector: dict[str, Any] = raw if isinstance(raw, dict) else {}
+    if "matchLabels" in selector and isinstance(selector.get("matchLabels"), dict) and len(selector) == 1:
+        selector = selector.get("matchLabels") or {}
+    if not selector:
+        maybe = (spec.get("selector") or {}).get("matchLabels") if isinstance(spec.get("selector"), dict) else None
+        if isinstance(maybe, dict):
+            selector = maybe
+    if not isinstance(selector, dict):
+        return {}
+    return {str(k): str(v) for k, v in selector.items()}
+
+
+def _pod_template_labels(obj: K8sObject) -> dict[str, str]:
+    spec = obj.spec or {}
+    template = spec.get("template") or {}
+    meta = template.get("metadata") or {}
+    labels = meta.get("labels") or {}
+    if not isinstance(labels, dict):
+        return {}
+    return {str(k): str(v) for k, v in labels.items()}
+
+
+def _selector_matches(selector: dict[str, str], labels: dict[str, str]) -> bool:
+    if not selector:
+        return False
+    for key, val in selector.items():
+        if labels.get(key) != val:
+            return False
+    return True
+
+
+def _fallback_service_target(svc: K8sObject, selector: dict[str, str]) -> str | None:
+    meta = svc.metadata or {}
+    labels = meta.get("labels") if isinstance(meta, dict) else {}
+    annotations = meta.get("annotations") if isinstance(meta, dict) else {}
+    return (
+        selector.get("app")
+        or selector.get("app.kubernetes.io/name")
+        or (labels.get("app") if isinstance(labels, dict) else None)
+        or (annotations.get("apishim.k1s.dev/app") if isinstance(annotations, dict) else None)
+        or svc.name
+    )
+
+
 def _resolve_port_value(port: Any, ports_by_name: dict[str, int]) -> int | None:
     if port is None:
         return None
@@ -392,7 +438,10 @@ class AdapterWorker(threading.Thread):
             }
             self._store.upsert("apps", "v1", "statefulsets", sts.namespace, sts.name, sts.metadata, sts.spec, status=st)
             return
-        m = _manifest_from_deployment(sts)
+        dep_key = (sts.namespace, sts.name)
+        svc_spec = self._service_specs.get(dep_key)
+        ing_spec = self._ingress_specs.get(dep_key)
+        m = _manifest_from_deployment(sts, service_spec=svc_spec, ingress_spec=ing_spec)
         try:
             labels = sts.metadata.get("labels") or None
         except Exception:
@@ -441,7 +490,10 @@ class AdapterWorker(threading.Thread):
         spec_mod = dict(spec)
         spec_mod["replicas"] = desired
         ds_mod = K8sObject(ds.group, ds.version, ds.resource, ds.namespace, ds.name, ds.metadata, spec_mod, ds.status, ds.resource_version)
-        m = _manifest_from_deployment(ds_mod)
+        dep_key = (ds.namespace, ds.name)
+        svc_spec = self._service_specs.get(dep_key)
+        ing_spec = self._ingress_specs.get(dep_key)
+        m = _manifest_from_deployment(ds_mod, service_spec=svc_spec, ingress_spec=ing_spec)
         try:
             labels = ds.metadata.get("labels") or None
         except Exception:
@@ -638,9 +690,16 @@ class AdapterWorker(threading.Thread):
         if namespace is None:
             return
         dep = self._store.get("apps", "v1", "deployments", namespace, deploy_name)
-        if dep is None:
+        if dep is not None:
+            self._apply_deployment(dep)
             return
-        self._apply_deployment(dep)
+        sts = self._store.get("apps", "v1", "statefulsets", namespace, deploy_name)
+        if sts is not None:
+            self._apply_statefulset(sts)
+            return
+        ds = self._store.get("apps", "v1", "daemonsets", namespace, deploy_name)
+        if ds is not None:
+            self._apply_daemonset(ds)
 
     def _watch_services(self) -> None:
         gen = self._store.watch(
@@ -1159,20 +1218,45 @@ class AdapterWorker(threading.Thread):
             self._service_name_map[(ns, svc_name)] = dep_key
         self._trigger_reconcile(dep_key[0], dep_key[1])
 
+    def _resolve_service_target(self, svc: K8sObject, selector: dict[str, str]) -> str | None:
+        if not selector:
+            return None
+        ns = svc.namespace
+        candidates: list[tuple[bool, int, int, str]] = []
+        workloads = [
+            ("apps", "v1", "deployments"),
+            ("apps", "v1", "statefulsets"),
+            ("apps", "v1", "daemonsets"),
+        ]
+        for order, (group, version, resource) in enumerate(workloads):
+            try:
+                items = (
+                    self._store.list(group, version, resource, ns)
+                    if ns is not None
+                    else self._store.list_all(group, version, resource)
+                )
+            except Exception:
+                items = []
+            for obj in items:
+                labels = _pod_template_labels(obj)
+                if not labels or not _selector_matches(selector, labels):
+                    continue
+                exact = labels == selector
+                extra = max(len(labels) - len(selector), 0)
+                candidates.append((exact, extra, order, obj.name))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda entry: (not entry[0], entry[1], entry[2], entry[3]))
+        return candidates[0][3]
+
     def _service_spec_for(
         self, svc: K8sObject
     ) -> tuple[tuple[str | None, str], ServiceSpec] | None:
         spec = svc.spec or {}
-        selector = spec.get("selector") or {}
-        if not selector:
-            selector = (spec.get("selector") or {}).get("matchLabels") or {}
-        target = (
-            selector.get("app")
-            or selector.get("app.kubernetes.io/name")
-            or svc.metadata.get("labels", {}).get("app")
-            or svc.metadata.get("annotations", {}).get("apishim.k1s.dev/app")
-            or svc.metadata.get("name")
-        )
+        selector = _service_selector(spec)
+        target = self._resolve_service_target(svc, selector)
+        if not target:
+            target = _fallback_service_target(svc, selector)
         if not target:
             return None
         svc_type = spec.get("type", "ClusterIP")

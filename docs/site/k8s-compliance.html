@@ -399,9 +399,9 @@
 <li>This adds server-side dry-run and applies the exported YAML to the cluster, waiting for the Deployment rollout; results are included in the score.</li>
 </ul>
 <p>The compliance status and per-sample details render below when a report is present.</p>
-<h2>Current Coverage Summary (2026-01-14)</h2>
+<h2>Current Coverage Summary (2026-01-16)</h2>
 <ul>
-<li>Workloads: Deployment/StatefulSet/DaemonSet/Job/CronJob supported; shim mirrors status/scale.</li>
+<li>Workloads: Deployment full support; StatefulSet/DaemonSet/Job/CronJob are stored with best-effort status but emulated as Deployment-like apps (no real completion, scheduling, or per-node placement).</li>
 <li>Pod/Container: env/envFrom; readiness/liveness/startup probes; lifecycle hooks; resources requests/limits; securityContext (runAs*/fsGroup/readOnlyRootFilesystem/cap drop/seccomp/AppArmor); terminationGracePeriodSeconds; priorityClassName.</li>
 <li>Service: ClusterIP/NodePort/LoadBalancer with multi-port mapping, nodePort validation, externalIPs, sessionAffinity; EndpointSlice projection with topology hints; service port-forward supported by shim.</li>
 <li>Ingress: networking.k8s.io/v1 Prefix paths with TLS and ingressClassName; status.loadBalancer populated from Service VIP/provider IPs.</li>
@@ -478,7 +478,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-16 00:57:33</span>
+        <span>Built 2026-01-16 08:47:34</span>
       </div>
     </footer>
     <script>
