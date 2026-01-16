@@ -443,8 +443,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         try:
             import os as _os
 
-            origin = _os.getenv("AE_LABS_CORS_ORIGIN", "*")
-            self.send_header("Access-Control-Allow-Origin", origin)
+            origin = (_os.getenv("AE_LABS_CORS_ORIGIN", "*") or "*").strip()
+            req_origin = (self.headers.get("Origin") or "").strip()
+            allow_origin = origin
+            if origin in {"*", "auto"} and req_origin:
+                allow_origin = req_origin
+            self.send_header("Access-Control-Allow-Origin", allow_origin)
+            if allow_origin != "*":
+                self.send_header("Access-Control-Allow-Credentials", "true")
+                self.send_header("Vary", "Origin")
             self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         except Exception:
@@ -1463,6 +1470,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 return
             try:
                 logger.info("labs reset requested")
+                # Stop helm demo first so it doesn't reapply resources during reset.
+                try:
+                    _helm_demo_stop()
+                except Exception:
+                    pass
                 sess = str(payload.get("session_id") or "")
                 # Prefer tracked labs apps that match the session suffix; fallback to echo-<sess>
                 try:
@@ -1495,11 +1507,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         _labs_block_app(app)
                 except Exception:
                     pass
-                removed = []
+                removed_apps: list[dict[str, object]] = []
                 for app in candidates:
                     try:
                         res = self.delete_fn(app, True)  # type: ignore[misc]
-                        removed.append(res)
+                        removed_apps.append(res)
                         try:
                             _LABS_APPS.discard(app)
                         except Exception:
@@ -1508,14 +1520,25 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         continue
                 # Also clean up any helm shim demo apps by namespace prefix.
                 try:
+                    prefixes: set[str] = set()
+                    try:
+                        prefixes.update(_LABS_APP_PREFIXES)
+                    except Exception:
+                        pass
                     ns = str(_HELM_DEMO_STATE.get("namespace") or "demo-helm")
                     if ns:
-                        prefix = f"{ns}--"
+                        prefixes.add(f"{ns}--")
+                    if prefixes:
+                        names: set[str] = set()
                         try:
-                            names = [s.app_name for s in self.store.list_status()]
+                            names.update([s.app_name for s in self.store.list_status()])
                         except Exception:
-                            names = []
-                        helm_candidates = [n for n in names if n.startswith(prefix)]
+                            pass
+                        try:
+                            names.update(self.store.list_registered_app_names())
+                        except Exception:
+                            pass
+                        helm_candidates = sorted({n for n in names if any(n.startswith(p) for p in prefixes)})
                         if helm_candidates:
                             logger.info("labs reset removing helm demo apps: %s", ", ".join(helm_candidates))
                         try:
@@ -1526,7 +1549,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         for app in helm_candidates:
                             try:
                                 res = self.delete_fn(app, True)  # type: ignore[misc]
-                                removed.append(res)
+                                removed_apps.append(res)
                                 try:
                                     _LABS_APPS.discard(app)
                                 except Exception:
@@ -1534,7 +1557,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             except Exception:
                                 continue
                         try:
-                            _LABS_APP_PREFIXES.discard(prefix)
+                            for prefix in prefixes:
+                                _LABS_APP_PREFIXES.discard(prefix)
                         except Exception:
                             pass
                 except Exception:
@@ -1565,7 +1589,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             ("networking.k8s.io", "v1", "ingresses"),
                             ("autoscaling", "v2", "horizontalpodautoscalers"),
                         ]
-                        removed = 0
+                        removed_shim = 0
                         for grp, ver, res in targets:
                             try:
                                 items = store.list(grp, ver, res, ns)
@@ -1573,9 +1597,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                                 continue
                             for obj in items:
                                 if store.delete(grp, ver, res, ns, obj.name):
-                                    removed += 1
-                        if removed:
-                            logger.info("labs reset removed %s shim objects in namespace %s", removed, ns)
+                                    removed_shim += 1
+                        if removed_shim:
+                            logger.info("labs reset removed %s shim objects in namespace %s", removed_shim, ns)
                 except Exception:
                     pass
                 # Ensure the shim demo process is stopped so it doesn't reapply.
@@ -1583,7 +1607,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     _helm_demo_stop()
                 except Exception:
                     pass
-                self._json_ok({"removed": removed})
+                self._json_ok({"removed": removed_apps})
             except Exception as exc:  # pragma: no cover
                 self._json_error(500, str(exc))
             return
