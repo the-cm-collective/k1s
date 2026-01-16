@@ -20,9 +20,9 @@ Online (cluster-backed) checks
 
 The compliance status and per-sample details render below when a report is present.
 
-## Current Coverage Summary (2026-01-14)
+## Current Coverage Summary (2026-01-16)
 
-- Workloads: Deployment/StatefulSet/DaemonSet/Job/CronJob supported; shim mirrors status/scale.
+- Workloads: Deployment full support; StatefulSet/DaemonSet/Job/CronJob are stored with best-effort status but emulated as Deployment-like apps (no real completion, scheduling, or per-node placement).
 - Pod/Container: env/envFrom; readiness/liveness/startup probes; lifecycle hooks; resources requests/limits; securityContext (runAs*/fsGroup/readOnlyRootFilesystem/cap drop/seccomp/AppArmor); terminationGracePeriodSeconds; priorityClassName.
 - Service: ClusterIP/NodePort/LoadBalancer with multi-port mapping, nodePort validation, externalIPs, sessionAffinity; EndpointSlice projection with topology hints; service port-forward supported by shim.
 - Ingress: networking.k8s.io/v1 Prefix paths with TLS and ingressClassName; status.loadBalancer populated from Service VIP/provider IPs.
