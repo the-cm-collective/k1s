@@ -14,14 +14,18 @@ from __future__ import annotations
 import errno
 import http.server
 import json
+import logging
 import os
 import socketserver
 import subprocess
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ae.controller.state import SQLiteStateStore
+
+logger = logging.getLogger(__name__)
 
 
 # Helper: when running in demo mode, restrict visible apps to those declared
@@ -127,6 +131,9 @@ _APP_RECONCILE_COUNT: dict[str, int] = {}
 _LABS_APPS: set[str] = set()
 # Prefixes to allow in demo-scoped dashboards (e.g., helm shim demo namespace).
 _LABS_APP_PREFIXES: set[str] = set()
+# Short-lived suppression to avoid reconciling apps immediately after labs reset.
+_LABS_RESET_BLOCK: dict[str, float] = {}
+_LABS_RESET_BLOCK_SECONDS = int(os.getenv("AE_LABS_RESET_BLOCK_SECONDS", "30") or 30)
 # Crashloop flags: app -> unix timestamp until which the flag is considered active
 _APP_CRASHLOOP_UNTIL: dict[str, float] = {}
 # Hook observations: (app, hook, type) -> (duration_seconds: float, success: bool)
@@ -150,6 +157,37 @@ _HELM_DEMO_STATE: dict[str, object] = {
     "chart": os.getenv("AE_LABS_HELM_CHART", "demochart"),
     "started": None,
 }
+
+
+def _labs_block_app(app: str) -> None:
+    if not app:
+        return
+    try:
+        ttl = max(0, int(_LABS_RESET_BLOCK_SECONDS))
+    except Exception:
+        ttl = 30
+    _LABS_RESET_BLOCK[app] = time.time() + ttl
+
+
+def _labs_unblock_app(app: str) -> None:
+    if not app:
+        return
+    _LABS_RESET_BLOCK.pop(app, None)
+
+
+def _labs_is_blocked(app: str) -> bool:
+    if not app:
+        return False
+    try:
+        until = _LABS_RESET_BLOCK.get(app)
+        if until is None:
+            return False
+        if time.time() <= float(until):
+            return True
+        _LABS_RESET_BLOCK.pop(app, None)
+        return False
+    except Exception:
+        return False
 
 
 def _helm_demo_status() -> dict[str, object]:
@@ -1188,6 +1226,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 else:
                     new_name = name
                 data.setdefault("metadata", {})["name"] = new_name
+                try:
+                    _labs_unblock_app(new_name)
+                except Exception:
+                    pass
                 # If ingress host is a .home.arpa, avoid session-specific hosts by default
                 # to prevent DNS failures in browsers (no wildcard in /etc/hosts). Keep
                 # per-session hostnames only when AE_LABS_SESSION_HOSTS=1.
@@ -1421,6 +1463,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             candidates = ["echo"]
                     except Exception:
                         pass
+                try:
+                    for app in candidates:
+                        _labs_block_app(app)
+                except Exception:
+                    pass
                 removed = []
                 for app in candidates:
                     try:
@@ -1444,6 +1491,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         helm_candidates = [n for n in names if n.startswith(prefix)]
                         if helm_candidates:
                             logger.info("labs reset removing helm demo apps: %s", ", ".join(helm_candidates))
+                        try:
+                            for app in helm_candidates:
+                                _labs_block_app(app)
+                        except Exception:
+                            pass
                         for app in helm_candidates:
                             try:
                                 res = self.delete_fn(app, True)  # type: ignore[misc]
