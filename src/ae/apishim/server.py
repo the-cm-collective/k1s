@@ -5138,6 +5138,69 @@ class ShimHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(b"{}")
                 return
+        if path.startswith("/apis/apps/v1"):
+            d_plural, d_ns, d_name = _apps_ns_name(path)
+            if d_plural in {"deployments", "statefulsets", "daemonsets"}:
+                if d_name:
+                    ok = self.server.store.delete("apps", "v1", d_plural, d_ns, d_name)  # type: ignore[attr-defined]
+                    if not ok:
+                        self._not_found()
+                        return
+                else:
+                    items = (
+                        self.server.store.list_all("apps", "v1", d_plural)  # type: ignore[attr-defined]
+                        if d_ns is None
+                        else self.server.store.list("apps", "v1", d_plural, d_ns)  # type: ignore[attr-defined]
+                    )
+                    for obj in items:
+                        self.server.store.delete("apps", "v1", d_plural, obj.namespace or None, obj.name)  # type: ignore[attr-defined]
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b"{}")
+                return
+        if path.startswith("/apis/networking.k8s.io/v1"):
+            n_plural, n_ns, n_name = _net_ns_name(path)
+            if n_plural == "ingresses":
+                if n_name:
+                    ok = self.server.store.delete("networking.k8s.io", "v1", n_plural, n_ns, n_name)  # type: ignore[attr-defined]
+                    if not ok:
+                        self._not_found()
+                        return
+                else:
+                    items = (
+                        self.server.store.list_all("networking.k8s.io", "v1", n_plural)  # type: ignore[attr-defined]
+                        if n_ns is None
+                        else self.server.store.list("networking.k8s.io", "v1", n_plural, n_ns)  # type: ignore[attr-defined]
+                    )
+                    for obj in items:
+                        self.server.store.delete("networking.k8s.io", "v1", n_plural, obj.namespace or None, obj.name)  # type: ignore[attr-defined]
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b"{}")
+                return
+        if path.startswith("/apis/autoscaling/v2"):
+            a_plural, a_ns, a_name = _gv_ns_name(path, "autoscaling", "v2", "horizontalpodautoscalers")
+            if a_plural == "horizontalpodautoscalers":
+                if a_name:
+                    ok = self.server.store.delete("autoscaling", "v2", a_plural, a_ns, a_name)  # type: ignore[attr-defined]
+                    if not ok:
+                        self._not_found()
+                        return
+                else:
+                    items = (
+                        self.server.store.list_all("autoscaling", "v2", a_plural)  # type: ignore[attr-defined]
+                        if a_ns is None
+                        else self.server.store.list("autoscaling", "v2", a_plural, a_ns)  # type: ignore[attr-defined]
+                    )
+                    for obj in items:
+                        self.server.store.delete("autoscaling", "v2", a_plural, obj.namespace or None, obj.name)  # type: ignore[attr-defined]
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b"{}")
+                return
         if path.startswith("/apis/apiextensions.k8s.io/v1"):
             crd_plural, crd_name = _gv_cluster_name(
                 path, "apiextensions.k8s.io", "v1", "customresourcedefinitions"
