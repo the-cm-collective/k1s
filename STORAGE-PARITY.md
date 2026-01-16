@@ -258,6 +258,89 @@ provisioners:
 - Populate `pv.kubernetes.io/provisioned-by` and `volume.kubernetes.io/storage-provisioner`
   using the StorageClass provisioner string for compatibility with external-provisioner.
 
+### Example PV/PVC Objects (K8s-aligned)
+
+PVC (dynamic provisioning request):
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data
+  namespace: app
+  uid: 123e4567-e89b-12d3-a456-426614174000
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: k1s-nfs
+  resources:
+    requests:
+      storage: 10Gi
+status:
+  phase: Pending
+```
+
+PV (provisioned + bound):
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pvc-123e4567-e89b-12d3-a456-426614174000
+  annotations:
+    pv.kubernetes.io/bound-by-controller: "yes"
+    pv.kubernetes.io/provisioned-by: k1s.io/nfs
+  finalizers:
+    - kubernetes.io/pv-protection
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes: [ReadWriteMany]
+  storageClassName: k1s-nfs
+  persistentVolumeReclaimPolicy: Retain
+  claimRef:
+    namespace: app
+    name: data
+    uid: 123e4567-e89b-12d3-a456-426614174000
+status:
+  phase: Bound
+```
+
+PVC after bind:
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data
+  namespace: app
+  finalizers:
+    - kubernetes.io/pvc-protection
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: k1s-nfs
+  volumeName: pvc-123e4567-e89b-12d3-a456-426614174000
+  resources:
+    requests:
+      storage: 10Gi
+status:
+  phase: Bound
+  accessModes: [ReadWriteMany]
+  capacity:
+    storage: 10Gi
+```
+
+### CSI Sidecar Deployment Model (Initial)
+
+When external CSI drivers are enabled, the shim exposes the minimal objects and
+expects standard CSI sidecars to run alongside the driver:
+- `external-provisioner`: watches PVCs and creates PVs via CSI CreateVolume.
+- `external-attacher`: tracks VolumeAttachment for attach/detach.
+- `external-resizer`: handles PVC expansion when enabled.
+- `external-snapshotter` (optional): snapshot support if/when added.
+
+We keep this model k8s-compatible so vendor CSI charts can be reused with minimal
+modifications:
+- Use the same `CSIDriver`, `CSINode`, and `CSIStorageCapacity` APIs.
+- Prefer `StorageClass` parameters and secrets compatible with upstream drivers.
+- Preserve `VolumeAttachment` objects (if implemented) for attach state.
+
 ---
 
 ## 8) Compatibility Matrix (Target)
