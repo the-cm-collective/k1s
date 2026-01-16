@@ -110,4 +110,6 @@ PORT=8450 TOKEN=demo RUNTIME=podman bash scripts/helm_shim_demo.sh
 ```
 
 The script starts the shim, generates a kubeconfig, scaffolds a chart, installs/inspects/uninstalls it, and tears everything down. Use environment variables (`PORT`, `TOKEN`, `RUNTIME`, `CHART_NAME`, `NAMESPACE`) to customize the run.
+
+Need the old template-only path for debugging? Set `HELM_TEMPLATE_ONLY=1` to use `helm template` + `kubectl apply` instead of real Helm release storage. This bypasses Helm release records and hooks, so prefer the default install flow for validation.
 ```
