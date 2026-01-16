@@ -19,6 +19,7 @@ TOKEN=${TOKEN:-helm-demo}
 RUNTIME=${RUNTIME:-stub}
 CHART_NAME=${CHART_NAME:-demochart}
 NAMESPACE=${NAMESPACE:-demo-helm}
+APISHIM_SERVER=${APISHIM_SERVER:-}
 HELM_TEMPLATE_ONLY=${HELM_TEMPLATE_ONLY:-0}
 HELM_TIMEOUT=${HELM_TIMEOUT:-120s}
 TMPDIR=${TMPDIR:-/tmp}
@@ -183,12 +184,17 @@ cleanup() {
 trap cleanup EXIT
 
 export PYTHONPATH
-AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME="$RUNTIME" python -m ae.apishim serve \
-  --host 127.0.0.1 --port "$PORT" --token "$TOKEN" --allow-anonymous >"$LOG_PATH" 2>&1 &
-SHIM_PID=$!
+if [[ -z "$APISHIM_SERVER" ]]; then
+  APISHIM_SERVER="http://127.0.0.1:$PORT"
+  AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME="$RUNTIME" python -m ae.apishim serve \
+    --host 127.0.0.1 --port "$PORT" --token "$TOKEN" >"$LOG_PATH" 2>&1 &
+  SHIM_PID=$!
+else
+  echo "[shim-demo] using external shim at $APISHIM_SERVER"
+fi
 
 python -m ae.apishim kubeconfig \
-  --server "http://127.0.0.1:$PORT" \
+  --server "$APISHIM_SERVER" \
   --token "$TOKEN" \
   --context k1s-shim \
   --insecure-skip-tls-verify > "$KUBECONFIG_PATH"

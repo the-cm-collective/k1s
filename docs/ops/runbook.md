@@ -266,8 +266,13 @@ Two easy ways to run it:
     - Export `AE_LABS_TOKEN=…` for the controller; paste it into “Labs Token” on the page.
 
 - All‑in‑one compose (controller + docs)
-  - `docker compose -f ops/dev/labs-aio.yaml up -d`
+  - Recommended: `make labs-aio-up` (generates shim tokens before compose)
+  - Or: `./scripts/ensure_apishim_env.sh && docker compose -f ops/dev/labs-aio.yaml up -d`
   - Open https://localhost:8443/playground.html
+  - API shim starts by default on `127.0.0.1:8445` with per-run tokens stored in `state/labs/apishim.env`
+  - To override tokens, set `AE_APISHIM_TOKEN` / `AE_APISHIM_READ_TOKEN` in `.env` (long values; weak tokens are rejected)
+  - To run with a local Postgres backend for controller + shim, set `AE_LABS_USE_POSTGRES=1` before bringing the stack up
+  - To print the shim tokens: `make labs-apishim-env`
 
 Tips
 - Toggle “Enable Controlled Actions” to activate Apply/Scale/Reset; otherwise the page remains read‑only.
