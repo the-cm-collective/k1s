@@ -13,6 +13,12 @@ repos:
           - PyYAML>=6.0
   - repo: local
     hooks:
+      - id: versioning
+        name: versioning
+        entry: python scripts/check_versioning.py
+        language: system
+        pass_filenames: false
+        files: ^(pyproject\.toml|CHANGELOG\.md)$
       - id: pytest
         name: pytest
         entry: pytest
