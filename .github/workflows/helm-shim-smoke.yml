@@ -69,7 +69,7 @@ jobs:
           TOKEN: "helm-demo"
           PYTHONPATH: src
         run: |
-          bash scripts/helm_shim_demo.sh
+          bash scripts/ci/helm-shim-smoke.sh
       - name: Show shim logs on failure
         if: failure()
         run: |
