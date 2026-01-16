@@ -74,6 +74,7 @@ class HealthManager:
         readiness_spec = manifest.spec.health.readiness if manifest.spec.health else None
         liveness_spec = manifest.spec.health.liveness if manifest.spec.health else None
         startup_spec = getattr(manifest.spec.health, "startup", None) if manifest.spec.health else None
+        is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
 
         # Group runtime states by replica_id to support multi-container replicas
         groups: dict[str, list[ReplicaState]] = {}
@@ -89,8 +90,15 @@ class HealthManager:
                     break
             if primary is None:
                 primary = members[0]
-            # All containers in the replica must be running to be considered healthy overall
-            sidecars_ok = all((getattr(m, "status", "running") == "running") for m in members)
+            # All containers in the replica must be healthy to be considered ready overall.
+            if is_job:
+                sidecars_ok = all(
+                    (getattr(m, "status", "running") == "running")
+                    or (getattr(m, "exit_code", None) == 0)
+                    for m in members
+                )
+            else:
+                sidecars_ok = all((getattr(m, "status", "running") == "running") for m in members)
             replica = primary
             # If startupProbe is defined, gate readiness/liveness until it succeeds.
             if startup_spec is not None:

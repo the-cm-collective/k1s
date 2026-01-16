@@ -39,6 +39,7 @@ class PodmanRuntime(RuntimeAdapter):
     REPLICA_LABEL = "ae.replica_id"
     REVISION_LABEL = "ae.revision"
     CONTAINER_LABEL = "ae.container"
+    JOB_ATTEMPT_LABEL = "ae.job_attempt"
 
     def __init__(self) -> None:
         configured_bin = os.getenv("AE_PODMAN_BIN", "podman")
@@ -87,6 +88,14 @@ class PodmanRuntime(RuntimeAdapter):
             else [f"{app}-rev{revision}-{i}" for i in range(manifest.spec.replicas)]
         )
         self._current_node_id = node_id
+        is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
+        job_backoff_limit = None
+        if is_job:
+            try:
+                raw_limit = getattr(manifest.spec, "job_backoff_limit", None)
+                job_backoff_limit = int(raw_limit) if raw_limit is not None else 6
+            except Exception:
+                job_backoff_limit = 6
 
         # Find existing containers for this app
         existing = self._list_app_containers(app)
@@ -182,7 +191,58 @@ class PodmanRuntime(RuntimeAdapter):
                 # Ensure running with proper handling of Podman states
                 st = (c.get("State") or {}).get("Status") or ""
                 cid = c.get("Id", "")
-                if st != "running":
+                restart_handled = False
+                if is_job and st != "running":
+                    exit_code = (c.get("State") or {}).get("ExitCode", None)
+                    try:
+                        exit_code = int(exit_code) if exit_code is not None else None
+                    except Exception:
+                        exit_code = None
+                    attempt = 0
+                    try:
+                        attempt = int(_labels(c).get(self.JOB_ATTEMPT_LABEL, 0))
+                    except Exception:
+                        attempt = 0
+                    if exit_code == 0:
+                        restart_handled = True
+                    elif exit_code is not None:
+                        if job_backoff_limit is not None and attempt >= job_backoff_limit:
+                            restart_handled = True
+                        else:
+                            # Retry by recreating the container with incremented attempt
+                            self._stop_and_remove(cid)
+                            self._create_container(
+                                manifest,
+                                rid,
+                                revision,
+                                service=(svc_port, svc_target, svc_ports_list),
+                                node_id=node_id,
+                                attempt=attempt + 1,
+                            )
+                            if self._network_name:
+                                nid = self._find_by_label(self.REPLICA_LABEL, rid)
+                                if nid:
+                                    aliases = [
+                                        f"ae-{app}",
+                                        f"ae-{app}-rev{revision}",
+                                        f"ae-{app}-rep-{rid.split('-')[-1]}",
+                                    ]
+                                    for al in aliases:
+                                        self._run_ok(
+                                            [
+                                                self._bin,
+                                                "network",
+                                                "connect",
+                                                "--alias",
+                                                al,
+                                                self._network_name,
+                                                nid,
+                                            ],
+                                            allow_fail=True,
+                                        )
+                            updated += 1
+                            restart_handled = True
+                if st != "running" and not restart_handled:
                     # Unpause if needed
                     if st == "paused":
                         self._run_ok([self._bin, "unpause", cid], allow_fail=True)
@@ -228,8 +288,16 @@ class PodmanRuntime(RuntimeAdapter):
             if labs.get(self.REVISION_LABEL) != str(revision):
                 continue
             rid = labs.get(self.REPLICA_LABEL) or ""
-            st = (c.get("State") or {}).get("Status", "")
-            started = self._parse_dt((c.get("State") or {}).get("StartedAt"))
+            state = c.get("State") or {}
+            st = state.get("Status", "")
+            started = self._parse_dt(state.get("StartedAt"))
+            exit_code = None
+            try:
+                raw_exit = state.get("ExitCode", None)
+                exit_code = int(raw_exit) if raw_exit is not None else None
+            except Exception:
+                exit_code = None
+            finished_at = self._parse_dt(state.get("FinishedAt"))
             endpoint = None
             # Prefer published host ports (so Caddy can reach via host alias).
             # Selection order: preferred probe port; 80/tcp; 8080/tcp; first non‑443 mapping.
@@ -321,13 +389,21 @@ class PodmanRuntime(RuntimeAdapter):
                         pass
             except Exception:
                 pass
+            ready = st == "running"
+            if is_job:
+                if st == "running":
+                    ready = False
+                else:
+                    ready = exit_code == 0
             states.append(
                 ReplicaState(
                     replica_id=rid,
-                    ready=(st == "running"),
+                    ready=ready,
                     status=st or "",
                     endpoint=endpoint,
                     started_at=started,
+                    exit_code=exit_code,
+                    finished_at=finished_at,
                 )
             )
 
@@ -980,6 +1056,7 @@ class PodmanRuntime(RuntimeAdapter):
         *,
         service: tuple[int | None, int | None, list | None] = (None, None, None),
         node_id: str | None = None,
+        attempt: int = 0,
     ) -> None:
         app = manifest.metadata.name
         suffix = replica_id.split("-")[-1]
@@ -994,6 +1071,7 @@ class PodmanRuntime(RuntimeAdapter):
             # Best-effort stop/remove by name
             self._stop_and_remove(name)
 
+        is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
         cmd = [
             self._bin,
             "run",
@@ -1006,9 +1084,10 @@ class PodmanRuntime(RuntimeAdapter):
             f"{self.REPLICA_LABEL}={replica_id}",
             "--label",
             f"{self.REVISION_LABEL}={revision}",
-            "--restart",
-            "unless-stopped",
         ]
+        if is_job:
+            cmd += ["--label", f"{self.JOB_ATTEMPT_LABEL}={int(attempt)}"]
+        cmd += ["--restart", "no" if is_job else "unless-stopped"]
         if node_id:
             cmd += ["--label", f"ae.node={node_id}"]
         try:
