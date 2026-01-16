@@ -1495,12 +1495,18 @@ class AdapterWorker(threading.Thread):
         return target_key, ingress_spec
 
 
-def build_adapter(store: ObjectStore, runtime: RuntimeAdapter | None = None) -> AdapterWorker:
-    db_path = os.getenv("AE_STATE_DB", "state/controller.db")
-    state = SQLiteStateStore(Path(db_path))  # type: ignore[name-defined]
+def build_adapter(
+    store: ObjectStore,
+    runtime: RuntimeAdapter | None = None,
+    state_store: SQLiteStateStore | None = None,
+) -> AdapterWorker:
+    if state_store is None:
+        state_dsn = os.getenv("AE_STATE_DSN")
+        db_path = Path(os.getenv("AE_STATE_DB", "state/controller.db"))
+        state_store = SQLiteStateStore(db_path if not state_dsn else None, dsn=state_dsn)  # type: ignore[name-defined]
     runtime = runtime or _runtime_from_env()
     # Minimal reconciler wiring; skip ingress/secrets/config extras for MVP
     from ae.controller.health import HealthManager
 
-    reconciler = Reconciler(runtime=runtime, state_store=state, health_manager=HealthManager())
-    return AdapterWorker(store, state, reconciler)
+    reconciler = Reconciler(runtime=runtime, state_store=state_store, health_manager=HealthManager())
+    return AdapterWorker(store, state_store, reconciler)
