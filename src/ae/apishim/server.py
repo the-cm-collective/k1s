@@ -4182,6 +4182,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             ns_in = md.get("namespace") or ns
             if plural == "namespaces":
                 ns_in = None
+            if plural == "secrets":
+                _set_secret_type(md, doc.get("type"))
             if not _valid_name(name_in):
                 self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.name (DNS-1123 label)")
                 return
@@ -4591,6 +4593,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             ns_in = md.get("namespace") or ns
             if plural == "namespaces":
                 ns_in = None
+            if plural == "secrets":
+                _set_secret_type(md, doc.get("type"))
             if not _valid_name(name_in):
                 self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.name (DNS-1123 label)")
                 return
@@ -4845,6 +4849,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             if merged is None:
                 return
             md = merged.get("metadata") or {}
+            if plural == "secrets":
+                _set_secret_type(md, merged.get("type"))
             patch_paths = _extract_field_paths(patch) if isinstance(patch, dict) else set()
             if ctype.startswith("application/apply-patch") and _managed_conflict(obj.metadata, field_manager, patch_paths, force_flag):
                 self._json_status(
@@ -5381,16 +5387,45 @@ def _api_version(group: str, version: str) -> str:
     return f"{group}/{version}" if group else version
 
 
+_SECRET_TYPE_ANN = "ae.apishim/secret-type"
+
+
+def _set_secret_type(md: dict[str, Any], secret_type: Any) -> None:
+    if secret_type is None:
+        return
+    st = str(secret_type)
+    if not st:
+        return
+    anns = md.get("annotations")
+    if not isinstance(anns, dict):
+        anns = {}
+        md["annotations"] = anns
+    anns[_SECRET_TYPE_ANN] = st
+
+
+def _secret_type_from_meta(md: dict[str, Any]) -> str | None:
+    anns = md.get("annotations")
+    if not isinstance(anns, dict):
+        return None
+    val = anns.get(_SECRET_TYPE_ANN)
+    if val is None:
+        return None
+    st = str(val)
+    return st or None
+
+
 def _to_obj(o: K8sObject) -> dict[str, Any]:
     meta = dict(o.metadata)
     meta.setdefault("name", o.name)
     if o.namespace:
         meta.setdefault("namespace", o.namespace)
     meta.setdefault("resourceVersion", str(o.resource_version))
+    secret_type = _secret_type_from_meta(meta) if o.resource == "secrets" else None
     return {
         "apiVersion": _api_version(o.group, o.version),
         "kind": _kind(o.resource),
         "metadata": meta,
+        **({"type": secret_type} if secret_type else {}),
         **(
             {"data": o.spec}
             if o.resource in {"configmaps", "secrets"}
