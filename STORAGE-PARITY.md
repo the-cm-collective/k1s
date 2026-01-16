@@ -355,6 +355,21 @@ Implementation notes:
   with immediate `attached=true`.
 - For node-local PVs, ensure `spec.nodeName` reflects the scheduler decision.
 
+Example VolumeAttachment (CSI attach):
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: VolumeAttachment
+metadata:
+  name: csi-attach-123e4567
+spec:
+  attacher: csi.example.com
+  nodeName: node-a
+  source:
+    persistentVolumeName: pvc-123e4567-e89b-12d3-a456-426614174000
+status:
+  attached: true
+```
+
 ### CSI Sidecar Responsibilities (Object Coverage)
 
 | Sidecar | Primary API Objects | Required in apishim | Notes |
@@ -363,6 +378,16 @@ Implementation notes:
 | external-attacher | VolumeAttachment, CSIDriver | Yes | Tracks attach/detach state. |
 | external-resizer | PVC, PV | Yes | Updates PV/PVC capacity on expansion. |
 | external-snapshotter | VolumeSnapshot* | Optional | Out of scope for “complete” target. |
+
+### Helm-Facing Storage API Checklist (apishim)
+
+Required for most charts:
+- core/v1: PersistentVolume, PersistentVolumeClaim, Secret, ConfigMap
+- storage.k8s.io/v1: StorageClass, CSIDriver, CSINode, CSIStorageCapacity
+- storage.k8s.io/v1: VolumeAttachment (for CSI attach/detach)
+
+Optional (common for backup/restore charts):
+- snapshot.storage.k8s.io/v1: VolumeSnapshot, VolumeSnapshotClass
 
 ---
 
