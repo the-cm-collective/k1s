@@ -1,8 +1,8 @@
 {
-  "generated_at": "2025-11-12T06:37:38.984894+00:00",
+  "generated_at": "2026-01-16T17:08:42.584338+00:00",
   "samples_count": 3,
-  "overall_score": 100.0,
-  "grade": "excellent",
+  "overall_score": 57.1,
+  "grade": "failing",
   "results": [
     {
       "sample": "specs/examples/echo.yaml",
@@ -24,9 +24,9 @@
         "summary": null
       },
       "server_dry_run": {
-        "ran": false,
-        "ok": null,
-        "output": null
+        "ran": true,
+        "ok": false,
+        "output": "Could not connect to the endpoint URL: \"https://sts.us-east-2.amazonaws.com/\"\n\nCould not connect to the endpoint URL: \"https://sts.us-east-2.amazonaws.com/\"\n\nCould not connect to the endpoint URL: \"https://sts.us-east-2.amazonaws.com/\"\nerror: error validating \"/tmp/tmpojcsrx_c\": error validating data: failed to download openapi: Get \"https://030F8F56D9F551BCE62746B5FF5BAAB1.yl4.us-east-2.eks.amazonaws.com/openapi/v2?timeout=32s\": getting credentials: exec: executable aws failed with exit code 255; if you choose to ignore these errors, turn validation off with --validate=false"
       },
       "kinds": [
         "ConfigMap",
@@ -43,8 +43,8 @@
         "ok": null,
         "details": null
       },
-      "score": 100.0,
-      "confidence": 0.4
+      "score": 57.1,
+      "confidence": 0.7
     },
     {
       "sample": "specs/examples/multi-replica-echo.yaml",
@@ -66,9 +66,9 @@
         "summary": null
       },
       "server_dry_run": {
-        "ran": false,
-        "ok": null,
-        "output": null
+        "ran": true,
+        "ok": false,
+        "output": "Could not connect to the endpoint URL: \"https://sts.us-east-2.amazonaws.com/\"\n\nCould not connect to the endpoint URL: \"https://sts.us-east-2.amazonaws.com/\"\n\nCould not connect to the endpoint URL: \"https://sts.us-east-2.amazonaws.com/\"\nerror: error validating \"/tmp/tmprch9ey9i\": error validating data: failed to download openapi: Get \"https://030F8F56D9F551BCE62746B5FF5BAAB1.yl4.us-east-2.eks.amazonaws.com/openapi/v2?timeout=32s\": getting credentials: exec: executable aws failed with exit code 255; if you choose to ignore these errors, turn validation off with --validate=false"
       },
       "kinds": [
         "Deployment",
@@ -86,8 +86,8 @@
         "ok": null,
         "details": null
       },
-      "score": 100.0,
-      "confidence": 0.4
+      "score": 57.1,
+      "confidence": 0.7
     },
     {
       "sample": "specs/examples/echo-hpa.yaml",
@@ -109,9 +109,9 @@
         "summary": null
       },
       "server_dry_run": {
-        "ran": false,
-        "ok": null,
-        "output": null
+        "ran": true,
+        "ok": false,
+        "output": "Could not connect to the endpoint URL: \"https://sts.us-east-2.amazonaws.com/\"\n\nCould not connect to the endpoint URL: \"https://sts.us-east-2.amazonaws.com/\"\n\nCould not connect to the endpoint URL: \"https://sts.us-east-2.amazonaws.com/\"\nerror: error validating \"/tmp/tmpqwsptio7\": error validating data: failed to download openapi: Get \"https://030F8F56D9F551BCE62746B5FF5BAAB1.yl4.us-east-2.eks.amazonaws.com/openapi/v2?timeout=32s\": getting credentials: exec: executable aws failed with exit code 255; if you choose to ignore these errors, turn validation off with --validate=false"
       },
       "kinds": [
         "Deployment",
@@ -128,8 +128,8 @@
         "ok": null,
         "details": null
       },
-      "score": 100.0,
-      "confidence": 0.4
+      "score": 57.1,
+      "confidence": 0.7
     }
   ]
 }
