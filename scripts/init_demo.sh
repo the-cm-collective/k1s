@@ -34,6 +34,28 @@ stop_by_pattern() {
   fi
 }
 
+cleanup_demo_containers() {
+  local bin="$1"
+  if [[ -z "${bin}" ]] || ! command -v "$bin" >/dev/null 2>&1; then
+    return 0
+  fi
+  local apps_regex="blue|green|echo|echo-mr|echo-multi|echo-sec|echo-tcp|echo-exec|echo-hardened|echo-resources|echo-storage"
+  local names to_remove=()
+  names=$("$bin" ps -a --format '{{.Names}}' 2>/dev/null || true)
+  if [[ -z "$names" ]]; then
+    return 0
+  fi
+  while read -r name; do
+    if [[ "$name" =~ ^ae-(${apps_regex})-rev[0-9]+- ]]; then
+      to_remove+=("$name")
+    fi
+  done <<<"$names"
+  if [[ ${#to_remove[@]} -gt 0 ]]; then
+    log "Removing stale demo containers (${bin}): ${to_remove[*]}"
+    "$bin" rm -f "${to_remove[@]}" >/dev/null 2>&1 || true
+  fi
+}
+
 usage() {
   cat <<USAGE
 Usage:
@@ -93,6 +115,7 @@ Environment variables you can override:
   - AE_STATE_DB, AE_SPECS_DIR, AE_CADDY_* (see docs/ops/runbook.md)
   - AE_USE_REGISTRY_CACHE (default 1) to enable local pull-through cache for dev stack
   - AE_REGISTRY_PORT (default 5001), AE_REGISTRY_HOST (default localhost:${AE_REGISTRY_PORT})
+  - AE_REGISTRY_IMAGE (default registry:2) to override the registry cache image
   - AE_REGISTRY_USERNAME/AE_REGISTRY_PASSWORD/AE_REGISTRY_REMOTEURL for upstream registry auth
 
 Endpoints after setup:
@@ -280,6 +303,42 @@ finally:
     except Exception:
         pass
 PY
+}
+
+warn_insecure_registry() {
+  local host_port="$1"
+  local engine="$2"
+  if [[ "$host_port" != *:* ]]; then
+    return 0
+  fi
+  local host="${host_port%:*}"
+  case "$host" in
+    localhost|127.0.0.1|::1) ;;
+    *) return 0 ;;
+  esac
+  if [[ "$engine" == "docker" ]]; then
+    local daemon_json="/etc/docker/daemon.json"
+    if [[ -r "$daemon_json" ]]; then
+      if grep -q "\"insecure-registries\"" "$daemon_json" && grep -q "$host_port" "$daemon_json"; then
+        return 0
+      fi
+    fi
+    log "Warning: Docker insecure registry for ${host_port} not detected; configure /etc/docker/daemon.json to avoid HTTPS errors."
+  else
+    local conf_user="$HOME/.config/containers/registries.conf"
+    local conf_sys="/etc/containers/registries.conf"
+    if [[ -r "$conf_user" ]] && grep -q "location *= *\"${host_port}\"" "$conf_user"; then
+      if grep -q "insecure *= *true" "$conf_user"; then
+        return 0
+      fi
+    fi
+    if [[ -r "$conf_sys" ]] && grep -q "location *= *\"${host_port}\"" "$conf_sys"; then
+      if grep -q "insecure *= *true" "$conf_sys"; then
+        return 0
+      fi
+    fi
+    log "Warning: Podman registry config for ${host_port} not detected; set insecure=true in registries.conf to avoid HTTPS errors."
+  fi
 }
 
 token_valid() {
@@ -528,6 +587,21 @@ if [[ -z "${STACK_BIN:-}" ]]; then
 fi
 STACK_COMPOSE=("$STACK_BIN" compose)
 
+# Runtime CLI for app containers (may differ from dev stack runtime)
+if [[ "$AE_RUNTIME_BACKEND" == "docker" ]]; then
+  if command -v docker >/dev/null 2>&1; then
+    APP_BIN=docker
+  else
+    APP_BIN=podman
+  fi
+else
+  if command -v podman >/dev/null 2>&1; then
+    APP_BIN=podman
+  else
+    APP_BIN=docker
+  fi
+fi
+
 # Optional cache reset before (re)starting the dev stack.
 if [[ $RESET_REGISTRY_CACHE -eq 1 ]]; then
   if [[ -f ops/dev/docker-compose.cache.override.yml ]]; then
@@ -625,10 +699,13 @@ fi
 if [[ "${AE_USE_REGISTRY_CACHE}" == "1" && -f ops/dev/docker-compose.cache.override.yml ]]; then
   export AE_REGISTRY_PORT=${AE_REGISTRY_PORT:-$(pick_port 5001)}
   export AE_REGISTRY_HOST=${AE_REGISTRY_HOST:-localhost:${AE_REGISTRY_PORT}}
+  export AE_REGISTRY_IMAGE=${AE_REGISTRY_IMAGE:-registry:2}
   if [[ "${AE_REGISTRY_PORT}" != "5001" ]]; then
     log "Registry cache default port 5001 busy; using ${AE_REGISTRY_PORT}"
   fi
   log "Using local registry cache at ${AE_REGISTRY_HOST}"
+  log "Registry cache image set to ${AE_REGISTRY_IMAGE}"
+  warn_insecure_registry "${AE_REGISTRY_HOST}" "${STACK_BIN}" || true
 fi
 # Ensure state directories exist with liberal perms for rootless Podman
 mkdir -p state/caddy-data state/caddy docs/site || true
@@ -1166,6 +1243,7 @@ if [[ $DOCS_ONLY -ne 1 ]]; then
   # Default: apply standard demo only when explicitly requested OR when no demo flags were provided at all.
   ANY_DEMO=$(( DEMO_CONFIGS | DEMO_STANDARD | DEMO_ECHO_MR | DEMO_ECHO_MULTI | DEMO_SECURITY | DEMO_TCP | DEMO_EXEC | DEMO_ROLLOUT | DEMO_STORAGE ))
   if [[ $DEMO_STANDARD -eq 1 || $ANY_DEMO -eq 0 ]]; then
+    cleanup_demo_containers "${APP_BIN}"
     apply_or_diag "blue"  "specs/examples/blue.yaml"
     apply_or_diag "green" "specs/examples/green.yaml"
   fi
