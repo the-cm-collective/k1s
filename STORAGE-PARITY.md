@@ -116,7 +116,8 @@ lifecycle semantics.
 
 ### Runtime volume identity
 We need an explicit mapping from PVC -> runtime storage:
-- Local-path: host path under a known root, e.g. `state/volumes/<pv>`.
+- Local-path: host path under a known root, e.g. `/var/lib/k1s/storage/<pv>`
+  (configurable via `AE_STORAGE_ROOT`).
 - Docker/Podman named volume: `ae-<ns>--<pvc>` or `ae-<app>-<pvc>-<ordinal>`.
 
 ---
@@ -200,6 +201,62 @@ K8s-aligned conventions:
   - `volume.kubernetes.io/storage-provisioner: <provisioner>`
 - PVC/PV phase transitions mirror Kubernetes (`Pending` -> `Bound`, PV `Available` -> `Bound` -> `Released`).
 - `volumeBindingMode` defaults: `WaitForFirstConsumer` for local storage, `Immediate` for RWX.
+
+K8s conventions checklist (implementation):
+- PVC/PV finalizers: `kubernetes.io/pvc-protection`, `kubernetes.io/pv-protection`.
+- `claimRef` includes `namespace`, `name`, and `uid` when bound.
+- PVC `status.capacity` and `status.accessModes` are populated on bind.
+- PV `status.capacity`, `status.accessModes`, and `status.phase` are updated.
+- StatefulSet PVC names follow `<claimTemplateName>-<statefulsetName>-<ordinal>`.
+- Local PVs carry `nodeAffinity` to the chosen node (for WaitForFirstConsumer).
+
+### CSI Hook Interface (Initial)
+
+The CSI hooks provide a Kubernetes-aligned integration point so external CSI
+drivers can be used without changing Helm charts.
+
+**Provisioner registry configuration** (default path, override with `AE_STORAGE_PROVISIONERS`):
+- `configs/storage-provisioners.yaml` lists built-in and external drivers and the
+  StorageClass defaults they map to.
+
+Example:
+```yaml
+provisioners:
+  - name: k1s-local
+    provisioner: k1s.io/local-path
+    type: builtin
+    accessModes: [ReadWriteOnce]
+    volumeBindingMode: WaitForFirstConsumer
+    reclaimPolicy: Delete
+  - name: k1s-nfs
+    provisioner: k1s.io/nfs
+    type: builtin
+    accessModes: [ReadWriteMany]
+    volumeBindingMode: Immediate
+    reclaimPolicy: Retain
+  - name: csi-fast
+    provisioner: csi.example.com
+    type: csi
+    endpoint: unix:///run/csi.sock
+    accessModes: [ReadWriteOnce, ReadWriteMany]
+    volumeBindingMode: Immediate
+    reclaimPolicy: Delete
+```
+
+**Hook contract (exec or gRPC bridge)**:
+- CreateVolume: input PVC + StorageClass + optional `selectedNode`, output PV spec
+  (including `capacity`, `accessModes`, `volumeMode`, `nodeAffinity` as needed).
+- DeleteVolume: input PV name + parameters, perform cleanup and return success.
+- ExpandVolume: input PV name + new size, update PV capacity and return success.
+- GetCapabilities: return supported access modes, volume modes, expansion.
+
+**Objects surfaced in apishim** (when CSI is enabled):
+- `storage.k8s.io/v1` `CSIDriver`, `CSINode`, `CSIStorageCapacity`
+  (minimum set for Helm and CSI-sidecar compatibility).
+
+**CSI-aligned annotations/conditions**:
+- Populate `pv.kubernetes.io/provisioned-by` and `volume.kubernetes.io/storage-provisioner`
+  using the StorageClass provisioner string for compatibility with external-provisioner.
 
 ---
 
