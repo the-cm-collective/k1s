@@ -341,6 +341,29 @@ modifications:
 - Prefer `StorageClass` parameters and secrets compatible with upstream drivers.
 - Preserve `VolumeAttachment` objects (if implemented) for attach state.
 
+### VolumeAttachment Handling (Scope + Mapping)
+
+For k8s-aligned behavior, we will support `storage.k8s.io/v1` `VolumeAttachment`
+as the canonical attach/detach state machine when CSI drivers are enabled.
+
+Implementation notes:
+- Create `VolumeAttachment` objects during attach requests from the CSI driver
+  (or external-attacher).
+- Populate `status.attached`, `status.attachError`, and `status.detachError`
+  according to CSI call outcomes.
+- In single-node local-path mode, `VolumeAttachment` may be treated as a no-op
+  with immediate `attached=true`.
+- For node-local PVs, ensure `spec.nodeName` reflects the scheduler decision.
+
+### CSI Sidecar Responsibilities (Object Coverage)
+
+| Sidecar | Primary API Objects | Required in apishim | Notes |
+|--------|----------------------|---------------------|-------|
+| external-provisioner | PVC, PV, StorageClass | Yes | Handles Create/Delete volume lifecycle. |
+| external-attacher | VolumeAttachment, CSIDriver | Yes | Tracks attach/detach state. |
+| external-resizer | PVC, PV | Yes | Updates PV/PVC capacity on expansion. |
+| external-snapshotter | VolumeSnapshot* | Optional | Out of scope for “complete” target. |
+
 ---
 
 ## 8) Compatibility Matrix (Target)
