@@ -354,6 +354,7 @@
       <a href="index.html">Home</a>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
+      <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
@@ -391,7 +392,7 @@
 <pre><code>./scripts/init_demo.sh --demo-standard -y</code></pre>
 <ul>
 <li>Script reference: <code>scripts/init_demo.sh:1</code></li>
-<li>Flags map: <code>docs/demo-modes.md:1</code></li>
+<li>Flags map: <code>docs/guides/demos-examples.md:1</code></li>
 </ul>
 <p>2) Open endpoints:</p>
 <ul>
@@ -437,7 +438,7 @@ k1s logs app/echo --follow --tail 100</code></pre>
 <p>Optional: start the Kubernetes API shim for kubectl/helm parity</p>
 <pre><code>AE_APISHIM_TOKEN=devtoken python -m ae.apishim serve --host 127.0.0.1 --port 8445
 kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code></pre>
-<p>Shim capabilities and gaps live in <code>docs/apishim-compatibility-matrix.md</code>.</p>
+<p>Shim capabilities and gaps live in <code>docs/reference/apishim-compatibility-matrix.md</code>.</p>
 <h2>Makefile Helper Commands</h2>
 <p>Run with <code>make &lt;target&gt;</code>. You can override defaults via <code>VAR=value make &lt;target&gt;</code>.</p>
 <p>Setup and quality</p>
@@ -546,7 +547,7 @@ AE_NODE_ID=worker-1 python -m ae.node --runtime-backend podman --port 9109 --ens
 <pre><code>python -m ae.cli apply -f specs/examples/echo-multinode.yaml
 ae nodes list
 ae status echo-mn --watch</code></pre>
-<p>Full walkthrough and WireGuard tips: <code>docs/multinode-lab.md</code> or <code>ops/dev/multinode-lab.sh -h</code>.</p>
+<p>Full walkthrough and WireGuard tips: <code>docs/guides/multinode-lab.md</code> or <code>ops/dev/multinode-lab.sh -h</code>.</p>
 <h2>Using the <code>ae</code> CLI (greatest hits)</h2>
 <ul>
 <pre><code>ae apply -f &lt;manifest.yaml&gt;
@@ -571,17 +572,16 @@ ae tls verify --name mycert --json</code></pre>
 <pre><code>python -m ae.cli api tokens --generate --ttl-hours 24 -o .env.api
 source .env.api
 ae --server http://&lt;controller-ip&gt;:9108 --token $AE_API_READ_TOKEN status</code></pre>
-<p>Details: <code>README.md:67</code> and token management in <code>docs/runbook.md:1</code>.</p>
+<p>Details: <code>README.md:67</code> and token management in <code>docs/ops/runbook.md:1</code>.</p>
 <h2>Documentation Map (most useful first)</h2>
 <ul>
-<li>High‑level overview: <code>docs/overview.md:1</code></li>
-<li>Operations runbook: <code>docs/runbook.md:1</code></li>
-<li>HTTP API reference: <code>docs/http-api.md:1</code></li>
-<li>Kubernetes API shim compatibility: <code>docs/apishim-compatibility-matrix.md:1</code></li>
-<li>Ingress &amp; TLS: <code>docs/ingress.md:1</code></li>
-<li>Demo modes: <code>docs/demo-modes.md:1</code></li>
-<li>Examples index: <code>docs/examples.md:1</code></li>
-<li>Architecture deep dive: <code>docs/architecture.md:1</code></li>
+<li>High‑level overview: <code>docs/getting-started/overview.md:1</code></li>
+<li>Operations runbook: <code>docs/ops/runbook.md:1</code></li>
+<li>HTTP API reference: <code>docs/reference/http-api.md:1</code></li>
+<li>Kubernetes API shim compatibility: <code>docs/reference/apishim-compatibility-matrix.md:1</code></li>
+<li>Ingress &amp; TLS: <code>docs/reference/ingress.md:1</code></li>
+<li>Demos &amp; examples: <code>docs/guides/demos-examples.md:1</code></li>
+<li>Architecture deep dive: <code>docs/reference/architecture.md:1</code></li>
 </ul>
 <h2>Where things live in the repo</h2>
 <ul>
@@ -608,7 +608,7 @@ ae --server http://&lt;controller-ip&gt;:9108 --token $AE_API_READ_TOKEN status<
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-15 15:09:49</span>
+        <span>Built 2026-01-15 16:48:40</span>
       </div>
     </footer>
     <script>

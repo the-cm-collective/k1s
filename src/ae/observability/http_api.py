@@ -2941,11 +2941,17 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       body.apps-collapsed #apps { border-right:0; padding-right:0; }
       .scrollbar-hide { scrollbar-width: none; -ms-overflow-style: none; }
       .scrollbar-hide::-webkit-scrollbar { width:0; height:0; }
-      #apps-list { display:block; overflow-y:auto; height: calc(100vh - (var(--header-h, 60px)) - 12px); }
+      #apps-list { display:block; overflow-y:auto; height: calc(100vh - (var(--header-h, 60px)) - 12px); padding:6px 6px 12px; }
       body.apps-collapsed #apps-list { display:none; }
-      .app { padding:6px 8px; border-radius:6px; cursor:pointer; }
-      .app.active { background:#1f2937; color:#e5e7eb; }
+      .ns-header { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:#94a3b8; display:flex; align-items:center; gap:6px; margin:8px 6px 4px; }
+      .ns-header .ns-dot { width:8px; height:8px; border-radius:999px; background:var(--ns-color, #64748b); box-shadow:0 0 0 2px rgba(0,0,0,.25); }
+      .ns-header .ns-count { margin-left:auto; font-size:11px; opacity:.7; }
+      .app { padding:6px 8px; border-radius:6px; cursor:pointer; border-left:3px solid var(--ns-color, #334155); background:linear-gradient(90deg, var(--ns-tint, transparent), transparent 70%); margin:2px 0; }
+      .app.active { background:linear-gradient(90deg, var(--ns-tint, rgba(31,41,55,.65)), #1f2937 70%); color:#e5e7eb; }
+      .app-title { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+      .app-sub { font-size:12px; color:#94a3b8; }
       .pill { display:inline-block; padding:1px 6px; border-radius:999px; font-size:12px; margin-left:6px; }
+      .ns-pill { display:inline-block; padding:1px 6px; border-radius:999px; font-size:12px; border:1px solid var(--ns-color, #64748b); background:var(--ns-tint, #33415533); color:#e2e8f0; }
       .ok { background:#16a34a33; color:#16a34a; }
       .warn { background:#f59e0b33; color:#b45309; }
       .bad { background:#ef444433; color:#b91c1c; }
@@ -3030,6 +3036,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           <div class=\"card detail-card\" style=\"display:flex; flex-direction:column;\">
             <div id=\"desc\" class=\"scrollcap scrollbar-hide\">
             <div><strong>App:</strong> <span id=\"d-app\">-</span></div>
+            <div><strong>Namespace:</strong> <span id=\"d-namespace\">-</span></div>
             <div><strong>Image:</strong> <span id=\"d-image\">-</span></div>
             <div><strong>Ingress:</strong> <span id=\"d-ingress\">-</span></div>
             <div><strong>Replicas:</strong> <span id=\"d-replicas\">-</span></div>
@@ -3085,20 +3092,23 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                   <path d=\"M0,0 L10,3 L0,6 Z\" fill=\"#9ca3af\" />
                 </marker>
                 <style>
-                  .node text { font-size:12px; pointer-events:none; }
-                  .node.system rect { fill:#e5e7eb; stroke:#6b7280; }
-                  .node.worker rect { fill:#e0f2fe; stroke:#0284c7; }
-                  .node.worker.stale rect { fill:#fee2e2; stroke:#ef4444; }
-                  .node.worker.cordoned rect { fill:#fef3c7; stroke:#f59e0b; }
-                  .node.app rect { fill:#dbeafe; stroke:#3b82f6; }
+                  .node text { font-size:12px; pointer-events:none; fill:#f8fafc; paint-order: stroke; stroke:rgba(0,0,0,0.65); stroke-width:2; }
+                  .node .node-shape { stroke-width:1.2; }
+                  .node.system .node-shape { fill:#e5e7eb; stroke:#6b7280; }
+                  .node.worker .node-shape { fill:#e0f2fe; stroke:#0284c7; }
+                  .node.worker.stale .node-shape { fill:#fee2e2; stroke:#ef4444; }
+                  .node.worker.cordoned .node-shape { fill:#fef3c7; stroke:#f59e0b; }
+                  .node.app .node-shape { fill:#f5f5f5; stroke:var(--ns-color, #3b82f6); }
+                  .node.app .ns-stripe { fill:var(--ns-color, #3b82f6); opacity:.35; }
                   .node.pod circle { fill:#e5e7eb; stroke:#6b7280; }
+                  .label-chip { fill:rgba(8,12,18,0.85); stroke:rgba(255,255,255,0.18); stroke-width:0.8; }
                   .node.pod.ready circle { fill:#dcfce7; stroke:#16a34a; }
                   .node.pod.pending circle { fill:#fef3c7; stroke:#f59e0b; }
                   .link { stroke:#9ca3af; stroke-width:1.5; fill:none; marker-end:url(#arrow); }
                   .flow { stroke-dasharray:6 6; }
                   .flow-fwd { animation: flow 1.6s linear infinite; }
                   .flow-rev { animation: flow 1.6s linear infinite reverse; }
-                  .selected rect, .selected circle { stroke-width:2.4 !important; filter: drop-shadow(0 0 2px #60a5fa); }
+                  .selected .node-shape, .selected circle { stroke-width:2.4 !important; filter: drop-shadow(0 0 2px #60a5fa); }
                   .selected.link { stroke:#2563eb; }
                   .faded { opacity:0.35; }
                   @keyframes flow { to { stroke-dashoffset: -24; } }
@@ -3294,6 +3304,37 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
       function badge(cls, text){ return '<span class="pill ' + cls + '">' + text + '</span>'; }
 
+      function splitAppName(full){
+        var s = String(full || '');
+        var idx = s.indexOf('--');
+        if (idx > 0) {
+          return { namespace: s.slice(0, idx), name: s.slice(idx + 2) };
+        }
+        return { namespace: 'default', name: s };
+      }
+
+      function hashHue(str){
+        var h = 0;
+        for (var i = 0; i < str.length; i++) {
+          h = (h * 31 + str.charCodeAt(i)) % 360;
+        }
+        return h;
+      }
+
+      function namespaceColors(ns){
+        var n = (ns && String(ns)) ? String(ns) : 'default';
+        if (n === 'default') {
+          return { color: '#64748b', tint: 'rgba(100,116,139,0.18)' };
+        }
+        var hue = hashHue(n);
+        return { color: 'hsl(' + hue + ', 70%, 55%)', tint: 'hsla(' + hue + ', 70%, 20%, 0.18)' };
+      }
+
+      function renderNamespacePill(ns){
+        var c = namespaceColors(ns);
+        return '<span class="ns-pill" style="--ns-color:' + c.color + '; --ns-tint:' + c.tint + ';">' + escapeHtml(ns) + '</span>';
+      }
+
       function fetchJSON(path){
         return fetch(path, {headers: authHeaders()}).then(function(r){
           if(!r.ok) return r.text().then(function(t){ throw new Error(t); });
@@ -3309,6 +3350,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       // Clear detail panels/logs when the selected app disappears
       function clearDetailPanels(){
         try { document.getElementById('d-app').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-namespace').textContent = '-'; } catch(e){}
         try { document.getElementById('d-image').textContent = '-'; } catch(e){}
         try { document.getElementById('d-ingress').textContent = '-'; } catch(e){}
         try { document.getElementById('d-replicas').textContent = '-'; } catch(e){}
@@ -3332,38 +3374,74 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var items = data.items || [];
           lastStatuses = items;
           var names = items.map(function(s){ return s.app_name; });
+          var groups = {};
           items.forEach(function(s){
-            // Use server-derived revision_status for the primary badge to avoid
-            // drift with controller semantics (ready/progressing/degraded).
-            var statusBadge = '';
-            var rs = String(s.revision_status||'').toLowerCase();
-            if (rs === 'ready') statusBadge = badge('ok','ready');
-            else if (rs === 'progressing') statusBadge = badge('warn','progressing');
-            else statusBadge = badge('bad','degraded');
-            var div = document.createElement('div');
-            div.className = 'app' + (current===s.app_name ? ' active' : '');
-            try { div.dataset.app = s.app_name; } catch(e){}
-            // Canary pill if rollout strategy is canary with weight>0
-            var canary = '';
-            var pausedPill = '';
-            try {
-              var ro = s.rollout || null;
-              var w = (ro && ro.weight!=null) ? Number(ro.weight) : 0;
-              if (ro && String((ro.strategy||'')).toLowerCase()==='canary' && w>0) {
-                canary = badge('warn', 'canary ' + String(w) + '%');
-              }
-              if (ro && ro.pause === true) {
-                pausedPill = badge('warn', 'paused');
-              }
-            } catch(e){}
-            var crash = (lastSystem && lastSystem.crashloop && lastSystem.crashloop[s.app_name]) ? badge('bad','crashloop') : '';
-            var cdsec = (lastSystem && lastSystem.cooldown && lastSystem.cooldown[s.app_name]) ? Number(lastSystem.cooldown[s.app_name]||0) : 0;
-            var cd = cdsec>0 ? badge('warn','cooldown '+String(cdsec)+'s') : '';
-            var line1 = '<div><strong>' + s.app_name + '</strong> ' + statusBadge + ' ' + canary + ' ' + pausedPill + ' ' + crash + ' ' + cd + '</div>';
-            var line2 = '<div style="font-size:12px;color:#666;">' + s.ready_replicas + '/' + s.desired_replicas + ' ready - rev ' + s.revision_status + '</div>';
-            div.innerHTML = line1 + line2;
-            div.onclick = function(){ selectApp(s.app_name); };
-            if (elAppsList) elAppsList.appendChild(div);
+            var info = splitAppName(s.app_name);
+            s._ns = info.namespace;
+            s._short = info.name;
+            if (!groups[info.namespace]) groups[info.namespace] = [];
+            groups[info.namespace].push(s);
+          });
+          var namespaces = Object.keys(groups);
+          namespaces.sort(function(a, b){
+            if (a === 'default') return -1;
+            if (b === 'default') return 1;
+            return String(a).localeCompare(String(b));
+          });
+          namespaces.forEach(function(ns){
+            var colors = namespaceColors(ns);
+            if (elAppsList) {
+              var header = document.createElement('div');
+              header.className = 'ns-header';
+              header.style.setProperty('--ns-color', colors.color);
+              header.style.setProperty('--ns-tint', colors.tint);
+              header.innerHTML = '<span class="ns-dot"></span><span class="ns-name">' + escapeHtml(ns) + '</span><span class="ns-count">' + String(groups[ns].length) + '</span>';
+              elAppsList.appendChild(header);
+            }
+            groups[ns].sort(function(a, b){
+              return String(a._short || a.app_name).localeCompare(String(b._short || b.app_name));
+            });
+            groups[ns].forEach(function(s){
+              // Use server-derived revision_status for the primary badge to avoid
+              // drift with controller semantics (ready/progressing/degraded).
+              var statusBadge = '';
+              var rs = String(s.revision_status||'').toLowerCase();
+              if (rs === 'ready') statusBadge = badge('ok','ready');
+              else if (rs === 'progressing') statusBadge = badge('warn','progressing');
+              else statusBadge = badge('bad','degraded');
+              var div = document.createElement('div');
+              div.className = 'app' + (current===s.app_name ? ' active' : '');
+              div.style.setProperty('--ns-color', colors.color);
+              div.style.setProperty('--ns-tint', colors.tint);
+              try { div.dataset.app = s.app_name; div.dataset.ns = ns; } catch(e){}
+              // Canary pill if rollout strategy is canary with weight>0
+              var canary = '';
+              var pausedPill = '';
+              try {
+                var ro = s.rollout || null;
+                var w = (ro && ro.weight!=null) ? Number(ro.weight) : 0;
+                if (ro && String((ro.strategy||'')).toLowerCase()==='canary' && w>0) {
+                  canary = badge('warn', 'canary ' + String(w) + '%');
+                }
+                if (ro && ro.pause === true) {
+                  pausedPill = badge('warn', 'paused');
+                }
+              } catch(e){}
+              var crash = (lastSystem && lastSystem.crashloop && lastSystem.crashloop[s.app_name]) ? badge('bad','crashloop') : '';
+              var cdsec = (lastSystem && lastSystem.cooldown && lastSystem.cooldown[s.app_name]) ? Number(lastSystem.cooldown[s.app_name]||0) : 0;
+              var cd = cdsec>0 ? badge('warn','cooldown '+String(cdsec)+'s') : '';
+              var displayName = s._short || s.app_name;
+              var line1 = '<div class="app-title"><strong class="app-name">' + escapeHtml(displayName) + '</strong> ' + statusBadge + ' ' + canary + ' ' + pausedPill + ' ' + crash + ' ' + cd + '</div>';
+              var revStatus = String(s.revision_status || '-');
+              var line2 = '<div class="app-sub">' + String(s.ready_replicas) + '/' + String(s.desired_replicas) + ' ready - rev ' + escapeHtml(revStatus) + '</div>';
+              div.innerHTML = line1 + line2;
+              try {
+                var nameEl = div.querySelector('.app-name');
+                if (nameEl) nameEl.title = s.app_name;
+              } catch(e){}
+              div.onclick = function(){ selectApp(s.app_name); };
+              if (elAppsList) elAppsList.appendChild(div);
+            });
           });
           // If the currently viewed app was removed, fall back to the first available.
           if (current && names.indexOf(current) === -1) {
@@ -3383,6 +3461,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if(!current) return Promise.resolve();
         return fetchJSON('/status/' + encodeURIComponent(current) + '?details=1').then(function(s){
           document.getElementById('d-app').textContent = s.app_name;
+          try {
+            var nsInfo = splitAppName(s.app_name);
+            var nsEl = document.getElementById('d-namespace');
+            if (nsEl) { nsEl.innerHTML = renderNamespacePill(nsInfo.namespace); }
+          } catch(e){}
           document.getElementById('d-image').textContent = s.image || '-';
           var inh = (s.ingress_host || '-') + (s.ingress_path || '');
           document.getElementById('d-ingress').textContent = inh;
@@ -3816,6 +3899,31 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         }
       })();
 
+      function fitTextToWidth(textEl, label, maxWidth){
+        var full = String(label || '');
+        if (!textEl) return { text: full, truncated: false, full: full };
+        try {
+          textEl.textContent = full;
+          if (textEl.getComputedTextLength() <= maxWidth) {
+            return { text: full, truncated: false, full: full };
+          }
+          var lo = 0, hi = full.length, best = '…';
+          while (lo <= hi) {
+            var mid = Math.floor((lo + hi) / 2);
+            var cand = full.slice(0, Math.max(0, mid)) + '…';
+            textEl.textContent = cand;
+            var w = textEl.getComputedTextLength();
+            if (w <= maxWidth) { best = cand; lo = mid + 1; }
+            else { hi = mid - 1; }
+          }
+          textEl.textContent = best;
+          return { text: best, truncated: true, full: full };
+        } catch(e){
+          textEl.textContent = full;
+          return { text: full, truncated: false, full: full };
+        }
+      }
+
       function drawSystemGraph(sys, statuses){
         var svg = document.getElementById('sys-graph');
         if(!svg) return;
@@ -3868,11 +3976,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         apps.forEach(function(s){ byApp[s.app_name]=s; });
         var placements = sys.placements || {};
         apps.forEach(function(s, i){
+          var info = splitAppName(s.app_name);
           var col = i % cols;
           var row = Math.floor(i / cols);
           var x = padX + gap*col + gap*0.5;
           var appY = (midY + 90) + row * (nodeH + podOffsetY + rowGap);
-          addNode('app:'+s.app_name, s.app_name, 'app', x, appY, {app:s.app_name, ready:s.ready_replicas, desired:s.desired_replicas, rev:s.revision, status:s.revision_status, row:row, col:col, idx:i});
+          addNode('app:'+s.app_name, info.name, 'app', x, appY, {app:s.app_name, app_short: info.name, ns: info.namespace, ready:s.ready_replicas, desired:s.desired_replicas, rev:s.revision, status:s.revision_status, row:row, col:col, idx:i});
           var reps = placements[s.app_name] || [];
           reps.slice(0,12).forEach(function(p, idx){
             var podY = appY + podOffsetY;
@@ -3880,7 +3989,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             var nodePos = nid && nodeById[nid] ? nodeById[nid] : null;
             var px = nodePos ? nodePos.x : (x - (reps.length-1)*10/2 + idx*10);
             var state = p.ready ? 'ready' : 'pending';
-            addNode('pod:'+s.app_name+':'+idx, state, 'pod', px, podY, {app:s.app_name, podIndex:idx, state:state, node:p.node_id});
+            addNode('pod:'+s.app_name+':'+idx, state, 'pod', px, podY, {app:s.app_name, ns: info.namespace, podIndex:idx, state:state, node:p.node_id});
           });
         });
 
@@ -4093,6 +4202,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           if(appName){ g.setAttribute('data-app', appName); g.style.cursor='pointer';
             g.addEventListener('click', function(ev){ ev.preventDefault(); ev.stopPropagation(); try { selectApp(appName); focusAppListItem(appName); } catch(e){} });
           }
+          if(n.type==='app' && n.meta && n.meta.ns){
+            var nsc = namespaceColors(n.meta.ns);
+            g.style.setProperty('--ns-color', nsc.color);
+            g.style.setProperty('--ns-tint', nsc.tint);
+          }
           if(n.type==='pod'){
             g.setAttribute('transform','translate('+(n.x-5)+','+(n.y-5)+')');
             var c = document.createElementNS('http://www.w3.org/2000/svg','circle');
@@ -4104,38 +4218,60 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             var title = document.createElementNS('http://www.w3.org/2000/svg','title');
             var parts = [];
             if(n.meta && n.meta.app) parts.push('App: '+n.meta.app);
+            if(n.meta && n.meta.ns) parts.push('Namespace: '+n.meta.ns);
             if(n.meta && (n.meta.podIndex!=null)) parts.push('Replica: '+String(n.meta.podIndex));
             parts.push('State: ' + (n.meta && n.meta.state ? n.meta.state : n.label));
             title.textContent = parts.join(String.fromCharCode(10));
             g.appendChild(title);
+            gNodes.appendChild(g);
           } else {
             var rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
-            rect.setAttribute('width','80'); rect.setAttribute('height','32'); rect.setAttribute('rx','6'); rect.setAttribute('ry','6'); rect.setAttribute('stroke-width','1.2');
+            rect.setAttribute('width','80'); rect.setAttribute('height','32'); rect.setAttribute('rx','6'); rect.setAttribute('ry','6');
+            rect.setAttribute('class','node-shape');
             g.appendChild(rect);
+            if(n.type==='app' && n.meta && n.meta.ns){
+              var stripe = document.createElementNS('http://www.w3.org/2000/svg','rect');
+              stripe.setAttribute('class','ns-stripe');
+              stripe.setAttribute('x','1'); stripe.setAttribute('y','1'); stripe.setAttribute('width','6'); stripe.setAttribute('height','30');
+              stripe.setAttribute('rx','4'); stripe.setAttribute('ry','4');
+              g.appendChild(stripe);
+            }
             var t = document.createElementNS('http://www.w3.org/2000/svg','text');
-            t.setAttribute('x','40'); t.setAttribute('y','20'); t.setAttribute('text-anchor','middle'); t.textContent = n.label;
+            t.setAttribute('x','40'); t.setAttribute('y','20'); t.setAttribute('text-anchor','middle'); t.textContent = String(n.label || '');
             g.appendChild(t);
+            gNodes.appendChild(g);
+            var labelInfo = fitTextToWidth(t, n.label, (nodeW * 1.4) - 8);
+            try {
+              var bbox = t.getBBox();
+              var chip = document.createElementNS('http://www.w3.org/2000/svg','rect');
+              chip.setAttribute('class','label-chip');
+              chip.setAttribute('x', String(bbox.x - 4));
+              chip.setAttribute('y', String(bbox.y - 2));
+              chip.setAttribute('width', String(bbox.width + 8));
+              chip.setAttribute('height', String(bbox.height + 4));
+              chip.setAttribute('rx','4'); chip.setAttribute('ry','4');
+              g.insertBefore(chip, t);
+            } catch(e){}
             var title = document.createElementNS('http://www.w3.org/2000/svg','title');
             if(n.id.startsWith('app:')){
               var a = n.meta || {};
               var info = [];
               info.push('App: ' + (a.app||n.label));
+              if (a.ns) info.push('Namespace: ' + a.ns);
               info.push('Replicas: ' + (a.ready||0) + '/' + (a.desired||0));
               if(a.rev!=null) info.push('Revision: ' + a.rev + ' (' + (a.status||'-') + ')');
               title.textContent = info.join(String.fromCharCode(10));
             } else {
-              title.textContent = n.label;
+              title.textContent = labelInfo.full;
             }
             g.appendChild(title);
           }
           // System node hover help
           if(n.type==='system' && (n.id==='ingress' || n.id==='controller' || n.id==='runtime')){
-            var label = g.querySelector('text');
-            g.addEventListener('mouseenter', function(ev){ if(label) label.style.visibility='hidden'; showHoverCard(n.id, ev); });
+            g.addEventListener('mouseenter', function(ev){ showHoverCard(n.id, ev); });
             g.addEventListener('mousemove', function(ev){ showHoverCard(n.id, ev); });
-            g.addEventListener('mouseleave', function(){ if(label) label.style.visibility='visible'; hideHoverCard(); });
+            g.addEventListener('mouseleave', function(){ hideHoverCard(); });
           }
-          gNodes.appendChild(g);
         }
 
         links.forEach(function(L,i){ drawLink('e'+i, L.a, L.b, L.cls); });

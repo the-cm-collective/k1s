@@ -354,6 +354,7 @@
       <a href="index.html">Home</a>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
+      <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
@@ -387,7 +388,7 @@
 <li>Multi‑node: controller manages registered nodes with heartbeats, cordon/drain, and a minimal scheduler that respects <code>nodeSelector</code>, taints/tolerations, topology spread, and storage pinning. Agents expose runtime exec/logs/probes over mTLS; Service VIPs ride a WireGuard/VXLAN overlay with HAProxy provider. HostPorts are still supported for single‑node edge cases.</li>
 <li>Networking/Ingress: Service CIDR + overlay provider (<code>AE_SERVICE_PROVIDER=overlay</code>) with ClusterIP allocation, EndpointSlice projection, and Caddy templates that prefer Service VIPs. Bridge provider remains for single‑node or no‑overlay labs.</li>
 <li>State: SQLite by default; Postgres supported for shim HA and multi‑node durability (<code>AE_STATE_DSN</code> / <code>AE_APISHIM_DSN</code>).</li>
-<li>API surface: native HTTP API plus the Kubernetes API shim (<code>ae.apishim serve</code>) covering Deployments/StatefulSets/DaemonSets/Jobs/CronJobs/Ingress/Service/HPA/RBAC with SSA/patch support. Compatibility matrix and OpenAPI v2/v3 artifacts ship in <code>docs/apishim-compatibility-matrix.md</code> and CI.</li>
+<li>API surface: native HTTP API plus the Kubernetes API shim (<code>ae.apishim serve</code>) covering Deployments/StatefulSets/DaemonSets/Jobs/CronJobs/Ingress/Service/HPA/RBAC with SSA/patch support. Compatibility matrix and OpenAPI v2/v3 artifacts ship in <code>docs/reference/apishim-compatibility-matrix.md</code> and CI.</li>
 <li>Tooling: <code>k1s</code> kubectl‑style wrapper, <code>ae nodes</code> for inventory/cordon, <code>ae plan</code> for placement hints, <code>export-k8s</code> and <code>k8s-report</code> for parity/compliance, dashboard at <code>/dashboard</code>, and <code>/nodes</code> + enriched <code>/metrics</code> for node/service visibility.</li>
 <li>Footprint: stays well below k3s while adding overlay + shim; recent lab runs keep controller+agent PSS under ~450 MB on Podman+crun.</li>
 </ul>
@@ -440,7 +441,7 @@
 <li>Polling only: <code>python -m ae.controller --loop --specs specs/ --metrics-port 9108</code></li>
 <li>With file watch (if <code>watchdog</code> installed): <code>python -m ae.controller --loop --watch --specs specs/ --metrics-port 9108</code></li>
 </ul>
-<p>Multi-node lab (two hosts): follow <code>docs/multinode-lab.md</code> or run <code>ops/dev/multinode-lab.sh -h</code> for flags. Ensure <code>AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay</code> on the controller and start <code>ae.node</code> on each worker with <code>--ensure-pod-net</code>.</p>
+<p>Multi-node lab (two hosts): follow <code>docs/guides/multinode-lab.md</code> or run <code>ops/dev/multinode-lab.sh -h</code> for flags. Ensure <code>AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay</code> on the controller and start <code>ae.node</code> on each worker with <code>--ensure-pod-net</code>.</p>
 <p>2) Apply a sample app</p>
 <ul>
 <li><code>python -m ae.cli apply -f specs/examples/echo.yaml</code></li>
@@ -490,11 +491,11 @@
 </ul>
 <h2>Further Reading</h2>
 <ul>
-<li>Runbook: <code>docs/runbook.md</code></li>
-<li>End-to-End Guide: <code>docs/e2e.md</code></li>
-<li>HTTP API: <code>docs/http-api.md</code></li>
-<li>Kubernetes API shim + compatibility matrix: <code>CONFORMANCE.md</code>, <code>docs/apishim-compatibility-matrix.md</code></li>
-<li>Architecture (detailed): <code>docs/architecture.md</code></li>
+<li>Runbook: <code>docs/ops/runbook.md</code></li>
+<li>End-to-End Guide: <code>docs/guides/e2e.md</code></li>
+<li>HTTP API: <code>docs/reference/http-api.md</code></li>
+<li>Kubernetes API shim + compatibility matrix: <code>CONFORMANCE.md</code>, <code>docs/reference/apishim-compatibility-matrix.md</code></li>
+<li>Architecture (detailed): <code>docs/reference/architecture.md</code></li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -503,7 +504,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-15 15:09:49</span>
+        <span>Built 2026-01-15 16:48:40</span>
       </div>
     </footer>
     <script>

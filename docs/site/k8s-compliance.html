@@ -354,6 +354,7 @@
       <a href="index.html">Home</a>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
+      <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
@@ -406,7 +407,22 @@
 <li>Ingress: networking.k8s.io/v1 Prefix paths with TLS and ingressClassName; status.loadBalancer populated from Service VIP/provider IPs.</li>
 <li>Policy/Autoscaling/Accounts: PDB (int/percent), HPA v2 (CPU/memory utilization/averageValue), ServiceAccount tokens, Role/RoleBinding emit/enforce in shim, NetworkPolicy passthrough.</li>
 <li>Scheduling: affinity/tolerations/topologySpreadConstraints/nodeSelector/priorityClassName passed to Pod templates; scheduler in k1s honors selectors/tolerations/topology spread and storage pinning.</li>
-<li>Validation/Tooling: <code>ae export-k8s --validate</code>, <code>ae k8s-check --policy strict</code>, <code>ae k8s-report</code>, OpenAPI v2/v3 drift guard + fixtures, compatibility matrix (<code>docs/apishim-compatibility-matrix.md</code>).</li>
+<li>Runtime/Networking: Service CIDR + overlay provider with ClusterIP allocation, EndpointSlice projection, port-forward for pods/services, exec/logs via agents.</li>
+<li>Discovery/Tooling: OpenAPI v2/v3 drift guard + fixtures, kubectl/helm apply/watch/port-forward gates in CI, compatibility matrix (<code>apishim-compatibility-matrix.html</code>).</li>
+</ul>
+<h2>Parity Checklist</h2>
+<ul>
+<li>Use readiness/liveness/startup probes.</li>
+<li>Provide <code>resources.requests/limits</code>; enable <code>--policy strict</code> in <code>ae k8s-check</code>.</li>
+<li>Add topology spread or anti-affinity for multi-replica apps.</li>
+<li>Keep retained volumes single-node or use PVCs when exporting to Kubernetes.</li>
+<li>Prefer Service VIP + ingress over hostPorts for HA; reserve hostPorts for single-node edges.</li>
+</ul>
+<h2>Verification Notes</h2>
+<ul>
+<li>Exporter validated with <code>ae export-k8s --validate</code> + <code>ae k8s-check --policy strict</code>.</li>
+<li>Shim gates: kubectl/helm apply/get/watch/port-forward exercised in CI with OpenAPI drift guard.</li>
+<li>Multi-node overlay path covered by integration tests and the multi-node lab guide.</li>
 </ul>
 <h3>Notable Gaps vs. Kubernetes</h3>
 <ul>
@@ -415,6 +431,20 @@
 <li>PV/PVC/StorageClass/CSI provisioning beyond exported manifests; k1s runtime relies on retained named volumes.</li>
 <li>metrics.k8s.io/metrics-server and aggregated APIs are out of scope.</li>
 <li>Advanced Ingress features (regex, weighted/canary annotations, multiple backends per rule) remain out of scope for now.</li>
+</ul>
+<h2>Demo Manifests</h2>
+<ul>
+<li><code>specs/examples/echo-sec.yaml</code>: non-root + read-only root filesystem + HTTP readiness + ingress.</li>
+<li>Apply: <code>python -m ae.cli apply -f specs/examples/echo-sec.yaml</code></li>
+<li><code>specs/examples/echo-tcp.yaml</code>: TCP readiness with thresholds + ingress.</li>
+<li>Apply: <code>python -m ae.cli apply -f specs/examples/echo-tcp.yaml</code></li>
+<li><code>specs/examples/echo-exec.yaml</code>: Exec readiness probe + ingress.</li>
+<li>Apply: <code>python -m ae.cli apply -f specs/examples/echo-exec.yaml</code></li>
+</ul>
+<h2>Remote Apply</h2>
+<ul>
+<li>Enable mutations and token, then:</li>
+<li><code>ae --server https://api.home.arpa:8443 --token &lt;admin&gt; apply -f specs/examples/echo-sec.yaml</code></li>
 </ul>
 <h2>NetworkPolicy Provider Notes (k3s)</h2>
 <ul>
@@ -448,7 +478,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-15 15:09:49</span>
+        <span>Built 2026-01-15 16:48:40</span>
       </div>
     </footer>
     <script>
