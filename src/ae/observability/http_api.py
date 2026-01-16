@@ -28,10 +28,9 @@ from ae.controller.state import SQLiteStateStore
 logger = logging.getLogger(__name__)
 
 
-# Helper: when running in demo mode, restrict visible apps to those declared
-# in the active specs directory (AE_SPECS_DIR). This keeps the dashboard
-# scoped to the selected demo and avoids surfacing historical apps from the
-# state DB.
+# Helper: when running in demo mode, restrict visible apps to those registered
+# in the app registry (typically source=specs). This keeps the dashboard scoped
+# to the selected demo and avoids surfacing historical apps from the state DB.
 def _demo_filter_enabled() -> bool:
     try:
         raw = str(os.getenv("AE_DEMO_FILTER", "") or "").strip().lower()
@@ -42,37 +41,57 @@ def _demo_filter_enabled() -> bool:
     return True
 
 
+def _demo_allowed_sources() -> set[str]:
+    raw = str(os.getenv("AE_DEMO_SOURCES", "specs") or "").strip()
+    if not raw:
+        return set()
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def _demo_label_selector() -> dict[str, str | None]:
+    raw = str(os.getenv("AE_DEMO_LABELS", "") or "").strip()
+    if not raw:
+        return {}
+    out: dict[str, str | None] = {}
+    for expr in raw.split(","):
+        expr = expr.strip()
+        if not expr:
+            continue
+        if "=" in expr:
+            k, v = expr.split("=", 1)
+            out[k.strip()] = v.strip()
+        else:
+            out[expr] = None
+    return out
+
+
+def _labels_match(labels: dict, selector: dict[str, str | None]) -> bool:
+    for key, val in selector.items():
+        if key not in labels:
+            return False
+        if val is not None and str(labels.get(key)) != val:
+            return False
+    return True
+
+
 def _demo_allowed_apps() -> set[str]:
     try:
-        import os as _os
-        from pathlib import Path as _Path
-
         # Only filter when explicitly in demo mode
-        if _os.getenv("AE_DEMO_MODE") != "1" or not _demo_filter_enabled():
+        if os.getenv("AE_DEMO_MODE") != "1" or not _demo_filter_enabled():
             return set()
-        specs_root = _os.getenv("AE_SPECS_DIR") or ""
-        if not specs_root:
-            return set()
-        root = _Path(specs_root)
-        if not root.exists():
-            return set()
-        # Parse manifests to extract app names
-        try:
-            from ae.controller.spec import load_manifest as _load
-        except Exception:
-            return set()
-        names: set[str] = set()
-        for p in root.rglob("*.y*"):
-            try:
-                if not p.is_file():
-                    continue
-                m = _load(p)
-                nm = getattr(getattr(m, "metadata", None), "name", None)
-                if nm:
-                    names.add(str(nm))
-            except Exception:
+        sources = _demo_allowed_sources()
+        label_sel = _demo_label_selector()
+        db_path = Path(os.getenv("AE_STATE_DB", "state/controller.db"))
+        store = SQLiteStateStore(db_path)
+        entries = store.list_registered_apps()
+        allowed: set[str] = set()
+        for entry in entries:
+            if sources and entry.source in sources:
+                allowed.add(entry.app_name)
                 continue
-        return names
+            if label_sel and _labels_match(entry.labels, label_sel):
+                allowed.add(entry.app_name)
+        return allowed
     except Exception:
         return set()
 
@@ -81,7 +100,7 @@ def _filter_statuses_for_demo(items):
     try:
         if not _demo_filter_enabled():
             return items
-        # Compute the allowed app set from the active demo specs and any Labs-applied apps.
+        # Compute the allowed app set from registry demo sources and any Labs-applied apps.
         demo_allowed = set(_demo_allowed_apps())
         try:
             labs_allowed = set(_LABS_APPS)
@@ -108,7 +127,7 @@ def _filter_statuses_for_demo(items):
         ]
         if subset:
             return subset
-        # If a demo scope exists (apps declared under AE_SPECS_DIR), strictly enforce it
+        # If a demo scope exists (apps registered under demo sources/labels), strictly enforce it
         # even if the controller hasn't recorded any of those apps yet. This prevents
         # leaking historical apps from previous runs.
         if demo_allowed:
@@ -409,6 +428,14 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             if (params.get("token") or [""])[0] == tok:
                 return True
         return False
+
+    def _call_apply(self, payload: dict, source: str | None = None, labels: dict | None = None):
+        if self.apply_fn is None:
+            raise RuntimeError("apply not available")
+        try:
+            return self.apply_fn(payload, source=source, labels=labels)  # type: ignore[misc]
+        except TypeError:
+            return self.apply_fn(payload)  # type: ignore[misc]
 
     def _maybe_cors(self) -> None:
         if not self._labs_enabled():
@@ -932,7 +959,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 if role != "admin" or not self._scope_allows("admin", app) or not self._rbac_allows("create", app):
                     self._json_error(403, "token scope denies apply to target app")
                     return
-                report = self.apply_fn(payload)  # type: ignore[misc]
+                report = self._call_apply(payload, source="api")
                 self._json_ok(report)
             except Exception as exc:  # pragma: no cover
                 self._json_error(500, str(exc))
@@ -1404,7 +1431,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                                     break
                 except Exception:
                     pass
-                report = self.apply_fn(data)  # type: ignore[misc]
+                report = self._call_apply(data, source="labs")
                 try:
                     _LABS_APPS.add(new_name)
                 except Exception:
@@ -1510,6 +1537,45 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             _LABS_APP_PREFIXES.discard(prefix)
                         except Exception:
                             pass
+                except Exception:
+                    pass
+                # Also remove shim objects in the helm demo namespace so the adapter
+                # doesn't reapply them after reset.
+                try:
+                    ns = str(_HELM_DEMO_STATE.get("namespace") or "demo-helm")
+                    if ns:
+                        import os as _os
+                        from pathlib import Path as _Path
+
+                        from ae.apishim.store import ObjectStore as _ObjectStore
+
+                        dsn = _os.getenv("AE_APISHIM_DSN")
+                        db_path = _os.getenv("AE_APISHIM_DB", "state/apishim.db")
+                        store = _ObjectStore(dsn=dsn) if dsn else _ObjectStore(db_path=_Path(db_path))
+                        targets = [
+                            ("", "v1", "services"),
+                            ("", "v1", "serviceaccounts"),
+                            ("", "v1", "secrets"),
+                            ("", "v1", "configmaps"),
+                            ("apps", "v1", "deployments"),
+                            ("apps", "v1", "daemonsets"),
+                            ("apps", "v1", "statefulsets"),
+                            ("batch", "v1", "jobs"),
+                            ("batch", "v1", "cronjobs"),
+                            ("networking.k8s.io", "v1", "ingresses"),
+                            ("autoscaling", "v2", "horizontalpodautoscalers"),
+                        ]
+                        removed = 0
+                        for grp, ver, res in targets:
+                            try:
+                                items = store.list(grp, ver, res, ns)
+                            except Exception:
+                                continue
+                            for obj in items:
+                                if store.delete(grp, ver, res, ns, obj.name):
+                                    removed += 1
+                        if removed:
+                            logger.info("labs reset removed %s shim objects in namespace %s", removed, ns)
                 except Exception:
                     pass
                 # Ensure the shim demo process is stopped so it doesn't reapply.
@@ -1675,7 +1741,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                                 meta["annotations"] = anns
                             except Exception:
                                 pass
-                            rep = self.apply_fn(data)  # type: ignore[misc]
+                            rep = self._call_apply(data, source="labs")
                             if isinstance(rep, dict):
                                 if base_revision is not None:
                                     rep["base_revision"] = int(base_revision)
@@ -1716,7 +1782,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         meta["annotations"] = anns
                     except Exception:
                         pass
-                    rep = self.apply_fn(data)  # type: ignore[misc]
+                    rep = self._call_apply(data, source="labs")
                     if isinstance(rep, dict):
                         if base_revision is not None:
                             rep["base_revision"] = int(base_revision)
@@ -2038,7 +2104,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         # Per-app and per-replica labeled gauges
         try:
             statuses = self.store.list_status()
-            # Demo filter: keep only apps present in the active specs directory
+            # Demo filter: keep only apps registered under the demo scope
             statuses = _filter_statuses_for_demo(statuses)
             # Optional read scope filtering when a read-capable token is presented
             try:
@@ -2300,7 +2366,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 )
             },
         }
-        # In demo mode, restrict controller app counters to allowed apps from specs
+        # In demo mode, restrict controller app counters to allowed apps from registry
         try:
             demo_allowed = set(_demo_allowed_apps())
             labs_allowed = set(_LABS_APPS)
@@ -2694,7 +2760,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         import urllib.parse as _up
 
         statuses = self.store.list_status()
-        # Demo filter: keep only apps present in the active specs directory
+        # Demo filter: keep only apps registered under the demo scope
         statuses = _filter_statuses_for_demo(statuses)
         # Optional read scope filtering when a read-capable token is presented
         try:
@@ -4210,7 +4276,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           controller: {
             title:'Controller',
             body:[
-              'Reconciliation loop for manifests in specs/.',
+              'Reconciliation loop for registered apps (imported from specs/).',
               'Computes desired state and converges containers and ingress.',
               'Single-node rollout: maxUnavailable=0, maxSurge=1 (zero-downtime).',
               'Records events, exposes /status, /events, /metrics, and serves the dashboard.',

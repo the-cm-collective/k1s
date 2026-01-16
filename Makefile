@@ -149,6 +149,8 @@ demo-reset:
 	@rm -f state/caddy/*.caddy 2>/dev/null || true
 	@echo "[demo-reset] removing controller DB (state/controller.db)"
 	@rm -f state/controller.db 2>/dev/null || true
+	@echo "[demo-reset] removing shim DB (state/apishim.db)"
+	@rm -f state/apishim.db 2>/dev/null || true
 	@echo "[demo-reset] pruning ae.app volumes (docker/podman)"
 	@{ command -v docker >/dev/null 2>&1 && docker volume ls -q --filter label=ae.app | xargs -r docker volume rm >/dev/null 2>&1; } || true
 	@{ command -v podman >/dev/null 2>&1 && podman volume ls -q --filter label=ae.app | xargs -r podman volume rm >/dev/null 2>&1; } || true

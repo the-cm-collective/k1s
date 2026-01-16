@@ -18,6 +18,7 @@ class Metadata(BaseModel):
     """Metadata block for top-level resources."""
 
     name: str
+    labels: dict | None = None
 
 
 class HTTPGetProbe(BaseModel):

@@ -161,6 +161,30 @@
     b._hideTimer = setTimeout(() => { b.className = 'ribbon hidden'; b.innerHTML=''; }, ms);
   }
 
+  async function handleLabsAuth(resp, actionLabel) {
+    if (!resp || (resp.status !== 401 && resp.status !== 403)) {
+      return false;
+    }
+    const label = actionLabel || 'Action';
+    try {
+      banner(`${label} requires a Labs token. Paste AE_LABS_TOKEN and click “Use Token”.`, 'fail');
+      const inp = document.getElementById('labs-token');
+      if (inp) { inp.classList.add('attn'); inp.focus(); }
+    } catch(_){}
+    return true;
+  }
+
+  function bannerFetchFailure(actionLabel, err) {
+    const label = actionLabel || 'Action';
+    const msg = String(err || '');
+    if (msg.toLowerCase().includes('failed to fetch')) {
+      banner(`${label} failed: API unreachable or blocked by the browser (TLS/mixed content). Confirm docs proxy is up at https://docs.home.arpa:8443 and API mode is Proxy.`, 'fail', 8000);
+      return;
+    }
+    banner(`${label} error: ${err}`, 'fail');
+  }
+
+
   // Expose banner helper for ad-hoc feedback from other scripts
   try { window.k1sBanner = banner; } catch(_) {}
 
@@ -470,10 +494,8 @@
         headers: labsHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ action: 'start' })
       });
-      if (!resp.ok) {
-        banner(`Helm demo start failed: ${await resp.text()}`, 'fail');
-        return;
-      }
+      if (await handleLabsAuth(resp, 'Helm demo start')) { return; }
+      if (!resp.ok) { banner(`Helm demo start failed: ${await resp.text()}`, 'fail'); return; }
       const data = await resp.json();
       updateHelmDemoUI(data);
       try { toast('Helm demo started', 'ok'); } catch(_){}
@@ -488,10 +510,8 @@
         headers: labsHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ action: 'stop' })
       });
-      if (!resp.ok) {
-        banner(`Helm demo stop failed: ${await resp.text()}`, 'fail');
-        return;
-      }
+      if (await handleLabsAuth(resp, 'Helm demo stop')) { return; }
+      if (!resp.ok) { banner(`Helm demo stop failed: ${await resp.text()}`, 'fail'); return; }
       const data = await resp.json();
       updateHelmDemoUI(data);
     });
@@ -962,8 +982,9 @@
             headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
             body: JSON.stringify({ session_id: prev })
           });
+          if (await handleLabsAuth(r, 'Reset')) { return; }
           if (!r.ok && r.status !== 404) { banner(`Reset failed: ${await r.text()}`, 'fail'); return; }
-        } catch(e){ banner(`Reset error: ${e}`, 'fail'); return; }
+        } catch(e){ bannerFetchFailure('Reset', e); return; }
       }
       // Local UI/session clear regardless of backend availability
       try { banner('Session reset — resources will disappear shortly.', 'ok'); } catch(_){ try { toast('Session reset', 'ok'); } catch(_){} }
