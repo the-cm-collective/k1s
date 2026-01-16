@@ -110,4 +110,4 @@ Read‑only status/metrics/events published at:
 Kubernetes API shim (optional):
 
 - `python -m ae.apishim serve --token <bearer>` exposes `/api`, `/apis`, `/openapi/v2|v3` with SSA/patch and port-forward.
-- Works with kubectl/helm for Deployments/StatefulSets/DaemonSets/Jobs/CronJobs/Ingress/Services/HPA/RBAC; see `docs/reference/apishim-compatibility-matrix.md` for coverage.
+- Works with kubectl/helm for Deployments/Services/Ingress/HPA/RBAC; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated (see `docs/reference/apishim-compatibility-matrix.md`).

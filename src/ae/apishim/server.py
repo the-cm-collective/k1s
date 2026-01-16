@@ -193,6 +193,156 @@ def _list_item_key(obj: dict[str, Any]) -> Any:
     return None
 
 
+def _split_selector_terms(selector: str) -> list[str]:
+    terms: list[str] = []
+    if not selector:
+        return terms
+    buf: list[str] = []
+    depth = 0
+    for ch in selector:
+        if ch == "(":
+            depth += 1
+        elif ch == ")" and depth > 0:
+            depth -= 1
+        if ch == "," and depth == 0:
+            term = "".join(buf).strip()
+            if term:
+                terms.append(term)
+            buf = []
+            continue
+        buf.append(ch)
+    tail = "".join(buf).strip()
+    if tail:
+        terms.append(tail)
+    return terms
+
+
+def _split_selector_values(raw: str) -> list[str]:
+    return [val.strip() for val in (raw or "").split(",") if val.strip()]
+
+
+def _label_selector_match(labels: dict[str, Any], selector: str) -> bool:
+    if not selector:
+        return True
+    labels = labels or {}
+    for expr in _split_selector_terms(selector):
+        if not expr:
+            continue
+        m_notin = re.match(r"^\s*([^\s!<>=(),]+)\s+notin\s+\(([^)]*)\)\s*$", expr)
+        if m_notin:
+            key = m_notin.group(1)
+            values = _split_selector_values(m_notin.group(2))
+            actual = labels.get(key)
+            if actual is not None and str(actual) in values:
+                return False
+            continue
+        m_in = re.match(r"^\s*([^\s!<>=(),]+)\s+in\s+\(([^)]*)\)\s*$", expr)
+        if m_in:
+            key = m_in.group(1)
+            values = _split_selector_values(m_in.group(2))
+            actual = labels.get(key)
+            if actual is None or str(actual) not in values:
+                return False
+            continue
+        if "!=" in expr:
+            key, val = expr.split("!=", 1)
+            key = key.strip()
+            val = val.strip()
+            actual = labels.get(key)
+            if actual is not None and str(actual) == val:
+                return False
+            continue
+        if "==" in expr:
+            key, val = expr.split("==", 1)
+            key = key.strip()
+            val = val.strip()
+            actual = labels.get(key)
+            if actual is None or str(actual) != val:
+                return False
+            continue
+        if "=" in expr:
+            key, val = expr.split("=", 1)
+            key = key.strip()
+            val = val.strip()
+            actual = labels.get(key)
+            if actual is None or str(actual) != val:
+                return False
+            continue
+        # Unsupported selector semantics -> best-effort pass
+    return True
+
+
+def _field_selector_match(name: str | None, namespace: str | None, selector: str) -> bool:
+    if not selector:
+        return True
+    actual_name = name or ""
+    actual_namespace = namespace or ""
+    for expr in _split_selector_terms(selector):
+        if not expr:
+            continue
+        op = None
+        if "!=" in expr:
+            key, val = expr.split("!=", 1)
+            op = "!="
+        elif "==" in expr:
+            key, val = expr.split("==", 1)
+            op = "=="
+        elif "=" in expr:
+            key, val = expr.split("=", 1)
+            op = "="
+        else:
+            continue
+        key = key.strip()
+        val = val.strip()
+        if key == "metadata.name":
+            actual = actual_name
+        elif key == "metadata.namespace":
+            actual = actual_namespace
+        else:
+            # Unsupported field selector -> best-effort pass
+            continue
+        if op in {"=", "=="} and actual != val:
+            return False
+        if op == "!=" and actual == val:
+            return False
+    return True
+
+
+def _selector_values_from_query(query: dict[str, list[str]]) -> tuple[str, str]:
+    label_sel = (query.get("labelSelector", [""])[0] or "").strip()
+    field_sel = (query.get("fieldSelector", [""])[0] or "").strip()
+    return label_sel, field_sel
+
+
+def _matches_selectors(obj: K8sObject | dict[str, Any], label_sel: str, field_sel: str) -> bool:
+    if not label_sel and not field_sel:
+        return True
+    if isinstance(obj, K8sObject):
+        meta = obj.metadata or {}
+        labels = meta.get("labels") if isinstance(meta, dict) else None
+        name = meta.get("name") if isinstance(meta, dict) else None
+        namespace = meta.get("namespace") if isinstance(meta, dict) else None
+        if not name:
+            name = obj.name
+        if namespace is None:
+            namespace = obj.namespace
+    else:
+        meta = obj.get("metadata") if isinstance(obj, dict) else {}
+        labels = meta.get("labels") if isinstance(meta, dict) else None
+        name = meta.get("name") if isinstance(meta, dict) else None
+        namespace = meta.get("namespace") if isinstance(meta, dict) else None
+    labels = labels if isinstance(labels, dict) else {}
+    if not _label_selector_match(labels, label_sel):
+        return False
+    return _field_selector_match(name, namespace, field_sel)
+
+
+def _filter_k8s_items(items: list[K8sObject], label_sel: str, field_sel: str) -> list[K8sObject]:
+    if not label_sel and not field_sel:
+        return items
+    return [item for item in items if _matches_selectors(item, label_sel, field_sel)]
+
+
 def _extract_field_paths(doc: Any, prefix: str = "") -> set[str]:
     paths: set[str] = set()
     if isinstance(doc, dict):
@@ -2143,6 +2293,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
+        label_sel, field_sel = _selector_values_from_query(query)
         try:
             start = time.time()
             timeout = int(query.get("timeoutSeconds", ["0"])[0] or 0) or None
@@ -2160,6 +2311,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps(bm, separators=(",", ":")).encode("utf-8") + b"\n")
                 self.wfile.flush()
             for ev_type, obj in self.server.store.watch(group, version, resource, namespace, heartbeat_seconds=heartbeat, allow_bookmarks=allow_bm, since_rv=int(rv_param) if rv_param and rv_param.isdigit() else None):  # type: ignore[attr-defined]
+                if ev_type != "BOOKMARK" and not _matches_selectors(obj, label_sel, field_sel):
+                    continue
                 body = {"type": ev_type, "object": transform(obj)}
                 line = json.dumps(body, separators=(",", ":")).encode("utf-8") + b"\n"
                 self.wfile.write(line)
@@ -2772,6 +2925,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         plural, ns, name = _ns_name(path)
         if plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}:
             if name is None:
+                label_sel, field_sel = _selector_values_from_query(q)
                 # watch support on LIST endpoints
                 if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
                     if not self._rbac_allows("watch", plural):
@@ -2787,6 +2941,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                         heartbeat = int(q.get("heartbeatSeconds", ["0"]) [0] or 0) or None
                         allow_bm = q.get("allowWatchBookmarks", ["0"]) [0] in ("1", "true", "True")
                         for ev_type, obj in self.server.store.watch("", "v1", plural, ns, heartbeat_seconds=heartbeat, allow_bookmarks=allow_bm):  # type: ignore[attr-defined]
+                            if ev_type != "BOOKMARK" and not _matches_selectors(obj, label_sel, field_sel):
+                                continue
                             line = json.dumps({"type": ev_type, "object": _to_obj(obj)}, separators=(",", ":")).encode("utf-8") + b"\n"
                             self.wfile.write(line)
                             self.wfile.flush()
@@ -2811,10 +2967,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                         items = self.server.store.list_all("", "v1", plural)  # type: ignore[attr-defined]
                     else:
                         items = self.server.store.list("", "v1", plural, ns)  # type: ignore[attr-defined]
+                items = _filter_k8s_items(items, label_sel, field_sel)
+
                 def _transform(obj: K8sObject) -> dict[str, Any]:
                     if plural == "services":
                         doc = _to_obj(obj)
-                        doc = _merge_provider_service(self.server.state, doc, obj)  # type: ignore[attr-defined]
+                        doc = _merge_provider_service(self.server.state, self.server.store, doc, obj)  # type: ignore[attr-defined]
                         return doc
                     return _to_obj(obj)
 
@@ -2859,7 +3017,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                             status=obj.status,
                         )
                 if plural == "services":
-                    doc = _merge_provider_service(self.server.state, _to_obj(obj), obj)  # type: ignore[attr-defined]
+                    doc = _merge_provider_service(self.server.state, self.server.store, _to_obj(obj), obj)  # type: ignore[attr-defined]
                     self._ok(doc)
                     return
                 self._ok(_to_obj(obj))
@@ -2888,7 +3046,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )
                 items: list[dict[str, Any]] = []
                 for svc in svcs:
-                    ep = _endpoints_for_service(self.server.state, svc)  # type: ignore[attr-defined]
+                    ep = _endpoints_for_service(self.server.state, self.server.store, svc)  # type: ignore[attr-defined]
                     if ep:
                         items.append(ep)
                 rv = max((int(i["metadata"].get("resourceVersion", "0")) for i in items), default=0)
@@ -2916,7 +3074,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             if not svc:
                 self._not_found()
                 return
-            ep = _endpoints_for_service(self.server.state, svc)  # type: ignore[attr-defined]
+            ep = _endpoints_for_service(self.server.state, self.server.store, svc)  # type: ignore[attr-defined]
             if not ep:
                 self._not_found()
                 return
@@ -2930,27 +3088,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 containers = self.server.runtime.list_containers_info()  # type: ignore[attr-defined]
             except Exception:
                 containers = []
-            label_sel = q.get("labelSelector", [""])[0] or ""
-
-            def _match_labels(labels: dict[str, Any]) -> bool:
-                if not label_sel:
-                    return True
-                for expr in label_sel.split(","):
-                    expr = expr.strip()
-                    if not expr:
-                        continue
-                    if "!=" in expr:
-                        key, val = expr.split("!=", 1)
-                        if labels.get(key) == val:
-                            return False
-                        continue
-                    if "=" in expr:
-                        key, val = expr.split("=", 1)
-                        if labels.get(key) != val:
-                            return False
-                        continue
-                    # Unsupported selector semantics -> best-effort pass
-                return True
+            label_sel, field_sel = _selector_values_from_query(q)
             # enrich with controller replica/node info when available
             replica_info: dict[str, tuple[str | None, bool, bool, str, str, str]] = {}
             try:
@@ -2969,12 +3107,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                 c_ns = labels.get("ae.namespace") or "default"
                 if ns and c_ns != ns:
                     continue
-                if not _match_labels(labels):
-                    continue
                 rid = labels.get("ae.replica_id") or c.get("name")
                 rep_info = replica_info.get(str(rid))
                 node_name = labels.get("ae.node") or (rep_info[0] if rep_info else None)
                 pod_obj = _pod_obj(c, now_rv, node_name)
+                if not _matches_selectors(pod_obj, label_sel, field_sel):
+                    continue
                 if rep_info:
                     pod_obj["status"]["hostIP"] = node_name
                     # reflect readiness/live from controller status if available
@@ -3187,7 +3325,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             if not target_ports:
                 self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="ports query param required")
                 return
-            app_name = _service_app_name(svc)
+            app_name = _service_app_name(svc, self.server.store)
             eps_raw = self.server.state.list_service_endpoints(app_name) if app_name else []  # type: ignore[attr-defined]
             target_ip = _pick_endpoint_ip(eps_raw, key=",".join(str(p) for p in target_ports) if target_ports else None)
             if isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
@@ -3346,6 +3484,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             d_plural, d_ns, d_name = _apps_ns_name(path)
             if d_plural == "deployments":
                 if d_name is None:
+                    label_sel, field_sel = _selector_values_from_query(q)
                     if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
                         if not self._rbac_allows("watch", "deployments"):
                             self._deny(403)
@@ -3360,6 +3499,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                             heartbeat = int(q.get("heartbeatSeconds", ["0"]) [0] or 0) or None
                             allow_bm = q.get("allowWatchBookmarks", ["0"]) [0] in ("1", "true", "True")
                             for ev_type, obj in self.server.store.watch("apps", "v1", "deployments", d_ns, heartbeat_seconds=heartbeat, allow_bookmarks=allow_bm):  # type: ignore[attr-defined]
+                                if ev_type != "BOOKMARK" and not _matches_selectors(obj, label_sel, field_sel):
+                                    continue
                                 line = json.dumps({"type": ev_type, "object": _to_deployment(obj)}, separators=(",", ":")).encode("utf-8") + b"\n"
                                 self.wfile.write(line)
                                 self.wfile.flush()
@@ -3381,6 +3522,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                         if d_ns is None
                         else self.server.store.list("apps", "v1", "deployments", d_ns)  # type: ignore[attr-defined]
                     )
+                    items = _filter_k8s_items(items, label_sel, field_sel)
                     self._ok(
                         _list_with_rv(items, _to_deployment, kind="Deployment", api_version="apps/v1", limit=limit if limit > 0 else None, continue_token=cont)
                     )
@@ -3496,6 +3638,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             n_plural, n_ns, n_name = _net_ns_name(path)
             if n_plural == "ingresses":
                 if n_name is None:
+                    label_sel, field_sel = _selector_values_from_query(q)
                     if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
                         if not self._rbac_allows("watch", "ingresses"):
                             self._deny(403)
@@ -3510,7 +3653,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                             heartbeat = int(q.get("heartbeatSeconds", ["0"]) [0] or 0) or None
                             allow_bm = q.get("allowWatchBookmarks", ["0"]) [0] in ("1", "true", "True")
                             for ev_type, obj in self.server.store.watch("networking.k8s.io", "v1", "ingresses", n_ns, heartbeat_seconds=heartbeat, allow_bookmarks=allow_bm):  # type: ignore[attr-defined]
-                                line = json.dumps({"type": ev_type, "object": _to_ingress(obj, self.server.state)}, separators=(",", ":")).encode("utf-8") + b"\n"  # type: ignore[attr-defined]
+                                if ev_type != "BOOKMARK" and not _matches_selectors(obj, label_sel, field_sel):
+                                    continue
+                                line = json.dumps({"type": ev_type, "object": _to_ingress(obj, self.server.state, self.server.store)}, separators=(",", ":")).encode("utf-8") + b"\n"  # type: ignore[attr-defined]
                                 self.wfile.write(line)
                                 self.wfile.flush()
                                 if timeout is not None and timeout > 0 and (time.time() - start) >= timeout:
@@ -3526,12 +3671,13 @@ class ShimHandler(BaseHTTPRequestHandler):
                         if n_ns is None
                         else self.server.store.list("networking.k8s.io", "v1", "ingresses", n_ns)  # type: ignore[attr-defined]
                     )
+                    items = _filter_k8s_items(items, label_sel, field_sel)
                     try:
                         limit = int(q.get("limit", ["0"])[0] or 0)
                     except Exception:
                         limit = 0
                     cont = q.get("continue", [""])[0] or None
-                    self._ok(_list_with_rv(items, lambda o: _to_ingress(o, self.server.state), kind="Ingress", api_version="networking.k8s.io/v1", limit=limit if limit > 0 else None, continue_token=cont))  # type: ignore[attr-defined]
+                    self._ok(_list_with_rv(items, lambda o: _to_ingress(o, self.server.state, self.server.store), kind="Ingress", api_version="networking.k8s.io/v1", limit=limit if limit > 0 else None, continue_token=cont))  # type: ignore[attr-defined]
                     return
                 else:
                     if not self._rbac_allows("get", "ingresses"):
@@ -3541,7 +3687,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     if not obj:
                         self._not_found()
                         return
-                    self._ok(_to_ingress(obj, self.server.state))  # type: ignore[attr-defined]
+                    self._ok(_to_ingress(obj, self.server.state, self.server.store))  # type: ignore[attr-defined]
                     return
 
         # batch/v1 Jobs and CronJobs (stored passthrough with synthesized status)
@@ -3629,7 +3775,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                             else self.server.store.list("", "v1", "services", e_ns)  # type: ignore[attr-defined]
                         )
                         for svc in svcs:
-                            eps = _endpointslice_for_service(self.server.state, svc)  # type: ignore[attr-defined]
+                            eps = _endpointslice_for_service(self.server.state, self.server.store, svc)  # type: ignore[attr-defined]
                             if eps:
                                 items.append(eps)
                         self._stream_fake_watch(items, kind="EndpointSlice", api_version="discovery.k8s.io/v1")
@@ -3644,7 +3790,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     )
                     items = []
                     for svc in svcs:
-                        eps = _endpointslice_for_service(self.server.state, svc)  # type: ignore[attr-defined]
+                        eps = _endpointslice_for_service(self.server.state, self.server.store, svc)  # type: ignore[attr-defined]
                         if eps:
                             items.append(eps)
                     rv = max((int(i["metadata"].get("resourceVersion", "0")) for i in items), default=0)
@@ -3680,7 +3826,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if not svc:
                     self._not_found()
                     return
-                eps = _endpointslice_for_service(self.server.state, svc)  # type: ignore[attr-defined]
+                eps = _endpointslice_for_service(self.server.state, self.server.store, svc)  # type: ignore[attr-defined]
                 if not eps:
                     self._not_found()
                     return
@@ -3961,7 +4107,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             if not svc:
                 self._not_found()
                 return
-            ep = _endpoints_for_service(self.server.state, svc)  # type: ignore[attr-defined]
+            ep = _endpoints_for_service(self.server.state, self.server.store, svc)  # type: ignore[attr-defined]
             subsets = (ep or {}).get("subsets") or []
             addresses = subsets[0].get("addresses") if subsets else None
             target_ip = (addresses[0].get("ip") if addresses else None) if addresses else None
@@ -4243,7 +4389,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     status=doc.get("status") or {},
                 )
                 self.send_response(HTTPStatus.CREATED)
-                out = _json(_to_ingress(created))
+                out = _json(_to_ingress(created, self.server.state, self.server.store))
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(out)))
                 self.end_headers()
@@ -4559,7 +4705,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     spec=doc.get("spec") or {},
                     status=doc.get("status") or {},
                 )
-                self._ok(_to_ingress(updated))
+                self._ok(_to_ingress(updated, self.server.state, self.server.store))
                 return
         if self.path.startswith("/apis/apiextensions.k8s.io/v1"):
             crd_plural, crd_name = _gv_cluster_name(
@@ -5486,7 +5632,7 @@ def _to_event(namespace: str, obj_name: str, ev: AppEvent) -> dict[str, Any]:  #
     }
 
 
-def _ingress_vip(state: SQLiteStateStore, ing: K8sObject) -> str | None:
+def _ingress_vip(state: SQLiteStateStore, store: ObjectStore | None, ing: K8sObject) -> str | None:
     """Best-effort: use first backend service to derive VIP/clusterIP."""
     spec = ing.spec or {}
     svc_name = None
@@ -5507,16 +5653,18 @@ def _ingress_vip(state: SQLiteStateStore, ing: K8sObject) -> str | None:
     if not svc_name:
         return None
     try:
-        svc_obj = state.get("", "v1", "services", ing.namespace, svc_name)  # type: ignore[attr-defined]
+        svc_obj = store.get("", "v1", "services", ing.namespace, svc_name) if store else None
     except Exception:
         svc_obj = None
     if svc_obj:
-        prov_ip = _provider_cluster_ip(state, svc_obj)  # type: ignore[arg-type]
+        prov_ip = _provider_cluster_ip(state, svc_obj, store)  # type: ignore[arg-type]
         return prov_ip or svc_obj.spec.get("clusterIP") or None
     return None
 
 
-def _to_ingress(o: K8sObject, state: SQLiteStateStore | None = None) -> dict[str, Any]:
+def _to_ingress(
+    o: K8sObject, state: SQLiteStateStore | None = None, store: ObjectStore | None = None
+) -> dict[str, Any]:
     meta = dict(o.metadata)
     meta.setdefault("name", o.name)
     if o.namespace:
@@ -5530,7 +5678,7 @@ def _to_ingress(o: K8sObject, state: SQLiteStateStore | None = None) -> dict[str
     }
     status = dict(o.status or {})
     if state is not None:
-        vip = _ingress_vip(state, o)
+        vip = _ingress_vip(state, store, o)
         if vip:
             lb = status.get("loadBalancer") or {}
             ingress = lb.get("ingress") or []
@@ -5829,30 +5977,95 @@ def _valid_name(name: str) -> bool:
     return _DNS1123_RE.match(name) is not None
 
 
-def _service_target(svc: K8sObject) -> str | None:
-    spec = svc.spec or {}
-    selector = spec.get("selector") or {}
+def _service_selector(spec: dict[str, Any]) -> dict[str, str]:
+    raw = spec.get("selector") or {}
+    selector: dict[str, Any] = raw if isinstance(raw, dict) else {}
+    if "matchLabels" in selector and isinstance(selector.get("matchLabels"), dict) and len(selector) == 1:
+        selector = selector.get("matchLabels") or {}
     if not selector:
-        selector = (spec.get("selector") or {}).get("matchLabels") or {}
+        maybe = (spec.get("selector") or {}).get("matchLabels") if isinstance(spec.get("selector"), dict) else None
+        if isinstance(maybe, dict):
+            selector = maybe
+    if not isinstance(selector, dict):
+        return {}
+    return {str(k): str(v) for k, v in selector.items()}
+
+
+def _pod_template_labels(obj: K8sObject) -> dict[str, str]:
+    spec = obj.spec or {}
+    template = spec.get("template") or {}
+    meta = template.get("metadata") or {}
+    labels = meta.get("labels") or {}
+    if not isinstance(labels, dict):
+        return {}
+    return {str(k): str(v) for k, v in labels.items()}
+
+
+def _selector_matches(selector: dict[str, str], labels: dict[str, str]) -> bool:
+    if not selector:
+        return False
+    for key, val in selector.items():
+        if labels.get(key) != val:
+            return False
+    return True
+
+
+def _resolve_service_target(store: ObjectStore, svc: K8sObject, selector: dict[str, str]) -> str | None:
+    if not selector:
+        return None
+    ns = svc.namespace
+    candidates: list[tuple[bool, int, int, str]] = []
+    workloads = [
+        ("apps", "v1", "deployments"),
+        ("apps", "v1", "statefulsets"),
+        ("apps", "v1", "daemonsets"),
+    ]
+    for order, (group, version, resource) in enumerate(workloads):
+        try:
+            items = store.list(group, version, resource, ns) if ns is not None else store.list_all(group, version, resource)
+        except Exception:
+            items = []
+        for obj in items:
+            labels = _pod_template_labels(obj)
+            if not labels or not _selector_matches(selector, labels):
+                continue
+            exact = labels == selector
+            extra = max(len(labels) - len(selector), 0)
+            candidates.append((exact, extra, order, obj.name))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda entry: (not entry[0], entry[1], entry[2], entry[3]))
+    return candidates[0][3]
+
+
+def _service_target(svc: K8sObject, store: ObjectStore | None = None) -> str | None:
+    spec = svc.spec or {}
+    selector = _service_selector(spec)
+    target = _resolve_service_target(store, svc, selector) if store else None
+    if target:
+        return target
+    meta = svc.metadata or {}
+    labels = meta.get("labels") if isinstance(meta, dict) else {}
+    annotations = meta.get("annotations") if isinstance(meta, dict) else {}
     return (
         selector.get("app")
         or selector.get("app.kubernetes.io/name")
-        or svc.metadata.get("labels", {}).get("app")
-        or svc.metadata.get("annotations", {}).get("apishim.k1s.dev/app")
-        or svc.metadata.get("name")
+        or (labels.get("app") if isinstance(labels, dict) else None)
+        or (annotations.get("apishim.k1s.dev/app") if isinstance(annotations, dict) else None)
+        or svc.name
     )
 
 
-def _service_app_name(svc: K8sObject) -> str | None:
-    tgt = _service_target(svc)
+def _service_app_name(svc: K8sObject, store: ObjectStore | None = None) -> str | None:
+    tgt = _service_target(svc, store)
     if not tgt:
         return None
     return f"{svc.namespace}--{tgt}" if svc.namespace else tgt
 
 
-def _provider_cluster_ip(state: SQLiteStateStore, svc: K8sObject) -> str | None:
+def _provider_cluster_ip(state: SQLiteStateStore, svc: K8sObject, store: ObjectStore | None = None) -> str | None:
     """Fetch cluster IP allocated by the network provider (if recorded in controller state)."""
-    app_name = _service_app_name(svc)
+    app_name = _service_app_name(svc, store)
     if not app_name:
         return None
     try:
@@ -5862,9 +6075,9 @@ def _provider_cluster_ip(state: SQLiteStateStore, svc: K8sObject) -> str | None:
         return None
 
 
-def _provider_ports(state: SQLiteStateStore, svc: K8sObject) -> dict:
+def _provider_ports(state: SQLiteStateStore, svc: K8sObject, store: ObjectStore | None = None) -> dict:
     """Fetch provider-recorded port info (including nodePort) for a service, keyed by port name/number."""
-    app_name = _service_app_name(svc)
+    app_name = _service_app_name(svc, store)
     if not app_name:
         return {}
     try:
@@ -5876,9 +6089,9 @@ def _provider_ports(state: SQLiteStateStore, svc: K8sObject) -> dict:
     return rec.ports
 
 
-def _provider_vip(state: SQLiteStateStore, svc: K8sObject) -> str | None:
+def _provider_vip(state: SQLiteStateStore, svc: K8sObject, store: ObjectStore | None = None) -> str | None:
     """Return overlay/proxy VIP if recorded by the network provider."""
-    app_name = _service_app_name(svc)
+    app_name = _service_app_name(svc, store)
     if not app_name:
         return None
     try:
@@ -5891,18 +6104,18 @@ def _provider_vip(state: SQLiteStateStore, svc: K8sObject) -> str | None:
     return None
 
 
-def _merge_provider_service(state: SQLiteStateStore, doc: dict[str, Any], svc_obj: K8sObject) -> dict[str, Any]:
+def _merge_provider_service(state: SQLiteStateStore, store: ObjectStore | None, doc: dict[str, Any], svc_obj: K8sObject) -> dict[str, Any]:
     """Augment service spec/status with provider allocations (clusterIP/nodePort)."""
     spec = doc.get("spec") or {}
     status = doc.get("status") or {}
-    prov_ip = _provider_cluster_ip(state, svc_obj)
-    vip = _provider_vip(state, svc_obj) or prov_ip
+    prov_ip = _provider_cluster_ip(state, svc_obj, store)
+    vip = _provider_vip(state, svc_obj, store) or prov_ip
     if prov_ip:
         if spec.get("clusterIP") in {None, "", "None"}:
             spec["clusterIP"] = prov_ip
         status = _service_lb_status(spec, status, vip)
     # fill nodePorts from provider record if missing
-    prov_ports = _provider_ports(state, svc_obj)
+    prov_ports = _provider_ports(state, svc_obj, store)
     if prov_ports and spec.get("ports"):
         new_ports = []
         for p in spec.get("ports", []):
@@ -6020,8 +6233,10 @@ def _pick_endpoint_ip(endpoints: list[ServiceEndpoint], key: str | None = None) 
     return candidates[idx]
 
 
-def _endpoints_for_service(state: SQLiteStateStore, svc: K8sObject) -> dict[str, Any] | None:
-    app_name = _service_app_name(svc)
+def _endpoints_for_service(
+    state: SQLiteStateStore, store: ObjectStore | None, svc: K8sObject
+) -> dict[str, Any] | None:
+    app_name = _service_app_name(svc, store)
     if not app_name:
         return None
     endpoints = state.list_service_endpoints(app_name)
@@ -6062,9 +6277,11 @@ def _endpoints_for_service(state: SQLiteStateStore, svc: K8sObject) -> dict[str,
     return body
 
 
-def _endpointslice_for_service(state: SQLiteStateStore, svc: K8sObject) -> dict[str, Any] | None:
+def _endpointslice_for_service(
+    state: SQLiteStateStore, store: ObjectStore | None, svc: K8sObject
+) -> dict[str, Any] | None:
     """Project a single EndpointSlice per Service using controller endpoints."""
-    target = _service_target(svc)
+    target = _service_target(svc, store)
     if not target:
         return None
     app_name = f"{svc.namespace}--{target}" if svc.namespace else target
@@ -6163,7 +6380,7 @@ def _runtime_from_env() -> RuntimeAdapter:
 def _pod_obj(container: dict, rv: int, node_name: str | None) -> dict[str, Any]:
     labels = container.get("labels", {}) or {}
     replica_id = labels.get("ae.replica_id") or container.get("name") or "replica"
-    ns = "default"
+    ns = labels.get("ae.namespace") or "default"
     meta = {
         "name": replica_id,
         "namespace": ns,
