@@ -210,6 +210,8 @@ K8s conventions checklist (implementation):
 - StatefulSet PVC names follow `<claimTemplateName>-<statefulsetName>-<ordinal>`.
 - Local PVs carry `nodeAffinity` to the chosen node (for WaitForFirstConsumer).
 
+## 8) CSI Compatibility
+
 ### CSI Hook Interface (Initial)
 
 The CSI hooks provide a Kubernetes-aligned integration point so external CSI
@@ -411,10 +413,11 @@ Minimum objects and endpoints (list/watch + CRUD):
   - VolumeAttachment
 - snapshot.storage.k8s.io/v1 (optional):
   - VolumeSnapshot
-  - VolumeSnapshotClass
+- VolumeSnapshotClass
+
 ---
 
-## 8) Compatibility Matrix (Target)
+## 9) Compatibility Matrix (Target)
 
 | Feature | Native k1s | apishim storage | Exporter |
 |--------|------------|----------------|----------|
@@ -429,7 +432,7 @@ Minimum objects and endpoints (list/watch + CRUD):
 
 ---
 
-## 9) Implementation Phases
+## 10) Implementation Phases
 
 ### Phase 0: Schema + Storage Objects (apishim)
 - Add CRUD + watch for PVC, PV, StorageClass in apishim.
@@ -466,7 +469,7 @@ Minimum objects and endpoints (list/watch + CRUD):
 
 ---
 
-## 10) Backwards Compatibility
+## 11) Backwards Compatibility
 
 - Existing `spec.storage` remains functional for native k1s manifests.
 - apishim PVC support is additive and does not break existing apps.
@@ -475,7 +478,7 @@ Minimum objects and endpoints (list/watch + CRUD):
 
 ---
 
-## 11) Tests & Validation
+## 12) Tests & Validation
 
 - Unit tests:
   - PVC -> PV binding logic (Immediate + WaitForFirstConsumer).
@@ -488,7 +491,7 @@ Minimum objects and endpoints (list/watch + CRUD):
 
 ---
 
-## 12) Configuration Knobs
+## 13) Configuration Knobs
 
 - `AE_STORAGE_ROOT`: root path for local-path provisioner (default: `/var/lib/k1s/storage`).
 - `AE_STORAGE_DEFAULT_CLASS`: name of default StorageClass (default: `k1s-nfs`).
@@ -497,7 +500,7 @@ Minimum objects and endpoints (list/watch + CRUD):
 
 ---
 
-## 13) Risks & Mitigations
+## 14) Risks & Mitigations
 
 - **Data loss with Delete reclaim**: make Delete explicit, default to Retain for
   user-created StorageClass unless overridden.
@@ -507,7 +510,7 @@ Minimum objects and endpoints (list/watch + CRUD):
 
 ---
 
-## 14) Deliverables (MVP for "Complete")
+## 15) Deliverables (MVP for "Complete")
 
 - PVC/PV/StorageClass support in apishim (CRUD + watch).
 - RWX-capable default StorageClass (`k1s-nfs`) plus local-path class.
