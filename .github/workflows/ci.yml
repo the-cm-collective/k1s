@@ -41,6 +41,9 @@ jobs:
           HTTPS_PROXY: ""
         run: pytest --maxfail=1 --disable-warnings -q
 
+      - name: K8s alignment matrix drift check
+        run: python tools/check_matrix_drift.py
+
       - name: Planner gating (strict)
         env:
           AE_RUNTIME_BACKEND: stub
