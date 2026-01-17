@@ -482,6 +482,38 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if self.apply_fn is None:
             raise RuntimeError("apply not available")
         try:
+            meta = payload.get("metadata") if isinstance(payload, dict) else {}
+            app = ""
+            if isinstance(meta, dict):
+                app = str(meta.get("name") or "")
+            if not app:
+                # Some callers may wrap the manifest
+                inner = payload.get("manifest") if isinstance(payload, dict) else None
+                if isinstance(inner, dict):
+                    inner_meta = inner.get("metadata") or {}
+                    if isinstance(inner_meta, dict):
+                        app = str(inner_meta.get("name") or "")
+            peer = "unknown"
+            try:
+                peer = str(self.client_address[0]) if self.client_address else "unknown"
+            except Exception:
+                peer = "unknown"
+            ua = (self.headers.get("User-Agent") or "").strip()
+            if len(ua) > 160:
+                ua = ua[:160] + "…"
+            auth_present = bool(self.headers.get("Authorization"))
+            logger.info(
+                "apply request source=%s app=%s peer=%s ua=%s path=%s auth=%s",
+                source or "unknown",
+                app or "<unknown>",
+                peer,
+                ua or "<none>",
+                getattr(self, "path", "") or "",
+                "yes" if auth_present else "no",
+            )
+        except Exception:
+            pass
+        try:
             return self.apply_fn(payload, source=source, labels=labels)  # type: ignore[misc]
         except TypeError:
             return self.apply_fn(payload)  # type: ignore[misc]
