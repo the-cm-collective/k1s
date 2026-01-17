@@ -1400,6 +1400,35 @@ class PodmanRuntime(RuntimeAdapter):
             raise RuntimeError(f"podman failed: {' '.join(argv)} => {stderr.strip()}")
 
     def _image_exists(self, name: str) -> bool:
+        def _dockerhub_aliases(image: str) -> set[str]:
+            aliases = {image}
+            raw = image
+            digest = None
+            if "@" in raw:
+                raw, digest = raw.split("@", 1)
+            tag = None
+            if ":" in raw and "/" not in raw.rsplit(":", 1)[1]:
+                raw, tag = raw.rsplit(":", 1)
+            if raw.startswith("docker.io/"):
+                rest = raw[len("docker.io/") :]
+                if rest.startswith("library/"):
+                    repo = rest[len("library/") :]
+                    alt = f"docker.io/{repo}"
+                    if tag:
+                        alt = f"{alt}:{tag}"
+                    if digest:
+                        alt = f"{alt}@{digest}"
+                    aliases.add(alt)
+                elif "/" not in rest:
+                    alt = f"docker.io/library/{rest}"
+                    if tag:
+                        alt = f"{alt}:{tag}"
+                    if digest:
+                        alt = f"{alt}@{digest}"
+                    aliases.add(alt)
+            return aliases
+
+        name_aliases = _dockerhub_aliases(name)
         try:
             r = self._run_ok([self._bin, "images", "--format", "json"], allow_fail=True)
             arr = json.loads(r.out or "[]")
@@ -1424,8 +1453,8 @@ class PodmanRuntime(RuntimeAdapter):
                         names.append(f"{rp}:{tg}")
                 for n in it.get("Names") or []:
                     names.append(n)
-                # Direct hit
-                if name in names:
+                # Direct hit (including docker.io/library alias)
+                if any(n in name_aliases for n in names):
                     return True
                 # Treat default-registry qualified names as matching the unqualified input and vice versa
                 # Examples: docker.io/mendhak/http-https-echo:37 ≈ mendhak/http-https-echo:37
