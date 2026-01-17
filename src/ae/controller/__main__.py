@@ -192,6 +192,320 @@ def _apishim_mirror_enabled() -> bool:
     return _env_true("AE_LABS")
 
 
+_APISHIM_MIRROR_MODE: str | None = None
+_APISHIM_MIRROR_STATS: dict[str, object] = {}
+
+
+def _set_apishim_mirror_mode(mode: str, detail: str) -> None:
+    global _APISHIM_MIRROR_MODE
+    if _APISHIM_MIRROR_MODE == mode:
+        return
+    _APISHIM_MIRROR_MODE = mode
+    try:
+        import logging
+
+        logging.getLogger(__name__).info("apishim mirror using %s (%s)", mode, detail)
+    except Exception:
+        pass
+
+
+def _log_apishim_mirror_stats(
+    *,
+    reachable: bool,
+    seen: int,
+    created: int,
+    updated: int,
+    stale: int,
+    ignored: int,
+) -> None:
+    global _APISHIM_MIRROR_STATS
+    stats = {
+        "reachable": bool(reachable),
+        "seen": int(seen),
+        "created": int(created),
+        "updated": int(updated),
+        "stale": int(stale),
+        "ignored": int(ignored),
+    }
+    if stats == _APISHIM_MIRROR_STATS:
+        return
+    _APISHIM_MIRROR_STATS = stats
+    try:
+        import logging
+
+        logging.getLogger(__name__).info(
+            "apishim mirror sync: reachable=%s seen=%s created=%s updated=%s stale=%s ignored=%s",
+            stats["reachable"],
+            stats["seen"],
+            stats["created"],
+            stats["updated"],
+            stats["stale"],
+            stats["ignored"],
+        )
+    except Exception:
+        pass
+
+
+def _apishim_api_base() -> str:
+    base = (
+        os.getenv("AE_APISHIM_SERVER")
+        or os.getenv("AE_LABS_HELM_SERVER")
+        or ""
+    )
+    return base.strip().rstrip("/")
+
+
+def _apishim_api_headers() -> dict[str, str]:
+    token = (
+        os.getenv("AE_APISHIM_READ_TOKEN")
+        or os.getenv("AE_APISHIM_TOKEN")
+        or os.getenv("AE_LABS_HELM_TOKEN")
+        or ""
+    ).strip()
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    return {}
+
+
+def _apishim_api_verify() -> bool | str:
+    override = (
+        os.getenv("AE_APISHIM_CA_BUNDLE")
+        or os.getenv("AE_APISHIM_CA")
+        or os.getenv("AE_APISHIM_TLS_CA")
+        or ""
+    ).strip()
+    if override:
+        try:
+            path = Path(override)
+            if path.exists():
+                return str(path)
+        except Exception:
+            pass
+    for path in ("state/certs/combined-dev-ca.pem", "state/labs/apishim.crt"):
+        try:
+            if Path(path).exists():
+                return path
+        except Exception:
+            continue
+    return False
+
+
+def _apishim_api_get_json(
+    url: str,
+    headers: dict[str, str],
+    verify: bool | str,
+    timeout_seconds: float = 3.0,
+) -> tuple[dict | None, bool]:
+    try:
+        import requests as _req
+
+        resp = _req.get(url, headers=headers, timeout=timeout_seconds, verify=verify)
+        if resp.status_code >= 400:
+            return None, False
+        if not resp.content:
+            return {}, True
+        return resp.json(), True
+    except Exception:
+        pass
+    try:
+        import json as _json
+        import ssl as _ssl
+        import urllib.request as _urlreq
+
+        ctx = None
+        if verify is False:
+            ctx = _ssl._create_unverified_context()
+        elif isinstance(verify, str):
+            ctx = _ssl.create_default_context(cafile=verify)
+        req = _urlreq.Request(url, headers=headers)
+        with _urlreq.urlopen(req, timeout=timeout_seconds, context=ctx) as resp:
+            if getattr(resp, "status", 200) >= 400:
+                return None, False
+            payload = resp.read()
+        if not payload:
+            return {}, True
+        return _json.loads(payload), True
+    except Exception:
+        return None, False
+
+
+def _snapshot_apishim_api_manifests(
+    store: SQLiteStateStore,
+    base: str,
+) -> tuple[dict[str, AppManifest], bool]:
+    try:
+        from ae.apishim.adapter import AdapterWorker as _AdapterWorker
+        from ae.apishim.adapter import _manifest_from_deployment as _shim_manifest
+        from ae.apishim.store import K8sObject as _K8sObject
+        from ae.runtime import StubRuntime as _StubRuntime
+    except Exception:
+        return {}, False
+
+    base = base.strip().rstrip("/")
+    if not base:
+        return {}, False
+    headers = _apishim_api_headers()
+    verify = _apishim_api_verify()
+    reachable = False
+    namespaces: list[str] = []
+
+    def _fetch(url: str) -> dict | None:
+        nonlocal reachable
+        data, ok = _apishim_api_get_json(url, headers, verify)
+        if ok:
+            reachable = True
+            if isinstance(data, dict):
+                return data
+        return None
+
+    ns_data = _fetch(f"{base}/api/v1/namespaces")
+    if ns_data:
+        for item in (ns_data.get("items") or []):
+            if not isinstance(item, dict):
+                continue
+            meta = item.get("metadata") or {}
+            name = meta.get("name")
+            if name:
+                namespaces.append(str(name))
+    if not namespaces:
+        fallback = (
+            os.getenv("AE_LABS_HELM_NAMESPACE")
+            or os.getenv("AE_APISHIM_NAMESPACE")
+            or ""
+        ).strip()
+        if fallback:
+            namespaces = [fallback]
+        else:
+            namespaces = ["demo-helm", "default"]
+
+    items_by_key: dict[tuple[str, str, str, str], list[_K8sObject]] = {}
+    services: list[_K8sObject] = []
+    ingresses: list[_K8sObject] = []
+    workloads: list[_K8sObject] = []
+
+    def _add_item(group: str, version: str, resource: str, item: dict, ns_hint: str) -> None:
+        meta = item.get("metadata") or {}
+        name = meta.get("name")
+        if not name:
+            return
+        ns_val = meta.get("namespace") or ns_hint or ""
+        try:
+            rv = int(meta.get("resourceVersion") or 0)
+        except Exception:
+            rv = 0
+        obj = _K8sObject(
+            group,
+            version,
+            resource,
+            ns_val,
+            name,
+            meta,
+            item.get("spec") or {},
+            item.get("status") or {},
+            rv,
+        )
+        key = (group, version, resource, ns_val or "")
+        items_by_key.setdefault(key, []).append(obj)
+        if group == "" and resource == "services":
+            services.append(obj)
+        elif group == "networking.k8s.io" and resource == "ingresses":
+            ingresses.append(obj)
+        elif (group, resource) in {
+            ("apps", "deployments"),
+            ("apps", "statefulsets"),
+            ("apps", "daemonsets"),
+            ("batch", "jobs"),
+        }:
+            workloads.append(obj)
+
+    for ns in namespaces:
+        svc_data = _fetch(f"{base}/api/v1/namespaces/{ns}/services")
+        if svc_data:
+            for item in (svc_data.get("items") or []):
+                if isinstance(item, dict):
+                    _add_item("", "v1", "services", item, ns)
+        ing_data = _fetch(f"{base}/apis/networking.k8s.io/v1/namespaces/{ns}/ingresses")
+        if ing_data:
+            for item in (ing_data.get("items") or []):
+                if isinstance(item, dict):
+                    _add_item("networking.k8s.io", "v1", "ingresses", item, ns)
+        dep_data = _fetch(f"{base}/apis/apps/v1/namespaces/{ns}/deployments")
+        if dep_data:
+            for item in (dep_data.get("items") or []):
+                if isinstance(item, dict):
+                    _add_item("apps", "v1", "deployments", item, ns)
+        sts_data = _fetch(f"{base}/apis/apps/v1/namespaces/{ns}/statefulsets")
+        if sts_data:
+            for item in (sts_data.get("items") or []):
+                if isinstance(item, dict):
+                    _add_item("apps", "v1", "statefulsets", item, ns)
+        ds_data = _fetch(f"{base}/apis/apps/v1/namespaces/{ns}/daemonsets")
+        if ds_data:
+            for item in (ds_data.get("items") or []):
+                if isinstance(item, dict):
+                    _add_item("apps", "v1", "daemonsets", item, ns)
+        job_data = _fetch(f"{base}/apis/batch/v1/namespaces/{ns}/jobs")
+        if job_data:
+            for item in (job_data.get("items") or []):
+                if isinstance(item, dict):
+                    _add_item("batch", "v1", "jobs", item, ns)
+
+    if not reachable:
+        return {}, False
+
+    class _StoreView:
+        def __init__(self, items: dict[tuple[str, str, str, str], list[_K8sObject]]) -> None:
+            self._items = items
+
+        def list(self, group: str, version: str, resource: str, namespace: str | None):
+            key = (group, version, resource, namespace or "")
+            return list(self._items.get(key, []))
+
+        def list_all(self, group: str, version: str, resource: str):
+            out: list[_K8sObject] = []
+            for (g, v, r, _ns), items in self._items.items():
+                if g == group and v == version and r == resource:
+                    out.extend(items)
+            return out
+
+    class _NullReconciler:
+        _runtime = _StubRuntime()
+
+    helper = _AdapterWorker(_StoreView(items_by_key), store, _NullReconciler())  # type: ignore[arg-type]
+    manifests: dict[str, AppManifest] = {}
+    for svc in services:
+        try:
+            result = helper._service_spec_for(svc)
+            if not result:
+                continue
+            dep_key, svc_spec = result
+            helper._service_specs[dep_key] = svc_spec
+            helper._service_name_map[(svc.namespace, svc.name)] = dep_key
+        except Exception:
+            continue
+    for ing in ingresses:
+        try:
+            result = helper._ingress_spec_for(ing)
+            if not result:
+                continue
+            dep_key, ing_spec = result
+            helper._ingress_specs[dep_key] = ing_spec
+            helper._ingress_owner_map[(ing.namespace, ing.name)] = dep_key
+        except Exception:
+            continue
+    for obj in workloads:
+        try:
+            dep_key = (obj.namespace, obj.name)
+            svc_spec = helper._service_specs.get(dep_key)
+            ing_spec = helper._ingress_specs.get(dep_key)
+            manifest = _shim_manifest(obj, service_spec=svc_spec, ingress_spec=ing_spec)
+            manifests[manifest.metadata.name] = manifest
+        except Exception:
+            continue
+
+    return manifests, True
+
+
 def _snapshot_apishim_manifests(
     store: SQLiteStateStore,
 ) -> tuple[dict[str, AppManifest], bool]:
@@ -203,14 +517,34 @@ def _snapshot_apishim_manifests(
     except Exception:
         return {}, False
 
+    base = _apishim_api_base()
     dsn = os.getenv("AE_APISHIM_DSN")
-    db_path = Path(os.getenv("AE_APISHIM_DB", "state/apishim.db"))
+    db_env = os.getenv("AE_APISHIM_DB")
+    db_path = Path(db_env or "state/apishim.db")
+    explicit_db = bool(db_env) and db_env != "state/apishim.db"
+    prefer_api = bool(base) and not dsn and not explicit_db
+    if prefer_api:
+        manifests, reachable = _snapshot_apishim_api_manifests(store, base)
+        if reachable:
+            _set_apishim_mirror_mode("api", base or "api")
+            return manifests, True
+
     if not dsn and not db_path.exists():
+        if base:
+            manifests, reachable = _snapshot_apishim_api_manifests(store, base)
+            if reachable:
+                _set_apishim_mirror_mode("api", base or "api")
+                return manifests, True
         return {}, False
 
     try:
         shim_store = _ObjectStore(dsn=dsn) if dsn else _ObjectStore(db_path=db_path)
     except Exception:
+        if base:
+            manifests, reachable = _snapshot_apishim_api_manifests(store, base)
+            if reachable:
+                _set_apishim_mirror_mode("api", base or "api")
+                return manifests, True
         return {}, False
 
     class _NullReconciler:
@@ -274,7 +608,15 @@ def _snapshot_apishim_manifests(
             except Exception:
                 continue
 
-    return manifests, reachable
+    if reachable:
+        _set_apishim_mirror_mode("db", dsn or str(db_path))
+        return manifests, True
+    if base:
+        manifests, reachable = _snapshot_apishim_api_manifests(store, base)
+        if reachable:
+            _set_apishim_mirror_mode("api", base or "api")
+            return manifests, True
+    return manifests, False
 
 
 def _purge_app_from_runtime(reconciler: Reconciler, store: SQLiteStateStore, app: str) -> None:
@@ -309,24 +651,42 @@ def _sync_apishim_registry(
     if manifests is None or reachable is None:
         manifests, reachable = _snapshot_apishim_manifests(store)
     if not reachable:
+        _log_apishim_mirror_stats(
+            reachable=False,
+            seen=0,
+            created=0,
+            updated=0,
+            stale=0,
+            ignored=0,
+        )
         return False
 
     shim_seen = set(manifests.keys())
+    created = 0
+    updated = 0
+    ignored = 0
     for name, manifest in manifests.items():
         try:
             existing = store.get_registered_entry(name)
         except Exception:
             existing = None
         if existing is not None and existing.source != "apishim":
+            ignored += 1
             continue
         try:
-            if existing is not None and existing.spec_hash == _spec_hash(manifest):
+            spec_hash = _spec_hash(manifest)
+            if existing is not None and existing.spec_hash == spec_hash:
+                ignored += 1
                 continue
         except Exception:
-            pass
+            spec_hash = None
         try:
             labels = getattr(manifest.metadata, "labels", None)
             store.register_app(manifest, source="apishim", labels=labels)
+            if existing is None:
+                created += 1
+            else:
+                updated += 1
         except Exception:
             continue
 
@@ -337,6 +697,14 @@ def _sync_apishim_registry(
     stale = [entry.app_name for entry in entries if entry.source == "apishim" and entry.app_name not in shim_seen]
     for app in stale:
         _purge_app_from_runtime(reconciler, store, app)
+    _log_apishim_mirror_stats(
+        reachable=True,
+        seen=len(shim_seen),
+        created=created,
+        updated=updated,
+        stale=len(stale),
+        ignored=ignored,
+    )
     return True
 
 
@@ -447,6 +815,10 @@ def _reconcile_all(reconciler: Reconciler, manifests: Iterable[AppManifest]) -> 
 
     for m in manifests:
         if _labs_is_blocked(m.metadata.name):
+            try:
+                _log.getLogger(__name__).debug("labs reset block: skipping reconcile for %s", m.metadata.name)
+            except Exception:
+                pass
             continue
         t0 = _t.time()
         try:
@@ -690,28 +1062,6 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 statuses = store.list_status()
             except Exception:
                 statuses = []
-            # Restrict to demo apps when AE_DEMO_MODE=1
-            try:
-                from ae.observability.http_api import _LABS_APPS, _LABS_APP_PREFIXES, _demo_allowed_apps, _demo_filter_enabled
-
-                if _demo_filter_enabled():
-                    demo_allowed = set(_demo_allowed_apps())
-                    labs_allowed = set(_LABS_APPS)
-                    prefix_allowed = set(_LABS_APP_PREFIXES)
-                    if os.getenv("AE_DEMO_MODE") != "1":
-                        prefix_allowed = set()
-                    allowed = demo_allowed | labs_allowed
-                    if allowed or prefix_allowed:
-                        statuses = [
-                            s
-                            for s in statuses
-                            if (
-                                s.app_name in allowed
-                                or any(str(s.app_name).startswith(p) for p in prefix_allowed)
-                            )
-                        ]
-            except Exception:
-                pass
             # Nodes snapshot (heartbeat freshness, cordon)
             _nodes = []
             try:

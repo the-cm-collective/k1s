@@ -54,6 +54,28 @@ def _pod_template_labels(obj: K8sObject) -> dict[str, str]:
     return {str(k): str(v) for k, v in labels.items()}
 
 
+def _pod_template_ports_by_name(obj: K8sObject) -> dict[str, int]:
+    spec = obj.spec or {}
+    template = spec.get("template") or {}
+    tpl_spec = template.get("spec") or {}
+    ports_by_name: dict[str, int] = {}
+    for container in tpl_spec.get("containers") or []:
+        if not isinstance(container, dict):
+            continue
+        for port in container.get("ports") or []:
+            if not isinstance(port, dict):
+                continue
+            name = port.get("name")
+            if not name:
+                continue
+            try:
+                port_val = int(port.get("containerPort"))
+            except Exception:
+                continue
+            ports_by_name[str(name)] = port_val
+    return ports_by_name
+
+
 def _selector_matches(selector: dict[str, str], labels: dict[str, str]) -> bool:
     if not selector:
         return False
@@ -1249,11 +1271,13 @@ class AdapterWorker(threading.Thread):
             self._service_name_map[(ns, svc_name)] = dep_key
         self._trigger_reconcile(dep_key[0], dep_key[1])
 
-    def _resolve_service_target(self, svc: K8sObject, selector: dict[str, str]) -> str | None:
+    def _resolve_service_target(
+        self, svc: K8sObject, selector: dict[str, str]
+    ) -> tuple[str, dict[str, int]] | None:
         if not selector:
             return None
         ns = svc.namespace
-        candidates: list[tuple[bool, int, int, str]] = []
+        candidates: list[tuple[bool, bool, int, int, str, dict[str, int]]] = []
         workloads = [
             ("apps", "v1", "deployments"),
             ("apps", "v1", "statefulsets"),
@@ -1274,19 +1298,24 @@ class AdapterWorker(threading.Thread):
                     continue
                 exact = labels == selector
                 extra = max(len(labels) - len(selector), 0)
-                candidates.append((exact, extra, order, obj.name))
+                name_match = obj.name == svc.name
+                ports_by_name = _pod_template_ports_by_name(obj)
+                candidates.append((not name_match, not exact, extra, order, obj.name, ports_by_name))
         if not candidates:
             return None
-        candidates.sort(key=lambda entry: (not entry[0], entry[1], entry[2], entry[3]))
-        return candidates[0][3]
+        candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2], entry[3], entry[4]))
+        return candidates[0][4], candidates[0][5]
 
     def _service_spec_for(
         self, svc: K8sObject
     ) -> tuple[tuple[str | None, str], ServiceSpec] | None:
         spec = svc.spec or {}
         selector = _service_selector(spec)
-        target = self._resolve_service_target(svc, selector)
-        if not target:
+        target_info = self._resolve_service_target(svc, selector)
+        ports_by_name: dict[str, int] = {}
+        if target_info:
+            target, ports_by_name = target_info
+        else:
             target = _fallback_service_target(svc, selector)
         if not target:
             return None
@@ -1306,16 +1335,12 @@ class AdapterWorker(threading.Thread):
                 node_port = int(node_port_raw) if node_port_raw is not None else None
             except Exception:
                 node_port = None
-            tgt_raw = entry.get("targetPort", svc_port)
-            tgt_val: int | None
-            if isinstance(tgt_raw, int):
-                tgt_val = tgt_raw
-            else:
-                try:
-                    tgt_val = int(tgt_raw)
-                except Exception:
-                    # Fallback: when targetPort is a named port (e.g., "http"), just reuse service port
-                    tgt_val = svc_port
+            fallback_port = entry.get("_servicePort", svc_port)
+            tgt_raw = entry.get("targetPort", fallback_port)
+            tgt_val = _resolve_port_value(tgt_raw, ports_by_name)
+            if tgt_val is None:
+                # Fallback: when targetPort is a named port (e.g., "http"), just reuse service port
+                tgt_val = fallback_port
             host_port = node_port if node_port is not None and expose_host else None
             svc_ports.append(
                 ServiceSpec.ServicePort(
@@ -1351,6 +1376,7 @@ class AdapterWorker(threading.Thread):
         prepared: list[dict[str, Any]] = []
         for idx, entry in enumerate(desired):
             port_entry = dict(entry)
+            port_entry.setdefault("_servicePort", port_entry.get("port"))
             port_id = str(port_entry.get("name") or f"idx-{idx}")
             seen_ids.add(port_id)
             node_port = port_entry.get("nodePort")
