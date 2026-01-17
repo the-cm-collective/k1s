@@ -28,117 +28,6 @@ from ae.controller.state import SQLiteStateStore
 logger = logging.getLogger(__name__)
 
 
-# Helper: when running in demo mode, restrict visible apps to those registered
-# in the app registry (typically source=specs). This keeps the dashboard scoped
-# to the selected demo and avoids surfacing historical apps from the state DB.
-def _demo_filter_enabled() -> bool:
-    try:
-        raw = str(os.getenv("AE_DEMO_FILTER", "") or "").strip().lower()
-        if raw in {"0", "false", "no", "off"}:
-            return False
-    except Exception:
-        pass
-    return True
-
-
-def _demo_allowed_sources() -> set[str]:
-    raw = str(os.getenv("AE_DEMO_SOURCES", "specs") or "").strip()
-    if not raw:
-        return set()
-    return {part.strip() for part in raw.split(",") if part.strip()}
-
-
-def _demo_label_selector() -> dict[str, str | None]:
-    raw = str(os.getenv("AE_DEMO_LABELS", "") or "").strip()
-    if not raw:
-        return {}
-    out: dict[str, str | None] = {}
-    for expr in raw.split(","):
-        expr = expr.strip()
-        if not expr:
-            continue
-        if "=" in expr:
-            k, v = expr.split("=", 1)
-            out[k.strip()] = v.strip()
-        else:
-            out[expr] = None
-    return out
-
-
-def _labels_match(labels: dict, selector: dict[str, str | None]) -> bool:
-    for key, val in selector.items():
-        if key not in labels:
-            return False
-        if val is not None and str(labels.get(key)) != val:
-            return False
-    return True
-
-
-def _demo_allowed_apps() -> set[str]:
-    try:
-        # Only filter when explicitly in demo mode
-        if os.getenv("AE_DEMO_MODE") != "1" or not _demo_filter_enabled():
-            return set()
-        sources = _demo_allowed_sources()
-        label_sel = _demo_label_selector()
-        db_path = Path(os.getenv("AE_STATE_DB", "state/controller.db"))
-        store = SQLiteStateStore(db_path)
-        entries = store.list_registered_apps()
-        allowed: set[str] = set()
-        for entry in entries:
-            if sources and entry.source in sources:
-                allowed.add(entry.app_name)
-                continue
-            if label_sel and _labels_match(entry.labels, label_sel):
-                allowed.add(entry.app_name)
-        return allowed
-    except Exception:
-        return set()
-
-
-def _filter_statuses_for_demo(items):
-    try:
-        if not _demo_filter_enabled():
-            return items
-        # Compute the allowed app set from registry demo sources and any Labs-applied apps.
-        demo_allowed = set(_demo_allowed_apps())
-        try:
-            labs_allowed = set(_LABS_APPS)
-        except Exception:
-            labs_allowed = set()
-        try:
-            prefix_allowed = set(_LABS_APP_PREFIXES)
-        except Exception:
-            prefix_allowed = set()
-        if os.getenv("AE_DEMO_MODE") != "1":
-            prefix_allowed = set()
-        allowed = demo_allowed | labs_allowed
-        if not allowed and not prefix_allowed:
-            # No demo scope and no labs apps tracked: do not filter.
-            return items
-        # Restrict to the allowed set or allowed prefixes.
-        subset = [
-            s
-            for s in items
-            if (
-                getattr(s, "app_name", None) in allowed
-                or any(str(getattr(s, "app_name", "")).startswith(p) for p in prefix_allowed)
-            )
-        ]
-        if subset:
-            return subset
-        # If a demo scope exists (apps registered under demo sources/labels), strictly enforce it
-        # even if the controller hasn't recorded any of those apps yet. This prevents
-        # leaking historical apps from previous runs.
-        if demo_allowed:
-            return []
-        # Otherwise, this is a Labs-only race (session app not yet materialized in the store):
-        # fall back to the unfiltered list to avoid an empty UI during the brief apply window.
-        return items
-    except Exception:
-        return items
-
-
 from ae.observability.metrics import MetricsService
 
 # Simple in-memory reconcile metrics updated by the controller loop.
@@ -146,7 +35,7 @@ _LAST_RECONCILE_TS: float | None = None
 _LAST_RECONCILE_DURATION: float | None = None
 _APP_RECONCILE_SUM: dict[str, float] = {}
 _APP_RECONCILE_COUNT: dict[str, int] = {}
-# Track labs-applied app names so demo filters include them
+# Track labs-applied app names for reset coordination.
 _LABS_APPS: set[str] = set()
 # Prefixes to allow in demo-scoped dashboards (e.g., helm shim demo namespace).
 _LABS_APP_PREFIXES: set[str] = set()
@@ -174,6 +63,8 @@ _HELM_DEMO_STATE: dict[str, object] = {
     "runtime": os.getenv("AE_LABS_HELM_RUNTIME", "stub"),
     "namespace": os.getenv("AE_LABS_HELM_NAMESPACE", "demo-helm"),
     "chart": os.getenv("AE_LABS_HELM_CHART", "demochart"),
+    # Track whether AE_LABS_HELM_SERVER was explicitly provided at process start.
+    "server_override": bool(os.getenv("AE_LABS_HELM_SERVER")),
     "started": None,
 }
 
@@ -286,8 +177,11 @@ def _helm_demo_start() -> dict[str, object]:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_handle = open(log_path, "w", encoding="utf-8")  # noqa: SIM115 - keep handle open for proc output
         env = os.environ.copy()
+        # Avoid leaking a stale APISHIM_SERVER into the shim demo process.
+        env.pop("APISHIM_SERVER", None)
         env.setdefault("PYTHONPATH", str(root / "src"))
-        helm_server = os.getenv("AE_LABS_HELM_SERVER", "").strip()
+        explicit_server = bool(_HELM_DEMO_STATE.get("server_override"))
+        helm_server = os.getenv("AE_LABS_HELM_SERVER", "").strip() if explicit_server else ""
         port_note = ""
         port = int(_HELM_DEMO_STATE.get("port") or 8455)
         if not helm_server and not _port_available("127.0.0.1", port):
@@ -306,6 +200,34 @@ def _helm_demo_start() -> dict[str, object]:
         except Exception:
             env.setdefault("HELM_SHIM_KEEP", "1")
         if helm_server:
+            # If an explicit server is set but unreachable, fall back to local shim.
+            try:
+                import ssl as _ssl
+                import urllib.request as _urlreq
+
+                probe_url = helm_server.rstrip("/") + "/version"
+                headers = {}
+                token_val = str(_HELM_DEMO_STATE.get("token") or "")
+                if token_val:
+                    headers["Authorization"] = f"Bearer {token_val}"
+                verify_path = "state/certs/combined-dev-ca.pem"
+                ctx = None
+                if helm_server.startswith("https://"):
+                    if os.path.exists(verify_path):
+                        ctx = _ssl.create_default_context(cafile=verify_path)
+                    else:
+                        ctx = _ssl._create_unverified_context()
+                req = _urlreq.Request(probe_url, headers=headers)
+                with _urlreq.urlopen(req, timeout=2, context=ctx) as resp:
+                    if getattr(resp, "status", 200) >= 400:
+                        raise RuntimeError("probe failed")
+                    body = resp.read().decode("utf-8", "ignore")
+                    if "k1s-shim" not in body:
+                        raise RuntimeError("probe failed")
+            except Exception:
+                logger.info("labs helm demo shim unreachable at %s; starting local shim", helm_server)
+                helm_server = ""
+        if helm_server:
             env.setdefault("APISHIM_SERVER", helm_server)
             try:
                 import urllib.parse as _up
@@ -315,7 +237,32 @@ def _helm_demo_start() -> dict[str, object]:
                     _HELM_DEMO_STATE["port"] = parsed.port
             except Exception:
                 pass
+        else:
+            # Align controller mirror with the local shim demo server.
+            tls_mode = str(os.getenv("HELM_SHIM_TLS", "1") or "1").strip()
+            scheme = "https" if tls_mode != "0" else "http"
+            helm_server = f"{scheme}://127.0.0.1:{port}"
         env.setdefault("TMPDIR", str(log_path.parent))
+        # Persist resolved shim endpoint + token for the controller mirror loop.
+        try:
+            if helm_server:
+                os.environ["AE_LABS_HELM_SERVER"] = helm_server
+            token_val = str(_HELM_DEMO_STATE.get("token") or "")
+            if token_val:
+                os.environ["AE_LABS_HELM_TOKEN"] = token_val
+        except Exception:
+            pass
+        try:
+            db_hint = os.getenv("AE_APISHIM_DB", "").strip() or "<unset>"
+            dsn_hint = "set" if os.getenv("AE_APISHIM_DSN") else "unset"
+            logger.info(
+                "labs helm demo shim resolved: server=%s db=%s dsn=%s",
+                helm_server or "<unset>",
+                db_hint,
+                dsn_hint,
+            )
+        except Exception:
+            pass
         # Allow shim demo apps to show up on demo-scoped dashboards.
         try:
             ns = str(_HELM_DEMO_STATE.get("namespace") or "")
@@ -2277,8 +2224,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         # Per-app and per-replica labeled gauges
         try:
             statuses = self.store.list_status()
-            # Demo filter: keep only apps registered under the demo scope
-            statuses = _filter_statuses_for_demo(statuses)
             # Optional read scope filtering when a read-capable token is presented
             try:
                 import fnmatch as _fn
@@ -2539,15 +2484,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 )
             },
         }
-        # In demo mode, restrict controller app counters to allowed apps from registry
-        try:
-            demo_allowed = set(_demo_allowed_apps())
-            labs_allowed = set(_LABS_APPS)
-            allowed_apps = demo_allowed | labs_allowed
-            if allowed_apps:
-                ctrl["apps"] = {k: v for k, v in ctrl["apps"].items() if k in allowed_apps}
-        except Exception:
-            pass
         # RBAC/mutations flags (never echo secrets)
         rbac = {
             "mutations_enabled": os.getenv("AE_API_MUTATIONS") == "1",
@@ -2933,8 +2869,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         import urllib.parse as _up
 
         statuses = self.store.list_status()
-        # Demo filter: keep only apps registered under the demo scope
-        statuses = _filter_statuses_for_demo(statuses)
         # Optional read scope filtering when a read-capable token is presented
         try:
             import fnmatch as _fn

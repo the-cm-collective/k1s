@@ -12,12 +12,13 @@ services:
       - AE_LABS=1
       - AE_API_MUTATIONS=1
       - AE_LABS_HELM_SERVER=https://apishim:${APISHIM_PORT:-8445}
+      - AE_APISHIM_MIRROR=1
+      - AE_APISHIM_SOT=1
       # Local-only: allow plaintext secrets during dev/bench runs
       - AE_ALLOW_PLAINTEXT_SECRETS=1
       # Ensure new app containers join the compose network for fast, in-container probes
       - AE_DOCKER_NETWORK=dev_default
       - AE_DEMO_MODE=1
-      - AE_DEMO_FILTER=0
       - AE_SPECS_DIR=${AE_SPECS_DIR:-state/demo-specs}
       - AE_PROBE_LOOPBACK_FALLBACK=host.docker.internal
       - AE_APISHIM_DSN=${AE_APISHIM_DSN:-}
@@ -41,6 +42,8 @@ services:
       - AE_APISHIM_ALLOW_ANON=0
       - AE_APISHIM_RBAC=1
       - AE_APISHIM_RBAC_EVAL=0
+      - AE_APISHIM_SOT=1
+      - AE_APISHIM_ADAPTER=0
       - AE_APISHIM_DSN=${AE_APISHIM_DSN:-}
       - AE_APISHIM_TLS_CERT=/workspace/state/labs/apishim.crt
       - AE_APISHIM_TLS_KEY=/workspace/state/labs/apishim.key
