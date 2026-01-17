@@ -1,18 +1,20 @@
 # k1s Minimal Application Engine
 
-It started out of both basic necessity and general curiosity. I tend to push things—usually too far—and this was no exception. We needed a lightweight Kubernetes-like system for low-resource environments, and we wanted to learn how Kubernetes actually works. We feel we’ve achieved both, and it has become a great learning tool for understanding application engines in general.
+It started out of both basic necessity and general curiosity. I tend to push things—usually too far—and this was no exception. I needed a lightweight Kubernetes-like system for low-resource environments, and I wanted to learn how Kubernetes actually works. I feel we’ve achieved both, and it has become a great learning tool for understanding application engines in general.
 
-After all, application engines are the heart of the modern web. While they can be daunting and complex, we provide an integrated dashboard to visualize the stack and a playground page to help new users learn the basics. We also hope this is useful to anyone who needs a lightweight Kubernetes-like system for their own projects or lab experiments.
+After all, application engines are the heart of the modern web. While they can be daunting and complex, we created an integrated dashboard to help visualize the stack and an interactive playground page to help new users learn the basics. We also hope this is useful to anyone who needs a lightweight Kubernetes-like system for their own projects or lab experiments.
 
-What is k1s? In short, it’s a lightweight multi-node application engine with a Kubernetes-compatible API shim. It provides a subset of full Kubernetes functionality with a much smaller footprint and lower resource requirements, and it’s designed to run on a single node or multiple nodes.
+So, what is k1s? In short, it’s a lightweight multi-node application engine with a Kubernetes-compatible API shim. It provides a subset of full Kubernetes functionality with a much smaller footprint and lower resource requirements, and it’s designed to run on a single node or multiple nodes.
+
+Development is ongoing, and we're always looking for feedback and contributions. If you're interested in learning more or getting involved, please check out the documentation and reach out to us.
 
 ## Documentation
 
-- Multi-node architecture and lab: `docs/adr/0007-multinode-architecture-scope.md`, `docs/guides/multinode-lab.md`.
-- API compatibility and shim status: `docs/wip/conformance.md`, `docs/reference/apishim-compatibility-matrix.md`.
-- Operations runbook: see `docs/ops/runbook.md`.
-- Ingress/TLS details: see `docs/reference/ingress.md`.
-- End-to-end walkthrough: see `docs/guides/e2e.md`.
+- Multi-node architecture and lab: `docs/adr/0007-multinode-architecture-scope.md`, `docs/guides/multinode-lab.md`
+- API compatibility and shim status: `docs/wip/conformance.md`, `docs/reference/apishim-compatibility-matrix.md`
+- Operations runbook: see `docs/ops/runbook.md`
+- Ingress/TLS details: see `docs/reference/ingress.md`
+- End-to-end walkthrough: see `docs/guides/e2e.md`
 
 ## Kubernetes Alignment Matrix (Operator View)
 
@@ -25,7 +27,7 @@ Matrix updated: 2026-01-16 (see `docs/site/k8s_status.json`).
 | Area | Capability | Runtime | Shim | Export | Operator notes |
 | --- | --- | --- | --- | --- | --- |
 | API & tooling | kubectl get/apply/watch | N/A | Green | N/A | CI smoke gates cover apply/watch and OpenAPI drift. |
-| API & tooling | SSA + JSON/merge patch | N/A | Green | N/A | managedFields + conflict detection supported. |
+| API & tooling | SSA + JSON Merge Patch | N/A | Green | N/A | `managedFields` + conflict detection supported. |
 | API & tooling | OpenAPI v2/v3 | N/A | Green | N/A | v3 mirrors v2; schemas validated in CI. |
 | Workloads | Deployment/ReplicaSet/Pod semantics | Green | Green | Green | status/conditions + logs/exec/port-forward. |
 | Workloads | StatefulSet/DaemonSet/Job/CronJob semantics | Yellow | Yellow | Green | stored + best-effort status; emulated as Deployment-like apps. |
@@ -54,7 +56,7 @@ Matrix updated: 2026-01-16 (see `docs/site/k8s_status.json`).
 - Rollout policy with canary weights + auto-ramp persisted in state.
 - Built-in `/dashboard`, `/nodes`, and enriched `/metrics` endpoints.
 
-Quick token generation with expiry
+### Quick token generation with expiration
 - Generate API tokens that expire in 24 hours and write them to a file of exports you can `source`:
   - `python -m ae.cli api tokens --generate --ttl-hours 24 -o .env.api`
 
