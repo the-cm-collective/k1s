@@ -20,6 +20,9 @@ RUNTIME=${RUNTIME:-stub}
 CHART_NAME=${CHART_NAME:-demochart}
 NAMESPACE=${NAMESPACE:-demo-helm}
 APISHIM_SERVER=${APISHIM_SERVER:-}
+APISHIM_DSN=${AE_APISHIM_DSN:-}
+# Default to the shared demo DB unless a DSN (Postgres) is configured.
+APISHIM_DB=${AE_APISHIM_DB:-}
 HELM_TEMPLATE_ONLY=${HELM_TEMPLATE_ONLY:-0}
 HELM_SHIM_KEEP=${HELM_SHIM_KEEP:-0}
 HELM_TIMEOUT=${HELM_TIMEOUT:-120s}
@@ -237,16 +240,21 @@ trap cleanup EXIT
 
 export PYTHONPATH
 if [[ -z "$APISHIM_SERVER" ]]; then
+  # Prefer caller-provided apishim storage. If no DSN is set, use the shared demo DB.
+  if [[ -z "$APISHIM_DSN" && -z "$APISHIM_DB" ]]; then
+    APISHIM_DB="$ROOT_DIR/state/apishim.db"
+  fi
   if [[ "$HELM_SHIM_TLS" != "0" ]]; then
     APISHIM_SERVER="https://127.0.0.1:$PORT"
     AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME="$RUNTIME" \
-      AE_APISHIM_DB="$WORKDIR/apishim.db" \
+      AE_APISHIM_DSN="$APISHIM_DSN" \
+      AE_APISHIM_DB="$APISHIM_DB" \
       AE_APISHIM_TLS_CERT="$CERT_PATH" AE_APISHIM_TLS_KEY="$KEY_PATH" \
       python -m ae.apishim serve --host 127.0.0.1 --port "$PORT" --token "$TOKEN" --tls \
       >"$LOG_PATH" 2>&1 &
   else
     APISHIM_SERVER="http://127.0.0.1:$PORT"
-    AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME="$RUNTIME" AE_APISHIM_DB="$WORKDIR/apishim.db" python -m ae.apishim serve \
+    AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME="$RUNTIME" AE_APISHIM_DSN="$APISHIM_DSN" AE_APISHIM_DB="$APISHIM_DB" python -m ae.apishim serve \
       --host 127.0.0.1 --port "$PORT" --token "$TOKEN" --allow-anonymous >"$LOG_PATH" 2>&1 &
   fi
   SHIM_PID=$!
