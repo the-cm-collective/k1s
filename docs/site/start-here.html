@@ -410,6 +410,18 @@ python -m ae.cli logs blue --tail 50</code></pre>
 <li>Need only docs + API? Use <code>./scripts/init_demo.sh --docs-only -y</code>.</li>
 <li>Prefer Make: <code>make demo ARGS=&quot;--demo-standard -y -d&quot;</code> and <code>make demo-down</code> (see <code>Makefile:1</code>).</li>
 <li>Want to try multi-node? Run <code>make demo ARGS=&quot;--demo-multinode -y&quot;</code> once you have a second host/VM reachable (see Option C below).</li>
+<pre><code>  mkdir -p ~/.config/containers/registries.conf.d
+  cat &gt; ~/.config/containers/registries.conf.d/local-cache.conf &lt;&lt;&#x27;EOF&#x27;
+  [[registry]]
+  location = &quot;localhost:5001&quot;
+  insecure = true
+
+  [[registry]]
+  location = &quot;localhost:5002&quot;
+  insecure = true
+  EOF</code></pre>
+<li>Podman registry cache: configure an insecure local registry to avoid HTTPS pull errors and Docker Hub rate limits, or disable the cache.
+Or run with <code>AE_USE_REGISTRY_CACHE=0</code>.</li>
 </ul>
 <h2>Option B — Manual Quickstart (hands‑on)</h2>
 <p>Follow this if you want to see each moving part.</p>
@@ -608,7 +620,7 @@ ae --server http://&lt;controller-ip&gt;:9108 --token $AE_API_READ_TOKEN status<
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-17 13:14:36</span>
+        <span>Built 2026-01-17 14:05:27</span>
       </div>
     </footer>
     <script>
