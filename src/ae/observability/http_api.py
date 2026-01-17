@@ -3336,6 +3336,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                   .flow-rev { animation: flow 1.6s linear infinite reverse; }
                   .selected .node-shape, .selected circle { stroke-width:2.4 !important; filter: drop-shadow(0 0 2px #60a5fa); }
                   .selected.link { stroke:#2563eb; }
+                  .ns-peer { opacity:0.7; }
+                  .ns-peer .node-shape, .ns-peer circle { stroke-width:1.6; }
                   .faded { opacity:0.35; }
                   @keyframes flow { to { stroke-dashoffset: -24; } }
                 </style>
@@ -4605,11 +4607,31 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         try {
           var sel = (typeof current==='string' && current) ? String(current) : null;
           if (sel){
+            var selNs = null;
+            try {
+              var selNode = nodeById['app:' + sel];
+              if (selNode && selNode.meta && selNode.meta.ns) selNs = selNode.meta.ns;
+            } catch(e){}
+            if (!selNs) {
+              try { selNs = splitAppName(sel).namespace; } catch(e){}
+            }
             // nodes
             Array.from(gNodes.children).forEach(function(n){
               var a = n.getAttribute('data-app');
               var isSel = (a===sel);
-              if(isSel) n.classList.add('selected'); else if(n.className.baseVal.indexOf('system')===-1) n.classList.add('faded');
+              if (isSel){
+                n.classList.add('selected');
+                return;
+              }
+              if (n.className.baseVal.indexOf('system') !== -1) return;
+              if (selNs && a){
+                var nsInfo = splitAppName(a);
+                if (nsInfo && nsInfo.namespace === selNs){
+                  n.classList.add('ns-peer');
+                  return;
+                }
+              }
+              n.classList.add('faded');
             });
             // links
             Array.from(gLinks.children).forEach(function(p){
