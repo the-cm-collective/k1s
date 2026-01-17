@@ -1000,6 +1000,16 @@ fi
 if [[ -z "${AE_APISHIM_DSN:-}" ]]; then
   export AE_APISHIM_DB=${AE_APISHIM_DB:-state/apishim.db}
 fi
+export AE_LABS=${LABS_ENABLE}
+export AE_LABS_TOKEN=${LABS_TOKEN}
+if [[ ${LABS_ENABLE:-0} -eq 1 ]]; then
+  export AE_LABS_SESSION_HOSTS=${AE_LABS_SESSION_HOSTS:-1}
+  if [[ -z "${AE_APISHIM_MIRROR:-}" ]]; then
+    export AE_APISHIM_MIRROR=1
+  fi
+elif [[ -n "${AE_APISHIM_MIRROR:-}" ]]; then
+  export AE_APISHIM_MIRROR
+fi
 
 # Write env helper for manual shells (after exports)
 mkdir -p state
@@ -1019,6 +1029,7 @@ export AE_OCI_RUNTIME=${AE_OCI_RUNTIME:-}
 export API_PORT=${API_PORT}
 export AE_SPECS_DIR=${DEMO_SPECS_DIR}
 export AE_APISHIM_DB=${AE_APISHIM_DB:-}
+export AE_APISHIM_MIRROR=${AE_APISHIM_MIRROR:-}
 # Labs + docs wiring for controller
 export AE_LABS=${LABS_ENABLE}
 export AE_LABS_TOKEN=${LABS_TOKEN}
