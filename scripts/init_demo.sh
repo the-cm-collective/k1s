@@ -1007,8 +1007,14 @@ if [[ ${LABS_ENABLE:-0} -eq 1 ]]; then
   if [[ -z "${AE_APISHIM_MIRROR:-}" ]]; then
     export AE_APISHIM_MIRROR=1
   fi
+  if [[ -z "${AE_APISHIM_SOT:-}" ]]; then
+    export AE_APISHIM_SOT=1
+  fi
 elif [[ -n "${AE_APISHIM_MIRROR:-}" ]]; then
   export AE_APISHIM_MIRROR
+  if [[ -n "${AE_APISHIM_SOT:-}" ]]; then
+    export AE_APISHIM_SOT
+  fi
 fi
 
 # Write env helper for manual shells (after exports)
@@ -1030,6 +1036,7 @@ export API_PORT=${API_PORT}
 export AE_SPECS_DIR=${DEMO_SPECS_DIR}
 export AE_APISHIM_DB=${AE_APISHIM_DB:-}
 export AE_APISHIM_MIRROR=${AE_APISHIM_MIRROR:-}
+export AE_APISHIM_SOT=${AE_APISHIM_SOT:-}
 # Labs + docs wiring for controller
 export AE_LABS=${LABS_ENABLE}
 export AE_LABS_TOKEN=${LABS_TOKEN}
