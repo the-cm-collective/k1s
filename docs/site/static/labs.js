@@ -128,6 +128,11 @@
 
   // Lightweight toast and banner helpers
   function toast(msg, type) {
+    // Avoid duplicate overlays when the banner is already visible.
+    try {
+      const b = document.getElementById('banner');
+      if (b && !b.classList.contains('hidden')) return;
+    } catch(_){}
     let t = document.getElementById('toast');
     if (!t) {
       t = document.createElement('div');
@@ -665,7 +670,7 @@
     // Enable buttons if we have controlled actions, otherwise keep disabled
     const enableActions = $('#toggle-actions')?.checked && state.sessionId && state.orch.available;
     // Keep Apply clickable to surface guidance even when actions are unavailable
-    ['#btn-scale-2','#btn-scale-3','#btn-canary-10','#btn-observe-toggle','#btn-reset']
+    ['#btn-scale-2','#btn-scale-3','#btn-canary-10','#btn-canary-apply','#btn-observe-toggle','#btn-reset']
       .forEach(id=>{ const el=$(id); if (el) el.disabled = !enableActions; });
     const btnApply = $('#btn-apply-echo');
     if (btnApply) {
@@ -679,6 +684,8 @@
     }
     ['#btn-rollout-pause','#btn-rollout-resume']
       .forEach(id=>{ const el=$(id); if (el) el.disabled = !enableActions; });
+    const canarySlider = $('#canary-weight');
+    if (canarySlider) canarySlider.disabled = !enableActions;
     // Ingress link always enabled as a raw link to host when status has host
     verifyApply(); // kick initial verifiers
     refreshStatusNow();
@@ -1044,17 +1051,25 @@
     // Canary slider controls
     const cw = document.getElementById('canary-weight');
     const cwv = document.getElementById('canary-weight-val');
+    const canaryWeightToPercent = (val)=>{
+      const n = parseInt(String(val ?? ''), 10);
+      if (!Number.isFinite(n) || n <= 0) return 10;
+      return Math.max(10, Math.min(100, n * 10));
+    };
     if (cw && cwv) {
-      cw.addEventListener('input', ()=> { cwv.textContent = cw.value; });
+      const updateCanaryLabel = ()=>{ cwv.textContent = String(canaryWeightToPercent(cw.value)); };
+      cw.addEventListener('input', updateCanaryLabel);
+      updateCanaryLabel();
     }
     $('#btn-canary-apply')?.addEventListener('click', async(e)=>{
       if (!state.orch.available) return;
-      const weight = (document.getElementById('canary-weight')||{value:'3'}).value;
+      const rawWeight = (document.getElementById('canary-weight')||{value:'3'}).value;
+      const weight = canaryWeightToPercent(rawWeight);
       const btn = e.currentTarget || document.getElementById('btn-canary-apply');
       await withButtonFeedback(btn, `Applying canary ${weight}%…`, async ()=>{
         const resp = await apiFetch(`/labs/rollout`, {
           method: 'POST', headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
-          body: JSON.stringify({ session_id: state.sessionId, action: 'canary', app: state.appName, weight: Number(weight)||3 })
+          body: JSON.stringify({ session_id: state.sessionId, action: 'canary', app: state.appName, weight })
         });
         if (!resp.ok) { banner(`Canary failed: ${await resp.text()}`, 'fail'); return; }
         try {
