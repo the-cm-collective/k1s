@@ -4,7 +4,7 @@ Use this page to try k1s in minutes — no Kubernetes experience required. The p
 
 Quick start:
 
-- Step 1: Scroll to "A. Environment & Backend" and click `Start Session`.
+- Step 1: Scroll to "A. Environment & Backend", enable <strong>Controlled Actions</strong>, click <strong>Use Token</strong> to load `AE_LABS_TOKEN`, then click `Start Session`.
 - Step 2: In "B. Apply Example", choose `echo` and click `Apply Selected Example`.
 - Step 3: In "E. Ingress Test", click `Open App` to view the service, and in "C. Logs & Events" watch activity live.
 
@@ -13,6 +13,8 @@ Quick start:
 This page prefers HTMX + SSE for live updates and uses a small `labs.js` helper for sessions. If the dev‑only lab orchestrator is not running, the page falls back to read‑only checks with copyable CLI commands.
 
 ## A. Environment & Backend
+
+To start a session: enable <strong>Controlled Actions</strong>, click <strong>Use Token</strong> to load `AE_LABS_TOKEN`, then click `Start Session`.
 
 - API Base: <span id="env-api-base">(detecting)</span>
 - Orchestrator: <span id="env-orch">(checking)</span>
@@ -72,7 +74,14 @@ This page prefers HTMX + SSE for live updates and uses a small `labs.js` helper 
   <pre id="helm-demo-log" class="helm-demo-log hidden scrollbar-hide" aria-live="polite"></pre>
 </div>
 
-Want to watch a Helm deployment materialize inside the dashboard? Click “Run Helm Shim Demo” above (requires Labs token). Behind the scenes, the server runs the commands below; you can still run them manually if you prefer:
+Want to watch a Helm deployment materialize inside the dashboard? Click “Run Helm Shim Demo” above (requires Labs token). Behind the scenes, the server runs the commands below; you can still run them manually if you prefer. The demo creates a few core Kubernetes objects so you can see how they show up in the UI:
+
+- `Namespace` (`demo-helm`) - isolates the demo resources so they are easy to find and clean up.
+- `Deployment` (`demochart`) - declares the desired number of Pods and handles rolling updates.
+- `Service` (`demochart`) - provides a stable virtual IP/DNS name and load-balances traffic to the Pods.
+- `ServiceAccount` (`demochart`) - gives Pods an identity for Kubernetes API access and permissions.
+
+The chart also includes optional Ingress and HPA templates, but they are disabled by default in this demo.
 
 ```bash
 # 1) Create a self-signed cert (dev-only)
@@ -110,7 +119,7 @@ Back in the playground:
 
 ## B. Apply Example
 
-Pick a sample and apply it. In read‑only mode the UI shows the exact CLI you can run locally.
+Pick a sample and apply it. In read-only mode the UI shows the exact CLI you can run locally. Each example is an `App` spec YAML: `apiVersion` and `kind` identify the schema, `metadata.name` becomes the app's ID, and `spec` is where you describe what to run and how it should behave. Typical `spec` fields include `image` (container), `replicas` (how many), `ports`/`service` (how traffic reaches it), `health` checks, plus optional sections like `ingress`, `resources`, `security`, `storage`, and `configRefs`/`secretRefs` for configuration.
 
 - Example:
   - <select id="example-select">
@@ -162,6 +171,8 @@ Try increasing replicas or enabling a tiny canary rollout. These buttons become 
 - Canary 10%: enables a canary rollout policy and shifts a small portion of traffic to a new revision. This is a safe way to test changes with limited impact. You can later fine‑tune weight in "F. Rollout Controls" or revert to 0%.
 - Requirements: an active session, "Enable Controlled Actions" toggled on, and an example applied (e.g., echo).
 
+How to read canary results: a canary is not a separate app. It is a new revision of the same app created when the manifest changes. The base revision is the previous spec, the canary revision is the latest. If you only toggle canary, both revisions may run the same image and look identical — make a small change (like `spec.image` or an env value) to see a visible difference. The dashboard shows the base vs canary revision IDs in “Canary routes to revision” below.
+
 - <button id="btn-scale-2" disabled>Scale to 2</button>
 - <button id="btn-scale-3" disabled>Scale to 3</button>
 - <button id="btn-canary-10" disabled>Canary 10%</button>
@@ -182,6 +193,7 @@ Canary via YAML (conceptual):
 
 ```yaml
 spec:
+  image: mendhak/http-https-echo:38 # any spec change creates a new revision
   rollout:
     strategy: canary
     weight: 10   # send ~10% of traffic to the canary
