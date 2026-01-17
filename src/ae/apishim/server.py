@@ -6674,10 +6674,27 @@ class ShimServer(HTTPServer):
         self.runtime = _runtime_from_env()
         self._bootstrap_crds()
         # Start adapter worker to reconcile apps/v1 Deployments into k1s
-        try:
-            self._adapter = build_adapter(self.store, runtime=self.runtime, state_store=self.state)
-            self._adapter.start()
-        except Exception:
+        adapter_enabled = str(os.getenv("AE_APISHIM_ADAPTER", "1") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        sot_enabled = str(os.getenv("AE_APISHIM_SOT", "0") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if sot_enabled:
+            adapter_enabled = False
+        if adapter_enabled:
+            try:
+                self._adapter = build_adapter(self.store, runtime=self.runtime, state_store=self.state)
+                self._adapter.start()
+            except Exception:
+                self._adapter = None
+        else:
             self._adapter = None
 
     def _bootstrap_crds(self) -> None:
