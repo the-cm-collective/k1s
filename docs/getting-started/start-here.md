@@ -38,6 +38,20 @@ Tips
 - Need only docs + API? Use `./scripts/init_demo.sh --docs-only -y`.
 - Prefer Make: `make demo ARGS="--demo-standard -y -d"` and `make demo-down` (see `Makefile:1`).
 - Want to try multi-node? Run `make demo ARGS="--demo-multinode -y"` once you have a second host/VM reachable (see Option C below).
+- Podman registry cache: configure an insecure local registry to avoid HTTPS pull errors and Docker Hub rate limits, or disable the cache.
+  ```
+  mkdir -p ~/.config/containers/registries.conf.d
+  cat > ~/.config/containers/registries.conf.d/local-cache.conf <<'EOF'
+  [[registry]]
+  location = "localhost:5001"
+  insecure = true
+
+  [[registry]]
+  location = "localhost:5002"
+  insecure = true
+  EOF
+  ```
+  Or run with `AE_USE_REGISTRY_CACHE=0`.
 
 ## Option B — Manual Quickstart (hands‑on)
 Follow this if you want to see each moving part.
