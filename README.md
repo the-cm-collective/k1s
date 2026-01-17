@@ -1,18 +1,20 @@
 # k1s Minimal Application Engine
 
-It started out of both basic necessity and general curiosity. I tend to push things—usually too far—and this was no exception. We needed a lightweight Kubernetes-like system for low-resource environments, and we wanted to learn how Kubernetes actually works. We feel we’ve achieved both, and it has become a great learning tool for understanding application engines in general.
+It started out of both basic necessity and general curiosity. I tend to push things—usually too far—and this was no exception. I needed a lightweight Kubernetes-like system for low-resource environments, and I wanted to learn how Kubernetes actually works. I feel we’ve achieved both, and it has become a great learning tool for understanding application engines in general.
 
-After all, application engines are the heart of the modern web. While they can be daunting and complex, we provide an integrated dashboard to visualize the stack and a playground page to help new users learn the basics. We also hope this is useful to anyone who needs a lightweight Kubernetes-like system for their own projects or lab experiments.
+After all, application engines are the heart of the modern web. While they can be daunting and complex, we created an integrated dashboard to help visualize the stack and an interactive playground page to help new users learn the basics. We also hope this is useful to anyone who needs a lightweight Kubernetes-like system for their own projects or lab experiments.
 
-What is k1s? In short, it’s a lightweight multi-node application engine with a Kubernetes-compatible API shim. It provides a subset of full Kubernetes functionality with a much smaller footprint and lower resource requirements, and it’s designed to run on a single node or multiple nodes.
+So, what is k1s? In short, it’s a lightweight multi-node application engine with a Kubernetes-compatible API shim. It provides a subset of full Kubernetes functionality with a much smaller footprint and lower resource requirements, and it’s designed to run on a single node or multiple nodes.
+
+Development is ongoing, and we're always looking for feedback and contributions. If you're interested in learning more or getting involved, please check out the documentation and reach out to us.
 
 ## Documentation
 
-- Multi-node architecture and lab: `docs/adr/0007-multinode-architecture-scope.md`, `docs/guides/multinode-lab.md`.
-- API compatibility and shim status: `docs/wip/conformance.md`, `docs/reference/apishim-compatibility-matrix.md`.
-- Operations runbook: see `docs/ops/runbook.md`.
-- Ingress/TLS details: see `docs/reference/ingress.md`.
-- End-to-end walkthrough: see `docs/guides/e2e.md`.
+- Multi-node architecture and lab: `docs/adr/0007-multinode-architecture-scope.md`, `docs/guides/multinode-lab.md`
+- API compatibility and shim status: `docs/wip/conformance.md`, `docs/reference/apishim-compatibility-matrix.md`
+- Operations runbook: see `docs/ops/runbook.md`
+- Ingress/TLS details: see `docs/reference/ingress.md`
+- End-to-end walkthrough: see `docs/guides/e2e.md`
 
 ## Kubernetes Alignment Matrix (Operator View)
 
@@ -25,7 +27,7 @@ Matrix updated: 2026-01-16 (see `docs/site/k8s_status.json`).
 | Area | Capability | Runtime | Shim | Export | Operator notes |
 | --- | --- | --- | --- | --- | --- |
 | API & tooling | kubectl get/apply/watch | N/A | Green | N/A | CI smoke gates cover apply/watch and OpenAPI drift. |
-| API & tooling | SSA + JSON/merge patch | N/A | Green | N/A | managedFields + conflict detection supported. |
+| API & tooling | SSA + JSON Merge Patch | N/A | Green | N/A | `managedFields` + conflict detection supported. |
 | API & tooling | OpenAPI v2/v3 | N/A | Green | N/A | v3 mirrors v2; schemas validated in CI. |
 | Workloads | Deployment/ReplicaSet/Pod semantics | Green | Green | Green | status/conditions + logs/exec/port-forward. |
 | Workloads | StatefulSet/DaemonSet/Job/CronJob semantics | Yellow | Yellow | Green | stored + best-effort status; emulated as Deployment-like apps. |
@@ -54,7 +56,7 @@ Matrix updated: 2026-01-16 (see `docs/site/k8s_status.json`).
 - Rollout policy with canary weights + auto-ramp persisted in state.
 - Built-in `/dashboard`, `/nodes`, and enriched `/metrics` endpoints.
 
-Quick token generation with expiry
+### Quick token generation with expiration
 - Generate API tokens that expire in 24 hours and write them to a file of exports you can `source`:
   - `python -m ae.cli api tokens --generate --ttl-hours 24 -o .env.api`
 
@@ -125,14 +127,14 @@ Kubernetes API shim (kubectl/helm):
 
 Run with `make <target>`. You can override defaults via `VAR=value make <target>`.
 
-Setup and quality
+Setup and quality:
 - `make install`: install dev dependencies (`pip -e .[dev]`).
 - `make watch`: install file-watching extras (`pip -e .[watch]`).
 - `make test`: run unit tests (`pytest -q`).
 - `make lint`: run `ruff check` + `mypy src/ae`.
 - `make wheel`: build a wheel into `dist/`.
 
-Local dev and samples
+Local dev and samples:
 - `make dev-up` / `make dev-down`: start/stop dev Docker Compose stack.
 - `make loop`: controller reconcile loop (watch mode).
 - `make run`: single reconcile pass.
@@ -147,7 +149,7 @@ Local dev and samples
 - `make install-docs-service` / `make uninstall-docs-service`: install/remove docs service.
 - `make secrets-seal-demo`: run the sealed-secret demo helper.
 
-Docs, labs, and playground
+Docs, labs, and playground:
 - `make docs`: combine snapshots (if present), regenerate charts, build docs.
 - `make docs-watch`: rebuild docs when `combined/combined.csv` changes.
 - `make labs-up` / `make labs-down`: dev labs stack (docs + controller via compose).
@@ -156,8 +158,8 @@ Docs, labs, and playground
 - `make apishim-smoke`: quick API shim health check on port 8445.
 - `make shim-helm-demo`: run the helm shim demo helper.
 
-Demo workflows
-- `make demo`: run `scripts/init_demo.sh` (defaults to `--demo-configs`).
+Demo workflows:
+- `make demo`: run the playground labs demo (`--labs --labs-token`; podman backend, plaintext secrets allowed).
 - `make demo-help`: show demo script help.
 - `make demo-down`: tear down demo stacks.
 - `make demo-hardened`: run hardened demo flow.
@@ -165,11 +167,11 @@ Demo workflows
 - `make dashboard-reload`: reload controller under the dashboard supervisor.
 - `make dashboard-restart`: restart the supervisor and reload.
 
-Integration and e2e
+Integration and e2e:
 - `make integ-test`: integration tests (`pytest -q tests/integration/`).
 - `make e2e` / `make e2e-multiport`: run the multiport e2e script.
 
-Benchmarks (memory + runtime tooling)
+Benchmarks (memory + runtime tooling):
 - `make bench-mem-k1s`: snapshot k1s memory.
 - `make bench-mem-k3s`: snapshot k3s memory.
 - `make bench-mem-agg`: aggregate latest snapshot under a label.
@@ -205,14 +207,14 @@ Benchmarks (memory + runtime tooling)
 - `make bench-mem-idle-k1s`: idle baseline snapshot for k1s.
 - `make bench-mem-idle-k3s`: idle baseline snapshot for k3s.
 
-Images and containers
+Images and containers:
 - `make image-docker`: build controller image with Dockerfile.
 - `make image-podman`: build controller image with Containerfile.
 - `make push-docker` / `make push-podman`: push controller image.
 - `make docker-build-controller`: build controller image (ops/images/controller.Dockerfile).
 - `make docker-run-controller`: run controller container with specs/state mounts.
 
-## Kubernetes Export Quick Start
+## Kubernetes Export Quickstart
 
 - Render the echo example to Kubernetes YAML and validate:
   - `python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --ingress-class traefik --validate > k8s.yaml`
@@ -223,7 +225,7 @@ Images and containers
   - `python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --np-preset backend --validate > k8s.yaml`
 - See `docs/reference/k8s-export.md` for supported fields: startupProbe, image pull options, env/envFrom, projected volumes, PDB/HPA, pod-level security, and more.
 
-## Documentation
+## Documentation Index
 
 - Start here onboarding: `docs/getting-started/start-here.md`
 - High-level overview and getting started: `docs/getting-started/overview.md`

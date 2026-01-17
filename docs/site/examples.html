@@ -385,6 +385,10 @@
 </ul>
 <h2>Demo script overview</h2>
 <p>The init script can stand up different demo combinations. Use the flags below to control which apps are applied. Add <code>-y</code> to auto-add hosts and <code>-d</code> to attach logs (Ctrl-C to exit).</p>
+<p>Note</p>
+<ul>
+<li><code>make demo</code> now starts the playground labs demo by default. Use <code>make demo ARGS=&quot;...&quot;</code> for the modes below.</li>
+</ul>
 <h2>Demo modes</h2>
 <h3>Standard Demo (blue/green)</h3>
 <ul>
@@ -402,7 +406,7 @@
 <li>Files: <code>configs/app-config.yaml</code>, <code>specs/examples/demo-secret.sops.yaml</code></li>
 <li>Command:</li>
 <li><code>./scripts/init_demo.sh --with-secrets-env --demo-configs -y</code></li>
-<li><code>make demo</code> (defaults to <code>-y --demo-configs</code>)</li>
+<li><code>make demo ARGS=&quot;--demo-configs -y -d&quot;</code></li>
 </ul>
 <h3>Multi-Replica Echo (echo-mr)</h3>
 <ul>
@@ -498,7 +502,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-16 13:44:49</span>
+        <span>Built 2026-01-16 16:17:24</span>
       </div>
     </footer>
     <script>

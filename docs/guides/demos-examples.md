@@ -11,6 +11,9 @@ The init script can stand up different demo combinations. Use the flags below
 to control which apps are applied. Add `-y` to auto-add hosts and `-d` to attach
 logs (Ctrl-C to exit).
 
+Note
+- `make demo` now starts the playground labs demo by default. Use `make demo ARGS="..."` for the modes below.
+
 ## Demo modes
 
 ### Standard Demo (blue/green)
@@ -29,7 +32,7 @@ logs (Ctrl-C to exit).
 - Files: `configs/app-config.yaml`, `specs/examples/demo-secret.sops.yaml`
 - Command:
   - `./scripts/init_demo.sh --with-secrets-env --demo-configs -y`
-  - `make demo` (defaults to `-y --demo-configs`)
+  - `make demo ARGS="--demo-configs -y -d"`
 
 ### Multi-Replica Echo (echo-mr)
 

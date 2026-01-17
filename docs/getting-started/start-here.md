@@ -118,7 +118,7 @@ Docs, labs, and playground
 - `make shim-helm-demo`: run the helm shim demo helper.
 
 Demo workflows
-- `make demo`: run `scripts/init_demo.sh` (defaults to `--demo-configs`).
+- `make demo`: run the playground labs demo (`--labs --labs-token`; podman backend, plaintext secrets allowed).
 - `make demo-help`: show demo script help.
 - `make demo-down`: tear down demo stacks.
 - `make demo-hardened`: run hardened demo flow.
