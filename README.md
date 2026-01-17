@@ -60,6 +60,14 @@ Matrix updated: 2026-01-16 (see `docs/site/k8s_status.json`).
 - Generate API tokens that expire in 24 hours and write them to a file of exports you can `source`:
   - `python -m ae.cli api tokens --generate --ttl-hours 24 -o .env.api`
 
+## Integrated Dashboard & Interactive Playground
+
+Dashboard:
+![Dashboard](media/docs.home.arpa_8443_dashboard.png)
+
+Playground:
+![Playground](media/docs.home.arpa_8443_playground.html.png)
+
 ## Quickstart
 
 1) Install (editable for dev):
