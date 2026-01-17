@@ -347,12 +347,12 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="static/labs.css?v=1768687527"/>
+    <link rel="stylesheet" href="static/labs.css?v=1768692259"/>
 <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-<script>window.DOCS_LABS_TOKEN='D34DB33F';</script>
+<script>window.DOCS_LABS_TOKEN='';</script>
 <script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>
-<script defer src="static/labs.js?v=1768687527"></script>
+<script defer src="static/labs.js?v=1768692259"></script>
   </head>
   <body>
     <nav>
@@ -386,13 +386,14 @@
 <p>Use this page to try k1s in minutes — no Kubernetes experience required. The playground can run fully read‑only or, when enabled, perform safe actions like "apply example" and "scale".</p>
 <p>Quick start:</p>
 <ul>
-<li>Step 1: Scroll to "A. Environment & Backend" and click <code>Start Session</code>.</li>
+<li>Step 1: Scroll to "A. Environment & Backend", enable <strong>Controlled Actions</strong>, click <strong>Use Token</strong> to load <code>AE_LABS_TOKEN</code>, then click <code>Start Session</code>.</li>
 <li>Step 2: In "B. Apply Example", choose <code>echo</code> and click <code>Apply Selected Example</code>.</li>
 <li>Step 3: In "E. Ingress Test", click <code>Open App</code> to view the service, and in "C. Logs & Events" watch activity live.</li>
 </ul>
 <div class="callout" role="note">Tip: If the page says “Labs: unavailable”, you’re in read‑only mode — verifiers still run and CLI commands are shown to try locally.</div>
 <p>This page prefers HTMX + SSE for live updates and uses a small <code>labs.js</code> helper for sessions. If the dev‑only lab orchestrator is not running, the page falls back to read‑only checks with copyable CLI commands.</p>
 <h2>A. Environment &amp; Backend</h2>
+<p>To start a session: enable <strong>Controlled Actions</strong>, click <strong>Use Token</strong> to load <code>AE_LABS_TOKEN</code>, then click <code>Start Session</code>.</p>
 <ul>
 <li>API Base: <span id="env-api-base">(detecting)</span></li>
 <li>Orchestrator: <span id="env-orch">(checking)</span></li>
@@ -422,7 +423,14 @@
 </ul>
 <h3>Helm Shim Demo (Watch Mode)</h3>
 <div class="helm-demo-box">   <div class="helm-demo-controls">     <button id="btn-helm-demo" class="btn-secondary" disabled>Run Helm Shim Demo</button>     <button id="btn-helm-demo-stop" class="btn-secondary" disabled>Stop</button>   </div>   <div id="helm-demo-status" class="helm-demo-status">Labs backend unavailable.</div>   <pre id="helm-demo-log" class="helm-demo-log hidden scrollbar-hide" aria-live="polite"></pre> </div>
-<p>Want to watch a Helm deployment materialize inside the dashboard? Click “Run Helm Shim Demo” above (requires Labs token). Behind the scenes, the server runs the commands below; you can still run them manually if you prefer:</p>
+<p>Want to watch a Helm deployment materialize inside the dashboard? Click “Run Helm Shim Demo” above (requires Labs token). Behind the scenes, the server runs the commands below; you can still run them manually if you prefer. The demo creates a few core Kubernetes objects so you can see how they show up in the UI:</p>
+<ul>
+<li><code>Namespace</code> (<code>demo-helm</code>) - isolates the demo resources so they are easy to find and clean up.</li>
+<li><code>Deployment</code> (<code>demochart</code>) - declares the desired number of Pods and handles rolling updates.</li>
+<li><code>Service</code> (<code>demochart</code>) - provides a stable virtual IP/DNS name and load-balances traffic to the Pods.</li>
+<li><code>ServiceAccount</code> (<code>demochart</code>) - gives Pods an identity for Kubernetes API access and permissions.</li>
+</ul>
+<p>The chart also includes optional Ingress and HPA templates, but they are disabled by default in this demo.</p>
 <pre><code># 1) Create a self-signed cert (dev-only)
 openssl req -x509 -newkey rsa:2048 -sha256 -days 3 -nodes \
   -keyout /tmp/helm-shim.key -out /tmp/helm-shim.crt -subj &quot;/CN=127.0.0.1&quot;
@@ -451,7 +459,7 @@ helm uninstall demochart -n demo-helm &amp;&amp; kubectl delete namespace demo-h
 <p>Back in the playground:</p>
 <p>1. Set Backend to <code>k1s-Host</code>, click <code>Start Session</code>, and use **Quick Links → Open Dashboard**. 2. The release appears as <code>demo-helm--demochart</code> (namespace <code>demo-helm</code>); sections **B–E** stream logs, events, ingress health, and nodePort hints while Helm reconciles. 3. When you run <code>helm uninstall</code>, the dashboard reflects the teardown in real time.</p>
 <h2>B. Apply Example</h2>
-<p>Pick a sample and apply it. In read‑only mode the UI shows the exact CLI you can run locally.</p>
+<p>Pick a sample and apply it. In read-only mode the UI shows the exact CLI you can run locally. Each example is an <code>App</code> spec YAML: <code>apiVersion</code> and <code>kind</code> identify the schema, <code>metadata.name</code> becomes the app's ID, and <code>spec</code> is where you describe what to run and how it should behave. Typical <code>spec</code> fields include <code>image</code> (container), <code>replicas</code> (how many), <code>ports</code>/<code>service</code> (how traffic reaches it), <code>health</code> checks, plus optional sections like <code>ingress</code>, <code>resources</code>, <code>security</code>, <code>storage</code>, and <code>configRefs</code>/<code>secretRefs</code> for configuration.</p>
 <ul>
 <li>Example:</li>
 <li><select id="example-select">
@@ -488,6 +496,7 @@ helm uninstall demochart -n demo-helm &amp;&amp; kubectl delete namespace demo-h
 <li>Canary 10%: enables a canary rollout policy and shifts a small portion of traffic to a new revision. This is a safe way to test changes with limited impact. You can later fine‑tune weight in "F. Rollout Controls" or revert to 0%.</li>
 <li>Requirements: an active session, "Enable Controlled Actions" toggled on, and an example applied (e.g., echo).</li>
 </ul>
+<p>How to read canary results: a canary is not a separate app. It is a new revision of the same app created when the manifest changes. The base revision is the previous spec, the canary revision is the latest. If you only toggle canary, both revisions may run the same image and look identical — make a small change (like <code>spec.image</code> or an env value) to see a visible difference. The dashboard shows the base vs canary revision IDs in “Canary routes to revision” below.</p>
 <ul>
 <li><button id="btn-scale-2" disabled>Scale to 2</button></li>
 <li><button id="btn-scale-3" disabled>Scale to 3</button></li>
@@ -503,6 +512,7 @@ python -m ae.cli rollout pause &lt;app&gt;
 python -m ae.cli rollout resume &lt;app&gt;</code></pre>
 <p>Canary via YAML (conceptual):</p>
 <pre><code>spec:
+  image: mendhak/http-https-echo:38 # any spec change creates a new revision
   rollout:
     strategy: canary
     weight: 10   # send ~10% of traffic to the canary</code></pre>
@@ -552,7 +562,7 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-17 14:05:27</span>
+        <span>Built 2026-01-17 15:24:19</span>
       </div>
     </footer>
     <script>
