@@ -317,27 +317,49 @@ warn_insecure_registry() {
     *) return 0 ;;
   esac
   if [[ "$engine" == "docker" ]]; then
-    local daemon_json="/etc/docker/daemon.json"
-    if [[ -r "$daemon_json" ]]; then
-      if grep -q "\"insecure-registries\"" "$daemon_json" && grep -q "$host_port" "$daemon_json"; then
-        return 0
+    local daemon_json_sys="/etc/docker/daemon.json"
+    local daemon_json_user="${XDG_CONFIG_HOME:-$HOME/.config}/docker/daemon.json"
+    for daemon_json in "$daemon_json_user" "$daemon_json_sys"; do
+      if [[ -r "$daemon_json" ]]; then
+        if grep -q "\"insecure-registries\"" "$daemon_json" && grep -q "$host_port" "$daemon_json"; then
+          return 0
+        fi
       fi
-    fi
-    log "Warning: Docker insecure registry for ${host_port} not detected; configure /etc/docker/daemon.json to avoid HTTPS errors."
+    done
+    log "Warning: Docker insecure registry for ${host_port} not detected."
+    log "Add it to /etc/docker/daemon.json (or ${daemon_json_user} for rootless Docker) and restart the Docker daemon."
+    return 1
   else
-    local conf_user="$HOME/.config/containers/registries.conf"
+    local conf_user="${XDG_CONFIG_HOME:-$HOME/.config}/containers/registries.conf"
     local conf_sys="/etc/containers/registries.conf"
-    if [[ -r "$conf_user" ]] && grep -q "location *= *\"${host_port}\"" "$conf_user"; then
-      if grep -q "insecure *= *true" "$conf_user"; then
-        return 0
+    local conf_user_dir="${XDG_CONFIG_HOME:-$HOME/.config}/containers/registries.conf.d"
+    local conf_sys_dir="/etc/containers/registries.conf.d"
+    _conf_has_insecure() {
+      local file="$1"
+      if [[ -r "$file" ]] && grep -q "location *= *\"${host_port}\"" "$file"; then
+        if grep -q "insecure *= *true" "$file"; then
+          return 0
+        fi
       fi
+      return 1
+    }
+    if _conf_has_insecure "$conf_user" || _conf_has_insecure "$conf_sys"; then
+      return 0
     fi
-    if [[ -r "$conf_sys" ]] && grep -q "location *= *\"${host_port}\"" "$conf_sys"; then
-      if grep -q "insecure *= *true" "$conf_sys"; then
-        return 0
+    for conf_dir in "$conf_user_dir" "$conf_sys_dir"; do
+      if [[ -d "$conf_dir" ]]; then
+        for file in "$conf_dir"/*.conf; do
+          [[ -e "$file" ]] || continue
+          if _conf_has_insecure "$file"; then
+            return 0
+          fi
+        done
       fi
-    fi
-    log "Warning: Podman registry config for ${host_port} not detected; set insecure=true in registries.conf to avoid HTTPS errors."
+    done
+    log "Warning: Podman registry config for ${host_port} not detected."
+    log "Set insecure=true for ${host_port} in ${conf_user} or ${conf_sys} (or a registries.conf.d drop-in)."
+    log "If running podman system service, restart it after updating the config."
+    return 1
   fi
 }
 
@@ -703,9 +725,19 @@ if [[ "${AE_USE_REGISTRY_CACHE}" == "1" && -f ops/dev/docker-compose.cache.overr
   if [[ "${AE_REGISTRY_PORT}" != "5001" ]]; then
     log "Registry cache default port 5001 busy; using ${AE_REGISTRY_PORT}"
   fi
-  log "Using local registry cache at ${AE_REGISTRY_HOST}"
-  log "Registry cache image set to ${AE_REGISTRY_IMAGE}"
-  warn_insecure_registry "${AE_REGISTRY_HOST}" "${STACK_BIN}" || true
+  if ! warn_insecure_registry "${AE_REGISTRY_HOST}" "${STACK_BIN}"; then
+    log "Registry cache requires an insecure registry entry for ${AE_REGISTRY_HOST}."
+    if prompt_yes_no "Continue without registry cache? This may hit Docker Hub pull limits." "N"; then
+      log "Continuing without registry cache (AE_USE_REGISTRY_CACHE=0)"
+      AE_USE_REGISTRY_CACHE=0
+    else
+      log "Aborting. Configure the insecure registry or rerun with AE_USE_REGISTRY_CACHE=0."
+      exit 1
+    fi
+  else
+    log "Using local registry cache at ${AE_REGISTRY_HOST}"
+    log "Registry cache image set to ${AE_REGISTRY_IMAGE}"
+  fi
 fi
 # Ensure state directories exist with liberal perms for rootless Podman
 mkdir -p state/caddy-data state/caddy docs/site || true
@@ -924,9 +956,8 @@ if [[ ${WITH_SECRETS_ENV:-0} -eq 1 ]]; then
   log "Secrets env enabled (AE_ALLOW_PLAINTEXT_SECRETS=1; SOPS_AGE_KEY_FILE=${SOPS_AGE_KEY_FILE})"
 fi
 # Mark this run as demo-init so components can quiet benign warnings
-# Force AE_DEMO_MODE=1 for demos regardless of a pre-set env (demo-aware filtering is opt-in)
+# Force AE_DEMO_MODE=1 for demos regardless of a pre-set env
 export AE_DEMO_MODE=1
-export AE_DEMO_FILTER=${AE_DEMO_FILTER:-0}
 export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
 # Prefer crun for Podman/OCI demos when available, unless user overrode
 if [[ "${AE_RUNTIME_BACKEND}" == "podman" || "${AE_RUNTIME_BACKEND}" == "oci" ]]; then
@@ -963,26 +994,41 @@ rm -f "${AE_CADDY_SITES}"/*.caddy 2>/dev/null || true
 export AE_DOCKER_NETWORK=${AE_DOCKER_NETWORK:-dev_default}
 
 # If a labs-aio apishim is running locally, wire helm demo to reuse it.
+# Guard against reusing an unrelated shim unless the store/endpoint is explicit.
 if [[ ${LABS_ENABLE:-0} -eq 1 ]]; then
-  LABS_APISHIM_ENV="state/labs/apishim.env"
-  if [[ -f "$LABS_APISHIM_ENV" ]]; then
-    LABS_HELM_TOKEN="$(read_env_file_var "AE_LABS_HELM_TOKEN" "$LABS_APISHIM_ENV" || true)"
-    if [[ -z "$LABS_HELM_TOKEN" ]]; then
-      LABS_HELM_TOKEN="$(read_env_file_var "AE_APISHIM_TOKEN" "$LABS_APISHIM_ENV" || true)"
+  if [[ -z "${AE_LABS_HELM_SERVER:-}" ]]; then
+    allow_reuse=0
+    LABS_APISHIM_ENV="state/labs/apishim.env"
+    if [[ -n "${AE_APISHIM_DSN:-}" ]]; then
+      allow_reuse=1
+    elif [[ -n "${AE_APISHIM_DB:-}" && "${AE_APISHIM_DB}" != "state/apishim.db" ]]; then
+      allow_reuse=1
+    elif [[ -f "$LABS_APISHIM_ENV" ]]; then
+      allow_reuse=1
     fi
-    APISHIM_PORT=${APISHIM_PORT:-8455}
-    if [[ -n "$LABS_HELM_TOKEN" ]] && port_open "127.0.0.1" "$APISHIM_PORT"; then
-      if token_valid "https" "127.0.0.1" "$APISHIM_PORT" "$LABS_HELM_TOKEN"; then
-        export AE_LABS_HELM_SERVER="https://127.0.0.1:${APISHIM_PORT}"
-        export AE_LABS_HELM_TOKEN="$LABS_HELM_TOKEN"
-        log "Detected apishim on ${AE_LABS_HELM_SERVER}; helm demo will reuse it."
-      elif token_valid "http" "127.0.0.1" "$APISHIM_PORT" "$LABS_HELM_TOKEN"; then
-        export AE_LABS_HELM_SERVER="http://127.0.0.1:${APISHIM_PORT}"
-        export AE_LABS_HELM_TOKEN="$LABS_HELM_TOKEN"
-        log "Detected apishim on ${AE_LABS_HELM_SERVER}; helm demo will reuse it."
-      else
-        log "Found apishim.env but token rejected by ${APISHIM_PORT}; helm demo will start a local shim."
+    if [[ ${allow_reuse:-0} -eq 1 ]]; then
+      if [[ -f "$LABS_APISHIM_ENV" ]]; then
+        LABS_HELM_TOKEN="$(read_env_file_var "AE_LABS_HELM_TOKEN" "$LABS_APISHIM_ENV" || true)"
+        if [[ -z "$LABS_HELM_TOKEN" ]]; then
+          LABS_HELM_TOKEN="$(read_env_file_var "AE_APISHIM_TOKEN" "$LABS_APISHIM_ENV" || true)"
+        fi
+        APISHIM_PORT=${APISHIM_PORT:-8455}
+        if [[ -n "$LABS_HELM_TOKEN" ]] && port_open "127.0.0.1" "$APISHIM_PORT"; then
+          if token_valid "https" "127.0.0.1" "$APISHIM_PORT" "$LABS_HELM_TOKEN"; then
+            export AE_LABS_HELM_SERVER="https://127.0.0.1:${APISHIM_PORT}"
+            export AE_LABS_HELM_TOKEN="$LABS_HELM_TOKEN"
+            log "Detected apishim on ${AE_LABS_HELM_SERVER}; helm demo will reuse it."
+          elif token_valid "http" "127.0.0.1" "$APISHIM_PORT" "$LABS_HELM_TOKEN"; then
+            export AE_LABS_HELM_SERVER="http://127.0.0.1:${APISHIM_PORT}"
+            export AE_LABS_HELM_TOKEN="$LABS_HELM_TOKEN"
+            log "Detected apishim on ${AE_LABS_HELM_SERVER}; helm demo will reuse it."
+          else
+            log "Found apishim.env but token rejected by ${APISHIM_PORT}; helm demo will start a local shim."
+          fi
+        fi
       fi
+    else
+      log "Skipping apishim auto-detect; set AE_LABS_HELM_SERVER, AE_APISHIM_DSN, or create state/labs/apishim.env to reuse a running shim."
     fi
   fi
 fi
@@ -1027,9 +1073,8 @@ export AE_DOCKER_NETWORK=${AE_DOCKER_NETWORK}
 export AE_CONTAINER_CLI=${AE_CONTAINER_CLI}
 export AE_ALLOW_PLAINTEXT_SECRETS=${AE_ALLOW_PLAINTEXT_SECRETS}
 export SOPS_AGE_KEY_FILE=${SOPS_AGE_KEY_FILE:-}
-# Demo-aware filtering is opt-in; default is unfiltered.
+# Demo marker for local tooling.
 export AE_DEMO_MODE=1
-export AE_DEMO_FILTER=${AE_DEMO_FILTER}
 export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
 export AE_OCI_RUNTIME=${AE_OCI_RUNTIME:-}
 export API_PORT=${API_PORT}
