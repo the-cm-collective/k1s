@@ -43,8 +43,8 @@ if [[ -f state/controller_supervisor.pid ]]; then
   rm -f state/controller_supervisor.pid state/controller_supervisor.lock || true
 fi
 # Kill any strays on API port and matching patterns
-pkill -f 'scripts/supervise_controller\.sh .*\s[0-9]{4,5}$' 2>/dev/null || true
-pkill -f '\.venv-demo/bin/python -m ae\.controller --loop' 2>/dev/null || true
+pkill -f 'scripts/supervise_controller\.sh' 2>/dev/null || true
+pkill -f 'python.*-m ae\.controller --loop' 2>/dev/null || true
 if ss -ltnp 2>/dev/null | awk '$4 ~ /:9108$/ {exit 0} END{exit 1}'; then
   pids=$(ss -ltnp 2>/dev/null | awk '$4 ~ /:9108$/ {print $NF}' | sed -E 's/.*pid=([0-9]+),.*/\1/')
   for p in $pids; do kill "$p" 2>/dev/null || true; done
