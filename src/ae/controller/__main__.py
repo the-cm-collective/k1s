@@ -173,6 +173,158 @@ def _import_specs(specs_dir: Path, store: SQLiteStateStore, source: str = "specs
             continue
 
 
+def _env_true(name: str, default: str = "0") -> bool:
+    raw = str(os.getenv(name, default) or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _apishim_mirror_enabled() -> bool:
+    if os.getenv("AE_APISHIM_MIRROR") is not None:
+        return _env_true("AE_APISHIM_MIRROR")
+    return _env_true("AE_LABS")
+
+
+def _snapshot_apishim_manifests(
+    store: SQLiteStateStore,
+) -> tuple[dict[str, AppManifest], bool]:
+    try:
+        from ae.apishim.store import ObjectStore as _ObjectStore
+        from ae.apishim.adapter import AdapterWorker as _AdapterWorker
+        from ae.apishim.adapter import _manifest_from_deployment as _shim_manifest
+        from ae.runtime import StubRuntime as _StubRuntime
+    except Exception:
+        return {}, False
+
+    dsn = os.getenv("AE_APISHIM_DSN")
+    db_path = Path(os.getenv("AE_APISHIM_DB", "state/apishim.db"))
+    if not dsn and not db_path.exists():
+        return {}, False
+
+    try:
+        shim_store = _ObjectStore(dsn=dsn) if dsn else _ObjectStore(db_path=db_path)
+    except Exception:
+        return {}, False
+
+    class _NullReconciler:
+        _runtime = _StubRuntime()
+
+    helper = _AdapterWorker(shim_store, store, _NullReconciler())  # type: ignore[arg-type]
+    manifests: dict[str, AppManifest] = {}
+
+    reachable = False
+    try:
+        services = shim_store.list_all("", "v1", "services")
+        reachable = True
+    except Exception:
+        services = []
+    for svc in services:
+        try:
+            result = helper._service_spec_for(svc)
+            if not result:
+                continue
+            dep_key, svc_spec = result
+            helper._service_specs[dep_key] = svc_spec
+            helper._service_name_map[(svc.namespace, svc.name)] = dep_key
+        except Exception:
+            continue
+
+    try:
+        ingresses = shim_store.list_all("networking.k8s.io", "v1", "ingresses")
+        reachable = True
+    except Exception:
+        ingresses = []
+    for ing in ingresses:
+        try:
+            result = helper._ingress_spec_for(ing)
+            if not result:
+                continue
+            dep_key, ing_spec = result
+            helper._ingress_specs[dep_key] = ing_spec
+            helper._ingress_owner_map[(ing.namespace, ing.name)] = dep_key
+        except Exception:
+            continue
+
+    workloads = [
+        ("apps", "v1", "deployments"),
+        ("apps", "v1", "statefulsets"),
+        ("apps", "v1", "daemonsets"),
+        ("batch", "v1", "jobs"),
+    ]
+    for grp, ver, res in workloads:
+        try:
+            items = shim_store.list_all(grp, ver, res)
+            reachable = True
+        except Exception:
+            items = []
+        for obj in items:
+            try:
+                dep_key = (obj.namespace, obj.name)
+                svc_spec = helper._service_specs.get(dep_key)
+                ing_spec = helper._ingress_specs.get(dep_key)
+                manifest = _shim_manifest(obj, service_spec=svc_spec, ingress_spec=ing_spec)
+                manifests[manifest.metadata.name] = manifest
+            except Exception:
+                continue
+
+    return manifests, reachable
+
+
+def _purge_app_from_runtime(reconciler: Reconciler, store: SQLiteStateStore, app: str) -> None:
+    runtime = reconciler._runtime  # type: ignore[attr-defined]
+    runtime.remove_app(app)
+    ingress = reconciler._ingress_service  # type: ignore[attr-defined]
+    if ingress is not None:
+        try:
+            ingress.remove(app)
+            ingress.reload()
+        except Exception:
+            pass
+    try:
+        store.delete_registered_app(app)
+    except Exception:
+        pass
+    try:
+        store.delete_app_state(app, purge_history=True)
+    except Exception:
+        pass
+
+
+def _sync_apishim_registry(store: SQLiteStateStore, reconciler: Reconciler) -> None:
+    if not _apishim_mirror_enabled():
+        return
+
+    manifests, reachable = _snapshot_apishim_manifests(store)
+    if not reachable:
+        return
+
+    shim_seen = set(manifests.keys())
+    for name, manifest in manifests.items():
+        try:
+            existing = store.get_registered_entry(name)
+        except Exception:
+            existing = None
+        if existing is not None and existing.source != "apishim":
+            continue
+        try:
+            if existing is not None and existing.spec_hash == _spec_hash(manifest):
+                continue
+        except Exception:
+            pass
+        try:
+            labels = getattr(manifest.metadata, "labels", None)
+            store.register_app(manifest, source="apishim", labels=labels)
+        except Exception:
+            continue
+
+    try:
+        entries = store.list_registered_apps()
+    except Exception:
+        entries = []
+    stale = [entry.app_name for entry in entries if entry.source == "apishim" and entry.app_name not in shim_seen]
+    for app in stale:
+        _purge_app_from_runtime(reconciler, store, app)
+
+
 def _spec_hash(manifest: AppManifest) -> str:
     payload = json.dumps(
         manifest.model_dump(by_alias=True, exclude_none=True), sort_keys=True
@@ -977,6 +1129,10 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         except Exception:
             pass
         try:
+            _sync_apishim_registry(store, reconciler)
+        except Exception:
+            pass
+        try:
             entries = store.list_registered_apps()
         except Exception:
             entries = []
@@ -1041,6 +1197,10 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 t0 = time.time()
                 try:
                     _import_specs(specs_dir, store, source="specs")
+                except Exception:
+                    pass
+                try:
+                    _sync_apishim_registry(store, reconciler)
                 except Exception:
                     pass
                 try:
