@@ -178,7 +178,15 @@ def _env_true(name: str, default: str = "0") -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _apishim_sot_enabled() -> bool:
+    if os.getenv("AE_APISHIM_SOT") is not None:
+        return _env_true("AE_APISHIM_SOT")
+    return False
+
+
 def _apishim_mirror_enabled() -> bool:
+    if _apishim_sot_enabled():
+        return True
     if os.getenv("AE_APISHIM_MIRROR") is not None:
         return _env_true("AE_APISHIM_MIRROR")
     return _env_true("AE_LABS")
@@ -289,13 +297,19 @@ def _purge_app_from_runtime(reconciler: Reconciler, store: SQLiteStateStore, app
         pass
 
 
-def _sync_apishim_registry(store: SQLiteStateStore, reconciler: Reconciler) -> None:
+def _sync_apishim_registry(
+    store: SQLiteStateStore,
+    reconciler: Reconciler,
+    manifests: dict[str, AppManifest] | None = None,
+    reachable: bool | None = None,
+) -> bool:
     if not _apishim_mirror_enabled():
-        return
+        return False
 
-    manifests, reachable = _snapshot_apishim_manifests(store)
+    if manifests is None or reachable is None:
+        manifests, reachable = _snapshot_apishim_manifests(store)
     if not reachable:
-        return
+        return False
 
     shim_seen = set(manifests.keys())
     for name, manifest in manifests.items():
@@ -323,6 +337,7 @@ def _sync_apishim_registry(store: SQLiteStateStore, reconciler: Reconciler) -> N
     stale = [entry.app_name for entry in entries if entry.source == "apishim" and entry.app_name not in shim_seen]
     for app in stale:
         _purge_app_from_runtime(reconciler, store, app)
+    return True
 
 
 def _spec_hash(manifest: AppManifest) -> str:
