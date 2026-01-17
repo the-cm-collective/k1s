@@ -149,7 +149,11 @@ labs-apishim-env:
 
 .PHONY: demo demo-down integ-test
 demo:
-	./scripts/init_demo.sh $(if $(ARGS),$(ARGS),-y --demo-configs)
+	@TOKEN=$${AE_LABS_TOKEN:-D34DB33F}; \
+	  SOPS_AGE_KEY_FILE=$${SOPS_AGE_KEY_FILE:-$$HOME/.config/ae/keys.txt} \
+	  AE_ALLOW_PLAINTEXT_SECRETS=$${AE_ALLOW_PLAINTEXT_SECRETS:-1} \
+	  AE_RUNTIME_BACKEND=$${AE_RUNTIME_BACKEND:-podman} \
+	  ./scripts/init_demo.sh $(if $(ARGS),$(ARGS),-y -d --labs --labs-token "$$TOKEN")
 
 .PHONY: demo-help
 demo-help:

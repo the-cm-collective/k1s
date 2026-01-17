@@ -21,6 +21,7 @@ CHART_NAME=${CHART_NAME:-demochart}
 NAMESPACE=${NAMESPACE:-demo-helm}
 APISHIM_SERVER=${APISHIM_SERVER:-}
 HELM_TEMPLATE_ONLY=${HELM_TEMPLATE_ONLY:-0}
+HELM_SHIM_KEEP=${HELM_SHIM_KEEP:-0}
 HELM_TIMEOUT=${HELM_TIMEOUT:-120s}
 HELM_SHIM_TLS=${HELM_SHIM_TLS:-1}
 HELM_SHIM_TLS_DAYS=${HELM_SHIM_TLS_DAYS:-3}
@@ -330,9 +331,13 @@ YAML
   ASSIGNED_PORT=$(kubectl -n "$NAMESPACE" get svc "$CHART_NAME" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "n/a")
   echo "[shim-demo] service nodePort: $ASSIGNED_PORT"
 
-  kubectl -n "$NAMESPACE" delete -f "$MANIFEST_PATH" --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
-  kubectl -n "$NAMESPACE" delete cronjob --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
-  kubectl -n "$NAMESPACE" delete jobs --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
+  if is_true "$HELM_SHIM_KEEP"; then
+    echo "[shim-demo] keeping rendered resources (HELM_SHIM_KEEP=1)"
+  else
+    kubectl -n "$NAMESPACE" delete -f "$MANIFEST_PATH" --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
+    kubectl -n "$NAMESPACE" delete cronjob --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
+    kubectl -n "$NAMESPACE" delete jobs --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
+  fi
 else
   helm uninstall "$CHART_NAME" -n "$NAMESPACE" --wait --timeout "$HELM_TIMEOUT" >/dev/null 2>&1 || true
   echo "[shim-demo] helm install $CHART_NAME"
@@ -370,20 +375,26 @@ else
   ASSIGNED_PORT=$(kubectl -n "$NAMESPACE" get svc "$CHART_NAME" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "n/a")
   echo "[shim-demo] service nodePort: $ASSIGNED_PORT"
 
-  echo "[shim-demo] helm uninstall $CHART_NAME"
-  helm uninstall "$CHART_NAME" -n "$NAMESPACE" --wait --timeout "$HELM_TIMEOUT"
-  if helm ls -n "$NAMESPACE" -q | grep -qx "$CHART_NAME"; then
-    echo "[shim-demo] release still present after uninstall" >&2
-    exit 1
-  fi
-  if kubectl -n "$NAMESPACE" get secrets,configmaps -o name 2>/dev/null | grep -q "sh.helm.release.v1.${CHART_NAME}.v"; then
-    echo "[shim-demo] release records still present after uninstall" >&2
-    exit 1
+  if is_true "$HELM_SHIM_KEEP"; then
+    echo "[shim-demo] keeping helm release $CHART_NAME (HELM_SHIM_KEEP=1)"
+  else
+    echo "[shim-demo] helm uninstall $CHART_NAME"
+    helm uninstall "$CHART_NAME" -n "$NAMESPACE" --wait --timeout "$HELM_TIMEOUT"
+    if helm ls -n "$NAMESPACE" -q | grep -qx "$CHART_NAME"; then
+      echo "[shim-demo] release still present after uninstall" >&2
+      exit 1
+    fi
+    if kubectl -n "$NAMESPACE" get secrets,configmaps -o name 2>/dev/null | grep -q "sh.helm.release.v1.${CHART_NAME}.v"; then
+      echo "[shim-demo] release records still present after uninstall" >&2
+      exit 1
+    fi
   fi
 fi
 
-if [[ "$NAMESPACE" != "default" ]]; then
-  kubectl delete namespace "$NAMESPACE" >/dev/null 2>&1 || true
+if ! is_true "$HELM_SHIM_KEEP"; then
+  if [[ "$NAMESPACE" != "default" ]]; then
+    kubectl delete namespace "$NAMESPACE" >/dev/null 2>&1 || true
+  fi
 fi
 
 echo "\nRun completed. Logs: $LOG_PATH"

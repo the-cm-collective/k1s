@@ -300,6 +300,11 @@ def _helm_demo_start() -> dict[str, object]:
         env.setdefault("RUNTIME", str(_HELM_DEMO_STATE.get("runtime")))
         env.setdefault("NAMESPACE", str(_HELM_DEMO_STATE.get("namespace")))
         env.setdefault("CHART_NAME", str(_HELM_DEMO_STATE.get("chart")))
+        try:
+            keep = str(os.getenv("AE_LABS_HELM_KEEP", "") or "").strip()
+            env.setdefault("HELM_SHIM_KEEP", keep if keep else "1")
+        except Exception:
+            env.setdefault("HELM_SHIM_KEEP", "1")
         if helm_server:
             env.setdefault("APISHIM_SERVER", helm_server)
             try:
