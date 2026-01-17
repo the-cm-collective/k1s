@@ -996,6 +996,10 @@ fi
 if [[ -n "${AE_LABS_HELM_TOKEN:-}" ]]; then
   LABS_HELM_TOKEN_LINE="export AE_LABS_HELM_TOKEN=${AE_LABS_HELM_TOKEN}"
 fi
+# Default apishim DB to the shared demo DB when no DSN is configured.
+if [[ -z "${AE_APISHIM_DSN:-}" ]]; then
+  export AE_APISHIM_DB=${AE_APISHIM_DB:-state/apishim.db}
+fi
 
 # Write env helper for manual shells (after exports)
 mkdir -p state
@@ -1014,6 +1018,7 @@ export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
 export AE_OCI_RUNTIME=${AE_OCI_RUNTIME:-}
 export API_PORT=${API_PORT}
 export AE_SPECS_DIR=${DEMO_SPECS_DIR}
+export AE_APISHIM_DB=${AE_APISHIM_DB:-}
 # Labs + docs wiring for controller
 export AE_LABS=${LABS_ENABLE}
 export AE_LABS_TOKEN=${LABS_TOKEN}
