@@ -30,9 +30,11 @@ Phased path that minimizes churn:
 - A sync loop maps shim resources to `AppManifest` and writes `source="apishim"` into the registry.
 - Enabled by default when `AE_LABS=1`; override with `AE_APISHIM_MIRROR=0/1`.
 
-2) Single reconciler
-- Disable apishim adapter reconcile; controller loop watches shim store (or shim API) directly.
-- `app_registry` becomes a cache/derived view, not authoritative.
+2) Single reconciler (phase 2 fix)
+- Disable apishim adapter reconcile when `AE_APISHIM_SOT=1` (or `AE_APISHIM_ADAPTER=0`) so the shim server stops mutating controller state.
+- Controller continues to import spec apps and mirrors shim objects into the registry; reconcile runs from `app_registry` as before.
+- `app_registry` remains the single source of truth; `AE_APISHIM_MIRROR` is forced on by `AE_APISHIM_SOT` so shim objects are represented there.
+- Labs/demo sets `AE_APISHIM_SOT=1` by default to keep one writer and preserve the existing demo experience.
 
 3) Unified write path
 - CLI/specs write into shim store (or shim API); controller reads from shim store.
