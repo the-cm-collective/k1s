@@ -28,6 +28,7 @@ Phased path that minimizes churn:
 1) Shim-mirror registry (low risk)
 - Controller continues to reconcile from `app_registry`, but registry entries are sourced from shim objects.
 - A sync loop maps shim resources to `AppManifest` and writes `source="apishim"` into the registry.
+- Enabled by default when `AE_LABS=1`; override with `AE_APISHIM_MIRROR=0/1`.
 
 2) Single reconciler
 - Disable apishim adapter reconcile; controller loop watches shim store (or shim API) directly.
