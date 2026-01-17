@@ -88,6 +88,8 @@ python -m pip install -e .[watch]
 docker compose -f ops/dev/docker-compose.yaml up -d
 ```
 
+Podman registry cache note (demo helpers): if you use Podman with the local pull‑through cache, add an insecure registry entry for `localhost:5001`/`localhost:5002` (or set `AE_USE_REGISTRY_CACHE=0`) to avoid HTTPS pull errors and Docker Hub rate‑limit stalls.
+
 3) Start the controller loop:
 
 ```
