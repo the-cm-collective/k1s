@@ -1551,11 +1551,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 return
             try:
                 logger.info("labs reset requested")
-                # Stop helm demo first so it doesn't reapply resources during reset.
-                try:
-                    _helm_demo_stop()
-                except Exception:
-                    pass
                 sess = str(payload.get("session_id") or "")
                 # Prefer tracked labs apps that match the session suffix; fallback to echo-<sess>
                 try:
@@ -1645,18 +1640,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass
                 # Also remove shim objects in the helm demo namespace so the adapter
-                # doesn't reapply them after reset.
+                # doesn't reapply them after reset. Prefer the running shim API so
+                # deletes publish watch events; fall back to direct DB cleanup only
+                # if the shim server is unreachable.
                 try:
                     ns = str(_HELM_DEMO_STATE.get("namespace") or "demo-helm")
                     if ns:
-                        import os as _os
-                        from pathlib import Path as _Path
-
-                        from ae.apishim.store import ObjectStore as _ObjectStore
-
-                        dsn = _os.getenv("AE_APISHIM_DSN")
-                        db_path = _os.getenv("AE_APISHIM_DB", "state/apishim.db")
-                        store = _ObjectStore(dsn=dsn) if dsn else _ObjectStore(db_path=_Path(db_path))
                         targets = [
                             ("", "v1", "services"),
                             ("", "v1", "serviceaccounts"),
@@ -1671,16 +1660,95 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             ("autoscaling", "v2", "horizontalpodautoscalers"),
                         ]
                         removed_shim = 0
-                        for grp, ver, res in targets:
+                        shim_reachable = False
+                        shim_base = ""
+                        try:
+                            import os as _os
+                            import requests as _req
+
+                            base = str(_os.getenv("AE_LABS_HELM_SERVER", "") or "").strip()
+                            if not base:
+                                port = int(_HELM_DEMO_STATE.get("port") or 8455)
+                                base = f"https://127.0.0.1:{port}"
+                            base = base.rstrip("/")
+                            shim_base = base
+                            token = (
+                                str(_os.getenv("AE_LABS_HELM_TOKEN") or "").strip()
+                                or str(_os.getenv("AE_APISHIM_TOKEN") or "").strip()
+                                or str(_HELM_DEMO_STATE.get("token") or "").strip()
+                            )
+                            headers = {"Authorization": f"Bearer {token}"} if token else {}
+                            verify_path = "state/certs/combined-dev-ca.pem"
+                            verify = verify_path if _os.path.exists(verify_path) else False
                             try:
-                                items = store.list(grp, ver, res, ns)
+                                probe = _req.get(f"{base}/version", headers=headers, timeout=2, verify=verify)
+                                shim_reachable = probe.status_code < 500
                             except Exception:
-                                continue
-                            for obj in items:
-                                if store.delete(grp, ver, res, ns, obj.name):
-                                    removed_shim += 1
-                        if removed_shim:
-                            logger.info("labs reset removed %s shim objects in namespace %s", removed_shim, ns)
+                                shim_reachable = False
+                            if shim_reachable:
+                                logger.info(
+                                    "labs reset using shim API at %s for namespace %s",
+                                    shim_base or "<unknown>",
+                                    ns,
+                                )
+                                for grp, ver, res in targets:
+                                    if grp:
+                                        list_url = f"{base}/apis/{grp}/{ver}/namespaces/{ns}/{res}"
+                                    else:
+                                        list_url = f"{base}/api/{ver}/namespaces/{ns}/{res}"
+                                    try:
+                                        resp = _req.get(list_url, headers=headers, timeout=3, verify=verify)
+                                        if resp.status_code >= 400:
+                                            continue
+                                        data = resp.json() if resp.content else {}
+                                        items = data.get("items") if isinstance(data, dict) else []
+                                        for item in items or []:
+                                            meta = item.get("metadata") if isinstance(item, dict) else None
+                                            name = meta.get("name") if isinstance(meta, dict) else None
+                                            if not name:
+                                                continue
+                                            del_url = f"{list_url}/{name}"
+                                            try:
+                                                dresp = _req.delete(del_url, headers=headers, timeout=3, verify=verify)
+                                                if dresp.status_code < 300:
+                                                    removed_shim += 1
+                                            except Exception:
+                                                continue
+                                    except Exception:
+                                        continue
+                        except Exception:
+                            shim_reachable = False
+                        if shim_reachable and removed_shim:
+                            logger.info("labs reset removed %s shim objects via shim API in namespace %s", removed_shim, ns)
+                        if shim_reachable and not removed_shim:
+                            logger.info(
+                                "labs reset shim API reachable at %s; no shim objects removed for namespace %s",
+                                shim_base or "<unknown>",
+                                ns,
+                            )
+                        if not shim_reachable:
+                            logger.info(
+                                "labs reset shim API unavailable; falling back to direct DB cleanup for namespace %s",
+                                ns,
+                            )
+                            import os as _os
+                            from pathlib import Path as _Path
+
+                            from ae.apishim.store import ObjectStore as _ObjectStore
+
+                            dsn = _os.getenv("AE_APISHIM_DSN")
+                            db_path = _os.getenv("AE_APISHIM_DB", "state/apishim.db")
+                            store = _ObjectStore(dsn=dsn) if dsn else _ObjectStore(db_path=_Path(db_path))
+                            for grp, ver, res in targets:
+                                try:
+                                    items = store.list(grp, ver, res, ns)
+                                except Exception:
+                                    continue
+                                for obj in items:
+                                    if store.delete(grp, ver, res, ns, obj.name):
+                                        removed_shim += 1
+                            if removed_shim:
+                                logger.info("labs reset removed %s shim objects in namespace %s", removed_shim, ns)
                 except Exception:
                     pass
                 # Ensure the shim demo process is stopped so it doesn't reapply.
