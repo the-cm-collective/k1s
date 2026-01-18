@@ -1,5 +1,21 @@
 .container{font-size:15px}
 .container h2{margin-top:1.25rem;border-bottom:1px solid var(--border);padding-bottom:4px}
+.playground-shell{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:12px;align-items:start}
+.playground-main{min-width:0}
+.playground-rail{align-self:stretch}
+.playground-hero{margin-top:1.25rem;border-bottom:1px solid var(--border);padding-bottom:4px}
+.playground-hero h2{margin:0;border-bottom:none;padding-bottom:0}
+.lab-reset-fab{position:sticky;top:var(--playground-reset-top, 96px);margin-top:1.25rem;width:52px;height:52px;border-radius:50%;border:1px solid var(--border);background:var(--k1s-card-bg, var(--muted));color:var(--k1s-warn, #f59e0b);display:inline-flex;align-items:center;justify-content:center;box-shadow:0 10px 24px rgba(0,0,0,.25);cursor:pointer;transition:background .15s ease,border-color .15s ease,transform .12s ease,box-shadow .12s ease}
+.lab-reset-fab:hover{background:var(--k1s-surface, var(--muted));border-color:var(--k1s-border-soft, var(--border));transform:translateY(-1px);box-shadow:0 12px 28px rgba(0,0,0,.3)}
+.lab-reset-fab:active{transform:translateY(0)}
+.lab-reset-fab:focus-visible{outline:2px solid var(--k1s-warn, #f59e0b);outline-offset:3px}
+.lab-reset-fab svg{width:26px;height:26px;fill:currentColor}
+.container .lab-reset-fab.is-busy svg{opacity:.25}
+.container .lab-reset-fab.is-busy::after{margin-left:0;position:absolute;inset:0;margin:auto;width:16px;height:16px;border-width:2px}
+@media (max-width: 640px){
+  .lab-reset-fab{width:52px;height:52px}
+  .lab-reset-fab svg{width:26px;height:26px}
+}
 .container h3{margin-top:1rem}
 .panel{border:1px solid var(--border);padding:10px;margin:.5rem 0;min-height:140px;border-radius:8px;background:var(--k1s-card-bg, var(--muted));box-shadow:0 4px 14px rgba(0,0,0,.08)}
 .ok{color:var(--k1s-success, #16a34a)}
@@ -55,6 +71,7 @@
 .container button[aria-busy="true"]{pointer-events:none}
 .container .btn-primary:disabled{opacity:.65}
 .container button{cursor:pointer}
+.container .lab-reset-fab{border-radius:50%}
 .container #btn-use-token{position:relative; z-index:2; pointer-events:auto}
 .container button:disabled{opacity:.6; cursor:not-allowed}
 #backend-select,#example-select{min-width:240px}

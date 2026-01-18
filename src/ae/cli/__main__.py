@@ -35,7 +35,9 @@ from ae.secrets import SecretManager
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="ae", description="Minimal application engine CLI")
+    parser = argparse.ArgumentParser(
+        prog="ae", description="Minimal workload engine CLI (App manifests)"
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     parser.add_argument("--verbose", action="store_true", help="Enable DEBUG logging")
     parser.add_argument(
@@ -46,11 +48,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--token", default=None, help="Bearer token for remote API auth")
 
-    apply_parser = subparsers.add_parser("apply", help="Apply a manifest")
+    apply_parser = subparsers.add_parser("apply", help="Apply a workload manifest (App)")
     apply_parser.add_argument("-f", "--file", type=Path, required=True, help="Path to manifest")
 
-    status_parser = subparsers.add_parser("status", help="Show application status")
-    status_parser.add_argument("name", nargs="?", help="Application name (omit to list all)")
+    status_parser = subparsers.add_parser("status", help="Show workload (App) status")
+    status_parser.add_argument("name", nargs="?", help="Workload (App) name (omit to list all)")
     status_parser.add_argument(
         "--history", type=int, default=0, help="Show the most recent N probe evaluations"
     )
@@ -74,8 +76,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum seconds to watch before exiting nonzero (requires --watch)",
     )
 
-    logs_parser = subparsers.add_parser("logs", help="Tail application logs")
-    logs_parser.add_argument("name", help="Application name")
+    logs_parser = subparsers.add_parser("logs", help="Tail workload logs")
+    logs_parser.add_argument("name", help="Workload (App) name")
     logs_parser.add_argument("--follow", action="store_true", help="Stream logs continuously")
     logs_parser.add_argument(
         "--container", help="Replica selector: index (e.g. 0) or replica id", default=None
@@ -98,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # exec: run a command inside a container
     exec_parser = subparsers.add_parser("exec", help="Run a command in a container")
-    exec_parser.add_argument("name", help="Application name")
+    exec_parser.add_argument("name", help="Workload (App) name")
     exec_parser.add_argument(
         "--container", required=False, help="Target container name or replica id"
     )
@@ -119,8 +121,8 @@ def build_parser() -> argparse.ArgumentParser:
     certs_parser.add_argument("--root", default=None, help="TLS dir (default AE_TLS_DIR or state/tls)")
     certs_parser.add_argument("--json", action="store_true", help="Emit JSON")
 
-    rollback_parser = subparsers.add_parser("rollback", help="Rollback an application revision")
-    rollback_parser.add_argument("name", help="Application name")
+    rollback_parser = subparsers.add_parser("rollback", help="Rollback a workload revision")
+    rollback_parser.add_argument("name", help="Workload (App) name")
     rollback_parser.add_argument(
         "--to",
         type=int,
@@ -129,7 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     revisions_parser = subparsers.add_parser("revisions", help="List stored revisions")
-    revisions_parser.add_argument("name", help="Application name")
+    revisions_parser.add_argument("name", help="Workload (App) name")
     revisions_parser.add_argument("--limit", type=int, default=10)
 
     # registry helpers
@@ -185,14 +187,14 @@ def build_parser() -> argparse.ArgumentParser:
     metrics_parser.add_argument("--json", action="store_true", help="Emit JSON output")
 
     events_parser = subparsers.add_parser("events", help="Show recent events")
-    events_parser.add_argument("name", help="Application name")
+    events_parser.add_argument("name", help="Workload (App) name")
     events_parser.add_argument("--limit", type=int, default=20)
 
     services_parser = subparsers.add_parser("services", help="List Services (cluster IPs/endpoints)")
     services_parser.add_argument("--json", action="store_true", help="Emit JSON output")
 
     history_parser = subparsers.add_parser("history", help="Show recent probe evaluations")
-    history_parser.add_argument("name", help="Application name")
+    history_parser.add_argument("name", help="Workload (App) name")
     history_parser.add_argument("--limit", type=int, default=20)
     history_parser.add_argument("--replica", default=None, help="Filter by replica id")
     history_parser.add_argument("--json", action="store_true", help="Emit JSON output")
@@ -223,18 +225,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     # delete <name> [--purge]
     delete_parser = subparsers.add_parser(
-        "delete", help="Delete an application (containers + status)"
+        "delete", help="Delete a workload/app (containers + status)"
     )
-    delete_parser.add_argument("name", help="Application name")
+    delete_parser.add_argument("name", help="Workload (App) name")
     delete_parser.add_argument(
         "--purge", action="store_true", help="Also purge events and revisions history"
     )
 
     # scale <name> --replicas N
     scale_parser = subparsers.add_parser(
-        "scale", help="Scale an application by reconciling replicas"
+        "scale", help="Scale a workload/app by reconciling replicas"
     )
-    scale_parser.add_argument("name", help="Application name")
+    scale_parser.add_argument("name", help="Workload (App) name")
     scale_parser.add_argument("--replicas", type=int, required=True)
 
     # backup/restore
@@ -552,10 +554,10 @@ def build_parser() -> argparse.ArgumentParser:
     # rollout pause/resume
     rollout_cmd = subparsers.add_parser("rollout", help="Control rollout behavior (pause/resume)")
     rollout_sub = rollout_cmd.add_subparsers(dest="rollout_cmd", required=True)
-    r_pause = rollout_sub.add_parser("pause", help="Pause rollout for an app")
-    r_pause.add_argument("name", help="Application name")
-    r_resume = rollout_sub.add_parser("resume", help="Resume rollout for an app")
-    r_resume.add_argument("name", help="Application name")
+    r_pause = rollout_sub.add_parser("pause", help="Pause rollout for a workload/app")
+    r_pause.add_argument("name", help="Workload (App) name")
+    r_resume = rollout_sub.add_parser("resume", help="Resume rollout for a workload/app")
+    r_resume.add_argument("name", help="Workload (App) name")
 
     # api tokens helper
     api_cmd = subparsers.add_parser("api", help="HTTP API helpers")
@@ -2103,7 +2105,7 @@ def handle_status(
         return 0
     statuses = store.list_status()
     if not statuses:
-        print("No applications recorded.")
+        print("No workloads recorded.")
         return 0
     if args.json:
         import json
