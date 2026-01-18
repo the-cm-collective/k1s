@@ -1829,7 +1829,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     self._json_error(404, "apply not available")
                     return
                 try:
-                    weight = int(payload.get("weight") or 10)
+                    raw_weight = payload.get("weight", None)
+                    try:
+                        weight = int(raw_weight) if raw_weight is not None else 10
+                    except Exception:
+                        weight = 10
                     base_revision = None
                     if app:
                         # Try to fetch current manifest and patch rollout strategy/weight
@@ -1846,12 +1850,22 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                                 cur_rep = int(spec.get("replicas", 1) or 1)
                             except Exception:
                                 cur_rep = 1
-                            if cur_rep < 2:
+                            if weight > 0 and cur_rep < 2:
                                 spec["replicas"] = 2
                             rollout = dict(spec.get("rollout") or {})
-                            rollout["strategy"] = "canary"
-                            rollout["weight"] = int(weight)
-                            spec["rollout"] = rollout
+                            if weight <= 0:
+                                if str(rollout.get("strategy", "")).lower() == "canary":
+                                    rollout.pop("strategy", None)
+                                rollout.pop("weight", None)
+                                rollout.pop("auto", None)
+                                if rollout:
+                                    spec["rollout"] = rollout
+                                else:
+                                    spec.pop("rollout", None)
+                            else:
+                                rollout["strategy"] = "canary"
+                                rollout["weight"] = int(weight)
+                                spec["rollout"] = rollout
                             try:
                                 import time as _t
 
@@ -1884,14 +1898,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     data.setdefault("metadata", {})["name"] = new_name
                     spec = data.setdefault("spec", {})
                     ro = dict(spec.get("rollout") or {})
-                    ro["strategy"] = "canary"
-                    ro["weight"] = int(weight)
-                    spec["rollout"] = ro
+                    if weight <= 0:
+                        if str(ro.get("strategy", "")).lower() == "canary":
+                            ro.pop("strategy", None)
+                        ro.pop("weight", None)
+                        ro.pop("auto", None)
+                        if ro:
+                            spec["rollout"] = ro
+                        else:
+                            spec.pop("rollout", None)
+                    else:
+                        ro["strategy"] = "canary"
+                        ro["weight"] = int(weight)
+                        spec["rollout"] = ro
                     try:
                         cur_rep = int(spec.get("replicas", 1) or 1)
                     except Exception:
                         cur_rep = 1
-                    if cur_rep < 2:
+                    if weight > 0 and cur_rep < 2:
                         spec["replicas"] = 2
                     try:
                         import time as _t
