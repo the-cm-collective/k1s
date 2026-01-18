@@ -63,6 +63,7 @@ jobs:
         env:
           RUNTIME: stub
           AE_APISHIM_ALLOW_ANON: "1"
+          HELM_SHIM_SMOKE_TEMPLATE_ONLY: "1"
           HTTP_PROXY: ""
           HTTPS_PROXY: ""
           NO_PROXY: "127.0.0.1,localhost"

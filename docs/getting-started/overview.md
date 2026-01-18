@@ -82,6 +82,8 @@ Multi-node lab (two hosts): follow `docs/guides/multinode-lab.md` or run `ops/de
 4) Kubectl‑like aliases
 
 - `k1s get apps`
+- `k1s get pods`
+- `k1s get services`
 - `k1s describe app/echo`
 - `k1s logs app/echo --follow --tail 100`
 
