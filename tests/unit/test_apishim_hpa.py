@@ -4,7 +4,7 @@ from ae.apishim.adapter import AdapterWorker
 from ae.apishim.store import ObjectStore
 from ae.controller.health import HealthManager, HealthReport
 from ae.controller.reconciler import Reconciler
-from ae.controller.spec import ServiceSpec
+from ae.controller.spec import ServiceSpec, app_key
 from ae.controller.state import SQLiteStateStore
 from ae.network.service_controller import ServiceController
 from ae.runtime import RuntimeResult, StubRuntime
@@ -13,7 +13,9 @@ from ae.runtime import RuntimeResult, StubRuntime
 def _make_adapter(tmp_path):
     store = ObjectStore(tmp_path / "apishim.db")
     state = SQLiteStateStore(tmp_path / "state.db")
-    reconciler = Reconciler(runtime=StubRuntime(), state_store=state, health_manager=HealthManager())
+    reconciler = Reconciler(
+        runtime=StubRuntime(), state_store=state, health_manager=HealthManager()
+    )
     adapter = AdapterWorker(store, state, reconciler)
     adapter._hpa_cooldown_seconds = 0
     return store, state, adapter
@@ -26,7 +28,10 @@ def test_hpa_scales_up_on_cpu(tmp_path, monkeypatch):
     dep_spec = {
         "replicas": 1,
         "selector": {"matchLabels": {"app": "demo"}},
-        "template": {"metadata": {"labels": {"app": "demo"}}, "spec": {"containers": [{"name": "demo", "image": "busybox"}]}},
+        "template": {
+            "metadata": {"labels": {"app": "demo"}},
+            "spec": {"containers": [{"name": "demo", "image": "busybox"}]},
+        },
     }
     store.upsert("apps", "v1", "deployments", "default", "demo", dep_md, dep_spec, {})
 
@@ -37,12 +42,17 @@ def test_hpa_scales_up_on_cpu(tmp_path, monkeypatch):
         "metrics": [
             {
                 "type": "Resource",
-                "resource": {"name": "cpu", "target": {"type": "Utilization", "averageUtilization": 50}},
+                "resource": {
+                    "name": "cpu",
+                    "target": {"type": "Utilization", "averageUtilization": 50},
+                },
             }
         ],
     }
     hpa_md = {"name": "demo-hpa", "namespace": "default"}
-    hpa_obj = store.upsert("autoscaling", "v2", "horizontalpodautoscalers", "default", "demo-hpa", hpa_md, hpa_spec, {})
+    hpa_obj = store.upsert(
+        "autoscaling", "v2", "horizontalpodautoscalers", "default", "demo-hpa", hpa_md, hpa_spec, {}
+    )
 
     monkeypatch.setattr(
         adapter,
@@ -68,7 +78,10 @@ def test_hpa_scales_on_memory_average_value(tmp_path, monkeypatch):
     dep_spec = {
         "replicas": 2,
         "selector": {"matchLabels": {"app": "demo"}},
-        "template": {"metadata": {"labels": {"app": "demo"}}, "spec": {"containers": [{"name": "demo", "image": "busybox"}]}},
+        "template": {
+            "metadata": {"labels": {"app": "demo"}},
+            "spec": {"containers": [{"name": "demo", "image": "busybox"}]},
+        },
     }
     store.upsert("apps", "v1", "deployments", "default", "demo", dep_md, dep_spec, {})
 
@@ -79,12 +92,17 @@ def test_hpa_scales_on_memory_average_value(tmp_path, monkeypatch):
         "metrics": [
             {
                 "type": "Resource",
-                "resource": {"name": "memory", "target": {"type": "AverageValue", "averageValue": "200Mi"}},
+                "resource": {
+                    "name": "memory",
+                    "target": {"type": "AverageValue", "averageValue": "200Mi"},
+                },
             }
         ],
     }
     hpa_md = {"name": "demo-hpa", "namespace": "default"}
-    hpa_obj = store.upsert("autoscaling", "v2", "horizontalpodautoscalers", "default", "demo-hpa", hpa_md, hpa_spec, {})
+    hpa_obj = store.upsert(
+        "autoscaling", "v2", "horizontalpodautoscalers", "default", "demo-hpa", hpa_md, hpa_spec, {}
+    )
 
     # 400Mi average usage across 2 pods -> desired 4 (ceil(2*400/200))
     monkeypatch.setattr(
@@ -100,7 +118,9 @@ def test_hpa_scales_on_memory_average_value(tmp_path, monkeypatch):
 
     updated_hpa = store.get("autoscaling", "v2", "horizontalpodautoscalers", "default", "demo-hpa")
     assert updated_hpa.status.get("desiredReplicas") == 4
-    mem_metric = next(m for m in updated_hpa.status.get("currentMetrics", []) if m["resource"]["name"] == "memory")
+    mem_metric = next(
+        m for m in updated_hpa.status.get("currentMetrics", []) if m["resource"]["name"] == "memory"
+    )
     assert mem_metric["resource"]["current"]["averageValue"].endswith("Mi")
 
 
@@ -112,7 +132,10 @@ def test_hpa_cooldown_blocks_rapid_scale(tmp_path, monkeypatch):
     dep_spec = {
         "replicas": 2,
         "selector": {"matchLabels": {"app": "demo"}},
-        "template": {"metadata": {"labels": {"app": "demo"}}, "spec": {"containers": [{"name": "demo", "image": "busybox"}]}},
+        "template": {
+            "metadata": {"labels": {"app": "demo"}},
+            "spec": {"containers": [{"name": "demo", "image": "busybox"}]},
+        },
     }
     store.upsert("apps", "v1", "deployments", "default", "demo", dep_md, dep_spec, {})
 
@@ -123,12 +146,17 @@ def test_hpa_cooldown_blocks_rapid_scale(tmp_path, monkeypatch):
         "metrics": [
             {
                 "type": "Resource",
-                "resource": {"name": "cpu", "target": {"type": "Utilization", "averageUtilization": 50}},
+                "resource": {
+                    "name": "cpu",
+                    "target": {"type": "Utilization", "averageUtilization": 50},
+                },
             }
         ],
     }
     hpa_md = {"name": "demo-hpa", "namespace": "default"}
-    hpa_obj = store.upsert("autoscaling", "v2", "horizontalpodautoscalers", "default", "demo-hpa", hpa_md, hpa_spec, {})
+    hpa_obj = store.upsert(
+        "autoscaling", "v2", "horizontalpodautoscalers", "default", "demo-hpa", hpa_md, hpa_spec, {}
+    )
 
     monkeypatch.setattr(
         adapter,
@@ -138,7 +166,7 @@ def test_hpa_cooldown_blocks_rapid_scale(tmp_path, monkeypatch):
     # Pretend we just scaled a moment ago
     import time as _t
 
-    adapter._hpa_last_scale[_app_name := "default--demo"] = _t.time()
+    adapter._hpa_last_scale[_app_name := app_key("demo", "default")] = _t.time()
 
     adapter._apply_hpa(hpa_obj)
 
@@ -198,4 +226,6 @@ def test_overlay_events_emitted_on_status_change(tmp_path):
     ev_obj = _to_event("default", "demo", events[0])
     assert ev_obj["metadata"]["namespace"] == "default"
     assert ev_obj["reason"] in {"OverlayReady", "OverlayDegraded"}
+
+
 # ruff: noqa: E501

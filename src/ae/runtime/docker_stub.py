@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import os
+from datetime import datetime, timezone
 
-from ae.controller.spec import AppManifest
+from ae.controller.spec import AppManifest, app_key_for_manifest, runtime_labels_for_manifest
 
 from .base import ReplicaState, RuntimeAdapter, RuntimeResult
 
@@ -42,19 +42,14 @@ class StubRuntime(RuntimeAdapter):
         count = desired if limit_create is None else max(0, min(desired, limit_create))
         replica_states = []
         containers: list[dict] = []
+        app_name = app_key_for_manifest(manifest)
         rid_list = (
             list(replica_ids)
             if replica_ids is not None
-            else [f"{manifest.metadata.name}-rev{revision}-{i}" for i in range(desired)]
+            else [f"{app_name}-rev{revision}-{i}" for i in range(desired)]
         )
-        # Derive a Kubernetes-style app label (without namespace prefix)
-        full_name = manifest.metadata.name
-        if "--" in full_name:
-            ns_part, base_name = full_name.split("--", 1)
-            namespace_label = ns_part or self._default_namespace
-        else:
-            base_name = full_name
-            namespace_label = self._default_namespace
+        # Derive namespace/name for k8s-style labels
+        base_labels = runtime_labels_for_manifest(manifest, app_name=app_name)
         for idx, rid in enumerate(rid_list[:count]):
             host_port = self._backend_port + idx
             status = "exited" if is_job else "running"
@@ -75,9 +70,7 @@ class StubRuntime(RuntimeAdapter):
                 {
                     "name": rid,
                     "labels": {
-                        "ae.app": manifest.metadata.name,
-                        "ae.namespace": namespace_label,
-                        "app": base_name,
+                        **base_labels,
                         "ae.revision": str(revision),
                         "ae.replica_id": rid,
                         "ae.container": "main",
@@ -91,7 +84,7 @@ class StubRuntime(RuntimeAdapter):
                 }
             )
         # Persist latest view for list_containers_info/pod projection
-        self._containers[manifest.metadata.name] = containers
+        self._containers[app_name] = containers
         return RuntimeResult(
             revision=revision,
             created=count,

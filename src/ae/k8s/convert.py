@@ -3,13 +3,23 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
-from ae.controller.spec import AppManifest, AppSpec, IngressSpec, Metadata, PortSpec, ServiceSpec
+from ae.controller.spec import (
+    DEFAULT_NAMESPACE,
+    AppManifest,
+    AppSpec,
+    IngressSpec,
+    Metadata,
+    PortSpec,
+    ServiceSpec,
+    app_key,
+)
 
 
 def app_name_for_k8s(namespace: str | None, name: str) -> str:
-    return f"{namespace}--{name}" if namespace else name
+    return app_key(name, namespace)
 
 
 def _get(obj: Any, key: str, default: Any = None) -> Any:
@@ -42,10 +52,18 @@ def _namespace(obj: Any) -> str | None:
 def service_selector(spec: dict[str, Any]) -> dict[str, str]:
     raw = spec.get("selector") or {}
     selector: dict[str, Any] = raw if isinstance(raw, dict) else {}
-    if "matchLabels" in selector and isinstance(selector.get("matchLabels"), dict) and len(selector) == 1:
+    if (
+        "matchLabels" in selector
+        and isinstance(selector.get("matchLabels"), dict)
+        and len(selector) == 1
+    ):
         selector = selector.get("matchLabels") or {}
     if not selector:
-        maybe = (spec.get("selector") or {}).get("matchLabels") if isinstance(spec.get("selector"), dict) else None
+        maybe = (
+            (spec.get("selector") or {}).get("matchLabels")
+            if isinstance(spec.get("selector"), dict)
+            else None
+        )
         if isinstance(maybe, dict):
             selector = maybe
     if not isinstance(selector, dict):
@@ -79,7 +97,7 @@ def pod_template_ports_by_name(obj: Any) -> dict[str, int]:
                 continue
             try:
                 port_val = int(port.get("containerPort"))
-            except Exception:
+            except Exception:  # noqa: S112
                 continue
             ports_by_name[str(name)] = port_val
     return ports_by_name
@@ -88,10 +106,7 @@ def pod_template_ports_by_name(obj: Any) -> dict[str, int]:
 def selector_matches(selector: dict[str, str], labels: dict[str, str]) -> bool:
     if not selector:
         return False
-    for key, val in selector.items():
-        if labels.get(key) != val:
-            return False
-    return True
+    return all(labels.get(key) == val for key, val in selector.items())
 
 
 def fallback_service_target(svc: Any, selector: dict[str, str]) -> str | None:
@@ -147,7 +162,7 @@ def probe_from_k8s(raw: dict | None, ports_by_name: dict[str, int]) -> dict | No
         if key in raw:
             try:
                 out[key] = int(raw.get(key))
-            except Exception:
+            except Exception:  # noqa: S112
                 continue
     return out or None
 
@@ -159,7 +174,7 @@ def manifest_from_k8s_workload(
     ingress_spec: IngressSpec | None = None,
 ) -> AppManifest:
     spec: dict[str, Any] = _spec(obj)
-    tpl = ((spec.get("template") or {}).get("spec") or {})
+    tpl = (spec.get("template") or {}).get("spec") or {}
     containers = tpl.get("containers") or []
     if not containers:
         c0: dict[str, Any] = {}
@@ -172,7 +187,7 @@ def manifest_from_k8s_workload(
         for p in c0.get("ports") or []:
             try:
                 port_num = int(p.get("containerPort"))
-            except Exception:
+            except Exception:  # noqa: S112
                 continue
             name = p.get("name") or f"p{port_num}"
             ports.append(PortSpec(name=name, containerPort=port_num))
@@ -211,7 +226,11 @@ def manifest_from_k8s_workload(
             security["run_as_group"] = sec.get("runAsGroup")
         if sec.get("readOnlyRootFilesystem") is not None:
             security["read_only_root"] = bool(sec.get("readOnlyRootFilesystem"))
-        caps = (sec.get("capabilities") or {}).get("drop") if isinstance(sec.get("capabilities"), dict) else None
+        caps = (
+            (sec.get("capabilities") or {}).get("drop")
+            if isinstance(sec.get("capabilities"), dict)
+            else None
+        )
         if caps:
             security["drop_caps"] = list(caps)
         seccomp = sec.get("seccompProfile") if isinstance(sec.get("seccompProfile"), dict) else None
@@ -257,10 +276,13 @@ def manifest_from_k8s_workload(
     meta_labels = None
     try:
         meta_labels = _metadata(obj).get("labels") or None
-    except Exception:
+    except Exception:  # noqa: S112
         meta_labels = None
-    meta = Metadata(name=app_name_for_k8s(_namespace(obj), _name(obj)), labels=meta_labels)
-    return AppManifest(apiVersion="ae.dev/v1alpha1", kind="App", metadata=meta, spec=app_spec)
+    ns = _namespace(obj) or DEFAULT_NAMESPACE
+    meta = Metadata(name=_name(obj), namespace=ns, labels=meta_labels)
+    return AppManifest(
+        apiVersion="ae.dev/v1alpha1", kind="Deployment", metadata=meta, spec=app_spec
+    )
 
 
 def service_spec_from_k8s(
@@ -279,12 +301,12 @@ def service_spec_from_k8s(
             continue
         try:
             svc_port = int(entry.get("port"))
-        except Exception:
+        except Exception:  # noqa: S112
             continue
         node_port_raw = entry.get("nodePort")
         try:
             node_port = int(node_port_raw) if node_port_raw is not None else None
-        except Exception:
+        except Exception:  # noqa: S112
             node_port = None
         fallback_port = entry.get("port", svc_port)
         tgt_raw = entry.get("targetPort", fallback_port)

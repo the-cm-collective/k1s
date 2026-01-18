@@ -43,6 +43,9 @@ dependencies = {file = ["requirements.in"]}
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+markers = [
+    "integration: marks tests that require external dependencies or longer setup",
+]
 
 [tool.mypy]
 python_version = "3.11"

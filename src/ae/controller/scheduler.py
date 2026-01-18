@@ -15,7 +15,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from ae.controller.spec import AppManifest
+from ae.controller.spec import AppManifest, app_key_for_manifest
 from ae.controller.state import NodeRecord, NodeStatus, SQLiteStateStore
 
 
@@ -37,7 +37,8 @@ class Scheduler:
     def plan(self, manifest: AppManifest, revision: int) -> tuple[list[Placement], list[str]]:
         """Return placements and warnings for the manifest."""
         desired = int(manifest.spec.replicas)
-        replica_ids = [f"{manifest.metadata.name}-rev{revision}-{i}" for i in range(desired)]
+        app_name = app_key_for_manifest(manifest)
+        replica_ids = [f"{app_name}-rev{revision}-{i}" for i in range(desired)]
         warnings: list[str] = []
 
         nodes = self._store.list_nodes()
@@ -67,7 +68,7 @@ class Scheduler:
         if has_storage:
             bound_node_id = None
             try:
-                bindings = self._store.list_storage_bindings(manifest.metadata.name)
+                bindings = self._store.list_storage_bindings(app_name)
                 if bindings:
                     bound_node_id = bindings[0].node_id
             except Exception:
@@ -77,7 +78,9 @@ class Scheduler:
                 bound_node = next((n for n in eligible if n.node_id == bound_node_id), None)
                 if bound_node is not None:
                     return [
-                        Placement(node=bound_node, agent_url=bound_node.endpoint, replica_ids=replica_ids)
+                        Placement(
+                            node=bound_node, agent_url=bound_node.endpoint, replica_ids=replica_ids
+                        )
                     ], warnings
                 # Bound node exists but is not eligible (cordoned/stale/missing)
                 warnings.append(
@@ -88,7 +91,9 @@ class Scheduler:
                 return [], warnings
 
             target = eligible[0]
-            return [Placement(node=target, agent_url=target.endpoint, replica_ids=replica_ids)], warnings
+            return [
+                Placement(node=target, agent_url=target.endpoint, replica_ids=replica_ids)
+            ], warnings
 
         # Topology spread / soft anti-affinity: if topologySpreadConstraints specify a
         # topologyKey and we have >1 eligible node, distribute replicas to minimize skew
@@ -116,7 +121,9 @@ class Scheduler:
         if stale_nodes:
             warnings.append(f"stale/not-ready nodes skipped: {', '.join(stale_nodes)}")
 
-        return placements or [Placement(node=None, agent_url=None, replica_ids=replica_ids)], warnings
+        return placements or [
+            Placement(node=None, agent_url=None, replica_ids=replica_ids)
+        ], warnings
 
     def _not_ready_grace_seconds(self) -> int:
         try:
@@ -216,4 +223,6 @@ class Scheduler:
             if ids:
                 placements.append(Placement(node=n, agent_url=n.endpoint, replica_ids=ids))
         return placements
+
+
 # ruff: noqa

@@ -25,7 +25,7 @@ import json, hashlib
 
 from ae.controller.state import SQLiteStateStore
 from ae.controller.reconciler import Reconciler
-from ae.controller.spec import AppManifest, ManifestError, load_manifest
+from ae.controller.spec import AppManifest, ManifestError, app_key_for_manifest, load_manifest
 from ae.observability.http_api import start_http_api, set_reconcile_metrics
 from ae.controller.agent_api import start_agent_api
 from ae.observability.logging import configure_logging
@@ -62,7 +62,10 @@ def service_controller_factory(store: SQLiteStateStore):
             provider = DockerBridgeProvider(
                 store,
                 network_name=os.getenv("AE_NETWORK_NAME", "ae-net"),
-                network_subnet=os.getenv("AE_NETWORK_SUBNET", os.getenv("AE_DOCKER_NETWORK_SUBNET", "")) or None,
+                network_subnet=os.getenv(
+                    "AE_NETWORK_SUBNET", os.getenv("AE_DOCKER_NETWORK_SUBNET", "")
+                )
+                or None,
                 service_cidr=os.getenv("AE_SERVICE_IP_POOL", "10.241.0.0/16"),
                 proxy_image=os.getenv("AE_SERVICE_PROXY_IMAGE", "haproxy:2.9-alpine"),
                 docker_bin=os.getenv("AE_DOCKER_BIN", "docker"),
@@ -148,15 +151,15 @@ def _load_all(paths: Iterable[Path]) -> dict[str, tuple[AppManifest, Path]]:
             m = load_manifest(path)
         except ManifestError:
             continue
-        name = m.metadata.name
-        cur = selected.get(name)
+        app_name = app_key_for_manifest(m)
+        cur = selected.get(app_name)
         if cur is None:
-            selected[name] = (m, path)
+            selected[app_name] = (m, path)
             continue
         # Prefer files whose stem exactly equals the app name
-        prefer_new = path.stem == name and cur[1].stem != name
+        prefer_new = path.stem == m.metadata.name and cur[1].stem != m.metadata.name
         if prefer_new:
-            selected[name] = (m, path)
+            selected[app_name] = (m, path)
     return selected
 
 
@@ -198,7 +201,7 @@ _APISHIM_MIRROR_STATS: dict[str, object] = {}
 
 def _set_apishim_mirror_mode(mode: str, detail: str) -> None:
     global _APISHIM_MIRROR_MODE
-    if _APISHIM_MIRROR_MODE == mode:
+    if mode == _APISHIM_MIRROR_MODE:
         return
     _APISHIM_MIRROR_MODE = mode
     try:
@@ -247,11 +250,7 @@ def _log_apishim_mirror_stats(
 
 
 def _apishim_api_base() -> str:
-    base = (
-        os.getenv("AE_APISHIM_SERVER")
-        or os.getenv("AE_LABS_HELM_SERVER")
-        or ""
-    )
+    base = os.getenv("AE_APISHIM_SERVER") or os.getenv("AE_LABS_HELM_SERVER") or ""
     return base.strip().rstrip("/")
 
 
@@ -314,11 +313,11 @@ def _apishim_api_get_json(
 
         ctx = None
         if verify is False:
-            ctx = _ssl._create_unverified_context()
+            ctx = _ssl._create_unverified_context()  # noqa: S323
         elif isinstance(verify, str):
             ctx = _ssl.create_default_context(cafile=verify)
-        req = _urlreq.Request(url, headers=headers)
-        with _urlreq.urlopen(req, timeout=timeout_seconds, context=ctx) as resp:
+        req = _urlreq.Request(url, headers=headers)  # noqa: S310
+        with _urlreq.urlopen(req, timeout=timeout_seconds, context=ctx) as resp:  # noqa: S310
             if getattr(resp, "status", 200) >= 400:
                 return None, False
             payload = resp.read()
@@ -360,7 +359,7 @@ def _snapshot_apishim_api_manifests(
 
     ns_data = _fetch(f"{base}/api/v1/namespaces")
     if ns_data:
-        for item in (ns_data.get("items") or []):
+        for item in ns_data.get("items") or []:
             if not isinstance(item, dict):
                 continue
             meta = item.get("metadata") or {}
@@ -369,14 +368,9 @@ def _snapshot_apishim_api_manifests(
                 namespaces.append(str(name))
     if not namespaces:
         fallback = (
-            os.getenv("AE_LABS_HELM_NAMESPACE")
-            or os.getenv("AE_APISHIM_NAMESPACE")
-            or ""
+            os.getenv("AE_LABS_HELM_NAMESPACE") or os.getenv("AE_APISHIM_NAMESPACE") or ""
         ).strip()
-        if fallback:
-            namespaces = [fallback]
-        else:
-            namespaces = ["demo-helm", "default"]
+        namespaces = [fallback] if fallback else ["demo-helm", "default"]
 
     items_by_key: dict[tuple[str, str, str, str], list[_K8sObject]] = {}
     services: list[_K8sObject] = []
@@ -421,32 +415,32 @@ def _snapshot_apishim_api_manifests(
     for ns in namespaces:
         svc_data = _fetch(f"{base}/api/v1/namespaces/{ns}/services")
         if svc_data:
-            for item in (svc_data.get("items") or []):
+            for item in svc_data.get("items") or []:
                 if isinstance(item, dict):
                     _add_item("", "v1", "services", item, ns)
         ing_data = _fetch(f"{base}/apis/networking.k8s.io/v1/namespaces/{ns}/ingresses")
         if ing_data:
-            for item in (ing_data.get("items") or []):
+            for item in ing_data.get("items") or []:
                 if isinstance(item, dict):
                     _add_item("networking.k8s.io", "v1", "ingresses", item, ns)
         dep_data = _fetch(f"{base}/apis/apps/v1/namespaces/{ns}/deployments")
         if dep_data:
-            for item in (dep_data.get("items") or []):
+            for item in dep_data.get("items") or []:
                 if isinstance(item, dict):
                     _add_item("apps", "v1", "deployments", item, ns)
         sts_data = _fetch(f"{base}/apis/apps/v1/namespaces/{ns}/statefulsets")
         if sts_data:
-            for item in (sts_data.get("items") or []):
+            for item in sts_data.get("items") or []:
                 if isinstance(item, dict):
                     _add_item("apps", "v1", "statefulsets", item, ns)
         ds_data = _fetch(f"{base}/apis/apps/v1/namespaces/{ns}/daemonsets")
         if ds_data:
-            for item in (ds_data.get("items") or []):
+            for item in ds_data.get("items") or []:
                 if isinstance(item, dict):
                     _add_item("apps", "v1", "daemonsets", item, ns)
         job_data = _fetch(f"{base}/apis/batch/v1/namespaces/{ns}/jobs")
         if job_data:
-            for item in (job_data.get("items") or []):
+            for item in job_data.get("items") or []:
                 if isinstance(item, dict):
                     _add_item("batch", "v1", "jobs", item, ns)
 
@@ -499,7 +493,7 @@ def _snapshot_apishim_api_manifests(
             svc_spec = helper._service_specs.get(dep_key)
             ing_spec = helper._ingress_specs.get(dep_key)
             manifest = _shim_manifest(obj, service_spec=svc_spec, ingress_spec=ing_spec)
-            manifests[manifest.metadata.name] = manifest
+            manifests[app_key_for_manifest(manifest)] = manifest
         except Exception:
             continue
 
@@ -604,7 +598,7 @@ def _snapshot_apishim_manifests(
                 svc_spec = helper._service_specs.get(dep_key)
                 ing_spec = helper._ingress_specs.get(dep_key)
                 manifest = _shim_manifest(obj, service_spec=svc_spec, ingress_spec=ing_spec)
-                manifests[manifest.metadata.name] = manifest
+                manifests[app_key_for_manifest(manifest)] = manifest
             except Exception:
                 continue
 
@@ -694,7 +688,11 @@ def _sync_apishim_registry(
         entries = store.list_registered_apps()
     except Exception:
         entries = []
-    stale = [entry.app_name for entry in entries if entry.source == "apishim" and entry.app_name not in shim_seen]
+    stale = [
+        entry.app_name
+        for entry in entries
+        if entry.source == "apishim" and entry.app_name not in shim_seen
+    ]
     for app in stale:
         _purge_app_from_runtime(reconciler, store, app)
     _log_apishim_mirror_stats(
@@ -814,9 +812,12 @@ def _reconcile_all(reconciler: Reconciler, manifests: Iterable[AppManifest]) -> 
     import logging as _log
 
     for m in manifests:
-        if _labs_is_blocked(m.metadata.name):
+        app_name = app_key_for_manifest(m)
+        if _labs_is_blocked(app_name):
             try:
-                _log.getLogger(__name__).debug("labs reset block: skipping reconcile for %s", m.metadata.name)
+                _log.getLogger(__name__).debug(
+                    "labs reset block: skipping reconcile for %s", app_name
+                )
             except Exception:
                 pass
             continue
@@ -825,7 +826,7 @@ def _reconcile_all(reconciler: Reconciler, manifests: Iterable[AppManifest]) -> 
             report = reconciler.reconcile(m)
             dt = _t.time() - t0
             record_app_reconcile(
-                m.metadata.name,
+                app_name,
                 dt,
                 created=report.created,
                 updated=report.updated,
@@ -835,14 +836,14 @@ def _reconcile_all(reconciler: Reconciler, manifests: Iterable[AppManifest]) -> 
         except Exception as exc:  # pragma: no cover - defensive path
             # Do not crash the controller on a single manifest failure during demo/bootstrap.
             # Log the error, emit an event if the store is reachable, and continue.
-            _log.getLogger(__name__).error("reconcile failed for %s: %s", m.metadata.name, exc)
+            _log.getLogger(__name__).error("reconcile failed for %s: %s", app_name, exc)
             try:
                 store = getattr(reconciler, "_state_store", None)
                 if store is not None:
                     # Attribute to the latest revision if available; otherwise 0.
-                    revs = store.list_revisions(m.metadata.name, limit=1)
+                    revs = store.list_revisions(app_name, limit=1)
                     rev = int(revs[0].revision) if revs else 0
-                    store.record_event(m.metadata.name, rev, "ApplyError", str(exc))
+                    store.record_event(app_name, rev, "ApplyError", str(exc))
             except Exception:
                 pass
 
@@ -965,15 +966,21 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             return {"app": app, "removed": removed, "purged": bool(purge)}
 
         def _apply(payload: dict, source: str | None = None, labels: dict | None = None):  # noqa: ANN001
-            # Accept an App manifest JSON and reconcile
+            # Accept a Deployment/App manifest JSON and reconcile
             from ae.controller.spec import AppManifest
 
             try:
                 manifest = AppManifest.model_validate(payload)
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(f"invalid manifest: {exc}")
+            warnings: list[str] = []
+            if str(getattr(manifest, "kind", "")) == "App":
+                warnings.append(
+                    "kind 'App' is deprecated; use kind 'Deployment' (apiVersion: ae.dev/v1alpha1)"
+                )
             try:
-                existing = store.get_registered_entry(manifest.metadata.name)
+                app_name = app_key_for_manifest(manifest)
+                existing = store.get_registered_entry(app_name)
                 src = source or (existing.source if existing else "api")
                 lbls = labels if labels is not None else (existing.labels if existing else None)
                 store.register_app(manifest, source=src, labels=lbls)
@@ -1006,6 +1013,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 "created": report.created,
                 "updated": report.updated,
                 "removed": report.removed,
+                **({"warnings": warnings} if warnings else {}),
             }
 
         def _logs(
@@ -1038,10 +1046,19 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             if container:
                 rt = getattr(reconciler, "_runtime", None)
                 if rt is not None and hasattr(rt, "exec_for_container"):
-                    return int(getattr(rt, "exec_for_container")(app, str(container), cmd, timeout=timeout))
+                    return int(
+                        getattr(rt, "exec_for_container")(app, str(container), cmd, timeout=timeout)
+                    )
                 # Fallback: run in a matching replica id
                 reps = store.list_replicas(app)
-                target = next((r for r in reps if (r.replica_id == container or str(container) in r.replica_id)), None)
+                target = next(
+                    (
+                        r
+                        for r in reps
+                        if (r.replica_id == container or str(container) in r.replica_id)
+                    ),
+                    None,
+                )
                 if target is None and reps:
                     target = reps[0]
                 if target is None:
@@ -1197,6 +1214,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             ov = None
             try:
                 from ae.network.overlay_health import wireguard_health
+
                 ov = wireguard_health()
             except Exception:
                 ov = None
@@ -1257,7 +1275,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 "service_endpoints": {
                     s.app_name: {
                         "total": len(store.list_service_endpoints(s.app_name)),
-                        "ready": sum(1 for e in store.list_service_endpoints(s.app_name) if e.ready),
+                        "ready": sum(
+                            1 for e in store.list_service_endpoints(s.app_name) if e.ready
+                        ),
                     }
                     for s in store.list_services()
                 },
@@ -1375,7 +1395,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                             f"ingress.tlsSecretName '{ing.tls_secret_name}' not found under AE_TLS_DIR={root}; controller will fall back to Caddy 'tls internal'"
                         )
                 return {
-                    "app": manifest.metadata.name,
+                    "app": app_key_for_manifest(manifest),
                     "replicas": desired,
                     "rollout": {
                         "strategy": str(rollout.get("strategy", "parallel")),

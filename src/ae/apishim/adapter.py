@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ae.controller.reconciler import Reconciler
-from ae.controller.spec import AppManifest, IngressSpec, ServiceSpec
+from ae.controller.spec import AppManifest, IngressSpec, ServiceSpec, app_key_for_manifest
 from ae.controller.state import SQLiteStateStore
 from ae.k8s import convert as k8s_convert
 from ae.runtime import DockerRuntime, PodmanRuntime, RuntimeAdapter, StubRuntime
@@ -83,7 +83,9 @@ class AdapterWorker(threading.Thread):
 
     daemon = True
 
-    def __init__(self, store: ObjectStore, state_store: SQLiteStateStore, reconciler: Reconciler) -> None:
+    def __init__(
+        self, store: ObjectStore, state_store: SQLiteStateStore, reconciler: Reconciler
+    ) -> None:
         super().__init__(name="apishim-adapter")
         self._store = store
         self._state = state_store
@@ -202,15 +204,34 @@ class AdapterWorker(threading.Thread):
             except Exception:
                 pass
             # Update synthesized status to zeros
-            st = {"replicas": 0, "updatedReplicas": 0, "readyReplicas": 0, "availableReplicas": 0,
-                  "conditions": [{"type": "Available", "status": "False", "reason": "ScaledDown"},
-                                  {"type": "Progressing", "status": "False", "reason": "ScaledDown"}]}
+            st = {
+                "replicas": 0,
+                "updatedReplicas": 0,
+                "readyReplicas": 0,
+                "availableReplicas": 0,
+                "conditions": [
+                    {"type": "Available", "status": "False", "reason": "ScaledDown"},
+                    {"type": "Progressing", "status": "False", "reason": "ScaledDown"},
+                ],
+            }
             try:
-                still_exists = self._store.get("apps", "v1", "deployments", dep.namespace, dep.name) is not None
+                still_exists = (
+                    self._store.get("apps", "v1", "deployments", dep.namespace, dep.name)
+                    is not None
+                )
             except Exception:
                 still_exists = False
             if still_exists:
-                self._store.upsert_if_not_deleted("apps", "v1", "deployments", dep.namespace, dep.name, dep.metadata, dep.spec, status=st)
+                self._store.upsert_if_not_deleted(
+                    "apps",
+                    "v1",
+                    "deployments",
+                    dep.namespace,
+                    dep.name,
+                    dep.metadata,
+                    dep.spec,
+                    status=st,
+                )
             return
 
         dep_key = (dep.namespace, dep.name)
@@ -227,7 +248,8 @@ class AdapterWorker(threading.Thread):
             pass
         self._reconciler.reconcile(m)
         # Reflect status from state store
-        st_row = self._state.get_status(m.metadata.name)
+        app_name = app_key_for_manifest(m)
+        st_row = self._state.get_status(app_name)
         if st_row is not None:
             st = {
                 "replicas": st_row.desired_replicas,
@@ -238,24 +260,38 @@ class AdapterWorker(threading.Thread):
                 "conditions": [
                     {
                         "type": "Available",
-                        "status": "True" if st_row.ready_replicas >= st_row.desired_replicas else "False",
+                        "status": "True"
+                        if st_row.ready_replicas >= st_row.desired_replicas
+                        else "False",
                         "reason": "MinimumReplicasAvailable",
                     },
                     {
                         "type": "Progressing",
                         "status": "True",
-                        "reason": "NewReplicaSetAvailable" if st_row.revision_status == "live" else st_row.revision_status or "Progressing",
+                        "reason": "NewReplicaSetAvailable"
+                        if st_row.revision_status == "live"
+                        else st_row.revision_status or "Progressing",
                     },
                 ],
                 "observedGeneration": st_row.revision,
             }
             try:
-                still_exists = self._store.get("apps", "v1", "deployments", dep.namespace, dep.name) is not None
+                still_exists = (
+                    self._store.get("apps", "v1", "deployments", dep.namespace, dep.name)
+                    is not None
+                )
             except Exception:
                 still_exists = False
             if still_exists:
                 self._store.upsert_if_not_deleted(
-                    "apps", "v1", "deployments", dep.namespace, dep.name, dep.metadata, dep.spec, status=st
+                    "apps",
+                    "v1",
+                    "deployments",
+                    dep.namespace,
+                    dep.name,
+                    dep.metadata,
+                    dep.spec,
+                    status=st,
                 )
 
     def _apply_statefulset(self, sts: K8sObject) -> None:
@@ -272,11 +308,23 @@ class AdapterWorker(threading.Thread):
                 "updateRevision": sts.metadata.get("generation", 1),
             }
             try:
-                still_exists = self._store.get("apps", "v1", "statefulsets", sts.namespace, sts.name) is not None
+                still_exists = (
+                    self._store.get("apps", "v1", "statefulsets", sts.namespace, sts.name)
+                    is not None
+                )
             except Exception:
                 still_exists = False
             if still_exists:
-                self._store.upsert_if_not_deleted("apps", "v1", "statefulsets", sts.namespace, sts.name, sts.metadata, sts.spec, status=st)
+                self._store.upsert_if_not_deleted(
+                    "apps",
+                    "v1",
+                    "statefulsets",
+                    sts.namespace,
+                    sts.name,
+                    sts.metadata,
+                    sts.spec,
+                    status=st,
+                )
             return
         dep_key = (sts.namespace, sts.name)
         svc_spec = self._service_specs.get(dep_key)
@@ -291,7 +339,8 @@ class AdapterWorker(threading.Thread):
         except Exception:
             pass
         self._reconciler.reconcile(m)
-        st_row = self._state.get_status(m.metadata.name)
+        app_name = app_key_for_manifest(m)
+        st_row = self._state.get_status(app_name)
         if st_row is not None:
             st = {
                 "replicas": st_row.desired_replicas,
@@ -303,12 +352,21 @@ class AdapterWorker(threading.Thread):
                 "conditions": [
                     {
                         "type": "Ready",
-                        "status": "True" if st_row.ready_replicas >= st_row.desired_replicas else "False",
+                        "status": "True"
+                        if st_row.ready_replicas >= st_row.desired_replicas
+                        else "False",
                     }
                 ],
             }
             self._store.upsert_if_not_deleted(
-                "apps", "v1", "statefulsets", sts.namespace, sts.name, sts.metadata, sts.spec, status=st
+                "apps",
+                "v1",
+                "statefulsets",
+                sts.namespace,
+                sts.name,
+                sts.metadata,
+                sts.spec,
+                status=st,
             )
 
     def _apply_daemonset(self, ds: K8sObject) -> None:
@@ -328,15 +386,36 @@ class AdapterWorker(threading.Thread):
                 "numberAvailable": 0,
             }
             try:
-                still_exists = self._store.get("apps", "v1", "daemonsets", ds.namespace, ds.name) is not None
+                still_exists = (
+                    self._store.get("apps", "v1", "daemonsets", ds.namespace, ds.name) is not None
+                )
             except Exception:
                 still_exists = False
             if still_exists:
-                self._store.upsert_if_not_deleted("apps", "v1", "daemonsets", ds.namespace, ds.name, ds.metadata, ds.spec, status=st)
+                self._store.upsert_if_not_deleted(
+                    "apps",
+                    "v1",
+                    "daemonsets",
+                    ds.namespace,
+                    ds.name,
+                    ds.metadata,
+                    ds.spec,
+                    status=st,
+                )
             return
         spec_mod = dict(spec)
         spec_mod["replicas"] = desired
-        ds_mod = K8sObject(ds.group, ds.version, ds.resource, ds.namespace, ds.name, ds.metadata, spec_mod, ds.status, ds.resource_version)
+        ds_mod = K8sObject(
+            ds.group,
+            ds.version,
+            ds.resource,
+            ds.namespace,
+            ds.name,
+            ds.metadata,
+            spec_mod,
+            ds.status,
+            ds.resource_version,
+        )
         dep_key = (ds.namespace, ds.name)
         svc_spec = self._service_specs.get(dep_key)
         ing_spec = self._ingress_specs.get(dep_key)
@@ -350,7 +429,8 @@ class AdapterWorker(threading.Thread):
         except Exception:
             pass
         self._reconciler.reconcile(m)
-        st_row = self._state.get_status(m.metadata.name)
+        app_name = app_key_for_manifest(m)
+        st_row = self._state.get_status(app_name)
         if st_row is not None:
             st = {
                 "desiredNumberScheduled": desired,
@@ -371,16 +451,37 @@ class AdapterWorker(threading.Thread):
             self._remove_app_for(job)
             st = {"active": 0, "succeeded": 0, "failed": 0, "conditions": []}
             try:
-                still_exists = self._store.get("batch", "v1", "jobs", job.namespace, job.name) is not None
+                still_exists = (
+                    self._store.get("batch", "v1", "jobs", job.namespace, job.name) is not None
+                )
             except Exception:
                 still_exists = False
             if still_exists:
-                self._store.upsert_if_not_deleted("batch", "v1", "jobs", job.namespace, job.name, job.metadata, job.spec, status=st)
+                self._store.upsert_if_not_deleted(
+                    "batch",
+                    "v1",
+                    "jobs",
+                    job.namespace,
+                    job.name,
+                    job.metadata,
+                    job.spec,
+                    status=st,
+                )
             return
         # Treat Job as short-lived deployment with desired replicas=parallelism
         spec_mod = dict(spec)
         spec_mod["replicas"] = parallelism
-        job_mod = K8sObject(job.group, job.version, job.resource, job.namespace, job.name, job.metadata, spec_mod, job.status, job.resource_version)
+        job_mod = K8sObject(
+            job.group,
+            job.version,
+            job.resource,
+            job.namespace,
+            job.name,
+            job.metadata,
+            spec_mod,
+            job.status,
+            job.resource_version,
+        )
         m = _manifest_from_deployment(job_mod)
         # Mark workload as job and carry backoff/ttl hints
         spec_updates: dict[str, Any] = {"workload": "job"}
@@ -411,12 +512,13 @@ class AdapterWorker(threading.Thread):
         except Exception:
             pass
         self._reconciler.reconcile(m)
-        st_row = self._state.get_status(m.metadata.name)
+        app_name = app_key_for_manifest(m)
+        st_row = self._state.get_status(app_name)
         succeeded = 0
         failed = 0
         active = 0
         try:
-            reps = self._state.list_replicas(m.metadata.name)
+            reps = self._state.list_replicas(app_name)
         except Exception:
             reps = []
         if reps:
@@ -435,13 +537,20 @@ class AdapterWorker(threading.Thread):
         if succeeded >= completions:
             conditions.append({"type": "Complete", "status": "True"})
             try:
-                self._state.record_event(m.metadata.name, st_row.revision if st_row else 0, "Complete", f"Job {job.name} succeeded")  # type: ignore[arg-type]
+                self._state.record_event(
+                    app_name,
+                    st_row.revision if st_row else 0,
+                    "Complete",
+                    f"Job {job.name} succeeded",
+                )  # type: ignore[arg-type]
             except Exception:
                 pass
         elif failed > 0 and active == 0:
             conditions.append({"type": "Failed", "status": "True"})
             try:
-                self._state.record_event(m.metadata.name, st_row.revision if st_row else 0, "Failed", f"Job {job.name} failed")  # type: ignore[arg-type]
+                self._state.record_event(
+                    app_name, st_row.revision if st_row else 0, "Failed", f"Job {job.name} failed"
+                )  # type: ignore[arg-type]
             except Exception:
                 pass
         st = {
@@ -513,7 +622,9 @@ class AdapterWorker(threading.Thread):
                     }
                 ],
             }
-            job_obj = K8sObject("batch", "v1", "jobs", cj.namespace, fired_name, job_md, job_spec, {}, 0)
+            job_obj = K8sObject(
+                "batch", "v1", "jobs", cj.namespace, fired_name, job_md, job_spec, {}, 0
+            )
             self._apply_job(job_obj)
             last_schedule = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             last_success = last_schedule
@@ -524,7 +635,9 @@ class AdapterWorker(threading.Thread):
             "lastScheduleTime": last_schedule or state.get("last_schedule"),
             "lastSuccessfulTime": last_success or state.get("last_success"),
         }
-        self._store.upsert("batch", "v1", "cronjobs", cj.namespace, cj.name, cj.metadata, cj.spec, status=status)
+        self._store.upsert(
+            "batch", "v1", "cronjobs", cj.namespace, cj.name, cj.metadata, cj.spec, status=status
+        )
 
     def _remove_app_for(self, obj: K8sObject) -> None:
         app_name = _app_name(obj.namespace, obj.name)
@@ -783,9 +896,11 @@ class AdapterWorker(threading.Thread):
             )
             if system_delta <= 0:
                 return None
-            online = cpu_stats.get("online_cpus") or len(
-                cpu_stats.get("cpu_usage", {}).get("percpu_usage", []) or []
-            ) or 1
+            online = (
+                cpu_stats.get("online_cpus")
+                or len(cpu_stats.get("cpu_usage", {}).get("percpu_usage", []) or [])
+                or 1
+            )
             return max(0.0, (cpu_delta / system_delta) * float(online) * 100.0)
         except Exception:
             return None
@@ -923,7 +1038,10 @@ class AdapterWorker(threading.Thread):
         app_name = _app_name(hpa.namespace, target_name)
         current_replicas = int(target_obj.spec.get("replicas", 1) or 1)
         min_rep = int(spec.get("minReplicas", current_replicas) or current_replicas or 1)
-        max_rep = int(spec.get("maxReplicas", max(min_rep, current_replicas)) or max(min_rep, current_replicas))
+        max_rep = int(
+            spec.get("maxReplicas", max(min_rep, current_replicas))
+            or max(min_rep, current_replicas)
+        )
         metrics_spec = spec.get("metrics") or []
         metrics = self._collect_metrics_for_app(app_name)
         desired = current_replicas
@@ -941,14 +1059,23 @@ class AdapterWorker(threading.Thread):
 
             if rname == "cpu":
                 cur_val = metrics.get("cpu_util")
-                target_val = target_cfg.get("averageUtilization") or target_cfg.get("value") or target_cfg.get("averageValue")
+                target_val = (
+                    target_cfg.get("averageUtilization")
+                    or target_cfg.get("value")
+                    or target_cfg.get("averageValue")
+                )
                 if cur_val is not None and target_val:
                     try:
-                        desired_metric = max(1, math.ceil(current_replicas * float(cur_val) / float(target_val)))
+                        desired_metric = max(
+                            1, math.ceil(current_replicas * float(cur_val) / float(target_val))
+                        )
                         scale_reason = scale_reason or f"cpu {cur_val:.1f}%/{target_val}"
                     except Exception:
                         desired_metric = desired
-                cm_entry = {"type": "Resource", "resource": {"name": "cpu", "current": {}, "target": target_cfg}}
+                cm_entry = {
+                    "type": "Resource",
+                    "resource": {"name": "cpu", "current": {}, "target": target_cfg},
+                }
                 if cur_val is not None:
                     cm_entry["resource"]["current"]["averageUtilization"] = int(cur_val)
                 current_metrics_status.append(cm_entry)
@@ -961,22 +1088,33 @@ class AdapterWorker(threading.Thread):
                     if target_val is not None and cur_bytes is not None:
                         tgt_bytes = self._parse_quantity_bytes(str(target_val))
                         if tgt_bytes:
-                            desired_metric = max(1, math.ceil(current_replicas * float(cur_bytes) / float(tgt_bytes)))
-                            scale_reason = scale_reason or f"memory {self._fmt_bytes(cur_bytes)}/{target_val}"
+                            desired_metric = max(
+                                1, math.ceil(current_replicas * float(cur_bytes) / float(tgt_bytes))
+                            )
+                            scale_reason = (
+                                scale_reason or f"memory {self._fmt_bytes(cur_bytes)}/{target_val}"
+                            )
                         cur_val = cur_bytes
                 else:
                     target_val = target_cfg.get("averageUtilization")
                     cur_val = metrics.get("mem_util")
                     if target_val and cur_val is not None:
                         try:
-                            desired_metric = max(1, math.ceil(current_replicas * float(cur_val) / float(target_val)))
+                            desired_metric = max(
+                                1, math.ceil(current_replicas * float(cur_val) / float(target_val))
+                            )
                             scale_reason = scale_reason or f"memory {cur_val:.1f}%/{target_val}"
                         except Exception:
                             desired_metric = desired
-                cm_entry = {"type": "Resource", "resource": {"name": "memory", "current": {}, "target": target_cfg}}
+                cm_entry = {
+                    "type": "Resource",
+                    "resource": {"name": "memory", "current": {}, "target": target_cfg},
+                }
                 if cur_val is not None:
                     if target_type in {"value", "averagevalue"}:
-                        cm_entry["resource"]["current"]["averageValue"] = self._fmt_bytes(float(cur_val))
+                        cm_entry["resource"]["current"]["averageValue"] = self._fmt_bytes(
+                            float(cur_val)
+                        )
                     else:
                         cm_entry["resource"]["current"]["averageUtilization"] = int(cur_val)
                 current_metrics_status.append(cm_entry)
@@ -999,7 +1137,14 @@ class AdapterWorker(threading.Thread):
                 new_spec = dict(target_obj.spec or {})
                 new_spec["replicas"] = desired
                 updated = self._store.upsert(
-                    group, version, resource, hpa.namespace, target_name, target_obj.metadata, new_spec, status=target_obj.status
+                    group,
+                    version,
+                    resource,
+                    hpa.namespace,
+                    target_name,
+                    target_obj.metadata,
+                    new_spec,
+                    status=target_obj.status,
                 )
                 if target_kind == "deployment":
                     self._apply_deployment(updated)
@@ -1010,14 +1155,22 @@ class AdapterWorker(threading.Thread):
                 try:
                     st = self._state.get_status(app_name)
                     rev = st.revision if st else 0  # type: ignore[arg-type]
-                    self._state.record_event(app_name, int(rev or 0), "HPA", f"scaled to {desired} replicas ({scale_reason or 'autoscale'})")
+                    self._state.record_event(
+                        app_name,
+                        int(rev or 0),
+                        "HPA",
+                        f"scaled to {desired} replicas ({scale_reason or 'autoscale'})",
+                    )
                 except Exception:
                     pass
 
         conditions = [
             {"type": "AbleToScale", "status": "True"},
             {"type": "ScalingActive", "status": "True" if metrics_spec else "False"},
-            {"type": "ScalingLimited", "status": "True" if limited or desired in {min_rep, max_rep} else "False"},
+            {
+                "type": "ScalingLimited",
+                "status": "True" if limited or desired in {min_rep, max_rep} else "False",
+            },
         ]
         # Build status snapshot
         status: dict[str, Any] = {
@@ -1025,7 +1178,9 @@ class AdapterWorker(threading.Thread):
             "desiredReplicas": desired,
             "conditions": conditions,
             "currentMetrics": current_metrics_status,
-            "observedGeneration": hpa.metadata.get("generation", 1) if isinstance(hpa.metadata, dict) else 1,
+            "observedGeneration": hpa.metadata.get("generation", 1)
+            if isinstance(hpa.metadata, dict)
+            else 1,
         }
         if last_scale_time:
             status["lastScaleTime"] = last_scale_time
@@ -1103,7 +1258,9 @@ class AdapterWorker(threading.Thread):
                 extra = max(len(labels) - len(selector), 0)
                 name_match = obj.name == svc.name
                 ports_by_name = _pod_template_ports_by_name(obj)
-                candidates.append((not name_match, not exact, extra, order, obj.name, ports_by_name))
+                candidates.append(
+                    (not name_match, not exact, extra, order, obj.name, ports_by_name)
+                )
         if not candidates:
             return None
         candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2], entry[3], entry[4]))
@@ -1368,5 +1525,7 @@ def build_adapter(
     # Minimal reconciler wiring; skip ingress/secrets/config extras for MVP
     from ae.controller.health import HealthManager
 
-    reconciler = Reconciler(runtime=runtime, state_store=state_store, health_manager=HealthManager())
+    reconciler = Reconciler(
+        runtime=runtime, state_store=state_store, health_manager=HealthManager()
+    )
     return AdapterWorker(store, state_store, reconciler)

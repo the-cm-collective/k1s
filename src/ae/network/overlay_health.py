@@ -20,8 +20,9 @@ def wireguard_health(iface: str = "wg0") -> dict:
     wg_bin = shutil.which("wg") or "wg"
     ip_bin = shutil.which("ip") or "ip"
     try:
-        out = subprocess.check_output(
-            [wg_bin, "show", iface], text=True  # noqa: S603,S607 - fixed argv; iface validated; shell disabled
+        out = subprocess.check_output(  # noqa: S603
+            [wg_bin, "show", iface],  # noqa: S603
+            text=True,  # noqa: S603,S607 - fixed argv; iface validated; shell disabled
         )
     except Exception:
         return {"ok": False, "peers": 0, "latest_handshake_seconds": None, "mtu": None}
@@ -36,8 +37,9 @@ def wireguard_health(iface: str = "wg0") -> dict:
             latest = sec if latest is None else min(latest, sec)
     mtu = None
     try:
-        ip_out = subprocess.check_output(
-            [ip_bin, "link", "show", iface], text=True  # noqa: S603,S607 - fixed argv; iface validated; shell disabled
+        ip_out = subprocess.check_output(  # noqa: S603
+            [ip_bin, "link", "show", iface],  # noqa: S603
+            text=True,  # noqa: S603,S607 - fixed argv; iface validated; shell disabled
         )
         m = re.search(r"mtu (\d+)", ip_out)
         if m:
