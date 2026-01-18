@@ -91,6 +91,8 @@ python -m ae.cli logs echo --tail 50
 5) Kubectl‑like wrapper (optional):
 ```
 k1s get apps
+k1s get pods
+k1s get services
 k1s describe app/echo
 k1s logs app/echo --follow --tail 100
 ```
