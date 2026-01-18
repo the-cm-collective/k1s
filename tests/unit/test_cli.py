@@ -40,7 +40,7 @@ ghcr.io:
     exit_code = main(["apply", "-f", str(manifest_path)])
     assert exit_code == 0
     apply_out = capsys.readouterr().out
-    assert "Applied echo" in apply_out
+    assert "Applied default/echo" in apply_out
 
     exit_code = main(["status", "echo"])
     assert exit_code == 0
@@ -55,7 +55,7 @@ ghcr.io:
     exit_code = main(["status"])
     assert exit_code == 0
     list_out = capsys.readouterr().out
-    assert "echo" in list_out
+    assert "default/echo" in list_out
     assert "live=1" in list_out
     assert "rev=1" in list_out
     assert "ops=+1" in list_out
@@ -76,6 +76,7 @@ ghcr.io:
     assert exit_code == 0
     status_json = capsys.readouterr().out
     assert '"app_name": "echo"' in status_json
+    assert '"namespace": "default"' in status_json
 
     exit_code = main(["metrics"])
     assert exit_code == 0
@@ -116,7 +117,7 @@ def test_logs_command(tmp_path, monkeypatch, capsys):
     exit_code = main(["logs", "ghost"])
     assert exit_code == 1
     output = capsys.readouterr().out
-    assert "No status recorded for ghost" in output
+    assert "No status recorded for default/ghost" in output
 
     # After apply, logs should print stub line
     manifest_path = tmp_path / "echo.yaml"
@@ -159,7 +160,7 @@ spec:
     exit_code = main(["rollback", "echo", "--to", "1"])
     assert exit_code == 0
     output = capsys.readouterr().out
-    assert "Rolled back echo" in output
+    assert "Rolled back default/echo" in output
 
 
 def test_api_tokens_with_ttl_and_state(tmp_path):

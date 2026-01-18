@@ -86,7 +86,9 @@ def _ns_name(path: str) -> tuple[str, str | None, str | None]:
 
 
 def _app_name(ns: str | None, name: str) -> str:
-    return f"{ns}--{name}" if ns else name
+    from ae.controller.spec import app_key
+
+    return app_key(name, ns)
 
 
 def _rule_matches(resource: str, resources: list[str] | None) -> bool:
@@ -833,7 +835,9 @@ def _swagger_doc() -> dict[str, Any]:
                 "kind": {"type": "string"},
                 "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
                 "spec": {"type": "object", "additionalProperties": True},
-                "status": {"$ref": "#/definitions/io.k8s.api.autoscaling.v2.HorizontalPodAutoscalerStatus"},
+                "status": {
+                    "$ref": "#/definitions/io.k8s.api.autoscaling.v2.HorizontalPodAutoscalerStatus"
+                },
             },
             "additionalProperties": True,
         },
@@ -852,7 +856,9 @@ def _swagger_doc() -> dict[str, Any]:
                 "matchLabels": {"type": "object", "additionalProperties": {"type": "string"}},
                 "matchExpressions": {
                     "type": "array",
-                    "items": {"$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelectorRequirement"},
+                    "items": {
+                        "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelectorRequirement"
+                    },
                 },
             },
             "additionalProperties": True,
@@ -862,7 +868,9 @@ def _swagger_doc() -> dict[str, Any]:
             "properties": {
                 "minAvailable": {"type": ["integer", "string"]},
                 "maxUnavailable": {"type": ["integer", "string"]},
-                "selector": {"$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector"},
+                "selector": {
+                    "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector"
+                },
                 "unhealthyPodEvictionPolicy": {"type": "string"},
             },
             "additionalProperties": True,
@@ -897,19 +905,40 @@ def _swagger_doc() -> dict[str, Any]:
                 "image": {"type": "string"},
                 "command": {"type": "array", "items": {"type": "string"}},
                 "args": {"type": "array", "items": {"type": "string"}},
-                "env": {"type": "array", "items": {"type": "object", "additionalProperties": {"type": "string"}}},
+                "env": {
+                    "type": "array",
+                    "items": {"type": "object", "additionalProperties": {"type": "string"}},
+                },
                 "replicas": {"type": "integer"},
-                "ports": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+                "ports": {
+                    "type": "array",
+                    "items": {"type": "object", "additionalProperties": True},
+                },
                 "health": {"type": "object", "additionalProperties": True},
                 "service": {"type": "object", "additionalProperties": True},
                 "ingress": {"type": "object", "additionalProperties": True},
                 "resources": {"type": "object", "additionalProperties": True},
                 "security": {"type": "object", "additionalProperties": True},
-                "containers": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
-                "initContainers": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
-                "volumes": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
-                "storage": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
-                "emptyDirs": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+                "containers": {
+                    "type": "array",
+                    "items": {"type": "object", "additionalProperties": True},
+                },
+                "initContainers": {
+                    "type": "array",
+                    "items": {"type": "object", "additionalProperties": True},
+                },
+                "volumes": {
+                    "type": "array",
+                    "items": {"type": "object", "additionalProperties": True},
+                },
+                "storage": {
+                    "type": "array",
+                    "items": {"type": "object", "additionalProperties": True},
+                },
+                "emptyDirs": {
+                    "type": "array",
+                    "items": {"type": "object", "additionalProperties": True},
+                },
                 "networkPolicy": {"type": "object", "additionalProperties": True},
                 "exportHints": {"type": "object", "additionalProperties": True},
             },
@@ -999,40 +1028,134 @@ def _swagger_doc() -> dict[str, Any]:
             "/api/v1/namespaces": {"get": {}, "post": {}},
             "/api/v1/namespaces/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
             "/api/v1/namespaces/{namespace}/configmaps": {"get": {}, "post": {}},
-            "/api/v1/namespaces/{namespace}/configmaps/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/api/v1/namespaces/{namespace}/configmaps/{name}": {
+                "get": {},
+                "delete": {},
+                "patch": {},
+                "put": {},
+            },
             "/api/v1/namespaces/{namespace}/secrets": {"get": {}, "post": {}},
-            "/api/v1/namespaces/{namespace}/secrets/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/api/v1/namespaces/{namespace}/secrets/{name}": {
+                "get": {},
+                "delete": {},
+                "patch": {},
+                "put": {},
+            },
             "/api/v1/namespaces/{namespace}/serviceaccounts": {"get": {}, "post": {}},
-            "/api/v1/namespaces/{namespace}/serviceaccounts/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/api/v1/namespaces/{namespace}/serviceaccounts/{name}": {
+                "get": {},
+                "delete": {},
+                "patch": {},
+                "put": {},
+            },
             "/api/v1/namespaces/{namespace}/services": {"get": {}, "post": {}},
-            "/api/v1/namespaces/{namespace}/services/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/api/v1/namespaces/{namespace}/services/{name}": {
+                "get": {},
+                "delete": {},
+                "patch": {},
+                "put": {},
+            },
             "/apis/apps/v1/namespaces/{namespace}/deployments": {"get": {}, "post": {}},
-            "/apis/apps/v1/namespaces/{namespace}/deployments/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/apps/v1/namespaces/{namespace}/deployments/{name}": {
+                "get": {},
+                "delete": {},
+                "patch": {},
+                "put": {},
+            },
             "/apis/apps/v1/namespaces/{namespace}/statefulsets": {"get": {}, "post": {}},
-            "/apis/apps/v1/namespaces/{namespace}/statefulsets/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/apps/v1/namespaces/{namespace}/statefulsets/{name}": {
+                "get": {},
+                "delete": {},
+                "patch": {},
+                "put": {},
+            },
             "/apis/apps/v1/namespaces/{namespace}/daemonsets": {"get": {}, "post": {}},
-            "/apis/apps/v1/namespaces/{namespace}/daemonsets/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/apps/v1/namespaces/{namespace}/daemonsets/{name}": {
+                "get": {},
+                "delete": {},
+                "patch": {},
+                "put": {},
+            },
             "/apis/batch/v1/namespaces/{namespace}/jobs": {"get": {}, "post": {}},
-            "/apis/batch/v1/namespaces/{namespace}/jobs/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/batch/v1/namespaces/{namespace}/jobs/{name}": {
+                "get": {},
+                "delete": {},
+                "patch": {},
+                "put": {},
+            },
             "/apis/batch/v1/namespaces/{namespace}/cronjobs": {"get": {}, "post": {}},
-            "/apis/batch/v1/namespaces/{namespace}/cronjobs/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
-            "/apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers": {"get": {}, "post": {}},
-            "/apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/batch/v1/namespaces/{namespace}/cronjobs/{name}": {
+                "get": {},
+                "delete": {},
+                "patch": {},
+                "put": {},
+            },
+            "/apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers": {
+                "get": {},
+                "post": {},
+            },
+            "/apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers/{name}": {
+                "get": {},
+                "delete": {},
+                "patch": {},
+                "put": {},
+            },
             "/apis/policy/v1/namespaces/{namespace}/poddisruptionbudgets": {"get": {}, "post": {}},
-            "/apis/policy/v1/namespaces/{namespace}/poddisruptionbudgets/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/policy/v1/namespaces/{namespace}/poddisruptionbudgets/{name}": {
+                "get": {},
+                "delete": {},
+                "patch": {},
+                "put": {},
+            },
             "/apis/rbac.authorization.k8s.io/v1/clusterroles": {"get": {}, "post": {}},
-            "/apis/rbac.authorization.k8s.io/v1/clusterroles/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/rbac.authorization.k8s.io/v1/clusterroles/{name}": {
+                "get": {},
+                "delete": {},
+                "patch": {},
+                "put": {},
+            },
             "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings": {"get": {}, "post": {}},
-            "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
-            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/roles": {"get": {}, "post": {}},
-            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/roles/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
-            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/rolebindings": {"get": {}, "post": {}},
-            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/rolebindings/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/{name}": {
+                "get": {},
+                "delete": {},
+                "patch": {},
+                "put": {},
+            },
+            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/roles": {
+                "get": {},
+                "post": {},
+            },
+            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/roles/{name}": {
+                "get": {},
+                "delete": {},
+                "patch": {},
+                "put": {},
+            },
+            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/rolebindings": {
+                "get": {},
+                "post": {},
+            },
+            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/rolebindings/{name}": {
+                "get": {},
+                "delete": {},
+                "patch": {},
+                "put": {},
+            },
             "/apis/networking.k8s.io/v1/namespaces/{namespace}/ingresses": {"get": {}, "post": {}},
-            "/apis/networking.k8s.io/v1/namespaces/{namespace}/ingresses/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/networking.k8s.io/v1/namespaces/{namespace}/ingresses/{name}": {
+                "get": {},
+                "delete": {},
+                "patch": {},
+                "put": {},
+            },
             "/apis/authorization.k8s.io/v1/subjectaccessreviews": {"post": {}},
             "/apis/ae.dev/v1alpha1/namespaces/{namespace}/apps": {"get": {}, "post": {}},
-            "/apis/ae.dev/v1alpha1/namespaces/{namespace}/apps/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
+            "/apis/ae.dev/v1alpha1/namespaces/{namespace}/apps/{name}": {
+                "get": {},
+                "delete": {},
+                "patch": {},
+                "put": {},
+            },
         },
         "definitions": schemas,
     }
@@ -1111,7 +1234,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                     # expired; drop it
                     with self.sa_tokens_lock:
                         self.sa_tokens.pop(tok, None)
-                    return Principal(username="system:unauthenticated", groups={"system:unauthenticated"}, token_role=None, token=None)
+                    return Principal(
+                        username="system:unauthenticated",
+                        groups={"system:unauthenticated"},
+                        token_role=None,
+                        token=None,
+                    )
                 username = f"system:serviceaccount:{ns}:{name}"
                 groups = {
                     "system:authenticated",
@@ -1161,7 +1289,11 @@ class ShimHandler(BaseHTTPRequestHandler):
         if not verb or not resource:
             return {"allowed": False, "denied": True, "reason": "missing verb/resource"}
         allowed = self._rbac_allows(verb, resource, namespace)
-        return {"allowed": allowed, "denied": not allowed, "reason": "rbac: allowed" if allowed else "rbac: forbidden"}
+        return {
+            "allowed": allowed,
+            "denied": not allowed,
+            "reason": "rbac: allowed" if allowed else "rbac: forbidden",
+        }
 
     def _issue_sa_token(self, namespace: str, name: str) -> str:
         token = secrets.token_urlsafe(32)
@@ -1179,7 +1311,9 @@ class ShimHandler(BaseHTTPRequestHandler):
             return False
         # Static policy fallback
         if not self.rbac_eval_roles:
-            allowed = self.rbac_policies.get((verb, resource)) or self.rbac_policies.get((verb, "*"))
+            allowed = self.rbac_policies.get((verb, resource)) or self.rbac_policies.get(
+                (verb, "*")
+            )
             return bool(allowed and role in allowed)
         # Role/RoleBinding evaluation
         user = principal.username
@@ -1195,30 +1329,38 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if not any(
                     (s.get("kind") == "User" and s.get("name") == user)
                     or (s.get("kind") == "Group" and s.get("name") in groups)
-                for s in subjects):
+                    for s in subjects
+                ):
                     continue
                 ref = (rb.spec or {}).get("roleRef", {})
                 rname = ref.get("name")
                 if not rname:
                     continue
-                role_obj = self.store.get("rbac.authorization.k8s.io", "v1", "roles", rb.namespace, rname)  # type: ignore[attr-defined]
+                role_obj = self.store.get(
+                    "rbac.authorization.k8s.io", "v1", "roles", rb.namespace, rname
+                )  # type: ignore[attr-defined]
                 if role_obj:
                     for rule in (role_obj.spec or {}).get("rules", []):
                         if _rule_matches(resource, rule.get("resources", [])):
                             allowed_verbs.update(rule.get("verbs", []))
             # ClusterRoleBindings
-            for crb in self.store.list_all("rbac.authorization.k8s.io", "v1", "clusterrolebindings"):  # type: ignore[attr-defined]
+            for crb in self.store.list_all(
+                "rbac.authorization.k8s.io", "v1", "clusterrolebindings"
+            ):  # type: ignore[attr-defined]
                 subjects = (crb.spec or {}).get("subjects", [])
                 if not any(
                     (s.get("kind") == "User" and s.get("name") == user)
                     or (s.get("kind") == "Group" and s.get("name") in groups)
-                for s in subjects):
+                    for s in subjects
+                ):
                     continue
                 ref = (crb.spec or {}).get("roleRef", {})
                 rname = ref.get("name")
                 if not rname:
                     continue
-                crobj = self.store.get("rbac.authorization.k8s.io", "v1", "clusterroles", None, rname)  # type: ignore[attr-defined]
+                crobj = self.store.get(
+                    "rbac.authorization.k8s.io", "v1", "clusterroles", None, rname
+                )  # type: ignore[attr-defined]
                 if crobj:
                     for rule in (crobj.spec or {}).get("rules", []):
                         if _rule_matches(resource, rule.get("resources", [])):
@@ -1227,7 +1369,9 @@ class ShimHandler(BaseHTTPRequestHandler):
             return False
         if not allowed_verbs:
             # fallback to static if no rules matched
-            allowed = self.rbac_policies.get((verb, resource)) or self.rbac_policies.get((verb, "*"))
+            allowed = self.rbac_policies.get((verb, resource)) or self.rbac_policies.get(
+                (verb, "*")
+            )
             return bool(allowed and role in allowed)
         return verb in allowed_verbs
 
@@ -1293,7 +1437,9 @@ class ShimHandler(BaseHTTPRequestHandler):
         return self.rfile.read(length)
 
     def _deny(self, code: int = HTTPStatus.FORBIDDEN, message: str = "forbidden") -> None:
-        self._json_status(int(code), reason="Forbidden" if int(code) == 403 else "Unauthorized", message=message)
+        self._json_status(
+            int(code), reason="Forbidden" if int(code) == 403 else "Unauthorized", message=message
+        )
 
     def _max_rv_for(self, group: str, version: str, resource: str, namespace: str | None) -> int:
         try:
@@ -1321,7 +1467,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         if subproto_hdr:
             chosen_proto = subproto_hdr.split(",")[0].strip()
         try:
-            with open("/tmp/pf-headers.log", "w") as hdr:
+            with open("/tmp/pf-headers.log", "w") as hdr:  # noqa: S108
                 for k, v in self.headers.items():
                     hdr.write(f"{k}: {v}\n")
                 hdr.write(f"chosen: {chosen_proto}\n")
@@ -1369,15 +1515,15 @@ class ShimHandler(BaseHTTPRequestHandler):
             try:
                 header = bytearray()
                 header.append(0x80 | (opcode & 0x0F))
-                l = len(payload)
-                if l < 126:
-                    header.append(l)
-                elif l < (1 << 16):
+                length = len(payload)
+                if length < 126:
+                    header.append(length)
+                elif length < (1 << 16):
                     header.append(126)
-                    header.extend(l.to_bytes(2, "big"))
+                    header.extend(length.to_bytes(2, "big"))
                 else:
                     header.append(127)
-                    header.extend(l.to_bytes(8, "big"))
+                    header.extend(length.to_bytes(8, "big"))
                 sock.sendall(header + payload)
             except Exception:
                 pass
@@ -1415,7 +1561,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                             break
                         frame = bytes([channel_data]) + chunk
                         _send_ws(self.connection, frame, opcode=0x2)
-                    except socket.timeout:
+                    except TimeoutError:
                         continue
                     except Exception:
                         break
@@ -1457,6 +1603,7 @@ class ShimHandler(BaseHTTPRequestHandler):
 
         # SPDY-over-WebSocket tunneling (SPDY/3.1+portforward.k8s.io)
         if chosen_proto and chosen_proto.startswith("SPDY/3.1+"):
+
             class WsConn:
                 def __init__(self, sock, recv_fn, send_fn):
                     self._sock = sock
@@ -1489,7 +1636,9 @@ class ShimHandler(BaseHTTPRequestHandler):
 
             ws_conn = WsConn(self.connection, _recv_ws, _send_ws)
             try:
-                self._handle_port_forward_spdy(target_host, [target_port], conn_override=ws_conn, suppress_handshake=True)
+                self._handle_port_forward_spdy(
+                    target_host, [target_port], conn_override=ws_conn, suppress_handshake=True
+                )
             finally:
                 try:
                     self.connection.close()
@@ -1525,7 +1674,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if opcode not in (0x1, 0x2) or len(payload) < 2:
                     continue
                 try:
-                    with open("/tmp/pf-debug.log", "ab") as dbg:
+                    with open("/tmp/pf-debug.log", "ab") as dbg:  # noqa: S108
                         dbg.write(payload + b"\n")
                 except Exception:
                     pass
@@ -1548,7 +1697,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                         break
                     frame = port.to_bytes(2, "big") + chunk
                     _send_ws(self.connection, frame, opcode=0x2)
-                except socket.timeout:
+                except TimeoutError:
                     continue
                 except Exception:
                     break
@@ -1561,7 +1710,9 @@ class ShimHandler(BaseHTTPRequestHandler):
         first_sock = _get_upstream(target_port)
         threads: list[threading.Thread] = []
         if first_sock:
-            t = threading.Thread(target=_pump_to_client, args=(target_port, first_sock), daemon=True)
+            t = threading.Thread(
+                target=_pump_to_client, args=(target_port, first_sock), daemon=True
+            )
             t.start()
             threads.append(t)
         # Join while client pump alive
@@ -1581,7 +1732,15 @@ class ShimHandler(BaseHTTPRequestHandler):
             pass
 
     # ---------------- SPDY/3.1 port-forward (kubectl) ----------------
-    def _handle_port_forward_spdy(self, target_host: str, target_ports: list[int], target_hosts_by_port: dict[int, str] | None = None, *, conn_override=None, suppress_handshake: bool = False) -> None:
+    def _handle_port_forward_spdy(
+        self,
+        target_host: str,
+        target_ports: list[int],
+        target_hosts_by_port: dict[int, str] | None = None,
+        *,
+        conn_override=None,
+        suppress_handshake: bool = False,
+    ) -> None:
         """Implements the SPDY/3.1 port-forward protocol used by kubectl.
 
         Each data stream carries raw TCP bytes to a target port advertised in
@@ -1613,10 +1772,11 @@ class ShimHandler(BaseHTTPRequestHandler):
 
         def _pf_debug(msg: str) -> None:
             try:
-                with open("/tmp/pf-debug.txt", "a") as f:
+                with open("/tmp/pf-debug.txt", "a") as f:  # noqa: S108
                     f.write(msg + "\n")
             except Exception:
                 pass
+
         _pf_debug("spdy-start")
 
         SPDY_DICT = base64.b64decode(
@@ -1796,11 +1956,21 @@ class ShimHandler(BaseHTTPRequestHandler):
                             if not stype:
                                 stype = "data" if not data_streams else "error"
                             try:
-                                port = int(headers.get("port") or headers.get("streamname") or target_ports[0])
+                                port = int(
+                                    headers.get("port")
+                                    or headers.get("streamname")
+                                    or target_ports[0]
+                                )
                             except Exception:
                                 port = target_ports[0]
-                            _pf_debug(f"SYN_STREAM sid={sid} stype={stype} port={port} targets={target_ports}")
-                            if port not in target_ports and target_ports[0] != 0 and not isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
+                            _pf_debug(
+                                f"SYN_STREAM sid={sid} stype={stype} port={port} targets={target_ports}"
+                            )
+                            if (
+                                port not in target_ports
+                                and target_ports[0] != 0
+                                and not isinstance(self.server.runtime, StubRuntime)
+                            ):  # type: ignore[attr-defined]
                                 send_rst(sid, code=2)
                                 continue
                             choices = host_cycle.get(port) or [host_by_port.get(port, target_host)]
@@ -1825,8 +1995,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                                     if idx + 8 > len(payload):
                                         break
                                     _flags = payload[idx]
-                                    sid_setting = int.from_bytes(payload[idx + 1:idx + 3], "big")
-                                    val = int.from_bytes(payload[idx + 3:idx + 7], "big")
+                                    sid_setting = int.from_bytes(payload[idx + 1 : idx + 3], "big")
+                                    val = int.from_bytes(payload[idx + 3 : idx + 7], "big")
                                     idx += 8
                                     if sid_setting == 0x04:
                                         window_size = val
@@ -1879,12 +2049,18 @@ class ShimHandler(BaseHTTPRequestHandler):
                                     dest_port = port
                                     if isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                                         try:
-                                            dest_port = int(os.getenv("AE_STUB_BACKEND_PORT", "8081"))
+                                            dest_port = int(
+                                                os.getenv("AE_STUB_BACKEND_PORT", "8081")
+                                            )
                                         except Exception:
                                             dest_port = port
                                         dest_host = os.getenv("AE_STUB_BACKEND_HOST", dest_host)
-                                    _pf_debug(f"connect sid={stream_id} host={dest_host} port={dest_port}")
-                                    upstream_cache[stream_id] = socket.create_connection((dest_host, dest_port), timeout=5.0)
+                                    _pf_debug(
+                                        f"connect sid={stream_id} host={dest_host} port={dest_port}"
+                                    )
+                                    upstream_cache[stream_id] = socket.create_connection(
+                                        (dest_host, dest_port), timeout=5.0
+                                    )
                                     upstream_cache[stream_id].settimeout(0.05)
                                 except Exception as e:
                                     _pf_debug(f"connect-fail sid={stream_id} port={port} err={e}")
@@ -2101,7 +2277,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             size = int.from_bytes(frame[4:8], "big")
             if size == 0:
                 return None
-            data = frame[8:8 + size]
+            data = frame[8 : 8 + size]
             if len(data) < size:
                 return None
             return stream_type, data
@@ -2151,8 +2327,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                                     if idx + 8 > len(payload):
                                         break
                                     _flags = payload[idx]
-                                    sid_setting = int.from_bytes(payload[idx + 1:idx + 3], "big")
-                                    val = int.from_bytes(payload[idx + 3:idx + 7], "big")
+                                    sid_setting = int.from_bytes(payload[idx + 1 : idx + 3], "big")
+                                    val = int.from_bytes(payload[idx + 3 : idx + 7], "big")
                                     idx += 8
                                     if sid_setting == 0x04:
                                         window_size = val
@@ -2190,11 +2366,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                             # Handle resize payload JSON {"Width":x,"Height":y}
                             try:
                                 doc = json.loads(payload.decode("utf-8", "ignore"))
-                                h = int(doc.get("Height")) if doc.get("Height") is not None else None
+                                h = (
+                                    int(doc.get("Height"))
+                                    if doc.get("Height") is not None
+                                    else None
+                                )
                                 w = int(doc.get("Width")) if doc.get("Width") is not None else None
                                 if hasattr(self.server.runtime, "exec_resize"):  # type: ignore[attr-defined]
                                     try:
-                                        self.server.runtime.exec_resize(exec_id or "", height=h, width=w)  # type: ignore[attr-defined]
+                                        self.server.runtime.exec_resize(
+                                            exec_id or "", height=h, width=w
+                                        )  # type: ignore[attr-defined]
                                     except Exception:
                                         pass
                             except Exception:
@@ -2271,7 +2453,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                     "details": {"exitCode": exit_code},
                 }
                 try:
-                    send_data_frame(err_sid, json.dumps(status_obj, separators=(",", ":")).encode("utf-8"), flags=0x02)
+                    send_data_frame(
+                        err_sid,
+                        json.dumps(status_obj, separators=(",", ":")).encode("utf-8"),
+                        flags=0x02,
+                    )
                 except Exception:
                     pass
             try:
@@ -2316,10 +2502,21 @@ class ShimHandler(BaseHTTPRequestHandler):
                 except Exception:
                     current = 0
                 initial_rv = rv_param if rv_param else str(current)
-                bm = {"type": "BOOKMARK", "object": {"metadata": {"resourceVersion": str(initial_rv)}}}
+                bm = {
+                    "type": "BOOKMARK",
+                    "object": {"metadata": {"resourceVersion": str(initial_rv)}},
+                }
                 self.wfile.write(json.dumps(bm, separators=(",", ":")).encode("utf-8") + b"\n")
                 self.wfile.flush()
-            for ev_type, obj in self.server.store.watch(group, version, resource, namespace, heartbeat_seconds=heartbeat, allow_bookmarks=allow_bm, since_rv=int(rv_param) if rv_param and rv_param.isdigit() else None):  # type: ignore[attr-defined]
+            for ev_type, obj in self.server.store.watch(
+                group,
+                version,
+                resource,
+                namespace,
+                heartbeat_seconds=heartbeat,
+                allow_bookmarks=allow_bm,
+                since_rv=int(rv_param) if rv_param and rv_param.isdigit() else None,
+            ):  # type: ignore[attr-defined]
                 if ev_type != "BOOKMARK" and not _matches_selectors(obj, label_sel, field_sel):
                     continue
                 body = {"type": ev_type, "object": transform(obj)}
@@ -2338,8 +2535,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                 ev = {"type": "ADDED", "object": obj}
                 self.wfile.write(json.dumps(ev, separators=(",", ":")).encode("utf-8") + b"\n")
             # bookmark at end
-            rv = max((int(o.get("metadata", {}).get("resourceVersion", "0")) for o in objs), default=0)
-            bm = {"type": "BOOKMARK", "object": {"kind": kind, "apiVersion": api_version, "metadata": {"resourceVersion": str(rv)}}}
+            rv = max(
+                (int(o.get("metadata", {}).get("resourceVersion", "0")) for o in objs), default=0
+            )
+            bm = {
+                "type": "BOOKMARK",
+                "object": {
+                    "kind": kind,
+                    "apiVersion": api_version,
+                    "metadata": {"resourceVersion": str(rv)},
+                },
+            }
             self.wfile.write(json.dumps(bm, separators=(",", ":")).encode("utf-8") + b"\n")
             self.wfile.flush()
         except BrokenPipeError:
@@ -2358,7 +2564,10 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "apiVersion": "v1",
                             "name": "discovery.k8s.io",
                             "versions": [{"groupVersion": "discovery.k8s.io/v1", "version": "v1"}],
-                            "preferredVersion": {"groupVersion": "discovery.k8s.io/v1", "version": "v1"},
+                            "preferredVersion": {
+                                "groupVersion": "discovery.k8s.io/v1",
+                                "version": "v1",
+                            },
                             "serverAddressByClientCIDRs": [],
                         }
                     )
@@ -2368,8 +2577,13 @@ class ShimHandler(BaseHTTPRequestHandler):
                 "kind": "APIGroup",
                 "apiVersion": "v1",
                 "name": group,
-                "versions": [{"groupVersion": f"{group}/{ver}", "version": ver} for ver in versions],
-                "preferredVersion": {"groupVersion": f"{group}/{versions[0]}", "version": versions[0]},
+                "versions": [
+                    {"groupVersion": f"{group}/{ver}", "version": ver} for ver in versions
+                ],
+                "preferredVersion": {
+                    "groupVersion": f"{group}/{versions[0]}",
+                    "version": versions[0],
+                },
                 "serverAddressByClientCIDRs": [],
             }
             self._ok(payload)
@@ -2526,71 +2740,66 @@ class ShimHandler(BaseHTTPRequestHandler):
             return
         if path == "/apis":
             groups = [
-                        {
-                            "name": "batch",
-                            "versions": [{"groupVersion": "batch/v1", "version": "v1"}],
-                            "preferredVersion": {"groupVersion": "batch/v1", "version": "v1"},
-                        },
-                        {
-                            "name": "apps",
-                            "versions": [{"groupVersion": "apps/v1", "version": "v1"}],
-                            "preferredVersion": {"groupVersion": "apps/v1", "version": "v1"},
-                        },
-                        {
-                            "name": "networking.k8s.io",
-                            "versions": [
-                                {"groupVersion": "networking.k8s.io/v1", "version": "v1"}
-                            ],
-                            "preferredVersion": {
-                                "groupVersion": "networking.k8s.io/v1",
-                                "version": "v1",
-                            },
-                        },
-                        {
-                            "name": "discovery.k8s.io",
-                            "versions": [{"groupVersion": "discovery.k8s.io/v1", "version": "v1"}],
-                            "preferredVersion": {"groupVersion": "discovery.k8s.io/v1", "version": "v1"},
-                        },
-                        {
-                            "name": "rbac.authorization.k8s.io",
-                            "versions": [
-                                {"groupVersion": "rbac.authorization.k8s.io/v1", "version": "v1"}
-                            ],
-                            "preferredVersion": {
-                                "groupVersion": "rbac.authorization.k8s.io/v1",
-                                "version": "v1",
-                            },
-                        },
-                        {
-                            "name": "authorization.k8s.io",
-                            "versions": [{"groupVersion": "authorization.k8s.io/v1", "version": "v1"}],
-                            "preferredVersion": {"groupVersion": "authorization.k8s.io/v1", "version": "v1"},
-                        },
-                        {
-                            "name": "policy",
-                            "versions": [{"groupVersion": "policy/v1", "version": "v1"}],
-                            "preferredVersion": {"groupVersion": "policy/v1", "version": "v1"},
-                        },
-                        {
-                            "name": "autoscaling",
-                            "versions": [
-                                {"groupVersion": "autoscaling/v2", "version": "v2"}
-                            ],
-                            "preferredVersion": {
-                                "groupVersion": "autoscaling/v2",
-                                "version": "v2",
-                            },
-                        },
-                        {
-                            "name": "apiextensions.k8s.io",
-                            "versions": [
-                                {"groupVersion": "apiextensions.k8s.io/v1", "version": "v1"}
-                            ],
-                            "preferredVersion": {
-                                "groupVersion": "apiextensions.k8s.io/v1",
-                                "version": "v1",
-                            },
-                        },
+                {
+                    "name": "batch",
+                    "versions": [{"groupVersion": "batch/v1", "version": "v1"}],
+                    "preferredVersion": {"groupVersion": "batch/v1", "version": "v1"},
+                },
+                {
+                    "name": "apps",
+                    "versions": [{"groupVersion": "apps/v1", "version": "v1"}],
+                    "preferredVersion": {"groupVersion": "apps/v1", "version": "v1"},
+                },
+                {
+                    "name": "networking.k8s.io",
+                    "versions": [{"groupVersion": "networking.k8s.io/v1", "version": "v1"}],
+                    "preferredVersion": {
+                        "groupVersion": "networking.k8s.io/v1",
+                        "version": "v1",
+                    },
+                },
+                {
+                    "name": "discovery.k8s.io",
+                    "versions": [{"groupVersion": "discovery.k8s.io/v1", "version": "v1"}],
+                    "preferredVersion": {"groupVersion": "discovery.k8s.io/v1", "version": "v1"},
+                },
+                {
+                    "name": "rbac.authorization.k8s.io",
+                    "versions": [{"groupVersion": "rbac.authorization.k8s.io/v1", "version": "v1"}],
+                    "preferredVersion": {
+                        "groupVersion": "rbac.authorization.k8s.io/v1",
+                        "version": "v1",
+                    },
+                },
+                {
+                    "name": "authorization.k8s.io",
+                    "versions": [{"groupVersion": "authorization.k8s.io/v1", "version": "v1"}],
+                    "preferredVersion": {
+                        "groupVersion": "authorization.k8s.io/v1",
+                        "version": "v1",
+                    },
+                },
+                {
+                    "name": "policy",
+                    "versions": [{"groupVersion": "policy/v1", "version": "v1"}],
+                    "preferredVersion": {"groupVersion": "policy/v1", "version": "v1"},
+                },
+                {
+                    "name": "autoscaling",
+                    "versions": [{"groupVersion": "autoscaling/v2", "version": "v2"}],
+                    "preferredVersion": {
+                        "groupVersion": "autoscaling/v2",
+                        "version": "v2",
+                    },
+                },
+                {
+                    "name": "apiextensions.k8s.io",
+                    "versions": [{"groupVersion": "apiextensions.k8s.io/v1", "version": "v1"}],
+                    "preferredVersion": {
+                        "groupVersion": "apiextensions.k8s.io/v1",
+                        "version": "v1",
+                    },
+                },
             ]
             existing = {g["name"] for g in groups}
             for dyn in self._dynamic_group_names():
@@ -2603,8 +2812,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     {
                         "name": dyn,
                         "versions": [
-                            {"groupVersion": f"{dyn}/{ver}", "version": ver}
-                            for ver in versions
+                            {"groupVersion": f"{dyn}/{ver}", "version": ver} for ver in versions
                         ],
                         "preferredVersion": {
                             "groupVersion": f"{dyn}/{versions[0]}",
@@ -2646,7 +2854,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "singularName": "",
                             "namespaced": True,
                             "kind": "ConfigMap",
-                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
                             "shortNames": ["cm"],
                         },
                         {
@@ -2654,14 +2870,30 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "singularName": "",
                             "namespaced": True,
                             "kind": "Secret",
-                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
                         },
                         {
                             "name": "serviceaccounts",
                             "singularName": "",
                             "namespaced": True,
                             "kind": "ServiceAccount",
-                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
                             "shortNames": ["sa"],
                         },
                         {
@@ -2669,7 +2901,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "singularName": "",
                             "namespaced": True,
                             "kind": "Service",
-                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
                             "shortNames": ["svc"],
                         },
                         {
@@ -2710,7 +2950,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "singularName": "",
                             "namespaced": True,
                             "kind": "StatefulSet",
-                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
                             "shortNames": ["sts"],
                         },
                         {
@@ -2725,7 +2973,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "singularName": "",
                             "namespaced": True,
                             "kind": "DaemonSet",
-                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
                             "shortNames": ["ds"],
                         },
                         {
@@ -2740,7 +2996,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "singularName": "",
                             "namespaced": True,
                             "kind": "Deployment",
-                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
                             "shortNames": ["deploy", "deploys"],
                         },
                         {
@@ -2787,7 +3051,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "singularName": "",
                             "namespaced": True,
                             "kind": "Job",
-                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
                         },
                         {
                             "name": "jobs/status",
@@ -2801,7 +3073,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "singularName": "",
                             "namespaced": True,
                             "kind": "CronJob",
-                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
                         },
                         {
                             "name": "cronjobs/status",
@@ -2825,7 +3105,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "singularName": "",
                             "namespaced": True,
                             "kind": "Ingress",
-                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
                             "shortNames": ["ing"],
                         }
                     ],
@@ -2843,28 +3131,60 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "singularName": "",
                             "namespaced": True,
                             "kind": "Role",
-                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
                         },
                         {
                             "name": "rolebindings",
                             "singularName": "",
                             "namespaced": True,
                             "kind": "RoleBinding",
-                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
                         },
                         {
                             "name": "clusterroles",
                             "singularName": "",
                             "namespaced": False,
                             "kind": "ClusterRole",
-                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
                         },
                         {
                             "name": "clusterrolebindings",
                             "singularName": "",
                             "namespaced": False,
                             "kind": "ClusterRoleBinding",
-                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
                         },
                     ],
                 }
@@ -2898,7 +3218,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "singularName": "",
                             "namespaced": True,
                             "kind": "PodDisruptionBudget",
-                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
                             "shortNames": ["pdb"],
                         }
                     ],
@@ -2916,7 +3244,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "singularName": "",
                             "namespaced": True,
                             "kind": "HorizontalPodAutoscaler",
-                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
                             "shortNames": ["hpa"],
                         }
                     ],
@@ -2934,7 +3270,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "singularName": "",
                             "namespaced": False,
                             "kind": "CustomResourceDefinition",
-                            "verbs": ["get", "list", "create", "delete", "patch", "update", "watch"],
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
                             "shortNames": ["crd"],
                         }
                     ],
@@ -2951,7 +3295,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             if name is None:
                 label_sel, field_sel = _selector_values_from_query(q)
                 # watch support on LIST endpoints
-                if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
+                if q.get("watch", ["0"])[0] in ("1", "true", "True"):
                     if not self._rbac_allows("watch", plural):
                         self._deny(403)
                         return
@@ -2961,16 +3305,34 @@ class ShimHandler(BaseHTTPRequestHandler):
                     self.end_headers()
                     try:
                         start = time.time()
-                        timeout = int(q.get("timeoutSeconds", ["0"]) [0] or 0) or None
-                        heartbeat = int(q.get("heartbeatSeconds", ["0"]) [0] or 0) or None
-                        allow_bm = q.get("allowWatchBookmarks", ["0"]) [0] in ("1", "true", "True")
-                        for ev_type, obj in self.server.store.watch("", "v1", plural, ns, heartbeat_seconds=heartbeat, allow_bookmarks=allow_bm):  # type: ignore[attr-defined]
-                            if ev_type != "BOOKMARK" and not _matches_selectors(obj, label_sel, field_sel):
+                        timeout = int(q.get("timeoutSeconds", ["0"])[0] or 0) or None
+                        heartbeat = int(q.get("heartbeatSeconds", ["0"])[0] or 0) or None
+                        allow_bm = q.get("allowWatchBookmarks", ["0"])[0] in ("1", "true", "True")
+                        for ev_type, obj in self.server.store.watch(
+                            "",
+                            "v1",
+                            plural,
+                            ns,
+                            heartbeat_seconds=heartbeat,
+                            allow_bookmarks=allow_bm,
+                        ):  # type: ignore[attr-defined]
+                            if ev_type != "BOOKMARK" and not _matches_selectors(
+                                obj, label_sel, field_sel
+                            ):
                                 continue
-                            line = json.dumps({"type": ev_type, "object": _to_obj(obj)}, separators=(",", ":")).encode("utf-8") + b"\n"
+                            line = (
+                                json.dumps(
+                                    {"type": ev_type, "object": _to_obj(obj)}, separators=(",", ":")
+                                ).encode("utf-8")
+                                + b"\n"
+                            )
                             self.wfile.write(line)
                             self.wfile.flush()
-                            if timeout is not None and timeout > 0 and (time.time() - start) >= timeout:
+                            if (
+                                timeout is not None
+                                and timeout > 0
+                                and (time.time() - start) >= timeout
+                            ):
                                 break
                     except BrokenPipeError:
                         pass
@@ -2996,7 +3358,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                 def _transform(obj: K8sObject) -> dict[str, Any]:
                     if plural == "services":
                         doc = _to_obj(obj)
-                        doc = _merge_provider_service(self.server.state, self.server.store, doc, obj)  # type: ignore[attr-defined]
+                        doc = _merge_provider_service(
+                            self.server.state, self.server.store, doc, obj
+                        )  # type: ignore[attr-defined]
                         return doc
                     return _to_obj(obj)
 
@@ -3016,7 +3380,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if not self._rbac_allows("get", plural):
                     self._deny(403)
                     return
-                obj = self.server.store.get("", "v1", plural, None if plural == "namespaces" else ns, name)  # type: ignore[attr-defined]
+                obj = self.server.store.get(
+                    "", "v1", plural, None if plural == "namespaces" else ns, name
+                )  # type: ignore[attr-defined]
                 if not obj:
                     self._not_found()
                     return
@@ -3041,14 +3407,18 @@ class ShimHandler(BaseHTTPRequestHandler):
                             status=obj.status,
                         )
                 if plural == "services":
-                    doc = _merge_provider_service(self.server.state, self.server.store, _to_obj(obj), obj)  # type: ignore[attr-defined]
+                    doc = _merge_provider_service(
+                        self.server.state, self.server.store, _to_obj(obj), obj
+                    )  # type: ignore[attr-defined]
                     self._ok(doc)
                     return
                 self._ok(_to_obj(obj))
                 return
             # Mutations
             if self.command in {"POST", "PUT", "PATCH", "DELETE"}:
-                verb = {"POST": "create", "PUT": "update", "PATCH": "patch", "DELETE": "delete"}[self.command]
+                verb = {"POST": "create", "PUT": "update", "PATCH": "patch", "DELETE": "delete"}[
+                    self.command
+                ]
                 if not self._rbac_allows(verb, plural):
                     self._deny(403)
                     return
@@ -3057,7 +3427,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             pass
         # Endpoints (projected from controller state)
         if plural == "endpoints":
-            if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
+            if q.get("watch", ["0"])[0] in ("1", "true", "True"):
                 self.send_response(HTTPStatus.NOT_IMPLEMENTED)
                 self.end_headers()
                 return
@@ -3092,7 +3462,14 @@ class ShimHandler(BaseHTTPRequestHandler):
                 meta = {"resourceVersion": str(rv)}
                 if cont_token:
                     meta["continue"] = cont_token
-                self._ok({"kind": "EndpointsList", "apiVersion": "v1", "metadata": meta, "items": selected})
+                self._ok(
+                    {
+                        "kind": "EndpointsList",
+                        "apiVersion": "v1",
+                        "metadata": meta,
+                        "items": selected,
+                    }
+                )
                 return
             svc = self.server.store.get("", "v1", "services", ns, name)  # type: ignore[attr-defined]
             if not svc:
@@ -3117,10 +3494,18 @@ class ShimHandler(BaseHTTPRequestHandler):
             replica_info: dict[str, tuple[str | None, bool, bool, str, str, str]] = {}
             try:
                 # Build once for all apps to avoid N+1 queries
-                for app in { (c.get("labels", {}) or {}).get("ae.app") for c in containers }:
+                for app in {(c.get("labels", {}) or {}).get("ae.app") for c in containers}:
                     if not app:
                         continue
-                    for rid, node_id, ready, live, status, rmsg, lmsg in self.server.state.list_replica_nodes(app):  # type: ignore[attr-defined]
+                    for (
+                        rid,
+                        node_id,
+                        ready,
+                        live,
+                        status,
+                        rmsg,
+                        lmsg,
+                    ) in self.server.state.list_replica_nodes(app):  # type: ignore[attr-defined]
                         replica_info[rid] = (node_id, ready, live, status, rmsg, lmsg)
             except Exception:
                 replica_info = {}
@@ -3148,7 +3533,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                         {"type": "ContainersReady", "status": "True" if rep_info[1] else "False"},
                     ]
                     if not rep_info[1]:
-                        cs["state"] = {"waiting": {"reason": rep_info[3] or "Pending", "message": rep_info[4]}}
+                        cs["state"] = {
+                            "waiting": {"reason": rep_info[3] or "Pending", "message": rep_info[4]}
+                        }
                 pod_objs.append(pod_obj)
             if q.get("watch", ["0"])[0] in ("1", "true", "True"):
                 if not self._rbac_allows("watch", "pods"):
@@ -3161,10 +3548,16 @@ class ShimHandler(BaseHTTPRequestHandler):
                 try:
                     for p in pod_objs:
                         ev = {"type": "ADDED", "object": p}
-                        self.wfile.write(json.dumps(ev, separators=(",", ":")).encode("utf-8") + b"\n")
+                        self.wfile.write(
+                            json.dumps(ev, separators=(",", ":")).encode("utf-8") + b"\n"
+                        )
                     bm = {
                         "type": "BOOKMARK",
-                        "object": {"kind": "Pod", "apiVersion": "v1", "metadata": {"resourceVersion": str(now_rv)}},
+                        "object": {
+                            "kind": "Pod",
+                            "apiVersion": "v1",
+                            "metadata": {"resourceVersion": str(now_rv)},
+                        },
                     }
                     self.wfile.write(json.dumps(bm, separators=(",", ":")).encode("utf-8") + b"\n")
                     self.wfile.flush()
@@ -3193,7 +3586,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                 meta = {"resourceVersion": str(now_rv)}
                 if cont_token:
                     meta["continue"] = cont_token
-                self._ok({"kind": "PodList", "apiVersion": "v1", "metadata": meta, "items": selected})
+                self._ok(
+                    {"kind": "PodList", "apiVersion": "v1", "metadata": meta, "items": selected}
+                )
                 return
             for p in pod_objs:
                 if p["metadata"]["name"] == name:
@@ -3233,7 +3628,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     self.send_header("Content-Type", "text/plain")
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers()
-                    for ln in self.server.runtime.read_logs(pod_name, follow=True, tail=tail_i, since=since_i):  # type: ignore[attr-defined]
+                    for ln in self.server.runtime.read_logs(
+                        pod_name, follow=True, tail=tail_i, since=since_i
+                    ):  # type: ignore[attr-defined]
                         try:
                             data = _emit(ln)
                             if not data.endswith(b"\n"):
@@ -3244,7 +3641,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                             break
                     return
                 else:
-                    lines = list(self.server.runtime.read_logs(pod_name, follow=False, tail=tail_i, since=since_i))  # type: ignore[attr-defined]
+                    lines = list(
+                        self.server.runtime.read_logs(
+                            pod_name, follow=False, tail=tail_i, since=since_i
+                        )
+                    )  # type: ignore[attr-defined]
                     body = b"".join([_emit(ln) for ln in lines])
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Content-Type", "text/plain")
@@ -3253,7 +3654,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     self.wfile.write(body)
                     return
             except Exception as exc:
-                self._json_status(HTTPStatus.INTERNAL_SERVER_ERROR, reason="InternalError", message=str(exc))
+                self._json_status(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, reason="InternalError", message=str(exc)
+                )
                 return
         # Pod exec (kubectl uses SPDY upgrade)
         m_exec = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/exec$", path)
@@ -3264,7 +3667,11 @@ class ShimHandler(BaseHTTPRequestHandler):
             qs = parse_qs(parsed.query)
             cmd = qs.get("command") or []
             if not cmd:
-                self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="command query param is required")
+                self._json_status(
+                    HTTPStatus.BAD_REQUEST,
+                    reason="BadRequest",
+                    message="command query param is required",
+                )
                 return
             upgrade = (self.headers.get("Upgrade") or "").lower()
             if upgrade.startswith("spdy"):
@@ -3347,11 +3754,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
             if not target_ports:
-                self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="ports query param required")
+                self._json_status(
+                    HTTPStatus.BAD_REQUEST,
+                    reason="BadRequest",
+                    message="ports query param required",
+                )
                 return
             app_name = _service_app_name(svc, self.server.store)
             eps_raw = self.server.state.list_service_endpoints(app_name) if app_name else []  # type: ignore[attr-defined]
-            target_ip = _pick_endpoint_ip(eps_raw, key=",".join(str(p) for p in target_ports) if target_ports else None)
+            target_ip = _pick_endpoint_ip(
+                eps_raw, key=",".join(str(p) for p in target_ports) if target_ports else None
+            )
             if isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                 target_ip = os.getenv("AE_STUB_BACKEND_HOST", target_ip or "127.0.0.1")
                 try:
@@ -3359,7 +3772,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                 except Exception:
                     target_ports = [8081]
             if not target_ip:
-                self._json_status(HTTPStatus.SERVICE_UNAVAILABLE, reason="NoEndpoints", message="no ready endpoints for service")
+                self._json_status(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    reason="NoEndpoints",
+                    message="no ready endpoints for service",
+                )
                 return
             upgrade = (self.headers.get("Upgrade") or "").lower()
             if upgrade.startswith("spdy"):
@@ -3375,7 +3792,11 @@ class ShimHandler(BaseHTTPRequestHandler):
             elif upgrade == "websocket":
                 self._handle_port_forward_ws(target_ip, target_ports[0])
             else:
-                self._json_status(HTTPStatus.UPGRADE_REQUIRED, reason="UpgradeRequired", message="port-forward requires SPDY/3.1 used by kubectl")
+                self._json_status(
+                    HTTPStatus.UPGRADE_REQUIRED,
+                    reason="UpgradeRequired",
+                    message="port-forward requires SPDY/3.1 used by kubectl",
+                )
             return
         # Port-forward
         m_pf = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/portforward$", path)
@@ -3424,14 +3845,22 @@ class ShimHandler(BaseHTTPRequestHandler):
                 except Exception:
                     target_ports = [8081]
             if not target_ports:
-                self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="ports query param required")
+                self._json_status(
+                    HTTPStatus.BAD_REQUEST,
+                    reason="BadRequest",
+                    message="ports query param required",
+                )
                 return
             if upgrade == "websocket":
                 self._handle_port_forward_ws(target_host, target_ports[0])
             elif upgrade.startswith("spdy"):
                 self._handle_port_forward_spdy(target_host, target_ports)
             else:
-                self._json_status(HTTPStatus.UPGRADE_REQUIRED, reason="UpgradeRequired", message="port-forward requires SPDY/3.1 used by kubectl")
+                self._json_status(
+                    HTTPStatus.UPGRADE_REQUIRED,
+                    reason="UpgradeRequired",
+                    message="port-forward requires SPDY/3.1 used by kubectl",
+                )
             return
         # Events (lightweight list/watch sourced from controller events, empty fallback)
         m_events = re.match(r"^/api/v1(?:/namespaces/([^/]+))?/events(?:/([^/]+))?$", path)
@@ -3446,13 +3875,20 @@ class ShimHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 try:
                     rv = int(time.time() * 1000)
-                    line = json.dumps(
-                        {
-                            "type": "BOOKMARK",
-                            "object": {"kind": "Event", "apiVersion": "v1", "metadata": {"resourceVersion": str(rv)}},
-                        },
-                        separators=(",", ":"),
-                    ).encode("utf-8") + b"\n"
+                    line = (
+                        json.dumps(
+                            {
+                                "type": "BOOKMARK",
+                                "object": {
+                                    "kind": "Event",
+                                    "apiVersion": "v1",
+                                    "metadata": {"resourceVersion": str(rv)},
+                                },
+                            },
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                        + b"\n"
+                    )
                     self.wfile.write(line)
                     self.wfile.flush()
                 except BrokenPipeError:
@@ -3481,7 +3917,14 @@ class ShimHandler(BaseHTTPRequestHandler):
             except Exception:
                 items = []
             rv = int(time.time() * 1000)
-            self._ok({"kind": "EventList", "apiVersion": "v1", "metadata": {"resourceVersion": str(rv)}, "items": items})
+            self._ok(
+                {
+                    "kind": "EventList",
+                    "apiVersion": "v1",
+                    "metadata": {"resourceVersion": str(rv)},
+                    "items": items,
+                }
+            )
             return
 
         # Nodes (projected from controller state)
@@ -3491,7 +3934,14 @@ class ShimHandler(BaseHTTPRequestHandler):
             items = []
             for idx, (rec, st) in enumerate(nodes, start=1):
                 items.append(_node_obj(rec, st, now_rv + idx))
-            self._ok({"kind": "NodeList", "apiVersion": "v1", "metadata": {"resourceVersion": str(now_rv)}, "items": items})
+            self._ok(
+                {
+                    "kind": "NodeList",
+                    "apiVersion": "v1",
+                    "metadata": {"resourceVersion": str(now_rv)},
+                    "items": items,
+                }
+            )
             return
         if path.startswith("/api/v1/nodes/"):
             node_name = path.split("/")[-1]
@@ -3509,7 +3959,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             if d_plural == "deployments":
                 if d_name is None:
                     label_sel, field_sel = _selector_values_from_query(q)
-                    if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
+                    if q.get("watch", ["0"])[0] in ("1", "true", "True"):
                         if not self._rbac_allows("watch", "deployments"):
                             self._deny(403)
                             return
@@ -3519,16 +3969,39 @@ class ShimHandler(BaseHTTPRequestHandler):
                         self.end_headers()
                         try:
                             start = time.time()
-                            timeout = int(q.get("timeoutSeconds", ["0"]) [0] or 0) or None
-                            heartbeat = int(q.get("heartbeatSeconds", ["0"]) [0] or 0) or None
-                            allow_bm = q.get("allowWatchBookmarks", ["0"]) [0] in ("1", "true", "True")
-                            for ev_type, obj in self.server.store.watch("apps", "v1", "deployments", d_ns, heartbeat_seconds=heartbeat, allow_bookmarks=allow_bm):  # type: ignore[attr-defined]
-                                if ev_type != "BOOKMARK" and not _matches_selectors(obj, label_sel, field_sel):
+                            timeout = int(q.get("timeoutSeconds", ["0"])[0] or 0) or None
+                            heartbeat = int(q.get("heartbeatSeconds", ["0"])[0] or 0) or None
+                            allow_bm = q.get("allowWatchBookmarks", ["0"])[0] in (
+                                "1",
+                                "true",
+                                "True",
+                            )
+                            for ev_type, obj in self.server.store.watch(
+                                "apps",
+                                "v1",
+                                "deployments",
+                                d_ns,
+                                heartbeat_seconds=heartbeat,
+                                allow_bookmarks=allow_bm,
+                            ):  # type: ignore[attr-defined]
+                                if ev_type != "BOOKMARK" and not _matches_selectors(
+                                    obj, label_sel, field_sel
+                                ):
                                     continue
-                                line = json.dumps({"type": ev_type, "object": _to_deployment(obj)}, separators=(",", ":")).encode("utf-8") + b"\n"
+                                line = (
+                                    json.dumps(
+                                        {"type": ev_type, "object": _to_deployment(obj)},
+                                        separators=(",", ":"),
+                                    ).encode("utf-8")
+                                    + b"\n"
+                                )
                                 self.wfile.write(line)
                                 self.wfile.flush()
-                                if timeout is not None and timeout > 0 and (time.time() - start) >= timeout:
+                                if (
+                                    timeout is not None
+                                    and timeout > 0
+                                    and (time.time() - start) >= timeout
+                                ):
                                     break
                         except BrokenPipeError:
                             pass
@@ -3548,7 +4021,14 @@ class ShimHandler(BaseHTTPRequestHandler):
                     )
                     items = _filter_k8s_items(items, label_sel, field_sel)
                     self._ok(
-                        _list_with_rv(items, _to_deployment, kind="Deployment", api_version="apps/v1", limit=limit if limit > 0 else None, continue_token=cont)
+                        _list_with_rv(
+                            items,
+                            _to_deployment,
+                            kind="Deployment",
+                            api_version="apps/v1",
+                            limit=limit if limit > 0 else None,
+                            continue_token=cont,
+                        )
                     )
                     return
                 else:
@@ -3578,13 +4058,20 @@ class ShimHandler(BaseHTTPRequestHandler):
                         self.end_headers()
                         try:
                             rv = int(time.time() * 1000)
-                            line = json.dumps(
-                                {
-                                    "type": "BOOKMARK",
-                                    "object": {"kind": "ReplicaSet", "apiVersion": "apps/v1", "metadata": {"resourceVersion": str(rv)}},
-                                },
-                                separators=(",", ":"),
-                            ).encode("utf-8") + b"\n"
+                            line = (
+                                json.dumps(
+                                    {
+                                        "type": "BOOKMARK",
+                                        "object": {
+                                            "kind": "ReplicaSet",
+                                            "apiVersion": "apps/v1",
+                                            "metadata": {"resourceVersion": str(rv)},
+                                        },
+                                    },
+                                    separators=(",", ":"),
+                                ).encode("utf-8")
+                                + b"\n"
+                            )
                             self.wfile.write(line)
                             self.wfile.flush()
                         except BrokenPipeError:
@@ -3600,7 +4087,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                     )
                     rs_items = [_replicaset_from_deployment(dep) for dep in deps]
                     rs_items = _filter_k8s_items(rs_items, label_sel, field_sel)
-                    self._ok(_list_with_rv(rs_items, _to_replicaset, kind="ReplicaSet", api_version="apps/v1"))
+                    self._ok(
+                        _list_with_rv(
+                            rs_items, _to_replicaset, kind="ReplicaSet", api_version="apps/v1"
+                        )
+                    )
                     return
                 if not self._rbac_allows("get", "replicasets"):
                     self._deny(403)
@@ -3624,7 +4115,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                         if not self._rbac_allows("watch", "statefulsets"):
                             self._deny(403)
                             return
-                        self._stream_watch("apps", "v1", "statefulsets", d_ns, q, transform=transform)
+                        self._stream_watch(
+                            "apps", "v1", "statefulsets", d_ns, q, transform=transform
+                        )
                         return
                     if not self._rbac_allows("list", "statefulsets"):
                         self._deny(403)
@@ -3639,7 +4132,16 @@ class ShimHandler(BaseHTTPRequestHandler):
                     except Exception:
                         limit = 0
                     cont = q.get("continue", [""])[0] or None
-                    self._ok(_list_with_rv(items, transform, kind="StatefulSet", api_version="apps/v1", limit=limit if limit > 0 else None, continue_token=cont))
+                    self._ok(
+                        _list_with_rv(
+                            items,
+                            transform,
+                            kind="StatefulSet",
+                            api_version="apps/v1",
+                            limit=limit if limit > 0 else None,
+                            continue_token=cont,
+                        )
+                    )
                     return
                 else:
                     if not self._rbac_allows("get", "statefulsets"):
@@ -3664,7 +4166,14 @@ class ShimHandler(BaseHTTPRequestHandler):
                         if not self._rbac_allows("watch", "daemonsets"):
                             self._deny(403)
                             return
-                        self._stream_watch("apps", "v1", "daemonsets", d_ns, q, transform=lambda o: _to_daemonset(o))
+                        self._stream_watch(
+                            "apps",
+                            "v1",
+                            "daemonsets",
+                            d_ns,
+                            q,
+                            transform=lambda o: _to_daemonset(o),
+                        )
                         return
                     if not self._rbac_allows("list", "daemonsets"):
                         self._deny(403)
@@ -3674,7 +4183,14 @@ class ShimHandler(BaseHTTPRequestHandler):
                         if d_ns is None
                         else self.server.store.list("apps", "v1", "daemonsets", d_ns)  # type: ignore[attr-defined]
                     )
-                    self._ok(_list_with_rv(items, lambda o: _to_daemonset(o), kind="DaemonSet", api_version="apps/v1"))
+                    self._ok(
+                        _list_with_rv(
+                            items,
+                            lambda o: _to_daemonset(o),
+                            kind="DaemonSet",
+                            api_version="apps/v1",
+                        )
+                    )
                     return
                 else:
                     if not self._rbac_allows("get", "daemonsets"):
@@ -3712,7 +4228,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             if n_plural == "ingresses":
                 if n_name is None:
                     label_sel, field_sel = _selector_values_from_query(q)
-                    if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
+                    if q.get("watch", ["0"])[0] in ("1", "true", "True"):
                         if not self._rbac_allows("watch", "ingresses"):
                             self._deny(403)
                             return
@@ -3722,16 +4238,44 @@ class ShimHandler(BaseHTTPRequestHandler):
                         self.end_headers()
                         try:
                             start = time.time()
-                            timeout = int(q.get("timeoutSeconds", ["0"]) [0] or 0) or None
-                            heartbeat = int(q.get("heartbeatSeconds", ["0"]) [0] or 0) or None
-                            allow_bm = q.get("allowWatchBookmarks", ["0"]) [0] in ("1", "true", "True")
-                            for ev_type, obj in self.server.store.watch("networking.k8s.io", "v1", "ingresses", n_ns, heartbeat_seconds=heartbeat, allow_bookmarks=allow_bm):  # type: ignore[attr-defined]
-                                if ev_type != "BOOKMARK" and not _matches_selectors(obj, label_sel, field_sel):
+                            timeout = int(q.get("timeoutSeconds", ["0"])[0] or 0) or None
+                            heartbeat = int(q.get("heartbeatSeconds", ["0"])[0] or 0) or None
+                            allow_bm = q.get("allowWatchBookmarks", ["0"])[0] in (
+                                "1",
+                                "true",
+                                "True",
+                            )
+                            for ev_type, obj in self.server.store.watch(
+                                "networking.k8s.io",
+                                "v1",
+                                "ingresses",
+                                n_ns,
+                                heartbeat_seconds=heartbeat,
+                                allow_bookmarks=allow_bm,
+                            ):  # type: ignore[attr-defined]
+                                if ev_type != "BOOKMARK" and not _matches_selectors(
+                                    obj, label_sel, field_sel
+                                ):
                                     continue
-                                line = json.dumps({"type": ev_type, "object": _to_ingress(obj, self.server.state, self.server.store)}, separators=(",", ":")).encode("utf-8") + b"\n"  # type: ignore[attr-defined]
+                                line = (
+                                    json.dumps(
+                                        {
+                                            "type": ev_type,
+                                            "object": _to_ingress(
+                                                obj, self.server.state, self.server.store
+                                            ),
+                                        },
+                                        separators=(",", ":"),
+                                    ).encode("utf-8")
+                                    + b"\n"
+                                )  # type: ignore[attr-defined]
                                 self.wfile.write(line)
                                 self.wfile.flush()
-                                if timeout is not None and timeout > 0 and (time.time() - start) >= timeout:
+                                if (
+                                    timeout is not None
+                                    and timeout > 0
+                                    and (time.time() - start) >= timeout
+                                ):
                                     break
                         except BrokenPipeError:
                             pass
@@ -3750,13 +4294,24 @@ class ShimHandler(BaseHTTPRequestHandler):
                     except Exception:
                         limit = 0
                     cont = q.get("continue", [""])[0] or None
-                    self._ok(_list_with_rv(items, lambda o: _to_ingress(o, self.server.state, self.server.store), kind="Ingress", api_version="networking.k8s.io/v1", limit=limit if limit > 0 else None, continue_token=cont))  # type: ignore[attr-defined]
+                    self._ok(
+                        _list_with_rv(
+                            items,
+                            lambda o: _to_ingress(o, self.server.state, self.server.store),
+                            kind="Ingress",
+                            api_version="networking.k8s.io/v1",
+                            limit=limit if limit > 0 else None,
+                            continue_token=cont,
+                        )
+                    )  # type: ignore[attr-defined]
                     return
                 else:
                     if not self._rbac_allows("get", "ingresses"):
                         self._deny(403)
                         return
-                    obj = self.server.store.get("networking.k8s.io", "v1", "ingresses", n_ns, n_name)  # type: ignore[attr-defined]
+                    obj = self.server.store.get(
+                        "networking.k8s.io", "v1", "ingresses", n_ns, n_name
+                    )  # type: ignore[attr-defined]
                     if not obj:
                         self._not_found()
                         return
@@ -3815,7 +4370,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                         if b_ns is None
                         else self.server.store.list("batch", "v1", "cronjobs", b_ns)  # type: ignore[attr-defined]
                     )
-                    self._ok(_list_with_rv(items, transform, kind="CronJob", api_version="batch/v1"))
+                    self._ok(
+                        _list_with_rv(items, transform, kind="CronJob", api_version="batch/v1")
+                    )
                     return
                 obj = self.server.store.get("batch", "v1", "cronjobs", b_ns, b_name)  # type: ignore[attr-defined]
                 if not obj:
@@ -3836,7 +4393,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             e_plural, e_ns, e_name = _gv_ns_name(path, "discovery.k8s.io", "v1", "endpointslices")
             if e_plural == "endpointslices":
                 if e_name is None:
-                    if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
+                    if q.get("watch", ["0"])[0] in ("1", "true", "True"):
                         if not self._rbac_allows("watch", "endpointslices"):
                             self._deny(403)
                             return
@@ -3848,10 +4405,14 @@ class ShimHandler(BaseHTTPRequestHandler):
                             else self.server.store.list("", "v1", "services", e_ns)  # type: ignore[attr-defined]
                         )
                         for svc in svcs:
-                            eps = _endpointslice_for_service(self.server.state, self.server.store, svc)  # type: ignore[attr-defined]
+                            eps = _endpointslice_for_service(
+                                self.server.state, self.server.store, svc
+                            )  # type: ignore[attr-defined]
                             if eps:
                                 items.append(eps)
-                        self._stream_fake_watch(items, kind="EndpointSlice", api_version="discovery.k8s.io/v1")
+                        self._stream_fake_watch(
+                            items, kind="EndpointSlice", api_version="discovery.k8s.io/v1"
+                        )
                         return
                     if not self._rbac_allows("list", "endpointslices"):
                         self._deny(403)
@@ -3866,7 +4427,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                         eps = _endpointslice_for_service(self.server.state, self.server.store, svc)  # type: ignore[attr-defined]
                         if eps:
                             items.append(eps)
-                    rv = max((int(i["metadata"].get("resourceVersion", "0")) for i in items), default=0)
+                    rv = max(
+                        (int(i["metadata"].get("resourceVersion", "0")) for i in items), default=0
+                    )
                     try:
                         limit = int(q.get("limit", ["0"])[0] or 0)
                     except Exception:
@@ -3885,7 +4448,14 @@ class ShimHandler(BaseHTTPRequestHandler):
                     meta = {"resourceVersion": str(rv)}
                     if cont_token:
                         meta["continue"] = cont_token
-                    self._ok({"kind": "EndpointSliceList", "apiVersion": "discovery.k8s.io/v1", "metadata": meta, "items": selected})
+                    self._ok(
+                        {
+                            "kind": "EndpointSliceList",
+                            "apiVersion": "discovery.k8s.io/v1",
+                            "metadata": meta,
+                            "items": selected,
+                        }
+                    )
                     return
                 if not self._rbac_allows("get", "endpointslices"):
                     self._deny(403)
@@ -3913,7 +4483,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             )
             if crd_plural == "customresourcedefinitions":
                 if crd_name is None:
-                    if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
+                    if q.get("watch", ["0"])[0] in ("1", "true", "True"):
                         self._stream_watch(
                             "apiextensions.k8s.io",
                             "v1",
@@ -3952,71 +4522,194 @@ class ShimHandler(BaseHTTPRequestHandler):
             r_plural, r_ns, r_name = _gv_ns_name(path, "rbac.authorization.k8s.io", "v1", "roles")
             if r_plural == "roles":
                 if r_name is None:
-                    if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
-                        self._stream_watch("rbac.authorization.k8s.io", "v1", "roles", r_ns, q, transform=_to_generic("rbac.authorization.k8s.io", "v1", "Role", "roles"))
+                    if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                        self._stream_watch(
+                            "rbac.authorization.k8s.io",
+                            "v1",
+                            "roles",
+                            r_ns,
+                            q,
+                            transform=_to_generic(
+                                "rbac.authorization.k8s.io", "v1", "Role", "roles"
+                            ),
+                        )
                         return
                     items = (
                         self.server.store.list_all("rbac.authorization.k8s.io", "v1", "roles")  # type: ignore[attr-defined]
                         if r_ns is None
-                        else self.server.store.list("rbac.authorization.k8s.io", "v1", "roles", r_ns)  # type: ignore[attr-defined]
+                        else self.server.store.list(
+                            "rbac.authorization.k8s.io", "v1", "roles", r_ns
+                        )  # type: ignore[attr-defined]
                     )
-                    self._ok({"kind": "RoleList", "apiVersion": "rbac.authorization.k8s.io/v1", "items": [_to_generic("rbac.authorization.k8s.io", "v1", "Role", "roles")(i) for i in items]})
+                    self._ok(
+                        {
+                            "kind": "RoleList",
+                            "apiVersion": "rbac.authorization.k8s.io/v1",
+                            "items": [
+                                _to_generic("rbac.authorization.k8s.io", "v1", "Role", "roles")(i)
+                                for i in items
+                            ],
+                        }
+                    )
                     return
-                obj = self.server.store.get("rbac.authorization.k8s.io", "v1", "roles", r_ns, r_name)  # type: ignore[attr-defined]
+                obj = self.server.store.get(
+                    "rbac.authorization.k8s.io", "v1", "roles", r_ns, r_name
+                )  # type: ignore[attr-defined]
                 if not obj:
                     self._not_found()
                     return
                 self._ok(_to_generic("rbac.authorization.k8s.io", "v1", "Role", "roles")(obj))
                 return
-            rb_plural, rb_ns, rb_name = _gv_ns_name(path, "rbac.authorization.k8s.io", "v1", "rolebindings")
+            rb_plural, rb_ns, rb_name = _gv_ns_name(
+                path, "rbac.authorization.k8s.io", "v1", "rolebindings"
+            )
             if rb_plural == "rolebindings":
                 if rb_name is None:
-                    if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
-                        self._stream_watch("rbac.authorization.k8s.io", "v1", "rolebindings", rb_ns, q, transform=_to_generic("rbac.authorization.k8s.io", "v1", "RoleBinding", "rolebindings"))
+                    if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                        self._stream_watch(
+                            "rbac.authorization.k8s.io",
+                            "v1",
+                            "rolebindings",
+                            rb_ns,
+                            q,
+                            transform=_to_generic(
+                                "rbac.authorization.k8s.io", "v1", "RoleBinding", "rolebindings"
+                            ),
+                        )
                         return
                     items = (
-                        self.server.store.list_all("rbac.authorization.k8s.io", "v1", "rolebindings")  # type: ignore[attr-defined]
+                        self.server.store.list_all(
+                            "rbac.authorization.k8s.io", "v1", "rolebindings"
+                        )  # type: ignore[attr-defined]
                         if rb_ns is None
-                        else self.server.store.list("rbac.authorization.k8s.io", "v1", "rolebindings", rb_ns)  # type: ignore[attr-defined]
+                        else self.server.store.list(
+                            "rbac.authorization.k8s.io", "v1", "rolebindings", rb_ns
+                        )  # type: ignore[attr-defined]
                     )
-                    self._ok({"kind": "RoleBindingList", "apiVersion": "rbac.authorization.k8s.io/v1", "items": [_to_generic("rbac.authorization.k8s.io", "v1", "RoleBinding", "rolebindings")(i) for i in items]})
+                    self._ok(
+                        {
+                            "kind": "RoleBindingList",
+                            "apiVersion": "rbac.authorization.k8s.io/v1",
+                            "items": [
+                                _to_generic(
+                                    "rbac.authorization.k8s.io", "v1", "RoleBinding", "rolebindings"
+                                )(i)
+                                for i in items
+                            ],
+                        }
+                    )
                     return
-                obj = self.server.store.get("rbac.authorization.k8s.io", "v1", "rolebindings", rb_ns, rb_name)  # type: ignore[attr-defined]
+                obj = self.server.store.get(
+                    "rbac.authorization.k8s.io", "v1", "rolebindings", rb_ns, rb_name
+                )  # type: ignore[attr-defined]
                 if not obj:
                     self._not_found()
                     return
-                self._ok(_to_generic("rbac.authorization.k8s.io", "v1", "RoleBinding", "rolebindings")(obj))
+                self._ok(
+                    _to_generic("rbac.authorization.k8s.io", "v1", "RoleBinding", "rolebindings")(
+                        obj
+                    )
+                )
                 return
             # cluster-scoped
-            cr_plural, cr_name = _gv_cluster_name(path, "rbac.authorization.k8s.io", "v1", "clusterroles")
+            cr_plural, cr_name = _gv_cluster_name(
+                path, "rbac.authorization.k8s.io", "v1", "clusterroles"
+            )
             if cr_plural == "clusterroles":
                 if cr_name is None:
-                    if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
-                        self._stream_watch("rbac.authorization.k8s.io", "v1", "clusterroles", None, q, transform=_to_generic("rbac.authorization.k8s.io", "v1", "ClusterRole", "clusterroles"))
+                    if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                        self._stream_watch(
+                            "rbac.authorization.k8s.io",
+                            "v1",
+                            "clusterroles",
+                            None,
+                            q,
+                            transform=_to_generic(
+                                "rbac.authorization.k8s.io", "v1", "ClusterRole", "clusterroles"
+                            ),
+                        )
                         return
-                    items = self.server.store.list_all("rbac.authorization.k8s.io", "v1", "clusterroles")  # type: ignore[attr-defined]
-                    self._ok({"kind": "ClusterRoleList", "apiVersion": "rbac.authorization.k8s.io/v1", "items": [_to_generic("rbac.authorization.k8s.io", "v1", "ClusterRole", "clusterroles")(i) for i in items]})
+                    items = self.server.store.list_all(
+                        "rbac.authorization.k8s.io", "v1", "clusterroles"
+                    )  # type: ignore[attr-defined]
+                    self._ok(
+                        {
+                            "kind": "ClusterRoleList",
+                            "apiVersion": "rbac.authorization.k8s.io/v1",
+                            "items": [
+                                _to_generic(
+                                    "rbac.authorization.k8s.io", "v1", "ClusterRole", "clusterroles"
+                                )(i)
+                                for i in items
+                            ],
+                        }
+                    )
                     return
-                obj = self.server.store.get("rbac.authorization.k8s.io", "v1", "clusterroles", None, cr_name)  # type: ignore[attr-defined]
+                obj = self.server.store.get(
+                    "rbac.authorization.k8s.io", "v1", "clusterroles", None, cr_name
+                )  # type: ignore[attr-defined]
                 if not obj:
                     self._not_found()
                     return
-                self._ok(_to_generic("rbac.authorization.k8s.io", "v1", "ClusterRole", "clusterroles")(obj))
+                self._ok(
+                    _to_generic("rbac.authorization.k8s.io", "v1", "ClusterRole", "clusterroles")(
+                        obj
+                    )
+                )
                 return
-            crb_plural, crb_name = _gv_cluster_name(path, "rbac.authorization.k8s.io", "v1", "clusterrolebindings")
+            crb_plural, crb_name = _gv_cluster_name(
+                path, "rbac.authorization.k8s.io", "v1", "clusterrolebindings"
+            )
             if crb_plural == "clusterrolebindings":
                 if crb_name is None:
-                    if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
-                        self._stream_watch("rbac.authorization.k8s.io", "v1", "clusterrolebindings", None, q, transform=_to_generic("rbac.authorization.k8s.io", "v1", "ClusterRoleBinding", "clusterrolebindings"))
+                    if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                        self._stream_watch(
+                            "rbac.authorization.k8s.io",
+                            "v1",
+                            "clusterrolebindings",
+                            None,
+                            q,
+                            transform=_to_generic(
+                                "rbac.authorization.k8s.io",
+                                "v1",
+                                "ClusterRoleBinding",
+                                "clusterrolebindings",
+                            ),
+                        )
                         return
-                    items = self.server.store.list_all("rbac.authorization.k8s.io", "v1", "clusterrolebindings")  # type: ignore[attr-defined]
-                    self._ok({"kind": "ClusterRoleBindingList", "apiVersion": "rbac.authorization.k8s.io/v1", "items": [_to_generic("rbac.authorization.k8s.io", "v1", "ClusterRoleBinding", "clusterrolebindings")(i) for i in items]})
+                    items = self.server.store.list_all(
+                        "rbac.authorization.k8s.io", "v1", "clusterrolebindings"
+                    )  # type: ignore[attr-defined]
+                    self._ok(
+                        {
+                            "kind": "ClusterRoleBindingList",
+                            "apiVersion": "rbac.authorization.k8s.io/v1",
+                            "items": [
+                                _to_generic(
+                                    "rbac.authorization.k8s.io",
+                                    "v1",
+                                    "ClusterRoleBinding",
+                                    "clusterrolebindings",
+                                )(i)
+                                for i in items
+                            ],
+                        }
+                    )
                     return
-                obj = self.server.store.get("rbac.authorization.k8s.io", "v1", "clusterrolebindings", None, crb_name)  # type: ignore[attr-defined]
+                obj = self.server.store.get(
+                    "rbac.authorization.k8s.io", "v1", "clusterrolebindings", None, crb_name
+                )  # type: ignore[attr-defined]
                 if not obj:
                     self._not_found()
                     return
-                self._ok(_to_generic("rbac.authorization.k8s.io", "v1", "ClusterRoleBinding", "clusterrolebindings")(obj))
+                self._ok(
+                    _to_generic(
+                        "rbac.authorization.k8s.io",
+                        "v1",
+                        "ClusterRoleBinding",
+                        "clusterrolebindings",
+                    )(obj)
+                )
                 return
 
         # policy/v1 PodDisruptionBudget
@@ -4024,39 +4717,80 @@ class ShimHandler(BaseHTTPRequestHandler):
             p_plural, p_ns, p_name = _gv_ns_name(path, "policy", "v1", "poddisruptionbudgets")
             if p_plural == "poddisruptionbudgets":
                 if p_name is None:
-                    if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
-                        self._stream_watch("policy", "v1", "poddisruptionbudgets", p_ns, q, transform=_to_generic("policy", "v1", "PodDisruptionBudget", "poddisruptionbudgets"))
+                    if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                        self._stream_watch(
+                            "policy",
+                            "v1",
+                            "poddisruptionbudgets",
+                            p_ns,
+                            q,
+                            transform=_to_generic(
+                                "policy", "v1", "PodDisruptionBudget", "poddisruptionbudgets"
+                            ),
+                        )
                         return
                     items = (
                         self.server.store.list_all("policy", "v1", "poddisruptionbudgets")  # type: ignore[attr-defined]
                         if p_ns is None
                         else self.server.store.list("policy", "v1", "poddisruptionbudgets", p_ns)  # type: ignore[attr-defined]
                     )
-                    self._ok({"kind": "PodDisruptionBudgetList", "apiVersion": "policy/v1", "items": [_to_generic("policy", "v1", "PodDisruptionBudget", "poddisruptionbudgets")(i) for i in items]})
+                    self._ok(
+                        {
+                            "kind": "PodDisruptionBudgetList",
+                            "apiVersion": "policy/v1",
+                            "items": [
+                                _to_generic(
+                                    "policy", "v1", "PodDisruptionBudget", "poddisruptionbudgets"
+                                )(i)
+                                for i in items
+                            ],
+                        }
+                    )
                     return
                 obj = self.server.store.get("policy", "v1", "poddisruptionbudgets", p_ns, p_name)  # type: ignore[attr-defined]
                 if not obj:
                     self._not_found()
                     return
-                self._ok(_to_generic("policy", "v1", "PodDisruptionBudget", "poddisruptionbudgets")(obj))
+                self._ok(
+                    _to_generic("policy", "v1", "PodDisruptionBudget", "poddisruptionbudgets")(obj)
+                )
                 return
 
         # autoscaling/v2 HPA
         if path.startswith("/apis/autoscaling/v2"):
-            h_plural, h_ns, h_name = _gv_ns_name(path, "autoscaling", "v2", "horizontalpodautoscalers")
+            h_plural, h_ns, h_name = _gv_ns_name(
+                path, "autoscaling", "v2", "horizontalpodautoscalers"
+            )
             if h_plural == "horizontalpodautoscalers":
                 if h_name is None:
-                    if q.get("watch", ["0"]) [0] in ("1", "true", "True"):
-                        self._stream_watch("autoscaling", "v2", "horizontalpodautoscalers", h_ns, q, transform=lambda o: _to_hpa(o, self.server.store))  # type: ignore[attr-defined]
+                    if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                        self._stream_watch(
+                            "autoscaling",
+                            "v2",
+                            "horizontalpodautoscalers",
+                            h_ns,
+                            q,
+                            transform=lambda o: _to_hpa(o, self.server.store),
+                        )  # type: ignore[attr-defined]
                         return
                     items = (
                         self.server.store.list_all("autoscaling", "v2", "horizontalpodautoscalers")  # type: ignore[attr-defined]
                         if h_ns is None
-                        else self.server.store.list("autoscaling", "v2", "horizontalpodautoscalers", h_ns)  # type: ignore[attr-defined]
+                        else self.server.store.list(
+                            "autoscaling", "v2", "horizontalpodautoscalers", h_ns
+                        )  # type: ignore[attr-defined]
                     )
-                    self._ok({"kind": "HorizontalPodAutoscalerList", "apiVersion": "autoscaling/v2", "items": [_to_hpa(i, self.server.store) for i in items]})  # type: ignore[attr-defined]
+                    self._ok(
+                        {
+                            "kind": "HorizontalPodAutoscalerList",
+                            "apiVersion": "autoscaling/v2",
+                            "items": [_to_hpa(i, self.server.store) for i in items],
+                        }
+                    )  # type: ignore[attr-defined]
                     return
-                obj = self.server.store.get("autoscaling", "v2", "horizontalpodautoscalers", h_ns, h_name)  # type: ignore[attr-defined]
+                obj = self.server.store.get(
+                    "autoscaling", "v2", "horizontalpodautoscalers", h_ns, h_name
+                )  # type: ignore[attr-defined]
                 if not obj:
                     self._not_found()
                     return
@@ -4099,17 +4833,33 @@ class ShimHandler(BaseHTTPRequestHandler):
             cmd = doc.get("command") or doc.get("cmd")
             timeout = doc.get("timeoutSeconds") or doc.get("timeout")
             if not isinstance(cmd, list) or not cmd:
-                self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="command must be a non-empty list")
+                self._json_status(
+                    HTTPStatus.BAD_REQUEST,
+                    reason="BadRequest",
+                    message="command must be a non-empty list",
+                )
                 return
             try:
                 rc = int(
                     self.server.runtime.exec(  # type: ignore[attr-defined]
-                        m_exec.group(2), [str(c) for c in cmd], timeout=int(timeout) if timeout else None
+                        m_exec.group(2),
+                        [str(c) for c in cmd],
+                        timeout=int(timeout) if timeout else None,
                     )
                 )
-                self._ok({"kind": "Status", "status": "Success", "code": 200, "metadata": {}, "details": {"exitCode": rc}})
+                self._ok(
+                    {
+                        "kind": "Status",
+                        "status": "Success",
+                        "code": 200,
+                        "metadata": {},
+                        "details": {"exitCode": rc},
+                    }
+                )
             except Exception as exc:
-                self._json_status(HTTPStatus.INTERNAL_SERVER_ERROR, reason="InternalError", message=str(exc))
+                self._json_status(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, reason="InternalError", message=str(exc)
+                )
             return
         # Pod port-forward (kubectl uses POST + SPDY upgrade)
         m_pf = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/portforward$", path)
@@ -4148,7 +4898,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                 except Exception:
                     target_ports = [8081]
             if not target_ports:
-                self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="ports query param required")
+                self._json_status(
+                    HTTPStatus.BAD_REQUEST,
+                    reason="BadRequest",
+                    message="ports query param required",
+                )
                 return
             target_host = "127.0.0.1"
             if container_info:
@@ -4166,7 +4920,11 @@ class ShimHandler(BaseHTTPRequestHandler):
             elif upgrade == "websocket":
                 self._handle_port_forward_ws(target_host, target_ports[0])
             else:
-                self._json_status(HTTPStatus.UPGRADE_REQUIRED, reason="UpgradeRequired", message="port-forward requires SPDY/3.1 used by kubectl")
+                self._json_status(
+                    HTTPStatus.UPGRADE_REQUIRED,
+                    reason="UpgradeRequired",
+                    message="port-forward requires SPDY/3.1 used by kubectl",
+                )
             return
         # Service port-forward POST
         m_pf_svc = re.match(r"^/api/v1/namespaces/([^/]+)/services/([^/]+)/portforward$", path)
@@ -4190,7 +4948,11 @@ class ShimHandler(BaseHTTPRequestHandler):
             if not target_ip and isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                 target_ip = os.getenv("AE_STUB_BACKEND_HOST", "127.0.0.1")
             if not target_ip:
-                self._json_status(HTTPStatus.SERVICE_UNAVAILABLE, reason="NoEndpoints", message="no ready endpoints for service")
+                self._json_status(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    reason="NoEndpoints",
+                    message="no ready endpoints for service",
+                )
                 return
             qs = parse_qs(parsed.query)
             ports_q = qs.get("ports") or []
@@ -4234,7 +4996,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                 except Exception:
                     target_ports = [8081]
             if not target_ports:
-                self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="ports query param required")
+                self._json_status(
+                    HTTPStatus.BAD_REQUEST,
+                    reason="BadRequest",
+                    message="ports query param required",
+                )
                 return
             upgrade = (self.headers.get("Upgrade") or "").lower()
             if upgrade.startswith("spdy"):
@@ -4242,7 +5008,11 @@ class ShimHandler(BaseHTTPRequestHandler):
             elif upgrade == "websocket":
                 self._handle_port_forward_ws(target_ip, target_ports[0])
             else:
-                self._json_status(HTTPStatus.UPGRADE_REQUIRED, reason="UpgradeRequired", message="port-forward requires SPDY/3.1 used by kubectl")
+                self._json_status(
+                    HTTPStatus.UPGRADE_REQUIRED,
+                    reason="UpgradeRequired",
+                    message="port-forward requires SPDY/3.1 used by kubectl",
+                )
             return
 
         plural, ns, name = _ns_name(path)
@@ -4250,7 +5020,11 @@ class ShimHandler(BaseHTTPRequestHandler):
             md = doc.get("metadata") or {}
             name_in = md.get("name") or name
             if not isinstance(name_in, str) or not name_in:
-                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="metadata.name required")
+                self._json_status(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    reason="Invalid",
+                    message="metadata.name required",
+                )
                 return
             ns_in = md.get("namespace") or ns
             if plural == "namespaces":
@@ -4258,26 +5032,42 @@ class ShimHandler(BaseHTTPRequestHandler):
             if plural == "secrets":
                 _set_secret_type(md, doc.get("type"))
             if not _valid_name(name_in):
-                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.name (DNS-1123 label)")
+                self._json_status(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    reason="Invalid",
+                    message="invalid metadata.name (DNS-1123 label)",
+                )
                 return
             if ns_in is not None and not _valid_name(ns_in):
-                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.namespace (DNS-1123 label)")
+                self._json_status(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    reason="Invalid",
+                    message="invalid metadata.namespace (DNS-1123 label)",
+                )
                 return
-            spec_in = doc.get("data") if plural in {"configmaps", "secrets"} else (doc.get("spec") or {})
+            spec_in = (
+                doc.get("data") if plural in {"configmaps", "secrets"} else (doc.get("spec") or {})
+            )
             status_in = doc.get("status") or {}
             # Service enrichments: allocate clusterIP/nodePort if missing and validate collisions
             if plural == "serviceaccounts":
                 annotations = md.setdefault("annotations", {})
                 token = self._issue_sa_token(ns_in or "default", name_in)
                 annotations.setdefault("ae.apishim/token", token)
-                annotations.setdefault("ae.apishim/token-exp", str(int(time.time() + self.sa_token_ttl)))
+                annotations.setdefault(
+                    "ae.apishim/token-exp", str(int(time.time() + self.sa_token_ttl))
+                )
             if plural == "services":
                 spec_in = dict(spec_in or {})
                 existing_svcs = self.server.store.list_all("", "v1", "services")  # type: ignore[attr-defined]
-                existing_cluster_ips = {s.spec.get("clusterIP") for s in existing_svcs if s.spec.get("clusterIP")}
+                existing_cluster_ips = {
+                    s.spec.get("clusterIP") for s in existing_svcs if s.spec.get("clusterIP")
+                }
                 # include provider allocations to avoid clashes across restart
                 try:
-                    existing_cluster_ips |= {s.cluster_ip for s in self.server.state.list_services()}  # type: ignore[attr-defined]
+                    existing_cluster_ips |= {
+                        s.cluster_ip for s in self.server.state.list_services()
+                    }  # type: ignore[attr-defined]
                 except Exception:
                     pass
                 existing_nodeports = set()
@@ -4306,11 +5096,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                 cluster_ip = spec_in.get("clusterIP")
                 if svc_type != "ExternalName" and cluster_ip != "None":
                     if not cluster_ip:
-                        spec_in["clusterIP"] = _alloc_cluster_ip(ns_in, name_in, existing_cluster_ips)
+                        spec_in["clusterIP"] = _alloc_cluster_ip(
+                            ns_in, name_in, existing_cluster_ips
+                        )
                     else:
                         cip = str(cluster_ip)
                         if cip in existing_cluster_ips:
-                            self._json_status(HTTPStatus.CONFLICT, reason="AlreadyExists", message=f"clusterIP {cip} already allocated")
+                            self._json_status(
+                                HTTPStatus.CONFLICT,
+                                reason="AlreadyExists",
+                                message=f"clusterIP {cip} already allocated",
+                            )
                             return
                 # nodePort allocation for NodePort/LoadBalancer
                 if svc_type in {"NodePort", "LoadBalancer"}:
@@ -4323,15 +5119,26 @@ class ShimHandler(BaseHTTPRequestHandler):
                             try:
                                 np_i = int(np)
                             except Exception:
-                                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="nodePort must be integer")
+                                self._json_status(
+                                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                                    reason="Invalid",
+                                    message="nodePort must be integer",
+                                )
                                 return
                             if np_i in existing_nodeports:
-                                self._json_status(HTTPStatus.CONFLICT, reason="AlreadyExists", message=f"nodePort {np_i} already allocated")
+                                self._json_status(
+                                    HTTPStatus.CONFLICT,
+                                    reason="AlreadyExists",
+                                    message=f"nodePort {np_i} already allocated",
+                                )
                                 return
                             existing_nodeports.add(np_i)
                             p["nodePort"] = np_i
                         else:
-                            np_alloc = _alloc_nodeport(existing_nodeports, f"{ns_in}/{name_in}/{p.get('name')}/{p.get('port')}")
+                            np_alloc = _alloc_nodeport(
+                                existing_nodeports,
+                                f"{ns_in}/{name_in}/{p.get('name')}/{p.get('port')}",
+                            )
                             p["nodePort"] = np_alloc
                             existing_nodeports.add(np_alloc)
                         new_ports.append(p)
@@ -4340,7 +5147,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if svc_type in {"LoadBalancer", "NodePort"}:
                     if "status" not in status_in or not status_in:
                         status_in = {"loadBalancer": {"ingress": []}}
-                status_in = _service_lb_status(spec_in, status_in, None)  # provider IP may not exist yet during create
+                status_in = _service_lb_status(
+                    spec_in, status_in, None
+                )  # provider IP may not exist yet during create
             created = self.server.store.upsert(  # type: ignore[attr-defined]
                 "",
                 "v1",
@@ -4367,10 +5176,18 @@ class ShimHandler(BaseHTTPRequestHandler):
                 name_in = md.get("name") or d_name
                 ns_in = md.get("namespace") or d_ns
                 if not name_in or not _valid_name(name_in):
-                    self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.name (DNS-1123 label)")
+                    self._json_status(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        reason="Invalid",
+                        message="invalid metadata.name (DNS-1123 label)",
+                    )
                     return
                 if not ns_in or not _valid_name(ns_in):
-                    self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.namespace (DNS-1123 label)")
+                    self._json_status(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        reason="Invalid",
+                        message="invalid metadata.namespace (DNS-1123 label)",
+                    )
                     return
                 spec_in = doc.get("spec") or {}
                 spec_in = _inject_sa_projection(spec_in)
@@ -4382,7 +5199,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     name_in,
                     metadata=_normalize_metadata(md, name_in, ns_in, "deployments"),
                     spec=spec_in,
-                    status=_synthesize_deploy_status(doc.get("spec") or {}, doc.get("status") or {}),
+                    status=_synthesize_deploy_status(
+                        doc.get("spec") or {}, doc.get("status") or {}
+                    ),
                 )
                 self.send_response(HTTPStatus.CREATED)
                 out = _json(_to_deployment(created))
@@ -4396,7 +5215,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                 name_in = md.get("name") or d_name
                 ns_in = md.get("namespace") or d_ns
                 if not name_in or not _valid_name(name_in) or not ns_in or not _valid_name(ns_in):
-                    self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata")
+                    self._json_status(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        reason="Invalid",
+                        message="invalid metadata",
+                    )
                     return
                 spec_in = _inject_sa_projection(doc.get("spec") or {})
                 created = self.server.store.upsert(  # type: ignore[attr-defined]
@@ -4407,7 +5230,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     name_in,
                     metadata=_normalize_metadata(md, name_in, ns_in, "statefulsets"),
                     spec=spec_in,
-                    status=_synthesize_deploy_status(doc.get("spec") or {}, doc.get("status") or {}),
+                    status=_synthesize_deploy_status(
+                        doc.get("spec") or {}, doc.get("status") or {}
+                    ),
                 )
                 self.send_response(HTTPStatus.CREATED)
                 out = _json(_to_statefulset(created))
@@ -4421,7 +5246,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                 name_in = md.get("name") or d_name
                 ns_in = md.get("namespace") or d_ns
                 if not name_in or not _valid_name(name_in) or not ns_in or not _valid_name(ns_in):
-                    self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata")
+                    self._json_status(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        reason="Invalid",
+                        message="invalid metadata",
+                    )
                     return
                 spec_in = _inject_sa_projection(doc.get("spec") or {})
                 created = self.server.store.upsert(  # type: ignore[attr-defined]
@@ -4449,10 +5278,18 @@ class ShimHandler(BaseHTTPRequestHandler):
                 name_in = md.get("name") or n_name
                 ns_in = md.get("namespace") or n_ns
                 if not name_in or not _valid_name(name_in):
-                    self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.name (DNS-1123 label)")
+                    self._json_status(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        reason="Invalid",
+                        message="invalid metadata.name (DNS-1123 label)",
+                    )
                     return
                 if not ns_in or not _valid_name(ns_in):
-                    self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.namespace (DNS-1123 label)")
+                    self._json_status(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        reason="Invalid",
+                        message="invalid metadata.namespace (DNS-1123 label)",
+                    )
                     return
                 created = self.server.store.upsert(  # type: ignore[attr-defined]
                     "networking.k8s.io",
@@ -4480,7 +5317,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                 name_in = md.get("name") or b_name
                 ns_in = md.get("namespace") or b_ns
                 if not name_in or not _valid_name(name_in) or not ns_in or not _valid_name(ns_in):
-                    self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata")
+                    self._json_status(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        reason="Invalid",
+                        message="invalid metadata",
+                    )
                     return
                 spec_in = _inject_sa_projection(doc.get("spec") or {})
                 created = self.server.store.upsert(  # type: ignore[attr-defined]
@@ -4542,16 +5383,26 @@ class ShimHandler(BaseHTTPRequestHandler):
         if self.path.startswith("/apis/rbac.authorization.k8s.io/v1"):
             # namespaced roles/rolebindings
             for plural, kind in (("roles", "Role"), ("rolebindings", "RoleBinding")):
-                r_plural, r_ns, r_name = _gv_ns_name(self.path, "rbac.authorization.k8s.io", "v1", plural)
+                r_plural, r_ns, r_name = _gv_ns_name(
+                    self.path, "rbac.authorization.k8s.io", "v1", plural
+                )
                 if r_plural == plural:
                     md = doc.get("metadata") or {}
                     name_in = md.get("name") or r_name
                     ns_in = md.get("namespace") or r_ns
                     if not name_in or not _valid_name(name_in):
-                        self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.name (DNS-1123 label)")
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.name (DNS-1123 label)",
+                        )
                         return
                     if not ns_in or not _valid_name(ns_in):
-                        self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.namespace (DNS-1123 label)")
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.namespace (DNS-1123 label)",
+                        )
                         return
                     created = self.server.store.upsert(  # type: ignore[attr-defined]
                         "rbac.authorization.k8s.io",
@@ -4564,20 +5415,31 @@ class ShimHandler(BaseHTTPRequestHandler):
                         status=doc.get("status") or {},
                     )
                     self.send_response(HTTPStatus.CREATED)
-                    out = _json(_to_generic("rbac.authorization.k8s.io", "v1", kind, plural)(created))
+                    out = _json(
+                        _to_generic("rbac.authorization.k8s.io", "v1", kind, plural)(created)
+                    )
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(out)))
                     self.end_headers()
                     self.wfile.write(out)
                     return
             # clusterroles/clusterrolebindings
-            for plural, kind in ("clusterroles", "ClusterRole"), ("clusterrolebindings", "ClusterRoleBinding"):
-                cr_plural, cr_name = _gv_cluster_name(self.path, "rbac.authorization.k8s.io", "v1", plural)
+            for plural, kind in (
+                ("clusterroles", "ClusterRole"),
+                ("clusterrolebindings", "ClusterRoleBinding"),
+            ):
+                cr_plural, cr_name = _gv_cluster_name(
+                    self.path, "rbac.authorization.k8s.io", "v1", plural
+                )
                 if cr_plural == plural:
                     md = doc.get("metadata") or {}
                     name_in = md.get("name") or cr_name
                     if not name_in or not _valid_name(name_in):
-                        self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.name (DNS-1123 label)")
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.name (DNS-1123 label)",
+                        )
                         return
                     created = self.server.store.upsert(  # type: ignore[attr-defined]
                         "rbac.authorization.k8s.io",
@@ -4590,7 +5452,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                         status=doc.get("status") or {},
                     )
                     self.send_response(HTTPStatus.CREATED)
-                    out = _json(_to_generic("rbac.authorization.k8s.io", "v1", kind, plural)(created))
+                    out = _json(
+                        _to_generic("rbac.authorization.k8s.io", "v1", kind, plural)(created)
+                    )
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(out)))
                     self.end_headers()
@@ -4605,7 +5469,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                 name_in = md.get("name") or p_name
                 ns_in = md.get("namespace") or p_ns
                 if not name_in or not _valid_name(name_in) or not ns_in or not _valid_name(ns_in):
-                    self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata")
+                    self._json_status(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        reason="Invalid",
+                        message="invalid metadata",
+                    )
                     return
                 created = self.server.store.upsert(  # type: ignore[attr-defined]
                     "policy",
@@ -4618,7 +5486,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                     status=doc.get("status") or {},
                 )
                 self.send_response(HTTPStatus.CREATED)
-                out = _json(_to_generic("policy", "v1", "PodDisruptionBudget", "poddisruptionbudgets")(created))
+                out = _json(
+                    _to_generic("policy", "v1", "PodDisruptionBudget", "poddisruptionbudgets")(
+                        created
+                    )
+                )
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(out)))
                 self.end_headers()
@@ -4627,13 +5499,19 @@ class ShimHandler(BaseHTTPRequestHandler):
 
         # autoscaling/v2 HPA
         if path.startswith("/apis/autoscaling/v2"):
-            h_plural, h_ns, h_name = _gv_ns_name(path, "autoscaling", "v2", "horizontalpodautoscalers")
+            h_plural, h_ns, h_name = _gv_ns_name(
+                path, "autoscaling", "v2", "horizontalpodautoscalers"
+            )
             if h_plural == "horizontalpodautoscalers":
                 md = doc.get("metadata") or {}
                 name_in = md.get("name") or h_name
                 ns_in = md.get("namespace") or h_ns
                 if not name_in or not _valid_name(name_in) or not ns_in or not _valid_name(ns_in):
-                    self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata")
+                    self._json_status(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        reason="Invalid",
+                        message="invalid metadata",
+                    )
                     return
                 created = self.server.store.upsert(  # type: ignore[attr-defined]
                     "autoscaling",
@@ -4646,7 +5524,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                     status=doc.get("status") or {},
                 )
                 self.send_response(HTTPStatus.CREATED)
-                out = _json(_to_generic("autoscaling", "v2", "HorizontalPodAutoscaler", "horizontalpodautoscalers")(created))
+                out = _json(
+                    _to_generic(
+                        "autoscaling", "v2", "HorizontalPodAutoscaler", "horizontalpodautoscalers"
+                    )(created)
+                )
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(out)))
                 self.end_headers()
@@ -4661,7 +5543,10 @@ class ShimHandler(BaseHTTPRequestHandler):
         body = self._read_body()
         doc = _read_json(body)
         plural, ns, name = _ns_name(self.path)
-        if plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"} and name:
+        if (
+            plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}
+            and name
+        ):
             md = doc.get("metadata") or {}
             name_in = md.get("name") or name
             ns_in = md.get("namespace") or ns
@@ -4670,10 +5555,18 @@ class ShimHandler(BaseHTTPRequestHandler):
             if plural == "secrets":
                 _set_secret_type(md, doc.get("type"))
             if not _valid_name(name_in):
-                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.name (DNS-1123 label)")
+                self._json_status(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    reason="Invalid",
+                    message="invalid metadata.name (DNS-1123 label)",
+                )
                 return
             if ns_in is not None and not _valid_name(ns_in):
-                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.namespace (DNS-1123 label)")
+                self._json_status(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    reason="Invalid",
+                    message="invalid metadata.namespace (DNS-1123 label)",
+                )
                 return
             updated = self.server.store.upsert(  # type: ignore[attr-defined]
                 "",
@@ -4682,7 +5575,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                 ns_in,
                 name_in,
                 metadata=_normalize_metadata(md, name_in, ns_in, plural),
-                spec=doc.get("data") if plural in {"configmaps", "secrets"} else (doc.get("spec") or {}),
+                spec=doc.get("data")
+                if plural in {"configmaps", "secrets"}
+                else (doc.get("spec") or {}),
                 status=doc.get("status") or {},
             )
             self._ok(_to_obj(updated))
@@ -4695,10 +5590,18 @@ class ShimHandler(BaseHTTPRequestHandler):
                 name_in = md.get("name") or d_name
                 ns_in = md.get("namespace") or d_ns
                 if not name_in or not _valid_name(name_in):
-                    self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.name (DNS-1123 label)")
+                    self._json_status(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        reason="Invalid",
+                        message="invalid metadata.name (DNS-1123 label)",
+                    )
                     return
                 if ns_in is not None and not _valid_name(ns_in):
-                    self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.namespace (DNS-1123 label)")
+                    self._json_status(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        reason="Invalid",
+                        message="invalid metadata.namespace (DNS-1123 label)",
+                    )
                     return
                 updated = self.server.store.upsert(  # type: ignore[attr-defined]
                     "apps",
@@ -4708,7 +5611,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     name_in,
                     metadata=_normalize_metadata(md, name_in, ns_in, "deployments"),
                     spec=doc.get("spec") or {},
-                    status=_synthesize_deploy_status(doc.get("spec") or {}, doc.get("status") or {}),
+                    status=_synthesize_deploy_status(
+                        doc.get("spec") or {}, doc.get("status") or {}
+                    ),
                 )
                 self._ok(_to_deployment(updated))
                 return
@@ -4733,7 +5638,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                     )
                     self._ok(_to_scale(updated))
                     return
-                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="spec.replicas must be >= 0")
+                self._json_status(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    reason="Invalid",
+                    message="spec.replicas must be >= 0",
+                )
                 return
             if d_plural == "statefulsets" and d_name:
                 md = doc.get("metadata") or {}
@@ -4747,7 +5656,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     name_in,
                     metadata=_normalize_metadata(md, name_in, ns_in, "statefulsets"),
                     spec=doc.get("spec") or {},
-                    status=_synthesize_deploy_status(doc.get("spec") or {}, doc.get("status") or {}),
+                    status=_synthesize_deploy_status(
+                        doc.get("spec") or {}, doc.get("status") or {}
+                    ),
                 )
                 self._ok(_to_statefulset(updated))
                 return
@@ -4827,7 +5738,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return
         if self.path.startswith("/apis/rbac.authorization.k8s.io/v1"):
             for plural, kind in (("roles", "Role"), ("rolebindings", "RoleBinding")):
-                r_plural, r_ns, r_name = _gv_ns_name(self.path, "rbac.authorization.k8s.io", "v1", plural)
+                r_plural, r_ns, r_name = _gv_ns_name(
+                    self.path, "rbac.authorization.k8s.io", "v1", plural
+                )
                 if r_plural == plural and r_name:
                     md = doc.get("metadata") or {}
                     name_in = md.get("name") or r_name
@@ -4844,8 +5757,13 @@ class ShimHandler(BaseHTTPRequestHandler):
                     )
                     self._ok(_to_generic("rbac.authorization.k8s.io", "v1", kind, plural)(updated))
                     return
-            for plural, kind in (("clusterroles", "ClusterRole"), ("clusterrolebindings", "ClusterRoleBinding")):
-                cr_plural, cr_name = _gv_cluster_name(self.path, "rbac.authorization.k8s.io", "v1", plural)
+            for plural, kind in (
+                ("clusterroles", "ClusterRole"),
+                ("clusterrolebindings", "ClusterRoleBinding"),
+            ):
+                cr_plural, cr_name = _gv_cluster_name(
+                    self.path, "rbac.authorization.k8s.io", "v1", plural
+                )
                 if cr_plural == plural and cr_name:
                     md = doc.get("metadata") or {}
                     name_in = md.get("name") or cr_name
@@ -4878,11 +5796,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                     spec=_spec_payload("poddisruptionbudgets", doc),
                     status=doc.get("status") or {},
                 )
-                self._ok(_to_generic("policy", "v1", "PodDisruptionBudget", "poddisruptionbudgets")(updated))
+                self._ok(
+                    _to_generic("policy", "v1", "PodDisruptionBudget", "poddisruptionbudgets")(
+                        updated
+                    )
+                )
                 return
         # autoscaling/v2 HPA
         if self.path.startswith("/apis/autoscaling/v2"):
-            h_plural, h_ns, h_name = _gv_ns_name(self.path, "autoscaling", "v2", "horizontalpodautoscalers")
+            h_plural, h_ns, h_name = _gv_ns_name(
+                self.path, "autoscaling", "v2", "horizontalpodautoscalers"
+            )
             if h_plural == "horizontalpodautoscalers" and h_name:
                 md = doc.get("metadata") or {}
                 name_in = md.get("name") or h_name
@@ -4913,8 +5837,13 @@ class ShimHandler(BaseHTTPRequestHandler):
         body = self._read_body()
         patch = _read_json(body)
         plural, ns, name = _ns_name(path)
-        if plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"} and name:
-            obj = self.server.store.get("", "v1", plural, None if plural == "namespaces" else ns, name)  # type: ignore[attr-defined]
+        if (
+            plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}
+            and name
+        ):
+            obj = self.server.store.get(
+                "", "v1", plural, None if plural == "namespaces" else ns, name
+            )  # type: ignore[attr-defined]
             if not obj:
                 self._not_found()
                 return
@@ -4926,7 +5855,9 @@ class ShimHandler(BaseHTTPRequestHandler):
             if plural == "secrets":
                 _set_secret_type(md, merged.get("type"))
             patch_paths = _extract_field_paths(patch) if isinstance(patch, dict) else set()
-            if ctype.startswith("application/apply-patch") and _managed_conflict(obj.metadata, field_manager, patch_paths, force_flag):
+            if ctype.startswith("application/apply-patch") and _managed_conflict(
+                obj.metadata, field_manager, patch_paths, force_flag
+            ):
                 self._json_status(
                     HTTPStatus.CONFLICT,
                     reason="Conflict",
@@ -4934,17 +5865,32 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )
                 return
             if ctype.startswith("application/apply-patch"):
-                md = _update_managed_fields(md, "v1", field_manager, "Apply", fields=patch_paths, force=force_flag)
-            elif ctype in ("application/merge-patch+json", "application/strategic-merge-patch+json"):
+                md = _update_managed_fields(
+                    md, "v1", field_manager, "Apply", fields=patch_paths, force=force_flag
+                )
+            elif ctype in (
+                "application/merge-patch+json",
+                "application/strategic-merge-patch+json",
+            ):
                 md = _update_managed_fields(md, "v1", field_manager, "Update", fields=patch_paths)
-            spec_or_data = merged.get("data") if plural in {"configmaps", "secrets"} else merged.get("spec")
+            spec_or_data = (
+                merged.get("data") if plural in {"configmaps", "secrets"} else merged.get("spec")
+            )
             name_eff = md.get("name") or name
             ns_eff = None if plural == "namespaces" else (md.get("namespace") or ns)
             if not _valid_name(name_eff):
-                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.name (DNS-1123 label)")
+                self._json_status(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    reason="Invalid",
+                    message="invalid metadata.name (DNS-1123 label)",
+                )
                 return
             if ns_eff is not None and not _valid_name(ns_eff):
-                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.namespace (DNS-1123 label)")
+                self._json_status(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    reason="Invalid",
+                    message="invalid metadata.namespace (DNS-1123 label)",
+                )
                 return
             updated = self.server.store.upsert(  # type: ignore[attr-defined]
                 "",
@@ -4989,7 +5935,9 @@ class ShimHandler(BaseHTTPRequestHandler):
             ("apps", "v1", "daemonsets"): _to_daemonset,
             ("batch", "v1", "jobs"): _to_job,
             ("batch", "v1", "cronjobs"): _to_cronjob,
-            ("autoscaling", "v2", "horizontalpodautoscalers"): lambda o: _to_hpa(o, self.server.store),  # type: ignore[attr-defined]
+            ("autoscaling", "v2", "horizontalpodautoscalers"): lambda o: _to_hpa(
+                o, self.server.store
+            ),  # type: ignore[attr-defined]
         }
         for group, version, res, kind in specs:
             if not self.path.startswith(f"/apis/{group}/{version}"):
@@ -5002,13 +5950,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if not obj:
                     self._not_found()
                     return True
-                base = transform_map.get((group, version, res), _to_generic(group, version, kind, res))(obj)  # type: ignore[arg-type]
+                base = transform_map.get(
+                    (group, version, res), _to_generic(group, version, kind, res)
+                )(obj)  # type: ignore[arg-type]
                 merged = self._apply_patch_merge(base, patch, ctype)
                 if merged is None:
                     return True
                 md = merged.get("metadata") or {}
                 patch_paths = _extract_field_paths(patch) if isinstance(patch, dict) else set()
-                force_flag = (parse_qs(urlparse(self.path).query).get("force", ["false"])[0] or "").lower() in {"1", "true", "yes"}
+                force_flag = (
+                    parse_qs(urlparse(self.path).query).get("force", ["false"])[0] or ""
+                ).lower() in {"1", "true", "yes"}
                 if ctype.startswith("application/apply-patch"):
                     if _managed_conflict(obj.metadata, field_manager, patch_paths, force_flag):
                         self._json_status(
@@ -5017,9 +5969,21 @@ class ShimHandler(BaseHTTPRequestHandler):
                             message="managedFields conflict on apply",
                         )
                         return True
-                    md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Apply", fields=patch_paths, force=force_flag)
-                elif ctype in ("application/merge-patch+json", "application/strategic-merge-patch+json"):
-                    md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Update", fields=patch_paths)
+                    md = _update_managed_fields(
+                        md,
+                        f"{group}/{version}",
+                        field_manager,
+                        "Apply",
+                        fields=patch_paths,
+                        force=force_flag,
+                    )
+                elif ctype in (
+                    "application/merge-patch+json",
+                    "application/strategic-merge-patch+json",
+                ):
+                    md = _update_managed_fields(
+                        md, f"{group}/{version}", field_manager, "Update", fields=patch_paths
+                    )
                 # inject projections for workloads on any write
                 if res in {"deployments", "statefulsets", "daemonsets", "jobs"}:
                     spec_body = merged.get("spec") or {}
@@ -5042,7 +6006,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                     spec=_spec_payload(res, merged),
                     status=merged.get("status") or {},
                 )  # type: ignore[attr-defined]
-                self._ok(transform_map.get((group, version, res), _to_generic(group, version, kind, res))(updated))  # type: ignore[arg-type]
+                self._ok(
+                    transform_map.get(
+                        (group, version, res), _to_generic(group, version, kind, res)
+                    )(updated)
+                )  # type: ignore[arg-type]
                 return True
             plural, ns, name = _gv_ns_name(self.path, group, version, res)
             if plural != res or not name:
@@ -5051,14 +6019,18 @@ class ShimHandler(BaseHTTPRequestHandler):
             if not obj:
                 self._not_found()
                 return True
-            base = transform_map.get((group, version, res), _to_generic(group, version, kind, res))(obj)  # type: ignore[arg-type]
+            base = transform_map.get((group, version, res), _to_generic(group, version, kind, res))(
+                obj
+            )  # type: ignore[arg-type]
             merged = self._apply_patch_merge(base, patch, ctype)
             if merged is None:
                 return True
             md = merged.get("metadata") or {}
             patch_paths = _extract_field_paths(patch) if isinstance(patch, dict) else set()
             if ctype.startswith("application/apply-patch"):
-                force_flag = (parse_qs(urlparse(self.path).query).get("force", ["false"])[0] or "").lower() in {"1", "true", "yes"}
+                force_flag = (
+                    parse_qs(urlparse(self.path).query).get("force", ["false"])[0] or ""
+                ).lower() in {"1", "true", "yes"}
                 if _managed_conflict(obj.metadata, field_manager, patch_paths, force_flag):
                     self._json_status(
                         HTTPStatus.CONFLICT,
@@ -5066,9 +6038,21 @@ class ShimHandler(BaseHTTPRequestHandler):
                         message="managedFields conflict on apply",
                     )
                     return True
-                md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Apply", fields=patch_paths, force=force_flag)
-            elif ctype in ("application/merge-patch+json", "application/strategic-merge-patch+json"):
-                md = _update_managed_fields(md, f"{group}/{version}", field_manager, "Update", fields=patch_paths)
+                md = _update_managed_fields(
+                    md,
+                    f"{group}/{version}",
+                    field_manager,
+                    "Apply",
+                    fields=patch_paths,
+                    force=force_flag,
+                )
+            elif ctype in (
+                "application/merge-patch+json",
+                "application/strategic-merge-patch+json",
+            ):
+                md = _update_managed_fields(
+                    md, f"{group}/{version}", field_manager, "Update", fields=patch_paths
+                )
             if res in {"deployments", "statefulsets", "daemonsets", "jobs"}:
                 spec_body = merged.get("spec") or {}
                 merged["spec"] = _inject_sa_projection(spec_body)
@@ -5091,7 +6075,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                 spec=_spec_payload(res, merged),
                 status=merged.get("status") or {},
             )  # type: ignore[attr-defined]
-            self._ok(transform_map.get((group, version, res), _to_generic(group, version, kind, res))(updated))  # type: ignore[arg-type]
+            self._ok(
+                transform_map.get((group, version, res), _to_generic(group, version, kind, res))(
+                    updated
+                )
+            )  # type: ignore[arg-type]
             return True
         return False
 
@@ -5101,9 +6089,16 @@ class ShimHandler(BaseHTTPRequestHandler):
         if ctype == "application/json-patch+json":
             merged = _apply_json_patch(base, patch if isinstance(patch, list) else [])
             if merged is None:
-                self._json_status(HTTPStatus.BAD_REQUEST, reason="Invalid", message="invalid json patch")
+                self._json_status(
+                    HTTPStatus.BAD_REQUEST, reason="Invalid", message="invalid json patch"
+                )
             return merged
-        if ctype in ("application/merge-patch+json", "application/strategic-merge-patch+json", "application/apply-patch+yaml", "application/apply-patch+json"):
+        if ctype in (
+            "application/merge-patch+json",
+            "application/strategic-merge-patch+json",
+            "application/apply-patch+yaml",
+            "application/apply-patch+json",
+        ):
             return _merge_dict(base, patch)
         if ctype in ("application/json", ""):
             return patch if isinstance(patch, dict) else None
@@ -5128,12 +6123,18 @@ class ShimHandler(BaseHTTPRequestHandler):
         else:
             store_ns = None
             if namespace is not None:
-                self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="resource is cluster-scoped; omit namespace")
+                self._json_status(
+                    HTTPStatus.BAD_REQUEST,
+                    reason="BadRequest",
+                    message="resource is cluster-scoped; omit namespace",
+                )
                 return True
+
         def transform(obj: dict[str, Any]) -> dict[str, Any]:
             return _render_custom_resource(obj, group, version, meta.get("kind", plural))
+
         if name is None:
-            if query.get("watch", ["0"]) [0] in ("1", "true", "True"):
+            if query.get("watch", ["0"])[0] in ("1", "true", "True"):
                 self._stream_watch(group, version, plural, store_ns, query, transform)
                 return True
             if namespaced and namespace is None:
@@ -5191,11 +6192,19 @@ class ShimHandler(BaseHTTPRequestHandler):
         name_in = md.get("name") or path_name
         ns_in = md.get("namespace") or namespace
         if not name_in or not _valid_name(name_in):
-            self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.name (DNS-1123 label)")
+            self._json_status(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                reason="Invalid",
+                message="invalid metadata.name (DNS-1123 label)",
+            )
             return True
         if namespaced:
             if not ns_in or not _valid_name(ns_in):
-                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid or missing namespace")
+                self._json_status(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    reason="Invalid",
+                    message="invalid or missing namespace",
+                )
                 return True
         else:
             ns_in = None
@@ -5235,11 +6244,19 @@ class ShimHandler(BaseHTTPRequestHandler):
         name_in = md.get("name") or path_name
         ns_in = md.get("namespace") or namespace
         if not name_in or not _valid_name(name_in):
-            self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid metadata.name (DNS-1123 label)")
+            self._json_status(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                reason="Invalid",
+                message="invalid metadata.name (DNS-1123 label)",
+            )
             return True
         if namespaced:
             if not ns_in or not _valid_name(ns_in):
-                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="invalid or missing namespace")
+                self._json_status(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    reason="Invalid",
+                    message="invalid or missing namespace",
+                )
                 return True
         else:
             ns_in = None
@@ -5283,7 +6300,9 @@ class ShimHandler(BaseHTTPRequestHandler):
         name_eff = md.get("name") or name
         ns_eff = md.get("namespace") or namespace
         if namespaced and not ns_eff:
-            self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="missing namespace")
+            self._json_status(
+                HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message="missing namespace"
+            )
             return True
         if not namespaced:
             ns_eff = None
@@ -5315,7 +6334,11 @@ class ShimHandler(BaseHTTPRequestHandler):
             return False
         namespaced = meta.get("namespaced", True)
         if namespaced and namespace is None:
-            self._json_status(HTTPStatus.BAD_REQUEST, reason="BadRequest", message="namespaced resource delete requires namespace")
+            self._json_status(
+                HTTPStatus.BAD_REQUEST,
+                reason="BadRequest",
+                message="namespaced resource delete requires namespace",
+            )
             return True
         store_ns = namespace if namespaced else None
         ok = self.server.store.delete(group, version, plural, store_ns, name)  # type: ignore[attr-defined]
@@ -5330,8 +6353,13 @@ class ShimHandler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         plural, ns, name = _ns_name(path)
-        if plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"} and name:
-            ok = self.server.store.delete("", "v1", plural, None if plural == "namespaces" else ns, name)  # type: ignore[attr-defined]
+        if (
+            plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}
+            and name
+        ):
+            ok = self.server.store.delete(
+                "", "v1", plural, None if plural == "namespaces" else ns, name
+            )  # type: ignore[attr-defined]
             if not ok:
                 self._not_found()
                 return
@@ -5352,7 +6380,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                         else self.server.store.list("batch", "v1", b_plural, b_ns)  # type: ignore[attr-defined]
                     )
                     for obj in items:
-                        self.server.store.delete("batch", "v1", b_plural, obj.namespace or None, obj.name)  # type: ignore[attr-defined]
+                        self.server.store.delete(
+                            "batch", "v1", b_plural, obj.namespace or None, obj.name
+                        )  # type: ignore[attr-defined]
                 self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
                 return
         if path.startswith("/apis/apps/v1"):
@@ -5370,7 +6400,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                         else self.server.store.list("apps", "v1", d_plural, d_ns)  # type: ignore[attr-defined]
                     )
                     for obj in items:
-                        self.server.store.delete("apps", "v1", d_plural, obj.namespace or None, obj.name)  # type: ignore[attr-defined]
+                        self.server.store.delete(
+                            "apps", "v1", d_plural, obj.namespace or None, obj.name
+                        )  # type: ignore[attr-defined]
                 self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
                 return
         if path.startswith("/apis/networking.k8s.io/v1"):
@@ -5388,11 +6420,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                         else self.server.store.list("networking.k8s.io", "v1", n_plural, n_ns)  # type: ignore[attr-defined]
                     )
                     for obj in items:
-                        self.server.store.delete("networking.k8s.io", "v1", n_plural, obj.namespace or None, obj.name)  # type: ignore[attr-defined]
+                        self.server.store.delete(
+                            "networking.k8s.io", "v1", n_plural, obj.namespace or None, obj.name
+                        )  # type: ignore[attr-defined]
                 self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
                 return
         if path.startswith("/apis/autoscaling/v2"):
-            a_plural, a_ns, a_name = _gv_ns_name(path, "autoscaling", "v2", "horizontalpodautoscalers")
+            a_plural, a_ns, a_name = _gv_ns_name(
+                path, "autoscaling", "v2", "horizontalpodautoscalers"
+            )
             if a_plural == "horizontalpodautoscalers":
                 if a_name:
                     ok = self.server.store.delete("autoscaling", "v2", a_plural, a_ns, a_name)  # type: ignore[attr-defined]
@@ -5406,7 +6442,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                         else self.server.store.list("autoscaling", "v2", a_plural, a_ns)  # type: ignore[attr-defined]
                     )
                     for obj in items:
-                        self.server.store.delete("autoscaling", "v2", a_plural, obj.namespace or None, obj.name)  # type: ignore[attr-defined]
+                        self.server.store.delete(
+                            "autoscaling", "v2", a_plural, obj.namespace or None, obj.name
+                        )  # type: ignore[attr-defined]
                 self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
                 return
         if path.startswith("/apis/apiextensions.k8s.io/v1"):
@@ -5414,7 +6452,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                 path, "apiextensions.k8s.io", "v1", "customresourcedefinitions"
             )
             if crd_plural == "customresourcedefinitions" and crd_name:
-                ok = self.server.store.delete("apiextensions.k8s.io", "v1", "customresourcedefinitions", None, crd_name)  # type: ignore[attr-defined]
+                ok = self.server.store.delete(
+                    "apiextensions.k8s.io", "v1", "customresourcedefinitions", None, crd_name
+                )  # type: ignore[attr-defined]
                 if not ok:
                     self._not_found()
                     return
@@ -5661,7 +6701,17 @@ def _replicaset_from_deployment(dep: K8sObject) -> K8sObject:
         "availableReplicas": rs_spec["replicas"],
         "observedGeneration": gen,
     }
-    return K8sObject("apps", "v1", "replicasets", dep.namespace, name, meta, rs_spec, rs_status, dep.resource_version)
+    return K8sObject(
+        "apps",
+        "v1",
+        "replicasets",
+        dep.namespace,
+        name,
+        meta,
+        rs_spec,
+        rs_status,
+        dep.resource_version,
+    )
 
 
 def _to_replicaset(o: K8sObject) -> dict[str, Any]:
@@ -5966,12 +7016,16 @@ def _net_ns_name(path: str) -> tuple[str, str | None, str | None]:
     return ("", None, None)
 
 
-def _gv_ns_name(path: str, group: str, version: str, plural: str) -> tuple[str, str | None, str | None]:
+def _gv_ns_name(
+    path: str, group: str, version: str, plural: str
+) -> tuple[str, str | None, str | None]:
     pattern = rf"^/apis/{re.escape(group)}/{re.escape(version)}/namespaces/([^/]+)/{re.escape(plural)}(?:/([^/]+))?$"
     m = re.match(pattern, path)
     if m:
         return (plural, m.group(1), m.group(2))
-    pattern_all = rf"^/apis/{re.escape(group)}/{re.escape(version)}/{re.escape(plural)}(?:/([^/]+))?$"
+    pattern_all = (
+        rf"^/apis/{re.escape(group)}/{re.escape(version)}/{re.escape(plural)}(?:/([^/]+))?$"
+    )
     m = re.match(pattern_all, path)
     if m:
         return (plural, None, m.group(1))
@@ -6099,10 +7153,12 @@ def _parse_custom_resource_path(path: str) -> tuple[str, str, str | None, str, s
 
 def _stable_uid(ns: str | None, name: str, plural: str) -> str:
     seed = f"{plural}:{ns or ''}:{name}"
-    return hashlib.sha1(seed.encode("utf-8")).hexdigest()
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()  # noqa: S324
 
 
-def _normalize_metadata(md: dict[str, Any], name: str, ns: str | None, plural: str) -> dict[str, Any]:
+def _normalize_metadata(
+    md: dict[str, Any], name: str, ns: str | None, plural: str
+) -> dict[str, Any]:
     out = dict(md)
     out["name"] = name
     if ns and plural != "namespaces":
@@ -6172,10 +7228,18 @@ def _valid_name(name: str) -> bool:
 def _service_selector(spec: dict[str, Any]) -> dict[str, str]:
     raw = spec.get("selector") or {}
     selector: dict[str, Any] = raw if isinstance(raw, dict) else {}
-    if "matchLabels" in selector and isinstance(selector.get("matchLabels"), dict) and len(selector) == 1:
+    if (
+        "matchLabels" in selector
+        and isinstance(selector.get("matchLabels"), dict)
+        and len(selector) == 1
+    ):
         selector = selector.get("matchLabels") or {}
     if not selector:
-        maybe = (spec.get("selector") or {}).get("matchLabels") if isinstance(spec.get("selector"), dict) else None
+        maybe = (
+            (spec.get("selector") or {}).get("matchLabels")
+            if isinstance(spec.get("selector"), dict)
+            else None
+        )
         if isinstance(maybe, dict):
             selector = maybe
     if not isinstance(selector, dict):
@@ -6196,13 +7260,12 @@ def _pod_template_labels(obj: K8sObject) -> dict[str, str]:
 def _selector_matches(selector: dict[str, str], labels: dict[str, str]) -> bool:
     if not selector:
         return False
-    for key, val in selector.items():
-        if labels.get(key) != val:
-            return False
-    return True
+    return all(labels.get(key) == val for key, val in selector.items())
 
 
-def _resolve_service_target(store: ObjectStore, svc: K8sObject, selector: dict[str, str]) -> str | None:
+def _resolve_service_target(
+    store: ObjectStore, svc: K8sObject, selector: dict[str, str]
+) -> str | None:
     if not selector:
         return None
     ns = svc.namespace
@@ -6214,7 +7277,11 @@ def _resolve_service_target(store: ObjectStore, svc: K8sObject, selector: dict[s
     ]
     for order, (group, version, resource) in enumerate(workloads):
         try:
-            items = store.list(group, version, resource, ns) if ns is not None else store.list_all(group, version, resource)
+            items = (
+                store.list(group, version, resource, ns)
+                if ns is not None
+                else store.list_all(group, version, resource)
+            )
         except Exception:
             items = []
         for obj in items:
@@ -6255,7 +7322,9 @@ def _service_app_name(svc: K8sObject, store: ObjectStore | None = None) -> str |
     return f"{svc.namespace}--{tgt}" if svc.namespace else tgt
 
 
-def _provider_cluster_ip(state: SQLiteStateStore, svc: K8sObject, store: ObjectStore | None = None) -> str | None:
+def _provider_cluster_ip(
+    state: SQLiteStateStore, svc: K8sObject, store: ObjectStore | None = None
+) -> str | None:
     """Fetch cluster IP allocated by the network provider (if recorded in controller state)."""
     app_name = _service_app_name(svc, store)
     if not app_name:
@@ -6267,7 +7336,9 @@ def _provider_cluster_ip(state: SQLiteStateStore, svc: K8sObject, store: ObjectS
         return None
 
 
-def _provider_ports(state: SQLiteStateStore, svc: K8sObject, store: ObjectStore | None = None) -> dict:
+def _provider_ports(
+    state: SQLiteStateStore, svc: K8sObject, store: ObjectStore | None = None
+) -> dict:
     """Fetch provider-recorded port info (including nodePort) for a service, keyed by port name/number."""
     app_name = _service_app_name(svc, store)
     if not app_name:
@@ -6281,7 +7352,9 @@ def _provider_ports(state: SQLiteStateStore, svc: K8sObject, store: ObjectStore 
     return rec.ports
 
 
-def _provider_vip(state: SQLiteStateStore, svc: K8sObject, store: ObjectStore | None = None) -> str | None:
+def _provider_vip(
+    state: SQLiteStateStore, svc: K8sObject, store: ObjectStore | None = None
+) -> str | None:
     """Return overlay/proxy VIP if recorded by the network provider."""
     app_name = _service_app_name(svc, store)
     if not app_name:
@@ -6296,7 +7369,9 @@ def _provider_vip(state: SQLiteStateStore, svc: K8sObject, store: ObjectStore | 
     return None
 
 
-def _merge_provider_service(state: SQLiteStateStore, store: ObjectStore | None, doc: dict[str, Any], svc_obj: K8sObject) -> dict[str, Any]:
+def _merge_provider_service(
+    state: SQLiteStateStore, store: ObjectStore | None, doc: dict[str, Any], svc_obj: K8sObject
+) -> dict[str, Any]:
     """Augment service spec/status with provider allocations (clusterIP/nodePort)."""
     spec = doc.get("spec") or {}
     status = doc.get("status") or {}
@@ -6315,7 +7390,9 @@ def _merge_provider_service(state: SQLiteStateStore, store: ObjectStore | None, 
             lb = status.get("loadBalancer") if isinstance(status, dict) else None
             ingress = lb.get("ingress") if isinstance(lb, dict) else None
             if ingress:
-                ingress_ips = {str(i.get("ip")) for i in ingress if isinstance(i, dict) and i.get("ip")}
+                ingress_ips = {
+                    str(i.get("ip")) for i in ingress if isinstance(i, dict) and i.get("ip")
+                }
                 if vip and str(vip) not in ingress_ips:
                     status = dict(status or {})
                     status["loadBalancer"] = {}
@@ -6351,7 +7428,9 @@ def _node_zone_for_ip(state: SQLiteStateStore, ip: str) -> tuple[str | None, str
     for rec, _st in nodes:
         try:
             if rec.pod_cidr and ip_obj in ipaddress.ip_network(rec.pod_cidr):
-                zone = (rec.labels or {}).get("topology.kubernetes.io/zone") or (rec.labels or {}).get("failure-domain.beta.kubernetes.io/zone")
+                zone = (rec.labels or {}).get("topology.kubernetes.io/zone") or (
+                    rec.labels or {}
+                ).get("failure-domain.beta.kubernetes.io/zone")
                 name = rec.name or rec.node_id
                 return (name, zone)
         except Exception:
@@ -6387,7 +7466,9 @@ def _alloc_nodeport(existing: set[int], seed: str) -> int:
     return NP_MIN
 
 
-def _service_lb_status(spec: dict[str, Any], status: dict[str, Any], provider_ip: str | None = None) -> dict[str, Any]:
+def _service_lb_status(
+    spec: dict[str, Any], status: dict[str, Any], provider_ip: str | None = None
+) -> dict[str, Any]:
     """Ensure loadBalancer status is present for LB/NodePort services."""
     svc_type = (spec.get("type") or "ClusterIP") or "ClusterIP"
     status = dict(status or {})
@@ -6490,7 +7571,9 @@ def _endpointslice_for_service(
     target = _service_target(svc, store)
     if not target:
         return None
-    app_name = f"{svc.namespace}--{target}" if svc.namespace else target
+    from ae.controller.spec import app_key
+
+    app_name = app_key(target, svc.namespace)
     endpoints = state.list_service_endpoints(app_name)
     if not endpoints:
         return None
@@ -6659,7 +7742,9 @@ def _pod_obj(container: dict, rv: int, node_name: str | None) -> dict[str, Any]:
 
 
 class ShimServer(HTTPServer):
-    def __init__(self, server_address: tuple[str, int], token: str | None, allow_anonymous: bool = False) -> None:
+    def __init__(
+        self, server_address: tuple[str, int], token: str | None, allow_anonymous: bool = False
+    ) -> None:
         super().__init__(server_address, ShimHandler)
         dsn = os.getenv("AE_APISHIM_DSN")
         db_path = Path(os.getenv("AE_APISHIM_DB", "state/apishim.db"))
@@ -6690,7 +7775,9 @@ class ShimServer(HTTPServer):
             adapter_enabled = False
         if adapter_enabled:
             try:
-                self._adapter = build_adapter(self.store, runtime=self.runtime, state_store=self.state)
+                self._adapter = build_adapter(
+                    self.store, runtime=self.runtime, state_store=self.state
+                )
                 self._adapter.start()
             except Exception:
                 self._adapter = None
@@ -6706,13 +7793,21 @@ class ShimServer(HTTPServer):
             ShimHandler._register_crd(obj)
 
 
-def run_server(host: str = "127.0.0.1", port: int = 8445, token: str | None = None, tls: bool = False, allow_anonymous: bool = False) -> None:
+def run_server(
+    host: str = "127.0.0.1",
+    port: int = 8445,
+    token: str | None = None,
+    tls: bool = False,
+    allow_anonymous: bool = False,
+) -> None:
     if os.getenv("AE_APISHIM_ENABLE") != "1":
         raise RuntimeError("apishim disabled: set AE_APISHIM_ENABLE=1 to start the shim server")
     allow_anonymous = allow_anonymous or os.getenv("AE_APISHIM_ALLOW_ANON", "0") == "1"
     tok = token or os.getenv("AE_APISHIM_TOKEN")
     if not tok and not allow_anonymous:
-        raise RuntimeError("AE_APISHIM_TOKEN must be set (or --token) to start the shim server (or set AE_APISHIM_ALLOW_ANON=1 for dev)")
+        raise RuntimeError(
+            "AE_APISHIM_TOKEN must be set (or --token) to start the shim server (or set AE_APISHIM_ALLOW_ANON=1 for dev)"
+        )
     httpd = ShimServer((host, port), tok, allow_anonymous=allow_anonymous)
     if tls:
         # Dev TLS: requires user-provided cert/key via env or skip.

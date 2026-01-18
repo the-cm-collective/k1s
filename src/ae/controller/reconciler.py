@@ -11,7 +11,7 @@ from pathlib import Path
 import os
 
 from ae.controller.health import HealthManager, HealthReport, ReplicaHealth
-from ae.controller.spec import AppManifest, VolumeSpec, load_manifest
+from ae.controller.spec import AppManifest, VolumeSpec, app_key_for_manifest, load_manifest
 from ae.runtime import RuntimeAdapter, RuntimeResult
 
 
@@ -23,6 +23,7 @@ def _record_event_metric_safe(name: str) -> None:
         record_event_metric(name)
     except Exception:
         pass
+
 
 from .state import SQLiteStateStore
 from ae.ingress.service import IngressService
@@ -100,7 +101,9 @@ class Reconciler:
         except Exception:
             return self._runtime
 
-    def _exec_across_runtimes(self, replica_id: str, command: list[str], timeout: int | None) -> int:
+    def _exec_across_runtimes(
+        self, replica_id: str, command: list[str], timeout: int | None
+    ) -> int:
         """Try exec across known runtimes (local + cached remote)."""
         runtimes = [self._runtime] + list(self._runtime_cache.values())
         for rt in runtimes:
@@ -150,9 +153,10 @@ class Reconciler:
 
         spec_hash = self._compute_spec_hash(manifest)
         revision, _ = self._state_store.prepare_revision(manifest, spec_hash)
+        app_name = app_key_for_manifest(manifest)
 
         self._state_store.record_event(
-            manifest.metadata.name,
+            app_name,
             revision,
             "ApplyStarted",
             f"Reconciling revision {revision}",
@@ -167,7 +171,7 @@ class Reconciler:
         except Exception as exc:  # noqa: BLE001
             try:
                 self._state_store.record_event(
-                    manifest.metadata.name,
+                    app_name,
                     revision,
                     "SecretError",
                     f"secrets/config application failed: {exc}",
@@ -181,7 +185,7 @@ class Reconciler:
         manifest_for_runtime = manifest_with_env
         if projection_root is not None:
             vols = list(manifest_for_runtime.spec.volumes)
-            mount_root = f"/var/run/ae/config/{manifest.metadata.name}"
+            mount_root = f"/var/run/ae/config/{app_name}"
             # Append a typed VolumeSpec so downstream code sees attributes, not dicts
             vols.append(
                 VolumeSpec(host_path=str(projection_root), mount_path=mount_root, read_only=True)
@@ -196,19 +200,21 @@ class Reconciler:
                 # Emit start events
                 for c in inits:
                     try:
-                        name = getattr(c, "name", None) if not isinstance(c, dict) else c.get("name")
+                        name = (
+                            getattr(c, "name", None) if not isinstance(c, dict) else c.get("name")
+                        )
                         if name:
                             self._state_store.record_event(
-                                manifest.metadata.name, revision, "InitStart", f"container={name}"
+                                app_name, revision, "InitStart", f"container={name}"
                             )
                             _record_event_metric_safe("init_start")
                     except Exception:
                         pass
                 results = self._runtime.run_init_containers(manifest_for_runtime)  # type: ignore[attr-defined]
-                for (name, rc, msg) in results:
+                for name, rc, msg in results:
                     try:
                         self._state_store.record_event(
-                            manifest.metadata.name,
+                            app_name,
                             revision,
                             "InitDone",
                             f"container={name} rc={rc} {msg or ''}",
@@ -228,8 +234,8 @@ class Reconciler:
         # Pause: record snapshot with current status and skip runtime/ingress changes
         if bool(rollout.get("pause", False)):
             # Build a health report from last known status (if any)
-            prev = self._state_store.get_status(manifest.metadata.name)
-            replicas = self._state_store.list_replicas(manifest.metadata.name)
+            prev = self._state_store.get_status(app_name)
+            replicas = self._state_store.list_replicas(app_name)
             hr = HealthReport(
                 ready_replicas=prev.ready_replicas if prev else 0,
                 live_replicas=prev.live_replicas if prev else 0,
@@ -256,13 +262,13 @@ class Reconciler:
                 revision_status=revision_status,
             )
             self._state_store.record_event(
-                manifest.metadata.name,
+                app_name,
                 revision,
                 "RolloutPaused",
                 "Rollout paused by manifest; runtime unchanged",
             )
             return ReconcileReport(
-                app_name=manifest.metadata.name,
+                app_name=app_name,
                 created=0,
                 updated=0,
                 removed=0,
@@ -277,16 +283,14 @@ class Reconciler:
         now_ts = float(_t.time())
         limit_create = 1 if strategy == "ordered" else None
         # Apply create cooldown when active
-        until = float(self._create_cooldown_until.get(manifest.metadata.name, 0.0) or 0.0)
+        until = float(self._create_cooldown_until.get(app_name, 0.0) or 0.0)
         if until > now_ts:
             limit_create = 0
 
         placements, schedule_warnings = self._scheduler.plan(manifest_for_runtime, revision)
         for w in schedule_warnings:
             try:
-                self._state_store.record_event(
-                    manifest.metadata.name, revision, "ScheduleWarning", w
-                )
+                self._state_store.record_event(app_name, revision, "ScheduleWarning", w)
             except Exception:
                 pass
         # Persist placement hints before reconcile (so dashboard can render)
@@ -299,7 +303,7 @@ class Reconciler:
                 for rid in getattr(pl, "replica_ids", []) or []:
                     node_rows.append((rid, node_id))
             if node_rows:
-                self._state_store.set_replica_nodes(manifest.metadata.name, node_rows)
+                self._state_store.set_replica_nodes(app_name, node_rows)
         except Exception:
             pass
 
@@ -324,7 +328,7 @@ class Reconciler:
                 try:
                     for s in manifest_for_runtime.spec.storage:
                         self._state_store.upsert_storage_binding(
-                            manifest_for_runtime.metadata.name,
+                            app_name,
                             getattr(s, "name", ""),
                             placement.node.node_id,  # type: ignore[union-attr]
                             getattr(s, "retention", None),
@@ -358,12 +362,10 @@ class Reconciler:
         # Service/IPAM: prefer Service VIPs when controller is available
         if self._service_controller:
             try:
-                self._service_controller.reconcile(
-                    manifest_for_runtime, result, health_report
-                )
+                self._service_controller.reconcile(manifest_for_runtime, result, health_report)
             except Exception as exc:
                 logging.getLogger(__name__).warning(
-                    "service reconcile failed for %s: %s", manifest.metadata.name, exc
+                    "service reconcile failed for %s: %s", app_name, exc
                 )
         # Record probe backoff metrics from messages
         try:
@@ -379,7 +381,6 @@ class Reconciler:
                     return 0
 
             for rep in getattr(health_report, "replicas", []) or []:
-                app_name = manifest.metadata.name
                 record_probe_backoff(
                     app_name,
                     rep.replica_id,
@@ -406,7 +407,7 @@ class Reconciler:
                 if not hook_ok:
                     try:
                         self._state_store.record_event(
-                            manifest.metadata.name,
+                            app_name,
                             revision,
                             "HookFailed",
                             f"preSwitch: {hook_msg or 'failed'}",
@@ -423,16 +424,16 @@ class Reconciler:
                 self._ingress_service.apply(manifest, upstream_param)
                 self._ingress_service.reload()
                 self._state_store.record_event(
-                    manifest.metadata.name,
+                    app_name,
                     revision,
                     "IngressConfigured",
                     f"Ingress upstreams set to {', '.join(upstreams)}",
                 )
         elif self._ingress_service and not manifest.spec.ingress:
-            self._ingress_service.remove(manifest.metadata.name)
+            self._ingress_service.remove(app_name)
             self._ingress_service.reload()
             self._state_store.record_event(
-                manifest.metadata.name,
+                app_name,
                 revision,
                 "IngressRemoved",
                 "Ingress configuration removed",
@@ -447,7 +448,7 @@ class Reconciler:
                     ok, msg = self._run_rollout_hook(manifest, result, post)
                     ev = "HookPassed" if ok else "HookFailed"
                     self._state_store.record_event(
-                        manifest.metadata.name,
+                        app_name,
                         revision,
                         ev,
                         f"postSwitch: {msg or ('ok' if ok else 'failed')}",
@@ -479,12 +480,10 @@ class Reconciler:
                     self._run_prestop_on_old(manifest, keep_revision=revision)
                 except Exception:
                     pass
-                removed_old = self._remove_old_revisions_all(
-                    manifest.metadata.name, revision, runtimes_used
-                )
+                removed_old = self._remove_old_revisions_all(app_name, revision, runtimes_used)
                 if removed_old > 0:
                     self._state_store.record_event(
-                        manifest.metadata.name,
+                        app_name,
                         revision,
                         "RolloutOldRemoved",
                         f"Removed {removed_old} old revision container(s)",
@@ -494,7 +493,7 @@ class Reconciler:
 
         # Emit rollout change events (e.g., canary enabled/updated/disabled)
         try:
-            prev = self._state_store.get_status(manifest.metadata.name)
+            prev = self._state_store.get_status(app_name)
             prev_ro = None
             if prev is not None:
                 try:
@@ -537,7 +536,7 @@ class Reconciler:
                 ev_type = "CanaryUpdated"
                 msg = f"canary weight {int(p_weight or 0)}% -> {int(n_weight)}%"
             if ev_type and msg:
-                self._state_store.record_event(manifest.metadata.name, revision, ev_type, msg)
+                self._state_store.record_event(app_name, revision, ev_type, msg)
         except Exception:
             pass
 
@@ -549,7 +548,7 @@ class Reconciler:
             revision_status=revision_status,
         )
         self._state_store.record_event(
-            manifest.metadata.name,
+            app_name,
             revision,
             "ApplyCompleted",
             f"Revision {revision} status {revision_status}",
@@ -557,7 +556,7 @@ class Reconciler:
         if health_report.ready_replicas < manifest.spec.replicas:
             try:
                 self._state_store.record_event(
-                    manifest.metadata.name,
+                    app_name,
                     revision,
                     "RolloutProgressing",
                     f"{health_report.ready_replicas}/{manifest.spec.replicas} replicas ready",
@@ -568,7 +567,7 @@ class Reconciler:
         else:
             _record_event_metric_safe("rollout_complete")
         return ReconcileReport(
-            app_name=manifest.metadata.name,
+            app_name=app_name,
             created=result.created,
             updated=result.updated,
             removed=result.removed,
@@ -588,10 +587,15 @@ class Reconciler:
         handler = getattr(lc, "pre_stop", None) if lc else None
         if handler is None:
             return
+        app_name = app_key_for_manifest(manifest)
         timeout = 10
         try:
             timeout = int(
-                (getattr(handler, "timeout_seconds", None) or getattr(manifest.spec, "termination_grace_period_seconds", 10) or 10)
+                (
+                    getattr(handler, "timeout_seconds", None)
+                    or getattr(manifest.spec, "termination_grace_period_seconds", 10)
+                    or 10
+                )
             )
         except Exception:
             timeout = 10
@@ -604,7 +608,7 @@ class Reconciler:
             items = []
         for it in items:
             labels = (it or {}).get("labels") or {}
-            if (labels.get("ae.app") or "") != manifest.metadata.name:
+            if (labels.get("ae.app") or "") != app_name:
                 continue
             if str(labels.get("ae.revision")) == str(keep_revision):
                 continue
@@ -624,7 +628,7 @@ class Reconciler:
                     rc = None
                 try:
                     self._state_store.record_event(
-                        manifest.metadata.name,
+                        app_name,
                         keep_revision,
                         "PreStopExec",
                         f"replica={rid} rc={rc if rc is not None else 'n/a'}",
@@ -648,7 +652,7 @@ class Reconciler:
                     outcome = f"error({exc.__class__.__name__})"
                 try:
                     self._state_store.record_event(
-                        manifest.metadata.name,
+                        app_name,
                         keep_revision,
                         "PreStopHTTP",
                         f"replica={rid} {outcome}",
@@ -672,7 +676,7 @@ class Reconciler:
                     outcome = "error"
                 try:
                     self._state_store.record_event(
-                        manifest.metadata.name,
+                        app_name,
                         keep_revision,
                         "PreStopTCP",
                         f"replica={rid} {outcome}",
@@ -686,7 +690,7 @@ class Reconciler:
         """Remove old revision containers across all runtimes used in this reconcile."""
         total = 0
         seen: set[int] = set()
-        for rt in (list(runtimes or []) + [self._runtime]):
+        for rt in list(runtimes or []) + [self._runtime]:
             if id(rt) in seen:
                 continue
             seen.add(id(rt))
@@ -759,7 +763,7 @@ class Reconciler:
     def _detect_crashloops(self, manifest: AppManifest) -> None:
         import time as _t
 
-        app = manifest.metadata.name
+        app = app_key_for_manifest(manifest)
         try:
             infos = self._runtime.list_containers_info()  # type: ignore[attr-defined]
         except Exception:
@@ -824,9 +828,10 @@ class Reconciler:
         result: RuntimeResult,
         health_report: HealthReport,
     ) -> list[str]:
+        app_name = app_key_for_manifest(manifest)
         # Prefer Service VIP when recorded and ready backends exist
         try:
-            svc = self._state_store.get_service(manifest.metadata.name)
+            svc = self._state_store.get_service(app_name)
         except Exception:
             svc = None
 
@@ -841,7 +846,7 @@ class Reconciler:
                 svc_port = None
             if svc_port:
                 try:
-                    eps = self._state_store.list_service_endpoints(manifest.metadata.name)
+                    eps = self._state_store.list_service_endpoints(app_name)
                 except Exception:
                     eps = []
                 if any(ep.ready for ep in eps):
@@ -874,10 +879,9 @@ class Reconciler:
                 items = []
             prev_eps: list[str] = []
             cur_rev = str(result.revision)
-            app = manifest.metadata.name
             for it in items or []:
                 labs = it.get("labels") or {}
-                if (labs.get("ae.app") or "") != app:
+                if (labs.get("ae.app") or "") != app_name:
                     continue
                 if (labs.get("ae.revision") or "") == cur_rev:
                     continue
@@ -1025,9 +1029,21 @@ class Reconciler:
         updated_spec = manifest.spec.model_copy(update={"env": merged_env})
         return manifest.model_copy(update={"spec": updated_spec})
 
-    def _on_probe_event(self, replica_id: str, probe_type: str, success: bool, message: str) -> None:
+    def _on_probe_event(
+        self, replica_id: str, probe_type: str, success: bool, message: str
+    ) -> None:
         """Hook from HealthManager when probe effective status changes."""
-        app_name = replica_id.split("-", 1)[0] if "-" in replica_id else replica_id
+        app_name = replica_id
+        try:
+            import re
+
+            m = re.match(r"^(?P<app>.+)-rev\d+-\d+$", str(replica_id))
+            if m:
+                app_name = m.group("app")
+            elif "-" in replica_id:
+                app_name = replica_id.split("-", 1)[0]
+        except Exception:
+            app_name = replica_id.split("-", 1)[0] if "-" in replica_id else replica_id
         try:
             self._state_store.record_event(
                 app_name,
@@ -1046,7 +1062,7 @@ class Reconciler:
         file per key containing the string value. Returns the projection root if any files
         were written, else None.
         """
-        app = manifest.metadata.name
+        app = app_key_for_manifest(manifest)
         root = Path("state/projections") / f"{app}-rev{revision}"
         wrote = False
 
@@ -1137,4 +1153,6 @@ class Reconciler:
         except Exception:
             abs_root = root
         return abs_root if wrote else None
+
+
 # ruff: noqa

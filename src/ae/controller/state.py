@@ -18,7 +18,7 @@ except Exception:  # pragma: no cover - optional dependency
     psycopg = None  # type: ignore
 
 from ae.controller.health import HealthReport
-from ae.controller.spec import AppManifest
+from ae.controller.spec import AppManifest, app_key_for_manifest
 from ae.runtime import RuntimeResult
 
 
@@ -174,7 +174,9 @@ class SQLiteStateStore:
         self.backend = "sqlite"
         if self._dsn:
             if psycopg is None:
-                raise RuntimeError("psycopg is required for Postgres state store (install psycopg[binary])")
+                raise RuntimeError(
+                    "psycopg is required for Postgres state store (install psycopg[binary])"
+                )
             self.backend = "postgres"
         self._initialize()
 
@@ -281,7 +283,11 @@ class SQLiteStateStore:
                 ],
             ):
                 conn.execute("DROP TABLE IF EXISTS storage_bindings")
-            auto_inc = "INTEGER PRIMARY KEY AUTOINCREMENT" if self.backend == "sqlite" else "SERIAL PRIMARY KEY"
+            auto_inc = (
+                "INTEGER PRIMARY KEY AUTOINCREMENT"
+                if self.backend == "sqlite"
+                else "SERIAL PRIMARY KEY"
+            )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS app_status (
@@ -464,9 +470,7 @@ class SQLiteStateStore:
         raw = psycopg.connect(self._dsn)  # type: ignore[arg-type]
         return _PgCompatConnection(raw)
 
-    def _schema_matches(
-        self, conn, table: str, expected_columns: list[str]
-    ) -> bool:
+    def _schema_matches(self, conn, table: str, expected_columns: list[str]) -> bool:
         if self.backend == "sqlite":
             info = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
@@ -488,6 +492,7 @@ class SQLiteStateStore:
         revision_status: str,
     ) -> None:
         state_by_id = {state.replica_id: state for state in runtime_result.replica_states}
+        app_name = app_key_for_manifest(manifest)
 
         with self._connect() as conn:
             conn.execute(
@@ -508,7 +513,7 @@ class SQLiteStateStore:
                     ingress_path=excluded.ingress_path
                 """,
                 (
-                    manifest.metadata.name,
+                    app_name,
                     manifest.spec.replicas,
                     health_report.ready_replicas,
                     health_report.live_replicas,
@@ -525,18 +530,18 @@ class SQLiteStateStore:
 
             conn.execute(
                 "DELETE FROM replica_status WHERE app_name = ?",
-                (manifest.metadata.name,),
+                (app_name,),
             )
 
             # Clean existing placements for this app; will be repopulated below
-            conn.execute("DELETE FROM replica_nodes WHERE app_name = ?", (manifest.metadata.name,))
+            conn.execute("DELETE FROM replica_nodes WHERE app_name = ?", (app_name,))
 
             rows = []
             for replica in health_report.replicas:
                 state = state_by_id.get(replica.replica_id)
                 rows.append(
                     (
-                        manifest.metadata.name,
+                        app_name,
                         replica.replica_id,
                         int(replica.ready),
                         int(replica.live),
@@ -559,7 +564,7 @@ class SQLiteStateStore:
             timestamp = datetime.now(timezone.utc).isoformat()
             history_rows = [
                 (
-                    manifest.metadata.name,
+                    app_name,
                     replica.replica_id,
                     timestamp,
                     int(replica.ready),
@@ -588,7 +593,7 @@ class SQLiteStateStore:
                             LIMIT -1 OFFSET 50
                         )
                         """,
-                        (manifest.metadata.name, replica.replica_id),
+                        (app_name, replica.replica_id),
                     )
             # Persist placement mapping when runtime result contains node_id hints
             node_rows = []
@@ -598,7 +603,7 @@ class SQLiteStateStore:
                     continue
                 node_rows.append(
                     (
-                        manifest.metadata.name,
+                        app_name,
                         rs.replica_id,
                         node_id,
                         timestamp,
@@ -621,7 +626,7 @@ class SQLiteStateStore:
                 SET status = ?, image = ?, spec_hash = spec_hash
                 WHERE app_name = ? AND revision = ?
                 """,
-                (revision_status, manifest.spec.image, manifest.metadata.name, revision),
+                (revision_status, manifest.spec.image, app_name, revision),
             )
             conn.commit()
 
@@ -770,7 +775,8 @@ class SQLiteStateStore:
         return entries
 
     def prepare_revision(self, manifest: AppManifest, spec_hash: str) -> tuple[int, bool]:
-        latest = self._get_latest_revision(manifest.metadata.name)
+        app_name = app_key_for_manifest(manifest)
+        latest = self._get_latest_revision(app_name)
         if latest and latest.spec_hash == spec_hash:
             return latest.revision, False
 
@@ -786,7 +792,7 @@ class SQLiteStateStore:
                 ON CONFLICT(app_name, revision) DO NOTHING
                 """,
                 (
-                    manifest.metadata.name,
+                    app_name,
                     next_revision,
                     spec_hash,
                     spec_json,
@@ -815,6 +821,7 @@ class SQLiteStateStore:
         spec_json = json.dumps(manifest.model_dump(by_alias=True), sort_keys=True)
         spec_hash = self._manifest_hash(manifest)
         updated_at = datetime.now(timezone.utc).isoformat()
+        app_name = app_key_for_manifest(manifest)
         existing_source = None
         existing_labels: dict | None = None
         if source is None or labels is None:
@@ -822,7 +829,7 @@ class SQLiteStateStore:
                 with self._connect() as conn:
                     row = conn.execute(
                         "SELECT source, labels FROM app_registry WHERE app_name = ?",
-                        (manifest.metadata.name,),
+                        (app_name,),
                     ).fetchone()
                 if row is not None:
                     existing_source = row[0]
@@ -853,7 +860,7 @@ class SQLiteStateStore:
                     updated_at=excluded.updated_at
                 """,
                 (
-                    manifest.metadata.name,
+                    app_name,
                     spec_hash,
                     spec_json,
                     source_val,
@@ -881,9 +888,7 @@ class SQLiteStateStore:
 
     def list_registered_app_names(self) -> list[str]:
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT app_name FROM app_registry ORDER BY app_name"
-            ).fetchall()
+            rows = conn.execute("SELECT app_name FROM app_registry ORDER BY app_name").fetchall()
         return [row[0] for row in rows]
 
     def get_registered_entry(self, app_name: str) -> RegistryEntry | None:
@@ -1155,15 +1160,12 @@ class SQLiteStateStore:
             ports = {}
         return ServiceRecord(app_name=app_name, cluster_ip=row[0], ports=ports)
 
-    def upsert_service_endpoints(
-        self, app_name: str, endpoints: list[ServiceEndpoint]
-    ) -> None:
+    def upsert_service_endpoints(self, app_name: str, endpoints: list[ServiceEndpoint]) -> None:
         """Replace endpoints for an app."""
         with self._connect() as conn:
             conn.execute("DELETE FROM service_endpoints WHERE app_name = ?", (app_name,))
             rows = [
-                (ep.app_name, ep.port, ep.ip, ep.target_port, int(ep.ready))
-                for ep in endpoints
+                (ep.app_name, ep.port, ep.ip, ep.target_port, int(ep.ready)) for ep in endpoints
             ]
             if rows:
                 conn.executemany(
@@ -1509,4 +1511,6 @@ class _PgCompatConnection:
         finally:
             self._conn.close()
         return False
+
+
 # ruff: noqa

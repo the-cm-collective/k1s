@@ -1,7 +1,6 @@
 # ruff: noqa: E501
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import queue
@@ -9,9 +8,10 @@ import sqlite3
 import threading
 import time
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 try:  # Optional Postgres backend
     import psycopg
@@ -44,10 +44,18 @@ class ObjectStore:
     A monotonically increasing resource_version enables basic change detection.
     """
 
-    def __init__(self, db_path: Path = DB_PATH_DEFAULT, *, dsn: str | None = None, queue_size: int | None = None) -> None:
+    def __init__(
+        self,
+        db_path: Path = DB_PATH_DEFAULT,
+        *,
+        dsn: str | None = None,
+        queue_size: int | None = None,
+    ) -> None:
         self.db_path = db_path
         self._lock = threading.RLock()
-        self._queue_size = queue_size or int(os.getenv("AE_APISHIM_WATCH_QUEUE_SIZE", str(QUEUE_SIZE_DEFAULT)) or "1024")
+        self._queue_size = queue_size or int(
+            os.getenv("AE_APISHIM_WATCH_QUEUE_SIZE", str(QUEUE_SIZE_DEFAULT)) or "1024"
+        )
         self._watchers: dict[tuple[str, str, str, str], list[queue.Queue]] = {}
         self._metrics_dropped: dict[tuple[str, str, str, str], int] = defaultdict(int)
         self._metrics_enqueued: dict[tuple[str, str, str, str], int] = defaultdict(int)
@@ -63,7 +71,9 @@ class ObjectStore:
         if self._dsn:
             if self._dsn.startswith("postgres"):
                 if psycopg is None:
-                    raise RuntimeError("psycopg is required for Postgres backend (install psycopg[binary])")
+                    raise RuntimeError(
+                        "psycopg is required for Postgres backend (install psycopg[binary])"
+                    )
                 self.backend = "postgres"
                 self._init_pg()
             else:
@@ -140,10 +150,14 @@ class ObjectStore:
             row = cur.fetchone()
             return int(row["rv"])
 
-    def _tombstone_key(self, group: str, version: str, resource: str, namespace: str | None, name: str) -> tuple[str, str, str, str, str]:
+    def _tombstone_key(
+        self, group: str, version: str, resource: str, namespace: str | None, name: str
+    ) -> tuple[str, str, str, str, str]:
         return (group, version, resource, namespace or "", name)
 
-    def _tombstone_active(self, key: tuple[str, str, str, str, str], now: float | None = None) -> bool:
+    def _tombstone_active(
+        self, key: tuple[str, str, str, str, str], now: float | None = None
+    ) -> bool:
         if not self._tombstones:
             return False
         now = now or time.time()
@@ -332,7 +346,9 @@ class ObjectStore:
             int(row["rv"]),
         )
 
-    def list(self, group: str, version: str, resource: str, namespace: str | None | None) -> list[K8sObject]:
+    def list(
+        self, group: str, version: str, resource: str, namespace: str | None | None
+    ) -> list[K8sObject]:
         ns_val = namespace or ""
         if self.backend == "sqlite":
             cur = self._conn.execute(
@@ -395,23 +411,23 @@ class ObjectStore:
             rows = []
         out: list[K8sObject] = []
         for row in rows:
-            # sqlite3.Row supports mapping access but not .get()
-            meta = row["metadata"] if "metadata" in row.keys() else None
-            spec = row["spec"] if "spec" in row.keys() else None
-            status = row["status"] if "status" in row.keys() else None
+            row_data = dict(row)
+            meta = row_data.get("metadata")
+            spec = row_data.get("spec")
+            status = row_data.get("status")
             if meta is None or spec is None or status is None:
                 continue
             out.append(
                 K8sObject(
-                    row["grp"],
-                    row["ver"],
-                    row["res"],
-                    row["ns"],
-                    row["name"],
+                    row_data["grp"],
+                    row_data["ver"],
+                    row_data["res"],
+                    row_data["ns"],
+                    row_data["name"],
                     json.loads(meta),
                     json.loads(spec),
                     json.loads(status),
-                    int(row["rv"]),
+                    int(row_data["rv"]),
                 )
             )
         return out
@@ -422,7 +438,9 @@ class ObjectStore:
         with self._lock:
             prev = self.get(group, version, resource, namespace, name)
             if self._tombstone_ttl > 0:
-                self._tombstones[self._tombstone_key(group, version, resource, namespace, name)] = self._now() + self._tombstone_ttl
+                self._tombstones[self._tombstone_key(group, version, resource, namespace, name)] = (
+                    self._now() + self._tombstone_ttl
+                )
             ns_val = namespace or ""
             if self.backend == "sqlite":
                 with self._conn:  # type: ignore[union-attr]
@@ -466,7 +484,11 @@ class ObjectStore:
         def _iter():
             nonlocal last_rv
             try:
-                items = self.list_all(group, version, resource) if namespace is None else self.list(group, version, resource, namespace)
+                items = (
+                    self.list_all(group, version, resource)
+                    if namespace is None
+                    else self.list(group, version, resource, namespace)
+                )
                 for obj in items:
                     if obj.resource_version >= last_rv:
                         last_rv = max(last_rv, obj.resource_version)
@@ -546,8 +568,8 @@ class ObjectStore:
     def render_metrics(self) -> str:
         """Render Prometheus text metrics for watch/backpressure state."""
         lines = []
-        lines.append(f'# HELP apishim_store_backend_info Backend in use for shim object store')
-        lines.append(f'# TYPE apishim_store_backend_info gauge')
+        lines.append("# HELP apishim_store_backend_info Backend in use for shim object store")
+        lines.append("# TYPE apishim_store_backend_info gauge")
         lines.append(f'apishim_store_backend_info{{backend="{self.backend}"}} 1')
 
         def _labels(key: tuple[str, str, str, str]) -> str:
@@ -565,12 +587,16 @@ class ObjectStore:
             for k, v in self._metrics_queue_depth.items():
                 lines.append(f"apishim_watch_queue_depth{{{_labels(k)}}} {v}")
         if self._metrics_enqueued:
-            lines.append("# HELP apishim_watch_events_enqueued_total Events enqueued to watch queues")
+            lines.append(
+                "# HELP apishim_watch_events_enqueued_total Events enqueued to watch queues"
+            )
             lines.append("# TYPE apishim_watch_events_enqueued_total counter")
             for k, v in self._metrics_enqueued.items():
                 lines.append(f"apishim_watch_events_enqueued_total{{{_labels(k)}}} {v}")
         if self._metrics_dropped:
-            lines.append("# HELP apishim_watch_events_dropped_total Events dropped due to backpressure")
+            lines.append(
+                "# HELP apishim_watch_events_dropped_total Events dropped due to backpressure"
+            )
             lines.append("# TYPE apishim_watch_events_dropped_total counter")
             for k, v in self._metrics_dropped.items():
                 lines.append(f"apishim_watch_events_dropped_total{{{_labels(k)}}} {v}")

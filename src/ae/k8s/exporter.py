@@ -18,14 +18,14 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from ae.controller.spec import AppManifest
+from ae.controller.spec import DEFAULT_NAMESPACE, AppManifest, k8s_labels_for_manifest
 
 
 @dataclass(slots=True)
 class ExportOptions:
     # Which workload to emit
     workload_kind: str = "Deployment"  # "Deployment" | "StatefulSet" | "Job" | "CronJob"
-    namespace: str = "default"
+    namespace: Optional[str] = None  # default: manifest namespace or "default"
     ingress_class_name: Optional[str] = None
     service_port: Optional[int] = None  # override; default to 80
     # Config/Secret emission control
@@ -37,7 +37,7 @@ class ExportOptions:
     emit_storage: bool = False
     default_pvc_size: str = "1Gi"
     storage_class_name: Optional[str] = None
-    # Optional accessModes override for PVCs (e.g., ["ReadWriteOnce", "ReadOnlyMany"]) 
+    # Optional accessModes override for PVCs (e.g., ["ReadWriteOnce", "ReadOnlyMany"])
     pvc_access_modes: Optional[List[str]] = None
     # ServiceAccount
     service_account_name: Optional[str] = None
@@ -87,6 +87,23 @@ class ExportOptions:
     # Namespace emission with PodSecurity labels
     emit_namespace: bool = False
     pod_security_enforce: Optional[str] = None  # baseline|restricted
+
+
+def _resolve_namespace(m: AppManifest, opts: ExportOptions) -> str:
+    if getattr(opts, "namespace", None):
+        return str(opts.namespace)
+    ns = getattr(m.metadata, "namespace", None)
+    return str(ns or DEFAULT_NAMESPACE)
+
+
+def _resource_labels(m: AppManifest) -> Dict[str, Any]:
+    return dict(k8s_labels_for_manifest(m))
+
+
+def _selector_labels(m: AppManifest) -> Dict[str, Any]:
+    labels = _resource_labels(m)
+    selector_keys = ("app", "app.kubernetes.io/name", "app.kubernetes.io/instance")
+    return {k: labels[k] for k in selector_keys if k in labels}
 
 
 def _container_from_manifest(m: AppManifest, *, opts: ExportOptions) -> Dict[str, Any]:
@@ -215,6 +232,7 @@ def _container_from_manifest(m: AppManifest, *, opts: ExportOptions) -> Dict[str
     # lifecycle hooks
     if getattr(spec, "lifecycle", None):
         lifecycle: Dict[str, Any] = {}
+
         def _lh_to_k8s(h) -> Dict[str, Any]:  # noqa: ANN001
             if h is None:
                 return {}
@@ -224,7 +242,9 @@ def _container_from_manifest(m: AppManifest, *, opts: ExportOptions) -> Dict[str
                     return {"exec": {"command": list(h.get("exec", {}).get("command", []))}}
                 if h.get("httpGet") is not None:
                     hg = h.get("httpGet", {})
-                    return {"httpGet": {"path": (hg.get("path") or "/"), "port": int(hg.get("port", 0))}}
+                    return {
+                        "httpGet": {"path": (hg.get("path") or "/"), "port": int(hg.get("port", 0))}
+                    }
                 if h.get("tcpSocket") is not None:
                     ts = h.get("tcpSocket", {})
                     return {"tcpSocket": {"port": int(ts.get("port", 0))}}
@@ -236,6 +256,7 @@ def _container_from_manifest(m: AppManifest, *, opts: ExportOptions) -> Dict[str
             if getattr(h, "tcp_socket", None) is not None:
                 return {"tcpSocket": {"port": int(h.tcp_socket.port)}}
             return {}
+
         lc = getattr(spec, "lifecycle")
         post = getattr(lc, "post_start", None) if lc is not None else None
         pre = getattr(lc, "pre_stop", None) if lc is not None else None
@@ -253,13 +274,21 @@ def _container_from_manifest(m: AppManifest, *, opts: ExportOptions) -> Dict[str
     return c
 
 
-def _container_from_spec(m: AppManifest, csp, *, opts: ExportOptions, allow_probes: bool = True, projected_volume_name: str | None = None) -> Dict[str, Any]:
+def _container_from_spec(
+    m: AppManifest,
+    csp,
+    *,
+    opts: ExportOptions,
+    allow_probes: bool = True,
+    projected_volume_name: str | None = None,
+) -> Dict[str, Any]:
     """Build a K8s container dict from a ContainerSpec-like object."""
+
     def _gf(obj, field, default=None):
         if isinstance(obj, dict):
             return obj.get(field, default)
         return getattr(obj, field, default)
-    
+
     c: Dict[str, Any] = {"name": str(_gf(csp, "name")), "image": str(_gf(csp, "image"))}
     if _gf(csp, "command"):
         c["command"] = list(_gf(csp, "command"))
@@ -267,7 +296,7 @@ def _container_from_spec(m: AppManifest, csp, *, opts: ExportOptions, allow_prob
         c["args"] = list(_gf(csp, "args"))
     # env
     env: List[Dict[str, Any]] = []
-    for item in (_gf(csp, "env") or []):
+    for item in _gf(csp, "env") or []:
         name = item.get("name")
         if name is None:
             continue
@@ -280,7 +309,9 @@ def _container_from_spec(m: AppManifest, csp, *, opts: ExportOptions, allow_prob
     # global envFrom via refs
     for ref in getattr(m.spec, "config_refs", []) or []:
         if bool(getattr(ref, "env_from", False)):
-            env.append({"name": "", "valueFrom": {"configMapKeyRef": {"name": ref.name, "key": ""}}})
+            env.append(
+                {"name": "", "valueFrom": {"configMapKeyRef": {"name": ref.name, "key": ""}}}
+            )
     for ref in getattr(m.spec, "secret_refs", []) or []:
         if bool(getattr(ref, "env_from", False)):
             env.append({"name": "", "valueFrom": {"secretKeyRef": {"name": ref.name, "key": ""}}})
@@ -291,7 +322,9 @@ def _container_from_spec(m: AppManifest, csp, *, opts: ExportOptions, allow_prob
         for e in env:
             if e.get("name") == "" and e.get("valueFrom"):  # our marker
                 if "configMapKeyRef" in e["valueFrom"]:
-                    env_from.append({"configMapRef": {"name": e["valueFrom"]["configMapKeyRef"]["name"]}})
+                    env_from.append(
+                        {"configMapRef": {"name": e["valueFrom"]["configMapKeyRef"]["name"]}}
+                    )
                 elif "secretKeyRef" in e["valueFrom"]:
                     env_from.append({"secretRef": {"name": e["valueFrom"]["secretKeyRef"]["name"]}})
             else:
@@ -302,7 +335,9 @@ def _container_from_spec(m: AppManifest, csp, *, opts: ExportOptions, allow_prob
             c["envFrom"] = env_from
     # ports
     if _gf(csp, "ports"):
-        c["ports"] = [{"name": p.name, "containerPort": int(p.container_port)} for p in _gf(csp, "ports")]
+        c["ports"] = [
+            {"name": p.name, "containerPort": int(p.container_port)} for p in _gf(csp, "ports")
+        ]
     # resources
     if _gf(csp, "resources"):
         rs = _gf(csp, "resources")
@@ -341,7 +376,9 @@ def _container_from_spec(m: AppManifest, csp, *, opts: ExportOptions, allow_prob
             sc["capabilities"] = {"drop": list(sec.drop_caps)}
         if getattr(sec, "seccomp_type", None):
             s = {"type": str(sec.seccomp_type)}
-            if str(sec.seccomp_type) == "Localhost" and getattr(sec, "seccomp_localhost_profile", None):
+            if str(sec.seccomp_type) == "Localhost" and getattr(
+                sec, "seccomp_localhost_profile", None
+            ):
                 s["localhostProfile"] = str(sec.seccomp_localhost_profile)
             sc["seccompProfile"] = s
         if sc:
@@ -362,6 +399,7 @@ def _container_from_spec(m: AppManifest, csp, *, opts: ExportOptions, allow_prob
     if getattr(csp, "lifecycle", None):
         lc_dict: Dict[str, Any] = {}
         lc = getattr(csp, "lifecycle")
+
         def _lh_to_k8s(h) -> Dict[str, Any]:  # noqa: ANN001
             if h is None:
                 return {}
@@ -370,7 +408,9 @@ def _container_from_spec(m: AppManifest, csp, *, opts: ExportOptions, allow_prob
                     return {"exec": {"command": list(h.get("exec", {}).get("command", []))}}
                 if h.get("httpGet") is not None:
                     hg = h.get("httpGet", {})
-                    return {"httpGet": {"path": (hg.get("path") or "/"), "port": int(hg.get("port", 0))}}
+                    return {
+                        "httpGet": {"path": (hg.get("path") or "/"), "port": int(hg.get("port", 0))}
+                    }
                 if h.get("tcpSocket") is not None:
                     ts = h.get("tcpSocket", {})
                     return {"tcpSocket": {"port": int(ts.get("port", 0))}}
@@ -382,6 +422,7 @@ def _container_from_spec(m: AppManifest, csp, *, opts: ExportOptions, allow_prob
             if getattr(h, "tcp_socket", None) is not None:
                 return {"tcpSocket": {"port": int(h.tcp_socket.port)}}
             return {}
+
         post = getattr(lc, "post_start", None) if lc is not None else None
         pre = getattr(lc, "pre_stop", None) if lc is not None else None
         if post is None and isinstance(lc, dict):
@@ -400,12 +441,25 @@ def _container_from_spec(m: AppManifest, csp, *, opts: ExportOptions, allow_prob
         vms = c.setdefault("volumeMounts", [])
         for pm in getattr(csp, "projection_mounts", []) or []:
             path = getattr(pm, "path", None) if not isinstance(pm, dict) else pm.get("path")
-            mnt = getattr(pm, "mount_path", None) if not isinstance(pm, dict) else pm.get("mountPath") or pm.get("mount_path")
+            mnt = (
+                getattr(pm, "mount_path", None)
+                if not isinstance(pm, dict)
+                else pm.get("mountPath") or pm.get("mount_path")
+            )
             ro = (
-                bool(getattr(pm, "read_only", True)) if not isinstance(pm, dict) else bool(pm.get("readOnly", True))
+                bool(getattr(pm, "read_only", True))
+                if not isinstance(pm, dict)
+                else bool(pm.get("readOnly", True))
             )
             if path and mnt:
-                vms.append({"name": projected_volume_name, "mountPath": str(mnt), "subPath": str(path), "readOnly": ro})
+                vms.append(
+                    {
+                        "name": projected_volume_name,
+                        "mountPath": str(mnt),
+                        "subPath": str(path),
+                        "readOnly": ro,
+                    }
+                )
     return c
 
 
@@ -491,12 +545,18 @@ def _service_from_manifest(m: AppManifest, opts: ExportOptions) -> Optional[Dict
         )
         svc_ports.append({"name": "http", "port": port, "targetPort": target})
 
+    labels = _resource_labels(m)
+    selector = _selector_labels(m)
     body = {
         "apiVersion": "v1",
         "kind": "Service",
-        "metadata": {"name": m.metadata.name, "namespace": opts.namespace},
+        "metadata": {
+            "name": m.metadata.name,
+            "namespace": _resolve_namespace(m, opts),
+            "labels": labels,
+        },
         "spec": {
-            "selector": {"app": m.metadata.name},
+            "selector": selector,
             "ports": svc_ports,
         },
     }
@@ -633,7 +693,7 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
                 "maxSkew": 1,
                 "topologyKey": "kubernetes.io/hostname",
                 "whenUnsatisfiable": "ScheduleAnyway",
-                "labelSelector": {"matchLabels": {"app": m.metadata.name}},
+                "labelSelector": {"matchLabels": _selector_labels(m)},
             }
         ]
     # Storage mounts
@@ -673,11 +733,13 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
             if not ed_name or not ed_mount:
                 continue
             body: Dict[str, Any] = {}
-            medium = (getattr(ed, "medium", None) if not isinstance(ed, dict) else ed.get("medium"))
+            medium = getattr(ed, "medium", None) if not isinstance(ed, dict) else ed.get("medium")
             if medium is not None and str(medium) != "":
                 body["medium"] = str(medium)
             size_limit = (
-                getattr(ed, "size_limit", None) if not isinstance(ed, dict) else ed.get("sizeLimit") or ed.get("size_limit")
+                getattr(ed, "size_limit", None)
+                if not isinstance(ed, dict)
+                else ed.get("sizeLimit") or ed.get("size_limit")
             )
             if size_limit is not None:
                 body["sizeLimit"] = str(size_limit)
@@ -689,7 +751,9 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
         for c in pod_spec.get("containers", []) or []:
             c.setdefault("volumeMounts", []).extend(volume_mounts)
     # Add AppArmor annotation on the Pod template when requested
-    pod_meta: Dict[str, Any] = {"labels": {"app": m.metadata.name}}
+    labels = _resource_labels(m)
+    selector = _selector_labels(m)
+    pod_meta: Dict[str, Any] = {"labels": dict(labels)}
     if getattr(m.spec, "security", None) and getattr(m.spec.security, "apparmor_profile", None):
         ann_key = f"container.apparmor.security.beta.kubernetes.io/{m.metadata.name}"
         pod_meta["annotations"] = {ann_key: str(m.spec.security.apparmor_profile)}
@@ -697,10 +761,14 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
     pod = {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
-        "metadata": {"name": m.metadata.name, "namespace": opts.namespace},
+        "metadata": {
+            "name": m.metadata.name,
+            "namespace": _resolve_namespace(m, opts),
+            "labels": labels,
+        },
         "spec": {
             "replicas": int(m.spec.replicas),
-            "selector": {"matchLabels": {"app": m.metadata.name}},
+            "selector": {"matchLabels": selector},
             "template": {
                 "metadata": pod_meta,
                 "spec": pod_spec,
@@ -711,14 +779,18 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
         proj = _projected_volume_from_refs(m)
         proj_name = proj["name"] if proj is not None else None
         pod["spec"]["template"]["spec"]["initContainers"] = [
-            _container_from_spec(m, csp, opts=opts, allow_probes=False, projected_volume_name=proj_name)
+            _container_from_spec(
+                m, csp, opts=opts, allow_probes=False, projected_volume_name=proj_name
+            )
             for csp in m.spec.init_containers
         ]
     return pod
     if getattr(m.spec, "init_containers", None):
         proj_name = proj["name"] if proj is not None else None
         pod["spec"]["template"]["spec"]["initContainers"] = [
-            _container_from_spec(m, csp, opts=opts, allow_probes=False, projected_volume_name=proj_name)
+            _container_from_spec(
+                m, csp, opts=opts, allow_probes=False, projected_volume_name=proj_name
+            )
             for csp in m.spec.init_containers
         ]
     return pod
@@ -743,15 +815,18 @@ def _headless_service_for_statefulset(
             }
             for p in m.spec.ports
         ]
-    spec: Dict[str, Any] = {"clusterIP": "None", "selector": {"app": m.metadata.name}}
+    labels = _resource_labels(m)
+    selector = _selector_labels(m)
+    spec: Dict[str, Any] = {"clusterIP": "None", "selector": selector}
     if ports:
         spec["ports"] = ports
     return {
         "apiVersion": "v1",
         "kind": "Service",
-        "metadata": {"name": name, "namespace": opts.namespace},
+        "metadata": {"name": name, "namespace": _resolve_namespace(m, opts), "labels": labels},
         "spec": spec,
     }
+
 
 def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, Any]:
     # Containers
@@ -818,7 +893,7 @@ def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str,
                 "maxSkew": 1,
                 "topologyKey": "kubernetes.io/hostname",
                 "whenUnsatisfiable": "ScheduleAnyway",
-                "labelSelector": {"matchLabels": {"app": m.metadata.name}},
+                "labelSelector": {"matchLabels": _selector_labels(m)},
             }
         ]
     # DNS policy/config
@@ -915,7 +990,9 @@ def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str,
     if volume_specs:
         pod_spec["volumes"] = (pod_spec.get("volumes") or []) + volume_specs
 
-    pod_meta: Dict[str, Any] = {"labels": {"app": m.metadata.name}}
+    labels = _resource_labels(m)
+    selector = _selector_labels(m)
+    pod_meta: Dict[str, Any] = {"labels": dict(labels)}
     if getattr(m.spec, "security", None) and getattr(m.spec.security, "apparmor_profile", None):
         ann_key = f"container.apparmor.security.beta.kubernetes.io/{m.metadata.name}"
         pod_meta["annotations"] = {ann_key: str(m.spec.security.apparmor_profile)}
@@ -923,11 +1000,15 @@ def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str,
     sts: Dict[str, Any] = {
         "apiVersion": "apps/v1",
         "kind": "StatefulSet",
-        "metadata": {"name": m.metadata.name, "namespace": opts.namespace},
+        "metadata": {
+            "name": m.metadata.name,
+            "namespace": _resolve_namespace(m, opts),
+            "labels": labels,
+        },
         "spec": {
             "serviceName": f"{m.metadata.name}-headless",
             "replicas": int(m.spec.replicas),
-            "selector": {"matchLabels": {"app": m.metadata.name}},
+            "selector": {"matchLabels": selector},
             "template": {"metadata": pod_meta, "spec": pod_spec},
             "updateStrategy": {"type": "RollingUpdate"},
         },
@@ -935,7 +1016,9 @@ def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str,
     if getattr(m.spec, "init_containers", None):
         proj_name = proj["name"] if proj is not None else None
         sts["spec"]["template"]["spec"]["initContainers"] = [
-            _container_from_spec(m, csp, opts=opts, allow_probes=False, projected_volume_name=proj_name)
+            _container_from_spec(
+                m, csp, opts=opts, allow_probes=False, projected_volume_name=proj_name
+            )
             for csp in m.spec.init_containers
         ]
     if vcts:
@@ -978,7 +1061,7 @@ def _ingress_from_manifest(m: AppManifest, opts: ExportOptions) -> Optional[Dict
             )
         )
     # Validate/choose pathType
-    path_type = (opts.ingress_path_type or "Prefix")
+    path_type = opts.ingress_path_type or "Prefix"
     if opts.ingress_class_name:
         cls = str(opts.ingress_class_name).lower()
         if cls.find("traefik") != -1 and path_type not in {"Prefix", "ImplementationSpecific"}:
@@ -1001,7 +1084,11 @@ def _ingress_from_manifest(m: AppManifest, opts: ExportOptions) -> Optional[Dict
         if secret:
             tls_entry["secretName"] = secret
         spec["tls"] = [tls_entry]
-    meta: Dict[str, Any] = {"name": m.metadata.name, "namespace": opts.namespace}
+    meta: Dict[str, Any] = {
+        "name": m.metadata.name,
+        "namespace": _resolve_namespace(m, opts),
+        "labels": _resource_labels(m),
+    }
     if opts.ingress_annotations:
         meta.setdefault("annotations", {}).update(dict(opts.ingress_annotations))
     ing_res = {
@@ -1036,8 +1123,8 @@ def _configmap_from_ref(app: AppManifest, ref, opts: ExportOptions) -> Dict[str,
         "kind": "ConfigMap",
         "metadata": {
             "name": ref.name,
-            "namespace": opts.namespace,
-            "labels": {"app": app.metadata.name},
+            "namespace": _resolve_namespace(app, opts),
+            "labels": _resource_labels(app),
         },
         "data": data or None,
     }
@@ -1066,8 +1153,8 @@ def _secret_from_ref(app: AppManifest, ref, opts: ExportOptions) -> Dict[str, An
         "kind": "Secret",
         "metadata": {
             "name": ref.name,
-            "namespace": opts.namespace,
-            "labels": {"app": app.metadata.name},
+            "namespace": _resolve_namespace(app, opts),
+            "labels": _resource_labels(app),
         },
         **body,
     }
@@ -1080,6 +1167,7 @@ def _projected_volume_from_refs(app: AppManifest) -> Optional[Dict[str, Any]]:
     The volume is mounted by callers at /var/run/ae/config.
     """
     sources: List[Dict[str, Any]] = []
+
     # group items per ref for compactness
     def _items_from(files: list[dict]) -> List[Dict[str, str]]:
         items: List[Dict[str, str]] = []
@@ -1112,6 +1200,7 @@ def _explicit_volumes_from_refs(app: AppManifest) -> List[Dict[str, Any]]:
     Backward-compat: we still keep the single projected volume; these are additive.
     """
     vols: List[Dict[str, Any]] = []
+
     def _items(files: list[dict]) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
         for f in files or []:
@@ -1127,14 +1216,25 @@ def _explicit_volumes_from_refs(app: AppManifest) -> List[Dict[str, Any]]:
                     pass
             out.append(ent)
         return out
+
     for ref in getattr(app.spec, "config_refs", []) or []:
         items = _items(getattr(ref, "files", []) or [])
         if items:
-            vols.append({"name": f"{app.metadata.name}-cfg-{ref.name}", "configMap": {"name": ref.name, "items": items}})
+            vols.append(
+                {
+                    "name": f"{app.metadata.name}-cfg-{ref.name}",
+                    "configMap": {"name": ref.name, "items": items},
+                }
+            )
     for ref in getattr(app.spec, "secret_refs", []) or []:
         items = _items(getattr(ref, "files", []) or [])
         if items:
-            vols.append({"name": f"{app.metadata.name}-sec-{ref.name}", "secret": {"secretName": ref.name, "items": items}})
+            vols.append(
+                {
+                    "name": f"{app.metadata.name}-sec-{ref.name}",
+                    "secret": {"secretName": ref.name, "items": items},
+                }
+            )
     return vols
 
 
@@ -1147,8 +1247,8 @@ def _pvc_from_storage(app: AppManifest, s, opts: ExportOptions) -> Dict[str, Any
         "kind": "PersistentVolumeClaim",
         "metadata": {
             "name": _storage_claim_name(app.metadata.name, s_name or "data"),
-            "namespace": opts.namespace,
-            "labels": {"app": app.metadata.name},
+            "namespace": _resolve_namespace(app, opts),
+            "labels": _resource_labels(app),
         },
         "spec": {
             "accessModes": list(opts.pvc_access_modes or ["ReadWriteOnce"]),
@@ -1165,6 +1265,8 @@ def export_k8s_docs(
 ) -> List[Dict[str, Any]]:
     """Produce a list of K8s resource dicts from a manifest."""
     opts = options or ExportOptions()
+    ns = _resolve_namespace(manifest, opts)
+    labels = _resource_labels(manifest)
     docs: List[Dict[str, Any]] = []
     wk = (opts.workload_kind or "Deployment").lower()
     # Strict requests gating (opt-in)
@@ -1179,9 +1281,9 @@ def export_k8s_docs(
             )
     # Optional Namespace emission (so it exists before other objects when applying whole file)
     if bool(getattr(opts, "emit_namespace", False)):
-        ns_meta = {"name": opts.namespace}
+        ns_meta = {"name": ns}
         labels: Dict[str, Any] = {}
-        pse = (getattr(opts, "pod_security_enforce", None) or None)
+        pse = getattr(opts, "pod_security_enforce", None) or None
         if pse:
             labels["pod-security.kubernetes.io/enforce"] = str(pse)
             # default to latest policy version
@@ -1229,7 +1331,11 @@ def export_k8s_docs(
             {
                 "apiVersion": "v1",
                 "kind": "ServiceAccount",
-                "metadata": {"name": opts.service_account_name, "namespace": opts.namespace},
+                "metadata": {
+                    "name": opts.service_account_name,
+                    "namespace": ns,
+                    "labels": labels,
+                },
             }
         )
         # Emit a minimal Namespaced Role and RoleBinding tied to this ServiceAccount.
@@ -1240,7 +1346,7 @@ def export_k8s_docs(
             {
                 "apiVersion": "rbac.authorization.k8s.io/v1",
                 "kind": "Role",
-                "metadata": {"name": role_name, "namespace": opts.namespace},
+                "metadata": {"name": role_name, "namespace": ns, "labels": labels},
                 "rules": [
                     {  # Core read access to pods/services/endpoints/events (no secrets)
                         "apiGroups": [""],
@@ -1261,9 +1367,9 @@ def export_k8s_docs(
             {
                 "apiVersion": "rbac.authorization.k8s.io/v1",
                 "kind": "RoleBinding",
-                "metadata": {"name": rb_name, "namespace": opts.namespace},
+                "metadata": {"name": rb_name, "namespace": ns, "labels": labels},
                 "subjects": [
-                    {"kind": "ServiceAccount", "name": opts.service_account_name, "namespace": opts.namespace}
+                    {"kind": "ServiceAccount", "name": opts.service_account_name, "namespace": ns}
                 ],
                 "roleRef": {
                     "apiGroup": "rbac.authorization.k8s.io",
@@ -1275,7 +1381,7 @@ def export_k8s_docs(
     # Optional PodDisruptionBudget (not applicable to Job/CronJob)
     if wk not in {"job", "cronjob"} and opts.emit_pdb and int(manifest.spec.replicas) > 1:
         # Choose either minAvailable or maxUnavailable; prefer explicit provided one.
-        spec_pdb: Dict[str, Any] = {"selector": {"matchLabels": {"app": manifest.metadata.name}}}
+        spec_pdb: Dict[str, Any] = {"selector": {"matchLabels": _selector_labels(manifest)}}
         if opts.pdb_max_unavailable is not None and opts.pdb_min_available is not None:
             raise ValueError(
                 "PDB minAvailable and maxUnavailable are mutually exclusive; provide only one"
@@ -1297,7 +1403,11 @@ def export_k8s_docs(
             {
                 "apiVersion": "policy/v1",
                 "kind": "PodDisruptionBudget",
-                "metadata": {"name": f"{manifest.metadata.name}-pdb", "namespace": opts.namespace},
+                "metadata": {
+                    "name": f"{manifest.metadata.name}-pdb",
+                    "namespace": ns,
+                    "labels": labels,
+                },
                 "spec": spec_pdb,
             }
         )
@@ -1376,7 +1486,11 @@ def export_k8s_docs(
             {
                 "apiVersion": "autoscaling/v2",
                 "kind": "HorizontalPodAutoscaler",
-                "metadata": {"name": f"{manifest.metadata.name}", "namespace": opts.namespace},
+                "metadata": {
+                    "name": f"{manifest.metadata.name}",
+                    "namespace": ns,
+                    "labels": labels,
+                },
                 "spec": {
                     "scaleTargetRef": {
                         "apiVersion": "apps/v1",
@@ -1386,12 +1500,24 @@ def export_k8s_docs(
                     "minReplicas": int(opts.hpa_min),
                     "maxReplicas": int(opts.hpa_max),
                     "metrics": metrics,
-                    **({
-                        "behavior": {
-                            **({"scaleUp": dict(opts.hpa_behavior_up)} if opts.hpa_behavior_up else {}),
-                            **({"scaleDown": dict(opts.hpa_behavior_down)} if opts.hpa_behavior_down else {}),
+                    **(
+                        {
+                            "behavior": {
+                                **(
+                                    {"scaleUp": dict(opts.hpa_behavior_up)}
+                                    if opts.hpa_behavior_up
+                                    else {}
+                                ),
+                                **(
+                                    {"scaleDown": dict(opts.hpa_behavior_down)}
+                                    if opts.hpa_behavior_down
+                                    else {}
+                                ),
+                            }
                         }
-                    } if (opts.hpa_behavior_up or opts.hpa_behavior_down) else {})
+                        if (opts.hpa_behavior_up or opts.hpa_behavior_down)
+                        else {}
+                    ),
                 },
             }
         )
@@ -1425,7 +1551,11 @@ def _job_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, Any]:
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
-        "metadata": {"name": m.metadata.name, "namespace": opts.namespace},
+        "metadata": {
+            "name": m.metadata.name,
+            "namespace": _resolve_namespace(m, opts),
+            "labels": _resource_labels(m),
+        },
         "spec": body,
     }
 
@@ -1453,7 +1583,11 @@ def _cronjob_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, Any
     return {
         "apiVersion": "batch/v1",
         "kind": "CronJob",
-        "metadata": {"name": m.metadata.name, "namespace": opts.namespace},
+        "metadata": {
+            "name": m.metadata.name,
+            "namespace": _resolve_namespace(m, opts),
+            "labels": _resource_labels(m),
+        },
         "spec": spec,
     }
 
@@ -1465,11 +1599,16 @@ def _network_policy_from_manifest(m: AppManifest, opts: ExportOptions) -> Option
     policy_types = list(spec.get("policyTypes") or [])
     ingress = list(spec.get("ingress") or [])
     egress = list(spec.get("egress") or [])
-    pod_selector = spec.get("podSelector") or {"matchLabels": {"app": m.metadata.name}}
+    labels = _resource_labels(m)
+    pod_selector = spec.get("podSelector") or {"matchLabels": _selector_labels(m)}
     body = {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",
-        "metadata": {"name": m.metadata.name, "namespace": opts.namespace},
+        "metadata": {
+            "name": m.metadata.name,
+            "namespace": _resolve_namespace(m, opts),
+            "labels": labels,
+        },
         "spec": {"podSelector": pod_selector},
     }
     if policy_types:
@@ -1488,7 +1627,7 @@ def _default_network_policy(m: AppManifest, opts: ExportOptions) -> dict:
     if opts.np_default_deny_egress:
         policy_types.append("Egress")
     spec: Dict[str, Any] = {
-        "podSelector": {"matchLabels": {"app": m.metadata.name}},
+        "podSelector": {"matchLabels": _selector_labels(m)},
         "policyTypes": policy_types or ["Ingress"],
     }
     # Default deny is achieved by providing no rules for selected types
@@ -1498,22 +1637,26 @@ def _default_network_policy(m: AppManifest, opts: ExportOptions) -> dict:
         egress: List[Dict[str, Any]] = []
         # Optionally allow DNS egress (TCP/UDP 53) to anywhere
         if opts.np_allow_dns:
-            egress.append({
-                "to": [ {"ipBlock": {"cidr": "0.0.0.0/0"}} ],
-                "ports": [
-                    {"protocol": "UDP", "port": 53},
-                    {"protocol": "TCP", "port": 53},
-                ],
-            })
+            egress.append(
+                {
+                    "to": [{"ipBlock": {"cidr": "0.0.0.0/0"}}],
+                    "ports": [
+                        {"protocol": "UDP", "port": 53},
+                        {"protocol": "TCP", "port": 53},
+                    ],
+                }
+            )
         # Optionally allow HTTP/HTTPS egress (TCP 80/443)
         if opts.np_allow_web:
-            egress.append({
-                "to": [ {"ipBlock": {"cidr": "0.0.0.0/0"}} ],
-                "ports": [
-                    {"protocol": "TCP", "port": 80},
-                    {"protocol": "TCP", "port": 443},
-                ],
-            })
+            egress.append(
+                {
+                    "to": [{"ipBlock": {"cidr": "0.0.0.0/0"}}],
+                    "ports": [
+                        {"protocol": "TCP", "port": 80},
+                        {"protocol": "TCP", "port": 443},
+                    ],
+                }
+            )
         # Optionally allow internal RFC1918 destinations for selected ports
         if opts.np_allow_internal_ports:
             private_v4 = [
@@ -1536,7 +1679,11 @@ def _default_network_policy(m: AppManifest, opts: ExportOptions) -> dict:
     return {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",
-        "metadata": {"name": m.metadata.name, "namespace": opts.namespace},
+        "metadata": {
+            "name": m.metadata.name,
+            "namespace": _resolve_namespace(m, opts),
+            "labels": _resource_labels(m),
+        },
         "spec": spec,
     }
 
@@ -1550,5 +1697,7 @@ def export_k8s_yaml(manifest: AppManifest, *, options: Optional[ExportOptions] =
             yaml.safe_dump(d, sort_keys=False, default_flow_style=False, indent=2).rstrip()
         )
     return "\n---\n".join(parts) + "\n"
+
+
 # ruff: noqa
 # ruff: noqa: E501,UP006,UP007,UP017,UP035,S110,S112,SIM102,SIM105,B009,ARG001,ARG002

@@ -23,6 +23,7 @@ from ae.cli.__main__ import (
     secret_manager_factory,
     state_store_from_env,
 )
+from ae.controller.spec import app_key, format_app_ref, parse_app_ref
 from ae.observability.logging import configure_logging
 from ae.controller.reconciler import Reconciler
 from ae.controller.state import SQLiteStateStore
@@ -41,6 +42,15 @@ class ParsedRef:
     name: str
 
 
+def _resolve_app_name(raw: str) -> str:
+    ns, base = parse_app_ref(raw)
+    return app_key(base, ns)
+
+
+def _display_app_name(app_name: str) -> str:
+    return format_app_ref(app_name)
+
+
 def parse_ref(arg: str, expected: tuple[str, ...]) -> ParsedRef:
     """Parse resource reference like "app/echo" or provide NAME + kind default.
 
@@ -52,12 +62,17 @@ def parse_ref(arg: str, expected: tuple[str, ...]) -> ParsedRef:
     - Kinds are normalized to singular: "app".
     """
 
+    name = arg
     if "/" in arg:
-        raw_kind, name = arg.split("/", 1)
+        raw_kind, maybe_name = arg.split("/", 1)
         kind = raw_kind.lower()
+        if kind in {"app", "apps", "deployment", "deployments", "deploy", "workload", "workloads"}:
+            name = maybe_name
+        else:
+            kind = expected[0]
+            name = arg
     else:
         kind = expected[0]
-        name = arg
 
     app_aliases = {
         "app",
@@ -73,6 +88,8 @@ def parse_ref(arg: str, expected: tuple[str, ...]) -> ParsedRef:
         raise argparse.ArgumentTypeError(
             f"Unsupported resource kind '{kind}'. Expected one of: {', '.join(expected)}"
         )
+    if kind_norm == "app":
+        name = _resolve_app_name(name)
     return ParsedRef(kind=kind_norm, name=name)
 
 
@@ -222,7 +239,7 @@ def handle_get(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
             node = pod.get("node") or "-"
             print(
                 f"{pod.get('replica_id')}: ready={pod.get('ready')} live={pod.get('live')} "
-                f"status={pod.get('status')} node={node} app={pod.get('app')}"
+                f"status={pod.get('status')} node={node} app={_display_app_name(pod.get('app'))}"
             )
 
     def _print_services(services: list[dict]) -> None:
@@ -230,7 +247,7 @@ def handle_get(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
             _print_json(services)
             return
         for svc in services:
-            print(f"{svc.get('app')}: cluster_ip={svc.get('cluster_ip')}")
+            print(f"{_display_app_name(svc.get('app'))}: cluster_ip={svc.get('cluster_ip')}")
 
     if ns.resource in {"pods", "pod"}:
         app_filter = None
@@ -248,7 +265,7 @@ def handle_get(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
                     "workload",
                     "workloads",
                 }:
-                    app_filter = val
+                    app_filter = _resolve_app_name(val)
                 else:
                     replica_filter = raw
             else:
@@ -259,8 +276,9 @@ def handle_get(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
             if matches:
                 _print_pods(matches)
                 return 0
-            if store.get_status(replica_filter) is not None:
-                pods = _collect_pods(app_filter=replica_filter)
+            resolved = _resolve_app_name(replica_filter)
+            if store.get_status(resolved) is not None:
+                pods = _collect_pods(app_filter=resolved)
             else:
                 print(f"No pod/replica recorded for {replica_filter}")
                 return 1
@@ -272,10 +290,10 @@ def handle_get(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
 
     if ns.resource in {"services", "service"}:
         if ns.name:
-            app = ns.name
+            app = _resolve_app_name(ns.name)
             rec = store.get_service(app)
             if rec is None:
-                print(f"No service recorded for {app}")
+                print(f"No service recorded for {_display_app_name(app)}")
                 return 1
             endpoints = store.list_service_endpoints(app)
             if ns.output == "json":
@@ -296,13 +314,11 @@ def handle_get(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
                     }
                 )
                 return 0
-            print(f"{rec.app_name}: cluster_ip={rec.cluster_ip}")
+            print(f"{_display_app_name(rec.app_name)}: cluster_ip={rec.cluster_ip}")
             if rec.ports:
                 print(f"  ports: {rec.ports}")
             for ep in endpoints:
-                print(
-                    f"  - port={ep.port} ip={ep.ip} target={ep.target_port} ready={ep.ready}"
-                )
+                print(f"  - port={ep.port} ip={ep.ip} target={ep.target_port} ready={ep.ready}")
             return 0
         services = store.list_services()
         if not services:
@@ -316,7 +332,7 @@ def handle_get(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
         ref = parse_ref(f"{ns.resource}/{ns.name}", ("app",))
         status = store.get_status(ref.name)
         if status is None:
-            print(f"No status recorded for {ref.name}")
+            print(f"No status recorded for {_display_app_name(ref.name)}")
             return 1
         print(format_status(status))
         return 0
@@ -334,7 +350,7 @@ def handle_describe(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
     ref = parse_ref(ns.ref, ("app",))
     status = store.get_status(ref.name)
     if status is None:
-        print(f"No status recorded for {ref.name}")
+        print(f"No status recorded for {_display_app_name(ref.name)}")
         return 1
     print(format_status(status))
 
@@ -357,7 +373,7 @@ def handle_describe(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
 def handle_apply(ns: argparse.Namespace, reconciler: Reconciler) -> int:
     report = reconciler.reconcile_manifest_path(ns.file)
     print(
-        f"applied {report.app_name} rev={report.revision}({report.revision_status}) "
+        f"applied {_display_app_name(report.app_name)} rev={report.revision}({report.revision_status}) "
         f"ops=+{report.created}/~{report.updated}/-{report.removed} "
         f"ready={report.ready_replicas} live={report.live_replicas}"
     )
@@ -369,7 +385,7 @@ def handle_rollout(ns: argparse.Namespace, store: SQLiteStateStore, reconciler: 
         ref = parse_ref(ns.ref, ("app",))
         revs = store.list_revisions(ref.name, limit=ns.limit)
         if not revs:
-            print(f"No revisions recorded for {ref.name}.")
+            print(f"No revisions recorded for {_display_app_name(ref.name)}.")
             return 0
         for info in revs:
             print(
@@ -393,7 +409,9 @@ def handle_rollout(ns: argparse.Namespace, store: SQLiteStateStore, reconciler: 
             print(str(exc))
             return 1
         report = reconciler.reconcile(manifest)
-        print(f"rolled back {ref.name} to revision {report.revision} ({report.revision_status})")
+        print(
+            f"rolled back {_display_app_name(ref.name)} to revision {report.revision} ({report.revision_status})"
+        )
         return 0
 
     print(f"Unsupported rollout command: {ns.roll_cmd}")
@@ -421,7 +439,7 @@ def handle_events_k1s(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
     ref = parse_ref(ns.ref, ("app",))
     events = store.list_events(ref.name, limit=ns.limit)
     if not events:
-        print(f"No events recorded for {ref.name}.")
+        print(f"No events recorded for {_display_app_name(ref.name)}.")
         return 0
     for e in events:
         ts = e.created_at.strftime("%Y-%m-%d %H:%M:%S")
@@ -449,7 +467,7 @@ def handle_delete_k1s(
     except Exception:
         pass
     store.delete_app_state(ref.name, purge_history=bool(getattr(ns, "purge", False)))
-    print(f"deleted {ref.name}: removed={removed} containers")
+    print(f"deleted {_display_app_name(ref.name)}: removed={removed} containers")
     return 0
 
 
@@ -459,7 +477,9 @@ def handle_scale_k1s(
     ref = parse_ref(ns.ref, ("app",))
     revs = store.list_revisions(ref.name, limit=1)
     if not revs:
-        print(f"No revisions recorded for {ref.name}. Try 'k1s apply -f <manifest>'.")
+        print(
+            f"No revisions recorded for {_display_app_name(ref.name)}. Try 'k1s apply -f <manifest>'."
+        )
         return 1
     manifest = store.get_revision_manifest(ref.name, revs[0].revision)
     new_spec = manifest.spec.model_copy(update={"replicas": int(ns.replicas)})
@@ -473,7 +493,7 @@ def handle_scale_k1s(
         pass
     report = reconciler.reconcile(updated)
     print(
-        f"scaled {ref.name} to replicas={ns.replicas}: rev={report.revision}({report.revision_status})"
+        f"scaled {_display_app_name(ref.name)} to replicas={ns.replicas}: rev={report.revision}({report.revision_status})"
     )
     return 0
 

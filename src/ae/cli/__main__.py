@@ -8,15 +8,23 @@ import logging
 import os
 import shutil
 from collections.abc import Callable
-from typing import Any
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from ae import __version__ as AE_VERSION
 from ae import build_info as AE_BUILD_INFO
 from ae.config.manager import ConfigManager
 from ae.controller.health import HealthManager
 from ae.controller.reconciler import Reconciler, ReconcileReport
+from ae.controller.spec import (
+    AppManifest,
+    app_key,
+    app_key_for_manifest,
+    format_app_ref,
+    parse_app_ref,
+    split_app_key,
+)
 from ae.controller.state import AppStatus, SQLiteStateStore
 from ae.ingress import CaddyIngressManager, IngressService
 from ae.k8s.check import k8s_portability_issues
@@ -37,7 +45,7 @@ from ae.secrets import SecretManager
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="ae", description="Minimal workload engine CLI (App manifests)"
+        prog="ae", description="Minimal workload engine CLI (Deployment/App manifests)"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     parser.add_argument("--verbose", action="store_true", help="Enable DEBUG logging")
@@ -124,7 +132,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     certs_parser = subparsers.add_parser("certs", help="List issued/revoked agent certs")
-    certs_parser.add_argument("--root", default=None, help="TLS dir (default AE_TLS_DIR or state/tls)")
+    certs_parser.add_argument(
+        "--root", default=None, help="TLS dir (default AE_TLS_DIR or state/tls)"
+    )
     certs_parser.add_argument("--json", action="store_true", help="Emit JSON")
 
     rollback_parser = subparsers.add_parser("rollback", help="Rollback a workload revision")
@@ -185,7 +195,10 @@ def build_parser() -> argparse.ArgumentParser:
     reg_secret.add_argument("--name", default="regcred", help="Secret name (default: regcred)")
     reg_secret.add_argument("--namespace", default="default", help="Namespace (default: default)")
     reg_secret.add_argument(
-        "--host", action="append", default=[], help="Restrict to specific registry host(s); repeatable"
+        "--host",
+        action="append",
+        default=[],
+        help="Restrict to specific registry host(s); repeatable",
     )
     reg_secret.add_argument("--output", "-o", default="-", help="Output file ('-' for stdout)")
 
@@ -196,7 +209,9 @@ def build_parser() -> argparse.ArgumentParser:
     events_parser.add_argument("name", help="Workload (App) name")
     events_parser.add_argument("--limit", type=int, default=20)
 
-    services_parser = subparsers.add_parser("services", help="List Services (cluster IPs/endpoints)")
+    services_parser = subparsers.add_parser(
+        "services", help="List Services (cluster IPs/endpoints)"
+    )
     services_parser.add_argument("--json", action="store_true", help="Emit JSON output")
 
     history_parser = subparsers.add_parser("history", help="Show recent probe evaluations")
@@ -204,8 +219,15 @@ def build_parser() -> argparse.ArgumentParser:
     history_parser.add_argument("--limit", type=int, default=20)
     history_parser.add_argument("--replica", default=None, help="Filter by replica id")
     history_parser.add_argument("--json", action="store_true", help="Emit JSON output")
-    history_parser.add_argument("--since", default=None, help="Show entries since a relative duration (e.g., 10m, 2h)")
-    history_parser.add_argument("--since-time", dest="since_time", default=None, help="Show entries since an RFC3339 timestamp (e.g., 2025-11-10T12:34:00Z)")
+    history_parser.add_argument(
+        "--since", default=None, help="Show entries since a relative duration (e.g., 10m, 2h)"
+    )
+    history_parser.add_argument(
+        "--since-time",
+        dest="since_time",
+        default=None,
+        help="Show entries since an RFC3339 timestamp (e.g., 2025-11-10T12:34:00Z)",
+    )
 
     # config validate
     cfg_parser = subparsers.add_parser("config", help="Manage config resources")
@@ -281,7 +303,11 @@ def build_parser() -> argparse.ArgumentParser:
     # export-k8s (render Kubernetes YAML)
     xk = subparsers.add_parser("export-k8s", help="Export a manifest to Kubernetes YAML")
     xk.add_argument("-f", "--file", type=Path, required=True)
-    xk.add_argument("--namespace", default="default", help="K8s namespace (default: default)")
+    xk.add_argument(
+        "--namespace",
+        default=None,
+        help="K8s namespace (default: manifest metadata.namespace or default)",
+    )
     xk.add_argument(
         "--ingress-class", default=None, help="Ingress class name (e.g., traefik or nginx)"
     )
@@ -323,7 +349,11 @@ def build_parser() -> argparse.ArgumentParser:
     # Job/CronJob options
     xk.add_argument("--job-backoff-limit", type=int, default=None)
     xk.add_argument("--job-ttl-seconds-after-finished", type=int, default=None)
-    xk.add_argument("--cron-schedule", default=None, help="Cron expression for CronJob (required for --workload cronjob)")
+    xk.add_argument(
+        "--cron-schedule",
+        default=None,
+        help="Cron expression for CronJob (required for --workload cronjob)",
+    )
     xk.add_argument(
         "--cron-concurrency-policy",
         choices=["Allow", "Forbid", "Replace"],
@@ -449,11 +479,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--validate", action="store_true", help="Validate generated YAML structure (offline checks)"
     )
     # NetworkPolicy helper flags
-    xk.add_argument("--emit-np", action="store_true", help="Emit a default NetworkPolicy (deny-all per type)")
+    xk.add_argument(
+        "--emit-np", action="store_true", help="Emit a default NetworkPolicy (deny-all per type)"
+    )
     xk.add_argument("--np-deny-ingress", action="store_true", help="Default deny ingress")
     xk.add_argument("--np-deny-egress", action="store_true", help="Default deny egress")
-    xk.add_argument("--np-allow-dns", action="store_true", help="Allow DNS egress (TCP/UDP 53) when denying egress")
-    xk.add_argument("--np-allow-web", action="store_true", help="Allow HTTP/HTTPS egress (TCP 80/443) when denying egress")
+    xk.add_argument(
+        "--np-allow-dns",
+        action="store_true",
+        help="Allow DNS egress (TCP/UDP 53) when denying egress",
+    )
+    xk.add_argument(
+        "--np-allow-web",
+        action="store_true",
+        help="Allow HTTP/HTTPS egress (TCP 80/443) when denying egress",
+    )
     xk.add_argument(
         "--np-preset",
         choices=["web", "backend"],
@@ -475,7 +515,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Inject a basic topologySpreadConstraints across kubernetes.io/hostname when replicas>1",
     )
     # Namespace + PodSecurity labels
-    xk.add_argument("--emit-namespace", action="store_true", help="Emit a Namespace object for --namespace")
+    xk.add_argument(
+        "--emit-namespace",
+        action="store_true",
+        help="Emit a Namespace object for the resolved namespace",
+    )
     xk.add_argument(
         "--psa-enforce",
         choices=["baseline", "restricted"],
@@ -499,7 +543,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kc.add_argument("--json", action="store_true", help="Emit JSON output")
     kc.add_argument("--emit", action="store_true", help="Print the exported YAML used for checks")
-    kc.add_argument("--kubeconform", action="store_true", help="Run kubeconform on exported YAML (if available)")
+    kc.add_argument(
+        "--kubeconform", action="store_true", help="Run kubeconform on exported YAML (if available)"
+    )
     kc.add_argument("--kubeconform-bin", default=os.getenv("KUBECONFORM_BIN", "kubeconform"))
     kc.add_argument("--kube-version", default=None, help="Set --kubernetes-version for kubeconform")
     kc.add_argument(
@@ -529,7 +575,7 @@ def build_parser() -> argparse.ArgumentParser:
             Path("specs/examples/multi-replica-echo.yaml"),
             Path("specs/examples/echo-hpa.yaml"),
         ],
-        help="List of App manifests to score (files)",
+        help="List of Deployment/App manifests to score (files)",
     )
     kr.add_argument("--namespace", default="demo")
     kr.add_argument(
@@ -768,6 +814,7 @@ def handle_registry(args: argparse.Namespace) -> int:
         import json as _json
 
         import yaml as _yaml
+
         prov = RegistryAuthProvider()
         entries = prov.list_registries()
         if not entries:
@@ -795,7 +842,10 @@ def handle_registry(args: argparse.Namespace) -> int:
         sec = {
             "apiVersion": "v1",
             "kind": "Secret",
-            "metadata": {"name": getattr(args, "name", "regcred"), "namespace": getattr(args, "namespace", "default")},
+            "metadata": {
+                "name": getattr(args, "name", "regcred"),
+                "namespace": getattr(args, "namespace", "default"),
+            },
             "type": "kubernetes.io/dockerconfigjson",
             "data": {".dockerconfigjson": b64},
         }
@@ -834,9 +884,7 @@ def handle_registry(args: argparse.Namespace) -> int:
                 try:
                     import subprocess as sp
 
-                    cp = sp.run(
-                        ["gh", "auth", "token"], capture_output=True, text=True, check=True
-                    )  # noqa: S603,S607 - fixed gh binary; shell disabled
+                    cp = sp.run(["gh", "auth", "token"], capture_output=True, text=True, check=True)  # noqa: S603,S607 - fixed gh binary; shell disabled
                     p = (cp.stdout or "").strip()
                 except Exception:
                     p = p
@@ -1074,7 +1122,7 @@ def registry_auth_factory() -> RegistryAuthProvider:
 
 def format_report(report: ReconcileReport) -> str:
     return (
-        f"Applied {report.app_name}: +{report.created}/~{report.updated}/-{report.removed}, "
+        f"Applied {_display_app_name(report.app_name)}: +{report.created}/~{report.updated}/-{report.removed}, "
         f"ready={report.ready_replicas}, live={report.live_replicas}, "
         f"rev={report.revision}({report.revision_status})"
     )
@@ -1082,7 +1130,7 @@ def format_report(report: ReconcileReport) -> str:
 
 def format_status(status: AppStatus) -> str:
     parts = [
-        f"{status.app_name}: desired={status.desired_replicas}",
+        f"{_display_app_name(status.app_name)}: desired={status.desired_replicas}",
         f"ready={status.ready_replicas}",
         f"live={status.live_replicas}",
         f"rev={status.revision}({status.revision_status})",
@@ -1178,6 +1226,7 @@ def handle_apply(
     args: argparse.Namespace, reconciler: Reconciler, global_args: argparse.Namespace | None = None
 ) -> int:
     import yaml as _yaml
+
     from ae.k8s import convert as k8s_convert
 
     def _load_yaml_documents(path: Path) -> list[dict]:
@@ -1191,6 +1240,9 @@ def handle_apply(
 
     def _k8s_kind(doc: dict) -> str:
         return str(doc.get("kind") or "")
+
+    def _k8s_api(doc: dict) -> str:
+        return str(doc.get("apiVersion") or "")
 
     def _k8s_meta(doc: dict) -> dict:
         meta = doc.get("metadata") or {}
@@ -1208,18 +1260,22 @@ def handle_apply(
     def _should_convert_k8s(docs: list[dict], force: bool) -> bool:
         if force:
             return True
-        if len(docs) == 1:
-            if str(docs[0].get("kind") or "") == "App":
-                return False
+
+        def _is_native(doc: dict) -> bool:
+            return _k8s_api(doc) == "ae.dev/v1alpha1" and _k8s_kind(doc) in {"App", "Deployment"}
+
+        if len(docs) == 1 and _is_native(docs[0]):
+            return False
         for doc in docs:
             kind = _k8s_kind(doc)
-            if kind and kind != "App":
+            api = _k8s_api(doc)
+            if api == "ae.dev/v1alpha1" and kind in {"App", "Deployment"}:
+                continue
+            if kind:
                 return True
         return False
 
-    def _convert_k8s_documents(docs: list[dict]) -> tuple["AppManifest", list[str]]:
-        from ae.controller.spec import AppManifest
-
+    def _convert_k8s_documents(docs: list[dict]) -> tuple[AppManifest, list[str]]:
         workloads: list[dict] = []
         services: list[dict] = []
         ingresses: list[dict] = []
@@ -1239,7 +1295,9 @@ def handle_apply(
             raise ValueError(f"unsupported Kubernetes kinds: {', '.join(sorted(set(unsupported)))}")
         if len(workloads) != 1:
             names = ", ".join(_k8s_name(w) or "<unnamed>" for w in workloads)
-            raise ValueError(f"expected exactly one workload (Deployment/StatefulSet/DaemonSet/Job), got {len(workloads)}: {names}")
+            raise ValueError(
+                f"expected exactly one workload (Deployment/StatefulSet/DaemonSet/Job), got {len(workloads)}: {names}"
+            )
 
         workload = workloads[0]
         workload_kind = _k8s_kind(workload)
@@ -1260,7 +1318,10 @@ def handle_apply(
                 target_key = workload_key
             else:
                 target = k8s_convert.fallback_service_target(svc, selector)
-                if target in {workload_name, k8s_convert.app_name_for_k8s(workload_ns, workload_name)}:
+                if target in {
+                    workload_name,
+                    k8s_convert.app_name_for_k8s(workload_ns, workload_name),
+                }:
                     target_key = workload_key
             if not target_key:
                 continue
@@ -1309,6 +1370,12 @@ def handle_apply(
 
         return manifest, warnings
 
+    def _warn_deprecated_kind(kind: str | None) -> None:
+        if str(kind or "") == "App":
+            print(
+                "warning: kind 'App' is deprecated; use kind 'Deployment' (apiVersion: ae.dev/v1alpha1)"
+            )
+
     # Remote apply via API when --server is set
     if global_args and getattr(global_args, "server", None):
         base = str(global_args.server)
@@ -1326,8 +1393,9 @@ def handle_apply(
                 payload = manifest.model_dump(by_alias=True)
             else:
                 if len(docs) != 1:
-                    raise ValueError("expected a single App manifest document")
+                    raise ValueError("expected a single Deployment/App manifest document")
                 payload = docs[0]
+                _warn_deprecated_kind(payload.get("kind") if isinstance(payload, dict) else None)
             resp = _http_post_json(base, "/apply", payload, tok)
             print(
                 f"applied {resp.get('app')} rev={resp.get('revision')}({resp.get('status')}) "
@@ -1348,14 +1416,15 @@ def handle_apply(
                 print(f"warning: {w}")
         else:
             if len(docs) != 1:
-                raise ManifestError("expected a single App manifest document")
+                raise ManifestError("expected a single Deployment/App manifest document")
             manifest = load_manifest(args.file)
+            _warn_deprecated_kind(getattr(manifest, "kind", None))
     except (ManifestError, ValueError) as exc:
         print(f"failed to read manifest: {exc}")
         return 1
     try:
         store = state_store_from_env()
-        existing = store.get_registered_entry(manifest.metadata.name)
+        existing = store.get_registered_entry(app_key_for_manifest(manifest))
         src = existing.source if existing else "cli"
         lbls = existing.labels if existing else getattr(manifest.metadata, "labels", None)
         store.register_app(manifest, source=src, labels=lbls)
@@ -1472,6 +1541,7 @@ def _fmt_taints(taints: list) -> str:
                 parts.append(f"{key}:{eff}")
     return ",".join(parts) if parts else "-"
 
+
 def _node_status_with_staleness(status, *, grace_seconds: int = 40) -> str:  # type: ignore[no-untyped-def]
     if status is None:
         return "Unknown"
@@ -1489,8 +1559,10 @@ def handle_nodes(
     ns: argparse.Namespace, store: SQLiteStateStore, runtime: RuntimeAdapter | None = None
 ) -> int:
     # Mutating operations: cordon/uncordon/drain
-    if getattr(ns, "cordon", False) or getattr(ns, "uncordon", False) or getattr(
-        ns, "drain", False
+    if (
+        getattr(ns, "cordon", False)
+        or getattr(ns, "uncordon", False)
+        or getattr(ns, "drain", False)
     ):
         if not getattr(ns, "name", None):
             print("node name is required for cordon/uncordon/drain")
@@ -1577,17 +1649,18 @@ def handle_delete(
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
         try:
+            app_name = _resolve_app_name(args.name) or args.name
             resp = _http_post_json(
-                base, f"/delete/{args.name}?purge={'1' if args.purge else '0'}", {}, tok
+                base, f"/delete/{app_name}?purge={'1' if args.purge else '0'}", {}, tok
             )
             print(
-                f"deleted {args.name}: removed={resp.get('removed', 0)} containers{' (purged history)' if resp.get('purged') else ''}"
+                f"deleted {_display_app_name(app_name)}: removed={resp.get('removed', 0)} containers{' (purged history)' if resp.get('purged') else ''}"
             )
             return 0
         except Exception as exc:  # noqa: BLE001
             print(f"remote delete failed: {exc}")
             return 1
-    name = args.name
+    name = _resolve_app_name(args.name) or args.name
     removed = runtime.remove_app(name)
     if ingress_service:
         try:
@@ -1619,7 +1692,7 @@ def handle_delete(
         pass
     store.delete_app_state(name, purge_history=bool(args.purge))
     print(
-        f"deleted {name}: removed={removed} containers{' (purged history)' if args.purge else ''}"
+        f"deleted {_display_app_name(name)}: removed={removed} containers{' (purged history)' if args.purge else ''}"
     )
     return 0
 
@@ -1634,20 +1707,21 @@ def handle_scale(
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
         try:
+            app_name = _resolve_app_name(args.name) or args.name
             resp = _http_post_json(
-                base, f"/scale/{args.name}", {"replicas": int(args.replicas)}, tok
+                base, f"/scale/{app_name}", {"replicas": int(args.replicas)}, tok
             )
             print(
-                f"scaled {args.name} to replicas={resp.get('replicas')} rev={resp.get('revision')}({resp.get('status')}) "
+                f"scaled {_display_app_name(app_name)} to replicas={resp.get('replicas')} rev={resp.get('revision')}({resp.get('status')}) "
             )
             return 0
         except Exception as exc:  # noqa: BLE001
             print(f"remote scale failed: {exc}")
             return 1
-    name = args.name
+    name = _resolve_app_name(args.name) or args.name
     latest = store.list_revisions(name, limit=1)
     if not latest:
-        print(f"No revisions recorded for {name}. Try 'ae apply -f <manifest>'.")
+        print(f"No revisions recorded for {_display_app_name(name)}. Try 'ae apply -f <manifest>'.")
         return 1
     manifest = store.get_revision_manifest(name, latest[0].revision)
     updated_spec = manifest.spec.model_copy(update={"replicas": int(args.replicas)})
@@ -1661,7 +1735,7 @@ def handle_scale(
         pass
     report = reconciler.reconcile(new_manifest)
     print(
-        f"scaled {name} to replicas={args.replicas}: rev={report.revision}({report.revision_status}) "
+        f"scaled {_display_app_name(name)} to replicas={args.replicas}: rev={report.revision}({report.revision_status}) "
         f"ops=+{report.created}/~{report.updated}/-{report.removed} ready={report.ready_replicas}/{report.live_replicas}"
     )
     return 0
@@ -1760,7 +1834,6 @@ def handle_backup(args: argparse.Namespace) -> int:
         return 0
 
     if args.backup_cmd == "verify":
-
         src = args.input
         with tarfile.open(src, "r:gz") as tar:
             names = set(m.name for m in tar.getmembers())
@@ -2083,22 +2156,37 @@ def _http_post_json(base: str, path: str, body: dict, token: str | None = None):
     return r.json()
 
 
+def _resolve_app_name(name: str | None) -> str | None:
+    if not name:
+        return None
+    ns, base = parse_app_ref(name)
+    return app_key(base, ns)
+
+
+def _display_app_name(app_name: str) -> str:
+    return format_app_ref(app_name)
+
+
 def handle_status(
-    args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace, runtime: RuntimeAdapter | None = None
+    args: argparse.Namespace,
+    store: SQLiteStateStore,
+    global_args: argparse.Namespace,
+    runtime: RuntimeAdapter | None = None,
 ) -> int:
     if getattr(global_args, "server", None):
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
         try:
             if args.name:
-                path = f"/status/{args.name}"
+                app_name = _resolve_app_name(args.name) or args.name
+                path = f"/status/{app_name}"
                 if args.wide:
                     path += "?details=1"
                 data = _http_get_json(base, path, tok)
                 print(
                     ", ".join(
                         [
-                            f"{data['app_name']}: desired={data['desired_replicas']}",
+                            f"{_display_app_name(data['app_name'])}: desired={data['desired_replicas']}",
                             f"ready={data['ready_replicas']}",
                             f"live={data['live_replicas']}",
                             f"rev={data['revision']}({data['revision_status']})",
@@ -2138,7 +2226,7 @@ def handle_status(
             for s0 in page.get("items", []):
                 line = ", ".join(
                     [
-                        f"{s0['app_name']}: desired={s0['desired_replicas']}",
+                        f"{_display_app_name(s0['app_name'])}: desired={s0['desired_replicas']}",
                         f"ready={s0['ready_replicas']}",
                         f"live={s0['live_replicas']}",
                         f"rev={s0['revision']}({s0['revision_status']})",
@@ -2159,10 +2247,12 @@ def handle_status(
             return 1
     # local path
     if args.name:
-        status = store.get_status(args.name)
+        app_name = _resolve_app_name(args.name) or args.name
+        status = store.get_status(app_name)
         if status is None:
-            print(f"No status recorded for {args.name}")
+            print(f"No status recorded for {_display_app_name(app_name)}")
             return 1
+
         def _print_status_block(st: AppStatus) -> None:
             if args.json:
                 print(_status_to_json(st, store, include_details=args.wide))
@@ -2170,7 +2260,7 @@ def handle_status(
             print(format_status(st))
             if args.wide:
                 try:
-                    manifest = store.get_revision_manifest(args.name, st.revision)
+                    manifest = store.get_revision_manifest(app_name, st.revision)
                     res = manifest.spec.resources
                     vols = manifest.spec.volumes
                     if res and res.limits:
@@ -2178,9 +2268,11 @@ def handle_status(
                         mem = res.limits.memory if res.limits.memory is not None else "-"
                         print(f"    resources: limits cpu={cpu}, memory={mem}")
                     try:
-                        events = store.list_events(args.name, limit=10)
+                        events = store.list_events(app_name, limit=10)
                         if any(e.event_type == "CrashLoopDetected" for e in events):
-                            print("    crashloop: recent CrashLoopDetected events present (see 'ae events')")
+                            print(
+                                "    crashloop: recent CrashLoopDetected events present (see 'ae events')"
+                            )
                     except Exception:
                         pass
                     if vols:
@@ -2191,7 +2283,7 @@ def handle_status(
                         print(f"    storage: {st_str}")
                 except Exception:
                     pass
-            replicas = store.list_replicas(args.name)
+            replicas = store.list_replicas(app_name)
             for replica in replicas:
                 print(
                     f"  - {replica.replica_id}: ready={replica.ready} "
@@ -2200,7 +2292,7 @@ def handle_status(
                     f"liveness={replica.liveness_message}"
                 )
             if args.history and args.history > 0:
-                history = store.get_probe_history(args.name, args.history)
+                history = store.get_probe_history(app_name, args.history)
                 for entry in history:
                     timestamp = entry.check_time.strftime("%Y-%m-%d %H:%M:%S")
                     print(
@@ -2209,7 +2301,7 @@ def handle_status(
                         f"liveness={entry.liveness_message}"
                     )
             if args.events:
-                events = store.list_events(args.name, limit=10)
+                events = store.list_events(app_name, limit=10)
                 if not events:
                     print("    no events recorded")
                 else:
@@ -2225,7 +2317,9 @@ def handle_status(
                 except Exception:
                     infos = []
                 if infos:
-                    filtered = [c for c in infos if (c.get('labels') or {}).get('ae.app') == args.name]
+                    filtered = [
+                        c for c in infos if (c.get("labels") or {}).get("ae.app") == app_name
+                    ]
                     if filtered:
                         print("  containers:")
                         for c in filtered:
@@ -2249,9 +2343,9 @@ def handle_status(
                 if args.timeout and (time.time() - start) > args.timeout:
                     return 1
                 time.sleep(args.watch)
-                status = store.get_status(args.name)
+                status = store.get_status(app_name)
                 if status is None:
-                    print(f"No status recorded for {args.name}")
+                    print(f"No status recorded for {_display_app_name(app_name)}")
                     return 1
         else:
             _print_status_block(status)
@@ -2264,8 +2358,12 @@ def handle_status(
         import json
 
         def as_dict(s: AppStatus) -> dict:
+            ns, name = split_app_key(s.app_name)
             d = {
                 "app_name": s.app_name,
+                "name": name,
+                "namespace": ns,
+                "deployment": name,
                 "desired_replicas": s.desired_replicas,
                 "ready_replicas": s.ready_replicas,
                 "live_replicas": s.live_replicas,
@@ -2290,10 +2388,10 @@ def handle_rollout(
     if args.rollout_cmd not in {"pause", "resume"}:
         print("unsupported rollout command")
         return 2
-    app = args.name
+    app = _resolve_app_name(args.name) or args.name
     revs = store.list_revisions(app, limit=1)
     if not revs:
-        print(f"no revisions recorded for {app}")
+        print(f"no revisions recorded for {_display_app_name(app)}")
         return 1
     man = store.get_revision_manifest(app, revs[0].revision)
     rollout = dict(getattr(man.spec, "rollout", {}) or {})
@@ -2309,7 +2407,7 @@ def handle_rollout(
         pass
     report = reconciler.reconcile(updated)
     print(
-        f"rollout {args.rollout_cmd} {app}: rev={report.revision} status={report.revision_status} ready={report.ready_replicas}/{new_spec.replicas}"
+        f"rollout {args.rollout_cmd} {_display_app_name(app)}: rev={report.revision} status={report.revision_status} ready={report.ready_replicas}/{new_spec.replicas}"
     )
     return 0
 
@@ -2335,9 +2433,7 @@ def handle_api(args: argparse.Namespace) -> int:
 
         def _exp(hours):
             return (
-                (datetime.now(UTC) + timedelta(hours=int(hours)))
-                .isoformat()
-                .replace("+00:00", "Z")
+                (datetime.now(UTC) + timedelta(hours=int(hours))).isoformat().replace("+00:00", "Z")
             )
 
         ttl = getattr(args, "ttl_hours", None)
@@ -2488,20 +2584,21 @@ def handle_logs(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
         gargs = outer_locals.get("global_args") or outer_locals.get("args")
         if gargs is not None and getattr(gargs, "server", None):
             return handle_logs_remote(args, gargs)
-    status = store.get_status(args.name)
+    app_name = _resolve_app_name(args.name) or args.name
+    status = store.get_status(app_name)
     if status is None:
-        print(f"No status recorded for {args.name}")
+        print(f"No status recorded for {_display_app_name(app_name)}")
         return 1
-    replicas = store.list_replicas(args.name)
+    replicas = store.list_replicas(app_name)
     if not replicas:
-        print(f"No replicas available for {args.name}")
+        print(f"No replicas available for {_display_app_name(app_name)}")
         return 1
     # optional revision filter
     if args.revision is not None:
         rev_tag = f"-rev{args.revision}-"
         replicas = [r for r in replicas if rev_tag in r.replica_id]
         if not replicas:
-            print(f"No replicas for {args.name} at revision {args.revision}")
+            print(f"No replicas for {_display_app_name(app_name)} at revision {args.revision}")
             return 1
 
     # select by container flag
@@ -2554,33 +2651,38 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
             return handle_exec_remote(args, gargs)
 
     # Local-only path
-    status = store.get_status(args.name)
+    app_name = _resolve_app_name(args.name) or args.name
+    status = store.get_status(app_name)
     if status is None:
-        print(f"No status recorded for {args.name}")
+        print(f"No status recorded for {_display_app_name(app_name)}")
         return 1
-    replicas = store.list_replicas(args.name)
+    replicas = store.list_replicas(app_name)
     if not replicas:
-        print(f"No replicas available for {args.name}")
+        print(f"No replicas available for {_display_app_name(app_name)}")
         return 1
     timeout = getattr(args, "timeout", None)
     cmd = list(args.cmd or [])
     if cmd and cmd[0] == "--":
         cmd = cmd[1:]
     if not cmd:
-        print("exec requires a command after -- (e.g., ae exec app --container sidecar -- sh -c 'echo hi')")
+        print(
+            "exec requires a command after -- (e.g., ae exec app --container sidecar -- sh -c 'echo hi')"
+        )
         return 2
     if getattr(args, "container", None):
         cname = str(args.container)
         # If runtime supports container-scoped exec, use it
         if hasattr(runtime, "exec_for_container"):
             try:
-                rc = int(runtime.exec_for_container(args.name, cname, cmd, timeout=timeout))
+                rc = int(runtime.exec_for_container(app_name, cname, cmd, timeout=timeout))
                 return rc
             except Exception as exc:  # noqa: BLE001
                 print(f"exec failed: {exc}")
                 return 1
         # Fallback: select a replica by id substring
-        target = next((r for r in replicas if (r.replica_id == cname or cname in r.replica_id)), None)
+        target = next(
+            (r for r in replicas if (r.replica_id == cname or cname in r.replica_id)), None
+        )
         if not target:
             print(f"No matching replica for --container={cname}")
             return 1
@@ -2601,7 +2703,8 @@ def handle_exec_remote(args: argparse.Namespace, global_args: argparse.Namespace
         payload["timeoutSeconds"] = int(args.timeout)
     import requests
 
-    url = base.rstrip("/") + "/exec/" + args.name
+    app_name = _resolve_app_name(args.name) or args.name
+    url = base.rstrip("/") + "/exec/" + app_name
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
@@ -2620,8 +2723,12 @@ def handle_exec_remote(args: argparse.Namespace, global_args: argparse.Namespace
 def _status_to_json(status: AppStatus, store: SQLiteStateStore, *, include_details: bool) -> str:
     import json
 
+    ns, name = split_app_key(status.app_name)
     data = {
         "app_name": status.app_name,
+        "name": name,
+        "namespace": ns,
+        "deployment": name,
         "desired_replicas": status.desired_replicas,
         "ready_replicas": status.ready_replicas,
         "live_replicas": status.live_replicas,
@@ -2706,28 +2813,32 @@ def handle_rollback(
     reconciler: Reconciler,
 ) -> int:
     target_rev: int | None = args.to
+    app_name = _resolve_app_name(args.name) or args.name
     if target_rev is None:
-        revisions = store.list_revisions(args.name, limit=2)
+        revisions = store.list_revisions(app_name, limit=2)
         if len(revisions) < 2:
             print("No previous revision to roll back to.")
             return 1
         target_rev = revisions[1].revision
 
     try:
-        manifest = store.get_revision_manifest(args.name, target_rev)
+        manifest = store.get_revision_manifest(app_name, target_rev)
     except ValueError as exc:
         print(str(exc))
         return 1
 
     report = reconciler.reconcile(manifest)
-    print(f"Rolled back {args.name} to revision {report.revision} ({report.revision_status})")
+    print(
+        f"Rolled back {_display_app_name(app_name)} to revision {report.revision} ({report.revision_status})"
+    )
     return 0
 
 
 def handle_revisions(args: argparse.Namespace, store: SQLiteStateStore) -> int:
-    revisions = store.list_revisions(args.name, limit=args.limit)
+    app_name = _resolve_app_name(args.name) or args.name
+    revisions = store.list_revisions(app_name, limit=args.limit)
     if not revisions:
-        print(f"No revisions recorded for {args.name}.")
+        print(f"No revisions recorded for {_display_app_name(app_name)}.")
         return 0
     for info in revisions:
         print(
@@ -2774,15 +2885,16 @@ def handle_metrics(args: argparse.Namespace, store: SQLiteStateStore) -> int:
 def handle_events(
     args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace
 ) -> int:
+    app_name = _resolve_app_name(args.name) or args.name
     if getattr(global_args, "server", None):
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
         limit = getattr(args, "limit", 20)
         try:
-            page = _http_get_json(base, f"/events/{args.name}?limit={int(limit)}", tok)
+            page = _http_get_json(base, f"/events/{app_name}?limit={int(limit)}", tok)
             items = page.get("items", []) if isinstance(page, dict) else page
             if not items:
-                print(f"No events recorded for {args.name}.")
+                print(f"No events recorded for {_display_app_name(app_name)}.")
                 return 0
             for e in items:
                 ts = e.get("created_at", "")
@@ -2793,9 +2905,9 @@ def handle_events(
         except Exception as exc:  # noqa: BLE001
             print(f"remote events failed: {exc}")
             return 1
-    events = store.list_events(args.name, limit=args.limit)
+    events = store.list_events(app_name, limit=args.limit)
     if not events:
-        print(f"No events recorded for {args.name}.")
+        print(f"No events recorded for {_display_app_name(app_name)}.")
         return 0
     for event in events:
         timestamp = event.created_at.strftime("%Y-%m-%d %H:%M:%S")
@@ -2834,33 +2946,47 @@ def handle_services(args: argparse.Namespace, store: SQLiteStateStore) -> int:
             f"{p.get('name','')}:{p.get('port')}->{p.get('targetPort')}"
             for p in (ports or {}).get("ports", [])
         )
-        print(f"{svc.app_name}: ip={svc.cluster_ip} ports={port_str}")
+        print(f"{_display_app_name(svc.app_name)}: ip={svc.cluster_ip} ports={port_str}")
     return 0
+
 
 def handle_history(
     args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace
 ) -> int:
+    app_name = _resolve_app_name(args.name) or args.name
     # Server mode
     if getattr(global_args, "server", None):
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
         limit = int(getattr(args, "limit", 20))
-        since_secs = _parse_since_secs(getattr(args, "since", None)) if getattr(args, "since", None) else None
-        since_ts = _parse_rfc3339_to_epoch(getattr(args, "since_time", None)) if getattr(args, "since_time", None) else None
+        since_secs = (
+            _parse_since_secs(getattr(args, "since", None))
+            if getattr(args, "since", None)
+            else None
+        )
+        since_ts = (
+            _parse_rfc3339_to_epoch(getattr(args, "since_time", None))
+            if getattr(args, "since_time", None)
+            else None
+        )
         query_limit = max(limit, 200) if (since_secs or since_ts) else limit
         try:
-            items = _http_get_json(base, f"/history/{args.name}?limit={query_limit}", tok)
+            items = _http_get_json(base, f"/history/{app_name}?limit={query_limit}", tok)
             if getattr(args, "json", False):
                 import json as _json
+
                 if since_secs or since_ts:
                     import time
+
                     cutoff = (time.time() - since_secs) if since_secs else float(since_ts)
 
                     def _keep(h):
                         try:
                             import datetime as _dt
 
-                            t = _dt.datetime.fromisoformat(h.get("check_time", "").replace("Z", "+00:00")).timestamp()
+                            t = _dt.datetime.fromisoformat(
+                                h.get("check_time", "").replace("Z", "+00:00")
+                            ).timestamp()
                             return t >= float(cutoff)
                         except Exception:
                             return True
@@ -2869,7 +2995,7 @@ def handle_history(
                 print(_json.dumps(items, indent=2))
                 return 0
             if not items:
-                print(f"No probe history for {args.name}.")
+                print(f"No probe history for {_display_app_name(app_name)}.")
                 return 0
             rep = getattr(args, "replica", None)
             import time
@@ -2886,7 +3012,10 @@ def handle_history(
                 if cutoff is not None:
                     try:
                         import datetime as _dt
-                        t = _dt.datetime.fromisoformat(h.get("check_time", "").replace("Z", "+00:00")).timestamp()
+
+                        t = _dt.datetime.fromisoformat(
+                            h.get("check_time", "").replace("Z", "+00:00")
+                        ).timestamp()
                         if t < float(cutoff):
                             continue
                     except Exception:
@@ -2905,13 +3034,20 @@ def handle_history(
             return 1
     # Local store fallback
     limit = int(getattr(args, "limit", 20))
-    since_secs = _parse_since_secs(getattr(args, "since", None)) if getattr(args, "since", None) else None
-    since_ts = _parse_rfc3339_to_epoch(getattr(args, "since_time", None)) if getattr(args, "since_time", None) else None
+    since_secs = (
+        _parse_since_secs(getattr(args, "since", None)) if getattr(args, "since", None) else None
+    )
+    since_ts = (
+        _parse_rfc3339_to_epoch(getattr(args, "since_time", None))
+        if getattr(args, "since_time", None)
+        else None
+    )
     query_limit = max(limit, 200) if (since_secs or since_ts) else limit
-    items = store.get_probe_history(args.name, query_limit)
+    items = store.get_probe_history(app_name, query_limit)
     if getattr(args, "json", False):
         import json as _json
         import time
+
         def _filter(h):
             if since_secs is None and since_ts is None:
                 return True
@@ -2920,6 +3056,7 @@ def handle_history(
                 return h.check_time.timestamp() >= cutoff
             except Exception:
                 return True
+
         j = [
             {
                 "replica_id": h.replica_id,
@@ -2929,12 +3066,14 @@ def handle_history(
                 "readiness_message": h.readiness_message,
                 "liveness_message": h.liveness_message,
             }
-            for h in items if _filter(h)
+            for h in items
+            if _filter(h)
         ][:limit]
         print(_json.dumps(j, indent=2))
         return 0
     rep = getattr(args, "replica", None)
     import time
+
     shown = 0
     for h in items:
         if rep and str(h.replica_id) != str(rep):
@@ -2955,10 +3094,14 @@ def handle_history(
             break
     return 0
 
+
 def handle_volumes(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
     if args.vol_cmd == "list":
         try:
-            vols = runtime.list_storage_volumes(getattr(args, "app", None))  # type: ignore[attr-defined]
+            app_filter = getattr(args, "app", None)
+            if app_filter:
+                app_filter = _resolve_app_name(app_filter) or app_filter
+            vols = runtime.list_storage_volumes(app_filter)  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001
             print(f"volume listing not available: {exc}")
             return 1
@@ -2976,7 +3119,9 @@ def handle_volumes(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
                 drv = v.get("driver", "")
                 mnt = v.get("mountpoint", "")
                 app = labels.get("ae.app", "")
-                print(f"{name} driver={drv} mount={mnt} app={app}")
+                print(
+                    f"{name} driver={drv} mount={mnt} app={_display_app_name(app) if app else ''}"
+                )
         return 0
     print(f"Unsupported volumes command: {args.vol_cmd}")
     return 1
@@ -3002,7 +3147,8 @@ def handle_logs_remote(args: argparse.Namespace, global_args: argparse.Namespace
         params.append(("follow", "1"))
     from urllib.parse import urlencode
 
-    path = f"/logs/{args.name}"
+    app_name = _resolve_app_name(args.name) or args.name
+    path = f"/logs/{app_name}"
     if params:
         path += "?" + urlencode(params)
     import requests
@@ -3040,11 +3186,12 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
         print(f"failed to load manifest: {exc}")
         return 1
 
+    app_name = app_key_for_manifest(manifest)
     desired = int(manifest.spec.replicas)
     rollout = getattr(manifest.spec, "rollout", {}) or {}
     strategy = str(rollout.get("strategy", "parallel"))
     if not getattr(args, "json", False):
-        print(f"Plan for {manifest.metadata.name}:")
+        print(f"Plan for {_display_app_name(app_key_for_manifest(manifest))}:")
         print(
             f"  - replicas: {desired}\n  - rollout: strategy={strategy} maxSurge={rollout.get('maxSurge', 1)} maxUnavailable={rollout.get('maxUnavailable', 0)}"
         )
@@ -3196,7 +3343,7 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
                     import json as _json
 
                     out = {
-                        "app": manifest.metadata.name,
+                        "app": app_name,
                         "replicas": desired,
                         "rollout": strategy,
                         "service": {"ports": ports_to_check},
@@ -3248,12 +3395,10 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
         infos = runtime.list_containers_info()  # type: ignore[attr-defined]
     except Exception:
         infos = []
-    running_same = [
-        i for i in infos if (i.get("labels") or {}).get("ae.app") == manifest.metadata.name
-    ]
+    running_same = [i for i in infos if (i.get("labels") or {}).get("ae.app") == app_name]
     if running_same and not getattr(args, "json", False):
         print(
-            f"  - note: found {len(running_same)} running container(s) for app '{manifest.metadata.name}' (rollout surge may temporarily increase count)"
+            f"  - note: found {len(running_same)} running container(s) for app '{_display_app_name(app_name)}' (rollout surge may temporarily increase count)"
         )
     if desired > 1 and not os.getenv("AE_DOCKER_NETWORK") and not getattr(args, "json", False):
         print(
@@ -3265,12 +3410,10 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
         infos = runtime.list_containers_info()  # type: ignore[attr-defined]
     except Exception:
         infos = []
-    running_same = [
-        i for i in infos if (i.get("labels") or {}).get("ae.app") == manifest.metadata.name
-    ]
+    running_same = [i for i in infos if (i.get("labels") or {}).get("ae.app") == app_name]
     if running_same:
         warnings.append(
-            f'found {len(running_same)} running container(s) for app "{manifest.metadata.name}" (surge may increase count)'
+            f'found {len(running_same)} running container(s) for app "{_display_app_name(app_name)}" (surge may increase count)'
         )
     import os as _os
 
@@ -3446,7 +3589,7 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
         import json as _json
 
         out = {
-            "app": manifest.metadata.name,
+            "app": app_name,
             "replicas": desired,
             "rollout": {
                 "strategy": strategy,
@@ -3494,6 +3637,7 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
     ):
         print("error: --pdb-min-available and --pdb-max-unavailable are mutually exclusive")
         return 2
+
     # validate PDB values when provided (allow integer or percent string 0-100%)
     def _parse_pdb_value(v):
         if v is None:
@@ -3528,12 +3672,15 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
         return 2
     opts = ExportOptions(
         workload_kind=str(getattr(args, "workload", "deployment")).title(),
-        namespace=str(args.namespace or "default"),
+        namespace=(str(args.namespace) if args.namespace else None),
         ingress_class_name=args.ingress_class,
         ingress_path_type=getattr(args, "ingress_path_type", None),
         ingress_annotations=(
-            dict(a.split("=",1) for a in (getattr(args,"ingress_annotation",[]) or []) if "=" in a)
-            if getattr(args,"ingress_annotation",None) is not None else None
+            dict(
+                a.split("=", 1) for a in (getattr(args, "ingress_annotation", []) or []) if "=" in a
+            )
+            if getattr(args, "ingress_annotation", None) is not None
+            else None
         ),
         service_port=args.service_port,
         emit_configs=bool(getattr(args, "emit_configs", False)),
@@ -3557,8 +3704,16 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
         allow_hpa_without_requests=bool(getattr(args, "allow_hpa_no_requests", False)),
         default_security=bool(getattr(args, "default_security", False)),
         require_requests=bool(getattr(args, "require_requests", False)),
-        hpa_behavior_up=(__import__("json").loads(args.hpa_behavior_up) if getattr(args, "hpa_behavior_up", None) else None),
-        hpa_behavior_down=(__import__("json").loads(args.hpa_behavior_down) if getattr(args, "hpa_behavior_down", None) else None),
+        hpa_behavior_up=(
+            __import__("json").loads(args.hpa_behavior_up)
+            if getattr(args, "hpa_behavior_up", None)
+            else None
+        ),
+        hpa_behavior_down=(
+            __import__("json").loads(args.hpa_behavior_down)
+            if getattr(args, "hpa_behavior_down", None)
+            else None
+        ),
         emit_network_policy=bool(getattr(args, "emit_np", False)),
         np_default_deny_ingress=bool(getattr(args, "np_deny_ingress", False)),
         np_default_deny_egress=bool(getattr(args, "np_deny_egress", False)),
@@ -3610,12 +3765,13 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
         import yaml as _yaml
 
         from ae.k8s.exporter import export_k8s_docs
+
         outdir: Path = args.split
         outdir.mkdir(parents=True, exist_ok=True)
         docs = export_k8s_docs(man, options=opts)
         for i, d in enumerate(docs, start=1):
             meta = d.get("metadata") or {}
-            name = (meta.get("name") or f"res-{i}")
+            name = meta.get("name") or f"res-{i}"
             kind = (d.get("kind") or "Resource").lower()
             fn = outdir / f"{i:02d}-{kind}-{name}.yaml"
             fn.write_text(_yaml.safe_dump(d, sort_keys=False), encoding="utf-8")
@@ -3694,7 +3850,7 @@ def handle_k8s_check(args: argparse.Namespace) -> int:
             # Build export with default options for validation
             from ae.k8s.exporter import ExportOptions, export_k8s_yaml
 
-            yaml_text = export_k8s_yaml(man, options=ExportOptions(namespace="default"))
+            yaml_text = export_k8s_yaml(man, options=ExportOptions())
             if bool(getattr(args, "emit", False)):
                 print("---\n# Exported YAML used for validation:")
                 print(yaml_text, end="")
@@ -3764,9 +3920,7 @@ def handle_verify_image(args: argparse.Namespace) -> int:
     cmd += [str(args.image)]
 
     try:
-        proc = sp.run(
-            cmd, capture_output=True, text=True, check=False
-        )  # noqa: S603,S607 - cosign path vetted via shutil.which; shell disabled
+        proc = sp.run(cmd, capture_output=True, text=True, check=False)  # noqa: S603,S607 - cosign path vetted via shutil.which; shell disabled
     except Exception as exc:  # noqa: BLE001
         summary = f"cosign failed to start: {exc}"
         if getattr(args, "json", False):

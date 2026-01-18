@@ -30,17 +30,17 @@ def test_get_describe_rollout_and_logs(tmp_path, monkeypatch, capsys):
 
     assert main(["apply", "-f", str(manifest)]) == 0
     out = capsys.readouterr().out
-    assert "applied echo" in out
+    assert "applied default/echo" in out
 
     # get apps
     assert main(["get", "apps"]) == 0
     out = capsys.readouterr().out
-    assert "echo" in out and "ready=1" in out
+    assert "default/echo" in out and "ready=1" in out
 
     # get single app
     assert main(["get", "app", "echo"]) == 0
     out = capsys.readouterr().out
-    assert "echo: desired=1" in out
+    assert "default/echo: desired=1" in out
 
     # describe
     assert main(["describe", "app/echo"]) == 0
@@ -77,4 +77,4 @@ def test_rollout_undo(tmp_path, monkeypatch, capsys):
 
     assert main(["rollout", "undo", "app/echo", "--to-revision", "1"]) == 0
     out = capsys.readouterr().out
-    assert "rolled back echo" in out
+    assert "rolled back default/echo" in out

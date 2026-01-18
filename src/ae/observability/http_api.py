@@ -216,16 +216,18 @@ def _helm_demo_start() -> dict[str, object]:
                     if os.path.exists(verify_path):
                         ctx = _ssl.create_default_context(cafile=verify_path)
                     else:
-                        ctx = _ssl._create_unverified_context()
-                req = _urlreq.Request(probe_url, headers=headers)
-                with _urlreq.urlopen(req, timeout=2, context=ctx) as resp:
+                        ctx = _ssl._create_unverified_context()  # noqa: S323
+                req = _urlreq.Request(probe_url, headers=headers)  # noqa: S310
+                with _urlreq.urlopen(req, timeout=2, context=ctx) as resp:  # noqa: S310
                     if getattr(resp, "status", 200) >= 400:
                         raise RuntimeError("probe failed")
                     body = resp.read().decode("utf-8", "ignore")
                     if "k1s-shim" not in body:
                         raise RuntimeError("probe failed")
             except Exception:
-                logger.info("labs helm demo shim unreachable at %s; starting local shim", helm_server)
+                logger.info(
+                    "labs helm demo shim unreachable at %s; starting local shim", helm_server
+                )
                 helm_server = ""
         if helm_server:
             env.setdefault("APISHIM_SERVER", helm_server)
@@ -429,17 +431,21 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if self.apply_fn is None:
             raise RuntimeError("apply not available")
         try:
+            from ae.controller.spec import app_key
+
             meta = payload.get("metadata") if isinstance(payload, dict) else {}
             app = ""
             if isinstance(meta, dict):
-                app = str(meta.get("name") or "")
+                app = app_key(str(meta.get("name") or ""), meta.get("namespace"))
             if not app:
                 # Some callers may wrap the manifest
                 inner = payload.get("manifest") if isinstance(payload, dict) else None
                 if isinstance(inner, dict):
                     inner_meta = inner.get("metadata") or {}
                     if isinstance(inner_meta, dict):
-                        app = str(inner_meta.get("name") or "")
+                        app = app_key(
+                            str(inner_meta.get("name") or ""), inner_meta.get("namespace")
+                        )
             peer = "unknown"
             try:
                 peer = str(self.client_address[0]) if self.client_address else "unknown"
@@ -841,10 +847,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             return
         if path_only.startswith("/history/"):
             app_and_q = self.path.split("/", 2)[2]
-            app = app_and_q.split("?",1)[0]
+            app = app_and_q.split("?", 1)[0]
             try:
                 import urllib.parse as _up
-                q = app_and_q.split("?",1)[1] if "?" in app_and_q else ""
+
+                q = app_and_q.split("?", 1)[1] if "?" in app_and_q else ""
                 params = _up.parse_qs(q)
                 limit = int((params.get("limit", ["20"])[0] or "20"))
             except Exception:
@@ -919,15 +926,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if self.path == "/k8s/preview":
             try:
                 import os as _os
+
                 if _os.getenv("AE_API_DEV_EXPORT") != "1":
                     self._json_error(403, "disabled: set AE_API_DEV_EXPORT=1 to enable k8s preview")
                     return
                 length = int(self.headers.get("Content-Length", "0"))
                 raw = self.rfile.read(length) if length > 0 else b"{}"
                 import json as _json
+
                 payload = _json.loads(raw.decode("utf-8")) if raw else {}
                 # Build manifest model
                 from ae.controller.spec import AppManifest as _AppManifest
+
                 man = _AppManifest.model_validate(payload)
                 # Options (optional) under payload["options"]
                 from ae.k8s.exporter import ExportOptions as _Opts
@@ -982,16 +992,23 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 body = self.rfile.read(length) if length > 0 else b"{}"
                 payload = json.loads(body.decode("utf-8"))
             except Exception:
-                self._json_error(400, "invalid JSON body: expected App manifest")
+                self._json_error(400, "invalid JSON body: expected Deployment/App manifest")
                 return
             try:
                 # Scope enforcement: admin token must be allowed for target app
                 role = self._presented_role()
-                app = str(payload.get("metadata", {}).get("name", ""))
+                from ae.controller.spec import app_key
+
+                meta = payload.get("metadata", {}) if isinstance(payload, dict) else {}
+                app = app_key(str(meta.get("name") or ""), meta.get("namespace"))
                 if not app:
                     self._json_error(400, "manifest missing metadata.name for scope check")
                     return
-                if role != "admin" or not self._scope_allows("admin", app) or not self._rbac_allows("create", app):
+                if (
+                    role != "admin"
+                    or not self._scope_allows("admin", app)
+                    or not self._rbac_allows("create", app)
+                ):
                     self._json_error(403, "token scope denies apply to target app")
                     return
                 report = self._call_apply(payload, source="api")
@@ -1227,7 +1244,14 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 self._json_error(400, "cmd must be a non-empty list")
                 return
             try:
-                rc = int(self.exec_fn(app, container, [str(x) for x in cmd], int(timeout) if timeout is not None else None))  # type: ignore[misc]
+                rc = int(
+                    self.exec_fn(
+                        app,
+                        container,
+                        [str(x) for x in cmd],
+                        int(timeout) if timeout is not None else None,
+                    )
+                )  # type: ignore[misc]
             except Exception as exc:
                 self._json_error(500, f"exec failed: {exc}")
                 return
@@ -1561,9 +1585,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             names.update(self.store.list_registered_app_names())
                         except Exception:
                             pass
-                        helm_candidates = sorted({n for n in names if any(n.startswith(p) for p in prefixes)})
+                        helm_candidates = sorted(
+                            {n for n in names if any(n.startswith(p) for p in prefixes)}
+                        )
                         if helm_candidates:
-                            logger.info("labs reset removing helm demo apps: %s", ", ".join(helm_candidates))
+                            logger.info(
+                                "labs reset removing helm demo apps: %s", ", ".join(helm_candidates)
+                            )
                         try:
                             for app in helm_candidates:
                                 _labs_block_app(app)
@@ -1611,6 +1639,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         shim_base = ""
                         try:
                             import os as _os
+
                             import requests as _req
 
                             base = str(_os.getenv("AE_LABS_HELM_SERVER", "") or "").strip()
@@ -1628,7 +1657,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             verify_path = "state/certs/combined-dev-ca.pem"
                             verify = verify_path if _os.path.exists(verify_path) else False
                             try:
-                                probe = _req.get(f"{base}/version", headers=headers, timeout=2, verify=verify)
+                                probe = _req.get(
+                                    f"{base}/version", headers=headers, timeout=2, verify=verify
+                                )
                                 shim_reachable = probe.status_code < 500
                             except Exception:
                                 shim_reachable = False
@@ -1644,19 +1675,32 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                                     else:
                                         list_url = f"{base}/api/{ver}/namespaces/{ns}/{res}"
                                     try:
-                                        resp = _req.get(list_url, headers=headers, timeout=3, verify=verify)
+                                        resp = _req.get(
+                                            list_url, headers=headers, timeout=3, verify=verify
+                                        )
                                         if resp.status_code >= 400:
                                             continue
                                         data = resp.json() if resp.content else {}
                                         items = data.get("items") if isinstance(data, dict) else []
                                         for item in items or []:
-                                            meta = item.get("metadata") if isinstance(item, dict) else None
-                                            name = meta.get("name") if isinstance(meta, dict) else None
+                                            meta = (
+                                                item.get("metadata")
+                                                if isinstance(item, dict)
+                                                else None
+                                            )
+                                            name = (
+                                                meta.get("name") if isinstance(meta, dict) else None
+                                            )
                                             if not name:
                                                 continue
                                             del_url = f"{list_url}/{name}"
                                             try:
-                                                dresp = _req.delete(del_url, headers=headers, timeout=3, verify=verify)
+                                                dresp = _req.delete(
+                                                    del_url,
+                                                    headers=headers,
+                                                    timeout=3,
+                                                    verify=verify,
+                                                )
                                                 if dresp.status_code < 300:
                                                     removed_shim += 1
                                             except Exception:
@@ -1666,7 +1710,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         except Exception:
                             shim_reachable = False
                         if shim_reachable and removed_shim:
-                            logger.info("labs reset removed %s shim objects via shim API in namespace %s", removed_shim, ns)
+                            logger.info(
+                                "labs reset removed %s shim objects via shim API in namespace %s",
+                                removed_shim,
+                                ns,
+                            )
                         if shim_reachable and not removed_shim:
                             logger.info(
                                 "labs reset shim API reachable at %s; no shim objects removed for namespace %s",
@@ -1685,7 +1733,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
                             dsn = _os.getenv("AE_APISHIM_DSN")
                             db_path = _os.getenv("AE_APISHIM_DB", "state/apishim.db")
-                            store = _ObjectStore(dsn=dsn) if dsn else _ObjectStore(db_path=_Path(db_path))
+                            store = (
+                                _ObjectStore(dsn=dsn)
+                                if dsn
+                                else _ObjectStore(db_path=_Path(db_path))
+                            )
                             for grp, ver, res in targets:
                                 try:
                                     items = store.list(grp, ver, res, ns)
@@ -1695,7 +1747,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                                     if store.delete(grp, ver, res, ns, obj.name):
                                         removed_shim += 1
                             if removed_shim:
-                                logger.info("labs reset removed %s shim objects in namespace %s", removed_shim, ns)
+                                logger.info(
+                                    "labs reset removed %s shim objects in namespace %s",
+                                    removed_shim,
+                                    ns,
+                                )
                 except Exception:
                     pass
                 # Ensure the shim demo process is stopped so it doesn't reapply.
@@ -2195,6 +2251,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "# TYPE ae_ready_replicas gauge",
             "# HELP ae_live_replicas Live replicas per app (alias)",
             "# TYPE ae_live_replicas gauge",
+            "# HELP kube_deployment_spec_replicas Desired replicas for a Deployment",
+            "# TYPE kube_deployment_spec_replicas gauge",
+            "# HELP kube_deployment_status_replicas Current replicas for a Deployment",
+            "# TYPE kube_deployment_status_replicas gauge",
+            "# HELP kube_deployment_status_replicas_ready Ready replicas for a Deployment",
+            "# TYPE kube_deployment_status_replicas_ready gauge",
+            "# HELP kube_deployment_status_replicas_available Available replicas for a Deployment",
+            "# TYPE kube_deployment_status_replicas_available gauge",
+            "# HELP kube_deployment_status_replicas_unavailable Unavailable replicas for a Deployment",
+            "# TYPE kube_deployment_status_replicas_unavailable gauge",
+            "# HELP kube_pod_status_ready Pod readiness (1 for ready) by namespace/pod/condition",
+            "# TYPE kube_pod_status_ready gauge",
             "# HELP ae_node_status Node condition (one-hot by status)",
             "# TYPE ae_node_status gauge",
             "# HELP ae_node_last_seen_seconds Age in seconds since last heartbeat",
@@ -2248,6 +2316,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         # Per-app and per-replica labeled gauges
         try:
             statuses = self.store.list_status()
+            from ae.controller.spec import split_app_key
+
             # Optional read scope filtering when a read-capable token is presented
             try:
                 import fnmatch as _fn
@@ -2265,6 +2335,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 pass
             for s0 in statuses:
                 app = s0.app_name
+                ns, dep = split_app_key(app)
+                dep_labels = f'namespace="{ns}",deployment="{dep}"'
                 lines.append(f'ae_app_desired_replicas{{app="{app}"}} {s0.desired_replicas}')
                 lines.append(f'ae_app_ready_replicas{{app="{app}"}} {s0.ready_replicas}')
                 lines.append(f'ae_app_live_replicas{{app="{app}"}} {s0.live_replicas}')
@@ -2277,12 +2349,34 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 for name in ("ready", "progressing", "degraded"):
                     val = 1 if st == name else 0
                     lines.append(f'ae_app_status{{app="{app}",status="{name}"}} {val}')
+                lines.append(f"kube_deployment_spec_replicas{{{dep_labels}}} {s0.desired_replicas}")
+                lines.append(f"kube_deployment_status_replicas{{{dep_labels}}} {s0.live_replicas}")
+                lines.append(
+                    f"kube_deployment_status_replicas_ready{{{dep_labels}}} {s0.ready_replicas}"
+                )
+                lines.append(
+                    f"kube_deployment_status_replicas_available{{{dep_labels}}} {s0.ready_replicas}"
+                )
+                try:
+                    unavailable = max(int(s0.desired_replicas) - int(s0.ready_replicas), 0)
+                except Exception:
+                    unavailable = 0
+                lines.append(
+                    f"kube_deployment_status_replicas_unavailable{{{dep_labels}}} {unavailable}"
+                )
             for s0 in statuses:
                 reps = self.store.list_replicas(s0.app_name)
+                ns, _dep = split_app_key(s0.app_name)
                 for r in reps:
                     val = 1 if r.ready else 0
                     lines.append(
                         f'ae_replica_ready{{app="{s0.app_name}",replica="{r.replica_id}"}} {val}'
+                    )
+                    lines.append(
+                        f'kube_pod_status_ready{{namespace="{ns}",pod="{r.replica_id}",condition="true"}} {val}'
+                    )
+                    lines.append(
+                        f'kube_pod_status_ready{{namespace="{ns}",pod="{r.replica_id}",condition="false"}} {1 - val}'
                     )
         except Exception:
             pass
@@ -2313,7 +2407,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 lines.append(f'ae_node_status{{{labels},status="{st}"}} 1')
                 lines.append(f'ae_node_stale{{{labels}}} {"1" if stale else "0"}')
                 if last_age is not None:
-                    lines.append(f'ae_node_last_seen_seconds{{{labels}}} {last_age}')
+                    lines.append(f"ae_node_last_seen_seconds{{{labels}}} {last_age}")
         except Exception:
             pass
         # Service/VIP metrics
@@ -2323,7 +2417,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             services = self.store.list_services()
             for svc in services:
                 labels = f'app="{svc.app_name}",cluster_ip="{svc.cluster_ip}"'
-                lines.append(f'ae_service_info{{{labels}}} 1')
+                lines.append(f"ae_service_info{{{labels}}} 1")
                 eps = self.store.list_service_endpoints(svc.app_name)
                 lines.append(f'ae_service_endpoints_total{{app="{svc.app_name}"}} {len(eps)}')
                 ready_eps = sum(1 for e in eps if e.ready)
@@ -2390,13 +2484,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     ov = sysinfo.get("overlay") or {}
                     peers = ov.get("peers")
                     if peers is not None:
-                        lines.append(f'ae_overlay_peers {int(peers)}')
+                        lines.append(f"ae_overlay_peers {int(peers)}")
                     hs = ov.get("latest_handshake_seconds")
                     if hs is not None:
-                        lines.append(f'ae_overlay_latest_handshake_seconds {float(hs)}')
+                        lines.append(f"ae_overlay_latest_handshake_seconds {float(hs)}")
                     mtu = ov.get("mtu")
                     if mtu is not None:
-                        lines.append(f'ae_overlay_mtu {int(mtu)}')
+                        lines.append(f"ae_overlay_mtu {int(mtu)}")
                 except Exception:
                     pass
             # Agent cert expiry metrics (if issued.json present)
@@ -2609,6 +2703,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         "type": "object",
                         "properties": {
                             "app_name": {"type": "string"},
+                            "name": {"type": "string"},
+                            "namespace": {"type": "string"},
+                            "deployment": {"type": "string"},
                             "desired_replicas": {"type": "integer"},
                             "ready_replicas": {"type": "integer"},
                             "live_replicas": {"type": "integer"},
@@ -2892,6 +2989,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     def _handle_status_list(self) -> None:
         import urllib.parse as _up
 
+        from ae.controller.spec import split_app_key
+
         statuses = self.store.list_status()
         # Optional read scope filtering when a read-capable token is presented
         try:
@@ -2929,8 +3028,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         next_cursor = offset + limit if (offset + limit) < total else None
         out_items = []
         for s in page:
+            ns, name = split_app_key(s.app_name)
             item = {
                 "app_name": s.app_name,
+                "name": name,
+                "namespace": ns,
+                "deployment": name,
                 "desired_replicas": s.desired_replicas,
                 "ready_replicas": s.ready_replicas,
                 "live_replicas": s.live_replicas,
@@ -3002,6 +3105,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         # Support optional query on the path segment (e.g., "<app>?details=1")
         import urllib.parse as _up
 
+        from ae.controller.spec import split_app_key
+
         if "?" in app:
             app, query = app.split("?", 1)
             params = _up.parse_qs(query)
@@ -3012,8 +3117,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             return
+        ns, name = split_app_key(s.app_name)
         data = {
             "app_name": s.app_name,
+            "name": name,
+            "namespace": ns,
+            "deployment": name,
             "desired_replicas": s.desired_replicas,
             "ready_replicas": s.ready_replicas,
             "live_replicas": s.live_replicas,
@@ -3385,9 +3494,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         <div class=\"row stretch\" style=\"margin-top:12px; gap:12px;\"> 
           <div class=\"card detail-card\" style=\"flex:0 0 360px;\">
             <strong>Plan Diagnostics</strong>
-            <div style=\"font-size:12px; opacity:.9; margin:6px 0;\">Paste an App manifest (YAML or JSON) to preview warnings and diagnostics before applying. Or use the button to load the selected app's last applied manifest.</div>
+            <div style=\"font-size:12px; opacity:.9; margin:6px 0;\">Paste a Deployment/App manifest (YAML or JSON) to preview warnings and diagnostics before applying. Or use the button to load the selected app's last applied manifest.</div>
             <form id=\"plan-form\" onsubmit=\"return false;\">
-              <div><textarea id=\"plan-json\" rows=\"12\" cols=\"40\" placeholder=\"Paste App manifest YAML or JSON here...\"></textarea></div>
+              <div><textarea id=\"plan-json\" rows=\"12\" cols=\"40\" placeholder=\"Paste Deployment/App manifest YAML or JSON here...\"></textarea></div>
               <div class=\"row\" style=\"margin-top:6px\">
                 <button type=\"button\" id=\"plan-run\">Run Plan</button>
                 <button type=\"button\" id=\"plan-load\">Load from App</button>
@@ -3585,7 +3694,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       function clamp(n, lo, hi){ return Math.min(hi, Math.max(lo, n)); }
 
       function parseHslColor(str){
-        var m = String(str || '').match(/hsla?\(\s*([0-9.]+)\s*,\s*([0-9.]+)%\s*,\s*([0-9.]+)%/i);
+        var m = String(str || '').match(/hsla?\\(\\s*([0-9.]+)\\s*,\\s*([0-9.]+)%\\s*,\\s*([0-9.]+)%/i);
         if (!m) return null;
         return { h: parseFloat(m[1]), s: parseFloat(m[2]), l: parseFloat(m[3]) };
       }
@@ -3817,7 +3926,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
               var rows = (s.replicas||[]).map(function(r){
                 // Extract backoff seconds from readiness/liveness messages
                 function parseBackoff(msg){
-                  var m = String(msg||'').match(/backoff \((\d+)s\)/);
+                  var m = String(msg||'').match(/backoff \\((\\d+)s\\)/);
                   return m ? Number(m[1]) : 0;
                 }
                 var bo = Math.max(parseBackoff(r.readiness_message), parseBackoff(r.liveness_message));
@@ -4949,4 +5058,6 @@ def start_http_api(
     thread = threading.Thread(target=httpd.serve_forever, name="ae-http-api", daemon=True)
     thread.start()
     return httpd, assigned, thread
+
+
 # ruff: noqa: E501,S603,S607,S110,S112,SIM105,SIM108,SIM118,SIM210,S104,UP017,UP038,E741,B023,C401,UP035,E402,UP034
