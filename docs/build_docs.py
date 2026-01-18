@@ -554,7 +554,7 @@ def md_to_html(md: str, *, allow_raw_html: bool = False) -> str:
                 # Join buffered code lines without inserting a leading newline
                 content = "\n".join(code_buf or [])
                 if code_lang == "mermaid":
-                    out.append(f"<pre class=\"mermaid\">{content}</pre>")
+                    out.append(f'<pre class="mermaid">{content}</pre>')
                 else:
                     out.append(f"<pre><code>{content}</code></pre>")
                 in_code = False
@@ -717,6 +717,7 @@ def build_one(md_path: Path, out_path: Path) -> None:
         # Non-fatal: keep page renderable if injection fails, but log why
         try:
             import traceback, sys
+
             # quiet failure: keep page renderable
             _ = (e, traceback)
         except Exception:
@@ -783,6 +784,7 @@ def build_one(md_path: Path, out_path: Path) -> None:
                         "</tr>"
                     ),
                 ]
+
                 # Derived CP PSS helper: k3s -> k3s_control_plane_pss_kb; k1s -> controller+ingress; fallback to legacy
                 def cp_pss_mib_derived(row: dict[str, str]) -> str:
                     try:
@@ -803,7 +805,7 @@ def build_one(md_path: Path, out_path: Path) -> None:
                     except Exception:
                         pass
                     try:
-                        x = float(row.get('control_plane_pss_kb', '0') or 0)
+                        x = float(row.get("control_plane_pss_kb", "0") or 0)
                     except Exception:
                         x = 0.0
                     return f"{x / 1024.0:.1f}"
@@ -844,7 +846,11 @@ def build_one(md_path: Path, out_path: Path) -> None:
                         mode = (row.get("mode") or "").lower().strip() or "?"
                         backend = (row.get("backend") or "").lower().strip() or "?"
                         label = row.get("label", "")
-                        root_tag = "rootless" if "+rootless+" in label else ("priv" if "+priv+" in label else "?")
+                        root_tag = (
+                            "rootless"
+                            if "+rootless+" in label
+                            else ("priv" if "+priv+" in label else "?")
+                        )
                         if mode == "k1s" and backend == "podman" and root_tag == "rootless":
                             return "k1s rootless"
                         if mode == "k1s" and backend == "podman" and root_tag == "priv":
@@ -877,7 +883,9 @@ def build_one(md_path: Path, out_path: Path) -> None:
                             continue
                         key = (sc, st)
                         prev = latest.get(key)
-                        if prev is None or str(r.get("timestamp", "")) > str(prev.get("timestamp", "")):
+                        if prev is None or str(r.get("timestamp", "")) > str(
+                            prev.get("timestamp", "")
+                        ):
                             latest[key] = r
 
                     # Desired column order
@@ -930,10 +938,13 @@ def build_one(md_path: Path, out_path: Path) -> None:
                         html_parts.append("</tbody></table>")
                         return "".join(html_parts)
 
-                    parts.append("<style>table.mini td, table.mini th { border:1px solid var(--border); padding:6px; }</style>")
+                    parts.append(
+                        "<style>table.mini td, table.mini th { border:1px solid var(--border); padding:6px; }</style>"
+                    )
                     parts.append("<h2>Latest Comparison Matrix</h2>")
                     # Overall winner band (normalized across stages x metrics; lower is better)
                     try:
+
                         def to_norm(vals: list[float], v: float) -> float:
                             if not vals:
                                 return 0.0
@@ -1022,7 +1033,11 @@ def build_one(md_path: Path, out_path: Path) -> None:
                         ranking.sort(key=lambda x: x[0])
                         # Apply coverage threshold to filter scenarios from ranking/tables
                         coverage_min = float(os.getenv("DOCS_COVERAGE_MIN", "0.8") or 0.8)
-                        allowed_cols = [c for (_adj, _avg, c, n, coverage) in ranking if (max_n and (coverage >= coverage_min))]
+                        allowed_cols = [
+                            c
+                            for (_adj, _avg, c, n, coverage) in ranking
+                            if (max_n and (coverage >= coverage_min))
+                        ]
                         hidden_cols = [c for c in col_order if c not in allowed_cols]
                         # Winner band (only allowed columns)
                         parts.append(
@@ -1035,12 +1050,22 @@ def build_one(md_path: Path, out_path: Path) -> None:
                             "</style>"
                         )
                         bl: list[str] = ["<div class='band'><strong>Overall Ranking:</strong> "]
-                        shown = [(adj, _avg, c, n, cov) for (adj, _avg, c, n, cov) in ranking if c in allowed_cols]
+                        shown = [
+                            (adj, _avg, c, n, cov)
+                            for (adj, _avg, c, n, cov) in ranking
+                            if c in allowed_cols
+                        ]
                         for idx, (adjusted, _avg, c, n, coverage) in enumerate(shown):
-                            cls = "win" if idx == 0 else ("place2" if idx == 1 else ("place3" if idx == 2 else "dim"))
+                            cls = (
+                                "win"
+                                if idx == 0
+                                else ("place2" if idx == 1 else ("place3" if idx == 2 else "dim"))
+                            )
                             score = int(round(adjusted * 100))
                             title = f"comparisons:{n} coverage:{coverage:.0%}"
-                            bl.append(f"<span class='pill {cls}' title='{title}'> {c} <span style='opacity:.85'>&nbsp;({score})</span></span>")
+                            bl.append(
+                                f"<span class='pill {cls}' title='{title}'> {c} <span style='opacity:.85'>&nbsp;({score})</span></span>"
+                            )
                         bl.append("</div>")
                         if hidden_cols:
                             bl.append(
@@ -1076,6 +1101,7 @@ def build_one(md_path: Path, out_path: Path) -> None:
                             ),
                         )
                     )
+
                     def _memavail_delta_backfill(r):
                         try:
                             v = float(r.get("mem_available_delta_bytes", 0) or 0)
@@ -1089,6 +1115,7 @@ def build_one(md_path: Path, out_path: Path) -> None:
                             except Exception:
                                 v = 0.0
                         return to_float_mib(v)
+
                     parts.append(
                         render_metric_table(
                             "MemAvail Δ (MiB) — lower is better",
@@ -1101,6 +1128,7 @@ def build_one(md_path: Path, out_path: Path) -> None:
                 # Inline charts below the table
                 # Inline charts from one or more chart directories (charts, charts-user)
                 import shutil
+
                 charts_out = OUT / "charts"
                 charts_out.mkdir(parents=True, exist_ok=True)
                 charts_dirs = []
@@ -1111,12 +1139,24 @@ def build_one(md_path: Path, out_path: Path) -> None:
                 if charts_dirs:
                     chart_map = [
                         ("control_plane_pss_k3d.png", "Control‑plane PSS — Timeline (k3s)"),
-                        ("control_plane_pss_k1s_rootless.png", "Control‑plane PSS — Timeline (k1s rootless)"),
-                        ("control_plane_pss_k1s_rootful.png", "Control‑plane PSS — Timeline (k1s rootful)"),
+                        (
+                            "control_plane_pss_k1s_rootless.png",
+                            "Control‑plane PSS — Timeline (k1s rootless)",
+                        ),
+                        (
+                            "control_plane_pss_k1s_rootful.png",
+                            "Control‑plane PSS — Timeline (k1s rootful)",
+                        ),
                         ("control_plane_pss_k1nd.png", "Control‑plane PSS — Timeline (k1nd)"),
                         ("system_cgroups_k3d.png", "System Cgroups — Timeline (k3s)"),
-                        ("system_cgroups_k1s_rootless.png", "System Cgroups — Timeline (k1s rootless)"),
-                        ("system_cgroups_k1s_rootful.png", "System Cgroups — Timeline (k1s rootful)"),
+                        (
+                            "system_cgroups_k1s_rootless.png",
+                            "System Cgroups — Timeline (k1s rootless)",
+                        ),
+                        (
+                            "system_cgroups_k1s_rootful.png",
+                            "System Cgroups — Timeline (k1s rootful)",
+                        ),
                         ("system_cgroups_k1nd.png", "System Cgroups — Timeline (k1nd)"),
                         ("per_pod_overhead.png", "Per‑Pod Overhead (MiB)"),
                         ("per_pod_scaling.png", "Per‑Pod Scaling (MiB)"),
@@ -1168,7 +1208,11 @@ def build_one(md_path: Path, out_path: Path) -> None:
                                 if src.name not in copied:
                                     shutil.copy2(src, dst)
                                     copied.add(src.name)
-                                    title_txt = src.stem.replace("comparison_", "").replace("_", " ").title()
+                                    title_txt = (
+                                        src.stem.replace("comparison_", "")
+                                        .replace("_", " ")
+                                        .title()
+                                    )
                                     inline_blocks.append(
                                         f"<h3>{html.escape(title_txt)}</h3>"
                                         f"<img src='charts/{src.name}' alt='{html.escape(title_txt)}' "

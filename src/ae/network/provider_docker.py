@@ -214,9 +214,7 @@ class DockerBridgeProvider(NetworkProvider):
                 lines.append("  server placeholder 127.0.0.1:9 check fall 2 rise 3")
             else:
                 for idx, (host, target) in enumerate(servers):
-                    lines.append(
-                        f"  server srv{idx} {host}:{target} check fall 2 rise 3"
-                    )
+                    lines.append(f"  server srv{idx} {host}:{target} check fall 2 rise 3")
         # Ensure at least one listener to keep haproxy valid when no ports provided
         if not backends:
             lines.extend(

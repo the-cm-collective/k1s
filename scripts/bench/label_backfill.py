@@ -28,11 +28,7 @@ def _detect_oci_from_snapshot(snap: Path) -> str:
             data = json.loads(dj.read_text() or "[]")
             if isinstance(data, list) and data:
                 obj = data[0] or {}
-                oci = (
-                    (obj.get("HostConfig") or {}).get("Runtime")
-                    or obj.get("Runtime")
-                    or ""
-                )
+                oci = (obj.get("HostConfig") or {}).get("Runtime") or obj.get("Runtime") or ""
                 if isinstance(oci, str) and oci.strip():
                     return oci.strip()
     except Exception:
@@ -42,7 +38,7 @@ def _detect_oci_from_snapshot(snap: Path) -> str:
 
 def detect_backend() -> str:
     # Mirror mem_snapshot.sh behavior
-    b = (Path.cwd().joinpath("ENV").read_text() if False else None)  # placeholder
+    b = Path.cwd().joinpath("ENV").read_text() if False else None  # placeholder
     # Best-effort local detection order
     try:
         subprocess.run(["podman", "--version"], check=False, capture_output=True)

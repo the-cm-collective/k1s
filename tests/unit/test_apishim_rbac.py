@@ -22,14 +22,18 @@ def make_handler(path: str, method: str = "GET", headers=None, body: bytes = b""
             self.command = method
             self.headers = headers
             self.rbufsize = -1
+
         def makefile(self, mode, *_args, **_kwargs):
             if "r" in mode:
                 return self._rbuf
             return self._wbuf
+
         def settimeout(self, t):
             self.timeout = t
+
         def setsockopt(self, *a, **k):
             pass
+
         def close(self):
             pass
 
@@ -39,12 +43,16 @@ def make_handler(path: str, method: str = "GET", headers=None, body: bytes = b""
             self.responses = []
             self._body = body
             self.wfile = SimpleNamespace(write=lambda b: self.responses.append(b))
+
         def send_response(self, code, _message=None):
             self.responses.append(code)
+
         def send_header(self, k, v):
             pass
+
         def end_headers(self):
             pass
+
         def close(self):
             pass
 
@@ -135,10 +143,34 @@ def test_apishim_rbac_eval_rolebinding(monkeypatch, store):
     shim_server.ShimHandler.admin_token = "a"
     shim_server.ShimHandler.read_token = None
     # Create a role and rolebinding permitting list on services
-    role = K8sObject("rbac.authorization.k8s.io", "v1", "roles", "default", "viewer", {"name": "viewer", "namespace": "default"}, {"rules": [{"verbs": ["list"], "resources": ["services"]}]}, {}, 1)
-    store.upsert("rbac.authorization.k8s.io", "v1", "roles", "default", "viewer", role.metadata, role.spec)
-    rb = K8sObject("rbac.authorization.k8s.io", "v1", "rolebindings", "default", "bind", {"name": "bind", "namespace": "default"}, {"subjects": [{"kind": "User", "name": "admin"}], "roleRef": {"name": "viewer"}}, {}, 2)
-    store.upsert("rbac.authorization.k8s.io", "v1", "rolebindings", "default", "bind", rb.metadata, rb.spec)
+    role = K8sObject(
+        "rbac.authorization.k8s.io",
+        "v1",
+        "roles",
+        "default",
+        "viewer",
+        {"name": "viewer", "namespace": "default"},
+        {"rules": [{"verbs": ["list"], "resources": ["services"]}]},
+        {},
+        1,
+    )
+    store.upsert(
+        "rbac.authorization.k8s.io", "v1", "roles", "default", "viewer", role.metadata, role.spec
+    )
+    rb = K8sObject(
+        "rbac.authorization.k8s.io",
+        "v1",
+        "rolebindings",
+        "default",
+        "bind",
+        {"name": "bind", "namespace": "default"},
+        {"subjects": [{"kind": "User", "name": "admin"}], "roleRef": {"name": "viewer"}},
+        {},
+        2,
+    )
+    store.upsert(
+        "rbac.authorization.k8s.io", "v1", "rolebindings", "default", "bind", rb.metadata, rb.spec
+    )
     req = make_handler("/api/v1/services", headers={"Authorization": "Bearer a"})
     handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
     handler.path = req.path
@@ -164,7 +196,9 @@ def test_apishim_rbac_exec_requires_admin(monkeypatch, store):
     shim_server.ShimHandler.admin_token = "a"
     shim_server.ShimHandler.read_token = "r"
     # admin allowed
-    req = make_handler("/api/v1/namespaces/default/pods/p1/exec?command=sh", headers={"Authorization": "Bearer a"})
+    req = make_handler(
+        "/api/v1/namespaces/default/pods/p1/exec?command=sh", headers={"Authorization": "Bearer a"}
+    )
     handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
     handler.path = req.path
     handler.command = req.command
@@ -178,7 +212,9 @@ def test_apishim_rbac_exec_requires_admin(monkeypatch, store):
     handler.do_GET()
     assert 101 in handler.responses or 200 in handler.responses  # upgrade success
     # read should be denied
-    req2 = make_handler("/api/v1/namespaces/default/pods/p1/exec?command=sh", headers={"Authorization": "Bearer r"})
+    req2 = make_handler(
+        "/api/v1/namespaces/default/pods/p1/exec?command=sh", headers={"Authorization": "Bearer r"}
+    )
     handler2 = shim_server.ShimHandler(req2, ("127.0.0.1", 0), None)
     handler2.path = req2.path
     handler2.command = req2.command
@@ -213,7 +249,9 @@ def test_subject_access_review_allows(monkeypatch, store):
         {},
         1,
     )
-    store.upsert("rbac.authorization.k8s.io", "v1", "roles", "default", "viewer", role.metadata, role.spec)
+    store.upsert(
+        "rbac.authorization.k8s.io", "v1", "roles", "default", "viewer", role.metadata, role.spec
+    )
     rb = K8sObject(
         "rbac.authorization.k8s.io",
         "v1",
@@ -225,12 +263,20 @@ def test_subject_access_review_allows(monkeypatch, store):
         {},
         2,
     )
-    store.upsert("rbac.authorization.k8s.io", "v1", "rolebindings", "default", "bind", rb.metadata, rb.spec)
+    store.upsert(
+        "rbac.authorization.k8s.io", "v1", "rolebindings", "default", "bind", rb.metadata, rb.spec
+    )
     body = json.dumps(
         {
             "apiVersion": "authorization.k8s.io/v1",
             "kind": "SubjectAccessReview",
-            "spec": {"resourceAttributes": {"verb": "list", "resource": "services", "namespace": "default"}},
+            "spec": {
+                "resourceAttributes": {
+                    "verb": "list",
+                    "resource": "services",
+                    "namespace": "default",
+                }
+            },
         }
     ).encode()
     req = make_handler(
@@ -273,7 +319,13 @@ def test_subject_access_review_denied(monkeypatch, store):
         {
             "apiVersion": "authorization.k8s.io/v1",
             "kind": "SubjectAccessReview",
-            "spec": {"resourceAttributes": {"verb": "delete", "resource": "services", "namespace": "default"}},
+            "spec": {
+                "resourceAttributes": {
+                    "verb": "delete",
+                    "resource": "services",
+                    "namespace": "default",
+                }
+            },
         }
     ).encode()
     req = make_handler(
@@ -322,10 +374,23 @@ def test_serviceaccount_token_auth(monkeypatch, store):
         {},
         1,
     )
-    store.upsert("rbac.authorization.k8s.io", "v1", "roles", "default", "cm-reader", role.metadata, role.spec)
+    store.upsert(
+        "rbac.authorization.k8s.io", "v1", "roles", "default", "cm-reader", role.metadata, role.spec
+    )
     # create serviceaccount via shim to mint token
-    sa_body = json.dumps({"apiVersion": "v1", "kind": "ServiceAccount", "metadata": {"name": "default", "namespace": "default"}}).encode()
-    req_sa = make_handler("/api/v1/namespaces/default/serviceaccounts", method="POST", headers={"Authorization": "Bearer a"}, body=sa_body)
+    sa_body = json.dumps(
+        {
+            "apiVersion": "v1",
+            "kind": "ServiceAccount",
+            "metadata": {"name": "default", "namespace": "default"},
+        }
+    ).encode()
+    req_sa = make_handler(
+        "/api/v1/namespaces/default/serviceaccounts",
+        method="POST",
+        headers={"Authorization": "Bearer a"},
+        body=sa_body,
+    )
     handler_sa = shim_server.ShimHandler(req_sa, ("127.0.0.1", 0), None)
     handler_sa.path = req_sa.path
     handler_sa.command = req_sa.command
@@ -356,9 +421,19 @@ def test_serviceaccount_token_auth(monkeypatch, store):
         {},
         2,
     )
-    store.upsert("rbac.authorization.k8s.io", "v1", "rolebindings", "default", "bind-sa", rb.metadata, rb.spec)
+    store.upsert(
+        "rbac.authorization.k8s.io",
+        "v1",
+        "rolebindings",
+        "default",
+        "bind-sa",
+        rb.metadata,
+        rb.spec,
+    )
     # attempt list configmaps with SA token
-    req = make_handler("/api/v1/namespaces/default/configmaps", headers={"Authorization": f"Bearer {token}"})
+    req = make_handler(
+        "/api/v1/namespaces/default/configmaps", headers={"Authorization": f"Bearer {token}"}
+    )
     handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
     handler.path = req.path
     handler.command = req.command
@@ -396,4 +471,6 @@ def test_expired_sa_token_denied(monkeypatch, store):
     handler.wfile = BytesIO()
     handler.do_GET()
     assert 401 in handler.responses or 403 in handler.responses
+
+
 # ruff: noqa: S105,E501

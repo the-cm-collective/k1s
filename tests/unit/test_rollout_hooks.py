@@ -138,4 +138,6 @@ def test_hook_tcp_failure():
         m, rr, {"name": "preSwitch", "tcp": {"port": 9}, "timeoutSeconds": 1}
     )
     assert ok is False
+
+
 # ruff: noqa: SIM105,S110

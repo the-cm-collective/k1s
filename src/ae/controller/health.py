@@ -73,7 +73,9 @@ class HealthManager:
 
         readiness_spec = manifest.spec.health.readiness if manifest.spec.health else None
         liveness_spec = manifest.spec.health.liveness if manifest.spec.health else None
-        startup_spec = getattr(manifest.spec.health, "startup", None) if manifest.spec.health else None
+        startup_spec = (
+            getattr(manifest.spec.health, "startup", None) if manifest.spec.health else None
+        )
         is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
 
         # Group runtime states by replica_id to support multi-container replicas
@@ -117,7 +119,9 @@ class HealthManager:
                             live=True if sidecars_ok else False,
                             readiness_message=f"startup pending: {startup.message}",
                             liveness_message=(
-                                "liveness gated by startup" if sidecars_ok else "sidecar not running"
+                                "liveness gated by startup"
+                                if sidecars_ok
+                                else "sidecar not running"
                             ),
                         )
                     )
@@ -194,7 +198,12 @@ class HealthManager:
             )
             self._state[key] = st
             if prev_effective != default_success:
-                self._emit_probe_event(replica.replica_id, probe_type, default_success, f"{probe_type} default {'ok' if default_success else 'pending'}")
+                self._emit_probe_event(
+                    replica.replica_id,
+                    probe_type,
+                    default_success,
+                    f"{probe_type} default {'ok' if default_success else 'pending'}",
+                )
             return ProbeOutcome(
                 success=default_success,
                 message=f"{probe_type} default {'ok' if default_success else 'pending'}",
@@ -327,10 +336,14 @@ class HealthManager:
             msg = f"{probe_type} transient fail ({st['fail']}/{need_fail})"
         self._state[key] = st
         if st.get("effective", False) != prev_effective:
-            self._emit_probe_event(replica.replica_id, probe_type, bool(st.get("effective", False)), msg)
+            self._emit_probe_event(
+                replica.replica_id, probe_type, bool(st.get("effective", False)), msg
+            )
         return ProbeOutcome(bool(st["effective"]), msg)
 
-    def _emit_probe_event(self, replica_id: str, probe_type: str, success: bool, message: str) -> None:
+    def _emit_probe_event(
+        self, replica_id: str, probe_type: str, success: bool, message: str
+    ) -> None:
         if self._event_cb is None:
             return
         try:
@@ -436,4 +449,6 @@ class HealthManager:
         except Exception as exc:  # pragma: no cover
             return ProbeOutcome(False, f"{probe_type} exec error: {exc}")
         return ProbeOutcome(code == 0, f"{probe_type} exec rc={code}")
+
+
 # ruff: noqa: E501,I001,S110,S112,SIM105,SIM102,SIM210,UP017,UP007,S104

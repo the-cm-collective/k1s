@@ -28,4 +28,6 @@ def test_storage_purge_removes_delete_retention():
     )
     vols2 = json.loads(out2)
     assert not vols2, f"expected volumes to be removed on purge, got: {vols2}"
+
+
 # ruff: noqa: S603,S607

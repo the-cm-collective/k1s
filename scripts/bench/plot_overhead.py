@@ -81,6 +81,7 @@ def display_label(row: Dict[str, str]) -> str:
         return label.replace(token_b, f"{token_b}{oci}+")
     # Fallback: insert before stage suffixes like '-idle', '-pods-N', or rollout
     import re
+
     m = (
         re.search(r"(-idle)$", label)
         or re.search(r"(-pods-\d+)$", label)
@@ -116,13 +117,13 @@ def compact_label(row: Dict[str, str]) -> str:
 PALETTE = {
     # Greens
     "k1s rootless": "#66BB6A",  # Green 400
-    "k1s rootful": "#2E7D32",   # Green 800
+    "k1s rootful": "#2E7D32",  # Green 800
     # Blue / Amber
-    "k1nd": "#42A5F5",          # Blue 400
-    "k3d": "#FFB300",           # Amber 600
+    "k1nd": "#42A5F5",  # Blue 400
+    "k3d": "#FFB300",  # Amber 600
 }
 
-BG_DARK = "#263238"   # Blue Grey 900
+BG_DARK = "#263238"  # Blue Grey 900
 FG_LIGHT = "#ECEFF1"  # Blue Grey 50
 GRID_COLOR = "#546E7A"  # Blue Grey 600
 
@@ -248,7 +249,9 @@ def plot_per_pod_scaling(plt, outdir: Path, rows: List[Dict[str, str]]):
     ax.grid(axis="both", linestyle=":", alpha=0.4)
     # Legend optional (off by default)
     if str(os.getenv("PLOT_SHOW_LEGEND", "0")).lower() not in ("0", "false", "no", ""):
-        ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.18), ncol=max(1, len(by_scn)), frameon=False)
+        ax.legend(
+            loc="upper center", bbox_to_anchor=(0.5, 1.18), ncol=max(1, len(by_scn)), frameon=False
+        )
     plt.tight_layout(rect=[0, 0, 1, 0.9])
     out = outdir / "per_pod_scaling.png"
     try:
@@ -279,7 +282,7 @@ def plot_rollout_pairs(
 ):
     # Determine replicas to target: use provided or the most common N available
     ns = []
-    for (_sc, st) in latest_map.keys():
+    for _sc, st in latest_map.keys():
         m = re.match(r"rollout-(\d+)-(during|post)$", st)
         if m:
             ns.append(int(m.group(1)))
@@ -613,6 +616,7 @@ def main(argv: List[str]) -> int:
     # Metric extractors (reused across charts)
     def ex_cp(r):
         return _cp_pss_mib_derived(r)
+
     ex_app = lambda r: to_mib(r.get("app_mem_bytes", "0"))
     ex_host = lambda r: to_mib(
         r.get("host_system_cgroups_bytes")
@@ -642,7 +646,7 @@ def main(argv: List[str]) -> int:
                 continue
             val = cp / n
             ts = str(r.get("timestamp", ""))
-            cur_ts = (by_ts.setdefault(sc, {}).get(n) or "")
+            cur_ts = by_ts.setdefault(sc, {}).get(n) or ""
             if ts >= cur_ts:
                 by_scn.setdefault(sc, {})[n] = val
                 by_ts.setdefault(sc, {})[n] = ts

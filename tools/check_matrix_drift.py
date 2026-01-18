@@ -7,7 +7,6 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
-
 README_PATH = Path("README.md")
 STATUS_PATH = Path("docs/site/k8s_status.json")
 

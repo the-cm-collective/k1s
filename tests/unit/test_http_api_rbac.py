@@ -80,11 +80,17 @@ def clear_env(monkeypatch):
 def test_apply_denied_by_rbac(monkeypatch):
     monkeypatch.setenv("AE_API_RBAC", "1")
     monkeypatch.setenv("AE_API_ADMIN_TOKEN", "a")
-    req = make_handler("/apply", headers={"Authorization": "Bearer a"}, body={"metadata": {"name": "app"}})
+    req = make_handler(
+        "/apply", headers={"Authorization": "Bearer a"}, body={"metadata": {"name": "app"}}
+    )
     handler = http_api._ApiHandler(req, ("127.0.0.1", 0), None)
     # inject apply_fn
     called = {}
-    handler.headers = {"Authorization": "Bearer a", "Content-Length": str(len(req._payload)), "Content-Type": "application/json"}
+    handler.headers = {
+        "Authorization": "Bearer a",
+        "Content-Length": str(len(req._payload)),
+        "Content-Type": "application/json",
+    }
     handler.rfile = BytesIO(req._payload)
 
     def _apply(_payload):
@@ -99,10 +105,16 @@ def test_apply_denied_by_rbac(monkeypatch):
 def test_apply_forbidden_for_reader(monkeypatch):
     monkeypatch.setenv("AE_API_RBAC", "1")
     monkeypatch.setenv("AE_API_READ_TOKEN", "r")
-    req = make_handler("/apply", headers={"Authorization": "Bearer r"}, body={"metadata": {"name": "app"}})
+    req = make_handler(
+        "/apply", headers={"Authorization": "Bearer r"}, body={"metadata": {"name": "app"}}
+    )
     handler = http_api._ApiHandler(req, ("127.0.0.1", 0), None)
     called = {}
-    handler.headers = {"Authorization": "Bearer r", "Content-Length": str(len(req._payload)), "Content-Type": "application/json"}
+    handler.headers = {
+        "Authorization": "Bearer r",
+        "Content-Length": str(len(req._payload)),
+        "Content-Type": "application/json",
+    }
     handler.rfile = BytesIO(req._payload)
 
     def _apply(_payload):
@@ -122,7 +134,11 @@ def test_scale_allowed_for_scaler(monkeypatch):
     req = make_handler("/scale/app", headers={"Authorization": "Bearer s"}, body={"replicas": 2})
     handler = http_api._ApiHandler(req, ("127.0.0.1", 0), None)
     called = {}
-    handler.headers = {"Authorization": "Bearer s", "Content-Length": str(len(req._payload)), "Content-Type": "application/json"}
+    handler.headers = {
+        "Authorization": "Bearer s",
+        "Content-Length": str(len(req._payload)),
+        "Content-Type": "application/json",
+    }
     handler.rfile = BytesIO(req._payload)
 
     def _scale(app, replicas):
@@ -142,7 +158,11 @@ def test_delete_denied_for_reader(monkeypatch):
     req = make_handler("/delete/app", headers={"Authorization": "Bearer r"})
     handler = http_api._ApiHandler(req, ("127.0.0.1", 0), None)
     called = {}
-    handler.headers = {"Authorization": "Bearer r", "Content-Length": str(len(req._payload)), "Content-Type": "application/json"}
+    handler.headers = {
+        "Authorization": "Bearer r",
+        "Content-Length": str(len(req._payload)),
+        "Content-Type": "application/json",
+    }
     handler.rfile = BytesIO(req._payload)
 
     def _del(app, purge):
@@ -154,4 +174,6 @@ def test_delete_denied_for_reader(monkeypatch):
     handler.do_POST()
     assert called.get("app") is None
     assert 403 in req.responses
+
+
 # ruff: noqa: E501

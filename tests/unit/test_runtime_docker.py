@@ -61,9 +61,7 @@ class FakeContainerManager:
     def __init__(self, client: FakeDockerClient) -> None:
         self._client = client
 
-    def list(
-        self, all: bool = True, filters: dict[str, str] | None = None
-    ) -> list[FakeContainer]:
+    def list(self, all: bool = True, filters: dict[str, str] | None = None) -> list[FakeContainer]:
         _ = all
         containers = list(self._client.containers_by_replica.values())
         if not filters:
@@ -237,9 +235,12 @@ def test_port_mapping_with_multi_service_ports():
             )
         }
     )
-    with mock.patch.object(runtime, "_host_ports_in_use", return_value=set()), mock.patch(
-        "ae.runtime.docker_runtime.choose_host_port",
-        side_effect=lambda port, **_: (port, True),
+    with (
+        mock.patch.object(runtime, "_host_ports_in_use", return_value=set()),
+        mock.patch(
+            "ae.runtime.docker_runtime.choose_host_port",
+            side_effect=lambda port, **_: (port, True),
+        ),
     ):
         mapping, svc_map = runtime._port_mapping(  # type: ignore[attr-defined]
             manifest.spec.ports,
@@ -268,8 +269,9 @@ def test_port_mapping_falls_back_when_port_busy():
         }
     )
 
-    with mock.patch.object(runtime, "_host_ports_in_use", return_value=set()), mock.patch(
-        "ae.runtime.docker_runtime.choose_host_port", return_value=(18123, False)
+    with (
+        mock.patch.object(runtime, "_host_ports_in_use", return_value=set()),
+        mock.patch("ae.runtime.docker_runtime.choose_host_port", return_value=(18123, False)),
     ):
         mapping, svc_map = runtime._port_mapping(  # type: ignore[attr-defined]
             manifest.spec.ports,
@@ -302,9 +304,12 @@ def test_port_mapping_skips_ports_already_in_use():
             return port + 1, False
         return port, True
 
-    with mock.patch.object(runtime, "_host_ports_in_use", return_value={18080}), mock.patch(
-        "ae.runtime.docker_runtime.choose_host_port",
-        side_effect=fake_choose_host_port,
+    with (
+        mock.patch.object(runtime, "_host_ports_in_use", return_value={18080}),
+        mock.patch(
+            "ae.runtime.docker_runtime.choose_host_port",
+            side_effect=fake_choose_host_port,
+        ),
     ):
         mapping, svc_map = runtime._port_mapping(  # type: ignore[attr-defined]
             manifest.spec.ports,
