@@ -450,6 +450,8 @@ python -m ae.cli logs echo --tail 50</code></pre>
 </ul>
 <p>5) Kubectl‑like wrapper (optional):</p>
 <pre><code>k1s get apps
+k1s get pods
+k1s get services
 k1s describe app/echo
 k1s logs app/echo --follow --tail 100</code></pre>
 <p>Optional: start the Kubernetes API shim for kubectl/helm parity</p>
@@ -628,7 +630,7 @@ make demo-hardened</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-17 18:15:46</span>
+        <span>Built 2026-01-17 18:38:50</span>
       </div>
     </footer>
     <script>
