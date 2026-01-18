@@ -62,11 +62,15 @@ def main(argv: List[str]) -> int:
                 # Historical, misleading name kept for compatibility; charts/docs will prefer new fields below
                 "control_plane_pss_kb": s.get("overhead", {}).get("pss_kb_control_plane", 0),
                 # New structured fields
-                "overhead_pss_kb_total": s.get("overhead", {}).get("pss_kb_total_overhead", s.get("overhead", {}).get("pss_kb_control_plane", 0)),
+                "overhead_pss_kb_total": s.get("overhead", {}).get(
+                    "pss_kb_total_overhead", s.get("overhead", {}).get("pss_kb_control_plane", 0)
+                ),
                 "controller_pss_kb": s.get("overhead", {}).get("pss_kb_controller", 0),
                 "ingress_pss_kb": s.get("overhead", {}).get("pss_kb_ingress", 0),
                 "runtime_pss_kb": s.get("overhead", {}).get("pss_kb_runtime", 0),
-                "k3s_control_plane_pss_kb": s.get("overhead", {}).get("pss_kb_k3s_control_plane", 0),
+                "k3s_control_plane_pss_kb": s.get("overhead", {}).get(
+                    "pss_kb_k3s_control_plane", 0
+                ),
                 "app_mem_bytes": s.get("containers", {}).get("app_mem_bytes", 0),
                 "system_mem_bytes": s.get("containers", {}).get("system_mem_bytes", 0),
                 "host_system_cgroups_bytes": s.get("overhead", {}).get(
@@ -83,10 +87,8 @@ def main(argv: List[str]) -> int:
                     (s.get("mem_available", {}) or {}).get("delta_bytes", 0)
                     if (s.get("mem_available", {}) or {}).get("delta_bytes", 0)
                     else (
-                        (
-                            (s.get("mem_available", {}) or {}).get("after_bytes", 0)
-                            - (s.get("mem_available", {}) or {}).get("before_bytes", 0)
-                        )
+                        (s.get("mem_available", {}) or {}).get("after_bytes", 0)
+                        - (s.get("mem_available", {}) or {}).get("before_bytes", 0)
                     )
                 ),
             }

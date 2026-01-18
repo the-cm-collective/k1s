@@ -86,6 +86,7 @@ def test_hpa_mem_value_invalid(tmp_path) -> None:
 
 def test_startup_probe_hint_emitted() -> None:
     from ae.controller.spec import AppManifest, AppSpec, HealthSpec, Metadata, ProbeSpec
+
     man = AppManifest(
         apiVersion="ae.dev/v1alpha1",
         kind="App",
@@ -104,6 +105,7 @@ def test_startup_probe_hint_emitted() -> None:
 
 def test_prestop_short_grace_warns() -> None:
     from ae.controller.spec import AppManifest, AppSpec, Metadata
+
     man = AppManifest(
         apiVersion="ae.dev/v1alpha1",
         kind="App",
@@ -121,6 +123,7 @@ def test_prestop_short_grace_warns() -> None:
 
 def test_qos_limits_without_requests_warns() -> None:
     from ae.controller.spec import AppManifest, AppSpec, Metadata, ResourceQuantities, ResourcesSpec
+
     man = AppManifest(
         apiVersion="ae.dev/v1alpha1",
         kind="App",

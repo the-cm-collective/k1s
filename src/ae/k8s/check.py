@@ -105,7 +105,11 @@ def k8s_portability_issues(m: AppManifest) -> List[Issue]:
     if getattr(spec, "empty_dirs", None):
         for ed in spec.empty_dirs:
             try:
-                mnt = getattr(ed, "mount_path", None) or ed.get("mountPath") if isinstance(ed, dict) else None
+                mnt = (
+                    getattr(ed, "mount_path", None) or ed.get("mountPath")
+                    if isinstance(ed, dict)
+                    else None
+                )
             except Exception:
                 mnt = None
             issues.append(
@@ -119,7 +123,9 @@ def k8s_portability_issues(m: AppManifest) -> List[Issue]:
     if int(spec.replicas) > 1:
         has_pdb_hint = False
         try:
-            if getattr(spec, "export_hints", None) and bool(getattr(spec.export_hints, "emit_pdb", False)):
+            if getattr(spec, "export_hints", None) and bool(
+                getattr(spec.export_hints, "emit_pdb", False)
+            ):
                 has_pdb_hint = True
         except Exception:
             has_pdb_hint = False
@@ -170,13 +176,19 @@ def k8s_portability_issues(m: AppManifest) -> List[Issue]:
     # Image arch: cannot verify; warn as informational only unless suppressed by exportHints
     suppress_img = False
     try:
-        if getattr(spec, "export_hints", None) and bool(getattr(spec.export_hints, "suppress_image_multi_arch_warning", False)):
+        if getattr(spec, "export_hints", None) and bool(
+            getattr(spec.export_hints, "suppress_image_multi_arch_warning", False)
+        ):
             suppress_img = True
     except Exception:
         suppress_img = False
     if not suppress_img:
         issues.append(
-            Issue("warn", "IMAGE_MULTI_ARCH_UNKNOWN", "cannot verify image is multi-arch (amd64/arm64)")
+            Issue(
+                "warn",
+                "IMAGE_MULTI_ARCH_UNKNOWN",
+                "cannot verify image is multi-arch (amd64/arm64)",
+            )
         )
     # Multi-container advisory
     if getattr(spec, "containers", None):
@@ -304,9 +316,14 @@ def _valid_quantity(q: str) -> bool:
             issues.append(Issue("error", "INGRESS_HOST_EMPTY", "ingress.host must be set"))
         else:
             import re as _re
+
             # Basic hostname check: labels separated by dots, allow localhost for dev
-            if host != "localhost" and not _re.match(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}$", host):
-                issues.append(Issue("warn", "INGRESS_HOST_FORMAT", f"ingress.host '{host}' looks unusual"))
+            if host != "localhost" and not _re.match(
+                r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}$", host
+            ):
+                issues.append(
+                    Issue("warn", "INGRESS_HOST_FORMAT", f"ingress.host '{host}' looks unusual")
+                )
         if not path.startswith("/"):
             issues.append(Issue("error", "INGRESS_PATH_FORMAT", "ingress.path must start with '/'"))
 
@@ -319,11 +336,15 @@ def _valid_quantity(q: str) -> bool:
             p = getattr(sp, "port", None)
             if n:
                 if n in names:
-                    issues.append(Issue("error", "SVC_PORT_NAME_DUP", f"duplicate Service port name: {n}"))
+                    issues.append(
+                        Issue("error", "SVC_PORT_NAME_DUP", f"duplicate Service port name: {n}")
+                    )
                 names.append(n)
             if p is not None:
                 if p in nums:
-                    issues.append(Issue("warn", "SVC_PORT_NUM_DUP", f"duplicate Service port number: {p}"))
+                    issues.append(
+                        Issue("warn", "SVC_PORT_NUM_DUP", f"duplicate Service port number: {p}")
+                    )
                 nums.append(p)
             # targetPort match check (numeric)
             tp = getattr(sp, "target_port", None)
@@ -333,7 +354,17 @@ def _valid_quantity(q: str) -> bool:
                 except Exception:
                     tpi = None
                 if tpi is not None:
-                    if not any(int(getattr(cp, "container_port", 0)) == tpi for cp in spec.ports or []):
-                        issues.append(Issue("warn", "SVC_TARGETPORT_MISSING", f"targetPort {tpi} not found in container ports"))
+                    if not any(
+                        int(getattr(cp, "container_port", 0)) == tpi for cp in spec.ports or []
+                    ):
+                        issues.append(
+                            Issue(
+                                "warn",
+                                "SVC_TARGETPORT_MISSING",
+                                f"targetPort {tpi} not found in container ports",
+                            )
+                        )
+
+
 # ruff: noqa
 # ruff: noqa: E501,UP006,UP007,UP017,UP035,S110,S112,SIM102,SIM105,SIM108,F821

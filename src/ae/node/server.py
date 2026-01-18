@@ -362,9 +362,13 @@ def serve(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="ae.node", description="k1s node agent (phase 1 skeleton)")
+    parser = argparse.ArgumentParser(
+        prog="ae.node", description="k1s node agent (phase 1 skeleton)"
+    )
     parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=int(__import__("os").getenv("AE_NODE_PORT", "9109")))
+    parser.add_argument(
+        "--port", type=int, default=int(__import__("os").getenv("AE_NODE_PORT", "9109"))
+    )
     parser.add_argument("--controller-url", default=os.getenv("AE_CONTROLLER_URL"))
     parser.add_argument(
         "--heartbeat-interval",
@@ -428,7 +432,8 @@ def main(argv: list[str] | None = None) -> int:
         token=token,
         pod_cidr=os.getenv("AE_POD_CIDR"),
         wg_pubkey=os.getenv("AE_WG_PUBKEY"),
-        ensure_pod_net=args.ensure_pod_net or bool(int(os.getenv("AE_AGENT_CONFIGURE_OVERLAY", "0"))),
+        ensure_pod_net=args.ensure_pod_net
+        or bool(int(os.getenv("AE_AGENT_CONFIGURE_OVERLAY", "0"))),
         pod_bridge=args.pod_bridge,
         wg_config=os.getenv("AE_WG_CONFIG"),
         tls_cert=args.tls_cert,

@@ -70,4 +70,6 @@ def test_labs_ingress_check_returns_json_on_network_failure() -> None:  # noqa: 
     assert status and status[0] == 200
     data = json.loads(wfile.getvalue().decode("utf-8") or "{}")
     assert set(["ok", "code", "elapsed_ms"]).issubset(set(data.keys()))
+
+
 # ruff: noqa: C405

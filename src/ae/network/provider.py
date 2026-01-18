@@ -39,4 +39,6 @@ class NullProvider:
 
     def remove_service(self, app_name: str) -> None:  # pragma: no cover - trivial
         return
+
+
 # ruff: noqa: E501,UP006,UP007,UP017,UP035,ARG002

@@ -27,9 +27,7 @@ def test_create_container_removes_existing(monkeypatch):
     rt = PodmanRuntime()
     calls: list[list[str]] = []
 
-    monkeypatch.setattr(
-        "ae.runtime.podman_runtime.choose_host_port", lambda *_, **__: (8080, True)
-    )
+    monkeypatch.setattr("ae.runtime.podman_runtime.choose_host_port", lambda *_, **__: (8080, True))
 
     def fake_run(argv, allow_fail=False):  # noqa: ANN001
         _ = allow_fail
@@ -102,9 +100,7 @@ def test_oci_runtime_flag_in_create(monkeypatch):
     rt = PodmanRuntime()
     calls: list[list[str]] = []
 
-    monkeypatch.setattr(
-        "ae.runtime.podman_runtime.choose_host_port", lambda *_, **__: (8080, True)
-    )
+    monkeypatch.setattr("ae.runtime.podman_runtime.choose_host_port", lambda *_, **__: (8080, True))
 
     def fake_run(argv, allow_fail=False):  # noqa: ANN001
         _ = allow_fail
@@ -123,9 +119,13 @@ def test_oci_runtime_flag_in_create(monkeypatch):
     rt._create_container(m, "blue-rev1-0", 1, service=(8080, 8080, None))
 
     # Find the `podman run -d ...` invocation and assert --runtime crun is present
-    run_calls = [c for c in calls if len(c) >= 3 and c[0] == rt._bin and c[1] == "run" and "-d" in c]
+    run_calls = [
+        c for c in calls if len(c) >= 3 and c[0] == rt._bin and c[1] == "run" and "-d" in c
+    ]
     assert run_calls, f"expected a podman run -d call, got: {calls}"
-    assert any("--runtime" in c and "crun" in c for c in run_calls), f"--runtime crun missing in: {run_calls}"
+    assert any(
+        "--runtime" in c and "crun" in c for c in run_calls
+    ), f"--runtime crun missing in: {run_calls}"
 
 
 def test_oci_runtime_flag_in_init_containers(monkeypatch):
@@ -140,7 +140,9 @@ def test_oci_runtime_flag_in_init_containers(monkeypatch):
         spec=AppSpec(
             image="localhost/demo:latest",
             replicas=1,
-            init_containers=[{"name": "prep", "image": "alpine", "command": ["sh", "-c"], "args": ["true"]}],
+            init_containers=[
+                {"name": "prep", "image": "alpine", "command": ["sh", "-c"], "args": ["true"]}
+            ],
         ),
     )
 
@@ -163,5 +165,9 @@ def test_oci_runtime_flag_in_init_containers(monkeypatch):
     res = rt.run_init_containers(m)
     assert res and res[0][1] == 0
     # Ensure the run argv contains --runtime crun
-    assert any(c[:2] == [rt._bin, "run"] and "--runtime" in c and "crun" in c for c in captured), f"--runtime crun missing in: {captured}"
+    assert any(
+        c[:2] == [rt._bin, "run"] and "--runtime" in c and "crun" in c for c in captured
+    ), f"--runtime crun missing in: {captured}"
+
+
 # ruff: noqa: E501

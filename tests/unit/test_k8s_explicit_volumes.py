@@ -12,13 +12,19 @@ def test_explicit_config_secret_volume_items_and_modes() -> None:
             "spec": man.spec.model_copy(
                 update={
                     "secret_refs": [
-                        man.spec.secret_refs[0].model_copy(update={"files": [{"key": "token", "file": "secret/token", "mode": 0o440}]})
+                        man.spec.secret_refs[0].model_copy(
+                            update={
+                                "files": [{"key": "token", "file": "secret/token", "mode": 0o440}]
+                            }
+                        )
                     ]
                 }
             )
         }
     )
-    docs = export_k8s_docs(man, options=ExportOptions(namespace="demo", emit_configs=True, emit_secrets=True))
+    docs = export_k8s_docs(
+        man, options=ExportOptions(namespace="demo", emit_configs=True, emit_secrets=True)
+    )
     dep = next(d for d in docs if d.get("kind") == "Deployment")
     pod = dep["spec"]["template"]["spec"]
     vols = pod.get("volumes", [])
@@ -28,4 +34,6 @@ def test_explicit_config_secret_volume_items_and_modes() -> None:
     assert item["key"] == "token"
     assert item["path"] == "secret/token"
     assert int(item.get("mode", 0)) == 0o440
+
+
 # ruff: noqa: E501
