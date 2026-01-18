@@ -12,21 +12,21 @@ recognizes pre-releases correctly.
 
 ## Tagging
 
-- Git tags match the package version, prefixed with `v` (example: `v0.1.0a1`).
+- Git tags match the package version, prefixed with `v` (example: `v0.1.0`).
 - Tag the commit that lands the release in `main`.
 - Use annotated tags; if GPG is configured, prefer signed tags.
 - Example commands:
 
 ```bash
-git tag -a v0.1.0a1 -m "v0.1.0a1"
-git push origin v0.1.0a1
+git tag -a v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
 ```
 
 - Example (signed tag):
 
 ```bash
-git tag -s v0.1.0a1 -m "v0.1.0a1"
-git push origin v0.1.0a1
+git tag -s v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
 ```
 
 ## Post-release bump
@@ -38,7 +38,7 @@ git push origin v0.1.0a1
 
 - Keep an `Unreleased (YYYY-MM-DD)` section at the top of `CHANGELOG.md`.
 - When releasing, move its entries under a new section like
-  `0.1.0a1 - 2026-01-16`, then create a fresh empty Unreleased section.
+  `0.1.0 - 2026-01-18`, then create a fresh empty Unreleased section.
 
 ## Automation
 
@@ -49,4 +49,4 @@ git push origin v0.1.0a1
 
 ## Current status
 
-- `0.1.0a1` (2026-01-16) is the first official alpha release.
+- `0.1.0` (2026-01-18) is the first official release.
