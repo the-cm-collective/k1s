@@ -7,4 +7,3 @@ can interact with a k1s-backed store. See docs/design/api-shim.md.
 __all__ = [
     "serve",
 ]
-

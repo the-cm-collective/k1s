@@ -127,6 +127,7 @@ def test_apply_patch_sets_managed_fields(tmp_path, monkeypatch):
     assert mfields
     assert any(mf.get("manager") == "kubectl" for mf in mfields)
 
+
 def test_apply_conflict_on_managedfields(tmp_path, monkeypatch):
     store = ObjectStore(tmp_path / "apishim.db")
     monkeypatch.setenv("AE_APISHIM_TOKEN", "a")
@@ -134,7 +135,11 @@ def test_apply_conflict_on_managedfields(tmp_path, monkeypatch):
     shim_server.ShimHandler.read_token = None
     shim_server.ShimHandler.rbac_enabled = False
     monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda _self: None)
-    svc_meta = {"name": "web", "namespace": "default", "managedFields": [{"manager": "helm", "operation": "Apply"}]}
+    svc_meta = {
+        "name": "web",
+        "namespace": "default",
+        "managedFields": [{"manager": "helm", "operation": "Apply"}],
+    }
     svc_spec = {"ports": [{"port": 80, "targetPort": 8080}]}
     store.upsert("", "v1", "services", "default", "web", svc_meta, svc_spec)
     body = json.dumps({"metadata": {"labels": {"team": "platform"}}}).encode()
@@ -240,12 +245,23 @@ def test_strategic_merge_patch_preserves_container_ports(tmp_path, monkeypatch):
     shim_server.ShimHandler.rbac_enabled = False
     monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda _self: None)
     meta = {"name": "demo", "namespace": "default"}
-    spec = {"template": {"spec": {"containers": [{"name": "c", "image": "nginx", "ports": [{"containerPort": 80}]}]}}}
+    spec = {
+        "template": {
+            "spec": {
+                "containers": [{"name": "c", "image": "nginx", "ports": [{"containerPort": 80}]}]
+            }
+        }
+    }
     store.upsert("apps", "v1", "deployments", "default", "demo", meta, spec)
-    patch_body = json.dumps({"spec": {"template": {"spec": {"containers": [{"name": "c", "image": "nginx:1.2"}]}}}}).encode()
+    patch_body = json.dumps(
+        {"spec": {"template": {"spec": {"containers": [{"name": "c", "image": "nginx:1.2"}]}}}}
+    ).encode()
     req = make_handler(
         "/apis/apps/v1/namespaces/default/deployments/demo",
-        headers={"Authorization": "Bearer a", "Content-Type": "application/strategic-merge-patch+json"},
+        headers={
+            "Authorization": "Bearer a",
+            "Content-Type": "application/strategic-merge-patch+json",
+        },
         body=patch_body,
     )
     handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
@@ -274,7 +290,15 @@ def _register_app_crd(store):
         "versions": [{"name": "v1alpha1", "served": True, "storage": True}],
         "names": {"plural": "apps", "singular": "app", "kind": "App"},
     }
-    obj = store.upsert("apiextensions.k8s.io", "v1", "customresourcedefinitions", None, "apps.ae.dev", crd_meta, crd_spec)
+    obj = store.upsert(
+        "apiextensions.k8s.io",
+        "v1",
+        "customresourcedefinitions",
+        None,
+        "apps.ae.dev",
+        crd_meta,
+        crd_spec,
+    )
     shim_server.ShimHandler._register_crd(obj)
 
 
@@ -393,7 +417,9 @@ def test_deployment_injects_sa_projection(tmp_path, monkeypatch):
     vols = tpl_spec.get("volumes") or []
     assert any(v.get("projected") for v in vols)
     cmounts = tpl_spec.get("containers")[0].get("volumeMounts")
-    assert cmounts and any(vm.get("mountPath") == "/var/run/secrets/kubernetes.io/serviceaccount" for vm in cmounts)
+    assert cmounts and any(
+        vm.get("mountPath") == "/var/run/secrets/kubernetes.io/serviceaccount" for vm in cmounts
+    )
 
 
 def test_secret_type_roundtrip(tmp_path, monkeypatch):
@@ -432,8 +458,10 @@ def test_secret_type_roundtrip(tmp_path, monkeypatch):
     handler.do_POST()
     obj = store.get("", "v1", "secrets", "demo", "release")
     assert obj
-    anns = (obj.metadata.get("annotations") or {})
+    anns = obj.metadata.get("annotations") or {}
     assert anns.get("ae.apishim/secret-type") == "helm.sh/release.v1"
     out = shim_server._to_obj(obj)
     assert out.get("type") == "helm.sh/release.v1"
+
+
 # ruff: noqa: S105,E501

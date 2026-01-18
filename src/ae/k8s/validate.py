@@ -67,5 +67,7 @@ def validate_documents(yaml_text: str) -> Tuple[bool, List[str]]:
                 errors.append(f"doc {i}: Ingress.spec.rules required")
 
     return (len(errors) == 0), errors
+
+
 # ruff: noqa
 # ruff: noqa: E501,UP006,UP007,UP017,UP035,F401

@@ -184,7 +184,10 @@ def test_hpa_behavior_knobs_pass_through() -> None:
         hpa_min=1,
         hpa_max=3,
         hpa_cpu_target=70,
-        hpa_behavior_up={"stabilizationWindowSeconds": 60, "policies": [{"type": "Percent", "value": 50, "periodSeconds": 60}]},
+        hpa_behavior_up={
+            "stabilizationWindowSeconds": 60,
+            "policies": [{"type": "Percent", "value": 50, "periodSeconds": 60}],
+        },
         hpa_behavior_down={"stabilizationWindowSeconds": 60},
     )
     docs = export_k8s_docs(man, options=opts)
@@ -468,6 +471,7 @@ def test_pod_security_fs_group_and_pod_seccomp() -> None:
     man = load_manifest(Path("specs/examples/echo.yaml"))
     # Add pod-level fsGroup and seccompProfile(Localhost)
     from ae.controller.spec import PodSecuritySpec
+
     psec = PodSecuritySpec(
         fs_group=2000, seccomp_type="Localhost", seccomp_localhost_profile="profiles/pod.json"
     )
@@ -597,9 +601,7 @@ def test_pod_dns_policy_and_config_exports() -> None:
 def test_pod_hostname_and_subdomain_export() -> None:
     man = load_manifest(Path("specs/examples/echo.yaml"))
     man = man.model_copy(
-        update={
-            "spec": man.spec.model_copy(update={"hostname": "echo-0", "subdomain": "echo"})
-        }
+        update={"spec": man.spec.model_copy(update={"hostname": "echo-0", "subdomain": "echo"})}
     )
     docs = export_k8s_docs(man, options=ExportOptions(namespace="demo"))
     dep = next(d for d in docs if d["kind"] == "Deployment")
@@ -652,13 +654,17 @@ def test_pod_small_pass_throughs() -> None:
     assert pod.get("hostNetwork") is True
     assert pod.get("nodeSelector") == {"disktype": "ssd", "zone": "us-east-1a"}
     # setHostnameAsFQDN
-    man2 = man.model_copy(update={"spec": man.spec.model_copy(update={"set_hostname_as_fqdn": True})})
+    man2 = man.model_copy(
+        update={"spec": man.spec.model_copy(update={"set_hostname_as_fqdn": True})}
+    )
     docs2 = export_k8s_docs(man2, options=ExportOptions(namespace="demo"))
     dep2 = next(d for d in docs2 if d["kind"] == "Deployment")
     pod2 = dep2["spec"]["template"]["spec"]
     assert pod2.get("setHostnameAsFQDN") is True
     # hostPID/hostIPC
-    man3 = man.model_copy(update={"spec": man.spec.model_copy(update={"host_pid": True, "host_ipc": False})})
+    man3 = man.model_copy(
+        update={"spec": man.spec.model_copy(update={"host_pid": True, "host_ipc": False})}
+    )
     docs3 = export_k8s_docs(man3, options=ExportOptions(namespace="demo"))
     dep3 = next(d for d in docs3 if d["kind"] == "Deployment")
     pod3 = dep3["spec"]["template"]["spec"]
@@ -667,7 +673,9 @@ def test_pod_small_pass_throughs() -> None:
 
 def test_statefulset_carries_startup_probe_and_pull_secrets() -> None:
     man = load_manifest(Path("specs/examples/echo.yaml"))
-    startup2 = ProbeSpec(tcpSocket=TCPSocketProbe(port=8080), initialDelaySeconds=1, timeoutSeconds=1)
+    startup2 = ProbeSpec(
+        tcpSocket=TCPSocketProbe(port=8080), initialDelaySeconds=1, timeoutSeconds=1
+    )
     man = man.model_copy(
         update={
             "spec": man.spec.model_copy(
@@ -789,7 +797,14 @@ def test_network_policy_emit_from_manifest() -> None:
 
 def test_export_default_network_policy_generation() -> None:
     man = load_manifest(Path("specs/examples/echo.yaml"))
-    opts = ExportOptions(namespace="demo", emit_network_policy=True, np_default_deny_ingress=True, np_default_deny_egress=True, np_allow_dns=True, np_allow_web=True)
+    opts = ExportOptions(
+        namespace="demo",
+        emit_network_policy=True,
+        np_default_deny_ingress=True,
+        np_default_deny_egress=True,
+        np_allow_dns=True,
+        np_allow_web=True,
+    )
     docs = export_k8s_docs(man, options=opts)
     np = next(d for d in docs if d.get("kind") == "NetworkPolicy")
     assert np["metadata"]["name"] == man.metadata.name
@@ -800,4 +815,6 @@ def test_export_default_network_policy_generation() -> None:
     assert any(any(p.get("port") == 53 for p in e.get("ports", [])) for e in egs)
     assert any(any(p.get("port") == 80 for p in e.get("ports", [])) for e in egs)
     assert any(any(p.get("port") == 443 for p in e.get("ports", [])) for e in egs)
+
+
 # ruff: noqa: E501

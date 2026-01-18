@@ -305,4 +305,6 @@ def test_reconciler_applies_secrets(tmp_path: Path) -> None:
     assert runtime.last_manifest is not None
     env_map = {item["name"]: item["value"] for item in runtime.last_manifest.spec.env}
     assert env_map["SECRET_VALUE"] == "hunter2"
+
+
 # ruff: noqa: S105
