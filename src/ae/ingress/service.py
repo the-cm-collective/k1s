@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from ae.controller.spec import AppManifest
+from ae.controller.spec import AppManifest, app_key_for_manifest
 from ae.controller.state import SQLiteStateStore
 from .tls_sync import TlsSecretResolver
 
@@ -34,8 +34,9 @@ class IngressService:
 
     def apply(self, manifest: AppManifest, upstream) -> IngressResult:
         if manifest.spec.ingress is None:
+            app_name = app_key_for_manifest(manifest)
             return IngressResult(
-                app_name=manifest.metadata.name,
+                app_name=app_name,
                 host=None,
                 config_path=None,
             )
@@ -72,7 +73,7 @@ class IngressService:
                 try:
                     if self._store is not None:
                         self._store.record_event(
-                            manifest.metadata.name,
+                            app_key_for_manifest(manifest),
                             0,
                             "IngressTLSMissing",
                             f"tlsSecretName '{ingress_spec.tls_secret_name}' not found under AE_TLS_DIR; using Caddy internal TLS",
@@ -85,7 +86,7 @@ class IngressService:
         else:
             ups_tuple = (upstream,)
         sig = f"{manifest.spec.ingress.host}|{readiness_path}|{ups_tuple}"
-        app = manifest.metadata.name
+        app = app_key_for_manifest(manifest)
 
         site_path = None
         if self._last_sig.get(app) != sig:
@@ -178,9 +179,7 @@ class IngressService:
                 )  # type: ignore[arg-type]
             except TypeError:
                 try:
-                    site_path = self._manager.apply(
-                        manifest, upstream, readiness_path
-                    )  # type: ignore[arg-type]
+                    site_path = self._manager.apply(manifest, upstream, readiness_path)  # type: ignore[arg-type]
                 except TypeError:
                     site_path = self._manager.apply(manifest, upstream)
             except Exception as exc:  # pragma: no cover - defensive
@@ -189,9 +188,7 @@ class IngressService:
                 try:
                     import logging as _log
 
-                    _log.getLogger(__name__).warning(
-                        "ingress apply skipped: %s", exc
-                    )
+                    _log.getLogger(__name__).warning("ingress apply skipped: %s", exc)
                 except Exception:
                     pass
                 site_path = None
@@ -204,7 +201,7 @@ class IngressService:
             except Exception:
                 site_path = None
         return IngressResult(
-            app_name=manifest.metadata.name,
+            app_name=app,
             host=manifest.spec.ingress.host,
             config_path=str(site_path) if site_path else None,
         )
@@ -224,4 +221,6 @@ class IngressService:
             logging.getLogger(__name__).warning("ingress reload skipped: %s", exc)
         finally:
             self._dirty = False
+
+
 # ruff: noqa

@@ -12,7 +12,14 @@ import docker
 from docker.errors import APIError, NotFound
 from docker.models.containers import Container
 
-from ae.controller.spec import AppManifest, PortSpec
+from ae.controller.spec import (
+    DEFAULT_NAMESPACE,
+    AppManifest,
+    PortSpec,
+    app_key_for_manifest,
+    runtime_labels_for_manifest,
+    split_app_key,
+)
 from ae.runtime.ports import choose_host_port
 
 from .base import ReplicaState, RuntimeAdapter, RuntimeResult
@@ -56,8 +63,12 @@ class DockerRuntime(RuntimeAdapter):
         replica_ids: list[str] | None = None,
         node_id: str | None = None,
     ) -> RuntimeResult:
-        app_name = manifest.metadata.name
-        desired_replica_ids = list(replica_ids) if replica_ids is not None else self._desired_replica_ids(manifest, revision)
+        app_name = app_key_for_manifest(manifest)
+        desired_replica_ids = (
+            list(replica_ids)
+            if replica_ids is not None
+            else self._desired_replica_ids(manifest, revision)
+        )
         # Record node context so volume helpers can label ownership
         self._current_node_id = node_id
         is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
@@ -124,7 +135,11 @@ class DockerRuntime(RuntimeAdapter):
             else:
                 self._reload(container)
                 if is_job:
-                    state = container.attrs.get("State", {}) if getattr(container, "attrs", None) else {}
+                    state = (
+                        container.attrs.get("State", {})
+                        if getattr(container, "attrs", None)
+                        else {}
+                    )
                     status = state.get("Status", container.status)
                     exit_code = state.get("ExitCode", None)
                     try:
@@ -286,10 +301,8 @@ class DockerRuntime(RuntimeAdapter):
     # Internal helpers -------------------------------------------------
 
     def _desired_replica_ids(self, manifest: AppManifest, revision: int) -> list[str]:
-        return [
-            f"{manifest.metadata.name}-rev{revision}-{replica}"
-            for replica in range(manifest.spec.replicas)
-        ]
+        app_name = app_key_for_manifest(manifest)
+        return [f"{app_name}-rev{revision}-{replica}" for replica in range(manifest.spec.replicas)]
 
     def _pull_image(self, manifest: AppManifest) -> None:
         image_ref = manifest.spec.image
@@ -315,7 +328,7 @@ class DockerRuntime(RuntimeAdapter):
         attempt: int = 0,
     ) -> Container:
         # replica_id pattern: <app>-rev<revision>-<index>
-        app_name = manifest.metadata.name
+        app_name = app_key_for_manifest(manifest)
         replica_suffix = replica_id.split("-")[-1]
         name = f"ae-{app_name}-rev{revision}-{replica_suffix}"
         env = self._manifest_env(manifest)
@@ -380,11 +393,9 @@ class DockerRuntime(RuntimeAdapter):
                     host_path = os.path.abspath(host_path)
                 volumes[host_path] = {"bind": v.mount_path, "mode": mode}
         if getattr(manifest.spec, "storage", None):
-            self.ensure_storage_volumes(
-                manifest.metadata.name, [s.model_dump() for s in manifest.spec.storage]
-            )
+            self.ensure_storage_volumes(app_name, [s.model_dump() for s in manifest.spec.storage])
             for s in manifest.spec.storage:
-                vol_name = self._storage_volume_name(manifest.metadata.name, s.name)
+                vol_name = self._storage_volume_name(app_name, s.name)
                 volumes[vol_name] = {"bind": s.mount_path, "mode": "rw"}
 
         try:
@@ -402,13 +413,15 @@ class DockerRuntime(RuntimeAdapter):
             elif getattr(manifest.spec, "args", None):
                 _cmd = list(manifest.spec.args)
             is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
-            labels = {
-                self.APP_LABEL: manifest.metadata.name,
-                self.REPLICA_LABEL: replica_id,
-                self.REVISION_LABEL: str(revision),
-                self.CONTAINER_LABEL: "main",
-                **({"ae.node": str(node_id)} if node_id else {}),
-            }
+            labels = runtime_labels_for_manifest(manifest, app_name=app_name)
+            labels.update(
+                {
+                    self.REPLICA_LABEL: replica_id,
+                    self.REVISION_LABEL: str(revision),
+                    self.CONTAINER_LABEL: "main",
+                    **({"ae.node": str(node_id)} if node_id else {}),
+                }
+            )
             if is_job:
                 labels[self.JOB_ATTEMPT_LABEL] = str(int(attempt))
             kwargs = {
@@ -596,7 +609,7 @@ class DockerRuntime(RuntimeAdapter):
         """Ensure declared sidecar containers (spec.containers) are running for a replica."""
         if not getattr(manifest.spec, "containers", None):
             return
-        app_name = manifest.metadata.name
+        app_name = app_key_for_manifest(manifest)
         try:
             existing = self._client.containers.list(
                 all=True,
@@ -638,14 +651,18 @@ class DockerRuntime(RuntimeAdapter):
                 c = by_cname.get(cname)
                 if c is None:
                     env_map: dict[str, str] = {}
-                    for item in (getattr(csp, "env", []) or []):
+                    for item in getattr(csp, "env", []) or []:
                         if isinstance(item, dict) and "name" in item and "value" in item:
                             env_map[item["name"]] = str(item.get("value", ""))
                     # Merge per-container projection mounts
                     vmap = dict(volumes or {})
                     try:
                         for pm in getattr(csp, "projection_mounts", []) or []:
-                            p = getattr(pm, "path", None) if not isinstance(pm, dict) else pm.get("path")
+                            p = (
+                                getattr(pm, "path", None)
+                                if not isinstance(pm, dict)
+                                else pm.get("path")
+                            )
                             mnt = (
                                 getattr(pm, "mount_path", None)
                                 if not isinstance(pm, dict)
@@ -676,7 +693,7 @@ class DockerRuntime(RuntimeAdapter):
                             environment=env_map or None,
                             volumes=vmap or None,
                             labels={
-                                self.APP_LABEL: app_name,
+                                **runtime_labels_for_manifest(manifest, app_name=app_name),
                                 self.REPLICA_LABEL: replica_id,
                                 self.REVISION_LABEL: str(revision),
                                 self.CONTAINER_LABEL: cname,
@@ -784,7 +801,12 @@ class DockerRuntime(RuntimeAdapter):
 
     # Streaming exec/attach for kubectl exec (SPDY)
     def exec_attach(
-        self, replica_id: str, command: list[str], *, container: str | None = None, tty: bool = False
+        self,
+        replica_id: str,
+        command: list[str],
+        *,
+        container: str | None = None,
+        tty: bool = False,
     ):
         """Return (socket, exec_id) for an attached exec session."""
         target = None
@@ -810,7 +832,9 @@ class DockerRuntime(RuntimeAdapter):
         sock = self._client.api.exec_start(exec_id, tty=tty, stream=True, socket=True, demux=False)
         return sock, exec_id
 
-    def exec_resize(self, exec_id: str, *, height: int | None = None, width: int | None = None) -> None:
+    def exec_resize(
+        self, exec_id: str, *, height: int | None = None, width: int | None = None
+    ) -> None:
         try:
             self._client.api.exec_resize(exec_id, height=height, width=width)
         except APIError:
@@ -837,13 +861,9 @@ class DockerRuntime(RuntimeAdapter):
         except Exception:
             exit_code = None
         finished_at = self._parse_datetime(state.get("FinishedAt"))
-        ready = False
         is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
         if is_job:
-            if status == "running":
-                ready = False
-            else:
-                ready = exit_code == 0
+            ready = False if status == "running" else exit_code == 0
         elif "Health" in state:
             ready = state["Health"].get("Status") == "healthy"
         else:
@@ -1056,11 +1076,12 @@ class DockerRuntime(RuntimeAdapter):
             pass
         try:
             if getattr(manifest.spec, "storage", None):
+                app_name = app_key_for_manifest(manifest)
                 self.ensure_storage_volumes(
-                    manifest.metadata.name, [s.model_dump() for s in manifest.spec.storage]
+                    app_name, [s.model_dump() for s in manifest.spec.storage]
                 )
                 for s in manifest.spec.storage:
-                    vol_name = self._storage_volume_name(manifest.metadata.name, s.name)
+                    vol_name = self._storage_volume_name(app_name, s.name)
                     volumes[vol_name] = {"bind": str(s.mount_path), "mode": "rw"}
         except Exception:
             pass
@@ -1069,32 +1090,50 @@ class DockerRuntime(RuntimeAdapter):
             name = (
                 getattr(c, "name", None) if not isinstance(c, dict) else c.get("name")
             ) or "init"
-            image = (
-                getattr(c, "image", None) if not isinstance(c, dict) else c.get("image")
-            )
+            image = getattr(c, "image", None) if not isinstance(c, dict) else c.get("image")
             if not image:
                 results.append((str(name), 1, "missing image"))
                 continue
             # Timeout
             timeout: int | None = None
             try:
-                raw = getattr(c, "timeout_seconds", None) if not isinstance(c, dict) else c.get("timeoutSeconds")
+                raw = (
+                    getattr(c, "timeout_seconds", None)
+                    if not isinstance(c, dict)
+                    else c.get("timeoutSeconds")
+                )
                 if raw is not None:
                     timeout = int(raw)
             except Exception:
                 timeout = None
             # Command + args
             try:
-                command = [str(x) for x in (getattr(c, "command", None) or (c.get("command") if isinstance(c, dict) else []) or [])]
+                command = [
+                    str(x)
+                    for x in (
+                        getattr(c, "command", None)
+                        or (c.get("command") if isinstance(c, dict) else [])
+                        or []
+                    )
+                ]
             except Exception:
                 command = []
             try:
-                args = [str(x) for x in (getattr(c, "args", None) or (c.get("args") if isinstance(c, dict) else []) or [])]
+                args = [
+                    str(x)
+                    for x in (
+                        getattr(c, "args", None)
+                        or (c.get("args") if isinstance(c, dict) else [])
+                        or []
+                    )
+                ]
             except Exception:
                 args = []
             env_map: dict[str, str] = {}
             try:
-                for item in (getattr(c, "env", None) or (c.get("env") if isinstance(c, dict) else []) or []):
+                for item in (
+                    getattr(c, "env", None) or (c.get("env") if isinstance(c, dict) else []) or []
+                ):
                     if isinstance(item, dict) and "name" in item and "value" in item:
                         env_map[item["name"]] = str(item.get("value", ""))
             except Exception:
@@ -1225,10 +1264,6 @@ class DockerRuntime(RuntimeAdapter):
         except ValueError:  # pragma: no cover - best effort parsing
             return None
 
-    
-
-    
-
     def _parse_memory_bytes(self, raw: str) -> int | None:
         try:
             s = raw.strip()
@@ -1336,10 +1371,19 @@ class DockerRuntime(RuntimeAdapter):
                     continue
                 except NotFound:
                     pass
+                ns, base = split_app_key(app_name)
+                std_labels = {
+                    "app": base,
+                    "app.kubernetes.io/name": base,
+                    "app.kubernetes.io/instance": base,
+                    "app.kubernetes.io/managed-by": "k1s",
+                    "ae.app": app_name,
+                    "ae.namespace": ns or DEFAULT_NAMESPACE,
+                }
                 self._client.volumes.create(
                     name=vol_name,
                     labels={
-                        "ae.app": app_name,
+                        **std_labels,
                         "ae.volume": str(name),
                         **(
                             {"ae.node": str(getattr(self, "_current_node_id", None))}

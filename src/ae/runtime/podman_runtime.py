@@ -18,7 +18,13 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 
-from ae.controller.spec import AppManifest
+from ae.controller.spec import (
+    DEFAULT_NAMESPACE,
+    AppManifest,
+    app_key_for_manifest,
+    runtime_labels_for_manifest,
+    split_app_key,
+)
 
 from .base import ReplicaState, RuntimeAdapter, RuntimeResult
 from .ports import choose_host_port
@@ -57,7 +63,9 @@ class PodmanRuntime(RuntimeAdapter):
         # When set, the adapter passes "--runtime=<value>" to all `podman run` calls.
         raw = os.getenv("AE_OCI_RUNTIME", "").strip()
         # Guard against injection: allow alnum, dash, underscore
-        self._oci_runtime = raw if raw and all(ch.isalnum() or ch in ("-", "_") for ch in raw) else None
+        self._oci_runtime = (
+            raw if raw and all(ch.isalnum() or ch in ("-", "_") for ch in raw) else None
+        )
 
     def _maybe_inject_runtime(self, argv: list[str]) -> None:
         """Inject --runtime into a `podman run` argv in-place when AE_OCI_RUNTIME is set."""
@@ -68,7 +76,7 @@ class PodmanRuntime(RuntimeAdapter):
         except ValueError:
             return
         if "--runtime" not in argv:
-            argv[idx + 1:idx + 1] = ["--runtime", str(self._oci_runtime)]
+            argv[idx + 1 : idx + 1] = ["--runtime", str(self._oci_runtime)]
 
     # Core ops ---------------------------------------------------------
     def ensure_app(
@@ -81,7 +89,7 @@ class PodmanRuntime(RuntimeAdapter):
         replica_ids: list[str] | None = None,
         node_id: str | None = None,
     ) -> RuntimeResult:
-        app = manifest.metadata.name
+        app = app_key_for_manifest(manifest)
         desired_ids = (
             list(replica_ids)
             if replica_ids is not None
@@ -143,9 +151,7 @@ class PodmanRuntime(RuntimeAdapter):
             if getattr(manifest.spec.service, "ports", None):
                 svc_ports_list = list(manifest.spec.service.ports)
 
-        strict_service = (
-            self._serial_service_rollout and not keep_old and svc_port is not None
-        )
+        strict_service = self._serial_service_rollout and not keep_old and svc_port is not None
         if strict_service and old:
             for c in list(old):
                 self._stop_and_remove(c.get("Id", ""))
@@ -391,10 +397,7 @@ class PodmanRuntime(RuntimeAdapter):
                 pass
             ready = st == "running"
             if is_job:
-                if st == "running":
-                    ready = False
-                else:
-                    ready = exit_code == 0
+                ready = False if st == "running" else exit_code == 0
             states.append(
                 ReplicaState(
                     replica_id=rid,
@@ -418,14 +421,22 @@ class PodmanRuntime(RuntimeAdapter):
     def _ensure_sidecars(self, manifest: AppManifest, replica_id: str, revision: int) -> None:
         if not getattr(manifest.spec, "containers", None):
             return
-        app = manifest.metadata.name
+        app = app_key_for_manifest(manifest)
         # Determine projection host root from manifest.spec.volumes
         proj_host_root = None
         try:
             for v in getattr(manifest.spec, "volumes", []) or []:
                 try:
-                    mpath = getattr(v, "mount_path", None) if not isinstance(v, dict) else v.get("mountPath")
-                    hpath = getattr(v, "host_path", None) if not isinstance(v, dict) else v.get("hostPath")
+                    mpath = (
+                        getattr(v, "mount_path", None)
+                        if not isinstance(v, dict)
+                        else v.get("mountPath")
+                    )
+                    hpath = (
+                        getattr(v, "host_path", None)
+                        if not isinstance(v, dict)
+                        else v.get("hostPath")
+                    )
                     if mpath and str(mpath).startswith(f"/var/run/ae/config/{app}") and hpath:
                         if hpath and not os.path.isabs(hpath):
                             hpath = os.path.abspath(hpath)
@@ -436,7 +447,7 @@ class PodmanRuntime(RuntimeAdapter):
         except Exception:
             pass
         # For each declared sidecar, create if missing for this replica
-        for csp in (manifest.spec.containers or []):
+        for csp in manifest.spec.containers or []:
             try:
                 cname = str(getattr(csp, "name", "") or "").strip()
                 if not cname:
@@ -463,18 +474,22 @@ class PodmanRuntime(RuntimeAdapter):
                 cid = (r.out or "").strip()
                 if not cid:
                     # Build run args
+                    labels = runtime_labels_for_manifest(manifest, app_name=app)
+                    labels.update(
+                        {
+                            self.REPLICA_LABEL: replica_id,
+                            self.REVISION_LABEL: str(revision),
+                            self.CONTAINER_LABEL: cname,
+                        }
+                    )
                     cmd = [
                         self._bin,
                         "run",
                         "-d",
-                        "--label",
-                        f"{self.APP_LABEL}={app}",
-                        "--label",
-                        f"{self.REPLICA_LABEL}={replica_id}",
-                        "--label",
-                        f"{self.REVISION_LABEL}={revision}",
-                        "--label",
-                        f"{self.CONTAINER_LABEL}={cname}",
+                        *sum(
+                            [["--label", f"{k}={v}"] for k, v in labels.items()],
+                            [],
+                        ),
                         "--restart",
                         "unless-stopped",
                     ]
@@ -494,7 +509,11 @@ class PodmanRuntime(RuntimeAdapter):
                     # Per-container projection mounts
                     try:
                         for pm in getattr(csp, "projection_mounts", []) or []:
-                            p = getattr(pm, "path", None) if not isinstance(pm, dict) else pm.get("path")
+                            p = (
+                                getattr(pm, "path", None)
+                                if not isinstance(pm, dict)
+                                else pm.get("path")
+                            )
                             mnt = (
                                 getattr(pm, "mount_path", None)
                                 if not isinstance(pm, dict)
@@ -575,7 +594,10 @@ class PodmanRuntime(RuntimeAdapter):
                 ) as proc:  # type: ignore
                     if proc.stdout is not None:
                         for line in proc.stdout:
-                            if "no container with name or ID" in line or "no such container" in line:
+                            if (
+                                "no container with name or ID" in line
+                                or "no such container" in line
+                            ):
                                 return
                             yield line.rstrip("\n")
             except Exception:
@@ -629,7 +651,10 @@ class PodmanRuntime(RuntimeAdapter):
                 ) as proc:  # type: ignore
                     if proc.stdout is not None:
                         for line in proc.stdout:
-                            if "no container with name or ID" in line or "no such container" in line:
+                            if (
+                                "no container with name or ID" in line
+                                or "no such container" in line
+                            ):
                                 return
                             yield line.rstrip("\n")
             except Exception:
@@ -662,14 +687,26 @@ class PodmanRuntime(RuntimeAdapter):
             return 127
         cmd = [self._bin, "exec", cid[0], *[str(x) for x in (command or [])]]
         try:
-            cp = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+            cp = subprocess.run(
+                cmd,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout,
+            )
             return int(cp.returncode)
         except Exception:
             return 1
 
     # Streaming exec for Podman (uses `podman exec --interactive --tty --attach` via varlink-less HTTP API)
     def exec_attach(
-        self, replica_id: str, command: list[str], *, container: str | None = None, tty: bool = False
+        self,
+        replica_id: str,
+        command: list[str],
+        *,
+        container: str | None = None,
+        tty: bool = False,
     ):
         # Locate container by replica_id label
         cid = None
@@ -744,7 +781,9 @@ class PodmanRuntime(RuntimeAdapter):
 
         return _FDAsSocket(master, proc), f"{cid}:{proc.pid}"
 
-    def exec_resize(self, exec_id: str, *, height: int | None = None, width: int | None = None) -> None:
+    def exec_resize(
+        self, exec_id: str, *, height: int | None = None, width: int | None = None
+    ) -> None:
         # best-effort: send SIGWINCH to the exec process when using pty
         try:
             if ":" in exec_id:
@@ -810,7 +849,7 @@ class PodmanRuntime(RuntimeAdapter):
         try:
             if getattr(manifest.spec, "storage", None):
                 self.ensure_storage_volumes(
-                    manifest.metadata.name, [s.model_dump() for s in manifest.spec.storage]
+                    app_key_for_manifest(manifest), [s.model_dump() for s in manifest.spec.storage]
                 )
         except Exception:
             pass
@@ -818,21 +857,19 @@ class PodmanRuntime(RuntimeAdapter):
         for c in inits:
             # Extract fields supporting both dict and model forms
             name = (
-                getattr(c, "name", None)
-                if not isinstance(c, dict)
-                else c.get("name")
+                getattr(c, "name", None) if not isinstance(c, dict) else c.get("name")
             ) or "init"
-            image = (
-                getattr(c, "image", None)
-                if not isinstance(c, dict)
-                else c.get("image")
-            )
+            image = getattr(c, "image", None) if not isinstance(c, dict) else c.get("image")
             if not image:
                 results.append((str(name), 1, "missing image"))
                 continue
             timeout: int | None = None
             try:
-                raw = getattr(c, "timeout_seconds", None) if not isinstance(c, dict) else c.get("timeoutSeconds")
+                raw = (
+                    getattr(c, "timeout_seconds", None)
+                    if not isinstance(c, dict)
+                    else c.get("timeoutSeconds")
+                )
                 if raw is not None:
                     timeout = int(raw)
             except Exception:
@@ -840,11 +877,25 @@ class PodmanRuntime(RuntimeAdapter):
 
             # Build command
             try:
-                command = [str(x) for x in (getattr(c, "command", None) or (c.get("command") if isinstance(c, dict) else []) or [])]
+                command = [
+                    str(x)
+                    for x in (
+                        getattr(c, "command", None)
+                        or (c.get("command") if isinstance(c, dict) else [])
+                        or []
+                    )
+                ]
             except Exception:
                 command = []
             try:
-                args = [str(x) for x in (getattr(c, "args", None) or (c.get("args") if isinstance(c, dict) else []) or [])]
+                args = [
+                    str(x)
+                    for x in (
+                        getattr(c, "args", None)
+                        or (c.get("args") if isinstance(c, dict) else [])
+                        or []
+                    )
+                ]
             except Exception:
                 args = []
 
@@ -854,14 +905,20 @@ class PodmanRuntime(RuntimeAdapter):
             self._maybe_inject_runtime(argv)
             # Working dir if specified on init container
             try:
-                wd = getattr(c, "working_dir", None) if not isinstance(c, dict) else c.get("workingDir")
+                wd = (
+                    getattr(c, "working_dir", None)
+                    if not isinstance(c, dict)
+                    else c.get("workingDir")
+                )
                 if wd:
                     argv += ["--workdir", str(wd)]
             except Exception:
                 pass
             # Env
             try:
-                for item in (getattr(c, "env", None) or (c.get("env") if isinstance(c, dict) else []) or []):
+                for item in (
+                    getattr(c, "env", None) or (c.get("env") if isinstance(c, dict) else []) or []
+                ):
                     if isinstance(item, dict) and "name" in item and "value" in item:
                         argv += ["-e", f"{item['name']}={item['value']}"]
             except Exception:
@@ -870,14 +927,28 @@ class PodmanRuntime(RuntimeAdapter):
             try:
                 if getattr(manifest.spec, "storage", None):
                     for s in manifest.spec.storage:
-                        vol_name = self._storage_volume_name(manifest.metadata.name, getattr(s, "name", ""))
+                        vol_name = self._storage_volume_name(
+                            app_key_for_manifest(manifest), getattr(s, "name", "")
+                        )
                         mnt = getattr(s, "mount_path", None)
                         if vol_name and mnt:
                             argv += ["-v", f"{vol_name}:{mnt}:rw"]
                 for v in getattr(manifest.spec, "volumes", []) or []:
-                    host = getattr(v, "host_path", None) if not isinstance(v, dict) else v.get("hostPath")
-                    mnt = getattr(v, "mount_path", None) if not isinstance(v, dict) else v.get("mountPath")
-                    ro = bool(getattr(v, "read_only", False) if not isinstance(v, dict) else v.get("readOnly", False))
+                    host = (
+                        getattr(v, "host_path", None)
+                        if not isinstance(v, dict)
+                        else v.get("hostPath")
+                    )
+                    mnt = (
+                        getattr(v, "mount_path", None)
+                        if not isinstance(v, dict)
+                        else v.get("mountPath")
+                    )
+                    ro = bool(
+                        getattr(v, "read_only", False)
+                        if not isinstance(v, dict)
+                        else v.get("readOnly", False)
+                    )
                     if host and mnt:
                         if host and not os.path.isabs(host):
                             host = os.path.abspath(host)
@@ -887,13 +958,23 @@ class PodmanRuntime(RuntimeAdapter):
 
             # Image and command
             argv += [image]
-            if "/" not in image and not self._image_exists(image) and self._image_exists(f"localhost/{image}"):
+            if (
+                "/" not in image
+                and not self._image_exists(image)
+                and self._image_exists(f"localhost/{image}")
+            ):
                 argv[-1] = f"localhost/{image}"
             argv += command + args
 
             # Execute with optional timeout
             try:
-                cp = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout or None)
+                cp = subprocess.run(
+                    argv,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=timeout or None,
+                )
                 rc = int(cp.returncode)
                 msg = "ok" if rc == 0 else (cp.stderr.strip() or "failed")
                 results.append((str(name), rc, msg))
@@ -909,6 +990,15 @@ class PodmanRuntime(RuntimeAdapter):
         return f"ae-{app_name}-{vol_name}"
 
     def ensure_storage_volumes(self, app_name: str, volumes: list[dict]) -> None:  # type: ignore[override]
+        ns, base = split_app_key(app_name)
+        std_labels = {
+            "app": base,
+            "app.kubernetes.io/name": base,
+            "app.kubernetes.io/instance": base,
+            "app.kubernetes.io/managed-by": "k1s",
+            "ae.app": app_name,
+            "ae.namespace": ns or DEFAULT_NAMESPACE,
+        }
         for v in volumes or []:
             name = (v or {}).get("name")
             if not name:
@@ -925,10 +1015,8 @@ class PodmanRuntime(RuntimeAdapter):
             except Exception:
                 pass
             if not exists:
-                labels = [
-                    f"{self.APP_LABEL}={app_name}",
-                    f"ae.volume={name}",
-                ]
+                labels = [f"{k}={v}" for k, v in std_labels.items()]
+                labels.append(f"ae.volume={name}")
                 node_label = getattr(self, "_current_node_id", None)
                 if node_label:
                     labels.append(f"ae.node={node_label}")
@@ -1058,7 +1146,7 @@ class PodmanRuntime(RuntimeAdapter):
         node_id: str | None = None,
         attempt: int = 0,
     ) -> None:
-        app = manifest.metadata.name
+        app = app_key_for_manifest(manifest)
         suffix = replica_id.split("-")[-1]
         name = f"ae-{app}-rev{revision}-{suffix}"
 
@@ -1072,29 +1160,36 @@ class PodmanRuntime(RuntimeAdapter):
             self._stop_and_remove(name)
 
         is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
+        labels = runtime_labels_for_manifest(manifest, app_name=app)
+        labels.update(
+            {
+                self.REPLICA_LABEL: replica_id,
+                self.REVISION_LABEL: str(revision),
+                self.CONTAINER_LABEL: "main",
+            }
+        )
+        if is_job:
+            labels[self.JOB_ATTEMPT_LABEL] = str(int(attempt))
+        if node_id:
+            labels["ae.node"] = str(node_id)
+        try:
+            stop_timeout = int(getattr(manifest.spec, "termination_grace_period_seconds", 10) or 10)
+        except Exception:
+            stop_timeout = 10
+        labels["ae.stop_timeout"] = str(int(stop_timeout))
         cmd = [
             self._bin,
             "run",
             "-d",
             "--name",
             name,
-            "--label",
-            f"{self.APP_LABEL}={app}",
-            "--label",
-            f"{self.REPLICA_LABEL}={replica_id}",
-            "--label",
-            f"{self.REVISION_LABEL}={revision}",
+            *sum(
+                [["--label", f"{k}={v}"] for k, v in labels.items()],
+                [],
+            ),
+            "--restart",
+            "no" if is_job else "unless-stopped",
         ]
-        if is_job:
-            cmd += ["--label", f"{self.JOB_ATTEMPT_LABEL}={int(attempt)}"]
-        cmd += ["--restart", "no" if is_job else "unless-stopped"]
-        if node_id:
-            cmd += ["--label", f"ae.node={node_id}"]
-        try:
-            stop_timeout = int(getattr(manifest.spec, "termination_grace_period_seconds", 10) or 10)
-        except Exception:
-            stop_timeout = 10
-        cmd += ["--label", f"ae.stop_timeout={int(stop_timeout)}"]
 
         # Resources: limits/requests
         # - limits.memory → hard cap (--memory)
@@ -1162,7 +1257,9 @@ class PodmanRuntime(RuntimeAdapter):
                             by_num.get(int(portnum)) if portnum is not None else None
                         )
                     if portnum is not None and tgt is not None:
-                        chosen, used_preferred = choose_host_port(int(portnum), reserved=reserved_ports)
+                        chosen, used_preferred = choose_host_port(
+                            int(portnum), reserved=reserved_ports
+                        )
                         if chosen is None:
                             LOGGER.warning(
                                 "service port %s for app %s is unavailable; skipping publish",
@@ -1374,7 +1471,7 @@ class PodmanRuntime(RuntimeAdapter):
 
     def _should_retry_podman(self, stderr: str) -> bool:
         lowered = (stderr or "").lower()
-        return ("permission denied" in lowered and "crun" in lowered and "/run/user" in lowered)
+        return "permission denied" in lowered and "crun" in lowered and "/run/user" in lowered
 
     def _run_ok(self, argv: list[str], *, allow_fail: bool = False) -> _RunResult:
         retries = self._podman_retry_max if not allow_fail else 0
@@ -1385,7 +1482,9 @@ class PodmanRuntime(RuntimeAdapter):
                     argv, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
                 )
             except FileNotFoundError as exc:
-                raise RuntimeError("podman binary not found. Install Podman or set AE_PODMAN_BIN") from exc
+                raise RuntimeError(
+                    "podman binary not found. Install Podman or set AE_PODMAN_BIN"
+                ) from exc
 
             if cp.returncode == 0 or allow_fail:
                 return _RunResult(cp.returncode, cp.stdout or "", cp.stderr or "")

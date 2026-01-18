@@ -7,7 +7,6 @@ import sys
 import tomllib
 from pathlib import Path
 
-
 VERSION_RE = re.compile(
     r"^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
     r"(?:(?P<pre_label>a|b|rc)(?P<pre_num>\d+))?"
@@ -34,15 +33,13 @@ def bump_next_dev(version: str) -> str:
     pre_label = match.group("pre_label")
     pre_num = match.group("pre_num")
     if pre_label is None or pre_num is None:
-        raise ValueError(
-            "final versions are not supported; tag a pre-release (a/b/rc) first"
-        )
+        raise ValueError("final versions are not supported; tag a pre-release (a/b/rc) first")
     next_pre = int(pre_num) + 1
     base = f"{match.group('major')}.{match.group('minor')}.{match.group('patch')}"
     return f"{base}{pre_label}{next_pre}.dev0"
 
 
-def write_pyproject_version(path: Path, old: str, new: str) -> None:
+def write_pyproject_version(path: Path, new: str) -> None:
     lines = path.read_text(encoding="utf-8").splitlines()
     in_project = False
     updated = False
@@ -80,7 +77,7 @@ def main() -> int:
         return 0
 
     try:
-        write_pyproject_version(path, current, next_version)
+        write_pyproject_version(path, next_version)
     except (OSError, ValueError) as exc:
         print(f"bump-version: {exc}", file=sys.stderr)
         return 1

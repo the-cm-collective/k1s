@@ -11,7 +11,13 @@ def cmd_serve(args: argparse.Namespace) -> int:
     token = args.token or os.getenv("AE_APISHIM_TOKEN")
     if os.getenv("AE_APISHIM_ENABLE") != "1":
         raise SystemExit("AE_APISHIM_ENABLE=1 required to run the API shim")
-    run_server(host=args.host, port=args.port, token=token, tls=args.tls, allow_anonymous=args.allow_anonymous)
+    run_server(
+        host=args.host,
+        port=args.port,
+        token=token,
+        tls=args.tls,
+        allow_anonymous=args.allow_anonymous,
+    )
     return 0
 
 
@@ -45,8 +51,9 @@ users:
 
 
 def cmd_migrate(args: argparse.Namespace) -> int:
-    from .store import ObjectStore
     from pathlib import Path
+
+    from .store import ObjectStore
 
     def _store(uri: str) -> ObjectStore:
         if uri.startswith("postgres://") or uri.startswith("postgresql://"):

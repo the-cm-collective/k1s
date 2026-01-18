@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from string import Template
 
-from ae.controller.spec import AppManifest, IngressSpec
+from ae.controller.spec import AppManifest, IngressSpec, app_key_for_manifest
 
 LOGGER = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ class CaddyIngressManager:
         site_config = self._render_site(
             ingress, upstream, readiness_path, prefer_first, first_weight
         )
-        site_path = self._site_path(manifest.metadata.name)
+        site_path = self._site_path(app_key_for_manifest(manifest))
         site_path.write_text(site_config)
         LOGGER.debug("Wrote Caddy site config to %s", site_path)
         return site_path
