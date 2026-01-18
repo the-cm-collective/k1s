@@ -23,7 +23,9 @@ def run(cmd: list[str], env=None, cwd=None, timeout=20):
         env_all.update(env)
     # Ensure local src is importable when spawning helper scripts
     env_all.setdefault("PYTHONPATH", "src")
-    return subprocess.run(cmd, env=env_all, cwd=cwd, check=True, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(
+        cmd, env=env_all, cwd=cwd, check=True, capture_output=True, text=True, timeout=timeout
+    )
 
 
 @pytest.fixture()
@@ -61,7 +63,18 @@ def _start_apishim(state_db: Path, apishim_db: Path):
         }
     )
     proc = subprocess.Popen(
-        ["python", "-m", "ae.apishim", "serve", "--host", "127.0.0.1", "--port", "8845", "--token", "test-token"],
+        [
+            "python",
+            "-m",
+            "ae.apishim",
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8845",
+            "--token",
+            "test-token",
+        ],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -146,4 +159,6 @@ def test_apishim_persists_service_and_endpoints(state_db: Path, apishim_db: Path
     finally:
         proc2.kill()
         proc2.wait(timeout=5)
+
+
 # ruff: noqa: E501,S603,S607,S310

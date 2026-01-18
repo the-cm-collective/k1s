@@ -15,9 +15,7 @@ except ImportError:  # pragma: no cover - packaging may not be installed in all 
     Version = None
 
 
-FALLBACK_VERSION_RE = re.compile(
-    r"^\d+\.\d+\.\d+((a|b|rc)\d+)?(\.dev\d+)?$"
-)
+FALLBACK_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+((a|b|rc)\d+)?(\.dev\d+)?$")
 
 
 def read_pyproject_version(path: Path) -> str:
@@ -38,9 +36,7 @@ def validate_version(version: str) -> None:
             raise ValueError(f"invalid PEP 440 version: {version}") from exc
         return
     if not FALLBACK_VERSION_RE.match(version):
-        raise ValueError(
-            "invalid version format; expected PEP 440 like 0.1.0a1 or 0.1.0a2.dev0"
-        )
+        raise ValueError("invalid version format; expected PEP 440 like 0.1.0a1 or 0.1.0a2.dev0")
 
 
 def changelog_has_release(changelog: Path, version: str) -> bool:

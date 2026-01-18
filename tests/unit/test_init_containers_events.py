@@ -40,10 +40,15 @@ def test_init_containers_emit_events(tmp_path: Path) -> None:
         apiVersion="ae.dev/v1alpha1",
         kind="App",
         metadata=Metadata(name="echo"),
-        spec=AppSpec(image="alpine:3.20", initContainers=[{"name": "init", "image": "alpine:3.20", "command": ["/bin/true"]}]),  # type: ignore[arg-type]
+        spec=AppSpec(
+            image="alpine:3.20",
+            initContainers=[{"name": "init", "image": "alpine:3.20", "command": ["/bin/true"]}],
+        ),  # type: ignore[arg-type]
     )
     rec.reconcile(man)
     events = store.list_events("echo")
     codes = [e.event_type for e in events]
     assert any(t in codes for t in ("InitStart", "InitDone"))
+
+
 # ruff: noqa: E501

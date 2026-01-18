@@ -99,8 +99,10 @@ def test_prestop_http_and_tcp_emit_events(tmp_path: Path, monkeypatch) -> None:
     def fake_get(_url: str, *args, **kwargs):  # noqa: ANN001
         _ = (args, kwargs)
         calls["http"] += 1
+
         class _R:
             status_code = 200
+
         return _R()
 
     def fake_conn(_addr, *args, **kwargs):  # noqa: ANN001
@@ -110,6 +112,7 @@ def test_prestop_http_and_tcp_emit_events(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr("requests.get", fake_get, raising=False)
     import socket as _sock
+
     monkeypatch.setattr(_sock, "create_connection", fake_conn, raising=False)
 
     # HTTP preStop

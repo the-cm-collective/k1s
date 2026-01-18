@@ -55,7 +55,9 @@ def apply_preset(opts: ExportOptions, preset: PresetName) -> ExportOptions:
     if preset == "web-strict":
         return replace(
             base,
-            require_requests=True if base.require_requests is False else base.require_requests or True,
+            require_requests=True
+            if base.require_requests is False
+            else base.require_requests or True,
             default_security=fill_bool(True, base.default_security),
             emit_pdb=fill_bool(True, base.emit_pdb),
             service_port=base.service_port or 80,
@@ -84,7 +86,9 @@ def apply_ingress_preset(opts: ExportOptions, preset: IngressPresetName) -> Expo
         }
         merged = dict(opts.ingress_annotations or {})
         merged.update(ann)
-        return replace(opts, ingress_annotations=merged, ingress_path_type=opts.ingress_path_type or "Prefix")
+        return replace(
+            opts, ingress_annotations=merged, ingress_path_type=opts.ingress_path_type or "Prefix"
+        )
 
     if preset == "traefik-web":
         ann = {
@@ -94,9 +98,15 @@ def apply_ingress_preset(opts: ExportOptions, preset: IngressPresetName) -> Expo
         merged = dict(opts.ingress_annotations or {})
         merged.update(ann)
         # Traefik supports Prefix/ImplementationSpecific. Prefer Prefix.
-        pt = opts.ingress_path_type if opts.ingress_path_type in {"Prefix", "ImplementationSpecific"} else "Prefix"
+        pt = (
+            opts.ingress_path_type
+            if opts.ingress_path_type in {"Prefix", "ImplementationSpecific"}
+            else "Prefix"
+        )
         return replace(opts, ingress_annotations=merged, ingress_path_type=pt)
 
     return opts
+
+
 # ruff: noqa
 # ruff: noqa: E501,I001

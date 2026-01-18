@@ -25,13 +25,23 @@ def test_overlay_provider_renders_endpoints():
         store.record_service_endpoints(
             "echo-mn",
             [
-                ServiceEndpoint(app_name="echo-mn", port=80, ip="10.42.0.2", target_port=8080, ready=True),
-                ServiceEndpoint(app_name="echo-mn", port=80, ip="10.42.1.3", target_port=8080, ready=True),
+                ServiceEndpoint(
+                    app_name="echo-mn", port=80, ip="10.42.0.2", target_port=8080, ready=True
+                ),
+                ServiceEndpoint(
+                    app_name="echo-mn", port=80, ip="10.42.1.3", target_port=8080, ready=True
+                ),
             ],
         )
-        provider.update_service_endpoints("echo-mn", {80: [("10.42.0.2", 8080), ("10.42.1.3", 8080)]})
+        provider.update_service_endpoints(
+            "echo-mn", {80: [("10.42.0.2", 8080), ("10.42.1.3", 8080)]}
+        )
         # Rendered config should include both endpoints
-        cfg = provider._render_haproxy("echo-mn", ip, {80: [("10.42.0.2", 8080), ("10.42.1.3", 8080)]})
+        cfg = provider._render_haproxy(
+            "echo-mn", ip, {80: [("10.42.0.2", 8080), ("10.42.1.3", 8080)]}
+        )
         assert "10.42.0.2:8080" in cfg
         assert "10.42.1.3:8080" in cfg
+
+
 # ruff: noqa: E501

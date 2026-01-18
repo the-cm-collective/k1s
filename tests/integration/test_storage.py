@@ -32,4 +32,6 @@ def test_storage_volume_lifecycle():
     )
     vols2 = json.loads(out2)
     assert vols2, "volumes should remain with retention=Retain"
+
+
 # ruff: noqa: S603,S607

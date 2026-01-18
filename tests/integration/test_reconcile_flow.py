@@ -132,4 +132,6 @@ def test_reconcile_emits_events_and_metrics(tmp_path: Path) -> None:
 
     revisions = state.list_revisions("demo", limit=5)
     assert len(revisions) >= 2
+
+
 # ruff: noqa: S108

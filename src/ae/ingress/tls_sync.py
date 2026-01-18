@@ -71,4 +71,6 @@ class TlsSecretResolver:
             return yaml.safe_load(path.read_text())
         except Exception:
             return None
+
+
 # ruff: noqa: E501,UP006,UP007,S110,S112

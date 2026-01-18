@@ -14,6 +14,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from ae.controller.state import SQLiteStateStore
+
 try:  # Optional: Phase 3 pod CIDR allocator
     from ae.network.pod_cidr import PodCIDRAllocator
 except Exception:  # pragma: no cover - allocator optional
@@ -90,7 +91,11 @@ def make_handler(
             if not exp:
                 return True
             try:
-                dt = _dt.fromisoformat(exp[:-1] + "+00:00") if exp.endswith("Z") else _dt.fromisoformat(exp)
+                dt = (
+                    _dt.fromisoformat(exp[:-1] + "+00:00")
+                    if exp.endswith("Z")
+                    else _dt.fromisoformat(exp)
+                )
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=_tz.utc)
                 return _dt.now(_tz.utc) < dt

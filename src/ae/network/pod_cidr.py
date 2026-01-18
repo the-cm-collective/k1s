@@ -68,4 +68,6 @@ class PodCIDRAllocator:
             )
             return cidr
         raise RuntimeError(f"no free pod CIDRs available in pool {self._pool} (/ {self._mask})")
+
+
 # ruff: noqa: E501,UP006,UP007,UP017,UP035,S110,S112,SIM105

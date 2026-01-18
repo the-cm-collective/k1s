@@ -1,6 +1,3 @@
-
-
-
 class FakeResp:
     def __init__(self, data, status=200):
         self._data = data
@@ -44,4 +41,6 @@ def test_http_helpers_post(monkeypatch):
     monkeypatch.setattr(requests, "post", fake_post)
     data = _http_post_json("http://127.0.0.1:9108", "/scale/echo", {"replicas": 2}, token="t")
     assert data["replicas"] == 2
+
+
 # ruff: noqa: S106
