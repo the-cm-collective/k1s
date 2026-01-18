@@ -1,4 +1,8 @@
-## Interactive Lab Playground
+<div class="playground-shell">
+  <div class="playground-main">
+    <div class="playground-hero">
+      <h2>Interactive Lab Playground</h2>
+    </div>
 
 Use this page to try k1s in minutes — no Kubernetes experience required. The playground can run fully read‑only or, when enabled, perform safe actions like "apply example" and "scale".
 
@@ -224,12 +228,12 @@ Advanced controls you can ignore on your first run. Use the slider to choose a s
 
 - <button id="btn-rollout-pause" disabled>Pause Rollout</button>
 - <button id="btn-rollout-resume" disabled>Resume Rollout</button>
-- Canary weight: <input type="range" id="canary-weight" min="1" max="10" step="1" value="3"/> <span id="canary-weight-val">3</span>
+- Canary weight: <input type="range" id="canary-weight" min="0" max="10" step="1" value="3"/> <span id="canary-weight-val">3</span>
 - <button id="btn-canary-apply" disabled>Apply Canary Weight</button>
 
 ## G. Reset
 
-- <button id="btn-reset" disabled>Reset Session</button>
+- <button id="btn-reset" type="button">Reset Session</button>
 
 ---
 
@@ -240,3 +244,13 @@ Advanced controls you can ignore on your first run. Use the slider to choose a s
 - Backends: Auto detection prefers k1s-in-Docker when the compose stack is up, otherwise k1s-Host; k3s engages if a k3d cluster is detected or allowed to auto-provision.
 
 </details>
+
+  </div>
+  <div class="playground-rail">
+    <button id="btn-reset-fab" class="lab-reset-fab" type="button" aria-label="Reset labs and playground" title="Reset lab environment and playground">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4V1L7 6l5 5V7c1.66 0 3.14.69 4.22 1.78S18 11.34 18 13c0 3.31-2.69 6-6 6s-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8c0-2.21-.9-4.21-2.35-5.65z"/>
+      </svg>
+    </button>
+  </div>
+</div>

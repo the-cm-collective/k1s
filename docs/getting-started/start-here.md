@@ -2,6 +2,8 @@
 
 This single page gets a new contributor or user from a fresh clone to a running demo, with pointers to the most useful docs and commands.
 
+Terminology: k1s "Apps" are Deployment-like workloads; replicas map to Pods; Service VIPs map to Services/ClusterIP.
+
 ## Prerequisites
 - Python 3.11+
 - Podman (preferred) or Docker installed and running
@@ -9,11 +11,13 @@ This single page gets a new contributor or user from a fresh clone to a running 
 - Optional (for multi-node lab): two Linux hosts/VMs with WireGuard tools and rootful networking
 
 ## Option A — Zero‑to‑Demo (automated)
-This script provisions a local demo stack, serves docs, starts the controller API, and applies sample apps.
+This script provisions a local demo stack, serves docs, starts the controller API, and applies sample workloads (Apps).
 
 1) Run the demo initializer (adds hosts; Ctrl‑C safe):
 ```
-./scripts/init_demo.sh --demo-standard -y
+./scripts/init_demo.sh --demo-standard -y -d
+# or
+make demo ARGS="--demo-standard -y -d"
 ```
    - Script reference: `scripts/init_demo.sh:1`
    - Flags map: `docs/guides/demos-examples.md:1`
@@ -32,12 +36,14 @@ python -m ae.cli logs blue --tail 50
 4) Tear down when done (stops stack, cleans containers; keeps state):
 ```
 ./scripts/init_demo.sh --down -y
+# or
+make demo-down
 ```
 
 Tips
-- Need only docs + API? Use `./scripts/init_demo.sh --docs-only -y`.
+- Need only docs + API? Use `./scripts/init_demo.sh --docs-only -y -d` or `make demo ARGS="--docs-only -y -d"`.
 - Prefer Make: `make demo ARGS="--demo-standard -y -d"` and `make demo-down` (see `Makefile:1`).
-- Want to try multi-node? Run `make demo ARGS="--demo-multinode -y"` once you have a second host/VM reachable (see Option C below).
+- Want to try multi-node? Follow Option C, then apply `specs/examples/echo-multinode.yaml`.
 - Podman registry cache: configure an insecure local registry to avoid HTTPS pull errors and Docker Hub rate limits, or disable the cache.
   ```
   mkdir -p ~/.config/containers/registries.conf.d
@@ -74,7 +80,7 @@ docker compose -f ops/dev/docker-compose.yaml up -d
 python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch
 ```
 
-4) Apply and inspect a sample app:
+4) Apply and inspect a sample workload (App):
 ```
 python -m ae.cli apply -f specs/examples/echo.yaml
 python -m ae.cli status echo --wide --events
