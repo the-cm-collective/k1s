@@ -91,11 +91,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    # k1s get apps|app <name?>
+    # k1s get apps|app|pods|services <name?>
     get_p = sub.add_parser("get", help="List resources or show a resource")
     get_p.add_argument(
         "resource",
-        choices=["apps", "app", "deployments", "deployment", "workloads", "workload", "deploy"],
+        choices=[
+            "apps",
+            "app",
+            "deployments",
+            "deployment",
+            "workloads",
+            "workload",
+            "deploy",
+            "pods",
+            "pod",
+            "services",
+            "service",
+        ],
         help="Resource type",
     )
     get_p.add_argument("name", nargs="?", help="Optional resource name")
@@ -174,6 +186,132 @@ def _setup() -> tuple[SQLiteStateStore, Reconciler, object]:
 
 
 def handle_get(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
+    def _print_json(payload: object) -> None:
+        import json
+
+        print(json.dumps(payload, indent=2))
+
+    def _collect_pods(app_filter: str | None = None) -> list[dict]:
+        pods: list[dict] = []
+        statuses = store.list_status()
+        for st in statuses:
+            if app_filter and st.app_name != app_filter:
+                continue
+            rows = store.list_replica_nodes(st.app_name)
+            for row in rows:
+                replica_id, node_id, ready, live, status, readiness, liveness = row
+                pods.append(
+                    {
+                        "app": st.app_name,
+                        "replica_id": replica_id,
+                        "ready": bool(ready),
+                        "live": bool(live),
+                        "status": status,
+                        "node": node_id,
+                        "readiness_message": readiness,
+                        "liveness_message": liveness,
+                    }
+                )
+        return pods
+
+    def _print_pods(pods: list[dict]) -> None:
+        if ns.output == "json":
+            _print_json(pods)
+            return
+        for pod in pods:
+            node = pod.get("node") or "-"
+            print(
+                f"{pod.get('replica_id')}: ready={pod.get('ready')} live={pod.get('live')} "
+                f"status={pod.get('status')} node={node} app={pod.get('app')}"
+            )
+
+    def _print_services(services: list[dict]) -> None:
+        if ns.output == "json":
+            _print_json(services)
+            return
+        for svc in services:
+            print(f"{svc.get('app')}: cluster_ip={svc.get('cluster_ip')}")
+
+    if ns.resource in {"pods", "pod"}:
+        app_filter = None
+        replica_filter = None
+        if ns.name:
+            raw = ns.name
+            if "/" in raw:
+                kind, val = raw.split("/", 1)
+                if kind in {
+                    "app",
+                    "apps",
+                    "deployment",
+                    "deployments",
+                    "deploy",
+                    "workload",
+                    "workloads",
+                }:
+                    app_filter = val
+                else:
+                    replica_filter = raw
+            else:
+                replica_filter = raw
+        pods = _collect_pods(app_filter=app_filter)
+        if replica_filter and not app_filter:
+            matches = [p for p in pods if p.get("replica_id") == replica_filter]
+            if matches:
+                _print_pods(matches)
+                return 0
+            if store.get_status(replica_filter) is not None:
+                pods = _collect_pods(app_filter=replica_filter)
+            else:
+                print(f"No pod/replica recorded for {replica_filter}")
+                return 1
+        if not pods:
+            print("No pods recorded.")
+            return 0
+        _print_pods(pods)
+        return 0
+
+    if ns.resource in {"services", "service"}:
+        if ns.name:
+            app = ns.name
+            rec = store.get_service(app)
+            if rec is None:
+                print(f"No service recorded for {app}")
+                return 1
+            endpoints = store.list_service_endpoints(app)
+            if ns.output == "json":
+                _print_json(
+                    {
+                        "app": rec.app_name,
+                        "cluster_ip": rec.cluster_ip,
+                        "ports": rec.ports,
+                        "endpoints": [
+                            {
+                                "port": ep.port,
+                                "ip": ep.ip,
+                                "target_port": ep.target_port,
+                                "ready": ep.ready,
+                            }
+                            for ep in endpoints
+                        ],
+                    }
+                )
+                return 0
+            print(f"{rec.app_name}: cluster_ip={rec.cluster_ip}")
+            if rec.ports:
+                print(f"  ports: {rec.ports}")
+            for ep in endpoints:
+                print(
+                    f"  - port={ep.port} ip={ep.ip} target={ep.target_port} ready={ep.ready}"
+                )
+            return 0
+        services = store.list_services()
+        if not services:
+            print("No services recorded.")
+            return 0
+        payload = [{"app": s.app_name, "cluster_ip": s.cluster_ip} for s in services]
+        _print_services(payload)
+        return 0
+
     if ns.name:
         ref = parse_ref(f"{ns.resource}/{ns.name}", ("app",))
         status = store.get_status(ref.name)
@@ -183,7 +321,6 @@ def handle_get(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
         print(format_status(status))
         return 0
 
-    # list
     statuses = store.list_status()
     if not statuses:
         print("No workloads recorded.")
