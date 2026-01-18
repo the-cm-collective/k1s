@@ -28,8 +28,8 @@ def _cleanup_service_proxies() -> None:
     """Best-effort removal of exited ae-svc-* proxy containers after tests."""
     for bin_name in _container_bins():
         try:
-            ps = subprocess.run(
-                [bin_name, "ps", "-aq", "--filter", "name=ae-svc-"],
+            ps = subprocess.run(  # noqa: S603,S607
+                [bin_name, "ps", "-aq", "--filter", "name=ae-svc-"],  # noqa: S603
                 check=False,
                 capture_output=True,
                 text=True,
@@ -37,13 +37,13 @@ def _cleanup_service_proxies() -> None:
             ids = ps.stdout.split()
             if not ids:
                 continue
-            subprocess.run(
-                [bin_name, "rm", "-f", *ids],
+            subprocess.run(  # noqa: S603,S607
+                [bin_name, "rm", "-f", *ids],  # noqa: S603
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-        except Exception:
+        except Exception:  # noqa: S112
             # Never fail tests due to cleanup
             continue
 

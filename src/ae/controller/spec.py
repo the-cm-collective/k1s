@@ -10,6 +10,9 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 
+DEFAULT_NAMESPACE = "default"
+
+
 class ManifestError(RuntimeError):
     """Raised when a manifest cannot be parsed."""
 
@@ -18,7 +21,16 @@ class Metadata(BaseModel):
     """Metadata block for top-level resources."""
 
     name: str
+    namespace: Optional[str] = Field(default=DEFAULT_NAMESPACE)
     labels: dict | None = None
+
+    @field_validator("namespace", mode="before")
+    @classmethod
+    def _normalize_namespace(cls, v: Optional[str]):  # noqa: D401 - simple guard
+        if v is None:
+            return v
+        ns = str(v).strip()
+        return ns or None
 
 
 class HTTPGetProbe(BaseModel):
@@ -368,6 +380,7 @@ class ConfigRef(BaseModel):
     # Optional envFrom behavior: when true, exporter may emit envFrom for this configmap
     env_from: bool = Field(default=False, alias="envFrom")
 
+
 class AppSpec(BaseModel):
     """Workload specification."""
 
@@ -384,6 +397,7 @@ class AppSpec(BaseModel):
     ports: List[PortSpec] = Field(default_factory=list)
     health: Optional[HealthSpec] = None
     lifecycle: Optional[LifecycleSpec] = None
+
     # Multi-container (exporter-level support; runtime runs a single container)
     class ContainerSpec(BaseModel):
         name: str
@@ -399,11 +413,14 @@ class AppSpec(BaseModel):
         health: Optional[HealthSpec] = None
         # Optional timeout for init containers (seconds). Ignored for main containers.
         timeout_seconds: Optional[int] = Field(default=None, alias="timeoutSeconds")
+
         # Optional additional mounts from the app's projection root (state/projections/...)
         # Each entry binds a subpath under /var/run/ae/config/<app> into a custom mountPath
         # inside this container. Useful to expose selected config/secret files at bespoke paths.
         class ProjectionMount(BaseModel):
-            path: str  # relative to /var/run/ae/config/<app> (e.g., "config/db", "secret/creds.json")
+            path: (
+                str  # relative to /var/run/ae/config/<app> (e.g., "config/db", "secret/creds.json")
+            )
             mount_path: str = Field(alias="mountPath")
             read_only: bool = Field(default=True, alias="readOnly")
 
@@ -421,7 +438,9 @@ class AppSpec(BaseModel):
     service: Optional[ServiceSpec] = None
     working_dir: Optional[str] = Field(default=None, alias="workingDir")
     termination_message_path: Optional[str] = Field(default=None, alias="terminationMessagePath")
-    termination_message_policy: Optional[str] = Field(default=None, alias="terminationMessagePolicy")
+    termination_message_policy: Optional[str] = Field(
+        default=None, alias="terminationMessagePolicy"
+    )
     # Rollout policy
     rollout: Optional[dict] = Field(
         default_factory=lambda: {"strategy": "parallel", "maxSurge": 1, "maxUnavailable": 0}
@@ -438,9 +457,9 @@ class AppSpec(BaseModel):
     # Optional exporter hints (purely affects export/check tooling)
     export_hints: Optional[ExportHints] = Field(default=None, alias="exportHints")
     # Image pull controls (pass-through to K8s export)
-    image_pull_policy: Optional[
-        Literal["Always", "IfNotPresent", "Never"]
-    ] = Field(default=None, alias="imagePullPolicy")
+    image_pull_policy: Optional[Literal["Always", "IfNotPresent", "Never"]] = Field(
+        default=None, alias="imagePullPolicy"
+    )
     image_pull_secrets: List[str] = Field(default_factory=list, alias="imagePullSecrets")
     # Scheduling (pass-through for K8s export)
     affinity: dict | None = None
@@ -454,9 +473,9 @@ class AppSpec(BaseModel):
     # Pod-level security context
     pod_security: Optional[PodSecuritySpec] = Field(default=None, alias="podSecurity")
     # DNS policy/config (K8s export pass-through)
-    dns_policy: Optional[
-        Literal["Default", "ClusterFirst", "ClusterFirstWithHostNet", "None"]
-    ] = Field(default=None, alias="dnsPolicy")
+    dns_policy: Optional[Literal["Default", "ClusterFirst", "ClusterFirstWithHostNet", "None"]] = (
+        Field(default=None, alias="dnsPolicy")
+    )
     dns_config: Optional[DNSConfig] = Field(default=None, alias="dnsConfig")
     # Pod identity (K8s export pass-through)
     hostname: Optional[str] = None
@@ -476,18 +495,30 @@ class AppSpec(BaseModel):
 
 
 class AppManifest(BaseModel):
-    """Top-level application manifest."""
+    """Top-level workload manifest (Deployment/App)."""
 
     api_version: Literal["ae.dev/v1alpha1"] = Field(alias="apiVersion")
-    kind: Literal["App"]
+    kind: Literal["App", "Deployment"]
     metadata: Metadata
     spec: AppSpec
 
     model_config = {"populate_by_name": True}
 
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _normalize_kind(cls, v: str):  # noqa: D401 - simple guard
+        if isinstance(v, str):
+            raw = v.strip()
+            low = raw.lower()
+            if low == "app":
+                return "App"
+            if low == "deployment":
+                return "Deployment"
+        return v
+
 
 def load_manifest(path: Path) -> AppManifest:
-    """Load an App manifest from YAML."""
+    """Load a Deployment/App manifest from YAML."""
 
     try:
         data = yaml.safe_load(path.read_text())
@@ -503,4 +534,71 @@ def load_manifest(path: Path) -> AppManifest:
         return AppManifest.model_validate(data)
     except ValidationError as exc:
         raise ManifestError(f"Manifest {path} failed validation: {exc}") from exc
+
+
+def normalize_namespace(namespace: str | None) -> str | None:
+    if namespace is None:
+        return None
+    ns = str(namespace).strip()
+    return ns or None
+
+
+def app_key(name: str, namespace: str | None) -> str:
+    ns = normalize_namespace(namespace)
+    if not ns or ns == DEFAULT_NAMESPACE:
+        return name
+    return f"{ns}--{name}"
+
+
+def split_app_key(app_name: str) -> tuple[str, str]:
+    raw = str(app_name or "")
+    if "--" in raw:
+        ns, name = raw.split("--", 1)
+        if ns:
+            return ns, name
+    return DEFAULT_NAMESPACE, raw
+
+
+def format_app_ref(app_name: str) -> str:
+    ns, name = split_app_key(app_name)
+    return f"{ns}/{name}"
+
+
+def parse_app_ref(ref: str) -> tuple[str | None, str]:
+    raw = str(ref or "").strip()
+    if "/" in raw:
+        ns, name = raw.split("/", 1)
+        return normalize_namespace(ns), name
+    if "--" in raw:
+        ns, name = raw.split("--", 1)
+        return normalize_namespace(ns), name
+    return None, raw
+
+
+def app_key_for_manifest(manifest: "AppManifest") -> str:
+    return app_key(manifest.metadata.name, getattr(manifest.metadata, "namespace", None))
+
+
+def k8s_labels_for_manifest(manifest: "AppManifest") -> dict[str, str]:
+    labels: dict[str, str] = {}
+    try:
+        labels.update({str(k): str(v) for k, v in (manifest.metadata.labels or {}).items()})
+    except Exception:
+        labels = {}
+    labels.setdefault("app", manifest.metadata.name)
+    labels.setdefault("app.kubernetes.io/name", manifest.metadata.name)
+    labels.setdefault("app.kubernetes.io/instance", manifest.metadata.name)
+    labels.setdefault("app.kubernetes.io/managed-by", "k1s")
+    return labels
+
+
+def runtime_labels_for_manifest(
+    manifest: "AppManifest", *, app_name: str | None = None
+) -> dict[str, str]:
+    labels = k8s_labels_for_manifest(manifest)
+    labels["ae.app"] = app_name or app_key_for_manifest(manifest)
+    labels["ae.namespace"] = getattr(manifest.metadata, "namespace", None) or DEFAULT_NAMESPACE
+    return labels
+
+
 # ruff: noqa

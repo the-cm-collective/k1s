@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Dict, List, Tuple
 
 from ae.controller.health import HealthReport
-from ae.controller.spec import AppManifest, ServiceSpec
+from ae.controller.spec import AppManifest, ServiceSpec, app_key_for_manifest
 from ae.controller.state import SQLiteStateStore, ServiceEndpoint
 from ae.runtime import RuntimeResult
 
@@ -29,7 +29,7 @@ class ServiceController:
         """Ensure Service and endpoints reflect the latest runtime/health state."""
 
         svc_spec = getattr(manifest.spec, "service", None)
-        app = manifest.metadata.name
+        app = app_key_for_manifest(manifest)
         if not svc_spec:
             self._cleanup(app)
             return None
@@ -188,7 +188,10 @@ class ServiceController:
         msg_parts = []
         if "peers" in health:
             msg_parts.append(f"peers={health.get('peers')}")
-        if "latest_handshake_seconds" in health and health.get("latest_handshake_seconds") is not None:
+        if (
+            "latest_handshake_seconds" in health
+            and health.get("latest_handshake_seconds") is not None
+        ):
             msg_parts.append(f"latest_hs={health.get('latest_handshake_seconds')}s")
         if "mtu" in health and health.get("mtu") is not None:
             msg_parts.append(f"mtu={health.get('mtu')}")
@@ -198,4 +201,6 @@ class ServiceController:
             self._store.record_event(app, int(revision or 0), event_type, msg)
         except Exception:
             pass
+
+
 # ruff: noqa: E501,I001,UP006,UP007,UP017,UP035,S110,S112,SIM105,SIM108

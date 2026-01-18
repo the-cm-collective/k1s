@@ -13,12 +13,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Dict, Iterable, Tuple
 
 import yaml
 from jsonschema import Draft4Validator, RefResolver, ValidationError
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST_DIRS = [
@@ -32,7 +31,7 @@ def load_openapi(path: Path) -> dict:
         return json.load(fh)
 
 
-def build_gvk_map(openapi: dict) -> Dict[Tuple[str, str, str], str]:
+def build_gvk_map(openapi: dict) -> dict[tuple[str, str, str], str]:
     """Derive (group, version, kind) from definition names.
 
     The committed spec omits x-kubernetes-group-version-kind so we parse the
@@ -40,7 +39,7 @@ def build_gvk_map(openapi: dict) -> Dict[Tuple[str, str, str], str]:
     expose apiVersion/kind properties (top-level resources).
     """
 
-    mapping: Dict[Tuple[str, str, str], str] = {}
+    mapping: dict[tuple[str, str, str], str] = {}
     prefix = "io.k8s.api."
 
     group_overrides = {
@@ -59,7 +58,9 @@ def build_gvk_map(openapi: dict) -> Dict[Tuple[str, str, str], str]:
     for name, schema in openapi.get("definitions", {}).items():
         if not name.startswith(prefix):
             continue
-        if "apiVersion" not in schema.get("properties", {}) or "kind" not in schema.get("properties", {}):
+        if "apiVersion" not in schema.get("properties", {}) or "kind" not in schema.get(
+            "properties", {}
+        ):
             continue
 
         tail = name[len(prefix) :].split(".")
@@ -91,7 +92,7 @@ def iter_manifests(paths: Iterable[Path]):
 
 
 def validate_docs(
-    gvk_map: Dict[Tuple[str, str, str], str],
+    gvk_map: dict[tuple[str, str, str], str],
     openapi: dict,
     manifest_paths: Iterable[Path] = DEFAULT_MANIFEST_DIRS,
 ) -> int:
@@ -111,7 +112,10 @@ def validate_docs(
             print(f"[SKIP] {path.name}#{idx}: no schema for {api_version} {kind}")
             continue
 
-        schema = {"$ref": f"#/definitions/{ref}", **{k: v for k, v in openapi.items() if k == "definitions"}}
+        schema = {
+            "$ref": f"#/definitions/{ref}",
+            **{k: v for k, v in openapi.items() if k == "definitions"},
+        }
         validator = Draft4Validator(schema, resolver=resolver)
         try:
             validator.validate(doc)
