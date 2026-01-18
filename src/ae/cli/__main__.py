@@ -8,6 +8,7 @@ import logging
 import os
 import shutil
 from collections.abc import Callable
+from typing import Any
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -50,6 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     apply_parser = subparsers.add_parser("apply", help="Apply a workload manifest (App)")
     apply_parser.add_argument("-f", "--file", type=Path, required=True, help="Path to manifest")
+    apply_parser.add_argument(
+        "--k8s",
+        action="store_true",
+        help="Treat input as Kubernetes manifests (Deployment/Service/Ingress)",
+    )
 
     status_parser = subparsers.add_parser("status", help="Show workload (App) status")
     status_parser.add_argument("name", nargs="?", help="Workload (App) name (omit to list all)")
@@ -1171,18 +1177,157 @@ def main(argv: list[str] | None = None) -> int:
 def handle_apply(
     args: argparse.Namespace, reconciler: Reconciler, global_args: argparse.Namespace | None = None
 ) -> int:
+    import yaml as _yaml
+    from ae.k8s import convert as k8s_convert
+
+    def _load_yaml_documents(path: Path) -> list[dict]:
+        docs = [d for d in _yaml.safe_load_all(path.read_text()) if d]
+        if not docs:
+            raise ValueError("no YAML documents found")
+        return docs
+
+    k8s_workload_kinds = {"Deployment", "StatefulSet", "DaemonSet", "Job"}
+    k8s_network_kinds = {"Service", "Ingress"}
+
+    def _k8s_kind(doc: dict) -> str:
+        return str(doc.get("kind") or "")
+
+    def _k8s_meta(doc: dict) -> dict:
+        meta = doc.get("metadata") or {}
+        return meta if isinstance(meta, dict) else {}
+
+    def _k8s_name(doc: dict) -> str:
+        meta = _k8s_meta(doc)
+        return str(meta.get("name") or "")
+
+    def _k8s_namespace(doc: dict) -> str | None:
+        meta = _k8s_meta(doc)
+        ns = meta.get("namespace")
+        return str(ns) if ns else None
+
+    def _should_convert_k8s(docs: list[dict], force: bool) -> bool:
+        if force:
+            return True
+        if len(docs) == 1:
+            if str(docs[0].get("kind") or "") == "App":
+                return False
+        for doc in docs:
+            kind = _k8s_kind(doc)
+            if kind and kind != "App":
+                return True
+        return False
+
+    def _convert_k8s_documents(docs: list[dict]) -> tuple["AppManifest", list[str]]:
+        from ae.controller.spec import AppManifest
+
+        workloads: list[dict] = []
+        services: list[dict] = []
+        ingresses: list[dict] = []
+        unsupported: list[str] = []
+        for doc in docs:
+            kind = _k8s_kind(doc)
+            if kind in k8s_workload_kinds:
+                workloads.append(doc)
+            elif kind in k8s_network_kinds:
+                if kind == "Service":
+                    services.append(doc)
+                elif kind == "Ingress":
+                    ingresses.append(doc)
+            elif kind:
+                unsupported.append(kind)
+        if unsupported:
+            raise ValueError(f"unsupported Kubernetes kinds: {', '.join(sorted(set(unsupported)))}")
+        if len(workloads) != 1:
+            names = ", ".join(_k8s_name(w) or "<unnamed>" for w in workloads)
+            raise ValueError(f"expected exactly one workload (Deployment/StatefulSet/DaemonSet/Job), got {len(workloads)}: {names}")
+
+        workload = workloads[0]
+        workload_kind = _k8s_kind(workload)
+        workload_name = _k8s_name(workload)
+        workload_ns = _k8s_namespace(workload)
+        workload_key = (workload_ns, workload_name)
+        labels = k8s_convert.pod_template_labels(workload)
+        ports_by_name = k8s_convert.pod_template_ports_by_name(workload)
+
+        warnings: list[str] = []
+        service_spec = None
+        service_name_map: dict[tuple[str | None, str], tuple[str | None, str]] = {}
+        for svc in services:
+            spec = svc.get("spec") if isinstance(svc.get("spec"), dict) else {}
+            selector = k8s_convert.service_selector(spec or {})
+            target_key = None
+            if selector and k8s_convert.selector_matches(selector, labels):
+                target_key = workload_key
+            else:
+                target = k8s_convert.fallback_service_target(svc, selector)
+                if target in {workload_name, k8s_convert.app_name_for_k8s(workload_ns, workload_name)}:
+                    target_key = workload_key
+            if not target_key:
+                continue
+            if service_spec is not None:
+                warnings.append("multiple Services matched the workload; using the first one")
+                continue
+            service_spec = k8s_convert.service_spec_from_k8s(svc, ports_by_name)
+            if service_spec is None:
+                warnings.append("matched Service has no usable ports; skipping Service mapping")
+                continue
+            service_name_map[(_k8s_namespace(svc), _k8s_name(svc))] = target_key
+
+        ingress_spec = None
+        for ing in ingresses:
+            res = k8s_convert.ingress_spec_from_k8s(ing, service_name_map)
+            if not res:
+                continue
+            target_key, spec = res
+            if target_key != workload_key:
+                continue
+            if ingress_spec is not None:
+                warnings.append("multiple Ingresses matched the workload; using the first one")
+                continue
+            ingress_spec = spec
+
+        manifest = k8s_convert.manifest_from_k8s_workload(
+            workload, service_spec=service_spec, ingress_spec=ingress_spec
+        )
+        if workload_kind == "Job":
+            spec = manifest.spec
+            updates: dict[str, Any] = {"workload": "job"}
+            job_spec = workload.get("spec") or {}
+            try:
+                if job_spec.get("backoffLimit") is not None:
+                    updates["job_backoff_limit"] = int(job_spec.get("backoffLimit"))
+            except Exception:
+                pass
+            try:
+                if job_spec.get("ttlSecondsAfterFinished") is not None:
+                    updates["job_ttl_seconds_after_finished"] = int(
+                        job_spec.get("ttlSecondsAfterFinished")
+                    )
+            except Exception:
+                pass
+            manifest = manifest.model_copy(update={"spec": spec.model_copy(update=updates)})
+
+        return manifest, warnings
+
     # Remote apply via API when --server is set
     if global_args and getattr(global_args, "server", None):
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
         try:
-            import yaml as _yaml
-
-            payload = _yaml.safe_load(args.file.read_text())
+            docs = _load_yaml_documents(args.file)
         except Exception as exc:  # noqa: BLE001
             print(f"failed to read manifest: {exc}")
             return 1
         try:
+            if _should_convert_k8s(docs, bool(getattr(args, "k8s", False))):
+                manifest, warnings = _convert_k8s_documents(docs)
+                for w in warnings:
+                    print(f"warning: {w}")
+                payload = manifest.model_dump(by_alias=True)
+            else:
+                if len(docs) != 1:
+                    raise ValueError("expected a single App manifest document")
+                payload = docs[0]
             resp = _http_post_json(base, "/apply", payload, tok)
             print(
                 f"applied {resp.get('app')} rev={resp.get('revision')}({resp.get('status')}) "
@@ -1196,8 +1341,16 @@ def handle_apply(
     from ae.controller.spec import ManifestError, load_manifest
 
     try:
-        manifest = load_manifest(args.file)
-    except ManifestError as exc:
+        docs = _load_yaml_documents(args.file)
+        if _should_convert_k8s(docs, bool(getattr(args, "k8s", False))):
+            manifest, warnings = _convert_k8s_documents(docs)
+            for w in warnings:
+                print(f"warning: {w}")
+        else:
+            if len(docs) != 1:
+                raise ManifestError("expected a single App manifest document")
+            manifest = load_manifest(args.file)
+    except (ManifestError, ValueError) as exc:
         print(f"failed to read manifest: {exc}")
         return 1
     try:
