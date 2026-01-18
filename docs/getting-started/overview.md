@@ -16,7 +16,7 @@ k1s is a small, multi‑node application engine that now supports a controller +
 
 ## Features (High‑Level)
 
-- Declarative specs: `apiVersion: ae.dev/v1alpha1`, `kind: App`.
+- Declarative specs: `apiVersion: ae.dev/v1alpha1`, `kind: App` (Deployment-like workload).
 - Multi‑node scheduler: Ready node filtering, cordon/drain, nodeSelector + tolerations + topology spread, storage pinning, and overlay Service VIPs.
 - Rolling deploys and rollback with health gates; pause/resume via `ae rollout`.
 - Probes: HTTP/TCP/Exec plus startup probes and lifecycle hooks.

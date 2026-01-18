@@ -1,7 +1,7 @@
 """kubectl-like CLI for working with the ae/k1s engine.
 
 This provides familiar commands (`get`, `describe`, `apply`, `rollout`, `logs`, `events`)
-that map onto the existing `ae.cli` functionality.
+that map onto the existing `ae.cli` functionality. k1s Apps are Deployment-like workloads.
 """
 
 from __future__ import annotations
@@ -46,6 +46,8 @@ def parse_ref(arg: str, expected: tuple[str, ...]) -> ParsedRef:
 
     - Accepts forms:
       * "app/NAME" or "apps/NAME"
+      * "deploy/NAME", "deployment/NAME", or "deployments/NAME"
+      * "workload/NAME" or "workloads/NAME"
       * just NAME (defaults to the first `expected` kind)
     - Kinds are normalized to singular: "app".
     """
@@ -57,7 +59,16 @@ def parse_ref(arg: str, expected: tuple[str, ...]) -> ParsedRef:
         kind = expected[0]
         name = arg
 
-    kind_norm = "app" if kind in {"app", "apps"} else kind
+    app_aliases = {
+        "app",
+        "apps",
+        "deployment",
+        "deployments",
+        "deploy",
+        "workload",
+        "workloads",
+    }
+    kind_norm = "app" if kind in app_aliases else kind
     if kind_norm not in expected:
         raise argparse.ArgumentTypeError(
             f"Unsupported resource kind '{kind}'. Expected one of: {', '.join(expected)}"
@@ -71,7 +82,9 @@ def parse_ref(arg: str, expected: tuple[str, ...]) -> ParsedRef:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="k1s", description="kubectl-like CLI for k1s")
+    p = argparse.ArgumentParser(
+        prog="k1s", description="kubectl-like CLI for k1s (Apps are Deployment-like)"
+    )
     p.add_argument("--verbose", action="store_true", help="Enable DEBUG logging")
     p.add_argument(
         "--log-level", default=None, help="Override log level (DEBUG/INFO/WARNING/ERROR)"
@@ -80,13 +93,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     # k1s get apps|app <name?>
     get_p = sub.add_parser("get", help="List resources or show a resource")
-    get_p.add_argument("resource", choices=["apps", "app"], help="Resource type")
+    get_p.add_argument(
+        "resource",
+        choices=["apps", "app", "deployments", "deployment", "workloads", "workload", "deploy"],
+        help="Resource type",
+    )
     get_p.add_argument("name", nargs="?", help="Optional resource name")
     get_p.add_argument("-o", "--output", choices=["wide", "json"], default="wide")
 
     # k1s describe app/<name>
     desc_p = sub.add_parser("describe", help="Describe a resource")
-    desc_p.add_argument("ref", help="Resource ref: app/NAME or NAME")
+    desc_p.add_argument("ref", help="Resource ref: app/NAME, deployment/NAME, or NAME")
 
     # k1s apply -f <file>
     apply_p = sub.add_parser("apply", help="Apply a manifest file")
@@ -97,16 +114,16 @@ def build_parser() -> argparse.ArgumentParser:
     roll_sub = roll_p.add_subparsers(dest="roll_cmd", required=True)
 
     hist_p = roll_sub.add_parser("history", help="Show rollout history for a resource")
-    hist_p.add_argument("ref", help="Resource ref: app/NAME or NAME")
+    hist_p.add_argument("ref", help="Resource ref: app/NAME, deployment/NAME, or NAME")
     hist_p.add_argument("--limit", type=int, default=10)
 
     undo_p = roll_sub.add_parser("undo", help="Rollback/undo to a previous revision")
-    undo_p.add_argument("ref", help="Resource ref: app/NAME or NAME")
+    undo_p.add_argument("ref", help="Resource ref: app/NAME, deployment/NAME, or NAME")
     undo_p.add_argument("--to-revision", type=int, default=None)
 
     # k1s logs app/<name> [-f]
-    logs_p = sub.add_parser("logs", help="Show application logs")
-    logs_p.add_argument("ref", help="Resource ref: app/NAME or NAME")
+    logs_p = sub.add_parser("logs", help="Show workload logs")
+    logs_p.add_argument("ref", help="Resource ref: app/NAME, deployment/NAME, or NAME")
     logs_p.add_argument("-f", "--follow", action="store_true")
     logs_p.add_argument("--container", default=None, help="Replica selector: index or id")
     logs_p.add_argument("--revision", type=int, default=None, help="Filter by revision")
@@ -115,18 +132,18 @@ def build_parser() -> argparse.ArgumentParser:
     logs_p.add_argument("--since-time", dest="since_time", default=None, help="RFC3339 timestamp")
 
     # bonus passthroughs
-    events_p = sub.add_parser("events", help="Show recent events for an app")
-    events_p.add_argument("ref", help="Resource ref: app/NAME or NAME")
+    events_p = sub.add_parser("events", help="Show recent events for a workload/app")
+    events_p.add_argument("ref", help="Resource ref: app/NAME, deployment/NAME, or NAME")
     events_p.add_argument("--limit", type=int, default=20)
 
     # k1s delete app/<name>
-    del_p = sub.add_parser("delete", help="Delete an app (containers + status)")
-    del_p.add_argument("ref", help="Resource ref: app/NAME or NAME")
+    del_p = sub.add_parser("delete", help="Delete a workload/app (containers + status)")
+    del_p.add_argument("ref", help="Resource ref: app/NAME, deployment/NAME, or NAME")
     del_p.add_argument("--purge", action="store_true", help="Also purge events and revisions")
 
     # k1s scale app/<name> --replicas N
-    sc_p = sub.add_parser("scale", help="Scale an app by reconciling replicas")
-    sc_p.add_argument("ref", help="Resource ref: app/NAME or NAME")
+    sc_p = sub.add_parser("scale", help="Scale a workload/app by reconciling replicas")
+    sc_p.add_argument("ref", help="Resource ref: app/NAME, deployment/NAME, or NAME")
     sc_p.add_argument("--replicas", type=int, required=True)
 
     return p
@@ -169,7 +186,7 @@ def handle_get(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
     # list
     statuses = store.list_status()
     if not statuses:
-        print("No applications recorded.")
+        print("No workloads recorded.")
         return 0
     for s in statuses:
         print(format_status(s))

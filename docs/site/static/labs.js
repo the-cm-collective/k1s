@@ -670,7 +670,7 @@
     // Enable buttons if we have controlled actions, otherwise keep disabled
     const enableActions = $('#toggle-actions')?.checked && state.sessionId && state.orch.available;
     // Keep Apply clickable to surface guidance even when actions are unavailable
-    ['#btn-scale-2','#btn-scale-3','#btn-canary-10','#btn-canary-apply','#btn-observe-toggle','#btn-reset']
+    ['#btn-scale-2','#btn-scale-3','#btn-canary-10','#btn-canary-apply','#btn-observe-toggle']
       .forEach(id=>{ const el=$(id); if (el) el.disabled = !enableActions; });
     const btnApply = $('#btn-apply-echo');
     if (btnApply) {
@@ -909,6 +909,102 @@
     }
   }
 
+  async function resetSession(btn){
+    await withButtonFeedback(btn, 'Resetting session…', async ()=>{
+      const prev = state.sessionId;
+      // Attempt server cleanup when orchestrator is available (session optional)
+      if (state.orch.available) {
+        try {
+          const r = await apiFetch(`/labs/reset`, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
+            body: JSON.stringify({ session_id: prev })
+          });
+          if (await handleLabsAuth(r, 'Reset')) { return; }
+          if (!r.ok && r.status !== 404) { banner(`Reset failed: ${await r.text()}`, 'fail'); return; }
+        } catch(e){ bannerFetchFailure('Reset', e); return; }
+        // Best-effort: stop helm demo runner so the lab demo resets too.
+        try {
+          const demoResp = await apiFetch(`/labs/helm-demo`, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
+            body: JSON.stringify({ action: 'stop' })
+          });
+          if (demoResp && demoResp.ok) {
+            try { updateHelmDemoUI(await demoResp.json()); } catch(_) { updateHelmDemoUI({ running: false, message: 'Labs demo reset.' }); }
+          }
+        } catch(_){}
+      }
+      // Local UI/session clear regardless of backend availability
+      try { banner('Session reset — resources will disappear shortly.', 'ok'); } catch(_){ try { toast('Session reset', 'ok'); } catch(_){} }
+      state.sessionId = null;
+      state.appApplied = false;
+      state.appName = 'echo';
+      // Stop/disable SSE and prefer non-HTMX panels
+      try {
+        const ids = ['logs-sse','events-sse','status-summary'];
+        ids.forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.removeAttribute('sse-connect');
+        });
+        const polyLogs = document.getElementById('observe-logs');
+        const polyEv = document.getElementById('observe-events');
+        if (polyLogs) polyLogs.classList.remove('hidden');
+        if (polyEv) polyEv.classList.remove('hidden');
+        const sseLogs = document.getElementById('logs-sse');
+        const sseEv = document.getElementById('events-sse');
+        if (sseLogs) sseLogs.classList.add('hidden');
+        if (sseEv) sseEv.classList.add('hidden');
+      } catch(_){}
+      // Clear panels and indicators
+      try { const ev = document.getElementById('observe-events'); if (ev) ev.textContent = ''; } catch(_){}
+      try { const lg = document.getElementById('observe-logs'); if (lg) lg.textContent = ''; } catch(_){}
+      try { setText('#v-apply-events','n/a','pending'); } catch(_){}
+      try { setText('#v-apply-ready','n/a','pending'); } catch(_){}
+      try { clearCanaryInfo(); } catch(_){}
+      try { setText('#ingress-check','n/a','pending'); } catch(_){}
+      try { setText('#ingress-curl',''); const b=document.getElementById('ingress-curl-copy'); if (b) b.disabled=true; } catch(_){}
+      try { setHostsHint(''); } catch(_){}
+      try {
+        const backendSel = document.getElementById('backend-select');
+        if (backendSel) {
+          backendSel.value = 'auto';
+          backendSel.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        state.backend = 'auto';
+      } catch(_){}
+      try {
+        const toggle = document.getElementById('toggle-actions');
+        if (toggle) {
+          toggle.checked = false;
+          toggle.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      } catch(_){}
+      try {
+        const ex = document.getElementById('example-select');
+        if (ex) {
+          ex.value = 'echo';
+          ex.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+          loadExampleYaml('echo');
+        }
+      } catch(_){}
+      try {
+        const cw = document.getElementById('canary-weight');
+        if (cw) {
+          cw.value = '3';
+          cw.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      } catch(_){}
+      // Reset status to cluster-wide summary and refresh
+      try { setStatusMode('cluster'); refreshStatusNow(); } catch(_){}
+      // Disable action buttons now that we have no session
+      try { wireControls(); } catch(_){}
+      setText('#session-id','(none)');
+      try { updateHelmDemoUI({ running: false, message: 'Labs demo reset.' }); } catch(_){}
+    });
+  }
+
   function bind() {
     $('#btn-start-session')?.addEventListener('click', startSession);
     // Load YAML preview on example change
@@ -977,59 +1073,12 @@
       await withButtonFeedback(btn, `Scaling “${state.appName}” to 3…`, async ()=>{ await doScale(3); });
     });
     // Reset session: server-side cleanup (when available) + local UI clear
-    $('#btn-reset')?.addEventListener('click', async(e)=>{
-      const btn = e.currentTarget || document.getElementById('btn-reset');
-      await withButtonFeedback(btn, 'Resetting session…', async ()=>{
-      const prev = state.sessionId;
-      // Attempt server cleanup when orchestrator is available (session optional)
-      if (state.orch.available) {
-        try {
-          const r = await apiFetch(`/labs/reset`, {
-            method: 'POST',
-            headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
-            body: JSON.stringify({ session_id: prev })
-          });
-          if (await handleLabsAuth(r, 'Reset')) { return; }
-          if (!r.ok && r.status !== 404) { banner(`Reset failed: ${await r.text()}`, 'fail'); return; }
-        } catch(e){ bannerFetchFailure('Reset', e); return; }
-      }
-      // Local UI/session clear regardless of backend availability
-      try { banner('Session reset — resources will disappear shortly.', 'ok'); } catch(_){ try { toast('Session reset', 'ok'); } catch(_){} }
-      state.sessionId = null;
-      state.appApplied = false;
-      state.appName = 'echo';
-      // Stop/disable SSE and prefer non-HTMX panels
-      try {
-        const ids = ['logs-sse','events-sse','status-summary'];
-        ids.forEach(id => {
-          const el = document.getElementById(id);
-          if (el) el.removeAttribute('sse-connect');
-        });
-        const polyLogs = document.getElementById('observe-logs');
-        const polyEv = document.getElementById('observe-events');
-        if (polyLogs) polyLogs.classList.remove('hidden');
-        if (polyEv) polyEv.classList.remove('hidden');
-        const sseLogs = document.getElementById('logs-sse');
-        const sseEv = document.getElementById('events-sse');
-        if (sseLogs) sseLogs.classList.add('hidden');
-        if (sseEv) sseEv.classList.add('hidden');
-      } catch(_){}
-      // Clear panels and indicators
-      try { const ev = document.getElementById('observe-events'); if (ev) ev.textContent = ''; } catch(_){}
-      try { const lg = document.getElementById('observe-logs'); if (lg) lg.textContent = ''; } catch(_){}
-      try { setText('#v-apply-events','n/a','pending'); } catch(_){}
-      try { setText('#v-apply-ready','n/a','pending'); } catch(_){}
-      try { clearCanaryInfo(); } catch(_){}
-      try { setText('#ingress-check','n/a','pending'); } catch(_){}
-      try { setText('#ingress-curl',''); const b=document.getElementById('ingress-curl-copy'); if (b) b.disabled=true; } catch(_){}
-      try { setHostsHint(''); } catch(_){}
-      // Reset status to cluster-wide summary and refresh
-      try { setStatusMode('cluster'); refreshStatusNow(); } catch(_){}
-      // Disable action buttons now that we have no session
-      try { wireControls(); } catch(_){}
-      setText('#session-id','(none)');
-      });
-    });
+    const resetHandler = async (e) => {
+      const btn = (e && e.currentTarget) || document.getElementById('btn-reset');
+      await resetSession(btn);
+    };
+    $('#btn-reset')?.addEventListener('click', resetHandler);
+    $('#btn-reset-fab')?.addEventListener('click', resetHandler);
     $('#btn-canary-10')?.addEventListener('click', async(e)=>{
       if (!state.orch.available) return;
       const btn = e.currentTarget || document.getElementById('btn-canary-10');
@@ -1053,7 +1102,8 @@
     const cwv = document.getElementById('canary-weight-val');
     const canaryWeightToPercent = (val)=>{
       const n = parseInt(String(val ?? ''), 10);
-      if (!Number.isFinite(n) || n <= 0) return 10;
+      if (!Number.isFinite(n)) return 10;
+      if (n <= 0) return 0;
       return Math.max(10, Math.min(100, n * 10));
     };
     if (cw && cwv) {
@@ -1065,8 +1115,9 @@
       if (!state.orch.available) return;
       const rawWeight = (document.getElementById('canary-weight')||{value:'3'}).value;
       const weight = canaryWeightToPercent(rawWeight);
+      const isRemove = weight <= 0;
       const btn = e.currentTarget || document.getElementById('btn-canary-apply');
-      await withButtonFeedback(btn, `Applying canary ${weight}%…`, async ()=>{
+      await withButtonFeedback(btn, isRemove ? 'Removing canary…' : `Applying canary ${weight}%…`, async ()=>{
         const resp = await apiFetch(`/labs/rollout`, {
           method: 'POST', headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
           body: JSON.stringify({ session_id: state.sessionId, action: 'canary', app: state.appName, weight })
@@ -1074,10 +1125,17 @@
         if (!resp.ok) { banner(`Canary failed: ${await resp.text()}`, 'fail'); return; }
         try {
           const out = await resp.json();
-          if (out) { setCanaryInfo(out.revision ?? null, out.base_revision ?? null, out.canary_weight ?? null); }
+          if (out) {
+            const outWeight = Number(out.canary_weight ?? weight ?? 0);
+            if (outWeight <= 0) {
+              clearCanaryInfo();
+            } else {
+              setCanaryInfo(out.revision ?? null, out.base_revision ?? null, out.canary_weight ?? null);
+            }
+          }
         } catch(_){}
         setTimeout(verifyApply, 800);
-        try { toast(`Canary weight ${weight} applied`, 'ok'); } catch(_){ }
+        try { toast(isRemove ? 'Canary disabled' : `Canary weight ${weight} applied`, 'ok'); } catch(_){ }
       });
     });
     // Token adoption (auto-paste from clipboard if field empty)
@@ -1162,6 +1220,21 @@
 
     document.addEventListener('DOMContentLoaded', async () => {
     const followCtl = document.getElementById('follow-tail');
+    const setResetFabOffset = () => {
+      try {
+        const nav = document.querySelector('nav');
+        const baseTop = 12;
+        const gap = 12;
+        const navHeight = nav ? Math.round(nav.getBoundingClientRect().height) : 0;
+        const offset = Math.max(72, baseTop + navHeight + gap);
+        document.documentElement.style.setProperty('--playground-reset-top', `${offset}px`);
+      } catch(_){}
+    };
+    setResetFabOffset();
+    try {
+      window.addEventListener('resize', setResetFabOffset, { passive: true });
+      window.addEventListener('load', setResetFabOffset, { passive: true });
+    } catch(_){}
     const shouldFollow = () => !followCtl || followCtl.checked;
     const follow = (el) => { if (el && shouldFollow()) { try { el.scrollTop = el.scrollHeight; } catch(_){ } } };
     const forceFollowAll = () => {

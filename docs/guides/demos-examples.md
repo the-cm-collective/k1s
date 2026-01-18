@@ -64,6 +64,7 @@ Note
 
 - Ordered rollout for `echo` with default prefer-first routing:
   - `./scripts/init_demo.sh --demo-rollout -y -d`
+  - `make demo ARGS="--demo-rollout -y -d"`
   - Optional canary: set `spec.rollout.strategy: canary` with `weight` (and `auto` for ramps).
 
 ### Storage (PV-lite)

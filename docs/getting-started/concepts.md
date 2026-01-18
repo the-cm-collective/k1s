@@ -2,11 +2,21 @@
 
 This guide explains core concepts used throughout k1s.
 
-## App
+## Terminology map (k1s -> Kubernetes)
+
+| k1s term | Kubernetes term | Notes |
+| --- | --- | --- |
+| App | Deployment (workload) | k1s native workload manifest (`kind: App`). |
+| Replica | Pod | One container instance for an App revision. |
+| Revision | ReplicaSet / Deployment revision | Immutable snapshot of desired state. |
+| Service VIP | Service / ClusterIP | Stable virtual IP for service routing. |
+| Spec / manifest | Manifest | YAML resource definition. |
+
+## App (Deployment-like workload)
 
 The primary unit of deployment. Defined by an `App` manifest with a desired image, replicas, ports, health checks, and optional ingress/secrets/resources.
 
-## Replica
+## Replica (Pod)
 
 An individual container instance belonging to an app revision. Replica IDs follow the pattern `<app>-rev<revision>-<index>` (e.g., `echo-rev3-0`).
 
@@ -14,11 +24,11 @@ An individual container instance belonging to an app revision. Replica IDs follo
 
 A registered worker (or the controller host) that can run replicas. Nodes send heartbeats, advertise labels/taints, and expose a runtime endpoint that the controller uses for ensure/logs/exec/probes. Nodes can be cordoned or drained via `ae nodes`.
 
-## Service VIP
+## Service VIP (Service/ClusterIP)
 
 A stable virtual IP allocated from the Service CIDR and fronted by the overlay provider. Ingress prefers VIPs when ready endpoints exist; hostPorts remain for single-node edge cases.
 
-## Revision
+## Revision (Deployment revision)
 
 An immutable snapshot of desired state computed from the manifest spec hash. A new revision is created when the manifest content changes.
 

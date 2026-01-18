@@ -379,15 +379,17 @@
     <div class="container">
     <h1>k1s Concepts</h1>
 <p>This guide explains core concepts used throughout k1s.</p>
-<h2>App</h2>
+<h2>Terminology map (k1s -&gt; Kubernetes)</h2>
+<p>| k1s term | Kubernetes term | Notes | | --- | --- | --- | | App | Deployment (workload) | k1s native workload manifest (<code>kind: App</code>). | | Replica | Pod | One container instance for an App revision. | | Revision | ReplicaSet / Deployment revision | Immutable snapshot of desired state. | | Service VIP | Service / ClusterIP | Stable virtual IP for service routing. | | Spec / manifest | Manifest | YAML resource definition. |</p>
+<h2>App (Deployment-like workload)</h2>
 <p>The primary unit of deployment. Defined by an <code>App</code> manifest with a desired image, replicas, ports, health checks, and optional ingress/secrets/resources.</p>
-<h2>Replica</h2>
+<h2>Replica (Pod)</h2>
 <p>An individual container instance belonging to an app revision. Replica IDs follow the pattern <code>&lt;app&gt;-rev&lt;revision&gt;-&lt;index&gt;</code> (e.g., <code>echo-rev3-0</code>).</p>
 <h2>Node</h2>
 <p>A registered worker (or the controller host) that can run replicas. Nodes send heartbeats, advertise labels/taints, and expose a runtime endpoint that the controller uses for ensure/logs/exec/probes. Nodes can be cordoned or drained via <code>ae nodes</code>.</p>
-<h2>Service VIP</h2>
+<h2>Service VIP (Service/ClusterIP)</h2>
 <p>A stable virtual IP allocated from the Service CIDR and fronted by the overlay provider. Ingress prefers VIPs when ready endpoints exist; hostPorts remain for single-node edge cases.</p>
-<h2>Revision</h2>
+<h2>Revision (Deployment revision)</h2>
 <p>An immutable snapshot of desired state computed from the manifest spec hash. A new revision is created when the manifest content changes.</p>
 <ul>
 <li>Stored in SQLite with its normalized JSON and status.</li>
@@ -462,7 +464,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-17 14:05:27</span>
+        <span>Built 2026-01-17 18:15:46</span>
       </div>
     </footer>
     <script>
