@@ -9,25 +9,27 @@ cover_image: "../docs.home.arpa_8443_playground.html.png"
 
 # k1s November Update: Dashboard, Playground, Storage, and K8s Parity
 
-Previously, we published a deep dive into k1s — the tiny single‑node application engine. Since then we’ve shipped a bunch of quality‑of‑life improvements and new features. This post is a quick tour you can try locally in minutes.
+Well, hello again! This is a short technical tour of what changed since the Oct 29 deep dive, with commands you can run locally. It focuses on the dashboard/playground, PV‑lite storage, HTTP API auth, L4 service patterns, rollouts, and portability tooling.
 
 ## TL;DR Highlights
 
-- Dashboard (/dashboard): a lightweight live UI for status, events, and logs, plus a System snapshot (ingress/sites, services, volumes, RBAC).
-- Labs Playground: an interactive “try it” page that can run read‑only or, with a token, apply/scale/canary safely from the browser.
-- PV‑lite storage: declare `spec.storage`, inspect with `ae volumes list`, and control retention on purge.
-- HTTP API RBAC + dev mutations: optional READ/SCALER/ADMIN tokens; enable scale/delete for demos; upgraded logs endpoint.
-- L4 services guide: documented TCP patterns and added an HAProxy dev fixture with a watcher that tracks replica ports via `/system`.
-- Rollout polish: canary weight + controller‑tracked auto ramps; ordered/parallel semantics clarified and demoed.
-- Kubernetes parity: stricter exporter validation, a portability checklist (`k8s-check`), and a docs‑embedded compliance report (`k8s-report`).
+- Dashboard (/dashboard): live UI for status, events, and logs, plus a System snapshot backed by `/system` (ingress/sites, services, volumes, RBAC).
+- Labs Playground: interactive page that runs read‑only by default; controlled actions require `AE_LABS=1` and `AE_LABS_TOKEN`.
+- PV‑lite storage: `spec.storage` → engine‑named volumes, `ae volumes list` for inspection, retention honored by `ae delete --purge`.
+- HTTP API auth + dev mutations: `AE_API_READ_TOKEN`, `AE_API_SCALER_TOKEN`, `AE_API_ADMIN_TOKEN`; `AE_API_MUTATIONS=1` enables scale/delete.
+- L4 services guide: stable host port for single‑replica apps; HAProxy watcher tracks replica ports via `/system`.
+- Rollout polish: canary weight + controller‑tracked auto ramps persisted in SQLite.
+- Kubernetes parity: `ae export-k8s` presets, `k8s-check`, and a docs‑embedded compliance report (`k8s-report`).
 - Registry + supply chain: helpers for GHCR/GCR/ECR and `verify-image` via cosign.
 
 ## 1) Live Dashboard and System Snapshot
 
-The controller’s HTTP server now serves a simple dashboard at `/dashboard` with:
+The controller’s HTTP server serves a simple dashboard at `/dashboard` with:
 
 - Per‑app status cards, event stream, and log tails (poll/SSE when available)
 - A System panel sourced from `GET /system`: last reconcile timings, ingress site health, declared services, discovered volumes, and RBAC state
+
+The `/system` response is a JSON snapshot you can use in scripts or dashboards without scraping the UI.
 
 Quick start (local):
 
@@ -41,10 +43,10 @@ Docs: see `docs/reference/observability.md` and `docs/reference/http-api.md`.
 
 ## 2) Labs Playground (Interactive)
 
-We shipped an interactive playground page for fast hands‑on exploration. It prefers HTMX + SSE for live updates and can run in two modes:
+The Playground is an interactive page for fast hands‑on exploration. It prefers HTMX + SSE for live updates and can run in two modes:
 
 - Read‑only: verifiers and copyable CLI, no server‑side actions
-- Controlled actions: with `AE_LABS=1` and a bearer token, you can apply an example, scale replicas, and adjust canary weight
+- Controlled actions: with `AE_LABS=1` and `AE_LABS_TOKEN`, you can apply an example, scale replicas, and adjust canary weight
 
 Try it in the dev stack:
 
@@ -80,9 +82,13 @@ python -m ae.cli delete echo --purge      # removes volumes with retention: Dele
 
 Docs: `docs/reference/storage.md`.
 
+PV‑lite uses engine‑named volumes and retention flags; it is not full PVC/PV semantics.
+
+Spec → runtime: `spec.storage` creates engine‑named volumes (`ae-<app>-<name>`) and mounts them at `mountPath`. Retention controls whether `ae delete --purge` removes the volume.
+
 ## 4) HTTP API: RBAC and Dev Mutations
 
-The HTTP surface stays read‑only by default, but you can optionally enable mutations for demos/tests and gate them with tokens.
+The HTTP surface stays read‑only by default, but you can optionally enable mutations for demos/tests and gate them with tokens. When any token is configured, the API expects a bearer token.
 
 - Tokens (optional): `AE_API_READ_TOKEN`, `AE_API_SCALER_TOKEN`, `AE_API_ADMIN_TOKEN`
 - Mutations (opt‑in): set `AE_API_MUTATIONS=1` on the controller
@@ -105,9 +111,9 @@ Docs: `docs/reference/http-api.md`, `docs/reference/api-auth.md`.
 
 ## 5) L4 Services: TCP Patterns + HAProxy Watcher
 
-When you need non‑HTTP (TCP/UDP) on a single host, the new guide shows pragmatic options:
+When you need non‑HTTP (TCP/UDP) on a single host, the guide shows pragmatic options:
 
-- Single‑replica with a stable host port via `spec.service.port`
+- Single‑replica with a stable host port via `spec.service.port` (multi‑replica needs an external proxy)
 - External L4 proxy for multi‑replica (recommended). We provide a dev HAProxy service and two helpers:
   - One‑shot config render from `/system`
   - A watcher that rewrites the backend list as replicas/ports change and validates the config inside the container before restart
@@ -125,6 +131,8 @@ Docs and scripts: `docs/guides/l4-services.md`, `scripts/dev/update_haproxy_from
 ## 6) Rollouts: Ordered, Parallel, Canary (with Auto Ramps)
 
 We clarified semantics, polished events, and wired a controller‑tracked canary ramp that persists in SQLite.
+
+Spec → runtime: `rollout.strategy=canary` biases ingress toward the first upstream, and `rollout.auto` stores the ramp schedule in SQLite so it survives restarts.
 
 Spec excerpt:
 
@@ -192,6 +200,6 @@ Docs pages touched recently:
 
 ## What’s Next
 
-From the FEAT tracker: packaging (controller container + wheels), stricter presets for production via `k8s-check`, and more metrics (reconcile histograms and canary step counters) with sample Grafana panels.
+Next up is packaging (controller container + wheels), stricter presets for production via `k8s-check`, and more metrics (reconcile histograms and canary step counters) with sample Grafana panels.
 
-As always, feedback is welcome. If you try the Playground or the dev demos, let us know what workflows you want to see next.
+If you try the Playground or the dev demos, let us know what workflows you want to see next.
