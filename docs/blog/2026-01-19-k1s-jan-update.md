@@ -9,7 +9,7 @@ cover_image: "../docs.home.arpa_8443_dashboard.png"
 
 # k1s January Update: The Project, Multi-node, Service VIPs, and an Expanded API Shim
 
-This is a short technical tour of changes since the November update. We have made some significant progress on multi-node support, Service VIPs, API shim parity, security, observability, and the tooling that holds it together, but first I'd like to talk about the project in general.
+Ahoy, ahoy! Here's a short technical tour of changes since the November update. We have made some significant progress on multi-node support, Service VIPs, API shim parity, security, observability, and the tooling that holds it together, but first I'd like to talk about the project in general.
 
 It was your classic case of "need something to do something" vs "curiosity about how the thing does the thing". You know, typical stuff. I needed a small application engine to run on a VPS with minimal resources and I was already trying to broaden my understanding of Kubernetes and app engines in general. I already knew that k3s was a little too heavy for my VPS. I also had some free time on my hands, so I dove in. I started with a small set of success criteria that made me feel good about things:
 
