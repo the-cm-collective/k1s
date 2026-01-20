@@ -24,7 +24,12 @@ from datetime import datetime
 
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT
-OUT = ROOT / "site"
+DEFAULT_OUT = ROOT / "site"
+OUT = Path(os.getenv("DOCS_OUT_DIR", str(DEFAULT_OUT)))
+
+
+def _truthy_env(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 # Decide API base for Swagger/ReDoc links.
@@ -42,10 +47,60 @@ def detect_api_base() -> str:
 
 
 API_BASE = detect_api_base()
+EXPORT_NON_INTERACTIVE = _truthy_env("DOCS_NON_INTERACTIVE") or _truthy_env(
+    "DOCS_EXPORT_NON_INTERACTIVE"
+)
+
+INTERACTIVE_HREF_TOKENS = ("/swagger", "/redoc", "/dashboard", "playground.html", "/playground")
+
+NAV_LINKS = [
+    ("Home", "index.html", False, False),
+    ("Start Here", "start-here.html", False, False),
+    ("Overview", "overview.html", False, False),
+    ("Demos", "examples.html", False, False),
+    ("Architecture", "architecture.html", False, False),
+    ("Multi-Node", "multinode-lab.html", False, False),
+    ("HTTP API", "http-api.html", False, False),
+    ("API Shim", "apishim-compatibility-matrix.html", False, False),
+    ("Ingress", "ingress.html", False, False),
+    ("API Auth", "api-auth.html", False, False),
+    ("Concepts", "concepts.html", False, False),
+    ("Benchmarks", "benchmarks.html", False, False),
+    ("Swagger", "/swagger", True, True),
+    ("ReDoc", "/redoc", True, True),
+    ("Dashboard", "/dashboard", True, True),
+    ("Playground", "playground.html", True, False),
+    ("Concepts in Practice", "concepts-in-practice.html", False, False),
+]
+
+
+def is_interactive_href(href: str) -> bool:
+    href_lower = href.strip().lower()
+    return any(token in href_lower for token in INTERACTIVE_HREF_TOKENS)
+
+
+def render_nav(*, include_interactive: bool) -> str:
+    parts = []
+    for label, href, interactive, external in NAV_LINKS:
+        if interactive and not include_interactive:
+            continue
+        attrs = []
+        if external:
+            attrs.append('target="_blank"')
+            attrs.append('rel="noopener"')
+        attr_str = " " + " ".join(attrs) if attrs else ""
+        parts.append(f'      <a href="{href}"{attr_str}>{label}</a>')
+    return "\n".join(parts)
 
 
 def render_template(
-    *, title: str, body: str, api_base: str, extra_head: str, footer_text: str
+    *,
+    title: str,
+    body: str,
+    api_base: str,
+    extra_head: str,
+    footer_text: str,
+    nav_html: str,
 ) -> str:
     """Render TEMPLATE safely without str.format interfering with braces.
 
@@ -57,12 +112,14 @@ def render_template(
         .replace("{api_base}", "{__API_BASE__}")
         .replace("{extra_head}", "{__EXTRA__}")
         .replace("{footer_text}", "{__FOOT__}")
+        .replace("{nav}", "{__NAV__}")
     )
     t = t.replace("{__TITLE__}", title)
     t = t.replace("{__BODY__}", body)
     t = t.replace("{__API_BASE__}", api_base)
     t = t.replace("{__EXTRA__}", extra_head)
     t = t.replace("{__FOOT__}", footer_text)
+    t = t.replace("{__NAV__}", nav_html)
     return t
 
 
@@ -419,23 +476,7 @@ TEMPLATE = """<!doctype html>
   </head>
   <body>
     <nav>
-      <a href="index.html">Home</a>
-      <a href="start-here.html">Start Here</a>
-      <a href="overview.html">Overview</a>
-      <a href="examples.html">Demos</a>
-      <a href="architecture.html">Architecture</a>
-      <a href="multinode-lab.html">Multi-Node</a>
-      <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="ingress.html">Ingress</a>
-      <a href="api-auth.html">API Auth</a>
-      <a href="concepts.html">Concepts</a>
-      <a href="benchmarks.html">Benchmarks</a>
-      <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
-      <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
-      <a href="playground.html">Playground</a>
-      <a href="concepts-in-practice.html">Concepts in Practice</a>
+{nav}
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -489,7 +530,9 @@ TEMPLATE = """<!doctype html>
 """
 
 
-def format_inline(text: str, *, allow_raw_html: bool = False) -> str:
+def format_inline(
+    text: str, *, allow_raw_html: bool = False, strip_interactive_links: bool = False
+) -> str:
     """Render inline markdown constructs.
 
     - When ``allow_raw_html`` is False (default), escape all HTML first.
@@ -508,20 +551,31 @@ def format_inline(text: str, *, allow_raw_html: bool = False) -> str:
 
     text = re.sub(r"`([^`]+)`", repl_code, text)
     # links [text](url) — escape URL attribute; keep link text as-is
-    text = re.sub(
-        r"\[([^\]]+)\]\(([^)]+)\)",
-        lambda m: f'<a href="{html.escape(m.group(2), quote=True)}">{m.group(1)}</a>',
-        text,
-    )
+    def repl_link(m: re.Match[str]) -> str:
+        href = m.group(2)
+        if strip_interactive_links and is_interactive_href(href):
+            return m.group(1)
+        return f'<a href="{html.escape(href, quote=True)}">{m.group(1)}</a>'
+
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", repl_link, text)
     return text
 
 
-def md_to_html(md: str, *, allow_raw_html: bool = False) -> str:
+def md_to_html(
+    md: str, *, allow_raw_html: bool = False, strip_interactive_links: bool = False
+) -> str:
     lines = md.splitlines()
     out: list[str] = []
     in_code = False
     code_lang = ""
     code_buf: list[str] | None = None
+
+    def fmt(text: str) -> str:
+        return format_inline(
+            text,
+            allow_raw_html=allow_raw_html,
+            strip_interactive_links=strip_interactive_links,
+        )
 
     def flush_paragraph(buf: list[str]):
         if not buf:
@@ -531,7 +585,7 @@ def md_to_html(md: str, *, allow_raw_html: bool = False) -> str:
         if allow_raw_html and text.lstrip().startswith("<"):
             out.append(text)
         else:
-            rendered = format_inline(text, allow_raw_html=allow_raw_html)
+            rendered = fmt(text)
             out.append(f"<p>{rendered}</p>")
         buf.clear()
 
@@ -563,7 +617,7 @@ def md_to_html(md: str, *, allow_raw_html: bool = False) -> str:
                 return ""
             parts = ["<ul>"]
             for item in items:
-                content = format_inline(str(item["text"]), allow_raw_html=allow_raw_html)
+                content = fmt(str(item["text"]))
                 children = item.get("children") or []
                 if children:
                     parts.append(f"<li>{content}")
@@ -625,32 +679,32 @@ def md_to_html(md: str, *, allow_raw_html: bool = False) -> str:
         # headings
         if line.startswith("###### "):
             flush_paragraph(para_buf)
-            out.append(f"<h6>{format_inline(line[7:])}</h6>")
+            out.append(f"<h6>{fmt(line[7:])}</h6>")
             i += 1
             continue
         if line.startswith("##### "):
             flush_paragraph(para_buf)
-            out.append(f"<h5>{format_inline(line[6:])}</h5>")
+            out.append(f"<h5>{fmt(line[6:])}</h5>")
             i += 1
             continue
         if line.startswith("#### "):
             flush_paragraph(para_buf)
-            out.append(f"<h4>{format_inline(line[5:])}</h4>")
+            out.append(f"<h4>{fmt(line[5:])}</h4>")
             i += 1
             continue
         if line.startswith("### "):
             flush_paragraph(para_buf)
-            out.append(f"<h3>{format_inline(line[4:])}</h3>")
+            out.append(f"<h3>{fmt(line[4:])}</h3>")
             i += 1
             continue
         if line.startswith("## "):
             flush_paragraph(para_buf)
-            out.append(f"<h2>{format_inline(line[3:])}</h2>")
+            out.append(f"<h2>{fmt(line[3:])}</h2>")
             i += 1
             continue
         if line.startswith("# "):
             flush_paragraph(para_buf)
-            out.append(f"<h1>{format_inline(line[2:])}</h1>")
+            out.append(f"<h1>{fmt(line[2:])}</h1>")
             i += 1
             continue
 
@@ -685,13 +739,27 @@ def md_to_html(md: str, *, allow_raw_html: bool = False) -> str:
     return "\n".join(out)
 
 
-def build_one(md_path: Path, out_path: Path) -> None:
+def build_one(
+    md_path: Path,
+    out_path: Path,
+    *,
+    nav_html: str,
+    strip_interactive_links: bool,
+) -> None:
     allow_raw = md_path.name == "playground.md"
-    html_body = md_to_html(md_path.read_text(encoding="utf-8"), allow_raw_html=allow_raw)
+    html_body = md_to_html(
+        md_path.read_text(encoding="utf-8"),
+        allow_raw_html=allow_raw,
+        strip_interactive_links=strip_interactive_links,
+    )
     # Inject K8s compliance status if building the compliance page and a report exists
     try:
         if md_path.name == "k8s-compliance.md":
             status_path = OUT / "k8s_status.json"
+            if not status_path.exists() and OUT != DEFAULT_OUT:
+                fallback = DEFAULT_OUT / "k8s_status.json"
+                if fallback.exists():
+                    status_path = fallback
             if status_path.exists():
                 import json
 
@@ -1275,6 +1343,7 @@ def build_one(md_path: Path, out_path: Path) -> None:
             api_base=API_BASE,
             extra_head=extra_head,
             footer_text=f"Built {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            nav_html=nav_html,
         ),
         encoding="utf-8",
     )
@@ -1282,19 +1351,22 @@ def build_one(md_path: Path, out_path: Path) -> None:
 
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
+    include_interactive = not EXPORT_NON_INTERACTIVE
+    nav_html = render_nav(include_interactive=include_interactive)
     # Copy static assets if present
-    try:
-        static_src = SRC / "static"
-        if static_src.exists():
-            import shutil
+    if not EXPORT_NON_INTERACTIVE:
+        try:
+            static_src = SRC / "static"
+            if static_src.exists():
+                import shutil
 
-            static_out = OUT / "static"
-            static_out.mkdir(parents=True, exist_ok=True)
-            for p in static_src.iterdir():
-                if p.is_file():
-                    shutil.copy2(p, static_out / p.name)
-    except Exception:
-        pass
+                static_out = OUT / "static"
+                static_out.mkdir(parents=True, exist_ok=True)
+                for p in static_src.iterdir():
+                    if p.is_file():
+                        shutil.copy2(p, static_out / p.name)
+        except Exception:
+            pass
     mapping = {
         "getting-started/start-here.md": "start-here.html",
         "getting-started/overview.md": "overview.html",
@@ -1327,33 +1399,39 @@ def main() -> None:
         "concepts-in-practice/09-configuration-secrets.md": "concepts-in-practice-09-configuration-secrets.html",
         "concepts-in-practice/10-access-policy.md": "concepts-in-practice-10-access-policy.html",
     }
-    # index
-    index = f"""
-<h1>k1s Documentation</h1>
-<ul>
-  <li><a href="start-here.html">Start Here (Onboarding)</a></li>
-  <li><a href="overview.html">Overview</a></li>
-  <li><a href="examples.html">Demos &amp; Examples</a></li>
-  <li><a href="architecture.html">Architecture</a></li>
-  <li><a href="multinode-lab.html">Multi-Node Lab</a></li>
-  <li><a href="http-api.html">HTTP API</a></li>
-  <li><a href="apishim-compatibility-matrix.html">API Shim Compatibility</a></li>
-  <li><a href="ingress.html">Ingress</a></li>
-  <li><a href="api-auth.html">API Auth</a></li>
-  <li><a href="concepts.html">Concepts</a></li>
-  <li><a href="configs-secrets.html">Configs &amp; Secrets</a></li>
-  <li><a href="rollouts.html">Rollouts</a></li>
-  <li><a href="storage.html">Storage</a></li>
-  <li><a href="observability.html">Observability</a></li>
-  <li><a href="benchmarks.html">Benchmarks</a></li>
-  <li><a href="scheduling.html">Scheduling</a></li>
-  <li><a href="e2e.html">End-to-End Guide</a></li>
-  <li><a href="k8s-compliance.html">K8s Compliance Status</a></li>
-  <li><a href="playground.html">Interactive Lab Playground</a></li>
-  <li><a href="concepts-in-practice.html">Concepts in Practice</a></li>
-  <li><a href="/dashboard" target="_blank" rel="noopener">Live Demo Dashboard</a></li>
-</ul>
-"""
+    if EXPORT_NON_INTERACTIVE:
+        mapping.pop("guides/playground.md", None)
+
+    index_links = [
+        ("Start Here (Onboarding)", "start-here.html", False, False),
+        ("Overview", "overview.html", False, False),
+        ("Demos &amp; Examples", "examples.html", False, False),
+        ("Architecture", "architecture.html", False, False),
+        ("Multi-Node Lab", "multinode-lab.html", False, False),
+        ("HTTP API", "http-api.html", False, False),
+        ("API Shim Compatibility", "apishim-compatibility-matrix.html", False, False),
+        ("Ingress", "ingress.html", False, False),
+        ("API Auth", "api-auth.html", False, False),
+        ("Concepts", "concepts.html", False, False),
+        ("Configs &amp; Secrets", "configs-secrets.html", False, False),
+        ("Rollouts", "rollouts.html", False, False),
+        ("Storage", "storage.html", False, False),
+        ("Observability", "observability.html", False, False),
+        ("Benchmarks", "benchmarks.html", False, False),
+        ("Scheduling", "scheduling.html", False, False),
+        ("End-to-End Guide", "e2e.html", False, False),
+        ("K8s Compliance Status", "k8s-compliance.html", False, False),
+        ("Interactive Lab Playground", "playground.html", True, False),
+        ("Concepts in Practice", "concepts-in-practice.html", False, False),
+        ("Live Demo Dashboard", "/dashboard", True, True),
+    ]
+    index_items = []
+    for label, href, interactive, external in index_links:
+        if interactive and not include_interactive:
+            continue
+        attrs = ' target="_blank" rel="noopener"' if external else ""
+        index_items.append(f'  <li><a href="{href}"{attrs}>{label}</a></li>')
+    index = "<h1>k1s Documentation</h1>\n<ul>\n" + "\n".join(index_items) + "\n</ul>\n"
     (OUT / "index.html").write_text(
         render_template(
             title="k1s Docs",
@@ -1361,28 +1439,35 @@ def main() -> None:
             api_base=API_BASE,
             extra_head="",
             footer_text=f"Built {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            nav_html=nav_html,
         ),
         encoding="utf-8",
     )
 
     for src_name, out_name in mapping.items():
-        build_one(SRC / src_name, OUT / out_name)
+        build_one(
+            SRC / src_name,
+            OUT / out_name,
+            nav_html=nav_html,
+            strip_interactive_links=EXPORT_NON_INTERACTIVE,
+        )
 
     # Copy curated example YAMLs to /examples for playground preview
-    try:
-        examples_src = ROOT.parent / "specs" / "examples"
-        examples_out = OUT / "examples"
-        examples_out.mkdir(parents=True, exist_ok=True)
-        if examples_src.exists():
-            import shutil
+    if not EXPORT_NON_INTERACTIVE:
+        try:
+            examples_src = ROOT.parent / "specs" / "examples"
+            examples_out = OUT / "examples"
+            examples_out.mkdir(parents=True, exist_ok=True)
+            if examples_src.exists():
+                import shutil
 
-            for p in examples_src.glob("*.y*ml"):
-                try:
-                    shutil.copy2(p, examples_out / p.name)
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                for p in examples_src.glob("*.y*ml"):
+                    try:
+                        shutil.copy2(p, examples_out / p.name)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

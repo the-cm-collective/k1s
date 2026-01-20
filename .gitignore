@@ -27,3 +27,4 @@ coverage.xml
 htmlcov/
 *.mp4
 .cache
+docs/export/*
