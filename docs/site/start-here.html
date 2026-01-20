@@ -379,6 +379,21 @@
         font-weight: 600;
         font-size: 13px;
       }
+      .hero-link--stack {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .hero-link-title {
+        font-weight: 700;
+        font-size: 13px;
+      }
+      .hero-link-sub {
+        font-weight: 400;
+        font-size: 11px;
+        line-height: 1.3;
+        color: var(--k1s-text-muted);
+      }
       .hero-link:hover {
         border-color: var(--k1s-brand-gold);
         color: var(--fg);
@@ -764,7 +779,7 @@ kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-20 14:30:06</span>
+        <span>Built 2026-01-20 14:54:26</span>
       </div>
     </footer>
     <script>
