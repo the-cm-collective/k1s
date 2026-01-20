@@ -1020,6 +1020,13 @@ def build_one(
         allow_raw_html=allow_raw,
         strip_interactive_links=strip_interactive_links,
     )
+    if strip_interactive_links and md_path.name == "start-here.md":
+        html_body = re.sub(
+            r'<div class="hero-links hero-links--local">.*?</div>',
+            "",
+            html_body,
+            flags=re.S,
+        )
     # Inject K8s compliance status if building the compliance page and a report exists
     try:
         if md_path.name == "k8s-compliance.md":

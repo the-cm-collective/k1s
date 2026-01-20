@@ -6,7 +6,7 @@
     </div>
     <h1>Start Here: k1s Onboarding</h1>
     <p class="hero-tagline">From fresh clone to running demo in minutes. k1s keeps the control plane light, the UI live, and the YAML close to Kubernetes.</p>
-    <div class="hero-links">
+    <div class="hero-links hero-links--local">
       <a class="hero-link" href="https://docs.home.arpa:8443/">Docs (TLS)</a>
       <a class="hero-link" href="http://127.0.0.1:9109/">Docs (local)</a>
       <a class="hero-link" href="https://api.home.arpa:8443/dashboard">Dashboard (TLS)</a>
