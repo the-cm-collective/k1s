@@ -125,6 +125,9 @@ html[data-theme='light'] .helm-demo-log{background:var(--k1s-panel, #f1f5f9);col
       grid-template-columns: 200px 1fr;
       column-gap:12px;
     }
+    .container ul:has(#example-select){
+      grid-template-columns: 1fr;
+    }
     .container ul:has(input)>li,
     .container ul:has(select)>li,
     .container ul:has(button)>li{margin:6px 0}
