@@ -168,6 +168,35 @@
         color: var(--fg);
         border-radius: 8px;
       }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 1rem 0;
+        background: var(--k1s-panel);
+        border: 1px solid var(--k1s-border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      thead th {
+        text-align: left;
+        padding: 12px 14px;
+        background: var(--k1s-card-bg);
+        border-bottom: 1px solid var(--k1s-border);
+        color: var(--fg);
+        font-weight: 600;
+      }
+      tbody td {
+        padding: 12px 14px;
+        border-top: 1px solid var(--k1s-border-soft);
+        color: var(--fg);
+        vertical-align: top;
+      }
+      tbody tr:nth-child(even) td {
+        background: color-mix(in srgb, var(--k1s-panel) 92%, #000000 8%);
+      }
+      html[data-theme="light"] tbody tr:nth-child(even) td {
+        background: color-mix(in srgb, var(--k1s-panel) 92%, #ffffff 8%);
+      }
       pre {
         padding: 12px;
         overflow-x: auto;
@@ -381,7 +410,7 @@
     <h1>k1s Concepts</h1>
 <p>This guide explains core concepts used throughout k1s.</p>
 <h2>Terminology map (k1s -&gt; Kubernetes)</h2>
-<p>| k1s term | Kubernetes term | Notes | | --- | --- | --- | | App | Deployment (workload) | k1s native workload manifest (<code>kind: App</code>). | | Replica | Pod | One container instance for an App revision. | | Revision | ReplicaSet / Deployment revision | Immutable snapshot of desired state. | | Service VIP | Service / ClusterIP | Stable virtual IP for service routing. | | Spec / manifest | Manifest | YAML resource definition. |</p>
+<table><thead><tr><th>k1s term</th><th>Kubernetes term</th><th>Notes</th></tr></thead><tbody><tr><td>App</td><td>Deployment (workload)</td><td>k1s native workload manifest (<code>kind: App</code>).</td></tr><tr><td>Replica</td><td>Pod</td><td>One container instance for an App revision.</td></tr><tr><td>Revision</td><td>ReplicaSet / Deployment revision</td><td>Immutable snapshot of desired state.</td></tr><tr><td>Service VIP</td><td>Service / ClusterIP</td><td>Stable virtual IP for service routing.</td></tr><tr><td>Spec / manifest</td><td>Manifest</td><td>YAML resource definition.</td></tr></tbody></table>
 <h2>App (Deployment-like workload)</h2>
 <p>The primary unit of deployment. Defined by an <code>App</code> manifest with a desired image, replicas, ports, health checks, and optional ingress/secrets/resources.</p>
 <h2>Replica (Pod)</h2>
@@ -465,7 +494,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-20 10:45:46</span>
+        <span>Built 2026-01-20 11:36:34</span>
       </div>
     </footer>
     <script>
