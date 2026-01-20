@@ -136,3 +136,7 @@ python -m ae.cli events echo --limit 20
         default_factory=list, alias="topologySpreadConstraints"
     )
 ```
+## Chapter navigation
+- Prev: [Chapter 02 - Declarative Specs and Apply Semantics](concepts-in-practice-02-declarative-apply.html)
+- Next: [Chapter 04 - Runtime Adapters and Container Execution](concepts-in-practice-04-runtime-adapters.html)
+

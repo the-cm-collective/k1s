@@ -142,3 +142,7 @@ spec:
     - name: http
       containerPort: 8080
 ```
+## Chapter navigation
+- Prev: [Chapter 01 - Desired State and Reconciliation Loops](concepts-in-practice-01-desired-state-reconciliation.html)
+- Next: [Chapter 03 - Scheduling and Placement (Where Work Runs)](concepts-in-practice-03-scheduling-placement.html)
+
