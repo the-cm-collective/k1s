@@ -155,3 +155,7 @@ configRefs:
       - key: mode
         file: config/app_mode.txt
 ```
+## Chapter navigation
+- Prev: [Chapter 08 - Rollouts, Updates, and Rollbacks](concepts-in-practice-08-rollouts-updates.html)
+- Next: [Chapter 10 - Access and Policy Boundaries](concepts-in-practice-10-access-policy.html)
+

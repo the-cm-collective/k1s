@@ -133,3 +133,7 @@ def handle_rollback(...):
     report = reconciler.reconcile(manifest)
     print(f"Rolled back ... to revision {report.revision} ({report.revision_status})")
 ```
+## Chapter navigation
+- Prev: [Chapter 07 - Health Probes and Readiness/Liveness](concepts-in-practice-07-health-probes.html)
+- Next: [Chapter 09 - Configuration and Secrets Management](concepts-in-practice-09-configuration-secrets.html)
+

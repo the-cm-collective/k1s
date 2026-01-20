@@ -134,3 +134,6 @@ Format: base64url(node_id:exp_ts:nonce:signature)
 """
 ...
 ```
+## Chapter navigation
+- Prev: [Chapter 09 - Configuration and Secrets Management](concepts-in-practice-09-configuration-secrets.html)
+

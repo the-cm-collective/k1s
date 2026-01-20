@@ -502,6 +502,11 @@ docker compose -f ops/dev/docker-compose.yaml down</code></pre>
         backends = self._build_backends(app, svc_spec, runtime_result, health_report)
         self._store.upsert_service(app, cluster_ip, ports)
         self._provider.update_service_endpoints(app, backends[&quot;by_port&quot;])</code></pre>
+<h2>Chapter navigation</h2>
+<ul>
+<li>Prev: <a href="concepts-in-practice-04-runtime-adapters.html">Chapter 04 - Runtime Adapters and Container Execution</a></li>
+<li>Next: <a href="concepts-in-practice-06-observability.html">Chapter 06 - Observability: Logs, Metrics, Events</a></li>
+</ul>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -509,7 +514,7 @@ docker compose -f ops/dev/docker-compose.yaml down</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-20 10:39:25</span>
+        <span>Built 2026-01-20 10:45:46</span>
       </div>
     </footer>
     <script>

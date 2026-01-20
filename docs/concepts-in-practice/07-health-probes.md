@@ -112,3 +112,7 @@ health:
     failureThreshold: 30
     periodSeconds: 5
 ```
+## Chapter navigation
+- Prev: [Chapter 06 - Observability: Logs, Metrics, Events](concepts-in-practice-06-observability.html)
+- Next: [Chapter 08 - Rollouts, Updates, and Rollbacks](concepts-in-practice-08-rollouts-updates.html)
+
