@@ -293,6 +293,35 @@ TEMPLATE = """<!doctype html>
         color: var(--fg);
         border-radius: 8px;
       }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 1rem 0;
+        background: var(--k1s-panel);
+        border: 1px solid var(--k1s-border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      thead th {
+        text-align: left;
+        padding: 12px 14px;
+        background: var(--k1s-card-bg);
+        border-bottom: 1px solid var(--k1s-border);
+        color: var(--fg);
+        font-weight: 600;
+      }
+      tbody td {
+        padding: 12px 14px;
+        border-top: 1px solid var(--k1s-border-soft);
+        color: var(--fg);
+        vertical-align: top;
+      }
+      tbody tr:nth-child(even) td {
+        background: color-mix(in srgb, var(--k1s-panel) 92%, #000000 8%);
+      }
+      html[data-theme="light"] tbody tr:nth-child(even) td {
+        background: color-mix(in srgb, var(--k1s-panel) 92%, #ffffff 8%);
+      }
       pre {
         padding: 12px;
         overflow-x: auto;
@@ -630,6 +659,14 @@ def md_to_html(
 
         return render_nodes(nodes)
 
+    def split_table_row(row: str) -> list[str]:
+        stripped = row.strip()
+        if stripped.startswith("|"):
+            stripped = stripped[1:]
+        if stripped.endswith("|"):
+            stripped = stripped[:-1]
+        return [cell.strip() for cell in stripped.split("|")]
+
     para_buf: list[str] = []
     i = 0
     while i < len(lines):
@@ -670,6 +707,44 @@ def md_to_html(
             out.append("<hr/>")
             i += 1
             continue
+
+        # tables (pipe-delimited, requires header + separator row)
+        if "|" in line and i + 1 < len(lines):
+            next_line = lines[i + 1].rstrip("\n")
+            if re.fullmatch(r"\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*", next_line):
+                flush_paragraph(para_buf)
+                headers = split_table_row(line)
+                i += 2
+                rows: list[list[str]] = []
+                while i < len(lines):
+                    row_line = lines[i].rstrip("\n")
+                    if not row_line.strip():
+                        break
+                    if "|" not in row_line:
+                        break
+                    if row_line.strip().startswith("```"):
+                        break
+                    if re.fullmatch(r"\s*-{3,}\s*", row_line):
+                        break
+                    if row_line.lstrip().startswith("#"):
+                        break
+                    rows.append(split_table_row(row_line))
+                    i += 1
+                table_parts = ["<table>", "<thead><tr>"]
+                for cell in headers:
+                    table_parts.append(f"<th>{fmt(cell)}</th>")
+                table_parts.append("</tr></thead>")
+                if rows:
+                    table_parts.append("<tbody>")
+                    for row in rows:
+                        table_parts.append("<tr>")
+                        for cell in row:
+                            table_parts.append(f"<td>{fmt(cell)}</td>")
+                        table_parts.append("</tr>")
+                    table_parts.append("</tbody>")
+                table_parts.append("</table>")
+                out.append("".join(table_parts))
+                continue
 
         if not line.strip():
             flush_paragraph(para_buf)
