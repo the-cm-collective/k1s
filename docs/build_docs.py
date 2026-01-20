@@ -1605,19 +1605,18 @@ def main() -> None:
     include_interactive = not EXPORT_NON_INTERACTIVE
     nav_html = render_nav(include_interactive=include_interactive)
     # Copy static assets if present
-    if not EXPORT_NON_INTERACTIVE:
-        try:
-            static_src = SRC / "static"
-            if static_src.exists():
-                import shutil
+    try:
+        static_src = SRC / "static"
+        if static_src.exists():
+            import shutil
 
-                static_out = OUT / "static"
-                static_out.mkdir(parents=True, exist_ok=True)
-                for p in static_src.iterdir():
-                    if p.is_file():
-                        shutil.copy2(p, static_out / p.name)
-        except Exception:
-            pass
+            static_out = OUT / "static"
+            static_out.mkdir(parents=True, exist_ok=True)
+            for p in static_src.iterdir():
+                if p.is_file():
+                    shutil.copy2(p, static_out / p.name)
+    except Exception:
+        pass
     mapping = {
         "getting-started/start-here.md": "start-here.html",
         "getting-started/overview.md": "overview.html",
