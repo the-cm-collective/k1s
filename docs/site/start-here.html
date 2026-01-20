@@ -4,7 +4,11 @@
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>Start Here</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs/%3E%3Crect width='64' height='64' rx='12' fill='%23096ad9'/%3E%3Cpath d='M16 45h32M16 19h32M16 32h32' stroke='white' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E"/>
+    <link rel="icon" href="static/favicon.ico" sizes="any"/>
+    <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
+    <link rel="icon" type="image/png" sizes="16x16" href="static/favicon-16x16.png"/>
+    <link rel="icon" type="image/png" sizes="48x48" href="static/favicon-48x48.png"/>
+    <link rel="apple-touch-icon" sizes="180x180" href="static/icon-180x180.png"/>
     <style>
       :root {
         color-scheme: light dark;
@@ -31,6 +35,9 @@
         --k1s-radius: 8px;
         --k1s-radius-pill: 999px;
         --k1s-gap: 12px;
+        --k1s-brand-gold: #fbc02d;
+        --k1s-brand-graphite: #404040;
+        --k1s-brand-mist: #f1f1f1;
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
@@ -79,7 +86,7 @@
         align-items: center;
         flex-wrap: wrap;
         gap: .6rem;
-        justify-content: center;
+        justify-content: flex-start;
         margin: 0 auto 1.25rem auto;
         width: min(100%, 1320px);
         padding: 10px 16px;
@@ -93,6 +100,18 @@
         z-index: 10;
         backdrop-filter: blur(6px);
         -webkit-backdrop-filter: blur(6px);
+      }
+      nav::after {
+        content: "";
+        position: absolute;
+        left: 14px;
+        right: 14px;
+        bottom: 6px;
+        height: 2px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold), transparent);
+        opacity: 0.5;
+        pointer-events: none;
       }
       nav a {
         display: inline-flex;
@@ -110,9 +129,32 @@
       }
       nav a:hover {
         background: var(--k1s-surface);
-        border-color: var(--k1s-border-soft);
+        border-color: var(--k1s-brand-gold);
         color: var(--link-hover);
         transform: translateY(-1px);
+      }
+      nav .nav-brand {
+        gap: 10px;
+        padding: 6px 10px;
+        border: 1px solid transparent;
+        background: transparent;
+        box-shadow: none;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-size: 11px;
+        color: var(--k1s-text-muted);
+      }
+      nav .nav-brand:hover {
+        background: color-mix(in srgb, var(--k1s-card-bg) 60%, transparent);
+        border-color: var(--k1s-brand-gold);
+        color: var(--fg);
+        transform: translateY(0);
+      }
+      nav .nav-brand img {
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        box-shadow: 0 6px 16px rgba(0,0,0,0.2);
       }
       nav a:active { transform: translateY(0); }
       .spacer { flex: 1 1 auto; }
@@ -255,6 +297,119 @@
         border-radius: var(--k1s-radius);
         padding: 10px 12px;
       }
+      .hero {
+        position: relative;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 16px;
+        padding: 22px;
+        border: 1px solid var(--k1s-border);
+        border-radius: 18px;
+        background:
+          radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--k1s-brand-gold) 22%, transparent) 0%, transparent 55%),
+          linear-gradient(135deg, color-mix(in srgb, var(--k1s-panel) 86%, #000000 14%) 0%, var(--k1s-panel) 55%, color-mix(in srgb, var(--k1s-brand-gold) 14%, var(--k1s-panel)) 100%);
+        overflow: hidden;
+        box-shadow: 0 16px 40px rgba(0,0,0,0.18);
+      }
+      html[data-theme="light"] .hero {
+        background:
+          radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--k1s-brand-gold) 26%, transparent) 0%, transparent 60%),
+          linear-gradient(135deg, #ffffff 0%, #f8f7f2 60%, color-mix(in srgb, var(--k1s-brand-gold) 18%, #ffffff) 100%);
+      }
+      .hero::after {
+        content: "";
+        position: absolute;
+        right: -24px;
+        bottom: -36px;
+        width: 220px;
+        height: 220px;
+        background: url('static/k1s-logo-circle.png') no-repeat center / contain;
+        opacity: 0.12;
+        pointer-events: none;
+      }
+      .hero-brand {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        z-index: 1;
+      }
+      .hero-logo-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .hero-logo {
+        width: min(320px, 90%);
+        height: auto;
+      }
+      .hero-pill {
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-weight: 700;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        background: var(--k1s-brand-gold);
+        color: #2b2b2b;
+        box-shadow: 0 10px 22px rgba(251, 192, 45, 0.25);
+      }
+      .hero h1 {
+        font-size: 32px;
+        margin: 4px 0 0;
+      }
+      .hero-tagline {
+        max-width: 52ch;
+        color: var(--k1s-text-muted);
+        font-size: 15px;
+      }
+      .hero-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 6px;
+      }
+      .hero-link {
+        text-decoration: none;
+        padding: 6px 10px;
+        border-radius: 10px;
+        border: 1px solid var(--k1s-border-soft);
+        background: color-mix(in srgb, var(--k1s-card-bg) 70%, transparent);
+        color: var(--fg);
+        font-weight: 600;
+        font-size: 13px;
+      }
+      .hero-link:hover {
+        border-color: var(--k1s-brand-gold);
+        color: var(--fg);
+      }
+      .hero-actions {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+        align-items: start;
+        z-index: 1;
+      }
+      .hero-card {
+        border: 1px solid var(--k1s-border-soft);
+        background: color-mix(in srgb, var(--k1s-card-bg) 85%, transparent);
+        border-radius: 14px;
+        padding: 12px;
+        box-shadow: 0 12px 28px rgba(0,0,0,0.18);
+      }
+      .hero-card h2 {
+        margin: 0 0 6px;
+        font-size: 16px;
+      }
+      .hero-card p {
+        margin: 0 0 10px;
+        color: var(--k1s-text-muted);
+        font-size: 13px;
+      }
+      .hero-card pre {
+        margin: 8px 0 0;
+        font-size: 12px;
+      }
       .callout, blockquote {
         border-left: 4px solid var(--k1s-primary-soft);
         background: var(--k1s-card-bg);
@@ -380,6 +535,7 @@
   </head>
   <body>
     <nav>
+      <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.png" alt="k1s logo" /><span>k1s docs</span></a>
       <a href="index.html">Home</a>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
@@ -407,9 +563,9 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Start Here: k1s Onboarding</h1>
+    <div class="hero">   <div class="hero-brand">     <div class="hero-logo-row">       <img src="static/k1s-logo-horizontal.png" alt="k1s logo" class="hero-logo" />       <span class="hero-pill">Onboarding</span>     </div>     <h1>Start Here: k1s Onboarding</h1>     <p class="hero-tagline">From fresh clone to running demo in minutes. k1s keeps the control plane light, the UI live, and the YAML close to Kubernetes.</p>     <div class="hero-links">       <a class="hero-link" href="https://docs.home.arpa:8443/">Docs (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9109/">Docs (local)</a>       <a class="hero-link" href="https://api.home.arpa:8443/dashboard">Dashboard (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9108/dashboard">Dashboard (local)</a>     </div>   </div>   <div class="hero-actions">     <div class="hero-card">       <h2>Zero-to-Labs</h2>       <p>Provision docs, API, dashboard, and sample apps in one shot.</p>       <pre><code>make demo</code></pre>     </div>     <div class="hero-card">       <h2>Manual Quickstart</h2>       <p>Install editable, start the controller, then apply echo.</p>       <pre><code>make install</code></pre>       <pre><code>make loop</code></pre>     </div>     <div class="hero-card">       <h2>Key CLI Checks</h2>       <ul>         <li><code>make apply-sample</code></li>         <li><code>make status-sample</code></li>         <li><code>make logs-sample</code></li>       </ul>     </div>   </div> </div>
 <p>This single page gets a new contributor or user from a fresh clone to a running demo, with pointers to the most useful docs and commands.</p>
-<p>Terminology: k1s &quot;Apps&quot; are Deployment-like workloads; replicas map to Pods; Service VIPs map to Services/ClusterIP.</p>
+<p>Terminology: k1s "Apps" are Deployment-like workloads; replicas map to Pods; Service VIPs map to Services/ClusterIP.</p>
 <h2>Prerequisites</h2>
 <ul>
 <li>Python 3.11+</li>
@@ -593,7 +749,7 @@ kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-20 11:36:34</span>
+        <span>Built 2026-01-20 12:57:57</span>
       </div>
     </footer>
     <script>
