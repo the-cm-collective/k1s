@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Overview</title>
+    <title>06 Observability</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs/%3E%3Crect width='64' height='64' rx='12' fill='%23096ad9'/%3E%3Cpath d='M16 45h32M16 19h32M16 32h32' stroke='white' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E"/>
     <style>
       :root {
@@ -378,128 +378,98 @@
       </svg>
     </button>
     <div class="container">
-    <h1>k1s Overview</h1>
-<p>k1s is a small, multi‑node application engine that now supports a controller + worker agents, Service VIPs over an overlay network, and a Kubernetes‑compatible API shim. You can declare apps in YAML, run them on one or more hosts (Podman preferred; Docker supported), and expose them through Caddy or your own proxy while keeping resource usage low.</p>
-<ul>
-<li>Goal: predictable rollouts and Kubernetes‑style ergonomics on 1–4 nodes without a heavyweight control plane.</li>
-<li>Non‑goal: full upstream conformance or cloud‑provider controllers; we target a curated “compatibility” subset instead.</li>
-</ul>
-<h2>Current State (Jan 2026)</h2>
-<ul>
-<li>Multi‑node: controller manages registered nodes with heartbeats, cordon/drain, and a minimal scheduler that respects <code>nodeSelector</code>, taints/tolerations, topology spread, and storage pinning. Agents expose runtime exec/logs/probes over mTLS; Service VIPs ride a WireGuard/VXLAN overlay with HAProxy provider. HostPorts are still supported for single‑node edge cases.</li>
-<li>Networking/Ingress: Service CIDR + overlay provider (<code>AE_SERVICE_PROVIDER=overlay</code>) with ClusterIP allocation, EndpointSlice projection, and Caddy templates that prefer Service VIPs. Bridge provider remains for single‑node or no‑overlay labs.</li>
-<li>State: SQLite by default; Postgres supported for shim HA and multi‑node durability (<code>AE_STATE_DSN</code> / <code>AE_APISHIM_DSN</code>).</li>
-<li>API surface: native HTTP API plus the Kubernetes API shim (<code>ae.apishim serve</code>) covering Deployments/Services/Ingress/HPA/RBAC with SSA/patch support; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated as Deployment-like apps (see <code>docs/reference/apishim-compatibility-matrix.md</code>).</li>
-<li>Tooling: <code>k1s</code> kubectl‑style wrapper, <code>ae nodes</code> for inventory/cordon, <code>ae plan</code> for placement hints, <code>export-k8s</code> and <code>k8s-report</code> for parity/compliance, dashboard at <code>/dashboard</code>, and <code>/nodes</code> + enriched <code>/metrics</code> for node/service visibility.</li>
-<li>Footprint: stays well below k3s while adding overlay + shim; recent lab runs keep controller+agent PSS under ~450 MB on Podman+crun.</li>
-</ul>
-<h2>Features (High‑Level)</h2>
-<ul>
-<li>Declarative specs: <code>apiVersion: ae.dev/v1alpha1</code>, <code>kind: App</code> (Deployment-like workload).</li>
-<li>Multi‑node scheduler: Ready node filtering, cordon/drain, nodeSelector + tolerations + topology spread, storage pinning, and overlay Service VIPs.</li>
-<li>Rolling deploys and rollback with health gates; pause/resume via <code>ae rollout</code>.</li>
-<li>Probes: HTTP/TCP/Exec plus startup probes and lifecycle hooks.</li>
-<li>Ingress via Caddy site fragments + reload; TLS via BYO secrets or k8s‑style secrets; upstreams prefer Service VIPs.</li>
-<li>Configs and Secrets: project keys to env and files (SOPS/age supported); envFrom/file projections honored by exporter and shim.</li>
-<li>Storage: per‑app named volumes (retain/delete) with node affinity; emptyDir support.</li>
-<li>Security: runAsUser/runAsGroup, readOnlyRootFilesystem, cap drop, seccomp/AppArmor.</li>
-<li>Registry auth from <code>~/.config/ae/registries.yaml</code>.</li>
-<li>Observability: Prometheus metrics with node/service gauges, events, <code>/nodes</code>, <code>/system</code>, dashboard.</li>
-<li>CLIs: <code>ae</code> (native), <code>k1s</code> (kubectl‑like wrapper), <code>ae nodes</code> for inventory, <code>ae plan</code> for placement, <code>ae tls</code> helpers.</li>
-<li>Kubernetes API shim: <code>ae.apishim serve</code> with RBAC/SSA/patch, OpenAPI v2/v3, port-forward for pods/services, compatibility matrix.</li>
-<li>K8s helpers: <code>export-k8s</code>, <code>k8s-check</code>, and <code>k8s-report</code> for parity/compliance.</li>
-</ul>
-<h3>Architecture at a Glance (Diagram)</h3>
+    <h1>Chapter 06 - Observability: Logs, Metrics, Events</h1>
+<h2>Concept</h2>
+<p>Observability is the ability to understand system behavior from the outside. Metrics quantify state, events explain transitions, and logs provide raw evidence. Together, they enable fast diagnosis and safe operations.</p>
+<pre class="mermaid">flowchart TB
+  Metrics[Metrics] --&gt; Q1[&quot;How healthy?&quot;]
+  Events[Events] --&gt; Q2[&quot;What changed?&quot;]
+  Logs[Logs] --&gt; Q3[&quot;What happened?&quot;]
+  Q1 --&gt; Triage[Triage]
+  Q2 --&gt; Triage
+  Q3 --&gt; Triage</pre>
+<h3>Theory</h3>
+<p>The three pillars serve different purposes: metrics answer &quot;how much&quot; and &quot;how many,&quot; events answer &quot;what changed,&quot; and logs answer &quot;what happened at a point in time.&quot; Effective systems emit all three, and operators should move between them methodically.</p>
 <pre class="mermaid">flowchart LR
-  A[Specs/*.yaml] --&gt;|load| C[Controller]
-  C --&gt;|schedule| SCH[Scheduler]
-  SCH --&gt;|place| N1[Node Agent]
-  SCH --&gt;|place| N2[Node Agent]
-  C --&gt;|write| S[(SQLite/Postgres)]
-  C --&gt;|service VIPs| SV[Service Controller]
-  SV --&gt;|overlay endpoints| O[Overlay/HAProxy]
-  C --&gt;|render+reload| I[Caddy Ingress]
-  N1 --&gt;|ensure/exec/logs| R1[(Runtime)]
-  N2 --&gt;|ensure/exec/logs| R2[(Runtime)]
-  C --&gt;|expose| API[HTTP API + API Shim]
-  CLI[ae / k1s CLI] --&gt;|apply/rollback| C
-  CLI --&gt;|kubectl/helm| API</pre>
-<h2>Requirements</h2>
+  State[SQLite state] --&gt; MetricsSvc[MetricsService]
+  MetricsSvc --&gt; CLI[ae cli metrics]
+  MetricsSvc --&gt; HTTP[/metrics HTTP]
+  State --&gt; Events[Events table]
+  Events --&gt; CLI2[ae cli events]</pre>
+<h3>Design</h3>
+<p>k1s stores reconciliation state in SQLite, derives aggregate metrics from that store, and emits structured events during every reconcile. A lightweight HTTP API exposes Prometheus metrics and event data. This design keeps observability local and reproducible while still compatible with external tooling.</p>
+<pre class="mermaid">sequenceDiagram
+  participant O as Operator
+  participant C as Controller
+  participant S as State Store
+  O-&gt;&gt;C: Apply spec
+  C-&gt;&gt;S: Record events + status
+  O-&gt;&gt;C: Query metrics/events
+  C-&gt;&gt;S: Read snapshots
+  C--&gt;&gt;O: Metrics + events</pre>
+<h3>Application</h3>
+<p>When troubleshooting, start with metrics to see if the system is degraded, then use events to find the trigger. If you need detail, inspect logs for the specific runtime or controller. This approach scales to production k8s workflows with Prometheus and Events API.</p>
+<pre class="mermaid">flowchart TB
+  Symptom[Issue observed] --&gt; Metrics[Check metrics]
+  Metrics --&gt; Events[Check events]
+  Events --&gt; Logs[Check logs]
+  Logs --&gt; Fix[Apply fix]
+  Fix --&gt; Verify[Verify metrics]</pre>
+<h2>Key Terms and Acronyms</h2>
 <ul>
-<li>Python 3.11+</li>
-<li>Podman (preferred) or Docker</li>
-<li>Optional: WireGuard tools for overlay, Postgres for HA shim/multi-node durability</li>
-<li>Optional: Caddy (for ingress), SOPS/age (for secrets), watchdog (for live file watch)</li>
+<li>Observability - Ability to understand system state from signals.</li>
+<li>Metrics - Numeric aggregates over time.</li>
+<li>Events - Discrete records of state transitions.</li>
+<li>Logs - Text output from components.</li>
+<li>Prometheus - Metrics format and scraping ecosystem.</li>
+<li>Snapshot - Point-in-time aggregate metrics view.</li>
+<li>HTTP API - Controller interface for metrics/events/status.</li>
+<li>Triage - Structured troubleshooting flow.</li>
 </ul>
-<h2>Install</h2>
+<h2>Commands (copy/paste)</h2>
+<pre><code>python -m ae.controller --loop --specs specs/ --metrics-port 9108
+python -m ae.cli apply -f specs/examples/echo.yaml
+python -m ae.cli metrics --json
+python -m ae.cli events echo --limit 20
+curl http://127.0.0.1:9108/metrics</code></pre>
+<h2>Docs references (source + site)</h2>
 <ul>
-<li>Dev install: <code>python -m pip install -e .[dev]</code></li>
-<li>Optional file watching: <code>python -m pip install -e .[watch]</code></li>
+<li>Source: <code>docs/reference/observability.md</code></li>
+<li>Source: <code>docs/ops/grafana.md</code></li>
+<li>Source: <code>docs/ops/runbook.md</code></li>
+<li>Site: <code>docs/site/observability.html</code></li>
 </ul>
-<h2>Getting Started</h2>
-<p>1) Start the controller loop (single-node)</p>
+<h2>Code references (walkthrough anchors)</h2>
 <ul>
-<li>Polling only: <code>python -m ae.controller --loop --specs specs/ --metrics-port 9108</code></li>
-<li>With file watch (if <code>watchdog</code> installed): <code>python -m ae.controller --loop --watch --specs specs/ --metrics-port 9108</code></li>
+<li>Metrics snapshot aggregation: <code>src/ae/observability/metrics.py:25</code></li>
 </ul>
-<p>Multi-node lab (two hosts): follow <code>docs/guides/multinode-lab.md</code> or run <code>ops/dev/multinode-lab.sh -h</code> for flags. Ensure <code>AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay</code> on the controller and start <code>ae.node</code> on each worker with <code>--ensure-pod-net</code>.</p>
-<p>2) Apply a sample app</p>
+<pre><code>class MetricsService:
+    &quot;&quot;&quot;Aggregates metrics from application status records.&quot;&quot;&quot;
+
+    def snapshot(self) -&gt; MetricsSnapshot:
+        statuses = self._store.list_status()
+        total_apps = len(statuses)
+        ready_apps = sum(1 for status in statuses if status.revision_status == &quot;ready&quot;)
+        progressing_apps = sum(1 for status in statuses if status.revision_status == &quot;progressing&quot;)
+        ...
+        return MetricsSnapshot(...)</code></pre>
 <ul>
-<li><code>python -m ae.cli apply -f specs/examples/echo.yaml</code></li>
+<li>CLI metrics/events output: <code>src/ae/cli/__main__.py:2854</code></li>
 </ul>
-<p>3) Inspect status, events, logs</p>
-<ul>
-<li><code>python -m ae.cli status echo --wide --events</code></li>
-<li><code>python -m ae.cli logs echo --tail 50</code></li>
-</ul>
-<p>4) Kubectl‑like aliases</p>
-<ul>
-<li><code>k1s get apps</code></li>
-<li><code>k1s get pods</code></li>
-<li><code>k1s get services</code></li>
-<li><code>k1s describe app/echo</code></li>
-<li><code>k1s logs app/echo --follow --tail 100</code></li>
-</ul>
-<p>5) API and metrics</p>
-<ul>
-<li>JSON and metrics: <code>curl :9108/status</code>, <code>curl :9108/metrics</code></li>
-<li>OpenAPI and docs: <code>curl :9108/openapi.json</code>, open <code>http://localhost:9108/docs</code></li>
-<li>Nodes: <code>curl :9108/nodes</code> (with tokens if configured) for inventory/heartbeat state</li>
-<li>Dashboard: <code>http://localhost:9108/dashboard</code></li>
-</ul>
-<h2>Configuration (Quick Reference)</h2>
-<ul>
-<li>AE_STATE_DB: path to SQLite DB (default <code>state/controller.db</code>)</li>
-<li>AE_SPECS_DIR: specs directory (default <code>specs</code>)</li>
-<li>AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER: ingress tuning</li>
-<li>AE_REGISTRY_CONFIG: registry credentials file (default <code>~/.config/ae/registries.yaml</code>)</li>
-<li>AE_ALLOW_PLAINTEXT_SECRETS=1: allow bypassing SOPS (dev only)</li>
-<li>AE_LOG_LEVEL: logging level (DEBUG/INFO/…)</li>
-<li>AE_AGENT_API_TOKEN / AE_AGENT_API_PORT: controller → agent auth/port</li>
-<li>AE_SERVICE_PROVIDER / AE_OVERLAY_NET / AE_SERVICE_IP_POOL: Service VIP provider + overlay settings</li>
-<li>AE_APISHIM_TOKEN / AE_APISHIM_DSN: Kubernetes API shim auth + backing store</li>
-</ul>
-<h2>Project Layout</h2>
-<ul>
-<li>src/ae/controller: reconcile loop, scheduler, state, health, spec models</li>
-<li>src/ae/runtime: Podman (default) and Docker adapters, RemoteRuntime client for agents</li>
-<li>src/ae/node: node agent entrypoint wrapping runtime and probes/logs/exec</li>
-<li>src/ae/ingress: Caddy templating + reload</li>
-<li>src/ae/network: Service/VIP providers (overlay/bridge)</li>
-<li>src/ae/cli and src/ae/kctl: CLIs (<code>ae</code>, <code>k1s</code>)</li>
-<li>src/ae/apishim: Kubernetes API shim (kubectl/helm compatibility)</li>
-<li>src/ae/observability: metrics, HTTP API, logging</li>
-<li>specs/: example manifests and secrets</li>
-<li>docs/: runbook, HTTP/API shim, testing, this overview</li>
-</ul>
-<h2>Further Reading</h2>
-<ul>
-<li>Runbook: <code>docs/ops/runbook.md</code></li>
-<li>End-to-End Guide: <code>docs/guides/e2e.md</code></li>
-<li>HTTP API: <code>docs/reference/http-api.md</code></li>
-<li>Kubernetes API shim + compatibility matrix: <code>docs/wip/conformance.md</code>, <code>docs/reference/apishim-compatibility-matrix.md</code></li>
-<li>Architecture (detailed): <code>docs/reference/architecture.md</code></li>
-</ul>
+<pre><code>def handle_metrics(args: argparse.Namespace, store: SQLiteStateStore) -&gt; int:
+    service = MetricsService(store)
+    snapshot = service.snapshot()
+    if args.json:
+        print(json.dumps({...}, indent=2))
+        return 0
+    print(f&quot;apps total={snapshot.total_apps} ...&quot;)
+
+
+def handle_events(...):
+    events = store.list_events(app_name, limit=args.limit)
+    for event in events:
+        timestamp = event.created_at.strftime(&quot;%Y-%m-%d %H:%M:%S&quot;)
+        print(f&quot;{timestamp} rev={event.revision} {event.event_type}: {event.message}&quot;)</code></pre>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -507,7 +477,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-20 10:34:45</span>
+        <span>Built 2026-01-20 10:39:25</span>
       </div>
     </footer>
     <script>

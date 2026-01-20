@@ -367,6 +367,7 @@
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -381,18 +382,29 @@
 <p>The controller exposes an HTTP API when started with <code>--metrics-port PORT</code>. By default, endpoints are read-only. Mutating endpoints can be enabled for dev/testing.</p>
 <p>Base URL: <code>http://&lt;host&gt;:&lt;port&gt;</code></p>
 <ul>
-<li>GET <code>/metrics</code></li>
+<li>GET <code>/metrics</code>
+<ul>
 <li>Content-Type: <code>text/plain; version=0.0.4</code></li>
-<li>Prometheus text format gauges:</li>
+<li>Prometheus text format gauges:
+<ul>
 <li>Apps/replicas: <code>ae_apps_total</code>, <code>ae_apps_ready</code>, <code>ae_apps_progressing</code>, <code>ae_apps_degraded</code>, <code>ae_replicas_total</code>, <code>ae_replicas_ready</code>, <code>ae_replicas_live</code></li>
 <li>Nodes: <code>ae_nodes_total</code>, <code>ae_nodes_ready</code>, <code>ae_nodes_stale</code></li>
 <li>Services: <code>ae_services_total</code> plus per-service labels (ClusterIP, provider)</li>
 <li>Shim/backends: <code>apishim_*</code> metrics (watchers, queue depth, backend) when the API shim is enabled</li>
 </ul>
+</li>
+</ul>
+</li>
+</ul>
 <ul>
-<li>GET <code>/status</code></li>
+<li>GET <code>/status</code>
+<ul>
 <li>Content-Type: <code>application/json</code></li>
 <li>200 OK: JSON array of app status objects</li>
+<li>Example item:</li>
+</ul>
+</li>
+</ul>
 <pre><code>    {
       &quot;app_name&quot;: &quot;echo&quot;,
       &quot;desired_replicas&quot;: 1,
@@ -404,21 +416,30 @@
       &quot;ingress_host&quot;: &quot;echo.localtest.me&quot;,
       &quot;ingress_path&quot;: &quot;/&quot;
     }</code></pre>
-<li>Example item:</li>
-</ul>
 <ul>
-<li>GET <code>/status/&lt;app&gt;</code></li>
+<li>GET <code>/status/&lt;app&gt;</code>
+<ul>
 <li>200 OK: JSON object (same shape as items in <code>/status</code>)</li>
 <li>404 Not Found: when no status exists</li>
 </ul>
+</li>
+</ul>
 <ul>
-<li>GET <code>/nodes</code></li>
+<li>GET <code>/nodes</code>
+<ul>
 <li>200 OK: <code>{ &quot;nodes&quot;: [ { node_id, name, backend, endpoint, labels, taints, pod_cidr, cordoned, status, seen_at, stale }, ... ], &quot;count&quot;: N, &quot;stale_after_seconds&quot;: 40 }</code></li>
 <li>Requires READ token when auth is configured.</li>
 </ul>
+</li>
+</ul>
 <ul>
-<li>GET <code>/events/&lt;app&gt;?limit=N</code></li>
+<li>GET <code>/events/&lt;app&gt;?limit=N</code>
+<ul>
 <li>200 OK: JSON array of recent events for <code>&lt;app&gt;</code></li>
+<li>Example item:</li>
+</ul>
+</li>
+</ul>
 <pre><code>    {
       &quot;app_name&quot;: &quot;echo&quot;,
       &quot;revision&quot;: 3,
@@ -426,11 +447,12 @@
       &quot;message&quot;: &quot;Revision 3 status ready&quot;,
       &quot;created_at&quot;: &quot;2025-10-23T12:34:56+00:00&quot;
     }</code></pre>
-<li>Example item:</li>
-</ul>
 <ul>
-<li>GET <code>/system</code> and <code>/dashboard</code></li>
+<li>GET <code>/system</code> and <code>/dashboard</code>
+<ul>
 <li>Aggregate snapshot for the dashboard UI including nodes, services, storage volumes, and token/mutation flags.</li>
+</ul>
+</li>
 </ul>
 <p>Notes</p>
 <ul>
@@ -448,38 +470,56 @@
 <li>Enable by setting env <code>AE_API_MUTATIONS=1</code> on the controller process. Optionally set <code>AE_API_TOKEN</code> and send <code>Authorization: Bearer &lt;token&gt;</code> on requests.</li>
 </ul>
 <ul>
-<li>POST <code>/scale/&lt;app&gt;</code></li>
+<li>POST <code>/scale/&lt;app&gt;</code>
+<ul>
 <li>Body: <code>{ &quot;replicas&quot;: &lt;int&gt; }</code></li>
 <li>200 OK: <code>{ app, replicas, revision, status, created, updated, removed }</code></li>
 </ul>
+</li>
+</ul>
 <ul>
-<li>POST <code>/delete/&lt;app&gt;?purge=1</code></li>
+<li>POST <code>/delete/&lt;app&gt;?purge=1</code>
+<ul>
 <li>200 OK: <code>{ app, removed, purged }</code></li>
 <li>Deletes runtime containers and ingress; <code>purge=1</code> also deletes events and revisions for the app.</li>
 </ul>
+</li>
+</ul>
 <p>AuthN/AuthZ (optional)</p>
 <ul>
-<li>Set tokens in the controller environment to enable role-based access:</li>
+<li>Set tokens in the controller environment to enable role-based access:
+<ul>
 <li><code>AE_API_READ_TOKEN</code> — read-only access</li>
 <li><code>AE_API_SCALER_TOKEN</code> — can scale</li>
 <li><code>AE_API_ADMIN_TOKEN</code> — can delete</li>
+</ul>
+</li>
 <li>When any token is configured, GETs require at least the READ token.</li>
 <li>Mutations require tokens and <code>AE_API_MUTATIONS=1</code>.</li>
 </ul>
 <p>Endpoints</p>
 <ul>
 <li>GET <code>/health</code> — Controller health summary (uptime, last reconcile, app/replica counts)</li>
-<li>GET <code>/status</code> — Paginated list of app statuses</li>
+<li>GET <code>/status</code> — Paginated list of app statuses
+<ul>
 <li>Query: <code>limit</code>, <code>cursor</code>, <code>app</code>, <code>wildcard</code> (glob)</li>
 <li>Response: <code>{ items: [...], next: &quot;cursor&quot; | null }</code></li>
+</ul>
+</li>
 <li>GET <code>/status/&lt;app&gt;</code> — JSON status object</li>
-<li>GET <code>/events/&lt;app&gt;?limit=N&amp;cursor=...</code> — Paginated recent events</li>
+<li>GET <code>/events/&lt;app&gt;?limit=N&amp;cursor=...</code> — Paginated recent events
+<ul>
 <li>Response: <code>{ items: [...], next: &quot;cursor&quot; | null }</code></li>
+</ul>
+</li>
 <li>GET <code>/nodes</code> — Node inventory and staleness info</li>
 <li>POST <code>/scale/&lt;app&gt;</code> — Body: <code>{ &quot;replicas&quot;: &lt;int&gt; }</code> (requires scaler/admin)</li>
 <li>POST <code>/delete/&lt;app&gt;?purge=1</code> — Delete app (requires admin)</li>
-<li>Logs: GET <code>/logs/&lt;app&gt;?container=&amp;tail=&amp;since=&amp;follow=</code> (requires READ)</li>
+<li>Logs: GET <code>/logs/&lt;app&gt;?container=&amp;tail=&amp;since=&amp;follow=</code> (requires READ)
+<ul>
 <li>When <code>follow=1</code>, streams plain text lines; otherwise JSON: <code>{ lines: [...] }</code></li>
+</ul>
+</li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -488,7 +528,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-17 18:52:18</span>
+        <span>Built 2026-01-20 10:34:45</span>
       </div>
     </footer>
     <script>

@@ -367,6 +367,7 @@
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -403,10 +404,16 @@
 </ul>
 <h3>Retention &amp; Purge</h3>
 <ul>
-<li><code>retention: Retain</code> (default) keeps data even if you delete the app:</li>
+<li><code>retention: Retain</code> (default) keeps data even if you delete the app:
+<ul>
 <li><code>ae delete &lt;app&gt;</code> will stop and remove containers but keep the engine volume(s).</li>
-<li><code>retention: Delete</code> removes data only when you purge:</li>
+</ul>
+</li>
+<li><code>retention: Delete</code> removes data only when you purge:
+<ul>
 <li><code>ae delete &lt;app&gt; --purge</code></li>
+</ul>
+</li>
 </ul>
 <p>Example with <code>retention: Delete</code> (see <code>specs/examples/echo-storage-delete.yaml</code>):</p>
 <pre><code>spec:
@@ -421,7 +428,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-17 18:52:18</span>
+        <span>Built 2026-01-20 10:34:45</span>
       </div>
     </footer>
     <script>

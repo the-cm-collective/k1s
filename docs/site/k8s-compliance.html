@@ -367,6 +367,7 @@
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -387,15 +388,24 @@
 </ul>
 <p>Update the status</p>
 <ul>
-<li>Generate a fresh report and write it where the docs server picks it up:</li>
+<li>Generate a fresh report and write it where the docs server picks it up:
+<ul>
 <li><code>python -m ae.cli k8s-report --run-dry-run -o docs/site/k8s_status.json</code></li>
-<li>Rebuild docs to embed the status in this page:</li>
+</ul>
+</li>
+<li>Rebuild docs to embed the status in this page:
+<ul>
 <li><code>python docs/build_docs.py</code></li>
+</ul>
+</li>
 </ul>
 <p>Online (cluster-backed) checks</p>
 <ul>
-<li>If you have kubectl and a cluster (Kind or k3s via k3d):</li>
+<li>If you have kubectl and a cluster (Kind or k3s via k3d):
+<ul>
 <li><code>python -m ae.cli k8s-report --run-dry-run --apply-online --cleanup -o docs/site/k8s_status.json</code></li>
+</ul>
+</li>
 <li>This adds server-side dry-run and applies the exported YAML to the cluster, waiting for the Deployment rollout; results are included in the score.</li>
 </ul>
 <p>The compliance status and per-sample details render below when a report is present.</p>
@@ -434,25 +444,40 @@
 </ul>
 <h2>Demo Manifests</h2>
 <ul>
-<li><code>specs/examples/echo-sec.yaml</code>: non-root + read-only root filesystem + HTTP readiness + ingress.</li>
+<li><code>specs/examples/echo-sec.yaml</code>: non-root + read-only root filesystem + HTTP readiness + ingress.
+<ul>
 <li>Apply: <code>python -m ae.cli apply -f specs/examples/echo-sec.yaml</code></li>
-<li><code>specs/examples/echo-tcp.yaml</code>: TCP readiness with thresholds + ingress.</li>
+</ul>
+</li>
+<li><code>specs/examples/echo-tcp.yaml</code>: TCP readiness with thresholds + ingress.
+<ul>
 <li>Apply: <code>python -m ae.cli apply -f specs/examples/echo-tcp.yaml</code></li>
-<li><code>specs/examples/echo-exec.yaml</code>: Exec readiness probe + ingress.</li>
+</ul>
+</li>
+<li><code>specs/examples/echo-exec.yaml</code>: Exec readiness probe + ingress.
+<ul>
 <li>Apply: <code>python -m ae.cli apply -f specs/examples/echo-exec.yaml</code></li>
+</ul>
+</li>
 </ul>
 <h2>Remote Apply</h2>
 <ul>
-<li>Enable mutations and token, then:</li>
+<li>Enable mutations and token, then:
+<ul>
 <li><code>ae --server https://api.home.arpa:8443 --token &lt;admin&gt; apply -f specs/examples/echo-sec.yaml</code></li>
+</ul>
+</li>
 </ul>
 <h2>NetworkPolicy Provider Notes (k3s)</h2>
 <ul>
 <li>Enforcement depends on your CNI plugin. The default k3s installation uses flannel, which does not enforce NetworkPolicy. In that setup, policies are created but not applied by the dataplane.</li>
 <li>To enforce policies on k3s, choose a CNI that implements NetworkPolicy (for example, Calico or Cilium). Install it per vendor instructions and disable flannel when required by that CNI.</li>
-<li>Use the exporter presets to bootstrap sane defaults:</li>
+<li>Use the exporter presets to bootstrap sane defaults:
+<ul>
 <li>Web tier: <code>--emit-np --np-preset web</code> (default deny + web/DNS egress allowed).</li>
 <li>Backend tier: <code>--emit-np --np-preset backend</code> (default deny + DNS egress and RFC1918 egress to common DB/cache ports).</li>
+</ul>
+</li>
 </ul>
 <h3>Gap Tracker (create issues and check off when done)</h3>
 <ul>
@@ -478,7 +503,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-17 18:52:18</span>
+        <span>Built 2026-01-20 10:34:45</span>
       </div>
     </footer>
     <script>
