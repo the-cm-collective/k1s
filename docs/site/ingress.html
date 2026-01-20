@@ -367,6 +367,7 @@
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -401,27 +402,39 @@
 <p>2) Kubernetes-style Secret material (auto-resolved)</p>
 <ul>
 <li>Set only <code>spec.ingress.tlsSecretName: &lt;name&gt;</code> in your manifest.</li>
-<li>Place TLS material in <code>AE_TLS_DIR</code> (default: state/tls):</li>
+<li>Place TLS material in <code>AE_TLS_DIR</code> (default: state/tls):
+<ul>
 <li>Either files <code>&lt;name&gt;.crt</code> and <code>&lt;name&gt;.key</code>, or</li>
 <li>A Secret YAML/JSON <code>&lt;name&gt;.yaml|yml|json</code> with base64 fields data.tls.crt, data.tls.key.</li>
+</ul>
+</li>
 <li>The controller resolves PEM files and fills tlsCertPath/Key on the fly.</li>
 </ul>
 <p>CLI helper: tls sync</p>
 <ul>
-<li>Render PEMs from a Secret file (or confirm direct files):</li>
+<li>Render PEMs from a Secret file (or confirm direct files):
+<ul>
 <li><code>python -m ae.cli tls sync --name mycert --input path/to/mycert.yaml --root state/tls</code></li>
 <li>Output shows where cert/key were written (under state/tls/rendered/).</li>
 </ul>
+</li>
+</ul>
 <p>CLI helper: tls verify</p>
 <ul>
-<li>Check if TLS material is resolvable for a given name (without copying):</li>
+<li>Check if TLS material is resolvable for a given name (without copying):
+<ul>
 <li><code>python -m ae.cli tls verify --name mycert --root state/tls</code></li>
 <li>Returns non-zero if not found; use <code>--json</code> for machine-readable results.</li>
 </ul>
+</li>
+</ul>
 <p>CLI helper: tls kubesecret</p>
 <ul>
-<li>Generate a Kubernetes TLS Secret YAML (<code>kubernetes.io/tls</code>) from PEMs under <code>AE_TLS_DIR</code>:</li>
+<li>Generate a Kubernetes TLS Secret YAML (<code>kubernetes.io/tls</code>) from PEMs under <code>AE_TLS_DIR</code>:
+<ul>
 <li><code>python -m ae.cli tls kubesecret --name mycert --namespace demo --root state/tls -o mycert-secret.yaml</code></li>
+</ul>
+</li>
 <li>Apply it to your cluster and reference it from the exporter/manifest via <code>ingress.tlsSecretName: mycert</code>.</li>
 </ul>
 <p>Multi-path routing</p>
@@ -442,7 +455,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-17 18:52:18</span>
+        <span>Built 2026-01-20 10:34:45</span>
       </div>
     </footer>
     <script>

@@ -367,6 +367,7 @@
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -393,74 +394,110 @@
 <h3>Standard Demo (blue/green)</h3>
 <ul>
 <li>Apps: blue and green services behind TLS via Caddy.</li>
-<li>Command:</li>
+<li>Command:
+<ul>
 <li><code>./scripts/init_demo.sh --demo-standard -y</code></li>
 <li><code>make demo ARGS=&quot;--demo-standard -y -d&quot;</code></li>
-<li>Endpoints:</li>
+</ul>
+</li>
+<li>Endpoints:
+<ul>
 <li><code>https://blue.home.arpa:8443/</code></li>
 <li><code>https://green.home.arpa:8443/</code></li>
+</ul>
+</li>
 </ul>
 <h3>Configs &amp; Secrets Demo (echo)</h3>
 <ul>
 <li>Shows <code>configRefs</code> and <code>secretRefs</code> → env and file projections.</li>
 <li>Files: <code>configs/app-config.yaml</code>, <code>specs/examples/demo-secret.sops.yaml</code></li>
-<li>Command:</li>
+<li>Command:
+<ul>
 <li><code>./scripts/init_demo.sh --with-secrets-env --demo-configs -y</code></li>
 <li><code>make demo ARGS=&quot;--demo-configs -y -d&quot;</code></li>
+</ul>
+</li>
 </ul>
 <h3>Multi-Replica Echo (echo-mr)</h3>
 <ul>
 <li>Shows Caddy load-balancing across replicas on a shared container network.</li>
 <li>File: <code>specs/examples/multi-replica-echo.yaml</code></li>
-<li>Command:</li>
+<li>Command:
+<ul>
 <li><code>./scripts/init_demo.sh --demo-echo-mr -y</code></li>
 <li><code>make demo ARGS=&quot;--demo-echo-mr -y -d&quot;</code></li>
+</ul>
+</li>
 </ul>
 <h3>Multi‑Port Echo (echo-multi)</h3>
 <ul>
 <li>Demonstrates a Service with multiple ports (HTTP + metrics) and readiness bound to the HTTP port. Ingress routes to the <code>http</code> port.</li>
 <li>File: <code>specs/examples/echo-multiport.yaml</code></li>
-<li>Commands:</li>
+<li>Commands:
+<ul>
 <li><code>./scripts/init_demo.sh --demo-echo-multi -y</code></li>
 <li><code>make demo ARGS=&quot;--demo-echo-multi -y -d&quot;</code></li>
+</ul>
+</li>
 <li>Endpoint: <code>https://echo-mr.home.arpa:8443/</code></li>
 </ul>
 <h3>Hardened Echo (echo-hardened)</h3>
 <ul>
 <li>Shows a security-hardened manifest with non-root, read-only root filesystem, seccomp RuntimeDefault, startup/liveness probes, topology spread, PDB hint, and a default-deny NetworkPolicy with DNS/HTTP(S) egress.</li>
 <li>File: <code>specs/examples/echo-hardened.yaml</code></li>
-<li>Commands:</li>
+<li>Commands:
+<ul>
 <li><code>./scripts/init_demo.sh --demo-hardened -y</code></li>
 <li><code>make demo ARGS=&quot;--demo-hardened -y -d&quot;</code></li>
+</ul>
+</li>
 <li>Endpoint: <code>https://echo-hardened.home.arpa:8443/</code></li>
 </ul>
 <h3>Rollout Demo</h3>
 <ul>
-<li>Ordered rollout for <code>echo</code> with default prefer-first routing:</li>
+<li>Ordered rollout for <code>echo</code> with default prefer-first routing:
+<ul>
 <li><code>./scripts/init_demo.sh --demo-rollout -y -d</code></li>
 <li><code>make demo ARGS=&quot;--demo-rollout -y -d&quot;</code></li>
 <li>Optional canary: set <code>spec.rollout.strategy: canary</code> with <code>weight</code> (and <code>auto</code> for ramps).</li>
 </ul>
+</li>
+</ul>
 <h3>Storage (PV-lite)</h3>
 <ul>
 <li>Applies an <code>echo</code> app with a named volume mounted at <code>/var/lib/echo</code>.</li>
-<li>Command:</li>
+<li>Command:
+<ul>
 <li><code>./scripts/init_demo.sh --demo-storage -y</code></li>
 <li><code>make demo ARGS=&quot;--demo-storage -y -d&quot;</code></li>
-<li>Inspect volumes:</li>
+</ul>
+</li>
+<li>Inspect volumes:
+<ul>
 <li><code>ae volumes list --app echo</code></li>
-<li>Delete with purge to remove volumes marked <code>retention: Delete</code>:</li>
+</ul>
+</li>
+<li>Delete with purge to remove volumes marked <code>retention: Delete</code>:
+<ul>
 <li><code>ae delete echo --purge</code></li>
+</ul>
+</li>
 </ul>
 <h3>Docs Only</h3>
 <ul>
 <li>Starts the docs server and API; does not apply any apps.</li>
-<li>Command:</li>
+<li>Command:
+<ul>
 <li><code>./scripts/init_demo.sh --docs-only -y</code></li>
 <li><code>make demo ARGS=&quot;--docs-only -y -d&quot;</code></li>
-<li>Endpoints:</li>
+</ul>
+</li>
+<li>Endpoints:
+<ul>
 <li>Docs: <code>https://docs.home.arpa:8443/</code> and <code>http://127.0.0.1:9109/</code></li>
 <li>API:  <code>https://api.home.arpa:8443/swagger</code> and <code>http://127.0.0.1:9108/swagger</code></li>
+</ul>
+</li>
 </ul>
 <h3>Helpful Flags &amp; Targets</h3>
 <ul>
@@ -474,27 +511,36 @@
 <h3>Notes</h3>
 <ul>
 <li>Caddy HTTP: <code>:8888</code>, HTTPS: <code>:8443</code>.</li>
-<li>Hosts entries (added with <code>-y</code>): <code>blue|green|echo-mr|docs|api.home.arpa</code> → <code>127.0.0.1</code>.</li>
+<li>Hosts entries (added with <code>-y</code>): <code>blue|green|echo-mr|docs|api.home.arpa</code> → <code>127.0.0.1</code>.
+<ul>
 <li>Also: <code>echo-hardened.home.arpa</code> when running the hardened demo.</li>
 <li>Dashboard lives under the API host: <code>https://api.home.arpa:8443/dashboard</code> (or <code>http://127.0.0.1:9108/dashboard</code> directly).</li>
+</ul>
+</li>
 <li>Health checks are disabled by default for compatibility; enable with <code>AE_CADDY_ACTIVE_HEALTH=1</code> if your Caddy supports the directive.</li>
 </ul>
 <h2>Example manifests (standalone)</h2>
 <h3>Multi-Port Service (HTTP + Metrics)</h3>
 <ul>
 <li>File: <code>specs/examples/echo-multiport.yaml</code></li>
-<li>Notes:</li>
+<li>Notes:
+<ul>
 <li>Exporter emits multiple Service ports; Ingress routes to the <code>http</code> port.</li>
 <li>Docker/Podman publish all declared <code>service.ports[]</code> when <code>replicas=1</code>.</li>
 <li>You can also generate the example via CLI: <code>ae examples write --type multiport -o specs/examples/echo-multiport.yaml</code></li>
 </ul>
+</li>
+</ul>
 <h3>Security Hardening (seccomp + AppArmor)</h3>
 <ul>
 <li>File: <code>specs/examples/echo-sec-adv.yaml</code></li>
-<li>Notes:</li>
+<li>Notes:
+<ul>
 <li>Default preset uses <code>seccompProfileType: RuntimeDefault</code>.</li>
 <li>For a Localhost profile, place the profile file and set <code>seccompLocalhostProfile</code> accordingly.</li>
 <li>AppArmor annotation is set to <code>localhost/echo-profile</code>; adjust based on your cluster policy.</li>
+</ul>
+</li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -503,7 +549,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-17 18:52:18</span>
+        <span>Built 2026-01-20 10:34:45</span>
       </div>
     </footer>
     <script>

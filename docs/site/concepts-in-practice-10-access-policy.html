@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Overview</title>
+    <title>10 Access Policy</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs/%3E%3Crect width='64' height='64' rx='12' fill='%23096ad9'/%3E%3Cpath d='M16 45h32M16 19h32M16 32h32' stroke='white' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E"/>
     <style>
       :root {
@@ -378,128 +378,122 @@
       </svg>
     </button>
     <div class="container">
-    <h1>k1s Overview</h1>
-<p>k1s is a small, multi‑node application engine that now supports a controller + worker agents, Service VIPs over an overlay network, and a Kubernetes‑compatible API shim. You can declare apps in YAML, run them on one or more hosts (Podman preferred; Docker supported), and expose them through Caddy or your own proxy while keeping resource usage low.</p>
-<ul>
-<li>Goal: predictable rollouts and Kubernetes‑style ergonomics on 1–4 nodes without a heavyweight control plane.</li>
-<li>Non‑goal: full upstream conformance or cloud‑provider controllers; we target a curated “compatibility” subset instead.</li>
-</ul>
-<h2>Current State (Jan 2026)</h2>
-<ul>
-<li>Multi‑node: controller manages registered nodes with heartbeats, cordon/drain, and a minimal scheduler that respects <code>nodeSelector</code>, taints/tolerations, topology spread, and storage pinning. Agents expose runtime exec/logs/probes over mTLS; Service VIPs ride a WireGuard/VXLAN overlay with HAProxy provider. HostPorts are still supported for single‑node edge cases.</li>
-<li>Networking/Ingress: Service CIDR + overlay provider (<code>AE_SERVICE_PROVIDER=overlay</code>) with ClusterIP allocation, EndpointSlice projection, and Caddy templates that prefer Service VIPs. Bridge provider remains for single‑node or no‑overlay labs.</li>
-<li>State: SQLite by default; Postgres supported for shim HA and multi‑node durability (<code>AE_STATE_DSN</code> / <code>AE_APISHIM_DSN</code>).</li>
-<li>API surface: native HTTP API plus the Kubernetes API shim (<code>ae.apishim serve</code>) covering Deployments/Services/Ingress/HPA/RBAC with SSA/patch support; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated as Deployment-like apps (see <code>docs/reference/apishim-compatibility-matrix.md</code>).</li>
-<li>Tooling: <code>k1s</code> kubectl‑style wrapper, <code>ae nodes</code> for inventory/cordon, <code>ae plan</code> for placement hints, <code>export-k8s</code> and <code>k8s-report</code> for parity/compliance, dashboard at <code>/dashboard</code>, and <code>/nodes</code> + enriched <code>/metrics</code> for node/service visibility.</li>
-<li>Footprint: stays well below k3s while adding overlay + shim; recent lab runs keep controller+agent PSS under ~450 MB on Podman+crun.</li>
-</ul>
-<h2>Features (High‑Level)</h2>
-<ul>
-<li>Declarative specs: <code>apiVersion: ae.dev/v1alpha1</code>, <code>kind: App</code> (Deployment-like workload).</li>
-<li>Multi‑node scheduler: Ready node filtering, cordon/drain, nodeSelector + tolerations + topology spread, storage pinning, and overlay Service VIPs.</li>
-<li>Rolling deploys and rollback with health gates; pause/resume via <code>ae rollout</code>.</li>
-<li>Probes: HTTP/TCP/Exec plus startup probes and lifecycle hooks.</li>
-<li>Ingress via Caddy site fragments + reload; TLS via BYO secrets or k8s‑style secrets; upstreams prefer Service VIPs.</li>
-<li>Configs and Secrets: project keys to env and files (SOPS/age supported); envFrom/file projections honored by exporter and shim.</li>
-<li>Storage: per‑app named volumes (retain/delete) with node affinity; emptyDir support.</li>
-<li>Security: runAsUser/runAsGroup, readOnlyRootFilesystem, cap drop, seccomp/AppArmor.</li>
-<li>Registry auth from <code>~/.config/ae/registries.yaml</code>.</li>
-<li>Observability: Prometheus metrics with node/service gauges, events, <code>/nodes</code>, <code>/system</code>, dashboard.</li>
-<li>CLIs: <code>ae</code> (native), <code>k1s</code> (kubectl‑like wrapper), <code>ae nodes</code> for inventory, <code>ae plan</code> for placement, <code>ae tls</code> helpers.</li>
-<li>Kubernetes API shim: <code>ae.apishim serve</code> with RBAC/SSA/patch, OpenAPI v2/v3, port-forward for pods/services, compatibility matrix.</li>
-<li>K8s helpers: <code>export-k8s</code>, <code>k8s-check</code>, and <code>k8s-report</code> for parity/compliance.</li>
-</ul>
-<h3>Architecture at a Glance (Diagram)</h3>
+    <h1>Chapter 10 - Access and Policy Boundaries</h1>
+<h2>Concept</h2>
+<p>An orchestration engine must enforce who can read, modify, or deploy workloads. Access controls and policy boundaries prevent accidental or malicious changes.</p>
+<h3>Theory</h3>
+<p>Access control is role-based: read, scale, and admin roles map to different verbs. Policy enforcement can be coarse (RBAC) or fine-grained (scoped patterns). Authentication and authorization must be consistent across API and CLI surfaces.</p>
+<h3>Design</h3>
+<p>k1s provides API token roles (read/scale/admin) and optional RBAC enforcement for HTTP API requests. Registry credentials are stored in a local config and injected into runtime logins. Node join tokens use HMAC signatures to prevent unauthorized agents. This maps directly to Kubernetes RBAC, admission, and image pull secrets.</p>
+<h3>Application</h3>
+<p>Enable RBAC in non-trivial environments, rotate tokens, and scope admin privileges. Keep registry credentials in the standard config path. Use join tokens for controlled node onboarding. These practices mirror production k8s policies and reduce operational risk.</p>
+<pre class="mermaid">sequenceDiagram
+  participant Client
+  participant API
+  participant Auth as RBAC/Auth
+  Client-&gt;&gt;API: Request + Bearer token
+  API-&gt;&gt;Auth: Evaluate role
+  Auth--&gt;&gt;API: Allow/Deny
+  API--&gt;&gt;Client: Response</pre>
+<h3>Visuals (Mermaid)</h3>
 <pre class="mermaid">flowchart LR
-  A[Specs/*.yaml] --&gt;|load| C[Controller]
-  C --&gt;|schedule| SCH[Scheduler]
-  SCH --&gt;|place| N1[Node Agent]
-  SCH --&gt;|place| N2[Node Agent]
-  C --&gt;|write| S[(SQLite/Postgres)]
-  C --&gt;|service VIPs| SV[Service Controller]
-  SV --&gt;|overlay endpoints| O[Overlay/HAProxy]
-  C --&gt;|render+reload| I[Caddy Ingress]
-  N1 --&gt;|ensure/exec/logs| R1[(Runtime)]
-  N2 --&gt;|ensure/exec/logs| R2[(Runtime)]
-  C --&gt;|expose| API[HTTP API + API Shim]
-  CLI[ae / k1s CLI] --&gt;|apply/rollback| C
-  CLI --&gt;|kubectl/helm| API</pre>
-<h2>Requirements</h2>
+  Request[HTTP request] --&gt; Auth[Bearer token]
+  Auth --&gt; Role{Role?}
+  Role --&gt;|read| Read[Allow read verbs]
+  Role --&gt;|scale| Scale[Allow scale/update]
+  Role --&gt;|admin| Admin[Allow all]
+  Role --&gt;|none| Deny[Deny]</pre>
+<pre class="mermaid">flowchart TB
+  RegistryCreds[registries.yaml] --&gt; Runtime[Runtime adapter]
+  Runtime --&gt; Login[registry login]
+  Login --&gt; Pull[Image pull]</pre>
+<pre class="mermaid">flowchart LR
+  JoinSecret[AE_AGENT_JOIN_SECRET] --&gt; HMAC[HMAC token]
+  HMAC --&gt; Agent[Agent join request]
+  Agent --&gt; Verify[Token verify]
+  Verify --&gt; Allow[Allow join]</pre>
+<h2>Key Terms and Acronyms</h2>
 <ul>
-<li>Python 3.11+</li>
-<li>Podman (preferred) or Docker</li>
-<li>Optional: WireGuard tools for overlay, Postgres for HA shim/multi-node durability</li>
-<li>Optional: Caddy (for ingress), SOPS/age (for secrets), watchdog (for live file watch)</li>
+<li>RBAC - Role-based access control.</li>
+<li>AuthN/AuthZ - Authentication/authorization.</li>
+<li>Token - Bearer credential for API access.</li>
+<li>Scope - Pattern limiting which apps a token can affect.</li>
+<li>Registry credentials - Username/password for image pulls.</li>
+<li>imagePullSecret - Kubernetes secret for registry auth.</li>
+<li>HMAC - Keyed hashing used for join tokens.</li>
+<li>Admission - Policy enforcement on create/update.</li>
+<li>Least privilege - Principle of minimal access.</li>
 </ul>
-<h2>Install</h2>
+<h2>Commands (copy/paste)</h2>
+<pre><code># Start controller with RBAC tokens enabled
+AE_API_RBAC=1 \
+AE_API_READ_TOKEN=read-token \
+AE_API_SCALER_TOKEN=scale-token \
+AE_API_ADMIN_TOKEN=admin-token \
+python -m ae.controller --loop --specs specs/ --metrics-port 9108
+
+# Read-only request
+curl -H &quot;Authorization: Bearer read-token&quot; http://127.0.0.1:9108/status
+
+# Local CLI checks
+python -m ae.cli status --verbose
+python -m ae.cli registry list</code></pre>
+<h2>Docs references (source + site)</h2>
 <ul>
-<li>Dev install: <code>python -m pip install -e .[dev]</code></li>
-<li>Optional file watching: <code>python -m pip install -e .[watch]</code></li>
+<li>Source: <code>docs/reference/api-auth.md</code></li>
+<li>Source: <code>docs/reference/http-api.md</code></li>
+<li>Source: <code>docs/ops/runbook.md</code></li>
+<li>Site: <code>docs/site/api-auth.html</code></li>
+<li>Site: <code>docs/site/http-api.html</code></li>
 </ul>
-<h2>Getting Started</h2>
-<p>1) Start the controller loop (single-node)</p>
+<h2>Code references (walkthrough anchors)</h2>
 <ul>
-<li>Polling only: <code>python -m ae.controller --loop --specs specs/ --metrics-port 9108</code></li>
-<li>With file watch (if <code>watchdog</code> installed): <code>python -m ae.controller --loop --watch --specs specs/ --metrics-port 9108</code></li>
+<li>RBAC role enforcement in HTTP API: <code>src/ae/observability/http_api.py:608</code></li>
 </ul>
-<p>Multi-node lab (two hosts): follow <code>docs/guides/multinode-lab.md</code> or run <code>ops/dev/multinode-lab.sh -h</code> for flags. Ensure <code>AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay</code> on the controller and start <code>ae.node</code> on each worker with <code>--ensure-pod-net</code>.</p>
-<p>2) Apply a sample app</p>
+<pre><code>    def _rbac_allows(self, verb: str, _app: str | None = None) -&gt; bool:
+        if os.getenv(&quot;AE_API_RBAC&quot;, &quot;0&quot;) != &quot;1&quot;:
+            return True
+        auth = self.headers.get(&quot;Authorization&quot;, &quot;&quot;)
+        token = auth.split(&quot; &quot;, 1)[1] if auth.startswith(&quot;Bearer &quot;) else &quot;&quot;
+        admin = os.getenv(&quot;AE_API_ADMIN_TOKEN&quot;)
+        scaler = os.getenv(&quot;AE_API_SCALER_TOKEN&quot;)
+        reader = os.getenv(&quot;AE_API_READ_TOKEN&quot;)
+        ...
+        policy = {
+            &quot;get&quot;: {&quot;admin&quot;, &quot;scale&quot;, &quot;read&quot;},
+            &quot;list&quot;: {&quot;admin&quot;, &quot;scale&quot;, &quot;read&quot;},
+            &quot;create&quot;: {&quot;admin&quot;},
+            &quot;update&quot;: {&quot;admin&quot;, &quot;scale&quot;},
+            &quot;delete&quot;: {&quot;admin&quot;},
+        }
+        return role in policy.get(verb, {&quot;admin&quot;})</code></pre>
 <ul>
-<li><code>python -m ae.cli apply -f specs/examples/echo.yaml</code></li>
+<li>Registry credentials resolution: <code>src/ae/runtime/registry.py:18</code></li>
 </ul>
-<p>3) Inspect status, events, logs</p>
+<pre><code>class RegistryAuthProvider:
+    &quot;&quot;&quot;Loads registry credentials and logs into docker clients as needed.&quot;&quot;&quot;
+
+    def ensure_login(self, client, image: str) -&gt; None:
+        registry = self._extract_registry(image)
+        candidates = [registry] if registry else [&quot;docker.io&quot;]
+        ...
+        if not creds:
+            return
+        client.login(
+            registry=chosen_host,
+            username=creds.get(&quot;username&quot;),
+            password=creds.get(&quot;password&quot;),
+        )</code></pre>
 <ul>
-<li><code>python -m ae.cli status echo --wide --events</code></li>
-<li><code>python -m ae.cli logs echo --tail 50</code></li>
+<li>Agent join token format (node bootstrap): <code>src/ae/security/tokens.py:1</code></li>
 </ul>
-<p>4) Kubectl‑like aliases</p>
-<ul>
-<li><code>k1s get apps</code></li>
-<li><code>k1s get pods</code></li>
-<li><code>k1s get services</code></li>
-<li><code>k1s describe app/echo</code></li>
-<li><code>k1s logs app/echo --follow --tail 100</code></li>
-</ul>
-<p>5) API and metrics</p>
-<ul>
-<li>JSON and metrics: <code>curl :9108/status</code>, <code>curl :9108/metrics</code></li>
-<li>OpenAPI and docs: <code>curl :9108/openapi.json</code>, open <code>http://localhost:9108/docs</code></li>
-<li>Nodes: <code>curl :9108/nodes</code> (with tokens if configured) for inventory/heartbeat state</li>
-<li>Dashboard: <code>http://localhost:9108/dashboard</code></li>
-</ul>
-<h2>Configuration (Quick Reference)</h2>
-<ul>
-<li>AE_STATE_DB: path to SQLite DB (default <code>state/controller.db</code>)</li>
-<li>AE_SPECS_DIR: specs directory (default <code>specs</code>)</li>
-<li>AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER: ingress tuning</li>
-<li>AE_REGISTRY_CONFIG: registry credentials file (default <code>~/.config/ae/registries.yaml</code>)</li>
-<li>AE_ALLOW_PLAINTEXT_SECRETS=1: allow bypassing SOPS (dev only)</li>
-<li>AE_LOG_LEVEL: logging level (DEBUG/INFO/…)</li>
-<li>AE_AGENT_API_TOKEN / AE_AGENT_API_PORT: controller → agent auth/port</li>
-<li>AE_SERVICE_PROVIDER / AE_OVERLAY_NET / AE_SERVICE_IP_POOL: Service VIP provider + overlay settings</li>
-<li>AE_APISHIM_TOKEN / AE_APISHIM_DSN: Kubernetes API shim auth + backing store</li>
-</ul>
-<h2>Project Layout</h2>
-<ul>
-<li>src/ae/controller: reconcile loop, scheduler, state, health, spec models</li>
-<li>src/ae/runtime: Podman (default) and Docker adapters, RemoteRuntime client for agents</li>
-<li>src/ae/node: node agent entrypoint wrapping runtime and probes/logs/exec</li>
-<li>src/ae/ingress: Caddy templating + reload</li>
-<li>src/ae/network: Service/VIP providers (overlay/bridge)</li>
-<li>src/ae/cli and src/ae/kctl: CLIs (<code>ae</code>, <code>k1s</code>)</li>
-<li>src/ae/apishim: Kubernetes API shim (kubectl/helm compatibility)</li>
-<li>src/ae/observability: metrics, HTTP API, logging</li>
-<li>specs/: example manifests and secrets</li>
-<li>docs/: runbook, HTTP/API shim, testing, this overview</li>
-</ul>
-<h2>Further Reading</h2>
-<ul>
-<li>Runbook: <code>docs/ops/runbook.md</code></li>
-<li>End-to-End Guide: <code>docs/guides/e2e.md</code></li>
-<li>HTTP API: <code>docs/reference/http-api.md</code></li>
-<li>Kubernetes API shim + compatibility matrix: <code>docs/wip/conformance.md</code>, <code>docs/reference/apishim-compatibility-matrix.md</code></li>
-<li>Architecture (detailed): <code>docs/reference/architecture.md</code></li>
-</ul>
+<pre><code>&quot;&quot;&quot;
+Join-token utilities for agent bootstrap.
+
+Tokens are HMAC-SHA256 over (node_id, expiry, random nonce) using a shared secret.
+Format: base64url(node_id:exp_ts:nonce:signature)
+&quot;&quot;&quot;
+...</code></pre>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -507,7 +501,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-20 10:34:45</span>
+        <span>Built 2026-01-20 10:39:25</span>
       </div>
     </footer>
     <script>

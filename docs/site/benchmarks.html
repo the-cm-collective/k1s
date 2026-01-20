@@ -367,6 +367,7 @@
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -387,9 +388,12 @@
 </ul>
 <p>What we measure</p>
 <ul>
-<li>Processes (PSS/RSS/USS) via <code>/proc/&lt;pid&gt;/smaps_rollup</code> and <code>/proc/&lt;pid&gt;/status</code>:</li>
+<li>Processes (PSS/RSS/USS) via <code>/proc/&lt;pid&gt;/smaps_rollup</code> and <code>/proc/&lt;pid&gt;/status</code>:
+<ul>
 <li>k1s: <code>python -m ae.controller</code>, ingress proxy (Caddy), Docker/Podman runtime processes.</li>
 <li>k3s: <code>k3s</code>, <code>containerd</code>, <code>coredns</code>, ingress controller (Traefik if enabled).</li>
+</ul>
+</li>
 <li>Containers (cgroups): <code>memory.current</code> for each container cgroup via the container PID (split into app vs non‑app based on labels/names).</li>
 <li>Host services (cgroups): sum of <code>memory.current</code> for leaf cgroups under <code>system.slice</code> plus <code>init.scope</code> (cgroup v2), excluding <code>user.slice</code> entirely. This avoids parent+child double counting.</li>
 </ul>
@@ -453,11 +457,13 @@ make bench-mem-agg LABEL=pods-5</code></pre>
 </ul>
 <p>Automate a small matrix (k1s)</p>
 <ul>
-<pre><code>make bench-mem-matrix-k1s LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30</code></pre>
 <li>Run idle + scale-out snapshots in one go (requires controller running and echo example available):</li>
-<pre><code>make bench-mem-combine GLOB=&#x27;snapshots/*/*&#x27;</code></pre>
+</ul>
+<pre><code>make bench-mem-matrix-k1s LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30</code></pre>
+<ul>
 <li>Combine all summaries into one CSV/JSON for charting:</li>
 </ul>
+<pre><code>make bench-mem-combine GLOB=&#x27;snapshots/*/*&#x27;</code></pre>
 <p>End-to-end (k1s one-liner)</p>
 <pre><code>make bench-mem-e2e-k1s LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5</code></pre>
 <p>This runs matrix + rollout, combines all summaries, and writes charts/.</p>
@@ -498,64 +504,100 @@ make bench-mem-agg LABEL=pods-5</code></pre>
 </ul>
 <p>Automate a small matrix (k3s via k3d)</p>
 <ul>
-<pre><code>make bench-k3s-up K3S_NAME=bench</code></pre>
 <li>Create cluster and expose ports 80/443 for Traefik:</li>
-<pre><code>make bench-mem-matrix-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yaml REPLICAS=1,5,10 DURATION=30</code></pre>
+</ul>
+<pre><code>make bench-k3s-up K3S_NAME=bench</code></pre>
+<ul>
 <li>Run idle + scale-out snapshots using a simple echo Deployment/Service/Ingress:</li>
-<pre><code>make bench-mem-combine GLOB=&#x27;snapshots/*/*&#x27;</code></pre>
+</ul>
+<pre><code>make bench-mem-matrix-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yaml REPLICAS=1,5,10 DURATION=30</code></pre>
+<ul>
 <li>Combine across runs:</li>
-<pre><code>make bench-k3s-down K3S_NAME=bench</code></pre>
+</ul>
+<pre><code>make bench-mem-combine GLOB=&#x27;snapshots/*/*&#x27;</code></pre>
+<ul>
 <li>Tear down cluster when finished:</li>
 </ul>
+<pre><code>make bench-k3s-down K3S_NAME=bench</code></pre>
 <p>End-to-end (k3s one-liner; cluster must be up)</p>
 <pre><code>make bench-mem-e2e-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5</code></pre>
 <h2>Runbook: Successful Benchmark Runs</h2>
 <ul>
-<li>Environment</li>
+<li>Environment
+<ul>
 <li><code>PYTHONPATH=src</code> in the shell running commands.</li>
 <li>Runtime backend: <code>AE_RUNTIME_BACKEND=podman</code> (preferred) or <code>docker</code>.</li>
 <li>Secrets (demo-friendly): set <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> unless SOPS is configured (or run <code>init_demo.sh --with-secrets-env</code>).</li>
 </ul>
-<ul>
-<li>Controller</li>
-<li>Keep the controller running for the full duration:</li>
-<li>Terminal A: <code>python -m ae.controller --loop --specs specs/ --watch</code></li>
-<li>The bench scripts auto-start it if missing and log to <code>/tmp/k1s_ctrl_bench.log</code>, but a dedicated terminal is more predictable.</li>
+</li>
 </ul>
 <ul>
-<li>Images</li>
+<li>Controller
+<ul>
+<li>Keep the controller running for the full duration:
+<ul>
+<li>Terminal A: <code>python -m ae.controller --loop --specs specs/ --watch</code></li>
+</ul>
+</li>
+<li>The bench scripts auto-start it if missing and log to <code>/tmp/k1s_ctrl_bench.log</code>, but a dedicated terminal is more predictable.</li>
+</ul>
+</li>
+</ul>
+<ul>
+<li>Images
+<ul>
 <li>Podman: <code>podman build -t localhost/demo-blue:latest samples/servers/blue</code> and <code>localhost/demo-green:latest samples/servers/green</code>.</li>
 <li>Docker: <code>docker build -t demo-blue:latest samples/servers/blue</code> and <code>demo-green:latest</code>.</li>
 <li>Verify: <code>podman images | rg &#x27;demo-(blue|green)&#x27;</code> or <code>docker images | rg &#x27;demo-(blue|green)&#x27;</code>.</li>
 </ul>
+</li>
+</ul>
 <ul>
-<li>Commands (Podman-first)</li>
-<li>Terminal B:</li>
+<li>Commands (Podman-first)
+<ul>
+<li>Terminal B:
+<ul>
 <li><code>export PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_ALLOW_PLAINTEXT_SECRETS=1</code> (or start with <code>./scripts/init_demo.sh --with-secrets-env</code>)</li>
 <li><code>make bench-mem-e2e-k1s LABEL_SUITE=report-YYYYMMDD APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5</code></li>
 <li><code>python scripts/bench/mem_combine.py snapshots/*/*</code></li>
 <li><code>python scripts/bench/plot_overhead.py combined/combined.csv charts</code></li>
 <li><code>python docs/build_docs.py</code></li>
 </ul>
+</li>
+</ul>
+</li>
+</ul>
 <ul>
-<li>Docker fallback</li>
+<li>Docker fallback
+<ul>
 <li><code>export AE_RUNTIME_BACKEND=docker</code> and re-run the same commands.</li>
 <li>Ensure the current user can run <code>docker ps</code> without sudo (group membership or rootless config).</li>
 </ul>
+</li>
+</ul>
 <ul>
-<li>Preflights and guardrails</li>
-<li>Podman readiness: <code>podman info</code> must succeed. If not, try:</li>
+<li>Preflights and guardrails
+<ul>
+<li>Podman readiness: <code>podman info</code> must succeed. If not, try:
+<ul>
 <li><code>systemctl --user reset-failed; systemctl --user daemon-reload</code></li>
 <li><code>systemctl --user start podman.socket || systemctl --user start podman.service</code></li>
 <li><code>loginctl enable-linger &quot;$USER&quot;</code>; open a new login shell</li>
 <li><code>podman system migrate</code></li>
+</ul>
+</li>
 <li>Secrets guard: if <code>AE_ALLOW_PLAINTEXT_SECRETS!=1</code> and <code>sops</code> is missing or cannot decrypt, the scripts will fail fast with guidance.</li>
 <li>Logs: controller auto-start logs at <code>/tmp/k1s_ctrl_bench.log</code>.</li>
 </ul>
+</li>
+</ul>
 <ul>
 <li>After run</li>
-<li>Combined table: <code>combined/combined.csv</code> and <code>combined/combined.json</code>.</li>
+<li>Combined table: <code>combined/combined.csv</code> and <code>combined/combined.json</code>.
+<ul>
 <li>Charts: <code>charts/control_plane_pss.png</code>, <code>charts/system_cgroups.png</code>, <code>charts/per_pod_overhead.png</code>.</li>
+</ul>
+</li>
 <li>Docs page <code>benchmarks.html</code> auto-appends a “Latest Benchmarks (Auto)” section from <code>combined/combined.csv</code>.</li>
 </ul>
 <h2>Automated Prep/Teardown</h2>
@@ -602,7 +644,7 @@ make bench-mem-agg LABEL=pods-5</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-17 18:52:18</span>
+        <span>Built 2026-01-20 10:34:45</span>
       </div>
     </footer>
     <script>
