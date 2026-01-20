@@ -168,6 +168,35 @@
         color: var(--fg);
         border-radius: 8px;
       }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 1rem 0;
+        background: var(--k1s-panel);
+        border: 1px solid var(--k1s-border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      thead th {
+        text-align: left;
+        padding: 12px 14px;
+        background: var(--k1s-card-bg);
+        border-bottom: 1px solid var(--k1s-border);
+        color: var(--fg);
+        font-weight: 600;
+      }
+      tbody td {
+        padding: 12px 14px;
+        border-top: 1px solid var(--k1s-border-soft);
+        color: var(--fg);
+        vertical-align: top;
+      }
+      tbody tr:nth-child(even) td {
+        background: color-mix(in srgb, var(--k1s-panel) 92%, #000000 8%);
+      }
+      html[data-theme="light"] tbody tr:nth-child(even) td {
+        background: color-mix(in srgb, var(--k1s-panel) 92%, #ffffff 8%);
+      }
       pre {
         padding: 12px;
         overflow-x: auto;
@@ -347,12 +376,12 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="static/labs.css?v=1768934746"/>
+    <link rel="stylesheet" href="static/labs.css?v=1768937794"/>
 <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
 <script>window.DOCS_LABS_TOKEN='';</script>
 <script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>
-<script defer src="static/labs.js?v=1768934746"></script>
+<script defer src="static/labs.js?v=1768937794"></script>
   </head>
   <body>
     <nav>
@@ -393,7 +422,7 @@
 </ul>
 <div class="callout" role="note">Tip: If the page says “Labs: unavailable”, you’re in read‑only mode — verifiers still run and CLI commands are shown to try locally.</div>
 <p>This page prefers HTMX + SSE for live updates and uses a small <code>labs.js</code> helper for sessions. If the dev‑only lab orchestrator is not running, the page falls back to read‑only checks with copyable CLI commands.</p>
-<h2>A. Environment &amp; Backend</h2>
+<h2>A. Environment & Backend</h2>
 <p>To start a session: enable <strong>Controlled Actions</strong>, click <strong>Use Token</strong> to load <code>AE_LABS_TOKEN</code>, then click <code>Start Session</code>.</p>
 <ul>
 <li>API Base: <span id="env-api-base">(detecting)</span></li>
@@ -475,10 +504,10 @@ helm uninstall demochart -n demo-helm &amp;&amp; kubectl delete namespace demo-h
 <li>Events include “ApplyCompleted” for a revision: <span id="v-apply-events" data-v="pending">pending</span></li>
 <li>Status readyReplicas == spec.replicas: <span id="v-apply-ready" data-v="pending">pending</span></li>
 </ul>
-<h2>C. Logs &amp; Events</h2>
+<h2>C. Logs & Events</h2>
 <p>Live feed of events and logs for your sample app. When sessions are enabled, this switches to streaming mode automatically.</p>
 <div id="observe">   <button id="btn-observe-toggle" disabled>Start Tail</button>   <label style="margin-left:10px"><input type="checkbox" id="follow-tail" checked/> Follow tail</label>   <div id="observe-events" class="panel scrollbar-hide" aria-live="polite" aria-busy="true" data-source="events" style="height:220px;max-height:220px;overflow:auto;"></div>   <div id="observe-logs" class="panel scrollbar-hide" aria-live="polite" aria-busy="true" data-source="logs" style="height:220px;max-height:220px;overflow:auto;"></div>   <!-- HTMX SSE variant for logs; labs.js will arm sse-connect once a session exists -->   <div id="logs-sse" class="panel hidden scrollbar-hide" hx-ext="sse" sse-connect="" sse-swap="message" hx-swap="beforeend" style="height:220px;max-height:220px;overflow:auto;"></div>   <!-- HTMX SSE variant for events; labs.js will arm sse-connect once a session exists -->   <div id="events-sse" class="panel hidden scrollbar-hide" hx-ext="sse" sse-connect="" sse-swap="message" style="height:220px;max-height:220px;overflow:auto;"></div> </div>
-<h2>D. Scale &amp; Rollout</h2>
+<h2>D. Scale & Rollout</h2>
 <p>Try increasing replicas or enabling a tiny canary rollout. These buttons become active after a session starts and actions are enabled.</p>
 <ul>
 <li>Scale to 2/3: updates the app's desired replica count. The controller reconciles containers until readyReplicas matches the new spec. Watch the status badge and events to see the change propagate.</li>
@@ -552,7 +581,7 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-20 10:45:46</span>
+        <span>Built 2026-01-20 11:36:34</span>
       </div>
     </footer>
     <script>
