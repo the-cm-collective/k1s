@@ -108,3 +108,7 @@ def handle_events(...):
         timestamp = event.created_at.strftime("%Y-%m-%d %H:%M:%S")
         print(f"{timestamp} rev={event.revision} {event.event_type}: {event.message}")
 ```
+## Chapter navigation
+- Prev: [Chapter 05 - Ingress and Service Exposure](concepts-in-practice-05-ingress-service-exposure.html)
+- Next: [Chapter 07 - Health Probes and Readiness/Liveness](concepts-in-practice-07-health-probes.html)
+

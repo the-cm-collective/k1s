@@ -140,3 +140,7 @@ SITE_TEMPLATE = Template(
         self._store.upsert_service(app, cluster_ip, ports)
         self._provider.update_service_endpoints(app, backends["by_port"])
 ```
+## Chapter navigation
+- Prev: [Chapter 04 - Runtime Adapters and Container Execution](concepts-in-practice-04-runtime-adapters.html)
+- Next: [Chapter 06 - Observability: Logs, Metrics, Events](concepts-in-practice-06-observability.html)
+
