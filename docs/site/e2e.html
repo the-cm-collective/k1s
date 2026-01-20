@@ -367,6 +367,7 @@
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -388,25 +389,43 @@
 </ul>
 <p>Podman Quickstart (recommended)</p>
 <ul>
-<li>Create a shared network for multi-replica + ingress DNS:</li>
+<li>Create a shared network for multi-replica + ingress DNS:
+<ul>
 <li><code>podman network create devnet</code></li>
-<li>Export environment for the controller and ingress tooling:</li>
+</ul>
+</li>
+<li>Export environment for the controller and ingress tooling:
+<ul>
 <li><code>export AE_RUNTIME_BACKEND=podman</code></li>
 <li><code>export AE_PODMAN_NETWORK=devnet</code></li>
 <li><code>export AE_CONTAINER_CLI=podman</code>  # lets the controller reload Caddy via podman exec</li>
-<li>Start fixtures with Podman if desired:</li>
+</ul>
+</li>
+<li>Start fixtures with Podman if desired:
+<ul>
 <li><code>podman compose -f ops/dev/docker-compose.yaml up -d</code></li>
-<li>Run the controller with metrics:</li>
+</ul>
+</li>
+<li>Run the controller with metrics:
+<ul>
 <li><code>python -m ae.controller --loop --watch --specs specs/ --metrics-port 9108</code></li>
-<li>Apply a sample and open the dashboard:</li>
+</ul>
+</li>
+<li>Apply a sample and open the dashboard:
+<ul>
 <li><code>python -m ae.cli apply -f specs/examples/echo.yaml</code></li>
 <li><code>http://127.0.0.1:9108/dashboard</code></li>
 </ul>
+</li>
+</ul>
 <p>Start Controller</p>
 <ul>
-<li>Polling loop with metrics and watch (if watchdog installed):</li>
+<li>Polling loop with metrics and watch (if watchdog installed):
+<ul>
 <li><code>python -m ae.controller --loop --watch --specs specs/ --metrics-port 9108</code></li>
 <li>UI: <code>http://127.0.0.1:9108</code> → status, docs, metrics.</li>
+</ul>
+</li>
 </ul>
 <p>Conventions</p>
 <ul>
@@ -415,69 +434,111 @@
 </ul>
 <p>1) Standard Demo (blue/green)</p>
 <ul>
-<li>Apply blue, verify, then swap to green.</li>
+<li>Apply blue, verify, then swap to green.
+<ul>
 <li><code>python -m ae.cli apply -f specs/examples/blue.yaml</code></li>
 <li><code>python -m ae.cli status blue --wide --events</code></li>
 <li><code>python -m ae.cli logs blue --tail 50</code></li>
 <li>Switch color: <code>python -m ae.cli apply -f specs/examples/green.yaml</code></li>
 <li>Verify zero-downtime: <code>python -m ae.cli status green --wide --events</code></li>
 </ul>
+</li>
+</ul>
 <p>2) Echo (Configs &amp; Secrets)</p>
 <ul>
-<li>Demonstrates <code>configRefs</code> and <code>secretRefs</code> projected into env and files, plus readiness/liveness.</li>
-<li>Decrypt sample secret for dev only (requires <code>sops</code>):</li>
+<li>Demonstrates <code>configRefs</code> and <code>secretRefs</code> projected into env and files, plus readiness/liveness.
+<ul>
+<li>Decrypt sample secret for dev only (requires <code>sops</code>):
+<ul>
 <li><code>sops --decrypt specs/examples/demo-secret.sops.yaml &gt; state/demo-secret.yaml</code> (or set <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> and use the sops file directly; <code>init_demo.sh --with-secrets-env</code> exports this for you)</li>
+</ul>
+</li>
 <li><code>python -m ae.cli apply -f specs/examples/echo.yaml</code></li>
-<li>Inspect:</li>
+<li>Inspect:
+<ul>
 <li><code>python -m ae.cli status echo --wide --events</code></li>
 <li><code>python -m ae.cli logs echo --tail 100</code></li>
+</ul>
+</li>
 <li>Ingress (if Caddy running): open <code>http://echo.home.arpa/</code> (map host in <code>/etc/hosts</code> to 127.0.0.1 for dev).</li>
+</ul>
+</li>
 </ul>
 <p>3) Echo (Resources and hostPath)</p>
 <ul>
-<li>Demonstrates resource limits and a writable hostPath mount.</li>
+<li>Demonstrates resource limits and a writable hostPath mount.
+<ul>
 <li><code>python -m ae.cli apply -f specs/examples/echo-resources.yaml</code></li>
 <li><code>python -m ae.cli status echo-resources --wide --events</code></li>
 <li>Expect <code>k8s-check</code> to warn about hostPath RW when exporting to K8s.</li>
 </ul>
+</li>
+</ul>
 <p>4) Echo (Security Hardening)</p>
 <ul>
-<li>Non-root, read-only root FS, <code>allowPrivilegeEscalation: false</code>, drop <code>ALL</code> caps.</li>
+<li>Non-root, read-only root FS, <code>allowPrivilegeEscalation: false</code>, drop <code>ALL</code> caps.
+<ul>
 <li><code>python -m ae.cli apply -f specs/examples/echo-sec.yaml</code></li>
 <li><code>python -m ae.cli status echo-sec --wide</code></li>
 </ul>
+</li>
+</ul>
 <p>5) Echo (Probes via Exec &amp; TCP)</p>
 <ul>
-<li>Exec probe: <code>echo-exec.yaml</code></li>
+<li>Exec probe: <code>echo-exec.yaml</code>
+<ul>
 <li><code>python -m ae.cli apply -f specs/examples/echo-exec.yaml</code></li>
 <li><code>python -m ae.cli status echo-exec --events</code></li>
-<li>TCP probe: <code>echo-tcp.yaml</code></li>
+</ul>
+</li>
+<li>TCP probe: <code>echo-tcp.yaml</code>
+<ul>
 <li><code>python -m ae.cli apply -f specs/examples/echo-tcp.yaml</code></li>
 <li><code>python -m ae.cli status echo-tcp --events</code></li>
 </ul>
+</li>
+</ul>
 <p>6) Storage (PV-lite)</p>
 <ul>
-<li>Retain volume: <code>echo-stateful.yaml</code></li>
+<li>Retain volume: <code>echo-stateful.yaml</code>
+<ul>
 <li><code>python -m ae.cli apply -f specs/examples/echo-stateful.yaml</code></li>
 <li><code>python -m ae.cli volumes list --app echo-stateful</code></li>
-<li>Delete-on-purge volume: <code>echo-storage-delete.yaml</code></li>
+</ul>
+</li>
+<li>Delete-on-purge volume: <code>echo-storage-delete.yaml</code>
+<ul>
 <li><code>python -m ae.cli apply -f specs/examples/echo-storage-delete.yaml</code></li>
-<li>Purge removes named volumes with <code>retention: Delete</code>:</li>
+<li>Purge removes named volumes with <code>retention: Delete</code>:
+<ul>
 <li><code>python -m ae.cli delete echo-del --purge</code></li>
+</ul>
+</li>
+</ul>
+</li>
 </ul>
 <p>7) Rollout Policy</p>
 <ul>
-<li>Ordered rolling with explicit surge/unavailable:</li>
+<li>Ordered rolling with explicit surge/unavailable:
+<ul>
 <li><code>python -m ae.cli apply -f specs/examples/echo-rollout.yaml</code></li>
-<li>Pause/resume controls:</li>
+<li>Pause/resume controls:
+<ul>
 <li><code>python -m ae.cli rollout pause echo-rollout</code></li>
 <li><code>python -m ae.cli rollout resume echo-rollout</code></li>
 </ul>
+</li>
+</ul>
+</li>
+</ul>
 <p>8) Multi-Replica</p>
 <ul>
-<li>Native (controller-side) multi-replica demo:</li>
+<li>Native (controller-side) multi-replica demo:
+<ul>
 <li><code>python -m ae.cli apply -f specs/examples/multi-replica-echo.yaml</code></li>
 <li><code>python -m ae.cli status echo-mr --wide --events</code></li>
+</ul>
+</li>
 </ul>
 <p>9) Observability</p>
 <ul>
@@ -487,27 +548,48 @@
 </ul>
 <p>10) K8s Portability Check (offline)</p>
 <ul>
-<li>Baseline checklist:</li>
+<li>Baseline checklist:
+<ul>
 <li><code>python -m ae.cli k8s-check -f specs/examples/echo.yaml</code></li>
-<li>Strict policy (CI-like):</li>
+</ul>
+</li>
+<li>Strict policy (CI-like):
+<ul>
 <li><code>python -m ae.cli k8s-check -f specs/examples/multi-replica-echo.yaml --policy strict</code></li>
-<li>HPA pre-req advisory using an HPA-oriented sample:</li>
+</ul>
+</li>
+<li>HPA pre-req advisory using an HPA-oriented sample:
+<ul>
 <li><code>python -m ae.cli k8s-check -f specs/examples/echo-hpa.yaml --policy strict --assume-hpa cpu-util</code></li>
+</ul>
+</li>
 </ul>
 <p>11) Export to Kubernetes YAML</p>
 <ul>
-<li>Hardened single-replica echo:</li>
+<li>Hardened single-replica echo:
+<ul>
 <li><code>python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --preset web-hardened --ingress-class traefik --service-port 80 --validate -o specs/examples/echo-k8s.yaml</code></li>
-<li>Multi-replica hardened export:</li>
+</ul>
+</li>
+<li>Multi-replica hardened export:
+<ul>
 <li><code>python -m ae.cli export-k8s -f specs/examples/multi-replica-echo.yaml --namespace demo --preset web-hardened --ingress-class traefik --service-port 80 --validate -o specs/examples/multi-replica-echo-k8s.yaml</code></li>
-<li>Validate structure (already done via <code>--validate</code>) and run server-side dry-run if a cluster is present:</li>
+</ul>
+</li>
+<li>Validate structure (already done via <code>--validate</code>) and run server-side dry-run if a cluster is present:
+<ul>
 <li><code>kubectl apply --dry-run=server -f specs/examples/echo-k8s.yaml -n demo</code></li>
+</ul>
+</li>
 </ul>
 <p>12) TLS Options (Ingress)</p>
 <ul>
-<li>BYO TLS via Secret material:</li>
+<li>BYO TLS via Secret material:
+<ul>
 <li><code>python -m ae.cli tls sync --name mycert --input path/to/mycert.yaml --root state/tls</code></li>
 <li>Set only <code>spec.ingress.tlsSecretName: mycert</code> in your App manifest; controller resolves PEMs.</li>
+</ul>
+</li>
 </ul>
 <p>13) Cleanup</p>
 <ul>
@@ -528,9 +610,12 @@
 </ul>
 <p>Quick E2E Target</p>
 <ul>
-<li>Run the multi-port end-to-end smoke test (applies demo, checks status, curls ingress):</li>
+<li>Run the multi-port end-to-end smoke test (applies demo, checks status, curls ingress):
+<ul>
 <li><code>make e2e</code> or <code>make e2e-multiport</code></li>
 <li>Uses <code>scripts/e2e/multiport.sh</code> and defaults to Caddy HTTPS <code>:8443</code> unless <code>CADDY_HTTPS_PORT</code> is set.</li>
+</ul>
+</li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -539,7 +624,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-17 18:52:18</span>
+        <span>Built 2026-01-20 10:34:45</span>
       </div>
     </footer>
     <script>

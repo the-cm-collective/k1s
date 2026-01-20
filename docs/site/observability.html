@@ -367,6 +367,7 @@
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -381,18 +382,30 @@
 <h3>Metrics</h3>
 <p>Prometheus-style text at <code>/metrics</code> includes aggregated gauges and labeled series:</p>
 <ul>
-<li>Aggregated:</li>
+<li>Aggregated:
+<ul>
 <li><code>ae_apps_total</code>, <code>ae_apps_ready</code>, <code>ae_apps_progressing</code>, <code>ae_apps_degraded</code></li>
 <li><code>ae_replicas_total</code>, <code>ae_replicas_ready</code>, <code>ae_replicas_live</code></li>
-<li>Nodes/Services:</li>
+</ul>
+</li>
+<li>Nodes/Services:
+<ul>
 <li><code>ae_nodes_total</code>, <code>ae_nodes_ready</code>, <code>ae_nodes_stale</code></li>
 <li><code>ae_services_total</code> plus per-service <code>cluster_ip</code>, <code>provider</code>, and port labels</li>
-<li>Per-app:</li>
+</ul>
+</li>
+<li>Per-app:
+<ul>
 <li><code>ae_app_desired_replicas{app=&quot;&lt;name&gt;&quot;}</code></li>
 <li><code>ae_app_ready_replicas{app=&quot;&lt;name&gt;&quot;}</code></li>
 <li><code>ae_app_live_replicas{app=&quot;&lt;name&gt;&quot;}</code></li>
-<li>Per-replica:</li>
+</ul>
+</li>
+<li>Per-replica:
+<ul>
 <li><code>ae_replica_ready{app=&quot;&lt;name&gt;&quot;,replica=&quot;&lt;id&gt;&quot;}</code> 0/1</li>
+</ul>
+</li>
 </ul>
 <p>API shim (when enabled)</p>
 <ul>
@@ -415,9 +428,12 @@
 <p>See <code>docs/ops/runbook.md</code> for the “Remote CLI over LAN” section and auth token setup.</p>
 <h3>Grafana Examples</h3>
 <ul>
-<li>Import the example dashboards/panels using a Prometheus data source (uid <code>PROM</code> in examples):</li>
+<li>Import the example dashboards/panels using a Prometheus data source (uid <code>PROM</code> in examples):
+<ul>
 <li><code>docs/grafana/controller-health.json</code> — stat + timeseries for controller health</li>
 <li><code>docs/grafana/apps-overview.json</code> — per-app readiness time series and status table</li>
+</ul>
+</li>
 </ul>
 <p>You can also embed a single panel JSON (e.g., stat showing ready apps):</p>
 <pre><code>{
@@ -434,7 +450,8 @@
 }</code></pre>
 <h3>Demo Dashboard (/dashboard)</h3>
 <ul>
-<li>Adds a System snapshot sourced from <code>GET /system</code>:</li>
+<li>Adds a System snapshot sourced from <code>GET /system</code>:
+<ul>
 <li>Controller: last reconcile timestamp and duration</li>
 <li>Nodes: Ready/stale counts plus table of node status/cordon</li>
 <li>Ingress: configured site blocks and existence flag</li>
@@ -442,9 +459,14 @@
 <li>Storage: container‑engine named volumes created for apps (PV‑lite)</li>
 <li>RBAC: shows whether mutations are enabled and tokens are configured (never reveals secrets)</li>
 </ul>
+</li>
+</ul>
 <ul>
-<li>Per‑app details now include:</li>
+<li>Per‑app details now include:
+<ul>
 <li>Service mapping, count of secret refs, and declared storage volumes (from the manifest)</li>
+</ul>
+</li>
 </ul>
 <h3>System API</h3>
 <p><code>GET /system</code> returns a JSON object combining controller stats and optional runtime/ingress snapshots, for example:</p>
@@ -462,7 +484,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-17 18:52:18</span>
+        <span>Built 2026-01-20 10:34:45</span>
       </div>
     </footer>
     <script>

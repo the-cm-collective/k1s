@@ -367,6 +367,7 @@
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -391,28 +392,43 @@
     auto: { start: 1, step: 2, intervalSeconds: 60, max: 10 }  # controller‑tracked ramp</code></pre>
 <h3>Semantics</h3>
 <ul>
-<li>strategy=ordered:</li>
+<li>strategy=ordered:
+<ul>
 <li>Creates at most one new replica per reconcile until desired is met.</li>
 <li>Leaves old revision replicas running during rollout (surge).</li>
 <li>Removes old replicas when readiness satisfies desired - maxUnavailable.</li>
 </ul>
+</li>
+</ul>
 <ul>
-<li>strategy=parallel:</li>
+<li>strategy=parallel:
+<ul>
 <li>Creates all missing new replicas in one reconcile.</li>
 <li>Leaves old running during rollout (surge), then removes when readiness target is met.</li>
 </ul>
+</li>
+</ul>
 <ul>
-<li>strategy=canary:</li>
+<li>strategy=canary:
+<ul>
 <li>Biases ingress routing toward the first upstream. With <code>weight: N</code>, the first upstream is duplicated N times in the Caddy config.</li>
 <li>With an <code>auto</code> block, the controller persists the weight in SQLite and increases it on schedule until <code>max</code>.</li>
 </ul>
-<ul>
-<li>maxSurge (current behavior):</li>
-<li>Old revision containers are kept until new replicas are ready enough per maxUnavailable.</li>
+</li>
 </ul>
 <ul>
-<li>maxUnavailable:</li>
+<li>maxSurge (current behavior):
+<ul>
+<li>Old revision containers are kept until new replicas are ready enough per maxUnavailable.</li>
+</ul>
+</li>
+</ul>
+<ul>
+<li>maxUnavailable:
+<ul>
 <li>Old replicas are removed only when <code>ready_replicas &gt;= desired - maxUnavailable</code>.</li>
+</ul>
+</li>
 </ul>
 <h3>Routing Bias</h3>
 <p>Ingress uses a “prefer first” policy by default. The controller writes the new revision endpoints first, so traffic prefers the new revision as soon as it becomes ready; old replicas are removed once readiness satisfies the policy. For canary rollouts, use <code>rollout.weight</code> (and optional <code>rollout.auto</code>) to bias and ramp traffic.</p>
@@ -432,7 +448,7 @@ ae rollout resume echo</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-17 18:52:18</span>
+        <span>Built 2026-01-20 10:34:45</span>
       </div>
     </footer>
     <script>

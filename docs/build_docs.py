@@ -435,6 +435,7 @@ TEMPLATE = """<!doctype html>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -521,8 +522,6 @@ def md_to_html(md: str, *, allow_raw_html: bool = False) -> str:
     in_code = False
     code_lang = ""
     code_buf: list[str] | None = None
-    in_list = False
-    li_buf: list[str] | None = None
 
     def flush_paragraph(buf: list[str]):
         if not buf:
@@ -536,17 +535,51 @@ def md_to_html(md: str, *, allow_raw_html: bool = False) -> str:
             out.append(f"<p>{rendered}</p>")
         buf.clear()
 
-    def flush_li():
-        nonlocal li_buf
-        if li_buf is None:
-            return
-        content = "\n".join(li_buf)
-        rendered = format_inline(content, allow_raw_html=allow_raw_html)
-        out.append(f"<li>{rendered}</li>")
-        li_buf = None
+    def render_list_block(list_lines: list[str]) -> str:
+        nodes: list[dict[str, object]] = []
+        stack: list[tuple[int, list[dict[str, object]]]] = [(-1, nodes)]
+        last_node: dict[str, object] | None = None
+
+        for line in list_lines:
+            m = re.match(r"^(?P<indent>\s*)-\s+(?P<text>.+)$", line)
+            if m:
+                indent_str = m.group("indent").replace("\t", "  ")
+                indent = len(indent_str)
+                text = m.group("text").strip()
+                while stack and indent <= stack[-1][0]:
+                    stack.pop()
+                parent = stack[-1][1]
+                node = {"text": text, "children": []}
+                parent.append(node)
+                stack.append((indent, node["children"]))  # type: ignore[list-item]
+                last_node = node
+            else:
+                cont = line.strip()
+                if cont and last_node is not None:
+                    last_node["text"] = f"{last_node['text']} {cont}"
+
+        def render_nodes(items: list[dict[str, object]]) -> str:
+            if not items:
+                return ""
+            parts = ["<ul>"]
+            for item in items:
+                content = format_inline(str(item["text"]), allow_raw_html=allow_raw_html)
+                children = item.get("children") or []
+                if children:
+                    parts.append(f"<li>{content}")
+                    parts.append(render_nodes(children))  # type: ignore[arg-type]
+                    parts.append("</li>")
+                else:
+                    parts.append(f"<li>{content}</li>")
+            parts.append("</ul>")
+            return "\n".join(parts)
+
+        return render_nodes(nodes)
 
     para_buf: list[str] = []
-    for raw in lines:
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
         line = raw.rstrip("\n")
         if in_code:
             if line.strip().startswith("```"):
@@ -565,6 +598,7 @@ def md_to_html(md: str, *, allow_raw_html: bool = False) -> str:
                 if code_buf is None:
                     code_buf = []
                 code_buf.append(html.escape(line))
+            i += 1
             continue
 
         if line.strip().startswith("```"):
@@ -573,110 +607,81 @@ def md_to_html(md: str, *, allow_raw_html: bool = False) -> str:
             code_lang = lang
             code_buf = []
             in_code = True
+            i += 1
             continue
 
         # horizontal rule: lines with only ---
         if re.fullmatch(r"\s*-{3,}\s*", line):
             flush_paragraph(para_buf)
-            if li_buf is not None:
-                flush_li()
-            if in_list:
-                out.append("</ul>")
-                in_list = False
             out.append("<hr/>")
+            i += 1
             continue
 
         if not line.strip():
             flush_paragraph(para_buf)
-            if li_buf is not None:
-                flush_li()
-            if in_list:
-                out.append("</ul>")
-                in_list = False
+            i += 1
             continue
 
         # headings
         if line.startswith("###### "):
             flush_paragraph(para_buf)
-            if li_buf is not None:
-                flush_li()
-            if in_list:
-                out.append("</ul>")
-                in_list = False
             out.append(f"<h6>{format_inline(line[7:])}</h6>")
+            i += 1
             continue
         if line.startswith("##### "):
             flush_paragraph(para_buf)
-            if li_buf is not None:
-                flush_li()
-            if in_list:
-                out.append("</ul>")
-                in_list = False
             out.append(f"<h5>{format_inline(line[6:])}</h5>")
+            i += 1
             continue
         if line.startswith("#### "):
             flush_paragraph(para_buf)
-            if li_buf is not None:
-                flush_li()
-            if in_list:
-                out.append("</ul>")
-                in_list = False
             out.append(f"<h4>{format_inline(line[5:])}</h4>")
+            i += 1
             continue
         if line.startswith("### "):
             flush_paragraph(para_buf)
-            if li_buf is not None:
-                flush_li()
-            if in_list:
-                out.append("</ul>")
-                in_list = False
             out.append(f"<h3>{format_inline(line[4:])}</h3>")
+            i += 1
             continue
         if line.startswith("## "):
             flush_paragraph(para_buf)
-            if li_buf is not None:
-                flush_li()
-            if in_list:
-                out.append("</ul>")
-                in_list = False
             out.append(f"<h2>{format_inline(line[3:])}</h2>")
+            i += 1
             continue
         if line.startswith("# "):
             flush_paragraph(para_buf)
-            if li_buf is not None:
-                flush_li()
-            if in_list:
-                out.append("</ul>")
-                in_list = False
             out.append(f"<h1>{format_inline(line[2:])}</h1>")
+            i += 1
             continue
 
-        # lists (supports continued lines indented under a list item)
-        if line.lstrip().startswith("- "):
+        # lists (supports nested lists via indentation and continued lines)
+        if re.match(r"\s*-\s+", line):
             flush_paragraph(para_buf)
-            if not in_list:
-                out.append("<ul>")
-                in_list = True
-            # flush previous list item if open
-            if li_buf is not None:
-                flush_li()
-            li_buf = [line.strip()[2:]]
-            continue
-
-        # list item continuation: treat indented lines as part of current <li>
-        if in_list and li_buf is not None and (line.startswith("  ") or line.startswith("\t")):
-            li_buf.append(line.lstrip())
+            list_lines: list[str] = []
+            while i < len(lines):
+                cur = lines[i].rstrip("\n")
+                if not cur.strip():
+                    break
+                if cur.strip().startswith("```"):
+                    break
+                if re.fullmatch(r"\s*-{3,}\s*", cur):
+                    break
+                if cur.lstrip().startswith("#"):
+                    break
+                if re.match(r"\s*-\s+", cur) or re.match(r"\s+", cur):
+                    list_lines.append(cur)
+                    i += 1
+                    continue
+                break
+            out.append(render_list_block(list_lines))
             continue
 
         # paragraph accumulation
         # normal paragraph text
         para_buf.append(line)
+        i += 1
 
     flush_paragraph(para_buf)
-    if li_buf is not None:
-        flush_li()
-    if in_list:
-        out.append("</ul>")
     return "\n".join(out)
 
 
@@ -1310,6 +1315,17 @@ def main() -> None:
         "guides/e2e.md": "e2e.html",
         "reference/k8s-compliance.md": "k8s-compliance.html",
         "guides/playground.md": "playground.html",
+        "concepts-in-practice/index.md": "concepts-in-practice.html",
+        "concepts-in-practice/01-desired-state-reconciliation.md": "concepts-in-practice-01-desired-state-reconciliation.html",
+        "concepts-in-practice/02-declarative-apply.md": "concepts-in-practice-02-declarative-apply.html",
+        "concepts-in-practice/03-scheduling-placement.md": "concepts-in-practice-03-scheduling-placement.html",
+        "concepts-in-practice/04-runtime-adapters.md": "concepts-in-practice-04-runtime-adapters.html",
+        "concepts-in-practice/05-ingress-service-exposure.md": "concepts-in-practice-05-ingress-service-exposure.html",
+        "concepts-in-practice/06-observability.md": "concepts-in-practice-06-observability.html",
+        "concepts-in-practice/07-health-probes.md": "concepts-in-practice-07-health-probes.html",
+        "concepts-in-practice/08-rollouts-updates.md": "concepts-in-practice-08-rollouts-updates.html",
+        "concepts-in-practice/09-configuration-secrets.md": "concepts-in-practice-09-configuration-secrets.html",
+        "concepts-in-practice/10-access-policy.md": "concepts-in-practice-10-access-policy.html",
     }
     # index
     index = f"""
@@ -1334,6 +1350,7 @@ def main() -> None:
   <li><a href="e2e.html">End-to-End Guide</a></li>
   <li><a href="k8s-compliance.html">K8s Compliance Status</a></li>
   <li><a href="playground.html">Interactive Lab Playground</a></li>
+  <li><a href="concepts-in-practice.html">Concepts in Practice</a></li>
   <li><a href="/dashboard" target="_blank" rel="noopener">Live Demo Dashboard</a></li>
 </ul>
 """

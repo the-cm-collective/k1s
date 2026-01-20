@@ -367,6 +367,7 @@
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -415,6 +416,8 @@ make demo-down</code></pre>
 <li>Need only docs + API? Use <code>./scripts/init_demo.sh --docs-only -y -d</code> or <code>make demo ARGS=&quot;--docs-only -y -d&quot;</code>.</li>
 <li>Prefer Make: <code>make demo ARGS=&quot;--demo-standard -y -d&quot;</code> and <code>make demo-down</code> (see <code>Makefile:1</code>).</li>
 <li>Want to try multi-node? Follow Option C, then apply <code>specs/examples/echo-multinode.yaml</code>.</li>
+<li>Podman registry cache: configure an insecure local registry to avoid HTTPS pull errors and Docker Hub rate limits, or disable the cache.</li>
+</ul>
 <pre><code>  mkdir -p ~/.config/containers/registries.conf.d
   cat &gt; ~/.config/containers/registries.conf.d/local-cache.conf &lt;&lt;&#x27;EOF&#x27;
   [[registry]]
@@ -425,9 +428,7 @@ make demo-down</code></pre>
   location = &quot;localhost:5002&quot;
   insecure = true
   EOF</code></pre>
-<li>Podman registry cache: configure an insecure local registry to avoid HTTPS pull errors and Docker Hub rate limits, or disable the cache.
-Or run with <code>AE_USE_REGISTRY_CACHE=0</code>.</li>
-</ul>
+<p>  Or run with <code>AE_USE_REGISTRY_CACHE=0</code>.</p>
 <h2>Option B — Manual Quickstart (hands‑on)</h2>
 <p>Follow this if you want to see each moving part.</p>
 <p>1) Install the package (editable dev mode):</p>
@@ -569,23 +570,27 @@ ae status echo-mn --watch</code></pre>
 <p>Full walkthrough and WireGuard tips: <code>docs/guides/multinode-lab.md</code> or <code>ops/dev/multinode-lab.sh -h</code>.</p>
 <h2>Using the <code>ae</code> CLI (greatest hits)</h2>
 <ul>
+<li>Apply/inspect lifecycle:</li>
+</ul>
 <pre><code>ae apply -f &lt;manifest.yaml&gt;
 ae status [&lt;app&gt;] --wide --events --json
 ae logs &lt;app&gt; --follow --tail 100
 ae revisions &lt;app&gt;
 ae rollback &lt;app&gt; [--to N]
 ae delete &lt;app&gt; [--purge]</code></pre>
-<li>Apply/inspect lifecycle:</li>
+<ul>
+<li>Planning and K8s helpers:</li>
+</ul>
 <pre><code>ae plan -f specs/examples/echo.yaml --verbose --json
 ae export-k8s -f specs/examples/echo.yaml --namespace demo --preset web-hardened --validate -o specs/examples/echo-k8s.yaml
 ae k8s-check -f specs/examples/echo.yaml --policy strict</code></pre>
-<li>Planning and K8s helpers:</li>
+<ul>
+<li>Registries and TLS:</li>
+</ul>
 <pre><code>ae registry login ghcr --username &lt;u&gt; --token &lt;pat&gt;
 ae registry list
 ae tls sync --name mycert --input path/to/k8s-secret.yaml
 ae tls verify --name mycert --json</code></pre>
-<li>Registries and TLS:</li>
-</ul>
 <h2>Remote CLI &amp; Tokens (optional)</h2>
 <p>Generate API tokens and point the CLI at a remote controller.</p>
 <pre><code>python -m ae.cli api tokens --generate --ttl-hours 24 -o .env.api
@@ -630,7 +635,7 @@ make demo-hardened</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-17 18:52:18</span>
+        <span>Built 2026-01-20 10:34:45</span>
       </div>
     </footer>
     <script>
