@@ -367,6 +367,7 @@
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -382,25 +383,37 @@
 <ul>
 <li>Read-only endpoints (/status, /events, /metrics, /logs, /health, /openapi.json) are available by default.</li>
 <li>Mutating endpoints (/scale/&lt;app&gt;, /delete/&lt;app&gt;) are disabled unless AE_API_MUTATIONS=1.</li>
-<li>Optional Bearer tokens gate access per role:</li>
+<li>Optional Bearer tokens gate access per role:
+<ul>
 <li>AE_API_READ_TOKEN   (read)</li>
 <li>AE_API_SCALER_TOKEN (scale)</li>
 <li>AE_API_ADMIN_TOKEN  (admin)</li>
 </ul>
+</li>
+</ul>
 <p>Enabling mutations (dev) 1) Export tokens and enable mutations for the controller process:</p>
 <ul>
 <li>AE_API_MUTATIONS=1</li>
-<p>2) Start controller with --metrics-port and Caddy fronting the API.</p>
 <li>AE_API_ADMIN_TOKEN=changeme</li>
 </ul>
+<p>2) Start controller with --metrics-port and Caddy fronting the API.</p>
 <p>Remote CLI usage</p>
 <ul>
-<li>Scale:</li>
+<li>Scale:
+<ul>
 <li>ae --server https://api.home.arpa:8443 --token $SCALER scale echo --replicas 2</li>
-<li>Delete:</li>
+</ul>
+</li>
+<li>Delete:
+<ul>
 <li>ae --server https://api.home.arpa:8443 --token $ADMIN delete echo --purge</li>
-<li>Logs (requires READ token when any token is configured):</li>
+</ul>
+</li>
+<li>Logs (requires READ token when any token is configured):
+<ul>
 <li>ae --server https://api.home.arpa:8443 --token $READ logs echo --tail 100</li>
+</ul>
+</li>
 </ul>
 <p>Security notes</p>
 <ul>
@@ -411,36 +424,63 @@
 <p>Registry Auth (private images)</p>
 <ul>
 <li>Credentials are stored at <code>~/.config/ae/registries.yaml</code> and used by the runtime before pulls.</li>
-<li>List configured hosts:</li>
+<li>List configured hosts:
+<ul>
 <li><code>ae registry list</code></li>
-<li>Docker Hub:</li>
+<li>Docker Hub:
+<ul>
 <li>Short image names (e.g., <code>caddy:2.8</code>, <code>python:3.12-slim</code>) are treated as <code>docker.io</code>.</li>
-<li>Add Docker Hub creds by host key <code>docker.io</code> (also accepts <code>index.docker.io</code>):</li>
+<li>Add Docker Hub creds by host key <code>docker.io</code> (also accepts <code>index.docker.io</code>):
+<ul>
 <li><code>ae registry login custom --registry docker.io --username &lt;you&gt; --password &lt;token&gt;</code></li>
 <li>Or run <code>docker login</code> once; the runtime will reuse your local Docker credentials.</li>
-<li>GHCR (GitHub Container Registry):</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>GHCR (GitHub Container Registry):
+<ul>
 <li><code>ae registry login ghcr --username &lt;you&gt; --token &lt;PAT&gt;</code></li>
 <li>Or rely on <code>gh</code> CLI: <code>ae registry login ghcr --username &lt;you&gt;</code> (uses <code>gh auth token</code>)</li>
-<li>GCR (Google Container Registry/Artifact Registry):</li>
+</ul>
+</li>
+<li>GCR (Google Container Registry/Artifact Registry):
+<ul>
 <li><code>ae registry login gcr --use-gcloud --gcr-host us.gcr.io</code></li>
 <li>Or provide a token: <code>ae registry login gcr --gcr-host us.gcr.io --token $(gcloud auth print-access-token)</code></li>
 <li>Username defaults to <code>oauth2accesstoken</code>.</li>
-<li>ECR (AWS Elastic Container Registry):</li>
+</ul>
+</li>
+<li>ECR (AWS Elastic Container Registry):
+<ul>
 <li><code>ae registry login ecr --use-aws --region us-east-1 --account-id 123456789012</code></li>
 <li>Or specify: <code>ae registry login ecr --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com --password $(aws ecr get-login-password)</code></li>
-<li>Custom registry:</li>
+</ul>
+</li>
+<li>Custom registry:
+<ul>
 <li><code>ae registry login custom --registry registry.example.com --username user --password secret</code></li>
+</ul>
+</li>
 </ul>
 <p>Refreshing short‑lived tokens</p>
 <ul>
-<li>Some providers issue short‑lived credentials (GCR/ECR). Refresh any saved hosts with:</li>
+<li>Some providers issue short‑lived credentials (GCR/ECR). Refresh any saved hosts with:
+<ul>
 <li><code>ae registry refresh</code> (all supported providers)</li>
 <li><code>ae registry refresh --provider gcr</code></li>
 <li><code>ae registry refresh --provider ecr</code></li>
-<li>Refresh logic uses local CLIs when available:</li>
+</ul>
+</li>
+<li>Refresh logic uses local CLIs when available:
+<ul>
 <li>ghcr: <code>gh auth token</code> or <code>GHCR_TOKEN</code>.</li>
 <li>gcr: <code>gcloud auth print-access-token</code>.</li>
 <li>ecr: <code>aws ecr get-login-password</code> (region derived from the registry hostname).</li>
+</ul>
+</li>
 </ul>
 <p>Planner hint</p>
 <ul>
@@ -453,7 +493,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-17 18:52:18</span>
+        <span>Built 2026-01-20 10:34:45</span>
       </div>
     </footer>
     <script>

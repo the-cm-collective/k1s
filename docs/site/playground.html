@@ -347,12 +347,12 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="static/labs.css?v=1768704738"/>
+    <link rel="stylesheet" href="static/labs.css?v=1768934085"/>
 <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-<script>window.DOCS_LABS_TOKEN='D34DB33F';</script>
+<script>window.DOCS_LABS_TOKEN='';</script>
 <script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>
-<script defer src="static/labs.js?v=1768704738"></script>
+<script defer src="static/labs.js?v=1768934085"></script>
   </head>
   <body>
     <nav>
@@ -372,6 +372,7 @@
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -397,17 +398,15 @@
 <ul>
 <li>API Base: <span id="env-api-base">(detecting)</span></li>
 <li>Orchestrator: <span id="env-orch">(checking)</span></li>
-<li>Backend:</li>
-<li><select id="backend-select">
-<option value="auto" selected>Auto</option>
-<option value="k1s-host">k1s-Host (local)</option>
-<option value="k1s-docker">k1s-in-Docker (compose)</option>
-<option value="k3s">k3s via k3d</option>
-</select></li>
+<li>Backend:
+<ul>
+<li><select id="backend-select"> <option value="auto" selected>Auto</option> <option value="k1s-host">k1s-Host (local)</option> <option value="k1s-docker">k1s-in-Docker (compose)</option> <option value="k3s">k3s via k3d</option> </select></li>
 <li><label><input type="checkbox" id="toggle-actions"/> Enable Controlled Actions</label></li>
 <li>Token: <input id="labs-token" type="password" placeholder="paste AE_LABS_TOKEN"/> <button id="btn-use-token" onclick="window.k1sUseToken && window.k1sUseToken()">Use Token</button> <span id="labs-token-nudge" class="nudge hidden" role="status" aria-live="polite">Paste AE_LABS_TOKEN, then click <em>Use Token</em>.</span></li>
 <li><button id="btn-start-session" class="btn-primary">Start Session</button></li>
 <li>Session: <span id="session-id">(none)</span></li>
+</ul>
+</li>
 </ul>
 <div id="env-notes"></div> <div id="backend-status" class="ribbon muted"></div> <div class="status-bar">   <span class="status-label">Direct API curl:</span>   <div class="api-curl">     <code id="api-curl"></code>     <button id="api-curl-copy" disabled>Copy</button>   </div>   <span class="status-label">Status:</span>   <div class="status-stack">     <span id="status-summary" class="pending" hx-ext="sse" sse-connect="" sse-swap="message">n/a</span>     <div class="status-toggle" role="group" aria-label="Status scope">       <button id="status-mode-app" type="button" aria-pressed="false" title="Focus on the app from this session">App</button>       <button id="status-mode-cluster" type="button" class="is-active" aria-pressed="true" title="Show totals across all apps">Cluster</button>     </div>   </div>   <span id="status-mode-note" class="status-note nudge">Cluster shows totals across all apps. Switch to App after applying an example.</span> </div>
 <!-- Global banner for errors and important notices --> <div id="banner" class="ribbon hidden"></div>
@@ -461,21 +460,11 @@ helm uninstall demochart -n demo-helm &amp;&amp; kubectl delete namespace demo-h
 <h2>B. Apply Example</h2>
 <p>Pick a sample and apply it. In read-only mode the UI shows the exact CLI you can run locally. Each example is an <code>App</code> spec YAML: <code>apiVersion</code> and <code>kind</code> identify the schema, <code>metadata.name</code> becomes the app's ID, and <code>spec</code> is where you describe what to run and how it should behave. Typical <code>spec</code> fields include <code>image</code> (container), <code>replicas</code> (how many), <code>ports</code>/<code>service</code> (how traffic reaches it), <code>health</code> checks, plus optional sections like <code>ingress</code>, <code>resources</code>, <code>security</code>, <code>storage</code>, and <code>configRefs</code>/<code>secretRefs</code> for configuration.</p>
 <ul>
-<li>Example:</li>
-<li><select id="example-select">
-<option value="echo" selected>echo</option>
-<option value="multi-replica-echo">multi-replica-echo</option>
-<option value="echo-multiport">echo-multiport</option>
-<option value="echo-hpa">echo-hpa</option>
-<option value="echo-resources">echo-resources</option>
-<option value="echo-stateful">echo-stateful</option>
-<option value="echo-sec">echo-sec</option>
-<option value="echo-sec-adv">echo-sec-adv</option>
-<option value="echo-tcp">echo-tcp</option>
-<option value="echo-exec">echo-exec</option>
-<option value="echo-storage">echo-storage</option>
-<option value="echo-storage-delete">echo-storage-delete</option>
-</select></li>
+<li>Example:
+<ul>
+<li><select id="example-select"> <option value="echo" selected>echo</option> <option value="multi-replica-echo">multi-replica-echo</option> <option value="echo-multiport">echo-multiport</option> <option value="echo-hpa">echo-hpa</option> <option value="echo-resources">echo-resources</option> <option value="echo-stateful">echo-stateful</option> <option value="echo-sec">echo-sec</option> <option value="echo-sec-adv">echo-sec-adv</option> <option value="echo-tcp">echo-tcp</option> <option value="echo-exec">echo-exec</option> <option value="echo-storage">echo-storage</option> <option value="echo-storage-delete">echo-storage-delete</option> </select></li>
+</ul>
+</li>
 <li>Action: <button id="btn-apply-echo" class="btn-primary" disabled>Apply Selected Example</button></li>
 <li>YAML (read-only):</li>
 </ul>
@@ -563,7 +552,7 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-17 18:52:18</span>
+        <span>Built 2026-01-20 10:34:45</span>
       </div>
     </footer>
     <script>
