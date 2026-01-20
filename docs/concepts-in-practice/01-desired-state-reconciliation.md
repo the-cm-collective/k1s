@@ -157,3 +157,6 @@ python -m ae.cli metrics
                 (...)
             )
 ```
+## Chapter navigation
+- Next: [Chapter 02 - Declarative Specs and Apply Semantics](concepts-in-practice-02-declarative-apply.html)
+

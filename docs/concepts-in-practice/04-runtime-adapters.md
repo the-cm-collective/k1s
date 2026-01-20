@@ -139,3 +139,7 @@ def runtime_factory(registry_auth: RegistryAuthProvider | None = None) -> Runtim
             return DockerRuntime(registry_auth=registry_auth)
     return DockerRuntime(registry_auth=registry_auth)
 ```
+## Chapter navigation
+- Prev: [Chapter 03 - Scheduling and Placement (Where Work Runs)](concepts-in-practice-03-scheduling-placement.html)
+- Next: [Chapter 05 - Ingress and Service Exposure](concepts-in-practice-05-ingress-service-exposure.html)
+
