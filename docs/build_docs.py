@@ -54,7 +54,6 @@ EXPORT_NON_INTERACTIVE = _truthy_env("DOCS_NON_INTERACTIVE") or _truthy_env(
 INTERACTIVE_HREF_TOKENS = ("/swagger", "/redoc", "/dashboard", "playground.html", "/playground")
 
 NAV_LINKS = [
-    ("Home", "index.html", False, False),
     ("Start Here", "start-here.html", False, False),
     ("Overview", "overview.html", False, False),
     ("Demos", "examples.html", False, False),
@@ -217,7 +216,7 @@ TEMPLATE = """<!doctype html>
         align-items: center;
         flex-wrap: wrap;
         gap: .6rem;
-        justify-content: flex-start;
+        justify-content: center;
         margin: 0 auto 1.25rem auto;
         width: min(100%, 1320px);
         padding: 10px 16px;
@@ -540,6 +539,22 @@ TEMPLATE = """<!doctype html>
       .hero-card pre {
         margin: 8px 0 0;
         font-size: 12px;
+      }
+      .hero-index {
+        grid-template-columns: minmax(280px, 1.1fr) minmax(320px, 2fr);
+      }
+      .hero-index .hero-actions {
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+      .hero-card--section {
+        min-height: 180px;
+      }
+      .hero-links--dense {
+        gap: 8px;
+      }
+      .hero-links--dense .hero-link {
+        font-size: 12px;
+        padding: 6px 10px;
       }
       .callout, blockquote {
         border-left: 4px solid var(--k1s-primary-soft);
@@ -1638,36 +1653,126 @@ def main() -> None:
     if EXPORT_NON_INTERACTIVE:
         mapping.pop("guides/playground.md", None)
 
-    index_links = [
-        ("Start Here (Onboarding)", "start-here.html", False, False),
+    def render_link(label: str, href: str, external: bool) -> str:
+        attrs = ' target="_blank" rel="noopener"' if external else ""
+        return f'<a class="hero-link" href="{href}"{attrs}>{html.escape(label)}</a>'
+
+    index_quick_links = [
+        ("Start Here", "start-here.html", False, False),
         ("Overview", "overview.html", False, False),
-        ("Demos &amp; Examples", "examples.html", False, False),
-        ("Architecture", "architecture.html", False, False),
-        ("Multi-Node Lab", "multinode-lab.html", False, False),
-        ("HTTP API", "http-api.html", False, False),
-        ("API Shim Compatibility", "apishim-compatibility-matrix.html", False, False),
-        ("Ingress", "ingress.html", False, False),
-        ("API Auth", "api-auth.html", False, False),
-        ("Concepts", "concepts.html", False, False),
-        ("Configs &amp; Secrets", "configs-secrets.html", False, False),
-        ("Rollouts", "rollouts.html", False, False),
-        ("Storage", "storage.html", False, False),
-        ("Observability", "observability.html", False, False),
-        ("Benchmarks", "benchmarks.html", False, False),
-        ("Scheduling", "scheduling.html", False, False),
-        ("End-to-End Guide", "e2e.html", False, False),
-        ("K8s Compliance Status", "k8s-compliance.html", False, False),
+        ("Live Hive Dashboard", "/dashboard", True, True),
         ("Interactive Lab Playground", "playground.html", True, False),
-        ("Concepts in Practice", "concepts-in-practice.html", False, False),
-        ("Live Demo Dashboard", "/dashboard", True, True),
     ]
-    index_items = []
-    for label, href, interactive, external in index_links:
+
+    index_sections = [
+        {
+            "title": "Getting Started",
+            "desc": "Fast onboarding paths, demos, and architecture context.",
+            "links": [
+                ("Start Here", "start-here.html", False, False),
+                ("Overview", "overview.html", False, False),
+                ("Demos & Examples", "examples.html", False, False),
+                ("Architecture", "architecture.html", False, False),
+            ],
+        },
+        {
+            "title": "Labs & Concepts",
+            "desc": "Hands-on labs and the reconciliation mental model.",
+            "links": [
+                ("Multi-Node Lab", "multinode-lab.html", False, False),
+                ("Concepts", "concepts.html", False, False),
+                ("Concepts in Practice", "concepts-in-practice.html", False, False),
+            ],
+        },
+        {
+            "title": "Platform Guides",
+            "desc": "Storage, rollouts, and runtime configuration guides.",
+            "links": [
+                ("Configs & Secrets", "configs-secrets.html", False, False),
+                ("Rollouts", "rollouts.html", False, False),
+                ("Storage", "storage.html", False, False),
+                ("Scheduling", "scheduling.html", False, False),
+            ],
+        },
+        {
+            "title": "Networking & API",
+            "desc": "Ingress, auth, and API compatibility details.",
+            "links": [
+                ("HTTP API", "http-api.html", False, False),
+                ("API Shim Compatibility", "apishim-compatibility-matrix.html", False, False),
+                ("Ingress", "ingress.html", False, False),
+                ("API Auth", "api-auth.html", False, False),
+            ],
+        },
+        {
+            "title": "Ops & Observability",
+            "desc": "Runbooks, benchmarks, and observability surfaces.",
+            "links": [
+                ("Observability", "observability.html", False, False),
+                ("Benchmarks", "benchmarks.html", False, False),
+                ("End-to-End Guide", "e2e.html", False, False),
+                ("K8s Compliance Status", "k8s-compliance.html", False, False),
+            ],
+        },
+        {
+            "title": "Interactive Surfaces",
+            "desc": "Live dashboards and interactive playgrounds.",
+            "links": [
+                ("Live Hive Dashboard", "/dashboard", True, True),
+                ("Interactive Lab Playground", "playground.html", True, False),
+            ],
+        },
+    ]
+
+    quick_links_html = []
+    for label, href, interactive, external in index_quick_links:
         if interactive and not include_interactive:
             continue
-        attrs = ' target="_blank" rel="noopener"' if external else ""
-        index_items.append(f'  <li><a href="{href}"{attrs}>{label}</a></li>')
-    index = "<h1>k1s Documentation</h1>\n<ul>\n" + "\n".join(index_items) + "\n</ul>\n"
+        quick_links_html.append(render_link(label, href, external))
+
+    card_html = []
+    for section in index_sections:
+        link_bits = []
+        for label, href, interactive, external in section["links"]:
+            if interactive and not include_interactive:
+                continue
+            link_bits.append(render_link(label, href, external))
+        if not link_bits:
+            continue
+        card_html.append(
+            "\n".join(
+                [
+                    '  <div class="hero-card hero-card--section">',
+                    f'    <h2>{html.escape(section["title"])}</h2>',
+                    f'    <p>{html.escape(section["desc"])}</p>',
+                    '    <div class="hero-links hero-links--dense">',
+                    "      " + "\n      ".join(link_bits),
+                    "    </div>",
+                    "  </div>",
+                ]
+            )
+        )
+
+    index = "\n".join(
+        [
+            '<div class="hero hero-index">',
+            '  <div class="hero-brand">',
+            '    <div class="hero-logo-row">',
+            '      <img src="static/k1s-logo-horizontal.png" alt="k1s logo" class="hero-logo" />',
+            '      <span class="hero-pill">Docs Hub</span>',
+            "    </div>",
+            "    <h1>k1s Documentation</h1>",
+            "    <p class=\"hero-tagline\">Guides, labs, and reference for building, operating, and observing k1s clusters.</p>",
+            '    <div class="hero-links">',
+            "      " + "\n      ".join(quick_links_html),
+            "    </div>",
+            "  </div>",
+            '  <div class="hero-actions">',
+            "\n".join(card_html),
+            "  </div>",
+            "</div>",
+        ]
+    )
     (OUT / "index.html").write_text(
         render_template(
             title="k1s Docs",

@@ -86,7 +86,7 @@
         align-items: center;
         flex-wrap: wrap;
         gap: .6rem;
-        justify-content: flex-start;
+        justify-content: center;
         margin: 0 auto 1.25rem auto;
         width: min(100%, 1320px);
         padding: 10px 16px;
@@ -410,6 +410,22 @@
         margin: 8px 0 0;
         font-size: 12px;
       }
+      .hero-index {
+        grid-template-columns: minmax(280px, 1.1fr) minmax(320px, 2fr);
+      }
+      .hero-index .hero-actions {
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+      .hero-card--section {
+        min-height: 180px;
+      }
+      .hero-links--dense {
+        gap: 8px;
+      }
+      .hero-links--dense .hero-link {
+        font-size: 12px;
+        padding: 6px 10px;
+      }
       .callout, blockquote {
         border-left: 4px solid var(--k1s-primary-soft);
         background: var(--k1s-card-bg);
@@ -536,7 +552,6 @@
   <body>
     <nav>
       <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.png" alt="k1s logo" /><span>k1s docs</span></a>
-      <a href="index.html">Home</a>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
@@ -671,7 +686,7 @@ python -m ae.cli history echo --limit 20</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-20 12:57:58</span>
+        <span>Built 2026-01-20 13:58:37</span>
       </div>
     </footer>
     <script>
