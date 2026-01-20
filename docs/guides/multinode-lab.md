@@ -1,6 +1,6 @@
-# Multi-node Lab Walkthrough (Phase 7)
+# Multi-node Lab Walkthrough
 
-Use this quickstart to exercise the multi-node path on two Linux hosts (one controller + one worker). It mirrors the Phase 7 smoke the CI job will run.
+Use this quickstart to exercise the multi-node path on two Linux hosts (one controller + one worker). It mirrors the multi-node smoke the CI job will run.
 
 ## Prereqs
 - Two hosts (or VMs) with Python 3.11+, Podman or Docker, WireGuard tools (`wg`, `wg-quick`), and passwordless SSH between them for convenience.

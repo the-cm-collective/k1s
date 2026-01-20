@@ -86,7 +86,7 @@
         align-items: center;
         flex-wrap: wrap;
         gap: .6rem;
-        justify-content: flex-start;
+        justify-content: center;
         margin: 0 auto 1.25rem auto;
         width: min(100%, 1320px);
         padding: 10px 16px;
@@ -410,6 +410,22 @@
         margin: 8px 0 0;
         font-size: 12px;
       }
+      .hero-index {
+        grid-template-columns: minmax(280px, 1.1fr) minmax(320px, 2fr);
+      }
+      .hero-index .hero-actions {
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+      .hero-card--section {
+        min-height: 180px;
+      }
+      .hero-links--dense {
+        gap: 8px;
+      }
+      .hero-links--dense .hero-link {
+        font-size: 12px;
+        padding: 6px 10px;
+      }
       .callout, blockquote {
         border-left: 4px solid var(--k1s-primary-soft);
         background: var(--k1s-card-bg);
@@ -536,7 +552,6 @@
   <body>
     <nav>
       <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.png" alt="k1s logo" /><span>k1s docs</span></a>
-      <a href="index.html">Home</a>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
@@ -563,31 +578,81 @@
       </svg>
     </button>
     <div class="container">
+    <div class="hero hero-index">
+  <div class="hero-brand">
+    <div class="hero-logo-row">
+      <img src="static/k1s-logo-horizontal.png" alt="k1s logo" class="hero-logo" />
+      <span class="hero-pill">Docs Hub</span>
+    </div>
     <h1>k1s Documentation</h1>
-<ul>
-  <li><a href="start-here.html">Start Here (Onboarding)</a></li>
-  <li><a href="overview.html">Overview</a></li>
-  <li><a href="examples.html">Demos &amp; Examples</a></li>
-  <li><a href="architecture.html">Architecture</a></li>
-  <li><a href="multinode-lab.html">Multi-Node Lab</a></li>
-  <li><a href="http-api.html">HTTP API</a></li>
-  <li><a href="apishim-compatibility-matrix.html">API Shim Compatibility</a></li>
-  <li><a href="ingress.html">Ingress</a></li>
-  <li><a href="api-auth.html">API Auth</a></li>
-  <li><a href="concepts.html">Concepts</a></li>
-  <li><a href="configs-secrets.html">Configs &amp; Secrets</a></li>
-  <li><a href="rollouts.html">Rollouts</a></li>
-  <li><a href="storage.html">Storage</a></li>
-  <li><a href="observability.html">Observability</a></li>
-  <li><a href="benchmarks.html">Benchmarks</a></li>
-  <li><a href="scheduling.html">Scheduling</a></li>
-  <li><a href="e2e.html">End-to-End Guide</a></li>
-  <li><a href="k8s-compliance.html">K8s Compliance Status</a></li>
-  <li><a href="playground.html">Interactive Lab Playground</a></li>
-  <li><a href="concepts-in-practice.html">Concepts in Practice</a></li>
-  <li><a href="/dashboard" target="_blank" rel="noopener">Live Demo Dashboard</a></li>
-</ul>
-
+    <p class="hero-tagline">Guides, labs, and reference for building, operating, and observing k1s clusters.</p>
+    <div class="hero-links">
+      <a class="hero-link" href="start-here.html">Start Here</a>
+      <a class="hero-link" href="overview.html">Overview</a>
+      <a class="hero-link" href="/dashboard" target="_blank" rel="noopener">Live Hive Dashboard</a>
+      <a class="hero-link" href="playground.html">Interactive Lab Playground</a>
+    </div>
+  </div>
+  <div class="hero-actions">
+  <div class="hero-card hero-card--section">
+    <h2>Getting Started</h2>
+    <p>Fast onboarding paths, demos, and architecture context.</p>
+    <div class="hero-links hero-links--dense">
+      <a class="hero-link" href="start-here.html">Start Here</a>
+      <a class="hero-link" href="overview.html">Overview</a>
+      <a class="hero-link" href="examples.html">Demos &amp; Examples</a>
+      <a class="hero-link" href="architecture.html">Architecture</a>
+    </div>
+  </div>
+  <div class="hero-card hero-card--section">
+    <h2>Labs &amp; Concepts</h2>
+    <p>Hands-on labs and the reconciliation mental model.</p>
+    <div class="hero-links hero-links--dense">
+      <a class="hero-link" href="multinode-lab.html">Multi-Node Lab</a>
+      <a class="hero-link" href="concepts.html">Concepts</a>
+      <a class="hero-link" href="concepts-in-practice.html">Concepts in Practice</a>
+    </div>
+  </div>
+  <div class="hero-card hero-card--section">
+    <h2>Platform Guides</h2>
+    <p>Storage, rollouts, and runtime configuration guides.</p>
+    <div class="hero-links hero-links--dense">
+      <a class="hero-link" href="configs-secrets.html">Configs &amp; Secrets</a>
+      <a class="hero-link" href="rollouts.html">Rollouts</a>
+      <a class="hero-link" href="storage.html">Storage</a>
+      <a class="hero-link" href="scheduling.html">Scheduling</a>
+    </div>
+  </div>
+  <div class="hero-card hero-card--section">
+    <h2>Networking &amp; API</h2>
+    <p>Ingress, auth, and API compatibility details.</p>
+    <div class="hero-links hero-links--dense">
+      <a class="hero-link" href="http-api.html">HTTP API</a>
+      <a class="hero-link" href="apishim-compatibility-matrix.html">API Shim Compatibility</a>
+      <a class="hero-link" href="ingress.html">Ingress</a>
+      <a class="hero-link" href="api-auth.html">API Auth</a>
+    </div>
+  </div>
+  <div class="hero-card hero-card--section">
+    <h2>Ops &amp; Observability</h2>
+    <p>Runbooks, benchmarks, and observability surfaces.</p>
+    <div class="hero-links hero-links--dense">
+      <a class="hero-link" href="observability.html">Observability</a>
+      <a class="hero-link" href="benchmarks.html">Benchmarks</a>
+      <a class="hero-link" href="e2e.html">End-to-End Guide</a>
+      <a class="hero-link" href="k8s-compliance.html">K8s Compliance Status</a>
+    </div>
+  </div>
+  <div class="hero-card hero-card--section">
+    <h2>Interactive Surfaces</h2>
+    <p>Live dashboards and interactive playgrounds.</p>
+    <div class="hero-links hero-links--dense">
+      <a class="hero-link" href="/dashboard" target="_blank" rel="noopener">Live Hive Dashboard</a>
+      <a class="hero-link" href="playground.html">Interactive Lab Playground</a>
+    </div>
+  </div>
+  </div>
+</div>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -595,7 +660,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-20 12:57:57</span>
+        <span>Built 2026-01-20 13:58:37</span>
       </div>
     </footer>
     <script>
