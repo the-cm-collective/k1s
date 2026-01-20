@@ -20,7 +20,7 @@ The three pillars serve different purposes: metrics answer "how much" and "how m
 flowchart LR
   State[SQLite state] --> MetricsSvc[MetricsService]
   MetricsSvc --> CLI[ae cli metrics]
-  MetricsSvc --> HTTP[/metrics HTTP]
+  MetricsSvc --> HTTP["/metrics HTTP"]
   State --> Events[Events table]
   Events --> CLI2[ae cli events]
 ```
@@ -111,4 +111,3 @@ def handle_events(...):
 ## Chapter navigation
 - Prev: [Chapter 05 - Ingress and Service Exposure](concepts-in-practice-05-ingress-service-exposure.html)
 - Next: [Chapter 07 - Health Probes and Readiness/Liveness](concepts-in-practice-07-health-probes.html)
-
