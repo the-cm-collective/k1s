@@ -509,6 +509,21 @@ TEMPLATE = """<!doctype html>
         font-weight: 600;
         font-size: 13px;
       }
+      .hero-link--stack {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .hero-link-title {
+        font-weight: 700;
+        font-size: 13px;
+      }
+      .hero-link-sub {
+        font-weight: 400;
+        font-size: 11px;
+        line-height: 1.3;
+        color: var(--k1s-text-muted);
+      }
       .hero-link:hover {
         border-color: var(--k1s-brand-gold);
         color: var(--fg);
@@ -997,7 +1012,9 @@ def build_one(
     nav_html: str,
     strip_interactive_links: bool,
 ) -> None:
-    allow_raw = md_path.name in {"playground.md", "start-here.md"}
+    allow_raw = md_path.name in {"playground.md", "start-here.md"} or (
+        md_path.name == "index.md" and md_path.parent.name == "concepts-in-practice"
+    )
     html_body = md_to_html(
         md_path.read_text(encoding="utf-8"),
         allow_raw_html=allow_raw,
