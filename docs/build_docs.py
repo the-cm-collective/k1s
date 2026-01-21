@@ -108,6 +108,8 @@ def render_template(
     extra_head: str,
     footer_text: str,
     nav_html: str,
+    api_mode_widget: str,
+    api_mode_script: str,
 ) -> str:
     """Render TEMPLATE safely without str.format interfering with braces.
 
@@ -120,6 +122,8 @@ def render_template(
         .replace("{extra_head}", "{__EXTRA__}")
         .replace("{footer_text}", "{__FOOT__}")
         .replace("{nav}", "{__NAV__}")
+        .replace("{api_mode_widget}", "{__API_MODE_WIDGET__}")
+        .replace("{api_mode_script}", "{__API_MODE_SCRIPT__}")
     )
     t = t.replace("{__TITLE__}", title)
     t = t.replace("{__BODY__}", body)
@@ -127,6 +131,8 @@ def render_template(
     t = t.replace("{__EXTRA__}", extra_head)
     t = t.replace("{__FOOT__}", footer_text)
     t = t.replace("{__NAV__}", nav_html)
+    t = t.replace("{__API_MODE_WIDGET__}", api_mode_widget)
+    t = t.replace("{__API_MODE_SCRIPT__}", api_mode_script)
     return t
 
 
@@ -715,41 +721,57 @@ TEMPLATE = """<!doctype html>
       <div class="container inner">
         <span>k1s Documentation</span>
         <span class="spacer"></span>
-        <button id="api-mode-toggle">API Mode</button>
-        <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
+{api_mode_widget}
         <span>{footer_text}</span>
       </div>
     </footer>
-    <script>
-      (function() {
-        var btn = document.getElementById('api-mode-toggle');
-        if (!btn) return;
-        function label() {
-          var mode = localStorage.getItem('docsApiMode') || 'proxy';
-          btn.textContent = (mode === 'direct') ? 'API Mode: Direct' : 'API Mode: Proxy';
-          var lab = document.getElementById('api-mode-label');
-          if (lab) {
-            if (mode === 'direct') {
-              var base = (window.DOCS_API_BASE||'').trim() || '(unset)';
-              lab.textContent = ' [' + base + ']';
-            } else {
-              lab.textContent = ' (proxy)';
-            }
-          }
-        }
-        btn.addEventListener('click', function() {
-          var cur = localStorage.getItem('docsApiMode') || 'proxy';
-          var next = (cur === 'direct') ? 'proxy' : 'direct';
-          localStorage.setItem('docsApiMode', next);
-          label();
-          if (location.pathname.endsWith('playground.html')) location.reload();
-        });
-        label();
-      })();
-    </script>
+{api_mode_script}
   </body>
 </html>
 """
+
+
+def api_mode_fragments(include: bool) -> tuple[str, str]:
+    if not include:
+        return ("", "")
+    widget = "\n".join(
+        [
+            '        <button id="api-mode-toggle">API Mode</button>',
+            '        <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>',
+        ]
+    )
+    script = "\n".join(
+        [
+            "    <script>",
+            "      (function() {",
+            "        var btn = document.getElementById('api-mode-toggle');",
+            "        if (!btn) return;",
+            "        function label() {",
+            "          var mode = localStorage.getItem('docsApiMode') || 'proxy';",
+            "          btn.textContent = (mode === 'direct') ? 'API Mode: Direct' : 'API Mode: Proxy';",
+            "          var lab = document.getElementById('api-mode-label');",
+            "          if (lab) {",
+            "            if (mode === 'direct') {",
+            "              var base = (window.DOCS_API_BASE||'').trim() || '(unset)';",
+            "              lab.textContent = ' [' + base + ']';",
+            "            } else {",
+            "              lab.textContent = ' (proxy)';",
+            "            }",
+            "          }",
+            "        }",
+            "        btn.addEventListener('click', function() {",
+            "          var cur = localStorage.getItem('docsApiMode') || 'proxy';",
+            "          var next = (cur === 'direct') ? 'proxy' : 'direct';",
+            "          localStorage.setItem('docsApiMode', next);",
+            "          label();",
+            "          if (location.pathname.endsWith('playground.html')) location.reload();",
+            "        });",
+            "        label();",
+            "      })();",
+            "    </script>",
+        ]
+    )
+    return (widget, script)
 
 
 def format_inline(
@@ -1013,6 +1035,8 @@ def build_one(
     *,
     nav_html: str,
     strip_interactive_links: bool,
+    api_mode_widget: str,
+    api_mode_script: str,
 ) -> None:
     allow_raw = md_path.name in {"playground.md", "start-here.md"} or (
         md_path.name == "index.md" and md_path.parent.name == "concepts-in-practice"
@@ -1621,6 +1645,8 @@ def build_one(
             extra_head=extra_head,
             footer_text=f"Built {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             nav_html=nav_html,
+            api_mode_widget=api_mode_widget,
+            api_mode_script=api_mode_script,
         ),
         encoding="utf-8",
     )
@@ -1630,6 +1656,7 @@ def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     include_interactive = not EXPORT_NON_INTERACTIVE
     nav_html = render_nav(include_interactive=include_interactive)
+    api_mode_widget, api_mode_script = api_mode_fragments(include_interactive)
     # Copy static assets if present
     try:
         static_src = SRC / "static"
@@ -1776,6 +1803,8 @@ def main() -> None:
             extra_head="",
             footer_text=f"Built {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             nav_html=nav_html,
+            api_mode_widget=api_mode_widget,
+            api_mode_script=api_mode_script,
         ),
         encoding="utf-8",
     )
@@ -1786,6 +1815,8 @@ def main() -> None:
             OUT / out_name,
             nav_html=nav_html,
             strip_interactive_links=EXPORT_NON_INTERACTIVE,
+            api_mode_widget=api_mode_widget,
+            api_mode_script=api_mode_script,
         )
 
     # Copy curated example YAMLs to /examples for playground preview
