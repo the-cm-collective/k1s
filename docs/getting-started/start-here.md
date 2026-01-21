@@ -46,7 +46,7 @@ Terminology: k1s "Apps" are Deployment-like workloads; replicas map to Pods; Ser
 - Optional (for ingress/docs via Caddy and Prometheus): `docker compose` or `podman compose`
 - Optional (for multi-node lab): two Linux hosts/VMs with WireGuard tools and rootful networking
 
-## Option A — Zero‑to‑Demo (automated)
+## Option A — Zero‑to‑Labs (automated)
 This script provisions a local demo stack, serves docs, starts the controller API, and applies sample workloads (Apps).
 
 1) Run the demo initializer (adds hosts; Ctrl‑C safe):
