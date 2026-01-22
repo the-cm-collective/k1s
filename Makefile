@@ -75,6 +75,7 @@ uninstall-docs-service:
 			@bash scripts/install.sh docs-uninstall --disable
 
 .PHONY: docs docs-export docs-wiki-export
+DOCS_OUT_DIR ?= docs/export
 docs:
 	@SNAP_ROOT=$${SNAP_ROOT:-snapshots}; \
 	if find "$$SNAP_ROOT" -maxdepth 2 -name summary.json -print -quit 2>/dev/null | grep -q .; then \
@@ -90,7 +91,7 @@ docs:
 	@python docs/build_docs.py
 
 docs-export:
-	@DOCS_OUT_DIR=docs/export DOCS_NON_INTERACTIVE=1 $(MAKE) docs
+	@DOCS_OUT_DIR=$(DOCS_OUT_DIR) DOCS_NON_INTERACTIVE=1 $(MAKE) docs
 
 docs-wiki-export:
 	@DOCS_WIKI_OUT_DIR=$${WIKI_OUT:-docs/wiki} DOCS_NON_INTERACTIVE=1 python docs/export_wiki.py
