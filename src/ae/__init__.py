@@ -1,6 +1,6 @@
 """ae package root for the minimal application engine."""
 
-__version__ = "0.1.1"
+__version__ = "0.1.2.dev0"
 
 
 def build_info() -> dict:

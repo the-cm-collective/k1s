@@ -1021,7 +1021,7 @@ def _swagger_doc() -> dict[str, Any]:
     }
     doc = {
         "swagger": "2.0",
-        "info": {"title": "k1s apishim", "version": "0.1.1"},
+        "info": {"title": "k1s apishim", "version": "0.1.2.dev0"},
         "produces": ["application/json"],
         "schemes": ["http"],
         "paths": {
