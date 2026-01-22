@@ -53,6 +53,11 @@ EXPORT_NON_INTERACTIVE = _truthy_env("DOCS_NON_INTERACTIVE") or _truthy_env(
     "DOCS_EXPORT_NON_INTERACTIVE"
 )
 
+RSS_FEED_URL = os.getenv("DOCS_RSS_FEED_URL", "https://codeberg.org/th3_4rchit3ct/k1s.rss").strip()
+RSS_FEED_TITLE = "k1s Repo Activity"
+SOURCE_REPO_URL = os.getenv("DOCS_SOURCE_REPO_URL", "https://codeberg.org/th3_4rchit3ct/k1s").strip()
+SOURCE_REPO_LABEL = "Canonical (Upstream) Repository"
+
 INTERACTIVE_HREF_TOKENS = ("/swagger", "/redoc", "/dashboard", "playground.html", "/playground")
 
 NAV_LINKS = [
@@ -84,7 +89,7 @@ def render_nav(*, include_interactive: bool) -> str:
     parts = []
     parts.append(
         '      <a class="nav-brand" href="index.html" aria-label="k1s docs home">'
-        '<img src="static/k1s-logo-circle.png" alt="k1s logo" />'
+        '<img src="static/k1s-logo-circle.svg" alt="k1s logo" />'
         '<span>k1s docs</span>'
         "</a>"
     )
@@ -143,8 +148,11 @@ TEMPLATE = """<!doctype html>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>{title}</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
     <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-16x16.svg"/>
     <link rel="icon" type="image/png" sizes="16x16" href="static/favicon-16x16.png"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-48x48.svg"/>
     <link rel="icon" type="image/png" sizes="48x48" href="static/favicon-48x48.png"/>
     <link rel="apple-touch-icon" sizes="180x180" href="static/icon-180x180.png"/>
     <style>
@@ -207,6 +215,7 @@ TEMPLATE = """<!doctype html>
     <style>
       /* Base layout aligned to dashboard palette */
       html { height: 100%; }
+      *, *::before, *::after { box-sizing: border-box; }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
         margin: 0;
@@ -219,6 +228,7 @@ TEMPLATE = """<!doctype html>
         background: var(--bg);
         color: var(--fg);
       }
+      img { max-width: 100%; height: auto; }
       nav {
         display: flex;
         align-items: center;
@@ -348,6 +358,8 @@ TEMPLATE = """<!doctype html>
         color: var(--fg);
         border-radius: 8px;
       }
+      code { overflow-wrap: anywhere; }
+      pre code { overflow-wrap: normal; }
       table {
         width: 100%;
         border-collapse: collapse;
@@ -461,7 +473,7 @@ TEMPLATE = """<!doctype html>
         bottom: -36px;
         width: 220px;
         height: 220px;
-        background: url('static/k1s-logo-circle.png') no-repeat center / contain;
+        background: url('static/k1s-logo-circle.svg') no-repeat center / contain;
         opacity: 0.12;
         pointer-events: none;
       }
@@ -480,6 +492,7 @@ TEMPLATE = """<!doctype html>
       .hero-logo {
         width: min(320px, 90%);
         height: auto;
+        opacity: 0.85;
       }
       .hero-pill {
         padding: 6px 12px;
@@ -506,6 +519,34 @@ TEMPLATE = """<!doctype html>
         flex-wrap: wrap;
         gap: 10px;
         margin-top: 6px;
+      }
+      .hero-repo {
+        margin-top: 14px;
+        padding: 10px 12px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px 10px;
+        border: 1px solid var(--k1s-border);
+        border-radius: 12px;
+        background: var(--k1s-panel);
+        box-shadow: 0 8px 22px rgba(0,0,0,0.18);
+      }
+      .hero-repo-label {
+        font-size: 0.7rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-link {
+        color: var(--link);
+        font-weight: 600;
+        text-decoration: none;
+        word-break: break-word;
+      }
+      .hero-repo-link:hover {
+        color: var(--link-hover);
+        text-decoration: underline;
       }
       .hero-link {
         text-decoration: none;
@@ -604,6 +645,69 @@ TEMPLATE = """<!doctype html>
         gap: .75rem;
         padding: 14px 0;
         opacity: .85;
+      }
+      @media (hover: none) {
+        .copy-btn { opacity: .92; }
+        pre.has-copy { padding-top: 36px; }
+      }
+      @media (max-width: 980px) {
+        body { padding: 1.5rem; }
+        nav {
+          width: 100%;
+          padding: 8px 10px;
+          gap: .5rem;
+          justify-content: flex-start;
+        }
+        nav a {
+          padding: 6px 10px;
+          font-size: 12px;
+        }
+        nav .nav-brand {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+        }
+        .hero {
+          padding: 18px;
+        }
+        .hero h1 { font-size: 28px; }
+        .hero-tagline { font-size: 14px; }
+        .hero-index { grid-template-columns: 1fr; }
+        .hero-actions { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+        .hero-card--section { min-height: auto; }
+        .theme-fab { right: 12px; bottom: 88px; }
+        footer.site-footer .inner { flex-wrap: wrap; }
+      }
+      @media (max-width: 720px) {
+        body { padding: 1.1rem; }
+        nav {
+          top: 8px;
+          flex-wrap: nowrap;
+          overflow-x: auto;
+          scrollbar-width: none;
+        }
+        nav::-webkit-scrollbar { width: 0; height: 0; }
+        nav a { flex: 0 0 auto; }
+        nav::after { left: 8px; right: 8px; }
+        h1 { font-size: 24px; }
+        h2 { font-size: 18px; }
+        h3 { font-size: 15px; }
+        .hero { padding: 16px; }
+        .hero-logo { width: min(220px, 90%); }
+        .hero-pill { font-size: 11px; }
+        .hero-links { gap: 8px; }
+        .hero-link { font-size: 12px; }
+        .hero-actions { grid-template-columns: 1fr; }
+        .theme-fab { bottom: 24px; width: 48px; height: 48px; }
+        pre { font-size: 13px; }
+        table {
+          display: block;
+          max-width: 100%;
+          width: max-content;
+          min-width: 100%;
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+        }
+        thead th, tbody td { padding: 10px 12px; }
       }
     </style>
     <script>
@@ -1675,6 +1779,11 @@ def main() -> None:
         for src in INTERACTIVE_SOURCES:
             mapping.pop(src, None)
 
+    rss_feed_url = RSS_FEED_URL
+    rss_feed_title = RSS_FEED_TITLE
+    source_repo_url = SOURCE_REPO_URL
+    source_repo_label = SOURCE_REPO_LABEL
+
     def render_link(label: str, href: str, external: bool) -> str:
         attrs = ' target="_blank" rel="noopener"' if external else ""
         return f'<a class="hero-link" href="{href}"{attrs}>{html.escape(label)}</a>'
@@ -1685,6 +1794,8 @@ def main() -> None:
         ("Live Hive Dashboard", "/dashboard", True, True),
         ("Interactive Lab Playground", "playground.html", True, False),
     ]
+    if rss_feed_url:
+        index_quick_links.append(("RSS Feed", rss_feed_url, False, True))
 
     index_sections = [
         {
@@ -1775,12 +1886,26 @@ def main() -> None:
             )
         )
 
+    repo_section = ""
+    if source_repo_url:
+        repo_section = "\n".join(
+            [
+                '    <div class="hero-repo">',
+                f'      <span class="hero-repo-label">{html.escape(source_repo_label)}</span>',
+                (
+                    f'      <a class="hero-repo-link" href="{html.escape(source_repo_url)}" '
+                    'target="_blank" rel="noopener">'
+                    f"{html.escape(source_repo_url)}</a>"
+                ),
+                "    </div>",
+            ]
+        )
     index = "\n".join(
         [
             '<div class="hero hero-index">',
             '  <div class="hero-brand">',
             '    <div class="hero-logo-row">',
-            '      <img src="static/k1s-logo-horizontal.png" alt="k1s logo" class="hero-logo" />',
+            '      <img src="static/k1s-logo-horizontal.svg" alt="k1s logo" class="hero-logo" />',
             '      <span class="hero-pill">Docs Hub</span>',
             "    </div>",
             "    <h1>k1s Documentation</h1>",
@@ -1788,6 +1913,7 @@ def main() -> None:
             '    <div class="hero-links">',
             "      " + "\n      ".join(quick_links_html),
             "    </div>",
+            repo_section,
             "  </div>",
             '  <div class="hero-actions">',
             "\n".join(card_html),
@@ -1795,12 +1921,18 @@ def main() -> None:
             "</div>",
         ]
     )
+    index_extra_head = ""
+    if rss_feed_url:
+        index_extra_head = (
+            f'<link rel="alternate" type="application/rss+xml" '
+            f'title="{html.escape(rss_feed_title)}" href="{html.escape(rss_feed_url)}"/>'
+        )
     (OUT / "index.html").write_text(
         render_template(
             title="k1s Docs",
             body=index,
             api_base=API_BASE,
-            extra_head="",
+            extra_head=index_extra_head,
             footer_text=f"Built {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             nav_html=nav_html,
             api_mode_widget=api_mode_widget,

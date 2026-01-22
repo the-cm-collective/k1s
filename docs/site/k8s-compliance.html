@@ -5,8 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>K8S Compliance</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
     <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-16x16.svg"/>
     <link rel="icon" type="image/png" sizes="16x16" href="static/favicon-16x16.png"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-48x48.svg"/>
     <link rel="icon" type="image/png" sizes="48x48" href="static/favicon-48x48.png"/>
     <link rel="apple-touch-icon" sizes="180x180" href="static/icon-180x180.png"/>
     <style>
@@ -69,6 +72,7 @@
     <style>
       /* Base layout aligned to dashboard palette */
       html { height: 100%; }
+      *, *::before, *::after { box-sizing: border-box; }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
         margin: 0;
@@ -81,6 +85,7 @@
         background: var(--bg);
         color: var(--fg);
       }
+      img { max-width: 100%; height: auto; }
       nav {
         display: flex;
         align-items: center;
@@ -210,6 +215,8 @@
         color: var(--fg);
         border-radius: 8px;
       }
+      code { overflow-wrap: anywhere; }
+      pre code { overflow-wrap: normal; }
       table {
         width: 100%;
         border-collapse: collapse;
@@ -323,7 +330,7 @@
         bottom: -36px;
         width: 220px;
         height: 220px;
-        background: url('static/k1s-logo-circle.png') no-repeat center / contain;
+        background: url('static/k1s-logo-circle.svg') no-repeat center / contain;
         opacity: 0.12;
         pointer-events: none;
       }
@@ -342,6 +349,7 @@
       .hero-logo {
         width: min(320px, 90%);
         height: auto;
+        opacity: 0.85;
       }
       .hero-pill {
         padding: 6px 12px;
@@ -368,6 +376,34 @@
         flex-wrap: wrap;
         gap: 10px;
         margin-top: 6px;
+      }
+      .hero-repo {
+        margin-top: 14px;
+        padding: 10px 12px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px 10px;
+        border: 1px solid var(--k1s-border);
+        border-radius: 12px;
+        background: var(--k1s-panel);
+        box-shadow: 0 8px 22px rgba(0,0,0,0.18);
+      }
+      .hero-repo-label {
+        font-size: 0.7rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-link {
+        color: var(--link);
+        font-weight: 600;
+        text-decoration: none;
+        word-break: break-word;
+      }
+      .hero-repo-link:hover {
+        color: var(--link-hover);
+        text-decoration: underline;
       }
       .hero-link {
         text-decoration: none;
@@ -466,6 +502,69 @@
         gap: .75rem;
         padding: 14px 0;
         opacity: .85;
+      }
+      @media (hover: none) {
+        .copy-btn { opacity: .92; }
+        pre.has-copy { padding-top: 36px; }
+      }
+      @media (max-width: 980px) {
+        body { padding: 1.5rem; }
+        nav {
+          width: 100%;
+          padding: 8px 10px;
+          gap: .5rem;
+          justify-content: flex-start;
+        }
+        nav a {
+          padding: 6px 10px;
+          font-size: 12px;
+        }
+        nav .nav-brand {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+        }
+        .hero {
+          padding: 18px;
+        }
+        .hero h1 { font-size: 28px; }
+        .hero-tagline { font-size: 14px; }
+        .hero-index { grid-template-columns: 1fr; }
+        .hero-actions { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+        .hero-card--section { min-height: auto; }
+        .theme-fab { right: 12px; bottom: 88px; }
+        footer.site-footer .inner { flex-wrap: wrap; }
+      }
+      @media (max-width: 720px) {
+        body { padding: 1.1rem; }
+        nav {
+          top: 8px;
+          flex-wrap: nowrap;
+          overflow-x: auto;
+          scrollbar-width: none;
+        }
+        nav::-webkit-scrollbar { width: 0; height: 0; }
+        nav a { flex: 0 0 auto; }
+        nav::after { left: 8px; right: 8px; }
+        h1 { font-size: 24px; }
+        h2 { font-size: 18px; }
+        h3 { font-size: 15px; }
+        .hero { padding: 16px; }
+        .hero-logo { width: min(220px, 90%); }
+        .hero-pill { font-size: 11px; }
+        .hero-links { gap: 8px; }
+        .hero-link { font-size: 12px; }
+        .hero-actions { grid-template-columns: 1fr; }
+        .theme-fab { bottom: 24px; width: 48px; height: 48px; }
+        pre { font-size: 13px; }
+        table {
+          display: block;
+          max-width: 100%;
+          width: max-content;
+          min-width: 100%;
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+        }
+        thead th, tbody td { padding: 10px 12px; }
       }
     </style>
     <script>
@@ -566,7 +665,7 @@
   </head>
   <body>
     <nav>
-      <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.png" alt="k1s logo" /><span>k1s docs</span></a>
+      <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.svg" alt="k1s logo" /><span>k1s docs</span></a>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
@@ -718,7 +817,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-20 15:08:46</span>
+        <span>Built 2026-01-21 17:55:02</span>
       </div>
     </footer>
     <script>
