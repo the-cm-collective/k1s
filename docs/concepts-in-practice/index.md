@@ -1,7 +1,7 @@
 <div class="hero">
   <div class="hero-brand">
     <div class="hero-logo-row">
-      <img src="static/k1s-logo-horizontal.png" alt="k1s logo" class="hero-logo" />
+      <img src="static/k1s-logo-horizontal.svg" alt="k1s logo" class="hero-logo" />
       <span class="hero-pill">Concepts in Practice</span>
     </div>
     <h1>Concepts in Practice</h1>
