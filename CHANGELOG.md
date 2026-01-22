@@ -1,9 +1,23 @@
 # Changelog
 
-## Unreleased (2026-01-18)
+## Unreleased (2026-01-22)
 
 ### Added
 - TBD
+
+## 0.1.1 - 2026-01-22
+
+### Added
+- Docs wiki export and concepts-in-practice chapter series.
+- Blog: January update post.
+
+### Changed
+- Docs site refresh: nav/playground layout, branding assets, README hero, chart styling, chapter navigation, and non-interactive HTML export tooling.
+- Doc tooling: Makefile helper now accepts optional parameters for export workflows.
+
+### Fixed
+- Doc exports now bundle static assets correctly, hide local-only hero links, and remove footer proxy elements.
+- Playground action row layout in exported docs.
 
 ## 0.1.0 - 2026-01-18
 
