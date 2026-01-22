@@ -1768,9 +1768,17 @@ def main() -> None:
             import shutil
 
             static_out = OUT / "static"
+            if static_out.exists():
+                for existing in static_out.iterdir():
+                    if existing.is_dir():
+                        shutil.rmtree(existing)
+                    else:
+                        existing.unlink()
             static_out.mkdir(parents=True, exist_ok=True)
             for p in static_src.iterdir():
-                if p.is_file():
+                if p.is_dir():
+                    shutil.copytree(p, static_out / p.name)
+                elif p.is_file():
                     shutil.copy2(p, static_out / p.name)
     except Exception:
         pass
