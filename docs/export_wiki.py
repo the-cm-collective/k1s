@@ -38,7 +38,7 @@ TITLE_OVERRIDES = {
     "playground": "Interactive Lab Playground",
 }
 
-HERO_IMAGE = "static/k1s-logo-horizontal.png"
+HERO_IMAGE = "static/k1s-logo-horizontal.svg"
 
 
 def _truthy_env(name: str) -> bool:
