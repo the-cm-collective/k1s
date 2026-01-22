@@ -22,9 +22,16 @@ from pathlib import Path
 import re
 from datetime import datetime
 
+from doc_map import DOCS_MAPPING, INTERACTIVE_SOURCES
+
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT
-OUT = ROOT / "site"
+DEFAULT_OUT = ROOT / "site"
+OUT = Path(os.getenv("DOCS_OUT_DIR", str(DEFAULT_OUT)))
+
+
+def _truthy_env(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 # Decide API base for Swagger/ReDoc links.
@@ -42,10 +49,74 @@ def detect_api_base() -> str:
 
 
 API_BASE = detect_api_base()
+EXPORT_NON_INTERACTIVE = _truthy_env("DOCS_NON_INTERACTIVE") or _truthy_env(
+    "DOCS_EXPORT_NON_INTERACTIVE"
+)
+
+RSS_FEED_URL = os.getenv("DOCS_RSS_FEED_URL", "https://codeberg.org/th3_4rchit3ct/k1s.rss").strip()
+RSS_FEED_TITLE = "k1s Repo Activity"
+SOURCE_REPO_URL = os.getenv(
+    "DOCS_SOURCE_REPO_URL", "https://codeberg.org/th3_4rchit3ct/k1s"
+).strip()
+SOURCE_REPO_LABEL = "Canonical (Upstream) Repository"
+
+INTERACTIVE_HREF_TOKENS = ("/swagger", "/redoc", "/dashboard", "playground.html", "/playground")
+
+NAV_LINKS = [
+    ("Start Here", "start-here.html", False, False),
+    ("Overview", "overview.html", False, False),
+    ("Demos", "examples.html", False, False),
+    ("Architecture", "architecture.html", False, False),
+    ("Multi-Node", "multinode-lab.html", False, False),
+    ("HTTP API", "http-api.html", False, False),
+    ("API Shim", "apishim-compatibility-matrix.html", False, False),
+    ("Ingress", "ingress.html", False, False),
+    ("API Auth", "api-auth.html", False, False),
+    ("Concepts", "concepts.html", False, False),
+    ("Benchmarks", "benchmarks.html", False, False),
+    ("Swagger", "/swagger", True, True),
+    ("ReDoc", "/redoc", True, True),
+    ("Dashboard", "/dashboard", True, True),
+    ("Playground", "playground.html", True, False),
+    ("Concepts in Practice", "concepts-in-practice.html", False, False),
+]
+
+
+def is_interactive_href(href: str) -> bool:
+    href_lower = href.strip().lower()
+    return any(token in href_lower for token in INTERACTIVE_HREF_TOKENS)
+
+
+def render_nav(*, include_interactive: bool) -> str:
+    parts = []
+    parts.append(
+        '      <a class="nav-brand" href="index.html" aria-label="k1s docs home">'
+        '<img src="static/k1s-logo-circle.svg" alt="k1s logo" />'
+        "<span>k1s docs</span>"
+        "</a>"
+    )
+    for label, href, interactive, external in NAV_LINKS:
+        if interactive and not include_interactive:
+            continue
+        attrs = []
+        if external:
+            attrs.append('target="_blank"')
+            attrs.append('rel="noopener"')
+        attr_str = " " + " ".join(attrs) if attrs else ""
+        parts.append(f'      <a href="{href}"{attr_str}>{label}</a>')
+    return "\n".join(parts)
 
 
 def render_template(
-    *, title: str, body: str, api_base: str, extra_head: str, footer_text: str
+    *,
+    title: str,
+    body: str,
+    api_base: str,
+    extra_head: str,
+    footer_text: str,
+    nav_html: str,
+    api_mode_widget: str,
+    api_mode_script: str,
 ) -> str:
     """Render TEMPLATE safely without str.format interfering with braces.
 
@@ -57,12 +128,18 @@ def render_template(
         .replace("{api_base}", "{__API_BASE__}")
         .replace("{extra_head}", "{__EXTRA__}")
         .replace("{footer_text}", "{__FOOT__}")
+        .replace("{nav}", "{__NAV__}")
+        .replace("{api_mode_widget}", "{__API_MODE_WIDGET__}")
+        .replace("{api_mode_script}", "{__API_MODE_SCRIPT__}")
     )
     t = t.replace("{__TITLE__}", title)
     t = t.replace("{__BODY__}", body)
     t = t.replace("{__API_BASE__}", api_base)
     t = t.replace("{__EXTRA__}", extra_head)
     t = t.replace("{__FOOT__}", footer_text)
+    t = t.replace("{__NAV__}", nav_html)
+    t = t.replace("{__API_MODE_WIDGET__}", api_mode_widget)
+    t = t.replace("{__API_MODE_SCRIPT__}", api_mode_script)
     return t
 
 
@@ -72,7 +149,14 @@ TEMPLATE = """<!doctype html>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>{title}</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs/%3E%3Crect width='64' height='64' rx='12' fill='%23096ad9'/%3E%3Cpath d='M16 45h32M16 19h32M16 32h32' stroke='white' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E"/>
+    <link rel="icon" href="static/favicon.ico" sizes="any"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
+    <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-16x16.svg"/>
+    <link rel="icon" type="image/png" sizes="16x16" href="static/favicon-16x16.png"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-48x48.svg"/>
+    <link rel="icon" type="image/png" sizes="48x48" href="static/favicon-48x48.png"/>
+    <link rel="apple-touch-icon" sizes="180x180" href="static/icon-180x180.png"/>
     <style>
       :root {
         color-scheme: light dark;
@@ -99,6 +183,9 @@ TEMPLATE = """<!doctype html>
         --k1s-radius: 8px;
         --k1s-radius-pill: 999px;
         --k1s-gap: 12px;
+        --k1s-brand-gold: #fbc02d;
+        --k1s-brand-graphite: #404040;
+        --k1s-brand-mist: #f1f1f1;
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
@@ -130,6 +217,7 @@ TEMPLATE = """<!doctype html>
     <style>
       /* Base layout aligned to dashboard palette */
       html { height: 100%; }
+      *, *::before, *::after { box-sizing: border-box; }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
         margin: 0;
@@ -142,6 +230,7 @@ TEMPLATE = """<!doctype html>
         background: var(--bg);
         color: var(--fg);
       }
+      img { max-width: 100%; height: auto; }
       nav {
         display: flex;
         align-items: center;
@@ -162,6 +251,18 @@ TEMPLATE = """<!doctype html>
         backdrop-filter: blur(6px);
         -webkit-backdrop-filter: blur(6px);
       }
+      nav::after {
+        content: "";
+        position: absolute;
+        left: 14px;
+        right: 14px;
+        bottom: 6px;
+        height: 2px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold), transparent);
+        opacity: 0.5;
+        pointer-events: none;
+      }
       nav a {
         display: inline-flex;
         align-items: center;
@@ -178,9 +279,32 @@ TEMPLATE = """<!doctype html>
       }
       nav a:hover {
         background: var(--k1s-surface);
-        border-color: var(--k1s-border-soft);
+        border-color: var(--k1s-brand-gold);
         color: var(--link-hover);
         transform: translateY(-1px);
+      }
+      nav .nav-brand {
+        gap: 10px;
+        padding: 6px 10px;
+        border: 1px solid transparent;
+        background: transparent;
+        box-shadow: none;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-size: 11px;
+        color: var(--k1s-text-muted);
+      }
+      nav .nav-brand:hover {
+        background: color-mix(in srgb, var(--k1s-card-bg) 60%, transparent);
+        border-color: var(--k1s-brand-gold);
+        color: var(--fg);
+        transform: translateY(0);
+      }
+      nav .nav-brand img {
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        box-shadow: 0 6px 16px rgba(0,0,0,0.2);
       }
       nav a:active { transform: translateY(0); }
       .spacer { flex: 1 1 auto; }
@@ -235,6 +359,37 @@ TEMPLATE = """<!doctype html>
         border: 1px solid var(--border);
         color: var(--fg);
         border-radius: 8px;
+      }
+      code { overflow-wrap: anywhere; }
+      pre code { overflow-wrap: normal; }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 1rem 0;
+        background: var(--k1s-panel);
+        border: 1px solid var(--k1s-border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      thead th {
+        text-align: left;
+        padding: 12px 14px;
+        background: var(--k1s-card-bg);
+        border-bottom: 1px solid var(--k1s-border);
+        color: var(--fg);
+        font-weight: 600;
+      }
+      tbody td {
+        padding: 12px 14px;
+        border-top: 1px solid var(--k1s-border-soft);
+        color: var(--fg);
+        vertical-align: top;
+      }
+      tbody tr:nth-child(even) td {
+        background: color-mix(in srgb, var(--k1s-panel) 92%, #000000 8%);
+      }
+      html[data-theme="light"] tbody tr:nth-child(even) td {
+        background: color-mix(in srgb, var(--k1s-panel) 92%, #ffffff 8%);
       }
       pre {
         padding: 12px;
@@ -294,6 +449,179 @@ TEMPLATE = """<!doctype html>
         border-radius: var(--k1s-radius);
         padding: 10px 12px;
       }
+      .hero {
+        position: relative;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 16px;
+        padding: 22px;
+        border: 1px solid var(--k1s-border);
+        border-radius: 18px;
+        background:
+          radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--k1s-brand-gold) 22%, transparent) 0%, transparent 55%),
+          linear-gradient(135deg, color-mix(in srgb, var(--k1s-panel) 86%, #000000 14%) 0%, var(--k1s-panel) 55%, color-mix(in srgb, var(--k1s-brand-gold) 14%, var(--k1s-panel)) 100%);
+        overflow: hidden;
+        box-shadow: 0 16px 40px rgba(0,0,0,0.18);
+      }
+      html[data-theme="light"] .hero {
+        background:
+          radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--k1s-brand-gold) 26%, transparent) 0%, transparent 60%),
+          linear-gradient(135deg, #ffffff 0%, #f8f7f2 60%, color-mix(in srgb, var(--k1s-brand-gold) 18%, #ffffff) 100%);
+      }
+      .hero::after {
+        content: "";
+        position: absolute;
+        right: -24px;
+        bottom: -36px;
+        width: 220px;
+        height: 220px;
+        background: url('static/k1s-logo-circle.svg') no-repeat center / contain;
+        opacity: 0.12;
+        pointer-events: none;
+      }
+      .hero-brand {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        z-index: 1;
+      }
+      .hero-logo-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .hero-logo {
+        width: min(320px, 90%);
+        height: auto;
+        opacity: 0.85;
+      }
+      .hero-pill {
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-weight: 700;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        background: var(--k1s-brand-gold);
+        color: #2b2b2b;
+        box-shadow: 0 10px 22px rgba(251, 192, 45, 0.25);
+      }
+      .hero h1 {
+        font-size: 32px;
+        margin: 4px 0 0;
+      }
+      .hero-tagline {
+        max-width: 52ch;
+        color: var(--k1s-text-muted);
+        font-size: 15px;
+      }
+      .hero-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 6px;
+      }
+      .hero-repo {
+        margin-top: 14px;
+        padding: 10px 12px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px 10px;
+        border: 1px solid var(--k1s-border);
+        border-radius: 12px;
+        background: var(--k1s-panel);
+        box-shadow: 0 8px 22px rgba(0,0,0,0.18);
+      }
+      .hero-repo-label {
+        font-size: 0.7rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-link {
+        color: var(--link);
+        font-weight: 600;
+        text-decoration: none;
+        word-break: break-word;
+      }
+      .hero-repo-link:hover {
+        color: var(--link-hover);
+        text-decoration: underline;
+      }
+      .hero-link {
+        text-decoration: none;
+        padding: 6px 10px;
+        border-radius: 10px;
+        border: 1px solid var(--k1s-border-soft);
+        background: color-mix(in srgb, var(--k1s-card-bg) 70%, transparent);
+        color: var(--fg);
+        font-weight: 600;
+        font-size: 13px;
+      }
+      .hero-link--stack {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .hero-link-title {
+        font-weight: 700;
+        font-size: 13px;
+      }
+      .hero-link-sub {
+        font-weight: 400;
+        font-size: 11px;
+        line-height: 1.3;
+        color: var(--k1s-text-muted);
+      }
+      .hero-link:hover {
+        border-color: var(--k1s-brand-gold);
+        color: var(--fg);
+      }
+      .hero-actions {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+        align-items: start;
+        z-index: 1;
+      }
+      .hero-card {
+        border: 1px solid var(--k1s-border-soft);
+        background: color-mix(in srgb, var(--k1s-card-bg) 85%, transparent);
+        border-radius: 14px;
+        padding: 12px;
+        box-shadow: 0 12px 28px rgba(0,0,0,0.18);
+      }
+      .hero-card h2 {
+        margin: 0 0 6px;
+        font-size: 16px;
+      }
+      .hero-card p {
+        margin: 0 0 10px;
+        color: var(--k1s-text-muted);
+        font-size: 13px;
+      }
+      .hero-card pre {
+        margin: 8px 0 0;
+        font-size: 12px;
+      }
+      .hero-index {
+        grid-template-columns: minmax(280px, 1.1fr) minmax(320px, 2fr);
+      }
+      .hero-index .hero-actions {
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+      .hero-card--section {
+        min-height: 180px;
+      }
+      .hero-links--dense {
+        gap: 8px;
+      }
+      .hero-links--dense .hero-link {
+        font-size: 12px;
+        padding: 6px 10px;
+      }
       .callout, blockquote {
         border-left: 4px solid var(--k1s-primary-soft);
         background: var(--k1s-card-bg);
@@ -319,6 +647,69 @@ TEMPLATE = """<!doctype html>
         gap: .75rem;
         padding: 14px 0;
         opacity: .85;
+      }
+      @media (hover: none) {
+        .copy-btn { opacity: .92; }
+        pre.has-copy { padding-top: 36px; }
+      }
+      @media (max-width: 980px) {
+        body { padding: 1.5rem; }
+        nav {
+          width: 100%;
+          padding: 8px 10px;
+          gap: .5rem;
+          justify-content: flex-start;
+        }
+        nav a {
+          padding: 6px 10px;
+          font-size: 12px;
+        }
+        nav .nav-brand {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+        }
+        .hero {
+          padding: 18px;
+        }
+        .hero h1 { font-size: 28px; }
+        .hero-tagline { font-size: 14px; }
+        .hero-index { grid-template-columns: 1fr; }
+        .hero-actions { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+        .hero-card--section { min-height: auto; }
+        .theme-fab { right: 12px; bottom: 88px; }
+        footer.site-footer .inner { flex-wrap: wrap; }
+      }
+      @media (max-width: 720px) {
+        body { padding: 1.1rem; }
+        nav {
+          top: 8px;
+          flex-wrap: nowrap;
+          overflow-x: auto;
+          scrollbar-width: none;
+        }
+        nav::-webkit-scrollbar { width: 0; height: 0; }
+        nav a { flex: 0 0 auto; }
+        nav::after { left: 8px; right: 8px; }
+        h1 { font-size: 24px; }
+        h2 { font-size: 18px; }
+        h3 { font-size: 15px; }
+        .hero { padding: 16px; }
+        .hero-logo { width: min(220px, 90%); }
+        .hero-pill { font-size: 11px; }
+        .hero-links { gap: 8px; }
+        .hero-link { font-size: 12px; }
+        .hero-actions { grid-template-columns: 1fr; }
+        .theme-fab { bottom: 24px; width: 48px; height: 48px; }
+        pre { font-size: 13px; }
+        table {
+          display: block;
+          max-width: 100%;
+          width: max-content;
+          min-width: 100%;
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+        }
+        thead th, tbody td { padding: 10px 12px; }
       }
     </style>
     <script>
@@ -419,22 +810,7 @@ TEMPLATE = """<!doctype html>
   </head>
   <body>
     <nav>
-      <a href="index.html">Home</a>
-      <a href="start-here.html">Start Here</a>
-      <a href="overview.html">Overview</a>
-      <a href="examples.html">Demos</a>
-      <a href="architecture.html">Architecture</a>
-      <a href="multinode-lab.html">Multi-Node</a>
-      <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="ingress.html">Ingress</a>
-      <a href="api-auth.html">API Auth</a>
-      <a href="concepts.html">Concepts</a>
-      <a href="benchmarks.html">Benchmarks</a>
-      <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
-      <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
-      <a href="playground.html">Playground</a>
+{nav}
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -451,44 +827,62 @@ TEMPLATE = """<!doctype html>
       <div class="container inner">
         <span>k1s Documentation</span>
         <span class="spacer"></span>
-        <button id="api-mode-toggle">API Mode</button>
-        <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
+{api_mode_widget}
         <span>{footer_text}</span>
       </div>
     </footer>
-    <script>
-      (function() {
-        var btn = document.getElementById('api-mode-toggle');
-        if (!btn) return;
-        function label() {
-          var mode = localStorage.getItem('docsApiMode') || 'proxy';
-          btn.textContent = (mode === 'direct') ? 'API Mode: Direct' : 'API Mode: Proxy';
-          var lab = document.getElementById('api-mode-label');
-          if (lab) {
-            if (mode === 'direct') {
-              var base = (window.DOCS_API_BASE||'').trim() || '(unset)';
-              lab.textContent = ' [' + base + ']';
-            } else {
-              lab.textContent = ' (proxy)';
-            }
-          }
-        }
-        btn.addEventListener('click', function() {
-          var cur = localStorage.getItem('docsApiMode') || 'proxy';
-          var next = (cur === 'direct') ? 'proxy' : 'direct';
-          localStorage.setItem('docsApiMode', next);
-          label();
-          if (location.pathname.endsWith('playground.html')) location.reload();
-        });
-        label();
-      })();
-    </script>
+{api_mode_script}
   </body>
 </html>
 """
 
 
-def format_inline(text: str, *, allow_raw_html: bool = False) -> str:
+def api_mode_fragments(include: bool) -> tuple[str, str]:
+    if not include:
+        return ("", "")
+    widget = "\n".join(
+        [
+            '        <button id="api-mode-toggle">API Mode</button>',
+            '        <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>',
+        ]
+    )
+    script = "\n".join(
+        [
+            "    <script>",
+            "      (function() {",
+            "        var btn = document.getElementById('api-mode-toggle');",
+            "        if (!btn) return;",
+            "        function label() {",
+            "          var mode = localStorage.getItem('docsApiMode') || 'proxy';",
+            "          btn.textContent = (mode === 'direct') ? 'API Mode: Direct' : 'API Mode: Proxy';",
+            "          var lab = document.getElementById('api-mode-label');",
+            "          if (lab) {",
+            "            if (mode === 'direct') {",
+            "              var base = (window.DOCS_API_BASE||'').trim() || '(unset)';",
+            "              lab.textContent = ' [' + base + ']';",
+            "            } else {",
+            "              lab.textContent = ' (proxy)';",
+            "            }",
+            "          }",
+            "        }",
+            "        btn.addEventListener('click', function() {",
+            "          var cur = localStorage.getItem('docsApiMode') || 'proxy';",
+            "          var next = (cur === 'direct') ? 'proxy' : 'direct';",
+            "          localStorage.setItem('docsApiMode', next);",
+            "          label();",
+            "          if (location.pathname.endsWith('playground.html')) location.reload();",
+            "        });",
+            "        label();",
+            "      })();",
+            "    </script>",
+        ]
+    )
+    return (widget, script)
+
+
+def format_inline(
+    text: str, *, allow_raw_html: bool = False, strip_interactive_links: bool = False
+) -> str:
     """Render inline markdown constructs.
 
     - When ``allow_raw_html`` is False (default), escape all HTML first.
@@ -506,23 +900,33 @@ def format_inline(text: str, *, allow_raw_html: bool = False) -> str:
             return f"<code>{html.escape(m.group(1))}</code>"
 
     text = re.sub(r"`([^`]+)`", repl_code, text)
+
     # links [text](url) — escape URL attribute; keep link text as-is
-    text = re.sub(
-        r"\[([^\]]+)\]\(([^)]+)\)",
-        lambda m: f'<a href="{html.escape(m.group(2), quote=True)}">{m.group(1)}</a>',
-        text,
-    )
+    def repl_link(m: re.Match[str]) -> str:
+        href = m.group(2)
+        if strip_interactive_links and is_interactive_href(href):
+            return m.group(1)
+        return f'<a href="{html.escape(href, quote=True)}">{m.group(1)}</a>'
+
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", repl_link, text)
     return text
 
 
-def md_to_html(md: str, *, allow_raw_html: bool = False) -> str:
+def md_to_html(
+    md: str, *, allow_raw_html: bool = False, strip_interactive_links: bool = False
+) -> str:
     lines = md.splitlines()
     out: list[str] = []
     in_code = False
     code_lang = ""
     code_buf: list[str] | None = None
-    in_list = False
-    li_buf: list[str] | None = None
+
+    def fmt(text: str) -> str:
+        return format_inline(
+            text,
+            allow_raw_html=allow_raw_html,
+            strip_interactive_links=strip_interactive_links,
+        )
 
     def flush_paragraph(buf: list[str]):
         if not buf:
@@ -532,21 +936,63 @@ def md_to_html(md: str, *, allow_raw_html: bool = False) -> str:
         if allow_raw_html and text.lstrip().startswith("<"):
             out.append(text)
         else:
-            rendered = format_inline(text, allow_raw_html=allow_raw_html)
+            rendered = fmt(text)
             out.append(f"<p>{rendered}</p>")
         buf.clear()
 
-    def flush_li():
-        nonlocal li_buf
-        if li_buf is None:
-            return
-        content = "\n".join(li_buf)
-        rendered = format_inline(content, allow_raw_html=allow_raw_html)
-        out.append(f"<li>{rendered}</li>")
-        li_buf = None
+    def render_list_block(list_lines: list[str]) -> str:
+        nodes: list[dict[str, object]] = []
+        stack: list[tuple[int, list[dict[str, object]]]] = [(-1, nodes)]
+        last_node: dict[str, object] | None = None
+
+        for line in list_lines:
+            m = re.match(r"^(?P<indent>\s*)-\s+(?P<text>.+)$", line)
+            if m:
+                indent_str = m.group("indent").replace("\t", "  ")
+                indent = len(indent_str)
+                text = m.group("text").strip()
+                while stack and indent <= stack[-1][0]:
+                    stack.pop()
+                parent = stack[-1][1]
+                node = {"text": text, "children": []}
+                parent.append(node)
+                stack.append((indent, node["children"]))  # type: ignore[list-item]
+                last_node = node
+            else:
+                cont = line.strip()
+                if cont and last_node is not None:
+                    last_node["text"] = f"{last_node['text']} {cont}"
+
+        def render_nodes(items: list[dict[str, object]]) -> str:
+            if not items:
+                return ""
+            parts = ["<ul>"]
+            for item in items:
+                content = fmt(str(item["text"]))
+                children = item.get("children") or []
+                if children:
+                    parts.append(f"<li>{content}")
+                    parts.append(render_nodes(children))  # type: ignore[arg-type]
+                    parts.append("</li>")
+                else:
+                    parts.append(f"<li>{content}</li>")
+            parts.append("</ul>")
+            return "\n".join(parts)
+
+        return render_nodes(nodes)
+
+    def split_table_row(row: str) -> list[str]:
+        stripped = row.strip()
+        if stripped.startswith("|"):
+            stripped = stripped[1:]
+        if stripped.endswith("|"):
+            stripped = stripped[:-1]
+        return [cell.strip() for cell in stripped.split("|")]
 
     para_buf: list[str] = []
-    for raw in lines:
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
         line = raw.rstrip("\n")
         if in_code:
             if line.strip().startswith("```"):
@@ -565,6 +1011,7 @@ def md_to_html(md: str, *, allow_raw_html: bool = False) -> str:
                 if code_buf is None:
                     code_buf = []
                 code_buf.append(html.escape(line))
+            i += 1
             continue
 
         if line.strip().startswith("```"):
@@ -573,120 +1020,154 @@ def md_to_html(md: str, *, allow_raw_html: bool = False) -> str:
             code_lang = lang
             code_buf = []
             in_code = True
+            i += 1
             continue
 
         # horizontal rule: lines with only ---
         if re.fullmatch(r"\s*-{3,}\s*", line):
             flush_paragraph(para_buf)
-            if li_buf is not None:
-                flush_li()
-            if in_list:
-                out.append("</ul>")
-                in_list = False
             out.append("<hr/>")
+            i += 1
             continue
+
+        # tables (pipe-delimited, requires header + separator row)
+        if "|" in line and i + 1 < len(lines):
+            next_line = lines[i + 1].rstrip("\n")
+            if re.fullmatch(r"\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*", next_line):
+                flush_paragraph(para_buf)
+                headers = split_table_row(line)
+                i += 2
+                rows: list[list[str]] = []
+                while i < len(lines):
+                    row_line = lines[i].rstrip("\n")
+                    if not row_line.strip():
+                        break
+                    if "|" not in row_line:
+                        break
+                    if row_line.strip().startswith("```"):
+                        break
+                    if re.fullmatch(r"\s*-{3,}\s*", row_line):
+                        break
+                    if row_line.lstrip().startswith("#"):
+                        break
+                    rows.append(split_table_row(row_line))
+                    i += 1
+                table_parts = ["<table>", "<thead><tr>"]
+                for cell in headers:
+                    table_parts.append(f"<th>{fmt(cell)}</th>")
+                table_parts.append("</tr></thead>")
+                if rows:
+                    table_parts.append("<tbody>")
+                    for row in rows:
+                        table_parts.append("<tr>")
+                        for cell in row:
+                            table_parts.append(f"<td>{fmt(cell)}</td>")
+                        table_parts.append("</tr>")
+                    table_parts.append("</tbody>")
+                table_parts.append("</table>")
+                out.append("".join(table_parts))
+                continue
 
         if not line.strip():
             flush_paragraph(para_buf)
-            if li_buf is not None:
-                flush_li()
-            if in_list:
-                out.append("</ul>")
-                in_list = False
+            i += 1
             continue
 
         # headings
         if line.startswith("###### "):
             flush_paragraph(para_buf)
-            if li_buf is not None:
-                flush_li()
-            if in_list:
-                out.append("</ul>")
-                in_list = False
-            out.append(f"<h6>{format_inline(line[7:])}</h6>")
+            out.append(f"<h6>{fmt(line[7:])}</h6>")
+            i += 1
             continue
         if line.startswith("##### "):
             flush_paragraph(para_buf)
-            if li_buf is not None:
-                flush_li()
-            if in_list:
-                out.append("</ul>")
-                in_list = False
-            out.append(f"<h5>{format_inline(line[6:])}</h5>")
+            out.append(f"<h5>{fmt(line[6:])}</h5>")
+            i += 1
             continue
         if line.startswith("#### "):
             flush_paragraph(para_buf)
-            if li_buf is not None:
-                flush_li()
-            if in_list:
-                out.append("</ul>")
-                in_list = False
-            out.append(f"<h4>{format_inline(line[5:])}</h4>")
+            out.append(f"<h4>{fmt(line[5:])}</h4>")
+            i += 1
             continue
         if line.startswith("### "):
             flush_paragraph(para_buf)
-            if li_buf is not None:
-                flush_li()
-            if in_list:
-                out.append("</ul>")
-                in_list = False
-            out.append(f"<h3>{format_inline(line[4:])}</h3>")
+            out.append(f"<h3>{fmt(line[4:])}</h3>")
+            i += 1
             continue
         if line.startswith("## "):
             flush_paragraph(para_buf)
-            if li_buf is not None:
-                flush_li()
-            if in_list:
-                out.append("</ul>")
-                in_list = False
-            out.append(f"<h2>{format_inline(line[3:])}</h2>")
+            out.append(f"<h2>{fmt(line[3:])}</h2>")
+            i += 1
             continue
         if line.startswith("# "):
             flush_paragraph(para_buf)
-            if li_buf is not None:
-                flush_li()
-            if in_list:
-                out.append("</ul>")
-                in_list = False
-            out.append(f"<h1>{format_inline(line[2:])}</h1>")
+            out.append(f"<h1>{fmt(line[2:])}</h1>")
+            i += 1
             continue
 
-        # lists (supports continued lines indented under a list item)
-        if line.lstrip().startswith("- "):
+        # lists (supports nested lists via indentation and continued lines)
+        if re.match(r"\s*-\s+", line):
             flush_paragraph(para_buf)
-            if not in_list:
-                out.append("<ul>")
-                in_list = True
-            # flush previous list item if open
-            if li_buf is not None:
-                flush_li()
-            li_buf = [line.strip()[2:]]
-            continue
-
-        # list item continuation: treat indented lines as part of current <li>
-        if in_list and li_buf is not None and (line.startswith("  ") or line.startswith("\t")):
-            li_buf.append(line.lstrip())
+            list_lines: list[str] = []
+            while i < len(lines):
+                cur = lines[i].rstrip("\n")
+                if not cur.strip():
+                    break
+                if cur.strip().startswith("```"):
+                    break
+                if re.fullmatch(r"\s*-{3,}\s*", cur):
+                    break
+                if cur.lstrip().startswith("#"):
+                    break
+                if re.match(r"\s*-\s+", cur) or re.match(r"\s+", cur):
+                    list_lines.append(cur)
+                    i += 1
+                    continue
+                break
+            out.append(render_list_block(list_lines))
             continue
 
         # paragraph accumulation
         # normal paragraph text
         para_buf.append(line)
+        i += 1
 
     flush_paragraph(para_buf)
-    if li_buf is not None:
-        flush_li()
-    if in_list:
-        out.append("</ul>")
     return "\n".join(out)
 
 
-def build_one(md_path: Path, out_path: Path) -> None:
-    allow_raw = md_path.name == "playground.md"
-    html_body = md_to_html(md_path.read_text(encoding="utf-8"), allow_raw_html=allow_raw)
+def build_one(
+    md_path: Path,
+    out_path: Path,
+    *,
+    nav_html: str,
+    strip_interactive_links: bool,
+    api_mode_widget: str,
+    api_mode_script: str,
+) -> None:
+    allow_raw = md_path.name in {"playground.md", "start-here.md"} or (
+        md_path.name == "index.md" and md_path.parent.name == "concepts-in-practice"
+    )
+    html_body = md_to_html(
+        md_path.read_text(encoding="utf-8"),
+        allow_raw_html=allow_raw,
+        strip_interactive_links=strip_interactive_links,
+    )
+    if strip_interactive_links and md_path.name == "start-here.md":
+        html_body = re.sub(
+            r'<div class="hero-links hero-links--local">.*?</div>',
+            "",
+            html_body,
+            flags=re.S,
+        )
     # Inject K8s compliance status if building the compliance page and a report exists
     try:
         if md_path.name == "k8s-compliance.md":
             status_path = OUT / "k8s_status.json"
+            if not status_path.exists() and OUT != DEFAULT_OUT:
+                fallback = DEFAULT_OUT / "k8s_status.json"
+                if fallback.exists():
+                    status_path = fallback
             if status_path.exists():
                 import json
 
@@ -1270,6 +1751,9 @@ def build_one(md_path: Path, out_path: Path) -> None:
             api_base=API_BASE,
             extra_head=extra_head,
             footer_text=f"Built {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            nav_html=nav_html,
+            api_mode_widget=api_mode_widget,
+            api_mode_script=api_mode_script,
         ),
         encoding="utf-8",
     )
@@ -1277,6 +1761,9 @@ def build_one(md_path: Path, out_path: Path) -> None:
 
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
+    include_interactive = not EXPORT_NON_INTERACTIVE
+    nav_html = render_nav(include_interactive=include_interactive)
+    api_mode_widget, api_mode_script = api_mode_fragments(include_interactive)
     # Copy static assets if present
     try:
         static_src = SRC / "static"
@@ -1284,88 +1771,213 @@ def main() -> None:
             import shutil
 
             static_out = OUT / "static"
+            if static_out.exists():
+                for existing in static_out.iterdir():
+                    if existing.is_dir():
+                        shutil.rmtree(existing)
+                    else:
+                        existing.unlink()
             static_out.mkdir(parents=True, exist_ok=True)
             for p in static_src.iterdir():
-                if p.is_file():
+                if p.is_dir():
+                    shutil.copytree(p, static_out / p.name)
+                elif p.is_file():
                     shutil.copy2(p, static_out / p.name)
     except Exception:
         pass
-    mapping = {
-        "getting-started/start-here.md": "start-here.html",
-        "getting-started/overview.md": "overview.html",
-        "reference/architecture.md": "architecture.html",
-        "guides/multinode-lab.md": "multinode-lab.html",
-        "reference/http-api.md": "http-api.html",
-        "reference/ingress.md": "ingress.html",
-        "reference/api-auth.md": "api-auth.html",
-        "reference/apishim-compatibility-matrix.md": "apishim-compatibility-matrix.html",
-        "getting-started/concepts.md": "concepts.html",
-        "benchmarks/memory.md": "benchmarks.html",
-        "reference/configs-secrets.md": "configs-secrets.html",
-        "guides/demos-examples.md": "examples.html",
-        "reference/rollouts.md": "rollouts.html",
-        "reference/storage.md": "storage.html",
-        "reference/observability.md": "observability.html",
-        "reference/scheduling.md": "scheduling.html",
-        "guides/e2e.md": "e2e.html",
-        "reference/k8s-compliance.md": "k8s-compliance.html",
-        "guides/playground.md": "playground.html",
-    }
-    # index
-    index = f"""
-<h1>k1s Documentation</h1>
-<ul>
-  <li><a href="start-here.html">Start Here (Onboarding)</a></li>
-  <li><a href="overview.html">Overview</a></li>
-  <li><a href="examples.html">Demos &amp; Examples</a></li>
-  <li><a href="architecture.html">Architecture</a></li>
-  <li><a href="multinode-lab.html">Multi-Node Lab</a></li>
-  <li><a href="http-api.html">HTTP API</a></li>
-  <li><a href="apishim-compatibility-matrix.html">API Shim Compatibility</a></li>
-  <li><a href="ingress.html">Ingress</a></li>
-  <li><a href="api-auth.html">API Auth</a></li>
-  <li><a href="concepts.html">Concepts</a></li>
-  <li><a href="configs-secrets.html">Configs &amp; Secrets</a></li>
-  <li><a href="rollouts.html">Rollouts</a></li>
-  <li><a href="storage.html">Storage</a></li>
-  <li><a href="observability.html">Observability</a></li>
-  <li><a href="benchmarks.html">Benchmarks</a></li>
-  <li><a href="scheduling.html">Scheduling</a></li>
-  <li><a href="e2e.html">End-to-End Guide</a></li>
-  <li><a href="k8s-compliance.html">K8s Compliance Status</a></li>
-  <li><a href="playground.html">Interactive Lab Playground</a></li>
-  <li><a href="/dashboard" target="_blank" rel="noopener">Live Demo Dashboard</a></li>
-</ul>
-"""
+    mapping = dict(DOCS_MAPPING)
+    if EXPORT_NON_INTERACTIVE:
+        for src in INTERACTIVE_SOURCES:
+            mapping.pop(src, None)
+
+    rss_feed_url = RSS_FEED_URL
+    rss_feed_title = RSS_FEED_TITLE
+    source_repo_url = SOURCE_REPO_URL
+    source_repo_label = SOURCE_REPO_LABEL
+
+    def render_link(label: str, href: str, external: bool) -> str:
+        attrs = ' target="_blank" rel="noopener"' if external else ""
+        return f'<a class="hero-link" href="{href}"{attrs}>{html.escape(label)}</a>'
+
+    index_quick_links = [
+        ("Start Here", "start-here.html", False, False),
+        ("Overview", "overview.html", False, False),
+        ("Live Hive Dashboard", "/dashboard", True, True),
+        ("Interactive Lab Playground", "playground.html", True, False),
+    ]
+    if rss_feed_url:
+        index_quick_links.append(("RSS Feed", rss_feed_url, False, True))
+
+    index_sections = [
+        {
+            "title": "Getting Started",
+            "desc": "Fast onboarding paths, demos, and architecture context.",
+            "links": [
+                ("Start Here", "start-here.html", False, False),
+                ("Overview", "overview.html", False, False),
+                ("Demos & Examples", "examples.html", False, False),
+                ("Architecture", "architecture.html", False, False),
+            ],
+        },
+        {
+            "title": "Labs & Concepts",
+            "desc": "Hands-on labs and the reconciliation mental model.",
+            "links": [
+                ("Multi-Node Lab", "multinode-lab.html", False, False),
+                ("Concepts", "concepts.html", False, False),
+                ("Concepts in Practice", "concepts-in-practice.html", False, False),
+            ],
+        },
+        {
+            "title": "Platform Guides",
+            "desc": "Storage, rollouts, and runtime configuration guides.",
+            "links": [
+                ("Configs & Secrets", "configs-secrets.html", False, False),
+                ("Rollouts", "rollouts.html", False, False),
+                ("Storage", "storage.html", False, False),
+                ("Scheduling", "scheduling.html", False, False),
+            ],
+        },
+        {
+            "title": "Networking & API",
+            "desc": "Ingress, auth, and API compatibility details.",
+            "links": [
+                ("HTTP API", "http-api.html", False, False),
+                ("API Shim Compatibility", "apishim-compatibility-matrix.html", False, False),
+                ("Ingress", "ingress.html", False, False),
+                ("API Auth", "api-auth.html", False, False),
+            ],
+        },
+        {
+            "title": "Ops & Observability",
+            "desc": "Runbooks, benchmarks, and observability surfaces.",
+            "links": [
+                ("Observability", "observability.html", False, False),
+                ("Benchmarks", "benchmarks.html", False, False),
+                ("End-to-End Guide", "e2e.html", False, False),
+                ("K8s Compliance Status", "k8s-compliance.html", False, False),
+            ],
+        },
+        {
+            "title": "Interactive Surfaces",
+            "desc": "Live dashboards and interactive playgrounds.",
+            "links": [
+                ("Live Hive Dashboard", "/dashboard", True, True),
+                ("Interactive Lab Playground", "playground.html", True, False),
+            ],
+        },
+    ]
+
+    quick_links_html = []
+    for label, href, interactive, external in index_quick_links:
+        if interactive and not include_interactive:
+            continue
+        quick_links_html.append(render_link(label, href, external))
+
+    card_html = []
+    for section in index_sections:
+        link_bits = []
+        for label, href, interactive, external in section["links"]:
+            if interactive and not include_interactive:
+                continue
+            link_bits.append(render_link(label, href, external))
+        if not link_bits:
+            continue
+        card_html.append(
+            "\n".join(
+                [
+                    '  <div class="hero-card hero-card--section">',
+                    f'    <h2>{html.escape(section["title"])}</h2>',
+                    f'    <p>{html.escape(section["desc"])}</p>',
+                    '    <div class="hero-links hero-links--dense">',
+                    "      " + "\n      ".join(link_bits),
+                    "    </div>",
+                    "  </div>",
+                ]
+            )
+        )
+
+    repo_section = ""
+    if source_repo_url:
+        repo_section = "\n".join(
+            [
+                '    <div class="hero-repo">',
+                f'      <span class="hero-repo-label">{html.escape(source_repo_label)}</span>',
+                (
+                    f'      <a class="hero-repo-link" href="{html.escape(source_repo_url)}" '
+                    'target="_blank" rel="noopener">'
+                    f"{html.escape(source_repo_url)}</a>"
+                ),
+                "    </div>",
+            ]
+        )
+    index = "\n".join(
+        [
+            '<div class="hero hero-index">',
+            '  <div class="hero-brand">',
+            '    <div class="hero-logo-row">',
+            '      <img src="static/k1s-logo-horizontal.svg" alt="k1s logo" class="hero-logo" />',
+            '      <span class="hero-pill">Docs Hub</span>',
+            "    </div>",
+            "    <h1>k1s Documentation</h1>",
+            '    <p class="hero-tagline">Guides, labs, and reference for building, operating, and observing k1s clusters.</p>',
+            '    <div class="hero-links">',
+            "      " + "\n      ".join(quick_links_html),
+            "    </div>",
+            repo_section,
+            "  </div>",
+            '  <div class="hero-actions">',
+            "\n".join(card_html),
+            "  </div>",
+            "</div>",
+        ]
+    )
+    index_extra_head = ""
+    if rss_feed_url:
+        index_extra_head = (
+            f'<link rel="alternate" type="application/rss+xml" '
+            f'title="{html.escape(rss_feed_title)}" href="{html.escape(rss_feed_url)}"/>'
+        )
     (OUT / "index.html").write_text(
         render_template(
             title="k1s Docs",
             body=index,
             api_base=API_BASE,
-            extra_head="",
+            extra_head=index_extra_head,
             footer_text=f"Built {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            nav_html=nav_html,
+            api_mode_widget=api_mode_widget,
+            api_mode_script=api_mode_script,
         ),
         encoding="utf-8",
     )
 
     for src_name, out_name in mapping.items():
-        build_one(SRC / src_name, OUT / out_name)
+        build_one(
+            SRC / src_name,
+            OUT / out_name,
+            nav_html=nav_html,
+            strip_interactive_links=EXPORT_NON_INTERACTIVE,
+            api_mode_widget=api_mode_widget,
+            api_mode_script=api_mode_script,
+        )
 
     # Copy curated example YAMLs to /examples for playground preview
-    try:
-        examples_src = ROOT.parent / "specs" / "examples"
-        examples_out = OUT / "examples"
-        examples_out.mkdir(parents=True, exist_ok=True)
-        if examples_src.exists():
-            import shutil
+    if not EXPORT_NON_INTERACTIVE:
+        try:
+            examples_src = ROOT.parent / "specs" / "examples"
+            examples_out = OUT / "examples"
+            examples_out.mkdir(parents=True, exist_ok=True)
+            if examples_src.exists():
+                import shutil
 
-            for p in examples_src.glob("*.y*ml"):
-                try:
-                    shutil.copy2(p, examples_out / p.name)
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                for p in examples_src.glob("*.y*ml"):
+                    try:
+                        shutil.copy2(p, examples_out / p.name)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="media/style/logo-pack/icons/bg-black/icon-512x512.png" alt="k1s logo" width="260" />
+</p>
+
 # k1s Minimal Application Engine
 
 It started out of both basic necessity and general curiosity. I tend to push things—usually too far—and this was no exception. I needed a lightweight Kubernetes-like system for low-resource environments, and I wanted to learn how Kubernetes actually works. I feel we’ve achieved both, and it has become a great learning tool for understanding application engines in general.

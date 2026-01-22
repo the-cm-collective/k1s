@@ -1,4 +1,40 @@
-# Start Here: k1s Onboarding
+<div class="hero">
+  <div class="hero-brand">
+    <div class="hero-logo-row">
+      <img src="static/k1s-logo-horizontal.svg" alt="k1s logo" class="hero-logo" />
+      <span class="hero-pill">Onboarding</span>
+    </div>
+    <h1>Start Here: k1s Onboarding</h1>
+    <p class="hero-tagline">From fresh clone to running demo in minutes. k1s keeps the control plane light, the UI live, and the YAML close to Kubernetes.</p>
+    <div class="hero-links hero-links--local">
+      <a class="hero-link" href="https://docs.home.arpa:8443/">Docs (TLS)</a>
+      <a class="hero-link" href="http://127.0.0.1:9109/">Docs (local)</a>
+      <a class="hero-link" href="https://api.home.arpa:8443/dashboard">Dashboard (TLS)</a>
+      <a class="hero-link" href="http://127.0.0.1:9108/dashboard">Dashboard (local)</a>
+    </div>
+  </div>
+  <div class="hero-actions">
+    <div class="hero-card">
+      <h2>Zero-to-Labs</h2>
+      <p>Provision docs, API, dashboard, and sample apps in one shot.</p>
+      <pre><code>make demo</code></pre>
+    </div>
+    <div class="hero-card">
+      <h2>Manual Quickstart</h2>
+      <p>Install editable, start the controller, then apply echo.</p>
+      <pre><code>make install</code></pre>
+      <pre><code>make loop</code></pre>
+    </div>
+    <div class="hero-card">
+      <h2>Key CLI Checks</h2>
+      <ul>
+        <li><code>make apply-sample</code></li>
+        <li><code>make status-sample</code></li>
+        <li><code>make logs-sample</code></li>
+      </ul>
+    </div>
+  </div>
+</div>
 
 This single page gets a new contributor or user from a fresh clone to a running demo, with pointers to the most useful docs and commands.
 
@@ -10,7 +46,7 @@ Terminology: k1s "Apps" are Deployment-like workloads; replicas map to Pods; Ser
 - Optional (for ingress/docs via Caddy and Prometheus): `docker compose` or `podman compose`
 - Optional (for multi-node lab): two Linux hosts/VMs with WireGuard tools and rootful networking
 
-## Option A — Zero‑to‑Demo (automated)
+## Option A — Zero‑to‑Labs (automated)
 This script provisions a local demo stack, serves docs, starts the controller API, and applies sample workloads (Apps).
 
 1) Run the demo initializer (adds hosts; Ctrl‑C safe):

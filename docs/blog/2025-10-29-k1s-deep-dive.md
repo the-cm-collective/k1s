@@ -9,19 +9,22 @@ cover_image: "../api.home.arpa_8443_dashboard.png"
 
 # k1s: A Tiny Single‑Node Application Engine — Deep Dive
 
-What if you could keep the ergonomics of everyday Kubernetes workflows — declarative specs, health‑gated rollouts, events, metrics — but run everything on a single host with minimal moving parts? k1s is our answer: a compact controller + CLI that reconciles YAML manifests into running containers via Podman (default) or Docker, fronted by Caddy for ingress, with SQLite for state.
+Here's a little technical deep dive into the k1s single‑node engine: a compact controller + CLI that reconciles YAML manifests into running containers via Podman (default) or Docker, fronted by Caddy for ingress, with SQLite for state.
 
-This post covers the full system: the spec, reconcile loop, ingress/TLS, rollout strategies (including canary), observability, storage, secrets/configs, and the Kubernetes parity toolkit.
+We cover the spec, reconcile loop, ingress/TLS, rollout strategies (including canary), observability, storage, secrets/configs, and the Kubernetes parity toolkit, with an emphasis on how the spec maps to runtime behavior.
 
 ![Dashboard](../api.home.arpa_8443_dashboard.png)
 
 ## Why k1s
 
-- Single host, tiny footprint, predictable rollouts for 1–3 services
-- Declarative spec, idempotent reconcile
-- First‑class observability: metrics, events, dashboard, logs endpoint
+- Single‑host focus, small footprint, predictable rollouts for a handful of services
+- Declarative spec with idempotent reconcile and revision tracking
+- Observability: metrics, events, dashboard, logs endpoint
 - Podman‑first runtime to avoid daemon overhead; Docker fallback when needed
-- Seamless ingress via Caddy with TLS helpers and canary routing bias
+- Ingress via Caddy with TLS helpers and canary bias (prefer‑first routing)
+- Kubernetes portability tooling (`export-k8s`, `k8s-check`) without a full control plane
+
+Scope note: k1s is intentionally a single‑node engine here; there is no kubelet/etcd layer.
 
 ## Architecture at a Glance
 
@@ -72,6 +75,8 @@ Core fields (see src/ae/controller/spec.py):
 - `security`: `runAsUser`, `runAsGroup`, `readOnlyRootFilesystem`, `dropCapabilities[]`
 - `resources`: requests/limits (`cpu` in cores; `memory` as quantity)
 - `volumes`: bind mounts; `storage`: named volumes with `retention`
+
+Most fields map directly to runtime flags: `security` maps to user/group, read‑only root, and cap drops; `resources` map to container limits; `storage` maps to engine‑named volumes; and `service` defines host port behavior for single‑replica apps.
 
 ### Example: Hardened web app with TLS, configs/secrets, storage, and canary
 
@@ -193,7 +198,8 @@ for manifest in manifests:
 - Status & events: `/status`, `/status/<app>`, `/events/<app>` (pagination supported)
 - Logs: `/logs/<app>?tail=100&follow=1` (read token required when RBAC configured)
 - Health: `/health`; OpenAPI: `/openapi.json`; Docs: `/docs`; Dashboard: `/dashboard`
-- RBAC (optional): `AE_API_READ_TOKEN`, `AE_API_SCALER_TOKEN`, `AE_API_ADMIN_TOKEN` with `AE_API_MUTATIONS=1` for mutations
+- Optional tokens: `AE_API_READ_TOKEN`, `AE_API_SCALER_TOKEN`, `AE_API_ADMIN_TOKEN`
+- Mutations are gated by `AE_API_MUTATIONS=1` (read‑only by default)
 
 ## Kubernetes Parity & Tooling
 
@@ -250,6 +256,4 @@ ae export-k8s -f specs/examples/echo.yaml --namespace demo --preset web-hardened
 
 ## Closing Thoughts
 
-k1s aims to be “just enough orchestration” for a single host: familiar, observable, and safe by default. It won’t replace Kubernetes at scale — but it can replace ad‑hoc shell scripts and fragile Compose stacks where you want health checks, rollouts, and a small, understandable control plane.
-
-Explore the docs, run a demo, and tell us what you build with it.
+k1s is meant to be “just enough orchestration” for a single host: familiar, observable, and safe by default. It won’t replace Kubernetes at scale, but it can replace ad‑hoc shell scripts and fragile Compose stacks when you want health checks, rollouts, and a small control plane you can read end‑to‑end.

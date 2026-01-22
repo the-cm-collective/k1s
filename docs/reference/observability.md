@@ -68,7 +68,7 @@ You can also embed a single panel JSON (e.g., stat showing ready apps):
 }
 ```
 
-### Demo Dashboard (/dashboard)
+### Hive Dashboard (/dashboard)
 
 - Adds a System snapshot sourced from `GET /system`:
   - Controller: last reconcile timestamp and duration
