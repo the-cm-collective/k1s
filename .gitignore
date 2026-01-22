@@ -29,3 +29,4 @@ htmlcov/
 .cache
 docs/export/*
 docs/wiki/*
+content-prep/
