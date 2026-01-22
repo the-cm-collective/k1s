@@ -77,6 +77,7 @@
 #backend-select,#example-select{min-width:240px}
 #labs-token{min-width:220px}
 #canary-weight{width:180px}
+#toggle-actions{margin-left:25px}
 /* Backend status ribbon */
 #backend-status{font-size:.95rem; white-space:normal; overflow-wrap:anywhere}
 /* Floating, sticky header-style banner used for feedback */
@@ -124,9 +125,39 @@ html[data-theme='light'] .helm-demo-log{background:var(--k1s-panel, #f1f5f9);col
       grid-template-columns: 200px 1fr;
       column-gap:12px;
     }
+    .container ul:has(#example-select){
+      grid-template-columns: 1fr;
+    }
     .container ul:has(input)>li,
     .container ul:has(select)>li,
     .container ul:has(button)>li{margin:6px 0}
+  }
+  .container ul ul:has(#backend-select){
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+    padding-left:0;
+    list-style:none;
+  }
+  .container ul ul:has(#backend-select)>li{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    flex-wrap:wrap;
+  }
+  @media (min-width: 880px){
+    .container ul ul:has(#backend-select){
+      display:grid;
+      grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr);
+      column-gap:12px;
+      row-gap:8px;
+      align-items:center;
+    }
+    .container ul ul:has(#backend-select)>li:nth-child(3),
+    .container ul ul:has(#backend-select)>li:nth-child(4),
+    .container ul ul:has(#backend-select)>li:nth-child(5){
+      grid-column:1 / -1;
+    }
   }
 }
 
