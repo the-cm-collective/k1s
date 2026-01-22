@@ -9,12 +9,21 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+
+
+@dataclass
+class ShimProc:
+    proc: subprocess.Popen[str]
+    stdout_path: Path
+    stderr_path: Path
 
 
 def run(cmd: list[str], env=None, cwd=None, timeout=20):
@@ -50,7 +59,7 @@ store.upsert_service_endpoints("default--echo", [
     run(["python", "-c", script])
 
 
-def _start_apishim(state_db: Path, apishim_db: Path):
+def _start_apishim(state_db: Path, apishim_db: Path) -> ShimProc:
     env = os.environ.copy()
     env.update(
         {
@@ -62,6 +71,8 @@ def _start_apishim(state_db: Path, apishim_db: Path):
             "PYTHONPATH": "src",
         }
     )
+    stdout = tempfile.NamedTemporaryFile(prefix="apishim-", suffix=".out", delete=False)
+    stderr = tempfile.NamedTemporaryFile(prefix="apishim-", suffix=".err", delete=False)
     proc = subprocess.Popen(
         [
             "python",
@@ -76,12 +87,38 @@ def _start_apishim(state_db: Path, apishim_db: Path):
             "test-token",
         ],
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=stdout,
+        stderr=stderr,
         text=True,
     )
-    time.sleep(2)
-    return proc
+    stdout.close()
+    stderr.close()
+    return ShimProc(proc=proc, stdout_path=Path(stdout.name), stderr_path=Path(stderr.name))
+
+
+def _read_logs(shim: ShimProc) -> str:
+    parts: list[str] = []
+    for label, path in (("stdout", shim.stdout_path), ("stderr", shim.stderr_path)):
+        if path.exists():
+            content = path.read_text(encoding="utf-8", errors="replace").strip()
+            if content:
+                parts.append(f"{label}:\n{content}")
+    return "\n".join(parts) if parts else "no apishim logs captured"
+
+
+def _wait_for_apishim(timeout: float = 5.0) -> bool:
+    deadline = time.time() + timeout
+    req = urllib.request.Request(
+        "http://127.0.0.1:8845/version", headers={"Authorization": "Bearer test-token"}
+    )
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(req, timeout=1) as resp:
+                if resp.status in {200, 401, 403}:
+                    return True
+        except Exception:
+            time.sleep(0.2)
+    return False
 
 
 def _kubectl(args: list[str]):
@@ -109,6 +146,8 @@ def test_apishim_persists_service_and_endpoints(state_db: Path, apishim_db: Path
     _seed_state(state_db)
     proc1 = _start_apishim(state_db, apishim_db)
     try:
+        if not _wait_for_apishim():
+            raise AssertionError(f"apishim not ready:\n{_read_logs(proc1)}")
         # create Service through API (spec without clusterIP/nodePort)
         svc_manifest = {
             "apiVersion": "v1",
@@ -130,23 +169,11 @@ def test_apishim_persists_service_and_endpoints(state_db: Path, apishim_db: Path
             with urllib.request.urlopen(req, timeout=5) as resp:
                 assert resp.status in {200, 201}
         except urllib.error.HTTPError as exc:  # pragma: no cover - surface helpful error
-            raise AssertionError(f"service create failed: {exc.read().decode()}") from exc
-            svc = _service_get()
-            assert svc["spec"]["clusterIP"] == "10.96.0.77"
-            assert svc["spec"]["ports"][0]["nodePort"] == 31080
-            assert svc["status"]["loadBalancer"]["ingress"][0]["ip"] == "10.96.0.77"
-            from ae.controller.state import SQLiteStateStore
-
-            s = SQLiteStateStore(state_db)
-            eps = s.list_service_endpoints("default--echo")
-            assert eps and eps[0].ip == "10.0.0.21"
-    finally:
-        proc1.kill()
-        proc1.wait(timeout=5)
-
-    # restart apishim, ensure data remains consistent
-    proc2 = _start_apishim(state_db, apishim_db)
-    try:
+            raise AssertionError(
+                f"service create failed: {exc.read().decode()}\n{_read_logs(proc1)}"
+            ) from exc
+        except Exception as exc:  # pragma: no cover - surface helpful error
+            raise AssertionError(f"service create failed: {exc}\n{_read_logs(proc1)}") from exc
         svc = _service_get()
         assert svc["spec"]["clusterIP"] == "10.96.0.77"
         assert svc["spec"]["ports"][0]["nodePort"] == 31080
@@ -157,8 +184,30 @@ def test_apishim_persists_service_and_endpoints(state_db: Path, apishim_db: Path
         eps = s.list_service_endpoints("default--echo")
         assert eps and eps[0].ip == "10.0.0.21"
     finally:
-        proc2.kill()
-        proc2.wait(timeout=5)
+        proc1.proc.kill()
+        proc1.proc.wait(timeout=5)
+        proc1.stdout_path.unlink(missing_ok=True)
+        proc1.stderr_path.unlink(missing_ok=True)
+
+    # restart apishim, ensure data remains consistent
+    proc2 = _start_apishim(state_db, apishim_db)
+    try:
+        if not _wait_for_apishim():
+            raise AssertionError(f"apishim not ready:\n{_read_logs(proc2)}")
+        svc = _service_get()
+        assert svc["spec"]["clusterIP"] == "10.96.0.77"
+        assert svc["spec"]["ports"][0]["nodePort"] == 31080
+        assert svc["status"]["loadBalancer"]["ingress"][0]["ip"] == "10.96.0.77"
+        from ae.controller.state import SQLiteStateStore
+
+        s = SQLiteStateStore(state_db)
+        eps = s.list_service_endpoints("default--echo")
+        assert eps and eps[0].ip == "10.0.0.21"
+    finally:
+        proc2.proc.kill()
+        proc2.proc.wait(timeout=5)
+        proc2.stdout_path.unlink(missing_ok=True)
+        proc2.stderr_path.unlink(missing_ok=True)
 
 
 # ruff: noqa: E501,S603,S607,S310

@@ -55,7 +55,9 @@ EXPORT_NON_INTERACTIVE = _truthy_env("DOCS_NON_INTERACTIVE") or _truthy_env(
 
 RSS_FEED_URL = os.getenv("DOCS_RSS_FEED_URL", "https://codeberg.org/th3_4rchit3ct/k1s.rss").strip()
 RSS_FEED_TITLE = "k1s Repo Activity"
-SOURCE_REPO_URL = os.getenv("DOCS_SOURCE_REPO_URL", "https://codeberg.org/th3_4rchit3ct/k1s").strip()
+SOURCE_REPO_URL = os.getenv(
+    "DOCS_SOURCE_REPO_URL", "https://codeberg.org/th3_4rchit3ct/k1s"
+).strip()
 SOURCE_REPO_LABEL = "Canonical (Upstream) Repository"
 
 INTERACTIVE_HREF_TOKENS = ("/swagger", "/redoc", "/dashboard", "playground.html", "/playground")
@@ -90,7 +92,7 @@ def render_nav(*, include_interactive: bool) -> str:
     parts.append(
         '      <a class="nav-brand" href="index.html" aria-label="k1s docs home">'
         '<img src="static/k1s-logo-circle.svg" alt="k1s logo" />'
-        '<span>k1s docs</span>'
+        "<span>k1s docs</span>"
         "</a>"
     )
     for label, href, interactive, external in NAV_LINKS:
@@ -898,6 +900,7 @@ def format_inline(
             return f"<code>{html.escape(m.group(1))}</code>"
 
     text = re.sub(r"`([^`]+)`", repl_code, text)
+
     # links [text](url) — escape URL attribute; keep link text as-is
     def repl_link(m: re.Match[str]) -> str:
         href = m.group(2)
@@ -1917,7 +1920,7 @@ def main() -> None:
             '      <span class="hero-pill">Docs Hub</span>',
             "    </div>",
             "    <h1>k1s Documentation</h1>",
-            "    <p class=\"hero-tagline\">Guides, labs, and reference for building, operating, and observing k1s clusters.</p>",
+            '    <p class="hero-tagline">Guides, labs, and reference for building, operating, and observing k1s clusters.</p>',
             '    <div class="hero-links">',
             "      " + "\n      ".join(quick_links_html),
             "    </div>",

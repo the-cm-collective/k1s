@@ -106,8 +106,8 @@ def _sanitize_wiki_text(text: str) -> str:
         "\u2013": "-",
         "\u2014": "--",
         "\u2019": "'",
-        "\u201c": "\"",
-        "\u201d": "\"",
+        "\u201c": '"',
+        "\u201d": '"',
         "\u2026": "...",
         "\u2192": "->",
         "\u2212": "-",
@@ -191,31 +191,61 @@ def _render_concepts_index(slug_to_title: dict[str, str]) -> str:
         (
             "Core Control Loop",
             [
-                (slug_to_title.get("concepts-in-practice-01-desired-state-reconciliation"), "concepts-in-practice-01-desired-state-reconciliation"),
-                (slug_to_title.get("concepts-in-practice-02-declarative-apply"), "concepts-in-practice-02-declarative-apply"),
-                (slug_to_title.get("concepts-in-practice-03-scheduling-placement"), "concepts-in-practice-03-scheduling-placement"),
+                (
+                    slug_to_title.get("concepts-in-practice-01-desired-state-reconciliation"),
+                    "concepts-in-practice-01-desired-state-reconciliation",
+                ),
+                (
+                    slug_to_title.get("concepts-in-practice-02-declarative-apply"),
+                    "concepts-in-practice-02-declarative-apply",
+                ),
+                (
+                    slug_to_title.get("concepts-in-practice-03-scheduling-placement"),
+                    "concepts-in-practice-03-scheduling-placement",
+                ),
             ],
         ),
         (
             "Runtime & Exposure",
             [
-                (slug_to_title.get("concepts-in-practice-04-runtime-adapters"), "concepts-in-practice-04-runtime-adapters"),
-                (slug_to_title.get("concepts-in-practice-05-ingress-service-exposure"), "concepts-in-practice-05-ingress-service-exposure"),
+                (
+                    slug_to_title.get("concepts-in-practice-04-runtime-adapters"),
+                    "concepts-in-practice-04-runtime-adapters",
+                ),
+                (
+                    slug_to_title.get("concepts-in-practice-05-ingress-service-exposure"),
+                    "concepts-in-practice-05-ingress-service-exposure",
+                ),
             ],
         ),
         (
             "Reliability & Rollouts",
             [
-                (slug_to_title.get("concepts-in-practice-06-observability"), "concepts-in-practice-06-observability"),
-                (slug_to_title.get("concepts-in-practice-07-health-probes"), "concepts-in-practice-07-health-probes"),
-                (slug_to_title.get("concepts-in-practice-08-rollouts-updates"), "concepts-in-practice-08-rollouts-updates"),
+                (
+                    slug_to_title.get("concepts-in-practice-06-observability"),
+                    "concepts-in-practice-06-observability",
+                ),
+                (
+                    slug_to_title.get("concepts-in-practice-07-health-probes"),
+                    "concepts-in-practice-07-health-probes",
+                ),
+                (
+                    slug_to_title.get("concepts-in-practice-08-rollouts-updates"),
+                    "concepts-in-practice-08-rollouts-updates",
+                ),
             ],
         ),
         (
             "Policy & Operations",
             [
-                (slug_to_title.get("concepts-in-practice-09-configuration-secrets"), "concepts-in-practice-09-configuration-secrets"),
-                (slug_to_title.get("concepts-in-practice-10-access-policy"), "concepts-in-practice-10-access-policy"),
+                (
+                    slug_to_title.get("concepts-in-practice-09-configuration-secrets"),
+                    "concepts-in-practice-09-configuration-secrets",
+                ),
+                (
+                    slug_to_title.get("concepts-in-practice-10-access-policy"),
+                    "concepts-in-practice-10-access-policy",
+                ),
             ],
         ),
     ]
@@ -308,9 +338,7 @@ def main() -> None:
     mapping = _docs_mapping(include_interactive)
     html_to_slug = {out: Path(out).stem for _src, out in mapping}
     excluded_slugs = {
-        Path(DOCS_MAPPING[src]).stem
-        for src in INTERACTIVE_SOURCES
-        if src in DOCS_MAPPING
+        Path(DOCS_MAPPING[src]).stem for src in INTERACTIVE_SOURCES if src in DOCS_MAPPING
     }
 
     OUT.mkdir(parents=True, exist_ok=True)
@@ -392,9 +420,7 @@ def main() -> None:
         for page in items:
             sidebar_lines.append(f"- [{page['title']}]({page['slug']})")
         sidebar_lines.append("")
-    (OUT / "_Sidebar.md").write_text(
-        "\n".join(sidebar_lines).rstrip() + "\n", encoding="utf-8"
-    )
+    (OUT / "_Sidebar.md").write_text("\n".join(sidebar_lines).rstrip() + "\n", encoding="utf-8")
 
     # _Footer.md
     footer = f"Generated from docs/ on {datetime.now().strftime('%Y-%m-%d')}."
