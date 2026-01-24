@@ -6,6 +6,7 @@ import hashlib
 import ipaddress
 import json
 import json as _jsonlib
+import logging
 import os
 import re
 import secrets
@@ -17,7 +18,7 @@ import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -45,6 +46,14 @@ RESERVED_GROUPS = {
     "policy",
     "autoscaling",
     "apiextensions.k8s.io",
+}
+
+LOGGER = logging.getLogger(__name__)
+SPDY_DEBUG = str(os.getenv("AE_APISHIM_SPDY_DEBUG", "")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
 }
 
 
@@ -1188,6 +1197,7 @@ class ShimHandler(BaseHTTPRequestHandler):
     allow_anonymous: bool = os.getenv("AE_APISHIM_ALLOW_ANON", "0") == "1"
     rbac_enabled: bool = os.getenv("AE_APISHIM_RBAC", "0") == "1"
     rbac_eval_roles: bool = os.getenv("AE_APISHIM_RBAC_EVAL", "0") == "1"
+    app_admission_mode: str = os.getenv("AE_APISHIM_APP_ADMISSION", "enforce")
     sa_tokens: dict[str, tuple[str, str, float]] = {}
     sa_tokens_lock = threading.RLock()
     sa_token_ttl: int = int(os.getenv("AE_APISHIM_SA_TOKEN_TTL", "3600") or "3600")
@@ -1211,6 +1221,78 @@ class ShimHandler(BaseHTTPRequestHandler):
     crd_index: dict[str, list[tuple[str, str, str]]] = {}
     crd_lock = threading.RLock()
 
+    def _app_admission_mode(self) -> str:
+        mode = (self.app_admission_mode or "enforce").strip().lower()
+        if mode in {"warn", "warning"}:
+            return "warn"
+        if mode in {"off", "disabled", "ignore"}:
+            return "off"
+        return "enforce"
+
+    def _add_warning(self, message: str) -> None:
+        if not message:
+            return
+        warnings = getattr(self, "_warnings", None)
+        if warnings is None:
+            warnings = []
+            self._warnings = warnings
+        warnings.append(message)
+
+    def _emit_warnings(self) -> None:
+        warnings = getattr(self, "_warnings", None)
+        if not warnings:
+            return
+        for msg in warnings:
+            safe = str(msg).replace('"', "'")
+            self.send_header("Warning", f'299 - "{safe}"')
+
+    @classmethod
+    def rehydrate_sa_tokens(cls, store: ObjectStore) -> None:
+        try:
+            accounts = store.list_all("", "v1", "serviceaccounts")
+        except Exception:
+            return
+        now = time.time()
+        tokens: dict[str, tuple[str, str, float]] = {}
+        for obj in accounts:
+            md = obj.metadata or {}
+            anns = md.get("annotations") or {}
+            tok = anns.get("ae.apishim/token")
+            if not tok:
+                continue
+            try:
+                exp = float(anns.get("ae.apishim/token-exp", "0") or 0)
+            except Exception:
+                exp = 0
+            if exp <= now:
+                continue
+            tokens[tok] = (obj.namespace or "default", obj.name, exp)
+        if tokens:
+            with cls.sa_tokens_lock:
+                cls.sa_tokens.update(tokens)
+
+    def _lookup_sa_token(self, token: str) -> tuple[str, str, float] | None:
+        if not token:
+            return None
+        try:
+            accounts = self.server.store.list_all("", "v1", "serviceaccounts")  # type: ignore[attr-defined]
+        except Exception:
+            return None
+        now = time.time()
+        for obj in accounts:
+            md = obj.metadata or {}
+            anns = md.get("annotations") or {}
+            if anns.get("ae.apishim/token") != token:
+                continue
+            try:
+                exp = float(anns.get("ae.apishim/token-exp", "0") or 0)
+            except Exception:
+                exp = 0
+            if exp <= now:
+                return None
+            return (obj.namespace or "default", obj.name, exp)
+        return None
+
     def _parse_principal(self) -> Principal:
         hdr = self.headers.get("Authorization", "")
         tok = hdr[7:] if hdr.startswith("Bearer ") else ""
@@ -1228,6 +1310,11 @@ class ShimHandler(BaseHTTPRequestHandler):
         else:
             with self.sa_tokens_lock:
                 sa = self.sa_tokens.get(tok)
+            if sa is None and tok:
+                sa = self._lookup_sa_token(tok)
+                if sa:
+                    with self.sa_tokens_lock:
+                        self.sa_tokens[tok] = sa
             if sa:
                 ns, name, exp_ts = sa
                 if exp_ts < time.time():
@@ -1379,6 +1466,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         data = _json(payload)
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/json")
+        self._emit_warnings()
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -1408,6 +1496,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         if headers:
             for key, value in headers.items():
                 self.send_header(str(key), str(value))
+        self._emit_warnings()
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -1737,6 +1826,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         target_host: str,
         target_ports: list[int],
         target_hosts_by_port: dict[int, str] | None = None,
+        port_map: dict[int, int] | None = None,
         *,
         conn_override=None,
         suppress_handshake: bool = False,
@@ -1791,6 +1881,16 @@ class ShimHandler(BaseHTTPRequestHandler):
         error_streams: dict[int, int] = {}  # stream_id -> data_stream sid
         upstream_cache: dict[int, socket.socket] = {}
         host_by_port = target_hosts_by_port or {}
+        pf_port_map = port_map or {}
+        _pf_debug(
+            "handshake upgrade="
+            + str(self.headers.get("Upgrade"))
+            + " stream-proto="
+            + str(self.headers.get("X-Stream-Protocol-Version"))
+        )
+        _pf_debug(
+            f"targets host={target_host} ports={target_ports} host_by_port={host_by_port} port_map={pf_port_map}"
+        )
         # Build round-robin host cycles per port when multiple endpoints exist
         host_cycle: dict[int, list[str]] = {}
         for p, h in host_by_port.items():
@@ -1798,15 +1898,6 @@ class ShimHandler(BaseHTTPRequestHandler):
                 host_cycle[p] = list(h)
             else:
                 host_cycle[p] = [h]
-
-        def read_exact(sock, n: int) -> bytes | None:
-            buf = b""
-            while len(buf) < n:
-                chunk = sock.recv(n - len(buf))
-                if not chunk:
-                    return None
-                buf += chunk
-            return buf
 
         def send_data_frame(stream_id: int, payload: bytes, flags: int = 0) -> None:
             header = bytearray()
@@ -1968,6 +2059,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                             )
                             if (
                                 port not in target_ports
+                                and port not in pf_port_map
                                 and target_ports[0] != 0
                                 and not isinstance(self.server.runtime, StubRuntime)
                             ):  # type: ignore[attr-defined]
@@ -2046,7 +2138,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                             if stream_id not in upstream_cache:
                                 try:
                                     dest_host = host_by_port.get(port, target_host)
-                                    dest_port = port
+                                    dest_port = pf_port_map.get(port, port)
                                     if isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                                         try:
                                             dest_port = int(
@@ -2145,6 +2237,14 @@ class ShimHandler(BaseHTTPRequestHandler):
         want_stdout: bool,
         want_stderr: bool,
     ) -> None:
+        if SPDY_DEBUG:
+            LOGGER.warning(
+                "SPDY exec start pod=%s container=%s tty=%s cmd=%s",
+                pod_name,
+                container,
+                tty,
+                command,
+            )
         # Try to open an attached exec session on the runtime (docker/podman only for now)
         exec_sock = None
         exec_id = None
@@ -2154,7 +2254,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     pod_name, command, container=container, tty=tty
                 )
                 exec_sock.settimeout(0.05)
-            except Exception:
+            except Exception as exc:
+                if SPDY_DEBUG:
+                    LOGGER.warning("SPDY exec_attach failed: %s", exc)
                 exec_sock = None
         if exec_sock is None:
             self._json_status(
@@ -2164,30 +2266,67 @@ class ShimHandler(BaseHTTPRequestHandler):
             )
             return
 
+        def _parse_header_values(name: str) -> list[str]:
+            values = self.headers.get_all(name) if hasattr(self.headers, "get_all") else None
+            if not values:
+                val = self.headers.get(name)
+                values = [val] if val else []
+            parsed: list[str] = []
+            for value in values:
+                if not value:
+                    continue
+                for part in value.split(","):
+                    proto = part.strip()
+                    if proto:
+                        parsed.append(proto)
+            return parsed
+
+        server_protocols = [
+            "v5.channel.k8s.io",
+            "v4.channel.k8s.io",
+            "v3.channel.k8s.io",
+            "v2.channel.k8s.io",
+            "channel.k8s.io",
+        ]
+        client_protocols = _parse_header_values("X-Stream-Protocol-Version")
+        stream_proto = ""
+        for proto in client_protocols:
+            if proto in server_protocols:
+                stream_proto = proto
+                break
+        if not stream_proto:
+            self.send_response(403, "Forbidden")
+            for proto in server_protocols:
+                self.send_header("X-Accepted-Stream-Protocol-Versions", proto)
+            self.end_headers()
+            if SPDY_DEBUG:
+                LOGGER.warning(
+                    "SPDY exec handshake failed client_protocols=%s",
+                    client_protocols,
+                )
+            return
+
         # Accept upgrade after we know we can serve it
         self.send_response(101, "Switching Protocols")
         self.send_header("Connection", "Upgrade")
         self.send_header("Upgrade", self.headers.get("Upgrade", "SPDY/3.1"))
+        self.send_header("X-Stream-Protocol-Version", stream_proto)
+        if SPDY_DEBUG:
+            LOGGER.warning("SPDY exec stream-proto=%s", stream_proto)
         self.end_headers()
 
         conn = self.connection
         conn.settimeout(0.05)
 
-        SPDY_DICT = (
-            b"optionsgetheadpostputdeletetraceacceptaccept-charsetaccept-encodingaccept-language"
-            b"authorizationexpectfromhostif-modified-sinceif-matchif-none-matchif-rangeif-unmodified-"
-            b"sincemax-forwardsproxy-authorizationrange refererteuser-agent100101200201202203204205206"
-            b"300301302303304305306307400401402403404405406407408409410411412413414415416417500501502"
-            b"503504505accept-rangesageetaglocationproxy-authenticatepublicretry-afterservervarywarning"
-            b"www-authenticateallowcontent-basecontent-encodingcache-controlconnectiondatetrailertransfer"
-            b"-encodingupgradeviawarningcontent-languagecontent-lengthcontent-locationcontent-md5content-"
-            b"rangecontent-typeetagexpireslast-modifiedset-cookieMondayTuesdayWednesdayThursdayFridaySaturday"
-            b"SundayJanFebMarAprMayJunJulAugSepOctNovDecchunkedtext/htmlimage/pngimage/jpgimage/gifapplication"
-            b"/xmlapplication/xhtmltext/plainpublicprivatemax-agegztcomparallel bytesruning"
+        SPDY_DICT = base64.b64decode(
+            "AAAAB29wdGlvbnMAAAAEaGVhZAAAAARwb3N0AAAAA3B1dAAAAAZkZWxldGUAAAAFdHJhY2UAAAAGYWNjZXB0AAAADmFjY2VwdC1jaGFyc2V0AAAAD2FjY2VwdC1lbmNvZGluZwAAAA9hY2NlcHQtbGFuZ3VhZ2UAAAANYWNjZXB0LXJhbmdlcwAAAANhZ2UAAAAFYWxsb3cAAAANYXV0aG9yaXphdGlvbgAAAA1jYWNoZS1jb250cm9sAAAACmNvbm5lY3Rpb24AAAAMY29udGVudC1iYXNlAAAAEGNvbnRlbnQtZW5jb2RpbmcAAAAQY29udGVudC1sYW5ndWFnZQAAAA5jb250ZW50LWxlbmd0aAAAABBjb250ZW50LWxvY2F0aW9uAAAAC2NvbnRlbnQtbWQ1AAAADWNvbnRlbnQtcmFuZ2UAAAAMY29udGVudC10eXBlAAAABGRhdGUAAAAEZXRhZwAAAAZleHBlY3QAAAAHZXhwaXJlcwAAAARmcm9tAAAABGhvc3QAAAAIaWYtbWF0Y2gAAAARaWYtbW9kaWZpZWQtc2luY2UAAAANaWYtbm9uZS1tYXRjaAAAAAhpZi1yYW5nZQAAABNpZi11bm1vZGlmaWVkLXNpbmNlAAAADWxhc3QtbW9kaWZpZWQAAAAIbG9jYXRpb24AAAAMbWF4LWZvcndhcmRzAAAABnByYWdtYQAAABJwcm94eS1hdXRoZW50aWNhdGUAAAATcHJveHktYXV0aG9yaXphdGlvbgAAAAVyYW5nZQAAAAdyZWZlcmVyAAAAC3JldHJ5LWFmdGVyAAAABnNlcnZlcgAAAAJ0ZQAAAAd0cmFpbGVyAAAAEXRyYW5zZmVyLWVuY29kaW5nAAAAB3VwZ3JhZGUAAAAKdXNlci1hZ2VudAAAAAR2YXJ5AAAAA3ZpYQAAAAd3YXJuaW5nAAAAEHd3dy1hdXRoZW50aWNhdGUAAAAGbWV0aG9kAAAAA2dldAAAAAZzdGF0dXMAAAAGMjAwIE9LAAAAB3ZlcnNpb24AAAAISFRUUC8xLjEAAAADdXJsAAAABnB1YmxpYwAAAApzZXQtY29va2llAAAACmtlZXAtYWxpdmUAAAAGb3JpZ2luMTAwMTAxMjAxMjAyMjA1MjA2MzAwMzAyMzAzMzA0MzA1MzA2MzA3NDAyNDA1NDA2NDA3NDA4NDA5NDEwNDExNDEyNDEzNDE0NDE1NDE2NDE3NTAyNTA0NTA1MjAzIE5vbi1BdXRob3JpdGF0aXZlIEluZm9ybWF0aW9uMjA0IE5vIENvbnRlbnQzMDEgTW92ZWQgUGVybWFuZW50bHk0MDAgQmFkIFJlcXVlc3Q0MDEgVW5hdXRob3JpemVkNDAzIEZvcmJpZGRlbjQwNCBOb3QgRm91bmQ1MDAgSW50ZXJuYWwgU2VydmVyIEVycm9yNTAxIE5vdCBJbXBsZW1lbnRlZDUwMyBTZXJ2aWNlIFVuYXZhaWxhYmxlSmFuIEZlYiBNYXIgQXByIE1heSBKdW4gSnVsIEF1ZyBTZXB0IE9jdCBOb3YgRGVjIDAwOjAwOjAwIE1vbiwgVHVlLCBXZWQsIFRodSwgRnJpLCBTYXQsIFN1biwgR01UY2h1bmtlZCx0ZXh0L2h0bWwsaW1hZ2UvcG5nLGltYWdlL2pwZyxpbWFnZS9naWYsYXBwbGljYXRpb24veG1sLGFwcGxpY2F0aW9uL3hodG1sK3htbCx0ZXh0L3BsYWluLHRleHQvamF2YXNjcmlwdCxwdWJsaWNwcml2YXRlbWF4LWFnZT1nemlwLGRlZmxhdGUsc2RjaGNoYXJzZXQ9dXRmLThjaGFyc2V0PWlzby04ODU5LTEsdXRmLSwqLGVucT0wLg=="
         )
-        dctx = zlib.decompressobj(zdict=SPDY_DICT)
+        dctx = zlib.decompressobj(wbits=15, zdict=SPDY_DICT)
+        cctx = zlib.compressobj(wbits=15, zdict=SPDY_DICT)
 
         stream_ids: dict[str, int] = {}  # streamtype -> sid
+        fallback_streams = ["stdin", "stdout", "stderr", "error", "resize"]
+        fallback_idx = 0
         window_size = 1 << 20
         stream_windows: dict[int, int] = {}
         resize_sid: int | None = None
@@ -2228,6 +2367,52 @@ class ShimHandler(BaseHTTPRequestHandler):
             header += opaque[:4]
             conn.sendall(bytes(header))
 
+        def send_settings(initial_window: int | None = None) -> None:
+            entries = bytearray()
+            num_entries = 0
+            if initial_window is not None:
+                num_entries = 1
+                entries.append(0x00)  # flags
+                entries += (0x04).to_bytes(3, "big")  # SETTINGS_INITIAL_WINDOW_SIZE
+                entries += int(initial_window).to_bytes(4, "big")
+            payload = num_entries.to_bytes(4, "big") + entries
+            header = bytearray()
+            header += b"\x80\x03"
+            header += (0x04).to_bytes(2, "big")
+            header += b"\x00"
+            header += len(payload).to_bytes(3, "big")
+            conn.sendall(bytes(header) + payload)
+
+        try:
+            send_settings(initial_window=window_size)
+            if SPDY_DEBUG:
+                LOGGER.warning("SPDY sent SETTINGS initial_window=%s", window_size)
+        except Exception as exc:
+            if SPDY_DEBUG:
+                LOGGER.warning("SPDY failed to send SETTINGS: %s", exc)
+
+        def _encode_headers(headers: dict[str, str]) -> bytes:
+            buf = bytearray()
+            buf += len(headers).to_bytes(4, "big")
+            for name, value in headers.items():
+                n = name.encode("utf-8")
+                v = value.encode("utf-8")
+                buf += len(n).to_bytes(4, "big")
+                buf += n
+                buf += len(v).to_bytes(4, "big")
+                buf += v
+            return cctx.compress(bytes(buf)) + cctx.flush(zlib.Z_SYNC_FLUSH)
+
+        def send_syn_reply(stream_id: int) -> None:
+            hdrs = _encode_headers({":status": "200", ":version": "HTTP/1.1"})
+            header = bytearray()
+            header += b"\x80\x03"
+            header += (0x02).to_bytes(2, "big")  # SYN_REPLY
+            header += b"\x00"
+            header += (len(hdrs) + 4).to_bytes(3, "big")
+            header += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
+            conn.sendall(bytes(header) + hdrs)
+
         def send_rst(stream_id: int, code: int = 2) -> None:
             header = bytearray()
             header += b"\x80\x03"
@@ -2266,6 +2451,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                     value = f.read(vlen).decode("utf-8", "ignore")
                     headers[name] = value
             except Exception:
+                if SPDY_DEBUG:
+                    LOGGER.warning("SPDY exec syn-parse failed len=%s", len(payload))
                 return headers
             return headers
 
@@ -2282,7 +2469,21 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return None
             return stream_type, data
 
+        spdy_buf = b""
         last_ping = time.time()
+        exec_done = False
+        exec_done_at = 0.0
+        exec_grace_seconds = 3.0
+        required_streams: set[str] = {"error"}
+        if want_stdout:
+            required_streams.add("stdout")
+        if want_stderr and not tty:
+            required_streams.add("stderr")
+        if want_stdin:
+            required_streams.add("stdin")
+        if tty:
+            required_streams.add("resize")
+        warned_missing_streams = False
         try:
             exec_buf = b""
             while True:
@@ -2294,31 +2495,75 @@ class ShimHandler(BaseHTTPRequestHandler):
                         break
                     last_ping = now
 
-                # Read SPDY control/data frames from client
+                # Read SPDY control/data frames from client (buffered)
                 try:
-                    hdr = conn.recv(8)
+                    chunk = conn.recv(4096)
                 except TimeoutError:
-                    hdr = None
-                if hdr:
-                    if len(hdr) < 8:
+                    chunk = None
+                except Exception:
+                    chunk = b""
+                if chunk == b"":
+                    break
+                if chunk:
+                    spdy_buf += chunk
+
+                while True:
+                    if len(spdy_buf) < 8:
                         break
+                    hdr = spdy_buf[:8]
                     is_control = (hdr[0] & 0x80) != 0
+                    length = int.from_bytes(hdr[5:8], "big")
+                    frame_len = 8 + length
+                    if len(spdy_buf) < frame_len:
+                        break
+                    payload = spdy_buf[8:frame_len]
+                    spdy_buf = spdy_buf[frame_len:]
                     if is_control:
                         frame_type = int.from_bytes(hdr[2:4], "big")
                         flags = hdr[4]
-                        length = int.from_bytes(hdr[5:8], "big")
+                        if SPDY_DEBUG:
+                            LOGGER.warning(
+                                "SPDY ctrl frame type=%s flags=0x%02x length=%s",
+                                frame_type,
+                                flags,
+                                length,
+                            )
                         if length > (1 << 20):
                             send_goaway(status=2)
                             break
-                        payload = read_exact(conn, length) or b""
                         if frame_type == 1:  # SYN_STREAM registers channels
                             sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
+                            if SPDY_DEBUG:
+                                LOGGER.warning(
+                                    "SPDY exec syn-raw len=%s data=%s",
+                                    len(payload),
+                                    payload[:40].hex(),
+                                )
                             headers = parse_syn_stream(payload)
-                            stype = headers.get("streamtype", "").lower()
-                            stream_ids[stype] = sid
+                            stype = headers.get("streamtype", "").strip().lower()
+                            if SPDY_DEBUG:
+                                LOGGER.warning(
+                                    "SPDY SYN_STREAM sid=%s headers=%s", sid, headers
+                                )
+                            if stype not in {"stdin", "stdout", "stderr", "error", "resize"}:
+                                if fallback_idx < len(fallback_streams):
+                                    stype = fallback_streams[fallback_idx]
+                                    fallback_idx += 1
+                                    if SPDY_DEBUG:
+                                        LOGGER.warning(
+                                            "SPDY streamtype fallback sid=%s assigned=%s",
+                                            sid,
+                                            stype,
+                                        )
+                            if stype:
+                                stream_ids[stype] = sid
                             stream_windows[sid] = window_size
                             if stype == "resize":
                                 resize_sid = sid
+                            try:
+                                send_syn_reply(sid)
+                            except Exception:
+                                pass
                         elif frame_type == 4:  # SETTINGS
                             try:
                                 num = int.from_bytes(payload[0:4], "big")
@@ -2354,8 +2599,13 @@ class ShimHandler(BaseHTTPRequestHandler):
                     else:
                         stream_id = int.from_bytes(hdr[0:4], "big") & 0x7FFFFFFF
                         flags = hdr[4]
-                        length = int.from_bytes(hdr[5:8], "big")
-                        payload = read_exact(conn, length) or b""
+                        if SPDY_DEBUG:
+                            LOGGER.warning(
+                                "SPDY data frame sid=%s flags=0x%02x length=%s",
+                                stream_id,
+                                flags,
+                                length,
+                            )
                         # STDIN frames
                         if stream_id == stream_ids.get("stdin") and want_stdin and payload:
                             try:
@@ -2389,50 +2639,65 @@ class ShimHandler(BaseHTTPRequestHandler):
                                     pass
 
                 # Read from exec socket and forward to stdout/stderr
-                try:
-                    chunk = exec_sock.recv(4096)
-                except TimeoutError:
-                    chunk = None
-                except Exception:
-                    chunk = b""
-                if chunk:
-                    exec_buf += chunk
-                    if tty:
-                        if want_stdout:
-                            sid = stream_ids.get("stdout")
-                            if sid:
-                                send_data_frame(sid, chunk, flags=0)
-                                try:
-                                    send_window_update(sid, len(chunk))
-                                except Exception:
-                                    pass
-                    else:
-                        while True:
-                            if len(exec_buf) < 8:
-                                break
-                            size = int.from_bytes(exec_buf[4:8], "big")
-                            frame_len = 8 + size
-                            if len(exec_buf) < frame_len:
-                                break
-                            frame = exec_buf[:frame_len]
-                            exec_buf = exec_buf[frame_len:]
-                            dm = demux_exec_frame(frame)
-                            if dm:
-                                stype, data = dm
-                                if stype == 1 and want_stdout:
-                                    sid = stream_ids.get("stdout")
-                                elif stype == 2 and want_stderr:
-                                    sid = stream_ids.get("stderr")
-                                else:
-                                    sid = None
-                                if sid and data:
-                                    send_data_frame(sid, data, flags=0)
+                if exec_sock:
+                    try:
+                        chunk = exec_sock.recv(4096)
+                    except TimeoutError:
+                        chunk = None
+                    except Exception:
+                        chunk = b""
+                    if chunk:
+                        exec_buf += chunk
+                        if tty:
+                            if want_stdout:
+                                sid = stream_ids.get("stdout")
+                                if sid:
+                                    send_data_frame(sid, chunk, flags=0)
                                     try:
-                                        send_window_update(sid, len(data))
+                                        send_window_update(sid, len(chunk))
                                     except Exception:
                                         pass
-                elif chunk == b"":
-                    break
+                        else:
+                            while True:
+                                if len(exec_buf) < 8:
+                                    break
+                                size = int.from_bytes(exec_buf[4:8], "big")
+                                frame_len = 8 + size
+                                if len(exec_buf) < frame_len:
+                                    break
+                                frame = exec_buf[:frame_len]
+                                exec_buf = exec_buf[frame_len:]
+                                dm = demux_exec_frame(frame)
+                                if dm:
+                                    stype, data = dm
+                                    if stype == 1 and want_stdout:
+                                        sid = stream_ids.get("stdout")
+                                    elif stype == 2 and want_stderr:
+                                        sid = stream_ids.get("stderr")
+                                    else:
+                                        sid = None
+                                    if sid and data:
+                                        send_data_frame(sid, data, flags=0)
+                                        try:
+                                            send_window_update(sid, len(data))
+                                        except Exception:
+                                            pass
+                    elif chunk == b"":
+                        exec_done = True
+                        exec_done_at = time.time()
+                        try:
+                            exec_sock.close()
+                        except Exception:
+                            pass
+                        exec_sock = None
+
+                if exec_done:
+                    missing = required_streams.difference(stream_ids.keys())
+                    if missing and SPDY_DEBUG and not warned_missing_streams:
+                        warned_missing_streams = True
+                        LOGGER.warning("SPDY exec missing streams after exit: %s", sorted(missing))
+                    if not missing or (time.time() - exec_done_at) > exec_grace_seconds:
+                        break
 
         finally:
             # Send exit status over error stream if present
@@ -2714,7 +2979,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         path = parsed.path
         q = parse_qs(parsed.query)
         # Allow unauthenticated discovery/OpenAPI for kubectl validation
-        if path not in {"/openapi/v2", "/swagger.json", "/api", "/apis", "/version"}:
+        if path not in {"/openapi/v2", "/openapi/v3", "/swagger.json", "/api", "/apis", "/version"}:
             if not self._authz(role="read"):
                 return
 
@@ -4801,12 +5066,71 @@ class ShimHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
+        self.path = path
         # SubjectAccessReview should be callable by read tokens; other POSTs require write/admin.
         if path.startswith("/apis/authorization.k8s.io/"):
             if not self._authz(role="read"):
                 return
         else:
             if not self._authz(role="write"):
+                return
+
+        # Pod exec (kubectl uses POST + SPDY upgrade)
+        m_exec_spdy = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/exec$", path)
+        if m_exec_spdy:
+            if not self._rbac_allows("create", "pods/exec"):
+                self._deny(403)
+                return
+            upgrade = (self.headers.get("Upgrade") or "").lower()
+            if upgrade:
+                qs = parse_qs(parsed.query)
+                cmd = qs.get("command") or []
+                if not cmd:
+                    self._json_status(
+                        HTTPStatus.BAD_REQUEST,
+                        reason="BadRequest",
+                        message="command query param is required",
+                    )
+                    return
+                if upgrade.startswith("spdy"):
+                    container = (qs.get("container") or [None])[0]
+                    tty = (qs.get("tty") or ["false"])[0].lower() in ("1", "true", "yes")
+                    want_stdin = (qs.get("stdin") or ["false"])[0].lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                    )
+                    want_stdout = (qs.get("stdout") or ["true"])[0].lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                    )
+                    want_stderr = (qs.get("stderr") or ["true"])[0].lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                    )
+                    self._handle_exec_spdy(
+                        pod_name=m_exec_spdy.group(2),
+                        command=list(cmd),
+                        container=container,
+                        tty=tty,
+                        want_stdin=want_stdin,
+                        want_stdout=want_stdout,
+                        want_stderr=want_stderr,
+                    )
+                elif upgrade == "websocket":
+                    self._json_status(
+                        HTTPStatus.UPGRADE_REQUIRED,
+                        reason="UpgradeRequired",
+                        message="kubectl exec requires SPDY/3.1; websocket exec not implemented",
+                    )
+                else:
+                    self._json_status(
+                        HTTPStatus.UPGRADE_REQUIRED,
+                        reason="UpgradeRequired",
+                        message="exec requires SPDY/3.1 upgrade used by kubectl",
+                    )
                 return
         body = self._read_body()
         doc = _read_json(body)
@@ -4885,13 +5209,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     target_ports.append(int(p))
                 except Exception:
                     pass
-            if container_info:
-                try:
-                    hp = container_info.get("host_ports") or container_info.get("hostPorts") or []
-                    if hp:
-                        target_ports = [int(hp[0])]
-                except Exception:
-                    pass
+            if not target_ports:
+                # Allow stream headers to select the port for pod port-forward
+                target_ports = [0]
             if isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                 try:
                     target_ports = [int(os.getenv("AE_STUB_BACKEND_PORT", "8081"))]
@@ -4905,18 +5225,25 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )
                 return
             target_host = "127.0.0.1"
+            port_map: dict[int, int] = {}
+            use_host_ports = False
             if container_info:
-                target_host = (
-                    container_info.get("pod_ip")
-                    or container_info.get("host_ip")
-                    or container_info.get("hostIP")
-                    or target_host
-                )
+                host_ip = container_info.get("host_ip") or container_info.get("hostIP")
+                target_host = container_info.get("pod_ip") or host_ip or target_host
+                if not container_info.get("pod_ip"):
+                    port_map = container_info.get("port_map") or {}
+                    use_host_ports = bool(port_map)
+                if target_host in ("0.0.0.0", "::", ""):
+                    target_host = "127.0.0.1"
             elif isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                 target_host = os.getenv("AE_STUB_BACKEND_HOST", target_host)
             upgrade = (self.headers.get("Upgrade") or "").lower()
             if upgrade.startswith("spdy"):
-                self._handle_port_forward_spdy(target_host, target_ports)
+                self._handle_port_forward_spdy(
+                    target_host,
+                    target_ports if not use_host_ports else list(port_map.keys()) or target_ports,
+                    port_map=port_map if use_host_ports else None,
+                )
             elif upgrade == "websocket":
                 self._handle_port_forward_ws(target_host, target_ports[0])
             else:
@@ -5540,6 +5867,9 @@ class ShimHandler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:  # noqa: N802
         if not self._authz():
             return
+        parsed = urlparse(self.path)
+        path = parsed.path
+        self.path = path
         body = self._read_body()
         doc = _read_json(body)
         plural, ns, name = _ns_name(self.path)
@@ -6179,6 +6509,19 @@ class ShimHandler(BaseHTTPRequestHandler):
             return f"App validation failed: {exc}"
         return None
 
+    def _apply_app_admission(self, doc: dict[str, Any]) -> bool:
+        err = self._validate_app_custom_resource(doc)
+        if not err:
+            return True
+        mode = self._app_admission_mode()
+        if mode == "warn":
+            self._add_warning(err)
+            return True
+        if mode == "off":
+            return True
+        self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message=err)
+        return False
+
     def _handle_custom_resource_post(self, doc: dict[str, Any]) -> bool:
         parsed = _parse_custom_resource_path(self.path)
         if not parsed:
@@ -6209,9 +6552,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         else:
             ns_in = None
         if group == "ae.dev" and plural == "apps":
-            err = self._validate_app_custom_resource(doc)
-            if err:
-                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message=err)
+            if not self._apply_app_admission(doc):
                 return True
         created = self.server.store.upsert(  # type: ignore[attr-defined]
             group,
@@ -6226,6 +6567,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.CREATED)
         out = _json(_render_custom_resource(created, group, version, meta.get("kind", plural)))
         self.send_header("Content-Type", "application/json")
+        self._emit_warnings()
         self.send_header("Content-Length", str(len(out)))
         self.end_headers()
         self.wfile.write(out)
@@ -6261,9 +6603,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         else:
             ns_in = None
         if group == "ae.dev" and plural == "apps":
-            err = self._validate_app_custom_resource(doc)
-            if err:
-                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message=err)
+            if not self._apply_app_admission(doc):
                 return True
         updated = self.server.store.upsert(  # type: ignore[attr-defined]
             group,
@@ -6307,9 +6647,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         if not namespaced:
             ns_eff = None
         if group == "ae.dev" and plural == "apps":
-            err = self._validate_app_custom_resource(merged)
-            if err:
-                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message=err)
+            if not self._apply_app_admission(merged):
                 return True
         updated = self.server.store.upsert(  # type: ignore[attr-defined]
             group,
@@ -7741,7 +8079,8 @@ def _pod_obj(container: dict, rv: int, node_name: str | None) -> dict[str, Any]:
     }
 
 
-class ShimServer(HTTPServer):
+class ShimServer(ThreadingHTTPServer):
+    daemon_threads = True
     def __init__(
         self, server_address: tuple[str, int], token: str | None, allow_anonymous: bool = False
     ) -> None:
@@ -7749,6 +8088,7 @@ class ShimServer(HTTPServer):
         dsn = os.getenv("AE_APISHIM_DSN")
         db_path = Path(os.getenv("AE_APISHIM_DB", "state/apishim.db"))
         self.store = ObjectStore(db_path=db_path, dsn=dsn)
+        ShimHandler.rehydrate_sa_tokens(self.store)
         ShimHandler.admin_token = token or os.getenv("AE_APISHIM_TOKEN")
         ShimHandler.read_token = os.getenv("AE_APISHIM_READ_TOKEN")
         ShimHandler.allow_anonymous = allow_anonymous
