@@ -11,7 +11,10 @@ Endpoints:
 
 from __future__ import annotations
 
+import base64
 import errno
+import hashlib
+import hmac
 import http.server
 import json
 import logging
@@ -947,6 +950,79 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 opts = _Opts(**opts_payload) if isinstance(opts_payload, dict) else _Opts()
                 yaml_text = _export(man, options=opts)
                 self._json_ok({"yaml": yaml_text})
+            except Exception as exc:  # pragma: no cover
+                self._json_error(500, str(exc))
+            return
+        if self.path == "/api/apishim/session":
+            try:
+                secret = os.getenv("AE_APISHIM_SESSION_SECRET", "").strip()
+                if not secret:
+                    self._json_error(404, "apishim session tokens disabled")
+                    return
+                tokens_configured = bool(
+                    os.getenv("AE_API_ADMIN_TOKEN")
+                    or os.getenv("AE_API_SCALER_TOKEN")
+                    or os.getenv("AE_API_READ_TOKEN")
+                )
+                if tokens_configured:
+                    if not self._require_role("admin") and not self._labs_token_valid():
+                        self._deny(401 if not self.headers.get("Authorization") else 403)
+                        return
+                length = int(self.headers.get("Content-Length", "0") or "0")
+                raw = self.rfile.read(length) if length > 0 else b"{}"
+                try:
+                    payload = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception:
+                    self._json_error(400, "invalid JSON body for session token")
+                    return
+                role = str(payload.get("role") or "exec").strip().lower()
+                if role not in {"exec", "portforward", "read"}:
+                    self._json_error(400, "invalid role for session token")
+                    return
+                scopes_val = payload.get("scopes") or payload.get("scope") or []
+                scopes: list[str] = []
+                if isinstance(scopes_val, str):
+                    scopes = [scopes_val]
+                elif isinstance(scopes_val, list):
+                    scopes = [str(s) for s in scopes_val if s]
+                else:
+                    scopes = []
+                try:
+                    ttl_req = int(payload.get("ttlSeconds") or payload.get("ttl") or 0)
+                except Exception:
+                    ttl_req = 0
+                try:
+                    default_ttl = int(os.getenv("AE_APISHIM_SESSION_TTL", "600") or "600")
+                except Exception:
+                    default_ttl = 600
+                try:
+                    max_ttl = int(os.getenv("AE_APISHIM_SESSION_TTL_MAX", str(default_ttl)) or default_ttl)
+                except Exception:
+                    max_ttl = default_ttl
+                ttl = ttl_req if ttl_req > 0 else default_ttl
+                ttl = max(60, min(ttl, max_ttl))
+                exp = int(time.time()) + ttl
+                token_payload = {"role": role, "exp": exp}
+                if scopes:
+                    token_payload["scopes"] = scopes
+                payload_raw = json.dumps(token_payload, separators=(",", ":")).encode("utf-8")
+
+                def _b64url(data: bytes) -> str:
+                    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("utf-8")
+
+                payload_b64 = _b64url(payload_raw)
+                sig = hmac.new(secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
+                sig_b64 = _b64url(sig)
+                token = f"sess1.{payload_b64}.{sig_b64}"
+                self._json_ok(
+                    {
+                        "token": token,
+                        "expires_in": ttl,
+                        "expires_at": exp,
+                        "role": role,
+                        "scopes": scopes,
+                    }
+                )
             except Exception as exc:  # pragma: no cover
                 self._json_error(500, str(exc))
             return
@@ -3284,6 +3360,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     <title>k1s Hive Dashboard</title>
     <link rel=\"icon\" type=\"image/png\" sizes=\"32x32\" href=\"data:image/png;base64,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\" />
     <script src=\"https://unpkg.com/htmx.org@1.9.12\" integrity=\"sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2\" crossorigin=\"anonymous\"></script>
+    <link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/xterm@5.4.0/css/xterm.css\" />
+    <script src=\"https://cdn.jsdelivr.net/npm/xterm@5.4.0/lib/xterm.js\"></script>
+    <script src=\"https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js\"></script>
     <style>
       :root { color-scheme: light dark; --header-h: 60px; --k1s-brand-gold: #fbc02d; --k1s-brand-graphite: #404040; }
       body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; overflow-x:hidden; }
@@ -3365,6 +3444,17 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       @media (prefers-color-scheme: dark) { .hover-card { background:rgba(17,17,17,0.9); border-color:#555; } }
       h2 { font-size:14px; margin: 14px 4px 6px; opacity:0.9; }
       .divider { border-top:1px solid #8884; margin:16px 0; }
+      .modal-overlay { position:fixed; inset:0; background:rgba(2,6,23,0.65); display:flex; align-items:center; justify-content:center; z-index: 90; }
+      .modal { width:min(980px, 96vw); max-height:90vh; background:#0b1220; color:#e2e8f0; border:1px solid #334155; border-radius:10px; box-shadow:0 20px 40px rgba(0,0,0,.35); display:flex; flex-direction:column; }
+      .modal-header { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-bottom:1px solid #334155; }
+      .modal-body { padding:12px 14px; overflow:auto; }
+      .modal-footer { padding:10px 14px; border-top:1px solid #334155; display:flex; gap:8px; justify-content:flex-end; }
+      .modal.hidden { display:none; }
+      .terminal-wrap { height:360px; border:1px solid #334155; border-radius:8px; background:#0b0f14; }
+      .terminal-wrap .xterm-viewport { scrollbar-width: none; }
+      .terminal-wrap .xterm-viewport::-webkit-scrollbar { width:0; height:0; }
+      .modal .row input[type=text], .modal .row input[type=password], .modal .row select { min-width: 140px; }
+      .modal .hint { font-size:12px; opacity:.8; }
     </style>
   </head>
   <body>
@@ -3411,6 +3501,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             <div><strong>Rollout:</strong> <span id=\"d-rollout\">-</span></div>
             <div><strong>Secrets:</strong> <span id=\"d-secrets\">-</span></div>
             <div><strong>Storage:</strong> <span id=\"d-storage\">-</span></div>
+            </div>
+            <div class=\"row\" style=\"margin-top:10px; gap:8px; flex-wrap:wrap;\">
+              <button id=\"btn-shell\" type=\"button\">Remote Shell</button>
+              <button id=\"btn-portforward\" type=\"button\">Port-Forward</button>
             </div>
           </div>
           <div class=\"card\" style=\"flex:1; display:flex; flex-direction:column;\">
@@ -3546,6 +3640,61 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         </div>
       </section>
     </main>
+    <div id=\"shell-modal\" class=\"modal-overlay hidden\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"shell-title\">
+      <div class=\"modal\">
+        <div class=\"modal-header\">
+          <strong id=\"shell-title\">Remote Shell</strong>
+          <button id=\"shell-close\" type=\"button\">Close</button>
+        </div>
+        <div class=\"modal-body\">
+          <div class=\"row\" style=\"flex-wrap:wrap; gap:10px; margin-bottom:10px;\">
+            <label>Replica <select id=\"shell-pod\"></select></label>
+            <label>Container <input id=\"shell-container\" type=\"text\" placeholder=\"optional\" /></label>
+            <label>Command <input id=\"shell-cmd\" type=\"text\" value=\"sh\" /></label>
+            <label>Shim API <input id=\"shell-base\" type=\"text\" placeholder=\"http://127.0.0.1:8443\" /></label>
+            <label>Token <input id=\"shell-token\" type=\"password\" placeholder=\"apishim token\" /></label>
+          </div>
+          <div id=\"shell-terminal\" class=\"terminal-wrap\"></div>
+          <div class=\"row\" style=\"margin-top:10px; gap:8px; align-items:center;\">
+            <button id=\"shell-connect\" type=\"button\">Connect</button>
+            <button id=\"shell-disconnect\" type=\"button\">Disconnect</button>
+            <span id=\"shell-status\" class=\"pill\"></span>
+            <span class=\"hint\">Uses WebSocket exec (v5.channel.k8s.io).</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id=\"pf-modal\" class=\"modal-overlay hidden\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"pf-title\">
+      <div class=\"modal\">
+        <div class=\"modal-header\">
+          <strong id=\"pf-title\">Port-Forward (WS)</strong>
+          <button id=\"pf-close\" type=\"button\">Close</button>
+        </div>
+        <div class=\"modal-body\">
+          <div class=\"row\" style=\"flex-wrap:wrap; gap:10px; margin-bottom:10px;\">
+            <label>Replica <select id=\"pf-pod\"></select></label>
+            <label>Port <input id=\"pf-port\" type=\"text\" placeholder=\"8080\" /></label>
+            <label>Shim API <input id=\"pf-base\" type=\"text\" placeholder=\"http://127.0.0.1:8443\" /></label>
+            <label>Token <input id=\"pf-token\" type=\"password\" placeholder=\"apishim token\" /></label>
+          </div>
+          <div class=\"row\" style=\"gap:10px; flex-wrap:wrap;\">
+            <label style=\"flex:1 1 320px;\">Request
+              <textarea id=\"pf-request\" rows=\"4\" style=\"width:100%;\">GET / HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n</textarea>
+            </label>
+            <label style=\"flex:1 1 320px;\">Response
+              <textarea id=\"pf-response\" rows=\"4\" style=\"width:100%;\" readonly></textarea>
+            </label>
+          </div>
+          <div class=\"row\" style=\"margin-top:10px; gap:8px; align-items:center;\">
+            <button id=\"pf-connect\" type=\"button\">Connect</button>
+            <button id=\"pf-send\" type=\"button\">Send Request</button>
+            <button id=\"pf-disconnect\" type=\"button\">Disconnect</button>
+            <span id=\"pf-status\" class=\"pill\"></span>
+            <span class=\"hint\">Uses WebSocket port-forward (portforward.k8s.io).</span>
+          </div>
+        </div>
+      </div>
+    </div>
     <footer class=\"site-footer\"> 
       <div class=\"row\" style=\"justify-content:space-between;\">
         <span>k1s Hive Dashboard</span>
@@ -3572,6 +3721,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       var eventsSource = null;
       var lastSystem = null;
       var lastStatuses = [];
+      var currentDetail = null;
       var graphHover = null;
       var graphPathMode = (localStorage.getItem('graph_path_mode') || 'orth'); // 'orth' or 'straight'
       // Keep apps rail aligned under the header
@@ -3770,8 +3920,27 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         return tok ? { 'Authorization': 'Bearer ' + tok } : {};
       }
 
+      function mintShimToken(role, scope){
+        var headers = Object.assign({'Content-Type': 'application/json'}, authHeaders());
+        var payload = { role: role };
+        if (scope) payload.scope = scope;
+        return fetch('/api/apishim/session', {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify(payload)
+        }).then(function(r){
+          if (!r.ok) {
+            return r.text().then(function(t){ throw new Error(t || ('status ' + r.status)); });
+          }
+          return r.json();
+        }).then(function(data){
+          return (data && data.token) ? data.token : '';
+        });
+      }
+
       // Clear detail panels/logs when the selected app disappears
       function clearDetailPanels(){
+        currentDetail = null;
         try { document.getElementById('d-app').textContent = '-'; } catch(e){}
         try { document.getElementById('d-namespace').textContent = '-'; } catch(e){}
         try { document.getElementById('d-image').textContent = '-'; } catch(e){}
@@ -3883,6 +4052,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       function refreshDetail(){
         if(!current) return Promise.resolve();
         return fetchJSON('/status/' + encodeURIComponent(current) + '?details=1').then(function(s){
+          currentDetail = s;
           document.getElementById('d-app').textContent = s.app_name;
           try {
             var nsInfo = splitAppName(s.app_name);
@@ -4039,6 +4209,324 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         s = (s === null || s === undefined) ? '' : String(s);
         return s.replace(/[&<>]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]); });
       }
+
+      function splitArgs(cmd){
+        var out = [];
+        var re = /[^\\s"']+|"([^"]*)"|'([^']*)'/g;
+        var m;
+        while ((m = re.exec(String(cmd||''))) !== null) {
+          out.push(m[1] || m[2] || m[0]);
+        }
+        return out;
+      }
+
+      function replicaList(){
+        var reps = (currentDetail && currentDetail.replicas) ? currentDetail.replicas : [];
+        if (!Array.isArray(reps)) return [];
+        return reps.map(function(r){ return r.replica_id; }).filter(Boolean);
+      }
+
+      function defaultReplica(){
+        var reps = (currentDetail && currentDetail.replicas) ? currentDetail.replicas : [];
+        if (!Array.isArray(reps) || !reps.length) return '';
+        var ready = reps.find(function(r){ return r.ready; });
+        return (ready || reps[0]).replica_id;
+      }
+
+      function fillReplicaSelect(sel){
+        if (!sel) return;
+        var list = replicaList();
+        sel.innerHTML = '';
+        list.forEach(function(rid){
+          var opt = document.createElement('option');
+          opt.value = rid;
+          opt.textContent = rid;
+          sel.appendChild(opt);
+        });
+        var def = defaultReplica();
+        if (def) sel.value = def;
+      }
+
+      function normalizeBase(val){
+        var base = String(val||'').trim();
+        if (!base) base = localStorage.getItem('ae_apishim_base') || '';
+        if (!base) base = location.origin;
+        base = base.replace(/\\/$/, '');
+        return base;
+      }
+
+      function wsBase(base){
+        return base.replace(/^http/i, 'ws');
+      }
+
+      var shellModal = document.getElementById('shell-modal');
+      var shellTerm = null;
+      var shellFit = null;
+      var shellSocket = null;
+      var shellStatus = document.getElementById('shell-status');
+      var shellEncoder = (window.TextEncoder ? new TextEncoder() : null);
+      var shellDecoder = (window.TextDecoder ? new TextDecoder() : null);
+
+      function shellSendChannel(ch, data){
+        if (!shellSocket || shellSocket.readyState !== 1) return;
+        var payload = data instanceof Uint8Array ? data : (shellEncoder ? shellEncoder.encode(String(data||'')) : new Uint8Array());
+        var out = new Uint8Array(payload.length + 1);
+        out[0] = ch;
+        out.set(payload, 1);
+        shellSocket.send(out);
+      }
+
+      function shellSetStatus(txt, cls){
+        if (!shellStatus) return;
+        shellStatus.textContent = txt || '';
+        if (cls) shellStatus.className = 'pill ' + cls;
+      }
+
+      function shellConnect(){
+        var podSel = document.getElementById('shell-pod');
+        var pod = podSel && podSel.value ? podSel.value : defaultReplica();
+        if (!pod) { shellSetStatus('no replica', 'warn'); return; }
+        var nsInfo = splitAppName(current || '');
+        var ns = nsInfo && nsInfo.namespace ? nsInfo.namespace : 'default';
+        var baseInput = document.getElementById('shell-base');
+        var tokenInput = document.getElementById('shell-token');
+        var cmdInput = document.getElementById('shell-cmd');
+        var containerInput = document.getElementById('shell-container');
+        var base = normalizeBase(baseInput && baseInput.value);
+        if (baseInput) baseInput.value = base;
+        if (tokenInput && !tokenInput.value) {
+          try { tokenInput.value = localStorage.getItem('ae_apishim_token') || ''; } catch(e){}
+        }
+        try { localStorage.setItem('ae_apishim_base', base); } catch(e){}
+        var scope = (nsInfo && nsInfo.name) ? (ns + '/' + nsInfo.name) : (ns + '/' + pod);
+        function doConnect(){
+          var params = new URLSearchParams();
+          var cmd = splitArgs(cmdInput && cmdInput.value ? cmdInput.value : 'sh');
+          cmd.forEach(function(c){ params.append('command', c); });
+          params.set('stdin', '1');
+          params.set('stdout', '1');
+          params.set('stderr', '1');
+          params.set('tty', '1');
+          if (containerInput && containerInput.value) params.set('container', containerInput.value);
+          if (tokenInput && tokenInput.value) params.set('token', tokenInput.value);
+          var url = wsBase(base) + '/api/v1/namespaces/' + encodeURIComponent(ns) + '/pods/' + encodeURIComponent(pod) + '/exec?' + params.toString();
+          try {
+            shellSocket = new WebSocket(url, 'v5.channel.k8s.io');
+          } catch(e) {
+            shellSetStatus('ws error', 'bad');
+            return;
+          }
+          shellSocket.binaryType = 'arraybuffer';
+          shellSocket.onopen = function(){
+            shellSetStatus('connected', 'ok');
+            if (shellTerm) { shellTerm.focus(); }
+            if (shellFit) { try { shellFit.fit(); } catch(e){} }
+            if (shellTerm) {
+              try { shellSendChannel(4, JSON.stringify({ Width: shellTerm.cols, Height: shellTerm.rows })); } catch(e){}
+            }
+          };
+          shellSocket.onmessage = function(ev){
+            var data = ev.data;
+            if (data instanceof Blob) {
+              data.arrayBuffer().then(handleShellMessage).catch(function(){});
+            } else {
+              handleShellMessage(data);
+            }
+          };
+          shellSocket.onclose = function(){
+            shellSetStatus('disconnected', 'warn');
+          };
+          shellSocket.onerror = function(){
+            shellSetStatus('error', 'bad');
+          };
+        }
+        if (tokenInput && !tokenInput.value) {
+          shellSetStatus('minting token', 'muted');
+          mintShimToken('exec', scope).then(function(tok){
+            if (tok && tokenInput) tokenInput.value = tok;
+            doConnect();
+          }).catch(function(){ doConnect(); });
+          return;
+        }
+        doConnect();
+      }
+
+      function handleShellMessage(data){
+        try {
+          var buf = data instanceof ArrayBuffer ? new Uint8Array(data) : (shellEncoder ? shellEncoder.encode(String(data||'')) : new Uint8Array());
+          if (!buf || buf.length < 1) return;
+          var ch = buf[0];
+          var payload = buf.slice(1);
+          if (ch === 1 || ch === 2) {
+            if (shellTerm && shellDecoder) shellTerm.write(shellDecoder.decode(payload));
+          } else if (ch === 3) {
+            try {
+              var msg = shellDecoder ? shellDecoder.decode(payload) : '';
+              var status = JSON.parse(msg || '{}');
+              var code = (status && status.details && status.details.exitCode != null) ? status.details.exitCode : status.code;
+              shellSetStatus('exit ' + String(code||0), 'muted');
+            } catch(e){}
+            if (shellSocket) { try { shellSocket.close(); } catch(e){} }
+          }
+        } catch(e){}
+      }
+
+      function shellDisconnect(){
+        if (shellSocket) { try { shellSocket.close(); } catch(e){} }
+        shellSocket = null;
+      }
+
+      function openShellModal(){
+        if (!shellModal) return;
+        var sel = document.getElementById('shell-pod');
+        fillReplicaSelect(sel);
+        if (!shellTerm && window.Terminal) {
+          shellTerm = new Terminal({ cursorBlink: true, convertEol: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', theme: { background: '#0b0f14' } });
+          if (window.FitAddon && window.FitAddon.FitAddon) {
+            shellFit = new window.FitAddon.FitAddon();
+            shellTerm.loadAddon(shellFit);
+          }
+          shellTerm.open(document.getElementById('shell-terminal'));
+          if (shellFit) { try { shellFit.fit(); } catch(e){} }
+          shellTerm.onData(function(data){ shellSendChannel(0, data); });
+          shellTerm.onResize(function(size){ try { shellSendChannel(4, JSON.stringify({ Width: size.cols, Height: size.rows })); } catch(e){} });
+        }
+        if (shellStatus) shellSetStatus('idle', 'muted');
+        shellModal.classList.remove('hidden');
+      }
+
+      function closeShellModal(){
+        if (!shellModal) return;
+        shellDisconnect();
+        shellModal.classList.add('hidden');
+      }
+
+      var pfModal = document.getElementById('pf-modal');
+      var pfSocket = null;
+      var pfStatus = document.getElementById('pf-status');
+      var pfEncoder = (window.TextEncoder ? new TextEncoder() : null);
+      var pfDecoder = (window.TextDecoder ? new TextDecoder() : null);
+
+      function pfSetStatus(txt, cls){
+        if (!pfStatus) return;
+        pfStatus.textContent = txt || '';
+        if (cls) pfStatus.className = 'pill ' + cls;
+      }
+
+      function pfSendChannel(ch, data){
+        if (!pfSocket || pfSocket.readyState !== 1) return;
+        var payload = data instanceof Uint8Array ? data : (pfEncoder ? pfEncoder.encode(String(data||'')) : new Uint8Array());
+        var out = new Uint8Array(payload.length + 1);
+        out[0] = ch;
+        out.set(payload, 1);
+        pfSocket.send(out);
+      }
+
+      function pfConnect(){
+        var podSel = document.getElementById('pf-pod');
+        var pod = podSel && podSel.value ? podSel.value : defaultReplica();
+        if (!pod) { pfSetStatus('no replica', 'warn'); return; }
+        var nsInfo = splitAppName(current || '');
+        var ns = nsInfo && nsInfo.namespace ? nsInfo.namespace : 'default';
+        var portInput = document.getElementById('pf-port');
+        var baseInput = document.getElementById('pf-base');
+        var tokenInput = document.getElementById('pf-token');
+        var portVal = portInput && portInput.value ? portInput.value.trim() : '';
+        if (!portVal) { pfSetStatus('port required', 'warn'); return; }
+        var base = normalizeBase(baseInput && baseInput.value);
+        if (baseInput) baseInput.value = base;
+        if (tokenInput && !tokenInput.value) {
+          try { tokenInput.value = localStorage.getItem('ae_apishim_token') || ''; } catch(e){}
+        }
+        try { localStorage.setItem('ae_apishim_base', base); } catch(e){}
+        var scope = (nsInfo && nsInfo.name) ? (ns + '/' + nsInfo.name) : (ns + '/' + pod);
+        function doConnect(){
+          var params = new URLSearchParams();
+          params.append('ports', portVal);
+          if (tokenInput && tokenInput.value) params.set('token', tokenInput.value);
+          var url = wsBase(base) + '/api/v1/namespaces/' + encodeURIComponent(ns) + '/pods/' + encodeURIComponent(pod) + '/portforward?' + params.toString();
+          try {
+            pfSocket = new WebSocket(url, 'portforward.k8s.io');
+          } catch(e) {
+            pfSetStatus('ws error', 'bad');
+            return;
+          }
+          pfSocket.binaryType = 'arraybuffer';
+          pfSocket.onopen = function(){ pfSetStatus('connected', 'ok'); };
+          pfSocket.onmessage = function(ev){
+            var data = ev.data;
+            if (data instanceof Blob) {
+              data.arrayBuffer().then(handlePfMessage).catch(function(){});
+            } else {
+              handlePfMessage(data);
+            }
+          };
+          pfSocket.onclose = function(){ pfSetStatus('disconnected', 'warn'); };
+          pfSocket.onerror = function(){ pfSetStatus('error', 'bad'); };
+        }
+        if (tokenInput && !tokenInput.value) {
+          pfSetStatus('minting token', 'muted');
+          mintShimToken('portforward', scope).then(function(tok){
+            if (tok && tokenInput) tokenInput.value = tok;
+            doConnect();
+          }).catch(function(){ doConnect(); });
+          return;
+        }
+        doConnect();
+      }
+
+      function handlePfMessage(data){
+        try {
+          var buf = data instanceof ArrayBuffer ? new Uint8Array(data) : (pfEncoder ? pfEncoder.encode(String(data||'')) : new Uint8Array());
+          if (!buf || buf.length < 1) return;
+          var ch = buf[0];
+          var payload = buf.slice(1);
+          var txt = pfDecoder ? pfDecoder.decode(payload) : '';
+          if (ch === 0 || ch === 1) {
+            var out = document.getElementById('pf-response');
+            if (out) out.value = (out.value || '') + txt;
+          }
+        } catch(e){}
+      }
+
+      function pfSend(){
+        var req = document.getElementById('pf-request');
+        var payload = req && req.value ? req.value : '';
+        if (!payload) return;
+        pfSendChannel(0, payload);
+      }
+
+      function pfDisconnect(){
+        if (pfSocket) { try { pfSocket.close(); } catch(e){} }
+        pfSocket = null;
+      }
+
+      function openPfModal(){
+        if (!pfModal) return;
+        var sel = document.getElementById('pf-pod');
+        fillReplicaSelect(sel);
+        pfSetStatus('idle', 'muted');
+        var resp = document.getElementById('pf-response');
+        if (resp) resp.value = '';
+        pfModal.classList.remove('hidden');
+      }
+
+      function closePfModal(){
+        if (!pfModal) return;
+        pfDisconnect();
+        pfModal.classList.add('hidden');
+      }
+
+      try { document.getElementById('btn-shell').addEventListener('click', openShellModal); } catch(e){}
+      try { document.getElementById('btn-portforward').addEventListener('click', openPfModal); } catch(e){}
+      try { document.getElementById('shell-close').addEventListener('click', closeShellModal); } catch(e){}
+      try { document.getElementById('pf-close').addEventListener('click', closePfModal); } catch(e){}
+      try { document.getElementById('shell-connect').addEventListener('click', shellConnect); } catch(e){}
+      try { document.getElementById('shell-disconnect').addEventListener('click', shellDisconnect); } catch(e){}
+      try { document.getElementById('pf-connect').addEventListener('click', pfConnect); } catch(e){}
+      try { document.getElementById('pf-send').addEventListener('click', pfSend); } catch(e){}
+      try { document.getElementById('pf-disconnect').addEventListener('click', pfDisconnect); } catch(e){}
+      window.addEventListener('resize', function(){ if (shellFit && shellModal && !shellModal.classList.contains('hidden')) { try { shellFit.fit(); } catch(e){} } });
 
       function updateLogsHTMX(){
         var el = document.getElementById('logs');

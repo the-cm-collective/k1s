@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import base64
+import fnmatch
 import hashlib
+import hmac
 import ipaddress
 import json
 import json as _jsonlib
@@ -50,6 +52,12 @@ RESERVED_GROUPS = {
 
 LOGGER = logging.getLogger(__name__)
 SPDY_DEBUG = str(os.getenv("AE_APISHIM_SPDY_DEBUG", "")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+PF_DEBUG = str(os.getenv("AE_APISHIM_PF_DEBUG", "")).strip().lower() in {
     "1",
     "true",
     "yes",
@@ -1188,12 +1196,21 @@ class Principal:
     groups: set[str]
     token_role: str | None
     token: str | None
+    scopes: list[str] | None = None
 
 
 class ShimHandler(BaseHTTPRequestHandler):
     server_version = "k1s-apishim"
     admin_token: str | None = os.getenv("AE_APISHIM_TOKEN")
     read_token: str | None = os.getenv("AE_APISHIM_READ_TOKEN")
+    exec_token: str | None = os.getenv("AE_APISHIM_EXEC_TOKEN")
+    portforward_token: str | None = os.getenv("AE_APISHIM_PORTFORWARD_TOKEN")
+    session_secret: str | None = os.getenv("AE_APISHIM_SESSION_SECRET")
+    pod_state_check: bool = os.getenv("AE_APISHIM_POD_STATE_CHECK", "0") == "1"
+    pod_watch_check: bool = False
+    pod_watch_ttl: float = 30.0
+    pod_watch_cache: dict[tuple[str, str], tuple[str | None, int, float]] = {}
+    pod_watch_lock = threading.RLock()
     allow_anonymous: bool = os.getenv("AE_APISHIM_ALLOW_ANON", "0") == "1"
     rbac_enabled: bool = os.getenv("AE_APISHIM_RBAC", "0") == "1"
     rbac_eval_roles: bool = os.getenv("AE_APISHIM_RBAC_EVAL", "0") == "1"
@@ -1207,9 +1224,10 @@ class ShimHandler(BaseHTTPRequestHandler):
         ("list", "*"): {"admin", "read"},
         ("watch", "*"): {"admin", "read"},
         ("create", "*"): {"admin"},
-        ("create", "pods/exec"): {"admin"},
-        ("create", "pods/portforward"): {"admin"},
-        ("create", "services/portforward"): {"admin"},
+        ("create", "pods/exec"): {"admin", "exec"},
+        ("create", "pods/attach"): {"admin", "exec"},
+        ("create", "pods/portforward"): {"admin", "portforward"},
+        ("create", "services/portforward"): {"admin", "portforward"},
         ("update", "*"): {"admin"},
         ("patch", "*"): {"admin"},
         ("delete", "*"): {"admin"},
@@ -1293,9 +1311,68 @@ class ShimHandler(BaseHTTPRequestHandler):
             return (obj.namespace or "default", obj.name, exp)
         return None
 
+    def _parse_session_token(self, token: str) -> tuple[str, list[str]] | None:
+        if not token:
+            return None
+        secret = self.session_secret or os.getenv("AE_APISHIM_SESSION_SECRET")
+        if not secret:
+            return None
+        if not token.startswith("sess1."):
+            return None
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        payload_b64 = parts[1]
+        sig_b64 = parts[2]
+
+        def _b64url_decode(val: str) -> bytes:
+            pad = "=" * (-len(val) % 4)
+            return base64.urlsafe_b64decode((val + pad).encode("utf-8"))
+
+        try:
+            payload_raw = _b64url_decode(payload_b64)
+            sig_raw = _b64url_decode(sig_b64)
+        except Exception:
+            return None
+        try:
+            expected = hmac.new(secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
+            if not hmac.compare_digest(sig_raw, expected):
+                return None
+        except Exception:
+            return None
+        try:
+            payload = json.loads(payload_raw.decode("utf-8"))
+        except Exception:
+            return None
+        try:
+            exp = float(payload.get("exp") or 0)
+        except Exception:
+            exp = 0
+        if exp <= time.time():
+            return None
+        role = str(payload.get("role") or "").strip().lower()
+        if role not in {"exec", "portforward", "read"}:
+            return None
+        scopes_val = payload.get("scopes") or payload.get("scope") or []
+        scopes: list[str] = []
+        if isinstance(scopes_val, str):
+            scopes = [scopes_val]
+        elif isinstance(scopes_val, list | tuple):
+            scopes = [str(s) for s in scopes_val if s]
+        return role, scopes
+
     def _parse_principal(self) -> Principal:
+        cached = getattr(self, "_principal_cache", None)
+        if cached is not None:
+            return cached
         hdr = self.headers.get("Authorization", "")
         tok = hdr[7:] if hdr.startswith("Bearer ") else ""
+        if not tok:
+            try:
+                if (self.headers.get("Upgrade") or "").lower() == "websocket":
+                    tok = (parse_qs(urlparse(self.path).query).get("token") or [""])[0]
+            except Exception:
+                tok = tok or ""
         username = "system:unauthenticated"
         groups: set[str] = {"system:unauthenticated"}
         token_role: str | None = None
@@ -1307,7 +1384,30 @@ class ShimHandler(BaseHTTPRequestHandler):
             username = "reader"
             groups = {"system:authenticated", "read"}
             token_role = "read"  # noqa: S105 - role label, not a secret
+        elif tok and tok == self.exec_token:
+            username = "exec"
+            groups = {"system:authenticated", "exec"}
+            token_role = "exec"  # noqa: S105 - role label, not a secret
+        elif tok and tok == self.portforward_token:
+            username = "portforward"
+            groups = {"system:authenticated", "portforward"}
+            token_role = "portforward"  # noqa: S105 - role label, not a secret
         else:
+            session = self._parse_session_token(tok)
+            if session:
+                role, scopes = session
+                username = f"session:{role}"
+                groups = {"system:authenticated", role}
+                token_role = role
+                principal = Principal(
+                    username=username,
+                    groups=groups,
+                    token_role=token_role,
+                    token=tok,
+                    scopes=scopes,
+                )
+                self._principal_cache = principal
+                return principal
             with self.sa_tokens_lock:
                 sa = self.sa_tokens.get(tok)
             if sa is None and tok:
@@ -1321,12 +1421,14 @@ class ShimHandler(BaseHTTPRequestHandler):
                     # expired; drop it
                     with self.sa_tokens_lock:
                         self.sa_tokens.pop(tok, None)
-                    return Principal(
+                    principal = Principal(
                         username="system:unauthenticated",
                         groups={"system:unauthenticated"},
                         token_role=None,
                         token=None,
                     )
+                    self._principal_cache = principal
+                    return principal
                 username = f"system:serviceaccount:{ns}:{name}"
                 groups = {
                     "system:authenticated",
@@ -1334,7 +1436,291 @@ class ShimHandler(BaseHTTPRequestHandler):
                     f"system:serviceaccounts:{ns}",
                 }
                 token_role = None
-        return Principal(username=username, groups=groups, token_role=token_role, token=tok)
+        principal = Principal(username=username, groups=groups, token_role=token_role, token=tok)
+        self._principal_cache = principal
+        return principal
+
+    def _stream_limits(self) -> tuple[float | None, float | None]:
+        try:
+            max_seconds = float(os.getenv("AE_APISHIM_STREAM_MAX_SECONDS", "0") or 0)
+        except Exception:
+            max_seconds = 0
+        try:
+            idle_seconds = float(os.getenv("AE_APISHIM_STREAM_IDLE_SECONDS", "0") or 0)
+        except Exception:
+            idle_seconds = 0
+        max_v = max_seconds if max_seconds > 0 else None
+        idle_v = idle_seconds if idle_seconds > 0 else None
+        return max_v, idle_v
+
+    def _stream_byte_limit(self) -> int | None:
+        try:
+            max_bytes = int(os.getenv("AE_APISHIM_STREAM_MAX_BYTES", "0") or 0)
+        except Exception:
+            max_bytes = 0
+        return max_bytes if max_bytes > 0 else None
+
+    @staticmethod
+    def _app_from_labels(labels: dict[str, Any]) -> str | None:
+        for key in ("ae.app", "app.kubernetes.io/name", "app"):
+            val = labels.get(key)
+            if val:
+                return str(val)
+        return None
+
+    def _resolve_pod_container(self, namespace: str | None, pod_name: str) -> dict | None:
+        try:
+            containers = self.server.runtime.list_containers_info()  # type: ignore[attr-defined]
+        except Exception:
+            return None
+        for c in containers:
+            labels = c.get("labels", {}) or {}
+            rid = labels.get("ae.replica_id") or c.get("name")
+            if rid != pod_name and c.get("name") != pod_name:
+                continue
+            c_ns = labels.get("ae.namespace") or "default"
+            if namespace and c_ns != namespace:
+                continue
+            return c
+        return None
+
+    @staticmethod
+    def _extract_pod_uid(qs: dict[str, list[str]] | None) -> str | None:
+        if not qs:
+            return None
+        for key in qs:
+            if key.lower() in {"uid", "poduid"}:
+                vals = qs.get(key) or []
+                if vals:
+                    return str(vals[0])
+        return None
+
+    @staticmethod
+    def _extract_pod_rv(qs: dict[str, list[str]] | None) -> int | None:
+        if not qs:
+            return None
+        for key in qs:
+            if key.lower() in {"resourceversion", "podrv", "rv"}:
+                vals = qs.get(key) or []
+                if not vals:
+                    continue
+                try:
+                    return int(vals[0])
+                except Exception:
+                    return None
+        return None
+
+    @classmethod
+    def _pod_watch_cache_key(cls, namespace: str | None, pod_name: str) -> tuple[str, str]:
+        return (namespace or "default", pod_name)
+
+    @classmethod
+    def _update_pod_watch_cache(cls, pods: list[dict[str, Any]], default_rv: int) -> None:
+        if not pods:
+            return
+        now = time.time()
+        ttl = cls.pod_watch_ttl
+        with cls.pod_watch_lock:
+            for pod in pods:
+                meta = pod.get("metadata", {}) or {}
+                name = meta.get("name")
+                if not name:
+                    continue
+                ns = meta.get("namespace") or "default"
+                uid = meta.get("uid")
+                rv_val = meta.get("resourceVersion", default_rv)
+                try:
+                    rv = int(rv_val) if rv_val is not None else int(default_rv)
+                except Exception:
+                    rv = int(default_rv)
+                cls.pod_watch_cache[(ns, name)] = (uid, rv, now)
+            if ttl and ttl > 0:
+                cutoff = now - ttl
+                for key, (_uid, _rv, seen) in list(cls.pod_watch_cache.items()):
+                    if seen < cutoff:
+                        cls.pod_watch_cache.pop(key, None)
+
+    def _pod_watch_entry(
+        self,
+        namespace: str | None,
+        pod_name: str,
+    ) -> tuple[str | None, int, float] | None:
+        key = self._pod_watch_cache_key(namespace, pod_name)
+        now = time.time()
+        with self.pod_watch_lock:
+            entry = self.pod_watch_cache.get(key)
+        if not entry:
+            return None
+        uid, _rv, seen = entry
+        ttl = self.pod_watch_ttl
+        if ttl and ttl > 0 and (now - seen) > ttl:
+            return None
+        return entry
+
+    def _pod_watch_allows(
+        self,
+        namespace: str | None,
+        pod_name: str,
+        expected_uid: str | None = None,
+        expected_rv: int | None = None,
+    ) -> bool:
+        entry = self._pod_watch_entry(namespace, pod_name)
+        if not entry:
+            return False
+        uid, rv, _seen = entry
+        if expected_uid:
+            if not uid:
+                return False
+            if str(uid) != str(expected_uid):
+                return False
+        if expected_rv is not None and int(rv) != int(expected_rv):
+            return False
+        return True
+
+    def _scope_allows(
+        self,
+        env_name: str,
+        namespace: str | None,
+        app: str | None,
+        name: str,
+        *,
+        token_scopes: list[str] | None = None,
+    ) -> bool:
+        raw = os.getenv(env_name, "").strip()
+        env_scopes = [p.strip() for p in raw.split(",") if p.strip()] if raw else []
+        principal_scopes = token_scopes if token_scopes is not None else self._parse_principal().scopes
+        scopes: list[list[str]] = []
+        if env_scopes:
+            scopes.append(env_scopes)
+        if principal_scopes:
+            scopes.append([str(s) for s in principal_scopes if s])
+        if not scopes:
+            return True
+
+        candidates: list[str] = []
+        if namespace:
+            if app:
+                candidates.append(f"{namespace}/{app}")
+            candidates.append(f"{namespace}/{name}")
+        if app:
+            candidates.append(app)
+        candidates.append(name)
+
+        for scope_list in scopes:
+            matched = False
+            for pat in scope_list:
+                for cand in candidates:
+                    if fnmatch.fnmatch(cand, pat):
+                        matched = True
+                        break
+                if matched:
+                    break
+            if not matched:
+                return False
+        return True
+
+    def _validate_pod_scope(
+        self,
+        *,
+        namespace: str | None,
+        pod_name: str,
+        scope_env: str,
+        action: str,
+        expected_uid: str | None = None,
+        expected_rv: int | None = None,
+    ) -> dict | None:
+        container = self._resolve_pod_container(namespace, pod_name)
+        if not container:
+            self._not_found()
+            return None
+        if expected_uid:
+            actual_uid = container.get("uid") or container.get("id")
+            if not actual_uid or str(actual_uid) != str(expected_uid):
+                self._json_status(
+                    HTTPStatus.CONFLICT,
+                    reason="Conflict",
+                    message="pod UID mismatch",
+                )
+                return None
+        if not container.get("running", False):
+            self._json_status(
+                HTTPStatus.CONFLICT,
+                reason="Conflict",
+                message="pod is not running",
+            )
+            return None
+        labels = container.get("labels", {}) or {}
+        app = self._app_from_labels(labels) or pod_name
+        if self.pod_state_check and hasattr(self.server, "state"):
+            try:
+                fn = getattr(self.server.state, "list_replica_nodes", None)  # type: ignore[attr-defined]
+                if callable(fn):
+                    found = False
+                    for rid, _node, _ready, _live, _status, _rmsg, _lmsg in fn(app):
+                        if str(rid) == str(pod_name):
+                            found = True
+                            break
+                if not found:
+                    self._json_status(
+                        HTTPStatus.CONFLICT,
+                        reason="Conflict",
+                        message="pod not present in controller state",
+                    )
+                    return None
+            except Exception:
+                pass
+        if expected_rv is not None:
+            if not self._pod_watch_allows(namespace, pod_name, expected_uid, expected_rv):
+                self._json_status(
+                    HTTPStatus.CONFLICT,
+                    reason="Conflict",
+                    message="pod resourceVersion mismatch",
+                )
+                return None
+        elif self.pod_watch_check and not self._pod_watch_allows(
+            namespace, pod_name, expected_uid
+        ):
+            self._json_status(
+                HTTPStatus.CONFLICT,
+                reason="Conflict",
+                message="pod not present in watch cache",
+            )
+            return None
+        if not self._scope_allows(
+            scope_env,
+            namespace,
+            app,
+            pod_name,
+            token_scopes=self._parse_principal().scopes,
+        ):
+            self._deny(403, message=f"{action} scope denies target pod")
+            return None
+        return container
+
+    def _service_app_name(self, svc: K8sObject) -> str:
+        labels = svc.metadata.get("labels") or {}
+        app = self._app_from_labels(labels)
+        if app:
+            return app
+        selector = svc.spec.get("selector") or {}
+        if isinstance(selector, dict):
+            app = self._app_from_labels(selector)  # type: ignore[arg-type]
+            if app:
+                return app
+        return svc.name
+
+    def _validate_service_pf_scope(self, namespace: str | None, svc: K8sObject, name: str) -> bool:
+        app = self._service_app_name(svc)
+        if not self._scope_allows(
+            "AE_API_PF_SCOPE",
+            namespace,
+            app,
+            name,
+            token_scopes=self._parse_principal().scopes,
+        ):
+            self._deny(403, message="port-forward scope denies target service")
+            return False
+        return True
 
     def _authz(self, role: str = "read") -> bool:
         admin = self.admin_token
@@ -1346,14 +1732,20 @@ class ShimHandler(BaseHTTPRequestHandler):
             return True
         principal = self._parse_principal()
         role_name = principal.token_role
+        authed = principal.username != "system:unauthenticated"
+        rbac_relaxed = self.rbac_enabled and self.rbac_eval_roles and authed
         ok = False
         if role == "write":
             ok = role_name == "admin"
         elif role == "read":
             ok = role_name in {"admin", "read"}
+        elif role == "exec":
+            ok = role_name in {"admin", "exec"}
+        elif role == "portforward":
+            ok = role_name in {"admin", "portforward"}
         elif role in {"rbac-read", "rbac-write"}:
             ok = role_name in {"admin", "read"}
-        if ok:
+        if ok or (rbac_relaxed and role in {"read", "write", "exec", "portforward", "rbac-read", "rbac-write"}):
             return True
         if self.allow_anonymous:
             return True
@@ -1364,6 +1756,25 @@ class ShimHandler(BaseHTTPRequestHandler):
             headers={"WWW-Authenticate": "Bearer"},
         )
         return False
+
+    def _audit(self, action: str, **fields: Any) -> None:
+        try:
+            principal = self._parse_principal()
+            parts = []
+            for key, val in fields.items():
+                if val is None or val == "":
+                    continue
+                parts.append(f"{key}={val}")
+            suffix = " ".join(parts)
+            LOGGER.info(
+                "audit %s user=%s role=%s %s",
+                action,
+                principal.username,
+                principal.token_role or "-",
+                suffix,
+            )
+        except Exception:
+            return
 
     def _eval_subject_access_review(self, spec: dict[str, Any]) -> dict[str, Any]:
         res_attr = (spec or {}).get("resourceAttributes") or {}
@@ -1394,7 +1805,9 @@ class ShimHandler(BaseHTTPRequestHandler):
             return True
         principal = self._parse_principal()
         role = principal.token_role
-        if role is None:
+        if not self.rbac_eval_roles and role is None:
+            return False
+        if self.rbac_eval_roles and principal.username == "system:unauthenticated":
             return False
         # Static policy fallback
         if not self.rbac_eval_roles:
@@ -1405,6 +1818,13 @@ class ShimHandler(BaseHTTPRequestHandler):
         # Role/RoleBinding evaluation
         user = principal.username
         groups = principal.groups
+        sa_ns = None
+        sa_name = None
+        if user.startswith("system:serviceaccount:"):
+            parts = user.split(":")
+            if len(parts) >= 4:
+                sa_ns = parts[2]
+                sa_name = parts[3]
         # Collect role rules from bindings
         allowed_verbs: set[str] = set()
         try:
@@ -1416,6 +1836,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if not any(
                     (s.get("kind") == "User" and s.get("name") == user)
                     or (s.get("kind") == "Group" and s.get("name") in groups)
+                    or (
+                        s.get("kind") == "ServiceAccount"
+                        and sa_name
+                        and s.get("name") == sa_name
+                        and (s.get("namespace") or rb.namespace) == sa_ns
+                    )
                     for s in subjects
                 ):
                     continue
@@ -1438,6 +1864,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if not any(
                     (s.get("kind") == "User" and s.get("name") == user)
                     or (s.get("kind") == "Group" and s.get("name") in groups)
+                    or (
+                        s.get("kind") == "ServiceAccount"
+                        and sa_name
+                        and s.get("name") == sa_name
+                        and (s.get("namespace") or "") == (sa_ns or "")
+                    )
                     for s in subjects
                 ):
                     continue
@@ -1555,13 +1987,13 @@ class ShimHandler(BaseHTTPRequestHandler):
         chosen_proto = None
         if subproto_hdr:
             chosen_proto = subproto_hdr.split(",")[0].strip()
-        try:
-            with open("/tmp/pf-headers.log", "w") as hdr:  # noqa: S108
-                for k, v in self.headers.items():
-                    hdr.write(f"{k}: {v}\n")
-                hdr.write(f"chosen: {chosen_proto}\n")
-        except Exception:
-            pass
+        if PF_DEBUG:
+            LOGGER.warning(
+                "portforward ws handshake proto=%s target=%s:%s",
+                chosen_proto,
+                target_host,
+                target_port,
+            )
 
         def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
             buf = b""
@@ -1614,7 +2046,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     header.append(127)
                     header.extend(length.to_bytes(8, "big"))
                 sock.sendall(header + payload)
-            except Exception:
+            except Exception as exc:
+                if PF_DEBUG:
+                    LOGGER.warning("portforward ws send failed: %s", exc)
                 pass
 
         # Handshake
@@ -1625,6 +2059,28 @@ class ShimHandler(BaseHTTPRequestHandler):
         if chosen_proto:
             self.send_header("Sec-WebSocket-Protocol", chosen_proto)
         self.end_headers()
+        max_seconds, idle_seconds = self._stream_limits()
+        max_bytes = self._stream_byte_limit()
+        bytes_in = 0
+        bytes_out = 0
+        start_ts = time.time()
+        last_activity = start_ts
+        use_timeouts = bool(max_seconds or idle_seconds)
+        if use_timeouts:
+            try:
+                self.connection.settimeout(0.1)
+            except Exception:
+                pass
+
+        def _expired(now: float | None = None) -> bool:
+            if not max_seconds and not idle_seconds:
+                return False
+            check = now or time.time()
+            if max_seconds and (check - start_ts) > max_seconds:
+                return True
+            if idle_seconds and (check - last_activity) > idle_seconds:
+                return True
+            return False
 
         # Native WebSocket port-forward protocol (portforward.k8s.io)
         if chosen_proto and "portforward.k8s.io" in chosen_proto:
@@ -1635,21 +2091,46 @@ class ShimHandler(BaseHTTPRequestHandler):
                 upstream = socket.create_connection((target_host, target_port), timeout=5.0)
                 upstream.settimeout(0.1)
             except Exception:
+                if PF_DEBUG:
+                    LOGGER.warning(
+                        "portforward ws upstream connect failed target=%s:%s",
+                        target_host,
+                        target_port,
+                    )
                 upstream = None
 
             stop = False
+            recv_from_up = 0
+            send_to_up = 0
 
             def _pump_upstream() -> None:
                 nonlocal stop
+                nonlocal recv_from_up
+                nonlocal last_activity
+                nonlocal bytes_out
                 if not upstream:
                     return
                 while not stop:
+                    if _expired():
+                        stop = True
+                        break
                     try:
                         chunk = upstream.recv(4096)
                         if not chunk:
                             break
+                        last_activity = time.time()
+                        bytes_out += len(chunk)
+                        if max_bytes and (bytes_in + bytes_out) > max_bytes:
+                            stop = True
+                            break
+                        recv_from_up += len(chunk)
                         frame = bytes([channel_data]) + chunk
                         _send_ws(self.connection, frame, opcode=0x2)
+                        if PF_DEBUG and (recv_from_up < 8192 or recv_from_up % 65536 == 0):
+                            LOGGER.warning(
+                                "portforward ws upstream->client bytes=%s",
+                                recv_from_up,
+                            )
                     except TimeoutError:
                         continue
                     except Exception:
@@ -1660,14 +2141,21 @@ class ShimHandler(BaseHTTPRequestHandler):
             t_up.start()
 
             while not stop:
+                if _expired():
+                    break
                 msg = _recv_ws(self.connection)
                 if msg is None:
+                    if use_timeouts and not _expired():
+                        continue
                     break
                 opcode, payload = msg
                 if opcode == 0x8:
                     break
                 if opcode not in (0x1, 0x2) or not payload:
                     continue
+                bytes_in += len(payload)
+                if max_bytes and (bytes_in + bytes_out) > max_bytes:
+                    break
                 ch = payload[0]
                 data = payload[1:]
                 if ch == channel_error:
@@ -1675,7 +2163,14 @@ class ShimHandler(BaseHTTPRequestHandler):
                     continue
                 if upstream and data:
                     try:
+                        last_activity = time.time()
                         upstream.sendall(data)
+                        send_to_up += len(data)
+                        if PF_DEBUG and (send_to_up < 8192 or send_to_up % 65536 == 0):
+                            LOGGER.warning(
+                                "portforward ws client->upstream bytes=%s",
+                                send_to_up,
+                            )
                     except Exception:
                         break
             stop = True
@@ -1752,9 +2247,16 @@ class ShimHandler(BaseHTTPRequestHandler):
 
         def _pump_from_client() -> None:
             nonlocal stop
+            nonlocal last_activity
+            nonlocal bytes_in
             while not stop:
+                if _expired():
+                    stop = True
+                    break
                 msg = _recv_ws(self.connection)
                 if msg is None:
+                    if use_timeouts and not _expired():
+                        continue
                     break
                 opcode, payload = msg
                 if opcode == 0x8:  # close
@@ -1762,6 +2264,10 @@ class ShimHandler(BaseHTTPRequestHandler):
                     break
                 if opcode not in (0x1, 0x2) or len(payload) < 2:
                     continue
+                bytes_in += len(payload)
+                if max_bytes and (bytes_in + bytes_out) > max_bytes:
+                    stop = True
+                    break
                 try:
                     with open("/tmp/pf-debug.log", "ab") as dbg:  # noqa: S108
                         dbg.write(payload + b"\n")
@@ -1772,6 +2278,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 sock = _get_upstream(port or target_port)
                 if sock and data:
                     try:
+                        last_activity = time.time()
                         sock.sendall(data)
                     except Exception:
                         stop = True
@@ -1779,10 +2286,20 @@ class ShimHandler(BaseHTTPRequestHandler):
 
         def _pump_to_client(port: int, sock: socket.socket) -> None:
             nonlocal stop
+            nonlocal last_activity
+            nonlocal bytes_out
             while not stop:
+                if _expired():
+                    stop = True
+                    break
                 try:
                     chunk = sock.recv(4096)
                     if not chunk:
+                        break
+                    last_activity = time.time()
+                    bytes_out += len(chunk)
+                    if max_bytes and (bytes_in + bytes_out) > max_bytes:
+                        stop = True
                         break
                     frame = port.to_bytes(2, "big") + chunk
                     _send_ws(self.connection, frame, opcode=0x2)
@@ -1868,6 +2385,22 @@ class ShimHandler(BaseHTTPRequestHandler):
                 pass
 
         _pf_debug("spdy-start")
+        max_seconds, idle_seconds = self._stream_limits()
+        max_bytes = self._stream_byte_limit()
+        bytes_in = 0
+        bytes_out = 0
+        start_ts = time.time()
+        last_activity = start_ts
+
+        def _expired(now: float | None = None) -> bool:
+            if not max_seconds and not idle_seconds:
+                return False
+            check = now or time.time()
+            if max_seconds and (check - start_ts) > max_seconds:
+                return True
+            if idle_seconds and (check - last_activity) > idle_seconds:
+                return True
+            return False
 
         SPDY_DICT = base64.b64decode(
             "AAAAB29wdGlvbnMAAAAEaGVhZAAAAARwb3N0AAAAA3B1dAAAAAZkZWxldGUAAAAFdHJhY2UAAAAGYWNjZXB0AAAADmFjY2VwdC1jaGFyc2V0AAAAD2FjY2VwdC1lbmNvZGluZwAAAA9hY2NlcHQtbGFuZ3VhZ2UAAAANYWNjZXB0LXJhbmdlcwAAAANhZ2UAAAAFYWxsb3cAAAANYXV0aG9yaXphdGlvbgAAAA1jYWNoZS1jb250cm9sAAAACmNvbm5lY3Rpb24AAAAMY29udGVudC1iYXNlAAAAEGNvbnRlbnQtZW5jb2RpbmcAAAAQY29udGVudC1sYW5ndWFnZQAAAA5jb250ZW50LWxlbmd0aAAAABBjb250ZW50LWxvY2F0aW9uAAAAC2NvbnRlbnQtbWQ1AAAADWNvbnRlbnQtcmFuZ2UAAAAMY29udGVudC10eXBlAAAABGRhdGUAAAAEZXRhZwAAAAZleHBlY3QAAAAHZXhwaXJlcwAAAARmcm9tAAAABGhvc3QAAAAIaWYtbWF0Y2gAAAARaWYtbW9kaWZpZWQtc2luY2UAAAANaWYtbm9uZS1tYXRjaAAAAAhpZi1yYW5nZQAAABNpZi11bm1vZGlmaWVkLXNpbmNlAAAADWxhc3QtbW9kaWZpZWQAAAAIbG9jYXRpb24AAAAMbWF4LWZvcndhcmRzAAAABnByYWdtYQAAABJwcm94eS1hdXRoZW50aWNhdGUAAAATcHJveHktYXV0aG9yaXphdGlvbgAAAAVyYW5nZQAAAAdyZWZlcmVyAAAAC3JldHJ5LWFmdGVyAAAABnNlcnZlcgAAAAJ0ZQAAAAd0cmFpbGVyAAAAEXRyYW5zZmVyLWVuY29kaW5nAAAAB3VwZ3JhZGUAAAAKdXNlci1hZ2VudAAAAAR2YXJ5AAAAA3ZpYQAAAAd3YXJuaW5nAAAAEHd3dy1hdXRoZW50aWNhdGUAAAAGbWV0aG9kAAAAA2dldAAAAAZzdGF0dXMAAAAGMjAwIE9LAAAAB3ZlcnNpb24AAAAISFRUUC8xLjEAAAADdXJsAAAABnB1YmxpYwAAAApzZXQtY29va2llAAAACmtlZXAtYWxpdmUAAAAGb3JpZ2luMTAwMTAxMjAxMjAyMjA1MjA2MzAwMzAyMzAzMzA0MzA1MzA2MzA3NDAyNDA1NDA2NDA3NDA4NDA5NDEwNDExNDEyNDEzNDE0NDE1NDE2NDE3NTAyNTA0NTA1MjAzIE5vbi1BdXRob3JpdGF0aXZlIEluZm9ybWF0aW9uMjA0IE5vIENvbnRlbnQzMDEgTW92ZWQgUGVybWFuZW50bHk0MDAgQmFkIFJlcXVlc3Q0MDEgVW5hdXRob3JpemVkNDAzIEZvcmJpZGRlbjQwNCBOb3QgRm91bmQ1MDAgSW50ZXJuYWwgU2VydmVyIEVycm9yNTAxIE5vdCBJbXBsZW1lbnRlZDUwMyBTZXJ2aWNlIFVuYXZhaWxhYmxlSmFuIEZlYiBNYXIgQXByIE1heSBKdW4gSnVsIEF1ZyBTZXB0IE9jdCBOb3YgRGVjIDAwOjAwOjAwIE1vbiwgVHVlLCBXZWQsIFRodSwgRnJpLCBTYXQsIFN1biwgR01UY2h1bmtlZCx0ZXh0L2h0bWwsaW1hZ2UvcG5nLGltYWdlL2pwZyxpbWFnZS9naWYsYXBwbGljYXRpb24veG1sLGFwcGxpY2F0aW9uL3hodG1sK3htbCx0ZXh0L3BsYWluLHRleHQvamF2YXNjcmlwdCxwdWJsaWNwcml2YXRlbWF4LWFnZT1nemlwLGRlZmxhdGUsc2RjaGNoYXJzZXQ9dXRmLThjaGFyc2V0PWlzby04ODU5LTEsdXRmLSwqLGVucT0wLg=="
@@ -2014,6 +2547,10 @@ class ShimHandler(BaseHTTPRequestHandler):
             last_ping = time.time()
             while True:
                 now = time.time()
+                if _expired(now):
+                    break
+                if max_bytes and (bytes_in + bytes_out) > max_bytes:
+                    break
                 if now - last_ping > 10:
                     try:
                         send_ping()
@@ -2026,6 +2563,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 except TimeoutError:
                     hdr = None
                 if hdr:
+                    last_activity = time.time()
                     if len(hdr) < 8:
                         _pf_debug("recv-short")
                         break
@@ -2129,6 +2667,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                             send_rst(stream_id, code=2)
                             break
                         payload = read_exact(conn, length) or b""
+                        if payload:
+                            last_activity = time.time()
+                            bytes_in += len(payload)
                         if stream_id in data_streams and payload:
                             port = data_streams[stream_id]
                             wnd = stream_windows.get(stream_id, window_size)
@@ -2159,6 +2700,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                                     upstream_cache.pop(stream_id, None)
                                     continue
                             try:
+                                last_activity = time.time()
                                 upstream_cache[stream_id].sendall(payload)
                                 stream_windows[stream_id] = max(0, wnd - len(payload))
                             except Exception:
@@ -2182,6 +2724,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                     try:
                         resp = sock_up.recv(4096)
                         if resp:
+                            last_activity = time.time()
+                            bytes_out += len(resp)
                             send_data_frame(sid, resp, flags=0)
                             try:
                                 send_window_update(sid, len(resp))
@@ -2225,10 +2769,304 @@ class ShimHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    # ---------------- WebSocket exec/attach (browser + WS clients) ----------------
+    def _handle_exec_ws(
+        self,
+        *,
+        namespace: str | None,
+        pod_name: str,
+        command: list[str],
+        container: str | None,
+        tty: bool,
+        want_stdin: bool,
+        want_stdout: bool,
+        want_stderr: bool,
+    ) -> None:
+        self._audit(
+            "exec.start",
+            namespace=namespace,
+            pod=pod_name,
+            container=container or "",
+            tty=tty,
+            stdin=want_stdin,
+            stdout=want_stdout,
+            stderr=want_stderr,
+            cmd=" ".join(command),
+        )
+        # Try to open an attached exec session on the runtime (docker/podman only for now)
+        exec_sock = None
+        exec_id = None
+        if hasattr(self.server.runtime, "exec_attach"):  # type: ignore[attr-defined]
+            try:
+                exec_sock, exec_id = self.server.runtime.exec_attach(  # type: ignore[attr-defined]
+                    pod_name, command, container=container, tty=tty
+                )
+                exec_sock.settimeout(0.05)
+            except Exception as exc:
+                if SPDY_DEBUG:
+                    LOGGER.warning("WS exec_attach failed: %s", exc)
+                exec_sock = None
+        if exec_sock is None:
+            self._json_status(
+                HTTPStatus.NOT_IMPLEMENTED,
+                reason="NotImplemented",
+                message="Streaming exec not available for this runtime",
+            )
+            return
+
+        key = self.headers.get("Sec-WebSocket-Key")
+        if not key:
+            self.send_response(HTTPStatus.BAD_REQUEST)
+            self.end_headers()
+            return
+        accept_seed = (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("utf-8")
+        accept = base64.b64encode(hashlib.sha1(accept_seed).digest()).decode("utf-8")  # noqa: S324 - RFC 6455 requires SHA-1
+        subproto_hdr = self.headers.get("Sec-WebSocket-Protocol")
+        supported = [
+            "v5.channel.k8s.io",
+            "v4.channel.k8s.io",
+            "v3.channel.k8s.io",
+            "v2.channel.k8s.io",
+            "channel.k8s.io",
+        ]
+        chosen_proto = None
+        if subproto_hdr:
+            requested = [p.strip() for p in subproto_hdr.split(",") if p.strip()]
+            for proto in requested:
+                if proto in supported:
+                    chosen_proto = proto
+                    break
+        if chosen_proto is None:
+            chosen_proto = supported[0]
+
+        def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
+            buf = b""
+            while len(buf) < n:
+                chunk = sock.recv(n - len(buf))
+                if not chunk:
+                    return None
+                buf += chunk
+            return buf
+
+        def _recv_ws(sock: socket.socket) -> tuple[int, bytes] | None:
+            try:
+                hdr = _recv_exact(sock, 2)
+                if not hdr:
+                    return None
+                opcode = hdr[0] & 0x0F
+                masked = bool(hdr[1] & 0x80)
+                length = hdr[1] & 0x7F
+                if length == 126:
+                    ext = _recv_exact(sock, 2)
+                    if ext is None:
+                        return None
+                    length = int.from_bytes(ext, "big")
+                elif length == 127:
+                    ext = _recv_exact(sock, 8)
+                    if ext is None:
+                        return None
+                    length = int.from_bytes(ext, "big")
+                mask = _recv_exact(sock, 4) if masked else b""
+                payload = _recv_exact(sock, length) if length else b""
+                if payload is None:
+                    return None
+                if masked and mask:
+                    payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+                return opcode, payload
+            except Exception:
+                return None
+
+        def _send_ws(sock: socket.socket, payload: bytes, opcode: int = 0x2) -> None:
+            try:
+                header = bytearray()
+                header.append(0x80 | (opcode & 0x0F))
+                length = len(payload)
+                if length < 126:
+                    header.append(length)
+                elif length < (1 << 16):
+                    header.append(126)
+                    header.extend(length.to_bytes(2, "big"))
+                else:
+                    header.append(127)
+                    header.extend(length.to_bytes(8, "big"))
+                sock.sendall(header + payload)
+            except Exception:
+                pass
+
+        # Handshake
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        if chosen_proto:
+            self.send_header("Sec-WebSocket-Protocol", chosen_proto)
+        self.end_headers()
+
+        conn = self.connection
+        conn.settimeout(0.05)
+
+        def _send_channel(ch: int, data: bytes) -> None:
+            if not data:
+                return
+            _send_ws(conn, bytes([ch]) + data, opcode=0x2)
+
+        def demux_exec_frame(frame: bytes) -> tuple[int, bytes] | None:
+            # Docker multiplexed attach header: 1 byte stream, 3 bytes zero, 4 bytes length
+            if len(frame) < 8:
+                return None
+            stream_type = frame[0]
+            size = int.from_bytes(frame[4:8], "big")
+            if size == 0:
+                return None
+            data = frame[8 : 8 + size]
+            if len(data) < size:
+                return None
+            return stream_type, data
+
+        exec_done = False
+        exec_done_at = 0.0
+        exec_grace_seconds = 2.0
+        exec_buf = b""
+        max_seconds, idle_seconds = self._stream_limits()
+        max_bytes = self._stream_byte_limit()
+        bytes_in = 0
+        bytes_out = 0
+        start_ts = time.time()
+        last_activity = start_ts
+        try:
+            while True:
+                now = time.time()
+                if max_seconds and (now - start_ts) > max_seconds:
+                    break
+                if idle_seconds and (now - last_activity) > idle_seconds:
+                    break
+                if max_bytes and (bytes_in + bytes_out) > max_bytes:
+                    break
+                # Read from WebSocket client
+                try:
+                    msg = _recv_ws(conn)
+                except TimeoutError:
+                    msg = None
+                except Exception:
+                    msg = None
+                if msg:
+                    last_activity = time.time()
+                    opcode, payload = msg
+                    if opcode == 0x8:  # close
+                        break
+                    if opcode in (0x1, 0x2) and payload:
+                        bytes_in += len(payload)
+                        ch = payload[0]
+                        data = payload[1:]
+                        if ch == 0 and want_stdin and data:
+                            try:
+                                exec_sock.sendall(data)
+                            except Exception:
+                                pass
+                        elif ch == 4 and tty and data:
+                            try:
+                                doc = json.loads(data.decode("utf-8", "ignore"))
+                                h = (
+                                    int(doc.get("Height"))
+                                    if doc.get("Height") is not None
+                                    else None
+                                )
+                                w = int(doc.get("Width")) if doc.get("Width") is not None else None
+                                if hasattr(self.server.runtime, "exec_resize"):  # type: ignore[attr-defined]
+                                    try:
+                                        self.server.runtime.exec_resize(
+                                            exec_id or "", height=h, width=w
+                                        )  # type: ignore[attr-defined]
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+
+                # Read from exec socket
+                if exec_sock:
+                    try:
+                        chunk = exec_sock.recv(4096)
+                    except TimeoutError:
+                        chunk = None
+                    except Exception:
+                        chunk = b""
+                    if chunk:
+                        last_activity = time.time()
+                        bytes_out += len(chunk)
+                        if tty:
+                            if want_stdout:
+                                _send_channel(1, chunk)
+                        else:
+                            exec_buf += chunk
+                            while True:
+                                if len(exec_buf) < 8:
+                                    break
+                                size = int.from_bytes(exec_buf[4:8], "big")
+                                frame_len = 8 + size
+                                if len(exec_buf) < frame_len:
+                                    break
+                                frame = exec_buf[:frame_len]
+                                exec_buf = exec_buf[frame_len:]
+                                dm = demux_exec_frame(frame)
+                                if dm:
+                                    stype, data = dm
+                                    if stype == 1 and want_stdout:
+                                        _send_channel(1, data)
+                                    elif stype == 2 and want_stderr:
+                                        _send_channel(2, data)
+                    elif chunk == b"":
+                        exec_done = True
+                        exec_done_at = time.time()
+                        try:
+                            exec_sock.close()
+                        except Exception:
+                            pass
+                        exec_sock = None
+
+                if exec_done and (time.time() - exec_done_at) > exec_grace_seconds:
+                    break
+        finally:
+            exit_code = 0
+            try:
+                if exec_id and hasattr(self.server.runtime, "exec_exit_code"):  # type: ignore[attr-defined]
+                    exit_code = int(self.server.runtime.exec_exit_code(exec_id))  # type: ignore[attr-defined]
+            except Exception:
+                exit_code = 0
+            status_obj = {
+                "metadata": {},
+                "status": "Success",
+                "message": "",
+                "reason": "",
+                "code": exit_code,
+                "details": {"exitCode": exit_code},
+            }
+            try:
+                _send_channel(
+                    3, json.dumps(status_obj, separators=(",", ":")).encode("utf-8")
+                )
+            except Exception:
+                pass
+            self._audit(
+                "exec.end",
+                namespace=namespace,
+                pod=pod_name,
+                exit_code=exit_code,
+            )
+            if exec_sock:
+                try:
+                    exec_sock.close()
+                except Exception:
+                    pass
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     # ---------------- SPDY/3.1 exec/attach (kubectl exec) ----------------
     def _handle_exec_spdy(
         self,
         *,
+        namespace: str | None,
         pod_name: str,
         command: list[str],
         container: str | None,
@@ -2245,6 +3083,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                 tty,
                 command,
             )
+        self._audit(
+            "exec.start",
+            namespace=namespace,
+            pod=pod_name,
+            container=container or "",
+            tty=tty,
+            stdin=want_stdin,
+            stdout=want_stdout,
+            stderr=want_stderr,
+            cmd=" ".join(command),
+        )
         # Try to open an attached exec session on the runtime (docker/podman only for now)
         exec_sock = None
         exec_id = None
@@ -2474,6 +3323,12 @@ class ShimHandler(BaseHTTPRequestHandler):
         exec_done = False
         exec_done_at = 0.0
         exec_grace_seconds = 3.0
+        max_seconds, idle_seconds = self._stream_limits()
+        max_bytes = self._stream_byte_limit()
+        bytes_in = 0
+        bytes_out = 0
+        start_ts = time.time()
+        last_activity = start_ts
         required_streams: set[str] = {"error"}
         if want_stdout:
             required_streams.add("stdout")
@@ -2488,6 +3343,12 @@ class ShimHandler(BaseHTTPRequestHandler):
             exec_buf = b""
             while True:
                 now = time.time()
+                if max_seconds and (now - start_ts) > max_seconds:
+                    break
+                if idle_seconds and (now - last_activity) > idle_seconds:
+                    break
+                if max_bytes and (bytes_in + bytes_out) > max_bytes:
+                    break
                 if now - last_ping > 10:
                     try:
                         send_ping()
@@ -2505,6 +3366,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if chunk == b"":
                     break
                 if chunk:
+                    last_activity = time.time()
                     spdy_buf += chunk
 
                 while True:
@@ -2606,6 +3468,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 flags,
                                 length,
                             )
+                        bytes_in += length
                         # STDIN frames
                         if stream_id == stream_ids.get("stdin") and want_stdin and payload:
                             try:
@@ -2647,6 +3510,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                     except Exception:
                         chunk = b""
                     if chunk:
+                        last_activity = time.time()
+                        bytes_out += len(chunk)
                         exec_buf += chunk
                         if tty:
                             if want_stdout:
@@ -2725,6 +3590,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                     )
                 except Exception:
                     pass
+            self._audit(
+                "exec.end",
+                namespace=namespace,
+                pod=pod_name,
+                exit_code=exit_code,
+            )
             try:
                 send_goaway(last_stream=max(stream_ids.values()) if stream_ids else 0, status=0)
             except Exception:
@@ -2978,10 +3849,22 @@ class ShimHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         q = parse_qs(parsed.query)
+        upgrade = (self.headers.get("Upgrade") or "").lower()
+        is_exec_path = re.match(r"^/api/v1/namespaces/[^/]+/pods/[^/]+/exec$", path)
+        is_pf_path = re.match(
+            r"^/api/v1/namespaces/[^/]+/(pods|services)/[^/]+/portforward$", path
+        )
         # Allow unauthenticated discovery/OpenAPI for kubectl validation
         if path not in {"/openapi/v2", "/openapi/v3", "/swagger.json", "/api", "/apis", "/version"}:
-            if not self._authz(role="read"):
-                return
+            if is_exec_path and upgrade:
+                if not self._authz(role="exec"):
+                    return
+            elif is_pf_path and upgrade:
+                if not self._authz(role="portforward"):
+                    return
+            else:
+                if not self._authz(role="read"):
+                    return
 
         if path == "/healthz" or path == "/readyz":
             self._ok({"status": "ok"})
@@ -3802,6 +4685,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "waiting": {"reason": rep_info[3] or "Pending", "message": rep_info[4]}
                         }
                 pod_objs.append(pod_obj)
+            self._update_pod_watch_cache(pod_objs, now_rv)
             if q.get("watch", ["0"])[0] in ("1", "true", "True"):
                 if not self._rbac_allows("watch", "pods"):
                     self._deny(403)
@@ -3938,6 +4822,20 @@ class ShimHandler(BaseHTTPRequestHandler):
                     message="command query param is required",
                 )
                 return
+            expected_uid = self._extract_pod_uid(qs)
+            expected_rv = self._extract_pod_rv(qs)
+            if (
+                self._validate_pod_scope(
+                    namespace=m_exec.group(1),
+                    pod_name=m_exec.group(2),
+                    scope_env="AE_API_EXEC_SCOPE",
+                    action="exec",
+                    expected_uid=expected_uid,
+                    expected_rv=expected_rv,
+                )
+                is None
+            ):
+                return
             upgrade = (self.headers.get("Upgrade") or "").lower()
             if upgrade.startswith("spdy"):
                 container = (qs.get("container") or [None])[0]
@@ -3946,6 +4844,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 want_stdout = (qs.get("stdout") or ["true"])[0].lower() in ("1", "true", "yes")
                 want_stderr = (qs.get("stderr") or ["true"])[0].lower() in ("1", "true", "yes")
                 self._handle_exec_spdy(
+                    namespace=m_exec.group(1),
                     pod_name=m_exec.group(2),
                     command=list(cmd),
                     container=container,
@@ -3956,10 +4855,20 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )
                 return
             elif upgrade == "websocket":
-                self._json_status(
-                    HTTPStatus.UPGRADE_REQUIRED,
-                    reason="UpgradeRequired",
-                    message="kubectl exec requires SPDY/3.1; websocket exec not implemented",
+                container = (qs.get("container") or [None])[0]
+                tty = (qs.get("tty") or ["false"])[0].lower() in ("1", "true", "yes")
+                want_stdin = (qs.get("stdin") or ["false"])[0].lower() in ("1", "true", "yes")
+                want_stdout = (qs.get("stdout") or ["true"])[0].lower() in ("1", "true", "yes")
+                want_stderr = (qs.get("stderr") or ["true"])[0].lower() in ("1", "true", "yes")
+                self._handle_exec_ws(
+                    namespace=m_exec.group(1),
+                    pod_name=m_exec.group(2),
+                    command=list(cmd),
+                    container=container,
+                    tty=tty,
+                    want_stdin=want_stdin,
+                    want_stdout=want_stdout,
+                    want_stderr=want_stderr,
                 )
                 return
             else:
@@ -3980,6 +4889,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             svc = self.server.store.get("", "v1", "services", ns, svc_name)  # type: ignore[attr-defined]
             if not svc:
                 self._not_found()
+                return
+            if not self._validate_service_pf_scope(ns, svc, svc_name):
                 return
             qs = parse_qs(parsed.query)
             ports_q = qs.get("ports") or []
@@ -4044,6 +4955,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )
                 return
             upgrade = (self.headers.get("Upgrade") or "").lower()
+            port_label = ",".join(str(p) for p in target_ports)
             if upgrade.startswith("spdy"):
                 # choose endpoint per target port to spread load
                 ep_map: dict[int, list[str]] = {}
@@ -4053,9 +4965,41 @@ class ShimHandler(BaseHTTPRequestHandler):
                     if port_ips:
                         ep_map[tp] = port_ips
                 # fallback: single target_ip if map empty
-                self._handle_port_forward_spdy(target_ip, target_ports, ep_map if ep_map else None)
+                self._audit(
+                    "portforward.start",
+                    namespace=ns,
+                    service=svc_name,
+                    ports=port_label,
+                    protocol="spdy",
+                )
+                try:
+                    self._handle_port_forward_spdy(
+                        target_ip, target_ports, ep_map if ep_map else None
+                    )
+                finally:
+                    self._audit(
+                        "portforward.end",
+                        namespace=ns,
+                        service=svc_name,
+                        ports=port_label,
+                    )
             elif upgrade == "websocket":
-                self._handle_port_forward_ws(target_ip, target_ports[0])
+                self._audit(
+                    "portforward.start",
+                    namespace=ns,
+                    service=svc_name,
+                    ports=port_label,
+                    protocol="websocket",
+                )
+                try:
+                    self._handle_port_forward_ws(target_ip, target_ports[0])
+                finally:
+                    self._audit(
+                        "portforward.end",
+                        namespace=ns,
+                        service=svc_name,
+                        ports=port_label,
+                    )
             else:
                 self._json_status(
                     HTTPStatus.UPGRADE_REQUIRED,
@@ -4071,17 +5015,19 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return
             qs = parse_qs(parsed.query)
             ports_q = qs.get("ports") or []
+            ns = m_pf.group(1)
             pod_name = m_pf.group(2)
+            container_info = self._validate_pod_scope(
+                namespace=ns,
+                pod_name=pod_name,
+                scope_env="AE_API_PF_SCOPE",
+                action="port-forward",
+                expected_uid=self._extract_pod_uid(qs),
+                expected_rv=self._extract_pod_rv(qs),
+            )
+            if container_info is None:
+                return
             target_host = "127.0.0.1"
-            container_info = None
-            try:
-                for c in self.server.runtime.list_containers_info():  # type: ignore[attr-defined]
-                    labels = c.get("labels", {}) or {}
-                    if labels.get("ae.replica_id") == pod_name or c.get("name") == pod_name:
-                        container_info = c
-                        break
-            except Exception:
-                container_info = None
             if container_info:
                 target_host = (
                     container_info.get("pod_ip")
@@ -4116,10 +5062,41 @@ class ShimHandler(BaseHTTPRequestHandler):
                     message="ports query param required",
                 )
                 return
+            port_label = ",".join(str(p) for p in target_ports)
             if upgrade == "websocket":
-                self._handle_port_forward_ws(target_host, target_ports[0])
+                self._audit(
+                    "portforward.start",
+                    namespace=ns,
+                    pod=pod_name,
+                    ports=port_label,
+                    protocol="websocket",
+                )
+                try:
+                    self._handle_port_forward_ws(target_host, target_ports[0])
+                finally:
+                    self._audit(
+                        "portforward.end",
+                        namespace=ns,
+                        pod=pod_name,
+                        ports=port_label,
+                    )
             elif upgrade.startswith("spdy"):
-                self._handle_port_forward_spdy(target_host, target_ports)
+                self._audit(
+                    "portforward.start",
+                    namespace=ns,
+                    pod=pod_name,
+                    ports=port_label,
+                    protocol="spdy",
+                )
+                try:
+                    self._handle_port_forward_spdy(target_host, target_ports)
+                finally:
+                    self._audit(
+                        "portforward.end",
+                        namespace=ns,
+                        pod=pod_name,
+                        ports=port_label,
+                    )
             else:
                 self._json_status(
                     HTTPStatus.UPGRADE_REQUIRED,
@@ -5067,13 +6044,25 @@ class ShimHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         self.path = path
+        upgrade = (self.headers.get("Upgrade") or "").lower()
+        is_exec_path = re.match(r"^/api/v1/namespaces/[^/]+/pods/[^/]+/exec$", path)
+        is_pf_path = re.match(
+            r"^/api/v1/namespaces/[^/]+/(pods|services)/[^/]+/portforward$", path
+        )
         # SubjectAccessReview should be callable by read tokens; other POSTs require write/admin.
         if path.startswith("/apis/authorization.k8s.io/"):
             if not self._authz(role="read"):
                 return
         else:
-            if not self._authz(role="write"):
-                return
+            if is_exec_path and upgrade:
+                if not self._authz(role="exec"):
+                    return
+            elif is_pf_path and upgrade:
+                if not self._authz(role="portforward"):
+                    return
+            else:
+                if not self._authz(role="write"):
+                    return
 
         # Pod exec (kubectl uses POST + SPDY upgrade)
         m_exec_spdy = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/exec$", path)
@@ -5091,6 +6080,20 @@ class ShimHandler(BaseHTTPRequestHandler):
                         reason="BadRequest",
                         message="command query param is required",
                     )
+                    return
+                expected_uid = self._extract_pod_uid(qs)
+                expected_rv = self._extract_pod_rv(qs)
+                if (
+                    self._validate_pod_scope(
+                        namespace=m_exec_spdy.group(1),
+                        pod_name=m_exec_spdy.group(2),
+                        scope_env="AE_API_EXEC_SCOPE",
+                        action="exec",
+                        expected_uid=expected_uid,
+                        expected_rv=expected_rv,
+                    )
+                    is None
+                ):
                     return
                 if upgrade.startswith("spdy"):
                     container = (qs.get("container") or [None])[0]
@@ -5111,6 +6114,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                         "yes",
                     )
                     self._handle_exec_spdy(
+                        namespace=m_exec_spdy.group(1),
                         pod_name=m_exec_spdy.group(2),
                         command=list(cmd),
                         container=container,
@@ -5120,10 +6124,32 @@ class ShimHandler(BaseHTTPRequestHandler):
                         want_stderr=want_stderr,
                     )
                 elif upgrade == "websocket":
-                    self._json_status(
-                        HTTPStatus.UPGRADE_REQUIRED,
-                        reason="UpgradeRequired",
-                        message="kubectl exec requires SPDY/3.1; websocket exec not implemented",
+                    container = (qs.get("container") or [None])[0]
+                    tty = (qs.get("tty") or ["false"])[0].lower() in ("1", "true", "yes")
+                    want_stdin = (qs.get("stdin") or ["false"])[0].lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                    )
+                    want_stdout = (qs.get("stdout") or ["true"])[0].lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                    )
+                    want_stderr = (qs.get("stderr") or ["true"])[0].lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                    )
+                    self._handle_exec_ws(
+                        namespace=m_exec_spdy.group(1),
+                        pod_name=m_exec_spdy.group(2),
+                        command=list(cmd),
+                        container=container,
+                        tty=tty,
+                        want_stdin=want_stdin,
+                        want_stdout=want_stdout,
+                        want_stderr=want_stderr,
                     )
                 else:
                     self._json_status(
@@ -5163,6 +6189,21 @@ class ShimHandler(BaseHTTPRequestHandler):
                     message="command must be a non-empty list",
                 )
                 return
+            qs = parse_qs(parsed.query)
+            expected_uid = self._extract_pod_uid(qs)
+            expected_rv = self._extract_pod_rv(qs)
+            if (
+                self._validate_pod_scope(
+                    namespace=m_exec.group(1),
+                    pod_name=m_exec.group(2),
+                    scope_env="AE_API_EXEC_SCOPE",
+                    action="exec",
+                    expected_uid=expected_uid,
+                    expected_rv=expected_rv,
+                )
+                is None
+            ):
+                return
             try:
                 rc = int(
                     self.server.runtime.exec(  # type: ignore[attr-defined]
@@ -5193,16 +6234,18 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return
             qs = parse_qs(parsed.query)
             ports_q = qs.get("ports") or []
+            ns = m_pf.group(1)
             pod_name = m_pf.group(2)
-            container_info = None
-            try:
-                for c in self.server.runtime.list_containers_info():  # type: ignore[attr-defined]
-                    labels = c.get("labels", {}) or {}
-                    if labels.get("ae.replica_id") == pod_name or c.get("name") == pod_name:
-                        container_info = c
-                        break
-            except Exception:
-                container_info = None
+            container_info = self._validate_pod_scope(
+                namespace=ns,
+                pod_name=pod_name,
+                scope_env="AE_API_PF_SCOPE",
+                action="port-forward",
+                expected_uid=self._extract_pod_uid(qs),
+                expected_rv=self._extract_pod_rv(qs),
+            )
+            if container_info is None:
+                return
             target_ports: list[int] = []
             for p in ports_q:
                 try:
@@ -5239,13 +6282,46 @@ class ShimHandler(BaseHTTPRequestHandler):
                 target_host = os.getenv("AE_STUB_BACKEND_HOST", target_host)
             upgrade = (self.headers.get("Upgrade") or "").lower()
             if upgrade.startswith("spdy"):
-                self._handle_port_forward_spdy(
-                    target_host,
-                    target_ports if not use_host_ports else list(port_map.keys()) or target_ports,
-                    port_map=port_map if use_host_ports else None,
+                pf_ports = target_ports if not use_host_ports else list(port_map.keys()) or target_ports
+                port_label = ",".join(str(p) for p in pf_ports)
+                self._audit(
+                    "portforward.start",
+                    namespace=ns,
+                    pod=pod_name,
+                    ports=port_label,
+                    protocol="spdy",
                 )
+                try:
+                    self._handle_port_forward_spdy(
+                        target_host,
+                        pf_ports,
+                        port_map=port_map if use_host_ports else None,
+                    )
+                finally:
+                    self._audit(
+                        "portforward.end",
+                        namespace=ns,
+                        pod=pod_name,
+                        ports=port_label,
+                    )
             elif upgrade == "websocket":
-                self._handle_port_forward_ws(target_host, target_ports[0])
+                port_label = ",".join(str(p) for p in target_ports)
+                self._audit(
+                    "portforward.start",
+                    namespace=ns,
+                    pod=pod_name,
+                    ports=port_label,
+                    protocol="websocket",
+                )
+                try:
+                    self._handle_port_forward_ws(target_host, target_ports[0])
+                finally:
+                    self._audit(
+                        "portforward.end",
+                        namespace=ns,
+                        pod=pod_name,
+                        ports=port_label,
+                    )
             else:
                 self._json_status(
                     HTTPStatus.UPGRADE_REQUIRED,
@@ -5264,6 +6340,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             svc = self.server.store.get("", "v1", "services", ns, svc_name)  # type: ignore[attr-defined]
             if not svc:
                 self._not_found()
+                return
+            if not self._validate_service_pf_scope(ns, svc, svc_name):
                 return
             ep = _endpoints_for_service(self.server.state, self.server.store, svc)  # type: ignore[attr-defined]
             subsets = (ep or {}).get("subsets") or []
@@ -5331,9 +6409,41 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return
             upgrade = (self.headers.get("Upgrade") or "").lower()
             if upgrade.startswith("spdy"):
-                self._handle_port_forward_spdy(target_ip, target_ports)
+                port_label = ",".join(str(p) for p in target_ports)
+                self._audit(
+                    "portforward.start",
+                    namespace=ns,
+                    service=svc_name,
+                    ports=port_label,
+                    protocol="spdy",
+                )
+                try:
+                    self._handle_port_forward_spdy(target_ip, target_ports)
+                finally:
+                    self._audit(
+                        "portforward.end",
+                        namespace=ns,
+                        service=svc_name,
+                        ports=port_label,
+                    )
             elif upgrade == "websocket":
-                self._handle_port_forward_ws(target_ip, target_ports[0])
+                port_label = ",".join(str(p) for p in target_ports)
+                self._audit(
+                    "portforward.start",
+                    namespace=ns,
+                    service=svc_name,
+                    ports=port_label,
+                    protocol="websocket",
+                )
+                try:
+                    self._handle_port_forward_ws(target_ip, target_ports[0])
+                finally:
+                    self._audit(
+                        "portforward.end",
+                        namespace=ns,
+                        service=svc_name,
+                        ports=port_label,
+                    )
             else:
                 self._json_status(
                     HTTPStatus.UPGRADE_REQUIRED,
@@ -8014,6 +9124,9 @@ def _pod_obj(container: dict, rv: int, node_name: str | None) -> dict[str, Any]:
         "labels": labels,
         "resourceVersion": str(rv),
     }
+    uid = container.get("uid") or container.get("id")
+    if uid:
+        meta["uid"] = str(uid)
     running = bool(container.get("running", False))
     restart_count = int(container.get("restart_count", 0) or 0)
     started_at = container.get("started_at") or None
@@ -8091,6 +9204,18 @@ class ShimServer(ThreadingHTTPServer):
         ShimHandler.rehydrate_sa_tokens(self.store)
         ShimHandler.admin_token = token or os.getenv("AE_APISHIM_TOKEN")
         ShimHandler.read_token = os.getenv("AE_APISHIM_READ_TOKEN")
+        ShimHandler.exec_token = os.getenv("AE_APISHIM_EXEC_TOKEN")
+        ShimHandler.portforward_token = os.getenv("AE_APISHIM_PORTFORWARD_TOKEN")
+        ShimHandler.session_secret = os.getenv("AE_APISHIM_SESSION_SECRET")
+        ShimHandler.pod_state_check = os.getenv("AE_APISHIM_POD_STATE_CHECK", "0") == "1"
+        ShimHandler.pod_watch_check = os.getenv("AE_APISHIM_POD_WATCH_CHECK", "0") == "1"
+        try:
+            ShimHandler.pod_watch_ttl = float(
+                os.getenv("AE_APISHIM_POD_WATCH_TTL_SECONDS", "30") or 30
+            )
+        except Exception:
+            ShimHandler.pod_watch_ttl = 30.0
+        ShimHandler.pod_watch_cache = {}
         ShimHandler.allow_anonymous = allow_anonymous
         state_dsn = os.getenv("AE_STATE_DSN")
         db_path = Path(os.getenv("AE_STATE_DB", "state/controller.db"))

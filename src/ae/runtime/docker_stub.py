@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from datetime import datetime, timezone
 
 from ae.controller.spec import AppManifest, app_key_for_manifest, runtime_labels_for_manifest
@@ -52,6 +53,7 @@ class StubRuntime(RuntimeAdapter):
         base_labels = runtime_labels_for_manifest(manifest, app_name=app_name)
         for idx, rid in enumerate(rid_list[:count]):
             host_port = self._backend_port + idx
+            uid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{self._default_namespace}/{rid}"))
             status = "exited" if is_job else "running"
             exit_code = 0 if is_job else None
             finished_at = now if is_job else None
@@ -75,6 +77,7 @@ class StubRuntime(RuntimeAdapter):
                         "ae.replica_id": rid,
                         "ae.container": "main",
                     },
+                    "uid": uid,
                     "running": True,
                     "restart_count": 0,
                     "started_at": now.isoformat(),

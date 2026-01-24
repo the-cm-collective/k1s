@@ -54,7 +54,7 @@ Phase 5 action items:
 - ServiceAccounts + projected tokens: persist ServiceAccount objects, issue short-lived bearer tokens per SA/namespace, wire token authenticator, and project tokens into rendered Pod specs. *(tokens minted on SA create, auto-projected into workloads/pod projections; TTL/rotation handled in-memory; pod template injection in place.)*
 - Patch semantics: add JSONPatch and mergePatch handlers for supported kinds with correct content-type negotiation and status errors. *(json/merge/apply supported; json-patch added with unit coverage.)*
 - SSA + managedFields: honor `fieldManager`/`force`, track managedFields per object in shim storage, and surface conflicts on overlapping fields. *(implemented; conflict 409s covered in unit tests.)*
-- App CRD admission: validating hook to keep native App schema authoritative; reject or warn on incompatible native objects.
+- App CRD admission: validating hook to keep native App schema authoritative; reject by default and allow warn/off via `AE_APISHIM_APP_ADMISSION`. *(implemented; warn/off emit Warning headers instead of rejection.)*
 - CLI parity: implement `kubectl auth can-i` via a SubjectAccessReview-equivalent endpoint bound to RBAC evaluation. *(endpoint present; no e2e CI yet.)*
 - Tests/CI: unit matrix for RBAC decisions and patch/SSA behavior; add integration smoke that exercises can-i, JSONPatch/mergePatch, and SSA apply flows against the stub runtime. *(covered by `apishim-ssa-rbac` CI workflow.)*
 
@@ -94,12 +94,12 @@ Phase 5 action items:
 - Live gate landed: `scripts/ci/apishim-live-openapi.sh` drives kubectl/helm dry-run plus short watch churn against a Postgres-backed shim, capturing live `/openapi/v2` + `/openapi/v3`, fixture validation logs, and object snapshots. `.github/workflows/apishim-live-openapi.yml` publishes these artifacts on push/PR. The gate can point at a supplied kubeconfig (kind/dev lab) via `APISHIM_LIVE_KUBECONFIG(_B64)` or pull a kind kubeconfig by name with `APISHIM_KIND_CLUSTER`.
 - Follow-ups promoted to Phase 7.3: release-blocking promotion, docs/release-note wiring, and expanded sample set validated by the gate.
 
-#### Phase 7.3 — Release gate + site wiring (next)
-- Promotion: make `apishim-live-openapi` required on `main` and release tags; fail the release if fixture validation or live kubectl/helm checks fail (skips allowed only for sealed secrets with justification).
-- Coverage: run the live gate against both the local Postgres-backed shim and an external kubeconfig (kind/dev lab) nightly to catch drift across Kubernetes minor versions; publish artifacts per run.
-- Samples: add the PDB-emitting App manifest and App+HPA exporter render to the validated set (live gate + fixtures) and document them in `specs/examples/`.
-- Docs/release notes: wire compatibility matrix + `/openapi/v3` links into the docs navigation and release-note template; mark `/openapi/v3` as the primary endpoint and keep `/openapi/v2` as a compatibility mirror.
-- Fidelity: add a non-stub runtime path (docker/podman) in the live gate when runner capacity permits to exercise exec/logs and service status; keep Postgres storage enabled for resourceVersion stability.
+#### Phase 7.3 — Release gate + site wiring (in progress)
+- Promotion: `apishim-live-openapi` now runs on `main`/PRs and release tags; release workflow fails if the live gate fails. Skips are a manual exception reserved for sealed-secret fixtures with explicit justification.
+- Coverage: nightly live gate runs both local (Postgres-backed shim) and external kubeconfig targets when configured; artifacts are uploaded per run.
+- Samples: live gate now validates the multi-replica/PDB+HPA manifest set; fixtures already include the App/HPA exporter output and PDB-emitting App manifests in `specs/examples/`.
+- Docs/release notes: docs nav now links `/openapi/v3`, and release notes call out v3 as primary with v2 as the compatibility mirror.
+- Fidelity: live gate includes a non-stub runtime lane (docker) and exercises logs/exec; service status is captured in live artifacts. Postgres storage remains enabled for resourceVersion stability.
 
 ## Non‑goals (for now)
 - Aggregated API servers, PSP/PodSecurity admission, or CSI/CNI plugins. These would require extra control-plane components, admission/webhook plumbing, and host kernel capabilities (CNI/CSI) that we deliberately avoid to keep the shim lean. PSA alignment and a basic storage story may appear under the conformance-lite track, but full plugin ecosystems stay deferred.
@@ -135,3 +135,20 @@ Phase 5 action items:
 - Flow: install MetalLB, apply IPAddressPool + L2Advertisement, then create a Service `type: LoadBalancer`; MetalLB assigns an IP that is reachable from the runner. Curl the assigned IP:port to verify.
 - Integration with shim: add a MetalLB provider to mirror the assigned ingress IP into `status.loadBalancer` (and ingress annotations), while keeping Caddy/Envoy for L7. Use this as the first implementation of the `LoadBalancerProvider` interface.
 - CI lane sketch: spin up kind, install MetalLB with generated pool/adverts, run apishim (Postgres/stub) and apply a demo LB Service; assert ingress IP populated and reachable. Publish the assigned IP + logs as artifacts.
+
+## Update (2026-01-24)
+- HA watch propagation now fans out across Postgres-backed shim replicas via a watch outbox + poller, and the HA workflow runs a longer churn loop (`v0` → `v25`) plus outbox lag/retention checks. Remaining: longer soak coverage and retention tuning for production.
+- Shim server now uses a threaded HTTP server so streaming endpoints no longer block other requests; store access is locked to keep shared DB handles safe. Remaining: consider async I/O to reduce thread load under heavy watch/stream usage.
+- ServiceAccount tokens rehydrate from stored annotations at startup and fall back to store lookup when a token is unknown, enabling HA replicas to accept each other’s minted tokens. Remaining: move to durable JWT or DB-backed tokens with rotation.
+- CronJob scheduling now includes `croniter` in project dependencies, so cron expressions resolve instead of falling back to 60s/annotation intervals.
+- Docs drift fixed: the compatibility matrix now reflects best-effort CronJob scheduling and Job completion.
+- Live OpenAPI gate is promoted: it runs on main/PRs plus nightly local/external targets, and release tags now run the live gate alongside OpenAPI exports. Docs/nav and release notes now treat `/openapi/v3` as primary with `/openapi/v2` as the compatibility mirror; the live gate validates the multi-replica/PDB+HPA sample set.
+- Live OpenAPI gate now exercises a docker runtime lane with logs/exec smoke checks for non-stub fidelity.
+- Focused `kubectl exec` SPDY tests now succeed against both docker and podman runtimes (error/stdout/stderr streams open cleanly); the JSON exec fallback in the live gate can be retired after a full lane rerun.
+
+## Update (2026-01-25)
+- Decision: apishim remains the primary Kubernetes-compatibility track; no kube-apiserver/Kine fork in the near term.
+- Next focus: align core API semantics toward conformance-lite (resourceVersion ordering, list+watch consistency, bookmarks, compaction/retention, and durable watch history under churn).
+- Storage alignment: treat Postgres as the default HA backend, but implement an etcd-like contract (global monotonic revisions, watch history tables, compaction policies, and lease/TTL primitives for nodes/sessions).
+- AuthZ alignment: map RBAC verbs to K8s subresources (`pods/exec`, `pods/portforward`, `pods/log`) with explicit audit records per session.
+- Testing alignment: run an initial Sonobuoy pass on a dev/kind target to capture a baseline fail list; track the conformance-lite skip set and shrink it as semantics land.

@@ -1354,6 +1354,7 @@ class DockerRuntime(RuntimeAdapter):
                     {
                         "name": c.name,
                         "labels": c.labels or {},
+                        "uid": getattr(c, "id", None),
                         "host_ports": ports,
                         "port_map": port_map,
                         "host_ip": host_ip,
@@ -1368,6 +1369,7 @@ class DockerRuntime(RuntimeAdapter):
                     {
                         "name": getattr(c, "name", ""),
                         "labels": {},
+                        "uid": getattr(c, "id", None),
                         "host_ports": [],
                         "restart_count": 0,
                         "started_at": None,
