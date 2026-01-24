@@ -817,6 +817,17 @@ class DockerRuntime(RuntimeAdapter):
             containers = self._client.containers.list(all=True, filters=filters)
             if containers:
                 target = containers[0]
+            if target is None and container is None:
+                # Fallback for legacy or mismatched labels: scan by name/alternate labels.
+                for c in self._client.containers.list(all=True):
+                    labels = c.labels or {}
+                    if (
+                        labels.get(self.REPLICA_LABEL) == replica_id
+                        or labels.get("ae.replica") == replica_id
+                        or c.name == replica_id
+                    ):
+                        target = c
+                        break
         except APIError:
             target = None
         if target is None:
@@ -830,6 +841,9 @@ class DockerRuntime(RuntimeAdapter):
             tty=tty,
         )
         sock = self._client.api.exec_start(exec_id, tty=tty, stream=True, socket=True, demux=False)
+        # docker-py returns a SocketIO wrapper; unwrap to raw socket for recv/sendall.
+        if hasattr(sock, "_sock"):
+            sock = sock._sock
         return sock, exec_id
 
     def exec_resize(
@@ -1304,17 +1318,29 @@ class DockerRuntime(RuntimeAdapter):
         for c in containers:
             try:
                 ports: list[int] = []
+                port_map: dict[int, int] = {}
+                host_ip = None
                 pmap = (c.attrs or {}).get("NetworkSettings", {}).get("Ports", {}) or {}
-                for binds in pmap.values():
+                for key, binds in pmap.items():
                     if not binds:
                         continue
+                    try:
+                        cport = int(str(key).split("/", 1)[0])
+                    except Exception:
+                        cport = None
                     for b in binds:
                         hp = b.get("HostPort")
                         if hp:
                             try:
-                                ports.append(int(hp))
+                                hp_i = int(hp)
+                                ports.append(hp_i)
+                                if cport is not None:
+                                    port_map.setdefault(cport, hp_i)
                             except ValueError:
                                 continue
+                        hip = b.get("HostIp") or b.get("HostIP")
+                        if hip and host_ip is None:
+                            host_ip = hip
                 state = (c.attrs or {}).get("State", {})
                 restarts = (
                     int(state.get("RestartCount", 0))
@@ -1329,6 +1355,8 @@ class DockerRuntime(RuntimeAdapter):
                         "name": c.name,
                         "labels": c.labels or {},
                         "host_ports": ports,
+                        "port_map": port_map,
+                        "host_ip": host_ip,
                         "restart_count": restarts,
                         "started_at": started_at,
                         "running": bool(running),
