@@ -118,8 +118,38 @@ def build_parser() -> argparse.ArgumentParser:
     exec_parser.add_argument(
         "--container", required=False, help="Target container name or replica id"
     )
+    exec_parser.add_argument("-i", "--stdin", action="store_true", help="Pass stdin to the container")
+    exec_parser.add_argument("-t", "--tty", action="store_true", help="Allocate a TTY")
     exec_parser.add_argument("--timeout", type=int, default=None, help="Timeout seconds")
+    exec_parser.add_argument(
+        "--apishim",
+        default=None,
+        help="API shim base URL for SPDY exec (defaults to AE_APISHIM_SERVER when set)",
+    )
+    exec_parser.add_argument(
+        "--ws-fallback",
+        action="store_true",
+        help="Allow WebSocket exec if SPDY upgrade fails",
+    )
     exec_parser.add_argument("cmd", nargs=argparse.REMAINDER, help="Command to execute after --")
+
+    shell_parser = subparsers.add_parser("shell", help="Open an interactive shell in a container")
+    shell_parser.add_argument("name", help="Workload (App) name")
+    shell_parser.add_argument("--container", required=False, help="Target container name or replica id")
+    shell_parser.add_argument(
+        "--apishim",
+        default=None,
+        help="API shim base URL for SPDY exec (defaults to AE_APISHIM_SERVER when set)",
+    )
+    shell_parser.add_argument(
+        "--ws-fallback",
+        action="store_true",
+        help="Allow WebSocket exec if SPDY upgrade fails",
+    )
+    tty_group = shell_parser.add_mutually_exclusive_group()
+    tty_group.add_argument("--tty", action="store_true", help="Force TTY on")
+    tty_group.add_argument("--no-tty", action="store_true", help="Disable TTY")
+    shell_parser.add_argument("cmd", nargs=argparse.REMAINDER, help="Shell command after --")
 
     nodes_parser = subparsers.add_parser("nodes", help="List or describe nodes")
     nodes_parser.add_argument("name", nargs="?", help="Node id to describe (omit to list)")
@@ -1189,6 +1219,7 @@ def main(argv: list[str] | None = None) -> int:
         "status": lambda ns: handle_status(ns, store, args, runtime),
         "logs": lambda ns: handle_logs(ns, store, runtime),
         "exec": lambda ns: handle_exec(ns, store, runtime),
+        "shell": lambda ns: handle_shell(ns, store, runtime),
         "rollback": lambda ns: handle_rollback(ns, store, reconciler),
         "revisions": lambda ns: handle_revisions(ns, store),
         "rollout": lambda ns: handle_rollout(ns, store, reconciler),
@@ -2639,6 +2670,587 @@ def handle_logs(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
     return 0
 
 
+def _resolve_exec_target(
+    store: SQLiteStateStore, app_name: str, container_sel: str | None
+) -> tuple[str | None, str | None]:
+    status = store.get_status(app_name)
+    replicas = store.list_replicas(app_name) if status is not None else []
+    pod_name: str | None = None
+    container_name = container_sel
+    if replicas:
+        if container_sel:
+            sel = str(container_sel)
+            if sel.isdigit():
+                suffix = f"-{sel}"
+                for r in replicas:
+                    if r.replica_id.endswith(suffix):
+                        pod_name = r.replica_id
+                        container_name = None
+                        break
+            if pod_name is None:
+                for r in replicas:
+                    if r.replica_id == sel or sel in r.replica_id:
+                        pod_name = r.replica_id
+                        container_name = None
+                        break
+        if pod_name is None:
+            target = next((r for r in replicas if r.ready), replicas[0])
+            pod_name = target.replica_id
+    return pod_name, container_name
+
+
+def _exec_over_spdy(
+    base: str,
+    *,
+    namespace: str,
+    pod_name: str,
+    command: list[str],
+    container: str | None,
+    stdin: bool,
+    stdout: bool,
+    stderr: bool,
+    tty: bool,
+    token: str | None,
+    timeout: int | None,
+) -> int:
+    import base64
+    import json
+    import os
+    import shutil
+    import socket
+    import ssl
+    import threading
+    import urllib.parse
+    import zlib
+    from contextlib import contextmanager
+    import signal
+    import sys
+
+    if "://" not in base:
+        base = "http://" + base
+    parsed = urllib.parse.urlparse(base)
+    scheme = parsed.scheme or "http"
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if scheme == "https" else 80)
+    if not host:
+        raise RuntimeError(f"invalid apishim base: {base}")
+    base_path = parsed.path.rstrip("/")
+    path = f"{base_path}/api/v1/namespaces/{namespace}/pods/{pod_name}/exec"
+    params: dict[str, list[str]] = {
+        "command": [str(c) for c in command],
+        "stdin": ["1" if stdin else "0"],
+        "stdout": ["1" if stdout else "0"],
+        "stderr": ["1" if stderr else "0"],
+        "tty": ["1" if tty else "0"],
+    }
+    if container:
+        params["container"] = [container]
+    query = urllib.parse.urlencode(params, doseq=True)
+    full_path = path + ("?" + query if query else "")
+
+    sock = socket.create_connection((host, port), timeout=timeout or 10)
+    if scheme == "https":
+        ctx = ssl.create_default_context()
+        if os.getenv("AE_APISHIM_INSECURE") == "1":
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        sock = ctx.wrap_socket(sock, server_hostname=host)
+
+    req_lines = [
+        f"POST {full_path} HTTP/1.1",
+        f"Host: {host}:{port}",
+        "Connection: Upgrade",
+        "Upgrade: SPDY/3.1",
+        "X-Stream-Protocol-Version: v5.channel.k8s.io, v4.channel.k8s.io, v3.channel.k8s.io, v2.channel.k8s.io, channel.k8s.io",
+        "Content-Length: 0",
+    ]
+    if token:
+        req_lines.append(f"Authorization: Bearer {token}")
+    req_lines.append("\r\n")
+    sock.sendall(("\r\n".join(req_lines)).encode("utf-8"))
+
+    def _recv_until(marker: bytes, limit: int = 65536) -> bytes:
+        buf = b""
+        while marker not in buf and len(buf) < limit:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        return buf
+
+    header = _recv_until(b"\r\n\r\n")
+    if b"\r\n" not in header:
+        raise RuntimeError("spdy: invalid response from server")
+    status_line, rest = header.split(b"\r\n", 1)
+    try:
+        status_code = int(status_line.split()[1])
+    except Exception:
+        status_code = 0
+    if status_code != 101:
+        try:
+            body = rest.split(b"\r\n\r\n", 1)[1]
+            msg = body.decode("utf-8", "ignore").strip()
+        except Exception:
+            msg = ""
+        raise RuntimeError(f"spdy upgrade failed: {status_code} {msg}".strip())
+
+    SPDY_DICT = base64.b64decode(
+        "AAAAB29wdGlvbnMAAAAEaGVhZAAAAARwb3N0AAAAA3B1dAAAAAZkZWxldGUAAAAFdHJhY2UAAAAGYWNjZXB0AAAADmFjY2VwdC1jaGFyc2V0AAAAD2FjY2VwdC1lbmNvZGluZwAAAA9hY2NlcHQtbGFuZ3VhZ2UAAAANYWNjZXB0LXJhbmdlcwAAAANhZ2UAAAAFYWxsb3cAAAANYXV0aG9yaXphdGlvbgAAAA1jYWNoZS1jb250cm9sAAAACmNvbm5lY3Rpb24AAAAMY29udGVudC1iYXNlAAAAEGNvbnRlbnQtZW5jb2RpbmcAAAAQY29udGVudC1sYW5ndWFnZQAAAA5jb250ZW50LWxlbmd0aAAAABBjb250ZW50LWxvY2F0aW9uAAAAC2NvbnRlbnQtbWQ1AAAADWNvbnRlbnQtcmFuZ2UAAAAMY29udGVudC10eXBlAAAABGRhdGUAAAAEZXRhZwAAAAZleHBlY3QAAAAHZXhwaXJlcwAAAARmcm9tAAAABGhvc3QAAAAIaWYtbWF0Y2gAAAARaWYtbW9kaWZpZWQtc2luY2UAAAANaWYtbm9uZS1tYXRjaAAAAAhpZi1yYW5nZQAAABNpZi11bm1vZGlmaWVkLXNpbmNlAAAADWxhc3QtbW9kaWZpZWQAAAAIbG9jYXRpb24AAAAMbWF4LWZvcndhcmRzAAAABnByYWdtYQAAABJwcm94eS1hdXRoZW50aWNhdGUAAAATcHJveHktYXV0aG9yaXphdGlvbgAAAAVyYW5nZQAAAAdyZWZlcmVyAAAAC3JldHJ5LWFmdGVyAAAABnNlcnZlcgAAAAJ0ZQAAAAd0cmFpbGVyAAAAEXRyYW5zZmVyLWVuY29kaW5nAAAAB3VwZ3JhZGUAAAAKdXNlci1hZ2VudAAAAAR2YXJ5AAAAA3ZpYQAAAAd3YXJuaW5nAAAAEHd3dy1hdXRoZW50aWNhdGUAAAAGbWV0aG9kAAAAA2dldAAAAAZzdGF0dXMAAAAGMjAwIE9LAAAAB3ZlcnNpb24AAAAISFRUUC8xLjEAAAADdXJsAAAABnB1YmxpYwAAAApzZXQtY29va2llAAAACmtlZXAtYWxpdmUAAAAGb3JpZ2luMTAwMTAxMjAxMjAyMjA1MjA2MzAwMzAyMzAzMzA0MzA1MzA2MzA3NDAyNDA1NDA2NDA3NDA4NDA5NDEwNDExNDEyNDEzNDE0NDE1NDE2NDE3NTAyNTA0NTA1MjAzIE5vbi1BdXRob3JpdGF0aXZlIEluZm9ybWF0aW9uMjA0IE5vIENvbnRlbnQzMDEgTW92ZWQgUGVybWFuZW50bHk0MDAgQmFkIFJlcXVlc3Q0MDEgVW5hdXRob3JpemVkNDAzIEZvcmJpZGRlbjQwNCBOb3QgRm91bmQ1MDAgSW50ZXJuYWwgU2VydmVyIEVycm9yNTAxIE5vdCBJbXBsZW1lbnRlZDUwMyBTZXJ2aWNlIFVuYXZhaWxhYmxlSmFuIEZlYiBNYXIgQXByIE1heSBKdW4gSnVsIEF1ZyBTZXB0IE9jdCBOb3YgRGVjIDAwOjAwOjAwIE1vbiwgVHVlLCBXZWQsIFRodSwgRnJpLCBTYXQsIFN1biwgR01UY2h1bmtlZCx0ZXh0L2h0bWwsaW1hZ2UvcG5nLGltYWdlL2pwZyxpbWFnZS9naWYsYXBwbGljYXRpb24veG1sLGFwcGxpY2F0aW9uL3hodG1sK3htbCx0ZXh0L3BsYWluLHRleHQvamF2YXNjcmlwdCxwdWJsaWNwcml2YXRlbWF4LWFnZT1nemlwLGRlZmxhdGUsc2RjaGNoYXJzZXQ9dXRmLThjaGFyc2V0PWlzby04ODU5LTEsdXRmLSwqLGVucT0wLg=="
+    )
+    dctx = zlib.decompressobj(wbits=15, zdict=SPDY_DICT)
+    cctx = zlib.compressobj(wbits=15, zdict=SPDY_DICT)
+
+    send_lock = threading.Lock()
+
+    def _send_bytes(data: bytes) -> None:
+        with send_lock:
+            sock.sendall(data)
+
+    def _encode_headers(headers: dict[str, str]) -> bytes:
+        buf = bytearray()
+        buf += len(headers).to_bytes(4, "big")
+        for name, value in headers.items():
+            n = name.encode("utf-8")
+            v = value.encode("utf-8")
+            buf += len(n).to_bytes(4, "big")
+            buf += n
+            buf += len(v).to_bytes(4, "big")
+            buf += v
+        return cctx.compress(bytes(buf)) + cctx.flush(zlib.Z_SYNC_FLUSH)
+
+    def _send_ctrl(frame_type: int, flags: int, payload: bytes) -> None:
+        header = bytearray()
+        header += b"\x80\x03"
+        header += frame_type.to_bytes(2, "big")
+        header.append(flags & 0xFF)
+        header += len(payload).to_bytes(3, "big")
+        _send_bytes(bytes(header) + payload)
+
+    def _send_syn_stream(stream_id: int, headers: dict[str, str]) -> None:
+        hdrs = _encode_headers(headers)
+        payload = (
+            (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
+            + b"\x00\x00\x00\x00"
+            + b"\x00\x00"
+            + hdrs
+        )
+        _send_ctrl(1, 0, payload)
+
+    def _send_data(stream_id: int, data: bytes, fin: bool = False) -> None:
+        header = bytearray()
+        header += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
+        header.append(0x02 if fin else 0x00)
+        header += len(data).to_bytes(3, "big")
+        _send_bytes(bytes(header) + data)
+
+    stream_ids: dict[str, int] = {}
+    next_sid = 1
+
+    def _alloc(name: str) -> int:
+        nonlocal next_sid
+        sid = next_sid
+        next_sid += 2
+        stream_ids[name] = sid
+        return sid
+
+    _alloc("error")
+    if stdin:
+        _alloc("stdin")
+    if stdout:
+        _alloc("stdout")
+    if stderr and not tty:
+        _alloc("stderr")
+    if tty:
+        _alloc("resize")
+
+    for stype, sid in stream_ids.items():
+        _send_syn_stream(
+            sid,
+            {
+                ":method": "POST",
+                ":path": full_path,
+                ":version": "HTTP/1.1",
+                ":host": host,
+                "streamtype": stype,
+            },
+        )
+
+    stop_event = threading.Event()
+    exit_code = 0
+    err_buf = b""
+
+    @contextmanager
+    def _maybe_raw() -> None:
+        if not tty or not sys.stdin.isatty():
+            yield
+            return
+        import termios
+        import tty as _tty
+
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            _tty.setraw(fd)
+            yield
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+    def _pump_stdin() -> None:
+        if "stdin" not in stream_ids:
+            return
+        fd = sys.stdin.fileno()
+        while not stop_event.is_set():
+            try:
+                data = os.read(fd, 1024)
+            except Exception:
+                break
+            if not data:
+                try:
+                    _send_data(stream_ids["stdin"], b"", fin=True)
+                except Exception:
+                    pass
+                break
+            try:
+                _send_data(stream_ids["stdin"], data, fin=False)
+            except Exception:
+                break
+
+    def _send_resize() -> None:
+        if "resize" not in stream_ids:
+            return
+        try:
+            cols, rows = shutil.get_terminal_size(fallback=(80, 24))
+            payload = json.dumps({"Width": cols, "Height": rows}).encode("utf-8")
+            _send_data(stream_ids["resize"], payload, fin=False)
+        except Exception:
+            pass
+
+    stdin_thread = None
+    old_handler = None
+    if tty and "resize" in stream_ids and sys.stdin.isatty():
+        old_handler = signal.getsignal(signal.SIGWINCH)
+        signal.signal(signal.SIGWINCH, lambda *_args: _send_resize())
+        _send_resize()
+
+    with _maybe_raw():
+        if stdin and "stdin" in stream_ids:
+            stdin_thread = threading.Thread(target=_pump_stdin, daemon=True)
+            stdin_thread.start()
+
+        buf = b""
+        stream_by_id = {sid: name for name, sid in stream_ids.items()}
+        while not stop_event.is_set():
+            try:
+                chunk = sock.recv(4096)
+            except Exception:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            while True:
+                if len(buf) < 8:
+                    break
+                hdr = buf[:8]
+                is_control = (hdr[0] & 0x80) != 0
+                length = int.from_bytes(hdr[5:8], "big")
+                frame_len = 8 + length
+                if len(buf) < frame_len:
+                    break
+                payload = buf[8:frame_len]
+                buf = buf[frame_len:]
+                if is_control:
+                    frame_type = int.from_bytes(hdr[2:4], "big")
+                    if frame_type == 6:  # PING
+                        try:
+                            _send_bytes(hdr + payload)
+                        except Exception:
+                            pass
+                    if frame_type == 7:  # GOAWAY
+                        stop_event.set()
+                        break
+                else:
+                    sid = int.from_bytes(hdr[0:4], "big") & 0x7FFFFFFF
+                    flags = hdr[4]
+                    stype = stream_by_id.get(sid)
+                    if stype == "stdout" and stdout:
+                        sys.stdout.buffer.write(payload)
+                        sys.stdout.buffer.flush()
+                    elif stype == "stderr" and stderr and not tty:
+                        sys.stderr.buffer.write(payload)
+                        sys.stderr.buffer.flush()
+                    elif stype == "error":
+                        err_buf += payload
+                        if flags & 0x02:
+                            try:
+                                status = json.loads(err_buf.decode("utf-8", "ignore") or "{}")
+                                exit_code = int(
+                                    status.get("details", {}).get("exitCode")
+                                    or status.get("code")
+                                    or 0
+                                )
+                            except Exception:
+                                exit_code = 0
+                            stop_event.set()
+                            break
+            if stop_event.is_set():
+                break
+
+    stop_event.set()
+    if stdin_thread:
+        stdin_thread.join(timeout=1)
+    if old_handler is not None:
+        try:
+            signal.signal(signal.SIGWINCH, old_handler)
+        except Exception:
+            pass
+    try:
+        sock.close()
+    except Exception:
+        pass
+    return exit_code
+
+
+def _exec_over_ws(
+    base: str,
+    *,
+    namespace: str,
+    pod_name: str,
+    command: list[str],
+    container: str | None,
+    stdin: bool,
+    stdout: bool,
+    stderr: bool,
+    tty: bool,
+    token: str | None,
+    timeout: int | None,
+) -> int:
+    import base64
+    import json
+    import os
+    import shutil
+    import socket
+    import ssl
+    import threading
+    import urllib.parse
+    from contextlib import contextmanager
+    import signal
+    import sys
+
+    if "://" not in base:
+        base = "http://" + base
+    parsed = urllib.parse.urlparse(base)
+    scheme = parsed.scheme or "http"
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if scheme == "https" else 80)
+    if not host:
+        raise RuntimeError(f"invalid apishim base: {base}")
+    base_path = parsed.path.rstrip("/")
+    path = f"{base_path}/api/v1/namespaces/{namespace}/pods/{pod_name}/exec"
+    params: dict[str, list[str]] = {
+        "command": [str(c) for c in command],
+        "stdin": ["1" if stdin else "0"],
+        "stdout": ["1" if stdout else "0"],
+        "stderr": ["1" if stderr else "0"],
+        "tty": ["1" if tty else "0"],
+    }
+    if container:
+        params["container"] = [container]
+    query = urllib.parse.urlencode(params, doseq=True)
+    full_path = path + ("?" + query if query else "")
+
+    sock = socket.create_connection((host, port), timeout=timeout or 10)
+    if scheme == "https":
+        ctx = ssl.create_default_context()
+        if os.getenv("AE_APISHIM_INSECURE") == "1":
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        sock = ctx.wrap_socket(sock, server_hostname=host)
+
+    ws_key = base64.b64encode(os.urandom(16)).decode("ascii")
+    req_lines = [
+        f"GET {full_path} HTTP/1.1",
+        f"Host: {host}:{port}",
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        "Sec-WebSocket-Version: 13",
+        f"Sec-WebSocket-Key: {ws_key}",
+        "Sec-WebSocket-Protocol: v5.channel.k8s.io",
+    ]
+    if token:
+        req_lines.append(f"Authorization: Bearer {token}")
+    req_lines.append("\r\n")
+    sock.sendall(("\r\n".join(req_lines)).encode("utf-8"))
+
+    def _recv_until(marker: bytes, limit: int = 65536) -> bytes:
+        buf = b""
+        while marker not in buf and len(buf) < limit:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        return buf
+
+    header = _recv_until(b"\r\n\r\n")
+    if b"\r\n" not in header:
+        raise RuntimeError("websocket: invalid response from server")
+    status_line = header.split(b"\r\n", 1)[0]
+    try:
+        status_code = int(status_line.split()[1])
+    except Exception:
+        status_code = 0
+    if status_code != 101:
+        raise RuntimeError(f"websocket upgrade failed: {status_code}")
+
+    send_lock = threading.Lock()
+
+    def _send_ws(payload: bytes, opcode: int = 0x2) -> None:
+        mask_key = os.urandom(4)
+        header = bytearray()
+        header.append(0x80 | (opcode & 0x0F))
+        length = len(payload)
+        if length < 126:
+            header.append(0x80 | length)
+        elif length < (1 << 16):
+            header.append(0x80 | 126)
+            header.extend(length.to_bytes(2, "big"))
+        else:
+            header.append(0x80 | 127)
+            header.extend(length.to_bytes(8, "big"))
+        masked = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+        with send_lock:
+            sock.sendall(bytes(header) + mask_key + masked)
+
+    def _recv_exact(n: int) -> bytes | None:
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                return None
+            buf += chunk
+        return buf
+
+    def _recv_ws() -> tuple[int, bytes] | None:
+        hdr = _recv_exact(2)
+        if not hdr:
+            return None
+        opcode = hdr[0] & 0x0F
+        length = hdr[1] & 0x7F
+        if length == 126:
+            ext = _recv_exact(2)
+            if ext is None:
+                return None
+            length = int.from_bytes(ext, "big")
+        elif length == 127:
+            ext = _recv_exact(8)
+            if ext is None:
+                return None
+            length = int.from_bytes(ext, "big")
+        payload = _recv_exact(length) if length else b""
+        if payload is None:
+            return None
+        return opcode, payload
+
+    stop_event = threading.Event()
+    exit_code = 0
+    err_buf = b""
+
+    @contextmanager
+    def _maybe_raw() -> None:
+        if not tty or not sys.stdin.isatty():
+            yield
+            return
+        import termios
+        import tty as _tty
+
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            _tty.setraw(fd)
+            yield
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+    def _send_channel(ch: int, data: bytes) -> None:
+        _send_ws(bytes([ch]) + data, opcode=0x2)
+
+    def _pump_stdin() -> None:
+        if not stdin:
+            return
+        fd = sys.stdin.fileno()
+        while not stop_event.is_set():
+            try:
+                data = os.read(fd, 1024)
+            except Exception:
+                break
+            if not data:
+                break
+            _send_channel(0, data)
+
+    def _send_resize() -> None:
+        if not tty:
+            return
+        try:
+            cols, rows = shutil.get_terminal_size(fallback=(80, 24))
+            payload = json.dumps({"Width": cols, "Height": rows}).encode("utf-8")
+            _send_channel(4, payload)
+        except Exception:
+            pass
+
+    stdin_thread = None
+    old_handler = None
+    if tty and sys.stdin.isatty():
+        old_handler = signal.getsignal(signal.SIGWINCH)
+        signal.signal(signal.SIGWINCH, lambda *_args: _send_resize())
+        _send_resize()
+
+    with _maybe_raw():
+        if stdin:
+            stdin_thread = threading.Thread(target=_pump_stdin, daemon=True)
+            stdin_thread.start()
+        while not stop_event.is_set():
+            msg = _recv_ws()
+            if msg is None:
+                break
+            opcode, payload = msg
+            if opcode == 0x8:
+                break
+            if not payload:
+                continue
+            ch = payload[0]
+            data = payload[1:]
+            if ch == 1 and stdout:
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+            elif ch == 2 and stderr and not tty:
+                sys.stderr.buffer.write(data)
+                sys.stderr.buffer.flush()
+            elif ch == 3:
+                err_buf += data
+                try:
+                    status = json.loads(err_buf.decode("utf-8", "ignore") or "{}")
+                    exit_code = int(
+                        status.get("details", {}).get("exitCode") or status.get("code") or 0
+                    )
+                except Exception:
+                    exit_code = 0
+                stop_event.set()
+                break
+
+    stop_event.set()
+    if stdin_thread:
+        stdin_thread.join(timeout=1)
+    if old_handler is not None:
+        try:
+            signal.signal(signal.SIGWINCH, old_handler)
+        except Exception:
+            pass
+    try:
+        sock.close()
+    except Exception:
+        pass
+    return exit_code
+
+
 def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: RuntimeAdapter) -> int:
     # Remote mode
     import inspect as _inspect
@@ -2647,10 +3259,77 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
     if frame is not None:
         outer_locals = frame.f_back.f_locals if frame.f_back else {}
         gargs = outer_locals.get("global_args") or outer_locals.get("args")
+        import os as _os
+
+        apishim_base = getattr(args, "apishim", None) or _os.getenv("AE_APISHIM_SERVER")
+        ws_fallback = bool(
+            getattr(args, "ws_fallback", False) or _os.getenv("AE_EXEC_WS_FALLBACK") == "1"
+        )
+        token = None
+        if gargs is not None:
+            token = getattr(gargs, "token", None)
+        if token is None:
+            token = _os.getenv("AE_APISHIM_TOKEN")
+        if apishim_base:
+            app_name = _resolve_app_name(args.name) or args.name
+            cmd = list(args.cmd or [])
+            if cmd and cmd[0] == "--":
+                cmd = cmd[1:]
+            if not cmd:
+                print("exec requires a command after -- (e.g., ae exec app -- sh -c 'echo hi')")
+                return 2
+            pod_name, container_name = _resolve_exec_target(
+                store, app_name, getattr(args, "container", None)
+            )
+            if pod_name is None:
+                pod_name = app_name
+                print("warning: no local status; using app name as pod reference")
+            ns, _name = split_app_key(app_name)
+            want_stdin = bool(getattr(args, "stdin", False))
+            want_tty = bool(getattr(args, "tty", False))
+            want_stderr = not want_tty
+            try:
+                return _exec_over_spdy(
+                    apishim_base,
+                    namespace=ns,
+                    pod_name=pod_name,
+                    command=cmd,
+                    container=container_name,
+                    stdin=want_stdin,
+                    stdout=True,
+                    stderr=want_stderr,
+                    tty=want_tty,
+                    token=token,
+                    timeout=getattr(args, "timeout", None),
+                )
+            except Exception as exc:
+                if ws_fallback:
+                    print(f"spdy exec failed ({exc}); trying websocket fallback...")
+                    try:
+                        return _exec_over_ws(
+                            apishim_base,
+                            namespace=ns,
+                            pod_name=pod_name,
+                            command=cmd,
+                            container=container_name,
+                            stdin=want_stdin,
+                            stdout=True,
+                            stderr=want_stderr,
+                            tty=want_tty,
+                            token=token,
+                            timeout=getattr(args, "timeout", None),
+                        )
+                    except Exception as exc2:
+                        print(f"websocket exec failed: {exc2}")
+                        return 1
+                print(f"spdy exec failed: {exc}")
+                return 1
         if gargs is not None and getattr(gargs, "server", None):
             return handle_exec_remote(args, gargs)
 
     # Local-only path
+    if getattr(args, "stdin", False) or getattr(args, "tty", False):
+        print("warning: --stdin/--tty are only supported against the API shim (SPDY/WebSocket)")
     app_name = _resolve_app_name(args.name) or args.name
     status = store.get_status(app_name)
     if status is None:
@@ -2695,6 +3374,8 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
 def handle_exec_remote(args: argparse.Namespace, global_args: argparse.Namespace) -> int:
     base = str(global_args.server)
     tok = getattr(global_args, "token", None)
+    if getattr(args, "stdin", False) or getattr(args, "tty", False):
+        print("warning: --stdin/--tty are not supported via controller exec; use --apishim")
     payload = {
         "container": getattr(args, "container", None),
         "cmd": [str(x) for x in (getattr(args, "cmd", []) or []) if x != "--"],
@@ -2718,6 +3399,43 @@ def handle_exec_remote(args: argparse.Namespace, global_args: argparse.Namespace
     except Exception as exc:  # noqa: BLE001
         print(f"remote exec failed: {exc}")
         return 1
+
+
+def handle_shell(args: argparse.Namespace, store: SQLiteStateStore, runtime: RuntimeAdapter) -> int:
+    import inspect as _inspect
+    import os as _os
+    import sys as _sys
+
+    frame = _inspect.currentframe()
+    gargs = None
+    if frame is not None:
+        outer_locals = frame.f_back.f_locals if frame.f_back else {}
+        gargs = outer_locals.get("global_args") or outer_locals.get("args")
+
+    apishim_base = getattr(args, "apishim", None) or _os.getenv("AE_APISHIM_SERVER")
+    if not apishim_base and gargs and getattr(gargs, "server", None):
+        apishim_base = getattr(gargs, "server")
+    if not apishim_base:
+        print("shell requires the API shim; set --apishim or AE_APISHIM_SERVER")
+        return 2
+
+    cmd = list(getattr(args, "cmd", []) or [])
+    if cmd and cmd[0] == "--":
+        cmd = cmd[1:]
+    if not cmd:
+        cmd = ["sh"]
+
+    exec_args = argparse.Namespace(**vars(args))
+    exec_args.cmd = cmd
+    exec_args.stdin = True
+    if getattr(args, "no_tty", False):
+        exec_args.tty = False
+    elif getattr(args, "tty", False):
+        exec_args.tty = True
+    else:
+        exec_args.tty = bool(_sys.stdin.isatty() and _sys.stdout.isatty())
+    exec_args.apishim = apishim_base
+    return handle_exec(exec_args, store, runtime)
 
 
 def _status_to_json(status: AppStatus, store: SQLiteStateStore, *, include_details: bool) -> str:

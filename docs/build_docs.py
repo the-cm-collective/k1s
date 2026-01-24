@@ -60,7 +60,14 @@ SOURCE_REPO_URL = os.getenv(
 ).strip()
 SOURCE_REPO_LABEL = "Canonical (Upstream) Repository"
 
-INTERACTIVE_HREF_TOKENS = ("/swagger", "/redoc", "/dashboard", "playground.html", "/playground")
+INTERACTIVE_HREF_TOKENS = (
+    "/swagger",
+    "/redoc",
+    "/dashboard",
+    "/openapi/v3",
+    "playground.html",
+    "/playground",
+)
 
 NAV_LINKS = [
     ("Start Here", "start-here.html", False, False),
@@ -70,6 +77,7 @@ NAV_LINKS = [
     ("Multi-Node", "multinode-lab.html", False, False),
     ("HTTP API", "http-api.html", False, False),
     ("API Shim", "apishim-compatibility-matrix.html", False, False),
+    ("OpenAPI v3", "/openapi/v3", True, True),
     ("Ingress", "ingress.html", False, False),
     ("API Auth", "api-auth.html", False, False),
     ("Concepts", "concepts.html", False, False),

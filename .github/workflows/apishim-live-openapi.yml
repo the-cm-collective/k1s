@@ -2,28 +2,33 @@ name: apishim-live-openapi
 
 on:
   push:
-    paths:
-      - "src/**"
-      - "scripts/**"
-      - "docs/openapi/**"
-      - "API-COMPAT.md"
-      - ".github/workflows/apishim-live-openapi.yml"
+    branches: ["main"]
   pull_request:
-    paths:
-      - "src/**"
-      - "scripts/**"
-      - "docs/openapi/**"
-      - "API-COMPAT.md"
-      - ".github/workflows/apishim-live-openapi.yml"
+    branches: ["main"]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * *"
 
 jobs:
   live-openapi:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    env:
-      NO_PROXY: "127.0.0.1,localhost"
-      HTTP_PROXY: ""
-      HTTPS_PROXY: ""
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: local
+            runtime: stub
+          - target: local
+            runtime: docker
+          - target: external
+            runtime: stub
+    if: >-
+      ${{
+        matrix.target == 'local' ||
+        secrets.APISHIM_LIVE_KUBECONFIG_B64 != '' ||
+        vars.APISHIM_KIND_CLUSTER != ''
+      }}
     services:
       postgres:
         image: postgres:15
@@ -35,15 +40,18 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U shim -d shim" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
+      NO_PROXY: "127.0.0.1,localhost"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
       AE_APISHIM_DSN: postgresql://shim:shim@localhost:5432/shim
       AE_STATE_DSN: postgresql://shim:shim@localhost:5432/shim
       APISHIM_LIVE_ARTIFACT_DIR: /tmp/apishim-live
-      APISHIM_LIVE_RUNTIME: stub
+      APISHIM_LIVE_RUNTIME: ${{ matrix.runtime }}
       APISHIM_LIVE_TOKEN: live-ci
       APISHIM_LIVE_NAMESPACE: apishim-live
-      APISHIM_KIND_CLUSTER: ${{ vars.APISHIM_KIND_CLUSTER }}
-      APISHIM_LIVE_KUBECONFIG_B64: ${{ secrets.APISHIM_LIVE_KUBECONFIG_B64 }}
-      KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+      APISHIM_KIND_CLUSTER: ${{ matrix.target == 'external' && vars.APISHIM_KIND_CLUSTER || '' }}
+      APISHIM_LIVE_KUBECONFIG_B64: ${{ matrix.target == 'external' && secrets.APISHIM_LIVE_KUBECONFIG_B64 || '' }}
+      KUBECONFIG_B64: ${{ matrix.target == 'external' && secrets.KUBECONFIG_B64 || '' }}
     steps:
       - name: Trust Gitea cert (or disable verify)
         run: |
@@ -110,7 +118,7 @@ jobs:
       - name: Upload live OpenAPI artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: apishim-live-openapi
+          name: apishim-live-openapi-${{ matrix.target }}-${{ matrix.runtime }}
           path: /tmp/apishim-live
       - name: Show logs on failure
         if: failure()
