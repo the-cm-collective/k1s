@@ -52,6 +52,9 @@ PY
           AE_APISHIM_TOKEN: "ci-token"
           AE_APISHIM_DSN: postgresql://shim:shim@localhost:5432/shim
           AE_STATE_DSN: postgresql://shim:shim@localhost:5432/shim
+          AE_APISHIM_WATCH_OUTBOX_TTL: "5"
+          AE_APISHIM_WATCH_OUTBOX_CLEANUP: "1"
+          AE_APISHIM_WATCH_OUTBOX_POLL: "0.2"
           AE_RUNTIME_BACKEND: stub
           PYTHONPATH: src
         run: |
@@ -64,6 +67,9 @@ PY
           AE_APISHIM_TOKEN: "ci-token"
           AE_APISHIM_DSN: postgresql://shim:shim@localhost:5432/shim
           AE_STATE_DSN: postgresql://shim:shim@localhost:5432/shim
+          AE_APISHIM_WATCH_OUTBOX_TTL: "5"
+          AE_APISHIM_WATCH_OUTBOX_CLEANUP: "1"
+          AE_APISHIM_WATCH_OUTBOX_POLL: "0.2"
           AE_RUNTIME_BACKEND: stub
           PYTHONPATH: src
         run: |
@@ -77,24 +83,97 @@ PY
           set -euo pipefail
           KA="kubectl --server=http://127.0.0.1:8445 --token=$TOKEN --insecure-skip-tls-verify"
           KB="kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify"
-          $KB get configmaps -w --request-timeout=20s >/tmp/watch-b.log 2>&1 &
-          W=$!
-          for i in $(seq 1 8); do
-            cat <<'YAML' >/tmp/cm.yaml
+          cat <<'YAML' >/tmp/cm.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: ha-cm
   namespace: default
 data:
-  k: v
+  k: v0
 YAML
-            $KA apply -f /tmp/cm.yaml
+          $KA apply -f /tmp/cm.yaml
+          $KB get --raw '/api/v1/namespaces/default/configmaps?watch=1' >/tmp/watch-b.log 2>&1 &
+          W=$!
+          sleep 2
+          for i in $(seq 1 25); do
             $KA patch configmap ha-cm --type=merge -p '{"data":{"k":"v'$i'"}}'
-            sleep 1
+            sleep 0.4
           done
           kill $W || true
-          grep -q "ha-cm" /tmp/watch-b.log
+          grep -q '"k":"v0"' /tmp/watch-b.log
+          grep -q '"k":"v25"' /tmp/watch-b.log
+      - name: Verify outbox lag + retention cleanup
+        env:
+          PG_DSN: postgresql://shim:shim@localhost:5432/shim
+          TOKEN: "ci-token"
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+import json
+import time
+import psycopg
+
+dsn = "postgresql://shim:shim@localhost:5432/shim"
+with psycopg.connect(dsn) as conn:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO watch_events (source, grp, ver, res, ns, name, ev_type, rv, payload, created_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            RETURNING id
+            """,
+            (
+                "retention-test",
+                "",
+                "v1",
+                "configmaps",
+                "default",
+                "outbox-retention",
+                "ADDED",
+                1,
+                json.dumps(
+                    {
+                        "metadata": {"name": "outbox-retention", "namespace": "default"},
+                        "spec": {},
+                        "status": {},
+                    }
+                ),
+                time.time() - 60,
+            ),
+        )
+        inserted = int(cur.fetchone()[0])
+        print(f"INSERTED_ID={inserted}")
+          PY
+          sleep 2
+          python - <<'PY'
+import psycopg
+
+dsn = "postgresql://shim:shim@localhost:5432/shim"
+with psycopg.connect(dsn) as conn:
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM watch_events WHERE name='outbox-retention'")
+        count = cur.fetchone()[0]
+        print(f"REMAINING={count}")
+        if count != 0:
+            raise SystemExit("outbox retention cleanup did not remove stale event")
+          PY
+          MAX_ID=$(python - <<'PY'
+import psycopg
+
+dsn = "postgresql://shim:shim@localhost:5432/shim"
+with psycopg.connect(dsn) as conn:
+    with conn.cursor() as cur:
+        cur.execute("SELECT COALESCE(MAX(id),0) FROM watch_events")
+        print(cur.fetchone()[0])
+          PY
+          )
+          METRICS=$(curl -fsS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8446/metrics)
+          LAST_ID=$(echo "$METRICS" | awk '/apishim_watch_outbox_last_id/ {print $2}')
+          if [ "${LAST_ID:-0}" -lt "${MAX_ID:-0}" ]; then
+            echo "Outbox lag: last_id=$LAST_ID max_id=$MAX_ID"
+            exit 1
+          fi
       - name: Restart shim A and verify persistence via shim B
         env:
           TOKEN: "ci-token"

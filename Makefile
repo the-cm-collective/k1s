@@ -182,8 +182,10 @@ demo-hardened:
 demo-reset:
 	@echo "[demo-reset] stopping controller/docs and dev stacks"
 	@bash scripts/stop_all.sh
-	@{ docker compose -f ops/dev/labs-aio.yaml down >/dev/null 2>&1 || true; }
-	@{ docker compose -f ops/dev/labs-compose.yaml down >/dev/null 2>&1 || true; }
+	@{ command -v docker >/dev/null 2>&1 && docker compose -f ops/dev/labs-aio.yaml down >/dev/null 2>&1 || true; }
+	@{ command -v podman >/dev/null 2>&1 && podman compose -f ops/dev/labs-aio.yaml down >/dev/null 2>&1 || true; }
+	@{ command -v docker >/dev/null 2>&1 && docker compose -f ops/dev/labs-compose.yaml down >/dev/null 2>&1 || true; }
+	@{ command -v podman >/dev/null 2>&1 && podman compose -f ops/dev/labs-compose.yaml down >/dev/null 2>&1 || true; }
 	@echo "[demo-reset] clearing dynamic Caddy sites"
 	@rm -f state/caddy/*.caddy 2>/dev/null || true
 	@echo "[demo-reset] removing controller DB (state/controller.db)"

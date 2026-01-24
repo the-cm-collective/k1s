@@ -89,6 +89,22 @@
     return headers;
   }
 
+  async function mintShimToken(role, scope) {
+    const payload = { role: role };
+    if (scope) payload.scope = scope;
+    const r = await apiFetch('/api/apishim/session', {
+      method: 'POST',
+      headers: labsHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      const msg = await r.text();
+      throw new Error(msg || `${r.status}`);
+    }
+    const data = await r.json();
+    return (data && data.token) ? data.token : '';
+  }
+
   async function switchToDirectApi(reason){
     if (!window.DOCS_API_BASE) return;
     API = window.DOCS_API_BASE;
@@ -672,6 +688,8 @@
     // Keep Apply clickable to surface guidance even when actions are unavailable
     ['#btn-scale-2','#btn-scale-3','#btn-canary-10','#btn-canary-apply','#btn-observe-toggle']
       .forEach(id=>{ const el=$(id); if (el) el.disabled = !enableActions; });
+    ['#btn-labs-shell','#btn-labs-pf']
+      .forEach(id=>{ const el=$(id); if (el) el.disabled = !enableActions; });
     const btnApply = $('#btn-apply-echo');
     if (btnApply) {
       // Provide visual hint when actions are disabled
@@ -730,6 +748,327 @@
       return `${proto}//${host}${path||'/'}`;
     }
     return `${proto}//${host}${port}${path||'/'}`;
+  }
+
+  function splitArgs(cmd) {
+    const out = [];
+    const re = /[^\s"']+|"([^"]*)"|'([^']*)'/g;
+    let m;
+    while ((m = re.exec(String(cmd || ''))) !== null) {
+      out.push(m[1] || m[2] || m[0]);
+    }
+    return out;
+  }
+
+  function splitAppName(full) {
+    const s = String(full || '');
+    const idx = s.indexOf('--');
+    if (idx > 0) {
+      return { namespace: s.slice(0, idx), name: s.slice(idx + 2) };
+    }
+    return { namespace: 'default', name: s };
+  }
+
+  function normalizeShimBase(val) {
+    let base = String(val || '').trim();
+    if (!base) base = localStorage.getItem('ae_apishim_base') || '';
+    if (!base) base = API || location.origin;
+    base = base.replace(/\/$/, '');
+    return base;
+  }
+
+  function wsBaseFromHttp(base) {
+    return base.replace(/^http/i, 'ws');
+  }
+
+  async function fillReplicaSelect(sel) {
+    if (!sel) return;
+    sel.innerHTML = '';
+    const app = state.appName || '';
+    const fallback = app ? [app] : [];
+    try {
+      if (app) {
+        const s = await jsonGet(`${API}/status/${encodeURIComponent(app)}?details=1`);
+        const reps = Array.isArray(s?.replicas) ? s.replicas.map(r => r.replica_id).filter(Boolean) : [];
+        const list = reps.length ? reps : fallback;
+        list.forEach(rid => {
+          const opt = document.createElement('option');
+          opt.value = rid;
+          opt.textContent = rid;
+          sel.appendChild(opt);
+        });
+        return;
+      }
+    } catch {}
+    fallback.forEach(rid => {
+      const opt = document.createElement('option');
+      opt.value = rid;
+      opt.textContent = rid;
+      sel.appendChild(opt);
+    });
+  }
+
+  const labsShell = {
+    term: null,
+    fit: null,
+    socket: null,
+    encoder: (window.TextEncoder ? new TextEncoder() : null),
+    decoder: (window.TextDecoder ? new TextDecoder() : null),
+  };
+
+  function labsShellStatus(txt, cls) {
+    const el = document.getElementById('labs-shell-status');
+    if (!el) return;
+    el.textContent = txt || '';
+    if (cls) el.className = `pill ${cls}`;
+  }
+
+  function labsShellSend(ch, data) {
+    if (!labsShell.socket || labsShell.socket.readyState !== 1) return;
+    const payload = data instanceof Uint8Array ? data : (labsShell.encoder ? labsShell.encoder.encode(String(data || '')) : new Uint8Array());
+    const out = new Uint8Array(payload.length + 1);
+    out[0] = ch;
+    out.set(payload, 1);
+    labsShell.socket.send(out);
+  }
+
+  function labsHandleShellMessage(data) {
+    try {
+      const buf = data instanceof ArrayBuffer ? new Uint8Array(data) : (labsShell.encoder ? labsShell.encoder.encode(String(data || '')) : new Uint8Array());
+      if (!buf || buf.length < 1) return;
+      const ch = buf[0];
+      const payload = buf.slice(1);
+      if ((ch === 1 || ch === 2) && labsShell.term && labsShell.decoder) {
+        labsShell.term.write(labsShell.decoder.decode(payload));
+      } else if (ch === 3) {
+        try {
+          const msg = labsShell.decoder ? labsShell.decoder.decode(payload) : '';
+          const status = JSON.parse(msg || '{}');
+          const code = status?.details?.exitCode ?? status?.code ?? 0;
+          labsShellStatus(`exit ${code}`, 'muted');
+        } catch {}
+        try { labsShell.socket?.close(); } catch {}
+      }
+    } catch {}
+  }
+
+  function labsOpenShell() {
+    const enableActions = $('#toggle-actions')?.checked && state.sessionId && state.orch.available;
+    if (!enableActions) {
+      banner('Remote shell requires an active session and Controlled Actions.', 'fail');
+      return;
+    }
+    fillReplicaSelect(document.getElementById('labs-shell-pod'));
+    const modal = document.getElementById('labs-shell-modal');
+    if (!modal) return;
+    if (!labsShell.term && window.Terminal) {
+      labsShell.term = new Terminal({ cursorBlink: true, convertEol: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', theme: { background: '#0b0f14' } });
+      if (window.FitAddon && window.FitAddon.FitAddon) {
+        labsShell.fit = new window.FitAddon.FitAddon();
+        labsShell.term.loadAddon(labsShell.fit);
+      }
+      labsShell.term.open(document.getElementById('labs-shell-terminal'));
+      try { labsShell.fit?.fit(); } catch {}
+      labsShell.term.onData(data => labsShellSend(0, data));
+      labsShell.term.onResize(size => { try { labsShellSend(4, JSON.stringify({ Width: size.cols, Height: size.rows })); } catch {} });
+    }
+    labsShellStatus('idle', 'muted');
+    modal.classList.remove('hidden');
+  }
+
+  function labsCloseShell() {
+    try { labsShell.socket?.close(); } catch {}
+    labsShell.socket = null;
+    const modal = document.getElementById('labs-shell-modal');
+    if (modal) modal.classList.add('hidden');
+  }
+
+  function labsShellConnect() {
+    const podSel = document.getElementById('labs-shell-pod');
+    const pod = podSel && podSel.value ? podSel.value : state.appName;
+    if (!pod) { labsShellStatus('no replica', 'warn'); return; }
+    const ns = splitAppName(state.appName || '').namespace || 'default';
+    const baseInput = document.getElementById('labs-shell-base');
+    const tokenInput = document.getElementById('labs-shell-token');
+    const cmdInput = document.getElementById('labs-shell-cmd');
+    const containerInput = document.getElementById('labs-shell-container');
+    const base = normalizeShimBase(baseInput?.value);
+    if (baseInput) baseInput.value = base;
+    try { localStorage.setItem('ae_apishim_base', base); } catch {}
+    if (tokenInput && !tokenInput.value) {
+      try { tokenInput.value = localStorage.getItem('ae_apishim_token') || ''; } catch {}
+    }
+    const scope = `${ns}/${splitAppName(state.appName || '').name || pod}`;
+    const doConnect = () => {
+      const params = new URLSearchParams();
+      splitArgs(cmdInput?.value || 'sh').forEach(c => params.append('command', c));
+      params.set('stdin', '1');
+      params.set('stdout', '1');
+      params.set('stderr', '1');
+      params.set('tty', '1');
+      if (containerInput?.value) params.set('container', containerInput.value);
+      if (tokenInput?.value) params.set('token', tokenInput.value);
+      const url = wsBaseFromHttp(base) + `/api/v1/namespaces/${encodeURIComponent(ns)}/pods/${encodeURIComponent(pod)}/exec?` + params.toString();
+      try {
+        labsShell.socket = new WebSocket(url, 'v5.channel.k8s.io');
+      } catch {
+        labsShellStatus('ws error', 'bad');
+        return;
+      }
+      labsShell.socket.binaryType = 'arraybuffer';
+      labsShell.socket.onopen = () => {
+        labsShellStatus('connected', 'ok');
+        try { labsShell.fit?.fit(); } catch {}
+        if (labsShell.term) {
+          try { labsShellSend(4, JSON.stringify({ Width: labsShell.term.cols, Height: labsShell.term.rows })); } catch {}
+        }
+      };
+      labsShell.socket.onmessage = (ev) => {
+        const data = ev.data;
+        if (data instanceof Blob) {
+          data.arrayBuffer().then(labsHandleShellMessage).catch(() => {});
+        } else {
+          labsHandleShellMessage(data);
+        }
+      };
+      labsShell.socket.onclose = () => { labsShellStatus('disconnected', 'warn'); };
+      labsShell.socket.onerror = () => { labsShellStatus('error', 'bad'); };
+    };
+    if (tokenInput && !tokenInput.value) {
+      labsShellStatus('minting token', 'muted');
+      mintShimToken('exec', scope).then((tok) => {
+        if (tok && tokenInput) tokenInput.value = tok;
+        doConnect();
+      }).catch(() => { doConnect(); });
+      return;
+    }
+    doConnect();
+  }
+
+  function labsShellDisconnect() {
+    try { labsShell.socket?.close(); } catch {}
+    labsShell.socket = null;
+  }
+
+  const labsPf = {
+    socket: null,
+    encoder: (window.TextEncoder ? new TextEncoder() : null),
+    decoder: (window.TextDecoder ? new TextDecoder() : null),
+  };
+
+  function labsPfStatus(txt, cls) {
+    const el = document.getElementById('labs-pf-status');
+    if (!el) return;
+    el.textContent = txt || '';
+    if (cls) el.className = `pill ${cls}`;
+  }
+
+  function labsPfSend(ch, data) {
+    if (!labsPf.socket || labsPf.socket.readyState !== 1) return;
+    const payload = data instanceof Uint8Array ? data : (labsPf.encoder ? labsPf.encoder.encode(String(data || '')) : new Uint8Array());
+    const out = new Uint8Array(payload.length + 1);
+    out[0] = ch;
+    out.set(payload, 1);
+    labsPf.socket.send(out);
+  }
+
+  function labsHandlePfMessage(data) {
+    try {
+      const buf = data instanceof ArrayBuffer ? new Uint8Array(data) : (labsPf.encoder ? labsPf.encoder.encode(String(data || '')) : new Uint8Array());
+      if (!buf || buf.length < 1) return;
+      const ch = buf[0];
+      const payload = buf.slice(1);
+      const txt = labsPf.decoder ? labsPf.decoder.decode(payload) : '';
+      if (ch === 0 || ch === 1) {
+        const out = document.getElementById('labs-pf-response');
+        if (out) out.value = (out.value || '') + txt;
+      }
+    } catch {}
+  }
+
+  function labsOpenPf() {
+    const enableActions = $('#toggle-actions')?.checked && state.sessionId && state.orch.available;
+    if (!enableActions) {
+      banner('Port-forward requires an active session and Controlled Actions.', 'fail');
+      return;
+    }
+    fillReplicaSelect(document.getElementById('labs-pf-pod'));
+    const modal = document.getElementById('labs-pf-modal');
+    if (modal) modal.classList.remove('hidden');
+    const resp = document.getElementById('labs-pf-response');
+    if (resp) resp.value = '';
+    labsPfStatus('idle', 'muted');
+  }
+
+  function labsClosePf() {
+    try { labsPf.socket?.close(); } catch {}
+    labsPf.socket = null;
+    const modal = document.getElementById('labs-pf-modal');
+    if (modal) modal.classList.add('hidden');
+  }
+
+  function labsPfConnect() {
+    const podSel = document.getElementById('labs-pf-pod');
+    const pod = podSel && podSel.value ? podSel.value : state.appName;
+    if (!pod) { labsPfStatus('no replica', 'warn'); return; }
+    const ns = splitAppName(state.appName || '').namespace || 'default';
+    const portInput = document.getElementById('labs-pf-port');
+    const baseInput = document.getElementById('labs-pf-base');
+    const tokenInput = document.getElementById('labs-pf-token');
+    const portVal = portInput?.value ? portInput.value.trim() : '';
+    if (!portVal) { labsPfStatus('port required', 'warn'); return; }
+    const base = normalizeShimBase(baseInput?.value);
+    if (baseInput) baseInput.value = base;
+    try { localStorage.setItem('ae_apishim_base', base); } catch {}
+    if (tokenInput && !tokenInput.value) {
+      try { tokenInput.value = localStorage.getItem('ae_apishim_token') || ''; } catch {}
+    }
+    const scope = `${ns}/${splitAppName(state.appName || '').name || pod}`;
+    const doConnect = () => {
+      const params = new URLSearchParams();
+      params.append('ports', portVal);
+      if (tokenInput?.value) params.set('token', tokenInput.value);
+      const url = wsBaseFromHttp(base) + `/api/v1/namespaces/${encodeURIComponent(ns)}/pods/${encodeURIComponent(pod)}/portforward?` + params.toString();
+      try {
+        labsPf.socket = new WebSocket(url, 'portforward.k8s.io');
+      } catch {
+        labsPfStatus('ws error', 'bad');
+        return;
+      }
+      labsPf.socket.binaryType = 'arraybuffer';
+      labsPf.socket.onopen = () => { labsPfStatus('connected', 'ok'); };
+      labsPf.socket.onmessage = (ev) => {
+        const data = ev.data;
+        if (data instanceof Blob) {
+          data.arrayBuffer().then(labsHandlePfMessage).catch(() => {});
+        } else {
+          labsHandlePfMessage(data);
+        }
+      };
+      labsPf.socket.onclose = () => { labsPfStatus('disconnected', 'warn'); };
+      labsPf.socket.onerror = () => { labsPfStatus('error', 'bad'); };
+    };
+    if (tokenInput && !tokenInput.value) {
+      labsPfStatus('minting token', 'muted');
+      mintShimToken('portforward', scope).then((tok) => {
+        if (tok && tokenInput) tokenInput.value = tok;
+        doConnect();
+      }).catch(() => { doConnect(); });
+      return;
+    }
+    doConnect();
+  }
+
+  function labsPfSendRequest() {
+    const req = document.getElementById('labs-pf-request');
+    const payload = req?.value || '';
+    if (!payload) return;
+    labsPfSend(0, payload);
+  }
+
+  function labsPfDisconnect() {
+    try { labsPf.socket?.close(); } catch {}
+    labsPf.socket = null;
   }
 
   async function verifyApply() {
@@ -1377,6 +1716,16 @@
     try { document.getElementById('ingress-curl-copy')?.addEventListener('click', copyCurlHint); } catch(_){}
     // Copy API curl hint
     try { document.getElementById('api-curl-copy')?.addEventListener('click', copyApiCurlHint); } catch(_){}
+    // Debug tools (shell / port-forward)
+    try { document.getElementById('btn-labs-shell')?.addEventListener('click', labsOpenShell); } catch(_){}
+    try { document.getElementById('btn-labs-pf')?.addEventListener('click', labsOpenPf); } catch(_){}
+    try { document.getElementById('labs-shell-close')?.addEventListener('click', labsCloseShell); } catch(_){}
+    try { document.getElementById('labs-pf-close')?.addEventListener('click', labsClosePf); } catch(_){}
+    try { document.getElementById('labs-shell-connect')?.addEventListener('click', labsShellConnect); } catch(_){}
+    try { document.getElementById('labs-shell-disconnect')?.addEventListener('click', labsShellDisconnect); } catch(_){}
+    try { document.getElementById('labs-pf-connect')?.addEventListener('click', labsPfConnect); } catch(_){}
+    try { document.getElementById('labs-pf-send')?.addEventListener('click', labsPfSendRequest); } catch(_){}
+    try { document.getElementById('labs-pf-disconnect')?.addEventListener('click', labsPfDisconnect); } catch(_){}
   });
   // Ensure HTMX-driven events panel auto-scrolls to bottom after swaps (when follow is enabled)
   try {

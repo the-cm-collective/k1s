@@ -7,6 +7,7 @@ import queue
 import sqlite3
 import threading
 import time
+import uuid
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -53,6 +54,23 @@ class ObjectStore:
     ) -> None:
         self.db_path = db_path
         self._lock = threading.RLock()
+        self._outbox_enabled = False
+        self._outbox_source_id = uuid.uuid4().hex
+        self._outbox_last_id = 0
+        self._outbox_poll_interval = float(
+            os.getenv("AE_APISHIM_WATCH_OUTBOX_POLL", "0.5") or "0.5"
+        )
+        self._outbox_batch = int(os.getenv("AE_APISHIM_WATCH_OUTBOX_BATCH", "250") or "250")
+        self._outbox_ttl = int(os.getenv("AE_APISHIM_WATCH_OUTBOX_TTL", "300") or "300")
+        self._outbox_cleanup_interval = int(
+            os.getenv("AE_APISHIM_WATCH_OUTBOX_CLEANUP", "30") or "30"
+        )
+        self._outbox_stop = threading.Event()
+        self._outbox_thread: threading.Thread | None = None
+        self._metrics_outbox_enqueued = 0
+        self._metrics_outbox_consumed = 0
+        self._metrics_outbox_skipped = 0
+        self._metrics_outbox_errors = 0
         self._queue_size = queue_size or int(
             os.getenv("AE_APISHIM_WATCH_QUEUE_SIZE", str(QUEUE_SIZE_DEFAULT)) or "1024"
         )
@@ -76,6 +94,7 @@ class ObjectStore:
                     )
                 self.backend = "postgres"
                 self._init_pg()
+                self._start_outbox()
             else:
                 # Treat non-postgres DSN as sqlite path for compatibility
                 self.db_path = Path(self._dsn)
@@ -136,6 +155,116 @@ class ObjectStore:
                 """
             )
             cur.execute("CREATE SEQUENCE IF NOT EXISTS apishim_rv_seq START WITH 1 INCREMENT BY 1")
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS watch_events (
+                  id BIGSERIAL PRIMARY KEY,
+                  source TEXT NOT NULL,
+                  grp TEXT NOT NULL,
+                  ver TEXT NOT NULL,
+                  res TEXT NOT NULL,
+                  ns TEXT NOT NULL,
+                  name TEXT NOT NULL,
+                  ev_type TEXT NOT NULL,
+                  rv BIGINT NOT NULL,
+                  payload TEXT NOT NULL,
+                  created_at DOUBLE PRECISION NOT NULL
+                )
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS watch_events_created_idx ON watch_events (created_at)"
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS watch_events_rv_idx ON watch_events (rv)")
+        self._outbox_enabled = True
+
+    def _start_outbox(self) -> None:
+        if not self._outbox_enabled:
+            return
+        self._outbox_last_id = self._fetch_outbox_max_id()
+        self._outbox_thread = threading.Thread(
+            target=self._poll_outbox, name="apishim-outbox", daemon=True
+        )
+        self._outbox_thread.start()
+
+    def _fetch_outbox_max_id(self) -> int:
+        if not self._outbox_enabled:
+            return 0
+        with self._lock:
+            with self._conn.cursor() as cur:  # type: ignore[union-attr]
+                cur.execute("SELECT COALESCE(MAX(id), 0) AS m FROM watch_events")
+                row = cur.fetchone()
+        try:
+            return int(row["m"]) if row else 0
+        except Exception:
+            return 0
+
+    def _fetch_outbox_since(self, last_id: int) -> list[dict[str, Any]]:
+        if not self._outbox_enabled:
+            return []
+        with self._lock:
+            with self._conn.cursor() as cur:  # type: ignore[union-attr]
+                cur.execute(
+                    """
+                    SELECT id, source, grp, ver, res, ns, name, ev_type, rv, payload
+                    FROM watch_events
+                    WHERE id > %s
+                    ORDER BY id
+                    LIMIT %s
+                    """,
+                    (last_id, self._outbox_batch),
+                )
+                rows = cur.fetchall()
+        return list(rows or [])
+
+    def _cleanup_outbox(self, now: float | None = None) -> None:
+        if not self._outbox_enabled or self._outbox_ttl <= 0:
+            return
+        now = now or time.time()
+        cutoff = now - self._outbox_ttl
+        with self._lock:
+            with self._conn.cursor() as cur:  # type: ignore[union-attr]
+                cur.execute("DELETE FROM watch_events WHERE created_at < %s", (cutoff,))
+
+    def _poll_outbox(self) -> None:
+        last_cleanup = time.time()
+        while not self._outbox_stop.is_set():
+            try:
+                rows = self._fetch_outbox_since(self._outbox_last_id)
+                if rows:
+                    for row in rows:
+                        try:
+                            self._outbox_last_id = max(self._outbox_last_id, int(row["id"]))
+                        except Exception:
+                            continue
+                        if row.get("source") == self._outbox_source_id:
+                            self._metrics_outbox_skipped += 1
+                            continue
+                        payload = json.loads(row.get("payload") or "{}")
+                        obj = K8sObject(
+                            row.get("grp") or "",
+                            row.get("ver") or "",
+                            row.get("res") or "",
+                            row.get("ns") or "",
+                            row.get("name") or "",
+                            payload.get("metadata") or {},
+                            payload.get("spec") or {},
+                            payload.get("status") or {},
+                            int(row.get("rv") or 0),
+                        )
+                        self._publish_local(obj, row.get("ev_type") or "MODIFIED")
+                        self._metrics_outbox_consumed += 1
+                now = time.time()
+                if (
+                    self._outbox_ttl > 0
+                    and self._outbox_cleanup_interval > 0
+                    and (now - last_cleanup) >= self._outbox_cleanup_interval
+                ):
+                    self._cleanup_outbox(now=now)
+                    last_cleanup = now
+            except Exception:
+                self._metrics_outbox_errors += 1
+            time.sleep(self._outbox_poll_interval)
 
     def _now(self) -> float:
         return time.time()
@@ -316,22 +445,23 @@ class ObjectStore:
         self, group: str, version: str, resource: str, namespace: str | None, name: str
     ) -> K8sObject | None:
         ns_val = namespace or ""
-        if self.backend == "sqlite":
-            row = self._conn.execute(
-                """
-                SELECT * FROM objects WHERE grp=? AND ver=? AND res=? AND ns=? AND name=?
-                """,
-                (group, version, resource, ns_val, name),
-            ).fetchone()  # type: ignore[union-attr]
-        else:
-            with self._conn.cursor() as cur:  # type: ignore[union-attr]
-                cur.execute(
+        with self._lock:
+            if self.backend == "sqlite":
+                row = self._conn.execute(
                     """
-                    SELECT * FROM objects WHERE grp=%s AND ver=%s AND res=%s AND ns=%s AND name=%s
+                    SELECT * FROM objects WHERE grp=? AND ver=? AND res=? AND ns=? AND name=?
                     """,
                     (group, version, resource, ns_val, name),
-                )
-                row = cur.fetchone()
+                ).fetchone()  # type: ignore[union-attr]
+            else:
+                with self._conn.cursor() as cur:  # type: ignore[union-attr]
+                    cur.execute(
+                        """
+                        SELECT * FROM objects WHERE grp=%s AND ver=%s AND res=%s AND ns=%s AND name=%s
+                        """,
+                        (group, version, resource, ns_val, name),
+                    )
+                    row = cur.fetchone()
         if not row:
             return None
         return K8sObject(
@@ -350,25 +480,26 @@ class ObjectStore:
         self, group: str, version: str, resource: str, namespace: str | None | None
     ) -> list[K8sObject]:
         ns_val = namespace or ""
-        if self.backend == "sqlite":
-            cur = self._conn.execute(
-                """
-                SELECT * FROM objects WHERE grp=? AND ver=? AND res=? AND ns=?
-                ORDER BY name
-                """,
-                (group, version, resource, ns_val),
-            )  # type: ignore[union-attr]
-            rows = cur.fetchall()
-        else:
-            with self._conn.cursor() as cur:  # type: ignore[union-attr]
-                cur.execute(
+        with self._lock:
+            if self.backend == "sqlite":
+                cur = self._conn.execute(
                     """
-                    SELECT * FROM objects WHERE grp=%s AND ver=%s AND res=%s AND ns=%s
+                    SELECT * FROM objects WHERE grp=? AND ver=? AND res=? AND ns=?
                     ORDER BY name
                     """,
                     (group, version, resource, ns_val),
-                )
+                )  # type: ignore[union-attr]
                 rows = cur.fetchall()
+            else:
+                with self._conn.cursor() as cur:  # type: ignore[union-attr]
+                    cur.execute(
+                        """
+                        SELECT * FROM objects WHERE grp=%s AND ver=%s AND res=%s AND ns=%s
+                        ORDER BY name
+                        """,
+                        (group, version, resource, ns_val),
+                    )
+                    rows = cur.fetchall()
         out: list[K8sObject] = []
         for row in rows:
             out.append(
@@ -388,25 +519,26 @@ class ObjectStore:
 
     def list_all(self, group: str, version: str, resource: str) -> list[K8sObject]:
         try:
-            if self.backend == "sqlite":
-                cur = self._conn.execute(
-                    """
-                    SELECT * FROM objects WHERE grp=? AND ver=? AND res=?
-                    ORDER BY ns, name
-                    """,
-                    (group, version, resource),
-                )  # type: ignore[union-attr]
-                rows = cur.fetchall()
-            else:
-                with self._conn.cursor() as cur:  # type: ignore[union-attr]
-                    cur.execute(
+            with self._lock:
+                if self.backend == "sqlite":
+                    cur = self._conn.execute(
                         """
-                        SELECT * FROM objects WHERE grp=%s AND ver=%s AND res=%s
+                        SELECT * FROM objects WHERE grp=? AND ver=? AND res=?
                         ORDER BY ns, name
                         """,
                         (group, version, resource),
-                    )
+                    )  # type: ignore[union-attr]
                     rows = cur.fetchall()
+                else:
+                    with self._conn.cursor() as cur:  # type: ignore[union-attr]
+                        cur.execute(
+                            """
+                            SELECT * FROM objects WHERE grp=%s AND ver=%s AND res=%s
+                            ORDER BY ns, name
+                            """,
+                            (group, version, resource),
+                        )
+                        rows = cur.fetchall()
         except Exception:
             rows = []
         out: list[K8sObject] = []
@@ -530,6 +662,10 @@ class ObjectStore:
         return _iter()
 
     def _publish(self, obj: K8sObject, ev_type: str) -> None:
+        self._publish_local(obj, ev_type)
+        self._enqueue_outbox(obj, ev_type)
+
+    def _publish_local(self, obj: K8sObject, ev_type: str) -> None:
         specific = (obj.group, obj.version, obj.resource, (obj.namespace or ""))
         wildcard = (obj.group, obj.version, obj.resource, "*")
         with self._lock:
@@ -543,15 +679,50 @@ class ObjectStore:
                         self._metrics_dropped[key] += 1
                 self._metrics_broadcasts[key] += 1
 
+    def _enqueue_outbox(self, obj: K8sObject, ev_type: str) -> None:
+        if not self._outbox_enabled:
+            return
+        payload = json.dumps(
+            {"metadata": obj.metadata, "spec": obj.spec, "status": obj.status},
+            separators=(",", ":"),
+        )
+        ns_val = obj.namespace or ""
+        try:
+            with self._lock:
+                with self._conn.cursor() as cur:  # type: ignore[union-attr]
+                    cur.execute(
+                        """
+                        INSERT INTO watch_events
+                          (source, grp, ver, res, ns, name, ev_type, rv, payload, created_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            self._outbox_source_id,
+                            obj.group,
+                            obj.version,
+                            obj.resource,
+                            ns_val,
+                            obj.name,
+                            ev_type,
+                            int(obj.resource_version),
+                            payload,
+                            self._now(),
+                        ),
+                    )
+            self._metrics_outbox_enqueued += 1
+        except Exception:
+            self._metrics_outbox_errors += 1
+
     def export_all(self) -> Iterable[K8sObject]:
         """Export all stored objects (used for migrations)."""
-        if self.backend == "sqlite":
-            cur = self._conn.execute("SELECT * FROM objects")  # type: ignore[union-attr]
-            rows = cur.fetchall()
-        else:
-            with self._conn.cursor() as cur:  # type: ignore[union-attr]
-                cur.execute("SELECT * FROM objects")
+        with self._lock:
+            if self.backend == "sqlite":
+                cur = self._conn.execute("SELECT * FROM objects")  # type: ignore[union-attr]
                 rows = cur.fetchall()
+            else:
+                with self._conn.cursor() as cur:  # type: ignore[union-attr]
+                    cur.execute("SELECT * FROM objects")
+                    rows = cur.fetchall()
         for row in rows:
             yield K8sObject(
                 row["grp"],
@@ -610,4 +781,26 @@ class ObjectStore:
             lines.append("# TYPE apishim_watch_streams_started_total counter")
             for k, v in self._metrics_streams_started.items():
                 lines.append(f"apishim_watch_streams_started_total{{{_labels(k)}}} {v}")
+        if self._outbox_enabled:
+            lines.append(
+                "# HELP apishim_watch_outbox_enqueued_total Events written to the Postgres watch outbox"
+            )
+            lines.append("# TYPE apishim_watch_outbox_enqueued_total counter")
+            lines.append(f"apishim_watch_outbox_enqueued_total {self._metrics_outbox_enqueued}")
+            lines.append(
+                "# HELP apishim_watch_outbox_consumed_total Events consumed from the Postgres watch outbox"
+            )
+            lines.append("# TYPE apishim_watch_outbox_consumed_total counter")
+            lines.append(f"apishim_watch_outbox_consumed_total {self._metrics_outbox_consumed}")
+            lines.append(
+                "# HELP apishim_watch_outbox_skipped_total Outbox events skipped (originated locally)"
+            )
+            lines.append("# TYPE apishim_watch_outbox_skipped_total counter")
+            lines.append(f"apishim_watch_outbox_skipped_total {self._metrics_outbox_skipped}")
+            lines.append("# HELP apishim_watch_outbox_errors_total Outbox poll/insert errors")
+            lines.append("# TYPE apishim_watch_outbox_errors_total counter")
+            lines.append(f"apishim_watch_outbox_errors_total {self._metrics_outbox_errors}")
+            lines.append("# HELP apishim_watch_outbox_last_id Last processed outbox id")
+            lines.append("# TYPE apishim_watch_outbox_last_id gauge")
+            lines.append(f"apishim_watch_outbox_last_id {self._outbox_last_id}")
         return "\n".join(lines) + "\n"
