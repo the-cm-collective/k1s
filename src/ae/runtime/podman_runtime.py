@@ -1159,6 +1159,7 @@ class PodmanRuntime(RuntimeAdapter):
                 {
                     "name": it.get("Names", [it.get("Id", "")])[0],
                     "labels": labels,
+                    "uid": it.get("Id"),
                     "host_ports": host_ports,
                     "port_map": port_map,
                     "host_ip": host_ip,

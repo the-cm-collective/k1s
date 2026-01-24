@@ -72,10 +72,11 @@ API tokens
 
 API shim (kubectl/helm)
 - Start shim locally: `AE_APISHIM_ENABLE=1 AE_APISHIM_TOKEN=changeme python -m ae.apishim serve --host 127.0.0.1 --port 8445` (add `--allow-anonymous` only for dev). Postgres backend: set `AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname`; default is SQLite at `AE_APISHIM_DB` (`state/apishim.db`).
+- WS exec/port-forward smoke: `AE_APISHIM_EXEC_TOKEN=exec AE_APISHIM_PORTFORWARD_TOKEN=pf AE_RUNTIME_BACKEND=docker ./scripts/dev/apishim_ws_smoke.sh` (optional: `PF_JS=1` for JS client, `PF_RAW_DUMP=1` to capture raw frames).
 - Kubeconfig helper: `python -m ae.apishim kubeconfig --server http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN --insecure-skip-tls-verify > ~/.kube/k1s-apishim.yaml`.
 - Storage migration: `python -m ae.apishim migrate --source state/apishim.db --target $AE_APISHIM_DSN` copies objects while preserving resourceVersion between SQLite and Postgres.
 - Shim metrics: `/metrics` (token required unless anonymous allowed) exposes `apishim_watch_*` counters/gauges for watch queue depth, enqueued, dropped, streams started, and `apishim_store_backend_info`.
-- Helm/kubectl dry-run: shim serves `/openapi/v2` with enriched schemas and `/openapi/v3` mirroring it; both are exported during release and attached as artifacts.
+- Helm/kubectl dry-run: shim serves `/openapi/v3` as the primary schema endpoint with `/openapi/v2` as a compatibility mirror; both are exported during release and attached as artifacts.
 
 Controller state store
 - Default: SQLite at `state/controller.db`.
