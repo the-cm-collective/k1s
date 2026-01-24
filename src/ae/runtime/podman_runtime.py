@@ -708,6 +708,12 @@ class PodmanRuntime(RuntimeAdapter):
         container: str | None = None,
         tty: bool = False,
     ):
+        debug = str(os.getenv("AE_PODMAN_DEBUG", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         # Locate container by replica_id label
         cid = None
         try:
@@ -722,9 +728,13 @@ class PodmanRuntime(RuntimeAdapter):
                 "--format",
                 "{{.ID}}",
             ]
-            res = self._run_capture(cmd_list, allow_fail=True)
+            res = self._run_ok(cmd_list, allow_fail=True)
             cid = (res.out or "").strip().splitlines()[0]
-        except Exception:
+            if debug:
+                LOGGER.warning("podman exec_attach lookup %s => %s", cmd_list, cid)
+        except Exception as exc:
+            if debug:
+                LOGGER.warning("podman exec_attach lookup failed: %s", exc)
             cid = None
         if not cid:
             raise RuntimeError("Replica not found for exec")
@@ -733,22 +743,39 @@ class PodmanRuntime(RuntimeAdapter):
         # Fallback to stdio hijack via `podman exec --interactive --tty` and a pty.
         # Here we rely on `podman exec` with `--interactive` and `--tty` when requested,
         # attaching to a pseudo-tty and returning its master fd as a socket-like object.
-        import os
         import pty
 
-        master, slave = pty.openpty()
+        try:
+            master, slave = pty.openpty()
+        except Exception as exc:
+            if debug:
+                LOGGER.warning("podman exec_attach openpty failed: %s", exc)
+            raise
         argv = [self._bin, "exec", "--interactive"]
         if tty:
             argv.append("--tty")
         argv.append(cid)
         argv.extend([str(x) for x in command])
-        proc = subprocess.Popen(
-            argv,
-            stdin=slave,
-            stdout=slave,
-            stderr=slave,
-            close_fds=True,
-        )
+        try:
+            proc = subprocess.Popen(
+                argv,
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                close_fds=True,
+            )
+        except Exception as exc:
+            if debug:
+                LOGGER.warning("podman exec_attach spawn failed: %s", exc)
+            try:
+                os.close(master)
+            except Exception:
+                pass
+            try:
+                os.close(slave)
+            except Exception:
+                pass
+            raise
         os.close(slave)
 
         class _FDAsSocket:
@@ -761,7 +788,7 @@ class PodmanRuntime(RuntimeAdapter):
                 try:
                     return os.read(self._fd, n)
                 except BlockingIOError:
-                    return b""
+                    raise TimeoutError
 
             def sendall(self, data: bytes) -> None:
                 os.write(self._fd, data)
@@ -1075,8 +1102,10 @@ class PodmanRuntime(RuntimeAdapter):
         except Exception:
             return out
         for it in items:
-            labels = (it.get("Config") or {}).get("Labels") or {}
+            labels = it.get("Labels") or (it.get("Config") or {}).get("Labels") or {}
             host_ports: list[int] = []
+            port_map: dict[int, int] = {}
+            host_ip = None
             restarts = 0
             started_at = None
             running = (it.get("State") or "").lower() == "running"
@@ -1098,6 +1127,23 @@ class PodmanRuntime(RuntimeAdapter):
                                     host_ports.append(int(hp))
                                 except Exception:
                                     pass
+                            hip = b.get("HostIp") or b.get("HostIP")
+                            if hip and host_ip is None:
+                                host_ip = hip
+                    for key, binds in (pmap or {}).items():
+                        if not binds:
+                            continue
+                        try:
+                            cport = int(str(key).split("/", 1)[0])
+                        except Exception:
+                            continue
+                        for b in binds:
+                            hp = b.get("HostPort")
+                            if hp:
+                                try:
+                                    port_map.setdefault(cport, int(hp))
+                                except Exception:
+                                    pass
                     try:
                         st = arr[0].get("State") or {}
                         rc = st.get("RestartCount", 0)
@@ -1114,6 +1160,8 @@ class PodmanRuntime(RuntimeAdapter):
                     "name": it.get("Names", [it.get("Id", "")])[0],
                     "labels": labels,
                     "host_ports": host_ports,
+                    "port_map": port_map,
+                    "host_ip": host_ip,
                     "restart_count": restarts,
                     "started_at": started_at,
                     "running": bool(running),
