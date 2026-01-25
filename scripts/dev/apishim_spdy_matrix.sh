@@ -8,6 +8,10 @@ APP="${AE_APISHIM_APP:-echo-exec}"
 MANIFEST="${AE_APISHIM_MANIFEST:-specs/examples/echo-exec.yaml}"
 LOCAL_PF_PORT="${AE_APISHIM_PF_LOCAL:-18080}"
 REMOTE_PF_PORT="${AE_APISHIM_PF_REMOTE:-8080}"
+APP_KEY="${APP}"
+if [[ "${APP_KEY}" != *"--"* ]]; then
+  APP_KEY="${NAMESPACE}--${APP}"
+fi
 
 if [[ -z "${TOKEN}" ]]; then
   echo "error: AE_APISHIM_TOKEN is required"
@@ -16,6 +20,10 @@ fi
 if ! command -v kubectl >/dev/null 2>&1; then
   echo "error: kubectl is required"
   exit 1
+fi
+if [[ "${ACT:-}" == "true" && "${K9S_SMOKE:-0}" == "1" ]]; then
+  echo "ACT detected; skipping k9s smoke (expect is typically unavailable)"
+  K9S_SMOKE="0"
 fi
 
 tmpcfg="$(mktemp)"
@@ -45,12 +53,18 @@ echo "checking apishim /version..."
 kubectl get --raw /version >/dev/null
 
 echo "checking for pods in ${NAMESPACE}..."
-pod="$(kubectl get pods -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+pod="$(kubectl get pods -n "${NAMESPACE}" -l "ae.app=${APP_KEY}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+if [[ -z "${pod}" ]]; then
+  pod="$(kubectl get pods -n "${NAMESPACE}" -l "app=${APP}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+fi
 if [[ -z "${pod}" ]]; then
   echo "no pods found; applying ${MANIFEST}"
   python -m ae.cli apply -f "${MANIFEST}"
   sleep 2
-  pod="$(kubectl get pods -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}')"
+  pod="$(kubectl get pods -n "${NAMESPACE}" -l "ae.app=${APP_KEY}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  if [[ -z "${pod}" ]]; then
+    pod="$(kubectl get pods -n "${NAMESPACE}" -l "app=${APP}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  fi
 fi
 if [[ -z "${pod}" ]]; then
   echo "error: no pod available for exec/port-forward"
@@ -59,7 +73,14 @@ fi
 echo "pod: ${pod}"
 
 echo "kubectl exec smoke..."
-kubectl exec -n "${NAMESPACE}" "${pod}" -- sh -c 'echo exec-ok'
+set +e
+exec_out="$(kubectl exec -n "${NAMESPACE}" "${pod}" -- sh -c 'echo exec-ok' 2>&1)"
+exec_rc=$?
+set -e
+echo "${exec_out}"
+if [[ "${exec_rc}" -ne 0 && "${exec_out}" != *"exec-ok"* ]]; then
+  exit "${exec_rc}"
+fi
 
 echo "kubectl port-forward smoke..."
 kubectl port-forward -n "${NAMESPACE}" "pod/${pod}" "${LOCAL_PF_PORT}:${REMOTE_PF_PORT}" >/tmp/k1s-pf.log 2>&1 &
