@@ -27,7 +27,14 @@ jobs:
             git config --global http."https://gitea.core.home.arpa/".sslVerify false
             echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
           fi
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+      - name: Create venv (local act)
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          . .venv/bin/activate
+          python -m pip install -U pip
       - uses: actions/setup-python@v4
         with:
           python-version: "3.12"
@@ -53,7 +60,14 @@ jobs:
             git config --global http."https://gitea.core.home.arpa/".sslVerify false
             echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
           fi
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+      - name: Create venv (local act)
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          . .venv/bin/activate
+          python -m pip install -U pip
       - uses: actions/setup-python@v4
         with:
           python-version: "3.12"
@@ -110,15 +124,16 @@ jobs:
           WORKDIR=$(mktemp -d /tmp/helm-dryrun-XXXX)
           helm create "$WORKDIR/chart" >/dev/null
           rm -f "$WORKDIR/chart"/templates/{deployment.yaml,service.yaml,serviceaccount.yaml,tests/test-connection.yaml}
+          mkdir -p "$WORKDIR/chart/templates"
           cat >"$WORKDIR/chart/templates/configmap.yaml" <<'EOF'
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: demo-config
-  namespace: default
-data:
-  hello: world
-EOF
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: demo-config
+            namespace: default
+          data:
+            hello: world
+          EOF
           K="kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify"
           $K get --raw /openapi/v2 >/tmp/openapi.json
           helm template demo "$WORKDIR/chart" > /tmp/chart.yaml
