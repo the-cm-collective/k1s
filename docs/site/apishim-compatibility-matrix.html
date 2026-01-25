@@ -673,6 +673,7 @@
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
       <a href="apishim-compatibility-matrix.html">API Shim</a>
+      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
@@ -704,7 +705,7 @@
 <h2>Workloads</h2>
 <ul>
 <li>Deployments, ReplicaSets (virtual), Pods (projected): ✅ status/conditions, logs/exec/port-forward.</li>
-<li>StatefulSet, DaemonSet, Job, CronJob: ⚠️ stored + best-effort status; treated as Deployment-like apps (no PVC templates, no job completion, no CronJob scheduling, no one-per-node scheduling).</li>
+<li>StatefulSet, DaemonSet, Job, CronJob: ⚠️ stored + best-effort status; treated as Deployment-like apps (no PVC templates, no strict one-per-node scheduling; Job completion and CronJob scheduling are best-effort).</li>
 <li>HorizontalPodAutoscaler v2: ✅ currentMetrics/status; backs k1s autoscaling.</li>
 </ul>
 <h2>AuthN/AuthZ</h2>
@@ -722,7 +723,7 @@
 <h2>Discovery &amp; tooling</h2>
 <ul>
 <li>Discovery endpoints (/api, /apis, preferred versions): ✅</li>
-<li>OpenAPI: ✅ enriched <code>/openapi/v2</code> covering core workloads/services/HPA/ingress; <code>/openapi/v3</code> mirrors v2. Helm/kubectl dry-run validated in CI; drift guard compares committed specs.</li>
+<li>OpenAPI: ✅ <code>/openapi/v3</code> is the primary endpoint; <code>/openapi/v2</code> mirrors it for compatibility. Helm/kubectl dry-run validated in CI; drift guard compares committed specs.</li>
 <li>Port-forward: ✅ pods and services (SPDY/WebSocket) selecting ready endpoints first.</li>
 </ul>
 <h2>Not covered</h2>
@@ -737,7 +738,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-22 14:47:44</span>
+        <span>Built 2026-01-24 21:27:00</span>
       </div>
     </footer>
     <script>
