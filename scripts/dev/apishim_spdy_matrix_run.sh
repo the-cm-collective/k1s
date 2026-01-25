@@ -48,6 +48,24 @@ export AE_APISHIM_DB="${SHIM_DB}"
 export AE_APISHIM_TLS_CERT="${CERT}"
 export AE_APISHIM_TLS_KEY="${KEY}"
 
+if [[ "${RUNTIME}" == "docker" ]]; then
+  if [[ "${DOCKER_TLS_VERIFY:-}" == "0" ]]; then
+    export DOCKER_TLS_VERIFY=""
+  fi
+  if [[ -S /var/run/docker.sock ]]; then
+    export DOCKER_HOST="unix:///var/run/docker.sock"
+    unset DOCKER_TLS_VERIFY
+    unset DOCKER_CERT_PATH
+    unset DOCKER_TLS_CERTDIR
+  elif [[ -n "${DOCKER_TLS_CERTDIR:-}" && -f "${DOCKER_TLS_CERTDIR}/client/ca.pem" ]]; then
+    export DOCKER_HOST="${DOCKER_HOST:-tcp://docker:2376}"
+    if [[ -z "${DOCKER_TLS_VERIFY+x}" ]]; then
+      export DOCKER_TLS_VERIFY=1
+    fi
+    export DOCKER_CERT_PATH="${DOCKER_CERT_PATH:-${DOCKER_TLS_CERTDIR}/client}"
+  fi
+fi
+
 python -m ae.controller --loop --specs specs/ --watch >/tmp/k1s-ctrl-spdy.log 2>&1 &
 CTRL_PID=$!
 python -m ae.apishim serve --host 127.0.0.1 --port "${PORT}" --token "${TOKEN}" --tls >/tmp/k1s-apishim-spdy.log 2>&1 &

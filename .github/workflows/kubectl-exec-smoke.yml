@@ -10,9 +10,40 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Trust Gitea cert (or disable verify)
+        run: |
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+          fi
       - uses: actions/checkout@v4
+      - name: Create venv (local act)
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          . .venv/bin/activate
+          python -m pip install -U pip
+      - name: Configure Docker client (insecure TLS fallback)
+        run: |
+          if [ -S /var/run/docker.sock ]; then
+            echo "DOCKER_HOST=unix:///var/run/docker.sock" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_VERIFY=" >> "$GITHUB_ENV"
+            echo "DOCKER_CERT_PATH=" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_CERTDIR=" >> "$GITHUB_ENV"
+          elif [ -d /certs/client ]; then
+            echo "DOCKER_HOST=tcp://docker:2376" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_VERIFY=" >> "$GITHUB_ENV"
+            echo "DOCKER_CERT_PATH=/certs/client" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_CERTDIR=" >> "$GITHUB_ENV"
+          fi
       - name: Set up Python
         uses: actions/setup-python@v5
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
         with:
           python-version: "3.12"
       - name: Install deps
@@ -23,19 +54,48 @@ jobs:
         run: |
           curl -L https://dl.k8s.io/release/v1.30.3/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl
           chmod +x /usr/local/bin/kubectl
+      - name: Generate apishim TLS cert
+        run: |
+          openssl req -x509 -newkey rsa:2048 -sha256 -nodes \
+            -keyout /tmp/apishim-tls.key -out /tmp/apishim-tls.crt \
+            -subj "/CN=127.0.0.1" -days 1 >/dev/null 2>&1
+          echo "AE_APISHIM_TLS_CERT=/tmp/apishim-tls.crt" >> "$GITHUB_ENV"
+          echo "AE_APISHIM_TLS_KEY=/tmp/apishim-tls.key" >> "$GITHUB_ENV"
       - name: Start apishim (docker runtime)
         env:
           AE_APISHIM_ENABLE: "1"
           AE_APISHIM_TOKEN: "ci-token"
           AE_APISHIM_READ_TOKEN: "read-token"
+          AE_APISHIM_SPDY_DEBUG: "1"
+          AE_APISHIM_SPDY_LOG: "/tmp/apishim-spdy.log"
+          AE_LOG_LEVEL: "WARNING"
           AE_RUNTIME_BACKEND: "docker"
           AE_APISHIM_RBAC: "1"
           AE_APISHIM_RBAC_EVAL: "0"
           PYTHONPATH: "src"
         run: |
-          python -m ae.apishim serve --host 127.0.0.1 --port 8446 --token "$AE_APISHIM_TOKEN" >/tmp/apishim-exec.log 2>&1 &
+          python -m ae.apishim serve --host 127.0.0.1 --port 8446 --token "$AE_APISHIM_TOKEN" --tls >/tmp/apishim-exec.log 2>&1 &
           echo $! >/tmp/apishim-exec.pid
           sleep 3
+      - name: Wait for apishim
+        env:
+          TOKEN: "ci-token"
+        run: |
+          set -euo pipefail
+          for _i in $(seq 1 60); do
+            if curl -kfsS -H "Authorization: Bearer $TOKEN" "https://127.0.0.1:8446/version" >/dev/null 2>&1; then
+              exit 0
+            fi
+            if [ -f /tmp/apishim-exec.pid ] && ! kill -0 "$(cat /tmp/apishim-exec.pid)" >/dev/null 2>&1; then
+              echo "apishim exited before becoming ready"
+              tail -n 200 /tmp/apishim-exec.log || true
+              exit 1
+            fi
+            sleep 0.5
+          done
+          echo "apishim did not become ready"
+          tail -n 200 /tmp/apishim-exec.log || true
+          exit 1
       - name: Apply deployment
         env:
           TOKEN: "ci-token"
@@ -60,63 +120,69 @@ jobs:
                   image: busybox:1.36
                   command: ["sh", "-c", "sleep 300"]
           YAML
-          kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify --validate=false apply -f /tmp/exec-deploy.yaml
+          kubectl --server=https://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify --validate=false apply -f /tmp/exec-deploy.yaml
       - name: Wait for pod Ready
         env:
           TOKEN: "ci-token"
         run: |
           for i in $(seq 1 30); do
-            PHASE=$(kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
-            READY=$(kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].status.containerStatuses[0].ready}' 2>/dev/null || echo "false")
+            PHASE=$(kubectl --server=https://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
+            READY=$(kubectl --server=https://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].status.containerStatuses[0].ready}' 2>/dev/null || echo "false")
             if [ "$PHASE" = "Running" ] && [ "$READY" = "true" ]; then
               exit 0
             fi
             sleep 2
           done
           echo "pod not ready"
-          kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -o wide
+          kubectl --server=https://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -o wide
           exit 1
       - name: Verify pod status fields
         env:
           TOKEN: "ci-token"
         run: |
-          POD=$(kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].metadata.name}')
-          kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pod "$POD" -o json | python - <<'PY'
-import json,sys
-doc=json.load(sys.stdin)
-st=doc["status"]
-cs=st.get("containerStatuses",[])
-assert cs, "missing containerStatuses"
-c0=cs[0]
-assert c0.get("ready") is True, "container not ready"
-assert "restartCount" in c0, "restartCount missing"
-conds={c["type"]:c["status"] for c in st.get("conditions",[])}
-assert conds.get("Ready")=="True", "pod Ready condition false"
-assert conds.get("ContainersReady")=="True", "ContainersReady false"
-print("status ok")
-PY
+          POD=$(kubectl --server=https://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].metadata.name}')
+          kubectl --server=https://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pod "$POD" -o json > /tmp/exec-pod.json
+          python - <<'PY'
+          import json
+          with open("/tmp/exec-pod.json", "r", encoding="utf-8") as fh:
+              doc = json.load(fh)
+          st = doc["status"]
+          cs = st.get("containerStatuses", [])
+          assert cs, "missing containerStatuses"
+          c0 = cs[0]
+          assert c0.get("ready") is True, "container not ready"
+          assert "restartCount" in c0, "restartCount missing"
+          conds = {c["type"]: c["status"] for c in st.get("conditions", [])}
+          assert conds.get("Ready") == "True", "pod Ready condition false"
+          assert conds.get("ContainersReady") == "True", "ContainersReady false"
+          print("status ok")
+          PY
       - name: Exec smoke (stdout)
         env:
           TOKEN: "ci-token"
         run: |
-          POD=$(kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].metadata.name}')
-          OUT=$(kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify exec "$POD" -- sh -c "echo hello-exec")
+          POD=$(kubectl --server=https://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].metadata.name}')
+          OUT=$(kubectl --server=https://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify exec "$POD" -- sh -c "echo hello-exec")
           echo "exec output: $OUT"
           test "$OUT" = "hello-exec"
       - name: Exec resize (TTY)
         env:
           TOKEN: "ci-token"
         run: |
-          POD=$(kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].metadata.name}')
+          POD=$(kubectl --server=https://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].metadata.name}')
           # kubectl automatically sends a resize after attach; we just ensure it doesn't fail
-          kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify exec -ti "$POD" -- sh -c "stty size"
+          if [ ! -t 0 ]; then
+            echo "No TTY available; skipping resize test"
+            exit 0
+          fi
+          kubectl --server=https://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify exec -ti "$POD" -- sh -c "stty size"
       - name: Exec non-zero exit code
         env:
           TOKEN: "ci-token"
         run: |
-          POD=$(kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].metadata.name}')
+          POD=$(kubectl --server=https://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].metadata.name}')
           set +e
-          kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify exec "$POD" -- sh -c "exit 37"
+          kubectl --server=https://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify exec "$POD" -- sh -c "exit 37"
           RC=$?
           if [ $RC -ne 37 ]; then echo "expected rc 37 got $RC"; exit 1; fi
       - name: Exec deny with read token
@@ -124,19 +190,22 @@ PY
           TOKEN: "read-token"
         run: |
           set +e
-          POD=$(kubectl --server=http://127.0.0.1:8446 --token=ci-token --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].metadata.name}')
-          kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify exec "$POD" -- sh -c "echo nope"
+          POD=$(kubectl --server=https://127.0.0.1:8446 --token=ci-token --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].metadata.name}')
+          kubectl --server=https://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify exec "$POD" -- sh -c "echo nope"
           RC=$?
           if [ $RC -eq 0 ]; then
             echo "expected exec denial for read token"; exit 1; fi
       - name: Show logs on failure
         if: failure()
         run: |
-          echo "=== apishim ==="; cat /tmp/apishim-exec.log || true
+          echo "=== apishim (spdy) ==="
+          cat /tmp/apishim-spdy.log || true
+          echo "=== apishim (tail) ==="
+          tail -n 200 /tmp/apishim-exec.log || true
           docker ps -a || true
           docker logs $(docker ps -aq --filter label=ae.app=default--exec-echo | head -1) || true
       - name: Cleanup
         if: always()
         run: |
-          kubectl --server=http://127.0.0.1:8446 --token=ci-token --insecure-skip-tls-verify delete -f /tmp/exec-deploy.yaml || true
+          kubectl --server=https://127.0.0.1:8446 --token=ci-token --insecure-skip-tls-verify delete -f /tmp/exec-deploy.yaml || true
           if [ -f /tmp/apishim-exec.pid ]; then kill $(cat /tmp/apishim-exec.pid) 2>/dev/null || true; fi

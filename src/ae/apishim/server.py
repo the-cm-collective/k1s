@@ -17,6 +17,7 @@ import ssl
 import threading
 import time
 import zlib
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -67,6 +68,40 @@ PF_DEBUG = str(os.getenv("AE_APISHIM_PF_DEBUG", "")).strip().lower() in {
 
 def _json(d: dict[str, Any]) -> bytes:
     return json.dumps(d, separators=(",", ":")).encode("utf-8")
+
+
+def _spdy_debug_line(message: str) -> None:
+    path = os.getenv("AE_APISHIM_SPDY_LOG", "").strip()
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(message + "\n")
+    except Exception:
+        # Best-effort logging; never break request handling.
+        return
+
+
+def _exec_status_obj(exit_code: int) -> dict[str, Any]:
+    details: dict[str, Any] = {"exitCode": exit_code}
+    status = "Success"
+    reason = ""
+    message = ""
+    code = 0
+    if exit_code != 0:
+        status = "Failure"
+        reason = "NonZeroExitCode"
+        message = f"command terminated with non-zero exit code: {exit_code}"
+        details["causes"] = [{"reason": "ExitCode", "message": str(exit_code)}]
+        code = 1
+    return {
+        "metadata": {},
+        "status": status,
+        "message": message,
+        "reason": reason,
+        "code": code,
+        "details": details,
+    }
 
 
 def _read_json(body: bytes) -> dict[str, Any]:
@@ -3002,6 +3037,20 @@ class ShimHandler(BaseHTTPRequestHandler):
         want_stdout: bool,
         want_stderr: bool,
     ) -> None:
+        stream_debug = SPDY_DEBUG or str(os.getenv("AE_APISHIM_SPDY_DEBUG", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if stream_debug:
+            msg = (
+                f"WS exec start pod={pod_name} container={container} tty={tty} "
+                f"cmd={' '.join(command)}"
+            )
+            LOGGER.warning(msg)
+            print(msg, file=sys.stderr, flush=True)
+            _spdy_debug_line(msg)
         self._audit(
             "exec.start",
             namespace=namespace,
@@ -3121,6 +3170,11 @@ class ShimHandler(BaseHTTPRequestHandler):
         if chosen_proto:
             self.send_header("Sec-WebSocket-Protocol", chosen_proto)
         self.end_headers()
+        if stream_debug:
+            msg = f"WS exec stream-proto={chosen_proto}"
+            LOGGER.warning(msg)
+            print(msg, file=sys.stderr, flush=True)
+            _spdy_debug_line(msg)
 
         conn = self.connection
         conn.settimeout(0.05)
@@ -3147,6 +3201,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         exec_done_at = 0.0
         exec_grace_seconds = 2.0
         exec_buf = b""
+        stop_reason = "unknown"
         max_seconds, idle_seconds = self._stream_limits()
         max_bytes = self._stream_byte_limit()
         bytes_in = 0
@@ -3157,10 +3212,13 @@ class ShimHandler(BaseHTTPRequestHandler):
             while True:
                 now = time.time()
                 if max_seconds and (now - start_ts) > max_seconds:
+                    stop_reason = "max_seconds"
                     break
                 if idle_seconds and (now - last_activity) > idle_seconds:
+                    stop_reason = "idle_timeout"
                     break
                 if max_bytes and (bytes_in + bytes_out) > max_bytes:
+                    stop_reason = "byte_limit"
                     break
                 # Read from WebSocket client
                 try:
@@ -3173,6 +3231,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     last_activity = time.time()
                     opcode, payload = msg
                     if opcode == 0x8:  # close
+                        stop_reason = "client_close"
                         break
                     if opcode in (0x1, 0x2) and payload:
                         bytes_in += len(payload)
@@ -3244,6 +3303,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                         exec_sock = None
 
                 if exec_done and (time.time() - exec_done_at) > exec_grace_seconds:
+                    stop_reason = "exec_done"
                     break
         finally:
             exit_code = 0
@@ -3252,18 +3312,24 @@ class ShimHandler(BaseHTTPRequestHandler):
                     exit_code = int(self.server.runtime.exec_exit_code(exec_id))  # type: ignore[attr-defined]
             except Exception:
                 exit_code = 0
-            status_obj = {
-                "metadata": {},
-                "status": "Success",
-                "message": "",
-                "reason": "",
-                "code": exit_code,
-                "details": {"exitCode": exit_code},
-            }
+            if stream_debug:
+                msg = (
+                    "WS exec end "
+                    f"pod={pod_name} container={container} exit_code={exit_code} "
+                    f"bytes_in={bytes_in} bytes_out={bytes_out} reason={stop_reason}"
+                )
+                LOGGER.warning(msg)
+                print(msg, file=sys.stderr, flush=True)
+                _spdy_debug_line(msg)
+            status_obj = _exec_status_obj(exit_code)
             try:
                 _send_channel(
                     3, json.dumps(status_obj, separators=(",", ":")).encode("utf-8")
                 )
+            except Exception:
+                pass
+            try:
+                _send_ws(conn, b"\x03\xe8", opcode=0x8)
             except Exception:
                 pass
             self._audit(
@@ -3295,14 +3361,20 @@ class ShimHandler(BaseHTTPRequestHandler):
         want_stdout: bool,
         want_stderr: bool,
     ) -> None:
-        if SPDY_DEBUG:
-            LOGGER.warning(
-                "SPDY exec start pod=%s container=%s tty=%s cmd=%s",
-                pod_name,
-                container,
-                tty,
-                command,
+        spdy_debug = SPDY_DEBUG or str(os.getenv("AE_APISHIM_SPDY_DEBUG", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if spdy_debug:
+            msg = (
+                f"SPDY exec start pod={pod_name} container={container} tty={tty} "
+                f"cmd={' '.join(command)}"
             )
+            LOGGER.warning(msg)
+            print(msg, file=sys.stderr, flush=True)
+            _spdy_debug_line(msg)
         self._audit(
             "exec.start",
             namespace=namespace,
@@ -3380,8 +3452,11 @@ class ShimHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "Upgrade")
         self.send_header("Upgrade", self.headers.get("Upgrade", "SPDY/3.1"))
         self.send_header("X-Stream-Protocol-Version", stream_proto)
-        if SPDY_DEBUG:
-            LOGGER.warning("SPDY exec stream-proto=%s", stream_proto)
+        if spdy_debug:
+            msg = f"SPDY exec stream-proto={stream_proto}"
+            LOGGER.warning(msg)
+            print(msg, file=sys.stderr, flush=True)
+            _spdy_debug_line(msg)
         self.end_headers()
 
         conn = self.connection
@@ -3559,20 +3634,25 @@ class ShimHandler(BaseHTTPRequestHandler):
         if tty:
             required_streams.add("resize")
         warned_missing_streams = False
+        break_reason = ""
         try:
             exec_buf = b""
             while True:
                 now = time.time()
                 if max_seconds and (now - start_ts) > max_seconds:
+                    break_reason = "max_seconds"
                     break
                 if idle_seconds and (now - last_activity) > idle_seconds:
+                    break_reason = "idle_timeout"
                     break
                 if max_bytes and (bytes_in + bytes_out) > max_bytes:
+                    break_reason = "max_bytes"
                     break
                 if now - last_ping > 10:
                     try:
                         send_ping()
                     except Exception:
+                        break_reason = "ping_failed"
                         break
                     last_ping = now
 
@@ -3581,9 +3661,13 @@ class ShimHandler(BaseHTTPRequestHandler):
                     chunk = conn.recv(4096)
                 except TimeoutError:
                     chunk = None
-                except Exception:
+                except Exception as exc:
+                    if not break_reason:
+                        break_reason = f"client_recv_error:{type(exc).__name__}"
                     chunk = b""
                 if chunk == b"":
+                    if not break_reason:
+                        break_reason = "client_eof"
                     break
                 if chunk:
                     last_activity = time.time()
@@ -3782,9 +3866,54 @@ class ShimHandler(BaseHTTPRequestHandler):
                         warned_missing_streams = True
                         LOGGER.warning("SPDY exec missing streams after exit: %s", sorted(missing))
                     if not missing or (time.time() - exec_done_at) > exec_grace_seconds:
+                        break_reason = "exec_done"
                         break
 
         finally:
+            missing = required_streams.difference(stream_ids.keys())
+            if spdy_debug:
+                msg = (
+                    "SPDY exec end reason="
+                    f"{break_reason or 'unknown'} pod={pod_name} container={container or ''} "
+                    f"bytes_in={bytes_in} bytes_out={bytes_out} streams={sorted(stream_ids.keys())} "
+                    f"missing={sorted(missing)}"
+                )
+                LOGGER.warning(msg)
+                print(msg, file=sys.stderr, flush=True)
+                _spdy_debug_line(msg)
+            elif missing:
+                LOGGER.warning(
+                    "SPDY exec end missing streams reason=%s pod=%s container=%s bytes_in=%s bytes_out=%s streams=%s missing=%s",
+                    break_reason or "unknown",
+                    pod_name,
+                    container or "",
+                    bytes_in,
+                    bytes_out,
+                    sorted(stream_ids.keys()),
+                    sorted(missing),
+                )
+            elif break_reason and break_reason != "exec_done":
+                LOGGER.warning(
+                    "SPDY exec end reason=%s pod=%s container=%s bytes_in=%s bytes_out=%s streams=%s missing=%s",
+                    break_reason,
+                    pod_name,
+                    container or "",
+                    bytes_in,
+                    bytes_out,
+                    sorted(stream_ids.keys()),
+                    sorted(missing),
+                )
+            elif SPDY_DEBUG:
+                LOGGER.warning(
+                    "SPDY exec end reason=%s pod=%s container=%s bytes_in=%s bytes_out=%s streams=%s missing=%s",
+                    break_reason or "unknown",
+                    pod_name,
+                    container or "",
+                    bytes_in,
+                    bytes_out,
+                    sorted(stream_ids.keys()),
+                    sorted(missing),
+                )
             # Send exit status over error stream if present
             exit_code = 0
             try:
@@ -3794,14 +3923,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 exit_code = 0
             err_sid = stream_ids.get("error")
             if err_sid:
-                status_obj = {
-                    "metadata": {},
-                    "status": "Success",
-                    "message": "",
-                    "reason": "",
-                    "code": exit_code,
-                    "details": {"exitCode": exit_code},
-                }
+                status_obj = _exec_status_obj(exit_code)
                 try:
                     send_data_frame(
                         err_sid,

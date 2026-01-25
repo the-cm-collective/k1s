@@ -23,57 +23,111 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U shim -d shim" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
+      - name: Trust Gitea cert (or disable verify)
+        run: |
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+          fi
       - uses: actions/checkout@v4
+      - name: Create venv (local act)
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          . .venv/bin/activate
+          python -m pip install -U pip
       - uses: actions/setup-python@v5
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
         with:
           python-version: "3.12"
       - name: Install deps
         run: |
           python -m pip install -U pip
           python -m pip install -e .[dev]
+      - name: Set Postgres connection
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            PG_HOST="127.0.0.1"
+          else
+            PG_HOST="postgres"
+          fi
+          echo "PG_HOST=$PG_HOST" >> "$GITHUB_ENV"
+          echo "PG_DSN=postgresql://shim:shim@${PG_HOST}:5432/shim" >> "$GITHUB_ENV"
+          echo "AE_APISHIM_DSN=postgresql://shim:shim@${PG_HOST}:5432/shim" >> "$GITHUB_ENV"
+          echo "AE_STATE_DSN=postgresql://shim:shim@${PG_HOST}:5432/shim" >> "$GITHUB_ENV"
+      - name: Wait for Postgres
+        run: |
+          python -c "import sys,textwrap; exec(textwrap.dedent(sys.stdin.read()))" <<'PY'
+          import os
+          import time
+          import psycopg
+
+          dsn = os.environ["PG_DSN"]
+          deadline = time.time() + 60
+          last_error = None
+          while time.time() < deadline:
+              try:
+                  with psycopg.connect(dsn) as conn:
+                      with conn.cursor() as cur:
+                          cur.execute("SELECT 1")
+                  print("Postgres ready")
+                  break
+              except Exception as exc:
+                  last_error = exc
+                  time.sleep(2)
+          else:
+              raise SystemExit(f"Postgres not ready: {last_error}")
+          PY
       - name: Install kubectl
         run: |
           curl -L https://dl.k8s.io/release/v1.30.3/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl
           chmod +x /usr/local/bin/kubectl
+      - name: Generate apishim TLS cert
+        run: |
+          openssl req -x509 -newkey rsa:2048 -sha256 -nodes \
+            -keyout /tmp/apishim-tls.key -out /tmp/apishim-tls.crt \
+            -subj "/CN=127.0.0.1" -days 1 >/dev/null 2>&1
+          echo "AE_APISHIM_TLS_CERT=/tmp/apishim-tls.crt" >> "$GITHUB_ENV"
+          echo "AE_APISHIM_TLS_KEY=/tmp/apishim-tls.key" >> "$GITHUB_ENV"
       - name: Seed Postgres state
-        env:
-          PG_DSN: postgresql://shim:shim@localhost:5432/shim
         run: |
           set -euo pipefail
-          python - <<'PY'
-from ae.controller.state import SQLiteStateStore, ServiceEndpoint
-s = SQLiteStateStore(dsn='postgresql://shim:shim@localhost:5432/shim')
-s.upsert_service('default--echo', '10.96.0.77', {'8080': {'port': 8080, 'targetPort': 18080, 'protocol': 'TCP'}})
-s.upsert_service_endpoints('default--echo', [ServiceEndpoint(app_name='default--echo', port=8080, ip='10.0.0.21', target_port=18080, ready=True)])
-PY
+          python -c "import sys,textwrap; exec(textwrap.dedent(sys.stdin.read()))" <<'PY'
+          import os
+          from ae.controller.state import SQLiteStateStore, ServiceEndpoint
+          s = SQLiteStateStore(dsn=os.environ["PG_DSN"])
+          s.upsert_service('default--echo', '10.96.0.77', {'8080': {'port': 8080, 'targetPort': 18080, 'protocol': 'TCP'}})
+          s.upsert_service_endpoints('default--echo', [ServiceEndpoint(app_name='default--echo', port=8080, ip='10.0.0.21', target_port=18080, ready=True)])
+          PY
       - name: Start apishim A
         env:
           AE_APISHIM_ENABLE: "1"
           AE_APISHIM_TOKEN: "ci-token"
-          AE_APISHIM_DSN: postgresql://shim:shim@localhost:5432/shim
-          AE_STATE_DSN: postgresql://shim:shim@localhost:5432/shim
           AE_APISHIM_WATCH_OUTBOX_TTL: "5"
           AE_APISHIM_WATCH_OUTBOX_CLEANUP: "1"
           AE_APISHIM_WATCH_OUTBOX_POLL: "0.2"
           AE_RUNTIME_BACKEND: stub
           PYTHONPATH: src
         run: |
-          python -m ae.apishim serve --host 127.0.0.1 --port 8445 --token "$AE_APISHIM_TOKEN" >/tmp/apishim-a.log 2>&1 &
+          python -m ae.apishim serve --host 127.0.0.1 --port 8445 --token "$AE_APISHIM_TOKEN" --tls >/tmp/apishim-a.log 2>&1 &
           echo $! >/tmp/apishim-a.pid
           sleep 3
       - name: Start apishim B
         env:
           AE_APISHIM_ENABLE: "1"
           AE_APISHIM_TOKEN: "ci-token"
-          AE_APISHIM_DSN: postgresql://shim:shim@localhost:5432/shim
-          AE_STATE_DSN: postgresql://shim:shim@localhost:5432/shim
           AE_APISHIM_WATCH_OUTBOX_TTL: "5"
           AE_APISHIM_WATCH_OUTBOX_CLEANUP: "1"
           AE_APISHIM_WATCH_OUTBOX_POLL: "0.2"
           AE_RUNTIME_BACKEND: stub
           PYTHONPATH: src
         run: |
-          python -m ae.apishim serve --host 127.0.0.1 --port 8446 --token "$AE_APISHIM_TOKEN" >/tmp/apishim-b.log 2>&1 &
+          python -m ae.apishim serve --host 127.0.0.1 --port 8446 --token "$AE_APISHIM_TOKEN" --tls >/tmp/apishim-b.log 2>&1 &
           echo $! >/tmp/apishim-b.pid
           sleep 3
       - name: Create via shim A, watch via shim B (churn loop)
@@ -81,18 +135,18 @@ PY
           TOKEN: "ci-token"
         run: |
           set -euo pipefail
-          KA="kubectl --server=http://127.0.0.1:8445 --token=$TOKEN --insecure-skip-tls-verify"
-          KB="kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify"
+          KA="kubectl --server=https://127.0.0.1:8445 --token=$TOKEN --insecure-skip-tls-verify"
+          KB="kubectl --server=https://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify"
           cat <<'YAML' >/tmp/cm.yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ha-cm
-  namespace: default
-data:
-  k: v0
-YAML
-          $KA apply -f /tmp/cm.yaml
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: ha-cm
+            namespace: default
+          data:
+            k: v0
+          YAML
+          $KA apply --validate=false -f /tmp/cm.yaml
           $KB get --raw '/api/v1/namespaces/default/configmaps?watch=1' >/tmp/watch-b.log 2>&1 &
           W=$!
           sleep 2
@@ -105,19 +159,19 @@ YAML
           grep -q '"k":"v25"' /tmp/watch-b.log
       - name: Verify outbox lag + retention cleanup
         env:
-          PG_DSN: postgresql://shim:shim@localhost:5432/shim
           TOKEN: "ci-token"
         run: |
           set -euo pipefail
-          python - <<'PY'
-import json
-import time
-import psycopg
+          python -c "import sys,textwrap; exec(textwrap.dedent(sys.stdin.read()))" <<'PY'
+          import json
+          import time
+          import psycopg
 
-dsn = "postgresql://shim:shim@localhost:5432/shim"
-with psycopg.connect(dsn) as conn:
-    with conn.cursor() as cur:
-        cur.execute(
+          import os
+          dsn = os.environ["PG_DSN"]
+          with psycopg.connect(dsn) as conn:
+              with conn.cursor() as cur:
+                  cur.execute(
             """
             INSERT INTO watch_events (source, grp, ver, res, ns, name, ev_type, rv, payload, created_at)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
@@ -141,35 +195,37 @@ with psycopg.connect(dsn) as conn:
                 ),
                 time.time() - 60,
             ),
-        )
-        inserted = int(cur.fetchone()[0])
-        print(f"INSERTED_ID={inserted}")
+                  )
+                  inserted = int(cur.fetchone()[0])
+                  print(f"INSERTED_ID={inserted}")
           PY
           sleep 2
-          python - <<'PY'
-import psycopg
+          python -c "import sys,textwrap; exec(textwrap.dedent(sys.stdin.read()))" <<'PY'
+          import psycopg
 
-dsn = "postgresql://shim:shim@localhost:5432/shim"
-with psycopg.connect(dsn) as conn:
-    with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM watch_events WHERE name='outbox-retention'")
-        count = cur.fetchone()[0]
-        print(f"REMAINING={count}")
-        if count != 0:
-            raise SystemExit("outbox retention cleanup did not remove stale event")
+          import os
+          dsn = os.environ["PG_DSN"]
+          with psycopg.connect(dsn) as conn:
+              with conn.cursor() as cur:
+                  cur.execute("SELECT COUNT(*) FROM watch_events WHERE name='outbox-retention'")
+                  count = cur.fetchone()[0]
+                  print(f"REMAINING={count}")
+                  if count != 0:
+                      raise SystemExit("outbox retention cleanup did not remove stale event")
           PY
-          MAX_ID=$(python - <<'PY'
-import psycopg
+          MAX_ID=$(python -c "import sys,textwrap; exec(textwrap.dedent(sys.stdin.read()))" <<'PY'
+          import psycopg
 
-dsn = "postgresql://shim:shim@localhost:5432/shim"
-with psycopg.connect(dsn) as conn:
-    with conn.cursor() as cur:
-        cur.execute("SELECT COALESCE(MAX(id),0) FROM watch_events")
-        print(cur.fetchone()[0])
+          import os
+          dsn = os.environ["PG_DSN"]
+          with psycopg.connect(dsn) as conn:
+              with conn.cursor() as cur:
+                  cur.execute("SELECT COALESCE(MAX(id),0) FROM watch_events")
+                  print(cur.fetchone()[0])
           PY
           )
-          METRICS=$(curl -fsS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8446/metrics)
-          LAST_ID=$(echo "$METRICS" | awk '/apishim_watch_outbox_last_id/ {print $2}')
+          METRICS=$(curl -kfsS -H "Authorization: Bearer $TOKEN" https://127.0.0.1:8446/metrics)
+          LAST_ID=$(echo "$METRICS" | awk '$1=="apishim_watch_outbox_last_id" {print $2}')
           if [ "${LAST_ID:-0}" -lt "${MAX_ID:-0}" ]; then
             echo "Outbox lag: last_id=$LAST_ID max_id=$MAX_ID"
             exit 1
@@ -181,7 +237,7 @@ with psycopg.connect(dsn) as conn:
           set -euo pipefail
           if [ -f /tmp/apishim-a.pid ]; then kill $(cat /tmp/apishim-a.pid) || true; fi
           sleep 3
-          K="kubectl --server=http://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify"
+          K="kubectl --server=https://127.0.0.1:8446 --token=$TOKEN --insecure-skip-tls-verify"
           KVAL=$($K get configmap ha-cm -o jsonpath='{.data.k}')
           echo "val=$KVAL"
           [ -n "$KVAL" ]
@@ -189,7 +245,7 @@ with psycopg.connect(dsn) as conn:
         env:
           TOKEN: "ci-token"
         run: |
-          METRICS=$(curl -fsS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8446/metrics)
+          METRICS=$(curl -kfsS -H "Authorization: Bearer $TOKEN" https://127.0.0.1:8446/metrics)
           echo "$METRICS" | grep 'apishim_store_backend_info{backend="postgres"}'
           echo "$METRICS" | grep 'apishim_watch_events_enqueued_total'
       - name: Show logs on failure
