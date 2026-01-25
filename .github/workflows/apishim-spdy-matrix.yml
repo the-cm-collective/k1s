@@ -31,8 +31,16 @@ jobs:
             echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
           fi
       - uses: actions/checkout@v4
+      - name: Create venv (local act)
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          . .venv/bin/activate
+          python -m pip install -U pip
       - name: Set up Python
         uses: actions/setup-python@v5
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
         with:
           python-version: "3.12"
       - name: Install deps
@@ -44,16 +52,33 @@ jobs:
           curl -L https://dl.k8s.io/release/v1.30.3/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl
           chmod +x /usr/local/bin/kubectl
       - name: Install k9s
+        if: ${{ env.ACT != 'true' }}
         run: |
           curl -L https://github.com/derailed/k9s/releases/latest/download/k9s_Linux_amd64.tar.gz -o /tmp/k9s.tgz
           tar -xzf /tmp/k9s.tgz -C /usr/local/bin k9s
           chmod +x /usr/local/bin/k9s
       - name: Install podman
-        if: matrix.runtime == 'podman'
+        if: ${{ matrix.runtime == 'podman' && env.ACT != 'true' }}
         run: |
           sudo apt-get update
           sudo apt-get install -y podman
+      - name: Configure Docker client
+        if: matrix.runtime == 'docker'
+        run: |
+          if [ -S /var/run/docker.sock ]; then
+            echo "DOCKER_HOST=unix:///var/run/docker.sock" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_VERIFY=" >> "$GITHUB_ENV"
+            echo "DOCKER_CERT_PATH=" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_CERTDIR=" >> "$GITHUB_ENV"
+          elif [ -d /certs/client ]; then
+            echo "DOCKER_HOST=tcp://docker:2376" >> "$GITHUB_ENV"
+            # Self-signed runner certs: use client certs but skip verify.
+            echo "DOCKER_TLS_VERIFY=" >> "$GITHUB_ENV"
+            echo "DOCKER_CERT_PATH=/certs/client" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_CERTDIR=" >> "$GITHUB_ENV"
+          fi
       - name: Run SPDY matrix
+        if: ${{ env.ACT != 'true' || matrix.runtime != 'podman' }}
         env:
           AE_APISHIM_RUNTIME: ${{ matrix.runtime }}
           K9S_SMOKE: "1"

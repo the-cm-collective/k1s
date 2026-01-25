@@ -409,6 +409,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         hdr = self.headers.get("Authorization", "")
         if hdr == f"Bearer {tok}":
             return True
+        _p, _, q = self.path.partition("?")
+        if q:
+            import urllib.parse as _up
+
+            params = _up.parse_qs(q)
+            if (params.get("token") or [""])[0] == tok:
+                return True
         return False
 
     def _labs_request_authorized(self) -> bool:
@@ -763,6 +770,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "/redoc/",
             "/redoc/apishim",
             "/redoc/apishim/",
+            "/dashboard",
+            "/dashboard/",
+            "/dashboard.js",
             "/",
             "/docs",
         }:
@@ -781,6 +791,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     spec_url="/openapi/v3",
                     title="k1s Swagger UI (API Shim)",
                 )
+            elif path_only in ("/dashboard", "/dashboard/"):
+                self._handle_dashboard()
+            elif path_only == "/dashboard.js":
+                self._handle_dashboard_js()
             elif path_only in ("/redoc", "/redoc/"):
                 self._handle_redoc()
             else:
@@ -2764,6 +2778,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
   </body>
 </html>
 """.replace("__TITLE__", title).replace("__SPEC_URL__", spec_literal)
+        labs_token = ""
+        try:
+            import os as _os
+
+            if _os.getenv("AE_DEMO_MODE") == "1":
+                labs_token = (_os.getenv("AE_LABS_TOKEN") or "").strip()
+        except Exception:
+            labs_token = ""
+        html = html.replace("__LABS_TOKEN__", json.dumps(labs_token))
         payload = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -3779,6 +3802,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       })();
     </script>
     <script>
+      var labsToken = __LABS_TOKEN__;
       var elApps = document.getElementById('apps');
       var elAppsList = document.getElementById('apps-list');
       var elEvents = document.getElementById('events');
@@ -3987,9 +4011,31 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         });
       }
 
+      function activeToken(){
+        var tok = '';
+        try { tok = localStorage.getItem('ae_token') || ''; } catch(e) { tok = ''; }
+        if (!tok && labsToken) tok = labsToken;
+        return tok;
+      }
+
       function authHeaders(){
-        var tok = localStorage.getItem('ae_token') || '';
+        var tok = activeToken();
         return tok ? { 'Authorization': 'Bearer ' + tok } : {};
+      }
+
+      function sseToken(){
+        var tok = labsToken || '';
+        if (!tok) {
+          try { tok = localStorage.getItem('ae_token') || ''; } catch(e) { tok = ''; }
+        }
+        return tok;
+      }
+
+      if (window.htmx) {
+        window.htmx.on('configRequest', function(evt){
+          var hdrs = authHeaders();
+          for (var k in hdrs) { evt.detail.headers[k] = hdrs[k]; }
+        });
       }
 
       function mintShimToken(role, scope){
@@ -4623,7 +4669,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           // One-shot initial fill for context
           window.htmx.trigger(el, 'refresh');
         }
-        var url = '/logs/' + encodeURIComponent(current) + '/stream?' + new URLSearchParams({ tail: '200' }).toString();
+        var logParams = new URLSearchParams({ tail: '200' });
+        var logTok = sseToken();
+        if (logTok) logParams.set('token', logTok);
+        var url = '/logs/' + encodeURIComponent(current) + '/stream?' + logParams.toString();
         try {
           var es = new EventSource(url);
           logSource = es;
@@ -4648,7 +4697,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       function updateEventsStreaming(){
         if (eventsSource) { try { eventsSource.close(); } catch(e){} eventsSource = null; }
         if (!current) return;
-        var url = '/dashboard/sse/events?' + new URLSearchParams({ app: current, limit: '50' }).toString();
+        var evParams = new URLSearchParams({ app: current, limit: '50' });
+        var evTok = sseToken();
+        if (evTok) evParams.set('token', evTok);
+        var url = '/dashboard/sse/events?' + evParams.toString();
         try {
           var es = new EventSource(url);
           eventsSource = es;
