@@ -176,10 +176,28 @@ jobs:
 
   container:
     runs-on: ubuntu-latest
+    env:
+      REGISTRY: reg.microk8s.core.home.arpa:32000
+      IMAGE_NAME: ae/controller
+      CACHE_TAG: buildcache-release
     steps:
       - uses: actions/checkout@v4
-      - name: Build controller image
-        run: docker build -f ops/images/controller.Dockerfile -t ae/controller:${{ github.ref_name }} .
+      - name: Set up Buildx (insecure registry)
+        uses: docker/setup-buildx-action@v3
+        with:
+          config-inline: |
+            [registry."reg.microk8s.core.home.arpa:32000"]
+              http = true
+              insecure = true
+      - name: Build controller image (registry cache)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ops/images/controller.Dockerfile
+          load: true
+          tags: ae/controller:${{ github.ref_name }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.CACHE_TAG }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.CACHE_TAG }},mode=max
       - name: Save image tar
         run: docker save ae/controller:${{ github.ref_name }} -o controller.tar
       - name: Upload image artifact

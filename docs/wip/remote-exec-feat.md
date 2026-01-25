@@ -5,7 +5,7 @@ This draft captures the "Option A" path that aligns with:
 - A browser-friendly Dashboard and Playground experience.
 - A future `ae` remote shell command that speaks SPDY.
 
-Status: proposal for review.
+Status: Option A implemented; conformance-alignment gaps remain.
 
 ---
 
@@ -317,13 +317,16 @@ track while apishim remains primary.
   and `AE_APISHIM_STREAM_MAX_SECONDS`, plus total byte caps via `AE_APISHIM_STREAM_MAX_BYTES`.
 - **Compatibility smoke**: added `scripts/dev/apishim_spdy_matrix.sh` and a runner
   (`scripts/dev/apishim_spdy_matrix_run.sh`) to spin up apishim with TLS + docker/podman.
+- **k9s automation**: added `scripts/dev/apishim_k9s_smoke.sh` and CI matrix
+  (`.github/workflows/apishim-spdy-matrix.yml`) to cover docker + podman (podman allow-fail).
 
 ---
 
 ## Gap Status (2026-01-25)
 
 - **Compatibility matrix**: kubectl exec/port-forward covered by `scripts/dev/apishim_spdy_matrix.sh`
-  with a TLS runner; k9s coverage remains manual and podman coverage needs validation.
+  with a TLS runner; k9s coverage is automated via `scripts/dev/apishim_k9s_smoke.sh`, and
+  podman is validated in the matrix (currently allow-fail).
 - **Pod identity stability**: Pod `metadata.uid` is now surfaced and enforced when clients provide
   `podUID`/`uid`; phase/rv verification still lacks kube‑apiserver parity.
 - **Watch consistency**: optional watch-cache gating exists, but exec/port-forward still
