@@ -277,6 +277,24 @@ read_env_file_var() {
   ' "$file"
 }
 
+gen_token() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    python - <<'PY'
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+    return 0
+  fi
+  head -c 32 /dev/urandom | base64 | tr -d '=\n'
+}
+
 port_open() {
   local host="$1"
   local port="$2"
@@ -1049,6 +1067,22 @@ fi
 export AE_LABS=${LABS_ENABLE}
 export AE_LABS_TOKEN=${LABS_TOKEN}
 if [[ ${LABS_ENABLE:-0} -eq 1 ]]; then
+  ./scripts/ensure_apishim_env.sh
+  LABS_APISHIM_ENV="state/labs/apishim.env"
+  if [[ -z "${AE_APISHIM_SESSION_SECRET:-}" ]]; then
+    LABS_SESSION_SECRET="$(read_env_file_var "AE_APISHIM_SESSION_SECRET" "$LABS_APISHIM_ENV" || true)"
+    if [[ -z "$LABS_SESSION_SECRET" ]]; then
+      LABS_SESSION_SECRET="$(gen_token)"
+    fi
+    export AE_APISHIM_SESSION_SECRET="$LABS_SESSION_SECRET"
+  fi
+  if [[ -z "${AE_API_ADMIN_TOKEN:-}" ]]; then
+    LABS_ADMIN_TOKEN="$(read_env_file_var "AE_API_ADMIN_TOKEN" "$LABS_APISHIM_ENV" || true)"
+    if [[ -z "$LABS_ADMIN_TOKEN" ]]; then
+      LABS_ADMIN_TOKEN="$(gen_token)"
+    fi
+    export AE_API_ADMIN_TOKEN="$LABS_ADMIN_TOKEN"
+  fi
   export AE_LABS_SESSION_HOSTS=${AE_LABS_SESSION_HOSTS:-1}
   if [[ -z "${AE_APISHIM_MIRROR:-}" ]]; then
     export AE_APISHIM_MIRROR=1
@@ -1082,6 +1116,8 @@ export AE_SPECS_DIR=${DEMO_SPECS_DIR}
 export AE_APISHIM_DB=${AE_APISHIM_DB:-}
 export AE_APISHIM_MIRROR=${AE_APISHIM_MIRROR:-}
 export AE_APISHIM_SOT=${AE_APISHIM_SOT:-}
+export AE_APISHIM_SESSION_SECRET=${AE_APISHIM_SESSION_SECRET:-}
+export AE_API_ADMIN_TOKEN=${AE_API_ADMIN_TOKEN:-}
 # Labs + docs wiring for controller
 export AE_LABS=${LABS_ENABLE}
 export AE_LABS_TOKEN=${LABS_TOKEN}

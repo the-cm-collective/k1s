@@ -34,7 +34,12 @@ python -m ae.apishim kubeconfig \
 export KUBECONFIG="${tmpcfg}"
 
 echo "apishim: ${SERVER}"
-echo "kubectl: $(kubectl version --client --short 2>/dev/null || echo 'unknown')"
+kubectl_version="$(kubectl version --client --short 2>/dev/null || true)"
+if [[ -z "${kubectl_version}" ]]; then
+  echo "kubectl: unknown (client --short unsupported)"
+else
+  echo "kubectl: ${kubectl_version}"
+fi
 
 echo "checking apishim /version..."
 kubectl get --raw /version >/dev/null
@@ -64,7 +69,16 @@ curl -fsS "http://127.0.0.1:${LOCAL_PF_PORT}/" | head -c 200 || true
 kill "${PF_PID}" >/dev/null 2>&1 || true
 unset PF_PID
 
-echo "k9s manual check (optional):"
-echo "  KUBECONFIG=${tmpcfg} k9s"
-echo "  - open shell on pod ${pod}"
-echo "  - port-forward ${REMOTE_PF_PORT} and curl localhost:${LOCAL_PF_PORT}"
+if [[ "${K9S_SMOKE:-0}" == "1" ]]; then
+  K9S_POD="${pod}" \
+  K9S_NAMESPACE="${NAMESPACE}" \
+  K9S_KUBECONFIG="${tmpcfg}" \
+  K9S_PORT_FORWARD_LOCAL="${LOCAL_PF_PORT}" \
+  K9S_PORT_FORWARD_PORT="${REMOTE_PF_PORT}" \
+  scripts/dev/apishim_k9s_smoke.sh
+else
+  echo "k9s manual check (optional):"
+  echo "  KUBECONFIG=${tmpcfg} k9s"
+  echo "  - open shell on pod ${pod}"
+  echo "  - port-forward ${REMOTE_PF_PORT} and curl localhost:${LOCAL_PF_PORT}"
+fi
