@@ -1036,144 +1036,341 @@ def _swagger_doc() -> dict[str, Any]:
             "additionalProperties": True,
         },
     }
+    schemas.update(
+        {
+            "io.k8s.api.core.v1.Namespace": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                    "spec": {"type": "object", "additionalProperties": True},
+                    "status": {"type": "object", "additionalProperties": True},
+                },
+                "additionalProperties": True,
+            },
+            "io.k8s.api.core.v1.Node": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                    "spec": {"type": "object", "additionalProperties": True},
+                    "status": {"type": "object", "additionalProperties": True},
+                },
+                "additionalProperties": True,
+            },
+            "io.k8s.api.core.v1.Pod": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                    "spec": {"type": "object", "additionalProperties": True},
+                    "status": {"type": "object", "additionalProperties": True},
+                },
+                "additionalProperties": True,
+            },
+            "io.k8s.api.core.v1.Endpoints": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                    "subsets": {"type": "array", "items": {"type": "object"}},
+                },
+                "additionalProperties": True,
+            },
+            "io.k8s.api.core.v1.Event": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                    "involvedObject": {"type": "object", "additionalProperties": True},
+                    "reason": {"type": "string"},
+                    "message": {"type": "string"},
+                    "type": {"type": "string"},
+                },
+                "additionalProperties": True,
+            },
+            "io.k8s.api.apps.v1.ReplicaSet": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                    "spec": {"type": "object", "additionalProperties": True},
+                    "status": {"type": "object", "additionalProperties": True},
+                },
+                "additionalProperties": True,
+            },
+            "io.k8s.api.discovery.k8s.io.v1.EndpointSlice": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                    "addressType": {"type": "string"},
+                    "endpoints": {"type": "array", "items": {"type": "object"}},
+                    "ports": {"type": "array", "items": {"type": "object"}},
+                },
+                "additionalProperties": True,
+            },
+            "io.k8s.api.apiextensions.k8s.io.v1.CustomResourceDefinition": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                    "spec": {"type": "object", "additionalProperties": True},
+                    "status": {"type": "object", "additionalProperties": True},
+                },
+                "additionalProperties": True,
+            },
+            "io.k8s.api.authorization.k8s.io.v1.SelfSubjectAccessReview": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "spec": {"type": "object", "additionalProperties": True},
+                },
+                "additionalProperties": True,
+            },
+            "io.k8s.api.authorization.k8s.io.v1.SelfSubjectRulesReview": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "spec": {"type": "object", "additionalProperties": True},
+                },
+                "additionalProperties": True,
+            },
+        }
+    )
+    paths: dict[str, dict[str, Any]] = {}
+
+    def _add_path(path: str, methods: list[str]) -> None:
+        if not methods:
+            return
+        entry = paths.setdefault(path, {})
+        for method in methods:
+            entry.setdefault(method, {})
+
+    def _add_resource(base: str, plural: str, namespaced: bool, verbs: set[str]) -> None:
+        list_methods: list[str] = []
+        if "list" in verbs or "watch" in verbs:
+            list_methods.append("get")
+        if "create" in verbs:
+            list_methods.append("post")
+        if namespaced:
+            ns_path = f"{base}/namespaces/{{namespace}}/{plural}"
+            _add_path(ns_path, list_methods)
+            if "list" in verbs or "watch" in verbs:
+                _add_path(f"{base}/{plural}", ["get"])
+            item_path = f"{base}/namespaces/{{namespace}}/{plural}/{{name}}"
+        else:
+            _add_path(f"{base}/{plural}", list_methods)
+            item_path = f"{base}/{plural}/{{name}}"
+        item_methods: list[str] = []
+        if "get" in verbs:
+            item_methods.append("get")
+        if "update" in verbs:
+            item_methods.append("put")
+        if "patch" in verbs:
+            item_methods.append("patch")
+        if "delete" in verbs:
+            item_methods.append("delete")
+        _add_path(item_path, item_methods)
+
+    def _add_subresource(
+        base: str, plural: str, subresource: str, namespaced: bool, verbs: set[str]
+    ) -> None:
+        if namespaced:
+            path = f"{base}/namespaces/{{namespace}}/{plural}/{{name}}/{subresource}"
+        else:
+            path = f"{base}/{plural}/{{name}}/{subresource}"
+        methods: list[str] = []
+        if "get" in verbs:
+            methods.append("get")
+        if "create" in verbs:
+            methods.append("post")
+        if "update" in verbs:
+            methods.append("put")
+        if "patch" in verbs:
+            methods.append("patch")
+        if "delete" in verbs:
+            methods.append("delete")
+        _add_path(path, methods)
+
+    # Non-resource endpoints and discovery
+    for p in (
+        "/api",
+        "/apis",
+        "/version",
+        "/healthz",
+        "/readyz",
+        "/metrics",
+        "/openapi/v2",
+        "/openapi/v3",
+        "/swagger.json",
+        "/api/v1",
+        "/apis/apps/v1",
+        "/apis/batch/v1",
+        "/apis/networking.k8s.io/v1",
+        "/apis/rbac.authorization.k8s.io/v1",
+        "/apis/authorization.k8s.io/v1",
+        "/apis/policy/v1",
+        "/apis/autoscaling/v2",
+        "/apis/apiextensions.k8s.io/v1",
+        "/apis/discovery.k8s.io/v1",
+        "/apis/ae.dev/v1alpha1",
+    ):
+        _add_path(p, ["get"])
+
+    # Core API resources
+    for plural, namespaced, verbs in (
+        (
+            "namespaces",
+            False,
+            {"get", "list", "watch", "create", "delete", "patch", "update"},
+        ),
+        (
+            "configmaps",
+            True,
+            {"get", "list", "watch", "create", "delete", "patch", "update"},
+        ),
+        ("secrets", True, {"get", "list", "watch", "create", "delete", "patch", "update"}),
+        (
+            "serviceaccounts",
+            True,
+            {"get", "list", "watch", "create", "delete", "patch", "update"},
+        ),
+        ("services", True, {"get", "list", "watch", "create", "delete", "patch", "update"}),
+        ("endpoints", True, {"get", "list"}),
+        ("nodes", False, {"get", "list"}),
+        ("pods", True, {"get", "list", "watch"}),
+        ("events", True, {"get", "list", "watch"}),
+    ):
+        _add_resource("/api/v1", plural, namespaced, verbs)
+
+    # Core subresources and special endpoints
+    _add_path("/api/v1/namespaces/{namespace}/pods/{name}/log", ["get"])
+    _add_path("/api/v1/namespaces/{namespace}/pods/{name}/exec", ["get", "post"])
+    _add_path("/api/v1/namespaces/{namespace}/pods/{name}/portforward", ["get", "post"])
+    _add_path("/api/v1/namespaces/{namespace}/services/{name}/portforward", ["get", "post"])
+    _add_path("/api/v1/events/{name}", ["get"])
+
+    # apps/v1 resources
+    for plural, verbs in (
+        (
+            "deployments",
+            {"get", "list", "watch", "create", "delete", "patch", "update"},
+        ),
+        (
+            "statefulsets",
+            {"get", "list", "watch", "create", "delete", "patch", "update"},
+        ),
+        (
+            "daemonsets",
+            {"get", "list", "watch", "create", "delete", "patch", "update"},
+        ),
+        ("replicasets", {"get", "list", "watch"}),
+    ):
+        _add_resource("/apis/apps/v1", plural, True, verbs)
+
+    for plural, subresource, verbs in (
+        ("deployments", "status", {"get"}),
+        ("deployments", "scale", {"get", "update"}),
+        ("statefulsets", "status", {"get"}),
+        ("daemonsets", "status", {"get"}),
+    ):
+        _add_subresource("/apis/apps/v1", plural, subresource, True, verbs)
+
+    # batch/v1 resources
+    for plural, verbs in (
+        ("jobs", {"get", "list", "watch", "create", "delete", "patch", "update"}),
+        ("cronjobs", {"get", "list", "watch", "create", "delete", "patch", "update"}),
+    ):
+        _add_resource("/apis/batch/v1", plural, True, verbs)
+    for plural, verbs in (("jobs", {"get"}), ("cronjobs", {"get"})):
+        _add_subresource("/apis/batch/v1", plural, "status", True, verbs)
+
+    # networking.k8s.io/v1 resources
+    _add_resource(
+        "/apis/networking.k8s.io/v1",
+        "ingresses",
+        True,
+        {"get", "list", "watch", "create", "delete", "update"},
+    )
+
+    # rbac.authorization.k8s.io/v1 resources
+    for plural, namespaced in (
+        ("roles", True),
+        ("rolebindings", True),
+        ("clusterroles", False),
+        ("clusterrolebindings", False),
+    ):
+        _add_resource(
+            "/apis/rbac.authorization.k8s.io/v1",
+            plural,
+            namespaced,
+            {"get", "list", "watch", "create", "delete", "patch", "update"},
+        )
+
+    # authorization.k8s.io/v1 resources (create-only)
+    for plural in (
+        "subjectaccessreviews",
+        "selfsubjectaccessreviews",
+        "selfsubjectrulesreviews",
+    ):
+        _add_resource("/apis/authorization.k8s.io/v1", plural, False, {"create"})
+
+    # policy/v1 resources
+    _add_resource(
+        "/apis/policy/v1",
+        "poddisruptionbudgets",
+        True,
+        {"get", "list", "watch", "create", "delete", "patch", "update"},
+    )
+
+    # autoscaling/v2 resources
+    _add_resource(
+        "/apis/autoscaling/v2",
+        "horizontalpodautoscalers",
+        True,
+        {"get", "list", "watch", "create", "delete", "patch", "update"},
+    )
+
+    # apiextensions.k8s.io/v1 resources
+    _add_resource(
+        "/apis/apiextensions.k8s.io/v1",
+        "customresourcedefinitions",
+        False,
+        {"get", "list", "watch", "create", "delete", "update"},
+    )
+
+    # discovery.k8s.io/v1 resources
+    _add_resource(
+        "/apis/discovery.k8s.io/v1",
+        "endpointslices",
+        True,
+        {"get", "list", "watch"},
+    )
+
+    # ae.dev/v1alpha1 resources
+    _add_resource(
+        "/apis/ae.dev/v1alpha1",
+        "apps",
+        True,
+        {"get", "list", "watch", "create", "delete", "patch", "update"},
+    )
     doc = {
         "swagger": "2.0",
         "info": {"title": "k1s apishim", "version": "0.1.2.dev0"},
         "produces": ["application/json"],
         "schemes": ["http"],
-        "paths": {
-            "/api/v1/namespaces": {"get": {}, "post": {}},
-            "/api/v1/namespaces/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
-            "/api/v1/namespaces/{namespace}/configmaps": {"get": {}, "post": {}},
-            "/api/v1/namespaces/{namespace}/configmaps/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/api/v1/namespaces/{namespace}/secrets": {"get": {}, "post": {}},
-            "/api/v1/namespaces/{namespace}/secrets/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/api/v1/namespaces/{namespace}/serviceaccounts": {"get": {}, "post": {}},
-            "/api/v1/namespaces/{namespace}/serviceaccounts/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/api/v1/namespaces/{namespace}/services": {"get": {}, "post": {}},
-            "/api/v1/namespaces/{namespace}/services/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/apps/v1/namespaces/{namespace}/deployments": {"get": {}, "post": {}},
-            "/apis/apps/v1/namespaces/{namespace}/deployments/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/apps/v1/namespaces/{namespace}/statefulsets": {"get": {}, "post": {}},
-            "/apis/apps/v1/namespaces/{namespace}/statefulsets/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/apps/v1/namespaces/{namespace}/daemonsets": {"get": {}, "post": {}},
-            "/apis/apps/v1/namespaces/{namespace}/daemonsets/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/batch/v1/namespaces/{namespace}/jobs": {"get": {}, "post": {}},
-            "/apis/batch/v1/namespaces/{namespace}/jobs/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/batch/v1/namespaces/{namespace}/cronjobs": {"get": {}, "post": {}},
-            "/apis/batch/v1/namespaces/{namespace}/cronjobs/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers": {
-                "get": {},
-                "post": {},
-            },
-            "/apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/policy/v1/namespaces/{namespace}/poddisruptionbudgets": {"get": {}, "post": {}},
-            "/apis/policy/v1/namespaces/{namespace}/poddisruptionbudgets/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/rbac.authorization.k8s.io/v1/clusterroles": {"get": {}, "post": {}},
-            "/apis/rbac.authorization.k8s.io/v1/clusterroles/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings": {"get": {}, "post": {}},
-            "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/roles": {
-                "get": {},
-                "post": {},
-            },
-            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/roles/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/rolebindings": {
-                "get": {},
-                "post": {},
-            },
-            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/rolebindings/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/networking.k8s.io/v1/namespaces/{namespace}/ingresses": {"get": {}, "post": {}},
-            "/apis/networking.k8s.io/v1/namespaces/{namespace}/ingresses/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/authorization.k8s.io/v1/subjectaccessreviews": {"post": {}},
-            "/apis/ae.dev/v1alpha1/namespaces/{namespace}/apps": {"get": {}, "post": {}},
-            "/apis/ae.dev/v1alpha1/namespaces/{namespace}/apps/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-        },
+        "paths": paths,
         "definitions": schemas,
     }
     return doc
@@ -1785,7 +1982,21 @@ class ShimHandler(BaseHTTPRequestHandler):
         if subres:
             resource = f"{resource}/{subres}"
         if not verb or not resource:
-            return {"allowed": False, "denied": True, "reason": "missing verb/resource"}
+            non_attr = (spec or {}).get("nonResourceAttributes") or {}
+            nverb = (non_attr.get("verb") or "").lower()
+            path = non_attr.get("path") or ""
+            if not nverb or not path:
+                return {"allowed": False, "denied": True, "reason": "missing verb/resource"}
+            principal = self._parse_principal()
+            if self.rbac_enabled and self.rbac_eval_roles:
+                allowed = principal.token_role in {"admin", "read"}
+            else:
+                allowed = principal.username != "system:unauthenticated"
+            return {
+                "allowed": allowed,
+                "denied": not allowed,
+                "reason": "rbac: allowed" if allowed else "rbac: forbidden",
+            }
         allowed = self._rbac_allows(verb, resource, namespace)
         return {
             "allowed": allowed,
@@ -2431,6 +2642,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                 host_cycle[p] = list(h)
             else:
                 host_cycle[p] = [h]
+
+        def read_exact(sock, n: int) -> bytes | None:
+            buf = b""
+            while len(buf) < n:
+                chunk = sock.recv(n - len(buf))
+                if not chunk:
+                    return None
+                buf += chunk
+            return buf
 
         def send_data_frame(stream_id: int, payload: bytes, flags: int = 0) -> None:
             header = bytearray()
@@ -4350,7 +4570,21 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "namespaced": False,
                             "kind": "SubjectAccessReview",
                             "verbs": ["create"],
-                        }
+                        },
+                        {
+                            "name": "selfsubjectaccessreviews",
+                            "singularName": "",
+                            "namespaced": False,
+                            "kind": "SelfSubjectAccessReview",
+                            "verbs": ["create"],
+                        },
+                        {
+                            "name": "selfsubjectrulesreviews",
+                            "singularName": "",
+                            "namespaced": False,
+                            "kind": "SelfSubjectRulesReview",
+                            "verbs": ["create"],
+                        },
                     ],
                 }
             )
@@ -6160,6 +6394,61 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return
         body = self._read_body()
         doc = _read_json(body)
+
+        if path.startswith("/apis/authorization.k8s.io/v1/selfsubjectaccessreviews"):
+            status = self._eval_subject_access_review(doc.get("spec") or {})
+            resp = {
+                "apiVersion": "authorization.k8s.io/v1",
+                "kind": "SelfSubjectAccessReview",
+                "spec": doc.get("spec") or {},
+                "status": status,
+            }
+            out = _json(resp)
+            self.send_response(HTTPStatus.CREATED)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+            return
+
+        if path.startswith("/apis/authorization.k8s.io/v1/selfsubjectrulesreviews"):
+            principal = self._parse_principal()
+            token_role = principal.token_role or ""
+            if not self.rbac_enabled or token_role == "admin":
+                resource_rules = [{"verbs": ["*"], "apiGroups": ["*"], "resources": ["*"]}]
+                non_resource_rules = [{"verbs": ["*"], "nonResourceURLs": ["*"]}]
+                incomplete = False
+            elif token_role == "read":
+                resource_rules = [
+                    {
+                        "verbs": ["get", "list", "watch"],
+                        "apiGroups": ["*"],
+                        "resources": ["*"],
+                    }
+                ]
+                non_resource_rules = [{"verbs": ["get", "list", "watch"], "nonResourceURLs": ["*"]}]
+                incomplete = False
+            else:
+                resource_rules = []
+                non_resource_rules = []
+                incomplete = True
+            resp = {
+                "apiVersion": "authorization.k8s.io/v1",
+                "kind": "SelfSubjectRulesReview",
+                "spec": doc.get("spec") or {},
+                "status": {
+                    "resourceRules": resource_rules,
+                    "nonResourceRules": non_resource_rules,
+                    "incomplete": incomplete,
+                },
+            }
+            out = _json(resp)
+            self.send_response(HTTPStatus.CREATED)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+            return
 
         if path.startswith("/apis/authorization.k8s.io/v1/subjectaccessreviews"):
             status = self._eval_subject_access_review(doc.get("spec") or {})

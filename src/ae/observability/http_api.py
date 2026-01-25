@@ -752,21 +752,42 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         # Public pages (always allowed): OpenAPI + lightweight docs UIs
         if path_only in {
             "/openapi.json",
+            "/openapi/v2",
+            "/openapi/v3",
+            "/swagger.json",
             "/swagger",
             "/swagger/",
+            "/swagger/apishim",
+            "/swagger/apishim/",
             "/redoc",
             "/redoc/",
+            "/redoc/apishim",
+            "/redoc/apishim/",
             "/",
             "/docs",
         }:
             if path_only == "/openapi.json":
                 self._handle_openapi()
+            elif path_only in ("/openapi/v2", "/swagger.json"):
+                self._handle_apishim_openapi("v2")
+            elif path_only == "/openapi/v3":
+                self._handle_apishim_openapi("v3")
             elif path_only in ("/", "/docs"):
                 self._handle_docs()
             elif path_only in ("/swagger", "/swagger/"):
                 self._handle_swagger()
-            else:
+            elif path_only in ("/swagger/apishim", "/swagger/apishim/"):
+                self._handle_swagger(
+                    spec_url="/openapi/v3",
+                    title="k1s Swagger UI (API Shim)",
+                )
+            elif path_only in ("/redoc", "/redoc/"):
                 self._handle_redoc()
+            else:
+                self._handle_redoc(
+                    spec_url="/openapi/v3",
+                    title="k1s ReDoc (API Shim)",
+                )
             return
         # Enforce read auth if configured
         try:
@@ -959,15 +980,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 if not secret:
                     self._json_error(404, "apishim session tokens disabled")
                     return
+                labs_token = (os.getenv("AE_LABS_TOKEN") or "").strip()
                 tokens_configured = bool(
                     os.getenv("AE_API_ADMIN_TOKEN")
                     or os.getenv("AE_API_SCALER_TOKEN")
                     or os.getenv("AE_API_READ_TOKEN")
                 )
-                if tokens_configured:
-                    if not self._require_role("admin") and not self._labs_token_valid():
+                if labs_token:
+                    if not (self._labs_token_valid() or self._require_role("admin")):
                         self._deny(401 if not self.headers.get("Authorization") else 403)
                         return
+                elif tokens_configured:
+                    if not self._require_role("admin"):
+                        self._deny(401 if not self.headers.get("Authorization") else 403)
+                        return
+                else:
+                    # Secure-by-default: require auth even if no API tokens were configured.
+                    self._deny(401 if not self.headers.get("Authorization") else 403)
+                    return
                 length = int(self.headers.get("Content-Length", "0") or "0")
                 raw = self.rfile.read(length) if length > 0 else b"{}"
                 try:
@@ -2705,25 +2735,35 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         payload = {"controller": ctrl, "rbac": rbac, "crashloop": crash, **(extra or {})}
         self._json_ok(payload)
 
-    def _handle_swagger(self) -> None:
+    def _handle_swagger(self, *, spec_url: str = "/openapi.json", title: str = "k1s Swagger UI") -> None:
+        spec_literal = json.dumps(spec_url)
         html = """
 <!doctype html>
 <html>
   <head>
     <meta charset=\"utf-8\" />
-    <title>k1s Swagger UI</title>
+    <title>__TITLE__</title>
     <link rel=\"stylesheet\" href=\"https://unpkg.com/swagger-ui-dist@5/swagger-ui.css\" />
-    <style>body { margin: 0; } .swagger-ui { max-width: 1100px; margin: 20px auto; }</style>
+    <style>
+      body { margin: 0; font-family: system-ui, sans-serif; }
+      .topbar { padding: 10px 16px; border-bottom: 1px solid #e3e3e3; background: #f8f8f8; }
+      .topbar a { margin-right: 12px; color: #1b1b1b; text-decoration: none; font-weight: 600; }
+      .swagger-ui { max-width: 1100px; margin: 20px auto; }
+    </style>
   </head>
   <body>
+    <div class=\"topbar\">
+      <a href=\"/swagger\">Controller API</a>
+      <a href=\"/swagger/apishim\">API Shim</a>
+    </div>
     <div id=\"swagger-ui\"></div>
     <script src=\"https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js\"></script>
     <script type=\"text/javascript\">
-      window.ui = SwaggerUIBundle({ url: '/openapi.json', dom_id: '#swagger-ui' });
+      window.ui = SwaggerUIBundle({ url: __SPEC_URL__, dom_id: '#swagger-ui' });
     </script>
   </body>
 </html>
-"""
+""".replace("__TITLE__", title).replace("__SPEC_URL__", spec_literal)
         payload = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -2731,29 +2771,60 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def _handle_redoc(self) -> None:
+    def _handle_redoc(self, *, spec_url: str = "/openapi.json", title: str = "k1s ReDoc") -> None:
+        spec_literal = json.dumps(spec_url)
         html = """
 <!doctype html>
 <html>
   <head>
     <meta charset=\"utf-8\" />
-    <title>k1s ReDoc</title>
-    <style>body { margin: 0; } #redoc { width: 100vw; height: 100vh; }</style>
+    <title>__TITLE__</title>
+    <style>
+      body { margin: 0; font-family: system-ui, sans-serif; }
+      .topbar { padding: 10px 16px; border-bottom: 1px solid #e3e3e3; background: #f8f8f8; }
+      .topbar a { margin-right: 12px; color: #1b1b1b; text-decoration: none; font-weight: 600; }
+      #redoc { width: 100vw; height: calc(100vh - 48px); }
+    </style>
     <script src=\"https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js\"></script>
   </head>
   <body>
+    <div class=\"topbar\">
+      <a href=\"/redoc\">Controller API</a>
+      <a href=\"/redoc/apishim\">API Shim</a>
+    </div>
     <div id=\"redoc\"></div>
     <script>
       document.addEventListener('DOMContentLoaded', function () {
-        Redoc.init('/openapi.json', {}, document.getElementById('redoc'));
+        Redoc.init(__SPEC_URL__, {}, document.getElementById('redoc'));
       });
     </script>
   </body>
 </html>
-"""
+""".replace("__TITLE__", title).replace("__SPEC_URL__", spec_literal)
         payload = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _handle_apishim_openapi(self, version: str) -> None:
+        try:
+            from ae.apishim import server as _apishim_server
+        except Exception as exc:
+            self._json_error(500, f"unable to load apishim OpenAPI: {exc}")
+            return
+        try:
+            if version == "v2":
+                doc = _apishim_server._swagger_doc()
+            else:
+                doc = _apishim_server._openapi_v3_stub()
+        except Exception as exc:
+            self._json_error(500, f"unable to render apishim OpenAPI: {exc}")
+            return
+        payload = json.dumps(doc).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -3445,6 +3516,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       h2 { font-size:14px; margin: 14px 4px 6px; opacity:0.9; }
       .divider { border-top:1px solid #8884; margin:16px 0; }
       .modal-overlay { position:fixed; inset:0; background:rgba(2,6,23,0.65); display:flex; align-items:center; justify-content:center; z-index: 90; }
+      .modal-overlay.hidden { display:none; }
       .modal { width:min(980px, 96vw); max-height:90vh; background:#0b1220; color:#e2e8f0; border:1px solid #334155; border-radius:10px; box-shadow:0 20px 40px rgba(0,0,0,.35); display:flex; flex-direction:column; }
       .modal-header { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-bottom:1px solid #334155; }
       .modal-body { padding:12px 14px; overflow:auto; }

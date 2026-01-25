@@ -5,7 +5,7 @@ docs.home.arpa:443, docs.home.arpa
 
     @static {
         path *
-        not path /swagger* /redoc* /dashboard* /openapi.json /health* /status* /events* /logs* /metrics* /labs* /system*
+        not path /swagger* /redoc* /dashboard* /openapi* /health* /status* /events* /logs* /metrics* /labs* /system*
     }
     handle @static {
         root * /srv/docs
@@ -14,7 +14,7 @@ docs.home.arpa:443, docs.home.arpa
 
     # Proxy API endpoints to the controller on the host
     @api {
-        path /swagger* /redoc* /dashboard* /openapi.json /health* /status* /events* /logs* /metrics* /labs* /system*
+        path /swagger* /redoc* /dashboard* /openapi* /health* /status* /events* /logs* /metrics* /labs* /system*
     }
     handle @api {
         reverse_proxy {
