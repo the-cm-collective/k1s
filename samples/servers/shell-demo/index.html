@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>k1s Shell + Port-Forward Demo</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --k1s-bg: #0b1220;
+        --k1s-panel: #111827;
+        --k1s-border: #334155;
+        --k1s-primary: #2563eb;
+        --k1s-primary-soft: #3b82f6;
+        --k1s-warn: #f59e0b;
+        --k1s-accent: #fbbf24;
+        --k1s-text: #e5e7eb;
+        --k1s-muted: #94a3b8;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        font-family: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+        color: var(--k1s-text);
+        background:
+          radial-gradient(1200px circle at 15% 10%, rgba(37, 99, 235, 0.25), transparent 55%),
+          radial-gradient(900px circle at 80% 0%, rgba(245, 158, 11, 0.22), transparent 50%),
+          radial-gradient(900px circle at 70% 80%, rgba(251, 191, 36, 0.12), transparent 55%),
+          var(--k1s-bg);
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 32px;
+      }
+
+      .card {
+        width: min(920px, 94vw);
+        background: linear-gradient(140deg, rgba(17, 24, 39, 0.96), rgba(15, 23, 42, 0.92));
+        border: 1px solid var(--k1s-border);
+        border-radius: 18px;
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+        padding: 32px;
+      }
+
+      .header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 24px;
+        align-items: center;
+      }
+
+      .logo {
+        width: 120px;
+        height: 120px;
+        flex: 0 0 auto;
+      }
+
+      h1 {
+        margin: 0 0 8px 0;
+        font-size: clamp(28px, 4vw, 38px);
+      }
+
+      p {
+        margin: 0;
+        line-height: 1.6;
+        color: var(--k1s-muted);
+      }
+
+      .badge-row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 16px;
+      }
+
+      .badge {
+        border: 1px solid var(--k1s-border);
+        border-radius: 999px;
+        padding: 6px 12px;
+        font-size: 13px;
+        color: var(--k1s-text);
+        background: rgba(15, 23, 42, 0.7);
+      }
+
+      .badge.primary { border-color: var(--k1s-primary); color: #dbeafe; }
+      .badge.warn { border-color: var(--k1s-warn); color: #fef3c7; }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+        margin-top: 24px;
+      }
+
+      .panel {
+        border: 1px solid var(--k1s-border);
+        border-radius: 14px;
+        padding: 16px;
+        background: rgba(2, 6, 23, 0.6);
+      }
+
+      .panel strong { display: block; margin-bottom: 8px; }
+      .panel code {
+        display: inline-block;
+        padding: 4px 8px;
+        border-radius: 8px;
+        background: rgba(15, 23, 42, 0.9);
+        border: 1px solid var(--k1s-border);
+        color: #e2e8f0;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 12px;
+      }
+
+      .cta {
+        margin-top: 24px;
+        padding: 14px 16px;
+        border-radius: 12px;
+        border: 1px solid rgba(37, 99, 235, 0.6);
+        background: rgba(37, 99, 235, 0.12);
+        color: #dbeafe;
+        font-size: 14px;
+      }
+
+      .footer {
+        margin-top: 20px;
+        font-size: 12px;
+        color: var(--k1s-muted);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <section class="header">
+        <img class="logo" src="logo.svg" alt="k1s logo" />
+        <div>
+          <h1>Shell + Port-Forward Smoke</h1>
+          <p>This demo container exposes a simple web page and includes a usable shell for exec tests.</p>
+          <div class="badge-row">
+            <span class="badge primary">App: shell-demo</span>
+            <span class="badge">Port: 8080</span>
+            <span class="badge warn" id="server-time">booting…</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid">
+        <div class="panel">
+          <strong>Remote Shell</strong>
+          <p>Open a dashboard or playground shell and run:</p>
+          <code>ls -la /app</code>
+        </div>
+        <div class="panel">
+          <strong>Port-Forward</strong>
+          <p>Forward to port <code>8080</code> and request:</p>
+          <code>GET / HTTP/1.1</code>
+        </div>
+        <div class="panel">
+          <strong>Health Check</strong>
+          <p>Readiness probe hits:</p>
+          <code>/healthz</code>
+        </div>
+      </section>
+
+      <div class="cta">
+        This page uses the k1s palette and logo to confirm static assets render correctly over port-forward.
+      </div>
+      <div class="footer" id="server-meta"></div>
+    </main>
+
+    <script>
+      (function () {
+        var ts = new Date().toISOString();
+        var timeEl = document.getElementById('server-time');
+        if (timeEl) timeEl.textContent = ts;
+        var meta = document.getElementById('server-meta');
+        if (meta) meta.textContent = 'URL: ' + window.location.href;
+      })();
+    </script>
+  </body>
+</html>

@@ -99,7 +99,7 @@ Decision: use xterm.js for the terminal UI (no minimal fallback in v1).
 ### New commands
 
 - `ae exec <app> -- <cmd ...>`
-- `ae shell <app> [--container <name>] [--tty]`
+- `ae shell <app> [--container <name>] [--tty] -- <cmd ...>`
 
 ### Transport
 

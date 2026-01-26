@@ -5,7 +5,7 @@
     backend: 'auto',
     sessionId: null,
     orch: { available: false, token: null },
-    appName: 'echo',
+    appName: 'shell-demo',
     appApplied: false,
     canaryRevision: null,
     canaryBaseRevision: null,
@@ -13,6 +13,48 @@
     statusMode: 'cluster', // 'cluster' | 'app'
   };
   const helmDemo = { timer: null, running: false };
+
+  const xtermFallback = {
+    css: '/static/vendor/xterm.css',
+    js: '/static/vendor/xterm.js',
+    fit: '/static/vendor/xterm-addon-fit.js',
+  };
+  let xtermPromise = null;
+
+  function loadScriptOnce(src) {
+    return new Promise((resolve) => {
+      if (document.querySelector(`script[src="${src}"]`)) return resolve();
+      const s = document.createElement('script');
+      s.src = src;
+      s.defer = true;
+      s.onload = () => resolve();
+      s.onerror = () => resolve();
+      document.head.appendChild(s);
+    });
+  }
+
+  function loadCssOnce(href) {
+    if (document.querySelector(`link[href="${href}"]`)) return;
+    const l = document.createElement('link');
+    l.rel = 'stylesheet';
+    l.href = href;
+    document.head.appendChild(l);
+  }
+
+  function ensureXtermLoaded() {
+    if (window.Terminal && window.FitAddon && window.FitAddon.FitAddon) return Promise.resolve(true);
+    if (xtermPromise) return xtermPromise;
+    xtermPromise = new Promise((resolve) => {
+      const tasks = [];
+      loadCssOnce(xtermFallback.css);
+      if (!window.Terminal) tasks.push(loadScriptOnce(xtermFallback.js));
+      if (!(window.FitAddon && window.FitAddon.FitAddon)) tasks.push(loadScriptOnce(xtermFallback.fit));
+      if (!tasks.length) { resolve(true); return; }
+      Promise.all(tasks).then(() => resolve(true)).catch(() => resolve(true));
+      setTimeout(() => resolve(true), 1500);
+    });
+    return xtermPromise;
+  }
 
   function setText(id, txt, cls) {
     const el = typeof id === 'string' ? $(id) : id;
@@ -599,7 +641,7 @@
       // local-only session id for prefixing UI; no server token
       state.sessionId = randId();
       setText('#session-id', state.sessionId);
-      state.appName = `echo-${state.sessionId}`;
+      state.appName = `shell-demo-${state.sessionId}`;
       wireControls();
       // Ensure any SSE placeholders are disabled in read-only mode
       try {
@@ -638,7 +680,7 @@
       if (!r.ok || !data.session_id) throw new Error(data.error?.message || 'session');
       state.sessionId = data.session_id;
       setText('#session-id', state.sessionId);
-      state.appName = `echo-${state.sessionId}`;
+      state.appName = `shell-demo-${state.sessionId}`;
       state.orch.token = data.token || null;
       state.appApplied = false;
       wireControls();
@@ -656,7 +698,7 @@
     // Clear client session state
     state.sessionId = null;
     state.appApplied = false;
-    state.appName = 'echo';
+    state.appName = 'shell-demo';
     // Stop/disable SSE and prefer non-HTMX panels
     try {
       const ids = ['logs-sse','events-sse','status-summary'];
@@ -823,6 +865,21 @@
     decoder: (window.TextDecoder ? new TextDecoder() : null),
   };
 
+  function labsEnsureFitAddon() {
+    if (!labsShell.term || labsShell.fit) return;
+    if (window.FitAddon && window.FitAddon.FitAddon) {
+      try {
+        labsShell.fit = new window.FitAddon.FitAddon();
+        labsShell.term.loadAddon(labsShell.fit);
+      } catch {}
+    }
+  }
+
+  function labsFitNow() {
+    labsEnsureFitAddon();
+    try { labsShell.fit?.fit(); } catch {}
+  }
+
   function labsShellStatus(txt, cls) {
     const el = document.getElementById('labs-shell-status');
     if (!el) return;
@@ -868,19 +925,27 @@
     fillReplicaSelect(document.getElementById('labs-shell-pod'));
     const modal = document.getElementById('labs-shell-modal');
     if (!modal) return;
-    if (!labsShell.term && window.Terminal) {
-      labsShell.term = new Terminal({ cursorBlink: true, convertEol: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', theme: { background: '#0b0f14' } });
-      if (window.FitAddon && window.FitAddon.FitAddon) {
-        labsShell.fit = new window.FitAddon.FitAddon();
-        labsShell.term.loadAddon(labsShell.fit);
-      }
-      labsShell.term.open(document.getElementById('labs-shell-terminal'));
-      try { labsShell.fit?.fit(); } catch {}
-      labsShell.term.onData(data => labsShellSend(0, data));
-      labsShell.term.onResize(size => { try { labsShellSend(4, JSON.stringify({ Width: size.cols, Height: size.rows })); } catch {} });
-    }
-    labsShellStatus('idle', 'muted');
     modal.classList.remove('hidden');
+    labsShellStatus('loading terminal', 'muted');
+    ensureXtermLoaded().then(() => {
+      if (!labsShell.term && window.Terminal) {
+        labsShell.term = new Terminal({ cursorBlink: true, convertEol: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', theme: { background: '#0b0f14' } });
+        labsEnsureFitAddon();
+        labsShell.term.open(document.getElementById('labs-shell-terminal'));
+        labsFitNow();
+        labsShell.term.onData(data => labsShellSend(0, data));
+        labsShell.term.onResize(size => { try { labsShellSend(4, JSON.stringify({ Width: size.cols, Height: size.rows })); } catch {} });
+      }
+      if (!window.Terminal) {
+        labsShellStatus('terminal unavailable', 'bad');
+        try { banner('Terminal library failed to load.', 'fail'); } catch {}
+        return;
+      }
+      labsShellStatus('idle', 'muted');
+      setTimeout(labsFitNow, 50);
+      setTimeout(labsFitNow, 250);
+      setTimeout(labsFitNow, 900);
+    });
   }
 
   function labsCloseShell() {
@@ -925,7 +990,7 @@
       labsShell.socket.binaryType = 'arraybuffer';
       labsShell.socket.onopen = () => {
         labsShellStatus('connected', 'ok');
-        try { labsShell.fit?.fit(); } catch {}
+        labsFitNow();
         if (labsShell.term) {
           try { labsShellSend(4, JSON.stringify({ Width: labsShell.term.cols, Height: labsShell.term.rows })); } catch {}
         }
@@ -1285,7 +1350,7 @@
       try { banner('Session reset — resources will disappear shortly.', 'ok'); } catch(_){ try { toast('Session reset', 'ok'); } catch(_){} }
       state.sessionId = null;
       state.appApplied = false;
-      state.appName = 'echo';
+      state.appName = 'shell-demo';
       // Stop/disable SSE and prefer non-HTMX panels
       try {
         const ids = ['logs-sse','events-sse','status-summary'];
@@ -1329,10 +1394,10 @@
       try {
         const ex = document.getElementById('example-select');
         if (ex) {
-          ex.value = 'echo';
+          ex.value = 'shell-demo';
           ex.dispatchEvent(new Event('change', { bubbles: true }));
         } else {
-          loadExampleYaml('echo');
+          loadExampleYaml('shell-demo');
         }
       } catch(_){}
       try {
@@ -1356,20 +1421,20 @@
     // Load YAML preview on example change
     const sel = document.getElementById('example-select');
     if (sel) {
-      sel.addEventListener('change', ()=>{ try { loadExampleYaml(sel.value||'echo'); } catch(_){ } });
-      try { loadExampleYaml(sel.value||'echo'); } catch(_){ }
+      sel.addEventListener('change', ()=>{ try { loadExampleYaml(sel.value||'shell-demo'); } catch(_){ } });
+      try { loadExampleYaml(sel.value||'shell-demo'); } catch(_){ }
     }
     $('#btn-apply-echo')?.addEventListener('click', async(e) => {
       // Guardrails and user guidance instead of silent no-op
       const actionsEnabled = $('#toggle-actions')?.checked && state.sessionId && state.orch.available;
       const selNow = document.getElementById('example-select');
-      const example = selNow && selNow.value ? selNow.value : 'echo';
+      const example = selNow && selNow.value ? selNow.value : 'shell-demo';
       if (!state.orch.available) {
         banner(`Controlled actions are unavailable. Start a session and enable "Enable Controlled Actions", or run: ae apply -f specs/examples/${example}.yaml`, 'fail');
         return;
       }
       if (!state.sessionId) {
-        banner('Start Session first to namespace your app (echo-<session>).', 'fail');
+        banner('Start Session first to namespace your app (shell-demo-<session>).', 'fail');
         return;
       }
       if (!$('#toggle-actions')?.checked) {
@@ -1733,6 +1798,12 @@
     try { document.getElementById('labs-pf-connect')?.addEventListener('click', labsPfConnect); } catch(_){}
     try { document.getElementById('labs-pf-send')?.addEventListener('click', labsPfSendRequest); } catch(_){}
     try { document.getElementById('labs-pf-disconnect')?.addEventListener('click', labsPfDisconnect); } catch(_){}
+    try {
+      window.addEventListener('resize', () => {
+        const modal = document.getElementById('labs-shell-modal');
+        if (modal && !modal.classList.contains('hidden')) labsFitNow();
+      }, { passive: true });
+    } catch(_){}
   });
   // Ensure HTMX-driven events panel auto-scrolls to bottom after swaps (when follow is enabled)
   try {
