@@ -105,6 +105,7 @@ labs-k3d-down:
 
 .PHONY: labs-up labs-down labs-aio-up labs-aio-down labs-apishim-env
 labs-up:
+	@./scripts/ensure_dev_env.sh
 	docker compose -f ops/dev/labs-compose.yaml up -d
 
 labs-down:
@@ -126,6 +127,7 @@ apishim-smoke:
 
 labs-aio-up:
 	@./scripts/ensure_apishim_env.sh
+	@./scripts/ensure_dev_env.sh
 	@if [ "$${AE_LABS_USE_POSTGRES:-0}" = "1" ]; then \
 	  if [ -z "$${AE_APISHIM_DSN:-}" ] && [ -z "$${AE_STATE_DSN:-}" ]; then \
 	    export AE_APISHIM_DSN="postgresql://shim:shim@postgres:5432/shim"; \

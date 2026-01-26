@@ -41,11 +41,11 @@
 
   async function jsonGet(url) {
     try {
-      const r = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      const r = await fetch(url, { headers: labsHeaders({ 'Accept': 'application/json' }) });
       if (!r.ok) {
         if (r.status >= 500 && (!API || API==='') && window.DOCS_API_BASE && typeof url === 'string' && url.startsWith('/')) {
           try { await switchToDirectApi('proxy 5xx'); } catch(_){}
-          const r2 = await fetch(`${window.DOCS_API_BASE}${url}`, { headers: { 'Accept': 'application/json' } });
+          const r2 = await fetch(`${window.DOCS_API_BASE}${url}`, { headers: labsHeaders({ 'Accept': 'application/json' }) });
           if (!r2.ok) throw new Error(`${r2.status}`);
           return await r2.json();
         }
@@ -55,7 +55,7 @@
     } catch (e) {
       if ((!API || API==='') && window.DOCS_API_BASE && typeof url === 'string' && url.startsWith('/')) {
         try { await switchToDirectApi('proxy network error'); } catch(_){}
-        const r3 = await fetch(`${window.DOCS_API_BASE}${url}`, { headers: { 'Accept': 'application/json' } });
+        const r3 = await fetch(`${window.DOCS_API_BASE}${url}`, { headers: labsHeaders({ 'Accept': 'application/json' }) });
         if (!r3.ok) throw new Error(`${r3.status}`);
         return await r3.json();
       }
@@ -294,7 +294,7 @@
       API = window.DOCS_API_BASE || 'http://127.0.0.1:9108';
     } else {
       try {
-        const r = await fetch('/health');
+        const r = await fetch('/health', { headers: labsHeaders({ 'Accept': 'application/json' }) });
         if (r.ok) { API = ''; }
         else { throw new Error('no proxy'); }
       } catch {
@@ -314,11 +314,18 @@
         if (inp) inp.value = tok;
       }
     } catch(_){}
-    try { const dash = document.getElementById('open-dashboard'); if (dash) { dash.href = `${API}/dashboard`; dash.classList.remove('hidden'); } } catch(_){}
+    try {
+      const dash = document.getElementById('open-dashboard');
+      if (dash) {
+        const dashUrl = (window.DOCS_DASHBOARD_URL || `${API}/dashboard`).trim();
+        dash.href = dashUrl;
+        dash.classList.remove('hidden');
+      }
+    } catch(_) {}
     // Check API health regardless of labs availability
     let apiHealth = 'unknown', apiClass = 'pending';
     try {
-      const h = await fetch(`${API}/health`);
+      const h = await fetch(`${API}/health`, { headers: labsHeaders({ 'Accept': 'application/json' }) });
       apiHealth = h.ok ? 'ok' : `error ${h.status}`;
       apiClass = h.ok ? 'ok' : 'fail';
     } catch { apiHealth = 'unreachable'; apiClass = 'fail'; }
@@ -340,7 +347,7 @@
           bs.innerHTML = `Backends: ${backs} ${k3d.present? `(k3d present: http ${k3d.ports?.http||8081}, https ${k3d.ports?.https||8444})` : '(k3d not detected)'} · <span id="ribbon-api" class="pill">API: checking...</span> · <span id="ribbon-labs" class="pill ok">Labs: available</span>`;
           // Update the API pill now that the element exists
           try {
-            const h2 = await fetch(`${API}/health`);
+            const h2 = await fetch(`${API}/health`, { headers: labsHeaders({ 'Accept': 'application/json' }) });
             const ok2 = h2.ok;
             const elApi = document.getElementById('ribbon-api');
             if (elApi) { elApi.textContent = ok2 ? 'API: ok' : `API: error ${h2.status}`; elApi.className = 'pill ' + (ok2 ? 'ok' : 'fail'); }
@@ -432,7 +439,7 @@
           bs.innerHTML = `Backends: ${backs} ${k3d.present? `(k3d present: http ${k3d.ports?.http||8081}, https ${k3d.ports?.https||8444})` : '(k3d not detected)'} · <span id=\"ribbon-api\" class=\"pill\">API: checking...</span> · <span id=\"ribbon-labs\" class=\"pill ok\">Labs: available</span>`;
           // Update the API pill now that the element exists (mirror initEnv)
           try {
-            const h2 = await fetch(`${API}/health`);
+            const h2 = await fetch(`${API}/health`, { headers: labsHeaders({ 'Accept': 'application/json' }) });
             const ok2 = h2.ok;
             const elApi = document.getElementById('ribbon-api');
             if (elApi) {
