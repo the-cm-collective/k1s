@@ -105,10 +105,23 @@ def _exec_status_obj(exit_code: int) -> dict[str, Any]:
 
 
 def _read_json(body: bytes) -> dict[str, Any]:
-    try:
-        return json.loads(body.decode("utf-8")) if body else {}
-    except json.JSONDecodeError:
+    if not body:
         return {}
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError:
+        return {}
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            import yaml
+        except Exception:
+            return {}
+        try:
+            return yaml.safe_load(text) or {}
+        except Exception:
+            return {}
 
 
 def _ns_name(path: str) -> tuple[str, str | None, str | None]:
@@ -525,6 +538,32 @@ def _update_managed_fields(
     }
     cleaned.append(entry)
     md["managedFields"] = cleaned
+    return md
+
+
+def _ensure_managed_fields_entry(
+    md: dict[str, Any],
+    api_version: str,
+    manager: str,
+    operation: str,
+    paths: set[str] | None = None,
+) -> dict[str, Any]:
+    managed = list(md.get("managedFields") or [])
+    if any(m.get("manager") == manager for m in managed):
+        return md
+    now = datetime.now(timezone.utc).isoformat()  # noqa: UP017 - timezone-aware stamp
+    paths = set(paths or {"*"})
+    entry: dict[str, Any] = {
+        "manager": manager,
+        "operation": operation,
+        "apiVersion": api_version,
+        "time": now,
+        "fieldsType": "FieldsV1",
+        "paths": sorted(paths),
+        "fieldsV1": _paths_to_fieldsV1(paths),
+    }
+    managed.append(entry)
+    md["managedFields"] = managed
     return md
 
 
@@ -2051,6 +2090,10 @@ class ShimHandler(BaseHTTPRequestHandler):
             return True
         principal = self._parse_principal()
         role = principal.token_role
+        if role == "admin":
+            return True
+        if role == "read" and verb in {"get", "list", "watch"}:
+            return True
         if not self.rbac_eval_roles and role is None:
             return False
         if self.rbac_eval_roles and principal.username == "system:unauthenticated":
@@ -2188,13 +2231,19 @@ class ShimHandler(BaseHTTPRequestHandler):
                 line = self.rfile.readline()
                 if not line:
                     break
+                line = line.strip()
+                if b";" in line:
+                    line = line.split(b";", 1)[0]
                 try:
-                    chunk_len = int(line.strip(), 16)
+                    chunk_len = int(line, 16)
                 except Exception:
                     break
                 if chunk_len == 0:
-                    # consume trailing CRLF after last chunk
-                    self.rfile.readline()
+                    # consume trailers until blank line
+                    while True:
+                        trailer = self.rfile.readline()
+                        if not trailer or trailer in (b"\r\n", b"\n"):
+                            break
                     break
                 body.extend(self.rfile.read(chunk_len))
                 # consume chunk trailer CRLF
@@ -7687,6 +7736,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
         body = self._read_body()
         patch = _read_json(body)
+        patch_debug = os.getenv("AE_APISHIM_PATCH_DEBUG", "0") == "1"
         plural, ns, name = _ns_name(path)
         if (
             plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}
@@ -7706,6 +7756,15 @@ class ShimHandler(BaseHTTPRequestHandler):
             if plural == "secrets":
                 _set_secret_type(md, merged.get("type"))
             patch_paths = _extract_field_paths(patch) if isinstance(patch, dict) else set()
+            if patch_debug:
+                LOGGER.info(
+                    "patch %s/%s ctype=%s manager=%s paths=%s",
+                    plural,
+                    name,
+                    ctype or "<empty>",
+                    field_manager,
+                    sorted(patch_paths),
+                )
             if ctype.startswith("application/apply-patch") and _managed_conflict(
                 obj.metadata, field_manager, patch_paths, force_flag
             ):
@@ -7716,12 +7775,18 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )
                 return
             if ctype.startswith("application/apply-patch"):
+                if not patch_paths:
+                    patch_paths = {"*"}
+                md = _merge_dict(dict(obj.metadata), md)
                 md = _update_managed_fields(
                     md, "v1", field_manager, "Apply", fields=patch_paths, force=force_flag
                 )
+                md = _ensure_managed_fields_entry(md, "v1", field_manager, "Apply", patch_paths)
             elif ctype in (
                 "application/merge-patch+json",
                 "application/strategic-merge-patch+json",
+                "application/json",
+                "",
             ):
                 md = _update_managed_fields(md, "v1", field_manager, "Update", fields=patch_paths)
             spec_or_data = (
@@ -7753,6 +7818,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                 spec=spec_or_data or {},
                 status=merged.get("status") or {},
             )
+            if patch_debug and plural not in {"configmaps", "secrets"}:
+                LOGGER.info("patched %s/%s spec.replicas=%s", plural, name_eff, (spec_or_data or {}).get("replicas"))
             self._ok(_to_obj(updated))
             return
         orig_path = self.path
@@ -7760,13 +7827,15 @@ class ShimHandler(BaseHTTPRequestHandler):
         try:
             if self._handle_custom_resource_patch(ctype, patch):
                 return
-            if self._patch_extended_resources(ctype, patch, field_manager):
+            if self._patch_extended_resources(ctype, patch, field_manager, force_flag):
                 return
         finally:
             self.path = orig_path
         self._not_found()
 
-    def _patch_extended_resources(self, ctype: str, patch: Any, field_manager: str) -> bool:
+    def _patch_extended_resources(
+        self, ctype: str, patch: Any, field_manager: str, force_flag: bool
+    ) -> bool:
         specs = [
             ("apps", "v1", "deployments", "Deployment"),
             ("apps", "v1", "statefulsets", "StatefulSet"),
@@ -7799,6 +7868,59 @@ class ShimHandler(BaseHTTPRequestHandler):
                     continue
                 obj = self.server.store.get(group, version, res, None, name)  # type: ignore[attr-defined]
                 if not obj:
+                    if ctype.startswith("application/apply-patch"):
+                        merged = self._apply_patch_merge({}, patch, ctype)
+                        if merged is None:
+                            return True
+                        md = merged.get("metadata") or {}
+                        patch_paths = _extract_field_paths(patch) if isinstance(patch, dict) else set()
+                        if not patch_paths:
+                            patch_paths = {"*"}
+                        md = _update_managed_fields(
+                            md,
+                            f"{group}/{version}",
+                            field_manager,
+                            "Apply",
+                            fields=patch_paths,
+                            force=force_flag,
+                        )
+                        md = _ensure_managed_fields_entry(
+                            md, f"{group}/{version}", field_manager, "Apply", patch_paths
+                        )
+                        if res in {"deployments", "statefulsets", "daemonsets", "jobs"}:
+                            spec_body = merged.get("spec") or {}
+                            merged["spec"] = _inject_sa_projection(spec_body)
+                        if res == "cronjobs":
+                            cj_spec = merged.get("spec") or {}
+                            jt = cj_spec.get("jobTemplate") or {}
+                            jspec = _inject_sa_projection(jt.get("spec") or {})
+                            jt["spec"] = jspec
+                            cj_spec["jobTemplate"] = jt
+                            merged["spec"] = cj_spec
+                        name_eff = md.get("name") or name
+                        if not _valid_name(name_eff):
+                            self._json_status(
+                                HTTPStatus.UNPROCESSABLE_ENTITY,
+                                reason="Invalid",
+                                message="invalid metadata.name (DNS-1123 label)",
+                            )
+                            return True
+                        created = self.server.store.upsert(
+                            group,
+                            version,
+                            res,
+                            None,
+                            name_eff,
+                            metadata=_normalize_metadata(md, name_eff, None, res),
+                            spec=_spec_payload(res, merged),
+                            status=merged.get("status") or {},
+                        )  # type: ignore[attr-defined]
+                        self._ok(
+                            transform_map.get(
+                                (group, version, res), _to_generic(group, version, kind, res)
+                            )(created)
+                        )  # type: ignore[arg-type]
+                        return True
                     self._not_found()
                     return True
                 base = transform_map.get(
@@ -7809,9 +7931,16 @@ class ShimHandler(BaseHTTPRequestHandler):
                     return True
                 md = merged.get("metadata") or {}
                 patch_paths = _extract_field_paths(patch) if isinstance(patch, dict) else set()
-                force_flag = (
-                    parse_qs(urlparse(self.path).query).get("force", ["false"])[0] or ""
-                ).lower() in {"1", "true", "yes"}
+                patch_debug = os.getenv("AE_APISHIM_PATCH_DEBUG", "0") == "1"
+                if patch_debug:
+                    LOGGER.info(
+                        "patch %s/%s ctype=%s manager=%s paths=%s",
+                        res,
+                        name,
+                        ctype or "<empty>",
+                        field_manager,
+                        sorted(patch_paths),
+                    )
                 if ctype.startswith("application/apply-patch"):
                     if _managed_conflict(obj.metadata, field_manager, patch_paths, force_flag):
                         self._json_status(
@@ -7820,6 +7949,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                             message="managedFields conflict on apply",
                         )
                         return True
+                    if not patch_paths:
+                        patch_paths = {"*"}
+                    md = _merge_dict(dict(obj.metadata), md)
                     md = _update_managed_fields(
                         md,
                         f"{group}/{version}",
@@ -7828,9 +7960,14 @@ class ShimHandler(BaseHTTPRequestHandler):
                         fields=patch_paths,
                         force=force_flag,
                     )
+                    md = _ensure_managed_fields_entry(
+                        md, f"{group}/{version}", field_manager, "Apply", patch_paths
+                    )
                 elif ctype in (
                     "application/merge-patch+json",
                     "application/strategic-merge-patch+json",
+                    "application/json",
+                    "",
                 ):
                     md = _update_managed_fields(
                         md, f"{group}/{version}", field_manager, "Update", fields=patch_paths
@@ -7857,6 +7994,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     spec=_spec_payload(res, merged),
                     status=merged.get("status") or {},
                 )  # type: ignore[attr-defined]
+                if patch_debug and res in {"deployments", "statefulsets", "daemonsets"}:
+                    spec_out = _spec_payload(res, merged)
+                    LOGGER.info("patched %s/%s spec.replicas=%s", res, name_eff, spec_out.get("replicas"))
                 self._ok(
                     transform_map.get(
                         (group, version, res), _to_generic(group, version, kind, res)
@@ -7868,6 +8008,67 @@ class ShimHandler(BaseHTTPRequestHandler):
                 continue
             obj = self.server.store.get(group, version, res, ns, name)  # type: ignore[attr-defined]
             if not obj:
+                if ctype.startswith("application/apply-patch"):
+                    merged = self._apply_patch_merge({}, patch, ctype)
+                    if merged is None:
+                        return True
+                    md = merged.get("metadata") or {}
+                    patch_paths = _extract_field_paths(patch) if isinstance(patch, dict) else set()
+                    if not patch_paths:
+                        patch_paths = {"*"}
+                    md = _update_managed_fields(
+                        md,
+                        f"{group}/{version}",
+                        field_manager,
+                        "Apply",
+                        fields=patch_paths,
+                        force=force_flag,
+                    )
+                    md = _ensure_managed_fields_entry(
+                        md, f"{group}/{version}", field_manager, "Apply", patch_paths
+                    )
+                    if res in {"deployments", "statefulsets", "daemonsets", "jobs"}:
+                        spec_body = merged.get("spec") or {}
+                        merged["spec"] = _inject_sa_projection(spec_body)
+                    if res == "cronjobs":
+                        cj_spec = merged.get("spec") or {}
+                        jt = cj_spec.get("jobTemplate") or {}
+                        jspec = _inject_sa_projection(jt.get("spec") or {})
+                        jt["spec"] = jspec
+                        cj_spec["jobTemplate"] = jt
+                        merged["spec"] = cj_spec
+                    name_eff = md.get("name") or name
+                    ns_eff = md.get("namespace") or ns
+                    if not _valid_name(name_eff):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.name (DNS-1123 label)",
+                        )
+                        return True
+                    if ns_eff is not None and not _valid_name(ns_eff):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.namespace (DNS-1123 label)",
+                        )
+                        return True
+                    created = self.server.store.upsert(
+                        group,
+                        version,
+                        res,
+                        ns_eff,
+                        name_eff,
+                        metadata=_normalize_metadata(md, name_eff, ns_eff, res),
+                        spec=_spec_payload(res, merged),
+                        status=merged.get("status") or {},
+                    )  # type: ignore[attr-defined]
+                    self._ok(
+                        transform_map.get(
+                            (group, version, res), _to_generic(group, version, kind, res)
+                        )(created)
+                    )  # type: ignore[arg-type]
+                    return True
                 self._not_found()
                 return True
             base = transform_map.get((group, version, res), _to_generic(group, version, kind, res))(
@@ -7878,10 +8079,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return True
             md = merged.get("metadata") or {}
             patch_paths = _extract_field_paths(patch) if isinstance(patch, dict) else set()
+            patch_debug = os.getenv("AE_APISHIM_PATCH_DEBUG", "0") == "1"
+            if patch_debug:
+                LOGGER.info(
+                    "patch %s/%s ctype=%s manager=%s paths=%s",
+                    res,
+                    name,
+                    ctype or "<empty>",
+                    field_manager,
+                    sorted(patch_paths),
+                )
             if ctype.startswith("application/apply-patch"):
-                force_flag = (
-                    parse_qs(urlparse(self.path).query).get("force", ["false"])[0] or ""
-                ).lower() in {"1", "true", "yes"}
                 if _managed_conflict(obj.metadata, field_manager, patch_paths, force_flag):
                     self._json_status(
                         HTTPStatus.CONFLICT,
@@ -7889,6 +8097,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                         message="managedFields conflict on apply",
                     )
                     return True
+                if not patch_paths:
+                    patch_paths = {"*"}
+                md = _merge_dict(dict(obj.metadata), md)
                 md = _update_managed_fields(
                     md,
                     f"{group}/{version}",
@@ -7897,9 +8108,14 @@ class ShimHandler(BaseHTTPRequestHandler):
                     fields=patch_paths,
                     force=force_flag,
                 )
+                md = _ensure_managed_fields_entry(
+                    md, f"{group}/{version}", field_manager, "Apply", patch_paths
+                )
             elif ctype in (
                 "application/merge-patch+json",
                 "application/strategic-merge-patch+json",
+                "application/json",
+                "",
             ):
                 md = _update_managed_fields(
                     md, f"{group}/{version}", field_manager, "Update", fields=patch_paths
@@ -7926,6 +8142,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                 spec=_spec_payload(res, merged),
                 status=merged.get("status") or {},
             )  # type: ignore[attr-defined]
+            if patch_debug and res in {"deployments", "statefulsets", "daemonsets"}:
+                spec_out = _spec_payload(res, merged)
+                LOGGER.info("patched %s/%s spec.replicas=%s", res, name_eff, spec_out.get("replicas"))
             self._ok(
                 transform_map.get((group, version, res), _to_generic(group, version, kind, res))(
                     updated
@@ -7939,6 +8158,13 @@ class ShimHandler(BaseHTTPRequestHandler):
     ) -> dict[str, Any] | None:
         if ctype == "application/json-patch+json":
             merged = _apply_json_patch(base, patch if isinstance(patch, list) else [])
+            if merged is None:
+                self._json_status(
+                    HTTPStatus.BAD_REQUEST, reason="Invalid", message="invalid json patch"
+                )
+            return merged
+        if isinstance(patch, list) and ctype in ("application/json", ""):
+            merged = _apply_json_patch(base, patch)
             if merged is None:
                 self._json_status(
                     HTTPStatus.BAD_REQUEST, reason="Invalid", message="invalid json patch"
@@ -8216,6 +8442,9 @@ class ShimHandler(BaseHTTPRequestHandler):
             plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}
             and name
         ):
+            if not self._rbac_allows("delete", plural):
+                self._deny(403)
+                return
             ok = self.server.store.delete(
                 "", "v1", plural, None if plural == "namespaces" else ns, name
             )  # type: ignore[attr-defined]
@@ -8227,6 +8456,9 @@ class ShimHandler(BaseHTTPRequestHandler):
         if path.startswith("/apis/batch/v1"):
             b_plural, b_ns, b_name = _batch_ns_name(path)
             if b_plural in {"jobs", "cronjobs"}:
+                if not self._rbac_allows("delete", b_plural):
+                    self._deny(403)
+                    return
                 if b_name:
                     ok = self.server.store.delete("batch", "v1", b_plural, b_ns, b_name)  # type: ignore[attr-defined]
                     if not ok:
@@ -8247,6 +8479,9 @@ class ShimHandler(BaseHTTPRequestHandler):
         if path.startswith("/apis/apps/v1"):
             d_plural, d_ns, d_name = _apps_ns_name(path)
             if d_plural in {"deployments", "statefulsets", "daemonsets"}:
+                if not self._rbac_allows("delete", d_plural):
+                    self._deny(403)
+                    return
                 if d_name:
                     ok = self.server.store.delete("apps", "v1", d_plural, d_ns, d_name)  # type: ignore[attr-defined]
                     if not ok:
@@ -8267,6 +8502,9 @@ class ShimHandler(BaseHTTPRequestHandler):
         if path.startswith("/apis/networking.k8s.io/v1"):
             n_plural, n_ns, n_name = _net_ns_name(path)
             if n_plural == "ingresses":
+                if not self._rbac_allows("delete", n_plural):
+                    self._deny(403)
+                    return
                 if n_name:
                     ok = self.server.store.delete("networking.k8s.io", "v1", n_plural, n_ns, n_name)  # type: ignore[attr-defined]
                     if not ok:

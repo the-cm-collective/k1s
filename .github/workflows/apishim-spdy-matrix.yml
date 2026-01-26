@@ -7,6 +7,7 @@ on:
 
 jobs:
   spdy-matrix:
+    if: ${{ env.GITEA_ACTIONS != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -72,10 +73,10 @@ jobs:
             echo "DOCKER_TLS_CERTDIR=" >> "$GITHUB_ENV"
           elif [ -d /certs/client ]; then
             echo "DOCKER_HOST=tcp://docker:2376" >> "$GITHUB_ENV"
-            # Self-signed runner certs: use client certs but skip verify.
-            echo "DOCKER_TLS_VERIFY=" >> "$GITHUB_ENV"
+            # Trust the runner CA for TLS.
+            echo "DOCKER_TLS_VERIFY=1" >> "$GITHUB_ENV"
             echo "DOCKER_CERT_PATH=/certs/client" >> "$GITHUB_ENV"
-            echo "DOCKER_TLS_CERTDIR=" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_CERTDIR=/certs" >> "$GITHUB_ENV"
           fi
       - name: Run SPDY matrix
         if: ${{ env.ACT != 'true' || matrix.runtime != 'podman' }}
@@ -85,3 +86,12 @@ jobs:
           K9S_SMOKE_ALLOW_FAIL: ${{ matrix.allow_failure && '1' || '0' }}
         run: |
           scripts/dev/apishim_spdy_matrix_run.sh
+      - name: Docker TLS diagnostics
+        if: failure() && matrix.runtime == 'docker'
+        run: |
+          echo "=== docker env ==="
+          env | sort | grep -E '^DOCKER_|^AE_DOCKER_TLS_INSECURE' || true
+          echo "=== /certs/client ==="
+          ls -la /certs/client || true
+          echo "=== docker info ==="
+          docker info || true

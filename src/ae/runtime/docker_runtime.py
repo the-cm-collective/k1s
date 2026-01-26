@@ -43,7 +43,20 @@ class DockerRuntime(RuntimeAdapter):
         registry_auth: RegistryAuthProvider | None = None,
     ) -> None:
         try:
-            self._client = client or docker.from_env()
+            if client is None:
+                if not os.environ.get("DOCKER_CERT_PATH"):
+                    tls_dir = os.environ.get("DOCKER_TLS_CERTDIR")
+                    if tls_dir:
+                        candidate = os.path.join(tls_dir, "client")
+                        cert_ok = (
+                            os.path.isfile(os.path.join(candidate, "cert.pem"))
+                            and os.path.isfile(os.path.join(candidate, "key.pem"))
+                        )
+                        if cert_ok:
+                            os.environ["DOCKER_CERT_PATH"] = candidate
+                self._client = docker.from_env()
+            else:
+                self._client = client
         except Exception as exc:  # pragma: no cover - defensive guard, validated in tests
             raise RuntimeError(f"Failed to initialize Docker client: {exc}") from exc
         self._registry = registry_auth or RegistryAuthProvider()

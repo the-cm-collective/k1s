@@ -398,6 +398,21 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         except Exception:
             return False
 
+    def _flag_enabled(self, name: str, default: bool = True) -> bool:
+        try:
+            raw = os.getenv(name)
+        except Exception:
+            raw = None
+        if raw is None or str(raw).strip() == "":
+            return bool(default)
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _dashboard_enabled(self) -> bool:
+        return self._flag_enabled("AE_DASHBOARD", True)
+
+    def _playground_enabled(self) -> bool:
+        return self._flag_enabled("AE_PLAYGROUND", True)
+
     def _labs_token_valid(self) -> bool:
         if not self._labs_enabled():
             return False
@@ -724,7 +739,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
         # Labs SSE (dev-only): stream events/status to the playground
         if path_only.startswith("/labs/sse/"):
-            if not self._labs_enabled():
+            if not self._labs_enabled() or not self._playground_enabled():
                 self.send_response(404)
                 self.end_headers()
                 return
@@ -747,10 +762,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
         if path_only == "/labs/helm-demo" and self._labs_enabled():
+            if not self._playground_enabled():
+                self.send_response(404)
+                self.end_headers()
+                return
             if not self._labs_request_authorized():
                 self._deny(401)
                 return
             self._json_ok(_helm_demo_status())
+            return
+        # Public UI feature flags (non-sensitive)
+        if path_only == "/ui/features":
+            self._handle_ui_features()
             return
         # Metrics allowed without auth
         if path_only.startswith("/metrics"):
@@ -792,8 +815,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     title="k1s Swagger UI (API Shim)",
                 )
             elif path_only in ("/dashboard", "/dashboard/"):
+                if not self._dashboard_enabled():
+                    self.send_response(404)
+                    self.end_headers()
+                    return
                 self._handle_dashboard()
             elif path_only == "/dashboard.js":
+                if not self._dashboard_enabled():
+                    self.send_response(404)
+                    self.end_headers()
+                    return
                 self._handle_dashboard_js()
             elif path_only in ("/redoc", "/redoc/"):
                 self._handle_redoc()
@@ -826,9 +857,17 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             self._handle_system()
             return
         if path_only in ("/dashboard", "/dashboard/"):
+            if not self._dashboard_enabled():
+                self.send_response(404)
+                self.end_headers()
+                return
             self._handle_dashboard()
             return
         if path_only.startswith("/dashboard/partials/"):
+            if not self._dashboard_enabled():
+                self.send_response(404)
+                self.end_headers()
+                return
             # server-rendered fragments for HTMX-enhanced dashboard
             subpath = path_only[len("/dashboard/partials/") :]
             if subpath == "logs":
@@ -839,9 +878,17 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 return
         # Dashboard SSE alias for events (no labs gating)
         if path_only == "/dashboard/sse/events":
+            if not self._dashboard_enabled():
+                self.send_response(404)
+                self.end_headers()
+                return
             self._handle_labs_sse_events()
             return
         if path_only == "/dashboard.js":
+            if not self._dashboard_enabled():
+                self.send_response(404)
+                self.end_headers()
+                return
             self._handle_dashboard_js()
             return
         if path_only.startswith("/manifest/"):
@@ -1072,11 +1119,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             return
         # Labs playground micro-API (dev only)
         if self.path.startswith("/labs/") or self.path == "/labs/info":
+            if not self._playground_enabled():
+                self._json_error(404, "playground disabled")
+                return
             self._handle_labs_post()
             return
         # Mutations are optional and gated by env
-        import os
-
         if os.getenv("AE_API_MUTATIONS") != "1":
             self.send_response(404)
             self.end_headers()
@@ -2749,6 +2797,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         payload = {"controller": ctrl, "rbac": rbac, "crashloop": crash, **(extra or {})}
         self._json_ok(payload)
 
+    def _handle_ui_features(self) -> None:
+        payload = {
+            "dashboard": bool(self._dashboard_enabled()),
+            "playground": bool(self._playground_enabled()),
+        }
+        self._json_ok(payload)
+
     def _handle_swagger(self, *, spec_url: str = "/openapi.json", title: str = "k1s Swagger UI") -> None:
         spec_literal = json.dumps(spec_url)
         html = """
@@ -3476,6 +3531,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       body.apps-collapsed #apps { border-right:0; padding-right:0; }
       .scrollbar-hide { scrollbar-width: none; -ms-overflow-style: none; }
       .scrollbar-hide::-webkit-scrollbar { width:0; height:0; }
+      .hidden { display:none; }
       #apps-list { display:block; overflow-y:auto; height: calc(100vh - (var(--header-h, 60px)) - 12px); padding:6px 6px 12px; }
       body.apps-collapsed #apps-list { display:none; }
       .ns-header { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:#94a3b8; display:flex; align-items:center; gap:6px; margin:8px 6px 4px; }
@@ -3497,6 +3553,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       .card table { display:block; overflow:auto; white-space: nowrap; scrollbar-width: none; -ms-overflow-style: none; }
       .card table::-webkit-scrollbar { width:0; height:0; }
       .card pre { overflow:auto; }
+      .banner { margin-top:8px; padding:6px 10px; border-radius:6px; font-size:12px; border:1px solid transparent; }
+      .banner.warn { background:#fef3c733; color:#b45309; border-color:#f59e0b; }
+      .banner.err { background:#fee2e233; color:#b91c1c; border-color:#ef4444; }
       /* Ensure flex children can shrink and let inner boxes scroll */
       .row.stretch > .card { min-width: 0; }
       .detail-card { flex: 0 0 320px; }
@@ -3578,6 +3637,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         <label title=\"Hide healthy counters (show warn/bad only)\"><input type=\"checkbox\" id=\"hide-healthy\" /> Hide Healthy</label>
         <label title=\"Hide less critical counters (services, volumes, containers, restarts)\"><input type=\"checkbox\" id=\"compact-counters\" /> Compact Counters</label>
       </div>
+      <div id=\"auth-banner\" class=\"banner hidden\" role=\"status\" aria-live=\"polite\"></div>
     </header>
     <main>
   <section id=\"apps\"><div id=\"apps-list\" class=\"scrollbar-hide\"></div><button id=\"apps-pane-toggle\" title=\"Collapse apps pane\" aria-pressed=\"false\" aria-label=\"Toggle apps panel\"><svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"0\" fill=\"none\"/><path d=\"M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z\"/></svg></button></section>
@@ -3610,7 +3670,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         <!-- Logs directly below Application/Events -->
         <div class=\"card\" style=\"margin-top:12px;\">
           <strong>Logs</strong>
-          <div id=\"logs\" class=\"logbox scrollbar-hide\" style=\"height:235px;\" hx-get=\"/dashboard/partials/logs\" hx-trigger=\"load, every 5s, refresh\" hx-include=\"#log-filter\" hx-swap=\"innerHTML\" hx-on::after-settle=\"this.scrollTop=this.scrollHeight\"></div>
+          <div id=\"logs\" class=\"logbox scrollbar-hide\" style=\"height:235px;\" hx-get=\"/dashboard/partials/logs\" hx-trigger=\"refresh\" hx-include=\"#log-filter\" hx-swap=\"innerHTML\" hx-on::after-settle=\"this.scrollTop=this.scrollHeight\"></div>
         </div>
         <div class=\"card\" style=\"margin-top:12px;\"> 
           <strong>System</strong>
@@ -3620,8 +3680,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           <strong>Probe History</strong>
           <div id=\"probe-history\" class=\"scrollcap scrollbar-hide\" style=\"max-height:220px;\"
                hx-get=\"/dashboard/partials/probe-history\"
-               hx-trigger=\"load, every 10s, refresh\"
-               hx-include=\"#app-select\"
+               hx-trigger=\"refresh\"
                hx-swap=\"innerHTML\"></div>
         </div>
         <div class=\"card\" style=\"margin-top:12px;\">
@@ -3745,7 +3804,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           <div class=\"row\" style=\"flex-wrap:wrap; gap:10px; margin-bottom:10px;\">
             <label>Replica <select id=\"shell-pod\"></select></label>
             <label>Container <input id=\"shell-container\" type=\"text\" placeholder=\"optional\" /></label>
-            <label>Command <input id=\"shell-cmd\" type=\"text\" value=\"sh\" /></label>
+            <label>Command <input id=\"shell-cmd\" type=\"text\" value=\"sh -c &quot;echo connected; exec sh&quot;\" /></label>
             <label>Shim API <input id=\"shell-base\" type=\"text\" placeholder=\"http://127.0.0.1:8443\" /></label>
             <label>Token <input id=\"shell-token\" type=\"password\" placeholder=\"apishim token\" /></label>
           </div>
@@ -3803,6 +3862,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     </script>
     <script>
       var labsToken = __LABS_TOKEN__;
+      var apishimBase = __APISHIM_BASE__;
       var elApps = document.getElementById('apps');
       var elAppsList = document.getElementById('apps-list');
       var elEvents = document.getElementById('events');
@@ -3842,6 +3902,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       var tokInput = document.getElementById('auth-token');
       var saveBtn = document.getElementById('save-token');
       var clearBtn = document.getElementById('clear-token');
+      var authBanner = document.getElementById('auth-banner');
       try { tokInput.value = localStorage.getItem('ae_token') || ''; } catch(e) {}
       saveBtn.addEventListener('click', function(){ try { localStorage.setItem('ae_token', tokInput.value||''); } catch(e){}; window.location.reload(); });
       clearBtn.addEventListener('click', function(){ try { localStorage.removeItem('ae_token'); } catch(e){}; window.location.reload(); });
@@ -4006,8 +4067,35 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
       function fetchJSON(path){
         return fetch(path, {headers: authHeaders()}).then(function(r){
-          if(!r.ok) return r.text().then(function(t){ throw new Error(t); });
+          if(!r.ok) return r.text().then(function(t){
+            if (r.status === 401 || r.status === 403) { noteAuthStatus(r.status); }
+            var err = new Error(t || ('status ' + r.status));
+            err.status = r.status;
+            throw err;
+          });
+          noteAuthStatus(r.status);
           return r.json();
+        });
+      }
+
+      function fetchFragment(path, el, opts){
+        if (!el) return Promise.resolve();
+        return fetch(path, {headers: authHeaders()}).then(function(r){
+          if(!r.ok) return r.text().then(function(t){
+            if (r.status === 401 || r.status === 403) { noteAuthStatus(r.status); }
+            var err = new Error(t || ('status ' + r.status));
+            err.status = r.status;
+            throw err;
+          });
+          noteAuthStatus(r.status);
+          return r.text();
+        }).then(function(html){
+          el.innerHTML = html;
+          if (opts && typeof opts.after === 'function') { try { opts.after(el); } catch(e){} }
+        }).catch(function(err){
+          try {
+            el.innerHTML = '<div class="muted">error: ' + escapeHtml(String(err && err.message || err || 'failed')) + '</div>';
+          } catch(e){}
         });
       }
 
@@ -4023,6 +4111,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         return tok ? { 'Authorization': 'Bearer ' + tok } : {};
       }
 
+      function setHtmxAuth(el){
+        if (!el) return;
+        var tok = activeToken();
+        if (tok) {
+          try { el.setAttribute('hx-headers', JSON.stringify({ 'Authorization': 'Bearer ' + tok })); } catch(e){}
+        } else {
+          try { el.removeAttribute('hx-headers'); } catch(e){}
+        }
+      }
+
       function sseToken(){
         var tok = labsToken || '';
         if (!tok) {
@@ -4036,6 +4134,40 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var hdrs = authHeaders();
           for (var k in hdrs) { evt.detail.headers[k] = hdrs[k]; }
         });
+        window.htmx.on('responseError', function(evt){
+          try {
+            var st = evt && evt.detail && evt.detail.xhr ? evt.detail.xhr.status : 0;
+            if (st) { noteAuthStatus(st); }
+          } catch(e){}
+        });
+        window.htmx.on('afterOnLoad', function(evt){
+          try {
+            var st = evt && evt.detail && evt.detail.xhr ? evt.detail.xhr.status : 0;
+            if (st) { noteAuthStatus(st); }
+          } catch(e){}
+        });
+      }
+
+      function showAuthBanner(status){
+        if (!authBanner) return;
+        var msg = (status === 403)
+          ? 'Forbidden (403). Token lacks read access.'
+          : 'Unauthorized (401). Paste a read/scaler/admin token and click Save.';
+        authBanner.textContent = msg;
+        authBanner.classList.remove('hidden');
+        authBanner.classList.remove('warn', 'err');
+        authBanner.classList.add(status === 403 ? 'warn' : 'err');
+      }
+
+      function clearAuthBanner(){
+        if (!authBanner) return;
+        authBanner.classList.add('hidden');
+      }
+
+      function noteAuthStatus(status){
+        if (!status) return;
+        if (status === 401 || status === 403) { showAuthBanner(status); return; }
+        if (status >= 200 && status < 300) { clearAuthBanner(); }
       }
 
       function mintShimToken(role, scope){
@@ -4076,6 +4208,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         } catch(e){}
         try { if (elEvents) elEvents.innerHTML = '<div class="log-entry">No recent events</div>'; } catch(e){}
         clearLogs();
+        updateProbeHistoryHTMX();
       }
 
       function refreshApps(){
@@ -4318,6 +4451,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         current = name;
         clearLogs();
         updateLogsHTMX();
+        updateProbeHistoryHTMX();
         updateLogStreaming();
         updateEventsStreaming();
         refreshDetail().then(function(){ refreshApps(); focusAppListItem(name); renderGraphIfReady(); });
@@ -4368,6 +4502,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       function normalizeBase(val){
         var base = String(val||'').trim();
         if (!base) base = localStorage.getItem('ae_apishim_base') || '';
+        if (!base && apishimBase) base = String(apishimBase || '').trim();
         if (!base) base = location.origin;
         base = base.replace(/\\/$/, '');
         return base;
@@ -4412,11 +4547,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         var containerInput = document.getElementById('shell-container');
         var base = normalizeBase(baseInput && baseInput.value);
         if (baseInput) baseInput.value = base;
-        if (tokenInput && !tokenInput.value) {
-          try { tokenInput.value = localStorage.getItem('ae_apishim_token') || ''; } catch(e){}
+        var scope = (nsInfo && nsInfo.name) ? (ns + '/' + nsInfo.name) : (ns + '/' + pod);
+        var storedToken = '';
+        var storedScope = '';
+        try {
+          storedToken = localStorage.getItem('ae_apishim_exec_token') || localStorage.getItem('ae_apishim_token') || '';
+        } catch(e){}
+        try { storedScope = localStorage.getItem('ae_apishim_exec_scope') || ''; } catch(e){}
+        if (tokenInput && !tokenInput.value && storedToken) {
+          tokenInput.value = storedToken;
+        }
+        if (tokenInput && tokenInput.value && storedScope && storedScope !== scope && tokenInput.value.indexOf('sess1.') === 0) {
+          try {
+            localStorage.removeItem('ae_apishim_exec_token');
+            localStorage.removeItem('ae_apishim_exec_scope');
+          } catch(e){}
+          tokenInput.value = '';
         }
         try { localStorage.setItem('ae_apishim_base', base); } catch(e){}
-        var scope = (nsInfo && nsInfo.name) ? (ns + '/' + nsInfo.name) : (ns + '/' + pod);
         function doConnect(){
           var params = new URLSearchParams();
           var cmd = splitArgs(cmdInput && cmdInput.value ? cmdInput.value : 'sh');
@@ -4462,6 +4610,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           shellSetStatus('minting token', 'muted');
           mintShimToken('exec', scope).then(function(tok){
             if (tok && tokenInput) tokenInput.value = tok;
+            try {
+              if (tok) {
+                localStorage.setItem('ae_apishim_exec_token', tok);
+                localStorage.setItem('ae_apishim_exec_scope', scope);
+              }
+            } catch(e){}
             doConnect();
           }).catch(function(){ doConnect(); });
           return;
@@ -4553,11 +4707,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if (!portVal) { pfSetStatus('port required', 'warn'); return; }
         var base = normalizeBase(baseInput && baseInput.value);
         if (baseInput) baseInput.value = base;
-        if (tokenInput && !tokenInput.value) {
-          try { tokenInput.value = localStorage.getItem('ae_apishim_token') || ''; } catch(e){}
+        var pfScope = (nsInfo && nsInfo.name) ? (ns + '/' + nsInfo.name) : (ns + '/' + pod);
+        var pfStoredToken = '';
+        var pfStoredScope = '';
+        try {
+          pfStoredToken = localStorage.getItem('ae_apishim_pf_token') || localStorage.getItem('ae_apishim_token') || '';
+        } catch(e){}
+        try { pfStoredScope = localStorage.getItem('ae_apishim_pf_scope') || ''; } catch(e){}
+        if (tokenInput && !tokenInput.value && pfStoredToken) {
+          tokenInput.value = pfStoredToken;
+        }
+        if (tokenInput && tokenInput.value && pfStoredScope && pfStoredScope !== pfScope && tokenInput.value.indexOf('sess1.') === 0) {
+          try {
+            localStorage.removeItem('ae_apishim_pf_token');
+            localStorage.removeItem('ae_apishim_pf_scope');
+          } catch(e){}
+          tokenInput.value = '';
         }
         try { localStorage.setItem('ae_apishim_base', base); } catch(e){}
-        var scope = (nsInfo && nsInfo.name) ? (ns + '/' + nsInfo.name) : (ns + '/' + pod);
         function doConnect(){
           var params = new URLSearchParams();
           params.append('ports', portVal);
@@ -4584,8 +4751,14 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         }
         if (tokenInput && !tokenInput.value) {
           pfSetStatus('minting token', 'muted');
-          mintShimToken('portforward', scope).then(function(tok){
+          mintShimToken('portforward', pfScope).then(function(tok){
             if (tok && tokenInput) tokenInput.value = tok;
+            try {
+              if (tok) {
+                localStorage.setItem('ae_apishim_pf_token', tok);
+                localStorage.setItem('ae_apishim_pf_scope', pfScope);
+              }
+            } catch(e){}
             doConnect();
           }).catch(function(){ doConnect(); });
           return;
@@ -4649,13 +4822,35 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       function updateLogsHTMX(){
         var el = document.getElementById('logs');
         if(!el) return;
-        // Disable HTMX polling; we will stream via SSE. We still allow one-shot refresh events.
-        var trig = 'none';
-        el.setAttribute('hx-trigger', trig);
         var app = current ? encodeURIComponent(current) : '';
-        var url = '/dashboard/partials/logs' + (app ? ('?app=' + app + '&tail=200') : '');
-        el.setAttribute('hx-get', url);
-        if (window.htmx) { window.htmx.process(el); }
+        var filt = '';
+        try { filt = (logFilter && logFilter.value) ? String(logFilter.value) : ''; } catch(e){ filt = ''; }
+        var url = '/dashboard/partials/logs' + (app ? ('?app=' + app + '&tail=200' + (filt ? ('&filter=' + encodeURIComponent(filt)) : '')) : '');
+        fetchFragment(url, el, { after: function(node){ try { node.scrollTop = node.scrollHeight; } catch(e){} } });
+      }
+
+      var probeTimer = null;
+      function ensureProbeTimer(){
+        if (probeTimer) return;
+        probeTimer = setInterval(function(){
+          try {
+            if (!current) return;
+            fetchProbeHistoryFragment();
+          } catch(e){}
+        }, 10000);
+      }
+
+      function fetchProbeHistoryFragment(){
+        var el = document.getElementById('probe-history');
+        if(!el) return;
+        var app = current ? encodeURIComponent(current) : '';
+        var url = '/dashboard/partials/probe-history' + (app ? ('?app=' + app + '&limit=50') : '');
+        fetchFragment(url, el);
+      }
+
+      function updateProbeHistoryHTMX(){
+        fetchProbeHistoryFragment();
+        ensureProbeTimer();
       }
 
       function clearLogs(){ var el = document.getElementById('logs'); if (el) el.innerHTML = ''; }
@@ -4665,10 +4860,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if (logSource) { try { logSource.close(); } catch(e){} logSource = null; }
         if (pauseLogs || !current) return;
         var el = document.getElementById('logs');
-        if (window.htmx && el && el.getAttribute('hx-get')) {
-          // One-shot initial fill for context
-          window.htmx.trigger(el, 'refresh');
-        }
+        if (el) { updateLogsHTMX(); }
         var logParams = new URLSearchParams({ tail: '200' });
         var logTok = sseToken();
         if (logTok) logParams.set('token', logTok);
@@ -5400,12 +5592,29 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         } catch(e){}
       }
 
-      refreshApps().then(function(){ updateLogsHTMX(); updateLogStreaming(); return Promise.all([refreshDetail(), refreshSystem()]); }).catch(console.error);
+      refreshApps().then(function(){ updateLogsHTMX(); updateProbeHistoryHTMX(); updateLogStreaming(); return Promise.all([refreshDetail(), refreshSystem()]); }).catch(console.error);
       schedulePoll();
     </script>
   </body>
 </html>
 """
+        labs_token = ""
+        try:
+            import os as _os
+
+            if _os.getenv("AE_LABS") == "1":
+                labs_token = (_os.getenv("AE_LABS_TOKEN") or "").strip()
+        except Exception:
+            labs_token = ""
+        apishim_base = ""
+        try:
+            apishim_base = (
+                os.getenv("AE_APISHIM_SERVER") or os.getenv("AE_APISHIM_BASE") or ""
+            ).strip()
+        except Exception:
+            apishim_base = ""
+        html = html.replace("__LABS_TOKEN__", json.dumps(labs_token))
+        html = html.replace("__APISHIM_BASE__", json.dumps(apishim_base))
         payload = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
