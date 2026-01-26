@@ -38,7 +38,7 @@ services:
       - ../../state/labs/apishim.env
     environment:
       - AE_APISHIM_ENABLE=1
-      - AE_APISHIM_RUNTIME=${AE_APISHIM_RUNTIME:-stub}
+      - AE_APISHIM_RUNTIME=${AE_APISHIM_RUNTIME:-docker}
       - AE_APISHIM_ALLOW_ANON=0
       - AE_APISHIM_RBAC=1
       - AE_APISHIM_RBAC_EVAL=0
@@ -57,6 +57,8 @@ services:
     ports:
       - "${CADDY_HTTP_PORT:-8888}:80"
       - "${CADDY_HTTPS_PORT:-8443}:443"
+    environment:
+      - APISHIM_UPSTREAM=apishim:8445
     volumes:
       - ./caddy:/etc/caddy:ro
       - ../../state/caddy-data:/data

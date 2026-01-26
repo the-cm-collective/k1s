@@ -15,6 +15,7 @@ This is not a full Markdown implementation — just enough for our docs.
 
 from __future__ import annotations
 
+import hashlib
 import html
 import os
 import time
@@ -49,6 +50,22 @@ def detect_api_base() -> str:
 
 
 API_BASE = detect_api_base()
+
+
+def detect_dashboard_url() -> str:
+    env = os.getenv("DOCS_DASHBOARD_URL")
+    if env:
+        return env.strip()
+    try:
+        hosts = Path("/etc/hosts").read_text(encoding="utf-8", errors="ignore")
+        if "dash.home.arpa" in hosts:
+            return "https://dash.home.arpa:8443/dashboard"
+    except Exception:
+        pass
+    return "/dashboard"
+
+
+DASHBOARD_URL = detect_dashboard_url()
 EXPORT_NON_INTERACTIVE = _truthy_env("DOCS_NON_INTERACTIVE") or _truthy_env(
     "DOCS_EXPORT_NON_INTERACTIVE"
 )
@@ -84,7 +101,7 @@ NAV_LINKS = [
     ("Benchmarks", "benchmarks.html", False, False),
     ("Swagger", "/swagger", True, True),
     ("ReDoc", "/redoc", True, True),
-    ("Dashboard", "/dashboard", True, True),
+    ("Dashboard", DASHBOARD_URL, True, True),
     ("Playground", "playground.html", True, False),
     ("Concepts in Practice", "concepts-in-practice.html", False, False),
 ]
@@ -120,6 +137,7 @@ def render_template(
     title: str,
     body: str,
     api_base: str,
+    dashboard_url: str,
     extra_head: str,
     footer_text: str,
     nav_html: str,
@@ -134,6 +152,7 @@ def render_template(
         TEMPLATE.replace("{title}", "{__TITLE__}")
         .replace("{body}", "{__BODY__}")
         .replace("{api_base}", "{__API_BASE__}")
+        .replace("{dashboard_url}", "{__DASHBOARD_URL__}")
         .replace("{extra_head}", "{__EXTRA__}")
         .replace("{footer_text}", "{__FOOT__}")
         .replace("{nav}", "{__NAV__}")
@@ -143,12 +162,68 @@ def render_template(
     t = t.replace("{__TITLE__}", title)
     t = t.replace("{__BODY__}", body)
     t = t.replace("{__API_BASE__}", api_base)
+    t = t.replace("{__DASHBOARD_URL__}", dashboard_url)
     t = t.replace("{__EXTRA__}", extra_head)
     t = t.replace("{__FOOT__}", footer_text)
     t = t.replace("{__NAV__}", nav_html)
     t = t.replace("{__API_MODE_WIDGET__}", api_mode_widget)
     t = t.replace("{__API_MODE_SCRIPT__}", api_mode_script)
     return t
+
+
+BUILD_STAMP_RE = re.compile(r"Built\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}")
+BUILD_STAMP_PLACEHOLDER = "Built __DOCS_BUILD_TS__"
+
+
+def _normalize_build_stamp(text: str) -> str:
+    return BUILD_STAMP_RE.sub(BUILD_STAMP_PLACEHOLDER, text)
+
+
+def _extract_build_stamp(text: str) -> str | None:
+    match = BUILD_STAMP_RE.search(text)
+    return match.group(0) if match else None
+
+
+def _current_build_stamp() -> str:
+    return f"Built {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
+
+def _apply_stable_build_stamp(out_path: Path, html_text: str) -> str:
+    if out_path.exists():
+        try:
+            previous = out_path.read_text(encoding="utf-8")
+        except Exception:
+            previous = ""
+        if previous:
+            if _normalize_build_stamp(previous) == html_text:
+                prev_stamp = _extract_build_stamp(previous)
+                if prev_stamp:
+                    return html_text.replace(BUILD_STAMP_PLACEHOLDER, prev_stamp)
+    return html_text.replace(BUILD_STAMP_PLACEHOLDER, _current_build_stamp())
+
+
+def _hash_files(paths: list[Path]) -> str | None:
+    h = hashlib.sha256()
+    found = False
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            h.update(path.read_bytes())
+            found = True
+        except Exception:
+            continue
+    if not found:
+        return None
+    return h.hexdigest()[:10]
+
+
+def _labs_asset_version() -> str:
+    static_root = SRC / "static"
+    ver = _hash_files([static_root / "labs.css", static_root / "labs.js"])
+    if ver:
+        return ver
+    return str(int(time.time()))
 
 
 TEMPLATE = """<!doctype html>
@@ -758,6 +833,7 @@ TEMPLATE = """<!doctype html>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
     <script>window.DOCS_API_BASE='{api_base}';</script>
+    <script>window.DOCS_DASHBOARD_URL='{dashboard_url}';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -881,6 +957,64 @@ def api_mode_fragments(include: bool) -> tuple[str, str]:
             "          if (location.pathname.endsWith('playground.html')) location.reload();",
             "        });",
             "        label();",
+            "      })();",
+            "    </script>",
+            "    <script>",
+            "      (function() {",
+            "        function hideLinks(match) {",
+            "          var links = document.querySelectorAll('a[href]');",
+            "          links.forEach(function(a) {",
+            "            var href = a.getAttribute('href') || '';",
+            "            if (match(href)) { a.style.display = 'none'; }",
+            "          });",
+            "        }",
+            "        function rewriteDashboardLinks(target) {",
+            "          if (!target) return;",
+            "          var links = document.querySelectorAll('a[href]');",
+            "          links.forEach(function(a) {",
+            "            var href = a.getAttribute('href') || '';",
+            "            if (href.indexOf('/dashboard') === 0) {",
+            "              a.setAttribute('href', target);",
+            "              if (!a.getAttribute('target')) {",
+            "                a.setAttribute('target', '_blank');",
+            "                a.setAttribute('rel', 'noopener');",
+            "              }",
+            "            }",
+            "          });",
+            "        }",
+            "        function disablePlaygroundPage() {",
+            "          var path = (location && location.pathname) ? location.pathname : '';",
+            "          if (!/playground/i.test(path)) return;",
+            "          var container = document.querySelector('.container');",
+            "          if (container) container.style.display = 'none';",
+            "          var msg = document.createElement('div');",
+            "          msg.style.maxWidth = '960px';",
+            "          msg.style.margin = '32px auto';",
+            "          msg.style.padding = '16px 20px';",
+            "          msg.style.border = '1px solid var(--border)';",
+            "          msg.style.borderRadius = '12px';",
+            "          msg.style.background = 'var(--k1s-panel)';",
+            "          msg.style.color = 'var(--k1s-text)';",
+            "          msg.innerHTML = '<h2 style=\"margin:0 0 8px\">Playground disabled</h2>' +",
+            "            '<p style=\"margin:0;color:var(--k1s-text-muted)\">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';",
+            "          document.body.insertBefore(msg, document.body.firstChild);",
+            "        }",
+            "        fetch('/ui/features', { credentials: 'same-origin' })",
+            "          .then(function(r) { return r.ok ? r.json() : null; })",
+            "          .then(function(f) {",
+            "            if (!f) return;",
+            "            if (f.dashboard === false) {",
+            "              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });",
+            "            } else {",
+            "              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();",
+            "              rewriteDashboardLinks(dashUrl);",
+            "            }",
+            "            if (f.playground === false) {",
+            "              hideLinks(function(h) { return h.indexOf('playground') !== -1; });",
+            "              disablePlaygroundPage();",
+            "            }",
+            "          })",
+            "          .catch(function() {});",
             "      })();",
             "    </script>",
         ]
@@ -1736,7 +1870,7 @@ def build_one(
         pass
     extra_head = ""
     if md_path.name == "playground.md":
-        ver = str(int(datetime.now().timestamp()))
+        ver = _labs_asset_version()
         extra_head = "\n".join(
             [
                 f'<link rel="stylesheet" href="static/labs.css?v={ver}"/>',
@@ -1752,19 +1886,19 @@ def build_one(
         )
         # Removed: no extra Echo YAML dump at the end of the page
     title = md_path.stem.replace("-", " ").title()
-    out_path.write_text(
-        render_template(
-            title=title,
-            body=html_body,
-            api_base=API_BASE,
-            extra_head=extra_head,
-            footer_text=f"Built {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            nav_html=nav_html,
-            api_mode_widget=api_mode_widget,
-            api_mode_script=api_mode_script,
-        ),
-        encoding="utf-8",
+    html_out = render_template(
+        title=title,
+        body=html_body,
+        api_base=API_BASE,
+        dashboard_url=DASHBOARD_URL,
+        extra_head=extra_head,
+        footer_text=BUILD_STAMP_PLACEHOLDER,
+        nav_html=nav_html,
+        api_mode_widget=api_mode_widget,
+        api_mode_script=api_mode_script,
     )
+    html_out = _apply_stable_build_stamp(out_path, html_out)
+    out_path.write_text(html_out, encoding="utf-8")
 
 
 def main() -> None:
@@ -1946,19 +2080,20 @@ def main() -> None:
             f'<link rel="alternate" type="application/rss+xml" '
             f'title="{html.escape(rss_feed_title)}" href="{html.escape(rss_feed_url)}"/>'
         )
-    (OUT / "index.html").write_text(
-        render_template(
-            title="k1s Docs",
-            body=index,
-            api_base=API_BASE,
-            extra_head=index_extra_head,
-            footer_text=f"Built {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            nav_html=nav_html,
-            api_mode_widget=api_mode_widget,
-            api_mode_script=api_mode_script,
-        ),
-        encoding="utf-8",
+    index_path = OUT / "index.html"
+    index_html = render_template(
+        title="k1s Docs",
+        body=index,
+        api_base=API_BASE,
+        dashboard_url=DASHBOARD_URL,
+        extra_head=index_extra_head,
+        footer_text=BUILD_STAMP_PLACEHOLDER,
+        nav_html=nav_html,
+        api_mode_widget=api_mode_widget,
+        api_mode_script=api_mode_script,
     )
+    index_html = _apply_stable_build_stamp(index_path, index_html)
+    index_path.write_text(index_html, encoding="utf-8")
 
     for src_name, out_name in mapping.items():
         build_one(
