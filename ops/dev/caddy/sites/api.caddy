@@ -2,9 +2,41 @@ api.home.arpa:443, api.home.arpa
 {
     tls internal
     encode gzip zstd
-    reverse_proxy {
-        to host.docker.internal:9108
-        header_up Host {http.reverse_proxy.upstream.hostport}
+
+    @ui {
+        path /dashboard* /playground*
+    }
+    handle @ui {
+        respond 404
+    }
+
+    # Proxy shim API (exec/port-forward) to the apishim service
+    @apishim {
+        path /api/v1* /apis*
+    }
+    handle @apishim {
+        reverse_proxy https://{$APISHIM_UPSTREAM:apishim:8445} {
+            transport http {
+                tls_insecure_skip_verify
+            }
+        }
+    }
+
+    # Controller API endpoints
+    @controller {
+        path /api/apishim/* /ui/features /health* /status* /events* /logs* /metrics* /system* /nodes* /history* /manifest* /plan* /k8s/preview
+    }
+    handle @controller {
+        reverse_proxy {
+            to host.docker.internal:9108
+            header_up Host {http.reverse_proxy.upstream.hostport}
+        }
+    }
+
+    handle {
+        reverse_proxy {
+            to host.docker.internal:9108
+            header_up Host {http.reverse_proxy.upstream.hostport}
+        }
     }
 }
-

@@ -262,6 +262,7 @@ Two easy ways to run it:
   - Serve docs via compose:
     - `docker compose -f ops/dev/labs-compose.yaml up -d`
   - Open https://localhost:8443/playground.html
+  - Dashboard (separate host): https://dash.home.arpa:8443/dashboard
   - Optional token gate:
     - Export `AE_LABS_TOKEN=…` for the controller; paste it into “Labs Token” on the page.
 
@@ -269,6 +270,7 @@ Two easy ways to run it:
   - Recommended: `make labs-aio-up` (generates shim tokens before compose)
   - Or: `./scripts/ensure_apishim_env.sh && docker compose -f ops/dev/labs-aio.yaml up -d`
   - Open https://localhost:8443/playground.html
+  - Dashboard (separate host): https://dash.home.arpa:8443/dashboard
   - API shim starts by default on `127.0.0.1:8445` with per-run tokens stored in `state/labs/apishim.env`
   - To override tokens, set `AE_APISHIM_TOKEN` / `AE_APISHIM_READ_TOKEN` in `.env` (long values; weak tokens are rejected)
   - To run with a local Postgres backend for controller + shim, set `AE_LABS_USE_POSTGRES=1` before bringing the stack up
@@ -279,6 +281,7 @@ Tips
 - The page auto‑detects the API base; use the “API Mode” button in the footer to switch proxy vs. direct.
 - k3s/k3d: click “Create k3d Cluster” to bootstrap a local k3d for the Kubernetes track; ports default to 8081/8444 and are shown in the banner.
 - If ingress uses a custom TLS secret, make sure it’s synced (see “Ingress and TLS” above) so the app hostname resolves under Caddy.
+- Gates: set `AE_PLAYGROUND=0` to disable the playground UI and labs endpoints, and `AE_DASHBOARD=0` to disable the dashboard UI.
 
 DNS/hosts for local domains
 - Add entries to your hosts file so browsers resolve the dev domains:
@@ -288,12 +291,14 @@ DNS/hosts for local domains
 ```
 127.0.0.1 docs.home.arpa
 127.0.0.1 api.home.arpa
+127.0.0.1 dash.home.arpa
 ```
 
 Caddy site config (dev)
 - The repo ships site snippets under `ops/dev/caddy/sites/`:
-  - `docs.caddy`: serves the docs at `https://docs.home.arpa:8443/` and proxies API paths (`/health`, `/status`, `/events`, `/logs`, `/metrics`, `/swagger`, `/redoc`, `/dashboard`, `/labs`, `/system`) to the controller on `host.docker.internal:9108`.
-  - `api.caddy`: exposes the API directly at `https://api.home.arpa:8443/` (handy for Swagger/ReDoc).
+  - `docs.caddy`: serves the docs at `https://docs.home.arpa:8443/` and proxies API paths (`/health`, `/status`, `/events`, `/logs`, `/metrics`, `/swagger`, `/redoc`, `/labs`, `/system`, `/ui/features`, `/api/apishim/*`) to the controller on `host.docker.internal:9108`.
+  - `dash.caddy`: exposes the dashboard UI at `https://dash.home.arpa:8443/dashboard` (controller-backed).
+  - `api.caddy`: exposes the API directly at `https://api.home.arpa:8443/` and routes `/api/v1` + `/apis` to the API shim (exec/port-forward).
 - After updating site files, restart Caddy:
   - `docker compose -f ops/dev/labs-compose.yaml restart caddy` (or bring the stack up again)
 ## Probe History: Dashboard and CLI

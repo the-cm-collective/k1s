@@ -7,6 +7,7 @@ on:
 
 jobs:
   exec:
+    if: ${{ env.GITEA_ACTIONS != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -37,9 +38,9 @@ jobs:
             echo "DOCKER_TLS_CERTDIR=" >> "$GITHUB_ENV"
           elif [ -d /certs/client ]; then
             echo "DOCKER_HOST=tcp://docker:2376" >> "$GITHUB_ENV"
-            echo "DOCKER_TLS_VERIFY=" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_VERIFY=1" >> "$GITHUB_ENV"
             echo "DOCKER_CERT_PATH=/certs/client" >> "$GITHUB_ENV"
-            echo "DOCKER_TLS_CERTDIR=" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_CERTDIR=/certs" >> "$GITHUB_ENV"
           fi
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -198,6 +199,12 @@ jobs:
       - name: Show logs on failure
         if: failure()
         run: |
+          echo "=== docker env ==="
+          env | sort | grep -E '^DOCKER_|^AE_DOCKER_TLS_INSECURE' || true
+          echo "=== /certs/client ==="
+          ls -la /certs/client || true
+          echo "=== docker info ==="
+          docker info || true
           echo "=== apishim (spdy) ==="
           cat /tmp/apishim-spdy.log || true
           echo "=== apishim (tail) ==="
