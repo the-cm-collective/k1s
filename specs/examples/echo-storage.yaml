@@ -1,5 +1,5 @@
 apiVersion: ae.dev/v1alpha1
-kind: App
+kind: Deployment
 metadata:
   name: echo-storage
 spec:

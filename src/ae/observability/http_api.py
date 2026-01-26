@@ -779,6 +779,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if path_only.startswith("/metrics"):
             self._handle_metrics()
             return
+        if path_only.startswith("/static/"):
+            if self._handle_static_asset(path_only):
+                return
+            self.send_response(404)
+            self.end_headers()
+            return
         # Public pages (always allowed): OpenAPI + lightweight docs UIs
         if path_only in {
             "/openapi.json",
@@ -1452,6 +1458,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 ex = str(payload.get("example") or "echo")
                 # Map example id to file path
                 ex_map = {
+                    "shell-demo": _Path("specs/examples/shell-demo.yaml"),
                     "echo": _Path("specs/examples/echo.yaml"),
                     "echo-multiport": _Path("specs/examples/echo-multiport.yaml"),
                     "echo-rollout": _Path("specs/examples/echo-rollout.yaml"),
@@ -3499,6 +3506,46 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _handle_static_asset(self, path_only: str) -> bool:
+        from pathlib import Path
+
+        rel = path_only.lstrip("/")
+        if not rel.startswith("static/"):
+            return False
+        rel_path = rel[len("static/") :]
+        if not rel_path:
+            return False
+        if ".." in Path(rel_path).parts:
+            return False
+        base_file = Path(__file__).resolve()
+        repo_root = base_file.parents[3]
+        candidates = [
+            repo_root / "docs" / "static" / rel_path,
+            repo_root / "docs" / "site" / "static" / rel_path,
+            base_file.parent / "static" / rel_path,
+        ]
+        target = next((p for p in candidates if p.is_file()), None)
+        if target is None:
+            return False
+        try:
+            data = target.read_bytes()
+        except Exception:
+            return False
+        ext = target.suffix.lower()
+        content_type = {
+            ".js": "application/javascript; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".svg": "image/svg+xml",
+            ".png": "image/png",
+            ".ico": "image/x-icon",
+        }.get(ext, "application/octet-stream")
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        return True
+
     def _handle_dashboard(self) -> None:
         # Simple static dashboard that polls status, events, and logs.
         html = """
@@ -3509,9 +3556,39 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     <title>k1s Hive Dashboard</title>
     <link rel=\"icon\" type=\"image/png\" sizes=\"32x32\" href=\"data:image/png;base64,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\" />
     <script src=\"https://unpkg.com/htmx.org@1.9.12\" integrity=\"sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2\" crossorigin=\"anonymous\"></script>
-    <link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/xterm@5.4.0/css/xterm.css\" />
-    <script src=\"https://cdn.jsdelivr.net/npm/xterm@5.4.0/lib/xterm.js\"></script>
-    <script src=\"https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js\"></script>
+    <link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css\" onerror=\"this.onerror=null; this.href='/static/vendor/xterm.css';\" />
+    <script src=\"https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js\" onerror=\"window.__xterm_cdn_failed=true;\"></script>
+    <script src=\"https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js\" onerror=\"window.__xterm_fit_cdn_failed=true;\"></script>
+    <script>
+      (function(){
+        function loadScript(src){
+          var s = document.createElement('script');
+          s.src = src;
+          s.defer = true;
+          document.head.appendChild(s);
+        }
+        function loadCss(href){
+          var l = document.createElement('link');
+          l.rel = 'stylesheet';
+          l.href = href;
+          document.head.appendChild(l);
+        }
+        function ensureLocal(){
+          if (window.__xterm_cdn_failed || !window.Terminal) {
+            loadCss('/static/vendor/xterm.css');
+            loadScript('/static/vendor/xterm.js');
+          }
+          if (window.__xterm_fit_cdn_failed || !(window.FitAddon && window.FitAddon.FitAddon)) {
+            loadScript('/static/vendor/xterm-addon-fit.js');
+          }
+        }
+        if (document.readyState === 'complete') {
+          ensureLocal();
+        } else {
+          window.addEventListener('load', ensureLocal);
+        }
+      })();
+    </script>
     <style>
       :root { color-scheme: light dark; --header-h: 60px; --k1s-brand-gold: #fbc02d; --k1s-brand-graphite: #404040; }
       body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; overflow-x:hidden; }
@@ -3604,7 +3681,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       .modal-body { padding:12px 14px; overflow:auto; }
       .modal-footer { padding:10px 14px; border-top:1px solid #334155; display:flex; gap:8px; justify-content:flex-end; }
       .modal.hidden { display:none; }
-      .terminal-wrap { height:360px; border:1px solid #334155; border-radius:8px; background:#0b0f14; }
+      .terminal-wrap { height:360px; border:1px solid #334155; border-radius:8px; background:#0b0f14; overflow:hidden; }
       .terminal-wrap .xterm-viewport { scrollbar-width: none; }
       .terminal-wrap .xterm-viewport::-webkit-scrollbar { width:0; height:0; }
       .modal .row input[type=text], .modal .row input[type=password], .modal .row select { min-width: 140px; }
@@ -4520,6 +4597,21 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       var shellEncoder = (window.TextEncoder ? new TextEncoder() : null);
       var shellDecoder = (window.TextDecoder ? new TextDecoder() : null);
 
+      function ensureShellFitAddon(){
+        if (!shellTerm || shellFit) return;
+        if (window.FitAddon && window.FitAddon.FitAddon) {
+          try {
+            shellFit = new window.FitAddon.FitAddon();
+            shellTerm.loadAddon(shellFit);
+          } catch(e){}
+        }
+      }
+
+      function fitShellNow(){
+        ensureShellFitAddon();
+        if (shellFit) { try { shellFit.fit(); } catch(e){} }
+      }
+
       function shellSendChannel(ch, data){
         if (!shellSocket || shellSocket.readyState !== 1) return;
         var payload = data instanceof Uint8Array ? data : (shellEncoder ? shellEncoder.encode(String(data||'')) : new Uint8Array());
@@ -4586,7 +4678,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           shellSocket.onopen = function(){
             shellSetStatus('connected', 'ok');
             if (shellTerm) { shellTerm.focus(); }
-            if (shellFit) { try { shellFit.fit(); } catch(e){} }
+            fitShellNow();
             if (shellTerm) {
               try { shellSendChannel(4, JSON.stringify({ Width: shellTerm.cols, Height: shellTerm.rows })); } catch(e){}
             }
@@ -4654,17 +4746,17 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         fillReplicaSelect(sel);
         if (!shellTerm && window.Terminal) {
           shellTerm = new Terminal({ cursorBlink: true, convertEol: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', theme: { background: '#0b0f14' } });
-          if (window.FitAddon && window.FitAddon.FitAddon) {
-            shellFit = new window.FitAddon.FitAddon();
-            shellTerm.loadAddon(shellFit);
-          }
+          ensureShellFitAddon();
           shellTerm.open(document.getElementById('shell-terminal'));
-          if (shellFit) { try { shellFit.fit(); } catch(e){} }
+          fitShellNow();
           shellTerm.onData(function(data){ shellSendChannel(0, data); });
           shellTerm.onResize(function(size){ try { shellSendChannel(4, JSON.stringify({ Width: size.cols, Height: size.rows })); } catch(e){} });
         }
         if (shellStatus) shellSetStatus('idle', 'muted');
         shellModal.classList.remove('hidden');
+        setTimeout(fitShellNow, 50);
+        setTimeout(fitShellNow, 250);
+        setTimeout(fitShellNow, 900);
       }
 
       function closeShellModal(){
@@ -4817,7 +4909,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       try { document.getElementById('pf-connect').addEventListener('click', pfConnect); } catch(e){}
       try { document.getElementById('pf-send').addEventListener('click', pfSend); } catch(e){}
       try { document.getElementById('pf-disconnect').addEventListener('click', pfDisconnect); } catch(e){}
-      window.addEventListener('resize', function(){ if (shellFit && shellModal && !shellModal.classList.contains('hidden')) { try { shellFit.fit(); } catch(e){} } });
+      window.addEventListener('resize', function(){ if (shellModal && !shellModal.classList.contains('hidden')) { fitShellNow(); } });
 
       function updateLogsHTMX(){
         var el = document.getElementById('logs');

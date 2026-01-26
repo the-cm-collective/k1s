@@ -121,7 +121,7 @@ cleanup_demo_containers() {
   if [[ -z "${bin}" ]] || ! command -v "$bin" >/dev/null 2>&1; then
     return 0
   fi
-  local apps_regex="blue|green|echo|echo-mr|echo-multi|echo-sec|echo-tcp|echo-exec|echo-hardened|echo-resources|echo-storage"
+  local apps_regex="blue|green|shell-demo|echo|echo-mr|echo-multi|echo-sec|echo-tcp|echo-exec|echo-hardened|echo-resources|echo-storage"
   local names to_remove=()
   names=$("$bin" ps -a --format '{{.Names}}' 2>/dev/null || true)
   if [[ -z "$names" ]]; then
@@ -796,16 +796,19 @@ fi
 if command -v docker >/dev/null 2>&1; then
   docker pull mendhak/http-https-echo:37 >/dev/null 2>&1 || true
 fi
-# Build only the local green image; blue samples now use the pre-pulled multi-arch echo image
+# Build local demo images (green + shell-demo); blue samples use the pre-pulled echo image
 if [[ "$AE_RUNTIME_BACKEND" == "podman" || "$AE_RUNTIME_BACKEND" == "oci" ]]; then
   if command -v podman >/dev/null 2>&1; then
     podman build -t localhost/demo-green:latest samples/servers/green || true
+    podman build -t localhost/demo-shell:latest samples/servers/shell-demo || true
   else
     log "Podman not available; building images with Docker as a fallback"
     docker build -t demo-green:latest samples/servers/green || true
+    docker build -t demo-shell:latest samples/servers/shell-demo || true
   fi
 else
   docker build -t demo-green:latest samples/servers/green || true
+  docker build -t demo-shell:latest samples/servers/shell-demo || true
 fi
 
 log "Starting local dev stack"
@@ -1619,7 +1622,7 @@ fi
 # If backend is podman, ensure demo images are available to Podman by importing from Docker when needed
 if [[ "$AE_RUNTIME_BACKEND" == "podman" || "$AE_RUNTIME_BACKEND" == "oci" ]]; then
   if command -v podman >/dev/null 2>&1; then
-    for img in demo-green:latest; do
+    for img in demo-green:latest demo-shell:latest; do
       if ! podman images --format '{{.Repository}}:{{.Tag}}' | grep -qE "(^|/)${img}$"; then
         if command -v docker >/dev/null 2>&1; then
           if docker image inspect "$img" >/dev/null 2>&1; then

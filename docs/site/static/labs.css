@@ -114,7 +114,7 @@ html[data-theme='light'] .helm-demo-log{background:var(--k1s-panel, #f1f5f9);col
 .labs-modal .modal-header{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--k1s-border, #334155)}
 .labs-modal .modal-body{padding:12px 14px;overflow:auto}
 .labs-modal .hint{font-size:12px;opacity:.8}
-.terminal-wrap{height:320px;border:1px solid var(--k1s-border, #334155);border-radius:8px;background:#0b0f14}
+.terminal-wrap{height:320px;border:1px solid var(--k1s-border, #334155);border-radius:8px;background:#0b0f14;overflow:hidden}
 .terminal-wrap .xterm-viewport{scrollbar-width:none}
 .terminal-wrap .xterm-viewport::-webkit-scrollbar{width:0;height:0}
 
