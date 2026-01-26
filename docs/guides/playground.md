@@ -4,16 +4,46 @@
       <h2>Interactive Lab Playground</h2>
     </div>
 
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.4.0/css/xterm.css" />
-<script src="https://cdn.jsdelivr.net/npm/xterm@5.4.0/lib/xterm.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" onerror="this.onerror=null; this.href='/static/vendor/xterm.css';" />
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js" onerror="window.__xterm_cdn_failed=true;"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js" onerror="window.__xterm_fit_cdn_failed=true;"></script>
+<script>
+(function(){
+  function loadScript(src){
+    var s = document.createElement('script');
+    s.src = src;
+    s.defer = true;
+    document.head.appendChild(s);
+  }
+  function loadCss(href){
+    var l = document.createElement('link');
+    l.rel = 'stylesheet';
+    l.href = href;
+    document.head.appendChild(l);
+  }
+  function ensureLocal(){
+    if (window.__xterm_cdn_failed || !window.Terminal) {
+      loadCss('/static/vendor/xterm.css');
+      loadScript('/static/vendor/xterm.js');
+    }
+    if (window.__xterm_fit_cdn_failed || !(window.FitAddon && window.FitAddon.FitAddon)) {
+      loadScript('/static/vendor/xterm-addon-fit.js');
+    }
+  }
+  if (document.readyState === 'complete') {
+    ensureLocal();
+  } else {
+    window.addEventListener('load', ensureLocal);
+  }
+})();
+</script>
 
 Use this page to try k1s in minutes — no Kubernetes experience required. The playground can run fully read‑only or, when enabled, perform safe actions like "apply example" and "scale".
 
 Quick start:
 
 - Step 1: Scroll to "A. Environment & Backend", enable <strong>Controlled Actions</strong>, click <strong>Use Token</strong> to load `AE_LABS_TOKEN`, then click `Start Session`.
-- Step 2: In "B. Apply Example", choose `echo` and click `Apply Selected Example`.
+- Step 2: In "B. Apply Example", choose `shell-demo` and click `Apply Selected Example`.
 - Step 3: In "F. Ingress Test", click `Open App` to view the service, and in "C. Logs & Events" watch activity live.
 
 <div class="callout" role="note">Tip: If the page says “Labs: unavailable”, you’re in read‑only mode — verifiers still run and CLI commands are shown to try locally.</div>
@@ -127,11 +157,12 @@ Back in the playground:
 
 ## B. Apply Example
 
-Pick a sample and apply it. In read-only mode the UI shows the exact CLI you can run locally. Each example is an `App` spec YAML: `apiVersion` and `kind` identify the schema, `metadata.name` becomes the app's ID, and `spec` is where you describe what to run and how it should behave. Typical `spec` fields include `image` (container), `replicas` (how many), `ports`/`service` (how traffic reaches it), `health` checks, plus optional sections like `ingress`, `resources`, `security`, `storage`, and `configRefs`/`secretRefs` for configuration.
+Pick a sample and apply it. In read-only mode the UI shows the exact CLI you can run locally. Each example is a `Deployment` spec YAML (k1s native; `kind: App` still works but is deprecated): `apiVersion` and `kind` identify the schema, `metadata.name` becomes the app's ID, and `spec` is where you describe what to run and how it should behave. Typical `spec` fields include `image` (container), `replicas` (how many), `ports`/`service` (how traffic reaches it), `health` checks, plus optional sections like `ingress`, `resources`, `security`, `storage`, and `configRefs`/`secretRefs` for configuration.
 
 - Example:
   - <select id="example-select">
-      <option value="echo" selected>echo</option>
+      <option value="shell-demo" selected>shell-demo</option>
+      <option value="echo">echo</option>
       <option value="multi-replica-echo">multi-replica-echo</option>
       <option value="echo-multiport">echo-multiport</option>
       <option value="echo-hpa">echo-hpa</option>
@@ -181,7 +212,7 @@ Open an interactive shell or run a lightweight port-forward check. These are Lab
     <button id="btn-labs-pf" disabled>Open Port-Forward</button>
     <span class="muted">Uses apishim WebSocket exec + port-forward.</span>
   </div>
-  <div class="muted" style="margin-top:6px;">If disabled, run locally: <code>ae shell &lt;app&gt;</code>, <code>kubectl exec</code>, or <code>kubectl port-forward</code>.</div>
+  <div class="muted" style="margin-top:6px;">If disabled, run locally: <code>ae shell &lt;app&gt; -- sh -c 'echo connected; exec sh'</code>, <code>kubectl exec</code>, or <code>kubectl port-forward</code>.</div>
 </div>
 
 <div id="labs-shell-modal" class="labs-modal hidden" role="dialog" aria-modal="true" aria-labelledby="labs-shell-title">
