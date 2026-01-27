@@ -29,7 +29,7 @@ Implemented:
 - Added CRI lifecycle integration test (gated by AE_CRI_IT).
 
 Remaining (next focus):
-- CI integration tests against containerd.
+- CI integration tests against containerd (workflow added; needs validation in CI).
 - CRI-native port-forward proxy (optional; pod IP direct connect works today).
 
 ---
@@ -353,7 +353,7 @@ Done:
 - Add exec/attach streaming via crictl.
 
 Remaining:
-- CI integration tests against containerd (gated tests exist; CI job missing).
+- CI integration tests against containerd (workflow added; needs validation in CI).
 - CRI-native port-forward proxy (optional; pod IP direct connect works today).
 
 
@@ -557,7 +557,8 @@ Exit criteria:
 - Done: implement exec/attach streaming via `crictl exec` (node dependency).
   - A CRI-native streaming proxy can still replace this later.
 - Done: implement log follow via CRI `log_path` (basic; kubelet-style rotation not covered).
-- Remaining: add integration tests: containerd node smoke + CRI adapter in CI
+- Remaining: validate CI integration tests: containerd node smoke + CRI adapter in CI
+  - CI workflow added (`.github/workflows/cri-ci.yml`) using `scripts/cri_ci_setup.sh`.
   - Gated integration tests exist locally (AE_CRI_SMOKE_PULL, AE_CRI_IT).
   - Validate `PodSandboxStatus` and `ContainerStatus` fields match Kubernetes expectations.
   - Validate `podIP` + container port routing for probes and ingress.
