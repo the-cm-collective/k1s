@@ -108,6 +108,10 @@ metadata:
   annotations:
     storageclass.kubernetes.io/is-default-class: "true"
 provisioner: k1s.io/nfs
+parameters:
+  server: ${NFS_SERVER}
+  path: ${NFS_PATH}
+  hostPath: ${NFS_EXPORT_DIR}/netfs
 reclaimPolicy: Retain
 volumeBindingMode: Immediate
 allowVolumeExpansion: false
@@ -216,6 +220,7 @@ NETFS_STORAGE_CLASS=k1s-nfs \
 NETFS_PV_NAME="${PV_NAME}" \
 NETFS_PVC_NAME="${PVC_NAME}" \
 NETFS_DEPLOYMENT_NAME="${DEPLOY_NAME}" \
+NETFS_DYNAMIC=1 \
 NFS_SERVER="${NFS_SERVER}" \
 NFS_PATH="${NFS_PATH}" \
 "${ROOT_DIR}/scripts/netfs_smoke.sh"

@@ -48,6 +48,12 @@ Example (see `docs/reference/storage-classes.yaml`):
 export AE_STORAGE_PROVISIONERS=docs/reference/storage-classes.yaml
 ```
 
+For dynamic NFS provisioning, include at least:
+- `parameters.server`: NFS server host/IP
+- `parameters.path`: exported base path (the controller will use a per-PVC subdir when possible)
+- `parameters.hostPath` (optional): local directory for the exported path; when set, the controller
+  will create and clean up per-PVC directories under this root.
+
 ### NetFS PVC mounts (apishim)
 
 When running the node agent with `AE_ENABLE_NETFS=1`, PVC mounts from apishim
@@ -90,6 +96,12 @@ binding and a PVC-backed Deployment:
 
 ```
 scripts/netfs_smoke.sh
+```
+
+To exercise dynamic provisioning, run:
+
+```
+NETFS_DYNAMIC=1 scripts/netfs_smoke.sh
 ```
 
 ### NetFS NFS harness
