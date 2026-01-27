@@ -43,6 +43,7 @@ Terminology: k1s "Apps" are Deployment-like workloads; replicas map to Pods; Ser
 ## Prerequisites
 - Python 3.11+
 - Podman (preferred) or Docker installed and running
+- Optional (CRI/containerd): containerd + CNI + `crictl` (see `docs/ops/runbook.md`)
 - Optional (for ingress/docs via Caddy and Prometheus): `docker compose` or `podman compose`
 - Optional (for multi-node lab): two Linux hosts/VMs with WireGuard tools and rootful networking
 
@@ -115,6 +116,7 @@ docker compose -f ops/dev/docker-compose.yaml up -d
 ```
 python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch
 ```
+   - For CRI/containerd: `AE_RUNTIME_BACKEND=cri` and follow the CRI section in `docs/ops/runbook.md` for CNI init + smoke checks.
 
 4) Apply and inspect a sample workload (App):
 ```
