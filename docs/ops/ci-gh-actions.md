@@ -3,6 +3,36 @@ GitHub Actions: Kubernetes YAML checks
 This workflow runs exporter smoke checks, portability checks, and kubeconform schema validation in CI.
 
 ```
+
+CRI integration workflow (containerd)
+
+The CRI workflow provisions containerd + CNI + crictl on the runner and executes CRI smoke + lifecycle tests:
+
+```
+name: cri-ci
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  cri-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+      - name: CRI setup (containerd + CNI + crictl)
+        run: sudo -E ./scripts/cri_ci_setup.sh
+      - name: CRI integration tests
+        run: |
+          sudo -E env AE_RUNTIME_BACKEND=cri AE_CRI_IT=1 AE_CRI_SMOKE_PULL=1 \
+            AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+            AE_CRI_SANDBOX_IMAGE=registry.k8s.io/pause:3.9 \
+            .venv/bin/python -m pytest \
+              tests/integration/test_cri_smoke.py \
+              tests/integration/test_cri_runtime_integration.py -q
+```
 name: k8s-yaml-checks
 on:
   pull_request:

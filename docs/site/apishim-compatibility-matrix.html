@@ -734,6 +734,11 @@
 <li>OpenAPI: ✅ <code>/openapi/v3</code> is the primary endpoint; <code>/openapi/v2</code> mirrors it for compatibility. Helm/kubectl dry-run validated in CI; drift guard compares committed specs.</li>
 <li>Port-forward: ✅ pods and services (SPDY/WebSocket) selecting ready endpoints first.</li>
 </ul>
+<p>Runtime caveats</p>
+<ul>
+<li>CRI/containerd nodes: exec/attach/logs use <code>crictl</code> on the node; install it and set <code>CRICTL_BIN</code> if needed.</li>
+<li>CRI port-forward proxy is optional: set <code>AE_APISHIM_CRI_PORTFORWARD=1</code> (or <code>..._FORCE=1</code>) to enable the CRI-native proxy path.</li>
+</ul>
 <h2>Not covered</h2>
 <ul>
 <li>Aggregated API servers, metrics.k8s.io, PodSecurity admission, CSI/CNI plugins, cloud LoadBalancers.</li>

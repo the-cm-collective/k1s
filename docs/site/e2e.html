@@ -741,6 +741,28 @@
 </ul>
 </li>
 </ul>
+<p>CRI Quickstart (containerd)</p>
+<ul>
+<li>Ensure containerd + CNI + <code>crictl</code> are installed (see <code>docs/ops/runbook.md</code>).</li>
+<li>Initialize CNI configs if missing:
+<ul>
+<li><code>./scripts/cni_init.sh</code> (or <code>AE_CNI_FORCE=1 AE_CNI_VERSION=1.0.0 ./scripts/cni_init.sh</code>)</li>
+</ul>
+</li>
+<li>Export runtime env:
+<ul>
+<li><code>export AE_RUNTIME_BACKEND=cri</code></li>
+<li><code>export AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock</code></li>
+<li><code>export AE_CRI_SANDBOX_IMAGE=registry.k8s.io/pause:3.9</code></li>
+</ul>
+</li>
+<li>Run CRI preflight/smoke (optional):
+<ul>
+<li><code>./scripts/cri_preflight.sh</code></li>
+<li><code>./scripts/cri_smoke.sh</code></li>
+</ul>
+</li>
+</ul>
 <p>Start Controller</p>
 <ul>
 <li>Polling loop with metrics and watch (if watchdog installed):
