@@ -144,3 +144,19 @@ def test_netfs_applies_selinux(tmp_path, monkeypatch) -> None:
         selinux={"type": "container_file_t"},
     )
     assert seen["opts"]["type"] == "container_file_t"
+
+
+def test_netfs_block_device_requires_device_path(tmp_path) -> None:
+    block_path = tmp_path / "block-dev"
+    block_path.write_text("fake", encoding="utf-8")
+    pv_obj = {"spec": {"volumeMode": "Block", "hostPath": {"path": str(block_path)}}}
+    state = FakeState(pv_obj)
+    manager = NetFSManager(state, root=tmp_path)
+
+    with pytest.raises(ValueError):
+        manager.ensure_mount(PvcRef(name="pvc", namespace="default"), node_id="node1")
+
+    mount = manager.ensure_mount(
+        PvcRef(name="pvc", namespace="default"), node_id="node1", for_device=True
+    )
+    assert mount.host_path == str(block_path)

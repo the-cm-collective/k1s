@@ -396,6 +396,7 @@ class DockerRuntime(RuntimeAdapter):
 
         # volumes
         volumes = {}
+        devices: list[str] = []
         if manifest.spec.volumes:
             for v in manifest.spec.volumes:
                 mode = "ro" if v.read_only else "rw"
@@ -405,6 +406,13 @@ class DockerRuntime(RuntimeAdapter):
                 if host_path and not os.path.isabs(host_path):
                     host_path = os.path.abspath(host_path)
                 volumes[host_path] = {"bind": v.mount_path, "mode": mode}
+        if getattr(manifest.spec, "volume_devices", None):
+            for d in manifest.spec.volume_devices:
+                mode = "r" if d.read_only else "rwm"
+                host_path = d.host_path
+                if host_path and not os.path.isabs(host_path):
+                    host_path = os.path.abspath(host_path)
+                devices.append(f"{host_path}:{d.device_path}:{mode}")
         if getattr(manifest.spec, "storage", None):
             self.ensure_storage_volumes(app_name, [s.model_dump() for s in manifest.spec.storage])
             for s in manifest.spec.storage:
@@ -447,6 +455,8 @@ class DockerRuntime(RuntimeAdapter):
                 "ports": ports if ports else None,
                 "restart_policy": {"Name": "no"} if is_job else {"Name": "unless-stopped"},
             }
+            if devices:
+                kwargs["devices"] = devices
             # Security context mapping
             sec = getattr(manifest.spec, "security", None)
             if sec is not None:
