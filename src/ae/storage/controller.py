@@ -287,7 +287,11 @@ class StorageController:
             sc_name = target["storage_class"]
             host_root = target["host_root"]
             topology = target.get("node_topology")
-            capacity = self._path_capacity(host_root)
+            capacity_override = target.get("capacity_override")
+            if capacity_override is not None:
+                capacity = int(capacity_override)
+            else:
+                capacity = self._path_capacity(host_root)
             if capacity is None:
                 continue
             name = self._capacity_name(sc_name, topology, host_root)
@@ -340,23 +344,39 @@ class StorageController:
             if not isinstance(spec, dict):
                 continue
             provisioner = str(spec.get("provisioner") or "")
-            if provisioner not in {NFS_PROVISIONER, LOCAL_PATH_PROVISIONER}:
-                continue
-            host_root = self._storage_class_host_root(spec, provisioner)
+            params = spec.get("parameters") if isinstance(spec, dict) else {}
+            params = params if isinstance(params, dict) else {}
+            override_raw = params.get("capacityBytes") or params.get("capacity")
+            capacity_override = None
+            if override_raw is not None:
+                if isinstance(override_raw, (int, float)):
+                    capacity_override = int(override_raw)
+                else:
+                    capacity_override = self._quantity_bytes(str(override_raw))
+            host_root = None
+            if provisioner in {NFS_PROVISIONER, LOCAL_PATH_PROVISIONER}:
+                host_root = self._storage_class_host_root(spec, provisioner)
             if host_root is None:
-                continue
-            if (sc.name, host_root) in pv_roots:
+                if capacity_override is None:
+                    continue
+                host_root = Path(f"/_capacity/{sc.name}")
+            if (sc.name, host_root) in pv_roots and capacity_override is None:
                 continue
             topology = self._storage_class_topology(spec)
             key = self._capacity_key(sc.name, topology, host_root)
-            targets.setdefault(
-                key,
-                {
-                    "storage_class": sc.name,
-                    "host_root": host_root,
-                    "node_topology": topology,
-                },
-            )
+            existing = targets.get(key)
+            if existing is not None:
+                if capacity_override is not None:
+                    existing["capacity_override"] = capacity_override
+                continue
+            entry = {
+                "storage_class": sc.name,
+                "host_root": host_root,
+                "node_topology": topology,
+            }
+            if capacity_override is not None:
+                entry["capacity_override"] = capacity_override
+            targets[key] = entry
 
         return list(targets.values())
 

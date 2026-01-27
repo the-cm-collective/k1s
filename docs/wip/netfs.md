@@ -358,6 +358,8 @@ Exit criteria:
 - CSIStorageCapacity (basic capacity reporting)
   - Emit `CSIStorageCapacity` objects per storage class using hostPath disk free
     space and PV node affinity where available.
+  - StorageClasses can set `parameters.capacity` (or `capacityBytes`) to publish
+    static capacity for external CSI drivers.
 - Namespace storage quotas (basic enforcement)
   - `AE_STORAGE_QUOTAS` config caps total requested storage per namespace.
   - Emit `StorageQuotaExceeded` events and expose usage/quota via metrics.
@@ -444,9 +446,4 @@ Optional (SMB / CSI):
 
 ## Future NetFS features to consider (post-MVP)
 
-- VolumeSnapshots and VolumeSnapshotClass support.
-- Volume expansion with filesystem resize in containers.
-- (Extended) CSI capacity/topology reporting for multi-node and external CSI drivers.
-- Volume health checks and metrics aligned with K8s events.
 - SELinux relabeling improvements for shared volumes.
-- Per-namespace quota enforcement and usage tracking.
