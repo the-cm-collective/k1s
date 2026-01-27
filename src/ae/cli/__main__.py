@@ -678,6 +678,62 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional path to write JSON state with tokens and expiries",
     )
 
+    # auth helpers
+    auth_cmd = subparsers.add_parser("auth", help="Auth helpers for local/remote setup")
+    auth_sub = auth_cmd.add_subparsers(dest="auth_cmd", required=True)
+    auth_local = auth_sub.add_parser(
+        "local", help="Emit export lines from local env files for CLI use"
+    )
+    auth_local.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        default=None,
+        help="Write exports to this file instead of stdout",
+    )
+    auth_local.add_argument(
+        "--apishim-env",
+        type=Path,
+        default=None,
+        help="Path to apishim env file (default: state/labs/apishim.env)",
+    )
+    auth_local.add_argument(
+        "--controller-env",
+        type=Path,
+        default=None,
+        help="Path to controller env file (default: state/env.sh)",
+    )
+    auth_local.add_argument(
+        "--dev-env",
+        type=Path,
+        default=None,
+        help="Path to dev env file (default: state/dev.env)",
+    )
+    auth_local.add_argument(
+        "--server",
+        default=None,
+        help="Override AE_APISHIM_SERVER value in the output",
+    )
+    auth_local.add_argument(
+        "--apishim-pid",
+        type=Path,
+        default=None,
+        help="Path to apishim pid file (default: state/apishim.pid)",
+    )
+    auth_remote = auth_sub.add_parser("remote", help="Generate fresh tokens for remote setup")
+    auth_remote.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        default=None,
+        help="Write exports to this file instead of stdout",
+    )
+    auth_remote.add_argument(
+        "--no-mutations",
+        action="store_true",
+        help="Do not include AE_API_MUTATIONS=1",
+    )
+
     # tls helpers
     tls_cmd = subparsers.add_parser("tls", help="TLS helpers for ingress")
     tls_sub = tls_cmd.add_subparsers(dest="tls_cmd", required=True)
@@ -1214,6 +1270,12 @@ def main(argv: list[str] | None = None) -> int:
         config_manager=config_manager,
     )
 
+    auth_handler = globals().get("handle_auth")
+    if auth_handler is None:
+        def auth_handler(_ns: argparse.Namespace) -> int:
+            print("auth command unavailable in this build")
+            return 2
+
     command_handlers: dict[str, Callable[[argparse.Namespace], int]] = {
         "apply": lambda ns: handle_apply(ns, reconciler, args),
         "status": lambda ns: handle_status(ns, store, args, runtime),
@@ -1224,6 +1286,7 @@ def main(argv: list[str] | None = None) -> int:
         "revisions": lambda ns: handle_revisions(ns, store),
         "rollout": lambda ns: handle_rollout(ns, store, reconciler),
         "api": handle_api,
+        "auth": auth_handler,
         "tls": handle_tls,
         "registry": handle_registry,
         "metrics": lambda ns: handle_metrics(ns, store),
@@ -2504,6 +2567,201 @@ def handle_api(args: argparse.Namespace) -> int:
     return 2
 
 
+def _read_env_file_var(path: Path, key: str) -> str | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        if k.strip() != key:
+            continue
+        val = v.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in {'"', "'"}:
+            val = val[1:-1]
+        return val
+    return None
+
+
+def _write_export_lines(lines: list[str], dest: Path | None) -> None:
+    payload = "\n".join(lines) + ("\n" if lines else "")
+    if dest:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(payload)
+    else:
+        print(payload, end="")
+
+
+def _read_proc_env(pid: int) -> dict[str, str]:
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for entry in raw.split(b"\x00"):
+        if not entry:
+            continue
+        try:
+            k, v = entry.split(b"=", 1)
+        except ValueError:
+            continue
+        try:
+            out[k.decode("utf-8")] = v.decode("utf-8")
+        except Exception:
+            continue
+    return out
+
+
+def handle_auth(args: argparse.Namespace) -> int:
+    if args.auth_cmd == "local":
+        apishim_env = Path(
+            args.apishim_env
+            if args.apishim_env
+            else os.getenv("APISHIM_ENV_FILE", "state/labs/apishim.env")
+        )
+        controller_env = Path(
+            args.controller_env
+            if args.controller_env
+            else os.getenv("CONTROLLER_ENV_FILE", "state/env.sh")
+        )
+        dev_env = Path(
+            args.dev_env if args.dev_env else os.getenv("DEV_ENV_FILE", "state/dev.env")
+        )
+        apishim_pid = Path(
+            args.apishim_pid
+            if args.apishim_pid
+            else os.getenv("APISHIM_PID_FILE", "state/apishim.pid")
+        )
+
+        def pick(*vals: str | None) -> str:
+            for val in vals:
+                if val:
+                    return val
+            return ""
+
+        proc_env: dict[str, str] = {}
+        if apishim_pid.exists():
+            try:
+                pid_val = int(apishim_pid.read_text().strip() or "0")
+            except Exception:
+                pid_val = 0
+            if pid_val > 0:
+                proc_env = _read_proc_env(pid_val)
+
+        apishim_token = pick(
+            proc_env.get("AE_APISHIM_TOKEN"),
+            _read_env_file_var(apishim_env, "AE_APISHIM_TOKEN"),
+            os.getenv("AE_APISHIM_TOKEN"),
+        )
+        apishim_read = pick(
+            proc_env.get("AE_APISHIM_READ_TOKEN"),
+            _read_env_file_var(apishim_env, "AE_APISHIM_READ_TOKEN"),
+            os.getenv("AE_APISHIM_READ_TOKEN"),
+        )
+        apishim_exec = pick(
+            proc_env.get("AE_APISHIM_EXEC_TOKEN"),
+            _read_env_file_var(apishim_env, "AE_APISHIM_EXEC_TOKEN"),
+            os.getenv("AE_APISHIM_EXEC_TOKEN"),
+        )
+        apishim_pf = pick(
+            proc_env.get("AE_APISHIM_PORTFORWARD_TOKEN"),
+            _read_env_file_var(apishim_env, "AE_APISHIM_PORTFORWARD_TOKEN"),
+            os.getenv("AE_APISHIM_PORTFORWARD_TOKEN"),
+        )
+        apishim_secret = pick(
+            proc_env.get("AE_APISHIM_SESSION_SECRET"),
+            _read_env_file_var(apishim_env, "AE_APISHIM_SESSION_SECRET"),
+            os.getenv("AE_APISHIM_SESSION_SECRET"),
+        )
+        admin_token = pick(
+            _read_env_file_var(apishim_env, "AE_API_ADMIN_TOKEN"),
+            _read_env_file_var(controller_env, "AE_API_ADMIN_TOKEN"),
+            os.getenv("AE_API_ADMIN_TOKEN"),
+        )
+        scaler_token = pick(
+            _read_env_file_var(controller_env, "AE_API_SCALER_TOKEN"),
+            os.getenv("AE_API_SCALER_TOKEN"),
+        )
+        read_token = pick(
+            _read_env_file_var(controller_env, "AE_API_READ_TOKEN"),
+            os.getenv("AE_API_READ_TOKEN"),
+        )
+
+        server = args.server or os.getenv("AE_APISHIM_SERVER")
+        if not server:
+            server = _read_env_file_var(controller_env, "AE_APISHIM_SERVER")
+        if not server:
+            upstream = pick(
+                os.getenv("APISHIM_UPSTREAM"),
+                _read_env_file_var(dev_env, "APISHIM_UPSTREAM"),
+            )
+            port = pick(
+                os.getenv("APISHIM_PORT"),
+                _read_env_file_var(dev_env, "APISHIM_PORT"),
+            )
+            if upstream:
+                server = upstream if "://" in upstream else f"https://{upstream}"
+            elif port:
+                server = f"https://127.0.0.1:{port}"
+            else:
+                server = "https://127.0.0.1:8445"
+
+        lines: list[str] = []
+        if apishim_token:
+            lines.append(f"export AE_APISHIM_TOKEN={apishim_token}")
+        if apishim_read:
+            lines.append(f"export AE_APISHIM_READ_TOKEN={apishim_read}")
+        if apishim_exec:
+            lines.append(f"export AE_APISHIM_EXEC_TOKEN={apishim_exec}")
+        if apishim_pf:
+            lines.append(f"export AE_APISHIM_PORTFORWARD_TOKEN={apishim_pf}")
+        if apishim_secret:
+            lines.append(f"export AE_APISHIM_SESSION_SECRET={apishim_secret}")
+        if admin_token:
+            lines.append(f"export AE_API_ADMIN_TOKEN={admin_token}")
+        if scaler_token:
+            lines.append(f"export AE_API_SCALER_TOKEN={scaler_token}")
+        if read_token:
+            lines.append(f"export AE_API_READ_TOKEN={read_token}")
+        if server:
+            lines.append(f"export AE_APISHIM_SERVER={server}")
+        _write_export_lines(lines, getattr(args, "output", None))
+        return 0
+
+    if args.auth_cmd == "remote":
+        import secrets
+
+        apishim_token = secrets.token_urlsafe(32)
+        apishim_read = secrets.token_urlsafe(32)
+        apishim_secret = secrets.token_urlsafe(32)
+        admin_token = secrets.token_hex(16)
+        scaler_token = secrets.token_hex(16)
+        read_token = secrets.token_hex(16)
+
+        lines = [
+            f"export AE_APISHIM_TOKEN={apishim_token}",
+            f"export AE_APISHIM_READ_TOKEN={apishim_read}",
+            f"export AE_APISHIM_SESSION_SECRET={apishim_secret}",
+            f"export AE_API_ADMIN_TOKEN={admin_token}",
+            f"export AE_API_SCALER_TOKEN={scaler_token}",
+            f"export AE_API_READ_TOKEN={read_token}",
+        ]
+        if not getattr(args, "no_mutations", False):
+            lines.append("export AE_API_MUTATIONS=1")
+        _write_export_lines(lines, getattr(args, "output", None))
+        return 0
+
+    print("unsupported auth command")
+    return 2
+
+
 def handle_tls(args: argparse.Namespace) -> int:
     # tls sync: copy optional input and resolve to PEM
     if args.tls_cmd == "sync":
@@ -3270,6 +3528,8 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
             token = getattr(gargs, "token", None)
         if token is None:
             token = _os.getenv("AE_APISHIM_TOKEN")
+        if token is None:
+            token = _os.getenv("AE_APISHIM_EXEC_TOKEN")
         if apishim_base:
             app_name = _resolve_app_name(args.name) or args.name
             cmd = list(args.cmd or [])
