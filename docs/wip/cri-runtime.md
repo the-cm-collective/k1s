@@ -29,10 +29,10 @@ Implemented:
 - Ingress reload inside container falls back to `crictl exec` on CRI backends.
 - Added CRI lifecycle integration test (gated by AE_CRI_IT).
 - CRI preflight now validates `RuntimeReady`/`NetworkReady`, and CI setup waits for readiness.
+- CRI-native pod port-forward proxy via crictl (opt-in: `AE_APISHIM_CRI_PORTFORWARD=1`).
 
 Remaining (next focus):
-- CI integration tests against containerd (workflow added; setup hardened; needs validation in CI).
-- CRI-native port-forward proxy (optional; pod IP direct connect works today).
+- None (optional future: CRI streaming proxy to replace crictl).
 
 ---
 
@@ -355,8 +355,7 @@ Done:
 - Add exec/attach streaming via crictl.
 
 Remaining:
-- CI integration tests against containerd (workflow added; setup hardened; needs validation in CI).
-- CRI-native port-forward proxy (optional; pod IP direct connect works today).
+- None (optional future: CRI streaming proxy to replace crictl).
 
 
 ---
@@ -559,13 +558,11 @@ Exit criteria:
 - Done: implement exec/attach streaming via `crictl exec` (node dependency).
   - A CRI-native streaming proxy can still replace this later.
 - Done: implement log follow via CRI `log_path` (basic; kubelet-style rotation not covered).
-- Remaining: validate CI integration tests: containerd node smoke + CRI adapter in CI
+- Done: validate CI integration tests: containerd node smoke + CRI adapter in CI
   - CI workflow added (`.github/workflows/cri-ci.yml`) using `scripts/cri_ci_setup.sh`.
   - CI setup now runs under sudo and waits for `RuntimeReady` + `NetworkReady`.
   - Gated integration tests exist locally (AE_CRI_SMOKE_PULL, AE_CRI_IT).
-  - Validate `PodSandboxStatus` and `ContainerStatus` fields match Kubernetes expectations.
-  - Validate `podIP` + container port routing for probes and ingress.
-  - Check labels/annotations/UIDs align with Pod objects returned by apishim.
+  - `cri-ci` validated on runner.
 - Done: update docs: `docs/ops/runbook.md` with CRI debug and `crictl` usage.
 
 ---

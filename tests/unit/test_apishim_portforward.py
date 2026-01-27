@@ -81,7 +81,7 @@ def _configure_auth(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 def test_portforward_prefers_pod_ip_container_port(monkeypatch, store):
     captured: dict[str, object] = {}
 
-    def _capture(_self, host: str, ports: list[int], _ep_map=None):  # noqa: ANN001
+    def _capture(_self, host: str, ports: list[int], _ep_map=None, **_kwargs):  # noqa: ANN001
         captured["host"] = host
         captured["ports"] = list(ports)
 
@@ -107,7 +107,7 @@ def test_portforward_prefers_pod_ip_container_port(monkeypatch, store):
 def test_portforward_maps_container_port_to_host_without_pod_ip(monkeypatch, store):
     captured: dict[str, object] = {}
 
-    def _capture(_self, host: str, ports: list[int], _ep_map=None):  # noqa: ANN001
+    def _capture(_self, host: str, ports: list[int], _ep_map=None, **_kwargs):  # noqa: ANN001
         captured["host"] = host
         captured["ports"] = list(ports)
 
