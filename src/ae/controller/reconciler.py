@@ -9,10 +9,12 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 import os
+from typing import Any
 
 from ae.controller.health import HealthManager, HealthReport, ReplicaHealth
 from ae.controller.spec import AppManifest, VolumeSpec, app_key_for_manifest, load_manifest
 from ae.runtime import RuntimeAdapter, RuntimeResult
+from ae.storage.config import DEFAULT_CLASS_ANNOTATIONS
 
 
 def _record_event_metric_safe(name: str) -> None:
@@ -30,6 +32,16 @@ from ae.ingress.service import IngressService
 from ae.secrets import SecretManager
 from ae.config.manager import ConfigManager
 from ae.controller.scheduler import Scheduler
+
+SC_GROUP = "storage.k8s.io"
+SC_VERSION = "v1"
+SC_RESOURCE = "storageclasses"
+CORE_GROUP = ""
+CORE_VERSION = "v1"
+PVC_RESOURCE = "persistentvolumeclaims"
+LOCAL_PATH_PROVISIONER = "k1s.io/local-path"
+WAIT_FOR_FIRST_CONSUMER = "WaitForFirstConsumer"
+SELECTED_NODE_ANNOTATION = "volume.kubernetes.io/selected-node"
 
 
 @dataclass(slots=True)
@@ -83,6 +95,9 @@ class Reconciler:
         self._last_restart_ts: dict[str, float] = {}
         # Create cooldowns: app -> unix timestamp until which we avoid creating new replicas
         self._create_cooldown_until: dict[str, float] = {}
+        self._apishim_store = None
+        self._apishim_store_checked = False
+        self._default_sc_name: str | None = None
 
     def _runtime_for_agent(self, agent_url: str | None) -> RuntimeAdapter:
         """Return a runtime bound to the target agent URL (cached)."""
@@ -293,6 +308,7 @@ class Reconciler:
                 self._state_store.record_event(app_name, revision, "ScheduleWarning", w)
             except Exception:
                 pass
+        self._apply_selected_node_annotations(manifest_for_runtime, placements, revision)
         # Persist placement hints before reconcile (so dashboard can render)
         try:
             node_rows: list[tuple[str, str]] = []
@@ -1196,6 +1212,161 @@ class Reconciler:
         except Exception:
             abs_root = root
         return abs_root if wrote else None
+
+    def _get_apishim_store(self):
+        if self._apishim_store_checked:
+            return self._apishim_store
+        self._apishim_store_checked = True
+        try:
+            from ae.apishim.store import ObjectStore
+        except Exception:
+            self._apishim_store = None
+            return None
+        dsn = os.getenv("AE_APISHIM_DSN")
+        db_env = os.getenv("AE_APISHIM_DB")
+        db_path = Path(db_env or "state/apishim.db")
+        if not dsn and not db_path.exists():
+            self._apishim_store = None
+            return None
+        try:
+            self._apishim_store = ObjectStore(dsn=dsn) if dsn else ObjectStore(db_path=db_path)
+        except Exception:
+            self._apishim_store = None
+        return self._apishim_store
+
+    def _apply_selected_node_annotations(
+        self, manifest: AppManifest, placements: list, revision: int
+    ) -> None:
+        pvc_mounts = list(getattr(manifest.spec, "pvc_mounts", []) or [])
+        if not pvc_mounts:
+            return
+        store = self._get_apishim_store()
+        if store is None:
+            return
+        nodes = [
+            getattr(getattr(pl, "node", None), "node_id", None)
+            for pl in placements
+            if getattr(getattr(pl, "node", None), "node_id", None)
+        ]
+        if not nodes:
+            return
+        target_node = nodes[0]
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or "default"
+        pvcs = {
+            (str(pm.claim_name), str(getattr(pm, "namespace", None) or namespace))
+            for pm in pvc_mounts
+        }
+        warnings: list[str] = []
+        for claim_name, ns in pvcs:
+            pvc = store.get(CORE_GROUP, CORE_VERSION, PVC_RESOURCE, ns, claim_name)
+            if pvc is None:
+                continue
+            if self._pvc_is_bound(pvc):
+                continue
+            if not self._pvc_needs_selected_node(store, pvc):
+                continue
+            selected = self._pvc_selected_node(pvc)
+            if selected and selected != target_node:
+                warnings.append(
+                    f"PVC {ns}/{claim_name} already selected node {selected}; scheduled node is {target_node}"
+                )
+                continue
+            if selected == target_node:
+                continue
+            meta = dict(getattr(pvc, "metadata", None) or {})
+            annotations = dict(meta.get("annotations") or {})
+            annotations[SELECTED_NODE_ANNOTATION] = target_node
+            meta["annotations"] = annotations
+            try:
+                store.upsert(
+                    CORE_GROUP,
+                    CORE_VERSION,
+                    PVC_RESOURCE,
+                    ns,
+                    claim_name,
+                    meta,
+                    dict(getattr(pvc, "spec", None) or {}),
+                    status=dict(getattr(pvc, "status", None) or {}),
+                )
+            except Exception as exc:
+                warnings.append(f"failed to set selected node on PVC {ns}/{claim_name}: {exc}")
+
+        if len(set(nodes)) > 1:
+            warnings.append(
+                "multiple nodes scheduled while local-path PVCs require a single selected node"
+            )
+        if not warnings:
+            return
+        app_name = app_key_for_manifest(manifest)
+        for w in warnings:
+            try:
+                self._state_store.record_event(app_name, revision, "ScheduleWarning", w)
+            except Exception:
+                continue
+
+    def _pvc_needs_selected_node(self, store, pvc) -> bool:
+        sc_name = self._pvc_storage_class_name(pvc) or self._default_storage_class_name(store)
+        if not sc_name:
+            return False
+        sc = store.get(SC_GROUP, SC_VERSION, SC_RESOURCE, None, sc_name)
+        if sc is None:
+            return False
+        sc_spec = self._obj_spec(sc)
+        provisioner = str(sc_spec.get("provisioner") or "")
+        binding_mode = str(sc_spec.get("volumeBindingMode") or "")
+        return provisioner == LOCAL_PATH_PROVISIONER and binding_mode == WAIT_FOR_FIRST_CONSUMER
+
+    def _default_storage_class_name(self, store) -> str | None:
+        if self._default_sc_name:
+            return self._default_sc_name
+        try:
+            classes = store.list_all(SC_GROUP, SC_VERSION, SC_RESOURCE)
+        except Exception:
+            return None
+        for sc in classes:
+            meta = getattr(sc, "metadata", None)
+            annotations = meta.get("annotations") if isinstance(meta, dict) else {}
+            if not isinstance(annotations, dict):
+                continue
+            for key in DEFAULT_CLASS_ANNOTATIONS:
+                raw = annotations.get(key)
+                if raw is not None and str(raw).lower() in {"true", "1", "yes"}:
+                    self._default_sc_name = sc.name
+                    return self._default_sc_name
+        if classes:
+            self._default_sc_name = classes[0].name
+            return self._default_sc_name
+        return None
+
+    @staticmethod
+    def _obj_spec(obj: Any) -> dict[str, Any]:
+        spec = getattr(obj, "spec", None)
+        return spec if isinstance(spec, dict) else {}
+
+    @staticmethod
+    def _pvc_storage_class_name(pvc) -> str | None:
+        spec = getattr(pvc, "spec", None)
+        if not isinstance(spec, dict):
+            return None
+        name = spec.get("storageClassName")
+        return str(name) if name else None
+
+    @staticmethod
+    def _pvc_selected_node(pvc) -> str | None:
+        meta = getattr(pvc, "metadata", None)
+        annotations = meta.get("annotations") if isinstance(meta, dict) else {}
+        if not isinstance(annotations, dict):
+            return None
+        node = annotations.get(SELECTED_NODE_ANNOTATION)
+        return str(node) if node else None
+
+    @staticmethod
+    def _pvc_is_bound(pvc) -> bool:
+        spec = getattr(pvc, "spec", None)
+        status = getattr(pvc, "status", None)
+        vol = spec.get("volumeName") if isinstance(spec, dict) else None
+        phase = status.get("phase") if isinstance(status, dict) else None
+        return bool(vol) or phase == "Bound"
 
 
 # ruff: noqa

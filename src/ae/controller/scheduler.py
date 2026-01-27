@@ -14,9 +14,22 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 from ae.controller.spec import AppManifest, app_key_for_manifest
 from ae.controller.state import NodeRecord, NodeStatus, SQLiteStateStore
+from ae.storage.config import DEFAULT_CLASS_ANNOTATIONS
+
+SC_GROUP = "storage.k8s.io"
+SC_VERSION = "v1"
+SC_RESOURCE = "storageclasses"
+CORE_GROUP = ""
+CORE_VERSION = "v1"
+PVC_RESOURCE = "persistentvolumeclaims"
+LOCAL_PATH_PROVISIONER = "k1s.io/local-path"
+WAIT_FOR_FIRST_CONSUMER = "WaitForFirstConsumer"
+SELECTED_NODE_ANNOTATION = "volume.kubernetes.io/selected-node"
 
 
 @dataclass(slots=True)
@@ -33,6 +46,8 @@ class Scheduler:
 
     def __init__(self, store: SQLiteStateStore) -> None:
         self._store = store
+        self._shim_store = self._init_shim_store()
+        self._default_sc_name: str | None = None
 
     def plan(self, manifest: AppManifest, revision: int) -> tuple[list[Placement], list[str]]:
         """Return placements and warnings for the manifest."""
@@ -63,10 +78,11 @@ class Scheduler:
             warnings.append("no eligible nodes; falling back to local runtime")
             return [Placement(node=None, agent_url=None, replica_ids=replica_ids)], warnings
 
-        # Storage pinning: keep all replicas on one node when storage is declared.
-        has_storage = bool(getattr(manifest.spec, "storage", None))
-        if has_storage:
-            bound_node_id = None
+        # Storage pinning: keep all replicas on one node when storage is declared or
+        # when local-path PVCs require node-local provisioning.
+        bound_node_id = None
+        has_declared_storage = bool(getattr(manifest.spec, "storage", None))
+        if has_declared_storage:
             try:
                 attachments = self._store.list_volume_attachments(app_name)
                 if attachments:
@@ -74,15 +90,29 @@ class Scheduler:
             except Exception:
                 bound_node_id = None
 
+        local_pvc_pinning, local_bound_node, local_warnings = self._local_path_pinning(manifest)
+        warnings.extend(local_warnings)
+        if bound_node_id and local_bound_node and bound_node_id != local_bound_node:
+            warnings.append(
+                "storage attachments and local-path PVCs disagree on bound node; "
+                f"using {bound_node_id}"
+            )
+        if bound_node_id is None:
+            bound_node_id = local_bound_node
+
+        if has_declared_storage or local_pvc_pinning:
             if bound_node_id:
                 bound_node = next((n for n in eligible if n.node_id == bound_node_id), None)
                 if bound_node is not None:
+                    if stale_nodes:
+                        warnings.append(f"stale/not-ready nodes skipped: {', '.join(stale_nodes)}")
                     return [
                         Placement(
-                            node=bound_node, agent_url=bound_node.endpoint, replica_ids=replica_ids
+                            node=bound_node,
+                            agent_url=bound_node.endpoint,
+                            replica_ids=replica_ids,
                         )
                     ], warnings
-                # Bound node exists but is not eligible (cordoned/stale/missing)
                 warnings.append(
                     f"storage volumes bound to node {bound_node_id} but node is not eligible (cordoned/not ready); skipping placement"
                 )
@@ -91,9 +121,13 @@ class Scheduler:
                 return [], warnings
 
             target = eligible[0]
-            return [
-                Placement(node=target, agent_url=target.endpoint, replica_ids=replica_ids)
-            ], warnings
+            if local_pvc_pinning and len(eligible) > 1:
+                warnings.append(
+                    f"local-path PVCs pending; pinning to node {target.node_id} until selected-node is set"
+                )
+            if stale_nodes:
+                warnings.append(f"stale/not-ready nodes skipped: {', '.join(stale_nodes)}")
+            return [Placement(node=target, agent_url=target.endpoint, replica_ids=replica_ids)], warnings
 
         # Topology spread / soft anti-affinity: if topologySpreadConstraints specify a
         # topologyKey and we have >1 eligible node, distribute replicas to minimize skew
@@ -130,6 +164,109 @@ class Scheduler:
             return int(os.getenv("AE_NODE_NOTREADY_AFTER", "40") or 40)
         except Exception:
             return 40
+
+    def _init_shim_store(self):
+        try:
+            from ae.apishim.store import ObjectStore
+        except Exception:
+            return None
+        dsn = os.getenv("AE_APISHIM_DSN")
+        db_env = os.getenv("AE_APISHIM_DB")
+        db_path = Path(db_env or "state/apishim.db")
+        if not dsn and not db_path.exists():
+            return None
+        try:
+            return ObjectStore(dsn=dsn) if dsn else ObjectStore(db_path=db_path)
+        except Exception:
+            return None
+
+    def _local_path_pinning(self, manifest: AppManifest) -> tuple[bool, str | None, list[str]]:
+        pvc_mounts = list(getattr(manifest.spec, "pvc_mounts", []) or [])
+        if not pvc_mounts or self._shim_store is None:
+            return False, None, []
+
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or "default"
+        pvcs = {(str(pm.claim_name), str(getattr(pm, "namespace", None) or namespace)) for pm in pvc_mounts}
+
+        local_present = False
+        selected_nodes: set[str] = set()
+        for claim_name, ns in pvcs:
+            pvc = self._shim_store.get(CORE_GROUP, CORE_VERSION, PVC_RESOURCE, ns, claim_name)
+            if pvc is None:
+                continue
+            sc_name = self._pvc_storage_class_name(pvc)
+            if not sc_name:
+                sc_name = self._default_storage_class_name()
+            if not sc_name:
+                continue
+            sc = self._shim_store.get(SC_GROUP, SC_VERSION, SC_RESOURCE, None, sc_name)
+            if sc is None:
+                continue
+            sc_spec = self._obj_spec(sc)
+            provisioner = str(sc_spec.get("provisioner") or "")
+            binding_mode = str(sc_spec.get("volumeBindingMode") or "")
+            if provisioner != LOCAL_PATH_PROVISIONER or binding_mode != WAIT_FOR_FIRST_CONSUMER:
+                continue
+            local_present = True
+            node = self._pvc_selected_node(pvc)
+            if node:
+                selected_nodes.add(node)
+
+        warnings: list[str] = []
+        if not local_present:
+            return False, None, warnings
+        bound_node = next(iter(selected_nodes)) if selected_nodes else None
+        if len(selected_nodes) > 1:
+            warnings.append(
+                "local-path PVCs reference multiple selected nodes; scheduling may be unstable"
+            )
+        return True, bound_node, warnings
+
+    @staticmethod
+    def _obj_spec(obj: Any) -> dict[str, Any]:
+        spec = getattr(obj, "spec", None)
+        return spec if isinstance(spec, dict) else {}
+
+    def _default_storage_class_name(self) -> str | None:
+        if self._default_sc_name:
+            return self._default_sc_name
+        if self._shim_store is None:
+            return None
+        try:
+            classes = self._shim_store.list_all(SC_GROUP, SC_VERSION, SC_RESOURCE)
+        except Exception:
+            return None
+        for sc in classes:
+            meta = getattr(sc, "metadata", None)
+            annotations = meta.get("annotations") if isinstance(meta, dict) else {}
+            if not isinstance(annotations, dict):
+                continue
+            for key in DEFAULT_CLASS_ANNOTATIONS:
+                raw = annotations.get(key)
+                if raw is not None and str(raw).lower() in {"true", "1", "yes"}:
+                    self._default_sc_name = sc.name
+                    return self._default_sc_name
+        if classes:
+            self._default_sc_name = classes[0].name
+            return self._default_sc_name
+        return None
+
+    @staticmethod
+    def _pvc_storage_class_name(pvc) -> str | None:
+        spec = getattr(pvc, "spec", None)
+        if not isinstance(spec, dict):
+            return None
+        name = spec.get("storageClassName")
+        return str(name) if name else None
+
+    @staticmethod
+    def _pvc_selected_node(pvc) -> str | None:
+        meta = getattr(pvc, "metadata", None)
+        annotations = meta.get("annotations") if isinstance(meta, dict) else {}
+        if not isinstance(annotations, dict):
+            return None
+        node = annotations.get(SELECTED_NODE_ANNOTATION)
+        return str(node) if node else None
 
     @staticmethod
     def _is_ready(status: NodeStatus | None, now: datetime, grace: int) -> bool:
