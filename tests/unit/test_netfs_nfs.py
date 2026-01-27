@@ -131,10 +131,11 @@ def test_netfs_applies_selinux(tmp_path, monkeypatch) -> None:
 
     seen = {}
 
-    def _fake_selinux(pvc, target, opts):
+    def _fake_selinux(pvc, target, opts, *, recursive=False):
         seen["pvc"] = pvc
         seen["target"] = target
         seen["opts"] = opts
+        seen["recursive"] = recursive
 
     monkeypatch.setattr(manager, "_apply_selinux", _fake_selinux)
 
@@ -144,6 +145,37 @@ def test_netfs_applies_selinux(tmp_path, monkeypatch) -> None:
         selinux={"type": "container_file_t"},
     )
     assert seen["opts"]["type"] == "container_file_t"
+    assert seen["recursive"] is False
+
+
+def test_netfs_selinux_recursive_for_rwx(tmp_path, monkeypatch) -> None:
+    pv_obj = {
+        "spec": {
+            "nfs": {"server": "10.0.0.6", "path": "/export"},
+            "accessModes": ["ReadWriteMany"],
+        }
+    }
+    state = FakeState(pv_obj)
+    manager = NetFSManager(state, root=tmp_path)
+
+    monkeypatch.setenv("AE_NETFS_SELINUX_RECURSIVE", "1")
+    monkeypatch.setattr(manager, "_mount_nfs", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(manager, "_mount_info", lambda _target: None)
+    monkeypatch.setattr(manager, "_ensure_nfs_tools", lambda: None)
+
+    seen = {}
+
+    def _fake_selinux(pvc, target, opts, *, recursive=False):
+        seen["recursive"] = recursive
+
+    monkeypatch.setattr(manager, "_apply_selinux", _fake_selinux)
+
+    manager.ensure_mount(
+        PvcRef(name="pvc", namespace="default"),
+        node_id="node1",
+        selinux={"type": "container_file_t"},
+    )
+    assert seen["recursive"] is True
 
 
 def test_netfs_block_device_requires_device_path(tmp_path) -> None:

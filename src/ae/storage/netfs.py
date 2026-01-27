@@ -64,10 +64,14 @@ class NetFSManager:
 
         existing = self._state.get_mount(pvc, node_id)
         if existing is not None:
+            target = Path(existing.host_path)
             if fs_group is not None:
-                self._apply_fs_group(pvc, Path(existing.host_path), fs_group)
+                self._apply_fs_group(pvc, target, fs_group)
             if selinux:
-                self._apply_selinux(pvc, Path(existing.host_path), selinux)
+                pv_obj = self._state.get_pv(existing.pv)
+                pv_spec = self._obj_spec(pv_obj)
+                recursive = self._selinux_recursive(pv_spec, target)
+                self._apply_selinux(pvc, target, selinux, recursive=recursive)
             return existing
 
         pv = self._state.get_pv_for_pvc(pvc)
@@ -117,7 +121,7 @@ class NetFSManager:
             if fs_group is not None:
                 self._apply_fs_group(pvc, block_path, fs_group)
             if selinux:
-                self._apply_selinux(pvc, block_path, selinux)
+                self._apply_selinux(pvc, block_path, selinux, recursive=False)
             mount = NetFSMount(
                 pvc=pvc,
                 pv=pv,
@@ -179,7 +183,9 @@ class NetFSManager:
             msg = str(exc) or "failed to apply fsGroup"
             self._record_pvc_event(pvc, "FsGroupApplyFailed", msg)
 
-    def _apply_selinux(self, pvc: PvcRef, target: Path, opts: dict[str, str]) -> None:
+    def _apply_selinux(
+        self, pvc: PvcRef, target: Path, opts: dict[str, str], *, recursive: bool = False
+    ) -> None:
         if not target.exists():
             return
         if os.geteuid() != 0:
@@ -191,6 +197,8 @@ class NetFSManager:
             self._record_pvc_event(pvc, "SelinuxRelabelSkipped", "chcon not available")
             return
         args = ["chcon"]
+        if recursive and target.is_dir():
+            args.append("-R")
         user = opts.get("user")
         role = opts.get("role")
         typ = opts.get("type")
@@ -211,6 +219,24 @@ class NetFSManager:
         except subprocess.CalledProcessError as exc:
             msg = (exc.stderr or exc.stdout or "").strip() or "SELinux relabel failed"
             self._record_pvc_event(pvc, "SelinuxRelabelFailed", msg)
+
+    @staticmethod
+    def _selinux_recursive_enabled() -> bool:
+        raw = os.getenv("AE_NETFS_SELINUX_RECURSIVE", "0")
+        return str(raw).lower() in {"1", "true", "yes", "on"}
+
+    def _selinux_recursive(self, pv_spec: dict[str, Any], target: Path) -> bool:
+        if not target.exists() or not target.is_dir():
+            return False
+        if not self._selinux_recursive_enabled():
+            return False
+        if not isinstance(pv_spec, dict):
+            return False
+        modes = pv_spec.get("accessModes")
+        if not isinstance(modes, list):
+            return False
+        shared = {"ReadWriteMany", "ReadOnlyMany"}
+        return any(str(mode) in shared for mode in modes)
 
     def _ensure_nfs_mount(
         self,
@@ -268,7 +294,8 @@ class NetFSManager:
         if fs_group is not None:
             self._apply_fs_group(pvc, target, fs_group)
         if selinux:
-            self._apply_selinux(pvc, target, selinux)
+            recursive = self._selinux_recursive(pv_spec, target)
+            self._apply_selinux(pvc, target, selinux, recursive=recursive)
         self._maybe_resize_filesystem(pvc, target)
 
         mount = NetFSMount(
@@ -335,7 +362,8 @@ class NetFSManager:
         if fs_group is not None:
             self._apply_fs_group(pvc, target, fs_group)
         if selinux:
-            self._apply_selinux(pvc, target, selinux)
+            recursive = self._selinux_recursive(pv_spec, target)
+            self._apply_selinux(pvc, target, selinux, recursive=recursive)
         self._maybe_resize_filesystem(pvc, target)
 
         read_only = bool(csi.get("readOnly", False))
