@@ -820,6 +820,15 @@ class StorageController:
             )
             return
 
+        pv_spec = pv.spec or {}
+        csi = pv_spec.get("csi") if isinstance(pv_spec, dict) else None
+        is_csi = isinstance(csi, dict)
+        volume_handle = ""
+        if is_csi:
+            raw_handle = csi.get("volumeHandle")
+            if raw_handle:
+                volume_handle = str(raw_handle)
+
         snap_uid = self._snapshot_uid(snapshot)
         content_name = self._snapshot_content_name(snapshot, pv)
         existing_content = self._store.get(
@@ -827,13 +836,19 @@ class StorageController:
         )
         driver, deletion_policy = self._snapshot_driver_and_policy(snapshot, pv)
         restore_size = ((pv.spec or {}).get("capacity") or {}).get("storage")
+        existing_status = (
+            dict(existing_content.status or {}) if existing_content is not None else {}
+        )
+        content_ready = bool(existing_status.get("readyToUse"))
+        content_restore_size = existing_status.get("restoreSize") or existing_status.get("size")
 
         snapshot_path: Path | None = None
         host_backing = self._pv_host_backing(pv)
         existing_backing = self._snapshot_content_backing(existing_content)
-        ready = True
+        ready = False
         if existing_backing is not None and existing_backing[1].exists():
             snapshot_path = existing_backing[1]
+            ready = True
         elif host_backing is not None:
             host_root, host_path = host_backing
             snapshot_path = host_root / SNAPSHOT_DIRNAME / snap_uid
@@ -843,7 +858,6 @@ class StorageController:
                     "SnapshotFailed",
                     f"refusing to snapshot outside host root: {snapshot_path}",
                 )
-                ready = False
             else:
                 snapshot_path.parent.mkdir(parents=True, exist_ok=True)
                 if not self._reset_dir(snapshot_path, root=host_root):
@@ -855,13 +869,29 @@ class StorageController:
                         f"failed to copy data from {host_path}",
                     )
                     ready = False
+                else:
+                    ready = True
+        elif is_csi:
+            if not volume_handle:
+                self._record_snapshot_event(
+                    snapshot,
+                    "SnapshotInvalid",
+                    f"PV {pv_name} missing CSI volumeHandle",
+                )
+            elif content_ready:
+                ready = True
+            else:
+                self._record_snapshot_event(
+                    snapshot,
+                    "SnapshotPending",
+                    f"waiting for CSI snapshotter for PV {pv_name}",
+                )
         else:
             self._record_snapshot_event(
                 snapshot,
                 "SnapshotBackingMissing",
                 f"PV {pv_name} has no hostPath backing annotations",
             )
-            ready = False
 
         ts = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         content_annotations = {SNAP_SOURCE_PV_ANNOTATION: str(pv_name)}
@@ -869,6 +899,10 @@ class StorageController:
             content_annotations[SNAP_HOST_ROOT_ANNOTATION] = str(host_backing[0])
             content_annotations[SNAP_HOST_PATH_ANNOTATION] = str(snapshot_path)
         content_meta = {"name": content_name, "annotations": content_annotations}
+        if is_csi and volume_handle:
+            content_source = {"volumeHandle": volume_handle}
+        else:
+            content_source = {"persistentVolumeName": str(pv_name)}
         content_spec = {
             "deletionPolicy": deletion_policy,
             "driver": driver,
@@ -877,11 +911,21 @@ class StorageController:
                 "namespace": snap_ns,
                 "uid": snap_uid,
             },
-            "source": {"persistentVolumeName": str(pv_name)},
+            "source": content_source,
         }
-        content_status = {"readyToUse": ready, "creationTime": ts}
-        if restore_size:
-            content_status["restoreSize"] = str(restore_size)
+        if host_backing is not None or existing_backing is not None:
+            content_status = {"readyToUse": ready, "creationTime": ts}
+            if restore_size:
+                content_status["restoreSize"] = str(restore_size)
+        elif is_csi and existing_status:
+            content_status = dict(existing_status)
+            content_status.setdefault("creationTime", ts)
+            if restore_size and "restoreSize" not in content_status:
+                content_status["restoreSize"] = str(restore_size)
+        else:
+            content_status = {"readyToUse": ready, "creationTime": ts}
+            if restore_size:
+                content_status["restoreSize"] = str(restore_size)
         self._store.upsert(
             SNAP_GROUP,
             SNAP_VERSION,
@@ -896,8 +940,9 @@ class StorageController:
         snap_status = dict(snapshot.status or {})
         snap_status["readyToUse"] = ready
         snap_status["boundVolumeSnapshotContentName"] = content_name
-        if restore_size:
-            snap_status["restoreSize"] = str(restore_size)
+        effective_restore = content_restore_size or restore_size
+        if effective_restore:
+            snap_status["restoreSize"] = str(effective_restore)
         self._store.upsert(
             SNAP_GROUP,
             SNAP_VERSION,
