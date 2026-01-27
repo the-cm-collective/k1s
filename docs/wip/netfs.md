@@ -348,9 +348,12 @@ Exit criteria:
   - CSI snapshot contents are created with `source.volumeHandle` and snapshot
     readiness reflects CSI-populated `VolumeSnapshotContent.status` when present.
     CSI restore/provisioning still requires external snapshotter/provisioner.
+- Volume health reporting (controller events)
+  - Emit `VolumeHealthy` / `VolumeUnhealthy` events when hostPath-backed PVs
+    appear or disappear under the storage root.
 - RWOP + topology
-  - Add `ReadWriteOncePod` access mode support (K8s 1.22+).
-  - Respect `topologyKeys` and `allowedTopologies` where provided.
+  - `ReadWriteOncePod` access mode limits replicas to 1 in scheduler warnings.
+  - Scheduler filters eligible nodes by `topologyKeys` / `allowedTopologies`.
 
 ---
 
