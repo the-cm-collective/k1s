@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import threading
 import time
 import uuid
@@ -35,6 +36,12 @@ PV_RESOURCE = "persistentvolumes"
 VA_RESOURCE = "volumeattachments"
 EVENT_RESOURCE = "events"
 
+SNAP_GROUP = "snapshot.storage.k8s.io"
+SNAP_VERSION = "v1"
+SNAPSHOT_RESOURCE = "volumesnapshots"
+SNAPCLASS_RESOURCE = "volumesnapshotclasses"
+SNAPCONTENT_RESOURCE = "volumesnapshotcontents"
+
 NFS_PROVISIONER = "k1s.io/nfs"
 LOCAL_PATH_PROVISIONER = "k1s.io/local-path"
 WAIT_FOR_FIRST_CONSUMER = "WaitForFirstConsumer"
@@ -45,6 +52,11 @@ NFS_HOST_ROOT_ANNOTATION = "k1s.io/nfs-host-root"
 NFS_HOST_PATH_ANNOTATION = "k1s.io/nfs-host-path"
 LOCAL_HOST_ROOT_ANNOTATION = "k1s.io/local-host-root"
 LOCAL_HOST_PATH_ANNOTATION = "k1s.io/local-host-path"
+SNAP_HOST_ROOT_ANNOTATION = "k1s.io/snapshot-host-root"
+SNAP_HOST_PATH_ANNOTATION = "k1s.io/snapshot-host-path"
+SNAP_SOURCE_PV_ANNOTATION = "k1s.io/snapshot-source-pv"
+SNAPSHOT_SOURCE_ANNOTATION = "k1s.io/snapshot-source"
+SNAPSHOT_DIRNAME = ".snapshots"
 DEFAULT_LOCAL_ROOT = Path(os.getenv("AE_STORAGE_ROOT", "/var/lib/ae/storage"))
 
 
@@ -59,6 +71,7 @@ class StorageController:
         self._stop = threading.Event()
         self._pvc_thread: threading.Thread | None = None
         self._pv_thread: threading.Thread | None = None
+        self._snapshot_thread: threading.Thread | None = None
 
     def sync(self) -> int:
         """Sync configured StorageClass objects into the apishim store."""
@@ -81,8 +94,12 @@ class StorageController:
         self._pv_thread = threading.Thread(
             target=self._watch_pvs, name="storage-pv-watch", daemon=True
         )
+        self._snapshot_thread = threading.Thread(
+            target=self._watch_snapshots, name="storage-snapshot-watch", daemon=True
+        )
         self._pvc_thread.start()
         self._pv_thread.start()
+        self._snapshot_thread.start()
         self.reconcile_once()
 
     def stop(self) -> None:
@@ -91,6 +108,7 @@ class StorageController:
     def reconcile_once(self) -> None:
         """Run a single PVC/PV binding pass."""
         self._reconcile_all()
+        self._reconcile_snapshots()
 
     def _resolve_default(
         self, storage_classes: list[StorageClassConfig]
@@ -168,6 +186,28 @@ class StorageController:
             with suppress(Exception):
                 gen.close()  # type: ignore[attr-defined]
 
+    def _watch_snapshots(self) -> None:
+        gen = self._store.watch(
+            SNAP_GROUP,
+            SNAP_VERSION,
+            SNAPSHOT_RESOURCE,
+            None,
+            heartbeat_seconds=5,
+            allow_bookmarks=True,
+        )
+        try:
+            for ev, obj in gen:
+                if self._stop.is_set():
+                    break
+                if ev == "DELETED":
+                    self._handle_snapshot_deleted(obj)
+                    continue
+                if ev in {"ADDED", "MODIFIED"}:
+                    self._reconcile_snapshot(obj)
+        finally:
+            with suppress(Exception):
+                gen.close()  # type: ignore[attr-defined]
+
     def _reconcile_all(self) -> None:
         try:
             pvcs = self._store.list_all(CORE_GROUP, CORE_VERSION, PVC_RESOURCE)
@@ -175,6 +215,14 @@ class StorageController:
             pvcs = []
         for pvc in pvcs:
             self._reconcile_pvc(pvc)
+
+    def _reconcile_snapshots(self) -> None:
+        try:
+            snapshots = self._store.list_all(SNAP_GROUP, SNAP_VERSION, SNAPSHOT_RESOURCE)
+        except Exception:
+            snapshots = []
+        for snapshot in snapshots:
+            self._reconcile_snapshot(snapshot)
 
     def _reconcile_pending(self) -> None:
         try:
@@ -289,6 +337,9 @@ class StorageController:
         sc = self._storage_class_for_pvc(pvc)
         if sc is None:
             return None
+        snapshot_info, blocked = self._snapshot_source_for_pvc(pvc)
+        if blocked:
+            return None
         sc_spec = sc.spec or {}
         binding_mode = str(sc_spec.get("volumeBindingMode") or "")
         selected_node = self._selected_node(pvc)
@@ -301,9 +352,11 @@ class StorageController:
             return None
         provisioner = str(sc_spec.get("provisioner") or "")
         if provisioner == NFS_PROVISIONER:
-            return self._provision_nfs(pvc, sc)
+            return self._provision_nfs(pvc, sc, snapshot_info=snapshot_info)
         if provisioner == LOCAL_PATH_PROVISIONER:
-            return self._provision_local_path(pvc, sc, selected_node=selected_node)
+            return self._provision_local_path(
+                pvc, sc, selected_node=selected_node, snapshot_info=snapshot_info
+            )
         return None
 
     def _pv_is_available(self, pv) -> bool:
@@ -615,7 +668,461 @@ class StorageController:
         except Exception:
             return None
 
-    def _provision_nfs(self, pvc, sc):
+    def _snapshot_source_for_pvc(self, pvc) -> tuple[dict[str, Any] | None, bool]:
+        spec = pvc.spec or {}
+        source = spec.get("dataSource") if isinstance(spec, dict) else None
+        if not isinstance(source, dict):
+            source = spec.get("dataSourceRef") if isinstance(spec, dict) else None
+        if not isinstance(source, dict):
+            return None, False
+        kind = str(source.get("kind") or "")
+        api_group = str(source.get("apiGroup") or "")
+        if kind != "VolumeSnapshot":
+            return None, False
+        if api_group and api_group != SNAP_GROUP:
+            return None, False
+        snap_name = str(source.get("name") or "")
+        snap_ns = str(source.get("namespace") or pvc.namespace or "")
+        if not snap_name or not snap_ns:
+            self._record_pvc_event(
+                pvc,
+                "SnapshotInvalid",
+                "dataSource VolumeSnapshot requires name and namespace",
+            )
+            return None, True
+        snapshot = self._store.get(
+            SNAP_GROUP,
+            SNAP_VERSION,
+            SNAPSHOT_RESOURCE,
+            snap_ns,
+            snap_name,
+        )
+        if snapshot is None:
+            self._record_pvc_event(
+                pvc,
+                "SnapshotNotFound",
+                f"snapshot {snap_ns}/{snap_name} not found",
+            )
+            return None, True
+        status = snapshot.status or {}
+        if not bool(status.get("readyToUse")):
+            self._record_pvc_event(
+                pvc,
+                "SnapshotNotReady",
+                f"snapshot {snap_ns}/{snap_name} is not readyToUse",
+            )
+            return None, True
+        content_name = status.get("boundVolumeSnapshotContentName")
+        if not content_name:
+            self._record_pvc_event(
+                pvc,
+                "SnapshotContentMissing",
+                f"snapshot {snap_ns}/{snap_name} has no bound content",
+            )
+            return None, True
+        content = self._store.get(
+            SNAP_GROUP,
+            SNAP_VERSION,
+            SNAPCONTENT_RESOURCE,
+            None,
+            content_name,
+        )
+        if content is None:
+            self._record_pvc_event(
+                pvc,
+                "SnapshotContentMissing",
+                f"snapshot content {content_name} not found",
+            )
+            return None, True
+        backing = self._snapshot_content_backing(content)
+        if backing is None:
+            self._record_pvc_event(
+                pvc,
+                "SnapshotRestoreUnavailable",
+                f"snapshot {snap_ns}/{snap_name} has no restorable backing path",
+            )
+            return None, True
+        host_root, host_path = backing
+        if not host_path.exists():
+            self._record_pvc_event(
+                pvc,
+                "SnapshotRestoreUnavailable",
+                f"snapshot backing path missing: {host_path}",
+            )
+            return None, True
+        return {
+            "snapshot_ref": f"{snap_ns}/{snap_name}",
+            "content_name": str(content_name),
+            "host_root": host_root,
+            "host_path": host_path,
+        }, False
+
+    def _reconcile_snapshot(self, snapshot) -> None:
+        spec = snapshot.spec or {}
+        source = spec.get("source") if isinstance(spec, dict) else None
+        source = source if isinstance(source, dict) else {}
+        pvc_name = source.get("persistentVolumeClaimName")
+        if not pvc_name:
+            self._record_snapshot_event(snapshot, "SnapshotInvalid", "source PVC name is required")
+            return
+        snap_ns = snapshot.namespace or ""
+        pvc = self._store.get(CORE_GROUP, CORE_VERSION, PVC_RESOURCE, snap_ns, pvc_name)
+        if pvc is None:
+            self._record_snapshot_event(
+                snapshot,
+                "SnapshotSourceMissing",
+                f"PVC {snap_ns}/{pvc_name} not found",
+            )
+            return
+        if not self._pvc_is_bound(pvc):
+            self._record_snapshot_event(
+                snapshot,
+                "SnapshotSourceNotBound",
+                f"PVC {snap_ns}/{pvc_name} is not bound",
+            )
+            return
+        pv_name = (pvc.spec or {}).get("volumeName")
+        if not pv_name:
+            self._record_snapshot_event(
+                snapshot,
+                "SnapshotSourceNotBound",
+                f"PVC {snap_ns}/{pvc_name} has no volumeName",
+            )
+            return
+        pv = self._store.get(CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, pv_name)
+        if pv is None:
+            self._record_snapshot_event(
+                snapshot,
+                "SnapshotSourceMissing",
+                f"PV {pv_name} not found",
+            )
+            return
+
+        snap_uid = self._snapshot_uid(snapshot)
+        content_name = self._snapshot_content_name(snapshot, pv)
+        existing_content = self._store.get(
+            SNAP_GROUP, SNAP_VERSION, SNAPCONTENT_RESOURCE, None, content_name
+        )
+        driver, deletion_policy = self._snapshot_driver_and_policy(snapshot, pv)
+        restore_size = ((pv.spec or {}).get("capacity") or {}).get("storage")
+
+        snapshot_path: Path | None = None
+        host_backing = self._pv_host_backing(pv)
+        existing_backing = self._snapshot_content_backing(existing_content)
+        ready = True
+        if existing_backing is not None and existing_backing[1].exists():
+            snapshot_path = existing_backing[1]
+        elif host_backing is not None:
+            host_root, host_path = host_backing
+            snapshot_path = host_root / SNAPSHOT_DIRNAME / snap_uid
+            if not self._within_root(host_root, snapshot_path):
+                self._record_snapshot_event(
+                    snapshot,
+                    "SnapshotFailed",
+                    f"refusing to snapshot outside host root: {snapshot_path}",
+                )
+                ready = False
+            else:
+                snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+                if not self._reset_dir(snapshot_path, root=host_root):
+                    ready = False
+                elif not self._copy_tree_contents(host_path, snapshot_path):
+                    self._record_snapshot_event(
+                        snapshot,
+                        "SnapshotFailed",
+                        f"failed to copy data from {host_path}",
+                    )
+                    ready = False
+        else:
+            self._record_snapshot_event(
+                snapshot,
+                "SnapshotBackingMissing",
+                f"PV {pv_name} has no hostPath backing annotations",
+            )
+            ready = False
+
+        ts = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        content_annotations = {SNAP_SOURCE_PV_ANNOTATION: str(pv_name)}
+        if snapshot_path and host_backing is not None:
+            content_annotations[SNAP_HOST_ROOT_ANNOTATION] = str(host_backing[0])
+            content_annotations[SNAP_HOST_PATH_ANNOTATION] = str(snapshot_path)
+        content_meta = {"name": content_name, "annotations": content_annotations}
+        content_spec = {
+            "deletionPolicy": deletion_policy,
+            "driver": driver,
+            "volumeSnapshotRef": {
+                "name": snapshot.name,
+                "namespace": snap_ns,
+                "uid": snap_uid,
+            },
+            "source": {"persistentVolumeName": str(pv_name)},
+        }
+        content_status = {"readyToUse": ready, "creationTime": ts}
+        if restore_size:
+            content_status["restoreSize"] = str(restore_size)
+        self._store.upsert(
+            SNAP_GROUP,
+            SNAP_VERSION,
+            SNAPCONTENT_RESOURCE,
+            None,
+            content_name,
+            content_meta,
+            content_spec,
+            status=content_status,
+        )
+
+        snap_status = dict(snapshot.status or {})
+        snap_status["readyToUse"] = ready
+        snap_status["boundVolumeSnapshotContentName"] = content_name
+        if restore_size:
+            snap_status["restoreSize"] = str(restore_size)
+        self._store.upsert(
+            SNAP_GROUP,
+            SNAP_VERSION,
+            SNAPSHOT_RESOURCE,
+            snap_ns,
+            snapshot.name,
+            snapshot.metadata,
+            snapshot.spec,
+            status=snap_status,
+        )
+        if ready:
+            self._record_snapshot_event(
+                snapshot,
+                "SnapshotReady",
+                f"snapshot ready via content {content_name}",
+            )
+
+    def _handle_snapshot_deleted(self, snapshot) -> None:
+        status = snapshot.status or {}
+        content_name = status.get("boundVolumeSnapshotContentName")
+        if not content_name:
+            return
+        content = self._store.get(
+            SNAP_GROUP,
+            SNAP_VERSION,
+            SNAPCONTENT_RESOURCE,
+            None,
+            content_name,
+        )
+        if content is None:
+            return
+        deletion_policy = str((content.spec or {}).get("deletionPolicy") or "Retain")
+        if deletion_policy != "Delete":
+            return
+        self._delete_snapshot_content(content)
+
+    def _snapshot_driver_and_policy(self, snapshot, pv) -> tuple[str, str]:
+        spec = snapshot.spec or {}
+        class_name = spec.get("volumeSnapshotClassName")
+        if class_name:
+            snap_class = self._store.get(
+                SNAP_GROUP, SNAP_VERSION, SNAPCLASS_RESOURCE, None, class_name
+            )
+        else:
+            snap_class = None
+        class_spec = snap_class.spec if snap_class is not None else {}
+        class_spec = class_spec if isinstance(class_spec, dict) else {}
+        driver = str(class_spec.get("driver") or "")
+        if not driver:
+            pv_spec = pv.spec or {}
+            csi = pv_spec.get("csi") if isinstance(pv_spec, dict) else None
+            if isinstance(csi, dict) and csi.get("driver"):
+                driver = str(csi.get("driver"))
+            elif isinstance(pv_spec.get("nfs"), dict):
+                driver = NFS_PROVISIONER
+            else:
+                annotations = (pv.metadata or {}).get("annotations", {})
+                if isinstance(annotations, dict):
+                    driver = str(annotations.get(STORAGE_PROVISIONER_ANNOTATION) or "")
+        deletion_policy = str(class_spec.get("deletionPolicy") or "Retain")
+        return driver or "k1s.io/unknown", deletion_policy
+
+    def _snapshot_content_backing(self, content) -> tuple[Path, Path] | None:
+        if content is None:
+            return None
+        meta = content.metadata or {}
+        annotations = meta.get("annotations") if isinstance(meta, dict) else {}
+        if not isinstance(annotations, dict):
+            return None
+        host_root = annotations.get(SNAP_HOST_ROOT_ANNOTATION)
+        host_path = annotations.get(SNAP_HOST_PATH_ANNOTATION)
+        if not host_root or not host_path:
+            return None
+        root = Path(str(host_root)).expanduser()
+        path = Path(str(host_path)).expanduser()
+        if not self._within_root(root, path):
+            return None
+        return root, path
+
+    def _pv_host_backing(self, pv) -> tuple[Path, Path] | None:
+        meta = pv.metadata or {}
+        annotations = meta.get("annotations") if isinstance(meta, dict) else {}
+        if not isinstance(annotations, dict):
+            return None
+        host_root = annotations.get(NFS_HOST_ROOT_ANNOTATION) or annotations.get(
+            LOCAL_HOST_ROOT_ANNOTATION
+        )
+        host_path = annotations.get(NFS_HOST_PATH_ANNOTATION) or annotations.get(
+            LOCAL_HOST_PATH_ANNOTATION
+        )
+        if not host_root or not host_path:
+            return None
+        root = Path(str(host_root)).expanduser()
+        path = Path(str(host_path)).expanduser()
+        if not self._within_root(root, path):
+            return None
+        return root, path
+
+    def _restore_snapshot_into(
+        self, pvc, target_root: Path, target_path: Path, snapshot_info: dict[str, Any]
+    ) -> bool:
+        source_root = snapshot_info.get("host_root")
+        source_path = snapshot_info.get("host_path")
+        if not isinstance(source_root, Path) or not isinstance(source_path, Path):
+            self._record_pvc_event(
+                pvc,
+                "SnapshotRestoreFailed",
+                "snapshot backing path unavailable",
+            )
+            return False
+        if not self._within_root(source_root, source_path):
+            self._record_pvc_event(
+                pvc,
+                "SnapshotRestoreFailed",
+                f"snapshot path outside source root: {source_path}",
+            )
+            return False
+        if not self._within_root(target_root, target_path):
+            self._record_pvc_event(
+                pvc,
+                "SnapshotRestoreFailed",
+                f"target path outside host root: {target_path}",
+            )
+            return False
+        if not source_path.exists():
+            self._record_pvc_event(
+                pvc,
+                "SnapshotRestoreFailed",
+                f"snapshot backing path missing: {source_path}",
+            )
+            return False
+        if not self._reset_dir(target_path, root=target_root):
+            self._record_pvc_event(pvc, "SnapshotRestoreFailed", f"failed to prepare {target_path}")
+            return False
+        if not self._copy_tree_contents(source_path, target_path):
+            self._record_pvc_event(
+                pvc,
+                "SnapshotRestoreFailed",
+                f"failed to copy data from snapshot {snapshot_info.get('snapshot_ref')}",
+            )
+            return False
+        self._record_pvc_event(
+            pvc,
+            "SnapshotRestored",
+            f"restored from snapshot {snapshot_info.get('snapshot_ref')}",
+        )
+        return True
+
+    def _delete_snapshot_content(self, content) -> None:
+        self._cleanup_snapshot_backing(content)
+        with suppress(Exception):
+            self._store.delete(SNAP_GROUP, SNAP_VERSION, SNAPCONTENT_RESOURCE, None, content.name)
+
+    def _cleanup_snapshot_backing(self, content) -> None:
+        backing = self._snapshot_content_backing(content)
+        if backing is None:
+            return
+        root, path = backing
+        if not path.exists():
+            return
+        if not self._within_root(root, path):
+            LOGGER.warning("skipping snapshot cleanup outside root: %s (root=%s)", path, root)
+            return
+        try:
+            shutil.rmtree(path)
+        except Exception:
+            LOGGER.exception("failed to clean snapshot backing path %s", path)
+
+    def _reset_dir(self, path: Path, *, root: Path) -> bool:
+        if not self._within_root(root, path):
+            return False
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            for child in path.iterdir():
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink(missing_ok=True)  # type: ignore[call-arg]
+        except Exception:
+            LOGGER.exception("failed to reset directory %s", path)
+            return False
+        return True
+
+    @staticmethod
+    def _copy_tree_contents(source: Path, dest: Path) -> bool:
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+            for child in source.iterdir():
+                target = dest / child.name
+                if child.is_dir() and not child.is_symlink():
+                    shutil.copytree(child, target, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(child, target)
+        except Exception:
+            return False
+        return True
+
+    def _snapshot_content_name(self, snapshot, pv) -> str:
+        snap_uid = self._snapshot_uid(snapshot)
+        raw = f"vsc-{pv.name}-{snap_uid[:8]}"
+        return self._sanitize_name(raw)
+
+    def _snapshot_uid(self, snapshot) -> str:
+        meta = snapshot.metadata or {}
+        uid = meta.get("uid") if isinstance(meta, dict) else None
+        if uid:
+            return str(uid)
+        token = uuid.uuid5(uuid.NAMESPACE_DNS, f"{snapshot.namespace}:{snapshot.name}")
+        return token.hex
+
+    def _record_snapshot_event(self, snapshot, reason: str, message: str) -> None:
+        snap_ns = snapshot.namespace or ""
+        snap_name = snapshot.name
+        if not snap_ns or not snap_name:
+            return
+        now = datetime.now(UTC)
+        ts = now.isoformat().replace("+00:00", "Z")
+        name = f"{snap_name}.{int(time.time())}.{uuid.uuid4().hex[:6]}"
+        involved = {"kind": "VolumeSnapshot", "name": snap_name, "namespace": snap_ns}
+        uid = (snapshot.metadata or {}).get("uid") if isinstance(snapshot.metadata, dict) else None
+        if uid:
+            involved["uid"] = str(uid)
+        spec = {
+            "involvedObject": involved,
+            "reason": str(reason),
+            "message": str(message),
+            "type": "Normal",
+            "firstTimestamp": ts,
+            "lastTimestamp": ts,
+            "eventTime": ts,
+            "count": 1,
+            "source": {"component": "storage-controller"},
+        }
+        metadata = {"name": name, "namespace": snap_ns}
+        with suppress(Exception):
+            self._store.upsert(
+                CORE_GROUP,
+                CORE_VERSION,
+                EVENT_RESOURCE,
+                snap_ns,
+                name,
+                metadata,
+                spec,
+                status={},
+            )
+
+    def _provision_nfs(self, pvc, sc, *, snapshot_info: dict[str, Any] | None = None):
         uid = self._pvc_uid(pvc)
         if not uid:
             self._record_pvc_event(pvc, "ProvisioningFailed", "PVC uid missing")
@@ -653,6 +1160,7 @@ class StorageController:
             PROVISIONED_BY_ANNOTATION: NFS_PROVISIONER,
             STORAGE_PROVISIONER_ANNOTATION: NFS_PROVISIONER,
         }
+        host_path: Path | None = None
         if host_root is not None:
             host_path = host_root / uid
             if self._within_root(host_root, host_path):
@@ -667,6 +1175,17 @@ class StorageController:
                     f"refusing to create NFS path outside host root: {host_path}",
                 )
                 return None
+
+        if snapshot_info and host_root is not None and host_path is not None:
+            if not self._restore_snapshot_into(pvc, host_root, host_path, snapshot_info):
+                return None
+            annotations[SNAPSHOT_SOURCE_ANNOTATION] = snapshot_info.get("snapshot_ref", "")
+        elif snapshot_info and host_root is None:
+            self._record_pvc_event(
+                pvc,
+                "SnapshotRestoreSkipped",
+                "snapshot restore requires parameters.hostPath for NFS provisioner",
+            )
 
         pv_spec = {
             "capacity": self._pvc_requested_capacity(pvc),
@@ -695,7 +1214,14 @@ class StorageController:
             status=status,
         )
 
-    def _provision_local_path(self, pvc, sc, *, selected_node: str | None):
+    def _provision_local_path(
+        self,
+        pvc,
+        sc,
+        *,
+        selected_node: str | None,
+        snapshot_info: dict[str, Any] | None = None,
+    ):
         sc_spec = sc.spec or {}
         binding_mode = str(sc_spec.get("volumeBindingMode") or "")
         if binding_mode == WAIT_FOR_FIRST_CONSUMER and not selected_node:
@@ -731,12 +1257,19 @@ class StorageController:
             return None
         host_path.mkdir(parents=True, exist_ok=True)
 
+        if snapshot_info and not self._restore_snapshot_into(
+            pvc, host_root, host_path, snapshot_info
+        ):
+            return None
+
         annotations = {
             PROVISIONED_BY_ANNOTATION: LOCAL_PATH_PROVISIONER,
             STORAGE_PROVISIONER_ANNOTATION: LOCAL_PATH_PROVISIONER,
             LOCAL_HOST_ROOT_ANNOTATION: str(host_root),
             LOCAL_HOST_PATH_ANNOTATION: str(host_path),
         }
+        if snapshot_info:
+            annotations[SNAPSHOT_SOURCE_ANNOTATION] = snapshot_info.get("snapshot_ref", "")
         pv_spec = {
             "capacity": self._pvc_requested_capacity(pvc),
             "accessModes": list((pvc.spec or {}).get("accessModes") or []),

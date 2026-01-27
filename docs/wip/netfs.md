@@ -335,9 +335,12 @@ Exit criteria:
   - When `allowVolumeExpansion=true`, larger PVC requests update PV `spec.capacity`
     and PVC `status.capacity`, and emit a `VolumeExpanded` event.
   - Filesystem resize inside containers is not implemented yet.
-- Snapshot / clone
-  - Use `snapshot.storage.k8s.io/v1` types and `VolumeSnapshotClass` semantics.
-  - Bind snapshots to PVCs via `dataSource` per K8s API.
+- Snapshot / clone (basic hostPath-backed snapshots implemented)
+  - `VolumeSnapshot` reconciliation creates `VolumeSnapshotContent` and copies
+    hostPath data into `.snapshots/<snapshot-uid>` under the storage root.
+  - PVC `dataSource` `VolumeSnapshot` restores snapshot data into new hostPath
+    volumes for NFS and local-path provisioners.
+  - CSI driver-managed snapshots/clones are not implemented yet.
 - RWOP + topology
   - Add `ReadWriteOncePod` access mode support (K8s 1.22+).
   - Respect `topologyKeys` and `allowedTopologies` where provided.
