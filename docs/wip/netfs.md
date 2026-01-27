@@ -334,7 +334,8 @@ Exit criteria:
 - Volume expansion (basic controller-side support implemented)
   - When `allowVolumeExpansion=true`, larger PVC requests update PV `spec.capacity`
     and PVC `status.capacity`, and emit a `VolumeExpanded` event.
-  - Filesystem resize inside containers is not implemented yet.
+  - Filesystem resize inside containers is best-effort on the node when
+    `AE_NETFS_FS_RESIZE=1` (ext4/xfs only); NFS/local-path mounts are a no-op.
 - Snapshot / clone (basic hostPath-backed snapshots implemented)
   - `VolumeSnapshot` reconciliation creates `VolumeSnapshotContent` and copies
     hostPath data into `.snapshots/<snapshot-uid>` under the storage root.
@@ -342,7 +343,9 @@ Exit criteria:
     `snapshot.storage.kubernetes.io/is-default-class: "true"`.
   - PVC `dataSource` `VolumeSnapshot` restores snapshot data into new hostPath
     volumes for NFS and local-path provisioners.
-  - CSI driver-managed snapshots/clones are not implemented yet.
+  - CSI snapshot contents are created with `source.volumeHandle` and snapshot
+    readiness reflects CSI-populated `VolumeSnapshotContent.status` when present.
+    CSI restore/provisioning still requires external snapshotter/provisioner.
 - RWOP + topology
   - Add `ReadWriteOncePod` access mode support (K8s 1.22+).
   - Respect `topologyKeys` and `allowedTopologies` where provided.
@@ -402,6 +405,8 @@ Add to `requirements.in` (or a storage extras group):
   - Check NFS/SMB utilities and validate mount targets.
 - `scripts/netfs_smoke.sh`
   - Create a PVC/PV pair and mount it on the node, then clean up.
+- `scripts/netfs_snapshot_clone.sh`
+  - Create a snapshot and clone PVC from an NFS-backed volume and verify data.
 
 ### Node/system utilities (document in runbook)
 
