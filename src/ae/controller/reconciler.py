@@ -39,6 +39,7 @@ SC_RESOURCE = "storageclasses"
 CORE_GROUP = ""
 CORE_VERSION = "v1"
 PVC_RESOURCE = "persistentvolumeclaims"
+PV_RESOURCE = "persistentvolumes"
 LOCAL_PATH_PROVISIONER = "k1s.io/local-path"
 WAIT_FOR_FIRST_CONSUMER = "WaitForFirstConsumer"
 SELECTED_NODE_ANNOTATION = "volume.kubernetes.io/selected-node"
@@ -1261,8 +1262,6 @@ class Reconciler:
             pvc = store.get(CORE_GROUP, CORE_VERSION, PVC_RESOURCE, ns, claim_name)
             if pvc is None:
                 continue
-            if self._pvc_is_bound(pvc):
-                continue
             if not self._pvc_needs_selected_node(store, pvc):
                 continue
             selected = self._pvc_selected_node(pvc)
@@ -1293,7 +1292,7 @@ class Reconciler:
 
         if len(set(nodes)) > 1:
             warnings.append(
-                "multiple nodes scheduled while local-path PVCs require a single selected node"
+                "multiple nodes scheduled while single-writer PVCs require a single selected node"
             )
         if not warnings:
             return
@@ -1305,6 +1304,12 @@ class Reconciler:
                 continue
 
     def _pvc_needs_selected_node(self, store, pvc) -> bool:
+        pv = self._bound_pv(store, pvc)
+        if pv is not None:
+            pv_spec = self._obj_spec(pv)
+            csi = pv_spec.get("csi") if isinstance(pv_spec, dict) else None
+            if isinstance(csi, dict) and self._is_single_writer(pv_spec):
+                return True
         sc_name = self._pvc_storage_class_name(pvc) or self._default_storage_class_name(store)
         if not sc_name:
             return False
@@ -1338,6 +1343,16 @@ class Reconciler:
             return self._default_sc_name
         return None
 
+    def _bound_pv(self, store, pvc):
+        spec = getattr(pvc, "spec", None)
+        pv_name = spec.get("volumeName") if isinstance(spec, dict) else None
+        if not pv_name:
+            return None
+        try:
+            return store.get(CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, str(pv_name))
+        except Exception:
+            return None
+
     @staticmethod
     def _obj_spec(obj: Any) -> dict[str, Any]:
         spec = getattr(obj, "spec", None)
@@ -1367,6 +1382,11 @@ class Reconciler:
         vol = spec.get("volumeName") if isinstance(spec, dict) else None
         phase = status.get("phase") if isinstance(status, dict) else None
         return bool(vol) or phase == "Bound"
+
+    @staticmethod
+    def _is_single_writer(spec: dict[str, Any]) -> bool:
+        modes = set(spec.get("accessModes") or []) if isinstance(spec, dict) else set()
+        return not bool(modes & {"ReadWriteMany", "ReadOnlyMany"})
 
 
 # ruff: noqa

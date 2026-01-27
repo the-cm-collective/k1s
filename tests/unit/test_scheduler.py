@@ -279,7 +279,7 @@ def test_scheduler_pins_local_path_wait_for_first_consumer(tmp_path):
     assert len(placements) == 1
     assert placements[0].node is not None
     assert placements[0].node.node_id == "n1"
-    assert any("local-path PVCs pending" in w for w in warnings)
+    assert any("single-writer PVCs pending" in w for w in warnings)
 
 
 def test_scheduler_respects_selected_node_for_local_path(tmp_path):
@@ -317,6 +317,107 @@ def test_scheduler_respects_selected_node_for_local_path(tmp_path):
         },
         pvc_spec,
         status={"phase": "Pending"},
+    )
+
+    store = _store_with_nodes(tmp_path)
+    store.upsert_node("n1", name="n1", labels={}, taints=[], backend="podman", endpoint="n1")
+    store.upsert_node("n2", name="n2", labels={}, taints=[], backend="podman", endpoint="n2")
+    store.record_heartbeat("n1", "Ready")
+    store.record_heartbeat("n2", "Ready")
+    man = _manifest(replicas=1).model_copy(
+        update={
+            "spec": AppSpec(
+                image="busybox",
+                replicas=1,
+                pvc_mounts=[{"claimName": "data", "mountPath": "/data"}],
+            )
+        }
+    )
+
+    sched = Scheduler(store)
+    placements, warnings = sched.plan(man, revision=1)
+    assert not warnings
+    assert len(placements) == 1
+    assert placements[0].node is not None
+    assert placements[0].node.node_id == "n2"
+
+
+def test_scheduler_pins_csi_single_writer(tmp_path):
+    shim = ObjectStore(db_path=tmp_path / "apishim.db")
+    pv_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "claimRef": {"namespace": "default", "name": "data", "uid": "pvc-uid"},
+        "csi": {"driver": "csi.example.com", "volumeHandle": "vol-1"},
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "csi-fast",
+        "volumeName": "pv-csi",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    shim.upsert("", "v1", "persistentvolumes", None, "pv-csi", {"name": "pv-csi"}, pv_spec)
+    shim.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "data",
+        {"name": "data", "namespace": "default", "uid": "pvc-uid"},
+        pvc_spec,
+        status={"phase": "Bound"},
+    )
+
+    store = _store_with_nodes(tmp_path)
+    store.upsert_node("n1", name="n1", labels={}, taints=[], backend="podman", endpoint="n1")
+    store.upsert_node("n2", name="n2", labels={}, taints=[], backend="podman", endpoint="n2")
+    store.record_heartbeat("n1", "Ready")
+    store.record_heartbeat("n2", "Ready")
+    man = _manifest(replicas=2).model_copy(
+        update={
+            "spec": AppSpec(
+                image="busybox",
+                replicas=2,
+                pvc_mounts=[{"claimName": "data", "mountPath": "/data"}],
+            )
+        }
+    )
+
+    sched = Scheduler(store)
+    placements, warnings = sched.plan(man, revision=1)
+    assert len(placements) == 1
+    assert placements[0].node is not None
+    assert placements[0].node.node_id == "n1"
+    assert any("single-writer PVCs pending" in w for w in warnings)
+
+
+def test_scheduler_respects_selected_node_for_csi_single_writer(tmp_path):
+    shim = ObjectStore(db_path=tmp_path / "apishim.db")
+    pv_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "claimRef": {"namespace": "default", "name": "data", "uid": "pvc-uid"},
+        "csi": {"driver": "csi.example.com", "volumeHandle": "vol-1"},
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "csi-fast",
+        "volumeName": "pv-csi",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    shim.upsert("", "v1", "persistentvolumes", None, "pv-csi", {"name": "pv-csi"}, pv_spec)
+    shim.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "data",
+        {
+            "name": "data",
+            "namespace": "default",
+            "uid": "pvc-uid",
+            "annotations": {"volume.kubernetes.io/selected-node": "n2"},
+        },
+        pvc_spec,
+        status={"phase": "Bound"},
     )
 
     store = _store_with_nodes(tmp_path)

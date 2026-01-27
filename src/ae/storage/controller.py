@@ -32,6 +32,7 @@ CORE_GROUP = ""
 CORE_VERSION = "v1"
 PVC_RESOURCE = "persistentvolumeclaims"
 PV_RESOURCE = "persistentvolumes"
+VA_RESOURCE = "volumeattachments"
 EVENT_RESOURCE = "events"
 
 NFS_PROVISIONER = "k1s.io/nfs"
@@ -192,6 +193,7 @@ class StorageController:
                 pv = self._store.get(CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, pv_name)
                 if pv is not None:
                     self._bind(pvc, pv)
+                    self._reconcile_csi_attachment(pvc, pv)
             return
 
         pv = self._match_pv_for_pvc(pvc)
@@ -210,6 +212,7 @@ class StorageController:
         pv = self._store.get(CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, pv_name)
         if pv is None:
             return
+        self._delete_volume_attachments(pv.name)
         policy = self._pv_reclaim_policy(pv)
         if policy == "Delete":
             self._delete_pv_and_backing(pv)
@@ -395,6 +398,73 @@ class StorageController:
             return obj.spec == spec and obj.status == status
         except Exception:
             return False
+
+    def _reconcile_csi_attachment(self, pvc, pv) -> None:
+        pv_spec = pv.spec or {}
+        csi = pv_spec.get("csi") if isinstance(pv_spec, dict) else None
+        if not isinstance(csi, dict):
+            return
+        node = self._selected_node(pvc)
+        if not node:
+            return
+        driver = str(csi.get("driver") or "")
+        handle = str(csi.get("volumeHandle") or "")
+        if not driver or not handle:
+            self._record_pvc_event(pvc, "InvalidVolume", "CSI PV missing driver/volumeHandle")
+            return
+        attachments = self._volume_attachments_for_pv(pv.name)
+        single_writer = self._is_single_writer(pv_spec)
+        conflict_nodes = sorted(
+            {
+                other
+                for att in attachments
+                if (other := self._attachment_node(att))
+                and other != node
+                and self._attachment_attached(att)
+            }
+        )
+        if conflict_nodes and single_writer:
+            nodes = ", ".join(conflict_nodes)
+            self._record_pvc_event(
+                pvc,
+                "MultiAttachForbidden",
+                f"volume {pv.name} already attached to node(s): {nodes}",
+            )
+            return
+
+        name = self._volume_attachment_name(pv.name, node)
+        annotations = {STORAGE_PROVISIONER_ANNOTATION: driver}
+        meta = {"name": name, "annotations": annotations}
+        spec = {
+            "attacher": driver,
+            "nodeName": node,
+            "source": {"persistentVolumeName": pv.name},
+        }
+        status = {
+            "attached": True,
+            "attachmentMetadata": {"volumeHandle": handle},
+        }
+        self._store.upsert(
+            SC_GROUP,
+            SC_VERSION,
+            VA_RESOURCE,
+            None,
+            name,
+            meta,
+            spec,
+            status=status,
+        )
+
+        if not single_writer:
+            return
+        for att in attachments:
+            other_node = self._attachment_node(att)
+            if not other_node or other_node == node:
+                continue
+            if self._attachment_attached(att):
+                continue
+            with suppress(Exception):
+                self._store.delete(SC_GROUP, SC_VERSION, VA_RESOURCE, None, att.name)
 
     def _storage_class_for_pvc(self, pvc):
         name = self._pvc_storage_class(pvc)
@@ -653,7 +723,63 @@ class StorageController:
             return "Retain"
         return str(policy)
 
+    def _volume_attachments_for_pv(self, pv_name: str) -> list[Any]:
+        try:
+            attachments = self._store.list_all(SC_GROUP, SC_VERSION, VA_RESOURCE)
+        except Exception:
+            return []
+        out: list[Any] = []
+        for att in attachments:
+            spec = att.spec or {}
+            source = spec.get("source") if isinstance(spec, dict) else {}
+            if not isinstance(source, dict):
+                continue
+            if source.get("persistentVolumeName") == pv_name:
+                out.append(att)
+        return out
+
+    def _delete_volume_attachments(self, pv_name: str) -> None:
+        for att in self._volume_attachments_for_pv(pv_name):
+            with suppress(Exception):
+                self._store.delete(SC_GROUP, SC_VERSION, VA_RESOURCE, None, att.name)
+
+    @staticmethod
+    def _is_single_writer(pv_spec: dict[str, Any]) -> bool:
+        modes = set(pv_spec.get("accessModes") or []) if isinstance(pv_spec, dict) else set()
+        if modes & {"ReadWriteMany", "ReadOnlyMany"}:
+            return False
+        return True
+
+    @staticmethod
+    def _attachment_node(att) -> str | None:
+        spec = att.spec or {}
+        if not isinstance(spec, dict):
+            return None
+        node = spec.get("nodeName")
+        return str(node) if node else None
+
+    @staticmethod
+    def _attachment_attached(att) -> bool:
+        status = att.status or {}
+        if not isinstance(status, dict):
+            return False
+        return bool(status.get("attached"))
+
+    def _volume_attachment_name(self, pv_name: str, node: str) -> str:
+        token = uuid.uuid5(uuid.NAMESPACE_DNS, f"{pv_name}:{node}").hex[:8]
+        raw = f"va-{pv_name}-{node}-{token}"
+        return self._sanitize_name(raw)
+
+    @staticmethod
+    def _sanitize_name(value: str) -> str:
+        safe = value.lower().replace("/", "-").replace("_", "-").replace(".", "-")
+        safe = "".join(ch if (ch.isalnum() or ch == "-") else "-" for ch in safe).strip("-")
+        if not safe:
+            safe = "va"
+        return safe[:253]
+
     def _delete_pv_and_backing(self, pv) -> None:
+        self._delete_volume_attachments(pv.name)
         self._cleanup_backing_path(pv)
         try:
             self._store.delete(CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, pv.name)
