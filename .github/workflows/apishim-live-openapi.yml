@@ -62,6 +62,13 @@ jobs:
             echo "SKIP_LIVE_OPENAPI=1" >> "$GITHUB_ENV"
             echo "Skipping docker runtime on act: docker daemon unavailable in act containers."
           fi
+      - name: Configure DSN for Gitea services
+        run: |
+          if [ "${GITEA_ACTIONS:-}" = "true" ]; then
+            echo "AE_APISHIM_DSN=postgresql://shim:shim@postgres:5432/shim" >> "$GITHUB_ENV"
+            echo "AE_STATE_DSN=postgresql://shim:shim@postgres:5432/shim" >> "$GITHUB_ENV"
+            echo "Using postgres service hostname for DSN on Gitea Actions."
+          fi
       - name: Trust Gitea cert (or disable verify)
         run: |
           if [ -n "${GITEA_CA_B64:-}" ]; then
