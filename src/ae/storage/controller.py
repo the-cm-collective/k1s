@@ -194,6 +194,7 @@ class StorageController:
                 if pv is not None:
                     self._bind(pvc, pv)
                     self._reconcile_csi_attachment(pvc, pv)
+                    self._maybe_expand_bound_volume(pvc, pv)
             return
 
         pv = self._match_pv_for_pvc(pvc)
@@ -203,6 +204,7 @@ class StorageController:
                 self._ensure_pvc_phase(pvc, "Pending")
                 return
         self._bind(pvc, pv)
+        self._maybe_expand_bound_volume(pvc, pv)
 
     def _handle_pvc_deleted(self, pvc) -> None:
         spec = pvc.spec or {}
@@ -498,6 +500,120 @@ class StorageController:
         if storage:
             return {"storage": str(storage)}
         return {}
+
+    def _maybe_expand_bound_volume(self, pvc, pv) -> None:
+        requested_raw = self._pvc_requested_storage(pvc)
+        if not requested_raw:
+            return
+        pv_spec = dict(pv.spec or {})
+        capacity = pv_spec.get("capacity") if isinstance(pv_spec.get("capacity"), dict) else {}
+        current_raw = capacity.get("storage") if isinstance(capacity, dict) else None
+        if not current_raw:
+            return
+
+        requested = self._quantity_bytes(requested_raw)
+        current = self._quantity_bytes(str(current_raw))
+        if requested is None or current is None:
+            return
+        if requested <= current:
+            return
+
+        if not self._storage_class_allows_expansion(pvc, pv):
+            self._record_pvc_event(
+                pvc,
+                "VolumeExpansionForbidden",
+                "storage class does not allow expansion",
+            )
+            return
+
+        capacity["storage"] = str(requested_raw)
+        pv_spec["capacity"] = capacity
+        pv_status = dict(pv.status or {})
+        pv_status["capacity"] = capacity
+        self._store.upsert(
+            CORE_GROUP,
+            CORE_VERSION,
+            PV_RESOURCE,
+            None,
+            pv.name,
+            pv.metadata,
+            pv_spec,
+            status=pv_status,
+        )
+
+        pvc_spec = dict(pvc.spec or {})
+        pvc_status = dict(pvc.status or {})
+        pvc_status["capacity"] = capacity
+        if pvc_status.get("phase") != "Bound":
+            pvc_status["phase"] = "Bound"
+        self._store.upsert(
+            CORE_GROUP,
+            CORE_VERSION,
+            PVC_RESOURCE,
+            pvc.namespace,
+            pvc.name,
+            pvc.metadata,
+            pvc_spec,
+            status=pvc_status,
+        )
+        self._record_pvc_event(pvc, "VolumeExpanded", f"expanded to {requested_raw}")
+
+    def _storage_class_allows_expansion(self, pvc, pv) -> bool:
+        sc_name = self._pv_storage_class(pv) or self._pvc_storage_class(pvc)
+        if not sc_name:
+            return False
+        sc = self._store.get(SC_GROUP, SC_VERSION, SC_RESOURCE, None, sc_name)
+        if sc is None:
+            return False
+        sc_spec = sc.spec or {}
+        if not isinstance(sc_spec, dict):
+            return False
+        return bool(sc_spec.get("allowVolumeExpansion"))
+
+    @staticmethod
+    def _pvc_requested_storage(pvc) -> str | None:
+        spec = pvc.spec or {}
+        resources = spec.get("resources") if isinstance(spec, dict) else {}
+        requests = resources.get("requests") if isinstance(resources, dict) else {}
+        storage = requests.get("storage") if isinstance(requests, dict) else None
+        return str(storage) if storage else None
+
+    @staticmethod
+    def _quantity_bytes(raw: str | None) -> int | None:
+        if raw is None:
+            return None
+        try:
+            s = str(raw).strip()
+            suffixes = {
+                "b": 1,
+                "k": 1024,
+                "kb": 1024,
+                "ki": 1024,
+                "m": 1024**2,
+                "mb": 1024**2,
+                "mi": 1024**2,
+                "g": 1024**3,
+                "gb": 1024**3,
+                "gi": 1024**3,
+                "t": 1024**4,
+                "tb": 1024**4,
+                "ti": 1024**4,
+            }
+            if s.isdigit():
+                return int(s)
+            num = ""
+            unit = ""
+            for ch in s:
+                if ch.isdigit() or ch == ".":
+                    num += ch
+                else:
+                    unit += ch
+            factor = suffixes.get(unit.lower())
+            if factor is None:
+                return None
+            return int(float(num) * factor)
+        except Exception:
+            return None
 
     def _provision_nfs(self, pvc, sc):
         uid = self._pvc_uid(pvc)

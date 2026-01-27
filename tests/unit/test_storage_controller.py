@@ -237,3 +237,119 @@ def test_storage_controller_blocks_multi_attach_for_csi(tmp_path):
     events = store.list_all("", "v1", "events")
     reasons = [(e.spec or {}).get("reason") for e in events]
     assert "MultiAttachForbidden" in reasons
+
+
+def test_storage_controller_expands_volume_when_allowed(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    pvc_uid = "uid-expand"
+    sc_spec = {"provisioner": "k1s.io/nfs", "allowVolumeExpansion": True}
+    pv_spec = {
+        "capacity": {"storage": "1Gi"},
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "expandable",
+        "claimRef": {"namespace": "default", "name": "data", "uid": pvc_uid},
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "volumeName": "pv-expand",
+        "storageClassName": "expandable",
+        "resources": {"requests": {"storage": "2Gi"}},
+    }
+    pvc_status = {"phase": "Bound", "capacity": {"storage": "1Gi"}}
+
+    store.upsert(
+        "storage.k8s.io",
+        "v1",
+        "storageclasses",
+        None,
+        "expandable",
+        {"name": "expandable"},
+        sc_spec,
+        status={},
+    )
+    store.upsert("", "v1", "persistentvolumes", None, "pv-expand", {"name": "pv-expand"}, pv_spec)
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "data",
+        {"name": "data", "namespace": "default", "uid": pvc_uid},
+        pvc_spec,
+        status=pvc_status,
+    )
+
+    controller.reconcile_once()
+
+    pv = store.get("", "v1", "persistentvolumes", None, "pv-expand")
+    pvc = store.get("", "v1", "persistentvolumeclaims", "default", "data")
+    assert pv is not None
+    assert pvc is not None
+    assert ((pv.spec or {}).get("capacity") or {}).get("storage") == "2Gi"
+    assert ((pvc.status or {}).get("capacity") or {}).get("storage") == "2Gi"
+    events = store.list_all("", "v1", "events")
+    reasons = [(e.spec or {}).get("reason") for e in events]
+    assert "VolumeExpanded" in reasons
+
+
+def test_storage_controller_blocks_expansion_when_forbidden(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    pvc_uid = "uid-expand"
+    sc_spec = {"provisioner": "k1s.io/nfs", "allowVolumeExpansion": False}
+    pv_spec = {
+        "capacity": {"storage": "1Gi"},
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "no-expand",
+        "claimRef": {"namespace": "default", "name": "data", "uid": pvc_uid},
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "volumeName": "pv-no-expand",
+        "storageClassName": "no-expand",
+        "resources": {"requests": {"storage": "2Gi"}},
+    }
+    pvc_status = {"phase": "Bound", "capacity": {"storage": "1Gi"}}
+
+    store.upsert(
+        "storage.k8s.io",
+        "v1",
+        "storageclasses",
+        None,
+        "no-expand",
+        {"name": "no-expand"},
+        sc_spec,
+        status={},
+    )
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumes",
+        None,
+        "pv-no-expand",
+        {"name": "pv-no-expand"},
+        pv_spec,
+    )
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "data",
+        {"name": "data", "namespace": "default", "uid": pvc_uid},
+        pvc_spec,
+        status=pvc_status,
+    )
+
+    controller.reconcile_once()
+
+    pv = store.get("", "v1", "persistentvolumes", None, "pv-no-expand")
+    pvc = store.get("", "v1", "persistentvolumeclaims", "default", "data")
+    assert pv is not None
+    assert pvc is not None
+    assert ((pv.spec or {}).get("capacity") or {}).get("storage") == "1Gi"
+    assert ((pvc.status or {}).get("capacity") or {}).get("storage") == "1Gi"
+    events = store.list_all("", "v1", "events")
+    reasons = [(e.spec or {}).get("reason") for e in events]
+    assert "VolumeExpansionForbidden" in reasons
