@@ -331,9 +331,10 @@ Exit criteria:
   - Treat multi-attach as an error event aligned with K8s behavior.
 
 ### Phase 4 -- Nice-to-haves
-- Volume expansion
-  - Honor PVC `spec.resources.requests.storage` updates when `allowVolumeExpansion=true`.
-  - Update PV `spec.capacity` and PVC `status.capacity` to match K8s flows.
+- Volume expansion (basic controller-side support implemented)
+  - When `allowVolumeExpansion=true`, larger PVC requests update PV `spec.capacity`
+    and PVC `status.capacity`, and emit a `VolumeExpanded` event.
+  - Filesystem resize inside containers is not implemented yet.
 - Snapshot / clone
   - Use `snapshot.storage.k8s.io/v1` types and `VolumeSnapshotClass` semantics.
   - Bind snapshots to PVCs via `dataSource` per K8s API.
