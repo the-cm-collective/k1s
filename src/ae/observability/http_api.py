@@ -2418,6 +2418,21 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "# TYPE ae_overlay_configured gauge",
             f"ae_overlay_configured {1 if os.getenv('AE_SERVICE_PROVIDER', '').lower() == 'overlay' and os.getenv('AE_ENABLE_SERVICE_PROXY', '0') == '1' else 0}",
         ]
+        storage_used = getattr(snap, "storage_used_bytes", {}) or {}
+        storage_quota = getattr(snap, "storage_quota_bytes", {}) or {}
+        if storage_used or storage_quota:
+            lines += [
+                "# HELP ae_storage_used_bytes Requested storage per namespace",
+                "# TYPE ae_storage_used_bytes gauge",
+            ]
+            for ns, val in sorted(storage_used.items()):
+                lines.append(f'ae_storage_used_bytes{{namespace="{ns}"}} {val}')
+            lines += [
+                "# HELP ae_storage_quota_bytes Storage quota per namespace",
+                "# TYPE ae_storage_quota_bytes gauge",
+            ]
+            for ns, val in sorted(storage_quota.items()):
+                lines.append(f'ae_storage_quota_bytes{{namespace="{ns}"}} {val}')
         # Per-app series metadata (declared once before samples)
         lines += [
             "# HELP ae_app_desired_replicas Desired replicas per app",

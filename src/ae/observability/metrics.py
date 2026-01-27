@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ae.controller.state import SQLiteStateStore
+from ae.storage.config import load_storage_quotas
 
 
 @dataclass(slots=True)
@@ -25,6 +26,8 @@ class MetricsSnapshot:
     total_pvs: int = 0
     healthy_pvs: int = 0
     unhealthy_pvs: int = 0
+    storage_used_bytes: dict[str, int] = field(default_factory=dict)
+    storage_quota_bytes: dict[str, int] = field(default_factory=dict)
 
 
 class MetricsService:
@@ -93,6 +96,8 @@ class MetricsService:
             total_services = 0
 
         total_pvs = healthy_pvs = unhealthy_pvs = 0
+        storage_used: dict[str, int] = {}
+        storage_quotas: dict[str, int] = {}
         if self._shim_store is not None:
             try:
                 pvs = self._shim_store.list_all("", "v1", "persistentvolumes")
@@ -108,6 +113,28 @@ class MetricsService:
                     healthy_pvs += 1
                 else:
                     unhealthy_pvs += 1
+            try:
+                pvcs = self._shim_store.list_all("", "v1", "persistentvolumeclaims")
+            except Exception:
+                pvcs = []
+            for pvc in pvcs:
+                ns = pvc.namespace or "default"
+                requested = _pvc_requested_storage(pvc)
+                if not requested:
+                    continue
+                req_bytes = _quantity_bytes(requested)
+                if req_bytes is None:
+                    continue
+                storage_used[ns] = storage_used.get(ns, 0) + req_bytes
+
+        quota_path = os.getenv("AE_STORAGE_QUOTAS")
+        if quota_path:
+            quotas = load_storage_quotas(Path(quota_path))
+            for quota in quotas:
+                limit = _quantity_bytes(quota.hard_storage)
+                if limit is None:
+                    continue
+                storage_quotas[quota.namespace] = limit
 
         return MetricsSnapshot(
             total_apps=total_apps,
@@ -124,6 +151,8 @@ class MetricsService:
             total_pvs=total_pvs,
             healthy_pvs=healthy_pvs,
             unhealthy_pvs=unhealthy_pvs,
+            storage_used_bytes=storage_used,
+            storage_quota_bytes=storage_quotas,
         )
 
 
@@ -149,6 +178,55 @@ def _pv_host_backing(pv) -> tuple[Path, Path] | None:
     except Exception:
         return None
     return root, path
+
+
+def _pvc_requested_storage(pvc) -> str | None:
+    spec = getattr(pvc, "spec", None)
+    if not isinstance(spec, dict):
+        return None
+    resources = spec.get("resources") if isinstance(spec, dict) else None
+    resources = resources if isinstance(resources, dict) else {}
+    requests = resources.get("requests") if isinstance(resources, dict) else None
+    requests = requests if isinstance(requests, dict) else {}
+    storage = requests.get("storage")
+    return str(storage) if storage else None
+
+
+def _quantity_bytes(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    try:
+        s = str(raw).strip()
+        suffixes = {
+            "b": 1,
+            "k": 1024,
+            "kb": 1024,
+            "ki": 1024,
+            "m": 1024**2,
+            "mb": 1024**2,
+            "mi": 1024**2,
+            "g": 1024**3,
+            "gb": 1024**3,
+            "gi": 1024**3,
+            "t": 1024**4,
+            "tb": 1024**4,
+            "ti": 1024**4,
+        }
+        if s.isdigit():
+            return int(s)
+        num = ""
+        unit = ""
+        for ch in s:
+            if ch.isdigit() or ch == ".":
+                num += ch
+            else:
+                unit += ch
+        factor = suffixes.get(unit.lower())
+        if factor is None:
+            return None
+        return int(float(num) * factor)
+    except Exception:
+        return None
 
 
 # ruff: noqa

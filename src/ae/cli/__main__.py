@@ -3942,6 +3942,8 @@ def handle_metrics(args: argparse.Namespace, store: SQLiteStateStore) -> int:
                     "total_pvs": snapshot.total_pvs,
                     "healthy_pvs": snapshot.healthy_pvs,
                     "unhealthy_pvs": snapshot.unhealthy_pvs,
+                    "storage_used_bytes": snapshot.storage_used_bytes,
+                    "storage_quota_bytes": snapshot.storage_quota_bytes,
                 },
                 indent=2,
             )
@@ -3958,6 +3960,14 @@ def handle_metrics(args: argparse.Namespace, store: SQLiteStateStore) -> int:
         print(
             f"volumes total={snapshot.total_pvs} healthy={snapshot.healthy_pvs} unhealthy={snapshot.unhealthy_pvs}"
         )
+    if snapshot.storage_used_bytes or snapshot.storage_quota_bytes:
+        for ns in sorted(set(snapshot.storage_used_bytes) | set(snapshot.storage_quota_bytes)):
+            used = snapshot.storage_used_bytes.get(ns, 0)
+            quota = snapshot.storage_quota_bytes.get(ns)
+            if quota is not None:
+                print(f"storage namespace={ns} used_bytes={used} quota_bytes={quota}")
+            else:
+                print(f"storage namespace={ns} used_bytes={used}")
     return 0
 
 
