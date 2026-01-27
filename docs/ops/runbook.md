@@ -36,6 +36,7 @@ CRI nodes (containerd)
 - Preflight checks: `./scripts/cri_preflight.sh`
 - Smoke check (requires crictl): `./scripts/cri_smoke.sh`
 - Optional pull test: `AE_CRI_SMOKE_PULL=1 pytest tests/integration/test_cri_smoke.py -k pull`
+- Optional lifecycle test: `AE_CRI_IT=1 pytest tests/integration/test_cri_runtime_integration.py -q`
 
 Export and Validate K8s YAML
 - Hardened export with validation:
