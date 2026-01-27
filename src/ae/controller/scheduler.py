@@ -54,9 +54,17 @@ class Scheduler:
         """Return placements and warnings for the manifest."""
         desired = int(manifest.spec.replicas)
         app_name = app_key_for_manifest(manifest)
-        replica_ids = [f"{app_name}-rev{revision}-{i}" for i in range(desired)]
         warnings: list[str] = []
 
+        rwop_claims = self._rwop_claims(manifest)
+        if rwop_claims and desired > 1:
+            warnings.append(
+                "ReadWriteOncePod PVCs limit replicas to 1; "
+                f"claims: {', '.join(rwop_claims)}"
+            )
+            desired = 1
+
+        replica_ids = [f"{app_name}-rev{revision}-{i}" for i in range(desired)]
         nodes = self._store.list_nodes()
         grace = self._not_ready_grace_seconds()
         now = datetime.now(timezone.utc)
@@ -75,9 +83,18 @@ class Scheduler:
                 continue
             eligible.append(node)
 
+        topo_nodes, topo_warnings, topo_applied = self._filter_nodes_by_storage_topology(
+            manifest, eligible
+        )
+        warnings.extend(topo_warnings)
+        if topo_applied:
+            eligible = topo_nodes
+
         if not eligible:
-            warnings.append("no eligible nodes; falling back to local runtime")
-            return [Placement(node=None, agent_url=None, replica_ids=replica_ids)], warnings
+            warnings.append("no eligible nodes after storage constraints; skipping placement")
+            if stale_nodes:
+                warnings.append(f"stale/not-ready nodes skipped: {', '.join(stale_nodes)}")
+            return [], warnings
 
         # Storage pinning: keep all replicas on one node when storage is declared or
         # when local-path PVCs require node-local provisioning.
@@ -186,8 +203,7 @@ class Scheduler:
         if not pvc_mounts or self._shim_store is None:
             return False, None, []
 
-        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or "default"
-        pvcs = {(str(pm.claim_name), str(getattr(pm, "namespace", None) or namespace)) for pm in pvc_mounts}
+        pvcs = self._pvc_mount_refs(manifest)
 
         local_present = False
         selected_nodes: set[str] = set()
@@ -238,6 +254,93 @@ class Scheduler:
     def _obj_spec(obj: Any) -> dict[str, Any]:
         spec = getattr(obj, "spec", None)
         return spec if isinstance(spec, dict) else {}
+
+    @staticmethod
+    def _pvc_mount_refs(manifest: AppManifest) -> set[tuple[str, str]]:
+        pvc_mounts = list(getattr(manifest.spec, "pvc_mounts", []) or [])
+        if not pvc_mounts:
+            return set()
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or "default"
+        return {
+            (str(pm.claim_name), str(getattr(pm, "namespace", None) or namespace))
+            for pm in pvc_mounts
+        }
+
+    def _rwop_claims(self, manifest: AppManifest) -> list[str]:
+        if self._shim_store is None:
+            return []
+        claims: list[str] = []
+        for claim_name, ns in self._pvc_mount_refs(manifest):
+            pvc = self._shim_store.get(CORE_GROUP, CORE_VERSION, PVC_RESOURCE, ns, claim_name)
+            if pvc is None:
+                continue
+            modes = set(self._access_modes(pvc))
+            pv_name = self._pvc_volume_name(pvc)
+            if pv_name:
+                pv = self._shim_store.get(CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, pv_name)
+                if pv is not None:
+                    modes.update(self._access_modes(pv))
+            if "ReadWriteOncePod" in modes:
+                claims.append(f"{ns}/{claim_name}")
+        return sorted(set(claims))
+
+    def _filter_nodes_by_storage_topology(
+        self, manifest: AppManifest, nodes: list[NodeRecord]
+    ) -> tuple[list[NodeRecord], list[str], bool]:
+        if self._shim_store is None or not nodes:
+            return nodes, [], False
+        pvcs = self._pvc_mount_refs(manifest)
+        if not pvcs:
+            return nodes, [], False
+
+        scs: dict[str, Any] = {}
+        for claim_name, ns in pvcs:
+            pvc = self._shim_store.get(CORE_GROUP, CORE_VERSION, PVC_RESOURCE, ns, claim_name)
+            if pvc is None:
+                continue
+            sc_name = self._pvc_storage_class_name(pvc) or self._default_storage_class_name()
+            if not sc_name or sc_name in scs:
+                continue
+            sc = self._shim_store.get(SC_GROUP, SC_VERSION, SC_RESOURCE, None, sc_name)
+            if sc is not None:
+                scs[sc_name] = sc
+        if not scs:
+            return nodes, [], False
+
+        warnings: list[str] = []
+        constrained_sets: list[set[str]] = []
+        constrained_classes: list[str] = []
+        for sc_name, sc in scs.items():
+            sc_spec = self._obj_spec(sc)
+            allowed = sc_spec.get("allowedTopologies")
+            if not allowed:
+                continue
+            constrained_classes.append(sc_name)
+            allowed_nodes = {
+                n.node_id for n in nodes if self._node_matches_allowed_topologies(n, allowed)
+            }
+            if not allowed_nodes:
+                warnings.append(
+                    f"storage class {sc_name} allowedTopologies matches no eligible nodes"
+                )
+                return [], warnings, True
+            constrained_sets.append(allowed_nodes)
+
+        if not constrained_sets:
+            return nodes, warnings, False
+
+        allowed_ids = set.intersection(*constrained_sets)
+        if not allowed_ids:
+            warnings.append("storage allowedTopologies intersect to zero eligible nodes")
+            return [], warnings, True
+
+        filtered = [n for n in nodes if n.node_id in allowed_ids]
+        if len(filtered) < len(nodes):
+            warnings.append(
+                "filtered eligible nodes by storage allowedTopologies for classes: "
+                + ", ".join(sorted(constrained_classes))
+            )
+        return filtered, warnings, True
 
     def _default_storage_class_name(self) -> str | None:
         if self._default_sc_name:
@@ -292,6 +395,47 @@ class Scheduler:
     def _is_single_writer(spec: dict[str, Any]) -> bool:
         modes = set(spec.get("accessModes") or []) if isinstance(spec, dict) else set()
         return not bool(modes & {"ReadWriteMany", "ReadOnlyMany"})
+
+    @staticmethod
+    def _node_matches_allowed_topologies(node: NodeRecord, allowed: Any) -> bool:
+        if not isinstance(allowed, list):
+            return True
+        labels = node.labels or {}
+        if not labels:
+            return False
+        for term in allowed:
+            exprs = term.get("matchLabelExpressions") if isinstance(term, dict) else None
+            if not isinstance(exprs, list) or not exprs:
+                continue
+            if all(Scheduler._match_topology_expr(labels, expr) for expr in exprs):
+                return True
+        return False
+
+    @staticmethod
+    def _match_topology_expr(labels: dict[str, Any], expr: Any) -> bool:
+        if not isinstance(expr, dict):
+            return False
+        key = expr.get("key")
+        if not key:
+            return False
+        node_val = labels.get(str(key))
+        if node_val is None:
+            return False
+        values = expr.get("values")
+        if isinstance(values, list) and values:
+            allowed_vals = {str(v) for v in values}
+            return str(node_val) in allowed_vals
+        return True
+
+    @staticmethod
+    def _access_modes(obj: Any) -> list[str]:
+        spec = getattr(obj, "spec", None)
+        if not isinstance(spec, dict):
+            return []
+        modes = spec.get("accessModes")
+        if not isinstance(modes, list):
+            return []
+        return [str(m) for m in modes if m]
 
     @staticmethod
     def _is_ready(status: NodeStatus | None, now: datetime, grace: int) -> bool:
