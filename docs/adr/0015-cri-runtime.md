@@ -1,4 +1,24 @@
-# CRI runtime (containerd) plan for k1s
+# ADR 0015 — CRI runtime (containerd)
+
+Date: 2026-01-27
+Status: Accepted
+Owners: runtime/controller/ingress/ops
+
+## Context
+- k1s needs a CRI backend to run on containerd while preserving Kubernetes semantics.
+- Existing runtime paths (Docker/Podman) assume host ports and local networks.
+- CI and ops need a repeatable way to validate CRI readiness and integration tests.
+
+## Decision
+- Implement CRIRuntime with Kubernetes-aligned command/args, PodSandbox metadata, and pod IP endpoints.
+- Provide CRI exec/attach/logs via crictl (node dependency) and optional port-forward proxy.
+- Add CI workflow and preflight scripts to validate CRI readiness.
+
+## Consequences
+- CRI is a supported backend with CI coverage on containerd nodes.
+- Streaming uses crictl today; a native CRI streaming proxy remains optional.
+
+## Details
 
 This doc covers:
 - A CRI runtime skeleton and how to wire it into runtime selection.
