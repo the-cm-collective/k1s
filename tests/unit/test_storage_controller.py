@@ -357,6 +357,106 @@ def test_storage_controller_blocks_expansion_when_forbidden(tmp_path):
     assert "VolumeExpansionForbidden" in reasons
 
 
+def test_storage_controller_quota_blocks_pvc(tmp_path, monkeypatch):
+    quota_path = tmp_path / "quotas.yaml"
+    quota_path.write_text(
+        "apiVersion: k1s.io/v1\n"
+        "kind: StorageQuota\n"
+        "metadata:\n"
+        "  name: default\n"
+        "spec:\n"
+        "  namespace: default\n"
+        "  hard:\n"
+        "    requests.storage: 1Gi\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AE_STORAGE_QUOTAS", str(quota_path))
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "k1s-nfs",
+        "resources": {"requests": {"storage": "2Gi"}},
+    }
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "data",
+        {"name": "data", "namespace": "default", "uid": "pvc-uid"},
+        pvc_spec,
+        status={"phase": "Pending"},
+    )
+
+    controller.reconcile_once()
+
+    pvc = store.get("", "v1", "persistentvolumeclaims", "default", "data")
+    assert pvc is not None
+    assert (pvc.status or {}).get("phase") == "Pending"
+    events = store.list_all("", "v1", "events")
+    reasons = [(e.spec or {}).get("reason") for e in events]
+    assert "StorageQuotaExceeded" in reasons
+
+
+def test_storage_controller_quota_blocks_expansion(tmp_path, monkeypatch):
+    quota_path = tmp_path / "quotas.yaml"
+    quota_path.write_text(
+        "apiVersion: k1s.io/v1\n"
+        "kind: StorageQuota\n"
+        "metadata:\n"
+        "  name: default\n"
+        "spec:\n"
+        "  namespace: default\n"
+        "  hard:\n"
+        "    requests.storage: 2Gi\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AE_STORAGE_QUOTAS", str(quota_path))
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    pv_spec = {
+        "capacity": {"storage": "1Gi"},
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "k1s-nfs",
+        "claimRef": {"namespace": "default", "name": "data", "uid": "pvc-uid"},
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "volumeName": "pv-quota",
+        "storageClassName": "k1s-nfs",
+        "resources": {"requests": {"storage": "3Gi"}},
+    }
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumes",
+        None,
+        "pv-quota",
+        {"name": "pv-quota"},
+        pv_spec,
+    )
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "data",
+        {"name": "data", "namespace": "default", "uid": "pvc-uid"},
+        pvc_spec,
+        status={"phase": "Bound"},
+    )
+
+    controller.reconcile_once()
+
+    pv = store.get("", "v1", "persistentvolumes", None, "pv-quota")
+    assert pv is not None
+    assert ((pv.spec or {}).get("capacity") or {}).get("storage") == "1Gi"
+    events = store.list_all("", "v1", "events")
+    reasons = [(e.spec or {}).get("reason") for e in events]
+    assert "StorageQuotaExceeded" in reasons
+
+
 def test_storage_controller_volume_health_events(tmp_path):
     store = ObjectStore(db_path=tmp_path / "apishim.db")
     controller = StorageController(store)
