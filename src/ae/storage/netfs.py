@@ -50,11 +50,13 @@ class NetFSManager:
         self._root = Path(root)
         self._nfs_tools_ok: bool | None = None
 
-    def ensure_mount(self, pvc: PvcRef, *, node_id: str) -> NetFSMount:
+    def ensure_mount(self, pvc: PvcRef, *, node_id: str, fs_group: int | None = None) -> NetFSMount:
         """Ensure PV is attached (if needed) and mounted on the node."""
 
         existing = self._state.get_mount(pvc, node_id)
         if existing is not None:
+            if fs_group is not None:
+                self._apply_fs_group(pvc, Path(existing.host_path), fs_group)
             return existing
 
         pv = self._state.get_pv_for_pvc(pvc)
@@ -73,10 +75,14 @@ class NetFSManager:
         self._enforce_rwop(pvc, pv_spec, node_id)
         nfs = pv_spec.get("nfs") if isinstance(pv_spec, dict) else None
         if isinstance(nfs, dict):
-            return self._ensure_nfs_mount(pvc, pv, pv_spec, nfs, node_id=node_id)
+            return self._ensure_nfs_mount(
+                pvc, pv, pv_spec, nfs, node_id=node_id, fs_group=fs_group
+            )
         csi = pv_spec.get("csi") if isinstance(pv_spec, dict) else None
         if isinstance(csi, dict):
-            return self._ensure_csi_mount(pvc, pv, pv_spec, csi, node_id=node_id)
+            return self._ensure_csi_mount(
+                pvc, pv, pv_spec, csi, node_id=node_id, fs_group=fs_group
+            )
         msg = "NetFS supports NFS and CSI PVs in this phase"
         self._record_pvc_event(pvc, "UnsupportedVolume", msg)
         raise NotImplementedError(msg)
@@ -95,8 +101,34 @@ class NetFSManager:
         self._record_pvc_event(pvc, "ReadWriteOncePodConflict", msg)
         raise RuntimeError(msg)
 
+    def _apply_fs_group(self, pvc: PvcRef, target: Path, fs_group: int) -> None:
+        try:
+            gid = int(fs_group)
+        except Exception:
+            self._record_pvc_event(
+                pvc, "FsGroupApplyFailed", f"invalid fsGroup value: {fs_group}"
+            )
+            return
+        try:
+            if not target.exists():
+                return
+            st = target.stat()
+            if st.st_gid == gid:
+                return
+            os.chown(target, -1, gid)
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc) or "failed to apply fsGroup"
+            self._record_pvc_event(pvc, "FsGroupApplyFailed", msg)
+
     def _ensure_nfs_mount(
-        self, pvc: PvcRef, pv: PvRef, pv_spec: dict[str, Any], nfs: dict[str, Any], *, node_id: str
+        self,
+        pvc: PvcRef,
+        pv: PvRef,
+        pv_spec: dict[str, Any],
+        nfs: dict[str, Any],
+        *,
+        node_id: str,
+        fs_group: int | None = None,
     ) -> NetFSMount:
         server = nfs.get("server")
         path = nfs.get("path")
@@ -140,6 +172,8 @@ class NetFSManager:
                 self._record_pvc_event(pvc, "MountConflict", msg)
                 raise RuntimeError(msg)
 
+        if fs_group is not None:
+            self._apply_fs_group(pvc, target, fs_group)
         self._maybe_resize_filesystem(pvc, target)
 
         mount = NetFSMount(
@@ -153,7 +187,14 @@ class NetFSManager:
         return mount
 
     def _ensure_csi_mount(
-        self, pvc: PvcRef, pv: PvRef, pv_spec: dict[str, Any], csi: dict[str, Any], *, node_id: str
+        self,
+        pvc: PvcRef,
+        pv: PvRef,
+        pv_spec: dict[str, Any],
+        csi: dict[str, Any],
+        *,
+        node_id: str,
+        fs_group: int | None = None,
     ) -> NetFSMount:
         _ = pv_spec
         driver = csi.get("driver")
@@ -195,6 +236,8 @@ class NetFSManager:
         except Exception as exc:  # noqa: BLE001
             LOGGER.debug("failed to write CSI marker for %s: %s", pvc, exc)
 
+        if fs_group is not None:
+            self._apply_fs_group(pvc, target, fs_group)
         self._maybe_resize_filesystem(pvc, target)
 
         read_only = bool(csi.get("readOnly", False))

@@ -359,6 +359,9 @@ Exit criteria:
   - `ReadWriteOncePod` access mode limits replicas to 1 in scheduler warnings.
   - NetFS manager blocks RWOP mounts on multiple nodes and emits conflict events.
   - Scheduler filters eligible nodes by `topologyKeys` / `allowedTopologies`.
+- SELinux + fsGroup (best-effort for local runtime)
+  - `fsGroup` is applied to NetFS mount points on the node when provided.
+  - SELinux relabeling remains a future enhancement for host-mounted volumes.
 
 ---
 
