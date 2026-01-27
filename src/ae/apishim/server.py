@@ -1307,6 +1307,8 @@ def _swagger_doc() -> dict[str, Any]:
         "/apis/autoscaling/v2",
         "/apis/apiextensions.k8s.io/v1",
         "/apis/discovery.k8s.io/v1",
+        "/apis/storage.k8s.io/v1",
+        "/apis/snapshot.storage.k8s.io/v1",
         "/apis/ae.dev/v1alpha1",
     ):
         _add_path(p, ["get"])
@@ -4221,6 +4223,26 @@ class ShimHandler(BaseHTTPRequestHandler):
                         }
                     )
                     return True
+                if group == "snapshot.storage.k8s.io":
+                    self._ok(
+                        {
+                            "kind": "APIGroup",
+                            "apiVersion": "v1",
+                            "name": "snapshot.storage.k8s.io",
+                            "versions": [
+                                {
+                                    "groupVersion": "snapshot.storage.k8s.io/v1",
+                                    "version": "v1",
+                                }
+                            ],
+                            "preferredVersion": {
+                                "groupVersion": "snapshot.storage.k8s.io/v1",
+                                "version": "v1",
+                            },
+                            "serverAddressByClientCIDRs": [],
+                        }
+                    )
+                    return True
                 return False
             payload = {
                 "kind": "APIGroup",
@@ -4295,6 +4317,65 @@ class ShimHandler(BaseHTTPRequestHandler):
                                     "update",
                                     "watch",
                                 ],
+                            },
+                        ],
+                    }
+                )
+                return True
+            if group == "snapshot.storage.k8s.io" and version == "v1":
+                self._ok(
+                    {
+                        "kind": "APIResourceList",
+                        "apiVersion": "snapshot.storage.k8s.io/v1",
+                        "groupVersion": "snapshot.storage.k8s.io/v1",
+                        "resources": [
+                            {
+                                "name": "volumesnapshots",
+                                "singularName": "volumesnapshot",
+                                "namespaced": True,
+                                "kind": "VolumeSnapshot",
+                                "verbs": [
+                                    "get",
+                                    "list",
+                                    "create",
+                                    "delete",
+                                    "patch",
+                                    "update",
+                                    "watch",
+                                ],
+                                "shortNames": ["vs"],
+                            },
+                            {
+                                "name": "volumesnapshotclasses",
+                                "singularName": "volumesnapshotclass",
+                                "namespaced": False,
+                                "kind": "VolumeSnapshotClass",
+                                "verbs": [
+                                    "get",
+                                    "list",
+                                    "create",
+                                    "delete",
+                                    "patch",
+                                    "update",
+                                    "watch",
+                                ],
+                                "shortNames": ["vsc"],
+                            },
+                            {
+                                "name": "volumesnapshotcontents",
+                                "singularName": "volumesnapshotcontent",
+                                "namespaced": False,
+                                "kind": "VolumeSnapshotContent",
+                                "verbs": [
+                                    "get",
+                                    "list",
+                                    "create",
+                                    "delete",
+                                    "patch",
+                                    "update",
+                                    "watch",
+                                ],
+                                "shortNames": ["vscnt"],
                             },
                         ],
                     }
@@ -4469,6 +4550,19 @@ class ShimHandler(BaseHTTPRequestHandler):
                     "versions": [{"groupVersion": "storage.k8s.io/v1", "version": "v1"}],
                     "preferredVersion": {
                         "groupVersion": "storage.k8s.io/v1",
+                        "version": "v1",
+                    },
+                },
+                {
+                    "name": "snapshot.storage.k8s.io",
+                    "versions": [
+                        {
+                            "groupVersion": "snapshot.storage.k8s.io/v1",
+                            "version": "v1",
+                        }
+                    ],
+                    "preferredVersion": {
+                        "groupVersion": "snapshot.storage.k8s.io/v1",
                         "version": "v1",
                     },
                 },
@@ -6455,6 +6549,103 @@ class ShimHandler(BaseHTTPRequestHandler):
         if self._handle_custom_resource_get(path, q):
             return
 
+        # snapshot.storage.k8s.io: volumesnapshots (namespaced) and snapshot classes/contents
+        if path.startswith("/apis/snapshot.storage.k8s.io/v1"):
+            resources = (
+                ("volumesnapshots", "VolumeSnapshot", "VolumeSnapshotList", True),
+                (
+                    "volumesnapshotclasses",
+                    "VolumeSnapshotClass",
+                    "VolumeSnapshotClassList",
+                    False,
+                ),
+                (
+                    "volumesnapshotcontents",
+                    "VolumeSnapshotContent",
+                    "VolumeSnapshotContentList",
+                    False,
+                ),
+            )
+            for plural, kind, list_kind, namespaced in resources:
+                if namespaced:
+                    s_plural, s_ns, s_name = _gv_ns_name(
+                        path, "snapshot.storage.k8s.io", "v1", plural
+                    )
+                    if s_plural != plural:
+                        continue
+                    if s_name is None:
+                        if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                            self._stream_watch(
+                                "snapshot.storage.k8s.io",
+                                "v1",
+                                plural,
+                                s_ns,
+                                q,
+                                transform=_to_generic("snapshot.storage.k8s.io", "v1", kind, plural),
+                            )
+                            return
+                        items = (
+                            self.server.store.list_all("snapshot.storage.k8s.io", "v1", plural)
+                            if s_ns is None
+                            else self.server.store.list("snapshot.storage.k8s.io", "v1", plural, s_ns)
+                        )  # type: ignore[attr-defined]
+                        self._ok(
+                            {
+                                "kind": list_kind,
+                                "apiVersion": "snapshot.storage.k8s.io/v1",
+                                "items": [
+                                    _to_generic("snapshot.storage.k8s.io", "v1", kind, plural)(i)
+                                    for i in items
+                                ],
+                            }
+                        )
+                        return
+                    obj = self.server.store.get(  # type: ignore[attr-defined]
+                        "snapshot.storage.k8s.io", "v1", plural, s_ns, s_name
+                    )
+                    if not obj:
+                        self._not_found()
+                        return
+                    self._ok(_to_generic("snapshot.storage.k8s.io", "v1", kind, plural)(obj))
+                    return
+
+                s_plural, s_name = _gv_cluster_name(path, "snapshot.storage.k8s.io", "v1", plural)
+                if s_plural != plural:
+                    continue
+                if s_name is None:
+                    if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                        self._stream_watch(
+                            "snapshot.storage.k8s.io",
+                            "v1",
+                            plural,
+                            None,
+                            q,
+                            transform=_to_generic("snapshot.storage.k8s.io", "v1", kind, plural),
+                        )
+                        return
+                    items = self.server.store.list_all(  # type: ignore[attr-defined]
+                        "snapshot.storage.k8s.io", "v1", plural
+                    )
+                    self._ok(
+                        {
+                            "kind": list_kind,
+                            "apiVersion": "snapshot.storage.k8s.io/v1",
+                            "items": [
+                                _to_generic("snapshot.storage.k8s.io", "v1", kind, plural)(i)
+                                for i in items
+                            ],
+                        }
+                    )
+                    return
+                obj = self.server.store.get(  # type: ignore[attr-defined]
+                    "snapshot.storage.k8s.io", "v1", plural, None, s_name
+                )
+                if not obj:
+                    self._not_found()
+                    return
+                self._ok(_to_generic("snapshot.storage.k8s.io", "v1", kind, plural)(obj))
+                return
+
         # storage.k8s.io: storageclasses and volumeattachments (cluster-scoped)
         if path.startswith("/apis/storage.k8s.io/v1"):
             for plural, kind, list_kind in (
@@ -7647,6 +7838,87 @@ class ShimHandler(BaseHTTPRequestHandler):
         if self._handle_custom_resource_post(doc):
             return
 
+        # snapshot.storage.k8s.io resources
+        if self.path.startswith("/apis/snapshot.storage.k8s.io/v1"):
+            resources = (
+                ("volumesnapshots", "VolumeSnapshot", True),
+                ("volumesnapshotclasses", "VolumeSnapshotClass", False),
+                ("volumesnapshotcontents", "VolumeSnapshotContent", False),
+            )
+            for plural, kind, namespaced in resources:
+                if namespaced:
+                    s_plural, s_ns, s_name = _gv_ns_name(
+                        self.path, "snapshot.storage.k8s.io", "v1", plural
+                    )
+                    if s_plural != plural or s_name:
+                        continue
+                    md = doc.get("metadata") or {}
+                    name_in = md.get("name")
+                    ns_in = md.get("namespace") or s_ns
+                    if not name_in or not _valid_name(name_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.name (DNS-1123 label)",
+                        )
+                        return
+                    if not ns_in or not _valid_name(ns_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.namespace (DNS-1123 label)",
+                        )
+                        return
+                    created = self.server.store.upsert(  # type: ignore[attr-defined]
+                        "snapshot.storage.k8s.io",
+                        "v1",
+                        plural,
+                        ns_in,
+                        name_in,
+                        metadata=_normalize_metadata(md, name_in, ns_in, plural),
+                        spec=doc.get("spec") or {},
+                        status=doc.get("status") or {},
+                    )
+                    self.send_response(HTTPStatus.CREATED)
+                    out = _json(_to_generic("snapshot.storage.k8s.io", "v1", kind, plural)(created))
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(out)))
+                    self.end_headers()
+                    self.wfile.write(out)
+                    return
+
+                s_plural, s_name = _gv_cluster_name(
+                    self.path, "snapshot.storage.k8s.io", "v1", plural
+                )
+                if s_plural != plural or s_name:
+                    continue
+                md = doc.get("metadata") or {}
+                name_in = md.get("name")
+                if not name_in or not _valid_name(name_in):
+                    self._json_status(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        reason="Invalid",
+                        message="invalid metadata.name (DNS-1123 label)",
+                    )
+                    return
+                created = self.server.store.upsert(  # type: ignore[attr-defined]
+                    "snapshot.storage.k8s.io",
+                    "v1",
+                    plural,
+                    None,
+                    name_in,
+                    metadata=_normalize_metadata(md, name_in, None, plural),
+                    spec=_spec_payload(plural, doc),
+                    status=doc.get("status") or {},
+                )
+                self.send_response(HTTPStatus.CREATED)
+                out = _json(_to_generic("snapshot.storage.k8s.io", "v1", kind, plural)(created))
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+                return
+
         # storage.k8s.io (cluster-scoped resources)
         if self.path.startswith("/apis/storage.k8s.io/v1"):
             for plural, kind in (
@@ -8081,6 +8353,75 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )
                 self._ok(_to_generic("storage.k8s.io", "v1", kind, plural)(updated))
                 return
+        if self.path.startswith("/apis/snapshot.storage.k8s.io/v1"):
+            resources = (
+                ("volumesnapshots", "VolumeSnapshot", True),
+                ("volumesnapshotclasses", "VolumeSnapshotClass", False),
+                ("volumesnapshotcontents", "VolumeSnapshotContent", False),
+            )
+            for plural, kind, namespaced in resources:
+                if namespaced:
+                    s_plural, s_ns, s_name = _gv_ns_name(
+                        self.path, "snapshot.storage.k8s.io", "v1", plural
+                    )
+                    if s_plural != plural or not s_name:
+                        continue
+                    md = doc.get("metadata") or {}
+                    name_in = md.get("name") or s_name
+                    ns_in = md.get("namespace") or s_ns
+                    if not name_in or not _valid_name(name_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.name (DNS-1123 label)",
+                        )
+                        return
+                    if not ns_in or not _valid_name(ns_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.namespace (DNS-1123 label)",
+                        )
+                        return
+                    updated = self.server.store.upsert(  # type: ignore[attr-defined]
+                        "snapshot.storage.k8s.io",
+                        "v1",
+                        plural,
+                        ns_in,
+                        name_in,
+                        metadata=_normalize_metadata(md, name_in, ns_in, plural),
+                        spec=doc.get("spec") or {},
+                        status=doc.get("status") or {},
+                    )
+                    self._ok(_to_generic("snapshot.storage.k8s.io", "v1", kind, plural)(updated))
+                    return
+
+                s_plural, s_name = _gv_cluster_name(
+                    self.path, "snapshot.storage.k8s.io", "v1", plural
+                )
+                if s_plural != plural or not s_name:
+                    continue
+                md = doc.get("metadata") or {}
+                name_in = md.get("name") or s_name
+                if not name_in or not _valid_name(name_in):
+                    self._json_status(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        reason="Invalid",
+                        message="invalid metadata.name (DNS-1123 label)",
+                    )
+                    return
+                updated = self.server.store.upsert(  # type: ignore[attr-defined]
+                    "snapshot.storage.k8s.io",
+                    "v1",
+                    plural,
+                    None,
+                    name_in,
+                    metadata=_normalize_metadata(md, name_in, None, plural),
+                    spec=_spec_payload(plural, doc),
+                    status=doc.get("status") or {},
+                )
+                self._ok(_to_generic("snapshot.storage.k8s.io", "v1", kind, plural)(updated))
+                return
         if self.path.startswith("/apis/rbac.authorization.k8s.io/v1"):
             for plural, kind in (("roles", "Role"), ("rolebindings", "RoleBinding")):
                 r_plural, r_ns, r_name = _gv_ns_name(
@@ -8309,6 +8650,19 @@ class ShimHandler(BaseHTTPRequestHandler):
             ("autoscaling", "v2", "horizontalpodautoscalers", "HorizontalPodAutoscaler"),
             ("storage.k8s.io", "v1", "storageclasses", "StorageClass"),
             ("storage.k8s.io", "v1", "volumeattachments", "VolumeAttachment"),
+            ("snapshot.storage.k8s.io", "v1", "volumesnapshots", "VolumeSnapshot"),
+            (
+                "snapshot.storage.k8s.io",
+                "v1",
+                "volumesnapshotclasses",
+                "VolumeSnapshotClass",
+            ),
+            (
+                "snapshot.storage.k8s.io",
+                "v1",
+                "volumesnapshotcontents",
+                "VolumeSnapshotContent",
+            ),
         ]
         transform_map = {
             ("apps", "v1", "deployments"): _to_deployment,
@@ -8971,6 +9325,65 @@ class ShimHandler(BaseHTTPRequestHandler):
                         self.server.store.delete(
                             "storage.k8s.io", "v1", plural, None, obj.name
                         )  # type: ignore[attr-defined]
+                self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
+                return
+        if path.startswith("/apis/snapshot.storage.k8s.io/v1"):
+            resources = (
+                ("volumesnapshots", True),
+                ("volumesnapshotclasses", False),
+                ("volumesnapshotcontents", False),
+            )
+            for plural, namespaced in resources:
+                if namespaced:
+                    s_plural, s_ns, s_name = _gv_ns_name(
+                        path, "snapshot.storage.k8s.io", "v1", plural
+                    )
+                    if s_plural != plural:
+                        continue
+                    if not self._rbac_allows("delete", plural):
+                        self._deny(403)
+                        return
+                    if s_name:
+                        ok = self.server.store.delete(  # type: ignore[attr-defined]
+                            "snapshot.storage.k8s.io", "v1", plural, s_ns, s_name
+                        )
+                        if not ok:
+                            self._not_found()
+                            return
+                    else:
+                        items = (
+                            self.server.store.list_all("snapshot.storage.k8s.io", "v1", plural)
+                            if s_ns is None
+                            else self.server.store.list("snapshot.storage.k8s.io", "v1", plural, s_ns)
+                        )  # type: ignore[attr-defined]
+                        for obj in items:
+                            self.server.store.delete(  # type: ignore[attr-defined]
+                                "snapshot.storage.k8s.io", "v1", plural, obj.namespace or None, obj.name
+                            )
+                    self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
+                    return
+
+                s_plural, s_name = _gv_cluster_name(path, "snapshot.storage.k8s.io", "v1", plural)
+                if s_plural != plural:
+                    continue
+                if not self._rbac_allows("delete", plural):
+                    self._deny(403)
+                    return
+                if s_name:
+                    ok = self.server.store.delete(  # type: ignore[attr-defined]
+                        "snapshot.storage.k8s.io", "v1", plural, None, s_name
+                    )
+                    if not ok:
+                        self._not_found()
+                        return
+                else:
+                    items = self.server.store.list_all(  # type: ignore[attr-defined]
+                        "snapshot.storage.k8s.io", "v1", plural
+                    )
+                    for obj in items:
+                        self.server.store.delete(  # type: ignore[attr-defined]
+                            "snapshot.storage.k8s.io", "v1", plural, None, obj.name
+                        )
                 self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
                 return
         if path.startswith("/apis/apps/v1"):
