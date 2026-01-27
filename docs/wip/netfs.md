@@ -370,6 +370,7 @@ Exit criteria:
 - SELinux + fsGroup (best-effort for local runtime)
   - `fsGroup` is applied to NetFS mount points on the node when provided.
   - SELinux relabeling is best-effort via `chcon` when `seLinuxOptions` are set.
+  - Set `AE_NETFS_SELINUX_RECURSIVE=1` to relabel RWX/ROX volume contents.
 
 ---
 
@@ -446,4 +447,4 @@ Optional (SMB / CSI):
 
 ## Future NetFS features to consider (post-MVP)
 
-- SELinux relabeling improvements for shared volumes.
+- TBD (no additional items tracked here yet).
