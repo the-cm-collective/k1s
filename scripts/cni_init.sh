@@ -6,6 +6,8 @@ bridge_file="${CNI_BRIDGE_FILE:-$conf_dir/10-k1s-bridge.conflist}"
 loopback_file="${CNI_LOOPBACK_FILE:-$conf_dir/99-loopback.conf}"
 bridge_name="${AE_CNI_BRIDGE_NAME:-cni0}"
 subnet="${AE_CNI_SUBNET:-10.88.0.0/16}"
+cni_version="${AE_CNI_VERSION:-1.0.0}"
+force="${AE_CNI_FORCE:-0}"
 
 need_sudo=0
 if [[ ! -d "$conf_dir" ]]; then
@@ -43,7 +45,9 @@ run_cmd mkdir -p "$conf_dir"
 
 # Detect existing non-loopback CNI config
 has_non_loopback=0
-if compgen -G "$conf_dir/*.conf" >/dev/null || compgen -G "$conf_dir/*.conflist" >/dev/null; then
+if [[ "$force" != "1" ]] && (
+  compgen -G "$conf_dir/*.conf" >/dev/null || compgen -G "$conf_dir/*.conflist" >/dev/null
+); then
   for cfg in "$conf_dir"/*; do
     base="$(basename "$cfg")"
     case "$base" in
@@ -53,10 +57,14 @@ if compgen -G "$conf_dir/*.conf" >/dev/null || compgen -G "$conf_dir/*.conflist"
   done
 fi
 
+if [[ "$force" == "1" ]]; then
+  echo "AE_CNI_FORCE=1 set; rewriting bridge and loopback configs"
+fi
+
 if [[ $has_non_loopback -eq 0 ]]; then
   bridge_cfg=$(cat <<EOF
 {
-  "cniVersion": "0.3.1",
+  "cniVersion": "${cni_version}",
   "name": "${bridge_name}",
   "plugins": [
     {
@@ -84,10 +92,10 @@ else
   echo "Existing non-loopback CNI config found; skipping bridge config"
 fi
 
-if [[ ! -f "$loopback_file" ]]; then
+if [[ "$force" == "1" || ! -f "$loopback_file" ]]; then
   loopback_cfg=$(cat <<EOF
 {
-  "cniVersion": "0.3.1",
+  "cniVersion": "${cni_version}",
   "name": "lo",
   "type": "loopback"
 }
