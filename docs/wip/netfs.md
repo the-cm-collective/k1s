@@ -346,6 +346,8 @@ Exit criteria:
     `snapshot.storage.kubernetes.io/is-default-class: "true"`.
   - PVC `dataSource` `VolumeSnapshot` restores snapshot data into new hostPath
     volumes for NFS and local-path provisioners.
+  - PVC `dataSourceRef` `PersistentVolumeClaim` clones source hostPath data for
+    NFS and local-path provisioners (filesystem volumes only).
   - CSI snapshot contents are created with `source.volumeHandle` and snapshot
     readiness reflects CSI-populated `VolumeSnapshotContent.status` when present.
     CSI restore/provisioning still requires external snapshotter/provisioner.
@@ -443,7 +445,6 @@ Optional (SMB / CSI):
 ## Future NetFS features to consider (post-MVP)
 
 - VolumeSnapshots and VolumeSnapshotClass support.
-- Volume cloning via `dataSourceRef`.
 - Volume expansion with filesystem resize in containers.
 - (Extended) CSI capacity/topology reporting for multi-node and external CSI drivers.
 - Volume health checks and metrics aligned with K8s events.

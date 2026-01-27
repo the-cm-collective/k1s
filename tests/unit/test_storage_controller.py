@@ -150,6 +150,94 @@ def test_storage_controller_dynamic_local_path_block(tmp_path):
     assert host_path.stat().st_size == 8 * 1024 * 1024
 
 
+def test_storage_controller_clone_local_path(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    host_root = tmp_path / "local-root"
+    sc_spec = {
+        "provisioner": "k1s.io/local-path",
+        "parameters": {"hostPath": str(host_root)},
+        "reclaimPolicy": "Delete",
+        "volumeBindingMode": "Immediate",
+    }
+    store.upsert(
+        "storage.k8s.io",
+        "v1",
+        "storageclasses",
+        None,
+        "local-path",
+        {"name": "local-path"},
+        sc_spec,
+    )
+
+    src_uid = "uid-src"
+    src_host_path = host_root / "src-vol"
+    src_host_path.mkdir(parents=True, exist_ok=True)
+    (src_host_path / "data.txt").write_text("clone-me", encoding="utf-8")
+    src_pv_spec = {
+        "capacity": {"storage": "1Gi"},
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "local-path",
+        "claimRef": {"namespace": "default", "name": "src", "uid": src_uid},
+        "hostPath": {"path": str(src_host_path)},
+    }
+    src_pv_meta = {
+        "name": "pv-src",
+        "annotations": {
+            "k1s.io/local-host-root": str(host_root),
+            "k1s.io/local-host-path": str(src_host_path),
+        },
+    }
+    src_pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "local-path",
+        "volumeName": "pv-src",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    store.upsert("", "v1", "persistentvolumes", None, "pv-src", src_pv_meta, src_pv_spec)
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "src",
+        {"name": "src", "namespace": "default", "uid": src_uid},
+        src_pvc_spec,
+        status={"phase": "Bound"},
+    )
+
+    clone_uid = "uid-clone"
+    clone_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "local-path",
+        "resources": {"requests": {"storage": "1Gi"}},
+        "dataSourceRef": {"kind": "PersistentVolumeClaim", "name": "src", "namespace": "default"},
+    }
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "clone",
+        {"name": "clone", "namespace": "default", "uid": clone_uid},
+        clone_spec,
+        status={"phase": "Pending"},
+    )
+
+    controller.reconcile_once()
+
+    clone_pvc = store.get("", "v1", "persistentvolumeclaims", "default", "clone")
+    assert clone_pvc is not None
+    clone_pv_name = clone_pvc.spec.get("volumeName")
+    assert clone_pv_name == f"pvc-{clone_uid}"
+    clone_pv = store.get("", "v1", "persistentvolumes", None, clone_pv_name)
+    assert clone_pv is not None
+    clone_host_path = Path(((clone_pv.spec or {}).get("hostPath") or {}).get("path"))
+    assert (clone_host_path / "data.txt").read_text(encoding="utf-8") == "clone-me"
+    annotations = (clone_pv.metadata or {}).get("annotations") or {}
+    assert annotations.get("k1s.io/clone-source") == "default/src"
+
+
 def test_storage_controller_reclaim_policy_delete_cleans_backing(tmp_path):
     store = ObjectStore(db_path=tmp_path / "apishim.db")
     controller = StorageController(store)

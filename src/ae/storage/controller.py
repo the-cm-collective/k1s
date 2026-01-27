@@ -60,6 +60,7 @@ SNAP_HOST_ROOT_ANNOTATION = "k1s.io/snapshot-host-root"
 SNAP_HOST_PATH_ANNOTATION = "k1s.io/snapshot-host-path"
 SNAP_SOURCE_PV_ANNOTATION = "k1s.io/snapshot-source-pv"
 SNAPSHOT_SOURCE_ANNOTATION = "k1s.io/snapshot-source"
+CLONE_SOURCE_ANNOTATION = "k1s.io/clone-source"
 SNAPSHOT_DIRNAME = ".snapshots"
 DEFAULT_LOCAL_ROOT = Path(os.getenv("AE_STORAGE_ROOT", "/var/lib/ae/storage"))
 
@@ -569,7 +570,7 @@ class StorageController:
         sc = self._storage_class_for_pvc(pvc)
         if sc is None:
             return None
-        snapshot_info, blocked = self._snapshot_source_for_pvc(pvc)
+        source_info, blocked = self._restore_source_for_pvc(pvc)
         if blocked:
             return None
         sc_spec = sc.spec or {}
@@ -584,10 +585,10 @@ class StorageController:
             return None
         provisioner = str(sc_spec.get("provisioner") or "")
         if provisioner == NFS_PROVISIONER:
-            return self._provision_nfs(pvc, sc, snapshot_info=snapshot_info)
+            return self._provision_nfs(pvc, sc, source_info=source_info)
         if provisioner == LOCAL_PATH_PROVISIONER:
             return self._provision_local_path(
-                pvc, sc, selected_node=selected_node, snapshot_info=snapshot_info
+                pvc, sc, selected_node=selected_node, source_info=source_info
             )
         return None
 
@@ -979,7 +980,7 @@ class StorageController:
         except Exception:
             return None
 
-    def _snapshot_source_for_pvc(self, pvc) -> tuple[dict[str, Any] | None, bool]:
+    def _restore_source_for_pvc(self, pvc) -> tuple[dict[str, Any] | None, bool]:
         spec = pvc.spec or {}
         source = spec.get("dataSource") if isinstance(spec, dict) else None
         if not isinstance(source, dict):
@@ -988,6 +989,15 @@ class StorageController:
             return None, False
         kind = str(source.get("kind") or "")
         api_group = str(source.get("apiGroup") or "")
+        if kind == "PersistentVolumeClaim":
+            if api_group:
+                self._record_pvc_event(
+                    pvc,
+                    "CloneInvalid",
+                    "dataSource PersistentVolumeClaim must not set apiGroup",
+                )
+                return None, True
+            return self._clone_source_for_pvc(pvc, source)
         if kind != "VolumeSnapshot":
             return None, False
         if api_group and api_group != SNAP_GROUP:
@@ -1062,8 +1072,102 @@ class StorageController:
             )
             return None, True
         return {
+            "source_kind": "snapshot",
             "snapshot_ref": f"{snap_ns}/{snap_name}",
             "content_name": str(content_name),
+            "host_root": host_root,
+            "host_path": host_path,
+        }, False
+
+    def _clone_source_for_pvc(self, pvc, source: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
+        src_name = str(source.get("name") or "")
+        src_ns = str(source.get("namespace") or pvc.namespace or "")
+        if not src_name or not src_ns:
+            self._record_pvc_event(
+                pvc,
+                "CloneInvalid",
+                "dataSource PersistentVolumeClaim requires name and namespace",
+            )
+            return None, True
+        target_sc = self._pvc_storage_class(pvc)
+        target_vm = str((pvc.spec or {}).get("volumeMode") or "Filesystem")
+        if target_vm.lower() == "block":
+            self._record_pvc_event(
+                pvc,
+                "CloneUnsupported",
+                "block volumeMode cloning is not supported",
+            )
+            return None, True
+        src_pvc = self._store.get(CORE_GROUP, CORE_VERSION, PVC_RESOURCE, src_ns, src_name)
+        if src_pvc is None:
+            self._record_pvc_event(
+                pvc,
+                "CloneNotFound",
+                f"source PVC {src_ns}/{src_name} not found",
+            )
+            return None, True
+        src_status = src_pvc.status or {}
+        src_spec = src_pvc.spec or {}
+        if str(src_status.get("phase") or "") != "Bound":
+            self._record_pvc_event(
+                pvc,
+                "CloneNotReady",
+                f"source PVC {src_ns}/{src_name} is not bound",
+            )
+            return None, True
+        src_sc = self._pvc_storage_class(src_pvc)
+        if target_sc and src_sc and target_sc != src_sc:
+            self._record_pvc_event(
+                pvc,
+                "CloneInvalid",
+                f"source PVC storageClass {src_sc} does not match target {target_sc}",
+            )
+            return None, True
+        src_pv_name = src_spec.get("volumeName")
+        if not src_pv_name:
+            self._record_pvc_event(
+                pvc,
+                "CloneNotReady",
+                f"source PVC {src_ns}/{src_name} has no bound PV",
+            )
+            return None, True
+        src_pv = self._store.get(CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, src_pv_name)
+        if src_pv is None:
+            self._record_pvc_event(
+                pvc,
+                "CloneSourceMissing",
+                f"source PV {src_pv_name} not found",
+            )
+            return None, True
+        src_pv_spec = src_pv.spec or {}
+        src_vm = str(src_pv_spec.get("volumeMode") or "Filesystem")
+        if src_vm.lower() == "block":
+            self._record_pvc_event(
+                pvc,
+                "CloneUnsupported",
+                "block source volumes are not supported for cloning",
+            )
+            return None, True
+        backing = self._pv_host_backing(src_pv)
+        if backing is None:
+            self._record_pvc_event(
+                pvc,
+                "CloneUnsupported",
+                "source PVC is not hostPath-backed",
+            )
+            return None, True
+        host_root, host_path = backing
+        if not host_path.exists():
+            self._record_pvc_event(
+                pvc,
+                "CloneSourceMissing",
+                f"source backing path missing: {host_path}",
+            )
+            return None, True
+        return {
+            "source_kind": "pvc",
+            "source_ref": f"{src_ns}/{src_name}",
+            "source_pv": src_pv.name,
             "host_root": host_root,
             "host_path": host_path,
         }, False
@@ -1422,6 +1526,64 @@ class StorageController:
         )
         return True
 
+    def _restore_clone_into(
+        self, pvc, target_root: Path, target_path: Path, clone_info: dict[str, Any]
+    ) -> bool:
+        source_root = clone_info.get("host_root")
+        source_path = clone_info.get("host_path")
+        source_ref = clone_info.get("source_ref")
+        if not isinstance(source_root, Path) or not isinstance(source_path, Path):
+            self._record_pvc_event(
+                pvc,
+                "CloneRestoreFailed",
+                "clone source backing path unavailable",
+            )
+            return False
+        if not self._within_root(source_root, source_path):
+            self._record_pvc_event(
+                pvc,
+                "CloneRestoreFailed",
+                f"clone source path outside root: {source_path}",
+            )
+            return False
+        if not self._within_root(target_root, target_path):
+            self._record_pvc_event(
+                pvc,
+                "CloneRestoreFailed",
+                f"target path outside host root: {target_path}",
+            )
+            return False
+        if not source_path.exists():
+            self._record_pvc_event(
+                pvc,
+                "CloneRestoreFailed",
+                f"clone source backing path missing: {source_path}",
+            )
+            return False
+        if not source_path.is_dir():
+            self._record_pvc_event(
+                pvc,
+                "CloneRestoreFailed",
+                f"clone source path is not a directory: {source_path}",
+            )
+            return False
+        if not self._reset_dir(target_path, root=target_root):
+            self._record_pvc_event(pvc, "CloneRestoreFailed", f"failed to prepare {target_path}")
+            return False
+        if not self._copy_tree_contents(source_path, target_path):
+            self._record_pvc_event(
+                pvc,
+                "CloneRestoreFailed",
+                f"failed to copy data from {source_ref}",
+            )
+            return False
+        self._record_pvc_event(
+            pvc,
+            "CloneRestored",
+            f"restored from {source_ref}",
+        )
+        return True
+
     def _delete_snapshot_content(self, content) -> None:
         self._cleanup_snapshot_backing(content)
         with suppress(Exception):
@@ -1520,7 +1682,7 @@ class StorageController:
                 status={},
             )
 
-    def _provision_nfs(self, pvc, sc, *, snapshot_info: dict[str, Any] | None = None):
+    def _provision_nfs(self, pvc, sc, *, source_info: dict[str, Any] | None = None):
         volume_mode = (pvc.spec or {}).get("volumeMode")
         if str(volume_mode or "").lower() == "block":
             self._record_pvc_event(
@@ -1582,16 +1744,29 @@ class StorageController:
                 )
                 return None
 
-        if snapshot_info and host_root is not None and host_path is not None:
-            if not self._restore_snapshot_into(pvc, host_root, host_path, snapshot_info):
-                return None
-            annotations[SNAPSHOT_SOURCE_ANNOTATION] = snapshot_info.get("snapshot_ref", "")
-        elif snapshot_info and host_root is None:
-            self._record_pvc_event(
-                pvc,
-                "SnapshotRestoreSkipped",
-                "snapshot restore requires parameters.hostPath for NFS provisioner",
-            )
+        if source_info and host_root is not None and host_path is not None:
+            source_kind = source_info.get("source_kind")
+            if source_kind == "snapshot":
+                if not self._restore_snapshot_into(pvc, host_root, host_path, source_info):
+                    return None
+                annotations[SNAPSHOT_SOURCE_ANNOTATION] = source_info.get("snapshot_ref", "")
+            elif source_kind == "pvc":
+                if not self._restore_clone_into(pvc, host_root, host_path, source_info):
+                    return None
+                annotations[CLONE_SOURCE_ANNOTATION] = source_info.get("source_ref", "")
+        elif source_info and host_root is None:
+            if source_info.get("source_kind") == "snapshot":
+                self._record_pvc_event(
+                    pvc,
+                    "SnapshotRestoreSkipped",
+                    "snapshot restore requires parameters.hostPath for NFS provisioner",
+                )
+            else:
+                self._record_pvc_event(
+                    pvc,
+                    "CloneRestoreSkipped",
+                    "clone restore requires parameters.hostPath for NFS provisioner",
+                )
 
         pv_spec = {
             "capacity": self._pvc_requested_capacity(pvc),
@@ -1626,7 +1801,7 @@ class StorageController:
         sc,
         *,
         selected_node: str | None,
-        snapshot_info: dict[str, Any] | None = None,
+        source_info: dict[str, Any] | None = None,
     ):
         sc_spec = sc.spec or {}
         binding_mode = str(sc_spec.get("volumeBindingMode") or "")
@@ -1695,16 +1870,27 @@ class StorageController:
         else:
             host_path.mkdir(parents=True, exist_ok=True)
 
-        if snapshot_info:
+        if source_info:
+            source_kind = source_info.get("source_kind")
             if is_block:
-                self._record_pvc_event(
-                    pvc,
-                    "SnapshotRestoreUnsupported",
-                    "snapshot restore is not supported for block volumes",
+                reason = (
+                    "SnapshotRestoreUnsupported"
+                    if source_kind == "snapshot"
+                    else "CloneRestoreUnsupported"
                 )
+                message = (
+                    "snapshot restore is not supported for block volumes"
+                    if source_kind == "snapshot"
+                    else "clone restore is not supported for block volumes"
+                )
+                self._record_pvc_event(pvc, reason, message)
                 return None
-            if not self._restore_snapshot_into(pvc, host_root, host_path, snapshot_info):
-                return None
+            if source_kind == "snapshot":
+                if not self._restore_snapshot_into(pvc, host_root, host_path, source_info):
+                    return None
+            elif source_kind == "pvc":
+                if not self._restore_clone_into(pvc, host_root, host_path, source_info):
+                    return None
 
         annotations = {
             PROVISIONED_BY_ANNOTATION: LOCAL_PATH_PROVISIONER,
@@ -1712,8 +1898,11 @@ class StorageController:
             LOCAL_HOST_ROOT_ANNOTATION: str(host_root),
             LOCAL_HOST_PATH_ANNOTATION: str(host_path),
         }
-        if snapshot_info:
-            annotations[SNAPSHOT_SOURCE_ANNOTATION] = snapshot_info.get("snapshot_ref", "")
+        if source_info:
+            if source_info.get("source_kind") == "snapshot":
+                annotations[SNAPSHOT_SOURCE_ANNOTATION] = source_info.get("snapshot_ref", "")
+            elif source_info.get("source_kind") == "pvc":
+                annotations[CLONE_SOURCE_ANNOTATION] = source_info.get("source_ref", "")
         pv_spec = {
             "capacity": self._pvc_requested_capacity(pvc),
             "accessModes": list((pvc.spec or {}).get("accessModes") or []),
