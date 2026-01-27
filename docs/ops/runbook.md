@@ -20,6 +20,23 @@ Setup
   - Seal sample secret: `make secrets-seal-demo` (uses `AE_AGE_RECIPIENT` or your keys.txt)
   - Convenience for demos: run `./scripts/init_demo.sh --with-secrets-env` to export both `AE_ALLOW_PLAINTEXT_SECRETS=1` and `SOPS_AGE_KEY_FILE` automatically.
 
+CRI nodes (containerd)
+- Required env:
+  - `AE_RUNTIME_BACKEND=cri`
+  - `AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock`
+  - `AE_CRI_SANDBOX_IMAGE=registry.k8s.io/pause:3.9`
+- Service VIP (optional):
+  - `AE_ENABLE_SERVICE_PROXY=1`
+  - `AE_SERVICE_PROVIDER=iptables`
+  - Run controller as root or with sufficient iptables permissions
+- Streaming exec/attach uses `crictl`; ensure it is installed and on PATH (`CRICTL_BIN` overrides).
+- Service VIP proxy on CRI uses iptables; set `AE_ENABLE_SERVICE_PROXY=1` and run as root.
+- CNI dirs (defaults): `/opt/cni/bin` and `/etc/cni/net.d`
+- Init CNI configs (bridge + loopback) if missing: `./scripts/cni_init.sh`
+- Preflight checks: `./scripts/cri_preflight.sh`
+- Smoke check (requires crictl): `./scripts/cri_smoke.sh`
+- Optional pull test: `AE_CRI_SMOKE_PULL=1 pytest tests/integration/test_cri_smoke.py -k pull`
+
 Export and Validate K8s YAML
 - Hardened export with validation:
   - `python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --preset web-hardened --ingress-class traefik --service-port 80 --validate -o specs/examples/echo-k8s.yaml`
