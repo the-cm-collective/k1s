@@ -50,6 +50,12 @@ class CaddyIngressManager:
         # Which container CLI to use when reloading inside a container (docker|podman)
         resolved_cli = container_cli or "docker"
         self._container_cli = shutil.which(resolved_cli) or resolved_cli
+        self._runtime_backend = os.getenv("AE_RUNTIME_BACKEND", "podman").lower()
+        self._cri_endpoint = os.getenv(
+            "AE_CRI_ENDPOINT", "unix:///run/containerd/containerd.sock"
+        )
+        crictl_bin = os.getenv("CRICTL_BIN", "crictl")
+        self._crictl = shutil.which(crictl_bin) or crictl_bin
         self._config_root.mkdir(parents=True, exist_ok=True)
 
     def apply(
@@ -80,62 +86,117 @@ class CaddyIngressManager:
 
     def reload(self) -> None:
         config_path = str(self._config_file or self._config_root)
-        cmd: list[str]
-        # Validate Caddyfile via 'caddy adapt' before reloads to avoid crashing/restarting
-        # the container
-        adapt_cmd: list[str]
-        if self._container:
-            adapt_cmd = [
-                self._container_cli,
-                "exec",
-                self._container,
-                self._caddy_binary,
-                "adapt",
-                "--config",
-                config_path,
-            ]
-            cmd = [
-                self._container_cli,
-                "exec",
-                self._container,
-                self._caddy_binary,
-                "reload",
-                "--config",
-                config_path,
-            ]
-        else:
-            # On host, skip adapt to keep tests and simple setups happy
-            cmd = [self._caddy_binary, "reload", "--config", config_path]
-
+        if not self._container:
+            # On host, skip adapt to keep tests and simple setups happy.
+            self._run_reload([self._caddy_binary, "reload", "--config", config_path])
+            return
+        # Try the configured container CLI first (docker/podman). If it cannot
+        # find the container on a CRI backend, fall back to crictl exec.
         try:
-            kwargs = {"check": True, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
-            if self._reload_timeout:
-                kwargs["timeout"] = self._reload_timeout
-            # Run adapt first only when inside container
-            if self._container:
-                subprocess.run(adapt_cmd, **kwargs)  # noqa: S603,S607 - fixed binaries; shell disabled
-            subprocess.run(cmd, **kwargs)  # noqa: S603,S607 - fixed binaries; shell disabled
-        except FileNotFoundError as exc:
-            missing = self._caddy_binary if not self._container else self._container_cli
-            raise RuntimeError(f"Caddy reload dependency not found: {missing}") from exc
-        except subprocess.TimeoutExpired as exc:
-            LOGGER.error("Caddy reload timed out after %.1fs", (self._reload_timeout or 0))
-            raise RuntimeError("Caddy reload timed out") from exc
+            self._reload_via_container_cli(config_path)
+            return
+        except FileNotFoundError:
+            if self._runtime_backend not in {"cri", "containerd"}:
+                missing = self._container_cli
+                raise RuntimeError(f"Caddy reload dependency not found: {missing}") from None
+        except RuntimeError:
+            if self._runtime_backend not in {"cri", "containerd"}:
+                raise
+        # CRI fallback
+        self._reload_via_crictl(config_path)
+
+    def _reload_via_container_cli(self, config_path: str) -> None:
+        adapt_cmd = [
+            self._container_cli,
+            "exec",
+            self._container,
+            self._caddy_binary,
+            "adapt",
+            "--config",
+            config_path,
+        ]
+        reload_cmd = [
+            self._container_cli,
+            "exec",
+            self._container,
+            self._caddy_binary,
+            "reload",
+            "--config",
+            config_path,
+        ]
+        try:
+            self._run_reload(adapt_cmd, run_adapt=True)
+            self._run_reload(reload_cmd)
         except subprocess.CalledProcessError as exc:
             msg = exc.stderr.decode("utf-8", "ignore")
-            # During early startup the dev Caddy container may not exist yet; avoid noisy warnings.
             transient = (
                 "No such container" in msg
                 or ("container" in msg and "not found" in msg)
                 or ("state improper" in msg)
             )
-            if self._container and transient:
-                LOGGER.info(
-                    "Caddy container %s not available yet; skipping reload", self._container
-                )
-                return
+            if transient:
+                raise RuntimeError("container-not-found") from exc
             LOGGER.error("Caddy reload failed: %s", msg)
             raise RuntimeError("Caddy reload failed") from exc
+
+    def _reload_via_crictl(self, config_path: str) -> None:
+        if shutil.which(self._crictl) is None:
+            raise RuntimeError("Caddy reload dependency not found: crictl")
+        container_id = self._cri_container_id()
+        if not container_id:
+            LOGGER.info("Caddy container %s not available yet; skipping reload", self._container)
+            return
+        base = [self._crictl, "--runtime-endpoint", self._cri_endpoint, "exec", container_id]
+        adapt_cmd = [*base, self._caddy_binary, "adapt", "--config", config_path]
+        reload_cmd = [*base, self._caddy_binary, "reload", "--config", config_path]
+        try:
+            self._run_reload(adapt_cmd, run_adapt=True)
+            self._run_reload(reload_cmd)
+        except subprocess.CalledProcessError as exc:
+            msg = exc.stderr.decode("utf-8", "ignore")
+            LOGGER.error("Caddy reload failed (crictl): %s", msg)
+            raise RuntimeError("Caddy reload failed") from exc
+
+    def _cri_container_id(self) -> str | None:
+        cmd = [
+            self._crictl,
+            "--runtime-endpoint",
+            self._cri_endpoint,
+            "ps",
+            "--name",
+            str(self._container),
+            "-q",
+        ]
+        try:
+            proc = subprocess.run(  # noqa: S603,S607 - fixed binaries; shell disabled
+                cmd,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            return None
+        if proc.returncode != 0:
+            return None
+        out = proc.stdout.decode("utf-8", "ignore").strip().splitlines()
+        return out[0].strip() if out else None
+
+    def _run_reload(self, cmd: list[str], *, run_adapt: bool = False) -> None:
+        try:
+            kwargs = {"check": True, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+            if self._reload_timeout:
+                kwargs["timeout"] = self._reload_timeout
+            subprocess.run(cmd, **kwargs)  # noqa: S603,S607 - fixed binaries; shell disabled
+        except FileNotFoundError as exc:
+            missing = self._caddy_binary if not self._container else cmd[0]
+            raise RuntimeError(f"Caddy reload dependency not found: {missing}") from exc
+        except subprocess.TimeoutExpired as exc:
+            LOGGER.error("Caddy reload timed out after %.1fs", (self._reload_timeout or 0))
+            raise RuntimeError("Caddy reload timed out") from exc
+        except subprocess.CalledProcessError as exc:
+            if run_adapt:
+                raise
+            raise
 
     def _render_site(
         self,
