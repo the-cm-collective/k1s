@@ -52,8 +52,29 @@ echo "Restarting containerd after CNI init..."
 run_root systemctl restart containerd || run_root service containerd restart
 sleep 2
 
-echo "CRI preflight..."
-run_root env AE_RUNTIME_BACKEND=cri AE_CRI_ENDPOINT="${endpoint}" ./scripts/cri_preflight.sh
+echo "Waiting for CRI readiness (RuntimeReady + NetworkReady)..."
+ready=0
+preflight_log="$(mktemp)"
+trap 'rm -f "$preflight_log"' EXIT
+for i in {1..30}; do
+  if run_root env \
+    AE_RUNTIME_BACKEND=cri \
+    AE_CRI_ENDPOINT="${endpoint}" \
+    AE_CRI_REQUIRE_NETWORK_READY=1 \
+    ./scripts/cri_preflight.sh >"$preflight_log" 2>&1; then
+    cat "$preflight_log"
+    ready=1
+    break
+  fi
+  if [[ $i -eq 30 ]]; then
+    cat "$preflight_log" >&2
+  fi
+  sleep 1
+done
+if [[ $ready -ne 1 ]]; then
+  echo "CRI did not become ready within timeout" >&2
+  exit 1
+fi
 
 echo "CRI smoke..."
 run_root env AE_CRI_ENDPOINT="${endpoint}" ./scripts/cri_smoke.sh
