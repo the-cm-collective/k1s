@@ -265,6 +265,13 @@ ae revisions <app>
 ae rollback <app> [--to N]
 ae delete <app> [--purge]
 ```
+- Namespace targeting (optional):
+```
+ae apply -n demo -f <manifest.yaml>
+ae apply -n demo --force-namespace -f <manifest.yaml>
+AE_NAMESPACE=demo ae status <app>
+ae shell demo/<app>
+```
 - Planning and K8s helpers:
 ```
 ae plan -f specs/examples/echo.yaml --verbose --json

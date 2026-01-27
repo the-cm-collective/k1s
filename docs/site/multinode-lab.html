@@ -745,7 +745,7 @@ ae status echo-mn --watch</code></pre>
 <ul>
 <li>Verify Service VIP reachability from the controller host: <code>curl http://$AE_SERVICE_IP_POOL_FIRST_IP/healthz</code> (replace with the allocated ClusterIP from <code>ae services list</code>).</li>
 <li>Simulate node loss: <code>ae nodes --cordon &lt;node&gt;</code> then stop the agent; reconcile should reschedule replicas to the surviving node (storage-bound apps will remain pending by design).</li>
-<li>Exec/logs proxied via agent: <code>ae exec echo-mn -- id</code> and <code>ae logs echo-mn --tail 5</code>.</li>
+<li>Exec/logs proxied via agent: <code>ae exec echo-mn -- id</code> and <code>ae logs echo-mn --tail 5</code> (add <code>-n &lt;ns&gt;</code> if the app is not in <code>default</code>).</li>
 </ul>
 <h2>Fast smoke commands</h2>
 <ul>
@@ -765,7 +765,7 @@ ae status echo-mn --watch</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-26 11:14:05</span>
+        <span>Built 2026-01-27 10:16:49</span>
       </div>
     </footer>
     <script>

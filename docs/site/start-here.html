@@ -895,6 +895,13 @@ ae revisions &lt;app&gt;
 ae rollback &lt;app&gt; [--to N]
 ae delete &lt;app&gt; [--purge]</code></pre>
 <ul>
+<li>Namespace targeting (optional):</li>
+</ul>
+<pre><code>ae apply -n demo -f &lt;manifest.yaml&gt;
+ae apply -n demo --force-namespace -f &lt;manifest.yaml&gt;
+AE_NAMESPACE=demo ae status &lt;app&gt;
+ae shell demo/&lt;app&gt;</code></pre>
+<ul>
 <li>Planning and K8s helpers:</li>
 </ul>
 <pre><code>ae plan -f specs/examples/echo.yaml --verbose --json
@@ -951,7 +958,7 @@ make demo-hardened</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-26 11:14:05</span>
+        <span>Built 2026-01-27 10:16:49</span>
       </div>
     </footer>
     <script>

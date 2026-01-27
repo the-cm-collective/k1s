@@ -22,6 +22,7 @@ from ae.controller.spec import (
     app_key,
     app_key_for_manifest,
     format_app_ref,
+    normalize_namespace,
     parse_app_ref,
     split_app_key,
 )
@@ -56,16 +57,37 @@ def build_parser() -> argparse.ArgumentParser:
         "--server", default=None, help="Remote API base URL (e.g. http://127.0.0.1:9108)"
     )
     parser.add_argument("--token", default=None, help="Bearer token for remote API auth")
+    parser.add_argument(
+        "-n",
+        "--namespace",
+        default=os.getenv("AE_NAMESPACE"),
+        help="Default namespace for app commands when the name is unqualified (also AE_NAMESPACE)",
+    )
+
+    def _add_namespace_arg(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "-n",
+            "--namespace",
+            default=argparse.SUPPRESS,
+            help="Namespace to operate in when the app name is unqualified (overrides global --namespace)",
+        )
 
     apply_parser = subparsers.add_parser("apply", help="Apply a workload manifest (App)")
+    _add_namespace_arg(apply_parser)
     apply_parser.add_argument("-f", "--file", type=Path, required=True, help="Path to manifest")
     apply_parser.add_argument(
         "--k8s",
         action="store_true",
         help="Treat input as Kubernetes manifests (Deployment/Service/Ingress)",
     )
+    apply_parser.add_argument(
+        "--force-namespace",
+        action="store_true",
+        help="Override metadata.namespace in the manifest(s) with --namespace",
+    )
 
     status_parser = subparsers.add_parser("status", help="Show workload (App) status")
+    _add_namespace_arg(status_parser)
     status_parser.add_argument("name", nargs="?", help="Workload (App) name (omit to list all)")
     status_parser.add_argument(
         "--history", type=int, default=0, help="Show the most recent N probe evaluations"
@@ -91,6 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     logs_parser = subparsers.add_parser("logs", help="Tail workload logs")
+    _add_namespace_arg(logs_parser)
     logs_parser.add_argument("name", help="Workload (App) name")
     logs_parser.add_argument("--follow", action="store_true", help="Stream logs continuously")
     logs_parser.add_argument(
@@ -114,11 +137,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     # exec: run a command inside a container
     exec_parser = subparsers.add_parser("exec", help="Run a command in a container")
+    _add_namespace_arg(exec_parser)
     exec_parser.add_argument("name", help="Workload (App) name")
     exec_parser.add_argument(
         "--container", required=False, help="Target container name or replica id"
     )
-    exec_parser.add_argument("-i", "--stdin", action="store_true", help="Pass stdin to the container")
+    exec_parser.add_argument(
+        "-i", "--stdin", action="store_true", help="Pass stdin to the container"
+    )
     exec_parser.add_argument("-t", "--tty", action="store_true", help="Allocate a TTY")
     exec_parser.add_argument("--timeout", type=int, default=None, help="Timeout seconds")
     exec_parser.add_argument(
@@ -131,11 +157,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Allow WebSocket exec if SPDY upgrade fails",
     )
-    exec_parser.add_argument("cmd", nargs=argparse.REMAINDER, help="Command to execute after --")
+    exec_parser.add_argument("cmd", nargs="*", help="Command to execute after --")
 
     shell_parser = subparsers.add_parser("shell", help="Open an interactive shell in a container")
+    _add_namespace_arg(shell_parser)
     shell_parser.add_argument("name", help="Workload (App) name")
-    shell_parser.add_argument("--container", required=False, help="Target container name or replica id")
+    shell_parser.add_argument(
+        "--container", required=False, help="Target container name or replica id"
+    )
     shell_parser.add_argument(
         "--apishim",
         default=None,
@@ -149,7 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
     tty_group = shell_parser.add_mutually_exclusive_group()
     tty_group.add_argument("--tty", action="store_true", help="Force TTY on")
     tty_group.add_argument("--no-tty", action="store_true", help="Disable TTY")
-    shell_parser.add_argument("cmd", nargs=argparse.REMAINDER, help="Shell command after --")
+    shell_parser.add_argument("cmd", nargs="*", help="Shell command after --")
 
     nodes_parser = subparsers.add_parser("nodes", help="List or describe nodes")
     nodes_parser.add_argument("name", nargs="?", help="Node id to describe (omit to list)")
@@ -168,6 +197,7 @@ def build_parser() -> argparse.ArgumentParser:
     certs_parser.add_argument("--json", action="store_true", help="Emit JSON")
 
     rollback_parser = subparsers.add_parser("rollback", help="Rollback a workload revision")
+    _add_namespace_arg(rollback_parser)
     rollback_parser.add_argument("name", help="Workload (App) name")
     rollback_parser.add_argument(
         "--to",
@@ -177,6 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     revisions_parser = subparsers.add_parser("revisions", help="List stored revisions")
+    _add_namespace_arg(revisions_parser)
     revisions_parser.add_argument("name", help="Workload (App) name")
     revisions_parser.add_argument("--limit", type=int, default=10)
 
@@ -236,15 +267,18 @@ def build_parser() -> argparse.ArgumentParser:
     metrics_parser.add_argument("--json", action="store_true", help="Emit JSON output")
 
     events_parser = subparsers.add_parser("events", help="Show recent events")
+    _add_namespace_arg(events_parser)
     events_parser.add_argument("name", help="Workload (App) name")
     events_parser.add_argument("--limit", type=int, default=20)
 
     services_parser = subparsers.add_parser(
         "services", help="List Services (cluster IPs/endpoints)"
     )
+    _add_namespace_arg(services_parser)
     services_parser.add_argument("--json", action="store_true", help="Emit JSON output")
 
     history_parser = subparsers.add_parser("history", help="Show recent probe evaluations")
+    _add_namespace_arg(history_parser)
     history_parser.add_argument("name", help="Workload (App) name")
     history_parser.add_argument("--limit", type=int, default=20)
     history_parser.add_argument("--replica", default=None, help="Filter by replica id")
@@ -285,6 +319,7 @@ def build_parser() -> argparse.ArgumentParser:
     delete_parser = subparsers.add_parser(
         "delete", help="Delete a workload/app (containers + status)"
     )
+    _add_namespace_arg(delete_parser)
     delete_parser.add_argument("name", help="Workload (App) name")
     delete_parser.add_argument(
         "--purge", action="store_true", help="Also purge events and revisions history"
@@ -294,6 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
     scale_parser = subparsers.add_parser(
         "scale", help="Scale a workload/app by reconciling replicas"
     )
+    _add_namespace_arg(scale_parser)
     scale_parser.add_argument("name", help="Workload (App) name")
     scale_parser.add_argument("--replicas", type=int, required=True)
 
@@ -637,8 +673,10 @@ def build_parser() -> argparse.ArgumentParser:
     rollout_cmd = subparsers.add_parser("rollout", help="Control rollout behavior (pause/resume)")
     rollout_sub = rollout_cmd.add_subparsers(dest="rollout_cmd", required=True)
     r_pause = rollout_sub.add_parser("pause", help="Pause rollout for a workload/app")
+    _add_namespace_arg(r_pause)
     r_pause.add_argument("name", help="Workload (App) name")
     r_resume = rollout_sub.add_parser("resume", help="Resume rollout for a workload/app")
+    _add_namespace_arg(r_resume)
     r_resume.add_argument("name", help="Workload (App) name")
 
     # api tokens helper
@@ -787,6 +825,7 @@ def build_parser() -> argparse.ArgumentParser:
     vols = subparsers.add_parser("volumes", help="Inspect storage volumes")
     vols_sub = vols.add_subparsers(dest="vol_cmd", required=True)
     vols_list = vols_sub.add_parser("list", help="List storage volumes (PV-lite)")
+    _add_namespace_arg(vols_list)
     vols_list.add_argument("--app", default=None, help="Filter by app name")
     vols_list.add_argument("--json", action="store_true", help="Emit JSON output")
 
@@ -1272,6 +1311,7 @@ def main(argv: list[str] | None = None) -> int:
 
     auth_handler = globals().get("handle_auth")
     if auth_handler is None:
+
         def auth_handler(_ns: argparse.Namespace) -> int:
             print("auth command unavailable in this build")
             return 2
@@ -1470,12 +1510,39 @@ def handle_apply(
                 "warning: kind 'App' is deprecated; use kind 'Deployment' (apiVersion: ae.dev/v1alpha1)"
             )
 
+    def _doc_has_namespace(doc: dict) -> bool:
+        meta = doc.get("metadata")
+        if not isinstance(meta, dict):
+            return False
+        ns = meta.get("namespace")
+        return bool(str(ns).strip()) if ns is not None else False
+
+    def _apply_namespace_override(
+        docs: list[dict], namespace: str | None, *, force: bool = False
+    ) -> None:
+        if not namespace:
+            return
+        for doc in docs:
+            if not isinstance(doc, dict):
+                continue
+            meta = doc.get("metadata")
+            if not isinstance(meta, dict):
+                meta = {}
+                doc["metadata"] = meta
+            ns_val = meta.get("namespace")
+            if force or ns_val is None or not str(ns_val).strip():
+                meta["namespace"] = namespace
+
+    ns_override = normalize_namespace(getattr(args, "namespace", None))
+    force_namespace = bool(getattr(args, "force_namespace", False))
+
     # Remote apply via API when --server is set
     if global_args and getattr(global_args, "server", None):
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
         try:
             docs = _load_yaml_documents(args.file)
+            _apply_namespace_override(docs, ns_override, force=force_namespace)
         except Exception as exc:  # noqa: BLE001
             print(f"failed to read manifest: {exc}")
             return 1
@@ -1504,6 +1571,10 @@ def handle_apply(
 
     try:
         docs = _load_yaml_documents(args.file)
+        raw_has_namespace = (
+            _doc_has_namespace(docs[0]) if docs and isinstance(docs[0], dict) else False
+        )
+        _apply_namespace_override(docs, ns_override, force=force_namespace)
         if _should_convert_k8s(docs, bool(getattr(args, "k8s", False))):
             manifest, warnings = _convert_k8s_documents(docs)
             for w in warnings:
@@ -1513,6 +1584,12 @@ def handle_apply(
                 raise ManifestError("expected a single Deployment/App manifest document")
             manifest = load_manifest(args.file)
             _warn_deprecated_kind(getattr(manifest, "kind", None))
+            if ns_override and (force_namespace or not raw_has_namespace):
+                manifest = manifest.model_copy(
+                    update={
+                        "metadata": manifest.metadata.model_copy(update={"namespace": ns_override})
+                    }
+                )
     except (ManifestError, ValueError) as exc:
         print(f"failed to read manifest: {exc}")
         return 1
@@ -1743,7 +1820,7 @@ def handle_delete(
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
         try:
-            app_name = _resolve_app_name(args.name) or args.name
+            app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
             resp = _http_post_json(
                 base, f"/delete/{app_name}?purge={'1' if args.purge else '0'}", {}, tok
             )
@@ -1754,7 +1831,7 @@ def handle_delete(
         except Exception as exc:  # noqa: BLE001
             print(f"remote delete failed: {exc}")
             return 1
-    name = _resolve_app_name(args.name) or args.name
+    name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     removed = runtime.remove_app(name)
     if ingress_service:
         try:
@@ -1801,7 +1878,7 @@ def handle_scale(
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
         try:
-            app_name = _resolve_app_name(args.name) or args.name
+            app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
             resp = _http_post_json(
                 base, f"/scale/{app_name}", {"replicas": int(args.replicas)}, tok
             )
@@ -1812,7 +1889,7 @@ def handle_scale(
         except Exception as exc:  # noqa: BLE001
             print(f"remote scale failed: {exc}")
             return 1
-    name = _resolve_app_name(args.name) or args.name
+    name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     latest = store.list_revisions(name, limit=1)
     if not latest:
         print(f"No revisions recorded for {_display_app_name(name)}. Try 'ae apply -f <manifest>'.")
@@ -2250,10 +2327,12 @@ def _http_post_json(base: str, path: str, body: dict, token: str | None = None):
     return r.json()
 
 
-def _resolve_app_name(name: str | None) -> str | None:
+def _resolve_app_name(name: str | None, namespace: str | None = None) -> str | None:
     if not name:
         return None
     ns, base = parse_app_ref(name)
+    if ns is None:
+        ns = normalize_namespace(namespace)
     return app_key(base, ns)
 
 
@@ -2267,12 +2346,13 @@ def handle_status(
     global_args: argparse.Namespace,
     runtime: RuntimeAdapter | None = None,
 ) -> int:
+    ns_filter = normalize_namespace(getattr(args, "namespace", None))
     if getattr(global_args, "server", None):
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
         try:
             if args.name:
-                app_name = _resolve_app_name(args.name) or args.name
+                app_name = _resolve_app_name(args.name, ns_filter) or args.name
                 path = f"/status/{app_name}"
                 if args.wide:
                     path += "?details=1"
@@ -2317,7 +2397,14 @@ def handle_status(
                         pass
                 return 0
             page = _http_get_json(base, "/status?limit=100", tok)
-            for s0 in page.get("items", []):
+            items = page.get("items", []) if isinstance(page, dict) else []
+            if ns_filter:
+                items = [
+                    s0
+                    for s0 in items
+                    if split_app_key(str((s0 or {}).get("app_name", "")))[0] == ns_filter
+                ]
+            for s0 in items:
                 line = ", ".join(
                     [
                         f"{_display_app_name(s0['app_name'])}: desired={s0['desired_replicas']}",
@@ -2341,7 +2428,7 @@ def handle_status(
             return 1
     # local path
     if args.name:
-        app_name = _resolve_app_name(args.name) or args.name
+        app_name = _resolve_app_name(args.name, ns_filter) or args.name
         status = store.get_status(app_name)
         if status is None:
             print(f"No status recorded for {_display_app_name(app_name)}")
@@ -2445,6 +2532,8 @@ def handle_status(
             _print_status_block(status)
         return 0
     statuses = store.list_status()
+    if ns_filter:
+        statuses = [s for s in statuses if split_app_key(s.app_name)[0] == ns_filter]
     if not statuses:
         print("No workloads recorded.")
         return 0
@@ -2482,7 +2571,7 @@ def handle_rollout(
     if args.rollout_cmd not in {"pause", "resume"}:
         print("unsupported rollout command")
         return 2
-    app = _resolve_app_name(args.name) or args.name
+    app = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     revs = store.list_revisions(app, limit=1)
     if not revs:
         print(f"no revisions recorded for {_display_app_name(app)}")
@@ -2631,9 +2720,7 @@ def handle_auth(args: argparse.Namespace) -> int:
             if args.controller_env
             else os.getenv("CONTROLLER_ENV_FILE", "state/env.sh")
         )
-        dev_env = Path(
-            args.dev_env if args.dev_env else os.getenv("DEV_ENV_FILE", "state/dev.env")
-        )
+        dev_env = Path(args.dev_env if args.dev_env else os.getenv("DEV_ENV_FILE", "state/dev.env"))
         apishim_pid = Path(
             args.apishim_pid
             if args.apishim_pid
@@ -2873,7 +2960,7 @@ def handle_logs(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
         gargs = outer_locals.get("global_args") or outer_locals.get("args")
         if gargs is not None and getattr(gargs, "server", None):
             return handle_logs_remote(args, gargs)
-    app_name = _resolve_app_name(args.name) or args.name
+    app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     status = store.get_status(app_name)
     if status is None:
         print(f"No status recorded for {_display_app_name(app_name)}")
@@ -3087,10 +3174,7 @@ def _exec_over_spdy(
     def _send_syn_stream(stream_id: int, headers: dict[str, str]) -> None:
         hdrs = _encode_headers(headers)
         payload = (
-            (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
-            + b"\x00\x00\x00\x00"
-            + b"\x00\x00"
-            + hdrs
+            (stream_id & 0x7FFFFFFF).to_bytes(4, "big") + b"\x00\x00\x00\x00" + b"\x00\x00" + hdrs
         )
         _send_ctrl(1, 0, payload)
 
@@ -3531,7 +3615,7 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
         if token is None:
             token = _os.getenv("AE_APISHIM_EXEC_TOKEN")
         if apishim_base:
-            app_name = _resolve_app_name(args.name) or args.name
+            app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
             cmd = list(args.cmd or [])
             if cmd and cmd[0] == "--":
                 cmd = cmd[1:]
@@ -3590,7 +3674,7 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
     # Local-only path
     if getattr(args, "stdin", False) or getattr(args, "tty", False):
         print("warning: --stdin/--tty are only supported against the API shim (SPDY/WebSocket)")
-    app_name = _resolve_app_name(args.name) or args.name
+    app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     status = store.get_status(app_name)
     if status is None:
         print(f"No status recorded for {_display_app_name(app_name)}")
@@ -3644,7 +3728,7 @@ def handle_exec_remote(args: argparse.Namespace, global_args: argparse.Namespace
         payload["timeoutSeconds"] = int(args.timeout)
     import requests
 
-    app_name = _resolve_app_name(args.name) or args.name
+    app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     url = base.rstrip("/") + "/exec/" + app_name
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     if tok:
@@ -3683,7 +3767,7 @@ def handle_shell(args: argparse.Namespace, store: SQLiteStateStore, runtime: Run
     if cmd and cmd[0] == "--":
         cmd = cmd[1:]
     if not cmd:
-        cmd = ["sh"]
+        cmd = ["bash"]
 
     exec_args = argparse.Namespace(**vars(args))
     exec_args.cmd = cmd
@@ -3791,7 +3875,7 @@ def handle_rollback(
     reconciler: Reconciler,
 ) -> int:
     target_rev: int | None = args.to
-    app_name = _resolve_app_name(args.name) or args.name
+    app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     if target_rev is None:
         revisions = store.list_revisions(app_name, limit=2)
         if len(revisions) < 2:
@@ -3813,7 +3897,7 @@ def handle_rollback(
 
 
 def handle_revisions(args: argparse.Namespace, store: SQLiteStateStore) -> int:
-    app_name = _resolve_app_name(args.name) or args.name
+    app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     revisions = store.list_revisions(app_name, limit=args.limit)
     if not revisions:
         print(f"No revisions recorded for {_display_app_name(app_name)}.")
@@ -3863,7 +3947,7 @@ def handle_metrics(args: argparse.Namespace, store: SQLiteStateStore) -> int:
 def handle_events(
     args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace
 ) -> int:
-    app_name = _resolve_app_name(args.name) or args.name
+    app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     if getattr(global_args, "server", None):
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
@@ -3894,7 +3978,10 @@ def handle_events(
 
 
 def handle_services(args: argparse.Namespace, store: SQLiteStateStore) -> int:
+    ns_filter = normalize_namespace(getattr(args, "namespace", None))
     rows = store.list_services()
+    if ns_filter:
+        rows = [r for r in rows if split_app_key(r.app_name)[0] == ns_filter]
     if args.json:
         import json as _json
 
@@ -3931,7 +4018,7 @@ def handle_services(args: argparse.Namespace, store: SQLiteStateStore) -> int:
 def handle_history(
     args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace
 ) -> int:
-    app_name = _resolve_app_name(args.name) or args.name
+    app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     # Server mode
     if getattr(global_args, "server", None):
         base = str(global_args.server)
@@ -4078,7 +4165,9 @@ def handle_volumes(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
         try:
             app_filter = getattr(args, "app", None)
             if app_filter:
-                app_filter = _resolve_app_name(app_filter) or app_filter
+                app_filter = (
+                    _resolve_app_name(app_filter, getattr(args, "namespace", None)) or app_filter
+                )
             vols = runtime.list_storage_volumes(app_filter)  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001
             print(f"volume listing not available: {exc}")
@@ -4125,7 +4214,7 @@ def handle_logs_remote(args: argparse.Namespace, global_args: argparse.Namespace
         params.append(("follow", "1"))
     from urllib.parse import urlencode
 
-    app_name = _resolve_app_name(args.name) or args.name
+    app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     path = f"/logs/{app_name}"
     if params:
         path += "?" + urlencode(params)
