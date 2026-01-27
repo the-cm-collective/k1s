@@ -143,6 +143,40 @@ def test_export_with_storage_and_serviceaccount() -> None:
     assert set(names) >= {"cpu", "memory"}
 
 
+def test_export_storage_fields_to_pvc_and_mounts() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    man = man.model_copy(
+        update={
+            "spec": man.spec.model_copy(
+                update={
+                    "storage": [
+                        {
+                            "name": "data",
+                            "mountPath": "/data",
+                            "size": "2Gi",
+                            "class": "fast",
+                            "accessModes": ["ReadWriteMany"],
+                            "volumeMode": "Filesystem",
+                            "readOnly": True,
+                        }
+                    ]
+                }
+            )
+        }
+    )
+    opts = ExportOptions(namespace="demo", emit_storage=True)
+    docs = export_k8s_docs(man, options=opts)
+    pvc = next(d for d in docs if d["kind"] == "PersistentVolumeClaim")
+    spec = pvc.get("spec", {})
+    assert spec.get("storageClassName") == "fast"
+    assert spec.get("accessModes") == ["ReadWriteMany"]
+    assert spec.get("volumeMode") == "Filesystem"
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    mounts = dep["spec"]["template"]["spec"]["containers"][0].get("volumeMounts", [])
+    mnt = next(m for m in mounts if m.get("mountPath") == "/data")
+    assert mnt.get("readOnly") is True
+
+
 def test_pdb_max_unavailable() -> None:
     man = load_manifest(Path("specs/examples/echo.yaml"))
     man = man.model_copy(update={"spec": man.spec.model_copy(update={"replicas": 2})})

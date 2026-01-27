@@ -497,7 +497,8 @@ class PodmanRuntime(RuntimeAdapter):
                     if getattr(manifest.spec, "storage", None):
                         for s in manifest.spec.storage:
                             vol_name = self._storage_volume_name(app, getattr(s, "name", ""))
-                            cmd += ["-v", f"{vol_name}:{getattr(s, 'mount_path', '')}:rw"]
+                            mode = "ro" if getattr(s, "read_only", False) else "rw"
+                            cmd += ["-v", f"{vol_name}:{getattr(s, 'mount_path', '')}:{mode}"]
                     for v in getattr(manifest.spec, "volumes", []) or []:
                         host = getattr(v, "host_path", None)
                         mnt = getattr(v, "mount_path", None)
@@ -959,7 +960,8 @@ class PodmanRuntime(RuntimeAdapter):
                         )
                         mnt = getattr(s, "mount_path", None)
                         if vol_name and mnt:
-                            argv += ["-v", f"{vol_name}:{mnt}:rw"]
+                            mode = "ro" if getattr(s, "read_only", False) else "rw"
+                            argv += ["-v", f"{vol_name}:{mnt}:{mode}"]
                 for v in getattr(manifest.spec, "volumes", []) or []:
                     host = (
                         getattr(v, "host_path", None)
@@ -1368,7 +1370,8 @@ class PodmanRuntime(RuntimeAdapter):
             self.ensure_storage_volumes(app, [s.model_dump() for s in manifest.spec.storage])
             for s in manifest.spec.storage:
                 vol_name = self._storage_volume_name(app, s.name)
-                cmd += ["-v", f"{vol_name}:{s.mount_path}:rw"]
+                mode = "ro" if getattr(s, "read_only", False) else "rw"
+                cmd += ["-v", f"{vol_name}:{s.mount_path}:{mode}"]
         if manifest.spec.volumes:
             for v in manifest.spec.volumes:
                 mode = "ro" if v.read_only else "rw"

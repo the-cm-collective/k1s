@@ -293,6 +293,17 @@ class VolumeSpec(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class PvcMountSpec(BaseModel):
+    """PVC-backed volume mount request (resolved via NetFS)."""
+
+    claim_name: str = Field(alias="claimName")
+    mount_path: str = Field(alias="mountPath")
+    read_only: bool = Field(default=False, alias="readOnly")
+    namespace: Optional[str] = None
+
+    model_config = {"populate_by_name": True}
+
+
 class StorageRetention(str):
     Retain = "Retain"
     Delete = "Delete"
@@ -303,12 +314,19 @@ class StorageSpec(BaseModel):
 
     The controller creates a Docker named volume per entry and mounts it at
     the specified path. Retention controls removal on app deletion.
+
+    Optional fields (class/accessModes/volumeMode/readOnly) are reserved for
+    NetFS-backed PVC mapping and future runtime integrations.
     """
 
     name: str
     mount_path: str = Field(alias="mountPath")
     retention: str = Field(default=StorageRetention.Retain)
     size: str | None = None  # reserved for future use
+    storage_class: str | None = Field(default=None, alias="class")
+    access_modes: list[str] | None = Field(default=None, alias="accessModes")
+    volume_mode: str | None = Field(default=None, alias="volumeMode")
+    read_only: bool = Field(default=False, alias="readOnly")
 
     model_config = {"populate_by_name": True}
 
@@ -452,6 +470,7 @@ class AppSpec(BaseModel):
     security: Optional[SecuritySpec] = None
     termination_grace_period_seconds: int = Field(default=10, alias="terminationGracePeriodSeconds")
     volumes: List[VolumeSpec] = Field(default_factory=list)
+    pvc_mounts: List[PvcMountSpec] = Field(default_factory=list, alias="pvcMounts")
     storage: List[StorageSpec] = Field(default_factory=list)
     empty_dirs: List[EmptyDirSpec] = Field(default_factory=list, alias="emptyDirs")
     # Optional exporter hints (purely affects export/check tooling)

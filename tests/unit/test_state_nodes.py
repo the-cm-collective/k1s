@@ -55,15 +55,15 @@ def test_list_nodes_returns_status(tmp_path):
     assert status.status == "NotReady"
 
 
-def test_storage_bindings_roundtrip(tmp_path):
+def test_volume_attachments_roundtrip(tmp_path):
     store = SQLiteStateStore(tmp_path / "state.db")
-    store.upsert_storage_binding("app", "data", "node-a", retention="Retain")
-    bindings = store.list_storage_bindings("app")
-    assert len(bindings) == 1
-    b = bindings[0]
-    assert b.app_name == "app"
-    assert b.volume_name == "data"
-    assert b.node_id == "node-a"
-    assert b.retention == "Retain"
-    store.delete_storage_bindings("app")
-    assert store.list_storage_bindings("app") == []
+    store.upsert_volume_attachment("app", "data", "node-a", retention="Retain")
+    attachments = store.list_volume_attachments("app")
+    assert len(attachments) == 1
+    att = attachments[0]
+    assert att.app_name == "app"
+    assert att.volume_name == "data"
+    assert att.node_id == "node-a"
+    assert att.retention == "Retain"
+    store.delete_volume_attachments("app")
+    assert store.list_volume_attachments("app") == []

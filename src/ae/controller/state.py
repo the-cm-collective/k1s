@@ -129,6 +129,17 @@ class StorageBinding:
 
 
 @dataclass(slots=True)
+class VolumeAttachment:
+    """Attachment record for a volume bound to a node."""
+
+    app_name: str
+    volume_name: str
+    node_id: str
+    retention: str | None
+    created_at: datetime
+
+
+@dataclass(slots=True)
 class NodeRecord:
     """Registered node information."""
 
@@ -283,6 +294,18 @@ class SQLiteStateStore:
                 ],
             ):
                 conn.execute("DROP TABLE IF EXISTS storage_bindings")
+            if not self._schema_matches(
+                conn,
+                "volume_attachments",
+                [
+                    "app_name",
+                    "volume_name",
+                    "node_id",
+                    "retention",
+                    "created_at",
+                ],
+            ):
+                conn.execute("DROP TABLE IF EXISTS volume_attachments")
             auto_inc = (
                 "INTEGER PRIMARY KEY AUTOINCREMENT"
                 if self.backend == "sqlite"
@@ -460,6 +483,19 @@ class SQLiteStateStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS volume_attachments (
+                    app_name TEXT NOT NULL,
+                    volume_name TEXT NOT NULL,
+                    node_id TEXT NOT NULL,
+                    retention TEXT,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (app_name, volume_name)
+                )
+                """
+            )
+            self._migrate_storage_bindings(conn)
             conn.commit()
 
     def _connect(self):
@@ -482,6 +518,40 @@ class SQLiteStateStore:
             return columns == expected_columns
         # For Postgres we skip strict schema match; rely on CREATE IF NOT EXISTS.
         return True
+
+    def _migrate_storage_bindings(self, conn) -> None:
+        """Best-effort migration from legacy storage_bindings to volume_attachments."""
+        try:
+            rows = conn.execute(
+                """
+                SELECT app_name, volume_name, node_id, retention, created_at
+                FROM storage_bindings
+                """
+            ).fetchall()
+        except Exception:
+            return
+        if not rows:
+            return
+        try:
+            existing = conn.execute(
+                "SELECT COUNT(1) FROM volume_attachments"
+            ).fetchone()
+            if existing and int(existing[0]) > 0:
+                return
+        except Exception:
+            return
+        for row in rows:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO volume_attachments(app_name, volume_name, node_id, retention, created_at)
+                    VALUES(?,?,?,?,?)
+                    ON CONFLICT(app_name, volume_name) DO NOTHING
+                    """,
+                    (row[0], row[1], row[2], row[3], row[4]),
+                )
+            except Exception:
+                continue
 
     def record_snapshot(
         self,
@@ -1400,17 +1470,17 @@ class SQLiteStateStore:
             status = NodeStatus(node_id=row[0], status=row[11], seen_at=seen_at)
         return node, status
 
-    # --- Storage bindings ----------------------------------------------
+    # --- Volume attachments --------------------------------------------
 
-    def upsert_storage_binding(
+    def upsert_volume_attachment(
         self, app_name: str, volume_name: str, node_id: str, retention: str | None = None
     ) -> None:
-        """Record that a persistent volume resides on a specific node."""
+        """Record that a volume is attached to a specific node."""
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO storage_bindings(app_name, volume_name, node_id, retention, created_at)
+                INSERT INTO volume_attachments(app_name, volume_name, node_id, retention, created_at)
                 VALUES(?,?,?,?,?)
                 ON CONFLICT(app_name, volume_name) DO UPDATE SET
                     node_id=excluded.node_id,
@@ -1421,26 +1491,37 @@ class SQLiteStateStore:
             )
             conn.commit()
 
-    def list_storage_bindings(self, app_name: str) -> list[StorageBinding]:
-        """Return recorded bindings for an app's persistent volumes."""
+    def list_volume_attachments(self, app_name: str) -> list[VolumeAttachment]:
+        """Return recorded volume attachments for an app."""
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT app_name, volume_name, node_id, retention, created_at
-                FROM storage_bindings
+                FROM volume_attachments
                 WHERE app_name = ?
                 ORDER BY volume_name
                 """,
                 (app_name,),
             ).fetchall()
-        out: list[StorageBinding] = []
+            # Back-compat: if no attachments are present, consult storage_bindings.
+            if not rows:
+                rows = conn.execute(
+                    """
+                    SELECT app_name, volume_name, node_id, retention, created_at
+                    FROM storage_bindings
+                    WHERE app_name = ?
+                    ORDER BY volume_name
+                    """,
+                    (app_name,),
+                ).fetchall()
+        out: list[VolumeAttachment] = []
         for row in rows:
             try:
                 created = datetime.fromisoformat(row[4])
             except Exception:
                 created = datetime.fromtimestamp(0, tz=timezone.utc)
             out.append(
-                StorageBinding(
+                VolumeAttachment(
                     app_name=row[0],
                     volume_name=row[1],
                     node_id=row[2],
@@ -1450,11 +1531,38 @@ class SQLiteStateStore:
             )
         return out
 
+    def delete_volume_attachments(self, app_name: str) -> None:
+        """Remove all volume attachments for an app (e.g., on delete)."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM volume_attachments WHERE app_name = ?", (app_name,))
+            conn.commit()
+
+    # --- Storage bindings (legacy) ------------------------------------
+
+    def upsert_storage_binding(
+        self, app_name: str, volume_name: str, node_id: str, retention: str | None = None
+    ) -> None:
+        """Record that a persistent volume resides on a specific node."""
+        self.upsert_volume_attachment(app_name, volume_name, node_id, retention)
+
+    def list_storage_bindings(self, app_name: str) -> list[StorageBinding]:
+        """Return recorded bindings for an app's persistent volumes."""
+        out: list[StorageBinding] = []
+        for att in self.list_volume_attachments(app_name):
+            out.append(
+                StorageBinding(
+                    app_name=att.app_name,
+                    volume_name=att.volume_name,
+                    node_id=att.node_id,
+                    retention=att.retention,
+                    created_at=att.created_at,
+                )
+            )
+        return out
+
     def delete_storage_bindings(self, app_name: str) -> None:
         """Remove all bindings for an app (e.g., on delete)."""
-        with self._connect() as conn:
-            conn.execute("DELETE FROM storage_bindings WHERE app_name = ?", (app_name,))
-            conn.commit()
+        self.delete_volume_attachments(app_name)
 
     # --- Admin / maintenance helpers ---
     def delete_app_state(self, app_name: str, *, purge_history: bool = False) -> None:
@@ -1466,6 +1574,7 @@ class SQLiteStateStore:
             conn.execute("DELETE FROM replica_status WHERE app_name = ?", (app_name,))
             conn.execute("DELETE FROM app_status WHERE app_name = ?", (app_name,))
             conn.execute("DELETE FROM storage_bindings WHERE app_name = ?", (app_name,))
+            conn.execute("DELETE FROM volume_attachments WHERE app_name = ?", (app_name,))
             if purge_history:
                 conn.execute("DELETE FROM app_events WHERE app_name = ?", (app_name,))
                 conn.execute("DELETE FROM app_revisions WHERE app_name = ?", (app_name,))

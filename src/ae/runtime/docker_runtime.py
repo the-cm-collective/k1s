@@ -408,8 +408,9 @@ class DockerRuntime(RuntimeAdapter):
         if getattr(manifest.spec, "storage", None):
             self.ensure_storage_volumes(app_name, [s.model_dump() for s in manifest.spec.storage])
             for s in manifest.spec.storage:
+                mode = "ro" if getattr(s, "read_only", False) else "rw"
                 vol_name = self._storage_volume_name(app_name, s.name)
-                volumes[vol_name] = {"bind": s.mount_path, "mode": "rw"}
+                volumes[vol_name] = {"bind": s.mount_path, "mode": mode}
 
         try:
             run_fn = self._client.containers.run
@@ -1108,8 +1109,9 @@ class DockerRuntime(RuntimeAdapter):
                     app_name, [s.model_dump() for s in manifest.spec.storage]
                 )
                 for s in manifest.spec.storage:
+                    mode = "ro" if getattr(s, "read_only", False) else "rw"
                     vol_name = self._storage_volume_name(app_name, s.name)
-                    volumes[vol_name] = {"bind": str(s.mount_path), "mode": "rw"}
+                    volumes[vol_name] = {"bind": str(s.mount_path), "mode": mode}
         except Exception:
             pass
 
