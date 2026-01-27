@@ -199,6 +199,49 @@ def manifest_from_k8s_workload(
         if isinstance(item, dict) and "name" in item and "value" in item:
             env.append({"name": str(item["name"]), "value": str(item.get("value") or "")})
     working_dir = c0.get("workingDir")
+    pvc_mounts: list[dict[str, Any]] = []
+    try:
+        volume_claims: dict[str, tuple[str, bool]] = {}
+        for vol in tpl.get("volumes") or []:
+            if not isinstance(vol, dict):
+                continue
+            vname = vol.get("name")
+            pvc = vol.get("persistentVolumeClaim") or {}
+            if not isinstance(pvc, dict):
+                continue
+            claim = pvc.get("claimName")
+            if vname and claim:
+                volume_claims[str(vname)] = (str(claim), bool(pvc.get("readOnly", False)))
+        if volume_claims:
+            seen: set[tuple[str, str, bool]] = set()
+            for container in containers or []:
+                if not isinstance(container, dict):
+                    continue
+                for vm in container.get("volumeMounts") or []:
+                    if not isinstance(vm, dict):
+                        continue
+                    vname = vm.get("name")
+                    entry = volume_claims.get(str(vname)) if vname else None
+                    if not entry:
+                        continue
+                    claim, vol_read_only = entry
+                    mount_path = vm.get("mountPath")
+                    if not mount_path:
+                        continue
+                    read_only = bool(vm.get("readOnly", False)) or bool(vol_read_only)
+                    key = (str(claim), str(mount_path), bool(read_only))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    pvc_mounts.append(
+                        {
+                            "claimName": str(claim),
+                            "mountPath": str(mount_path),
+                            "readOnly": read_only,
+                        }
+                    )
+    except Exception:  # noqa: S112 - best-effort PVC extraction
+        pvc_mounts = []
     resources: dict[str, Any] | None = None
     if isinstance(c0.get("resources"), dict):
         res = c0.get("resources") or {}
@@ -268,6 +311,7 @@ def manifest_from_k8s_workload(
         resources=resources,
         security=security,
         health=health,
+        pvc_mounts=pvc_mounts,
     )
     if service_spec is not None:
         app_spec = app_spec.model_copy(update={"service": service_spec})

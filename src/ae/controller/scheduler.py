@@ -68,9 +68,9 @@ class Scheduler:
         if has_storage:
             bound_node_id = None
             try:
-                bindings = self._store.list_storage_bindings(app_name)
-                if bindings:
-                    bound_node_id = bindings[0].node_id
+                attachments = self._store.list_volume_attachments(app_name)
+                if attachments:
+                    bound_node_id = attachments[0].node_id
             except Exception:
                 bound_node_id = None
 

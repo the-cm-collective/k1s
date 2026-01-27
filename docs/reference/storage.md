@@ -37,6 +37,34 @@ ae delete echo --purge
 - HostPath binds under `spec.volumes` still work for simple dev paths.
 - Future: `size` is reserved for advisory/validation.
 
+### NetFS StorageClass config
+
+Provide StorageClass definitions via `AE_STORAGE_PROVISIONERS` (YAML file). The
+shim will seed these into its object store on startup.
+
+Example (see `docs/reference/storage-classes.yaml`):
+
+```
+export AE_STORAGE_PROVISIONERS=docs/reference/storage-classes.yaml
+```
+
+### NetFS PVC mounts (apishim)
+
+When running the node agent with `AE_ENABLE_NETFS=1`, PVC mounts from apishim
+workloads are resolved into hostPath mounts under `AE_NETFS_ROOT`. The agent
+currently reads PVC/PV bindings from the apishim store (sqlite/postgres) to
+locate the bound PV.
+
+```
+export AE_ENABLE_NETFS=1
+export AE_APISHIM_DB=state/apishim.db
+```
+
+NetFS currently supports NFS PVs. The node must have `mount`/`umount` plus an
+NFS helper (`mount.nfs` or `mount.nfs4`). If these tools or the NFS mount fail,
+the agent records a PVC warning event; use `kubectl get events -n <ns>` to inspect
+`NfsPrereqFailed`, `MountFailed`, or `MountConflict` reasons.
+
 
 ### Retention & Purge
 
@@ -53,4 +81,13 @@ spec:
     - name: data
       mountPath: /var/lib/echo
       retention: Delete
+```
+
+### NetFS smoke test
+
+If apishim + controller + node agent are running, you can exercise static PV/PVC
+binding and a PVC-backed Deployment:
+
+```
+scripts/netfs_smoke.sh
 ```
