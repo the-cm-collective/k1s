@@ -351,11 +351,13 @@ Exit criteria:
 - Volume health reporting (controller events)
   - Emit `VolumeHealthy` / `VolumeUnhealthy` events when hostPath-backed PVs
     appear or disappear under the storage root.
+  - Expose PV health counters via `/metrics` and `ae metrics` (healthy/unhealthy).
 - CSIStorageCapacity (basic capacity reporting)
   - Emit `CSIStorageCapacity` objects per storage class using hostPath disk free
     space and PV node affinity where available.
 - RWOP + topology
   - `ReadWriteOncePod` access mode limits replicas to 1 in scheduler warnings.
+  - NetFS manager blocks RWOP mounts on multiple nodes and emits conflict events.
   - Scheduler filters eligible nodes by `topologyKeys` / `allowedTopologies`.
 
 ---
