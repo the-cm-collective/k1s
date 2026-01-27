@@ -12,8 +12,10 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import socket
 import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -1613,7 +1615,9 @@ class ShimHandler(BaseHTTPRequestHandler):
         except Exception:
             return None
         try:
-            expected = hmac.new(secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
+            expected = hmac.new(
+                secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256
+            ).digest()
             if not hmac.compare_digest(sig_raw, expected):
                 return None
         except Exception:
@@ -1737,6 +1741,91 @@ class ShimHandler(BaseHTTPRequestHandler):
         except Exception:
             max_bytes = 0
         return max_bytes if max_bytes > 0 else None
+
+    def _cri_pf_enabled(self) -> bool:
+        raw = str(os.getenv("AE_APISHIM_CRI_PORTFORWARD", "")).strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    def _cri_pf_force(self) -> bool:
+        raw = str(os.getenv("AE_APISHIM_CRI_PORTFORWARD_FORCE", "")).strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _alloc_local_port() -> int:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+    def _wait_local_port(self, port: int, proc: subprocess.Popen, timeout: float = 3.0) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                return False
+            try:
+                with socket.create_connection(("127.0.0.1", int(port)), timeout=0.2):
+                    return True
+            except Exception:
+                time.sleep(0.05)
+        return False
+
+    def _start_cri_port_forward(
+        self, pod_id: str, ports: list[int]
+    ) -> tuple[dict[int, int], list[subprocess.Popen]]:
+        crictl = os.getenv("CRICTL_BIN", "crictl")
+        if shutil.which(crictl) is None:
+            LOGGER.warning("cri port-forward requested but crictl not found")
+            return {}, []
+        endpoint = os.getenv("AE_CRI_ENDPOINT", "unix:///run/containerd/containerd.sock")
+        port_map: dict[int, int] = {}
+        procs: list[subprocess.Popen] = []
+        entries: list[tuple[int, int, subprocess.Popen]] = []
+        for port in ports:
+            local_port = self._alloc_local_port()
+            args = [
+                crictl,
+                "--runtime-endpoint",
+                endpoint,
+                "port-forward",
+                str(pod_id),
+                f"{local_port}:{int(port)}",
+            ]
+            proc = subprocess.Popen(  # noqa: S603 - fixed args, no user input
+                args,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            port_map[int(port)] = int(local_port)
+            procs.append(proc)
+            entries.append((int(port), int(local_port), proc))
+        for rport, lport, proc in entries:
+            if not self._wait_local_port(lport, proc):
+                LOGGER.warning("cri port-forward failed to bind local port for %s", rport)
+                self._stop_cri_port_forward(procs)
+                return {}, []
+        return port_map, procs
+
+    @staticmethod
+    def _stop_cri_port_forward(procs: list[subprocess.Popen]) -> None:
+        for proc in procs:
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+            except Exception:
+                pass
+        for proc in procs:
+            try:
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
 
     @staticmethod
     def _app_from_labels(labels: dict[str, Any]) -> str | None:
@@ -1866,7 +1955,9 @@ class ShimHandler(BaseHTTPRequestHandler):
     ) -> bool:
         raw = os.getenv(env_name, "").strip()
         env_scopes = [p.strip() for p in raw.split(",") if p.strip()] if raw else []
-        principal_scopes = token_scopes if token_scopes is not None else self._parse_principal().scopes
+        principal_scopes = (
+            token_scopes if token_scopes is not None else self._parse_principal().scopes
+        )
         scopes: list[list[str]] = []
         if env_scopes:
             scopes.append(env_scopes)
@@ -1955,9 +2046,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     message="pod resourceVersion mismatch",
                 )
                 return None
-        elif self.pod_watch_check and not self._pod_watch_allows(
-            namespace, pod_name, expected_uid
-        ):
+        elif self.pod_watch_check and not self._pod_watch_allows(namespace, pod_name, expected_uid):
             self._json_status(
                 HTTPStatus.CONFLICT,
                 reason="Conflict",
@@ -2023,7 +2112,10 @@ class ShimHandler(BaseHTTPRequestHandler):
             ok = role_name in {"admin", "portforward"}
         elif role in {"rbac-read", "rbac-write"}:
             ok = role_name in {"admin", "read"}
-        if ok or (rbac_relaxed and role in {"read", "write", "exec", "portforward", "rbac-read", "rbac-write"}):
+        if ok or (
+            rbac_relaxed
+            and role in {"read", "write", "exec", "portforward", "rbac-read", "rbac-write"}
+        ):
             return True
         if self.allow_anonymous:
             return True
@@ -3093,7 +3185,9 @@ class ShimHandler(BaseHTTPRequestHandler):
         want_stdout: bool,
         want_stderr: bool,
     ) -> None:
-        stream_debug = SPDY_DEBUG or str(os.getenv("AE_APISHIM_SPDY_DEBUG", "")).strip().lower() in {
+        stream_debug = SPDY_DEBUG or str(
+            os.getenv("AE_APISHIM_SPDY_DEBUG", "")
+        ).strip().lower() in {
             "1",
             "true",
             "yes",
@@ -3379,9 +3473,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 _spdy_debug_line(msg)
             status_obj = _exec_status_obj(exit_code)
             try:
-                _send_channel(
-                    3, json.dumps(status_obj, separators=(",", ":")).encode("utf-8")
-                )
+                _send_channel(3, json.dumps(status_obj, separators=(",", ":")).encode("utf-8"))
             except Exception:
                 pass
             try:
@@ -3764,9 +3856,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                             headers = parse_syn_stream(payload)
                             stype = headers.get("streamtype", "").strip().lower()
                             if SPDY_DEBUG:
-                                LOGGER.warning(
-                                    "SPDY SYN_STREAM sid=%s headers=%s", sid, headers
-                                )
+                                LOGGER.warning("SPDY SYN_STREAM sid=%s headers=%s", sid, headers)
                             if stype not in {"stdin", "stdout", "stderr", "error", "resize"}:
                                 if fallback_idx < len(fallback_streams):
                                     stype = fallback_streams[fallback_idx]
@@ -4249,9 +4339,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         q = parse_qs(parsed.query)
         upgrade = (self.headers.get("Upgrade") or "").lower()
         is_exec_path = re.match(r"^/api/v1/namespaces/[^/]+/pods/[^/]+/exec$", path)
-        is_pf_path = re.match(
-            r"^/api/v1/namespaces/[^/]+/(pods|services)/[^/]+/portforward$", path
-        )
+        is_pf_path = re.match(r"^/api/v1/namespaces/[^/]+/(pods|services)/[^/]+/portforward$", path)
         # Allow unauthenticated discovery/OpenAPI for kubectl validation
         if path not in {"/openapi/v2", "/openapi/v3", "/swagger.json", "/api", "/apis", "/version"}:
             if is_exec_path and upgrade:
@@ -5413,6 +5501,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                         ports=port_label,
                     )
             else:
+                if cri_pf_procs:
+                    self._stop_cri_port_forward(cri_pf_procs)
                 self._json_status(
                     HTTPStatus.UPGRADE_REQUIRED,
                     reason="UpgradeRequired",
@@ -5440,29 +5530,33 @@ class ShimHandler(BaseHTTPRequestHandler):
             if container_info is None:
                 return
             upgrade = (self.headers.get("Upgrade") or "").lower()
-            target_ports: list[int] = []
+            requested_ports: list[int] = []
             for p in ports_q:
                 try:
-                    target_ports.append(int(p))
+                    requested_ports.append(int(p))
                 except Exception:
                     pass
+            target_ports = list(requested_ports)
+            pod_id = None
+            pod_ip = None
+            host_ports: list[int] = []
+            port_map: dict[int, int] = {}
             if container_info:
                 default_host = "127.0.0.1"
                 pod_ip = container_info.get("pod_ip")
+                pod_id = container_info.get("uid") or container_info.get("id")
                 host_ip = (
                     container_info.get("host_ip") or container_info.get("hostIP") or default_host
                 )
                 raw_host_ports = (
                     container_info.get("host_ports") or container_info.get("hostPorts") or []
                 )
-                host_ports: list[int] = []
                 for hp in raw_host_ports:
                     try:
                         host_ports.append(int(hp))
                     except Exception:
                         continue
                 raw_port_map = container_info.get("port_map") or container_info.get("portMap") or {}
-                port_map: dict[int, int] = {}
                 if isinstance(raw_port_map, dict):
                     for cport, hport in raw_port_map.items():
                         try:
@@ -5490,6 +5584,23 @@ class ShimHandler(BaseHTTPRequestHandler):
                             target_ports = [sorted(port_map.values())[0]]
             else:
                 target_host = "127.0.0.1"
+            pf_port_map: dict[int, int] | None = None
+            cri_pf_procs: list[subprocess.Popen] = []
+            use_cri_pf = (
+                isinstance(self.server.runtime, CRIRuntime)  # type: ignore[attr-defined]
+                and pod_id
+                and (
+                    self._cri_pf_force()
+                    or (self._cri_pf_enabled() and not pod_ip and not host_ports)
+                )
+            )
+            if use_cri_pf and requested_ports:
+                pf_port_map, cri_pf_procs = self._start_cri_port_forward(
+                    str(pod_id), requested_ports
+                )
+                if pf_port_map:
+                    target_host = "127.0.0.1"
+                    target_ports = list(requested_ports)
             if isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                 target_host = os.getenv("AE_STUB_BACKEND_HOST", target_host)
                 try:
@@ -5503,7 +5614,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     message="ports query param required",
                 )
                 return
-            port_label = ",".join(str(p) for p in target_ports)
+            port_label = ",".join(str(p) for p in (requested_ports or target_ports))
             if upgrade == "websocket":
                 self._audit(
                     "portforward.start",
@@ -5513,8 +5624,13 @@ class ShimHandler(BaseHTTPRequestHandler):
                     protocol="websocket",
                 )
                 try:
-                    self._handle_port_forward_ws(target_host, target_ports[0])
+                    ws_port = target_ports[0]
+                    if pf_port_map:
+                        ws_port = pf_port_map.get(target_ports[0], ws_port)
+                    self._handle_port_forward_ws(target_host, ws_port)
                 finally:
+                    if cri_pf_procs:
+                        self._stop_cri_port_forward(cri_pf_procs)
                     self._audit(
                         "portforward.end",
                         namespace=ns,
@@ -5530,8 +5646,10 @@ class ShimHandler(BaseHTTPRequestHandler):
                     protocol="spdy",
                 )
                 try:
-                    self._handle_port_forward_spdy(target_host, target_ports)
+                    self._handle_port_forward_spdy(target_host, target_ports, port_map=pf_port_map)
                 finally:
+                    if cri_pf_procs:
+                        self._stop_cri_port_forward(cri_pf_procs)
                     self._audit(
                         "portforward.end",
                         namespace=ns,
@@ -5539,6 +5657,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                         ports=port_label,
                     )
             else:
+                if cri_pf_procs:
+                    self._stop_cri_port_forward(cri_pf_procs)
                 self._json_status(
                     HTTPStatus.UPGRADE_REQUIRED,
                     reason="UpgradeRequired",
@@ -6487,9 +6607,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         self.path = path
         upgrade = (self.headers.get("Upgrade") or "").lower()
         is_exec_path = re.match(r"^/api/v1/namespaces/[^/]+/pods/[^/]+/exec$", path)
-        is_pf_path = re.match(
-            r"^/api/v1/namespaces/[^/]+/(pods|services)/[^/]+/portforward$", path
-        )
+        is_pf_path = re.match(r"^/api/v1/namespaces/[^/]+/(pods|services)/[^/]+/portforward$", path)
         # SubjectAccessReview should be callable by read tokens; other POSTs require write/admin.
         if path.startswith("/apis/authorization.k8s.io/"):
             if not self._authz(role="read"):
@@ -6742,12 +6860,13 @@ class ShimHandler(BaseHTTPRequestHandler):
             )
             if container_info is None:
                 return
-            target_ports: list[int] = []
+            requested_ports: list[int] = []
             for p in ports_q:
                 try:
-                    target_ports.append(int(p))
+                    requested_ports.append(int(p))
                 except Exception:
                     pass
+            target_ports = list(requested_ports)
             if not target_ports:
                 # Allow stream headers to select the port for pod port-forward
                 target_ports = [0]
@@ -6765,20 +6884,43 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return
             target_host = "127.0.0.1"
             port_map: dict[int, int] = {}
+            pod_id = None
+            pod_ip = None
             use_host_ports = False
             if container_info:
                 host_ip = container_info.get("host_ip") or container_info.get("hostIP")
-                target_host = container_info.get("pod_ip") or host_ip or target_host
-                if not container_info.get("pod_ip"):
+                pod_ip = container_info.get("pod_ip")
+                pod_id = container_info.get("uid") or container_info.get("id")
+                target_host = pod_ip or host_ip or target_host
+                if not pod_ip:
                     port_map = container_info.get("port_map") or {}
                     use_host_ports = bool(port_map)
                 if target_host in ("0.0.0.0", "::", ""):
                     target_host = "127.0.0.1"
             elif isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                 target_host = os.getenv("AE_STUB_BACKEND_HOST", target_host)
+            pf_port_map: dict[int, int] | None = None
+            cri_pf_procs: list[subprocess.Popen] = []
+            use_cri_pf = (
+                isinstance(self.server.runtime, CRIRuntime)  # type: ignore[attr-defined]
+                and pod_id
+                and (self._cri_pf_force() or (self._cri_pf_enabled() and not pod_ip))
+            )
+            if use_cri_pf and requested_ports:
+                pf_port_map, cri_pf_procs = self._start_cri_port_forward(
+                    str(pod_id), requested_ports
+                )
+                if pf_port_map:
+                    target_host = "127.0.0.1"
+                    target_ports = list(requested_ports)
+                    use_host_ports = False
             upgrade = (self.headers.get("Upgrade") or "").lower()
             if upgrade.startswith("spdy"):
-                pf_ports = target_ports if not use_host_ports else list(port_map.keys()) or target_ports
+                pf_ports = (
+                    target_ports if not use_host_ports else list(port_map.keys()) or target_ports
+                )
+                if pf_port_map:
+                    pf_ports = list(requested_ports or target_ports)
                 port_label = ",".join(str(p) for p in pf_ports)
                 self._audit(
                     "portforward.start",
@@ -6791,9 +6933,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                     self._handle_port_forward_spdy(
                         target_host,
                         pf_ports,
-                        port_map=port_map if use_host_ports else None,
+                        port_map=pf_port_map or (port_map if use_host_ports else None),
                     )
                 finally:
+                    if cri_pf_procs:
+                        self._stop_cri_port_forward(cri_pf_procs)
                     self._audit(
                         "portforward.end",
                         namespace=ns,
@@ -6801,7 +6945,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                         ports=port_label,
                     )
             elif upgrade == "websocket":
-                port_label = ",".join(str(p) for p in target_ports)
+                port_label = ",".join(str(p) for p in (requested_ports or target_ports))
                 self._audit(
                     "portforward.start",
                     namespace=ns,
@@ -6810,8 +6954,13 @@ class ShimHandler(BaseHTTPRequestHandler):
                     protocol="websocket",
                 )
                 try:
-                    self._handle_port_forward_ws(target_host, target_ports[0])
+                    ws_port = target_ports[0]
+                    if pf_port_map:
+                        ws_port = pf_port_map.get(target_ports[0], ws_port)
+                    self._handle_port_forward_ws(target_host, ws_port)
                 finally:
+                    if cri_pf_procs:
+                        self._stop_cri_port_forward(cri_pf_procs)
                     self._audit(
                         "portforward.end",
                         namespace=ns,
@@ -7855,7 +8004,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                 status=merged.get("status") or {},
             )
             if patch_debug and plural not in {"configmaps", "secrets"}:
-                LOGGER.info("patched %s/%s spec.replicas=%s", plural, name_eff, (spec_or_data or {}).get("replicas"))
+                LOGGER.info(
+                    "patched %s/%s spec.replicas=%s",
+                    plural,
+                    name_eff,
+                    (spec_or_data or {}).get("replicas"),
+                )
             self._ok(_to_obj(updated))
             return
         orig_path = self.path
@@ -7909,7 +8063,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                         if merged is None:
                             return True
                         md = merged.get("metadata") or {}
-                        patch_paths = _extract_field_paths(patch) if isinstance(patch, dict) else set()
+                        patch_paths = (
+                            _extract_field_paths(patch) if isinstance(patch, dict) else set()
+                        )
                         if not patch_paths:
                             patch_paths = {"*"}
                         md = _update_managed_fields(
@@ -8032,7 +8188,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )  # type: ignore[attr-defined]
                 if patch_debug and res in {"deployments", "statefulsets", "daemonsets"}:
                     spec_out = _spec_payload(res, merged)
-                    LOGGER.info("patched %s/%s spec.replicas=%s", res, name_eff, spec_out.get("replicas"))
+                    LOGGER.info(
+                        "patched %s/%s spec.replicas=%s", res, name_eff, spec_out.get("replicas")
+                    )
                 self._ok(
                     transform_map.get(
                         (group, version, res), _to_generic(group, version, kind, res)
@@ -8180,7 +8338,9 @@ class ShimHandler(BaseHTTPRequestHandler):
             )  # type: ignore[attr-defined]
             if patch_debug and res in {"deployments", "statefulsets", "daemonsets"}:
                 spec_out = _spec_payload(res, merged)
-                LOGGER.info("patched %s/%s spec.replicas=%s", res, name_eff, spec_out.get("replicas"))
+                LOGGER.info(
+                    "patched %s/%s spec.replicas=%s", res, name_eff, spec_out.get("replicas")
+                )
             self._ok(
                 transform_map.get((group, version, res), _to_generic(group, version, kind, res))(
                     updated
@@ -9881,6 +10041,7 @@ def _pod_obj(container: dict, rv: int, node_name: str | None) -> dict[str, Any]:
 
 class ShimServer(ThreadingHTTPServer):
     daemon_threads = True
+
     def __init__(
         self, server_address: tuple[str, int], token: str | None, allow_anonymous: bool = False
     ) -> None:
