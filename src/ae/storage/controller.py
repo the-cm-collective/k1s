@@ -1521,6 +1521,14 @@ class StorageController:
             )
 
     def _provision_nfs(self, pvc, sc, *, snapshot_info: dict[str, Any] | None = None):
+        volume_mode = (pvc.spec or {}).get("volumeMode")
+        if str(volume_mode or "").lower() == "block":
+            self._record_pvc_event(
+                pvc,
+                "VolumeModeUnsupported",
+                "block volumeMode is not supported for NFS provisioner",
+            )
+            return None
         uid = self._pvc_uid(pvc)
         if not uid:
             self._record_pvc_event(pvc, "ProvisioningFailed", "PVC uid missing")
@@ -1623,6 +1631,14 @@ class StorageController:
         sc_spec = sc.spec or {}
         binding_mode = str(sc_spec.get("volumeBindingMode") or "")
         if binding_mode == WAIT_FOR_FIRST_CONSUMER and not selected_node:
+            return None
+        volume_mode = (pvc.spec or {}).get("volumeMode")
+        if str(volume_mode or "").lower() == "block":
+            self._record_pvc_event(
+                pvc,
+                "VolumeModeUnsupported",
+                "block volumeMode is not supported for local-path provisioner",
+            )
             return None
         uid = self._pvc_uid(pvc)
         if not uid:

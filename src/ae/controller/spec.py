@@ -298,12 +298,23 @@ class VolumeSpec(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class VolumeDeviceSpec(BaseModel):
+    """Raw device mapping (block volumes)."""
+
+    host_path: str = Field(alias="hostPath")
+    device_path: str = Field(alias="devicePath")
+    read_only: bool = Field(default=False, alias="readOnly")
+
+    model_config = {"populate_by_name": True}
+
+
 class PvcMountSpec(BaseModel):
     """PVC-backed volume mount request (resolved via NetFS)."""
 
     claim_name: str = Field(alias="claimName")
     mount_path: str = Field(alias="mountPath")
     read_only: bool = Field(default=False, alias="readOnly")
+    device_path: Optional[str] = Field(default=None, alias="devicePath")
     namespace: Optional[str] = None
 
     model_config = {"populate_by_name": True}
@@ -475,6 +486,7 @@ class AppSpec(BaseModel):
     security: Optional[SecuritySpec] = None
     termination_grace_period_seconds: int = Field(default=10, alias="terminationGracePeriodSeconds")
     volumes: List[VolumeSpec] = Field(default_factory=list)
+    volume_devices: List[VolumeDeviceSpec] = Field(default_factory=list, alias="volumeDevices")
     pvc_mounts: List[PvcMountSpec] = Field(default_factory=list, alias="pvcMounts")
     storage: List[StorageSpec] = Field(default_factory=list)
     empty_dirs: List[EmptyDirSpec] = Field(default_factory=list, alias="emptyDirs")

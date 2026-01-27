@@ -258,6 +258,7 @@ Exit criteria:
 ### Phase 3 -- Block volumes (attach + mount) (7-14 days)
 
 - Add attach/detach workflow for CSI-backed block volumes.
+- Allow local runtime device mappings for block PVs via `pvcMounts[].devicePath` (hostPath-backed).
 - Enforce single-writer semantics for RWO volumes.
 - Add VolumeAttachment objects and node publish semantics.
 
@@ -280,7 +281,7 @@ Exit criteria:
 - Keep `spec.storage` (named volumes) as default until Phase 2 completes.
 - Enable NetFS only on nodes labeled `storage=netfs` (or equivalent).
 - Gate StorageClass defaults per environment (local vs NFS).
-- Document known limitations (no Block mode, snapshots are hostPath-backed only).
+- Document known limitations (block mode requires hostPath devices; snapshots are hostPath-backed only).
 
 ---
 
@@ -303,7 +304,7 @@ Exit criteria:
   - Enforce `accessModes` includes `ReadWriteMany` for RWX workloads.
 - Implement node mount flow
   - Use `mountOptions` from StorageClass and PV (`spec.mountOptions`).
-  - Match K8s `volumeMode=Filesystem` semantics (no block devices yet).
+  - Match K8s `volumeMode=Filesystem` semantics (block mode is opt-in via devicePath).
 - Add NFS StorageClass default
   - `provisioner: k1s.io/nfs`, `volumeBindingMode: Immediate`, `reclaimPolicy: Retain`.
   - Set default class annotation per K8s conventions.
@@ -441,7 +442,7 @@ Optional (SMB / CSI):
 
 ## Future NetFS features to consider (post-MVP)
 
-- Block volume mode and raw device mapping.
+- Block volume mode for dynamic provisioners and CSI-backed devices.
 - VolumeSnapshots and VolumeSnapshotClass support.
 - Volume cloning via `dataSourceRef`.
 - Volume expansion with filesystem resize in containers.
