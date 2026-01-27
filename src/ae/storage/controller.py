@@ -35,6 +35,7 @@ PVC_RESOURCE = "persistentvolumeclaims"
 PV_RESOURCE = "persistentvolumes"
 VA_RESOURCE = "volumeattachments"
 EVENT_RESOURCE = "events"
+CSC_RESOURCE = "csistoragecapacities"
 
 SNAP_GROUP = "snapshot.storage.k8s.io"
 SNAP_VERSION = "v1"
@@ -71,6 +72,7 @@ class StorageController:
         self._default_class = self._resolve_default(self._storage_classes)
         self._default_snapshot_class: str | None = None
         self._volume_health: dict[str, bool] = {}
+        self._capacity_namespace = os.getenv("AE_NETFS_CAPACITY_NAMESPACE", "default")
         self._stop = threading.Event()
         self._pvc_thread: threading.Thread | None = None
         self._pv_thread: threading.Thread | None = None
@@ -113,6 +115,7 @@ class StorageController:
         self._reconcile_all()
         self._reconcile_snapshots()
         self._check_volume_health()
+        self._reconcile_storage_capacity()
 
     def _resolve_default(
         self, storage_classes: list[StorageClassConfig]
@@ -261,6 +264,186 @@ class StorageController:
                 self._record_pvc_event(pvc, "VolumeHealthy", f"backing path is present: {path}")
             else:
                 self._record_pvc_event(pvc, "VolumeUnhealthy", f"backing path missing: {path}")
+
+    def _reconcile_storage_capacity(self) -> None:
+        try:
+            storage_classes = self._store.list_all(SC_GROUP, SC_VERSION, SC_RESOURCE)
+        except Exception:
+            storage_classes = []
+        try:
+            pvs = self._store.list_all(CORE_GROUP, CORE_VERSION, PV_RESOURCE)
+        except Exception:
+            pvs = []
+
+        targets = self._capacity_targets(storage_classes, pvs)
+        if not targets:
+            return
+
+        for target in targets:
+            sc_name = target["storage_class"]
+            host_root = target["host_root"]
+            topology = target.get("node_topology")
+            capacity = self._path_capacity(host_root)
+            if capacity is None:
+                continue
+            name = self._capacity_name(sc_name, topology, host_root)
+            spec: dict[str, Any] = {
+                "storageClassName": sc_name,
+                "capacity": str(capacity),
+            }
+            if topology:
+                spec["nodeTopology"] = topology
+            meta = {"name": name, "namespace": self._capacity_namespace}
+            existing = self._store.get(
+                SC_GROUP, SC_VERSION, CSC_RESOURCE, self._capacity_namespace, name
+            )
+            if existing is not None and existing.spec == spec:
+                continue
+            self._store.upsert(
+                SC_GROUP,
+                SC_VERSION,
+                CSC_RESOURCE,
+                self._capacity_namespace,
+                name,
+                meta,
+                spec,
+                status=existing.status if existing is not None else {},
+            )
+
+    def _capacity_targets(self, storage_classes: list[Any], pvs: list[Any]) -> list[dict[str, Any]]:
+        targets: dict[str, dict[str, Any]] = {}
+
+        for pv in pvs:
+            sc_name = self._pv_storage_class(pv)
+            if not sc_name:
+                continue
+            backing = self._pv_host_backing(pv)
+            if backing is None:
+                continue
+            host_root, _host_path = backing
+            topology = self._pv_node_topology(pv)
+            key = self._capacity_key(sc_name, topology, host_root)
+            targets[key] = {
+                "storage_class": sc_name,
+                "host_root": host_root,
+                "node_topology": topology,
+            }
+
+        for sc in storage_classes:
+            spec = sc.spec or {}
+            if not isinstance(spec, dict):
+                continue
+            provisioner = str(spec.get("provisioner") or "")
+            if provisioner not in {NFS_PROVISIONER, LOCAL_PATH_PROVISIONER}:
+                continue
+            host_root = self._storage_class_host_root(spec, provisioner)
+            if host_root is None:
+                continue
+            topology = self._storage_class_topology(spec)
+            key = self._capacity_key(sc.name, topology, host_root)
+            targets.setdefault(
+                key,
+                {
+                    "storage_class": sc.name,
+                    "host_root": host_root,
+                    "node_topology": topology,
+                },
+            )
+
+        return list(targets.values())
+
+    def _storage_class_host_root(
+        self, spec: dict[str, Any], provisioner: str
+    ) -> Path | None:
+        params = spec.get("parameters") if isinstance(spec, dict) else {}
+        params = params if isinstance(params, dict) else {}
+        host_root_raw = params.get("hostPath")
+        if host_root_raw:
+            return Path(str(host_root_raw)).expanduser()
+        if provisioner == LOCAL_PATH_PROVISIONER:
+            return Path(os.getenv("AE_STORAGE_ROOT", str(DEFAULT_LOCAL_ROOT))).expanduser()
+        return None
+
+    @staticmethod
+    def _storage_class_topology(spec: dict[str, Any]) -> dict[str, Any] | None:
+        allowed = spec.get("allowedTopologies")
+        if isinstance(allowed, list) and allowed:
+            if len(allowed) == 1 and isinstance(allowed[0], dict):
+                exprs = allowed[0].get("matchLabelExpressions")
+                if isinstance(exprs, list) and exprs:
+                    return {"matchExpressions": list(exprs)}
+        topo_keys = spec.get("topologyKeys")
+        if isinstance(topo_keys, list) and topo_keys:
+            exprs = [{"key": str(k), "operator": "Exists"} for k in topo_keys if k]
+            if exprs:
+                return {"matchExpressions": exprs}
+        return None
+
+    @staticmethod
+    def _pv_node_topology(pv) -> dict[str, Any] | None:
+        spec = pv.spec or {}
+        if not isinstance(spec, dict):
+            return None
+        affinity = spec.get("nodeAffinity")
+        if not isinstance(affinity, dict):
+            return None
+        required = affinity.get("required")
+        if not isinstance(required, dict):
+            return None
+        terms = required.get("nodeSelectorTerms")
+        if not isinstance(terms, list) or not terms:
+            return None
+        term = terms[0] if isinstance(terms[0], dict) else None
+        if not term:
+            return None
+        exprs = term.get("matchExpressions")
+        if not isinstance(exprs, list) or not exprs:
+            return None
+        return {"matchExpressions": list(exprs)}
+
+    @staticmethod
+    def _capacity_key(
+        sc_name: str, topology: dict[str, Any] | None, host_root: Path
+    ) -> str:
+        topo_sig = StorageController._topology_signature(topology)
+        return f"{sc_name}:{host_root}:{topo_sig}"
+
+    @staticmethod
+    def _topology_signature(topology: dict[str, Any] | None) -> str:
+        if not topology:
+            return ""
+        exprs = topology.get("matchExpressions") if isinstance(topology, dict) else []
+        if not isinstance(exprs, list):
+            return ""
+        parts = []
+        for expr in exprs:
+            if not isinstance(expr, dict):
+                continue
+            key = str(expr.get("key") or "")
+            op = str(expr.get("operator") or "")
+            values = expr.get("values") if isinstance(expr.get("values"), list) else []
+            vals = ",".join(sorted(str(v) for v in values if v is not None))
+            parts.append(f"{key}:{op}:{vals}")
+        return "|".join(sorted(parts))
+
+    @staticmethod
+    def _capacity_name(
+        sc_name: str, topology: dict[str, Any] | None, host_root: Path
+    ) -> str:
+        topo_sig = StorageController._topology_signature(topology)
+        token = uuid.uuid5(uuid.NAMESPACE_DNS, f"{sc_name}:{host_root}:{topo_sig}").hex[:8]
+        raw = f"csc-{sc_name}-{token}"
+        return StorageController._sanitize_name(raw)
+
+    @staticmethod
+    def _path_capacity(path: Path) -> int | None:
+        try:
+            if not path.exists():
+                return None
+            usage = shutil.disk_usage(path)
+            return int(usage.free)
+        except Exception:
+            return None
 
     def _reconcile_pending(self) -> None:
         try:

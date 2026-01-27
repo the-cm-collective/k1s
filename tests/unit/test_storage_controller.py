@@ -398,6 +398,71 @@ def test_storage_controller_volume_health_events(tmp_path):
     assert "VolumeHealthy" in reasons
 
 
+def test_storage_controller_storage_capacity_topology(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    host_root = tmp_path / "local-root"
+    host_root.mkdir(parents=True, exist_ok=True)
+    sc_spec = {
+        "provisioner": "k1s.io/local-path",
+        "volumeBindingMode": "Immediate",
+        "parameters": {"hostPath": str(host_root)},
+    }
+    pv_spec = {
+        "capacity": {"storage": "1Gi"},
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "local-path",
+        "nodeAffinity": {
+            "required": {
+                "nodeSelectorTerms": [
+                    {
+                        "matchExpressions": [
+                            {
+                                "key": "kubernetes.io/hostname",
+                                "operator": "In",
+                                "values": ["node-a"],
+                            }
+                        ]
+                    }
+                ]
+            }
+        },
+    }
+    pv_meta = {
+        "name": "pv-capacity",
+        "annotations": {
+            "k1s.io/local-host-root": str(host_root),
+            "k1s.io/local-host-path": str(host_root / "vol-1"),
+        },
+    }
+    store.upsert(
+        "storage.k8s.io",
+        "v1",
+        "storageclasses",
+        None,
+        "local-path",
+        {"name": "local-path"},
+        sc_spec,
+        status={},
+    )
+    store.upsert("", "v1", "persistentvolumes", None, "pv-capacity", pv_meta, pv_spec)
+
+    controller.reconcile_once()
+    caps = store.list_all("storage.k8s.io", "v1", "csistoragecapacities")
+    assert caps
+    cap = next((c for c in caps if (c.spec or {}).get("storageClassName") == "local-path"), None)
+    assert cap is not None
+    assert int((cap.spec or {}).get("capacity") or 0) > 0
+    topo = (cap.spec or {}).get("nodeTopology") or {}
+    exprs = topo.get("matchExpressions") if isinstance(topo, dict) else []
+    assert any(
+        isinstance(e, dict)
+        and e.get("key") == "kubernetes.io/hostname"
+        and "node-a" in (e.get("values") or [])
+        for e in (exprs or [])
+    )
+
+
 def test_storage_controller_snapshot_and_clone_nfs(tmp_path):
     store = ObjectStore(db_path=tmp_path / "apishim.db")
     controller = StorageController(store)
