@@ -39,15 +39,29 @@ class NodeVolumeManager:
         ns = getattr(manifest.metadata, "namespace", None) or self._default_ns
 
         fs_group = None
+        selinux = None
         if getattr(manifest.spec, "pod_security", None):
             fs_group = getattr(manifest.spec.pod_security, "fs_group", None)
+            selinux = {}
+            if getattr(manifest.spec.pod_security, "selinux_user", None):
+                selinux["user"] = str(manifest.spec.pod_security.selinux_user)
+            if getattr(manifest.spec.pod_security, "selinux_role", None):
+                selinux["role"] = str(manifest.spec.pod_security.selinux_role)
+            if getattr(manifest.spec.pod_security, "selinux_type", None):
+                selinux["type"] = str(manifest.spec.pod_security.selinux_type)
+            if getattr(manifest.spec.pod_security, "selinux_level", None):
+                selinux["level"] = str(manifest.spec.pod_security.selinux_level)
+            if not selinux:
+                selinux = None
 
         mounts_by_pvc: dict[PvcRef, NetFSMount] = {}
         for pm in pvc_mounts:
             pvc = self._pvc_ref(pm, namespace=ns)
             if pvc in mounts_by_pvc:
                 continue
-            mount = self._netfs.ensure_mount(pvc, node_id=node, fs_group=fs_group)
+            mount = self._netfs.ensure_mount(
+                pvc, node_id=node, fs_group=fs_group, selinux=selinux
+            )
             mounts_by_pvc[pvc] = mount
 
         volumes = list(getattr(manifest.spec, "volumes", []) or [])
