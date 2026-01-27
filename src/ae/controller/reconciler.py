@@ -327,7 +327,7 @@ class Reconciler:
             ):
                 try:
                     for s in manifest_for_runtime.spec.storage:
-                        self._state_store.upsert_storage_binding(
+                        self._state_store.upsert_volume_attachment(
                             app_name,
                             getattr(s, "name", ""),
                             placement.node.node_id,  # type: ignore[union-attr]

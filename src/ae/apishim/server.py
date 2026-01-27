@@ -1325,6 +1325,16 @@ def _swagger_doc() -> dict[str, Any]:
         ),
         ("secrets", True, {"get", "list", "watch", "create", "delete", "patch", "update"}),
         (
+            "persistentvolumeclaims",
+            True,
+            {"get", "list", "watch", "create", "delete", "patch", "update"},
+        ),
+        (
+            "persistentvolumes",
+            False,
+            {"get", "list", "watch", "create", "delete", "patch", "update"},
+        ),
+        (
             "serviceaccounts",
             True,
             {"get", "list", "watch", "create", "delete", "patch", "update"},
@@ -4515,6 +4525,38 @@ class ShimHandler(BaseHTTPRequestHandler):
                             ],
                         },
                         {
+                            "name": "persistentvolumeclaims",
+                            "singularName": "",
+                            "namespaced": True,
+                            "kind": "PersistentVolumeClaim",
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
+                            "shortNames": ["pvc"],
+                        },
+                        {
+                            "name": "persistentvolumes",
+                            "singularName": "",
+                            "namespaced": False,
+                            "kind": "PersistentVolume",
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
+                            "shortNames": ["pv"],
+                        },
+                        {
                             "name": "serviceaccounts",
                             "singularName": "",
                             "namespaced": True,
@@ -4939,7 +4981,15 @@ class ShimHandler(BaseHTTPRequestHandler):
 
         # Lists and gets for core resources
         plural, ns, name = _ns_name(path)
-        if plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}:
+        if plural in {
+            "namespaces",
+            "configmaps",
+            "secrets",
+            "persistentvolumeclaims",
+            "persistentvolumes",
+            "serviceaccounts",
+            "services",
+        }:
             if name is None:
                 label_sel, field_sel = _selector_values_from_query(q)
                 # watch support on LIST endpoints
@@ -5070,7 +5120,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if not self._rbac_allows(verb, plural):
                     self._deny(403)
                     return
-        if plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}:
+        if plural in {
+            "namespaces",
+            "configmaps",
+            "secrets",
+            "persistentvolumeclaims",
+            "persistentvolumes",
+            "serviceaccounts",
+            "services",
+        }:
             # Mutations
             pass
         # Endpoints (projected from controller state)
@@ -5697,8 +5755,20 @@ class ShimHandler(BaseHTTPRequestHandler):
                 except BrokenPipeError:
                     pass
                 return
-            # best-effort pull from controller events by namespace
+            # best-effort pull from stored events + controller events by namespace
             items = []
+            try:
+                stored = (
+                    self.server.store.list_all("", "v1", "events")  # type: ignore[attr-defined]
+                    if ns is None
+                    else self.server.store.list("", "v1", "events", ns)  # type: ignore[attr-defined]
+                )
+                for ev in stored:
+                    if name and ev.name != name:
+                        continue
+                    items.append(_to_stored_event(ev))
+            except Exception:
+                pass
             try:
                 deps = (
                     self.server.store.list_all("apps", "v1", "deployments")  # type: ignore[attr-defined]
@@ -5718,7 +5788,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                             continue
                         items.append(_to_event(dep.namespace or "default", dep.name, ev))
             except Exception:
-                items = []
+                if not items:
+                    items = []
             rv = int(time.time() * 1000)
             self._ok(
                 {
@@ -7098,7 +7169,15 @@ class ShimHandler(BaseHTTPRequestHandler):
             return
 
         plural, ns, name = _ns_name(path)
-        if plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}:
+        if plural in {
+            "namespaces",
+            "configmaps",
+            "secrets",
+            "persistentvolumeclaims",
+            "persistentvolumes",
+            "serviceaccounts",
+            "services",
+        }:
             md = doc.get("metadata") or {}
             name_in = md.get("name") or name
             if not isinstance(name_in, str) or not name_in:
@@ -7109,7 +7188,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )
                 return
             ns_in = md.get("namespace") or ns
-            if plural == "namespaces":
+            if plural in {"namespaces", "persistentvolumes"}:
                 ns_in = None
             if plural == "secrets":
                 _set_secret_type(md, doc.get("type"))
@@ -7629,13 +7708,22 @@ class ShimHandler(BaseHTTPRequestHandler):
         doc = _read_json(body)
         plural, ns, name = _ns_name(self.path)
         if (
-            plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}
+            plural
+            in {
+                "namespaces",
+                "configmaps",
+                "secrets",
+                "persistentvolumeclaims",
+                "persistentvolumes",
+                "serviceaccounts",
+                "services",
+            }
             and name
         ):
             md = doc.get("metadata") or {}
             name_in = md.get("name") or name
             ns_in = md.get("namespace") or ns
-            if plural == "namespaces":
+            if plural in {"namespaces", "persistentvolumes"}:
                 ns_in = None
             if plural == "secrets":
                 _set_secret_type(md, doc.get("type"))
@@ -7924,7 +8012,16 @@ class ShimHandler(BaseHTTPRequestHandler):
         patch_debug = os.getenv("AE_APISHIM_PATCH_DEBUG", "0") == "1"
         plural, ns, name = _ns_name(path)
         if (
-            plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}
+            plural
+            in {
+                "namespaces",
+                "configmaps",
+                "secrets",
+                "persistentvolumeclaims",
+                "persistentvolumes",
+                "serviceaccounts",
+                "services",
+            }
             and name
         ):
             obj = self.server.store.get(
@@ -7978,7 +8075,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 merged.get("data") if plural in {"configmaps", "secrets"} else merged.get("spec")
             )
             name_eff = md.get("name") or name
-            ns_eff = None if plural == "namespaces" else (md.get("namespace") or ns)
+            ns_eff = None if plural in {"namespaces", "persistentvolumes"} else (md.get("namespace") or ns)
             if not _valid_name(name_eff):
                 self._json_status(
                     HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -8635,14 +8732,23 @@ class ShimHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         plural, ns, name = _ns_name(path)
         if (
-            plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}
+            plural
+            in {
+                "namespaces",
+                "configmaps",
+                "secrets",
+                "persistentvolumeclaims",
+                "persistentvolumes",
+                "serviceaccounts",
+                "services",
+            }
             and name
         ):
             if not self._rbac_allows("delete", plural):
                 self._deny(403)
                 return
             ok = self.server.store.delete(
-                "", "v1", plural, None if plural == "namespaces" else ns, name
+                "", "v1", plural, None if plural in {"namespaces", "persistentvolumes"} else ns, name
             )  # type: ignore[attr-defined]
             if not ok:
                 self._not_found()
@@ -8764,6 +8870,8 @@ def _kind(plural: str) -> str:
         "namespaces": "Namespace",
         "configmaps": "ConfigMap",
         "secrets": "Secret",
+        "persistentvolumeclaims": "PersistentVolumeClaim",
+        "persistentvolumes": "PersistentVolume",
         "serviceaccounts": "ServiceAccount",
         "services": "Service",
     }[plural]
@@ -9153,6 +9261,34 @@ def _to_event(namespace: str, obj_name: str, ev: AppEvent) -> dict[str, Any]:  #
         "firstTimestamp": ts,
         "lastTimestamp": ts,
     }
+
+
+def _to_stored_event(o: K8sObject) -> dict[str, Any]:
+    meta = dict(o.metadata)
+    meta.setdefault("name", o.name)
+    if o.namespace:
+        meta.setdefault("namespace", o.namespace)
+    meta.setdefault("resourceVersion", str(o.resource_version))
+    spec = dict(o.spec or {})
+    out = {"apiVersion": "v1", "kind": "Event", "metadata": meta}
+    for key in (
+        "involvedObject",
+        "reason",
+        "message",
+        "type",
+        "source",
+        "firstTimestamp",
+        "lastTimestamp",
+        "eventTime",
+        "count",
+        "action",
+        "related",
+        "reportingController",
+        "reportingInstance",
+    ):
+        if key in spec:
+            out[key] = spec[key]
+    return out
 
 
 def _ingress_vip(state: SQLiteStateStore, store: ObjectStore | None, ing: K8sObject) -> str | None:
@@ -10049,6 +10185,18 @@ class ShimServer(ThreadingHTTPServer):
         dsn = os.getenv("AE_APISHIM_DSN")
         db_path = Path(os.getenv("AE_APISHIM_DB", "state/apishim.db"))
         self.store = ObjectStore(db_path=db_path, dsn=dsn)
+        self._storage_controller = None
+        try:
+            from ae.storage.controller import StorageController
+
+            self._storage_controller = StorageController(self.store)
+            seeded = self._storage_controller.sync()
+            self._storage_controller.start()
+            if seeded:
+                LOGGER.info("seeded %s StorageClass objects from config", seeded)
+        except Exception as exc:  # noqa: BLE001
+            self._storage_controller = None
+            LOGGER.warning("storage controller init failed: %s", exc)
         ShimHandler.rehydrate_sa_tokens(self.store)
         ShimHandler.admin_token = token or os.getenv("AE_APISHIM_TOKEN")
         ShimHandler.read_token = os.getenv("AE_APISHIM_READ_TOKEN")

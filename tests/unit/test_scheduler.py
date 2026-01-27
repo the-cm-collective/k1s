@@ -86,7 +86,7 @@ def test_scheduler_prefers_bound_storage_node(tmp_path):
     )
     store.record_heartbeat("n1", "Ready")
     store.record_heartbeat("n2", "Ready")
-    store.upsert_storage_binding("app", "data", "n2", retention="Retain")
+    store.upsert_volume_attachment("app", "data", "n2", retention="Retain")
     man = _manifest(replicas=1)
     man = man.model_copy(
         update={
@@ -114,7 +114,7 @@ def test_scheduler_skips_when_bound_node_unavailable(tmp_path):
     store.record_heartbeat("n1", "Ready")
     store.record_heartbeat("n2", "Ready")
     store.cordon_node("n2", True)
-    store.upsert_storage_binding("app", "data", "n2", retention="Retain")
+    store.upsert_volume_attachment("app", "data", "n2", retention="Retain")
     man = _manifest(replicas=1)
     man = man.model_copy(
         update={

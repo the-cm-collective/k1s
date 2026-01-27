@@ -36,6 +36,8 @@ def _parse_manifest(payload: dict) -> AppManifest:
 
 class AgentHandler(BaseHTTPRequestHandler):
     runtime: RuntimeAdapter = None  # type: ignore[assignment]
+    volume_manager = None
+    node_id: str | None = None
 
     def log_message(self, format: str, *args) -> None:  # noqa: A003 - BaseHTTPRequestHandler API
         LOGGER.info("%s - %s", self.address_string(), format % args)
@@ -54,6 +56,10 @@ class AgentHandler(BaseHTTPRequestHandler):
         try:
             if self.path == "/v1/ensure_app":
                 manifest = _parse_manifest(payload.get("manifest", {}))
+                if self.volume_manager is not None:
+                    manifest = self.volume_manager.inject_pvc_mounts(  # type: ignore[attr-defined]
+                        manifest, node_id=payload.get("node_id") or self.node_id
+                    )
                 result = self.runtime.ensure_app(
                     manifest,
                     int(payload.get("revision", 0)),
@@ -343,6 +349,38 @@ def serve(
         client_key=controller_client_key,
     )
     AgentHandler.runtime = runtime
+    AgentHandler.node_id = node_id or socket.gethostname()
+    if os.getenv("AE_ENABLE_NETFS", "0") == "1":
+        try:
+            from pathlib import Path
+
+            from ae.apishim.store import ObjectStore
+            from ae.storage import (
+                ApishimStorageState,
+                InMemoryStorageState,
+                NetFSManager,
+                NodeVolumeManager,
+            )
+
+            state = None
+            dsn = os.getenv("AE_APISHIM_DSN")
+            db_path = os.getenv("AE_APISHIM_DB")
+            if dsn or db_path:
+                store = ObjectStore(
+                    db_path=Path(db_path) if db_path else Path("state/apishim.db"),
+                    dsn=dsn,
+                )
+                state = ApishimStorageState(store)
+            if state is None:
+                state = InMemoryStorageState()
+            netfs = NetFSManager(state)
+            AgentHandler.volume_manager = NodeVolumeManager(
+                netfs, node_id=AgentHandler.node_id
+            )
+            LOGGER.info("netfs volume manager enabled on node %s", AgentHandler.node_id)
+        except Exception as exc:  # noqa: BLE001
+            AgentHandler.volume_manager = None
+            LOGGER.warning("failed to enable netfs volume manager: %s", exc)
     server = HTTPServer((host, port), AgentHandler)
     if tls_cert and tls_key:
         import ssl
