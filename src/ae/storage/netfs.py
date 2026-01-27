@@ -63,11 +63,18 @@ class NetFSManager:
 
         pv_spec = self._obj_spec(pv_obj)
         nfs = pv_spec.get("nfs") if isinstance(pv_spec, dict) else None
-        if not isinstance(nfs, dict):
-            msg = "NetFS only supports NFS PVs in this phase"
-            self._record_pvc_event(pvc, "UnsupportedVolume", msg)
-            raise NotImplementedError(msg)
+        if isinstance(nfs, dict):
+            return self._ensure_nfs_mount(pvc, pv, pv_spec, nfs, node_id=node_id)
+        csi = pv_spec.get("csi") if isinstance(pv_spec, dict) else None
+        if isinstance(csi, dict):
+            return self._ensure_csi_mount(pvc, pv, pv_spec, csi, node_id=node_id)
+        msg = "NetFS supports NFS and CSI PVs in this phase"
+        self._record_pvc_event(pvc, "UnsupportedVolume", msg)
+        raise NotImplementedError(msg)
 
+    def _ensure_nfs_mount(
+        self, pvc: PvcRef, pv: PvRef, pv_spec: dict[str, Any], nfs: dict[str, Any], *, node_id: str
+    ) -> NetFSMount:
         server = nfs.get("server")
         path = nfs.get("path")
         if not server or not path:
@@ -110,6 +117,60 @@ class NetFSManager:
                 self._record_pvc_event(pvc, "MountConflict", msg)
                 raise RuntimeError(msg)
 
+        mount = NetFSMount(
+            pvc=pvc,
+            pv=pv,
+            node_id=node_id,
+            host_path=str(target),
+            read_only=read_only,
+        )
+        self._state.upsert_mount(mount)
+        return mount
+
+    def _ensure_csi_mount(
+        self, pvc: PvcRef, pv: PvRef, pv_spec: dict[str, Any], csi: dict[str, Any], *, node_id: str
+    ) -> NetFSMount:
+        _ = pv_spec
+        driver = csi.get("driver")
+        handle = csi.get("volumeHandle")
+        if not driver or not handle:
+            msg = f"PV {pv.name} missing CSI driver/volumeHandle"
+            self._record_pvc_event(pvc, "InvalidVolume", msg)
+            raise ValueError(msg)
+
+        attachment = self._state.get_volume_attachment(pv, node_id)
+        if attachment is None or not self._attachment_attached(attachment):
+            msg = f"PV {pv.name} is not attached to node {node_id}"
+            self._record_pvc_event(pvc, "VolumeNotAttached", msg)
+            raise RuntimeError(msg)
+
+        stage_secret = self._resolve_csi_secret_ref(pvc, csi.get("nodeStageSecretRef"), "nodeStage")
+        publish_secret = self._resolve_csi_secret_ref(
+            pvc, csi.get("nodePublishSecretRef"), "nodePublish"
+        )
+
+        target = self._mount_path(pvc)
+        target.mkdir(parents=True, exist_ok=True)
+        marker = target / ".csi-volume"
+        try:
+            lines = [f"driver={driver}", f"volumeHandle={handle}"]
+            secret_refs = (
+                ("nodeStageSecretRef", stage_secret),
+                ("nodePublishSecretRef", publish_secret),
+            )
+            for label, resolved in secret_refs:
+                if resolved is None:
+                    continue
+                ns, name, data = resolved
+                keys = ",".join(sorted(data.keys()))
+                lines.append(f"{label}={ns}/{name}")
+                if keys:
+                    lines.append(f"{label}.keys={keys}")
+            marker.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
+        read_only = bool(csi.get("readOnly", False))
         mount = NetFSMount(
             pvc=pvc,
             pv=pv,
@@ -267,6 +328,35 @@ class NetFSManager:
             self._state.record_pvc_event(pvc, reason, message)
         except Exception:
             return
+
+    def _resolve_csi_secret_ref(
+        self, pvc: PvcRef, raw_ref: Any, purpose: str
+    ) -> tuple[str, str, dict[str, str]] | None:
+        if not isinstance(raw_ref, dict):
+            return None
+        name = str(raw_ref.get("name") or "").strip()
+        namespace = str(raw_ref.get("namespace") or pvc.namespace).strip()
+        if not name:
+            msg = f"CSI {purpose} secretRef missing name"
+            self._record_pvc_event(pvc, "InvalidSecretRef", msg)
+            raise ValueError(msg)
+        if not namespace:
+            msg = f"CSI {purpose} secretRef missing namespace"
+            self._record_pvc_event(pvc, "InvalidSecretRef", msg)
+            raise ValueError(msg)
+        secret = self._state.get_secret(namespace, name)
+        if not secret:
+            msg = f"CSI {purpose} secret {namespace}/{name} not found"
+            self._record_pvc_event(pvc, "SecretNotFound", msg)
+            raise KeyError(msg)
+        return namespace, name, secret
+
+    @staticmethod
+    def _attachment_attached(attachment: Any) -> bool:
+        status = getattr(attachment, "status", None)
+        if not isinstance(status, dict):
+            return False
+        return bool(status.get("attached"))
 
     @staticmethod
     def _obj_spec(obj: Any) -> dict[str, Any]:
