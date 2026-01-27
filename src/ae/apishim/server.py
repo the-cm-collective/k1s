@@ -27,7 +27,14 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ae.controller.state import AppEvent, ServiceEndpoint, SQLiteStateStore
-from ae.runtime import DockerRuntime, PodmanRuntime, RemoteRuntime, RuntimeAdapter, StubRuntime
+from ae.runtime import (
+    CRIRuntime,
+    DockerRuntime,
+    PodmanRuntime,
+    RemoteRuntime,
+    RuntimeAdapter,
+    StubRuntime,
+)
 
 from .adapter import build_adapter
 from .store import K8sObject, ObjectStore
@@ -9753,6 +9760,8 @@ def _runtime_from_env() -> RuntimeAdapter:
     backend = (os.getenv("AE_APISHIM_RUNTIME") or os.getenv("AE_RUNTIME_BACKEND") or "stub").lower()
     if backend in {"stub", "test"}:
         return StubRuntime()
+    if backend in {"cri", "containerd"}:
+        return CRIRuntime()
     if backend in {"podman", "oci"}:
         try:
             return PodmanRuntime()
