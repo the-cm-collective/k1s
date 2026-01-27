@@ -7,19 +7,29 @@ if [[ "${ACT:-}" == "true" ]]; then
 fi
 
 endpoint="${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}"
+cni_version="${AE_CNI_VERSION:-1.0.0}"
+cni_force="${AE_CNI_FORCE:-1}"
+
+run_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    sudo -E "$@"
+  else
+    "$@"
+  fi
+}
 
 echo "Installing containerd, CNI plugins, and crictl (via cri-tools)..."
-sudo apt-get update
-sudo apt-get install -y containerd containernetworking-plugins cri-tools iptables
+run_root apt-get update
+run_root apt-get install -y containerd containernetworking-plugins cri-tools iptables
 
 echo "Ensuring containerd config exists..."
-sudo mkdir -p /etc/containerd
+run_root mkdir -p /etc/containerd
 if [[ ! -f /etc/containerd/config.toml ]]; then
-  sudo containerd config default | sudo tee /etc/containerd/config.toml >/dev/null
+  run_root containerd config default | run_root tee /etc/containerd/config.toml >/dev/null
 fi
 
 echo "Configuring crictl endpoint..."
-sudo tee /etc/crictl.yaml >/dev/null <<EOF
+run_root tee /etc/crictl.yaml >/dev/null <<EOF
 runtime-endpoint: ${endpoint}
 image-endpoint: ${endpoint}
 timeout: 10
@@ -27,26 +37,25 @@ debug: false
 EOF
 
 echo "Starting containerd..."
-sudo systemctl enable --now containerd || sudo service containerd start
+run_root systemctl enable --now containerd || run_root service containerd start
 
 echo "Ensuring CNI binaries are in /opt/cni/bin..."
 if [[ -d /usr/lib/cni ]]; then
-  sudo mkdir -p /opt/cni/bin
-  sudo cp -a /usr/lib/cni/. /opt/cni/bin/
+  run_root mkdir -p /opt/cni/bin
+  run_root cp -a /usr/lib/cni/. /opt/cni/bin/
 fi
 
 echo "Initializing CNI configs (bridge + loopback)..."
-sudo ./scripts/cni_init.sh
+run_root env AE_CNI_VERSION="${cni_version}" AE_CNI_FORCE="${cni_force}" ./scripts/cni_init.sh
 
 echo "Restarting containerd after CNI init..."
-sudo systemctl restart containerd || sudo service containerd restart
+run_root systemctl restart containerd || run_root service containerd restart
 sleep 2
 
 echo "CRI preflight..."
-AE_RUNTIME_BACKEND=cri ./scripts/cri_preflight.sh
+run_root env AE_RUNTIME_BACKEND=cri AE_CRI_ENDPOINT="${endpoint}" ./scripts/cri_preflight.sh
 
 echo "CRI smoke..."
-./scripts/cri_smoke.sh
+run_root env AE_CRI_ENDPOINT="${endpoint}" ./scripts/cri_smoke.sh
 
 echo "CRI CI setup complete"
-
