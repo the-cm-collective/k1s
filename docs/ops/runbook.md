@@ -353,3 +353,32 @@ For rapid iteration on exporter options, enable a development-only endpoint to r
 
 - Ingress: use `--ingress-preset nginx-web|traefik-web` to apply common, opt‑in annotations. Combine with `--ingress-class` and custom `--ingress-annotation key=value` for fine‑tuning.
 - Storage: `--storage-class-name <name>` and `--pvc-access-modes <mode>` override defaults for generated PVCs and StatefulSet `volumeClaimTemplates`.
+
+## NetFS Storage Operations
+
+Operational toggles:
+- `AE_NETFS_ROOT` controls the node mount root (default `/var/lib/ae/netfs`).
+- `AE_NETFS_FS_RESIZE=1` enables best-effort filesystem resize on bound volumes.
+- `AE_NETFS_SELINUX_RECURSIVE=1` allows recursive `chcon -R` on RWX/ROX volumes.
+
+PVC cloning (filesystem volumes only):
+- Set `spec.dataSourceRef` with kind `PersistentVolumeClaim` on the target PVC.
+- Source PVC must be `Bound` and hostPath-backed (NFS/local-path provisioners).
+- The target StorageClass must match the source StorageClass.
+- Not supported for `volumeMode: Block`.
+
+CSIStorageCapacity overrides:
+- StorageClasses can publish static capacity for external CSI drivers via
+  `parameters.capacity` (e.g., `5Gi`) or `parameters.capacityBytes` (integer bytes).
+- This bypasses hostPath disk probes and only affects the advertised capacity object.
+
+Common failure reasons (PVC events):
+- `CloneNotReady` / `CloneNotFound`: source PVC missing or not bound.
+- `CloneUnsupported`: block volume or non-hostPath-backed source.
+- `CloneInvalid`: mismatched StorageClass or invalid `dataSourceRef`.
+- `VolumeNotAttached`: CSI volume lacks a matching VolumeAttachment.
+- `SelinuxRelabelFailed`: SELinux relabel attempt failed; check privileges and `chcon`.
+
+Useful checks:
+- `ae events <app>` for recent PVC/PV events.
+- `ae status --verbose` to verify node mount paths and permissions.

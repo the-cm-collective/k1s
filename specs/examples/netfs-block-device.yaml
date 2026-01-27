@@ -1,0 +1,35 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-path-block
+provisioner: k1s.io/local-path
+parameters:
+  hostPath: /var/lib/ae/storage
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: block-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Block
+  storageClassName: local-path-block
+  resources:
+    requests:
+      storage: 8Mi
+---
+apiVersion: ae.dev/v1alpha1
+kind: Deployment
+metadata:
+  name: block-device-demo
+spec:
+  image: busybox:1.36
+  replicas: 1
+  command: ["sh", "-c", "ls -l /dev/xvdb; sleep 3600"]
+  pvcMounts:
+    - claimName: block-pvc
+      mountPath: /dev/xvdb
+      devicePath: /dev/xvdb

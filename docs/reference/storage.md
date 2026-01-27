@@ -71,6 +71,41 @@ NFS helper (`mount.nfs` or `mount.nfs4`). If these tools or the NFS mount fail,
 the agent records a PVC warning event; use `kubectl get events -n <ns>` to inspect
 `NfsPrereqFailed`, `MountFailed`, or `MountConflict` reasons.
 
+### NetFS cloning (PVC dataSourceRef)
+
+For hostPath-backed provisioners (NFS/local-path), the controller can restore a
+new PVC from a source PVC:
+
+- Set `spec.dataSourceRef` with kind `PersistentVolumeClaim`.
+- The source PVC must be `Bound`.
+- Source and target must use the same StorageClass.
+- Filesystem volumes only (`volumeMode: Filesystem`).
+
+Example: `specs/examples/netfs-clone.yaml`.
+
+### NetFS block devices
+
+Block volumes are supported for hostPath-backed provisioners:
+
+- PVC must set `volumeMode: Block`.
+- k1s manifests should use `spec.pvcMounts[].devicePath` to map the device
+  into the container (see `specs/examples/netfs-block-device.yaml`).
+
+### CSIStorageCapacity overrides
+
+StorageClasses can publish static capacity (useful for external CSI drivers):
+
+- `parameters.capacity`: Kubernetes size string (e.g., `10Gi`).
+- `parameters.capacityBytes`: integer byte count.
+
+Example: `specs/examples/netfs-capacity-override.yaml`.
+
+### SELinux relabeling
+
+When `seLinuxOptions` are provided via `podSecurity`, k1s attempts a best‑effort
+`chcon` on the mount path. For RWX/ROX volumes, set `AE_NETFS_SELINUX_RECURSIVE=1`
+to allow recursive relabeling.
+
 
 ### Retention & Purge
 
