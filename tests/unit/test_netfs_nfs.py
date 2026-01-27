@@ -94,3 +94,27 @@ def test_netfs_rwop_blocks_second_node(tmp_path, monkeypatch) -> None:
     manager.ensure_mount(PvcRef(name="pvc", namespace="default"), node_id="node1")
     with pytest.raises(RuntimeError):
         manager.ensure_mount(PvcRef(name="pvc", namespace="default"), node_id="node2")
+
+
+def test_netfs_applies_fs_group(tmp_path, monkeypatch) -> None:
+    pv_obj = {"spec": {"nfs": {"server": "10.0.0.4", "path": "/export"}}}
+    state = FakeState(pv_obj)
+    manager = NetFSManager(state, root=tmp_path)
+
+    monkeypatch.setattr(manager, "_mount_nfs", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(manager, "_mount_info", lambda _target: None)
+    monkeypatch.setattr(manager, "_ensure_nfs_tools", lambda: None)
+
+    seen = {}
+
+    def _fake_apply(pvc, target, fs_group):
+        seen["pvc"] = pvc
+        seen["target"] = target
+        seen["fs_group"] = fs_group
+
+    monkeypatch.setattr(manager, "_apply_fs_group", _fake_apply)
+
+    manager.ensure_mount(
+        PvcRef(name="pvc", namespace="default"), node_id="node1", fs_group=1234
+    )
+    assert seen["fs_group"] == 1234

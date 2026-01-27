@@ -38,12 +38,16 @@ class NodeVolumeManager:
         node = node_id or self._node_id
         ns = getattr(manifest.metadata, "namespace", None) or self._default_ns
 
+        fs_group = None
+        if getattr(manifest.spec, "pod_security", None):
+            fs_group = getattr(manifest.spec.pod_security, "fs_group", None)
+
         mounts_by_pvc: dict[PvcRef, NetFSMount] = {}
         for pm in pvc_mounts:
             pvc = self._pvc_ref(pm, namespace=ns)
             if pvc in mounts_by_pvc:
                 continue
-            mount = self._netfs.ensure_mount(pvc, node_id=node)
+            mount = self._netfs.ensure_mount(pvc, node_id=node, fs_group=fs_group)
             mounts_by_pvc[pvc] = mount
 
         volumes = list(getattr(manifest.spec, "volumes", []) or [])
