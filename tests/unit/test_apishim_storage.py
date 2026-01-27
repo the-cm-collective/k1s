@@ -118,7 +118,13 @@ def test_storage_group_and_version_discovery(tmp_path, monkeypatch) -> None:
     assert status["code"] == 200
     body = _json_body(handler)
     resources = {r.get("name") for r in (body.get("resources") or [])}
-    assert {"storageclasses", "volumeattachments"} <= resources
+    assert {
+        "storageclasses",
+        "volumeattachments",
+        "csidrivers",
+        "csinodes",
+        "csistoragecapacities",
+    } <= resources
 
 
 def test_storageclass_and_volumeattachment_crud(tmp_path, monkeypatch) -> None:
@@ -182,3 +188,60 @@ def test_storageclass_and_volumeattachment_crud(tmp_path, monkeypatch) -> None:
     body = _json_body(handler)
     items = body.get("items") or []
     assert any((item.get("metadata") or {}).get("name") == "va-demo" for item in items)
+
+    driver_doc = {
+        "apiVersion": "storage.k8s.io/v1",
+        "kind": "CSIDriver",
+        "metadata": {"name": "csi.example.com"},
+        "spec": {"attachRequired": True, "podInfoOnMount": False},
+    }
+    body = json.dumps(driver_doc).encode("utf-8")
+    handler, status = _handler(
+        store,
+        monkeypatch,
+        "/apis/storage.k8s.io/v1/csidrivers/csi.example.com",
+        method="PUT",
+        body=body,
+    )
+    handler.do_PUT()
+    assert status["code"] == 200
+    driver = store.get("storage.k8s.io", "v1", "csidrivers", None, "csi.example.com")
+    assert driver is not None
+
+    node_doc = {
+        "apiVersion": "storage.k8s.io/v1",
+        "kind": "CSINode",
+        "metadata": {"name": "node-a"},
+        "spec": {"drivers": [{"name": "csi.example.com", "nodeID": "node-a"}]},
+    }
+    body = json.dumps(node_doc).encode("utf-8")
+    handler, status = _handler(
+        store,
+        monkeypatch,
+        "/apis/storage.k8s.io/v1/csinodes/node-a",
+        method="PUT",
+        body=body,
+    )
+    handler.do_PUT()
+    assert status["code"] == 200
+    node = store.get("storage.k8s.io", "v1", "csinodes", None, "node-a")
+    assert node is not None
+
+    cap_doc = {
+        "apiVersion": "storage.k8s.io/v1",
+        "kind": "CSIStorageCapacity",
+        "metadata": {"name": "cap-1", "namespace": "default"},
+        "spec": {"storageClassName": "k1s-nfs", "capacity": "1Gi"},
+    }
+    body = json.dumps(cap_doc).encode("utf-8")
+    handler, status = _handler(
+        store,
+        monkeypatch,
+        "/apis/storage.k8s.io/v1/namespaces/default/csistoragecapacities/cap-1",
+        method="PUT",
+        body=body,
+    )
+    handler.do_PUT()
+    assert status["code"] == 200
+    cap = store.get("storage.k8s.io", "v1", "csistoragecapacities", "default", "cap-1")
+    assert cap is not None
