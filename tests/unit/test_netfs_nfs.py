@@ -1,3 +1,5 @@
+import pytest
+
 from ae.storage.netfs import NetFSManager
 from ae.storage.state import InMemoryStorageState
 from ae.storage.types import PvcRef, PvRef
@@ -73,3 +75,22 @@ def test_netfs_mount_respects_read_only(tmp_path, monkeypatch) -> None:
     assert calls["source"] == "10.0.0.2:/export"
     assert calls["options"][-1] == "ro"
     assert mount.read_only is True
+
+
+def test_netfs_rwop_blocks_second_node(tmp_path, monkeypatch) -> None:
+    pv_obj = {
+        "spec": {
+            "nfs": {"server": "10.0.0.3", "path": "/export"},
+            "accessModes": ["ReadWriteOncePod"],
+        }
+    }
+    state = FakeState(pv_obj)
+    manager = NetFSManager(state, root=tmp_path)
+
+    monkeypatch.setattr(manager, "_mount_nfs", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(manager, "_mount_info", lambda _target: None)
+    monkeypatch.setattr(manager, "_ensure_nfs_tools", lambda: None)
+
+    manager.ensure_mount(PvcRef(name="pvc", namespace="default"), node_id="node1")
+    with pytest.raises(RuntimeError):
+        manager.ensure_mount(PvcRef(name="pvc", namespace="default"), node_id="node2")

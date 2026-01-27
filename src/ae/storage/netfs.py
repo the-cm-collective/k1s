@@ -53,6 +53,10 @@ class NetFSManager:
     def ensure_mount(self, pvc: PvcRef, *, node_id: str) -> NetFSMount:
         """Ensure PV is attached (if needed) and mounted on the node."""
 
+        existing = self._state.get_mount(pvc, node_id)
+        if existing is not None:
+            return existing
+
         pv = self._state.get_pv_for_pvc(pvc)
         if pv is None:
             msg = f"PVC {pvc.namespace}/{pvc.name} is not bound to a PV"
@@ -66,6 +70,7 @@ class NetFSManager:
             raise KeyError(msg)
 
         pv_spec = self._obj_spec(pv_obj)
+        self._enforce_rwop(pvc, pv_spec, node_id)
         nfs = pv_spec.get("nfs") if isinstance(pv_spec, dict) else None
         if isinstance(nfs, dict):
             return self._ensure_nfs_mount(pvc, pv, pv_spec, nfs, node_id=node_id)
@@ -75,6 +80,20 @@ class NetFSManager:
         msg = "NetFS supports NFS and CSI PVs in this phase"
         self._record_pvc_event(pvc, "UnsupportedVolume", msg)
         raise NotImplementedError(msg)
+
+    def _enforce_rwop(self, pvc: PvcRef, pv_spec: dict[str, Any], node_id: str) -> None:
+        if not self._is_rwop(pv_spec):
+            return
+        mounts = self._state.list_mounts()
+        conflicts = [
+            m for m in mounts if m.pvc == pvc and m.node_id and m.node_id != node_id
+        ]
+        if not conflicts:
+            return
+        nodes = ", ".join(sorted({m.node_id for m in conflicts}))
+        msg = f"PVC {pvc.namespace}/{pvc.name} already mounted on node(s): {nodes}"
+        self._record_pvc_event(pvc, "ReadWriteOncePodConflict", msg)
+        raise RuntimeError(msg)
 
     def _ensure_nfs_mount(
         self, pvc: PvcRef, pv: PvRef, pv_spec: dict[str, Any], nfs: dict[str, Any], *, node_id: str
@@ -417,3 +436,12 @@ class NetFSManager:
         if isinstance(spec, dict):
             return spec
         return {}
+
+    @staticmethod
+    def _is_rwop(pv_spec: dict[str, Any]) -> bool:
+        if not isinstance(pv_spec, dict):
+            return False
+        modes = pv_spec.get("accessModes")
+        if not isinstance(modes, list):
+            return False
+        return "ReadWriteOncePod" in {str(m) for m in modes}
