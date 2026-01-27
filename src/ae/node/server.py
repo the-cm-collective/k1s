@@ -383,7 +383,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--runtime-backend",
-        choices=["podman", "docker"],
+        choices=["podman", "docker", "cri", "containerd"],
         default=__import__("os").getenv("AE_RUNTIME_BACKEND", "podman"),
     )
     parser.add_argument(
@@ -409,9 +409,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--controller-client-key", default=os.getenv("AE_CONTROLLER_TLS_KEY"))
     args = parser.parse_args(argv)
 
-    from ae.runtime import DockerRuntime, PodmanRuntime
+    from ae.runtime import CRIRuntime, DockerRuntime, PodmanRuntime
 
-    runtime = PodmanRuntime() if args.runtime_backend == "podman" else DockerRuntime()
+    if args.runtime_backend in {"cri", "containerd"}:
+        runtime = CRIRuntime()
+    else:
+        runtime = PodmanRuntime() if args.runtime_backend == "podman" else DockerRuntime()
     node_id = os.getenv("AE_NODE_ID", socket.gethostname())
     node_name = os.getenv("AE_NODE_NAME", node_id)
     node_labels = _parse_labels(os.getenv("AE_NODE_LABELS"))

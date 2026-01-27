@@ -641,13 +641,14 @@ class Reconciler:
                     import requests as _req
 
                     path = str(handler.http_get.path or "/")  # type: ignore[union-attr]
-                    host_ports = (it or {}).get("host_ports") or []
-                    if host_ports:
-                        url = f"http://127.0.0.1:{int(host_ports[0])}{path}"
+                    target = self._endpoint_from_container_info(it, handler.http_get.port)  # type: ignore[union-attr]
+                    if target:
+                        host, port = target
+                        url = f"http://{host}:{int(port)}{path}"
                         _req.get(url, timeout=max(1, int(timeout)))
                         outcome = "ok"
                     else:
-                        outcome = "skipped(no-host-port)"
+                        outcome = "skipped(no-endpoint)"
                 except Exception as exc:  # noqa: BLE001
                     outcome = f"error({exc.__class__.__name__})"
                 try:
@@ -664,14 +665,13 @@ class Reconciler:
                 import socket as _sock
 
                 try:
-                    host_ports = (it or {}).get("host_ports") or []
-                    if host_ports:
-                        with _sock.create_connection(
-                            ("127.0.0.1", int(host_ports[0])), timeout=max(1, int(timeout))
-                        ):
+                    target = self._endpoint_from_container_info(it, handler.tcp_socket.port)  # type: ignore[union-attr]
+                    if target:
+                        host, port = target
+                        with _sock.create_connection((host, int(port)), timeout=max(1, int(timeout))):
                             outcome = "ok"
                     else:
-                        outcome = "skipped(no-host-port)"
+                        outcome = "skipped(no-endpoint)"
                 except OSError:
                     outcome = "error"
                 try:
@@ -877,6 +877,7 @@ class Reconciler:
                 items = self._runtime.list_containers_info()  # type: ignore[attr-defined]
             except Exception:
                 items = []
+            preferred_port = self._preferred_container_port(manifest)
             prev_eps: list[str] = []
             cur_rev = str(result.revision)
             for it in items or []:
@@ -885,14 +886,10 @@ class Reconciler:
                     continue
                 if (labs.get("ae.revision") or "") == cur_rev:
                     continue
-                ports = list(it.get("host_ports") or [])
-                if not ports:
-                    continue
-                try:
-                    ep = f"127.0.0.1:{int(ports[0])}"
-                    prev_eps.append(ep)
-                except Exception:
-                    continue
+                target = self._endpoint_from_container_info(it, preferred_port)
+                if target:
+                    host, port = target
+                    prev_eps.append(f"{host}:{int(port)}")
             # Merge, de-duplicating, keeping new first to honor prefer-first policy
             seen = set()
             merged: list[str] = []
@@ -929,6 +926,52 @@ class Reconciler:
             return host, int(port)
         except Exception:
             return None, None
+
+    def _preferred_container_port(self, manifest: AppManifest) -> int | None:
+        try:
+            if manifest.spec.health and manifest.spec.health.readiness:
+                r = manifest.spec.health.readiness
+                if getattr(r, "http_get", None) is not None:
+                    return int(r.http_get.port)
+                if getattr(r, "tcp_socket", None) is not None:
+                    return int(r.tcp_socket.port)
+        except Exception:
+            pass
+        try:
+            if manifest.spec.service and getattr(manifest.spec.service, "target_port", None):
+                return int(manifest.spec.service.target_port)
+        except Exception:
+            pass
+        try:
+            if manifest.spec.ports:
+                return int(manifest.spec.ports[0].container_port)
+        except Exception:
+            pass
+        return None
+
+    def _endpoint_from_container_info(
+        self, info: dict, port_hint: int | None
+    ) -> tuple[str, int] | None:
+        pod_ip = (info or {}).get("pod_ip")
+        host_ip = (info or {}).get("host_ip") or "127.0.0.1"
+        port_map = (info or {}).get("port_map") or {}
+        host_ports = list((info or {}).get("host_ports") or [])
+        if pod_ip and port_hint:
+            return str(pod_ip), int(port_hint)
+        if port_hint is not None and port_map:
+            try:
+                if port_hint in port_map:
+                    return str(host_ip), int(port_map[port_hint])
+                if str(port_hint) in port_map:
+                    return str(host_ip), int(port_map[str(port_hint)])
+            except Exception:
+                pass
+        if host_ports:
+            try:
+                return str(host_ip), int(host_ports[0])
+            except Exception:
+                return None
+        return None
 
     def _compute_spec_hash(self, manifest: AppManifest) -> str:
         payload = json.dumps(

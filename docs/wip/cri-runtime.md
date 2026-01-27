@@ -9,6 +9,30 @@ It is intentionally minimal and matches the current code structure.
 
 ---
 
+## Current status (2026-01-27)
+
+Implemented:
+- CRIRuntime adapter with CRI gRPC stubs (api_pb2/api_pb2_grpc) and codegen script.
+- Backend wiring for `AE_RUNTIME_BACKEND=cri|containerd`.
+- PodSandbox + main container lifecycle, image pull + auth, ExecSync, log reading via log_path.
+- Command/args mapping follows Kubernetes semantics (command overrides entrypoint; args passed to entrypoint).
+- PodSandbox UID included in log directory for kube-compatible log tooling.
+- ReplicaState endpoint prefers pod IP + container port; hostPort only for replicas==1.
+- Init containers (sequential, ephemeral sandbox) and sidecars in the same PodSandbox.
+- HostPath storage manager for `spec.storage`.
+- CNI preflight/smoke scripts and runbook updates.
+- Reconciler endpoint selection (ingress + preStop) prefers pod IP endpoints when available.
+- CRI Service VIP provider using iptables NAT (single-node; requires root).
+- Exec/attach streaming via crictl (requires crictl on node).
+- Added CRI smoke pull test (gated by AE_CRI_SMOKE_PULL).
+
+Remaining (next focus):
+- Ingress reload inside container (docker/podman exec path) for CRI.
+- CI integration tests against containerd.
+- CRI-native port-forward proxy (optional; pod IP direct connect works today).
+
+---
+
 ## 1) CRI runtime skeleton + wiring
 
 ### New module: `src/ae/runtime/cri_runtime.py`
@@ -38,8 +62,8 @@ from ae.runtime.registry import RegistryAuthProvider
 
 # NOTE: you will need generated CRI gRPC stubs.
 # Example layout:
-#   src/ae/runtime/cri/api/runtime/v1/runtime_pb2.py
-#   src/ae/runtime/cri/api/runtime/v1/runtime_pb2_grpc.py
+#   src/ae/runtime/cri/api/runtime/v1/api_pb2.py
+#   src/ae/runtime/cri/api/runtime/v1/api_pb2_grpc.py
 #   src/ae/runtime/cri/api/runtime/v1/api.proto (vendored)
 # See "Dependencies" below.
 
@@ -199,16 +223,16 @@ Use one PodSandbox per replica (replica_id is unique).
 
 - `metadata.name`: `replica_id` (ex: `app-rev3-0`)
 - `metadata.namespace`: `manifest.metadata.namespace` (default `default`)
-- `metadata.uid`: stable hash of `replica_id` (or leave empty)
+- `metadata.uid`: stable hash of `replica_id` (required for kube-compatible log paths)
 - `metadata.attempt`: job attempt (from labels or reconciler if tracked)
 - `labels`:
   - `runtime_labels_for_manifest(manifest)`
-  - `ae.replica_id`, `ae.revision`, `ae.container=main`
+  - `ae.replica_id`, `ae.revision`
   - `ae.node` if `node_id` known
 - `annotations`: optional; keep empty for now
-- `log_directory`: `/var/log/pods/<ns>_<replica_id>` (or runtime default)
+- `log_directory`: `/var/log/pods/<ns>_<replica_id>_<uid>`
 - `linux.security_context`: only if you need SELinux/AppArmor; for now, leave empty
-- `port_mappings`: publish host ports when `service.port` or `service.ports` are defined
+- `port_mappings`: publish host ports only when replicas==1 and `service.port`/`service.ports` are defined
 
 Port mappings:
 - Use current `choose_host_port` logic (same as DockerRuntime) for stable host ports.
@@ -221,8 +245,8 @@ Port mappings:
 
 - `metadata.name`: `"main"`
 - `image.image`: `manifest.spec.image`
-- `command` / `args`: keep the same semantics as DockerRuntime
-  - If both are set: `command + args`
+- `command` / `args`: align with Kubernetes semantics
+  - If both are set: set `command` and `args` separately (do not concatenate)
   - If only args: set `args` only (entrypoint receives args)
 - `envs`: list of key/value pairs from `manifest.spec.env`
 - `working_dir`: `manifest.spec.working_dir`
@@ -315,13 +339,21 @@ Optional: containerd `hosts.toml` support
 
 ## Implementation checklist (summary)
 
-- Add `CRIRuntime` skeleton and stubs.
+Done:
+- Add `CRIRuntime` adapter + gRPC stubs/codegen.
 - Wire runtime selection for `AE_RUNTIME_BACKEND=cri`.
-- Implement PodSandbox/ContainerConfig mapping from `AppManifest`.
-- Update endpoint selection to prefer pod IP + container port.
-- Add storage manager for hostPath volumes.
+- Implement PodSandbox/ContainerConfig mapping from `AppManifest` (K8s command/args semantics).
+- Use PodSandbox UID in log directory for kube-compatible log paths.
+- Prefer pod IP + container port endpoints; hostPort only for replicas==1.
+- Add hostPath storage manager for `spec.storage`.
 - Add CRI PullImage auth path.
 - Add minimal tests for mapping + runtime selection.
+- Add CRI Service VIP provider (iptables NAT).
+- Add exec/attach streaming via crictl.
+
+Remaining:
+- CI integration tests against containerd.
+- CRI-native port-forward proxy (optional; pod IP direct connect works today).
 
 
 ---
@@ -336,17 +368,17 @@ Legend:
 
 | Subsystem | Docker | Podman | CRI (containerd) | Notes |
 | --- | --- | --- | --- | --- |
-| RuntimeAdapter core (ensure_app, remove, list, exec sync) | OK | OK | Needs work | CRI runtime adapter needed |
-| Init containers | OK | OK | Needs work | implement in CRI adapter |
-| Sidecars | OK | OK | Needs work | implement in CRI adapter |
-| Logs (read_logs) | OK | OK | Needs work | CRI log path / ContainerStatus |
-| Exec sync (probes/hooks) | OK | OK | Needs work | CRI ExecSync |
-| Exec attach/streaming | OK | OK | Needs work | CRI streaming server proxy |
-| Service VIP provider (HAProxy + docker network) | OK | OK | Needs work | replace docker CLI or disable |
+| RuntimeAdapter core (ensure_app, remove, list, exec sync) | OK | OK | OK | CRI runtime adapter implemented |
+| Init containers | OK | OK | OK | implemented in CRI adapter |
+| Sidecars | OK | OK | OK | implemented in CRI adapter |
+| Logs (read_logs) | OK | OK | OK | CRI log path / ContainerStatus |
+| Exec sync (probes/hooks) | OK | OK | OK | CRI ExecSync |
+| Exec attach/streaming | OK | OK | OK (crictl) | requires crictl on node |
+| Service VIP provider (HAProxy + docker network) | OK | OK | OK (iptables) | iptables NAT for CRI |
 | Ingress reload inside container | OK | OK | Needs work | replace docker/podman exec or run host‑mode |
-| Storage volumes (named volume API) | OK | OK | Needs work | hostPath/CSI manager for CRI |
-| Registry auth | OK | OK | Needs work | CRI PullImage auth or hosts.toml |
-| Host‑port ingress/health endpoints | OK | OK | Needs work | prefer pod IP + container port |
+| Storage volumes (named volume API) | OK | OK | OK | hostPath manager for CRI |
+| Registry auth | OK | OK | OK | CRI PullImage auth (hosts.toml optional) |
+| Host‑port ingress/health endpoints | OK | OK | OK | prefer pod IP + container port |
 
 Summary:
 - Keeping Docker/Podman while adding CRI is straightforward at the adapter layer.
@@ -382,10 +414,10 @@ Exit criteria:
 
 ### Phase 2 — Networking + endpoints (5–10 days)
 
-- Prefer pod IP + container port for endpoints; host ports only when explicitly mapped.
-- Implement pod port mappings (CRI `PortMapping`) for `service.port` / `service.ports`.
-- Update health/ingress selection to tolerate pod IP endpoints.
-- Add a CRI‑compatible Service provider (or disable service proxy on CRI nodes).
+- Done: prefer pod IP + container port for endpoints; host ports only when explicitly mapped.
+- Done: implement pod port mappings (CRI `PortMapping`) for `service.port` / `service.ports`.
+- Done: update health/ingress selection to tolerate pod IP endpoints.
+- Done: add a CRI‑compatible Service provider (iptables NAT).
 
 Exit criteria:
 - Ingress can route to pod IP endpoints (or documented limitations).
@@ -402,21 +434,23 @@ Exit criteria:
 - Storage volumes behave similarly to Docker/Podman runtimes.
 - Init containers and sidecars operate correctly under CRI.
 
-### Phase 4 — Streaming + multi‑node polish (optional) (7–14 days)
+### Phase 4 — Streaming + multi-node polish (optional) (7–14 days)
 
-- Implement exec/attach streaming by proxying CRI streaming server.
+- Done: exec/attach streaming via crictl (node dependency).
+- Optional: proxy CRI streaming server directly (avoid crictl dependency).
 - Add node‑level smoke checks (crictl info, runtime endpoints).
 - Add integration tests for CRI path (optionally via kind/containerd in CI).
 
 Exit criteria:
-- `kubectl exec`/attach and `port-forward` work for CRI nodes.
+- `kubectl exec`/attach works for CRI nodes.
+- Port-forward works for CRI nodes (direct pod IP or CRI proxy).
 - Multi‑node scheduling with CRI nodes is stable.
 
 ---
 
 ## Rollout strategy (mixed backends)
 
-- Keep Docker/Podman as default until Phase 2 is complete.
+- Keep Docker/Podman as default until streaming exec/attach is complete (Phase 4).
 - Allow `AE_RUNTIME_BACKEND=cri` only on nodes explicitly labeled (e.g., `runtime=cri`).
 - Gate Service VIP provider usage on backend type to avoid docker‑only assumptions.
 - Gradually move dev/test nodes to CRI, then production nodes.
@@ -483,22 +517,21 @@ Exit criteria:
   - Assert container metadata names match Kubernetes container names (main/init/sidecar).
 
 ### Phase 2 — Networking + endpoints
-- Implement port mapping logic in CRI PodSandboxConfig
+- Done: implement port mapping logic in CRI PodSandboxConfig
   - Use CRI `PortMapping` (`container_port`, `host_port`, `protocol`, `host_ip`) to mirror Kubernetes `hostPort`.
   - Only set mappings when `service.port` / `service.ports` requires a host port (avoid implicit hostPort).
-- Update endpoint selection to prefer pod IP + container port
+- Done: update endpoint selection to prefer pod IP + container port
   - Align with Kubernetes: Service/Ingress routes to `podIP:containerPort`, not host ports.
   - Use readiness probe port (`httpGet.port` or `tcpSocket.port`) as the preferred container port.
   - Only fall back to hostPort for local/dev or when podIP is unavailable.
-- Update `list_containers_info` to return:
+- Done: update `list_containers_info` to return:
   - `host_ports`, `port_map`, `pod_ip`, `host_ip`
   - one entry per replica (main container only)
   - Map `uid` to PodSandbox ID (closest equivalent to Kubernetes Pod UID).
   - Preserve labels on the PodSandbox as the authoritative label set (Pod-level metadata).
-- Add CRI-compatible Service provider or guard Service VIP logic on backend
-  - If implementing: align with Kubernetes `ClusterIP` semantics (stable virtual IP + ready pod endpoints).
-  - If deferring: disable service proxy on CRI nodes and document "Service unsupported" in runbook.
-- Add tests for endpoint selection, pod IP mapping, port mapping
+- Done: add CRI Service VIP provider (iptables NAT).
+  - Aligns with Kubernetes `ClusterIP` semantics on single-node setups.
+- Done: add tests for endpoint selection, pod IP mapping, port mapping
   - Validate `pod_ip` is used for readiness/ingress when present.
   - Validate hostPort mappings match requested Service ports (K8s hostPort semantics).
 
@@ -657,4 +690,3 @@ Recommended:
 ### Devices & hugepages
 - CDI device injection (GPU, RDMA) when runtime supports it
 - Hugepage limits and device allocations in `LinuxContainerResources`
-

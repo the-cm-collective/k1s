@@ -46,10 +46,38 @@ def service_controller_factory(store: SQLiteStateStore):
     if os.getenv("AE_ENABLE_SERVICE_PROXY", "0") != "1":
         return None
     try:
-        from ae.network import DockerBridgeProvider, OverlayProvider, ServiceController
+        from ae.network import (
+            DockerBridgeProvider,
+            IptablesProvider,
+            OverlayProvider,
+            ServiceController,
+        )
 
-        provider_name = os.getenv("AE_SERVICE_PROVIDER", "bridge").lower()
-        if provider_name in {"overlay", "kubeproxy"}:
+        backend = os.getenv("AE_RUNTIME_BACKEND", "podman").lower()
+        provider_name = os.getenv(
+            "AE_SERVICE_PROVIDER", "iptables" if backend in {"cri", "containerd"} else "bridge"
+        ).lower()
+        if backend in {"cri", "containerd"} and provider_name not in {
+            "iptables",
+            "kubeproxy",
+            "cri",
+        }:
+            try:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Service provider %s unsupported on CRI; using iptables.", provider_name
+                )
+            except Exception:
+                pass
+            provider_name = "iptables"
+        if provider_name in {"iptables", "kubeproxy", "cri"}:
+            provider = IptablesProvider(
+                store,
+                service_cidr=os.getenv("AE_SERVICE_IP_POOL", "10.241.0.0/16"),
+                iptables_bin=os.getenv("AE_IPTABLES_BIN", "iptables"),
+            )
+        elif provider_name in {"overlay"}:
             provider = OverlayProvider(
                 store,
                 network_name=os.getenv("AE_OVERLAY_NET", "ae-overlay"),
