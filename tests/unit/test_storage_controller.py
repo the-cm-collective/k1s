@@ -151,3 +151,89 @@ def test_storage_controller_reclaim_policy_delete_cleans_backing(tmp_path):
 
     assert store.get("", "v1", "persistentvolumes", None, pv_name) is None
     assert not backing.exists()
+
+
+def test_storage_controller_creates_volume_attachment_for_csi(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    pvc_uid = "uid-csi"
+    pv_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "persistentVolumeReclaimPolicy": "Retain",
+        "claimRef": {"namespace": "default", "name": "data", "uid": pvc_uid},
+        "csi": {"driver": "csi.example.com", "volumeHandle": "vol-1"},
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "volumeName": "pv-csi",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    pvc_meta = {
+        "name": "data",
+        "namespace": "default",
+        "uid": pvc_uid,
+        "annotations": {"volume.kubernetes.io/selected-node": "node-a"},
+    }
+
+    store.upsert("", "v1", "persistentvolumes", None, "pv-csi", {"name": "pv-csi"}, pv_spec)
+    store.upsert("", "v1", "persistentvolumeclaims", "default", "data", pvc_meta, pvc_spec)
+
+    controller.reconcile_once()
+
+    va_name = controller._volume_attachment_name("pv-csi", "node-a")
+    va = store.get("storage.k8s.io", "v1", "volumeattachments", None, va_name)
+    assert va is not None
+    assert (va.spec or {}).get("nodeName") == "node-a"
+    assert (va.spec or {}).get("attacher") == "csi.example.com"
+    source = (va.spec or {}).get("source") or {}
+    assert source.get("persistentVolumeName") == "pv-csi"
+    assert (va.status or {}).get("attached") is True
+
+
+def test_storage_controller_blocks_multi_attach_for_csi(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    pvc_uid = "uid-csi"
+    pv_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "persistentVolumeReclaimPolicy": "Retain",
+        "claimRef": {"namespace": "default", "name": "data", "uid": pvc_uid},
+        "csi": {"driver": "csi.example.com", "volumeHandle": "vol-1"},
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "volumeName": "pv-csi",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    pvc_meta = {
+        "name": "data",
+        "namespace": "default",
+        "uid": pvc_uid,
+        "annotations": {"volume.kubernetes.io/selected-node": "node-b"},
+    }
+    existing_va = {
+        "attacher": "csi.example.com",
+        "nodeName": "node-a",
+        "source": {"persistentVolumeName": "pv-csi"},
+    }
+
+    store.upsert("", "v1", "persistentvolumes", None, "pv-csi", {"name": "pv-csi"}, pv_spec)
+    store.upsert("", "v1", "persistentvolumeclaims", "default", "data", pvc_meta, pvc_spec)
+    store.upsert(
+        "storage.k8s.io",
+        "v1",
+        "volumeattachments",
+        None,
+        controller._volume_attachment_name("pv-csi", "node-a"),
+        {"name": controller._volume_attachment_name("pv-csi", "node-a")},
+        existing_va,
+        status={"attached": True},
+    )
+
+    controller.reconcile_once()
+
+    blocked_name = controller._volume_attachment_name("pv-csi", "node-b")
+    assert store.get("storage.k8s.io", "v1", "volumeattachments", None, blocked_name) is None
+    events = store.list_all("", "v1", "events")
+    reasons = [(e.spec or {}).get("reason") for e in events]
+    assert "MultiAttachForbidden" in reasons

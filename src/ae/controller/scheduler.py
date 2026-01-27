@@ -27,6 +27,7 @@ SC_RESOURCE = "storageclasses"
 CORE_GROUP = ""
 CORE_VERSION = "v1"
 PVC_RESOURCE = "persistentvolumeclaims"
+PV_RESOURCE = "persistentvolumes"
 LOCAL_PATH_PROVISIONER = "k1s.io/local-path"
 WAIT_FOR_FIRST_CONSUMER = "WaitForFirstConsumer"
 SELECTED_NODE_ANNOTATION = "volume.kubernetes.io/selected-node"
@@ -94,7 +95,7 @@ class Scheduler:
         warnings.extend(local_warnings)
         if bound_node_id and local_bound_node and bound_node_id != local_bound_node:
             warnings.append(
-                "storage attachments and local-path PVCs disagree on bound node; "
+                "storage attachments and single-writer PVCs disagree on bound node; "
                 f"using {bound_node_id}"
             )
         if bound_node_id is None:
@@ -123,7 +124,7 @@ class Scheduler:
             target = eligible[0]
             if local_pvc_pinning and len(eligible) > 1:
                 warnings.append(
-                    f"local-path PVCs pending; pinning to node {target.node_id} until selected-node is set"
+                    f"single-writer PVCs pending; pinning to node {target.node_id} until selected-node is set"
                 )
             if stale_nodes:
                 warnings.append(f"stale/not-ready nodes skipped: {', '.join(stale_nodes)}")
@@ -194,18 +195,29 @@ class Scheduler:
             pvc = self._shim_store.get(CORE_GROUP, CORE_VERSION, PVC_RESOURCE, ns, claim_name)
             if pvc is None:
                 continue
+            needs_pinning = False
             sc_name = self._pvc_storage_class_name(pvc)
             if not sc_name:
                 sc_name = self._default_storage_class_name()
-            if not sc_name:
-                continue
-            sc = self._shim_store.get(SC_GROUP, SC_VERSION, SC_RESOURCE, None, sc_name)
-            if sc is None:
-                continue
-            sc_spec = self._obj_spec(sc)
-            provisioner = str(sc_spec.get("provisioner") or "")
-            binding_mode = str(sc_spec.get("volumeBindingMode") or "")
-            if provisioner != LOCAL_PATH_PROVISIONER or binding_mode != WAIT_FOR_FIRST_CONSUMER:
+            if sc_name:
+                sc = self._shim_store.get(SC_GROUP, SC_VERSION, SC_RESOURCE, None, sc_name)
+                if sc is not None:
+                    sc_spec = self._obj_spec(sc)
+                    provisioner = str(sc_spec.get("provisioner") or "")
+                    binding_mode = str(sc_spec.get("volumeBindingMode") or "")
+                    if provisioner == LOCAL_PATH_PROVISIONER and binding_mode == WAIT_FOR_FIRST_CONSUMER:
+                        needs_pinning = True
+
+            pv_name = self._pvc_volume_name(pvc)
+            if pv_name:
+                pv = self._shim_store.get(CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, pv_name)
+                if pv is not None:
+                    pv_spec = self._obj_spec(pv)
+                    csi = pv_spec.get("csi") if isinstance(pv_spec, dict) else None
+                    if isinstance(csi, dict) and self._is_single_writer(pv_spec):
+                        needs_pinning = True
+
+            if not needs_pinning:
                 continue
             local_present = True
             node = self._pvc_selected_node(pvc)
@@ -218,7 +230,7 @@ class Scheduler:
         bound_node = next(iter(selected_nodes)) if selected_nodes else None
         if len(selected_nodes) > 1:
             warnings.append(
-                "local-path PVCs reference multiple selected nodes; scheduling may be unstable"
+                "single-writer PVCs reference multiple selected nodes; scheduling may be unstable"
             )
         return True, bound_node, warnings
 
@@ -260,6 +272,14 @@ class Scheduler:
         return str(name) if name else None
 
     @staticmethod
+    def _pvc_volume_name(pvc) -> str | None:
+        spec = getattr(pvc, "spec", None)
+        if not isinstance(spec, dict):
+            return None
+        name = spec.get("volumeName")
+        return str(name) if name else None
+
+    @staticmethod
     def _pvc_selected_node(pvc) -> str | None:
         meta = getattr(pvc, "metadata", None)
         annotations = meta.get("annotations") if isinstance(meta, dict) else {}
@@ -267,6 +287,11 @@ class Scheduler:
             return None
         node = annotations.get(SELECTED_NODE_ANNOTATION)
         return str(node) if node else None
+
+    @staticmethod
+    def _is_single_writer(spec: dict[str, Any]) -> bool:
+        modes = set(spec.get("accessModes") or []) if isinstance(spec, dict) else set()
+        return not bool(modes & {"ReadWriteMany", "ReadOnlyMany"})
 
     @staticmethod
     def _is_ready(status: NodeStatus | None, now: datetime, grace: int) -> bool:
