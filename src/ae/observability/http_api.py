@@ -3685,6 +3685,27 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       .modal-overlay { position:fixed; inset:0; background:rgba(2,6,23,0.65); display:flex; align-items:center; justify-content:center; z-index: 90; }
       .modal-overlay.hidden { display:none; }
       .modal { width:min(980px, 96vw); max-height:90vh; background:#0b1220; color:#e2e8f0; border:1px solid #334155; border-radius:10px; box-shadow:0 20px 40px rgba(0,0,0,.35); display:flex; flex-direction:column; }
+      #pf-modal .modal { height: min(560px, 90vh); }
+      #pf-modal .modal-body { display:flex; flex-direction:column; gap:12px; padding:12px 16px; flex:1 1 auto; min-height:0; }
+      #pf-modal .pf-fields { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:10px; }
+      #pf-modal .pf-fields label { display:flex; flex-direction:column; gap:6px; min-width:0; }
+      #pf-modal .pf-fields input, #pf-modal .pf-fields select { width:100%; }
+      #pf-modal .pf-span-2 { grid-column: span 2; }
+      #pf-modal .pf-span-4 { grid-column: 1 / -1; }
+      #pf-modal .pf-io { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px; flex:1 1 auto; min-height:0; }
+      #pf-modal .pf-io label { display:flex; flex-direction:column; gap:6px; min-height:0; }
+      #pf-modal .pf-io textarea { flex:1 1 auto; min-height:0; width:100%; }
+      #pf-modal .pf-controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:auto; }
+      @media (max-width: 900px) {
+        #pf-modal .pf-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        #pf-modal .pf-span-2 { grid-column: span 2; }
+        #pf-modal .pf-span-4 { grid-column: span 2; }
+        #pf-modal .pf-io { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 640px) {
+        #pf-modal .pf-fields { grid-template-columns: 1fr; }
+        #pf-modal .pf-span-2, #pf-modal .pf-span-4 { grid-column: span 1; }
+      }
       .modal-header { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-bottom:1px solid #334155; }
       .modal-body { padding:12px 14px; overflow:auto; }
       .modal-footer { padding:10px 14px; border-top:1px solid #334155; display:flex; gap:8px; justify-content:flex-end; }
@@ -3910,21 +3931,21 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           <button id=\"pf-close\" type=\"button\">Close</button>
         </div>
         <div class=\"modal-body\">
-          <div class=\"row\" style=\"flex-wrap:wrap; gap:10px; margin-bottom:10px;\">
+          <div class=\"pf-fields\">
             <label>Replica <select id=\"pf-pod\"></select></label>
             <label>Port <input id=\"pf-port\" type=\"text\" placeholder=\"8080\" /></label>
-            <label>Shim API <input id=\"pf-base\" type=\"text\" placeholder=\"http://127.0.0.1:8443\" /></label>
-            <label>Token <input id=\"pf-token\" type=\"password\" placeholder=\"apishim token\" /></label>
+            <label class=\"pf-span-2\">Shim API <input id=\"pf-base\" type=\"text\" placeholder=\"http://127.0.0.1:8443\" /></label>
+            <label class=\"pf-span-4\">Token <input id=\"pf-token\" type=\"password\" placeholder=\"apishim token\" /></label>
           </div>
-          <div class=\"row\" style=\"gap:10px; flex-wrap:wrap;\">
-            <label style=\"flex:1 1 320px;\">Request
-              <textarea id=\"pf-request\" rows=\"4\" style=\"width:100%;\">GET / HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n</textarea>
+          <div class=\"pf-io\">
+            <label>Request
+              <textarea id=\"pf-request\" rows=\"4\" style=\"width:100%;\">GET / HTTP/1.1\nHost: localhost\nConnection: close\n\n</textarea>
             </label>
-            <label style=\"flex:1 1 320px;\">Response
+            <label>Response
               <textarea id=\"pf-response\" rows=\"4\" style=\"width:100%;\" readonly></textarea>
             </label>
           </div>
-          <div class=\"row\" style=\"margin-top:10px; gap:8px; align-items:center;\">
+          <div class=\"pf-controls\">
             <button id=\"pf-connect\" type=\"button\">Connect</button>
             <button id=\"pf-send\" type=\"button\">Send Request</button>
             <button id=\"pf-disconnect\" type=\"button\">Disconnect</button>
@@ -5043,11 +5064,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         } catch(e){}
       }
 
+      function normalizePfPayload(payload){
+        if (payload == null) return '';
+        var text = String(payload);
+        if (text.indexOf('\\\\r') !== -1 || text.indexOf('\\\\n') !== -1) {
+          text = text.replace(/\\\\r\\\\n/g, '\\r\\n').replace(/\\\\n/g, '\\n').replace(/\\\\r/g, '\\r');
+        }
+        if (text.indexOf('\\n') !== -1) {
+          text = text.replace(/\\r?\\n/g, '\\r\\n');
+        }
+        return text;
+      }
+
       function pfSend(){
         var req = document.getElementById('pf-request');
         var payload = req && req.value ? req.value : '';
         if (!payload) return;
-        pfSendChannel(0, payload);
+        if (!pfSocket || pfSocket.readyState !== 1) { pfSetStatus('not connected', 'warn'); return; }
+        pfSendChannel(0, normalizePfPayload(payload));
       }
 
       function pfDisconnect(){
