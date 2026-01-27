@@ -149,6 +149,10 @@ class StorageController:
             spec["allowVolumeExpansion"] = bool(sc.allow_volume_expansion)
         if sc.mount_options:
             spec["mountOptions"] = list(sc.mount_options)
+        if sc.allowed_topologies:
+            spec["allowedTopologies"] = list(sc.allowed_topologies)
+        if sc.topology_keys:
+            spec["topologyKeys"] = list(sc.topology_keys)
         self._store.upsert(
             SC_GROUP,
             SC_VERSION,

@@ -310,36 +310,58 @@ class Scheduler:
         warnings: list[str] = []
         constrained_sets: list[set[str]] = []
         constrained_classes: list[str] = []
+        topo_key_sets: list[set[str]] = []
+        topo_key_classes: list[str] = []
         for sc_name, sc in scs.items():
             sc_spec = self._obj_spec(sc)
             allowed = sc_spec.get("allowedTopologies")
-            if not allowed:
-                continue
-            constrained_classes.append(sc_name)
-            allowed_nodes = {
-                n.node_id for n in nodes if self._node_matches_allowed_topologies(n, allowed)
-            }
-            if not allowed_nodes:
-                warnings.append(
-                    f"storage class {sc_name} allowedTopologies matches no eligible nodes"
-                )
-                return [], warnings, True
-            constrained_sets.append(allowed_nodes)
+            if allowed:
+                constrained_classes.append(sc_name)
+                allowed_nodes = {
+                    n.node_id for n in nodes if self._node_matches_allowed_topologies(n, allowed)
+                }
+                if not allowed_nodes:
+                    warnings.append(
+                        f"storage class {sc_name} allowedTopologies matches no eligible nodes"
+                    )
+                    return [], warnings, True
+                constrained_sets.append(allowed_nodes)
 
-        if not constrained_sets:
+            topo_keys_raw = sc_spec.get("topologyKeys")
+            topo_keys = [str(k) for k in topo_keys_raw if k] if isinstance(topo_keys_raw, list) else []
+            if topo_keys:
+                topo_key_classes.append(sc_name)
+                topo_nodes = {
+                    n.node_id for n in nodes if self._node_has_label_keys(n, topo_keys)
+                }
+                if not topo_nodes:
+                    warnings.append(
+                        f"storage class {sc_name} topologyKeys matches no eligible nodes"
+                    )
+                    return [], warnings, True
+                topo_key_sets.append(topo_nodes)
+
+        if not constrained_sets and not topo_key_sets:
             return nodes, warnings, False
 
-        allowed_ids = set.intersection(*constrained_sets)
+        all_sets = constrained_sets + topo_key_sets
+        allowed_ids = set.intersection(*all_sets)
         if not allowed_ids:
-            warnings.append("storage allowedTopologies intersect to zero eligible nodes")
+            warnings.append("storage topology constraints intersect to zero eligible nodes")
             return [], warnings, True
 
         filtered = [n for n in nodes if n.node_id in allowed_ids]
         if len(filtered) < len(nodes):
-            warnings.append(
-                "filtered eligible nodes by storage allowedTopologies for classes: "
-                + ", ".join(sorted(constrained_classes))
-            )
+            if constrained_sets:
+                warnings.append(
+                    "filtered eligible nodes by storage allowedTopologies for classes: "
+                    + ", ".join(sorted(constrained_classes))
+                )
+            if topo_key_sets:
+                warnings.append(
+                    "filtered eligible nodes by storage topologyKeys for classes: "
+                    + ", ".join(sorted(topo_key_classes))
+                )
         return filtered, warnings, True
 
     def _default_storage_class_name(self) -> str | None:
@@ -426,6 +448,13 @@ class Scheduler:
             allowed_vals = {str(v) for v in values}
             return str(node_val) in allowed_vals
         return True
+
+    @staticmethod
+    def _node_has_label_keys(node: NodeRecord, keys: list[str]) -> bool:
+        labels = node.labels or {}
+        if not labels:
+            return False
+        return all(str(k) in labels for k in keys)
 
     @staticmethod
     def _access_modes(obj: Any) -> list[str]:
