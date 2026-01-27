@@ -9,6 +9,8 @@ PV=${NETFS_PV_NAME:-netfs-pv}
 PVC=${NETFS_PVC_NAME:-netfs-pvc}
 DEPLOY=${NETFS_DEPLOYMENT_NAME:-netfs-echo}
 CLEANUP=${NETFS_CLEANUP:-1}
+NFS_SERVER=${NFS_SERVER:-127.0.0.1}
+NFS_PATH=${NFS_PATH:-/exports/netfs}
 
 log() {
   printf '[netfs-smoke] %s\n' "$1"
@@ -58,7 +60,7 @@ cat <<EOF_PV | put_json "$APISHIM_URL/api/v1/persistentvolumes/$PV"
     "accessModes": ["ReadWriteMany"],
     "persistentVolumeReclaimPolicy": "Retain",
     "storageClassName": "${SC}",
-    "nfs": {"server": "127.0.0.1", "path": "/exports/netfs"}
+    "nfs": {"server": "${NFS_SERVER}", "path": "${NFS_PATH}"}
   }
 }
 EOF_PV
