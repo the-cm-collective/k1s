@@ -5500,6 +5500,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         var hexScale = W < 520 ? 0.6 : (narrow ? 0.68 : 0.82);
         var hexW = baseHexW * hexScale;
         var hexH = baseHexH * hexScale;
+        var labelGap = hexH * 0.12;
+        var labelLift = hexH * 0.08;
 
         var nodes = [];
         var nodeById = {};
@@ -5520,33 +5522,48 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var gap = 5;
           var stepX = hexW + gap;
           var stepY = (hexH * 0.75) + gap;
-          if (count <= 1) return [{x:0,y:0}];
-          if (count === 2) return [{x:-stepX*0.5, y:0}, {x:stepX*0.5, y:0}];
+          if (count <= 1) return [{x:0,y:0,row:0,col:0,band:0}];
+          if (count === 2) {
+            return [
+              {x:-stepX*0.5, y:0, row:0, col:0, band:0},
+              {x:stepX*0.5, y:0, row:0, col:1, band:0}
+            ];
+          }
           if (count === 3) {
             return [
-              {x:-stepX*0.5, y:-stepY*0.5},
-              {x:stepX*0.5, y:-stepY*0.5},
-              {x:0, y:stepY*0.5}
+              {x:-stepX*0.5, y:-stepY*0.5, row:0, col:0, band:0},
+              {x:stepX*0.5, y:-stepY*0.5, row:0, col:1, band:0},
+              {x:0, y:stepY*0.5, row:1, col:0, band:0}
             ];
           }
           if (count === 4) {
             return [
-              {x:-stepX*0.75, y:-stepY*0.5},
-              {x:stepX*0.25, y:-stepY*0.5},
-              {x:-stepX*0.25, y:stepY*0.5},
-              {x:stepX*0.75, y:stepY*0.5}
+              {x:-stepX*0.75, y:-stepY*0.5, row:0, col:0, band:0},
+              {x:stepX*0.25, y:-stepY*0.5, row:0, col:1, band:0},
+              {x:-stepX*0.25, y:stepY*0.5, row:1, col:0, band:0},
+              {x:stepX*0.75, y:stepY*0.5, row:1, col:1, band:0}
             ];
           }
-          var cols = Math.min(3, count);
-          var rows = Math.ceil(count / cols);
+          var maxCols = Math.max(2, Math.floor((W - padX * 2) / stepX));
+          maxCols = Math.min(maxCols, 6);
+          var colsPerBand = Math.max(2, Math.min(maxCols, Math.ceil(count / 2)));
+          var bandCapacity = colsPerBand * 2;
+          var bands = Math.ceil(count / bandCapacity);
           var offsets = [];
-          for (var r=0;r<rows;r++){
-            for (var c=0;c<cols;c++){
-              if (offsets.length >= count) break;
-              var x = (c - (cols-1)/2) * stepX;
-              if (r % 2 === 1) x += stepX/2;
-              var y = (r - (rows-1)/2) * stepY;
-              offsets.push({x:x, y:y});
+          for (var band=0; band<bands; band++){
+            var remaining = count - (band * bandCapacity);
+            var bandCount = Math.min(bandCapacity, remaining);
+            var cols = Math.min(colsPerBand, Math.ceil(bandCount / 2));
+            var rows = Math.min(2, Math.ceil(bandCount / cols));
+            for (var r=0;r<rows;r++){
+              for (var c=0;c<cols;c++){
+                var idx = band * bandCapacity + r * cols + c;
+                if (idx >= count) break;
+                var x = (c - (cols-1)/2) * stepX;
+                if (r % 2 === 1) x += stepX/2;
+                var y = (r - (rows-1)/2) * stepY + band * (stepY * 2.2);
+                offsets.push({x:x, y:y, row:(r + band * 2), col:c, band:band});
+              }
             }
           }
           return offsets;
@@ -5564,7 +5581,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         var systemCenter = {x: W*0.22, y: 150};
         var leftX = Math.max(padX + hexW*1.4, W*0.24);
         var rightX = Math.min(W - padX - hexW*1.4, W*0.76);
-        var nsRowY = systemCenter.y + hexH * 1.7;
+        var nsRowY = systemCenter.y + hexH * 2.05;
 
         if (narrow){
           hostCenter = {x: W*0.5, y: 70};
@@ -5584,10 +5601,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           addNode(sysIds[idx], label, 'system', systemCenter.x + off.x, systemCenter.y + off.y, {system:sysIds[idx]});
         });
         var sysLabelX = systemCenter.x;
-        var sysLabelY = systemCenter.y - hexH * 0.45;
+        var sysLabelY = systemCenter.y - hexH * 0.5 - labelGap - labelLift;
         if (nodeById.dns && nodeById.ingress){
           sysLabelX = (nodeById.dns.x + nodeById.ingress.x) / 2;
-          sysLabelY = nodeById.dns.y - hexH * 0.45;
+          sysLabelY = nodeById.dns.y - hexH * 0.5 - labelGap - labelLift;
         }
         addLabel('label:system', 'system', sysLabelX, sysLabelY, '#e5e7eb', '#e2e8f0');
 
@@ -5610,22 +5627,26 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if (narrow){
           var startY = nsRowY;
           nsOrder.forEach(function(ns, idx){
-            nsCenters[ns] = {x: W*0.5, y: startY + idx * hexH * 1.7};
+            nsCenters[ns] = {x: W*0.5, y: startY + idx * hexH * 2.0};
           });
         } else {
           if (nsOrder.length > 0) {
-            var defaultX = hostCenter.x - hexW * 0.1;
-            var defaultY = nsRowY + hexH * 0.45;
+            var nsClusterGapX = Math.max(hexW * 2.5, 220);
+            var nsClusterGapY = hexH * 0.9;
+            var defaultX = clamp(hostCenter.x - nsClusterGapX * 0.45, padX + hexW, W - padX - hexW);
+            var defaultY = nsRowY + nsClusterGapY * 0.8;
             nsCenters[nsOrder[0]] = {x: defaultX, y: defaultY};
           }
           if (nsOrder.length > 1) {
-            nsCenters[nsOrder[1]] = {x: rightX, y: nsRowY - hexH*0.1};
+            var demoX = clamp(hostCenter.x + Math.max(hexW * 2.6, 230), padX + hexW, rightX);
+            var demoY = nsRowY - hexH * 0.15;
+            nsCenters[nsOrder[1]] = {x: demoX, y: demoY};
           }
           if (nsOrder.length > 2) {
             var extraNs = nsOrder.slice(2);
             var extraCols = Math.min(3, extraNs.length);
             var extraGap = (W - padX*2) / (extraCols + 1);
-            var extraStartY = nsRowY + hexH * 1.5;
+            var extraStartY = nsRowY + hexH * 2.0;
             extraNs.forEach(function(ns, idx){
               var col = idx % extraCols;
               var row = Math.floor(idx / extraCols);
@@ -5645,6 +5666,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             var s = entry.status;
             var info = entry.info;
             var off = offsets[idx] || {x:0,y:0};
+            var row = (off.row != null) ? off.row : (off.y < 0 ? 0 : 1);
+            var col = (off.col != null) ? off.col : (off.x < 0 ? 0 : 1);
+            var faceShift = 0;
+            if (list.length === 4) {
+              if (row === 0 && col === 0) faceShift = 2;
+              else if ((row === 0 && col === 1) || (row === 1 && col === 0)) faceShift = 1;
+            }
             var node = addNode('app:'+s.app_name, info.name, 'app', center.x + off.x, center.y + off.y, {
               app:s.app_name,
               app_short: info.name,
@@ -5653,7 +5681,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
               desired:s.desired_replicas,
               rev:s.revision,
               status:s.revision_status,
-              clusterCenter: center
+              clusterCenter: center,
+              row: row,
+              col: col,
+              faceShift: faceShift
             });
             minX = (minX==null) ? node.x : Math.min(minX, node.x);
             maxX = (maxX==null) ? node.x : Math.max(maxX, node.x);
@@ -5661,27 +5692,85 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             appNodes.push(node);
           });
           var c = namespaceColors(ns);
-          var labelX = center.x;
-          var labelY = center.y - hexH*0.78;
-          if (ns === 'default' && minX != null && maxX != null && minY != null) {
-            labelX = (minX + maxX) / 2;
-            labelY = minY - hexH * 0.45;
-          }
+          var labelX = (minX != null && maxX != null) ? (minX + maxX) / 2 : center.x;
+          var labelY = (minY != null)
+            ? (minY - hexH * 0.5 - labelGap - labelLift)
+            : (center.y - hexH*0.78 - labelGap - labelLift);
           addLabel('label:'+ns, ns, labelX, labelY, c.color, '#e2e8f0');
         });
 
+        var faceDirs = [
+          {x:1, y:0},
+          {x:0.5, y:-0.866},
+          {x:-0.5, y:-0.866},
+          {x:-1, y:0},
+          {x:-0.5, y:0.866},
+          {x:0.5, y:0.866}
+        ];
+        function segmentDistanceSq(ax, ay, bx, by, cx, cy){
+          var vx = bx - ax;
+          var vy = by - ay;
+          var wx = cx - ax;
+          var wy = cy - ay;
+          var c1 = vx * wx + vy * wy;
+          if (c1 <= 0) return wx*wx + wy*wy;
+          var c2 = vx * vx + vy * vy;
+          if (c2 <= c1) {
+            var dx = cx - bx;
+            var dy = cy - by;
+            return dx*dx + dy*dy;
+          }
+          var t = c1 / c2;
+          var px = ax + t * vx;
+          var py = ay + t * vy;
+          var dx2 = cx - px;
+          var dy2 = cy - py;
+          return dx2*dx2 + dy2*dy2;
+        }
+        function isFaceBlocked(start, end, n, neighbors){
+          var radius = hexH * 0.6;
+          for (var i=0;i<neighbors.length;i++){
+            var other = neighbors[i];
+            if (other === n) continue;
+            var distSq = segmentDistanceSq(start.x, start.y, end.x, end.y, other.x, other.y);
+            if (distSq < radius * radius) return true;
+          }
+          return false;
+        }
         appNodes.forEach(function(n){
           if (!n.meta || !n.meta.clusterCenter) return;
           var center = n.meta.clusterCenter;
           var dx = n.x - center.x;
-          var dirX = 0;
-          if (dx > 4) dirX = 0.7;
-          else if (dx < -4) dirX = -0.7;
-          var dirY = 1;
-          var norm = Math.sqrt(dirX*dirX + dirY*dirY);
-          dirX /= norm; dirY /= norm;
+          var dy = n.y - center.y;
+          var biasY = hexH * 0.85;
+          var targetX = dx * 0.7;
+          var targetY = dy + biasY;
+          var baseIndex = 0;
+          var bestScore = -1e9;
+          for (var i=0;i<faceDirs.length;i++){
+            var d = faceDirs[i];
+            var score = d.x * targetX + d.y * targetY;
+            if (score > bestScore) { bestScore = score; baseIndex = i; }
+          }
+          var shift = (n.meta && n.meta.faceShift) ? n.meta.faceShift : 0;
+          var startIndex = (baseIndex + shift) % faceDirs.length;
+          var neighbors = appNodes.filter(function(o){ return o !== n && o.meta && o.meta.ns === n.meta.ns; });
+          var dirX = faceDirs[startIndex].x;
+          var dirY = faceDirs[startIndex].y;
           var startDist = hexH * 0.525;
           var traceLen = hexH * 0.525;
+          for (var step=0; step<faceDirs.length; step++){
+            var idx = (startIndex + step) % faceDirs.length;
+            var ddir = faceDirs[idx];
+            var sX = n.x + ddir.x * startDist;
+            var sY = n.y + ddir.y * startDist;
+            var eX = n.x + ddir.x * (startDist + traceLen);
+            var eY = n.y + ddir.y * (startDist + traceLen);
+            if (!isFaceBlocked({x:sX,y:sY}, {x:eX,y:eY}, n, neighbors)){
+              dirX = ddir.x; dirY = ddir.y;
+              break;
+            }
+          }
           var startX = n.x + dirX * startDist;
           var startY = n.y + dirY * startDist;
           var endX = n.x + dirX * (startDist + traceLen);
@@ -5918,7 +6007,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           gInner.appendChild(comb);
 
           var text = document.createElementNS('http://www.w3.org/2000/svg','text');
-          text.setAttribute('x','0'); text.setAttribute('y','8');
+          var rowShift = 0;
+          if (n.type === 'app' && n.meta && typeof n.meta.row === 'number') {
+            rowShift = (n.meta.row % 2 === 0) ? -6 : 6;
+          }
+          text.setAttribute('x','0'); text.setAttribute('y', String(8 + rowShift));
           text.setAttribute('text-anchor','middle');
           text.setAttribute('font-family','ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial');
           text.setAttribute('font-size','16');
@@ -5929,7 +6022,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           gInner.appendChild(text);
           gNodes.appendChild(g);
 
-          var labelMax = hexW * 0.72;
+          var labelMax = hexW * 1.08;
           var labelInfo = fitTextToWidth(text, n.label, labelMax);
           try {
             var bb = text.getBBox();
