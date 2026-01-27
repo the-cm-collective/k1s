@@ -14,10 +14,10 @@ import re
 import secrets
 import socket
 import ssl
+import sys
 import threading
 import time
 import zlib
-import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -5439,14 +5439,6 @@ class ShimHandler(BaseHTTPRequestHandler):
             )
             if container_info is None:
                 return
-            target_host = "127.0.0.1"
-            if container_info:
-                target_host = (
-                    container_info.get("pod_ip")
-                    or container_info.get("host_ip")
-                    or container_info.get("hostIP")
-                    or target_host
-                )
             upgrade = (self.headers.get("Upgrade") or "").lower()
             target_ports: list[int] = []
             for p in ports_q:
@@ -5455,12 +5447,49 @@ class ShimHandler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             if container_info:
-                try:
-                    hp = container_info.get("host_ports") or container_info.get("hostPorts") or []
-                    if hp:
-                        target_ports = [int(hp[0])]
-                except Exception:
-                    pass
+                default_host = "127.0.0.1"
+                pod_ip = container_info.get("pod_ip")
+                host_ip = (
+                    container_info.get("host_ip") or container_info.get("hostIP") or default_host
+                )
+                raw_host_ports = (
+                    container_info.get("host_ports") or container_info.get("hostPorts") or []
+                )
+                host_ports: list[int] = []
+                for hp in raw_host_ports:
+                    try:
+                        host_ports.append(int(hp))
+                    except Exception:
+                        continue
+                raw_port_map = container_info.get("port_map") or container_info.get("portMap") or {}
+                port_map: dict[int, int] = {}
+                if isinstance(raw_port_map, dict):
+                    for cport, hport in raw_port_map.items():
+                        try:
+                            port_map[int(cport)] = int(hport)
+                        except Exception:
+                            continue
+
+                # Prefer pod IP + container port; fall back to host ports when needed.
+                if pod_ip:
+                    target_host = pod_ip
+                    if not target_ports:
+                        if port_map:
+                            target_ports = [sorted(port_map.keys())[0]]
+                        elif host_ports:
+                            target_host = host_ip
+                            target_ports = [host_ports[0]]
+                else:
+                    target_host = host_ip
+                    if target_ports and port_map:
+                        target_ports = [port_map.get(p, p) for p in target_ports]
+                    elif not target_ports:
+                        if host_ports:
+                            target_ports = [host_ports[0]]
+                        elif port_map:
+                            target_ports = [sorted(port_map.values())[0]]
+            else:
+                target_host = "127.0.0.1"
             if isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                 target_host = os.getenv("AE_STUB_BACKEND_HOST", target_host)
                 try:
