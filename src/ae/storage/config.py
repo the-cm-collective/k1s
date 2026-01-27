@@ -31,6 +31,7 @@ class StorageConfig:
     netfs_root: Path
     provisioners_path: Path | None
     default_class: str | None
+    quotas_path: Path | None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "StorageConfig":
@@ -38,7 +39,13 @@ class StorageConfig:
         root = _env_path(use_env, "AE_NETFS_ROOT") or DEFAULT_NETFS_ROOT
         provisioners = _env_path(use_env, "AE_STORAGE_PROVISIONERS")
         default_class = use_env.get("AE_STORAGE_DEFAULT_CLASS") or None
-        return cls(netfs_root=root, provisioners_path=provisioners, default_class=default_class)
+        quotas = _env_path(use_env, "AE_STORAGE_QUOTAS")
+        return cls(
+            netfs_root=root,
+            provisioners_path=provisioners,
+            default_class=default_class,
+            quotas_path=quotas,
+        )
 
 
 @dataclass(slots=True)
@@ -55,6 +62,14 @@ class StorageClassConfig:
     allowed_topologies: list[dict[str, Any]] = field(default_factory=list)
     topology_keys: list[str] = field(default_factory=list)
     is_default: bool = False
+
+
+@dataclass(slots=True)
+class StorageQuotaConfig:
+    """Namespace-scoped storage quota."""
+
+    namespace: str
+    hard_storage: str
 
 
 def _parse_storage_class(raw: Mapping[str, Any]) -> StorageClassConfig | None:
@@ -109,6 +124,38 @@ def _parse_storage_class(raw: Mapping[str, Any]) -> StorageClassConfig | None:
     )
 
 
+def _parse_storage_quota(raw: Mapping[str, Any]) -> StorageQuotaConfig | None:
+    if not raw:
+        return None
+    metadata = raw.get("metadata") if isinstance(raw, dict) else None
+    spec = raw.get("spec") if isinstance(raw, dict) else None
+    if not isinstance(spec, dict):
+        spec = raw if isinstance(raw, dict) else {}
+    namespace = (
+        spec.get("namespace")
+        or (metadata.get("namespace") if isinstance(metadata, dict) else None)
+        or (metadata.get("name") if isinstance(metadata, dict) else None)
+        or raw.get("namespace")
+    )
+    if not namespace:
+        return None
+    hard_storage = None
+    hard = spec.get("hard") if isinstance(spec, dict) else None
+    if isinstance(hard, dict):
+        hard_storage = (
+            hard.get("requests.storage")
+            or hard.get("requests.storage")
+            or hard.get("storage")
+        )
+    elif hard:
+        hard_storage = hard
+    if hard_storage is None:
+        hard_storage = spec.get("storage") or spec.get("requests.storage")
+    if hard_storage is None:
+        return None
+    return StorageQuotaConfig(namespace=str(namespace), hard_storage=str(hard_storage))
+
+
 def load_storage_classes(path: Path | None) -> list[StorageClassConfig]:
     """Load StorageClass definitions from YAML."""
 
@@ -135,6 +182,35 @@ def load_storage_classes(path: Path | None) -> list[StorageClassConfig]:
             sc = _parse_storage_class(raw)
             if sc is not None:
                 out.append(sc)
+    return out
+
+
+def load_storage_quotas(path: Path | None) -> list[StorageQuotaConfig]:
+    """Load namespace storage quotas from YAML."""
+
+    if path is None or not path.exists():
+        return []
+    docs = list(yaml.safe_load_all(path.read_text(encoding="utf-8")))
+    if not docs:
+        return []
+    out: list[StorageQuotaConfig] = []
+    for data in docs:
+        if not data:
+            continue
+        items: list[Mapping[str, Any]] = []
+        if isinstance(data, list):
+            items = [d for d in data if isinstance(d, dict)]
+        elif isinstance(data, dict):
+            if isinstance(data.get("items"), list):
+                items = [d for d in data.get("items") if isinstance(d, dict)]
+            else:
+                items = [data]
+        for raw in items:
+            if raw.get("kind") and str(raw.get("kind")) not in {"StorageQuota", "ResourceQuota"}:
+                continue
+            quota = _parse_storage_quota(raw)
+            if quota is not None:
+                out.append(quota)
     return out
 
 

@@ -19,7 +19,9 @@ from .config import (
     DEFAULT_CLASS_ANNOTATIONS,
     StorageClassConfig,
     StorageConfig,
+    StorageQuotaConfig,
     load_storage_classes,
+    load_storage_quotas,
     select_default_class,
 )
 
@@ -72,6 +74,7 @@ class StorageController:
         self._default_class = self._resolve_default(self._storage_classes)
         self._default_snapshot_class: str | None = None
         self._volume_health: dict[str, bool] = {}
+        self._storage_quotas = load_storage_quotas(self._config.quotas_path)
         self._capacity_namespace = os.getenv("AE_NETFS_CAPACITY_NAMESPACE", "default")
         self._stop = threading.Event()
         self._pvc_thread: threading.Thread | None = None
@@ -312,6 +315,7 @@ class StorageController:
 
     def _capacity_targets(self, storage_classes: list[Any], pvs: list[Any]) -> list[dict[str, Any]]:
         targets: dict[str, dict[str, Any]] = {}
+        pv_roots: set[tuple[str, Path]] = set()
 
         for pv in pvs:
             sc_name = self._pv_storage_class(pv)
@@ -328,6 +332,7 @@ class StorageController:
                 "host_root": host_root,
                 "node_topology": topology,
             }
+            pv_roots.add((sc_name, host_root))
 
         for sc in storage_classes:
             spec = sc.spec or {}
@@ -338,6 +343,8 @@ class StorageController:
                 continue
             host_root = self._storage_class_host_root(spec, provisioner)
             if host_root is None:
+                continue
+            if (sc.name, host_root) in pv_roots:
                 continue
             topology = self._storage_class_topology(spec)
             key = self._capacity_key(sc.name, topology, host_root)
@@ -464,6 +471,10 @@ class StorageController:
                     self._bind(pvc, pv)
                     self._reconcile_csi_attachment(pvc, pv)
                     self._maybe_expand_bound_volume(pvc, pv)
+            return
+
+        if not self._quota_allows_pvc(pvc):
+            self._ensure_pvc_phase(pvc, "Pending")
             return
 
         pv = self._match_pv_for_pvc(pvc)
@@ -616,6 +627,78 @@ class StorageController:
         if not pv_vm:
             return True
         return str(pv_vm) == str(pvc_vm)
+
+    def _quota_for_namespace(self, namespace: str | None) -> StorageQuotaConfig | None:
+        if not namespace:
+            return None
+        for quota in self._storage_quotas:
+            if quota.namespace == namespace:
+                return quota
+        return None
+
+    def _quota_bytes(self, namespace: str | None) -> int | None:
+        quota = self._quota_for_namespace(namespace)
+        if quota is None:
+            return None
+        return self._quantity_bytes(quota.hard_storage)
+
+    def _namespace_storage_usage(self, namespace: str, *, exclude: tuple[str, str | None] | None) -> int:
+        try:
+            pvcs = self._store.list_all(CORE_GROUP, CORE_VERSION, PVC_RESOURCE)
+        except Exception:
+            return 0
+        total = 0
+        for pvc in pvcs:
+            if pvc.namespace != namespace:
+                continue
+            if exclude is not None:
+                name, uid = exclude
+                if pvc.name == name:
+                    meta = pvc.metadata or {}
+                    pvc_uid = meta.get("uid") if isinstance(meta, dict) else None
+                    if uid is None or uid == pvc_uid:
+                        continue
+            requested = self._pvc_requested_storage(pvc)
+            if not requested:
+                continue
+            req_bytes = self._quantity_bytes(requested)
+            if req_bytes is None:
+                continue
+            total += req_bytes
+        return total
+
+    def _quota_allows_pvc(self, pvc) -> bool:
+        quota_bytes = self._quota_bytes(pvc.namespace)
+        if quota_bytes is None:
+            return True
+        requested_raw = self._pvc_requested_storage(pvc)
+        if not requested_raw:
+            return True
+        requested = self._quantity_bytes(requested_raw)
+        if requested is None:
+            return True
+        pvc_uid = (pvc.metadata or {}).get("uid") if isinstance(pvc.metadata, dict) else None
+        usage = self._namespace_storage_usage(
+            pvc.namespace or "", exclude=(pvc.name, pvc_uid)
+        )
+        if usage + requested > quota_bytes:
+            self._record_pvc_event(
+                pvc,
+                "StorageQuotaExceeded",
+                f"namespace storage quota exceeded: requested {requested_raw}",
+            )
+            return False
+        return True
+
+    def _quota_allows_expansion(self, pvc, requested_bytes: int) -> bool:
+        quota_bytes = self._quota_bytes(pvc.namespace)
+        if quota_bytes is None:
+            return True
+        pvc_uid = (pvc.metadata or {}).get("uid") if isinstance(pvc.metadata, dict) else None
+        usage = self._namespace_storage_usage(
+            pvc.namespace or "", exclude=(pvc.name, pvc_uid)
+        )
+        return usage + requested_bytes <= quota_bytes
 
     def _bind(self, pvc, pv) -> None:
         pvc_spec = dict(pvc.spec or {})
@@ -790,6 +873,13 @@ class StorageController:
         if requested is None or current is None:
             return
         if requested <= current:
+            return
+        if not self._quota_allows_expansion(pvc, requested):
+            self._record_pvc_event(
+                pvc,
+                "StorageQuotaExceeded",
+                "expansion would exceed namespace storage quota",
+            )
             return
 
         if not self._storage_class_allows_expansion(pvc, pv):
