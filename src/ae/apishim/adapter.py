@@ -15,7 +15,7 @@ from ae.controller.reconciler import Reconciler
 from ae.controller.spec import AppManifest, IngressSpec, ServiceSpec, app_key_for_manifest
 from ae.controller.state import SQLiteStateStore
 from ae.k8s import convert as k8s_convert
-from ae.runtime import DockerRuntime, PodmanRuntime, RuntimeAdapter, StubRuntime
+from ae.runtime import CRIRuntime, DockerRuntime, PodmanRuntime, RuntimeAdapter, StubRuntime
 
 from .store import K8sObject, ObjectStore
 
@@ -67,6 +67,8 @@ def _runtime_from_env() -> RuntimeAdapter:
     backend = (os.getenv("AE_APISHIM_RUNTIME") or os.getenv("AE_RUNTIME_BACKEND") or "stub").lower()
     if backend in {"stub", "test"}:
         return StubRuntime()
+    if backend in {"cri", "containerd"}:
+        return CRIRuntime()
     if backend in {"podman", "oci"}:
         try:
             return PodmanRuntime()
