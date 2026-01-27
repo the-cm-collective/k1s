@@ -702,6 +702,52 @@ def test_storage_controller_storage_capacity_topology(tmp_path):
     )
 
 
+def test_storage_controller_storage_capacity_override(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    sc_spec = {
+        "provisioner": "csi.example.com",
+        "parameters": {"capacity": "5Gi"},
+        "allowedTopologies": [
+            {
+                "matchLabelExpressions": [
+                    {
+                        "key": "topology.kubernetes.io/zone",
+                        "operator": "In",
+                        "values": ["zone-a"],
+                    }
+                ]
+            }
+        ],
+    }
+    store.upsert(
+        "storage.k8s.io",
+        "v1",
+        "storageclasses",
+        None,
+        "csi-ext",
+        {"name": "csi-ext"},
+        sc_spec,
+        status={},
+    )
+
+    controller.reconcile_once()
+
+    caps = store.list_all("storage.k8s.io", "v1", "csistoragecapacities")
+    assert caps
+    cap = next((c for c in caps if (c.spec or {}).get("storageClassName") == "csi-ext"), None)
+    assert cap is not None
+    assert int((cap.spec or {}).get("capacity") or 0) == 5 * 1024 * 1024 * 1024
+    topo = (cap.spec or {}).get("nodeTopology") or {}
+    exprs = topo.get("matchExpressions") if isinstance(topo, dict) else []
+    assert any(
+        isinstance(e, dict)
+        and e.get("key") == "topology.kubernetes.io/zone"
+        and "zone-a" in (e.get("values") or [])
+        for e in (exprs or [])
+    )
+
+
 def test_storage_controller_snapshot_and_clone_nfs(tmp_path):
     store = ObjectStore(db_path=tmp_path / "apishim.db")
     controller = StorageController(store)
