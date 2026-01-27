@@ -443,4 +443,119 @@ def test_scheduler_respects_selected_node_for_csi_single_writer(tmp_path):
     assert placements[0].node.node_id == "n2"
 
 
+def test_scheduler_limits_replicas_for_rwop(tmp_path):
+    shim = ObjectStore(db_path=tmp_path / "apishim.db")
+    pvc_spec = {
+        "accessModes": ["ReadWriteOncePod"],
+        "storageClassName": "rwop",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    shim.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "data",
+        {"name": "data", "namespace": "default", "uid": "pvc-uid"},
+        pvc_spec,
+        status={"phase": "Pending"},
+    )
+
+    store = _store_with_nodes(tmp_path)
+    store.upsert_node("n1", name="n1", labels={}, taints=[], backend="podman", endpoint="n1")
+    store.upsert_node("n2", name="n2", labels={}, taints=[], backend="podman", endpoint="n2")
+    store.record_heartbeat("n1", "Ready")
+    store.record_heartbeat("n2", "Ready")
+    man = _manifest(replicas=3).model_copy(
+        update={
+            "spec": AppSpec(
+                image="busybox",
+                replicas=3,
+                pvc_mounts=[{"claimName": "data", "mountPath": "/data"}],
+            )
+        }
+    )
+
+    sched = Scheduler(store)
+    placements, warnings = sched.plan(man, revision=1)
+    total = sum(len(p.replica_ids) for p in placements)
+    assert total == 1
+    assert any("ReadWriteOncePod PVCs limit replicas to 1" in w for w in warnings)
+
+
+def test_scheduler_filters_allowed_topologies(tmp_path):
+    shim = ObjectStore(db_path=tmp_path / "apishim.db")
+    sc_spec = {
+        "provisioner": "k1s.io/nfs",
+        "allowedTopologies": [
+            {
+                "matchLabelExpressions": [
+                    {"key": "topology.kubernetes.io/zone", "values": ["zone-a"]}
+                ]
+            }
+        ],
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteMany"],
+        "storageClassName": "zoned",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    shim.upsert(
+        "storage.k8s.io",
+        "v1",
+        "storageclasses",
+        None,
+        "zoned",
+        {"name": "zoned"},
+        sc_spec,
+        status={},
+    )
+    shim.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "data",
+        {"name": "data", "namespace": "default", "uid": "pvc-uid"},
+        pvc_spec,
+        status={"phase": "Pending"},
+    )
+
+    store = _store_with_nodes(tmp_path)
+    store.upsert_node(
+        "n1",
+        name="n1",
+        labels={"topology.kubernetes.io/zone": "zone-a"},
+        taints=[],
+        backend="podman",
+        endpoint="n1",
+    )
+    store.upsert_node(
+        "n2",
+        name="n2",
+        labels={"topology.kubernetes.io/zone": "zone-b"},
+        taints=[],
+        backend="podman",
+        endpoint="n2",
+    )
+    store.record_heartbeat("n1", "Ready")
+    store.record_heartbeat("n2", "Ready")
+    man = _manifest(replicas=2).model_copy(
+        update={
+            "spec": AppSpec(
+                image="busybox",
+                replicas=2,
+                pvc_mounts=[{"claimName": "data", "mountPath": "/data"}],
+            )
+        }
+    )
+
+    sched = Scheduler(store)
+    placements, warnings = sched.plan(man, revision=1)
+    assert len(placements) == 1
+    assert placements[0].node is not None
+    assert placements[0].node.node_id == "n1"
+    assert any("filtered eligible nodes by storage allowedTopologies" in w for w in warnings)
+
+
 # ruff: noqa: E501
