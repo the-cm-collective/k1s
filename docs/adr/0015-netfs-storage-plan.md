@@ -1,4 +1,22 @@
-# Network storage (NetFS) plan for k1s
+# ADR 0015 — NetFS storage plan
+
+Date: 2026-01-27
+Status: Accepted
+Owners: storage/controller/runtime
+
+## Context
+- k1s needed a CSI-aligned storage plan that could scale from NFS-only to full CSI semantics.
+- The existing PVC/PV contract required a consistent node + controller lifecycle.
+
+## Decision
+- Adopt the NetFS plan below as the canonical design and rollout strategy.
+- Align implementation phases with Kubernetes semantics (PVC/PV lifecycle, attachments, snapshots).
+
+## Consequences
+- Storage work is organized by explicit phases with concrete exit criteria.
+- CSI semantics drive interfaces even when the implementation is partial.
+
+## Plan details
 
 This doc covers:
 - A NetFS storage skeleton and how to wire it into runtime and apishim flows.
