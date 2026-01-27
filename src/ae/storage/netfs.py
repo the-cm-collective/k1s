@@ -50,13 +50,22 @@ class NetFSManager:
         self._root = Path(root)
         self._nfs_tools_ok: bool | None = None
 
-    def ensure_mount(self, pvc: PvcRef, *, node_id: str, fs_group: int | None = None) -> NetFSMount:
+    def ensure_mount(
+        self,
+        pvc: PvcRef,
+        *,
+        node_id: str,
+        fs_group: int | None = None,
+        selinux: dict[str, str] | None = None,
+    ) -> NetFSMount:
         """Ensure PV is attached (if needed) and mounted on the node."""
 
         existing = self._state.get_mount(pvc, node_id)
         if existing is not None:
             if fs_group is not None:
                 self._apply_fs_group(pvc, Path(existing.host_path), fs_group)
+            if selinux:
+                self._apply_selinux(pvc, Path(existing.host_path), selinux)
             return existing
 
         pv = self._state.get_pv_for_pvc(pvc)
@@ -76,12 +85,12 @@ class NetFSManager:
         nfs = pv_spec.get("nfs") if isinstance(pv_spec, dict) else None
         if isinstance(nfs, dict):
             return self._ensure_nfs_mount(
-                pvc, pv, pv_spec, nfs, node_id=node_id, fs_group=fs_group
+                pvc, pv, pv_spec, nfs, node_id=node_id, fs_group=fs_group, selinux=selinux
             )
         csi = pv_spec.get("csi") if isinstance(pv_spec, dict) else None
         if isinstance(csi, dict):
             return self._ensure_csi_mount(
-                pvc, pv, pv_spec, csi, node_id=node_id, fs_group=fs_group
+                pvc, pv, pv_spec, csi, node_id=node_id, fs_group=fs_group, selinux=selinux
             )
         msg = "NetFS supports NFS and CSI PVs in this phase"
         self._record_pvc_event(pvc, "UnsupportedVolume", msg)
@@ -120,6 +129,39 @@ class NetFSManager:
             msg = str(exc) or "failed to apply fsGroup"
             self._record_pvc_event(pvc, "FsGroupApplyFailed", msg)
 
+    def _apply_selinux(self, pvc: PvcRef, target: Path, opts: dict[str, str]) -> None:
+        if not target.exists():
+            return
+        if os.geteuid() != 0:
+            self._record_pvc_event(
+                pvc, "SelinuxRelabelSkipped", "insufficient privileges to apply SELinux label"
+            )
+            return
+        if not shutil.which("chcon"):
+            self._record_pvc_event(pvc, "SelinuxRelabelSkipped", "chcon not available")
+            return
+        args = ["chcon"]
+        user = opts.get("user")
+        role = opts.get("role")
+        typ = opts.get("type")
+        level = opts.get("level")
+        if user:
+            args += ["-u", user]
+        if role:
+            args += ["-r", role]
+        if typ:
+            args += ["-t", typ]
+        if level:
+            args += ["-l", level]
+        if len(args) == 1:
+            return
+        args.append(str(target))
+        try:
+            subprocess.run(args, check=True, capture_output=True, text=True)  # noqa: S603,S607
+        except subprocess.CalledProcessError as exc:
+            msg = (exc.stderr or exc.stdout or "").strip() or "SELinux relabel failed"
+            self._record_pvc_event(pvc, "SelinuxRelabelFailed", msg)
+
     def _ensure_nfs_mount(
         self,
         pvc: PvcRef,
@@ -129,6 +171,7 @@ class NetFSManager:
         *,
         node_id: str,
         fs_group: int | None = None,
+        selinux: dict[str, str] | None = None,
     ) -> NetFSMount:
         server = nfs.get("server")
         path = nfs.get("path")
@@ -174,6 +217,8 @@ class NetFSManager:
 
         if fs_group is not None:
             self._apply_fs_group(pvc, target, fs_group)
+        if selinux:
+            self._apply_selinux(pvc, target, selinux)
         self._maybe_resize_filesystem(pvc, target)
 
         mount = NetFSMount(
@@ -195,6 +240,7 @@ class NetFSManager:
         *,
         node_id: str,
         fs_group: int | None = None,
+        selinux: dict[str, str] | None = None,
     ) -> NetFSMount:
         _ = pv_spec
         driver = csi.get("driver")
@@ -238,6 +284,8 @@ class NetFSManager:
 
         if fs_group is not None:
             self._apply_fs_group(pvc, target, fs_group)
+        if selinux:
+            self._apply_selinux(pvc, target, selinux)
         self._maybe_resize_filesystem(pvc, target)
 
         read_only = bool(csi.get("readOnly", False))
