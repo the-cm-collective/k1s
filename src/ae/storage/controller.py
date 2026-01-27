@@ -41,6 +41,7 @@ SNAP_VERSION = "v1"
 SNAPSHOT_RESOURCE = "volumesnapshots"
 SNAPCLASS_RESOURCE = "volumesnapshotclasses"
 SNAPCONTENT_RESOURCE = "volumesnapshotcontents"
+SNAP_DEFAULT_CLASS_ANNOTATIONS = ("snapshot.storage.kubernetes.io/is-default-class",)
 
 NFS_PROVISIONER = "k1s.io/nfs"
 LOCAL_PATH_PROVISIONER = "k1s.io/local-path"
@@ -68,6 +69,7 @@ class StorageController:
         self._config = config or StorageConfig.from_env()
         self._storage_classes = load_storage_classes(self._config.provisioners_path)
         self._default_class = self._resolve_default(self._storage_classes)
+        self._default_snapshot_class: str | None = None
         self._stop = threading.Event()
         self._pvc_thread: threading.Thread | None = None
         self._pv_thread: threading.Thread | None = None
@@ -758,7 +760,27 @@ class StorageController:
         }, False
 
     def _reconcile_snapshot(self, snapshot) -> None:
-        spec = snapshot.spec or {}
+        spec = dict(snapshot.spec or {})
+        class_name = spec.get("volumeSnapshotClassName")
+        if not class_name:
+            default_class = self._default_snapshot_class_name()
+            if default_class:
+                spec["volumeSnapshotClassName"] = default_class
+                snapshot = self._store.upsert(
+                    SNAP_GROUP,
+                    SNAP_VERSION,
+                    SNAPSHOT_RESOURCE,
+                    snapshot.namespace,
+                    snapshot.name,
+                    snapshot.metadata,
+                    spec,
+                    status=snapshot.status or {},
+                )
+                self._record_snapshot_event(
+                    snapshot,
+                    "SnapshotClassDefaulted",
+                    f"defaulted volumeSnapshotClassName to {default_class}",
+                )
         source = spec.get("source") if isinstance(spec, dict) else None
         source = source if isinstance(source, dict) else {}
         pvc_name = source.get("persistentVolumeClaimName")
@@ -937,6 +959,28 @@ class StorageController:
                     driver = str(annotations.get(STORAGE_PROVISIONER_ANNOTATION) or "")
         deletion_policy = str(class_spec.get("deletionPolicy") or "Retain")
         return driver or "k1s.io/unknown", deletion_policy
+
+    def _default_snapshot_class_name(self) -> str | None:
+        if self._default_snapshot_class:
+            return self._default_snapshot_class
+        try:
+            classes = self._store.list_all(SNAP_GROUP, SNAP_VERSION, SNAPCLASS_RESOURCE)
+        except Exception:
+            return None
+        for snap_class in classes:
+            meta = getattr(snap_class, "metadata", None)
+            annotations = meta.get("annotations") if isinstance(meta, dict) else {}
+            if not isinstance(annotations, dict):
+                continue
+            for key in SNAP_DEFAULT_CLASS_ANNOTATIONS:
+                raw = annotations.get(key)
+                if raw is not None and str(raw).lower() in {"true", "1", "yes"}:
+                    self._default_snapshot_class = snap_class.name
+                    return self._default_snapshot_class
+        if classes:
+            self._default_snapshot_class = classes[0].name
+            return self._default_snapshot_class
+        return None
 
     def _snapshot_content_backing(self, content) -> tuple[Path, Path] | None:
         if content is None:

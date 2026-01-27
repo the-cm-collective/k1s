@@ -280,7 +280,7 @@ Exit criteria:
 - Keep `spec.storage` (named volumes) as default until Phase 2 completes.
 - Enable NetFS only on nodes labeled `storage=netfs` (or equivalent).
 - Gate StorageClass defaults per environment (local vs NFS).
-- Document known limitations (no Block mode, no snapshots until Phase 4).
+- Document known limitations (no Block mode, snapshots are hostPath-backed only).
 
 ---
 
@@ -338,6 +338,8 @@ Exit criteria:
 - Snapshot / clone (basic hostPath-backed snapshots implemented)
   - `VolumeSnapshot` reconciliation creates `VolumeSnapshotContent` and copies
     hostPath data into `.snapshots/<snapshot-uid>` under the storage root.
+  - Snapshot classes follow default-class semantics via
+    `snapshot.storage.kubernetes.io/is-default-class: "true"`.
   - PVC `dataSource` `VolumeSnapshot` restores snapshot data into new hostPath
     volumes for NFS and local-path provisioners.
   - CSI driver-managed snapshots/clones are not implemented yet.
