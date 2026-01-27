@@ -256,6 +256,7 @@ class PodSecuritySpec(BaseModel):
 
     - fsGroup: numeric GID applied to mounted volumes
     - seccompProfile at Pod level (type + localhostProfile)
+    - seLinuxOptions fields for SELinux context
     """
 
     fs_group: Optional[int] = Field(default=None, alias="fsGroup")
@@ -263,6 +264,10 @@ class PodSecuritySpec(BaseModel):
         default=None, alias="seccompProfileType"
     )
     seccomp_localhost_profile: Optional[str] = Field(default=None, alias="seccompLocalhostProfile")
+    selinux_user: Optional[str] = Field(default=None, alias="seLinuxUser")
+    selinux_role: Optional[str] = Field(default=None, alias="seLinuxRole")
+    selinux_type: Optional[str] = Field(default=None, alias="seLinuxType")
+    selinux_level: Optional[str] = Field(default=None, alias="seLinuxLevel")
 
     model_config = {"populate_by_name": True}
 

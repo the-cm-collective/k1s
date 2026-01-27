@@ -507,7 +507,10 @@ def test_pod_security_fs_group_and_pod_seccomp() -> None:
     from ae.controller.spec import PodSecuritySpec
 
     psec = PodSecuritySpec(
-        fs_group=2000, seccomp_type="Localhost", seccomp_localhost_profile="profiles/pod.json"
+        fs_group=2000,
+        seccomp_type="Localhost",
+        seccomp_localhost_profile="profiles/pod.json",
+        selinux_type="container_file_t",
     )
     man = man.model_copy(update={"spec": man.spec.model_copy(update={"pod_security": psec})})
     docs = export_k8s_docs(man, options=ExportOptions(namespace="demo"))
@@ -516,6 +519,7 @@ def test_pod_security_fs_group_and_pod_seccomp() -> None:
     assert psec.get("fsGroup") == 2000
     assert psec.get("seccompProfile", {}).get("type") == "Localhost"
     assert psec.get("seccompProfile", {}).get("localhostProfile") == "profiles/pod.json"
+    assert psec.get("seLinuxOptions", {}).get("type") == "container_file_t"
 
 
 def test_lifecycle_hooks_exported() -> None:

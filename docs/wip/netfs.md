@@ -364,7 +364,7 @@ Exit criteria:
   - Scheduler filters eligible nodes by `topologyKeys` / `allowedTopologies`.
 - SELinux + fsGroup (best-effort for local runtime)
   - `fsGroup` is applied to NetFS mount points on the node when provided.
-  - SELinux relabeling remains a future enhancement for host-mounted volumes.
+  - SELinux relabeling is best-effort via `chcon` when `seLinuxOptions` are set.
 
 ---
 
@@ -447,5 +447,5 @@ Optional (SMB / CSI):
 - Volume expansion with filesystem resize in containers.
 - (Extended) CSI capacity/topology reporting for multi-node and external CSI drivers.
 - Volume health checks and metrics aligned with K8s events.
-- SELinux and fsGroup policies for shared volumes.
+- SELinux relabeling improvements for shared volumes.
 - Per-namespace quota enforcement and usage tracking.
