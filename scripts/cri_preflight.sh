@@ -2,6 +2,14 @@
 set -euo pipefail
 
 endpoint="${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}"
+crictl_bin="${CRICTL_BIN:-crictl}"
+require_network_ready="${AE_CRI_REQUIRE_NETWORK_READY:-0}"
+if [[ -n "${AE_CRI_REQUIRE_RUNTIME_READY:-}" ]]; then
+  require_runtime_ready="${AE_CRI_REQUIRE_RUNTIME_READY}"
+else
+  # Default to strict runtime readiness only when running as root.
+  require_runtime_ready=$([[ "${EUID}" -eq 0 ]] && echo "1" || echo "0")
+fi
 
 if [[ "$endpoint" == unix://* ]]; then
   sock="${endpoint#unix://}"
@@ -13,10 +21,59 @@ else
   echo "Non-unix CRI endpoint configured: $endpoint"
 fi
 
-if ! command -v crictl >/dev/null 2>&1; then
+if ! command -v "$crictl_bin" >/dev/null 2>&1; then
   echo "crictl not found; install for debugging" >&2
 else
-  echo "crictl: $(command -v crictl)"
+  echo "crictl: $(command -v "$crictl_bin")"
+  info_tmp="$(mktemp)"
+  trap 'rm -f "$info_tmp"' EXIT
+  if ! "$crictl_bin" --runtime-endpoint "$endpoint" info >"$info_tmp" 2>/dev/null; then
+    echo "crictl info failed for endpoint: $endpoint" >&2
+    if [[ "$require_runtime_ready" == "1" || "$require_network_ready" == "1" ]]; then
+      exit 1
+    fi
+  else
+    python - "$info_tmp" "$require_runtime_ready" "$require_network_ready" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+require_runtime = sys.argv[2] == "1"
+require_network = sys.argv[3] == "1"
+
+with open(path, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+
+conds = {}
+for cond in (data.get("status", {}) or {}).get("conditions", []) or []:
+    ctype = str(cond.get("type") or "")
+    cstatus = bool(cond.get("status"))
+    conds[ctype] = (cstatus, str(cond.get("message") or ""))
+
+runtime_ready, runtime_msg = conds.get("RuntimeReady", (False, "missing condition"))
+network_ready, network_msg = conds.get("NetworkReady", (False, "missing condition"))
+
+print(f"CRI condition RuntimeReady={runtime_ready}")
+if runtime_msg:
+    print(f"RuntimeReady message: {runtime_msg}")
+print(f"CRI condition NetworkReady={network_ready}")
+if network_msg:
+    print(f"NetworkReady message: {network_msg}")
+
+if require_runtime and not runtime_ready:
+    sys.exit(2)
+if require_network and not network_ready:
+    sys.exit(3)
+PY
+    rc=$?
+    if [[ $rc -eq 2 ]]; then
+      echo "RuntimeReady is false" >&2
+      exit 1
+    elif [[ $rc -eq 3 ]]; then
+      echo "NetworkReady is false" >&2
+      exit 1
+    fi
+  fi
 fi
 
 if [[ "${AE_ENABLE_SERVICE_PROXY:-0}" == "1" ]]; then
