@@ -3939,6 +3939,9 @@ def handle_metrics(args: argparse.Namespace, store: SQLiteStateStore) -> int:
                     "total_replicas": snapshot.total_replicas,
                     "ready_replicas": snapshot.ready_replicas,
                     "live_replicas": snapshot.live_replicas,
+                    "total_pvs": snapshot.total_pvs,
+                    "healthy_pvs": snapshot.healthy_pvs,
+                    "unhealthy_pvs": snapshot.unhealthy_pvs,
                 },
                 indent=2,
             )
@@ -3951,6 +3954,10 @@ def handle_metrics(args: argparse.Namespace, store: SQLiteStateStore) -> int:
     print(
         f"replicas total={snapshot.total_replicas} ready={snapshot.ready_replicas} live={snapshot.live_replicas}"
     )
+    if snapshot.total_pvs:
+        print(
+            f"volumes total={snapshot.total_pvs} healthy={snapshot.healthy_pvs} unhealthy={snapshot.unhealthy_pvs}"
+        )
     return 0
 
 
