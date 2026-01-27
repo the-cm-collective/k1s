@@ -706,6 +706,7 @@
 <h2>Prereqs</h2>
 <ul>
 <li>Two hosts (or VMs) with Python 3.11+, Podman or Docker, WireGuard tools (<code>wg</code>, <code>wg-quick</code>), and passwordless SSH between them for convenience.</li>
+<li>Optional (CRI/containerd): containerd + CNI + <code>crictl</code> installed on nodes using <code>--runtime-backend cri</code>.</li>
 <li>Rootful networking on both nodes (rootless overlay is not supported); a small privileged helper is required to attach WireGuard.</li>
 <li>Controller host exposes TCP 9110 (agent API) and UDP 51820 (or your chosen WireGuard port).</li>
 <li>Clone this repo on the controller; worker only needs <code>ae</code> installed plus the <code>ae-node</code> entrypoint.</li>

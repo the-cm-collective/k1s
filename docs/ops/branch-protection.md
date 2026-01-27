@@ -10,7 +10,9 @@ Use this checklist to ensure the live OpenAPI gate is required on `main`.
    - `apishim-live-openapi / live-openapi (target=local, runtime=docker)`
 4. Optional (only if external kubeconfig/kind is configured and always available):
    - `apishim-live-openapi / live-openapi (target=external, runtime=stub)`
-5. Save the rule and verify a new PR shows the required checks.
+5. Optional (only if a CRI-capable runner is always available):
+   - `cri-ci / cri-integration`
+6. Save the rule and verify a new PR shows the required checks.
 
 Notes:
 - Do not require the external check unless `APISHIM_LIVE_KUBECONFIG_B64` or `APISHIM_KIND_CLUSTER`
