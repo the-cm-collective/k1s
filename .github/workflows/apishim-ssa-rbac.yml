@@ -65,6 +65,7 @@ jobs:
           AE_APISHIM_RBAC: "1"
           AE_APISHIM_RBAC_EVAL: "1"
           AE_APISHIM_PATCH_DEBUG: "1"
+          AE_APISHIM_ADAPTER: "0"
           AE_RUNTIME_BACKEND: "stub"
           PYTHONPATH: "src"
         run: |
