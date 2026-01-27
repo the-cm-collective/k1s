@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -32,6 +33,9 @@ def run(cmd: list[str], env=None, cwd=None, timeout=20):
         env_all.update(env)
     # Ensure local src is importable when spawning helper scripts
     env_all.setdefault("PYTHONPATH", "src")
+    # Use the current interpreter so venv-installed deps are available.
+    if cmd and cmd[0] == "python":
+        cmd = [sys.executable, *cmd[1:]]
     return subprocess.run(
         cmd, env=env_all, cwd=cwd, check=True, capture_output=True, text=True, timeout=timeout
     )
@@ -75,7 +79,7 @@ def _start_apishim(state_db: Path, apishim_db: Path) -> ShimProc:
     stderr = tempfile.NamedTemporaryFile(prefix="apishim-", suffix=".err", delete=False)
     proc = subprocess.Popen(
         [
-            "python",
+            sys.executable,
             "-m",
             "ae.apishim",
             "serve",
