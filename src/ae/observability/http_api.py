@@ -3591,7 +3591,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     </script>
     <style>
       :root { color-scheme: light dark; --header-h: 60px; --k1s-brand-gold: #fbc02d; --k1s-brand-graphite: #404040; }
-      body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; overflow-x:hidden; }
+      body {
+        margin:0;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        overflow-x:hidden;
+        background-color:#0b0f14;
+        background-image:
+          linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72)),
+          url('/static/dash-assets/page-background-3840x2160.png');
+        background-size: 100% 100%, auto 100%;
+        background-position: center, center top;
+        background-repeat: no-repeat, no-repeat;
+      }
       header { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; background:#0a0a0a10; position:sticky; top:0; backdrop-filter: blur(4px); z-index: 40; border-bottom:1px solid #8884; }
       header::after { content:""; position:absolute; left:14px; right:14px; bottom:0; height:2px; border-radius:999px; background: linear-gradient(90deg, transparent, var(--k1s-brand-gold), transparent); opacity:.5; pointer-events:none; }
       .brand-title { display:flex; align-items:center; gap:10px; font-size:18px; letter-spacing:.01em; }
@@ -3680,6 +3691,31 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       footer.site-footer { margin: 0 12px 12px; border-top:1px solid #8884; padding-top:10px; opacity:.85; }
       .hover-card { position:absolute; display:none; max-width:280px; font-size:12px; line-height:1.35; background:rgba(255,255,255,0.95); color:inherit; border:1px solid #888; border-radius:6px; padding:8px 10px; box-shadow:0 2px 8px rgba(0,0,0,0.1); pointer-events:none; z-index: 1000; }
       @media (prefers-color-scheme: dark) { .hover-card { background:rgba(17,17,17,0.9); border-color:#555; } }
+      .graph-surface {
+        position:relative;
+        width:100%;
+        height:420px;
+        margin-top:8px;
+        border-radius:12px;
+        border:1px solid rgba(148,163,184,0.35);
+        background-color: rgba(2,6,23,0.9);
+        background-image: url('/static/dash-assets/system-graph-background-1920x1080.png');
+        background-position: center;
+        background-size: cover;
+        background-repeat: no-repeat;
+        overflow:hidden;
+        box-shadow: inset 0 0 0 1px rgba(15,23,42,0.6), 0 12px 30px rgba(2,6,23,0.35);
+      }
+      .graph-surface::before {
+        content:"";
+        position:absolute;
+        inset:0;
+        background:
+          radial-gradient(circle at 15% 20%, rgba(30,41,59,0.18), rgba(2,6,23,0.7) 65%),
+          linear-gradient(135deg, rgba(2,6,23,0.18), rgba(15,23,42,0.55));
+        pointer-events:none;
+      }
+      #sys-graph { position:relative; z-index:1; }
       h2 { font-size:14px; margin: 14px 4px 6px; opacity:0.9; }
       .divider { border-top:1px solid #8884; margin:16px 0; }
       .modal-overlay { position:fixed; inset:0; background:rgba(2,6,23,0.65); display:flex; align-items:center; justify-content:center; z-index: 90; }
@@ -3805,44 +3841,43 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         </div>
         <div class=\"card\" style=\"margin-top:12px;\">
           <strong>System Graph</strong>
-          <div id=\"graph-wrap\" style=\"position:relative; width:100%; height:420px; margin-top:8px; background:#0001; border-radius:6px;\">
+          <div id=\"graph-wrap\" class=\"graph-surface\">
             <svg id=\"sys-graph\" viewBox=\"0 0 1000 420\" preserveAspectRatio=\"xMidYMid meet\" style=\"width:100%; height:100%;\">
               <defs>
                 <marker id=\"arrow\" markerWidth=\"10\" markerHeight=\"10\" refX=\"10\" refY=\"3\" orient=\"auto\">
                   <path d=\"M0,0 L10,3 L0,6 Z\" fill=\"#9ca3af\" />
                 </marker>
                 <style>
-                  .node text { font-size:12px; pointer-events:none; fill:#f8fafc; paint-order: stroke; stroke:rgba(0,0,0,0.65); stroke-width:2; }
-                  .node .node-shape { stroke-width:1.2; }
-                  .node.system .node-shape { fill:#e5e7eb; stroke:#6b7280; }
-                  .node.worker .node-shape { fill:#e0f2fe; stroke:#0284c7; }
-                  .node.worker.stale .node-shape { fill:#fee2e2; stroke:#ef4444; }
-                  .node.worker.cordoned .node-shape { fill:#fef3c7; stroke:#f59e0b; }
-                  .node.app .node-shape { fill:var(--ns-color, #3b82f6); stroke:var(--ns-color, #3b82f6); }
-                  .node.app .ns-stripe { fill:var(--ns-color, #3b82f6); opacity:.35; }
-                  .node.pod circle { fill:#e5e7eb; stroke:#6b7280; }
-                  .label-chip { fill:rgba(8,12,18,0.85); stroke:rgba(255,255,255,0.18); stroke-width:0.8; }
-                  .node.pod.ready circle { fill:#dcfce7; stroke:#16a34a; }
-                  .node.pod.pending circle { fill:#fef3c7; stroke:#f59e0b; }
-                  .link { stroke:#9ca3af; stroke-width:1.5; fill:none; marker-end:url(#arrow); }
-                  .flow { stroke-dasharray:6 6; }
-                  .flow-fwd { animation: flow 1.6s linear infinite; }
-                  .flow-rev { animation: flow 1.6s linear infinite reverse; }
-                  .selected .node-shape, .selected circle { stroke-width:2.4 !important; filter: drop-shadow(0 0 2px #60a5fa); }
-                  .selected.link { stroke:#2563eb; }
-                  .ns-peer { opacity:0.7; }
-                  .ns-peer .node-shape, .ns-peer circle { stroke-width:1.6; }
-                  .faded { opacity:0.35; }
+                  .node { cursor: default; }
+                  .hex-node text { font-size:16px; font-weight:700; letter-spacing:.01em; pointer-events:none; paint-order: stroke; stroke:rgba(0,0,0,0.35); stroke-width:3; }
+                  .hex-label { dominant-baseline: middle; }
+                  .hex-outer { stroke-linejoin: round; }
+                  .hex-inner { stroke-linejoin: round; }
+                  .hex-pattern { }
+                  .node.pod circle { fill:#e5e7eb; stroke:#94a3b8; stroke-width:1.2; }
+                  .node.pod.ready circle { fill:#22c55e; stroke:#bbf7d0; filter: drop-shadow(0 0 6px rgba(34,197,94,0.35)); }
+                  .node.pod.pending circle { fill:#f59e0b; stroke:#fde68a; filter: drop-shadow(0 0 6px rgba(245,158,11,0.35)); }
+                  .link { stroke:rgba(148,163,184,0.55); stroke-width:1.4; fill:none; marker-end:url(#arrow); }
+                  .link.flow { stroke-dasharray:6 6; }
+                  .link.trace { stroke:rgba(148,163,184,0.45); stroke-dasharray:4 6; marker-end:none; }
+                  .flow-fwd { animation: flow 1.8s linear infinite; }
+                  .flow-rev { animation: flow 1.8s linear infinite reverse; }
+                  .selected .hex-outer, .selected circle { stroke-width:6 !important; filter: drop-shadow(0 0 6px rgba(96,165,250,0.6)); }
+                  .selected.link { stroke:#60a5fa; }
+                  .ns-peer { opacity:0.75; }
+                  .faded { opacity:0.3; }
                   @keyframes flow { to { stroke-dashoffset: -24; } }
                 </style>
               </defs>
               <g id=\"links\"></g>
               <g id=\"nodes\"></g>
+              <g id=\"labels\"></g>
             </svg>
-            <div id=\"graph-legend\" style=\"position:absolute; right:8px; top:8px; background:rgba(17,24,39,0.82); color:#e5e7eb; padding:6px 8px; border-radius:6px; border:1px solid #334155; backdrop-filter: blur(2px); font-size:12px;\">
+            <div id=\"graph-legend\" style=\"position:absolute; right:8px; top:8px; background:rgba(17,24,39,0.82); color:#e5e7eb; padding:6px 8px; border-radius:6px; border:1px solid #334155; backdrop-filter: blur(2px); font-size:12px; z-index:2;\">
               <div style=\"display:flex; gap:10px; align-items:center; flex-wrap:wrap;\">
-                <span><svg width=\"14\" height=\"14\"><rect x=\"1\" y=\"1\" width=\"12\" height=\"12\" rx=\"3\" fill=\"#e5e7eb\" stroke=\"#6b7280\"/></svg> System</span>
-                <span><svg width=\"14\" height=\"14\"><rect x=\"1\" y=\"1\" width=\"12\" height=\"12\" rx=\"3\" fill=\"#dbeafe\" stroke=\"#3b82f6\"/></svg> App</span>
+                <span><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\"><path d=\"M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z\" fill=\"#1f2937\" stroke=\"#94a3b8\" stroke-width=\"1.6\"/></svg> Host</span>
+                <span><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\"><path d=\"M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z\" fill=\"#f8fafc\" stroke=\"#cbd5e1\" stroke-width=\"1.6\"/></svg> System</span>
+                <span><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\"><path d=\"M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z\" fill=\"#0f172a\" stroke=\"#3b82f6\" stroke-width=\"1.6\"/></svg> Namespace</span>
                 <span><svg width=\"14\" height=\"14\"><circle cx=\"7\" cy=\"7\" r=\"5\" fill=\"#dcfce7\" stroke=\"#16a34a\"/></svg> Pod ready</span>
                 <span><svg width=\"14\" height=\"14\"><circle cx=\"7\" cy=\"7\" r=\"5\" fill=\"#fef3c7\" stroke=\"#f59e0b\"/></svg> Pod pending</span>
                 <span><svg width=\"30\" height=\"8\"><path d=\"M1 4 L22 4\" stroke=\"#9ca3af\" stroke-width=\"1.5\" stroke-dasharray=\"6 6\"/><polygon points=\"22,1 29,4 22,7\" fill=\"#9ca3af\"/></svg> Flow</span>
@@ -4105,7 +4140,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       function namespaceColors(ns){
         var n = (ns && String(ns)) ? String(ns) : 'default';
         if (n === 'default') {
-          return { color: '#64748b', tint: 'rgba(100,116,139,0.18)' };
+          return { color: '#3b82f6', tint: 'rgba(59,130,246,0.18)' };
+        }
+        if (n === 'demo-helm') {
+          return { color: '#fbbf24', tint: 'rgba(251,191,36,0.2)' };
         }
         var hue = hashHue(n);
         return { color: 'hsl(' + hue + ', 70%, 55%)', tint: 'hsla(' + hue + ', 70%, 20%, 0.18)' };
@@ -5455,210 +5493,253 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if (graphHover) { graphHover.style.display='none'; }
         var wrapEl = document.getElementById('graph-wrap');
         var W = svg.clientWidth || (wrapEl ? wrapEl.clientWidth : 1000) || 1000;
-        var H = svg.clientHeight || 420;
         var padX = 40, padY = 30;
-        var topY = 40, midY = 150;
-        // Node metrics
-        var nodeW = 80, nodeH = 32;
-        var minXGap = 40; // horizontal spacing between app cards
-        var rowGap = 48;  // vertical spacing between app rows
-        var podOffsetY = 60; // pods rendered below their app card
+        var baseHexW = 96.994;
+        var baseHexH = 112;
+        var narrow = W < 760;
+        var hexScale = W < 520 ? 0.6 : (narrow ? 0.68 : 0.82);
+        var hexW = baseHexW * hexScale;
+        var hexH = baseHexH * hexScale;
 
         var nodes = [];
         var nodeById = {};
-        function addNode(id, label, type, x, y, meta){ var n={id:id,label:label,type:type,x:x,y:y,meta:meta||{}}; nodes.push(n); nodeById[id]=n; return n; }
+        var labelNodes = [];
+        var links = [];
+        var hexCounter = 0;
+
+        function addNode(id, label, type, x, y, meta){
+          var n={id:id,label:label,type:type,x:x,y:y,meta:meta||{}};
+          nodes.push(n); nodeById[id]=n; return n;
+        }
+        function addLabel(id, text, x, y, color, textColor){
+          labelNodes.push({id:id, text:text, x:x, y:y, color:color, textColor:textColor});
+        }
+        function link(a,b, cls, meta){ links.push({a:a,b:b,cls:cls||'',meta:meta||{}}); }
+
+        function clusterOffsets(count){
+          var gap = 5;
+          var stepX = hexW + gap;
+          var stepY = (hexH * 0.75) + gap;
+          if (count <= 1) return [{x:0,y:0}];
+          if (count === 2) return [{x:-stepX*0.5, y:0}, {x:stepX*0.5, y:0}];
+          if (count === 3) {
+            return [
+              {x:-stepX*0.5, y:-stepY*0.5},
+              {x:stepX*0.5, y:-stepY*0.5},
+              {x:0, y:stepY*0.5}
+            ];
+          }
+          if (count === 4) {
+            return [
+              {x:-stepX*0.75, y:-stepY*0.5},
+              {x:stepX*0.25, y:-stepY*0.5},
+              {x:-stepX*0.25, y:stepY*0.5},
+              {x:stepX*0.75, y:stepY*0.5}
+            ];
+          }
+          var cols = Math.min(3, count);
+          var rows = Math.ceil(count / cols);
+          var offsets = [];
+          for (var r=0;r<rows;r++){
+            for (var c=0;c<cols;c++){
+              if (offsets.length >= count) break;
+              var x = (c - (cols-1)/2) * stepX;
+              if (r % 2 === 1) x += stepX/2;
+              var y = (r - (rows-1)/2) * stepY;
+              offsets.push({x:x, y:y});
+            }
+          }
+          return offsets;
+        }
+
+        var hostName = 'h4cktop';
+        try {
+          if (sys && sys.nodes && sys.nodes.length){
+            var h = sys.nodes[0];
+            hostName = h.name || h.id || hostName;
+          }
+        } catch(e){}
+
+        var hostCenter = {x: W*0.52, y: 70};
+        var systemCenter = {x: W*0.22, y: 150};
+        var leftX = Math.max(padX + hexW*1.4, W*0.24);
+        var rightX = Math.min(W - padX - hexW*1.4, W*0.76);
+        var nsRowY = systemCenter.y + hexH * 1.7;
+
+        if (narrow){
+          hostCenter = {x: W*0.5, y: 70};
+          systemCenter = {x: W*0.5, y: hostCenter.y + hexH*1.3};
+          nsRowY = systemCenter.y + hexH*1.9;
+          leftX = W*0.5;
+          rightX = W*0.5;
+        }
+
+        addNode('host', hostName, 'host', hostCenter.x, hostCenter.y, {title:'Host'});
+
+        var sysLabels = ['DNS','Ingress','Controller','Runtime'];
+        var sysIds = ['dns','ingress','controller','runtime'];
+        var sysOffsets = clusterOffsets(4);
+        sysLabels.forEach(function(label, idx){
+          var off = sysOffsets[idx] || {x:0,y:0};
+          addNode(sysIds[idx], label, 'system', systemCenter.x + off.x, systemCenter.y + off.y, {system:sysIds[idx]});
+        });
+        var sysLabelX = systemCenter.x;
+        var sysLabelY = systemCenter.y - hexH * 0.45;
+        if (nodeById.dns && nodeById.ingress){
+          sysLabelX = (nodeById.dns.x + nodeById.ingress.x) / 2;
+          sysLabelY = nodeById.dns.y - hexH * 0.45;
+        }
+        addLabel('label:system', 'system', sysLabelX, sysLabelY, '#e5e7eb', '#e2e8f0');
+
+        var apps = (statuses||[]).slice();
+        var byNs = {};
+        apps.forEach(function(s){
+          var info = splitAppName(s.app_name);
+          if (!byNs[info.namespace]) byNs[info.namespace] = [];
+          byNs[info.namespace].push({status:s, info:info});
+        });
+        Object.keys(byNs).forEach(function(ns){
+          byNs[ns].sort(function(a,b){ return String(a.info.name||'').localeCompare(String(b.info.name||'')); });
+        });
+        var nsOrder = [];
+        if (byNs['default']) nsOrder.push('default');
+        if (byNs['demo-helm']) nsOrder.push('demo-helm');
+        Object.keys(byNs).filter(function(ns){ return nsOrder.indexOf(ns)===-1; }).sort().forEach(function(ns){ nsOrder.push(ns); });
+
+        var nsCenters = {};
+        if (narrow){
+          var startY = nsRowY;
+          nsOrder.forEach(function(ns, idx){
+            nsCenters[ns] = {x: W*0.5, y: startY + idx * hexH * 1.7};
+          });
+        } else {
+          if (nsOrder.length > 0) {
+            var defaultX = hostCenter.x - hexW * 0.1;
+            var defaultY = nsRowY + hexH * 0.45;
+            nsCenters[nsOrder[0]] = {x: defaultX, y: defaultY};
+          }
+          if (nsOrder.length > 1) {
+            nsCenters[nsOrder[1]] = {x: rightX, y: nsRowY - hexH*0.1};
+          }
+          if (nsOrder.length > 2) {
+            var extraNs = nsOrder.slice(2);
+            var extraCols = Math.min(3, extraNs.length);
+            var extraGap = (W - padX*2) / (extraCols + 1);
+            var extraStartY = nsRowY + hexH * 1.5;
+            extraNs.forEach(function(ns, idx){
+              var col = idx % extraCols;
+              var row = Math.floor(idx / extraCols);
+              nsCenters[ns] = {x: padX + extraGap * (col + 1), y: extraStartY + row * hexH * 1.5};
+            });
+          }
+        }
+
+        var appNodes = [];
+        nsOrder.forEach(function(ns){
+          var list = byNs[ns] || [];
+          if (!list.length) return;
+          var center = nsCenters[ns] || {x:leftX, y:nsRowY};
+          var offsets = clusterOffsets(list.length);
+          var minX = null, maxX = null, minY = null;
+          list.forEach(function(entry, idx){
+            var s = entry.status;
+            var info = entry.info;
+            var off = offsets[idx] || {x:0,y:0};
+            var node = addNode('app:'+s.app_name, info.name, 'app', center.x + off.x, center.y + off.y, {
+              app:s.app_name,
+              app_short: info.name,
+              ns: info.namespace,
+              ready:s.ready_replicas,
+              desired:s.desired_replicas,
+              rev:s.revision,
+              status:s.revision_status,
+              clusterCenter: center
+            });
+            minX = (minX==null) ? node.x : Math.min(minX, node.x);
+            maxX = (maxX==null) ? node.x : Math.max(maxX, node.x);
+            minY = (minY==null) ? node.y : Math.min(minY, node.y);
+            appNodes.push(node);
+          });
+          var c = namespaceColors(ns);
+          var labelX = center.x;
+          var labelY = center.y - hexH*0.78;
+          if (ns === 'default' && minX != null && maxX != null && minY != null) {
+            labelX = (minX + maxX) / 2;
+            labelY = minY - hexH * 0.45;
+          }
+          addLabel('label:'+ns, ns, labelX, labelY, c.color, '#e2e8f0');
+        });
+
+        appNodes.forEach(function(n){
+          if (!n.meta || !n.meta.clusterCenter) return;
+          var center = n.meta.clusterCenter;
+          var dx = n.x - center.x;
+          var dirX = 0;
+          if (dx > 4) dirX = 0.7;
+          else if (dx < -4) dirX = -0.7;
+          var dirY = 1;
+          var norm = Math.sqrt(dirX*dirX + dirY*dirY);
+          dirX /= norm; dirY /= norm;
+          var startDist = hexH * 0.525;
+          var traceLen = hexH * 0.525;
+          var startX = n.x + dirX * startDist;
+          var startY = n.y + dirY * startDist;
+          var endX = n.x + dirX * (startDist + traceLen);
+          var endY = n.y + dirY * (startDist + traceLen);
+          var state = Number(n.meta.ready||0) > 0 ? 'ready' : 'pending';
+          var podId = 'pod:' + n.meta.app;
+          addNode(podId, state, 'pod', endX, endY, {app:n.meta.app, ns:n.meta.ns, state:state});
+          link(n.id, podId, 'trace', {kind:'trace', start:{x:startX,y:startY}, end:{x:endX,y:endY}});
+        });
 
         var hasIngress = !!(sys.ingress && (sys.ingress.sites||[]).length);
-        // Worker nodes row
-        var workerY = topY;
-        var workerGap = 140;
-        var workerCount = (sys.nodes||[]).length;
-        var workerRowWidth = (workerCount > 1) ? ((workerCount - 1) * workerGap) : 0;
-        var workerStartX = (W - workerRowWidth) / 2;
-        if (workerStartX < (padX + nodeW/2)) workerStartX = padX + nodeW/2;
-        (sys.nodes||[]).forEach(function(n, idx){
-          var st = String(n.status||'').toLowerCase();
-          var cls = 'worker';
-          if (n.stale) cls += ' stale';
-          if (n.cordoned) cls += ' cordoned';
-          var x = workerStartX + idx * workerGap;
-          addNode('node:'+n.id, n.name||n.id, cls, x, workerY, {status:st, stale:n.stale, cordoned:n.cordoned});
-        });
-
-        // Shift system nodes down if workers present
-        if ((sys.nodes||[]).length > 0){ topY += 50; midY += 50; }
-        var apps = (statuses||[]).slice();
-        var appCount = apps.length;
-        // Grid layout: system column + app columns, centered within the graph bounds
-        var minCenterGap = nodeW + minXGap; // minimum center-to-center gap
-        var maxCenterGap = 200; // prevent over-stretching on wide viewports
-        var availableSpan = Math.max(1, W - padX*2 - nodeW);
-        var colsCap = Math.max(1, Math.floor(availableSpan / Math.max(1, minCenterGap)) - 1);
-        var cols = Math.max(1, Math.min(appCount || 1, colsCap));
-        var rows = Math.max(1, Math.ceil(appCount / cols));
-        var gap = availableSpan / Math.max(1, cols + 1);
-        if (gap > maxCenterGap) gap = maxCenterGap;
-        var baseX = (W - (cols + 1) * gap) / 2;
-
-        addNode('dns', 'DNS', 'system', baseX, topY);
-        addNode('ingress', 'Ingress', 'system', baseX + gap, topY);
-        addNode('controller', 'Controller', 'system', baseX, midY);
-        addNode('runtime', 'Runtime', 'system', baseX + gap, midY);
-        var byApp = {};
-        apps.forEach(function(s){ byApp[s.app_name]=s; });
-        var placements = sys.placements || {};
-        apps.forEach(function(s, i){
-          var info = splitAppName(s.app_name);
-          var col = i % cols;
-          var row = Math.floor(i / cols);
-          var x = baseX + gap * (2 + col);
-          var appY = (midY + 90) + row * (nodeH + podOffsetY + rowGap);
-          addNode('app:'+s.app_name, info.name, 'app', x, appY, {app:s.app_name, app_short: info.name, ns: info.namespace, ready:s.ready_replicas, desired:s.desired_replicas, rev:s.revision, status:s.revision_status, row:row, col:col, idx:i});
-          var reps = placements[s.app_name] || [];
-          reps.slice(0,12).forEach(function(p, idx){
-            var podY = appY + podOffsetY;
-            var nid = p.node_id ? ('node:'+p.node_id) : null;
-            var nodePos = nid && nodeById[nid] ? nodeById[nid] : null;
-            var px = nodePos ? nodePos.x : (x - (reps.length-1)*10/2 + idx*10);
-            var state = p.ready ? 'ready' : 'pending';
-            addNode('pod:'+s.app_name+':'+idx, state, 'pod', px, podY, {app:s.app_name, ns: info.namespace, podIndex:idx, state:state, node:p.node_id});
-          });
-        });
-
-        var links = [];
-        function link(a,b, cls){ links.push({a:a,b:b,cls:cls||''}); }
+        link('host','controller','flow');
         if (hasIngress) link('dns','ingress','flow');
         link('controller','runtime','flow');
         if (hasIngress) link('controller','ingress','flow');
-        (sys.nodes||[]).forEach(function(n){
-          link('controller','node:'+n.id,'');
-          link('runtime','node:'+n.id,'');
-        });
         var sites = (sys.ingress && sys.ingress.sites) || [];
         var appsWithIngress = new Set(sites.map(function(s){ return s.app; }));
         appsWithIngress.forEach(function(name){ link('ingress','app:'+name,'flow'); });
-        (statuses||[]).forEach(function(s){
-          link('runtime','app:'+s.app_name,'');
-          var desired = Math.max(0, Number(s.desired_replicas||0));
-          var pods = Math.min(desired, 12);
-          for (var k=0;k<pods;k++){ link('app:'+s.app_name, 'pod:'+s.app_name+':'+k, ''); }
-        });
+        (statuses||[]).forEach(function(s){ link('runtime','app:'+s.app_name,''); });
 
         var gNodes = svg.querySelector('#nodes');
         var gLinks = svg.querySelector('#links');
-        if(!gNodes||!gLinks) return;
+        var gLabels = svg.querySelector('#labels');
+        if(!gNodes||!gLinks||!gLabels) return;
         gNodes.innerHTML = '';
         gLinks.innerHTML = '';
-        var defs = svg.querySelector('defs');
-        if (defs) {
-          Array.from(defs.querySelectorAll('linearGradient[data-app-grad="1"]')).forEach(function(el){
-            if (el && el.parentNode) el.parentNode.removeChild(el);
-          });
-        }
+        gLabels.innerHTML = '';
 
-        function ensureAppGradient(ns){
-          if (!defs) return null;
-          var key = String(ns || 'default').toLowerCase().replace(/[^a-z0-9_-]+/g, '_');
-          var gradId = 'app-grad-' + key;
-          var existing = defs.querySelector('#' + gradId);
-          if (existing) return gradId;
-          var colors = namespaceGradient(ns);
-          var grad = document.createElementNS('http://www.w3.org/2000/svg','linearGradient');
-          grad.setAttribute('id', gradId);
-          grad.setAttribute('data-app-grad', '1');
-          grad.setAttribute('x1','0'); grad.setAttribute('y1','0');
-          grad.setAttribute('x2','0'); grad.setAttribute('y2','1');
-          var stop1 = document.createElementNS('http://www.w3.org/2000/svg','stop');
-          stop1.setAttribute('offset','0%');
-          stop1.setAttribute('stop-color', colors.top);
-          var stop2 = document.createElementNS('http://www.w3.org/2000/svg','stop');
-          stop2.setAttribute('offset','100%');
-          stop2.setAttribute('stop-color', colors.bottom);
-          grad.appendChild(stop1);
-          grad.appendChild(stop2);
-          defs.appendChild(grad);
-          return gradId;
-        }
-
-        // Resize the canvas height dynamically to fit all rows
-        var totalHeight = (midY + 90) + (rows-1) * (nodeH + podOffsetY + rowGap) + podOffsetY + padY;
-        if (wrapEl) {
-          wrapEl.style.height = Math.max(420, Math.ceil(totalHeight)) + 'px';
-        }
-        svg.setAttribute('viewBox', '0 0 ' + Math.max(1000, W) + ' ' + Math.max(420, Math.ceil(totalHeight)));
-
-        // Orthogonal routing helpers
-        var gutterLeftX = padX + 8;
-        var gutterRightX = W - padX - 8;
-        var lanePad = 12; // horizontal lane above an app row
-
-        // Track counts per destination to slightly offset and reduce overlap
-        var dstCounts = {};
-
-        function topEdgeY(n){ return (n.type==='pod') ? (n.y-5) : (n.y - (n.type==='app' || n.type==='system' ? nodeH/2 : 0)); }
-        function bottomEdgeY(n){ return (n.type==='pod') ? (n.y+5) : (n.y + (n.type==='app' || n.type==='system' ? nodeH/2 : 0)); }
-
-        function drawLink(id, src, dst, cls){
-          var a = nodeById[src], b = nodeById[dst]; if(!a||!b) return;
-          // Small per-destination jitter to reduce perfect overlap
-          dstCounts[dst] = (dstCounts[dst]||0) + 1;
-          var jitter = ((dstCounts[dst] % 5) - 2) * 2; // -4..+4 px
-
+        function drawLink(L){
+          var a = nodeById[L.a], b = nodeById[L.b];
+          if(!a||!b) return;
+          var start = (L.meta && L.meta.start) ? L.meta.start : {x:a.x, y:a.y};
+          var end = (L.meta && L.meta.end) ? L.meta.end : {x:b.x, y:b.y};
           var points = [];
-          if (graphPathMode === 'straight'){
-            points = [[a.x, a.y], [b.x, b.y]];
-          } else {
-          // Select routing strategy by pair types
-          if (a.id==='ingress' && b.type==='app'){
-            var laneBase = (b.y - nodeH/2 - lanePad);
-            // Stagger lanes by index to minimize overlay, and separate source types
-            var idx = (b.meta && b.meta.idx!=null) ? b.meta.idx : 0;
-            var yBand = ((idx % 7) - 3) * 5; // -15..+15
-            var srcSep = -6; // ingress a bit higher than runtime
-            var laneY = laneBase + yBand + srcSep + jitter;
-            // Direct turn into center of app to avoid U-turns
-            points.push([a.x, a.y]);
-            points.push([a.x, laneY]);
-            points.push([b.x, laneY]);
-            points.push([b.x, topEdgeY(b)]);
-          } else if (a.id==='runtime' && b.type==='app'){
-            var laneBase2 = (b.y - nodeH/2 - lanePad);
-            var idx2 = (b.meta && b.meta.idx!=null) ? b.meta.idx : 0;
-            var yBand2 = ((idx2 % 7) - 3) * 5; // -15..+15
-            var srcSep2 = +6; // runtime a bit lower than ingress
-            var laneY2 = laneBase2 + yBand2 + srcSep2 + jitter;
-            // Direct into center: down, across, down
-            points.push([a.x, a.y]);
-            points.push([a.x, laneY2]);
-            points.push([b.x, laneY2]);
-            points.push([b.x, topEdgeY(b)]);
-          } else if (a.type==='app' && b.type==='pod'){
-            // Drop from bottom of app, then short horizontal, then into pod
-            var sy = bottomEdgeY(a);
-            var ey = topEdgeY(b);
-            points.push([a.x, sy]);
-            points.push([a.x, ey]);
-            points.push([b.x, ey]);
-            points.push([b.x, b.y-5]);
-          } else {
-            // Default orthogonal: vertical then horizontal then vertical
-            var sy2 = (b.y > a.y) ? bottomEdgeY(a) : a.y;
-            var ty2 = (b.y > a.y) ? topEdgeY(b) : b.y;
-            points.push([a.x, sy2]);
-            var midY = a.y + (b.y - a.y)/2;
-            points.push([a.x, midY]);
-            points.push([b.x, midY]);
-            points.push([b.x, ty2]);
+          var isTrace = (L.cls||'').indexOf('trace') !== -1;
+          if (!isTrace && a.type !== 'pod' && b.type !== 'pod') {
+            var gap = Math.max(12, Math.min(20, hexW * 0.24));
+            var vx = end.x - start.x;
+            var vy = end.y - start.y;
+            var dist = Math.sqrt(vx*vx + vy*vy) || 1;
+            var ux = vx / dist;
+            var uy = vy / dist;
+            start = {x: start.x + ux * gap, y: start.y + uy * gap};
+            end = {x: end.x - ux * gap, y: end.y - uy * gap};
           }
+          if (graphPathMode === 'straight' || isTrace){
+            points = [[start.x, start.y], [end.x, end.y]];
+          } else {
+            var midY = start.y + (end.y - start.y)/2;
+            points = [[start.x, start.y], [start.x, midY], [end.x, midY], [end.x, end.y]];
           }
-          // Build path (rounded corners for orth mode)
           var d = '';
-          if (graphPathMode === 'straight'){
+          if (graphPathMode === 'straight' || isTrace){
             for (var i=0;i<points.length;i++){
               d += (i===0 ? 'M ' : ' L ') + points[i][0] + ' ' + points[i][1];
             }
           } else {
-            var r = 8; // corner radius
+            var r = 8;
             if (points.length > 0){ d = 'M ' + points[0][0] + ' ' + points[0][1]; }
             for (var i=1;i<points.length;i++){
               var prev = points[i-1];
@@ -5670,20 +5751,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
               }
               var v1x = curr[0]-prev[0], v1y = curr[1]-prev[1];
               var v2x = next[0]-curr[0], v2y = next[1]-curr[1];
-              var len1 = Math.max(1, Math.abs(v1x)+Math.abs(v1y));
-              var len2 = Math.max(1, Math.abs(v2x)+Math.abs(v2y));
-              // If colinear, keep straight
               var colinear = (v1x===0 && v2x===0) || (v1y===0 && v2y===0);
               if (colinear){ d += ' L ' + curr[0] + ' ' + curr[1]; continue; }
-              var r1 = Math.min(r, Math.floor((Math.abs(v1x)+Math.abs(v1y))/2));
-              var r2 = Math.min(r, Math.floor((Math.abs(v2x)+Math.abs(v2y))/2));
-              var rin = Math.min(r1, r2);
-              // Offset along v1 to approach corner
+              var rin = Math.min(r, Math.floor((Math.abs(v1x)+Math.abs(v1y))/2), Math.floor((Math.abs(v2x)+Math.abs(v2y))/2));
               var u1x = v1x===0 ? 0 : (v1x>0?1:-1);
               var u1y = v1y===0 ? 0 : (v1y>0?1:-1);
               var pInX = curr[0] - u1x * rin;
               var pInY = curr[1] - u1y * rin;
-              // Offset along v2 to exit corner
               var u2x = v2x===0 ? 0 : (v2x>0?1:-1);
               var u2y = v2y===0 ? 0 : (v2y>0?1:-1);
               var pOutX = curr[0] + u2x * rin;
@@ -5693,10 +5767,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           }
           var p = document.createElementNS('http://www.w3.org/2000/svg','path');
           p.setAttribute('d', d);
-          var klass = 'link ' + (cls||'');
-          if ((cls||'').indexOf('flow') !== -1){
-            // Decide animation direction based on net displacement from src->dst
-            var dx = b.x - a.x, dy = b.y - a.y;
+          var klass = 'link ' + (L.cls||'');
+          if ((L.cls||'').indexOf('flow') !== -1){
+            var dx = end.x - start.x, dy = end.y - start.y;
             var horiz = Math.abs(dx) >= Math.abs(dy);
             var forward = horiz ? (dx >= 0) : (dy >= 0);
             klass += forward ? ' flow-fwd' : ' flow-rev';
@@ -5706,6 +5779,271 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           p.setAttribute('fill','none');
           gLinks.appendChild(p);
         }
+
+        function hexTheme(n){
+          if (n.type === 'host') {
+            return {
+              accent:'rgba(148,163,184,0.7)',
+              shellFill:'rgba(20,22,26,0.92)',
+              innerStroke:'rgba(255,255,255,0.15)',
+              faceTop:'#2b2f36',
+              faceBot:'#15181d',
+              patternStroke:'rgba(255,255,255,0.12)',
+              patternOpacity:0.35,
+              label:'#e2e8f0',
+              shadowAlpha:0.4
+            };
+          }
+          if (n.type === 'system') {
+            return {
+              accent:'rgba(229,231,235,0.95)',
+              shellFill:'rgba(248,250,252,0.98)',
+              innerStroke:'rgba(148,163,184,0.6)',
+              faceTop:'#f8fafc',
+              faceBot:'#e2e8f0',
+              patternStroke:'rgba(148,163,184,0.25)',
+              patternOpacity:0.35,
+              label:'#0f172a',
+              shadowAlpha:0.25
+            };
+          }
+          var c = namespaceColors(n.meta && n.meta.ns ? n.meta.ns : 'default');
+          return {
+            accent:c.color,
+            shellFill:'rgba(12,16,22,0.92)',
+            innerStroke:'rgba(255,255,255,0.2)',
+            faceTop:shadeHsl(c.color, 18),
+            faceBot:shadeHsl(c.color, -18),
+            patternStroke:'rgba(255,255,255,0.2)',
+            patternOpacity:0.45,
+            label:'#f8fafc',
+            shadowAlpha:0.45
+          };
+        }
+
+        function drawHexNode(n){
+          var g = document.createElementNS('http://www.w3.org/2000/svg','g');
+          g.setAttribute('class','node hex-node ' + n.type);
+          g.setAttribute('transform','translate(' + n.x + ' ' + n.y + ')');
+          var gInner = document.createElementNS('http://www.w3.org/2000/svg','g');
+          gInner.setAttribute('transform','scale(' + hexScale + ')');
+          g.appendChild(gInner);
+
+          var appName = null;
+          if(n.id.indexOf('app:')===0) appName = n.id.slice(4);
+          if(n.id.indexOf('pod:')===0 && n.meta && n.meta.app) appName = n.meta.app;
+          if(appName){ g.setAttribute('data-app', appName); g.style.cursor='pointer';
+            g.addEventListener('click', function(ev){ ev.preventDefault(); ev.stopPropagation(); try { selectApp(appName); focusAppListItem(appName); } catch(e){} });
+          }
+
+          var t = hexTheme(n);
+          var uid = 'hc-' + (hexCounter++);
+          var shadowId = uid + '-shadow';
+          var combId = uid + '-comb';
+          var gradId = uid + '-grad';
+
+          var defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
+          var filter = document.createElementNS('http://www.w3.org/2000/svg','filter');
+          filter.setAttribute('id', shadowId);
+          filter.setAttribute('x','-40%'); filter.setAttribute('y','-40%');
+          filter.setAttribute('width','180%'); filter.setAttribute('height','180%');
+          var blur = document.createElementNS('http://www.w3.org/2000/svg','feGaussianBlur');
+          blur.setAttribute('in','SourceAlpha'); blur.setAttribute('stdDeviation','3'); blur.setAttribute('result','b');
+          var offset = document.createElementNS('http://www.w3.org/2000/svg','feOffset');
+          offset.setAttribute('in','b'); offset.setAttribute('dx','0'); offset.setAttribute('dy','4'); offset.setAttribute('result','o');
+          var matrix = document.createElementNS('http://www.w3.org/2000/svg','feColorMatrix');
+          matrix.setAttribute('in','o');
+          matrix.setAttribute('type','matrix');
+          var a = (t.shadowAlpha!=null) ? t.shadowAlpha : 0.55;
+          matrix.setAttribute('values','0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 ' + a + ' 0');
+          matrix.setAttribute('result','s');
+          var merge = document.createElementNS('http://www.w3.org/2000/svg','feMerge');
+          var mn1 = document.createElementNS('http://www.w3.org/2000/svg','feMergeNode');
+          mn1.setAttribute('in','s');
+          var mn2 = document.createElementNS('http://www.w3.org/2000/svg','feMergeNode');
+          mn2.setAttribute('in','SourceGraphic');
+          merge.appendChild(mn1); merge.appendChild(mn2);
+          filter.appendChild(blur); filter.appendChild(offset); filter.appendChild(matrix); filter.appendChild(merge);
+
+          var pattern = document.createElementNS('http://www.w3.org/2000/svg','pattern');
+          pattern.setAttribute('id', combId);
+          pattern.setAttribute('width','18');
+          pattern.setAttribute('height','15.588');
+          pattern.setAttribute('patternUnits','userSpaceOnUse');
+          var pPath = document.createElementNS('http://www.w3.org/2000/svg','path');
+          pPath.setAttribute('d','M 4.5 0 L 13.5 0 L 18 7.794 L 13.5 15.588 L 4.5 15.588 L 0 7.794 Z');
+          pPath.setAttribute('fill','none');
+          pPath.setAttribute('stroke', t.patternStroke || 'rgba(255,255,255,0.16)');
+          pPath.setAttribute('stroke-width','1.2');
+          pattern.appendChild(pPath);
+
+          var grad = document.createElementNS('http://www.w3.org/2000/svg','linearGradient');
+          grad.setAttribute('id', gradId);
+          grad.setAttribute('x1','0'); grad.setAttribute('y1','-80');
+          grad.setAttribute('x2','0'); grad.setAttribute('y2','80');
+          grad.setAttribute('gradientUnits','userSpaceOnUse');
+          var s1 = document.createElementNS('http://www.w3.org/2000/svg','stop');
+          s1.setAttribute('offset','0'); s1.setAttribute('stop-color', t.faceTop);
+          var s2 = document.createElementNS('http://www.w3.org/2000/svg','stop');
+          s2.setAttribute('offset','1'); s2.setAttribute('stop-color', t.faceBot);
+          grad.appendChild(s1); grad.appendChild(s2);
+
+          defs.appendChild(filter);
+          defs.appendChild(pattern);
+          defs.appendChild(grad);
+          gInner.appendChild(defs);
+
+          var outer = document.createElementNS('http://www.w3.org/2000/svg','path');
+          outer.setAttribute('d','M 48.497 28.000 L 0.000 56.000 L -48.497 28.000 L -48.497 -28.000 L -0.000 -56.000 L 48.497 -28.000 Z');
+          outer.setAttribute('fill', t.shellFill);
+          outer.setAttribute('stroke', t.accent);
+          outer.setAttribute('stroke-width','5');
+          outer.setAttribute('filter','url(#' + shadowId + ')');
+          outer.setAttribute('class','hex-outer');
+          gInner.appendChild(outer);
+
+          var inner = document.createElementNS('http://www.w3.org/2000/svg','path');
+          inner.setAttribute('d','M 39.837 23.000 L 0.000 46.000 L -39.837 23.000 L -39.837 -23.000 L -0.000 -46.000 L 39.837 -23.000 Z');
+          inner.setAttribute('fill','url(#' + gradId + ')');
+          inner.setAttribute('stroke', t.innerStroke);
+          inner.setAttribute('stroke-width','2');
+          inner.setAttribute('class','hex-inner');
+          gInner.appendChild(inner);
+
+          var comb = document.createElementNS('http://www.w3.org/2000/svg','path');
+          comb.setAttribute('d','M 39.837 23.000 L 0.000 46.000 L -39.837 23.000 L -39.837 -23.000 L -0.000 -46.000 L 39.837 -23.000 Z');
+          comb.setAttribute('fill','url(#' + combId + ')');
+          comb.setAttribute('opacity', String(t.patternOpacity != null ? t.patternOpacity : 0.45));
+          comb.setAttribute('class','hex-pattern');
+          gInner.appendChild(comb);
+
+          var text = document.createElementNS('http://www.w3.org/2000/svg','text');
+          text.setAttribute('x','0'); text.setAttribute('y','8');
+          text.setAttribute('text-anchor','middle');
+          text.setAttribute('font-family','ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial');
+          text.setAttribute('font-size','16');
+          text.setAttribute('font-weight','700');
+          text.setAttribute('class','hex-label');
+          text.setAttribute('fill', t.label);
+          text.textContent = String(n.label || '');
+          gInner.appendChild(text);
+          gNodes.appendChild(g);
+
+          var labelMax = hexW * 0.72;
+          var labelInfo = fitTextToWidth(text, n.label, labelMax);
+          try {
+            var bb = text.getBBox();
+            var lab = document.createElementNS('http://www.w3.org/2000/svg','rect');
+            lab.setAttribute('x', String(bb.x - 7));
+            lab.setAttribute('y', String(bb.y - 5));
+            lab.setAttribute('width', String(bb.width + 14));
+            lab.setAttribute('height', String(bb.height + 10));
+            lab.setAttribute('rx','6'); lab.setAttribute('ry','6');
+            lab.setAttribute('fill','rgba(15,23,42,0.55)');
+            lab.setAttribute('stroke', t.accent);
+            lab.setAttribute('stroke-width','1.1');
+            gInner.insertBefore(lab, text);
+          } catch(e){}
+          var title = document.createElementNS('http://www.w3.org/2000/svg','title');
+          if(n.id.indexOf('app:')===0){
+            var ainfo = n.meta || {};
+            var info = [];
+            info.push('App: ' + (ainfo.app||n.label));
+            if (ainfo.ns) info.push('Namespace: ' + ainfo.ns);
+            info.push('Replicas: ' + (ainfo.ready||0) + '/' + (ainfo.desired||0));
+            if(ainfo.rev!=null) info.push('Revision: ' + ainfo.rev + ' (' + (ainfo.status||'-') + ')');
+            title.textContent = info.join(String.fromCharCode(10));
+          } else {
+            title.textContent = labelInfo.full || String(n.label||'');
+          }
+          g.appendChild(title);
+
+          if(n.type==='system' && (n.id==='ingress' || n.id==='controller' || n.id==='runtime')){
+            g.addEventListener('mouseenter', function(ev){ showHoverCard(n.id, ev); });
+            g.addEventListener('mousemove', function(ev){ showHoverCard(n.id, ev); });
+            g.addEventListener('mouseleave', function(){ hideHoverCard(); });
+          }
+        }
+
+        function drawPodNode(n){
+          var g = document.createElementNS('http://www.w3.org/2000/svg','g');
+          g.setAttribute('class','node pod ' + (n.meta && n.meta.state ? n.meta.state : ''));
+          g.setAttribute('transform','translate('+(n.x-6)+','+(n.y-6)+')');
+          if(n.meta && n.meta.app){ g.setAttribute('data-app', n.meta.app); }
+          var c = document.createElementNS('http://www.w3.org/2000/svg','circle');
+          c.setAttribute('r','6'); c.setAttribute('cx','6'); c.setAttribute('cy','6');
+          g.appendChild(c);
+          var title = document.createElementNS('http://www.w3.org/2000/svg','title');
+          var parts = [];
+          if(n.meta && n.meta.app) parts.push('App: '+n.meta.app);
+          if(n.meta && n.meta.ns) parts.push('Namespace: '+n.meta.ns);
+          parts.push('State: ' + (n.meta && n.meta.state ? n.meta.state : n.label));
+          title.textContent = parts.join(String.fromCharCode(10));
+          g.appendChild(title);
+          gNodes.appendChild(g);
+        }
+
+        function drawLabel(l){
+          var g = document.createElementNS('http://www.w3.org/2000/svg','g');
+          var base = l.color || '#94a3b8';
+          var gradId = 'label-grad-' + Math.random().toString(36).slice(2);
+          var defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
+          var grad = document.createElementNS('http://www.w3.org/2000/svg','linearGradient');
+          grad.setAttribute('id', gradId);
+          grad.setAttribute('x1','0'); grad.setAttribute('y1','0');
+          grad.setAttribute('x2','0'); grad.setAttribute('y2','1');
+          var stopTop = document.createElementNS('http://www.w3.org/2000/svg','stop');
+          stopTop.setAttribute('offset','0%');
+          stopTop.setAttribute('stop-color', shadeHsl(base, 14));
+          stopTop.setAttribute('stop-opacity','0.8');
+          var stopBot = document.createElementNS('http://www.w3.org/2000/svg','stop');
+          stopBot.setAttribute('offset','100%');
+          stopBot.setAttribute('stop-color', shadeHsl(base, -6));
+          stopBot.setAttribute('stop-opacity','0.55');
+          grad.appendChild(stopTop);
+          grad.appendChild(stopBot);
+          defs.appendChild(grad);
+          g.appendChild(defs);
+          var t = document.createElementNS('http://www.w3.org/2000/svg','text');
+          t.setAttribute('x', String(l.x));
+          t.setAttribute('y', String(l.y));
+          t.setAttribute('text-anchor','middle');
+          t.setAttribute('font-size','15');
+          t.setAttribute('font-weight','700');
+          t.setAttribute('fill', l.textColor || '#e2e8f0');
+          t.textContent = String(l.text || '');
+          g.appendChild(t);
+          gLabels.appendChild(g);
+          try {
+            var bbox = t.getBBox();
+            var rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+            rect.setAttribute('x', String(bbox.x - 8));
+            rect.setAttribute('y', String(bbox.y - 4));
+            rect.setAttribute('width', String(bbox.width + 16));
+            rect.setAttribute('height', String(bbox.height + 8));
+            rect.setAttribute('rx','8'); rect.setAttribute('ry','8');
+            rect.setAttribute('fill','url(#' + gradId + ')');
+            rect.setAttribute('stroke', base);
+            rect.setAttribute('stroke-width','1.2');
+            g.insertBefore(rect, t);
+          } catch(e){}
+        }
+
+        var maxY = 0;
+        nodes.forEach(function(n){
+          var r = (n.type === 'pod') ? 12 : hexH * 0.6;
+          maxY = Math.max(maxY, n.y + r);
+        });
+        labelNodes.forEach(function(l){ maxY = Math.max(maxY, l.y + 20); });
+        var totalHeight = Math.max(420, Math.ceil(maxY + padY));
+        if (wrapEl) {
+          wrapEl.style.height = totalHeight + 'px';
+        }
+        svg.setAttribute('viewBox', '0 0 ' + Math.max(1000, W) + ' ' + totalHeight);
+
+        links.forEach(function(L){ drawLink(L); });
+        nodes.forEach(function(n){ if (n.type === 'pod') drawPodNode(n); else drawHexNode(n); });
+        labelNodes.forEach(drawLabel);
 
         var sysHelp = {
           ingress: {
@@ -5753,97 +6091,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         }
         function hideHoverCard(){ if (graphHover) graphHover.style.display='none'; }
 
-        function drawNode(n){
-          var g = document.createElementNS('http://www.w3.org/2000/svg','g');
-          g.setAttribute('class','node '+n.type);
-          g.setAttribute('transform','translate('+(n.x-40)+','+(n.y-16)+')');
-          // map to app for interactions
-          var appName = null;
-          if(n.id.startsWith('app:')) appName = n.id.slice(4);
-          if(n.id.startsWith('pod:')) appName = n.id.split(':')[1] || null;
-          if(appName){ g.setAttribute('data-app', appName); g.style.cursor='pointer';
-            g.addEventListener('click', function(ev){ ev.preventDefault(); ev.stopPropagation(); try { selectApp(appName); focusAppListItem(appName); } catch(e){} });
-          }
-          if(n.type==='app' && n.meta && n.meta.ns){
-            var nsc = namespaceColors(n.meta.ns);
-            g.style.setProperty('--ns-color', nsc.color);
-            g.style.setProperty('--ns-tint', nsc.tint);
-          }
-          if(n.type==='pod'){
-            g.setAttribute('transform','translate('+(n.x-5)+','+(n.y-5)+')');
-            var c = document.createElementNS('http://www.w3.org/2000/svg','circle');
-            c.setAttribute('r','5'); c.setAttribute('cx','5'); c.setAttribute('cy','5');
-            c.setAttribute('stroke-width','1.2');
-            // class for ready/pending
-            if(n.meta && n.meta.state){ g.setAttribute('class', g.getAttribute('class') + ' ' + n.meta.state); }
-            g.appendChild(c);
-            var title = document.createElementNS('http://www.w3.org/2000/svg','title');
-            var parts = [];
-            if(n.meta && n.meta.app) parts.push('App: '+n.meta.app);
-            if(n.meta && n.meta.ns) parts.push('Namespace: '+n.meta.ns);
-            if(n.meta && (n.meta.podIndex!=null)) parts.push('Replica: '+String(n.meta.podIndex));
-            parts.push('State: ' + (n.meta && n.meta.state ? n.meta.state : n.label));
-            title.textContent = parts.join(String.fromCharCode(10));
-            g.appendChild(title);
-            gNodes.appendChild(g);
-          } else {
-            var rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
-            rect.setAttribute('width','80'); rect.setAttribute('height','32'); rect.setAttribute('rx','6'); rect.setAttribute('ry','6');
-            rect.setAttribute('class','node-shape');
-            if(n.type==='app' && n.meta && n.meta.ns){
-              var gradId = ensureAppGradient(n.meta.ns);
-              if (gradId) rect.setAttribute('fill', 'url(#' + gradId + ')');
-              else rect.setAttribute('fill', nsc && nsc.color ? nsc.color : '#3b82f6');
-            }
-            g.appendChild(rect);
-            if(n.type==='app' && n.meta && n.meta.ns){
-              var stripe = document.createElementNS('http://www.w3.org/2000/svg','rect');
-              stripe.setAttribute('class','ns-stripe');
-              stripe.setAttribute('x','1'); stripe.setAttribute('y','1'); stripe.setAttribute('width','6'); stripe.setAttribute('height','30');
-              stripe.setAttribute('rx','4'); stripe.setAttribute('ry','4');
-              g.appendChild(stripe);
-            }
-            var t = document.createElementNS('http://www.w3.org/2000/svg','text');
-            t.setAttribute('x','40'); t.setAttribute('y','20'); t.setAttribute('text-anchor','middle'); t.textContent = String(n.label || '');
-            g.appendChild(t);
-            gNodes.appendChild(g);
-            var labelInfo = fitTextToWidth(t, n.label, (nodeW * 1.4) - 8);
-            try {
-              var bbox = t.getBBox();
-              var chip = document.createElementNS('http://www.w3.org/2000/svg','rect');
-              chip.setAttribute('class','label-chip');
-              chip.setAttribute('x', String(bbox.x - 4));
-              chip.setAttribute('y', String(bbox.y - 2));
-              chip.setAttribute('width', String(bbox.width + 8));
-              chip.setAttribute('height', String(bbox.height + 4));
-              chip.setAttribute('rx','4'); chip.setAttribute('ry','4');
-              g.insertBefore(chip, t);
-            } catch(e){}
-            var title = document.createElementNS('http://www.w3.org/2000/svg','title');
-            if(n.id.startsWith('app:')){
-              var a = n.meta || {};
-              var info = [];
-              info.push('App: ' + (a.app||n.label));
-              if (a.ns) info.push('Namespace: ' + a.ns);
-              info.push('Replicas: ' + (a.ready||0) + '/' + (a.desired||0));
-              if(a.rev!=null) info.push('Revision: ' + a.rev + ' (' + (a.status||'-') + ')');
-              title.textContent = info.join(String.fromCharCode(10));
-            } else {
-              title.textContent = labelInfo.full;
-            }
-            g.appendChild(title);
-          }
-          // System node hover help
-          if(n.type==='system' && (n.id==='ingress' || n.id==='controller' || n.id==='runtime')){
-            g.addEventListener('mouseenter', function(ev){ showHoverCard(n.id, ev); });
-            g.addEventListener('mousemove', function(ev){ showHoverCard(n.id, ev); });
-            g.addEventListener('mouseleave', function(){ hideHoverCard(); });
-          }
-        }
-
-        links.forEach(function(L,i){ drawLink('e'+i, L.a, L.b, L.cls); });
-        nodes.forEach(drawNode);
-
         // Highlight selection
         try {
           var sel = (typeof current==='string' && current) ? String(current) : null;
@@ -5864,7 +6111,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 n.classList.add('selected');
                 return;
               }
-              if (n.className.baseVal.indexOf('system') !== -1) return;
+              if (n.className.baseVal.indexOf('system') !== -1 || n.className.baseVal.indexOf('host') !== -1) return;
               if (selNs && a){
                 var nsInfo = splitAppName(a);
                 if (nsInfo && nsInfo.namespace === selNs){
@@ -5882,7 +6129,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             links.forEach(function(L, i){
               var p = gLinks.children[i];
               if(!p) return;
-              var involved = (L.a.indexOf('app:'+sel)===0) || (L.b.indexOf('app:'+sel)===0) || (L.b.indexOf('pod:'+sel+':')===0) || (L.a.indexOf('pod:'+sel+':')===0);
+              var involved = (L.a.indexOf('app:'+sel)===0) || (L.b.indexOf('app:'+sel)===0) || (L.b.indexOf('pod:'+sel)===0) || (L.a.indexOf('pod:'+sel)===0);
               if(involved) p.classList.add('selected'); else p.classList.add('faded');
             });
           }
