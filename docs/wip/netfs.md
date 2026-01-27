@@ -326,6 +326,8 @@ Exit criteria:
 - Implement secret handling for CSI
   - Honor `nodeStageSecretRef` and `nodePublishSecretRef` namespaces.
   - Align secret data keys to CSI driver docs (do not rename fields).
+- Expose CSI API objects for sidecars
+  - Serve `CSIDriver`, `CSINode`, and `CSIStorageCapacity` resources via apishim.
 - Enforce single-writer semantics
   - Prevent multiple node attachments for RWO volumes.
   - Treat multi-attach as an error event aligned with K8s behavior.
@@ -407,6 +409,8 @@ Add to `requirements.in` (or a storage extras group):
   - Create a PVC/PV pair and mount it on the node, then clean up.
 - `scripts/netfs_snapshot_clone.sh`
   - Create a snapshot and clone PVC from an NFS-backed volume and verify data.
+- `scripts/netfs_csi_smoke.sh`
+  - Validate CSI PV/PVC binding, VolumeAttachment creation, and CSI marker output.
 
 ### Node/system utilities (document in runbook)
 

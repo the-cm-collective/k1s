@@ -99,10 +99,15 @@ trap cleanup EXIT INT TERM
 need_cmd docker
 need_cmd curl
 need_cmd python
-need_cmd rpcinfo
+if [[ "${HARNESS_MODE}" != "csi" ]]; then
+  need_cmd rpcinfo
+fi
 
 log "harness dir: ${HARNESS_DIR}"
-mkdir -p "${NETFS_ROOT}" "${NFS_EXPORT_DIR}/netfs"
+mkdir -p "${NETFS_ROOT}"
+if [[ "${HARNESS_MODE}" != "csi" ]]; then
+  mkdir -p "${NFS_EXPORT_DIR}/netfs"
+fi
 
 cat >"${SC_FILE}" <<EOF_SC
 apiVersion: storage.k8s.io/v1
@@ -123,47 +128,49 @@ mountOptions:
   - vers=4.2
 EOF_SC
 
-log "starting NFS server container: ${NFS_CONTAINER}"
-docker rm -f "${NFS_CONTAINER}" >/dev/null 2>&1 || true
-docker run -d \
-  --name "${NFS_CONTAINER}" \
-  --privileged \
-  --network host \
-  -e SHARED_DIRECTORY=/exports \
-  -e PERMITTED=127.0.0.1 \
-  -v "${NFS_EXPORT_DIR}:/exports" \
-  itsthenetwork/nfs-server-alpine:latest >/dev/null
+if [[ "${HARNESS_MODE}" != "csi" ]]; then
+  log "starting NFS server container: ${NFS_CONTAINER}"
+  docker rm -f "${NFS_CONTAINER}" >/dev/null 2>&1 || true
+  docker run -d \
+    --name "${NFS_CONTAINER}" \
+    --privileged \
+    --network host \
+    -e SHARED_DIRECTORY=/exports \
+    -e PERMITTED=127.0.0.1 \
+    -v "${NFS_EXPORT_DIR}:/exports" \
+    itsthenetwork/nfs-server-alpine:latest >/dev/null
 
-log "waiting for NFS rpcbind/nfsd"
-for _ in $(seq 1 30); do
-  if rpcinfo -p "${NFS_SERVER}" 2>/dev/null | grep -q "100003"; then
-    break
+  log "waiting for NFS rpcbind/nfsd"
+  for _ in $(seq 1 30); do
+    if rpcinfo -p "${NFS_SERVER}" 2>/dev/null | grep -q "100003"; then
+      break
+    fi
+    sleep 1
+  done
+  if ! rpcinfo -p "${NFS_SERVER}" 2>/dev/null | grep -q "100003"; then
+    echo "NFS server did not become ready" >&2
+    docker logs "${NFS_CONTAINER}" | tail -n 60 >&2 || true
+    exit 1
   fi
-  sleep 1
-done
-if ! rpcinfo -p "${NFS_SERVER}" 2>/dev/null | grep -q "100003"; then
-  echo "NFS server did not become ready" >&2
-  docker logs "${NFS_CONTAINER}" | tail -n 60 >&2 || true
-  exit 1
-fi
 
-if [[ "${SKIP_MOUNT_PREFLIGHT}" != "1" && "${EUID}" -ne 0 ]]; then
-  log "running non-root NFS mount preflight"
-  test_mount="${HARNESS_DIR}/mount-preflight"
-  test_err="${HARNESS_DIR}/mount-preflight.err"
-  mkdir -p "${test_mount}"
-  set +e
-  timeout 15 mount -t nfs -o vers=4.2,ro "${NFS_SERVER}:${NFS_PATH}" "${test_mount}" \
-    2>"${test_err}"
-  rc=$?
-  set -e
-  if [[ "${rc}" -ne 0 ]]; then
-    echo "non-root NFS mount preflight failed" >&2
-    cat "${test_err}" >&2 || true
-    echo "run with sudo (or set SKIP_MOUNT_PREFLIGHT=1 to continue anyway)" >&2
-    exit 3
+  if [[ "${SKIP_MOUNT_PREFLIGHT}" != "1" && "${EUID}" -ne 0 ]]; then
+    log "running non-root NFS mount preflight"
+    test_mount="${HARNESS_DIR}/mount-preflight"
+    test_err="${HARNESS_DIR}/mount-preflight.err"
+    mkdir -p "${test_mount}"
+    set +e
+    timeout 15 mount -t nfs -o vers=4.2,ro "${NFS_SERVER}:${NFS_PATH}" "${test_mount}" \
+      2>"${test_err}"
+    rc=$?
+    set -e
+    if [[ "${rc}" -ne 0 ]]; then
+      echo "non-root NFS mount preflight failed" >&2
+      cat "${test_err}" >&2 || true
+      echo "run with sudo (or set SKIP_MOUNT_PREFLIGHT=1 to continue anyway)" >&2
+      exit 3
+    fi
+    umount "${test_mount}" >/dev/null 2>&1 || true
   fi
-  umount "${test_mount}" >/dev/null 2>&1 || true
 fi
 
 log "starting apishim on ${APISHIM_URL}"
@@ -228,6 +235,16 @@ if [[ "${HARNESS_MODE}" == "snapshot" ]]; then
   NETFS_SRC_DEPLOYMENT_NAME="${DEPLOY_NAME}-src" \
   NETFS_CLONE_DEPLOYMENT_NAME="${DEPLOY_NAME}-clone" \
   "${ROOT_DIR}/scripts/netfs_snapshot_clone.sh"
+elif [[ "${HARNESS_MODE}" == "csi" ]]; then
+  log "running NetFS CSI smoke test"
+  APISHIM_URL="${APISHIM_URL}" \
+  NETFS_STORAGE_CLASS=k1s-csi \
+  NETFS_ROOT="${NETFS_ROOT}" \
+  NETFS_PV_NAME="${PV_NAME}" \
+  NETFS_PVC_NAME="${PVC_NAME}" \
+  NETFS_DEPLOYMENT_NAME="${DEPLOY_NAME}" \
+  NETFS_NODE_ID="${NODE_ID}" \
+  "${ROOT_DIR}/scripts/netfs_csi_smoke.sh"
 else
   log "running NetFS smoke test"
   APISHIM_URL="${APISHIM_URL}" \
@@ -241,30 +258,31 @@ else
   "${ROOT_DIR}/scripts/netfs_smoke.sh"
 fi
 
-mount_targets=("${MOUNT_PATH}")
-if [[ "${HARNESS_MODE}" == "snapshot" ]]; then
-  mount_targets+=("${CLONE_MOUNT_PATH}")
-fi
+if [[ "${HARNESS_MODE}" != "csi" ]]; then
+  mount_targets=("${MOUNT_PATH}")
+  if [[ "${HARNESS_MODE}" == "snapshot" ]]; then
+    mount_targets+=("${CLONE_MOUNT_PATH}")
+  fi
 
-for target in "${mount_targets[@]}"; do
-  log "waiting for NFS mount at ${target}"
-  mounted=0
-  for _ in $(seq 1 45); do
-    if grep -qs " ${target} " /proc/mounts; then
-      mounted=1
-      break
-    fi
-    sleep 1
-  done
+  for target in "${mount_targets[@]}"; do
+    log "waiting for NFS mount at ${target}"
+    mounted=0
+    for _ in $(seq 1 45); do
+      if grep -qs " ${target} " /proc/mounts; then
+        mounted=1
+        break
+      fi
+      sleep 1
+    done
 
-  if [[ "${mounted}" != "1" ]]; then
-    echo "mount not detected at ${target}" >&2
-    log "recent events"
-    events_json=$(curl -fsS "${APISHIM_URL}/api/v1/namespaces/default/events" || true)
-    if [[ -z "${events_json}" ]]; then
-      log "no events returned from apishim"
-    else
-      python - "${events_json}" <<'PY'
+    if [[ "${mounted}" != "1" ]]; then
+      echo "mount not detected at ${target}" >&2
+      log "recent events"
+      events_json=$(curl -fsS "${APISHIM_URL}/api/v1/namespaces/default/events" || true)
+      if [[ -z "${events_json}" ]]; then
+        log "no events returned from apishim"
+      else
+        python - "${events_json}" <<'PY'
 import json
 import sys
 
@@ -282,9 +300,10 @@ for ev in items[-20:]:
     msg = ev.get("message", "")
     print(f"PVC event: {name} {reason} - {msg}")
 PY
+      fi
+      exit 1
     fi
-    exit 1
-  fi
-done
+  done
 
-log "mount detected"
+  log "mount detected"
+fi

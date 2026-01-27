@@ -4318,6 +4318,51 @@ class ShimHandler(BaseHTTPRequestHandler):
                                     "watch",
                                 ],
                             },
+                            {
+                                "name": "csidrivers",
+                                "singularName": "csidriver",
+                                "namespaced": False,
+                                "kind": "CSIDriver",
+                                "verbs": [
+                                    "get",
+                                    "list",
+                                    "create",
+                                    "delete",
+                                    "patch",
+                                    "update",
+                                    "watch",
+                                ],
+                            },
+                            {
+                                "name": "csinodes",
+                                "singularName": "csinode",
+                                "namespaced": False,
+                                "kind": "CSINode",
+                                "verbs": [
+                                    "get",
+                                    "list",
+                                    "create",
+                                    "delete",
+                                    "patch",
+                                    "update",
+                                    "watch",
+                                ],
+                            },
+                            {
+                                "name": "csistoragecapacities",
+                                "singularName": "csistoragecapacity",
+                                "namespaced": True,
+                                "kind": "CSIStorageCapacity",
+                                "verbs": [
+                                    "get",
+                                    "list",
+                                    "create",
+                                    "delete",
+                                    "patch",
+                                    "update",
+                                    "watch",
+                                ],
+                            },
                         ],
                     }
                 )
@@ -6646,12 +6691,56 @@ class ShimHandler(BaseHTTPRequestHandler):
                 self._ok(_to_generic("snapshot.storage.k8s.io", "v1", kind, plural)(obj))
                 return
 
-        # storage.k8s.io: storageclasses and volumeattachments (cluster-scoped)
+        # storage.k8s.io: storageclasses, volumeattachments, and CSI resources
         if path.startswith("/apis/storage.k8s.io/v1"):
-            for plural, kind, list_kind in (
-                ("storageclasses", "StorageClass", "StorageClassList"),
-                ("volumeattachments", "VolumeAttachment", "VolumeAttachmentList"),
-            ):
+            resources = (
+                ("storageclasses", "StorageClass", "StorageClassList", False),
+                ("volumeattachments", "VolumeAttachment", "VolumeAttachmentList", False),
+                ("csidrivers", "CSIDriver", "CSIDriverList", False),
+                ("csinodes", "CSINode", "CSINodeList", False),
+                ("csistoragecapacities", "CSIStorageCapacity", "CSIStorageCapacityList", True),
+            )
+            for plural, kind, list_kind, namespaced in resources:
+                if namespaced:
+                    s_plural, s_ns, s_name = _gv_ns_name(path, "storage.k8s.io", "v1", plural)
+                    if s_plural != plural:
+                        continue
+                    if s_name is None:
+                        if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                            self._stream_watch(
+                                "storage.k8s.io",
+                                "v1",
+                                plural,
+                                s_ns,
+                                q,
+                                transform=_to_generic("storage.k8s.io", "v1", kind, plural),
+                            )
+                            return
+                        items = (
+                            self.server.store.list_all("storage.k8s.io", "v1", plural)  # type: ignore[attr-defined]
+                            if s_ns is None
+                            else self.server.store.list("storage.k8s.io", "v1", plural, s_ns)  # type: ignore[attr-defined]
+                        )
+                        self._ok(
+                            {
+                                "kind": list_kind,
+                                "apiVersion": "storage.k8s.io/v1",
+                                "items": [
+                                    _to_generic("storage.k8s.io", "v1", kind, plural)(i)
+                                    for i in items
+                                ],
+                            }
+                        )
+                        return
+                    obj = self.server.store.get(  # type: ignore[attr-defined]
+                        "storage.k8s.io", "v1", plural, s_ns, s_name
+                    )
+                    if not obj:
+                        self._not_found()
+                        return
+                    self._ok(_to_generic("storage.k8s.io", "v1", kind, plural)(obj))
+                    return
+
                 s_plural, s_name = _gv_cluster_name(path, "storage.k8s.io", "v1", plural)
                 if s_plural != plural:
                     continue
@@ -7264,7 +7353,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if not pod_ip:
                     port_map = container_info.get("port_map") or {}
                     use_host_ports = bool(port_map)
-                if target_host in ("0.0.0.0", "::", ""):
+                if target_host in ("0.0.0.0", "::", ""):  # noqa: S104
                     target_host = "127.0.0.1"
             elif isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                 target_host = os.getenv("AE_STUB_BACKEND_HOST", target_host)
@@ -7919,34 +8008,70 @@ class ShimHandler(BaseHTTPRequestHandler):
                 self.wfile.write(out)
                 return
 
-        # storage.k8s.io (cluster-scoped resources)
+        # storage.k8s.io resources
         if self.path.startswith("/apis/storage.k8s.io/v1"):
-            for plural, kind in (
-                ("storageclasses", "StorageClass"),
-                ("volumeattachments", "VolumeAttachment"),
-            ):
-                s_plural, s_name = _gv_cluster_name(self.path, "storage.k8s.io", "v1", plural)
-                if s_plural != plural:
-                    continue
-                md = doc.get("metadata") or {}
-                name_in = md.get("name") or s_name
-                if not name_in or not _valid_name(name_in):
-                    self._json_status(
-                        HTTPStatus.UNPROCESSABLE_ENTITY,
-                        reason="Invalid",
-                        message="invalid metadata.name (DNS-1123 label)",
+            resources = (
+                ("storageclasses", "StorageClass", False),
+                ("volumeattachments", "VolumeAttachment", False),
+                ("csidrivers", "CSIDriver", False),
+                ("csinodes", "CSINode", False),
+                ("csistoragecapacities", "CSIStorageCapacity", True),
+            )
+            for plural, kind, namespaced in resources:
+                if namespaced:
+                    s_plural, s_ns, s_name = _gv_ns_name(self.path, "storage.k8s.io", "v1", plural)
+                    if s_plural != plural:
+                        continue
+                    md = doc.get("metadata") or {}
+                    name_in = md.get("name") or s_name
+                    ns_in = md.get("namespace") or s_ns
+                    if not name_in or not _valid_name(name_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.name (DNS-1123 label)",
+                        )
+                        return
+                    if not ns_in or not _valid_name(ns_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.namespace (DNS-1123 label)",
+                        )
+                        return
+                    created = self.server.store.upsert(  # type: ignore[attr-defined]
+                        "storage.k8s.io",
+                        "v1",
+                        plural,
+                        ns_in,
+                        name_in,
+                        metadata=_normalize_metadata(md, name_in, ns_in, plural),
+                        spec=_spec_payload(plural, doc),
+                        status=doc.get("status") or {},
                     )
-                    return
-                created = self.server.store.upsert(  # type: ignore[attr-defined]
-                    "storage.k8s.io",
-                    "v1",
-                    plural,
-                    None,
-                    name_in,
-                    metadata=_normalize_metadata(md, name_in, None, plural),
-                    spec=_spec_payload(plural, doc),
-                    status=doc.get("status") or {},
-                )
+                else:
+                    s_plural, s_name = _gv_cluster_name(self.path, "storage.k8s.io", "v1", plural)
+                    if s_plural != plural:
+                        continue
+                    md = doc.get("metadata") or {}
+                    name_in = md.get("name") or s_name
+                    if not name_in or not _valid_name(name_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.name (DNS-1123 label)",
+                        )
+                        return
+                    created = self.server.store.upsert(  # type: ignore[attr-defined]
+                        "storage.k8s.io",
+                        "v1",
+                        plural,
+                        None,
+                        name_in,
+                        metadata=_normalize_metadata(md, name_in, None, plural),
+                        spec=_spec_payload(plural, doc),
+                        status=doc.get("status") or {},
+                    )
                 self.send_response(HTTPStatus.CREATED)
                 out = _json(_to_generic("storage.k8s.io", "v1", kind, plural)(created))
                 self.send_header("Content-Type", "application/json")
@@ -8325,32 +8450,68 @@ class ShimHandler(BaseHTTPRequestHandler):
                 self._ok(_to_job(updated) if b_plural == "jobs" else _to_cronjob(updated))
                 return
         if self.path.startswith("/apis/storage.k8s.io/v1"):
-            for plural, kind in (
-                ("storageclasses", "StorageClass"),
-                ("volumeattachments", "VolumeAttachment"),
-            ):
-                s_plural, s_name = _gv_cluster_name(self.path, "storage.k8s.io", "v1", plural)
-                if s_plural != plural or not s_name:
-                    continue
-                md = doc.get("metadata") or {}
-                name_in = md.get("name") or s_name
-                if not name_in or not _valid_name(name_in):
-                    self._json_status(
-                        HTTPStatus.UNPROCESSABLE_ENTITY,
-                        reason="Invalid",
-                        message="invalid metadata.name (DNS-1123 label)",
+            resources = (
+                ("storageclasses", "StorageClass", False),
+                ("volumeattachments", "VolumeAttachment", False),
+                ("csidrivers", "CSIDriver", False),
+                ("csinodes", "CSINode", False),
+                ("csistoragecapacities", "CSIStorageCapacity", True),
+            )
+            for plural, kind, namespaced in resources:
+                if namespaced:
+                    s_plural, s_ns, s_name = _gv_ns_name(self.path, "storage.k8s.io", "v1", plural)
+                    if s_plural != plural or not s_name:
+                        continue
+                    md = doc.get("metadata") or {}
+                    name_in = md.get("name") or s_name
+                    ns_in = md.get("namespace") or s_ns
+                    if not name_in or not _valid_name(name_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.name (DNS-1123 label)",
+                        )
+                        return
+                    if not ns_in or not _valid_name(ns_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.namespace (DNS-1123 label)",
+                        )
+                        return
+                    updated = self.server.store.upsert(  # type: ignore[attr-defined]
+                        "storage.k8s.io",
+                        "v1",
+                        plural,
+                        ns_in,
+                        name_in,
+                        metadata=_normalize_metadata(md, name_in, ns_in, plural),
+                        spec=_spec_payload(plural, doc),
+                        status=doc.get("status") or {},
                     )
-                    return
-                updated = self.server.store.upsert(  # type: ignore[attr-defined]
-                    "storage.k8s.io",
-                    "v1",
-                    plural,
-                    None,
-                    name_in,
-                    metadata=_normalize_metadata(md, name_in, None, plural),
-                    spec=_spec_payload(plural, doc),
-                    status=doc.get("status") or {},
-                )
+                else:
+                    s_plural, s_name = _gv_cluster_name(self.path, "storage.k8s.io", "v1", plural)
+                    if s_plural != plural or not s_name:
+                        continue
+                    md = doc.get("metadata") or {}
+                    name_in = md.get("name") or s_name
+                    if not name_in or not _valid_name(name_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.name (DNS-1123 label)",
+                        )
+                        return
+                    updated = self.server.store.upsert(  # type: ignore[attr-defined]
+                        "storage.k8s.io",
+                        "v1",
+                        plural,
+                        None,
+                        name_in,
+                        metadata=_normalize_metadata(md, name_in, None, plural),
+                        spec=_spec_payload(plural, doc),
+                        status=doc.get("status") or {},
+                    )
                 self._ok(_to_generic("storage.k8s.io", "v1", kind, plural)(updated))
                 return
         if self.path.startswith("/apis/snapshot.storage.k8s.io/v1"):
@@ -8650,6 +8811,9 @@ class ShimHandler(BaseHTTPRequestHandler):
             ("autoscaling", "v2", "horizontalpodautoscalers", "HorizontalPodAutoscaler"),
             ("storage.k8s.io", "v1", "storageclasses", "StorageClass"),
             ("storage.k8s.io", "v1", "volumeattachments", "VolumeAttachment"),
+            ("storage.k8s.io", "v1", "csidrivers", "CSIDriver"),
+            ("storage.k8s.io", "v1", "csinodes", "CSINode"),
+            ("storage.k8s.io", "v1", "csistoragecapacities", "CSIStorageCapacity"),
             ("snapshot.storage.k8s.io", "v1", "volumesnapshots", "VolumeSnapshot"),
             (
                 "snapshot.storage.k8s.io",
@@ -9307,7 +9471,41 @@ class ShimHandler(BaseHTTPRequestHandler):
                 self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
                 return
         if path.startswith("/apis/storage.k8s.io/v1"):
-            for plural in ("storageclasses", "volumeattachments"):
+            resources = (
+                ("storageclasses", False),
+                ("volumeattachments", False),
+                ("csidrivers", False),
+                ("csinodes", False),
+                ("csistoragecapacities", True),
+            )
+            for plural, namespaced in resources:
+                if namespaced:
+                    s_plural, s_ns, s_name = _gv_ns_name(path, "storage.k8s.io", "v1", plural)
+                    if s_plural != plural:
+                        continue
+                    if not self._rbac_allows("delete", plural):
+                        self._deny(403)
+                        return
+                    if s_name:
+                        ok = self.server.store.delete(  # type: ignore[attr-defined]
+                            "storage.k8s.io", "v1", plural, s_ns, s_name
+                        )
+                        if not ok:
+                            self._not_found()
+                            return
+                    else:
+                        items = (
+                            self.server.store.list_all("storage.k8s.io", "v1", plural)  # type: ignore[attr-defined]
+                            if s_ns is None
+                            else self.server.store.list("storage.k8s.io", "v1", plural, s_ns)  # type: ignore[attr-defined]
+                        )
+                        for obj in items:
+                            self.server.store.delete(  # type: ignore[attr-defined]
+                                "storage.k8s.io", "v1", plural, obj.namespace or None, obj.name
+                            )
+                    self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
+                    return
+
                 s_plural, s_name = _gv_cluster_name(path, "storage.k8s.io", "v1", plural)
                 if s_plural != plural:
                     continue
@@ -9315,16 +9513,18 @@ class ShimHandler(BaseHTTPRequestHandler):
                     self._deny(403)
                     return
                 if s_name:
-                    ok = self.server.store.delete("storage.k8s.io", "v1", plural, None, s_name)  # type: ignore[attr-defined]
+                    ok = self.server.store.delete(  # type: ignore[attr-defined]
+                        "storage.k8s.io", "v1", plural, None, s_name
+                    )
                     if not ok:
                         self._not_found()
                         return
                 else:
                     items = self.server.store.list_all("storage.k8s.io", "v1", plural)  # type: ignore[attr-defined]
                     for obj in items:
-                        self.server.store.delete(
+                        self.server.store.delete(  # type: ignore[attr-defined]
                             "storage.k8s.io", "v1", plural, None, obj.name
-                        )  # type: ignore[attr-defined]
+                        )
                 self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
                 return
         if path.startswith("/apis/snapshot.storage.k8s.io/v1"):
