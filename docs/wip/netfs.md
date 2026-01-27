@@ -351,6 +351,9 @@ Exit criteria:
 - Volume health reporting (controller events)
   - Emit `VolumeHealthy` / `VolumeUnhealthy` events when hostPath-backed PVs
     appear or disappear under the storage root.
+- CSIStorageCapacity (basic capacity reporting)
+  - Emit `CSIStorageCapacity` objects per storage class using hostPath disk free
+    space and PV node affinity where available.
 - RWOP + topology
   - `ReadWriteOncePod` access mode limits replicas to 1 in scheduler warnings.
   - Scheduler filters eligible nodes by `topologyKeys` / `allowedTopologies`.
@@ -434,7 +437,7 @@ Optional (SMB / CSI):
 - VolumeSnapshots and VolumeSnapshotClass support.
 - Volume cloning via `dataSourceRef`.
 - Volume expansion with filesystem resize in containers.
-- Topology-aware provisioning and capacity tracking (`CSIStorageCapacity`).
+- (Extended) CSI capacity/topology reporting for multi-node and external CSI drivers.
 - Volume health checks and metrics aligned with K8s events.
 - SELinux and fsGroup policies for shared volumes.
 - Per-namespace quota enforcement and usage tracking.
