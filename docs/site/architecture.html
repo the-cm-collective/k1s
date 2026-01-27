@@ -705,7 +705,7 @@
 <p>This document describes k1s in depth: components, data model, reconcile algorithms, interfaces, and operational behavior. It is intentionally verbose.</p>
 <h2>Scope and Principles</h2>
 <ul>
-<li>Multi-node first. Controller manages one or more nodes via agents; Podman (OCI) is preferred, Docker is the fallback when Podman is unavailable.</li>
+<li>Multi-node first. Controller manages one or more nodes via agents; Podman (OCI) is preferred, Docker is the fallback when Podman is unavailable, and CRI/containerd is supported where needed.</li>
 <li>Declarative spec → idempotent reconcile. The controller continuously applies desired state and converges.</li>
 <li>Small surface. Prefer composition over features; leave seams to extend later.</li>
 <li>Fail well. A crash restarts cleanly; reconcile rebuilds reality from Docker + SQLite.</li>
@@ -715,7 +715,7 @@
 <li>Controller (src/ae/controller): orchestrates reconcile, scheduling, service VIPs, state, and events.</li>
 <li>Scheduler (src/ae/controller/scheduler.py): chooses Ready nodes honoring <code>nodeSelector</code>, taints/tolerations, topology spread, and storage pinning.</li>
 <li>Node agent (src/ae/node): exposes runtime ensure/logs/exec/probes for the controller over HTTP/mTLS; reports heartbeats.</li>
-<li>Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback; RemoteRuntime client proxies to agents.</li>
+<li>Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback, CRI/containerd supported; RemoteRuntime client proxies to agents.</li>
 <li>Service/overlay (src/ae/network): allocates Service CIDR VIPs and wires overlay providers (HAProxy overlay or bridge).</li>
 <li>Ingress (src/ae/ingress): writes Caddy site fragments and triggers reloads (prefers Service VIP upstreams).</li>
 <li>Health (src/ae/controller/health.py): readiness/liveness/exec/tcp evaluation (startup probe aware).</li>
@@ -867,8 +867,8 @@ spec:
 <li><code>list_revisions(app)</code>, <code>get_revision_manifest(app, rev)</code></li>
 <li><code>list_events(app, limit)</code></li>
 </ul>
-<h2>Runtime: Container Engine (Podman/Docker)</h2>
-<p>The controller talks to local Podman/Docker when no nodes are eligible; in multi-node runs it proxies through RemoteRuntime to each node agent endpoint. Agents enforce auth via <code>AE_AGENT_API_TOKEN</code> and optionally mTLS.</p>
+<h2>Runtime: Container Engine (Podman/Docker/CRI)</h2>
+<p>The controller talks to local Podman/Docker when no nodes are eligible; in multi-node runs it proxies through RemoteRuntime to each node agent endpoint. Agents enforce auth via <code>AE_AGENT_API_TOKEN</code> and optionally mTLS. CRI/containerd nodes are supported via <code>AE_RUNTIME_BACKEND=cri</code> and use the CRI gRPC API; exec/attach/port-forward use <code>crictl</code> on the node.</p>
 <p>Labels</p>
 <ul>
 <li><code>ae.app=&lt;name&gt;</code></li>
@@ -975,17 +975,22 @@ spec:
 <li>AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER</li>
 <li>AE_REGISTRY_CONFIG</li>
 <li>AE_SOPS_BIN, AE_ALLOW_PLAINTEXT_SECRETS</li>
-<li>AE_RUNTIME_BACKEND (&quot;podman&quot; [default], &quot;docker&quot;, &quot;stub&quot;)</li>
+<li>AE_RUNTIME_BACKEND (&quot;podman&quot; [default], &quot;docker&quot;, &quot;cri|containerd&quot;, &quot;stub&quot;)</li>
 <li>AE_PODMAN_BIN (default: podman)</li>
 <li>AE_PODMAN_NETWORK (name of shared network for multi-replica + ingress)</li>
 <li>AE_DOCKER_NETWORK (name of shared network when using Docker)</li>
 <li>AE_CONTAINER_CLI (&quot;docker&quot;|&quot;podman&quot;) for ingress reloads inside the Caddy container</li>
+<li>AE_CRI_ENDPOINT (default: unix:///run/containerd/containerd.sock)</li>
+<li>AE_CRI_SANDBOX_IMAGE (default: registry.k8s.io/pause:3.9)</li>
+<li>CRICTL_BIN (path override for crictl; used for exec/attach/port-forward on CRI)</li>
+<li>AE_APISHIM_CRI_PORTFORWARD / AE_APISHIM_CRI_PORTFORWARD_FORCE (enable/force CRI port-forward proxy)</li>
 <li>AE_LOG_LEVEL</li>
 </ul>
 <h2>Testing Strategy</h2>
 <ul>
 <li>Unit tests for CLI surface, state store, Docker runtime (via fakes), reconciler health decisions.</li>
 <li>Integration tests can run against a local Docker daemon for end‑to‑end validation.</li>
+<li>CRI integration tests run via <code>scripts/cri_ci_setup.sh</code> and <code>tests/integration/test_cri_*</code> (see <code>docs/ops/runbook.md</code>).</li>
 </ul>
 <h2>Performance &amp; Footprint</h2>
 <ul>

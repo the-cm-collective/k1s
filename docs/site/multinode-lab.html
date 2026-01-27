@@ -706,6 +706,7 @@
 <h2>Prereqs</h2>
 <ul>
 <li>Two hosts (or VMs) with Python 3.11+, Podman or Docker, WireGuard tools (<code>wg</code>, <code>wg-quick</code>), and passwordless SSH between them for convenience.</li>
+<li>Optional (CRI/containerd): containerd + CNI + <code>crictl</code> installed on nodes using <code>--runtime-backend cri</code>.</li>
 <li>Rootful networking on both nodes (rootless overlay is not supported); a small privileged helper is required to attach WireGuard.</li>
 <li>Controller host exposes TCP 9110 (agent API) and UDP 51820 (or your chosen WireGuard port).</li>
 <li>Clone this repo on the controller; worker only needs <code>ae</code> installed plus the <code>ae-node</code> entrypoint.</li>
@@ -739,6 +740,11 @@ AE_CONTROLLER_TLS_KEY=${AE_CONTROLLER_TLS_KEY:-} \
 AE_WG_CONFIG=&quot;$(cat /etc/wireguard/wg0.conf)&quot; \
 python -m ae.node --runtime-backend podman --port 9109 --ensure-pod-net</code></pre>
 <ul>
+<li>For CRI/containerd nodes, use:
+<ul>
+<li><code>AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock python -m ae.node --runtime-backend cri --port 9109 --ensure-pod-net</code></li>
+</ul>
+</li>
 <li>Leave <code>AE_POD_CIDR</code> empty to let the controller assign one on first heartbeat.</li>
 <li>If WireGuard is disabled, drop <code>--ensure-pod-net</code> and set <code>AE_SERVICE_PROVIDER=bridge</code> on the controller (no cross-node routing).</li>
 </ul>

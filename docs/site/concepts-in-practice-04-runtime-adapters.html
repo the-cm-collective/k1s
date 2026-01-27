@@ -703,7 +703,7 @@
     <div class="container">
     <h1>Chapter 04 - Runtime Adapters and Container Execution</h1>
 <h2>Concept</h2>
-<p>The controller defines desired state, but runtime adapters execute it. The adapter layer abstracts the container engine so the orchestration logic can remain stable while runtimes vary (Podman, Docker, or remote agents).</p>
+<p>The controller defines desired state, but runtime adapters execute it. The adapter layer abstracts the container engine so the orchestration logic can remain stable while runtimes vary (Podman, Docker, CRI/containerd, or remote agents).</p>
 <pre class="mermaid">flowchart LR
   Controller[Reconciler] --&gt; Adapter[RuntimeAdapter]
   Adapter --&gt; Engine[Container engine]
@@ -723,14 +723,16 @@
   E--&gt;&gt;A: updated state
   A--&gt;&gt;C: RuntimeResult</pre>
 <h3>Design</h3>
-<p>k1s defines a RuntimeAdapter protocol and provides concrete implementations for Podman and Docker. The controller calls <code>ensure_app</code>, which creates or updates containers to match the desired replica set. Backend selection is environment-driven, and fallback logic ensures the system remains functional even if the preferred runtime is unavailable.</p>
+<p>k1s defines a RuntimeAdapter protocol and provides concrete implementations for Podman, Docker, and CRI/containerd. The controller calls <code>ensure_app</code>, which creates or updates containers to match the desired replica set. Backend selection is environment-driven, and fallback logic ensures the system remains functional even if the preferred runtime is unavailable.</p>
 <pre class="mermaid">flowchart TB
   Env[AE_RUNTIME_BACKEND] --&gt; Select[Runtime factory]
   Select --&gt; Podman[PodmanRuntime]
   Select --&gt; Docker[DockerRuntime]
+  Select --&gt; CRI[CRIRuntime]
   Select --&gt; Stub[StubRuntime]
   Podman --&gt; Adapter[RuntimeAdapter]
   Docker --&gt; Adapter
+  CRI --&gt; Adapter
   Stub --&gt; Adapter</pre>
 <h3>Application</h3>
 <p>To extend k1s, implement the RuntimeAdapter contract for a new engine, then wire it into runtime selection. When debugging runtime issues, focus on adapter logs and verify container labels and lifecycle transitions. This mirrors how kubelet integrates CRI runtimes in Kubernetes.</p>
@@ -749,9 +751,10 @@
 <h2>Key Terms and Acronyms</h2>
 <ul>
 <li>Runtime adapter - Abstraction translating reconcile actions to runtime ops.</li>
-<li>Container runtime - Engine that runs containers (Docker/Podman).</li>
+<li>Container runtime - Engine that runs containers (Podman, Docker, containerd).</li>
 <li>CRI - Kubernetes Container Runtime Interface.</li>
 <li>OCI - Open Container Initiative spec for images/runtimes.</li>
+<li>containerd - Common CRI implementation used by k3s/k8s.</li>
 <li>ensure_app - Adapter method that enforces desired replicas.</li>
 <li>Replica state - Runtime-reported status for a replica.</li>
 <li>Image pull - Fetching a container image from a registry.</li>
@@ -816,6 +819,8 @@ python -m ae.cli events echo --limit 20</code></pre>
     backend = os.getenv(&quot;AE_RUNTIME_BACKEND&quot;, &quot;podman&quot;).lower()
     if backend == &quot;stub&quot;:
         return StubRuntime()
+    if backend in {&quot;cri&quot;, &quot;containerd&quot;}:
+        return CRIRuntime()
     if backend in {&quot;podman&quot;, &quot;oci&quot;}:
         try:
             if shutil.which(os.getenv(&quot;AE_PODMAN_BIN&quot;, &quot;podman&quot;)) is None:

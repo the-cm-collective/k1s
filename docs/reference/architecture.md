@@ -4,7 +4,7 @@ This document describes k1s in depth: components, data model, reconcile algorith
 
 ## Scope and Principles
 
-- Multi-node first. Controller manages one or more nodes via agents; Podman (OCI) is preferred, Docker is the fallback when Podman is unavailable.
+- Multi-node first. Controller manages one or more nodes via agents; Podman (OCI) is preferred, Docker is the fallback when Podman is unavailable, and CRI/containerd is supported where needed.
 - Declarative spec → idempotent reconcile. The controller continuously applies desired state and converges.
 - Small surface. Prefer composition over features; leave seams to extend later.
 - Fail well. A crash restarts cleanly; reconcile rebuilds reality from Docker + SQLite.
@@ -14,7 +14,7 @@ This document describes k1s in depth: components, data model, reconcile algorith
 - Controller (src/ae/controller): orchestrates reconcile, scheduling, service VIPs, state, and events.
 - Scheduler (src/ae/controller/scheduler.py): chooses Ready nodes honoring `nodeSelector`, taints/tolerations, topology spread, and storage pinning.
 - Node agent (src/ae/node): exposes runtime ensure/logs/exec/probes for the controller over HTTP/mTLS; reports heartbeats.
-- Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback; RemoteRuntime client proxies to agents.
+- Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback, CRI/containerd supported; RemoteRuntime client proxies to agents.
 - Service/overlay (src/ae/network): allocates Service CIDR VIPs and wires overlay providers (HAProxy overlay or bridge).
 - Ingress (src/ae/ingress): writes Caddy site fragments and triggers reloads (prefers Service VIP upstreams).
 - Health (src/ae/controller/health.py): readiness/liveness/exec/tcp evaluation (startup probe aware).
@@ -171,9 +171,9 @@ Query surfaces
 - `list_revisions(app)`, `get_revision_manifest(app, rev)`
 - `list_events(app, limit)`
 
-## Runtime: Container Engine (Podman/Docker)
+## Runtime: Container Engine (Podman/Docker/CRI)
 
-The controller talks to local Podman/Docker when no nodes are eligible; in multi-node runs it proxies through RemoteRuntime to each node agent endpoint. Agents enforce auth via `AE_AGENT_API_TOKEN` and optionally mTLS.
+The controller talks to local Podman/Docker when no nodes are eligible; in multi-node runs it proxies through RemoteRuntime to each node agent endpoint. Agents enforce auth via `AE_AGENT_API_TOKEN` and optionally mTLS. CRI/containerd nodes are supported via `AE_RUNTIME_BACKEND=cri` and use the CRI gRPC API; exec/attach/port-forward use `crictl` on the node.
 
 Labels
 - `ae.app=<name>`
@@ -275,17 +275,22 @@ Revision status
 - AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER
 - AE_REGISTRY_CONFIG
 - AE_SOPS_BIN, AE_ALLOW_PLAINTEXT_SECRETS
-- AE_RUNTIME_BACKEND ("podman" [default], "docker", "stub")
+- AE_RUNTIME_BACKEND ("podman" [default], "docker", "cri|containerd", "stub")
 - AE_PODMAN_BIN (default: podman)
 - AE_PODMAN_NETWORK (name of shared network for multi-replica + ingress)
 - AE_DOCKER_NETWORK (name of shared network when using Docker)
 - AE_CONTAINER_CLI ("docker"|"podman") for ingress reloads inside the Caddy container
+- AE_CRI_ENDPOINT (default: unix:///run/containerd/containerd.sock)
+- AE_CRI_SANDBOX_IMAGE (default: registry.k8s.io/pause:3.9)
+- CRICTL_BIN (path override for crictl; used for exec/attach/port-forward on CRI)
+- AE_APISHIM_CRI_PORTFORWARD / AE_APISHIM_CRI_PORTFORWARD_FORCE (enable/force CRI port-forward proxy)
 - AE_LOG_LEVEL
 
 ## Testing Strategy
 
 - Unit tests for CLI surface, state store, Docker runtime (via fakes), reconciler health decisions.
 - Integration tests can run against a local Docker daemon for end‑to‑end validation.
+- CRI integration tests run via `scripts/cri_ci_setup.sh` and `tests/integration/test_cri_*` (see `docs/ops/runbook.md`).
 
 ## Performance & Footprint
 

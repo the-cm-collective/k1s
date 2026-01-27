@@ -4,6 +4,7 @@ Use this quickstart to exercise the multi-node path on two Linux hosts (one cont
 
 ## Prereqs
 - Two hosts (or VMs) with Python 3.11+, Podman or Docker, WireGuard tools (`wg`, `wg-quick`), and passwordless SSH between them for convenience.
+- Optional (CRI/containerd): containerd + CNI + `crictl` installed on nodes using `--runtime-backend cri`.
 - Rootful networking on both nodes (rootless overlay is not supported); a small privileged helper is required to attach WireGuard.
 - Controller host exposes TCP 9110 (agent API) and UDP 51820 (or your chosen WireGuard port).
 - Clone this repo on the controller; worker only needs `ae` installed plus the `ae-node` entrypoint.
@@ -42,6 +43,8 @@ AE_CONTROLLER_TLS_KEY=${AE_CONTROLLER_TLS_KEY:-} \
 AE_WG_CONFIG="$(cat /etc/wireguard/wg0.conf)" \
 python -m ae.node --runtime-backend podman --port 9109 --ensure-pod-net
 ```
+- For CRI/containerd nodes, use:
+  - `AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock python -m ae.node --runtime-backend cri --port 9109 --ensure-pod-net`
 - Leave `AE_POD_CIDR` empty to let the controller assign one on first heartbeat.
 - If WireGuard is disabled, drop `--ensure-pod-net` and set `AE_SERVICE_PROVIDER=bridge` on the controller (no cross-node routing).
 

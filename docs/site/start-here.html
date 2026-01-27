@@ -708,6 +708,7 @@
 <ul>
 <li>Python 3.11+</li>
 <li>Podman (preferred) or Docker installed and running</li>
+<li>Optional (CRI/containerd): containerd + CNI + <code>crictl</code> (see <code>docs/ops/runbook.md</code>)</li>
 <li>Optional (for ingress/docs via Caddy and Prometheus): <code>docker compose</code> or <code>podman compose</code></li>
 <li>Optional (for multi-node lab): two Linux hosts/VMs with WireGuard tools and rootful networking</li>
 </ul>
@@ -765,6 +766,9 @@ python -m pip install -e .[watch]</code></pre>
 </ul>
 <p>3) Run the controller with API + file watch:</p>
 <pre><code>python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch</code></pre>
+<ul>
+<li>For CRI/containerd: <code>AE_RUNTIME_BACKEND=cri</code> and follow the CRI section in <code>docs/ops/runbook.md</code> for CNI init + smoke checks.</li>
+</ul>
 <p>4) Apply and inspect a sample workload (App):</p>
 <pre><code>python -m ae.cli apply -f specs/examples/echo.yaml
 python -m ae.cli status echo --wide --events

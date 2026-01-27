@@ -30,6 +30,7 @@ CRI nodes (containerd)
   - `AE_SERVICE_PROVIDER=iptables`
   - Run controller as root or with sufficient iptables permissions
 - Streaming exec/attach uses `crictl`; ensure it is installed and on PATH (`CRICTL_BIN` overrides).
+- CRI port-forward proxy (pods/services): set `AE_APISHIM_CRI_PORTFORWARD=1` (or `AE_APISHIM_CRI_PORTFORWARD_FORCE=1` to always prefer it).
 - Service VIP proxy on CRI uses iptables; set `AE_ENABLE_SERVICE_PROXY=1` and run as root.
 - CNI dirs (defaults): `/opt/cni/bin` and `/etc/cni/net.d`
 - Init CNI configs (bridge + loopback) if missing: `./scripts/cni_init.sh`
