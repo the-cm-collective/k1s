@@ -678,6 +678,17 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
             ):
                 sec["localhostProfile"] = str(m.spec.pod_security.seccomp_localhost_profile)
             psc["seccompProfile"] = sec
+        selinux = {}
+        if getattr(m.spec.pod_security, "selinux_user", None):
+            selinux["user"] = str(m.spec.pod_security.selinux_user)
+        if getattr(m.spec.pod_security, "selinux_role", None):
+            selinux["role"] = str(m.spec.pod_security.selinux_role)
+        if getattr(m.spec.pod_security, "selinux_type", None):
+            selinux["type"] = str(m.spec.pod_security.selinux_type)
+        if getattr(m.spec.pod_security, "selinux_level", None):
+            selinux["level"] = str(m.spec.pod_security.selinux_level)
+        if selinux:
+            psc["seLinuxOptions"] = selinux
         if psc:
             pod_spec["securityContext"] = psc
     # Scheduling pass-through
@@ -1003,6 +1014,17 @@ def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str,
             ):
                 sec["localhostProfile"] = str(m.spec.pod_security.seccomp_localhost_profile)
             psc["seccompProfile"] = sec
+        selinux = {}
+        if getattr(m.spec.pod_security, "selinux_user", None):
+            selinux["user"] = str(m.spec.pod_security.selinux_user)
+        if getattr(m.spec.pod_security, "selinux_role", None):
+            selinux["role"] = str(m.spec.pod_security.selinux_role)
+        if getattr(m.spec.pod_security, "selinux_type", None):
+            selinux["type"] = str(m.spec.pod_security.selinux_type)
+        if getattr(m.spec.pod_security, "selinux_level", None):
+            selinux["level"] = str(m.spec.pod_security.selinux_level)
+        if selinux:
+            psc["seLinuxOptions"] = selinux
         if psc:
             pod_spec["securityContext"] = psc
 
