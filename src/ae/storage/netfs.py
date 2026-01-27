@@ -5,11 +5,15 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Iterable
+from logging import getLogger
 from pathlib import Path
-from typing import Any, Iterable, Protocol
+from typing import Any, Protocol
 
 from .state import StorageState
 from .types import NetFSMount, PvcRef, PvRef
+
+LOGGER = getLogger(__name__)
 
 
 class StorageDriver(Protocol):
@@ -117,6 +121,8 @@ class NetFSManager:
                 self._record_pvc_event(pvc, "MountConflict", msg)
                 raise RuntimeError(msg)
 
+        self._maybe_resize_filesystem(pvc, target)
+
         mount = NetFSMount(
             pvc=pvc,
             pv=pv,
@@ -167,8 +173,10 @@ class NetFSManager:
                 if keys:
                     lines.append(f"{label}.keys={keys}")
             marker.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("failed to write CSI marker for %s: %s", pvc, exc)
+
+        self._maybe_resize_filesystem(pvc, target)
 
         read_only = bool(csi.get("readOnly", False))
         mount = NetFSMount(
@@ -227,7 +235,7 @@ class NetFSManager:
         if not raw:
             return []
         options: list[str] = []
-        if isinstance(raw, (list, tuple, set)):
+        if isinstance(raw, list | tuple | set):
             items: Iterable[Any] = raw
         else:
             items = [raw]
@@ -263,14 +271,16 @@ class NetFSManager:
             cmd.extend(["-o", ",".join(options)])
         cmd.extend([source, str(target)])
         try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            subprocess.run(cmd, check=True, capture_output=True, text=True)  # noqa: S603,S607
         except subprocess.CalledProcessError as exc:  # pragma: no cover - integration path
             stderr = (exc.stderr or "").strip()
             raise RuntimeError(f"failed to mount {source} on {target}: {stderr}") from exc
 
     def _unmount(self, target: Path) -> None:
         try:
-            subprocess.run(["umount", str(target)], check=True, capture_output=True, text=True)
+            subprocess.run(
+                ["umount", str(target)], check=True, capture_output=True, text=True  # noqa: S603,S607
+            )
         except subprocess.CalledProcessError as exc:  # pragma: no cover - integration path
             stderr = (exc.stderr or "").strip()
             raise RuntimeError(f"failed to unmount {target}: {stderr}") from exc
@@ -300,7 +310,7 @@ class NetFSManager:
         if not os.path.exists(mounts_path):
             mounts_path = "/etc/mtab"
         try:
-            with open(mounts_path, "r", encoding="utf-8") as handle:
+            with open(mounts_path, encoding="utf-8") as handle:
                 for line in handle:
                     parts = line.split()
                     if len(parts) < 3:
@@ -313,6 +323,43 @@ class NetFSManager:
         except FileNotFoundError:
             return None
         return None
+
+    def _maybe_resize_filesystem(self, pvc: PvcRef, target: Path) -> None:
+        if not self._fs_resize_enabled():
+            return
+        info = self._mount_info(target)
+        if info is None:
+            return
+        source, fstype = info
+        if fstype in {"nfs", "nfs4", "cifs", "smbfs"}:
+            return
+        if fstype in {"xfs"}:
+            tool = "xfs_growfs"
+            cmd = [tool, str(target)]
+        elif fstype in {"ext4", "ext3", "ext2"}:
+            if not source.startswith("/dev/"):
+                return
+            tool = "resize2fs"
+            cmd = [tool, source]
+        else:
+            return
+        if not shutil.which(tool):
+            self._record_pvc_event(pvc, "FileSystemResizeSkipped", f"{tool} not available")
+            return
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)  # noqa: S603,S607
+        except subprocess.CalledProcessError as exc:
+            err = (exc.stderr or exc.stdout or "").strip()
+            msg = err or f"{tool} failed"
+            self._record_pvc_event(pvc, "FileSystemResizeFailed", msg)
+            LOGGER.warning("filesystem resize failed for %s: %s", pvc, msg)
+            return
+        self._record_pvc_event(pvc, "FileSystemResized", f"filesystem resized via {tool}")
+
+    @staticmethod
+    def _fs_resize_enabled() -> bool:
+        raw = os.getenv("AE_NETFS_FS_RESIZE", "0")
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
     @staticmethod
     def _decode_mount_field(value: str) -> str:

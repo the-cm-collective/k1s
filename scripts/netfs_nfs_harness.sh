@@ -44,7 +44,10 @@ NFS_PATH=${NFS_PATH:-/netfs}
 PV_NAME=${PV_NAME:-netfs-pv-harness}
 PVC_NAME=${PVC_NAME:-netfs-pvc-harness}
 DEPLOY_NAME=${DEPLOY_NAME:-netfs-echo-harness}
+HARNESS_MODE=${NETFS_HARNESS_MODE:-smoke}
+CLONE_PVC_NAME=${NETFS_CLONE_PVC_NAME:-"${PVC_NAME}-clone"}
 MOUNT_PATH="${NETFS_ROOT}/default/${PVC_NAME}"
+CLONE_MOUNT_PATH="${NETFS_ROOT}/default/${CLONE_PVC_NAME}"
 
 APISHIM_PID=""
 AGENT_PID=""
@@ -83,6 +86,7 @@ cleanup() {
     kill_quick "${APISHIM_PID}"
   fi
   umount_if_mounted "${MOUNT_PATH}"
+  umount_if_mounted "${CLONE_MOUNT_PATH}"
   timeout 20 docker rm -f "${NFS_CONTAINER}" >/dev/null 2>&1 || true
   if [[ "${KEEP_STATE}" == "1" ]]; then
     log "preserving harness dir: ${HARNESS_DIR}"
@@ -214,35 +218,53 @@ store.upsert_node("${NODE_ID}", name="${NODE_ID}", endpoint="${AGENT_URL}")
 store.record_heartbeat("${NODE_ID}", "Ready")
 PY
 
-log "running NetFS smoke test"
-APISHIM_URL="${APISHIM_URL}" \
-NETFS_STORAGE_CLASS=k1s-nfs \
-NETFS_PV_NAME="${PV_NAME}" \
-NETFS_PVC_NAME="${PVC_NAME}" \
-NETFS_DEPLOYMENT_NAME="${DEPLOY_NAME}" \
-NETFS_DYNAMIC=1 \
-NFS_SERVER="${NFS_SERVER}" \
-NFS_PATH="${NFS_PATH}" \
-"${ROOT_DIR}/scripts/netfs_smoke.sh"
+if [[ "${HARNESS_MODE}" == "snapshot" ]]; then
+  log "running NetFS snapshot/clone smoke test"
+  APISHIM_URL="${APISHIM_URL}" \
+  NETFS_STORAGE_CLASS=k1s-nfs \
+  NETFS_ROOT="${NETFS_ROOT}" \
+  NETFS_SRC_PVC_NAME="${PVC_NAME}" \
+  NETFS_CLONE_PVC_NAME="${CLONE_PVC_NAME}" \
+  NETFS_SRC_DEPLOYMENT_NAME="${DEPLOY_NAME}-src" \
+  NETFS_CLONE_DEPLOYMENT_NAME="${DEPLOY_NAME}-clone" \
+  "${ROOT_DIR}/scripts/netfs_snapshot_clone.sh"
+else
+  log "running NetFS smoke test"
+  APISHIM_URL="${APISHIM_URL}" \
+  NETFS_STORAGE_CLASS=k1s-nfs \
+  NETFS_PV_NAME="${PV_NAME}" \
+  NETFS_PVC_NAME="${PVC_NAME}" \
+  NETFS_DEPLOYMENT_NAME="${DEPLOY_NAME}" \
+  NETFS_DYNAMIC=1 \
+  NFS_SERVER="${NFS_SERVER}" \
+  NFS_PATH="${NFS_PATH}" \
+  "${ROOT_DIR}/scripts/netfs_smoke.sh"
+fi
 
-log "waiting for NFS mount at ${MOUNT_PATH}"
-mounted=0
-for _ in $(seq 1 45); do
-  if grep -qs " ${MOUNT_PATH} " /proc/mounts; then
-    mounted=1
-    break
-  fi
-  sleep 1
-done
+mount_targets=("${MOUNT_PATH}")
+if [[ "${HARNESS_MODE}" == "snapshot" ]]; then
+  mount_targets+=("${CLONE_MOUNT_PATH}")
+fi
 
-if [[ "${mounted}" != "1" ]]; then
-  echo "mount not detected at ${MOUNT_PATH}" >&2
-  log "recent events"
-  events_json=$(curl -fsS "${APISHIM_URL}/api/v1/namespaces/default/events" || true)
-  if [[ -z "${events_json}" ]]; then
-    log "no events returned from apishim"
-  else
-    python - "${events_json}" <<'PY'
+for target in "${mount_targets[@]}"; do
+  log "waiting for NFS mount at ${target}"
+  mounted=0
+  for _ in $(seq 1 45); do
+    if grep -qs " ${target} " /proc/mounts; then
+      mounted=1
+      break
+    fi
+    sleep 1
+  done
+
+  if [[ "${mounted}" != "1" ]]; then
+    echo "mount not detected at ${target}" >&2
+    log "recent events"
+    events_json=$(curl -fsS "${APISHIM_URL}/api/v1/namespaces/default/events" || true)
+    if [[ -z "${events_json}" ]]; then
+      log "no events returned from apishim"
+    else
+      python - "${events_json}" <<'PY'
 import json
 import sys
 
@@ -260,8 +282,9 @@ for ev in items[-20:]:
     msg = ev.get("message", "")
     print(f"PVC event: {name} {reason} - {msg}")
 PY
+    fi
+    exit 1
   fi
-  exit 1
-fi
+done
 
 log "mount detected"

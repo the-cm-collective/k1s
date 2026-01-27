@@ -565,3 +565,108 @@ def test_storage_controller_defaults_snapshot_class(tmp_path):
     assert snap is not None
     assert (snap.spec or {}).get("volumeSnapshotClassName") == "nfs-default"
     assert (snap.status or {}).get("readyToUse") is True
+
+
+def test_storage_controller_snapshot_csi_ready(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    pvc_uid = "uid-csi"
+    pv_spec = {
+        "capacity": {"storage": "2Gi"},
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "csi-sc",
+        "claimRef": {"namespace": "default", "name": "data-csi", "uid": pvc_uid},
+        "csi": {"driver": "csi.example.com", "volumeHandle": "vol-123"},
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "volumeName": "pv-csi",
+        "storageClassName": "csi-sc",
+        "resources": {"requests": {"storage": "2Gi"}},
+    }
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumes",
+        None,
+        "pv-csi",
+        {"name": "pv-csi"},
+        pv_spec,
+    )
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "data-csi",
+        {"name": "data-csi", "namespace": "default", "uid": pvc_uid},
+        pvc_spec,
+        status={"phase": "Bound"},
+    )
+    snap_class_spec = {"driver": "csi.example.com", "deletionPolicy": "Retain"}
+    store.upsert(
+        "snapshot.storage.k8s.io",
+        "v1",
+        "volumesnapshotclasses",
+        None,
+        "csi-snap",
+        {"name": "csi-snap"},
+        snap_class_spec,
+        status={},
+    )
+    snap_uid = "snap-csi-uid"
+    snap_spec = {
+        "source": {"persistentVolumeClaimName": "data-csi"},
+        "volumeSnapshotClassName": "csi-snap",
+    }
+    store.upsert(
+        "snapshot.storage.k8s.io",
+        "v1",
+        "volumesnapshots",
+        "default",
+        "snap-csi",
+        {"name": "snap-csi", "namespace": "default", "uid": snap_uid},
+        snap_spec,
+        status={},
+    )
+
+    pv = store.get("", "v1", "persistentvolumes", None, "pv-csi")
+    snap = store.get("snapshot.storage.k8s.io", "v1", "volumesnapshots", "default", "snap-csi")
+    assert pv is not None
+    assert snap is not None
+    content_name = controller._snapshot_content_name(snap, pv)
+    content_spec = {
+        "deletionPolicy": "Retain",
+        "driver": "csi.example.com",
+        "volumeSnapshotRef": {
+            "name": "snap-csi",
+            "namespace": "default",
+            "uid": snap_uid,
+        },
+        "source": {"volumeHandle": "vol-123"},
+    }
+    content_status = {"readyToUse": True, "snapshotHandle": "snap-123", "restoreSize": "2Gi"}
+    store.upsert(
+        "snapshot.storage.k8s.io",
+        "v1",
+        "volumesnapshotcontents",
+        None,
+        content_name,
+        {"name": content_name},
+        content_spec,
+        status=content_status,
+    )
+
+    controller.reconcile_once()
+
+    snap = store.get("snapshot.storage.k8s.io", "v1", "volumesnapshots", "default", "snap-csi")
+    assert snap is not None
+    assert (snap.status or {}).get("readyToUse") is True
+    assert (snap.status or {}).get("boundVolumeSnapshotContentName") == content_name
+    content = store.get(
+        "snapshot.storage.k8s.io", "v1", "volumesnapshotcontents", None, content_name
+    )
+    assert content is not None
+    source = (content.spec or {}).get("source") or {}
+    assert source.get("volumeHandle") == "vol-123"
+    assert (content.status or {}).get("readyToUse") is True
