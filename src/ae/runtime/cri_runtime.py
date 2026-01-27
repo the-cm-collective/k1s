@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import grpc
+
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
     AppManifest,
@@ -231,7 +233,7 @@ class CRIRuntime(RuntimeAdapter):
             container_id=str(container_id), cmd=command, timeout=timeout_seconds
         )
         try:
-            resp = self._runtime.ExecSync(req)
+            resp = self._runtime_call("ExecSync", req)
         except Exception as exc:
             LOGGER.warning("CRI exec failed: %s", exc)
             return 1
@@ -334,7 +336,9 @@ class CRIRuntime(RuntimeAdapter):
                 child_sock.close()
 
         threading.Thread(target=_pump_stdin, daemon=True).start()
-        threading.Thread(target=_pump_stream, args=(proc.stdout, None if tty else 1), daemon=True).start()
+        threading.Thread(
+            target=_pump_stream, args=(proc.stdout, None if tty else 1), daemon=True
+        ).start()
         if not tty:
             threading.Thread(target=_pump_stream, args=(proc.stderr, 2), daemon=True).start()
         threading.Thread(target=_watch, daemon=True).start()
@@ -411,7 +415,9 @@ class CRIRuntime(RuntimeAdapter):
                 log_directory=self._pod_log_dir(ns, pod_name, pod_uid),
             )
             try:
-                resp = self._runtime.RunPodSandbox(pb2.RunPodSandboxRequest(config=pod_config))
+                resp = self._runtime_call(
+                    "RunPodSandbox", pb2.RunPodSandboxRequest(config=pod_config)
+                )
                 pod_id = getattr(resp, "pod_sandbox_id", None)
                 if not pod_id:
                     raise RuntimeError("RunPodSandbox returned no pod_sandbox_id")
@@ -433,18 +439,21 @@ class CRIRuntime(RuntimeAdapter):
                 req = pb2.CreateContainerRequest(
                     pod_sandbox_id=str(pod_id),
                     config=config,
-                    sandbox_config=pb2.PodSandboxConfig(),
+                    sandbox_config=pod_config,
                 )
-                resp = self._runtime.CreateContainer(req)
+                resp = self._runtime_call("CreateContainer", req)
                 container_id = getattr(resp, "container_id", None)
                 if not container_id:
                     raise RuntimeError("CreateContainer returned no container_id")
-                self._runtime.StartContainer(pb2.StartContainerRequest(container_id=container_id))
+                self._runtime_call(
+                    "StartContainer", pb2.StartContainerRequest(container_id=container_id)
+                )
                 exit_code = self._wait_container_exit(container_id, timeout)
                 if exit_code is None:
                     try:
-                        self._runtime.StopContainer(
-                            pb2.StopContainerRequest(container_id=container_id, timeout=0)
+                        self._runtime_call(
+                            "StopContainer",
+                            pb2.StopContainerRequest(container_id=container_id, timeout=0),
                         )
                     except Exception:
                         pass
@@ -457,20 +466,21 @@ class CRIRuntime(RuntimeAdapter):
             finally:
                 try:
                     if container_id:
-                        self._runtime.RemoveContainer(
-                            pb2.RemoveContainerRequest(container_id=container_id)
+                        self._runtime_call(
+                            "RemoveContainer", pb2.RemoveContainerRequest(container_id=container_id)
                         )
                 except Exception:
                     pass
                 try:
-                    self._runtime.StopPodSandbox(
-                        pb2.StopPodSandboxRequest(pod_sandbox_id=str(pod_id))
+                    self._runtime_call(
+                        "StopPodSandbox", pb2.StopPodSandboxRequest(pod_sandbox_id=str(pod_id))
                     )
                 except Exception:
                     pass
                 try:
-                    self._runtime.RemovePodSandbox(
-                        pb2.RemovePodSandboxRequest(pod_sandbox_id=str(pod_id))
+                    self._runtime_call(
+                        "RemovePodSandbox",
+                        pb2.RemovePodSandboxRequest(pod_sandbox_id=str(pod_id)),
                     )
                 except Exception:
                     pass
@@ -546,7 +556,6 @@ class CRIRuntime(RuntimeAdapter):
         if self._runtime and self._images:
             return
         try:
-            import grpc
             from ae.runtime.cri.api.runtime.v1 import api_pb2_grpc
         except Exception as exc:  # pragma: no cover - depends on generated stubs
             raise RuntimeError(
@@ -556,6 +565,43 @@ class CRIRuntime(RuntimeAdapter):
         self._channel = grpc.insecure_channel(target)
         self._runtime = api_pb2_grpc.RuntimeServiceStub(self._channel)
         self._images = api_pb2_grpc.ImageServiceStub(self._channel)
+
+    def _reset_clients(self) -> None:
+        ch = self._channel
+        self._channel = None
+        self._runtime = None
+        self._images = None
+        if ch is not None:
+            with contextlib.suppress(Exception):
+                ch.close()
+
+    def _runtime_call(self, method: str, req: Any):
+        self._ensure_clients()
+        fn = getattr(self._runtime, method)
+        try:
+            return fn(req)
+        except grpc.RpcError as exc:
+            if exc.code() != grpc.StatusCode.UNAVAILABLE:
+                raise
+            LOGGER.warning("CRI call unavailable; resetting client and retrying once: %s", exc)
+            self._reset_clients()
+            self._ensure_clients()
+            fn = getattr(self._runtime, method)
+            return fn(req)
+
+    def _images_call(self, method: str, req: Any):
+        self._ensure_clients()
+        fn = getattr(self._images, method)
+        try:
+            return fn(req)
+        except grpc.RpcError as exc:
+            if exc.code() != grpc.StatusCode.UNAVAILABLE:
+                raise
+            LOGGER.warning("CRI call unavailable; resetting client and retrying once: %s", exc)
+            self._reset_clients()
+            self._ensure_clients()
+            fn = getattr(self._images, method)
+            return fn(req)
 
     def _pb2(self):
         try:
@@ -594,7 +640,7 @@ class CRIRuntime(RuntimeAdapter):
         selector = {self.APP_LABEL: app_name} if app_name else {}
         flt = pb2.PodSandboxFilter(label_selector=selector) if selector else pb2.PodSandboxFilter()
         req = pb2.ListPodSandboxRequest(filter=flt)
-        resp = self._runtime.ListPodSandbox(req)
+        resp = self._runtime_call("ListPodSandbox", req)
         items = getattr(resp, "items", None)
         if items is None:
             items = getattr(resp, "pod_sandboxes", None)
@@ -621,7 +667,7 @@ class CRIRuntime(RuntimeAdapter):
             return None
         pb2 = self._pb2()
         req = pb2.PodSandboxStatusRequest(pod_sandbox_id=str(pod_id), verbose=False)
-        resp = self._runtime.PodSandboxStatus(req)
+        resp = self._runtime_call("PodSandboxStatus", req)
         return getattr(resp, "status", None)
 
     def _container_status(self, container_id: str | None):
@@ -629,7 +675,7 @@ class CRIRuntime(RuntimeAdapter):
             return None
         pb2 = self._pb2()
         req = pb2.ContainerStatusRequest(container_id=str(container_id), verbose=False)
-        resp = self._runtime.ContainerStatus(req)
+        resp = self._runtime_call("ContainerStatus", req)
         return getattr(resp, "status", None)
 
     def _find_container(self, pod_id: str | None, *, container_label: str | None = None):
@@ -641,7 +687,7 @@ class CRIRuntime(RuntimeAdapter):
             selector[self.CONTAINER_LABEL] = container_label
         flt = pb2.ContainerFilter(pod_sandbox_id=str(pod_id), label_selector=selector)
         req = pb2.ListContainersRequest(filter=flt)
-        resp = self._runtime.ListContainers(req)
+        resp = self._runtime_call("ListContainers", req)
         items = getattr(resp, "containers", None)
         if items is None:
             items = getattr(resp, "items", None)
@@ -666,7 +712,9 @@ class CRIRuntime(RuntimeAdapter):
         pb2 = self._pb2()
         spec = pb2.ImageSpec(image=str(image_ref))
         try:
-            status = self._images.ImageStatus(pb2.ImageStatusRequest(image=spec, verbose=False))
+            status = self._images_call(
+                "ImageStatus", pb2.ImageStatusRequest(image=spec, verbose=False)
+            )
             if getattr(status, "image", None):
                 return
         except Exception:
@@ -676,7 +724,7 @@ class CRIRuntime(RuntimeAdapter):
         if auth is not None:
             req.auth = auth
         try:
-            self._images.PullImage(req)
+            self._images_call("PullImage", req)
         except Exception as exc:
             raise RuntimeError(f"Failed to pull image {image_ref}: {exc}") from exc
 
@@ -749,7 +797,7 @@ class CRIRuntime(RuntimeAdapter):
         req = pb2.RunPodSandboxRequest(config=pod_config)
         if runtime_handler:
             req.runtime_handler = str(runtime_handler)
-        resp = self._runtime.RunPodSandbox(req)
+        resp = self._runtime_call("RunPodSandbox", req)
         pod_id = getattr(resp, "pod_sandbox_id", None)
         if not pod_id:
             raise RuntimeError("CRI RunPodSandbox returned no pod_sandbox_id")
@@ -811,7 +859,9 @@ class CRIRuntime(RuntimeAdapter):
             if job_backoff_limit is not None and attempt >= job_backoff_limit:
                 return False
         # Containers are single-use in CRI; recreate instead of restart.
-        self._runtime.RemoveContainer(self._pb2().RemoveContainerRequest(container_id=container.id))
+        self._runtime_call(
+            "RemoveContainer", self._pb2().RemoveContainerRequest(container_id=container.id)
+        )
         self._create_main_container(
             manifest,
             pod_id,
@@ -840,7 +890,7 @@ class CRIRuntime(RuntimeAdapter):
         existing: dict[str, Any] = {}
         try:
             flt = pb2.ContainerFilter(pod_sandbox_id=str(pod_id))
-            resp = self._runtime.ListContainers(pb2.ListContainersRequest(filter=flt))
+            resp = self._runtime_call("ListContainers", pb2.ListContainersRequest(filter=flt))
             containers = list(getattr(resp, "containers", None) or [])
             for c in containers:
                 labels = getattr(c, "labels", None) or {}
@@ -860,14 +910,15 @@ class CRIRuntime(RuntimeAdapter):
                 if status is not None and self._is_container_running(status):
                     continue
                 try:
-                    self._runtime.StopContainer(
-                        pb2.StopContainerRequest(container_id=container.id, timeout=0)
+                    self._runtime_call(
+                        "StopContainer",
+                        pb2.StopContainerRequest(container_id=container.id, timeout=0),
                     )
                 except Exception:
                     pass
                 try:
-                    self._runtime.RemoveContainer(
-                        pb2.RemoveContainerRequest(container_id=container.id)
+                    self._runtime_call(
+                        "RemoveContainer", pb2.RemoveContainerRequest(container_id=container.id)
                     )
                 except Exception:
                     pass
@@ -887,16 +938,35 @@ class CRIRuntime(RuntimeAdapter):
                 attempt=0,
                 is_main=False,
             )
+            pod_meta = None
+            try:
+                pod_status = self._pod_status(str(pod_id))
+                pod_meta = getattr(pod_status, "metadata", None)
+            except Exception:
+                pod_meta = None
+            if not pod_meta or not getattr(pod_meta, "uid", None):
+                app_name = app_key_for_manifest(manifest)
+                ns, _ = split_app_key(app_name)
+                pod_uid = self._pod_uid(replica_id, ns)
+                pod_meta = pb2.PodSandboxMetadata(
+                    name=replica_id,
+                    namespace=ns or DEFAULT_NAMESPACE,
+                    uid=str(pod_uid),
+                    attempt=0,
+                )
+            pod_config = pb2.PodSandboxConfig(metadata=pod_meta)
             req = pb2.CreateContainerRequest(
                 pod_sandbox_id=str(pod_id),
                 config=config,
-                sandbox_config=pb2.PodSandboxConfig(),
+                sandbox_config=pod_config,
             )
-            resp = self._runtime.CreateContainer(req)
+            resp = self._runtime_call("CreateContainer", req)
             container_id = getattr(resp, "container_id", None)
             if not container_id:
                 continue
-            self._runtime.StartContainer(pb2.StartContainerRequest(container_id=container_id))
+            self._runtime_call(
+                "StartContainer", pb2.StartContainerRequest(container_id=container_id)
+            )
 
     def _create_main_container(
         self,
@@ -909,17 +979,34 @@ class CRIRuntime(RuntimeAdapter):
     ) -> None:
         pb2 = self._pb2()
         config = self._container_config(manifest, replica_id, revision, attempt=attempt)
-        pod_config = pb2.PodSandboxConfig()  # required by CreateContainerRequest
+        pod_meta = None
+        try:
+            pod_status = self._pod_status(str(pod_id))
+            pod_meta = getattr(pod_status, "metadata", None)
+        except Exception:
+            pod_meta = None
+        if not pod_meta or not getattr(pod_meta, "uid", None):
+            app_name = app_key_for_manifest(manifest)
+            ns, _ = split_app_key(app_name)
+            pod_uid = self._pod_uid(replica_id, ns)
+            pod_meta = pb2.PodSandboxMetadata(
+                name=replica_id,
+                namespace=ns or DEFAULT_NAMESPACE,
+                uid=str(pod_uid),
+                attempt=0,
+            )
+        # containerd expects sandbox_config.metadata to be present.
+        pod_config = pb2.PodSandboxConfig(metadata=pod_meta)
         req = pb2.CreateContainerRequest(
             pod_sandbox_id=str(pod_id),
             config=config,
             sandbox_config=pod_config,
         )
-        resp = self._runtime.CreateContainer(req)
+        resp = self._runtime_call("CreateContainer", req)
         container_id = getattr(resp, "container_id", None)
         if not container_id:
             raise RuntimeError("CRI CreateContainer returned no container_id")
-        self._runtime.StartContainer(pb2.StartContainerRequest(container_id=container_id))
+        self._runtime_call("StartContainer", pb2.StartContainerRequest(container_id=container_id))
 
     def _stop_and_remove_pod(self, manifest: AppManifest | None, pod: Any) -> None:
         pb2 = self._pb2()
@@ -929,35 +1016,37 @@ class CRIRuntime(RuntimeAdapter):
         containers = []
         try:
             flt = pb2.ContainerFilter(pod_sandbox_id=str(pod_id))
-            resp = self._runtime.ListContainers(pb2.ListContainersRequest(filter=flt))
+            resp = self._runtime_call("ListContainers", pb2.ListContainersRequest(filter=flt))
             containers = list(getattr(resp, "containers", None) or [])
         except Exception:
             containers = []
         timeout = 10
         if manifest is not None:
             try:
-                timeout = int(
-                    getattr(manifest.spec, "termination_grace_period_seconds", 10) or 10
-                )
+                timeout = int(getattr(manifest.spec, "termination_grace_period_seconds", 10) or 10)
             except Exception:
                 timeout = 10
         for c in containers:
             try:
-                self._runtime.StopContainer(
-                    pb2.StopContainerRequest(container_id=c.id, timeout=timeout)
+                self._runtime_call(
+                    "StopContainer", pb2.StopContainerRequest(container_id=c.id, timeout=timeout)
                 )
             except Exception:
                 pass
             try:
-                self._runtime.RemoveContainer(pb2.RemoveContainerRequest(container_id=c.id))
+                self._runtime_call("RemoveContainer", pb2.RemoveContainerRequest(container_id=c.id))
             except Exception:
                 pass
         try:
-            self._runtime.StopPodSandbox(pb2.StopPodSandboxRequest(pod_sandbox_id=str(pod_id)))
+            self._runtime_call(
+                "StopPodSandbox", pb2.StopPodSandboxRequest(pod_sandbox_id=str(pod_id))
+            )
         except Exception:
             pass
         try:
-            self._runtime.RemovePodSandbox(pb2.RemovePodSandboxRequest(pod_sandbox_id=str(pod_id)))
+            self._runtime_call(
+                "RemovePodSandbox", pb2.RemovePodSandboxRequest(pod_sandbox_id=str(pod_id))
+            )
         except Exception:
             pass
 
