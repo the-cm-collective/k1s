@@ -37,3 +37,42 @@ def test_metrics_volume_health_counts(tmp_path, monkeypatch) -> None:
     assert snap.total_pvs == 1
     assert snap.healthy_pvs == 1
     assert snap.unhealthy_pvs == 0
+
+
+def test_metrics_storage_quota_usage(tmp_path, monkeypatch) -> None:
+    apishim_db = tmp_path / "apishim.db"
+    store = ObjectStore(db_path=apishim_db)
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "resources": {"requests": {"storage": "2Gi"}},
+    }
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "data",
+        {"name": "data", "namespace": "default"},
+        pvc_spec,
+        status={"phase": "Pending"},
+    )
+    quota_path = tmp_path / "quotas.yaml"
+    quota_path.write_text(
+        "apiVersion: k1s.io/v1\n"
+        "kind: StorageQuota\n"
+        "metadata:\n"
+        "  name: default\n"
+        "spec:\n"
+        "  namespace: default\n"
+        "  hard:\n"
+        "    requests.storage: 5Gi\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AE_APISHIM_DB", str(apishim_db))
+    monkeypatch.setenv("AE_STORAGE_QUOTAS", str(quota_path))
+    state_store = SQLiteStateStore(tmp_path / "state.db")
+    service = MetricsService(state_store)
+
+    snap = service.snapshot()
+    assert snap.storage_used_bytes.get("default") == 2 * 1024**3
+    assert snap.storage_quota_bytes.get("default") == 5 * 1024**3

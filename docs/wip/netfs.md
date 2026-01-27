@@ -355,6 +355,9 @@ Exit criteria:
 - CSIStorageCapacity (basic capacity reporting)
   - Emit `CSIStorageCapacity` objects per storage class using hostPath disk free
     space and PV node affinity where available.
+- Namespace storage quotas (basic enforcement)
+  - `AE_STORAGE_QUOTAS` config caps total requested storage per namespace.
+  - Emit `StorageQuotaExceeded` events and expose usage/quota via metrics.
 - RWOP + topology
   - `ReadWriteOncePod` access mode limits replicas to 1 in scheduler warnings.
   - NetFS manager blocks RWOP mounts on multiple nodes and emits conflict events.
