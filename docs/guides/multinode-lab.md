@@ -35,7 +35,7 @@ Expected: one replica on each node, Service VIP allocated from `AE_SERVICE_IP_PO
 ## Validate routing and failover
 - Verify Service VIP reachability from the controller host: `curl http://$AE_SERVICE_IP_POOL_FIRST_IP/healthz` (replace with the allocated ClusterIP from `ae services list`).
 - Simulate node loss: `ae nodes --cordon <node>` then stop the agent; reconcile should reschedule replicas to the surviving node (storage-bound apps will remain pending by design).
-- Exec/logs proxied via agent: `ae exec echo-mn -- id` and `ae logs echo-mn --tail 5`.
+- Exec/logs proxied via agent: `ae exec echo-mn -- id` and `ae logs echo-mn --tail 5` (add `-n <ns>` if the app is not in `default`).
 
 ## Fast smoke commands
 - Unit + integration (includes remote agent stub test): `pytest tests/unit/test_scheduler.py tests/integration/test_multinode_agent_flow.py`
