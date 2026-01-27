@@ -411,6 +411,7 @@ Add to `requirements.in` (or a storage extras group):
   - Create a snapshot and clone PVC from an NFS-backed volume and verify data.
 - `scripts/netfs_csi_smoke.sh`
   - Validate CSI PV/PVC binding, VolumeAttachment creation, and CSI marker output.
+  - Set `NETFS_MULTIATTACH=1` to verify multi-attach is blocked.
 
 ### Node/system utilities (document in runbook)
 
