@@ -25,9 +25,10 @@ Implemented:
 - CRI Service VIP provider using iptables NAT (single-node; requires root).
 - Exec/attach streaming via crictl (requires crictl on node).
 - Added CRI smoke pull test (gated by AE_CRI_SMOKE_PULL).
+- Ingress reload inside container falls back to `crictl exec` on CRI backends.
+- Added CRI lifecycle integration test (gated by AE_CRI_IT).
 
 Remaining (next focus):
-- Ingress reload inside container (docker/podman exec path) for CRI.
 - CI integration tests against containerd.
 - CRI-native port-forward proxy (optional; pod IP direct connect works today).
 
@@ -352,7 +353,7 @@ Done:
 - Add exec/attach streaming via crictl.
 
 Remaining:
-- CI integration tests against containerd.
+- CI integration tests against containerd (gated tests exist; CI job missing).
 - CRI-native port-forward proxy (optional; pod IP direct connect works today).
 
 
@@ -375,7 +376,7 @@ Legend:
 | Exec sync (probes/hooks) | OK | OK | OK | CRI ExecSync |
 | Exec attach/streaming | OK | OK | OK (crictl) | requires crictl on node |
 | Service VIP provider (HAProxy + docker network) | OK | OK | OK (iptables) | iptables NAT for CRI |
-| Ingress reload inside container | OK | OK | Needs work | replace docker/podman exec or run host‑mode |
+| Ingress reload inside container | OK | OK | OK (crictl fallback) | requires crictl + container name |
 | Storage volumes (named volume API) | OK | OK | OK | hostPath manager for CRI |
 | Registry auth | OK | OK | OK | CRI PullImage auth (hosts.toml optional) |
 | Host‑port ingress/health endpoints | OK | OK | OK | prefer pod IP + container port |
@@ -425,10 +426,10 @@ Exit criteria:
 
 ### Phase 3 — Storage + sidecars + init (5–10 days)
 
-- Add hostPath‑based storage manager for `spec.storage`.
-- Implement init containers sequential execution.
-- Implement sidecar container creation within the same PodSandbox.
-- Add cleanup logic (old revisions, job backoff).
+- Done: add hostPath‑based storage manager for `spec.storage`.
+- Done: implement init containers sequential execution.
+- Done: implement sidecar container creation within the same PodSandbox.
+- Done: add cleanup logic (old revisions, job backoff).
 
 Exit criteria:
 - Storage volumes behave similarly to Docker/Podman runtimes.
@@ -450,7 +451,7 @@ Exit criteria:
 
 ## Rollout strategy (mixed backends)
 
-- Keep Docker/Podman as default until streaming exec/attach is complete (Phase 4).
+- Keep Docker/Podman as default until CRI CI tests are complete.
 - Allow `AE_RUNTIME_BACKEND=cri` only on nodes explicitly labeled (e.g., `runtime=cri`).
 - Gate Service VIP provider usage on backend type to avoid docker‑only assumptions.
 - Gradually move dev/test nodes to CRI, then production nodes.
@@ -536,38 +537,32 @@ Exit criteria:
   - Validate hostPort mappings match requested Service ports (K8s hostPort semantics).
 
 ### Phase 3 — Storage + sidecars + init
-- Implement storage manager (hostPath) for CRI:
+- Done: implement storage manager (hostPath) for CRI:
   - `ensure_storage_volumes`, `remove_storage_volumes`, `list_storage_volumes`
   - Treat `spec.storage` as Kubernetes `hostPath` (node-local, not portable like PVC/PV).
   - Map storage volumes into `ContainerConfig.mounts` (`host_path`, `container_path`, `readonly`).
-- Implement init containers (sequential run, exit code, timeout)
+- Done: implement init containers (sequential run, exit code, timeout)
   - Align with Kubernetes initContainers: run sequentially, block main until success.
   - Use container names from manifest; set `ContainerConfig.metadata.name` accordingly.
   - Retry on failure similar to K8s pod restart policy (until backoff/limit).
-- Implement sidecars in same PodSandbox
+- Done: implement sidecars in same PodSandbox
   - Map to additional containers in same PodSandbox (Kubernetes Pod containers).
   - Use container name as `metadata.name`; set `ae.container=<name>` label.
   - Do not create separate sandboxes for sidecars.
-- Add tests for init/sidecar mapping and storage lifecycle
+- Done: add tests for init/sidecar mapping and storage lifecycle (unit coverage).
   - Ensure init containers run in order and stop rollout on failure (unless policy says otherwise).
   - Ensure sidecars share pod IP and volumes.
 
 ### Phase 4 — Streaming + multi-node polish
-- Implement exec/attach streaming proxy (CRI streaming endpoint)
-  - CRI `Exec`/`Attach` returns a URL for streaming; proxy to the Kubernetes SPDY/exec protocol.
-  - Align channel IDs with Kubernetes: stdin=0, stdout=1, stderr=2, error=3, resize=4.
-  - Support TTY semantics consistent with Kubernetes (stdout/stderr merged when tty=true).
-- Implement log streaming (follow) via CRI log path
-  - CRI log format is Kubernetes-aligned: `<RFC3339Nano> <stream> <tag> <content>` (`stream` = stdout/stderr).
-  - Use `ContainerStatus.log_path` and handle log rotation like kubelet (follow new files).
-  - Expose logs in the same line format expected by `kubectl logs`.
-- Add integration tests: containerd node smoke + CRI adapter in CI
+- Done: implement exec/attach streaming via `crictl exec` (node dependency).
+  - A CRI-native streaming proxy can still replace this later.
+- Done: implement log follow via CRI `log_path` (basic; kubelet-style rotation not covered).
+- Remaining: add integration tests: containerd node smoke + CRI adapter in CI
+  - Gated integration tests exist locally (AE_CRI_SMOKE_PULL, AE_CRI_IT).
   - Validate `PodSandboxStatus` and `ContainerStatus` fields match Kubernetes expectations.
   - Validate `podIP` + container port routing for probes and ingress.
   - Check labels/annotations/UIDs align with Pod objects returned by apishim.
-- Update docs: `docs/ops/runbook.md` with CRI debug and `crictl` usage
-  - Include `/etc/crictl.yaml` example using `runtime-endpoint` and `image-endpoint`.
-  - Provide `crictl` equivalents for Docker commands; keep Kubernetes nomenclature (Pod/Container).
+- Done: update docs: `docs/ops/runbook.md` with CRI debug and `crictl` usage.
 
 ---
 
