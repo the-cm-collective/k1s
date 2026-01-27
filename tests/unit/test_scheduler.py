@@ -558,4 +558,76 @@ def test_scheduler_filters_allowed_topologies(tmp_path):
     assert any("filtered eligible nodes by storage allowedTopologies" in w for w in warnings)
 
 
+def test_scheduler_filters_topology_keys(tmp_path):
+    shim = ObjectStore(db_path=tmp_path / "apishim.db")
+    sc_spec = {
+        "provisioner": "k1s.io/nfs",
+        "topologyKeys": ["topology.kubernetes.io/zone", "node.kubernetes.io/instance-type"],
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteMany"],
+        "storageClassName": "topo",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    shim.upsert(
+        "storage.k8s.io",
+        "v1",
+        "storageclasses",
+        None,
+        "topo",
+        {"name": "topo"},
+        sc_spec,
+        status={},
+    )
+    shim.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "data",
+        {"name": "data", "namespace": "default", "uid": "pvc-uid"},
+        pvc_spec,
+        status={"phase": "Pending"},
+    )
+
+    store = _store_with_nodes(tmp_path)
+    store.upsert_node(
+        "n1",
+        name="n1",
+        labels={
+            "topology.kubernetes.io/zone": "zone-a",
+            "node.kubernetes.io/instance-type": "c1",
+        },
+        taints=[],
+        backend="podman",
+        endpoint="n1",
+    )
+    store.upsert_node(
+        "n2",
+        name="n2",
+        labels={"topology.kubernetes.io/zone": "zone-b"},
+        taints=[],
+        backend="podman",
+        endpoint="n2",
+    )
+    store.record_heartbeat("n1", "Ready")
+    store.record_heartbeat("n2", "Ready")
+    man = _manifest(replicas=2).model_copy(
+        update={
+            "spec": AppSpec(
+                image="busybox",
+                replicas=2,
+                pvc_mounts=[{"claimName": "data", "mountPath": "/data"}],
+            )
+        }
+    )
+
+    sched = Scheduler(store)
+    placements, warnings = sched.plan(man, revision=1)
+    assert len(placements) == 1
+    assert placements[0].node is not None
+    assert placements[0].node.node_id == "n1"
+    assert any("filtered eligible nodes by storage topologyKeys" in w for w in warnings)
+
+
 # ruff: noqa: E501

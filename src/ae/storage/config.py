@@ -52,6 +52,8 @@ class StorageClassConfig:
     volume_binding_mode: str | None = None
     allow_volume_expansion: bool | None = None
     mount_options: list[str] = field(default_factory=list)
+    allowed_topologies: list[dict[str, Any]] = field(default_factory=list)
+    topology_keys: list[str] = field(default_factory=list)
     is_default: bool = False
 
 
@@ -76,6 +78,13 @@ def _parse_storage_class(raw: Mapping[str, Any]) -> StorageClassConfig | None:
             if v is None:
                 continue
             parameters[str(k)] = str(v)
+    allowed_topologies = raw.get("allowedTopologies")
+    if not isinstance(allowed_topologies, list):
+        allowed_topologies = []
+    topology_keys_raw = raw.get("topologyKeys")
+    topology_keys: list[str] = []
+    if isinstance(topology_keys_raw, list):
+        topology_keys = [str(k) for k in topology_keys_raw if k]
     annotations = {}
     if isinstance(metadata, dict):
         annotations = metadata.get("annotations") or {}
@@ -94,6 +103,8 @@ def _parse_storage_class(raw: Mapping[str, Any]) -> StorageClassConfig | None:
         volume_binding_mode=raw.get("volumeBindingMode"),
         allow_volume_expansion=raw.get("allowVolumeExpansion"),
         mount_options=list(raw.get("mountOptions") or []),
+        allowed_topologies=allowed_topologies,
+        topology_keys=topology_keys,
         is_default=is_default,
     )
 
