@@ -91,3 +91,16 @@ binding and a PVC-backed Deployment:
 ```
 scripts/netfs_smoke.sh
 ```
+
+### NetFS NFS harness
+
+For an end-to-end NFS mount harness (NFS server container, apishim, node agent,
+and smoke test), run:
+
+```
+scripts/netfs_nfs_harness.sh
+```
+
+NFS mounts typically require root. Run the harness with `sudo` to exercise the
+mount path, or set `SKIP_MOUNT_PREFLIGHT=1` to continue without the preflight
+check. Use `KEEP_STATE=1` to preserve logs/state for debugging.
