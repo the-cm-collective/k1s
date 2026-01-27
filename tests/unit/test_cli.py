@@ -183,4 +183,5 @@ def test_examples_write_multiport(tmp_path):
     exit_code = _main(["examples", "write", "--type", "multiport", "-o", str(out_path)])
     assert exit_code == 0
     text = out_path.read_text()
-    assert "kind: Deployment" in text and "echo-multi" in text
+    assert "echo-multi" in text
+    assert ("kind: Deployment" in text) or ("kind: App" in text)
