@@ -15,9 +15,12 @@ CSI_DRIVER=${CSI_DRIVER:-csi.example.com}
 CSI_HANDLE=${CSI_HANDLE:-vol-demo}
 CSI_STAGE_SECRET=${CSI_STAGE_SECRET:-csi-stage}
 CSI_PUBLISH_SECRET=${CSI_PUBLISH_SECRET:-csi-publish}
+CSI_MULTIATTACH=${NETFS_MULTIATTACH:-0}
+CSI_CONFLICT_NODE=${NETFS_CONFLICT_NODE:-netfs-node-b}
 
 CLEANUP=${NETFS_CLEANUP:-1}
 BOUND_PV=""
+CONFLICT_VA=""
 
 log() {
   printf '[netfs-csi] %s\n' "$1"
@@ -56,6 +59,9 @@ cleanup() {
     delete_if_exists "$APISHIM_URL/api/v1/persistentvolumes/$BOUND_PV"
   fi
   delete_if_exists "$APISHIM_URL/apis/storage.k8s.io/v1/volumeattachments/${PVC}-${NODE_ID}"
+  if [[ -n "$CONFLICT_VA" ]]; then
+    delete_if_exists "$APISHIM_URL/apis/storage.k8s.io/v1/volumeattachments/${CONFLICT_VA}"
+  fi
   delete_if_exists "$APISHIM_URL/apis/storage.k8s.io/v1/csidrivers/${CSI_DRIVER}"
   delete_if_exists "$APISHIM_URL/apis/storage.k8s.io/v1/csinodes/${NODE_ID}"
   delete_if_exists "$APISHIM_URL/api/v1/namespaces/$NS/secrets/${CSI_STAGE_SECRET}"
@@ -147,6 +153,42 @@ wait_marker() {
   return 1
 }
 
+wait_event_reason() {
+  local reason=$1
+  for _i in $(seq 1 30); do
+    local resp
+    resp=$(req GET "$APISHIM_URL/api/v1/namespaces/$NS/events" || true)
+    local found
+    found=$(python - "$resp" "$reason" <<'PY'
+import json
+import sys
+
+raw = sys.argv[1] if len(sys.argv) > 1 else ""
+target = sys.argv[2] if len(sys.argv) > 2 else ""
+if not raw.strip():
+    print("")
+    raise SystemExit(0)
+data = json.loads(raw)
+items = data.get("items") or []
+for item in items:
+    reason = item.get("reason")
+    if reason is None:
+        spec = item.get("spec") or {}
+        reason = spec.get("reason")
+    if str(reason or "") == target:
+        print("yes")
+        raise SystemExit(0)
+print("")
+PY
+)
+    if [[ -n "$found" ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 log "applying CSIDriver ${CSI_DRIVER}"
 cat <<EOF_DRIVER | put_json "$APISHIM_URL/apis/storage.k8s.io/v1/csidrivers/${CSI_DRIVER}"
 {
@@ -211,6 +253,24 @@ cat <<EOF_PV | put_json "$APISHIM_URL/api/v1/persistentvolumes/$PV"
 }
 EOF_PV
 
+if [[ "${CSI_MULTIATTACH}" == "1" ]]; then
+  CONFLICT_VA="va-${PV}-${CSI_CONFLICT_NODE}"
+  log "injecting conflict VolumeAttachment ${CONFLICT_VA}"
+  cat <<EOF_VA | put_json "$APISHIM_URL/apis/storage.k8s.io/v1/volumeattachments/${CONFLICT_VA}"
+{
+  "apiVersion": "storage.k8s.io/v1",
+  "kind": "VolumeAttachment",
+  "metadata": {"name": "${CONFLICT_VA}"},
+  "spec": {
+    "attacher": "${CSI_DRIVER}",
+    "nodeName": "${CSI_CONFLICT_NODE}",
+    "source": {"persistentVolumeName": "${PV}"}
+  },
+  "status": {"attached": true}
+}
+EOF_VA
+fi
+
 log "applying PVC $PVC"
 cat <<EOF_PVC | put_json "$APISHIM_URL/api/v1/namespaces/$NS/persistentvolumeclaims/$PVC"
 {
@@ -267,6 +327,16 @@ if [[ -n "$pv_name" ]]; then
   BOUND_PV=$pv_name
 fi
 log "PVC bound to PV ${BOUND_PV:-<unknown>}"
+
+if [[ "${CSI_MULTIATTACH}" == "1" ]]; then
+  log "waiting for MultiAttachForbidden event"
+  if ! wait_event_reason "MultiAttachForbidden"; then
+    log "MultiAttachForbidden event not observed"
+    exit 1
+  fi
+  log "multi-attach blocked as expected"
+  exit 0
+fi
 
 log "waiting for VolumeAttachment"
 if ! va_name=$(wait_volume_attachment "${BOUND_PV}"); then
