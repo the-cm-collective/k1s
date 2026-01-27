@@ -22,6 +22,7 @@ Implemented:
 - HostPath storage manager for `spec.storage`.
 - CNI preflight/smoke scripts and runbook updates.
 - Reconciler endpoint selection (ingress + preStop) prefers pod IP endpoints when available.
+- Pod port-forward now prefers pod IP + requested container ports, falling back to host ports only when pod IP is unavailable.
 - CRI Service VIP provider using iptables NAT (single-node; requires root).
 - Exec/attach streaming via crictl (requires crictl on node).
 - Added CRI smoke pull test (gated by AE_CRI_SMOKE_PULL).
