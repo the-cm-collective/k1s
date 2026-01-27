@@ -9,8 +9,10 @@ PV=${NETFS_PV_NAME:-netfs-pv}
 PVC=${NETFS_PVC_NAME:-netfs-pvc}
 DEPLOY=${NETFS_DEPLOYMENT_NAME:-netfs-echo}
 CLEANUP=${NETFS_CLEANUP:-1}
+NETFS_DYNAMIC=${NETFS_DYNAMIC:-0}
 NFS_SERVER=${NFS_SERVER:-127.0.0.1}
 NFS_PATH=${NFS_PATH:-/exports/netfs}
+BOUND_PV=""
 
 log() {
   printf '[netfs-smoke] %s\n' "$1"
@@ -45,12 +47,16 @@ cleanup() {
   log "cleaning up resources"
   delete_if_exists "$APISHIM_URL/apis/apps/v1/namespaces/$NS/deployments/$DEPLOY"
   delete_if_exists "$APISHIM_URL/api/v1/namespaces/$NS/persistentvolumeclaims/$PVC"
-  delete_if_exists "$APISHIM_URL/api/v1/persistentvolumes/$PV"
+  if [[ -n "$BOUND_PV" ]]; then
+    delete_if_exists "$APISHIM_URL/api/v1/persistentvolumes/$BOUND_PV"
+  fi
 }
 trap cleanup EXIT
 
-log "applying PV $PV"
-cat <<EOF_PV | put_json "$APISHIM_URL/api/v1/persistentvolumes/$PV"
+if [[ "$NETFS_DYNAMIC" != "1" ]]; then
+  log "applying PV $PV"
+  BOUND_PV=$PV
+  cat <<EOF_PV | put_json "$APISHIM_URL/api/v1/persistentvolumes/$PV"
 {
   "apiVersion": "v1",
   "kind": "PersistentVolume",
@@ -64,6 +70,9 @@ cat <<EOF_PV | put_json "$APISHIM_URL/api/v1/persistentvolumes/$PV"
   }
 }
 EOF_PV
+else
+  log "dynamic provisioning enabled; PV will be created by the storage controller"
+fi
 
 log "applying PVC $PVC"
 cat <<EOF_PVC | put_json "$APISHIM_URL/api/v1/namespaces/$NS/persistentvolumeclaims/$PVC"
@@ -111,23 +120,32 @@ EOF_DEP
 log "waiting for PVC to bind"
 for _i in $(seq 1 15); do
   resp=$(req GET "$APISHIM_URL/api/v1/namespaces/$NS/persistentvolumeclaims/$PVC" || true)
-  phase=$(python - "$resp" <<'PY'
+  phase_and_pv=$(python - "$resp" <<'PY'
 import json,sys
 raw = sys.argv[1] if len(sys.argv) > 1 else ""
 raw = raw.strip()
 if not raw:
-    print("")
+    print("\t")
     raise SystemExit(0)
 try:
     data = json.loads(raw)
 except Exception:
-    print("")
+    print("\t")
     raise SystemExit(0)
-print((data.get("status") or {}).get("phase", ""))
+status = data.get("status") or {}
+spec = data.get("spec") or {}
+phase = status.get("phase", "")
+volume = spec.get("volumeName", "")
+print(f"{phase}\t{volume}")
 PY
 )
+  phase=${phase_and_pv%%$'\t'*}
+  volume_name=${phase_and_pv#*$'\t'}
   if [[ "$phase" == "Bound" ]]; then
-    log "PVC bound"
+    if [[ -n "$volume_name" ]]; then
+      BOUND_PV=$volume_name
+    fi
+    log "PVC bound to PV ${BOUND_PV:-<unknown>}"
     exit 0
   fi
   sleep 1
