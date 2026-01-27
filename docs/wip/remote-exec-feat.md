@@ -98,8 +98,11 @@ Decision: use xterm.js for the terminal UI (no minimal fallback in v1).
 
 ### New commands
 
-- `ae exec <app> -- <cmd ...>`
-- `ae shell <app> [--container <name>] [--tty] -- <cmd ...>`
+- `ae exec [-n <ns>] <app> -- <cmd ...>`
+- `ae shell [-n <ns>] <app> [--container <name>] [--tty|--no-tty] [-- <cmd ...>]`
+
+Notes:
+- `ae shell` defaults to `bash` when no command is provided; use `-- sh` for minimal images.
 
 ### Transport
 
@@ -226,8 +229,8 @@ Best practice: read-only remains the default unless explicitly disabled.
 ## CLI Surface Alignment with kubectl
 
 Decision: kubectl-aligned flags for `ae exec` with a `ae shell` wrapper.
-- `ae exec <app> -- <cmd>` with `-i/--stdin`, `-t/--tty`, `-c/--container`.
-- `ae shell <app>` as a wrapper with auto-tty + resize.
+- `ae exec [-n <ns>] <app> -- <cmd>` with `-i/--stdin`, `-t/--tty`, `-c/--container`.
+- `ae shell [-n <ns>] <app>` as a wrapper with auto-tty + resize (defaults to `bash`).
 
 ---
 

@@ -106,8 +106,18 @@ python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch
 python -m ae.cli apply -f specs/examples/echo.yaml
 python -m ae.cli status echo --wide --events
 python -m ae.cli logs echo --tail 50
+python -m ae.cli shell echo
 python -m ae.cli exec echo -- -- sh -c 'echo hello from main'
 ```
+
+Namespace targeting:
+```
+ae apply -n demo -f specs/examples/echo.yaml
+ae apply -n demo --force-namespace -f specs/examples/echo.yaml
+AE_NAMESPACE=demo ae status echo
+ae shell demo/echo
+```
+Note: `ae shell` defaults to `bash`; use `-- sh` for minimal images.
 
 Kubectl-like aliases via `k1s`:
 
@@ -123,6 +133,7 @@ Multi-container tips:
 - Add sidecars under `spec.containers` and init containers under `spec.initContainers`.
 - Use `ae logs <app> --container <name>` and `ae exec <app> --container <name> -- <cmd>` to target a specific container.
 - Config/Secret file projections are mounted at `/var/run/ae/config/<app>`; sidecars can add custom `projectionMounts` to bind specific subpaths to custom mount points.
+- Namespace targeting: add `-n <ns>`/`--namespace` or use `ns/app` (or `ns--app`) when apps live outside `default`.
 
 Multi-node lab (controller + agents + overlay Service VIPs):
 - Controller: `AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay AE_AGENT_API_TOKEN=REDACTED
