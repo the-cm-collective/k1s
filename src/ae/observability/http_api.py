@@ -3654,6 +3654,14 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       select { background:#0f172a; color:#e5e7eb; border-color:#334155; color-scheme: dark; }
       select option { background:#0f172a; color:#e5e7eb; }
       button { padding:6px 10px; border:1px solid #8884; border-radius:6px; background:#0001; color:inherit; cursor:pointer; }
+      /* Emphasize primary dashboard actions */
+      .action-btn { font-weight:600; border-color: var(--action-border, #f8c32b); background: linear-gradient(180deg, var(--action-bg-start, rgba(248,195,43,0.2)), var(--action-bg-end, rgba(241,241,241,0.05))); box-shadow: 0 2px 6px rgba(0,0,0,0.18); transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease, background .12s ease; }
+      .action-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(0,0,0,0.24); }
+      .action-shell { --action-border: #f8c32b; --action-bg-start: rgba(248,195,43,0.22); --action-bg-end: rgba(248,195,43,0.08); }
+      .action-port { --action-border: #a7a7a7; --action-bg-start: rgba(64,64,64,0.18); --action-bg-end: rgba(241,241,241,0.05); }
+      @media (prefers-color-scheme: light) {
+        .action-btn { color:#1f2937; }
+      }
       /* Hide legacy header toggle and add pane handle */
       header #apps-toggle { display:none !important; }
       /* Small round chevron handle; positioned by JS for exact edge alignment */
@@ -3735,8 +3743,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             <div><strong>Storage:</strong> <span id=\"d-storage\">-</span></div>
             </div>
             <div class=\"row\" style=\"margin-top:10px; gap:8px; flex-wrap:wrap;\">
-              <button id=\"btn-shell\" type=\"button\">Remote Shell</button>
-              <button id=\"btn-portforward\" type=\"button\">Port-Forward</button>
+              <button id=\"btn-shell\" type=\"button\" class=\"action-btn action-shell\">Remote Shell</button>
+              <button id=\"btn-portforward\" type=\"button\" class=\"action-btn action-port\">Port-Forward</button>
             </div>
           </div>
           <div class=\"card\" style=\"flex:1; display:flex; flex-direction:column;\">
