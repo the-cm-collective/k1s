@@ -6,7 +6,13 @@ import os
 import socket
 from typing import Iterable
 
-from ae.controller.spec import DEFAULT_NAMESPACE, AppManifest, PvcMountSpec, VolumeSpec
+from ae.controller.spec import (
+    DEFAULT_NAMESPACE,
+    AppManifest,
+    PvcMountSpec,
+    VolumeDeviceSpec,
+    VolumeSpec,
+)
 
 from .netfs import NetFSManager
 from .types import NetFSMount, PvcRef
@@ -59,15 +65,22 @@ class NodeVolumeManager:
             pvc = self._pvc_ref(pm, namespace=ns)
             if pvc in mounts_by_pvc:
                 continue
+            wants_device = bool(getattr(pm, "device_path", None))
             mount = self._netfs.ensure_mount(
-                pvc, node_id=node, fs_group=fs_group, selinux=selinux
+                pvc,
+                node_id=node,
+                fs_group=fs_group,
+                selinux=selinux,
+                for_device=wants_device,
             )
             mounts_by_pvc[pvc] = mount
 
         volumes = list(getattr(manifest.spec, "volumes", []) or [])
+        devices = list(getattr(manifest.spec, "volume_devices", []) or [])
         seen = {(v.host_path, v.mount_path, bool(v.read_only)) for v in volumes}
+        seen_devices = {(d.host_path, d.device_path, bool(d.read_only)) for d in devices}
         for pm in pvc_mounts:
-            if not getattr(pm, "mount_path", None):
+            if not getattr(pm, "mount_path", None) and not getattr(pm, "device_path", None):
                 continue
             pvc = self._pvc_ref(pm, namespace=ns)
             mount = mounts_by_pvc.get(pvc)
@@ -75,6 +88,19 @@ class NodeVolumeManager:
                 continue
             host_path = mount.host_path
             read_only = bool(pm.read_only) or bool(mount.read_only)
+            if getattr(pm, "device_path", None):
+                key = (host_path, str(pm.device_path), bool(read_only))
+                if key in seen_devices:
+                    continue
+                seen_devices.add(key)
+                devices.append(
+                    VolumeDeviceSpec(
+                        host_path=host_path,
+                        device_path=str(pm.device_path),
+                        read_only=bool(read_only),
+                    )
+                )
+                continue
             key = (host_path, str(pm.mount_path), bool(read_only))
             if key in seen:
                 continue
@@ -87,7 +113,9 @@ class NodeVolumeManager:
                 )
             )
 
-        updated_spec = manifest.spec.model_copy(update={"volumes": volumes})
+        updated_spec = manifest.spec.model_copy(
+            update={"volumes": volumes, "volume_devices": devices}
+        )
         return manifest.model_copy(update={"spec": updated_spec})
 
     @staticmethod

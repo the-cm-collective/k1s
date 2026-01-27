@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 from collections.abc import Iterable
 from logging import getLogger
@@ -57,6 +58,7 @@ class NetFSManager:
         node_id: str,
         fs_group: int | None = None,
         selinux: dict[str, str] | None = None,
+        for_device: bool = False,
     ) -> NetFSMount:
         """Ensure PV is attached (if needed) and mounted on the node."""
 
@@ -81,6 +83,42 @@ class NetFSManager:
             raise KeyError(msg)
 
         pv_spec = self._obj_spec(pv_obj)
+        volume_mode = str(pv_spec.get("volumeMode") or "Filesystem")
+        if volume_mode.lower() == "block":
+            if not for_device:
+                msg = "block volumes require devicePath, not mountPath"
+                self._record_pvc_event(pvc, "VolumeModeMismatch", msg)
+                raise ValueError(msg)
+            block_path = self._block_device_path(pv_spec)
+            if block_path is None:
+                msg = "block volume requires hostPath device backing"
+                self._record_pvc_event(pvc, "BlockDeviceMissing", msg)
+                raise RuntimeError(msg)
+            if not block_path.exists():
+                msg = f"block device path missing: {block_path}"
+                self._record_pvc_event(pvc, "BlockDeviceMissing", msg)
+                raise RuntimeError(msg)
+            if not self._is_block_or_file(block_path):
+                msg = f"invalid block device path: {block_path}"
+                self._record_pvc_event(pvc, "BlockDeviceInvalid", msg)
+                raise RuntimeError(msg)
+            if fs_group is not None:
+                self._apply_fs_group(pvc, block_path, fs_group)
+            if selinux:
+                self._apply_selinux(pvc, block_path, selinux)
+            mount = NetFSMount(
+                pvc=pvc,
+                pv=pv,
+                node_id=node_id,
+                host_path=str(block_path),
+                read_only=bool(pv_spec.get("readOnly", False)),
+            )
+            self._state.upsert_mount(mount)
+            return mount
+        if for_device:
+            msg = "devicePath provided for filesystem volume"
+            self._record_pvc_event(pvc, "VolumeModeMismatch", msg)
+            raise ValueError(msg)
         self._enforce_rwop(pvc, pv_spec, node_id)
         nfs = pv_spec.get("nfs") if isinstance(pv_spec, dict) else None
         if isinstance(nfs, dict):
@@ -536,3 +574,21 @@ class NetFSManager:
         if not isinstance(modes, list):
             return False
         return "ReadWriteOncePod" in {str(m) for m in modes}
+
+    @staticmethod
+    def _block_device_path(pv_spec: dict[str, Any]) -> Path | None:
+        host = pv_spec.get("hostPath") if isinstance(pv_spec, dict) else None
+        if not isinstance(host, dict):
+            return None
+        path = host.get("path")
+        if not path:
+            return None
+        return Path(str(path))
+
+    @staticmethod
+    def _is_block_or_file(path: Path) -> bool:
+        try:
+            st = path.stat()
+        except Exception:
+            return False
+        return stat.S_ISBLK(st.st_mode) or stat.S_ISREG(st.st_mode)

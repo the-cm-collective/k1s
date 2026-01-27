@@ -982,6 +982,27 @@ class PodmanRuntime(RuntimeAdapter):
                         if host and not os.path.isabs(host):
                             host = os.path.abspath(host)
                         argv += ["-v", f"{host}:{mnt}:{'ro' if ro else 'rw'}"]
+                for d in getattr(manifest.spec, "volume_devices", []) or []:
+                    host = (
+                        getattr(d, "host_path", None)
+                        if not isinstance(d, dict)
+                        else d.get("hostPath")
+                    )
+                    dev = (
+                        getattr(d, "device_path", None)
+                        if not isinstance(d, dict)
+                        else d.get("devicePath")
+                    )
+                    ro = bool(
+                        getattr(d, "read_only", False)
+                        if not isinstance(d, dict)
+                        else d.get("readOnly", False)
+                    )
+                    if host and dev:
+                        if host and not os.path.isabs(host):
+                            host = os.path.abspath(host)
+                        mode = "r" if ro else "rwm"
+                        argv += ["--device", f"{host}:{dev}:{mode}"]
             except Exception:
                 pass
 
@@ -1379,6 +1400,14 @@ class PodmanRuntime(RuntimeAdapter):
                 if host and not os.path.isabs(host):
                     host = os.path.abspath(host)
                 cmd += ["-v", f"{host}:{v.mount_path}:{mode}"]
+        if getattr(manifest.spec, "volume_devices", None):
+            for d in manifest.spec.volume_devices:
+                host = d.host_path
+                dev = d.device_path
+                if host and not os.path.isabs(host):
+                    host = os.path.abspath(host)
+                mode = "r" if d.read_only else "rwm"
+                cmd += ["--device", f"{host}:{dev}:{mode}"]
 
         # Security context
         sec = getattr(manifest.spec, "security", None)
