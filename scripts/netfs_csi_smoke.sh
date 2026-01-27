@@ -13,6 +13,8 @@ NETFS_ROOT=${NETFS_ROOT:-/var/lib/ae/netfs}
 
 CSI_DRIVER=${CSI_DRIVER:-csi.example.com}
 CSI_HANDLE=${CSI_HANDLE:-vol-demo}
+CSI_STAGE_SECRET=${CSI_STAGE_SECRET:-csi-stage}
+CSI_PUBLISH_SECRET=${CSI_PUBLISH_SECRET:-csi-publish}
 
 CLEANUP=${NETFS_CLEANUP:-1}
 BOUND_PV=""
@@ -56,6 +58,8 @@ cleanup() {
   delete_if_exists "$APISHIM_URL/apis/storage.k8s.io/v1/volumeattachments/${PVC}-${NODE_ID}"
   delete_if_exists "$APISHIM_URL/apis/storage.k8s.io/v1/csidrivers/${CSI_DRIVER}"
   delete_if_exists "$APISHIM_URL/apis/storage.k8s.io/v1/csinodes/${NODE_ID}"
+  delete_if_exists "$APISHIM_URL/api/v1/namespaces/$NS/secrets/${CSI_STAGE_SECRET}"
+  delete_if_exists "$APISHIM_URL/api/v1/namespaces/$NS/secrets/${CSI_PUBLISH_SECRET}"
 }
 trap cleanup EXIT
 
@@ -163,6 +167,27 @@ cat <<EOF_NODE | put_json "$APISHIM_URL/apis/storage.k8s.io/v1/csinodes/${NODE_I
 }
 EOF_NODE
 
+log "applying CSI secrets"
+cat <<EOF_STAGE_SECRET | put_json "$APISHIM_URL/api/v1/namespaces/$NS/secrets/${CSI_STAGE_SECRET}"
+{
+  "apiVersion": "v1",
+  "kind": "Secret",
+  "metadata": {"name": "${CSI_STAGE_SECRET}", "namespace": "${NS}"},
+  "type": "Opaque",
+  "data": {"username": "stage-user", "password": "stage-pass"}
+}
+EOF_STAGE_SECRET
+
+cat <<EOF_PUBLISH_SECRET | put_json "$APISHIM_URL/api/v1/namespaces/$NS/secrets/${CSI_PUBLISH_SECRET}"
+{
+  "apiVersion": "v1",
+  "kind": "Secret",
+  "metadata": {"name": "${CSI_PUBLISH_SECRET}", "namespace": "${NS}"},
+  "type": "Opaque",
+  "data": {"username": "publish-user", "password": "publish-pass"}
+}
+EOF_PUBLISH_SECRET
+
 log "applying PV $PV"
 BOUND_PV=$PV
 cat <<EOF_PV | put_json "$APISHIM_URL/api/v1/persistentvolumes/$PV"
@@ -175,7 +200,13 @@ cat <<EOF_PV | put_json "$APISHIM_URL/api/v1/persistentvolumes/$PV"
     "accessModes": ["ReadWriteOnce"],
     "persistentVolumeReclaimPolicy": "Retain",
     "storageClassName": "${SC}",
-    "csi": {"driver": "${CSI_DRIVER}", "volumeHandle": "${CSI_HANDLE}", "fsType": "ext4"}
+    "csi": {
+      "driver": "${CSI_DRIVER}",
+      "volumeHandle": "${CSI_HANDLE}",
+      "fsType": "ext4",
+      "nodeStageSecretRef": {"name": "${CSI_STAGE_SECRET}", "namespace": "${NS}"},
+      "nodePublishSecretRef": {"name": "${CSI_PUBLISH_SECRET}", "namespace": "${NS}"}
+    }
   }
 }
 EOF_PV
@@ -257,6 +288,22 @@ if ! grep -q "driver=${CSI_DRIVER}" "${marker}"; then
 fi
 if ! grep -q "volumeHandle=${CSI_HANDLE}" "${marker}"; then
   log "CSI marker missing volumeHandle"
+  exit 1
+fi
+if ! grep -q "nodeStageSecretRef=${NS}/${CSI_STAGE_SECRET}" "${marker}"; then
+  log "CSI marker missing nodeStageSecretRef"
+  exit 1
+fi
+if ! grep -q "nodePublishSecretRef=${NS}/${CSI_PUBLISH_SECRET}" "${marker}"; then
+  log "CSI marker missing nodePublishSecretRef"
+  exit 1
+fi
+if ! grep -q "nodeStageSecretRef.keys=password,username" "${marker}"; then
+  log "CSI marker missing nodeStageSecretRef keys"
+  exit 1
+fi
+if ! grep -q "nodePublishSecretRef.keys=password,username" "${marker}"; then
+  log "CSI marker missing nodePublishSecretRef keys"
   exit 1
 fi
 
