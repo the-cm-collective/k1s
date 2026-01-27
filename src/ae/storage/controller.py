@@ -1632,14 +1632,18 @@ class StorageController:
         binding_mode = str(sc_spec.get("volumeBindingMode") or "")
         if binding_mode == WAIT_FOR_FIRST_CONSUMER and not selected_node:
             return None
-        volume_mode = (pvc.spec or {}).get("volumeMode")
-        if str(volume_mode or "").lower() == "block":
-            self._record_pvc_event(
-                pvc,
-                "VolumeModeUnsupported",
-                "block volumeMode is not supported for local-path provisioner",
-            )
-            return None
+        volume_mode = str((pvc.spec or {}).get("volumeMode") or "Filesystem")
+        is_block = volume_mode.lower() == "block"
+        if is_block:
+            requested_raw = self._pvc_requested_storage(pvc)
+            requested_bytes = self._quantity_bytes(requested_raw)
+            if not requested_raw or requested_bytes is None or requested_bytes <= 0:
+                self._record_pvc_event(
+                    pvc,
+                    "ProvisioningFailed",
+                    "block volume requires a valid storage request",
+                )
+                return None
         uid = self._pvc_uid(pvc)
         if not uid:
             self._record_pvc_event(pvc, "ProvisioningFailed", "PVC uid missing")
@@ -1669,12 +1673,38 @@ class StorageController:
                 f"refusing to create local path outside host root: {host_path}",
             )
             return None
-        host_path.mkdir(parents=True, exist_ok=True)
+        if is_block:
+            host_path.parent.mkdir(parents=True, exist_ok=True)
+            if host_path.exists() and host_path.is_dir():
+                self._record_pvc_event(
+                    pvc,
+                    "ProvisioningFailed",
+                    f"block volume path exists as directory: {host_path}",
+                )
+                return None
+            try:
+                with open(host_path, "ab") as handle:
+                    handle.truncate(requested_bytes)
+            except Exception:
+                self._record_pvc_event(
+                    pvc,
+                    "ProvisioningFailed",
+                    f"failed to create block backing file: {host_path}",
+                )
+                return None
+        else:
+            host_path.mkdir(parents=True, exist_ok=True)
 
-        if snapshot_info and not self._restore_snapshot_into(
-            pvc, host_root, host_path, snapshot_info
-        ):
-            return None
+        if snapshot_info:
+            if is_block:
+                self._record_pvc_event(
+                    pvc,
+                    "SnapshotRestoreUnsupported",
+                    "snapshot restore is not supported for block volumes",
+                )
+                return None
+            if not self._restore_snapshot_into(pvc, host_root, host_path, snapshot_info):
+                return None
 
         annotations = {
             PROVISIONED_BY_ANNOTATION: LOCAL_PATH_PROVISIONER,
@@ -1687,7 +1717,7 @@ class StorageController:
         pv_spec = {
             "capacity": self._pvc_requested_capacity(pvc),
             "accessModes": list((pvc.spec or {}).get("accessModes") or []),
-            "volumeMode": (pvc.spec or {}).get("volumeMode") or "Filesystem",
+            "volumeMode": volume_mode,
             "storageClassName": sc.name,
             "persistentVolumeReclaimPolicy": sc_spec.get("reclaimPolicy") or "Delete",
             "mountOptions": list(sc_spec.get("mountOptions") or []),
@@ -1868,6 +1898,13 @@ class StorageController:
             LOGGER.warning("skipping cleanup outside root: %s (root=%s)", path, root)
             return
         if not path.exists():
+            return
+        if path.is_file() or path.is_symlink():
+            with suppress(Exception):
+                path.unlink(missing_ok=True)  # type: ignore[call-arg]
+            return
+        if not path.is_dir():
+            LOGGER.warning("skipping cleanup for non-directory path: %s", path)
             return
         try:
             for child in sorted(path.glob("**/*"), reverse=True):
