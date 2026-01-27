@@ -70,6 +70,7 @@ class StorageController:
         self._storage_classes = load_storage_classes(self._config.provisioners_path)
         self._default_class = self._resolve_default(self._storage_classes)
         self._default_snapshot_class: str | None = None
+        self._volume_health: dict[str, bool] = {}
         self._stop = threading.Event()
         self._pvc_thread: threading.Thread | None = None
         self._pv_thread: threading.Thread | None = None
@@ -111,6 +112,7 @@ class StorageController:
         """Run a single PVC/PV binding pass."""
         self._reconcile_all()
         self._reconcile_snapshots()
+        self._check_volume_health()
 
     def _resolve_default(
         self, storage_classes: list[StorageClassConfig]
@@ -225,6 +227,36 @@ class StorageController:
             snapshots = []
         for snapshot in snapshots:
             self._reconcile_snapshot(snapshot)
+
+    def _check_volume_health(self) -> None:
+        try:
+            pvs = self._store.list_all(CORE_GROUP, CORE_VERSION, PV_RESOURCE)
+        except Exception:
+            return
+        for pv in pvs:
+            host_backing = self._pv_host_backing(pv)
+            if host_backing is None:
+                continue
+            _root, path = host_backing
+            healthy = path.exists()
+            prev = self._volume_health.get(pv.name)
+            if prev is not None and prev == healthy:
+                continue
+            self._volume_health[pv.name] = healthy
+            claim_ref = (pv.spec or {}).get("claimRef") or {}
+            if not isinstance(claim_ref, dict):
+                continue
+            pvc_ns = claim_ref.get("namespace")
+            pvc_name = claim_ref.get("name")
+            if not pvc_ns or not pvc_name:
+                continue
+            pvc = self._store.get(CORE_GROUP, CORE_VERSION, PVC_RESOURCE, pvc_ns, pvc_name)
+            if pvc is None:
+                continue
+            if healthy:
+                self._record_pvc_event(pvc, "VolumeHealthy", f"backing path is present: {path}")
+            else:
+                self._record_pvc_event(pvc, "VolumeUnhealthy", f"backing path missing: {path}")
 
     def _reconcile_pending(self) -> None:
         try:
