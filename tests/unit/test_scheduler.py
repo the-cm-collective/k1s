@@ -1,5 +1,8 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
+from ae.apishim.store import ObjectStore
 from ae.controller.scheduler import Scheduler
 from ae.controller.spec import AppManifest, AppSpec, Metadata
 from ae.controller.state import SQLiteStateStore
@@ -17,6 +20,11 @@ def _manifest(name: str = "app", replicas: int = 3) -> AppManifest:
 def _store_with_nodes(tmp_path):
     store = SQLiteStateStore(tmp_path / "state.db")
     return store
+
+
+@pytest.fixture(autouse=True)
+def _shim_db_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("AE_APISHIM_DB", str(tmp_path / "apishim.db"))
 
 
 def test_scheduler_round_robin(tmp_path):
@@ -215,6 +223,123 @@ def test_scheduler_spread_ignored_when_label_missing(tmp_path):
     assert len(placements) == 2
     total = sum(len(p.replica_ids) for p in placements)
     assert total == 3
+
+
+def test_scheduler_pins_local_path_wait_for_first_consumer(tmp_path):
+    shim = ObjectStore(db_path=tmp_path / "apishim.db")
+    sc_spec = {
+        "provisioner": "k1s.io/local-path",
+        "parameters": {"hostPath": str(tmp_path / "storage-root")},
+        "reclaimPolicy": "Delete",
+        "volumeBindingMode": "WaitForFirstConsumer",
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "k1s-local",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    shim.upsert(
+        "storage.k8s.io",
+        "v1",
+        "storageclasses",
+        None,
+        "k1s-local",
+        {"name": "k1s-local"},
+        sc_spec,
+        status={},
+    )
+    shim.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "data",
+        {"name": "data", "namespace": "default", "uid": "pvc-uid"},
+        pvc_spec,
+        status={"phase": "Pending"},
+    )
+
+    store = _store_with_nodes(tmp_path)
+    store.upsert_node("n1", name="n1", labels={}, taints=[], backend="podman", endpoint="n1")
+    store.upsert_node("n2", name="n2", labels={}, taints=[], backend="podman", endpoint="n2")
+    store.record_heartbeat("n1", "Ready")
+    store.record_heartbeat("n2", "Ready")
+    man = _manifest(replicas=2).model_copy(
+        update={
+            "spec": AppSpec(
+                image="busybox",
+                replicas=2,
+                pvc_mounts=[{"claimName": "data", "mountPath": "/data"}],
+            )
+        }
+    )
+
+    sched = Scheduler(store)
+    placements, warnings = sched.plan(man, revision=1)
+    assert len(placements) == 1
+    assert placements[0].node is not None
+    assert placements[0].node.node_id == "n1"
+    assert any("local-path PVCs pending" in w for w in warnings)
+
+
+def test_scheduler_respects_selected_node_for_local_path(tmp_path):
+    shim = ObjectStore(db_path=tmp_path / "apishim.db")
+    sc_spec = {
+        "provisioner": "k1s.io/local-path",
+        "volumeBindingMode": "WaitForFirstConsumer",
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "k1s-local",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    shim.upsert(
+        "storage.k8s.io",
+        "v1",
+        "storageclasses",
+        None,
+        "k1s-local",
+        {"name": "k1s-local"},
+        sc_spec,
+        status={},
+    )
+    shim.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "data",
+        {
+            "name": "data",
+            "namespace": "default",
+            "uid": "pvc-uid",
+            "annotations": {"volume.kubernetes.io/selected-node": "n2"},
+        },
+        pvc_spec,
+        status={"phase": "Pending"},
+    )
+
+    store = _store_with_nodes(tmp_path)
+    store.upsert_node("n1", name="n1", labels={}, taints=[], backend="podman", endpoint="n1")
+    store.upsert_node("n2", name="n2", labels={}, taints=[], backend="podman", endpoint="n2")
+    store.record_heartbeat("n1", "Ready")
+    store.record_heartbeat("n2", "Ready")
+    man = _manifest(replicas=1).model_copy(
+        update={
+            "spec": AppSpec(
+                image="busybox",
+                replicas=1,
+                pvc_mounts=[{"claimName": "data", "mountPath": "/data"}],
+            )
+        }
+    )
+
+    sched = Scheduler(store)
+    placements, warnings = sched.plan(man, revision=1)
+    assert not warnings
+    assert len(placements) == 1
+    assert placements[0].node is not None
+    assert placements[0].node.node_id == "n2"
 
 
 # ruff: noqa: E501
