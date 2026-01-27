@@ -39,11 +39,11 @@ jobs:
           .venv/bin/python -m pip install -e .[dev]
 
       - name: CRI setup
-        if: ${{ env.ACT != 'true' }}
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
         run: sudo -E ./scripts/cri_ci_setup.sh
 
       - name: CRI integration tests
-        if: ${{ env.ACT != 'true' }}
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
         env:
           AE_RUNTIME_BACKEND: cri
           AE_CRI_IT: "1"
