@@ -700,39 +700,7 @@
     </button>
     <div class="container">
     <div class="playground-shell">   <div class="playground-main">     <div class="playground-hero">       <h2>Interactive Lab Playground</h2>     </div>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" onerror="this.onerror=null; this.href='/static/vendor/xterm.css';" />
-<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js" onerror="window.__xterm_cdn_failed=true;"></script>
-<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js" onerror="window.__xterm_fit_cdn_failed=true;"></script>
-<script>
-(function(){
-  function loadScript(src){
-    var s = document.createElement('script');
-    s.src = src;
-    s.defer = true;
-    document.head.appendChild(s);
-  }
-  function loadCss(href){
-    var l = document.createElement('link');
-    l.rel = 'stylesheet';
-    l.href = href;
-    document.head.appendChild(l);
-  }
-  function ensureLocal(){
-    if (window.__xterm_cdn_failed || !window.Terminal) {
-      loadCss('/static/vendor/xterm.css');
-      loadScript('/static/vendor/xterm.js');
-    }
-    if (window.__xterm_fit_cdn_failed || !(window.FitAddon && window.FitAddon.FitAddon)) {
-      loadScript('/static/vendor/xterm-addon-fit.js');
-    }
-  }
-  if (document.readyState === 'complete') {
-    ensureLocal();
-  } else {
-    window.addEventListener('load', ensureLocal);
-  }
-})();
-</script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" onerror="this.onerror=null; this.href='/static/vendor/xterm.css';" /> <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js" onerror="window.__xterm_cdn_failed=true;"></script> <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js" onerror="window.__xterm_fit_cdn_failed=true;"></script> <script> (function(){   function loadScript(src){     var s = document.createElement('script');     s.src = src;     s.defer = true;     document.head.appendChild(s);   }   function loadCss(href){     var l = document.createElement('link');     l.rel = 'stylesheet';     l.href = href;     document.head.appendChild(l);   }   function ensureLocal(){     if (window.__xterm_cdn_failed || !window.Terminal) {       loadCss('/static/vendor/xterm.css');       loadScript('/static/vendor/xterm.js');     }     if (window.__xterm_fit_cdn_failed || !(window.FitAddon && window.FitAddon.FitAddon)) {       loadScript('/static/vendor/xterm-addon-fit.js');     }   }   if (document.readyState === 'complete') {     ensureLocal();   } else {     window.addEventListener('load', ensureLocal);   } })(); </script>
 <p>Use this page to try k1s in minutes — no Kubernetes experience required. The playground can run fully read‑only or, when enabled, perform safe actions like "apply example" and "scale".</p>
 <p>Quick start:</p>
 <ul>
@@ -906,7 +874,7 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-26 15:08:29</span>
+        <span>Built 2026-01-26 15:53:06</span>
       </div>
     </footer>
     <script>

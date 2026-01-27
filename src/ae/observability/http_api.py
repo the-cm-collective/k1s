@@ -4261,7 +4261,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           }
           return r.json();
         }).then(function(data){
-          return (data && data.token) ? data.token : '';
+          return data || {};
         });
       }
 
@@ -4589,6 +4589,103 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         return base.replace(/^http/i, 'ws');
       }
 
+      function parseSessionToken(tok){
+        if (!tok || tok.indexOf('sess1.') !== 0) return null;
+        var parts = tok.split('.');
+        if (parts.length !== 3) return null;
+        var payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        var pad = payload.length % 4;
+        if (pad) payload += '===='.slice(pad);
+        try {
+          var raw = atob(payload);
+          return JSON.parse(raw);
+        } catch(e){
+          return null;
+        }
+      }
+
+      function sessionTokenExp(tok){
+        var info = parseSessionToken(tok);
+        if (!info) return 0;
+        return parseInt(info.exp || '0', 10) || 0;
+      }
+
+      function sessionTokenExpired(tok, skewSec){
+        if (!tok || tok.indexOf('sess1.') !== 0) return false;
+        var exp = sessionTokenExp(tok);
+        if (!exp) return true;
+        var now = Math.floor(Date.now() / 1000);
+        return exp <= (now + (skewSec || 0));
+      }
+
+      function scopePatternMatch(pat, value){
+        if (!pat) return false;
+        if (pat === value) return true;
+        var raw = String(pat || '');
+        var esc = '';
+        var specials = '\\\\^$+?.()|{}[]';
+        for (var i = 0; i < raw.length; i++) {
+          var ch = raw[i];
+          if (ch === '*') { esc += '.*'; continue; }
+          if (ch === '?') { esc += '.'; continue; }
+          if (specials.indexOf(ch) !== -1) { esc += '\\\\' + ch; continue; }
+          esc += ch;
+        }
+        var re = '^' + esc + '$';
+        try { return new RegExp(re).test(String(value || '')); } catch(e){ return false; }
+      }
+
+      function sessionTokenAllowsScope(tok, scope){
+        var info = parseSessionToken(tok);
+        if (!info) return false;
+        var scopesVal = info.scopes || info.scope || [];
+        var scopes = [];
+        if (typeof scopesVal === 'string') scopes = [scopesVal];
+        else if (Array.isArray(scopesVal)) scopes = scopesVal.map(function(s){ return String(s || ''); }).filter(Boolean);
+        if (!scopes.length) return true;
+        for (var i=0; i<scopes.length; i++){
+          if (scopePatternMatch(scopes[i], scope)) return true;
+        }
+        return false;
+      }
+
+      function clearStoredSession(kind){
+        try { localStorage.removeItem('ae_apishim_' + kind + '_token'); } catch(e){}
+        try { localStorage.removeItem('ae_apishim_' + kind + '_scope'); } catch(e){}
+        try { localStorage.removeItem('ae_apishim_' + kind + '_exp'); } catch(e){}
+      }
+
+      function termWriteLine(term, text){
+        if (!term) return;
+        if (typeof term.writeln === 'function') { term.writeln(text); }
+        else { term.write(String(text || '') + '\\r\\n'); }
+      }
+
+      function shellTargetSummary(meta){
+        if (!meta) return '';
+        var parts = [];
+        if (meta.app) parts.push('app=' + meta.app);
+        if (meta.pod) parts.push('pod=' + meta.pod);
+        if (meta.container) parts.push('container=' + meta.container);
+        if (meta.cmd) {
+          var cmd = String(meta.cmd || '').replace(/"/g, "'");
+          parts.push('cmd="' + cmd + '"');
+        }
+        if (meta.base) parts.push('base=' + meta.base);
+        return parts.join(' ');
+      }
+
+      function shellWriteMarker(kind, meta, extra){
+        if (!shellTerm) return;
+        var ts = new Date().toISOString();
+        var summary = shellTargetSummary(meta);
+        var line = '---- shell ' + kind + ' ' + ts;
+        if (summary) line += ' ' + summary;
+        if (extra) line += ' ' + extra;
+        line += ' ----';
+        termWriteLine(shellTerm, line);
+      }
+
       var shellModal = document.getElementById('shell-modal');
       var shellTerm = null;
       var shellFit = null;
@@ -4646,17 +4743,41 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           storedToken = localStorage.getItem('ae_apishim_exec_token') || localStorage.getItem('ae_apishim_token') || '';
         } catch(e){}
         try { storedScope = localStorage.getItem('ae_apishim_exec_scope') || ''; } catch(e){}
+        if (storedToken && storedToken.indexOf('sess1.') === 0) {
+          if (sessionTokenExpired(storedToken, 15)) {
+            clearStoredSession('exec');
+            storedToken = '';
+            storedScope = '';
+          } else if (storedScope && storedScope !== scope) {
+            clearStoredSession('exec');
+            storedToken = '';
+            storedScope = '';
+          }
+        }
         if (tokenInput && !tokenInput.value && storedToken) {
           tokenInput.value = storedToken;
         }
+        if (tokenInput && tokenInput.value && tokenInput.value.indexOf('sess1.') === 0) {
+          if (sessionTokenExpired(tokenInput.value, 15) || !sessionTokenAllowsScope(tokenInput.value, scope)) {
+            clearStoredSession('exec');
+            tokenInput.value = '';
+          }
+        }
         if (tokenInput && tokenInput.value && storedScope && storedScope !== scope && tokenInput.value.indexOf('sess1.') === 0) {
           try {
-            localStorage.removeItem('ae_apishim_exec_token');
-            localStorage.removeItem('ae_apishim_exec_scope');
+            clearStoredSession('exec');
           } catch(e){}
           tokenInput.value = '';
         }
         try { localStorage.setItem('ae_apishim_base', base); } catch(e){}
+        if (shellSocket) { shellDisconnect(); }
+        var attempt = {
+          app: (nsInfo && nsInfo.name) ? (ns + '/' + nsInfo.name) : (current || ''),
+          pod: pod,
+          container: (containerInput && containerInput.value) ? containerInput.value : '',
+          cmd: (cmdInput && cmdInput.value) ? cmdInput.value : 'sh',
+          base: base
+        };
         function doConnect(){
           var params = new URLSearchParams();
           var cmd = splitArgs(cmdInput && cmdInput.value ? cmdInput.value : 'sh');
@@ -4674,38 +4795,58 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             shellSetStatus('ws error', 'bad');
             return;
           }
-          shellSocket.binaryType = 'arraybuffer';
-          shellSocket.onopen = function(){
+          var socket = shellSocket;
+          socket.__meta = { attempt: attempt, active: null, connected: false, closeReason: '' };
+          socket.binaryType = 'arraybuffer';
+          socket.onopen = function(){
+            var meta = socket.__meta || {};
+            meta.connected = true;
+            meta.active = meta.attempt || attempt;
+            meta.attempt = null;
             shellSetStatus('connected', 'ok');
+            shellWriteMarker('connect', meta.active);
             if (shellTerm) { shellTerm.focus(); }
             fitShellNow();
             if (shellTerm) {
               try { shellSendChannel(4, JSON.stringify({ Width: shellTerm.cols, Height: shellTerm.rows })); } catch(e){}
             }
           };
-          shellSocket.onmessage = function(ev){
+          socket.onmessage = function(ev){
             var data = ev.data;
             if (data instanceof Blob) {
-              data.arrayBuffer().then(handleShellMessage).catch(function(){});
+              data.arrayBuffer().then(function(buf){ handleShellMessage(socket, buf); }).catch(function(){});
             } else {
-              handleShellMessage(data);
+              handleShellMessage(socket, data);
             }
           };
-          shellSocket.onclose = function(){
+          socket.onclose = function(){
             shellSetStatus('disconnected', 'warn');
+            var meta = socket.__meta || {};
+            if (meta.connected && meta.active) {
+              shellWriteMarker('disconnect', meta.active, meta.closeReason ? ('reason=' + meta.closeReason) : '');
+            } else if (meta.attempt) {
+              shellWriteMarker('failed', meta.attempt, meta.closeReason ? ('reason=' + meta.closeReason) : '');
+            }
+            if (shellSocket === socket) { shellSocket = null; }
           };
-          shellSocket.onerror = function(){
+          socket.onerror = function(){
             shellSetStatus('error', 'bad');
+            var meta = socket.__meta || {};
+            if (!meta.connected && !meta.closeReason) meta.closeReason = 'ws-error';
           };
         }
         if (tokenInput && !tokenInput.value) {
           shellSetStatus('minting token', 'muted');
-          mintShimToken('exec', scope).then(function(tok){
+          mintShimToken('exec', scope).then(function(info){
+            var tok = (info && info.token) ? info.token : '';
             if (tok && tokenInput) tokenInput.value = tok;
             try {
               if (tok) {
                 localStorage.setItem('ae_apishim_exec_token', tok);
                 localStorage.setItem('ae_apishim_exec_scope', scope);
+                if (info && info.expires_at) {
+                  localStorage.setItem('ae_apishim_exec_exp', String(info.expires_at));
+                }
               }
             } catch(e){}
             doConnect();
@@ -4715,7 +4856,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         doConnect();
       }
 
-      function handleShellMessage(data){
+      function handleShellMessage(sock, data){
         try {
           var buf = data instanceof ArrayBuffer ? new Uint8Array(data) : (shellEncoder ? shellEncoder.encode(String(data||'')) : new Uint8Array());
           if (!buf || buf.length < 1) return;
@@ -4729,13 +4870,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
               var status = JSON.parse(msg || '{}');
               var code = (status && status.details && status.details.exitCode != null) ? status.details.exitCode : status.code;
               shellSetStatus('exit ' + String(code||0), 'muted');
+              if (sock && sock.__meta) sock.__meta.closeReason = 'exit=' + String(code||0);
             } catch(e){}
-            if (shellSocket) { try { shellSocket.close(); } catch(e){} }
+            if (sock) { try { sock.close(); } catch(e){} }
           }
         } catch(e){}
       }
 
       function shellDisconnect(){
+        if (shellSocket && shellSocket.__meta) shellSocket.__meta.closeReason = 'manual';
         if (shellSocket) { try { shellSocket.close(); } catch(e){} }
         shellSocket = null;
       }
@@ -4806,13 +4949,29 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           pfStoredToken = localStorage.getItem('ae_apishim_pf_token') || localStorage.getItem('ae_apishim_token') || '';
         } catch(e){}
         try { pfStoredScope = localStorage.getItem('ae_apishim_pf_scope') || ''; } catch(e){}
+        if (pfStoredToken && pfStoredToken.indexOf('sess1.') === 0) {
+          if (sessionTokenExpired(pfStoredToken, 15)) {
+            clearStoredSession('pf');
+            pfStoredToken = '';
+            pfStoredScope = '';
+          } else if (pfStoredScope && pfStoredScope !== pfScope) {
+            clearStoredSession('pf');
+            pfStoredToken = '';
+            pfStoredScope = '';
+          }
+        }
         if (tokenInput && !tokenInput.value && pfStoredToken) {
           tokenInput.value = pfStoredToken;
         }
+        if (tokenInput && tokenInput.value && tokenInput.value.indexOf('sess1.') === 0) {
+          if (sessionTokenExpired(tokenInput.value, 15) || !sessionTokenAllowsScope(tokenInput.value, pfScope)) {
+            clearStoredSession('pf');
+            tokenInput.value = '';
+          }
+        }
         if (tokenInput && tokenInput.value && pfStoredScope && pfStoredScope !== pfScope && tokenInput.value.indexOf('sess1.') === 0) {
           try {
-            localStorage.removeItem('ae_apishim_pf_token');
-            localStorage.removeItem('ae_apishim_pf_scope');
+            clearStoredSession('pf');
           } catch(e){}
           tokenInput.value = '';
         }
@@ -4843,12 +5002,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         }
         if (tokenInput && !tokenInput.value) {
           pfSetStatus('minting token', 'muted');
-          mintShimToken('portforward', pfScope).then(function(tok){
+          mintShimToken('portforward', pfScope).then(function(info){
+            var tok = (info && info.token) ? info.token : '';
             if (tok && tokenInput) tokenInput.value = tok;
             try {
               if (tok) {
                 localStorage.setItem('ae_apishim_pf_token', tok);
                 localStorage.setItem('ae_apishim_pf_scope', pfScope);
+                if (info && info.expires_at) {
+                  localStorage.setItem('ae_apishim_pf_exp', String(info.expires_at));
+                }
               }
             } catch(e){}
             doConnect();
