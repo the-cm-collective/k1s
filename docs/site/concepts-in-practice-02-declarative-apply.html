@@ -709,7 +709,8 @@
 <p>Declarative systems treat configuration as data. The &quot;apply&quot; operation is a reconciliation trigger: the controller compares the submitted desired state to the current desired state (stored in revisions) and decides whether a new revision is needed. This reduces hidden coupling and makes changes auditable.</p>
 <pre class="mermaid">flowchart TB
   Apply[ae apply] --&gt; Load[Load YAML documents]
-  Load --&gt; Detect{k8s kinds?}
+  Load --&gt; Namespace[Apply namespace override (optional)]
+  Namespace --&gt; Detect{k8s kinds?}
   Detect -- yes --&gt; Convert[k8s -&gt; AppManifest]
   Detect -- no --&gt; Native[Native App manifest]
   Convert --&gt; Store[Store revision]
@@ -748,7 +749,8 @@
 </ul>
 <h2>Commands (copy/paste)</h2>
 <pre><code>python -m ae.cli apply -f specs/examples/echo.yaml
-python -m ae.cli status echo --wide
+python -m ae.cli apply -n demo --force-namespace -f specs/examples/echo.yaml
+python -m ae.cli status -n demo echo --wide
 python -m ae.cli events echo --limit 20</code></pre>
 <h2>Docs references (source + site)</h2>
 <ul>
@@ -832,7 +834,7 @@ spec:
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-26 11:14:05</span>
+        <span>Built 2026-01-27 10:16:49</span>
       </div>
     </footer>
     <script>

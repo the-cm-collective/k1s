@@ -20,7 +20,8 @@ Declarative systems treat configuration as data. The "apply" operation is a reco
 ```mermaid
 flowchart TB
   Apply[ae apply] --> Load[Load YAML documents]
-  Load --> Detect{k8s kinds?}
+  Load --> Namespace[Apply namespace override (optional)]
+  Namespace --> Detect{k8s kinds?}
   Detect -- yes --> Convert[k8s -> AppManifest]
   Detect -- no --> Native[Native App manifest]
   Convert --> Store[Store revision]
@@ -69,7 +70,8 @@ flowchart LR
 ## Commands (copy/paste)
 ```bash
 python -m ae.cli apply -f specs/examples/echo.yaml
-python -m ae.cli status echo --wide
+python -m ae.cli apply -n demo --force-namespace -f specs/examples/echo.yaml
+python -m ae.cli status -n demo echo --wide
 python -m ae.cli events echo --limit 20
 ```
 
@@ -145,4 +147,3 @@ spec:
 ## Chapter navigation
 - Prev: [Chapter 01 - Desired State and Reconciliation Loops](concepts-in-practice-01-desired-state-reconciliation.html)
 - Next: [Chapter 03 - Scheduling and Placement (Where Work Runs)](concepts-in-practice-03-scheduling-placement.html)
-

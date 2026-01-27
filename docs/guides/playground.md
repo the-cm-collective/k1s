@@ -212,7 +212,7 @@ Open an interactive shell or run a lightweight port-forward check. These are Lab
     <button id="btn-labs-pf" disabled>Open Port-Forward</button>
     <span class="muted">Uses apishim WebSocket exec + port-forward.</span>
   </div>
-  <div class="muted" style="margin-top:6px;">If disabled, run locally: <code>ae shell &lt;app&gt; -- sh -c 'echo connected; exec sh'</code>, <code>kubectl exec</code>, or <code>kubectl port-forward</code>.</div>
+  <div class="muted" style="margin-top:6px;">If disabled, run locally: <code>ae shell &lt;app&gt;</code> (defaults to bash; use <code>-- sh</code> for minimal images), add <code>-n &lt;ns&gt;</code> if needed, or use <code>kubectl exec</code> / <code>kubectl port-forward</code>.</div>
 </div>
 
 <div id="labs-shell-modal" class="labs-modal hidden" role="dialog" aria-modal="true" aria-labelledby="labs-shell-title">
@@ -225,7 +225,7 @@ Open an interactive shell or run a lightweight port-forward check. These are Lab
       <div class="row" style="flex-wrap:wrap; gap:10px; margin-bottom:10px;">
         <label>Replica <select id="labs-shell-pod"></select></label>
         <label>Container <input id="labs-shell-container" type="text" placeholder="optional" /></label>
-        <label>Command <input id="labs-shell-cmd" type="text" value="sh" /></label>
+        <label>Command <input id="labs-shell-cmd" type="text" value="bash" /></label>
         <label>Shim API <input id="labs-shell-base" type="text" placeholder="http://127.0.0.1:8443" /></label>
         <label>Token <input id="labs-shell-token" type="password" placeholder="apishim token" /></label>
       </div>
