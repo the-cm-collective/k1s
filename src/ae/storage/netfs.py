@@ -89,9 +89,21 @@ class NetFSManager:
                 msg = "block volumes require devicePath, not mountPath"
                 self._record_pvc_event(pvc, "VolumeModeMismatch", msg)
                 raise ValueError(msg)
+            self._enforce_rwop(pvc, pv_spec, node_id)
+            csi = pv_spec.get("csi") if isinstance(pv_spec, dict) else None
+            if isinstance(csi, dict):
+                attachment = self._state.get_volume_attachment(pv, node_id)
+                if attachment is None or not self._attachment_attached(attachment):
+                    msg = f"PV {pv.name} is not attached to node {node_id}"
+                    self._record_pvc_event(pvc, "VolumeNotAttached", msg)
+                    raise RuntimeError(msg)
+                self._resolve_csi_secret_ref(pvc, csi.get("nodeStageSecretRef"), "nodeStage")
+                self._resolve_csi_secret_ref(
+                    pvc, csi.get("nodePublishSecretRef"), "nodePublish"
+                )
             block_path = self._block_device_path(pv_spec)
             if block_path is None:
-                msg = "block volume requires hostPath device backing"
+                msg = "block volume requires hostPath path or CSI devicePath"
                 self._record_pvc_event(pvc, "BlockDeviceMissing", msg)
                 raise RuntimeError(msg)
             if not block_path.exists():
@@ -579,11 +591,18 @@ class NetFSManager:
     def _block_device_path(pv_spec: dict[str, Any]) -> Path | None:
         host = pv_spec.get("hostPath") if isinstance(pv_spec, dict) else None
         if not isinstance(host, dict):
-            return None
-        path = host.get("path")
-        if not path:
-            return None
-        return Path(str(path))
+            host = None
+        if host:
+            path = host.get("path")
+            if path:
+                return Path(str(path))
+        csi = pv_spec.get("csi") if isinstance(pv_spec, dict) else None
+        if isinstance(csi, dict):
+            attrs = csi.get("volumeAttributes") if isinstance(csi.get("volumeAttributes"), dict) else {}
+            device = attrs.get("devicePath") or attrs.get("device_path")
+            if device:
+                return Path(str(device))
+        return None
 
     @staticmethod
     def _is_block_or_file(path: Path) -> bool:

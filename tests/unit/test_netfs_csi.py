@@ -94,3 +94,49 @@ def test_netfs_csi_mount_fails_when_secret_missing(tmp_path) -> None:
         manager.ensure_mount(PvcRef(name="pvc", namespace="default"), node_id="node1")
     assert any(reason == "SecretNotFound" for reason, _msg in state.events)
 
+
+def test_netfs_csi_block_uses_device_path(tmp_path) -> None:
+    device_path = tmp_path / "block-dev"
+    device_path.write_text("fake", encoding="utf-8")
+    pv_obj = {
+        "spec": {
+            "accessModes": ["ReadWriteOnce"],
+            "volumeMode": "Block",
+            "csi": {
+                "driver": "csi.example.com",
+                "volumeHandle": "vol-1",
+                "volumeAttributes": {"devicePath": str(device_path)},
+            },
+        }
+    }
+    state = FakeState(pv_obj, _attached_va(), secrets={})
+    manager = NetFSManager(state, root=tmp_path)
+
+    mount = manager.ensure_mount(
+        PvcRef(name="pvc", namespace="default"), node_id="node1", for_device=True
+    )
+    assert mount.host_path == str(device_path)
+
+
+def test_netfs_csi_block_requires_attachment(tmp_path) -> None:
+    device_path = tmp_path / "block-dev"
+    device_path.write_text("fake", encoding="utf-8")
+    pv_obj = {
+        "spec": {
+            "accessModes": ["ReadWriteOnce"],
+            "volumeMode": "Block",
+            "csi": {
+                "driver": "csi.example.com",
+                "volumeHandle": "vol-1",
+                "volumeAttributes": {"devicePath": str(device_path)},
+            },
+        }
+    }
+    state = FakeState(pv_obj, attachment=None, secrets={})
+    manager = NetFSManager(state, root=tmp_path)
+
+    with pytest.raises(RuntimeError):
+        manager.ensure_mount(
+            PvcRef(name="pvc", namespace="default"), node_id="node1", for_device=True
+        )
+    assert any(reason == "VolumeNotAttached" for reason, _msg in state.events)

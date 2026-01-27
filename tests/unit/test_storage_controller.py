@@ -99,6 +99,57 @@ def test_storage_controller_dynamic_nfs_provisioning(tmp_path):
     assert (host_root / pvc_uid).is_dir()
 
 
+def test_storage_controller_dynamic_local_path_block(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    host_root = tmp_path / "local-root"
+    sc_spec = {
+        "provisioner": "k1s.io/local-path",
+        "parameters": {"hostPath": str(host_root)},
+        "reclaimPolicy": "Delete",
+        "volumeBindingMode": "Immediate",
+    }
+    pvc_uid = "uid-block"
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "volumeMode": "Block",
+        "storageClassName": "local-path",
+        "resources": {"requests": {"storage": "8Mi"}},
+    }
+
+    store.upsert(
+        "storage.k8s.io",
+        "v1",
+        "storageclasses",
+        None,
+        "local-path",
+        {"name": "local-path"},
+        sc_spec,
+    )
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "pvc-block",
+        {"name": "pvc-block", "namespace": "default", "uid": pvc_uid},
+        pvc_spec,
+    )
+
+    controller.reconcile_once()
+
+    pvc = store.get("", "v1", "persistentvolumeclaims", "default", "pvc-block")
+    assert pvc is not None
+    pv_name = pvc.spec.get("volumeName")
+    assert pv_name == f"pvc-{pvc_uid}"
+    pv = store.get("", "v1", "persistentvolumes", None, pv_name)
+    assert pv is not None
+    assert (pv.spec or {}).get("volumeMode") == "Block"
+    host_path = Path(((pv.spec or {}).get("hostPath") or {}).get("path"))
+    assert host_path.is_file()
+    assert host_path.stat().st_size == 8 * 1024 * 1024
+
+
 def test_storage_controller_reclaim_policy_delete_cleans_backing(tmp_path):
     store = ObjectStore(db_path=tmp_path / "apishim.db")
     controller = StorageController(store)

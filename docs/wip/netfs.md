@@ -258,7 +258,7 @@ Exit criteria:
 ### Phase 3 -- Block volumes (attach + mount) (7-14 days)
 
 - Add attach/detach workflow for CSI-backed block volumes.
-- Allow local runtime device mappings for block PVs via `pvcMounts[].devicePath` (hostPath-backed).
+- Allow local runtime device mappings for block PVs via `pvcMounts[].devicePath` (hostPath or CSI device path).
 - Enforce single-writer semantics for RWO volumes.
 - Add VolumeAttachment objects and node publish semantics.
 
@@ -442,7 +442,6 @@ Optional (SMB / CSI):
 
 ## Future NetFS features to consider (post-MVP)
 
-- Block volume mode for dynamic provisioners and CSI-backed devices.
 - VolumeSnapshots and VolumeSnapshotClass support.
 - Volume cloning via `dataSourceRef`.
 - Volume expansion with filesystem resize in containers.
