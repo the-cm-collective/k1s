@@ -67,6 +67,7 @@ jobs:
           AE_RUNTIME_BACKEND: "stub"
           AE_STUB_BACKEND_HOST: "127.0.0.1"
           AE_STUB_BACKEND_PORT: "8081"
+          AE_REGISTER_LOCAL_NODE: "1"
           PYTHONPATH: "src"
         run: |
           rm -f /tmp/pf-debug.txt
