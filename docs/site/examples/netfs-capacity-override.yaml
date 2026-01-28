@@ -1,0 +1,13 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: csi-capacity-demo
+provisioner: csi.example.com
+parameters:
+  capacity: 10Gi
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: topology.kubernetes.io/zone
+        operator: In
+        values:
+          - zone-a
