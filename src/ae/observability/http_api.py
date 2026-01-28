@@ -3637,7 +3637,35 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
       .row.stretch { align-items: stretch; flex-wrap: nowrap; overflow-x: hidden; }
       .row.stretch::-webkit-scrollbar { height:0; }
-      .card { border:1px solid #8884; border-radius:8px; padding:8px 10px; min-width:0; max-width:100%; overflow:hidden; }
+      .card {
+        border:1px solid #8884;
+        border-radius:8px;
+        padding:8px 10px;
+        min-width:0;
+        max-width:100%;
+        overflow:hidden;
+        position: relative;
+        background-color: rgba(7, 10, 14, 0.18);
+        background-image: linear-gradient(135deg, rgba(7, 10, 14, 0.35), rgba(7, 10, 14, 0.55));
+        background-size: 100% 100%;
+        background-position: center;
+        background-repeat: no-repeat;
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+      }
+      .card::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background-image: url('/static/dash-assets/page-background-3840x2160.png');
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+        opacity: 0.12;
+        filter: saturate(0.28) brightness(0.5);
+        pointer-events: none;
+      }
+      .card > * { position: relative; z-index: 1; }
       .card table { display:block; overflow:auto; white-space: nowrap; scrollbar-width: none; -ms-overflow-style: none; }
       .card table::-webkit-scrollbar { width:0; height:0; }
       .card pre { overflow:auto; }
