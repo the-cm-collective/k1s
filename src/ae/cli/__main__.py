@@ -2772,6 +2772,11 @@ def handle_auth(args: argparse.Namespace) -> int:
             _read_env_file_var(controller_env, "AE_API_ADMIN_TOKEN"),
             os.getenv("AE_API_ADMIN_TOKEN"),
         )
+        labs_token = pick(
+            _read_env_file_var(apishim_env, "AE_LABS_TOKEN"),
+            _read_env_file_var(controller_env, "AE_LABS_TOKEN"),
+            os.getenv("AE_LABS_TOKEN"),
+        )
         scaler_token = pick(
             _read_env_file_var(controller_env, "AE_API_SCALER_TOKEN"),
             os.getenv("AE_API_SCALER_TOKEN"),
@@ -2813,6 +2818,8 @@ def handle_auth(args: argparse.Namespace) -> int:
             lines.append(f"export AE_APISHIM_SESSION_SECRET={apishim_secret}")
         if admin_token:
             lines.append(f"export AE_API_ADMIN_TOKEN={admin_token}")
+        if labs_token:
+            lines.append(f"export AE_LABS_TOKEN={labs_token}")
         if scaler_token:
             lines.append(f"export AE_API_SCALER_TOKEN={scaler_token}")
         if read_token:
@@ -3767,7 +3774,7 @@ def handle_shell(args: argparse.Namespace, store: SQLiteStateStore, runtime: Run
     if cmd and cmd[0] == "--":
         cmd = cmd[1:]
     if not cmd:
-        cmd = ["bash"]
+        cmd = ["sh"]
 
     exec_args = argparse.Namespace(**vars(args))
     exec_args.cmd = cmd
