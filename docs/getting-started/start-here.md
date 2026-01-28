@@ -179,6 +179,7 @@ Docs, labs, and playground
 
 Demo workflows
 - `make demo`: run the playground labs demo (`--labs --labs-token`; podman backend, plaintext secrets allowed).
+- Demo note: `AE_REGISTER_LOCAL_NODE=1` is set by default in demos/labs so the controller registers a local node for scheduling; unset to require explicit node registration.
 - `make demo-help`: show demo script help.
 - `make demo-down`: tear down demo stacks.
 - `make demo-hardened`: run hardened demo flow.
