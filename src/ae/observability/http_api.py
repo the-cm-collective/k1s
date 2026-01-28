@@ -5500,8 +5500,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         var hexScale = W < 520 ? 0.6 : (narrow ? 0.68 : 0.82);
         var hexW = baseHexW * hexScale;
         var hexH = baseHexH * hexScale;
-        var labelGap = hexH * 0.12;
-        var labelLift = hexH * 0.08;
+        var labelGap = hexH * 0.14;
+        var labelLift = hexH * 0.11;
+        var labelPadX = Math.max(10, hexW * 0.14);
 
         var nodes = [];
         var nodeById = {};
@@ -5513,8 +5514,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var n={id:id,label:label,type:type,x:x,y:y,meta:meta||{}};
           nodes.push(n); nodeById[id]=n; return n;
         }
-        function addLabel(id, text, x, y, color, textColor){
-          labelNodes.push({id:id, text:text, x:x, y:y, color:color, textColor:textColor});
+        function addLabel(id, text, x, y, color, textColor, anchor){
+          labelNodes.push({id:id, text:text, x:x, y:y, color:color, textColor:textColor, anchor:anchor});
         }
         function link(a,b, cls, meta){ links.push({a:a,b:b,cls:cls||'',meta:meta||{}}); }
 
@@ -5581,7 +5582,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         var systemCenter = {x: W*0.22, y: 150};
         var leftX = Math.max(padX + hexW*1.4, W*0.24);
         var rightX = Math.min(W - padX - hexW*1.4, W*0.76);
-        var nsRowY = systemCenter.y + hexH * 2.05;
+        var nsRowY = systemCenter.y + hexH * 2.2;
 
         if (narrow){
           hostCenter = {x: W*0.5, y: 70};
@@ -5606,7 +5607,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           sysLabelX = (nodeById.dns.x + nodeById.ingress.x) / 2;
           sysLabelY = nodeById.dns.y - hexH * 0.5 - labelGap - labelLift;
         }
-        addLabel('label:system', 'system', sysLabelX, sysLabelY, '#e5e7eb', '#e2e8f0');
+        addLabel('label:system', 'system', sysLabelX, sysLabelY, '#e5e7eb', '#e2e8f0', 'middle');
 
         var apps = (statuses||[]).slice();
         var byNs = {};
@@ -5631,15 +5632,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           });
         } else {
           if (nsOrder.length > 0) {
-            var nsClusterGapX = Math.max(hexW * 2.5, 220);
-            var nsClusterGapY = hexH * 0.9;
-            var defaultX = clamp(hostCenter.x - nsClusterGapX * 0.45, padX + hexW, W - padX - hexW);
-            var defaultY = nsRowY + nsClusterGapY * 0.8;
+            var nsClusterGapX = Math.max(hexW * 3.2, 260);
+            var nsClusterGapY = hexH * 1.05;
+            var defaultX = clamp(hostCenter.x - nsClusterGapX * 0.55, padX + hexW, W - padX - hexW);
+            var defaultY = nsRowY + nsClusterGapY * 0.85;
             nsCenters[nsOrder[0]] = {x: defaultX, y: defaultY};
           }
           if (nsOrder.length > 1) {
-            var demoX = clamp(hostCenter.x + Math.max(hexW * 2.6, 230), padX + hexW, rightX);
-            var demoY = nsRowY - hexH * 0.15;
+            var demoX = clamp(hostCenter.x + Math.max(hexW * 3.0, 260), padX + hexW, rightX);
+            var demoY = nsRowY - hexH * 0.1;
             nsCenters[nsOrder[1]] = {x: demoX, y: demoY};
           }
           if (nsOrder.length > 2) {
@@ -5661,6 +5662,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           if (!list.length) return;
           var center = nsCenters[ns] || {x:leftX, y:nsRowY};
           var offsets = clusterOffsets(list.length);
+          var rowCount = 1;
+          offsets.forEach(function(off){
+            if (typeof off.row === 'number') rowCount = Math.max(rowCount, off.row + 1);
+          });
           var minX = null, maxX = null, minY = null;
           list.forEach(function(entry, idx){
             var s = entry.status;
@@ -5669,6 +5674,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             var row = (off.row != null) ? off.row : (off.y < 0 ? 0 : 1);
             var col = (off.col != null) ? off.col : (off.x < 0 ? 0 : 1);
             var faceShift = 0;
+            if (rowCount === 1 && col === 0) {
+              faceShift = 1;
+            }
             if (list.length === 4) {
               if (row === 0 && col === 0) faceShift = 2;
               else if ((row === 0 && col === 1) || (row === 1 && col === 0)) faceShift = 1;
@@ -5684,7 +5692,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
               clusterCenter: center,
               row: row,
               col: col,
-              faceShift: faceShift
+              faceShift: faceShift,
+              clusterRows: rowCount
             });
             minX = (minX==null) ? node.x : Math.min(minX, node.x);
             maxX = (maxX==null) ? node.x : Math.max(maxX, node.x);
@@ -5692,11 +5701,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             appNodes.push(node);
           });
           var c = namespaceColors(ns);
-          var labelX = (minX != null && maxX != null) ? (minX + maxX) / 2 : center.x;
+          var labelX = (minX != null) ? (minX - labelPadX) : center.x;
           var labelY = (minY != null)
             ? (minY - hexH * 0.5 - labelGap - labelLift)
             : (center.y - hexH*0.78 - labelGap - labelLift);
-          addLabel('label:'+ns, ns, labelX, labelY, c.color, '#e2e8f0');
+          addLabel('label:'+ns, ns, labelX, labelY, c.color, '#e2e8f0', 'end');
         });
 
         var faceDirs = [
@@ -5737,40 +5746,63 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           }
           return false;
         }
-        appNodes.forEach(function(n){
-          if (!n.meta || !n.meta.clusterCenter) return;
-          var center = n.meta.clusterCenter;
-          var dx = n.x - center.x;
-          var dy = n.y - center.y;
-          var biasY = hexH * 0.85;
-          var targetX = dx * 0.7;
-          var targetY = dy + biasY;
+        function apexPoint(n){
+          var rows = (n.meta && n.meta.clusterRows) ? n.meta.clusterRows : 1;
+          var rowIndex = (n.meta && typeof n.meta.row === 'number') ? n.meta.row : 0;
+          var bottom = (rows > 1 && (rowIndex % 2) === 1);
+          var dy = bottom ? (hexH * 0.5) : (-hexH * 0.5);
+          var approach = {x:0, y: bottom ? -1 : 1};
+          return {point:{x:n.x, y:n.y + dy}, dir:approach};
+        }
+        function neighborNodes(n){
+          if (n.type === 'app') {
+            return appNodes.filter(function(o){ return o !== n && o.meta && n.meta && o.meta.ns === n.meta.ns; });
+          }
+          if (n.type === 'system') {
+            return sysIds.map(function(id){ return nodeById[id]; }).filter(function(o){ return o && o !== n; });
+          }
+          return [];
+        }
+        function faceAnchor(n, target, shift, neighbors){
+          var vx = target.x - n.x;
+          var vy = target.y - n.y;
           var baseIndex = 0;
           var bestScore = -1e9;
           for (var i=0;i<faceDirs.length;i++){
             var d = faceDirs[i];
-            var score = d.x * targetX + d.y * targetY;
+            var score = d.x * vx + d.y * vy;
             if (score > bestScore) { bestScore = score; baseIndex = i; }
           }
-          var shift = (n.meta && n.meta.faceShift) ? n.meta.faceShift : 0;
-          var startIndex = (baseIndex + shift) % faceDirs.length;
-          var neighbors = appNodes.filter(function(o){ return o !== n && o.meta && o.meta.ns === n.meta.ns; });
-          var dirX = faceDirs[startIndex].x;
-          var dirY = faceDirs[startIndex].y;
-          var startDist = hexH * 0.525;
-          var traceLen = hexH * 0.525;
-          for (var step=0; step<faceDirs.length; step++){
-            var idx = (startIndex + step) % faceDirs.length;
-            var ddir = faceDirs[idx];
-            var sX = n.x + ddir.x * startDist;
-            var sY = n.y + ddir.y * startDist;
-            var eX = n.x + ddir.x * (startDist + traceLen);
-            var eY = n.y + ddir.y * (startDist + traceLen);
-            if (!isFaceBlocked({x:sX,y:sY}, {x:eX,y:eY}, n, neighbors)){
-              dirX = ddir.x; dirY = ddir.y;
-              break;
+          var startIndex = (baseIndex + (shift || 0) + faceDirs.length) % faceDirs.length;
+          var faceDist = hexH * 0.52;
+          var stub = hexH * 0.24;
+          var dir = faceDirs[startIndex];
+          if (neighbors && neighbors.length){
+            for (var step=0; step<faceDirs.length; step++){
+              var idx = (startIndex + step) % faceDirs.length;
+              var ddir = faceDirs[idx];
+              var sX = n.x + ddir.x * faceDist;
+              var sY = n.y + ddir.y * faceDist;
+              var eX = n.x + ddir.x * (faceDist + stub);
+              var eY = n.y + ddir.y * (faceDist + stub);
+              if (!isFaceBlocked({x:sX,y:sY}, {x:eX,y:eY}, n, neighbors)){
+                dir = ddir;
+                break;
+              }
             }
           }
+          return {point:{x:n.x + dir.x * faceDist, y:n.y + dir.y * faceDist}, dir:dir};
+        }
+        appNodes.forEach(function(n){
+          if (!n.meta || !n.meta.clusterCenter) return;
+          var rows = (n.meta && n.meta.clusterRows) ? n.meta.clusterRows : 1;
+          var rowIndex = (n.meta && typeof n.meta.row === 'number') ? n.meta.row : 0;
+          var rowKind = (rows === 1) ? 'single' : (((rowIndex % 2) === 0) ? 'top' : 'bottom');
+          var startIndex = (rowKind === 'top') ? 1 : 5;
+          var dirX = faceDirs[startIndex].x;
+          var dirY = faceDirs[startIndex].y;
+          var startDist = hexH * 0.525 * 0.9;
+          var traceLen = hexH * 0.525 * 0.9;
           var startX = n.x + dirX * startDist;
           var startY = n.y + dirY * startDist;
           var endX = n.x + dirX * (startDist + traceLen);
@@ -5782,7 +5814,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         });
 
         var hasIngress = !!(sys.ingress && (sys.ingress.sites||[]).length);
-        link('host','controller','flow');
+        link('host','controller','flow', {special:'host-flow'});
         if (hasIngress) link('dns','ingress','flow');
         link('controller','runtime','flow');
         if (hasIngress) link('controller','ingress','flow');
@@ -5802,25 +5834,103 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         function drawLink(L){
           var a = nodeById[L.a], b = nodeById[L.b];
           if(!a||!b) return;
-          var start = (L.meta && L.meta.start) ? L.meta.start : {x:a.x, y:a.y};
-          var end = (L.meta && L.meta.end) ? L.meta.end : {x:b.x, y:b.y};
+          var start = {x:a.x, y:a.y};
+          var end = {x:b.x, y:b.y};
+          var startDir = null;
+          var endDir = null;
           var points = [];
           var isTrace = (L.cls||'').indexOf('trace') !== -1;
-          if (!isTrace && a.type !== 'pod' && b.type !== 'pod') {
-            var gap = Math.max(12, Math.min(20, hexW * 0.24));
-            var vx = end.x - start.x;
-            var vy = end.y - start.y;
-            var dist = Math.sqrt(vx*vx + vy*vy) || 1;
-            var ux = vx / dist;
-            var uy = vy / dist;
-            start = {x: start.x + ux * gap, y: start.y + uy * gap};
-            end = {x: end.x - ux * gap, y: end.y - uy * gap};
+          if (isTrace && L.meta && L.meta.start && L.meta.end) {
+            start = L.meta.start;
+            end = L.meta.end;
+          }
+          if (!isTrace) {
+            if (L.meta && L.meta.special === 'host-flow') {
+              start = {x:a.x, y:a.y + hexH * 0.5};
+              var ingress = nodeById['ingress'];
+              var runtime = nodeById['runtime'];
+              if (ingress && runtime) {
+                end = {
+                  x: Math.max(ingress.x, runtime.x) + hexW * 0.5,
+                  y: (ingress.y + runtime.y) / 2
+                };
+              } else {
+                end = {x: systemCenter.x + hexW * 0.5, y: systemCenter.y};
+              }
+              startDir = {x:0, y:1};
+              var hvx = start.x - end.x;
+              var hvy = start.y - end.y;
+              var hlen = Math.sqrt(hvx*hvx + hvy*hvy) || 1;
+              endDir = {x: hvx / hlen, y: hvy / hlen};
+            } else {
+              var aShift = (a.meta && a.meta.faceShift) ? a.meta.faceShift : 0;
+              var aAnchor = faceAnchor(a, b, aShift, neighborNodes(a));
+              start = aAnchor.point;
+              startDir = aAnchor.dir;
+              if (b.type === 'app') {
+                var apex = apexPoint(b);
+                var endGap = Math.max(6, hexH * 0.08);
+                endDir = apex.dir;
+                end = {
+                  x: apex.point.x - endDir.x * endGap,
+                  y: apex.point.y - endDir.y * endGap
+                };
+              } else {
+                var bShift = (b.meta && b.meta.faceShift) ? b.meta.faceShift : 0;
+                var bAnchor = faceAnchor(b, a, bShift, neighborNodes(b));
+                end = bAnchor.point;
+                endDir = bAnchor.dir;
+              }
+            }
           }
           if (graphPathMode === 'straight' || isTrace){
             points = [[start.x, start.y], [end.x, end.y]];
           } else {
-            var midY = start.y + (end.y - start.y)/2;
-            points = [[start.x, start.y], [start.x, midY], [end.x, midY], [end.x, end.y]];
+            var stub = hexH * 0.28;
+            var sdx = startDir ? startDir.x : 0;
+            var sdy = startDir ? startDir.y : 0;
+            var edx = endDir ? endDir.x : 0;
+            var edy = endDir ? endDir.y : 0;
+            var s1 = {x: start.x + sdx * stub, y: start.y + sdy * stub};
+            var e1 = {x: end.x - edx * stub, y: end.y - edy * stub};
+            var midA = {x: e1.x, y: s1.y};
+            var midB = {x: s1.x, y: e1.y};
+            var ptsA = [[start.x, start.y], [s1.x, s1.y], [midA.x, midA.y], [e1.x, e1.y], [end.x, end.y]];
+            var ptsB = [[start.x, start.y], [s1.x, s1.y], [midB.x, midB.y], [e1.x, e1.y], [end.x, end.y]];
+            var obstacles = nodes.filter(function(n){ return n.type !== 'pod' && n.id !== a.id && n.id !== b.id; });
+            var thresh = (hexH * 0.62) * (hexH * 0.62);
+            function pathPenalty(pts){
+              var hits = 0;
+              for (var si=0; si<pts.length-1; si++){
+                var ax = pts[si][0], ay = pts[si][1];
+                var bx = pts[si+1][0], by = pts[si+1][1];
+                for (var oi=0; oi<obstacles.length; oi++){
+                  var o = obstacles[oi];
+                  var distSq = segmentDistanceSq(ax, ay, bx, by, o.x, o.y);
+                  if (distSq < thresh) hits += 1;
+                }
+              }
+              return hits;
+            }
+            var scoreA = pathPenalty(ptsA);
+            var scoreB = pathPenalty(ptsB);
+            if (scoreB < scoreA) {
+              points = ptsB;
+            } else if (scoreA < scoreB) {
+              points = ptsA;
+            } else {
+              var dxA = Math.abs(s1.x - e1.x);
+              var dyA = Math.abs(s1.y - e1.y);
+              points = (dxA > dyA) ? ptsA : ptsB;
+            }
+            var cleaned = [];
+            for (var pi=0; pi<points.length; pi++){
+              var prev = cleaned.length ? cleaned[cleaned.length-1] : null;
+              if (!prev || prev[0] !== points[pi][0] || prev[1] !== points[pi][1]) {
+                cleaned.push(points[pi]);
+              }
+            }
+            points = cleaned;
           }
           var d = '';
           if (graphPathMode === 'straight' || isTrace){
@@ -6009,7 +6119,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var text = document.createElementNS('http://www.w3.org/2000/svg','text');
           var rowShift = 0;
           if (n.type === 'app' && n.meta && typeof n.meta.row === 'number') {
-            rowShift = (n.meta.row % 2 === 0) ? -6 : 6;
+            rowShift = (n.meta.row % 2 === 0) ? -10 : 10;
           }
           text.setAttribute('x','0'); text.setAttribute('y', String(8 + rowShift));
           text.setAttribute('text-anchor','middle');
@@ -6022,7 +6132,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           gInner.appendChild(text);
           gNodes.appendChild(g);
 
-          var labelMax = hexW * 1.08;
+          var labelMax = hexW * 1.62;
           var labelInfo = fitTextToWidth(text, n.label, labelMax);
           try {
             var bb = text.getBBox();
@@ -6100,7 +6210,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var t = document.createElementNS('http://www.w3.org/2000/svg','text');
           t.setAttribute('x', String(l.x));
           t.setAttribute('y', String(l.y));
-          t.setAttribute('text-anchor','middle');
+          t.setAttribute('text-anchor', l.anchor || 'middle');
           t.setAttribute('font-size','15');
           t.setAttribute('font-weight','700');
           t.setAttribute('fill', l.textColor || '#e2e8f0');
