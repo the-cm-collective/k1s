@@ -34,6 +34,25 @@ stop_by_pattern() {
   fi
 }
 
+apishim_health_code() {
+  # Emit "code|body" for an apishim /healthz probe using the provided token.
+  local port="$1"
+  local token="$2"
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "000|"
+    return 0
+  fi
+  local url="https://127.0.0.1:${port}/healthz"
+  local out
+  out="$(curl -sk -H "Authorization: Bearer ${token}" "${url}" -w "\n%{http_code}" 2>/dev/null || true)"
+  local code="${out##*$'\n'}"
+  local body="${out%$'\n'*}"
+  if [[ -z "${code}" ]]; then
+    code="000"
+  fi
+  echo "${code}|${body}"
+}
+
 start_apishim() {
   if [[ ${LABS_ENABLE:-0} -ne 1 ]]; then
     return 0
@@ -56,6 +75,9 @@ start_apishim() {
   if port_open "127.0.0.1" "${APISHIM_PORT}"; then
     local pid=""
     local restart_reason=""
+    local probe=""
+    local code=""
+    local body=""
     if [[ -f state/apishim.pid ]]; then
       pid=$(cat state/apishim.pid || true)
     fi
@@ -78,12 +100,38 @@ start_apishim() {
       log "Apishim already running on 127.0.0.1:${APISHIM_PORT} (env not readable)."
       return 0
     else
-      log "Apishim already running on 127.0.0.1:${APISHIM_PORT} (no pid file)."
-      return 0
+      # No pid file: probe healthz with current token to avoid mismatched apishim instances.
+      if [[ -n "${AE_APISHIM_TOKEN:-}" ]]; then
+        probe="$(apishim_health_code "${APISHIM_PORT}" "${AE_APISHIM_TOKEN}")"
+        code="${probe%%|*}"
+        body="${probe#*|}"
+        if [[ "${code}" == "200" ]]; then
+          log "Apishim already running on 127.0.0.1:${APISHIM_PORT} (token ok)."
+          return 0
+        fi
+        if [[ "${code}" == "401" || "${code}" == "403" ]]; then
+          if echo "${body}" | grep -q "missing/invalid bearer token"; then
+            restart_reason="token mismatch"
+          else
+            log "Apishim already running on 127.0.0.1:${APISHIM_PORT} (auth ${code}); reusing."
+            return 0
+          fi
+        else
+          log "Apishim already running on 127.0.0.1:${APISHIM_PORT} (status ${code}); reusing."
+          return 0
+        fi
+      else
+        log "Apishim already running on 127.0.0.1:${APISHIM_PORT} (no pid file)."
+        return 0
+      fi
     fi
     if [[ -n "$restart_reason" ]]; then
       log "Apishim already running but ${restart_reason}; restarting."
       stop_apishim
+      if port_open "127.0.0.1" "${APISHIM_PORT}"; then
+        log "Apishim port ${APISHIM_PORT} still in use. Stop other stacks (e.g., labs-aio) or set AE_APISHIM_AUTOSTART=0."
+        return 1
+      fi
     else
       log "Apishim already running on 127.0.0.1:${APISHIM_PORT}"
       return 0

@@ -1,4 +1,4 @@
-.PHONY: install test lint run loop dev-up dev-down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke
+.PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke
 .PHONY: shim-helm-demo
 
 install:
@@ -19,6 +19,9 @@ dev-up:
 
 dev-down:
 	docker compose -f ops/dev/docker-compose.yaml down
+
+down:
+	@bash scripts/stop_all.sh
 
 loop:
 	python -m ae.controller --loop --specs $${AE_SPECS_DIR:-specs} --metrics-port 9108 --watch

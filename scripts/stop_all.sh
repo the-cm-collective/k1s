@@ -52,6 +52,16 @@ if ss -ltnp 2>/dev/null | awk '$4 ~ /:9108$/ {exit 0} END{exit 1}'; then
   for p in $pids; do kill "$p" 2>/dev/null || true; done
 fi
 
+log "Stopping apishim"
+if [[ -f state/apishim.pid ]]; then
+  pid=$(cat state/apishim.pid || true)
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" || true
+  fi
+  rm -f state/apishim.pid || true
+fi
+pkill -f 'python.*-m ae\.apishim' 2>/dev/null || true
+
 log "Stopping dev compose stack (caddy, prometheus)"
 DEV_COMPOSE_FILES=(-f ops/dev/docker-compose.yaml)
 if [[ -f ops/dev/docker-compose.cache.override.yml ]]; then
