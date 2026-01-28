@@ -1,4 +1,4 @@
-"""Best-effort network helper for node agents (Phase 3 overlay plumbing).
+"""Best-effort network helper for node agents (bridge/NAT/WireGuard).
 
 This helper is intentionally minimal and designed for lab/demo use. It configures:
 - A pod bridge device with the node's Pod CIDR (e.g., 10.42.x.1/24)

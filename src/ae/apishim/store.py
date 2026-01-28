@@ -1,4 +1,6 @@
 # ruff: noqa: E501
+"""SQLite/Postgres-backed object store with watch support for the API shim."""
+
 from __future__ import annotations
 
 import json
@@ -157,13 +159,9 @@ class ObjectStore:
             return []
         with self._lock, self._conn.cursor() as cur:  # type: ignore[union-attr]
             cur.execute(
-                """
-                SELECT id, source, grp, ver, res, ns, name, ev_type, rv, payload
-                FROM watch_events
-                WHERE id > %s
-                ORDER BY id
-                LIMIT %s
-                """,
+                resource_loader.load_text(
+                    "sql", "apishim", "select_watch_events_since_pg.sql"
+                ),
                 (last_id, self._outbox_batch),
             )
             rows = cur.fetchall()
@@ -274,13 +272,9 @@ class ObjectStore:
             if self.backend == "sqlite":
                 with self._conn:  # type: ignore[union-attr]
                     self._conn.execute(
-                        """
-                        INSERT INTO objects (grp, ver, res, ns, name, metadata, spec, status, rv, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(grp, ver, res, ns, name)
-                        DO UPDATE SET metadata=excluded.metadata, spec=excluded.spec, status=excluded.status,
-                                      rv=excluded.rv, updated_at=excluded.updated_at
-                        """,
+                        resource_loader.load_text(
+                            "sql", "apishim", "upsert_object_sqlite.sql"
+                        ),
                         (
                             group,
                             version,
@@ -298,13 +292,7 @@ class ObjectStore:
             else:
                 with self._conn.cursor() as cur:  # type: ignore[union-attr]
                     cur.execute(
-                        """
-                        INSERT INTO objects (grp, ver, res, ns, name, metadata, spec, status, rv, created_at, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT(grp, ver, res, ns, name)
-                        DO UPDATE SET metadata=excluded.metadata, spec=excluded.spec, status=excluded.status,
-                                      rv=excluded.rv, updated_at=excluded.updated_at
-                        """,
+                        resource_loader.load_text("sql", "apishim", "upsert_object_pg.sql"),
                         (
                             group,
                             version,
@@ -347,13 +335,9 @@ class ObjectStore:
             if self.backend == "sqlite":
                 with self._conn:  # type: ignore[union-attr]
                     self._conn.execute(
-                        """
-                        INSERT INTO objects (grp, ver, res, ns, name, metadata, spec, status, rv, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(grp, ver, res, ns, name)
-                        DO UPDATE SET metadata=excluded.metadata, spec=excluded.spec, status=excluded.status,
-                                      rv=excluded.rv, updated_at=excluded.updated_at
-                        """,
+                        resource_loader.load_text(
+                            "sql", "apishim", "upsert_object_sqlite.sql"
+                        ),
                         (
                             group,
                             version,
@@ -371,13 +355,7 @@ class ObjectStore:
             else:
                 with self._conn.cursor() as cur:  # type: ignore[union-attr]
                     cur.execute(
-                        """
-                        INSERT INTO objects (grp, ver, res, ns, name, metadata, spec, status, rv, created_at, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT(grp, ver, res, ns, name)
-                        DO UPDATE SET metadata=excluded.metadata, spec=excluded.spec, status=excluded.status,
-                                      rv=excluded.rv, updated_at=excluded.updated_at
-                        """,
+                        resource_loader.load_text("sql", "apishim", "upsert_object_pg.sql"),
                         (
                             group,
                             version,
@@ -403,17 +381,13 @@ class ObjectStore:
         with self._lock:
             if self.backend == "sqlite":
                 row = self._conn.execute(
-                    """
-                    SELECT * FROM objects WHERE grp=? AND ver=? AND res=? AND ns=? AND name=?
-                    """,
+                    resource_loader.load_text("sql", "apishim", "select_object_sqlite.sql"),
                     (group, version, resource, ns_val, name),
                 ).fetchone()  # type: ignore[union-attr]
             else:
                 with self._conn.cursor() as cur:  # type: ignore[union-attr]
                     cur.execute(
-                        """
-                        SELECT * FROM objects WHERE grp=%s AND ver=%s AND res=%s AND ns=%s AND name=%s
-                        """,
+                        resource_loader.load_text("sql", "apishim", "select_object_pg.sql"),
                         (group, version, resource, ns_val, name),
                     )
                     row = cur.fetchone()
@@ -438,20 +412,18 @@ class ObjectStore:
         with self._lock:
             if self.backend == "sqlite":
                 cur = self._conn.execute(
-                    """
-                    SELECT * FROM objects WHERE grp=? AND ver=? AND res=? AND ns=?
-                    ORDER BY name
-                    """,
+                    resource_loader.load_text(
+                        "sql", "apishim", "select_objects_by_ns_sqlite.sql"
+                    ),
                     (group, version, resource, ns_val),
                 )  # type: ignore[union-attr]
                 rows = cur.fetchall()
             else:
                 with self._conn.cursor() as cur:  # type: ignore[union-attr]
                     cur.execute(
-                        """
-                        SELECT * FROM objects WHERE grp=%s AND ver=%s AND res=%s AND ns=%s
-                        ORDER BY name
-                        """,
+                        resource_loader.load_text(
+                            "sql", "apishim", "select_objects_by_ns_pg.sql"
+                        ),
                         (group, version, resource, ns_val),
                     )
                     rows = cur.fetchall()
@@ -477,20 +449,18 @@ class ObjectStore:
             with self._lock:
                 if self.backend == "sqlite":
                     cur = self._conn.execute(
-                        """
-                        SELECT * FROM objects WHERE grp=? AND ver=? AND res=?
-                        ORDER BY ns, name
-                        """,
+                        resource_loader.load_text(
+                            "sql", "apishim", "select_objects_all_sqlite.sql"
+                        ),
                         (group, version, resource),
                     )  # type: ignore[union-attr]
                     rows = cur.fetchall()
                 else:
                     with self._conn.cursor() as cur:  # type: ignore[union-attr]
                         cur.execute(
-                            """
-                            SELECT * FROM objects WHERE grp=%s AND ver=%s AND res=%s
-                            ORDER BY ns, name
-                            """,
+                            resource_loader.load_text(
+                                "sql", "apishim", "select_objects_all_pg.sql"
+                            ),
                             (group, version, resource),
                         )
                         rows = cur.fetchall()
@@ -645,11 +615,9 @@ class ObjectStore:
         try:
             with self._lock, self._conn.cursor() as cur:  # type: ignore[union-attr]
                 cur.execute(
-                    """
-                    INSERT INTO watch_events
-                      (source, grp, ver, res, ns, name, ev_type, rv, payload, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
+                    resource_loader.load_text(
+                        "sql", "apishim", "insert_watch_events_pg.sql"
+                    ),
                     (
                         self._outbox_source_id,
                         obj.group,

@@ -1,8 +1,7 @@
 """Remote runtime shim that delegates RuntimeAdapter calls to an HTTP agent.
 
-This is a minimal skeleton to keep controller/runtime interfaces stable while
-we flesh out a real gRPC/HTTP agent. When `agent_url` is None, it falls back to
-the provided `local_runtime` to preserve single-node behavior.
+When `agent_url` is None, it falls back to the provided `local_runtime` to
+preserve single-node behavior.
 """
 
 from __future__ import annotations

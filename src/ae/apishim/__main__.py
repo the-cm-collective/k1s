@@ -1,3 +1,5 @@
+"""CLI entry point for the Kubernetes API shim (serve, kubeconfig, migrate)."""
+
 from __future__ import annotations
 
 import argparse
