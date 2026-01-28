@@ -1,5 +1,5 @@
 # ruff: noqa: E501,I001,E402,S110,S112,SIM102,SIM105,SIM108,SIM114,SIM118,UP034,UP038
-"""Reconcile loop skeleton for the application engine."""
+"""Reconcile loop coordinating manifests, runtime operations, and health."""
 
 from __future__ import annotations
 

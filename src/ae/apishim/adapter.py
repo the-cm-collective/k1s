@@ -1,4 +1,6 @@
 # ruff: noqa: E501,S110,S112,SIM105
+"""Shim adapter that reconciles Kubernetes objects into k1s runtime state."""
+
 from __future__ import annotations
 
 import json

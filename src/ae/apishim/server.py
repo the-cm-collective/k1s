@@ -1,4 +1,6 @@
 # ruff: noqa: E501,S105,S110,S112,SIM102,SIM105,SIM108,SIM114,SIM118,SIM300
+"""HTTP server implementing a Kubernetes-compatible API for the shim."""
+
 from __future__ import annotations
 
 import base64

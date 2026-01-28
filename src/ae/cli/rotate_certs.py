@@ -1,3 +1,5 @@
+"""CLI helper to issue node certs and join tokens."""
+
 from __future__ import annotations
 
 import argparse

@@ -1,5 +1,5 @@
 # ruff: noqa: E501,S112,SIM110
-"""Replica placement planner for multi-node scheduling (Phase 4).
+"""Replica placement planner for multi-node scheduling.
 
 The scheduler is intentionally lightweight:
 - Filters nodes by readiness, staleness, cordon, nodeSelector, and taints/tolerations.
