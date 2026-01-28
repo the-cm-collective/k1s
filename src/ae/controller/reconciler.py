@@ -9,6 +9,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import socket
 from typing import Any
 
 from ae.controller.health import HealthManager, HealthReport, ReplicaHealth
@@ -25,6 +26,11 @@ def _record_event_metric_safe(name: str) -> None:
         record_event_metric(name)
     except Exception:
         pass
+
+
+def _truthy_env(name: str, default: str = "0") -> bool:
+    raw = os.getenv(name, default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 from .state import SQLiteStateStore
@@ -99,6 +105,7 @@ class Reconciler:
         self._apishim_store = None
         self._apishim_store_checked = False
         self._default_sc_name: str | None = None
+        self._register_local_node = _truthy_env("AE_REGISTER_LOCAL_NODE")
 
     def _runtime_for_agent(self, agent_url: str | None) -> RuntimeAdapter:
         """Return a runtime bound to the target agent URL (cached)."""
@@ -128,6 +135,37 @@ class Reconciler:
             except Exception:
                 continue
         return 127
+
+    def _runtime_backend_name(self) -> str:
+        env_backend = os.getenv("AE_RUNTIME_BACKEND")
+        if env_backend:
+            return str(env_backend).strip().lower()
+        return self._runtime.__class__.__name__.lower()
+
+    def _ensure_local_node(self) -> None:
+        if not self._register_local_node:
+            return
+        try:
+            if self._state_store.list_nodes():
+                return
+        except Exception:
+            pass
+        try:
+            node_id = os.getenv("AE_NODE_ID") or socket.gethostname()
+            name = os.getenv("AE_NODE_NAME") or node_id
+            self._state_store.upsert_node(
+                node_id,
+                name=name,
+                labels={"role": "controller"},
+                taints=[],
+                backend=self._runtime_backend_name(),
+                endpoint=None,
+                pod_cidr=None,
+                wg_pubkey=None,
+            )
+            self._state_store.record_heartbeat(node_id, "Ready")
+        except Exception:
+            pass
 
     def _ensure_on_runtime(
         self,
@@ -294,6 +332,7 @@ class Reconciler:
                 revision_status=revision_status,
             )
 
+        self._ensure_local_node()
         import time as _t
 
         now_ts = float(_t.time())

@@ -265,6 +265,8 @@ NO_CONTROLLER=0
 API_PORT=${API_PORT:-9108}
 # Runtime backend (default to podman/OCI if not set)
 AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-podman}
+# Convenience: register a local node for demo/labs unless explicitly disabled
+AE_REGISTER_LOCAL_NODE=${AE_REGISTER_LOCAL_NODE:-1}
 AE_USE_REGISTRY_CACHE=${AE_USE_REGISTRY_CACHE:-1}
 NO_SUPERVISOR=0
 DEBUG_ATTACH=0
@@ -1136,6 +1138,7 @@ fi
 # Force AE_DEMO_MODE=1 for demos regardless of a pre-set env
 export AE_DEMO_MODE=1
 export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
+export AE_REGISTER_LOCAL_NODE=${AE_REGISTER_LOCAL_NODE}
 # Prefer crun for Podman/OCI demos when available, unless user overrode
 if [[ "${AE_RUNTIME_BACKEND}" == "podman" || "${AE_RUNTIME_BACKEND}" == "oci" ]]; then
   if [[ -z "${AE_OCI_RUNTIME:-}" ]]; then
@@ -1269,6 +1272,7 @@ export SOPS_AGE_KEY_FILE=${SOPS_AGE_KEY_FILE:-}
 # Demo marker for local tooling.
 export AE_DEMO_MODE=1
 export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
+export AE_REGISTER_LOCAL_NODE=${AE_REGISTER_LOCAL_NODE}
 export AE_OCI_RUNTIME=${AE_OCI_RUNTIME:-}
 export API_PORT=${API_PORT}
 export AE_SPECS_DIR=${DEMO_SPECS_DIR}
