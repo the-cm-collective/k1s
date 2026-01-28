@@ -825,6 +825,7 @@ kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code
 <p>Demo workflows</p>
 <ul>
 <li><code>make demo</code>: run the playground labs demo (<code>--labs --labs-token</code>; podman backend, plaintext secrets allowed).</li>
+<li>Demo note: <code>AE_REGISTER_LOCAL_NODE=1</code> is set by default in demos/labs so the controller registers a local node for scheduling; unset to require explicit node registration.</li>
 <li><code>make demo-help</code>: show demo script help.</li>
 <li><code>make demo-down</code>: tear down demo stacks.</li>
 <li><code>make demo-hardened</code>: run hardened demo flow.</li>
