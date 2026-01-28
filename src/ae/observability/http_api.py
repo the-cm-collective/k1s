@@ -3646,7 +3646,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         overflow:hidden;
         position: relative;
         background-color: rgba(7, 10, 14, 0.18);
-        background-image: linear-gradient(135deg, rgba(7, 10, 14, 0.35), rgba(7, 10, 14, 0.55));
+        background-image: linear-gradient(135deg, rgba(25, 30, 36, 0.35), rgba(25, 30, 36, 0.45));
         background-size: 100% 100%;
         background-position: center;
         background-repeat: no-repeat;
@@ -3725,12 +3725,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         height:420px;
         margin-top:8px;
         border-radius:12px;
-        border:1px solid rgba(148,163,184,0.35);
-        background-color: rgba(2,6,23,0.9);
-        background-image: url('/static/dash-assets/system-graph-background-1920x1080.png');
-        background-position: center;
-        background-size: cover;
-        background-repeat: no-repeat;
+        border:1px solid rgba(148,163,184,0.25);
+        background-color: rgba(2,6,23,0.4);
         overflow:hidden;
         box-shadow: inset 0 0 0 1px rgba(15,23,42,0.6), 0 12px 30px rgba(2,6,23,0.35);
       }
@@ -3738,12 +3734,25 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         content:"";
         position:absolute;
         inset:0;
-        background:
-          radial-gradient(circle at 15% 20%, rgba(30,41,59,0.18), rgba(2,6,23,0.7) 65%),
-          linear-gradient(135deg, rgba(2,6,23,0.18), rgba(15,23,42,0.55));
+        background-image: url('/static/dash-assets/system-graph-background-1920x1080.png');
+        background-position: center;
+        background-size: cover;
+        background-repeat: no-repeat;
+        opacity: 0.45;
+        z-index: 0;
         pointer-events:none;
       }
-      #sys-graph { position:relative; z-index:1; }
+      .graph-surface::after {
+        content:"";
+        position:absolute;
+        inset:0;
+        background:
+          radial-gradient(circle at 15% 20%, rgba(30,41,59,0.10), rgba(2,6,23,0.35) 65%),
+          linear-gradient(135deg, rgba(2,6,23,0.10), rgba(15,23,42,0.30));
+        z-index: 1;
+        pointer-events:none;
+      }
+      #sys-graph { position:relative; z-index:2; }
       h2 { font-size:14px; margin: 14px 4px 6px; opacity:0.9; }
       .divider { border-top:1px solid #8884; margin:16px 0; }
       .modal-overlay { position:fixed; inset:0; background:rgba(2,6,23,0.65); display:flex; align-items:center; justify-content:center; z-index: 90; }
@@ -3905,8 +3914,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             <div id=\"graph-legend\" style=\"position:absolute; right:8px; top:8px; background:rgba(17,24,39,0.82); color:#e5e7eb; padding:6px 8px; border-radius:6px; border:1px solid #334155; backdrop-filter: blur(2px); font-size:12px; z-index:2;\">
               <div style=\"display:flex; gap:10px; align-items:center; flex-wrap:wrap;\">
                 <span><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\"><path d=\"M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z\" fill=\"#1f2937\" stroke=\"#94a3b8\" stroke-width=\"1.6\"/></svg> Host</span>
-                <span><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\"><path d=\"M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z\" fill=\"#f8fafc\" stroke=\"#cbd5e1\" stroke-width=\"1.6\"/></svg> System</span>
-                <span><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\"><path d=\"M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z\" fill=\"#0f172a\" stroke=\"#3b82f6\" stroke-width=\"1.6\"/></svg> Namespace</span>
+                <span><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\"><path d=\"M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z\" fill=\"#f8fafc\" fill-opacity=\"0.2\" stroke=\"#e5e7eb\" stroke-opacity=\"0.25\" stroke-width=\"1.6\"/></svg> System</span>
+                <span id=\"legend-namespace\" title=\"Namespace: default\" style=\"--ns-color:#3b82f6;\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\"><path id=\"legend-namespace-hex\" d=\"M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z\" fill=\"#0f172a\" stroke=\"var(--ns-color)\" stroke-width=\"1.6\"/></svg> Namespace (current)</span>
                 <span><svg width=\"14\" height=\"14\"><circle cx=\"7\" cy=\"7\" r=\"5\" fill=\"#dcfce7\" stroke=\"#16a34a\"/></svg> Pod ready</span>
                 <span><svg width=\"14\" height=\"14\"><circle cx=\"7\" cy=\"7\" r=\"5\" fill=\"#fef3c7\" stroke=\"#f59e0b\"/></svg> Pod pending</span>
                 <span><svg width=\"30\" height=\"8\"><path d=\"M1 4 L22 4\" stroke=\"#9ca3af\" stroke-width=\"1.5\" stroke-dasharray=\"6 6\"/><polygon points=\"22,1 29,4 22,7\" fill=\"#9ca3af\"/></svg> Flow</span>
@@ -4238,6 +4247,19 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         return '<span class="ns-pill" style="--ns-color:' + c.color + '; --ns-tint:' + c.tint + ';">' + escapeHtml(ns) + '</span>';
       }
 
+      function updateLegendNamespace(ns){
+        try {
+          var legend = document.getElementById('legend-namespace');
+          if (!legend) return;
+          var name = (ns && String(ns)) ? String(ns) : '';
+          var color = name ? namespaceColors(name).color : '#64748b';
+          legend.style.setProperty('--ns-color', color);
+          legend.title = 'Namespace: ' + (name || '-');
+          var hex = document.getElementById('legend-namespace-hex');
+          if (hex) { hex.setAttribute('stroke', color); }
+        } catch(e){}
+      }
+
       function fetchJSON(path){
         return fetch(path, {headers: authHeaders()}).then(function(r){
           if(!r.ok) return r.text().then(function(t){
@@ -4366,6 +4388,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         currentDetail = null;
         try { document.getElementById('d-app').textContent = '-'; } catch(e){}
         try { document.getElementById('d-namespace').textContent = '-'; } catch(e){}
+        try { updateLegendNamespace(null); } catch(e){}
         try { document.getElementById('d-image').textContent = '-'; } catch(e){}
         try { document.getElementById('d-ingress').textContent = '-'; } catch(e){}
         try { document.getElementById('d-replicas').textContent = '-'; } catch(e){}
@@ -4482,6 +4505,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             var nsInfo = splitAppName(s.app_name);
             var nsEl = document.getElementById('d-namespace');
             if (nsEl) { nsEl.innerHTML = renderNamespacePill(nsInfo.namespace); }
+            updateLegendNamespace(nsInfo.namespace);
           } catch(e){}
           document.getElementById('d-image').textContent = s.image || '-';
           var inh = (s.ingress_host || '-') + (s.ingress_path || '');
@@ -4622,6 +4646,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
       function selectApp(name){
         current = name;
+        try { updateLegendNamespace(splitAppName(name).namespace); } catch(e){}
         clearLogs();
         updateLogsHTMX();
         updateProbeHistoryHTMX();
@@ -6627,12 +6652,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         function hexTheme(n){
           if (n.type === 'host') {
             return {
-              accent:'rgba(148,163,184,0.7)',
-              shellFill:'rgba(20,22,26,0.92)',
-              innerStroke:'rgba(255,255,255,0.15)',
+              accent:'rgba(148,163,184,0.55)',
+              shellFill:'rgba(20,22,26,0.80)',
+              innerStroke:'rgba(255,255,255,0.10)',
               faceTop:'#2b2f36',
               faceBot:'#15181d',
-              patternStroke:'rgba(255,255,255,0.12)',
+              patternStroke:'rgba(255,255,255,0.10)',
               patternOpacity:0.35,
               label:'#e2e8f0',
               shadowAlpha:0.4
@@ -6640,15 +6665,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           }
           if (n.type === 'system') {
             return {
-              accent:'rgba(229,231,235,0.95)',
-              shellFill:'rgba(248,250,252,0.98)',
-              innerStroke:'rgba(148,163,184,0.6)',
-              faceTop:'#f8fafc',
-              faceBot:'#e2e8f0',
-              patternStroke:'rgba(148,163,184,0.25)',
-              patternOpacity:0.35,
+              accent:'rgba(229,231,235,0.25)',
+              shellFill:'rgba(248,250,252,0.20)',
+              innerStroke:'rgba(148,163,184,0.10)',
+              faceTop:'rgba(248,250,252,0.20)',
+              faceBot:'rgba(203,213,225,0.35)',
+              patternStroke:'rgba(148,163,184,0.10)',
+              patternOpacity:0.12,
               label:'#f8fafc',
-              shadowAlpha:0.25
+              shadowAlpha:0.12
             };
           }
           var c = namespaceColors(n.meta && n.meta.ns ? n.meta.ns : 'default');
@@ -6787,7 +6812,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             lab.setAttribute('width', String(bb.width + 14));
             lab.setAttribute('height', String(bb.height + 10));
             lab.setAttribute('rx','6'); lab.setAttribute('ry','6');
-            lab.setAttribute('fill','rgba(15,23,42,0.55)');
+            lab.setAttribute('fill','rgba(15,23,42,0.45)');
             lab.setAttribute('stroke', t.accent);
             lab.setAttribute('stroke-width','1.1');
             gInner.insertBefore(lab, text);
@@ -6843,11 +6868,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var stopTop = document.createElementNS('http://www.w3.org/2000/svg','stop');
           stopTop.setAttribute('offset','0%');
           stopTop.setAttribute('stop-color', shadeHsl(base, 14));
-          stopTop.setAttribute('stop-opacity','0.8');
+          stopTop.setAttribute('stop-opacity','0.7');
           var stopBot = document.createElementNS('http://www.w3.org/2000/svg','stop');
           stopBot.setAttribute('offset','100%');
           stopBot.setAttribute('stop-color', shadeHsl(base, -6));
-          stopBot.setAttribute('stop-opacity','0.55');
+          stopBot.setAttribute('stop-opacity','0.45');
           grad.appendChild(stopTop);
           grad.appendChild(stopBot);
           defs.appendChild(grad);

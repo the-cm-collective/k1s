@@ -66,6 +66,7 @@ token="${AE_APISHIM_TOKEN:-}"
 read_token="${AE_APISHIM_READ_TOKEN:-}"
 session_secret="${AE_APISHIM_SESSION_SECRET:-}"
 admin_token="${AE_API_ADMIN_TOKEN:-}"
+labs_token="${AE_LABS_TOKEN:-}"
 
 if [[ -z "$token" ]]; then
   token="$(read_env_var "AE_APISHIM_TOKEN" "$ENV_OVERRIDE_FILE" || true)"
@@ -79,6 +80,9 @@ fi
 if [[ -z "$admin_token" ]]; then
   admin_token="$(read_env_var "AE_API_ADMIN_TOKEN" "$ENV_OVERRIDE_FILE" || true)"
 fi
+if [[ -z "$labs_token" ]]; then
+  labs_token="$(read_env_var "AE_LABS_TOKEN" "$ENV_OVERRIDE_FILE" || true)"
+fi
 if [[ -z "$token" ]]; then
   token="$(read_env_var "AE_APISHIM_TOKEN" "$ENV_FILE" || true)"
 fi
@@ -90,6 +94,9 @@ if [[ -z "$session_secret" ]]; then
 fi
 if [[ -z "$admin_token" ]]; then
   admin_token="$(read_env_var "AE_API_ADMIN_TOKEN" "$ENV_FILE" || true)"
+fi
+if [[ -z "$labs_token" ]]; then
+  labs_token="$(read_env_var "AE_LABS_TOKEN" "$ENV_FILE" || true)"
 fi
 
 if ! require_strong "AE_APISHIM_TOKEN" "$token"; then
@@ -104,6 +111,9 @@ fi
 if ! require_strong "AE_API_ADMIN_TOKEN" "$admin_token"; then
   admin_token="$(gen_token)"
 fi
+if [[ -z "$labs_token" ]]; then
+  labs_token="$token"
+fi
 
 mkdir -p "$(dirname "$ENV_FILE")"
 umask 077
@@ -112,6 +122,7 @@ AE_APISHIM_TOKEN=${token}
 AE_APISHIM_READ_TOKEN=${read_token}
 AE_APISHIM_SESSION_SECRET=${session_secret}
 AE_API_ADMIN_TOKEN=${admin_token}
+AE_LABS_TOKEN=${labs_token}
 AE_LABS_HELM_TOKEN=${token}
 EOF
 chmod 600 "$ENV_FILE"
