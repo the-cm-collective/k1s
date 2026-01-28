@@ -5508,6 +5508,27 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         var labelNodes = [];
         var links = [];
         var hexCounter = 0;
+        var labelMeasureCtx = null;
+
+        function measureLabelText(text){
+          if (!labelMeasureCtx) {
+            try {
+              var canvas = document.createElement('canvas');
+              labelMeasureCtx = canvas.getContext('2d');
+              labelMeasureCtx.font = '700 15px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial';
+            } catch(e){ labelMeasureCtx = null; }
+          }
+          var label = String(text || '');
+          if (!labelMeasureCtx) {
+            return {w: label.length * 7.2, h: 18};
+          }
+          try {
+            var metrics = labelMeasureCtx.measureText(label);
+            return {w: metrics.width || (label.length * 7.2), h: 18};
+          } catch(e){
+            return {w: label.length * 7.2, h: 18};
+          }
+        }
 
         function addNode(id, label, type, x, y, meta){
           var n={id:id,label:label,type:type,x:x,y:y,meta:meta||{}};
@@ -5834,6 +5855,291 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         gLinks.innerHTML = '';
         gLabels.innerHTML = '';
 
+        function rectFromNode(n, pad){
+          var px = (hexW * 0.58) + (pad || 0);
+          var py = (hexH * 0.58) + (pad || 0);
+          return {x1:n.x - px, y1:n.y - py, x2:n.x + px, y2:n.y + py, id:n.id, kind:'node'};
+        }
+        function rectFromLabel(l){
+          var m = measureLabelText(l.text);
+          var w = (m.w || 0) + 16;
+          var h = (m.h || 18) + 8;
+          var x = l.x;
+          if (l.anchor === 'end') x -= w;
+          else if (l.anchor === 'middle') x -= w * 0.5;
+          var y = l.y - h * 0.8;
+          var pad = 6;
+          return {x1:x - pad, y1:y - pad, x2:x + w + pad, y2:y + h + pad, kind:'label'};
+        }
+        function pointInRect(x, y, r){
+          return x >= r.x1 && x <= r.x2 && y >= r.y1 && y <= r.y2;
+        }
+        function segmentHitsRect(ax, ay, bx, by, r){
+          if (ax === bx){
+            if (ax < r.x1 || ax > r.x2) return false;
+            var y1 = Math.min(ay, by), y2 = Math.max(ay, by);
+            return !(y2 < r.y1 || y1 > r.y2);
+          }
+          if (ay === by){
+            if (ay < r.y1 || ay > r.y2) return false;
+            var x1 = Math.min(ax, bx), x2 = Math.max(ax, bx);
+            return !(x2 < r.x1 || x1 > r.x2);
+          }
+          var minX = Math.min(ax, bx), maxX = Math.max(ax, bx);
+          var minY = Math.min(ay, by), maxY = Math.max(ay, by);
+          return !(maxX < r.x1 || minX > r.x2 || maxY < r.y1 || minY > r.y2);
+        }
+        function expandRect(r, pad){
+          return {x1:r.x1 - pad, y1:r.y1 - pad, x2:r.x2 + pad, y2:r.y2 + pad, id:r.id, kind:r.kind};
+        }
+        function uniqueSorted(values){
+          var out = [];
+          var seen = {};
+          for (var i=0;i<values.length;i++){
+            var key = values[i].toFixed(2);
+            if (seen[key]) continue;
+            seen[key] = true;
+            out.push(values[i]);
+          }
+          out.sort(function(a,b){ return a-b; });
+          return out;
+        }
+        function buildOrthPath(start, end, obstacles){
+          if (!start || !end) return null;
+          var pad = Math.max(6, hexH * 0.1);
+          var routeObstacles = (obstacles || []).map(function(r){ return expandRect(r, pad); });
+          var xs = [start.x, end.x];
+          var ys = [start.y, end.y];
+          routeObstacles.forEach(function(r){
+            xs.push(r.x1, r.x2);
+            ys.push(r.y1, r.y2);
+          });
+          xs = uniqueSorted(xs);
+          ys = uniqueSorted(ys);
+
+          function isBlocked(x, y){
+            if ((x === start.x && y === start.y) || (x === end.x && y === end.y)) return false;
+            for (var i=0;i<routeObstacles.length;i++){
+              if (pointInRect(x, y, routeObstacles[i])) return true;
+            }
+            return false;
+          }
+          function key(x, y){ return x.toFixed(2) + ',' + y.toFixed(2); }
+
+          var pts = [];
+          var idxMap = {};
+          for (var xi=0; xi<xs.length; xi++){
+            for (var yi=0; yi<ys.length; yi++){
+              var x = xs[xi], y = ys[yi];
+              if (isBlocked(x, y)) continue;
+              var idx = pts.length;
+              pts.push({x:x, y:y});
+              idxMap[key(x,y)] = idx;
+            }
+          }
+          var startKey = key(start.x, start.y);
+          var endKey = key(end.x, end.y);
+          if (idxMap[startKey] == null){
+            idxMap[startKey] = pts.length;
+            pts.push({x:start.x, y:start.y});
+          }
+          if (idxMap[endKey] == null){
+            idxMap[endKey] = pts.length;
+            pts.push({x:end.x, y:end.y});
+          }
+          var startIdx = idxMap[startKey];
+          var endIdx = idxMap[endKey];
+          var adj = new Array(pts.length);
+          for (var ai=0; ai<adj.length; ai++) adj[ai] = [];
+
+          for (var xi2=0; xi2<xs.length; xi2++){
+            var xcol = xs[xi2];
+            var col = [];
+            for (var yi2=0; yi2<ys.length; yi2++){
+              var ycol = ys[yi2];
+              var k = key(xcol, ycol);
+              if (idxMap[k] != null) col.push({y:ycol, idx:idxMap[k]});
+            }
+            col.sort(function(a,b){ return a.y - b.y; });
+            for (var ci=0; ci<col.length-1; ci++){
+              var a = col[ci], b = col[ci+1];
+              var blocked = false;
+              for (var oi=0; oi<routeObstacles.length; oi++){
+                if (segmentHitsRect(xcol, a.y, xcol, b.y, routeObstacles[oi])) { blocked = true; break; }
+              }
+              if (!blocked){
+                var dist = Math.abs(b.y - a.y);
+                adj[a.idx].push({to:b.idx, w:dist});
+                adj[b.idx].push({to:a.idx, w:dist});
+              }
+            }
+          }
+          for (var yi3=0; yi3<ys.length; yi3++){
+            var yrow = ys[yi3];
+            var row = [];
+            for (var xi3=0; xi3<xs.length; xi3++){
+              var xrow = xs[xi3];
+              var k2 = key(xrow, yrow);
+              if (idxMap[k2] != null) row.push({x:xrow, idx:idxMap[k2]});
+            }
+            row.sort(function(a,b){ return a.x - b.x; });
+            for (var ri=0; ri<row.length-1; ri++){
+              var ra = row[ri], rb = row[ri+1];
+              var blocked2 = false;
+              for (var oi2=0; oi2<routeObstacles.length; oi2++){
+                if (segmentHitsRect(ra.x, yrow, rb.x, yrow, routeObstacles[oi2])) { blocked2 = true; break; }
+              }
+              if (!blocked2){
+                var dist2 = Math.abs(rb.x - ra.x);
+                adj[ra.idx].push({to:rb.idx, w:dist2});
+                adj[rb.idx].push({to:ra.idx, w:dist2});
+              }
+            }
+          }
+          var distArr = new Array(pts.length);
+          var prev = new Array(pts.length);
+          var seen = new Array(pts.length);
+          for (var di=0; di<distArr.length; di++){ distArr[di] = Infinity; prev[di] = -1; seen[di] = false; }
+          distArr[startIdx] = 0;
+          for (var iter=0; iter<pts.length; iter++){
+            var best = -1;
+            var bestDist = Infinity;
+            for (var vi=0; vi<pts.length; vi++){
+              if (seen[vi]) continue;
+              if (distArr[vi] < bestDist) { bestDist = distArr[vi]; best = vi; }
+            }
+            if (best === -1) break;
+            if (best === endIdx) break;
+            seen[best] = true;
+            var neighbors = adj[best];
+            for (var ni=0; ni<neighbors.length; ni++){
+              var nb = neighbors[ni];
+              var cand = distArr[best] + nb.w;
+              if (cand < distArr[nb.to]){
+                distArr[nb.to] = cand;
+                prev[nb.to] = best;
+              }
+            }
+          }
+          if (prev[endIdx] === -1 && startIdx !== endIdx) return null;
+          var path = [];
+          var cur = endIdx;
+          while (cur !== -1){
+            path.push([pts[cur].x, pts[cur].y]);
+            if (cur === startIdx) break;
+            cur = prev[cur];
+          }
+          path.reverse();
+          return path;
+        }
+
+        var flowReserved = [];
+        var flowLaneCounts = {};
+        var flowLaneGap = Math.max(10, hexH * 0.16);
+        function nextLaneOffset(key){
+          var idx = flowLaneCounts[key] || 0;
+          flowLaneCounts[key] = idx + 1;
+          if (idx === 0) return 0;
+          var step = Math.ceil(idx / 2);
+          return (idx % 2 === 1 ? 1 : -1) * step * flowLaneGap;
+        }
+        function reserveFlowPath(points){
+          var pad = Math.max(6, hexH * 0.1);
+          if (!points || points.length < 2) return;
+          for (var i=0; i<points.length-1; i++){
+            var a = points[i], b = points[i+1];
+            if (a[0] === b[0]) {
+              flowReserved.push({x1:a[0]-pad, x2:a[0]+pad, y1:Math.min(a[1], b[1])-pad, y2:Math.max(a[1], b[1])+pad, kind:'flow'});
+            } else if (a[1] === b[1]) {
+              flowReserved.push({x1:Math.min(a[0], b[0])-pad, x2:Math.max(a[0], b[0])+pad, y1:a[1]-pad, y2:a[1]+pad, kind:'flow'});
+            }
+          }
+        }
+
+        var flowObstacles = [];
+        nodes.forEach(function(n){
+          if (n.type === 'pod') return;
+          flowObstacles.push(rectFromNode(n, Math.max(4, hexH * 0.06)));
+        });
+        labelNodes.forEach(function(l){
+          flowObstacles.push(rectFromLabel(l));
+        });
+        var systemBounds = null;
+        sysIds.forEach(function(id){
+          var n = nodeById[id];
+          if (!n) return;
+          var r = rectFromNode(n, hexH * 0.1);
+          if (!systemBounds) systemBounds = {minX:r.x1, maxX:r.x2, minY:r.y1, maxY:r.y2};
+          else {
+            systemBounds.minX = Math.min(systemBounds.minX, r.x1);
+            systemBounds.maxX = Math.max(systemBounds.maxX, r.x2);
+            systemBounds.minY = Math.min(systemBounds.minY, r.y1);
+            systemBounds.maxY = Math.max(systemBounds.maxY, r.y2);
+          }
+        });
+        var systemFlowY = systemBounds ? (systemBounds.maxY + hexH * 0.8) : (hexH * 3);
+
+        function appendSegment(points, seg){
+          if (!seg || !seg.length) return;
+          for (var i=0; i<seg.length; i++){
+            var pt = seg[i];
+            if (points.length) {
+              var last = points[points.length-1];
+              if (last[0] === pt[0] && last[1] === pt[1]) continue;
+            }
+            points.push([pt[0], pt[1]]);
+          }
+        }
+        function buildFlowRoute(a, b, start, end, startDir, endDir, meta){
+          var stub = hexH * 0.28;
+          var s1 = startDir ? {x: start.x + startDir.x * stub, y: start.y + startDir.y * stub} : {x:start.x, y:start.y};
+          var e1 = endDir ? {x: end.x - endDir.x * stub, y: end.y - endDir.y * stub} : {x:end.x, y:end.y};
+          var obstacles = flowObstacles.filter(function(r){ return r.id !== a.id && r.id !== b.id; }).concat(flowReserved);
+          var pad = Math.max(8, hexH * 0.12);
+          function pointBlocked(x, y){
+            for (var i=0; i<obstacles.length; i++){
+              var r = expandRect(obstacles[i], pad);
+              if (pointInRect(x, y, r)) return true;
+            }
+            return false;
+          }
+
+          var points = [[start.x, start.y]];
+          var vias = [];
+          if (a.type === 'system' && !(meta && meta.special === 'host-flow')) {
+            s1 = {x: start.x, y: start.y + stub};
+            var laneOffset = nextLaneOffset('sys:' + a.id);
+            var dropY = Math.max(systemFlowY, s1.y + hexH * 0.2) + laneOffset;
+            var guard = 0;
+            while (pointBlocked(s1.x, dropY) && guard < 6){
+              dropY += hexH * 0.2;
+              guard += 1;
+            }
+            vias.push({x: s1.x, y: dropY});
+          }
+          if (s1.x !== start.x || s1.y !== start.y) {
+            points.push([s1.x, s1.y]);
+          }
+          var curr = {x:s1.x, y:s1.y};
+          for (var vi=0; vi<vias.length; vi++){
+            var v = vias[vi];
+            var seg = buildOrthPath(curr, v, obstacles);
+            if (!seg) return null;
+            appendSegment(points, seg);
+            curr = {x:v.x, y:v.y};
+          }
+          var seg2 = buildOrthPath(curr, e1, obstacles);
+          if (!seg2) return null;
+          appendSegment(points, seg2);
+          if (e1.x !== points[points.length-1][0] || e1.y !== points[points.length-1][1]) {
+            points.push([e1.x, e1.y]);
+          }
+          if (end.x !== points[points.length-1][0] || end.y !== points[points.length-1][1]) {
+            points.push([end.x, end.y]);
+          }
+          return points;
+        }
+
         function drawLink(L){
           var a = nodeById[L.a], b = nodeById[L.b];
           if(!a||!b) return;
@@ -5843,6 +6149,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var endDir = null;
           var points = [];
           var isTrace = (L.cls||'').indexOf('trace') !== -1;
+          var isFlow = (L.cls||'').indexOf('flow') !== -1;
           if (isTrace && L.meta && L.meta.start && L.meta.end) {
             start = L.meta.start;
             end = L.meta.end;
@@ -5872,7 +6179,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
               startDir = aAnchor.dir;
               if (b.type === 'app') {
                 var apex = apexPoint(b);
-                var endGap = Math.max(6, hexH * 0.08);
+                var endGap = isFlow ? 0 : Math.max(6, hexH * 0.08);
                 endDir = apex.dir;
                 end = {
                   x: apex.point.x - endDir.x * endGap,
@@ -5886,8 +6193,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
               }
             }
           }
+          if (isFlow && endDir && b.type !== 'app') {
+            endDir = {x:-endDir.x, y:-endDir.y};
+          }
           if (graphPathMode === 'straight' || isTrace){
             points = [[start.x, start.y], [end.x, end.y]];
+          } else if (isFlow) {
+            var flowPoints = buildFlowRoute(a, b, start, end, startDir, endDir, L.meta);
+            if (flowPoints && flowPoints.length){
+              points = flowPoints;
+            } else {
+              points = [[start.x, start.y], [start.x, end.y], [end.x, end.y]];
+            }
           } else {
             var stub = hexH * 0.28;
             var sdx = startDir ? startDir.x : 0;
@@ -5934,6 +6251,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
               }
             }
             points = cleaned;
+          }
+          if (isFlow && graphPathMode !== 'straight' && points.length) {
+            reserveFlowPath(points);
           }
           var d = '';
           if (graphPathMode === 'straight' || isTrace){
