@@ -1,3 +1,5 @@
+"""mTLS and join-token helpers for node bootstrap security."""
+
 from .ca import (
     ensure_ca,
     issue_cert,

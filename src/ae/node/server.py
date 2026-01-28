@@ -1,7 +1,4 @@
-"""Minimal HTTP agent wrapping a RuntimeAdapter (Phase 1 skeleton).
-
-Phase 2: adds controller heartbeats for Ready/NotReady surfacing.
-"""
+"""HTTP agent exposing runtime operations and optional controller heartbeats."""
 
 from __future__ import annotations
 

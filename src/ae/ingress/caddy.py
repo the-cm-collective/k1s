@@ -11,23 +11,11 @@ from pathlib import Path
 from string import Template
 
 from ae.controller.spec import AppManifest, IngressSpec, app_key_for_manifest
+from ae.resources import loader as resource_loader
 
 LOGGER = logging.getLogger(__name__)
 
-
-SITE_TEMPLATE = Template(
-    """https://$host {
-    log {
-        output stdout
-        format console
-    }
-    # Ensure upstream HSTS does not stick during dev
-    header -Strict-Transport-Security
-    $tls_block
-    $routes
-}
-"""
-)
+SITE_TEMPLATE = Template(resource_loader.load_text("ingress", "caddy_site.txt"))
 
 
 class CaddyIngressManager:
