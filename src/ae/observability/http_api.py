@@ -5732,6 +5732,100 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           addLabel('label:'+ns, ns, labelX, labelY, c.color, '#e2e8f0', 'end');
         });
 
+        function appRowKind(n){
+          var rows = (n.meta && n.meta.clusterRows) ? n.meta.clusterRows : 1;
+          var rowIndex = (n.meta && typeof n.meta.row === 'number') ? n.meta.row : 0;
+          if (rows <= 1) return 'top';
+          return (rowIndex % 2 === 0) ? 'top' : 'bottom';
+        }
+
+        var systemBounds = null;
+        sysIds.forEach(function(id){
+          var n = nodeById[id];
+          if (!n) return;
+          var r = rectFromNode(n, hexH * 0.1);
+          if (!systemBounds) systemBounds = {minX:r.x1, maxX:r.x2, minY:r.y1, maxY:r.y2};
+          else {
+            systemBounds.minX = Math.min(systemBounds.minX, r.x1);
+            systemBounds.maxX = Math.max(systemBounds.maxX, r.x2);
+            systemBounds.minY = Math.min(systemBounds.minY, r.y1);
+            systemBounds.maxY = Math.max(systemBounds.maxY, r.y2);
+          }
+        });
+
+        var labelBounds = null;
+        labelNodes.forEach(function(l){
+          if (l.id === 'label:system') return;
+          var r = rectFromLabel(l);
+          if (!labelBounds) labelBounds = {minX:r.x1, maxX:r.x2, minY:r.y1, maxY:r.y2};
+          else {
+            labelBounds.minX = Math.min(labelBounds.minX, r.x1);
+            labelBounds.maxX = Math.max(labelBounds.maxX, r.x2);
+            labelBounds.minY = Math.min(labelBounds.minY, r.y1);
+            labelBounds.maxY = Math.max(labelBounds.maxY, r.y2);
+          }
+        });
+
+        var topApps = [];
+        var bottomApps = [];
+        var topApexMin = null;
+        var bottomApexMax = null;
+        appNodes.forEach(function(n){
+          var kind = appRowKind(n);
+          var apex = apexPoint(n);
+          if (kind === 'bottom') {
+            bottomApps.push(n);
+            bottomApexMax = (bottomApexMax == null) ? apex.point.y : Math.max(bottomApexMax, apex.point.y);
+          } else {
+            topApps.push(n);
+            topApexMin = (topApexMin == null) ? apex.point.y : Math.min(topApexMin, apex.point.y);
+          }
+        });
+
+        var busXBase = systemBounds ? (systemBounds.maxX + hexW * 0.55) : (systemCenter.x + hexW * 1.4);
+        var ingressBusX = busXBase;
+        var runtimeBusX = busXBase + Math.max(8, hexW * 0.12);
+        var labelBottom = labelBounds ? labelBounds.maxY : null;
+        var upperBase = null;
+        if (topApexMin != null) {
+          var upperLow = (labelBottom != null) ? (labelBottom + hexH * 0.08) : (topApexMin - hexH * 0.35);
+          var upperHigh = topApexMin - hexH * 0.12;
+          if (upperHigh < upperLow) {
+            upperBase = upperHigh;
+          } else {
+            upperBase = (upperLow + upperHigh) * 0.5;
+          }
+        }
+        var lowerBase = null;
+        if (bottomApexMax != null) {
+          lowerBase = bottomApexMax + hexH * 0.38;
+        } else if (topApexMin != null) {
+          lowerBase = topApexMin + hexH * 0.9;
+        } else if (systemBounds) {
+          lowerBase = systemBounds.maxY + hexH * 0.9;
+        }
+        var busGap = Math.max(8, hexH * 0.12);
+        var ingressUpperY = upperBase != null ? (upperBase - busGap * 0.35) : null;
+        var runtimeUpperY = upperBase != null ? (upperBase + busGap * 0.35) : null;
+        var ingressLowerY = lowerBase != null ? (lowerBase - busGap * 0.35) : null;
+        var runtimeLowerY = lowerBase != null ? (lowerBase + busGap * 0.35) : null;
+
+        var flowLaneMap = {};
+        function assignFlowLanes(key, nodes){
+          if (!nodes || !nodes.length) return;
+          var ordered = nodes.slice().sort(function(a,b){ return a.x - b.x; });
+          var n = ordered.length;
+          var gap = Math.max(6, hexH * 0.09);
+          ordered.forEach(function(node, idx){
+            var offset = (idx - (n - 1) / 2) * gap;
+            flowLaneMap[key + ':' + node.id] = offset;
+          });
+        }
+        assignFlowLanes('ingress:top', topApps);
+        assignFlowLanes('runtime:top', topApps);
+        assignFlowLanes('ingress:bottom', bottomApps);
+        assignFlowLanes('runtime:bottom', bottomApps);
+
         var faceDirs = [
           {x:1, y:0},
           {x:0.5, y:-0.866},
@@ -5842,10 +5936,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if (hasIngress) link('dns','ingress','flow');
         link('controller','runtime','flow');
         if (hasIngress) link('controller','ingress','flow');
-        var sites = (sys.ingress && sys.ingress.sites) || [];
-        var appsWithIngress = new Set(sites.map(function(s){ return s.app; }));
-        appsWithIngress.forEach(function(name){ link('ingress','app:'+name,'flow'); });
-        (statuses||[]).forEach(function(s){ link('runtime','app:'+s.app_name,''); });
+        appNodes.forEach(function(n){
+          if (nodeById.ingress) link('ingress', n.id, 'flow', {route:'ingress'});
+          if (nodeById.runtime) link('runtime', n.id, 'flow', {route:'runtime'});
+        });
 
         var gNodes = svg.querySelector('#nodes');
         var gLinks = svg.querySelector('#links');
@@ -5888,6 +5982,25 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var minX = Math.min(ax, bx), maxX = Math.max(ax, bx);
           var minY = Math.min(ay, by), maxY = Math.max(ay, by);
           return !(maxX < r.x1 || minX > r.x2 || maxY < r.y1 || minY > r.y2);
+        }
+        function segmentClear(ax, ay, bx, by, obstacles, pad){
+          if (!obstacles || !obstacles.length) return true;
+          var expanded = obstacles;
+          if (pad && pad > 0){
+            expanded = obstacles.map(function(r){ return expandRect(r, pad); });
+          }
+          for (var i=0; i<expanded.length; i++){
+            if (segmentHitsRect(ax, ay, bx, by, expanded[i])) return false;
+          }
+          return true;
+        }
+        function pathClear(points, obstacles, pad){
+          if (!points || points.length < 2) return true;
+          for (var i=0; i<points.length-1; i++){
+            var a = points[i], b = points[i+1];
+            if (!segmentClear(a[0], a[1], b[0], b[1], obstacles, pad)) return false;
+          }
+          return true;
         }
         function expandRect(r, pad){
           return {x1:r.x1 - pad, y1:r.y1 - pad, x2:r.x2 + pad, y2:r.y2 + pad, id:r.id, kind:r.kind};
@@ -6032,6 +6145,26 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           path.reverse();
           return path;
         }
+        function simplifyOrth(points){
+          if (!points || points.length < 3) return points || [];
+          var cleaned = [points[0]];
+          for (var i=1; i<points.length; i++){
+            var p = points[i];
+            if (cleaned.length < 2) {
+              cleaned.push(p);
+              continue;
+            }
+            var a = cleaned[cleaned.length-2];
+            var b = cleaned[cleaned.length-1];
+            var colinear = ((a[0] === b[0] && b[0] === p[0]) || (a[1] === b[1] && b[1] === p[1]));
+            if (colinear) {
+              cleaned[cleaned.length-1] = p;
+            } else {
+              cleaned.push(p);
+            }
+          }
+          return cleaned;
+        }
 
         var flowReserved = [];
         var flowLaneCounts = {};
@@ -6059,23 +6192,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         var flowObstacles = [];
         nodes.forEach(function(n){
           if (n.type === 'pod') return;
-          flowObstacles.push(rectFromNode(n, Math.max(4, hexH * 0.06)));
+          flowObstacles.push(rectFromNode(n, Math.max(6, hexH * 0.1)));
         });
         labelNodes.forEach(function(l){
           flowObstacles.push(rectFromLabel(l));
         });
-        var systemBounds = null;
-        sysIds.forEach(function(id){
-          var n = nodeById[id];
-          if (!n) return;
-          var r = rectFromNode(n, hexH * 0.1);
-          if (!systemBounds) systemBounds = {minX:r.x1, maxX:r.x2, minY:r.y1, maxY:r.y2};
-          else {
-            systemBounds.minX = Math.min(systemBounds.minX, r.x1);
-            systemBounds.maxX = Math.max(systemBounds.maxX, r.x2);
-            systemBounds.minY = Math.min(systemBounds.minY, r.y1);
-            systemBounds.maxY = Math.max(systemBounds.maxY, r.y2);
-          }
+        nodes.forEach(function(n){
+          if (n.type !== 'pod') return;
+          flowObstacles.push(rectFromNode(n, Math.max(6, hexH * 0.14)));
+        });
+        links.forEach(function(L){
+          if ((L.cls||'').indexOf('trace') === -1) return;
+          if (!L.meta || !L.meta.start || !L.meta.end) return;
+          var minX = Math.min(L.meta.start.x, L.meta.end.x);
+          var maxX = Math.max(L.meta.start.x, L.meta.end.x);
+          var minY = Math.min(L.meta.start.y, L.meta.end.y);
+          var maxY = Math.max(L.meta.start.y, L.meta.end.y);
+          var pad = Math.max(6, hexH * 0.12);
+          flowObstacles.push({x1:minX - pad, y1:minY - pad, x2:maxX + pad, y2:maxY + pad, kind:'trace'});
         });
         var systemFlowY = systemBounds ? (systemBounds.maxY + hexH * 0.8) : (hexH * 3);
 
@@ -6090,12 +6224,110 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             points.push([pt[0], pt[1]]);
           }
         }
+        function buildBusFlowRoute(a, b, start, end, startDir, endDir, meta){
+          if (!meta || !meta.route || !b || b.type !== 'app') return null;
+          var route = meta.route;
+          var rowKind = appRowKind(b);
+          var busY = null;
+          if (rowKind === 'bottom') {
+            busY = (route === 'ingress') ? ingressLowerY : runtimeLowerY;
+          } else {
+            busY = (route === 'ingress') ? ingressUpperY : runtimeUpperY;
+          }
+          if (busY == null) return null;
+          var laneKey = route + ':' + rowKind;
+          var laneOffset = flowLaneMap[laneKey + ':' + b.id] || 0;
+          busY += laneOffset;
+          var busX = (route === 'ingress') ? ingressBusX : runtimeBusX;
+          var stub = hexH * 0.28;
+          var s1 = startDir ? {x: start.x + startDir.x * stub, y: start.y + startDir.y * stub} : {x:start.x, y:start.y};
+          var e1 = endDir ? {x: end.x - endDir.x * stub, y: end.y - endDir.y * stub} : {x:end.x, y:end.y};
+
+          var obstacles = flowObstacles.filter(function(r){ return r.id !== a.id && r.id !== b.id; }).concat(flowReserved);
+          var pad = Math.max(10, hexH * 0.14);
+
+          function buildPoints(y){
+            return [
+              [start.x, start.y],
+              [s1.x, s1.y],
+              [busX, s1.y],
+              [busX, y],
+              [e1.x, y],
+              [e1.x, e1.y],
+              [end.x, end.y]
+            ];
+          }
+          var candidates = [busY, busY + hexH * 0.18, busY - hexH * 0.18, busY + hexH * 0.36, busY - hexH * 0.36];
+          for (var ci=0; ci<candidates.length; ci++){
+            var y = candidates[ci];
+            if (rowKind === 'top' && y >= end.y - hexH * 0.12) continue;
+            if (rowKind === 'bottom' && y <= end.y + hexH * 0.12) continue;
+            var pts = buildPoints(y);
+            if (pathClear(pts, obstacles, pad)) return simplifyOrth(pts);
+          }
+          return simplifyOrth(buildPoints(busY));
+        }
         function buildFlowRoute(a, b, start, end, startDir, endDir, meta){
           var stub = hexH * 0.28;
           var s1 = startDir ? {x: start.x + startDir.x * stub, y: start.y + startDir.y * stub} : {x:start.x, y:start.y};
           var e1 = endDir ? {x: end.x - endDir.x * stub, y: end.y - endDir.y * stub} : {x:end.x, y:end.y};
-          var obstacles = flowObstacles.filter(function(r){ return r.id !== a.id && r.id !== b.id; }).concat(flowReserved);
-          var pad = Math.max(8, hexH * 0.12);
+          var baseObstacles = flowObstacles.filter(function(r){ return r.id !== a.id && r.id !== b.id; });
+          var hardObstacles = baseObstacles.concat(flowReserved);
+          var pad = Math.max(10, hexH * 0.14);
+
+          function simpleRoute(obstacles){
+            var points = [[start.x, start.y]];
+            var startStep = s1;
+            var endStep = e1;
+            if (a.type === 'system' && !(meta && meta.special === 'host-flow')) {
+              startStep = {x:start.x, y:start.y + stub};
+              var laneOffset = nextLaneOffset('sys:' + a.id);
+              var dropBase = Math.max(systemFlowY, startStep.y + hexH * 0.2);
+              if (endDir && endDir.y < 0) {
+                dropBase = Math.max(dropBase, end.y + hexH * 0.6);
+              }
+              var baseDrop = dropBase + laneOffset;
+              var deltas = [0, hexH * 0.25, -hexH * 0.25, hexH * 0.5, -hexH * 0.5];
+              for (var di=0; di<deltas.length; di++){
+                var dropY = baseDrop + deltas[di];
+                var pts = [
+                  [start.x, start.y],
+                  [startStep.x, startStep.y],
+                  [startStep.x, dropY],
+                  [endStep.x, dropY],
+                  [endStep.x, endStep.y],
+                  [end.x, end.y]
+                ];
+                if (pathClear(pts, obstacles, pad)) return simplifyOrth(pts);
+              }
+            } else {
+              var ptsA = [
+                [start.x, start.y],
+                [startStep.x, startStep.y],
+                [endStep.x, startStep.y],
+                [endStep.x, endStep.y],
+                [end.x, end.y]
+              ];
+              if (pathClear(ptsA, obstacles, pad)) return simplifyOrth(ptsA);
+              var ptsB = [
+                [start.x, start.y],
+                [startStep.x, startStep.y],
+                [startStep.x, endStep.y],
+                [endStep.x, endStep.y],
+                [end.x, end.y]
+              ];
+              if (pathClear(ptsB, obstacles, pad)) return simplifyOrth(ptsB);
+            }
+            return null;
+          }
+
+          var simple = simpleRoute(hardObstacles);
+          if (!simple && flowReserved.length) {
+            simple = simpleRoute(baseObstacles);
+          }
+          if (simple) return simple;
+
+          var obstacles = hardObstacles;
           function pointBlocked(x, y){
             for (var i=0; i<obstacles.length; i++){
               var r = expandRect(obstacles[i], pad);
@@ -6108,14 +6340,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var vias = [];
           if (a.type === 'system' && !(meta && meta.special === 'host-flow')) {
             s1 = {x: start.x, y: start.y + stub};
-            var laneOffset = nextLaneOffset('sys:' + a.id);
-            var dropY = Math.max(systemFlowY, s1.y + hexH * 0.2) + laneOffset;
+            var laneOffset2 = nextLaneOffset('sys:' + a.id);
+            var dropBase2 = Math.max(systemFlowY, s1.y + hexH * 0.2);
+            if (endDir && endDir.y < 0) {
+              dropBase2 = Math.max(dropBase2, end.y + hexH * 0.6);
+            }
+            var dropY2 = dropBase2 + laneOffset2;
             var guard = 0;
-            while (pointBlocked(s1.x, dropY) && guard < 6){
-              dropY += hexH * 0.2;
+            while (pointBlocked(s1.x, dropY2) && guard < 6){
+              dropY2 += hexH * 0.2;
               guard += 1;
             }
-            vias.push({x: s1.x, y: dropY});
+            vias.push({x: s1.x, y: dropY2});
           }
           if (s1.x !== start.x || s1.y !== start.y) {
             points.push([s1.x, s1.y]);
@@ -6124,11 +6360,19 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           for (var vi=0; vi<vias.length; vi++){
             var v = vias[vi];
             var seg = buildOrthPath(curr, v, obstacles);
+            if (!seg && flowReserved.length){
+              obstacles = baseObstacles;
+              seg = buildOrthPath(curr, v, obstacles);
+            }
             if (!seg) return null;
             appendSegment(points, seg);
             curr = {x:v.x, y:v.y};
           }
           var seg2 = buildOrthPath(curr, e1, obstacles);
+          if (!seg2 && flowReserved.length){
+            obstacles = baseObstacles;
+            seg2 = buildOrthPath(curr, e1, obstacles);
+          }
           if (!seg2) return null;
           appendSegment(points, seg2);
           if (e1.x !== points[points.length-1][0] || e1.y !== points[points.length-1][1]) {
@@ -6137,7 +6381,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           if (end.x !== points[points.length-1][0] || end.y !== points[points.length-1][1]) {
             points.push([end.x, end.y]);
           }
-          return points;
+          return simplifyOrth(points);
         }
 
         function drawLink(L){
@@ -6199,7 +6443,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           if (graphPathMode === 'straight' || isTrace){
             points = [[start.x, start.y], [end.x, end.y]];
           } else if (isFlow) {
-            var flowPoints = buildFlowRoute(a, b, start, end, startDir, endDir, L.meta);
+            var flowPoints = null;
+            if (L.meta && L.meta.route) {
+              flowPoints = buildBusFlowRoute(a, b, start, end, startDir, endDir, L.meta);
+            }
+            if (!flowPoints) {
+              flowPoints = buildFlowRoute(a, b, start, end, startDir, endDir, L.meta);
+            }
             if (flowPoints && flowPoints.length){
               points = flowPoints;
             } else {
@@ -6261,7 +6511,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
               d += (i===0 ? 'M ' : ' L ') + points[i][0] + ' ' + points[i][1];
             }
           } else {
-            var r = 8;
+            var r = isFlow ? Math.max(12, hexH * 0.16) : 8;
             if (points.length > 0){ d = 'M ' + points[0][0] + ' ' + points[0][1]; }
             for (var i=1;i<points.length;i++){
               var prev = points[i-1];
