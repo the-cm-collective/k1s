@@ -75,10 +75,14 @@ def service_controller_factory(store: SQLiteStateStore):
         return None
 
 
+def _local_node_id() -> str:
+    return os.getenv("AE_NODE_ID", socket.gethostname())
+
+
 def _register_local_node(store: SQLiteStateStore, runtime_backend: str) -> None:
     """Best-effort local node registration for single-controller setups."""
     try:
-        node_id = os.getenv("AE_NODE_ID", socket.gethostname())
+        node_id = _local_node_id()
         name = os.getenv("AE_NODE_NAME", node_id)
         store.upsert_node(
             node_id,
@@ -1526,6 +1530,12 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
     # loop mode
     stop = False
+    try:
+        heartbeat_grace = int(os.getenv("AE_NODE_NOTREADY_AFTER", "40") or 40)
+    except Exception:
+        heartbeat_grace = 40
+    heartbeat_interval = max(5, min(20, max(1, heartbeat_grace // 2)))
+    last_heartbeat = 0.0
 
     def _graceful(*_):
         nonlocal stop
@@ -1577,6 +1587,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     try:
         while not stop:
             now = time.time()
+            if now - last_heartbeat >= heartbeat_interval:
+                try:
+                    store.record_heartbeat(_local_node_id(), "Ready")
+                except Exception:
+                    pass
+                else:
+                    last_heartbeat = now
             do_full = changed or (now - last_full) >= max(1, int(args.interval))
             if do_full:
                 t0 = time.time()

@@ -108,6 +108,7 @@ case "$mode" in
     apishim_read="$(read_env_var "AE_APISHIM_READ_TOKEN" "$APISHIM_ENV_FILE" || true)"
     apishim_secret="$(read_env_var "AE_APISHIM_SESSION_SECRET" "$APISHIM_ENV_FILE" || true)"
     admin_token="$(read_env_var "AE_API_ADMIN_TOKEN" "$APISHIM_ENV_FILE" || true)"
+    labs_token="$(read_env_var "AE_LABS_TOKEN" "$APISHIM_ENV_FILE" || true)"
     if [[ -z "$admin_token" ]]; then
       admin_token="$(read_env_var "AE_API_ADMIN_TOKEN" "$CONTROLLER_ENV_FILE" || true)"
     fi
@@ -118,6 +119,7 @@ case "$mode" in
     if [[ -n "$apishim_read" ]]; then emit "export AE_APISHIM_READ_TOKEN=${apishim_read}"; fi
     if [[ -n "$apishim_secret" ]]; then emit "export AE_APISHIM_SESSION_SECRET=${apishim_secret}"; fi
     if [[ -n "$admin_token" ]]; then emit "export AE_API_ADMIN_TOKEN=${admin_token}"; fi
+    if [[ -n "$labs_token" ]]; then emit "export AE_LABS_TOKEN=${labs_token}"; fi
     if [[ -n "$scaler_token" ]]; then emit "export AE_API_SCALER_TOKEN=${scaler_token}"; fi
     if [[ -n "$read_token" ]]; then emit "export AE_API_READ_TOKEN=${read_token}"; fi
 
