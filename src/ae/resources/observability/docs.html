@@ -1,0 +1,32 @@
+
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>k1s API Docs</title>
+    <style>
+      body { font-family: sans-serif; margin: 2rem; }
+      code { background:#f3f3f3; padding: 2px 4px; }
+      .path { font-weight: bold; }
+    </style>
+  </head>
+  <body>
+    <h1>k1s Controller API</h1>
+    <p>Minimal, read-only endpoints. OpenAPI at <code>/openapi.json</code>.</p>
+    <div id="endpoints">Loading...</div>
+    <script>
+      fetch('/openapi.json').then(r => r.json()).then(doc => {
+        const container = document.getElementById('endpoints');
+        container.innerHTML = '';
+        const paths = doc.paths || {};
+        Object.keys(paths).sort().forEach(p => {
+          const div = document.createElement('div');
+          div.innerHTML = `<div class="path">GET <code>${p}</code></div>`;
+          container.appendChild(div);
+        });
+      }).catch(() => {
+        document.getElementById('endpoints').textContent = 'Failed to load OpenAPI';
+      });
+    </script>
+  </body>
+</html>

@@ -19,6 +19,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 from ae.controller.health import HealthReport
 from ae.controller.spec import AppManifest, app_key_for_manifest
+from ae.resources import loader as resource_loader
 from ae.runtime import RuntimeResult
 
 
@@ -312,22 +313,7 @@ class SQLiteStateStore:
                 else "SERIAL PRIMARY KEY"
             )
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS app_status (
-                    app_name TEXT PRIMARY KEY,
-                    desired_replicas INTEGER NOT NULL,
-                    ready_replicas INTEGER NOT NULL,
-                    live_replicas INTEGER NOT NULL,
-                    revision INTEGER NOT NULL,
-                    revision_status TEXT NOT NULL,
-                    image TEXT NOT NULL,
-                    created INTEGER NOT NULL,
-                    updated INTEGER NOT NULL,
-                    removed INTEGER NOT NULL,
-                    ingress_host TEXT,
-                    ingress_path TEXT
-                )
-                """
+                resource_loader.load_text("sql", "controller", "create_app_status.sql")
             )
             conn.execute(
                 """
@@ -342,20 +328,7 @@ class SQLiteStateStore:
                 """
             )
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS replica_status (
-                    app_name TEXT NOT NULL,
-                    replica_id TEXT NOT NULL,
-                    ready INTEGER NOT NULL,
-                    live INTEGER NOT NULL,
-                    status TEXT NOT NULL,
-                    readiness_message TEXT NOT NULL,
-                    liveness_message TEXT NOT NULL,
-                    exit_code INTEGER,
-                    finished_at TEXT,
-                    PRIMARY KEY (app_name, replica_id)
-                )
-                """
+                resource_loader.load_text("sql", "controller", "create_replica_status.sql")
             )
             conn.execute(
                 """
@@ -445,21 +418,7 @@ class SQLiteStateStore:
                 """
             )
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS nodes (
-                    node_id TEXT PRIMARY KEY,
-                    name TEXT,
-                    labels TEXT DEFAULT '{}',
-                    taints TEXT DEFAULT '[]',
-                    backend TEXT,
-                    endpoint TEXT,
-                    pod_cidr TEXT,
-                    wg_pubkey TEXT,
-                    cordoned INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """
+                resource_loader.load_text("sql", "controller", "create_nodes.sql")
             )
             conn.execute(
                 """
@@ -566,22 +525,7 @@ class SQLiteStateStore:
 
         with self._connect() as conn:
             conn.execute(
-                """
-                INSERT INTO app_status(app_name, desired_replicas, ready_replicas, live_replicas, revision, revision_status, image, created, updated, removed, ingress_host, ingress_path)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(app_name) DO UPDATE SET
-                    desired_replicas=excluded.desired_replicas,
-                    ready_replicas=excluded.ready_replicas,
-                    live_replicas=excluded.live_replicas,
-                    revision=excluded.revision,
-                    revision_status=excluded.revision_status,
-                    image=excluded.image,
-                    created=excluded.created,
-                    updated=excluded.updated,
-                    removed=excluded.removed,
-                    ingress_host=excluded.ingress_host,
-                    ingress_path=excluded.ingress_path
-                """,
+                resource_loader.load_text("sql", "controller", "upsert_app_status.sql"),
                 (
                     app_name,
                     manifest.spec.replicas,
@@ -1301,20 +1245,7 @@ class SQLiteStateStore:
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
-                """
-                INSERT INTO nodes(node_id, name, labels, taints, backend, endpoint, pod_cidr, wg_pubkey, cordoned, created_at, updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(node_id) DO UPDATE SET
-                    name=excluded.name,
-                    labels=excluded.labels,
-                    taints=excluded.taints,
-                    backend=excluded.backend,
-                    endpoint=excluded.endpoint,
-                    pod_cidr=excluded.pod_cidr,
-                    wg_pubkey=excluded.wg_pubkey,
-                    cordoned=excluded.cordoned,
-                    updated_at=excluded.updated_at
-                """,
+                resource_loader.load_text("sql", "controller", "upsert_nodes.sql"),
                 (
                     node_id,
                     name,

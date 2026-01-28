@@ -1807,8 +1807,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                 str(pod_id),
                 f"{local_port}:{int(port)}",
             ]
-            proc = subprocess.Popen(  # noqa: S603 - fixed args, no user input
-                args,
+            proc = subprocess.Popen(
+                args,  # noqa: S603 - fixed args, no user input
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -5763,8 +5763,6 @@ class ShimHandler(BaseHTTPRequestHandler):
                         ports=port_label,
                     )
             else:
-                if cri_pf_procs:
-                    self._stop_cri_port_forward(cri_pf_procs)
                 self._json_status(
                     HTTPStatus.UPGRADE_REQUIRED,
                     reason="UpgradeRequired",

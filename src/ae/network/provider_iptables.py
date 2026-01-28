@@ -9,7 +9,6 @@ import logging
 import os
 import shutil
 import subprocess
-from typing import Dict, List, Tuple
 
 from ae.controller.state import SQLiteStateStore
 
@@ -59,7 +58,7 @@ class IptablesProvider(NetworkProvider):
         return cluster_ip
 
     def update_service_endpoints(
-        self, app_name: str, backends_by_port: Dict[int, List[Tuple[str, int]]]
+        self, app_name: str, backends_by_port: dict[int, list[tuple[str, int]]]
     ) -> None:
         if not self._check_available():
             return
@@ -134,7 +133,7 @@ class IptablesProvider(NetworkProvider):
     def _iptables_cmd(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         cmd = [self._iptables, "-w", "-t", "nat", *args]
         return subprocess.run(  # noqa: S603 - iptables command built from fixed args
-            cmd,
+            cmd,  # noqa: S603
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -251,18 +250,21 @@ class IptablesProvider(NetworkProvider):
         raise RuntimeError("Service IP pool exhausted")
 
     def _svc_chain(self, app_name: str, port: int) -> str:
-        digest = hashlib.sha1(f"{app_name}:{int(port)}".encode("utf-8")).hexdigest()[:8]
+        digest = hashlib.sha256(f"{app_name}:{int(port)}".encode()).hexdigest()[:8]
         return f"{self._chain_base}-{digest}"
 
     def _ports_from_record(self, ports: dict) -> dict[int, str]:
         result: dict[int, str] = {}
         for entry in (ports or {}).get("ports", []) or []:
+            port = None
             try:
                 port = int(entry.get("port"))
-                proto = str(entry.get("protocol") or "TCP").lower()
-                if proto not in {"tcp", "udp"}:
-                    proto = "tcp"
-                result[port] = proto
             except Exception:
+                port = None
+            if port is None:
                 continue
+            proto = str(entry.get("protocol") or "TCP").lower()
+            if proto not in {"tcp", "udp"}:
+                proto = "tcp"
+            result[port] = proto
         return result
