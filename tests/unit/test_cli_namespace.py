@@ -56,7 +56,7 @@ def test_exec_namespace_flag_after_name(monkeypatch, tmp_path):
     assert captured["command"] == ["sh"]
 
 
-def test_shell_defaults_to_bash(monkeypatch, tmp_path):
+def test_shell_defaults_to_sh(monkeypatch, tmp_path):
     parser = cli.build_parser()
     args = parser.parse_args(["shell", "green", "-n", "demo"])
     store = SQLiteStateStore(tmp_path / "state.db")
@@ -76,7 +76,7 @@ def test_shell_defaults_to_bash(monkeypatch, tmp_path):
     rc = cli.handle_shell(args, store, DummyRuntime())
     assert rc == 0
     assert captured["namespace"] == "demo"
-    assert captured["command"] == ["bash"]
+    assert captured["command"] == ["sh"]
 
 
 def test_apply_namespace_override(monkeypatch, tmp_path, capsys):
