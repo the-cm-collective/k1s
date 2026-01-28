@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import socket
-from typing import Iterable
 
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,

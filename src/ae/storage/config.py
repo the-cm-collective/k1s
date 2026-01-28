@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import yaml
-
 
 DEFAULT_NETFS_ROOT = Path("/var/lib/ae/netfs")
 DEFAULT_CLASS_ANNOTATIONS = (
@@ -34,7 +34,7 @@ class StorageConfig:
     quotas_path: Path | None
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> "StorageConfig":
+    def from_env(cls, env: Mapping[str, str] | None = None) -> StorageConfig:
         use_env = env if env is not None else os.environ
         root = _env_path(use_env, "AE_NETFS_ROOT") or DEFAULT_NETFS_ROOT
         provisioners = _env_path(use_env, "AE_STORAGE_PROVISIONERS")

@@ -349,7 +349,7 @@ class StorageController:
             override_raw = params.get("capacityBytes") or params.get("capacity")
             capacity_override = None
             if override_raw is not None:
-                if isinstance(override_raw, (int, float)):
+                if isinstance(override_raw, int | float):
                     capacity_override = int(override_raw)
                 else:
                     capacity_override = self._quantity_bytes(str(override_raw))
@@ -395,11 +395,14 @@ class StorageController:
     @staticmethod
     def _storage_class_topology(spec: dict[str, Any]) -> dict[str, Any] | None:
         allowed = spec.get("allowedTopologies")
-        if isinstance(allowed, list) and allowed:
-            if len(allowed) == 1 and isinstance(allowed[0], dict):
-                exprs = allowed[0].get("matchLabelExpressions")
-                if isinstance(exprs, list) and exprs:
-                    return {"matchExpressions": list(exprs)}
+        if (
+            isinstance(allowed, list)
+            and len(allowed) == 1
+            and isinstance(allowed[0], dict)
+        ):
+            exprs = allowed[0].get("matchLabelExpressions")
+            if isinstance(exprs, list) and exprs:
+                return {"matchExpressions": list(exprs)}
         topo_keys = spec.get("topologyKeys")
         if isinstance(topo_keys, list) and topo_keys:
             exprs = [{"key": str(k), "operator": "Exists"} for k in topo_keys if k]
@@ -663,7 +666,9 @@ class StorageController:
             return None
         return self._quantity_bytes(quota.hard_storage)
 
-    def _namespace_storage_usage(self, namespace: str, *, exclude: tuple[str, str | None] | None) -> int:
+    def _namespace_storage_usage(
+        self, namespace: str, *, exclude: tuple[str, str | None] | None
+    ) -> int:
         try:
             pvcs = self._store.list_all(CORE_GROUP, CORE_VERSION, PVC_RESOURCE)
         except Exception:
@@ -1099,7 +1104,9 @@ class StorageController:
             "host_path": host_path,
         }, False
 
-    def _clone_source_for_pvc(self, pvc, source: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
+    def _clone_source_for_pvc(
+        self, pvc, source: dict[str, Any]
+    ) -> tuple[dict[str, Any] | None, bool]:
         src_name = str(source.get("name") or "")
         src_ns = str(source.get("namespace") or pvc.namespace or "")
         if not src_name or not src_ns:
@@ -1905,12 +1912,14 @@ class StorageController:
                 )
                 self._record_pvc_event(pvc, reason, message)
                 return None
-            if source_kind == "snapshot":
-                if not self._restore_snapshot_into(pvc, host_root, host_path, source_info):
-                    return None
-            elif source_kind == "pvc":
-                if not self._restore_clone_into(pvc, host_root, host_path, source_info):
-                    return None
+            if source_kind == "snapshot" and not self._restore_snapshot_into(
+                pvc, host_root, host_path, source_info
+            ):
+                return None
+            if source_kind == "pvc" and not self._restore_clone_into(
+                pvc, host_root, host_path, source_info
+            ):
+                return None
 
         annotations = {
             PROVISIONED_BY_ANNOTATION: LOCAL_PATH_PROVISIONER,
