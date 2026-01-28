@@ -3779,9 +3779,48 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       #sys-graph { position:relative; z-index:2; }
       h2 { font-size:14px; margin: 14px 4px 6px; opacity:0.9; }
       .divider { border-top:1px solid #8884; margin:16px 0; }
-      .modal-overlay { position:fixed; inset:0; background:rgba(2,6,23,0.65); display:flex; align-items:center; justify-content:center; z-index: 90; }
+      .modal-overlay { position:fixed; inset:0; background:rgba(2,6,23,0.70); display:flex; align-items:center; justify-content:center; z-index: 90; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
       .modal-overlay.hidden { display:none; }
-      .modal { width:min(980px, 96vw); max-height:90vh; background:#0b1220; color:#e2e8f0; border:1px solid #334155; border-radius:10px; box-shadow:0 20px 40px rgba(0,0,0,.35); display:flex; flex-direction:column; }
+      .modal {
+        width:min(980px, 96vw);
+        max-height:90vh;
+        background-color: rgba(7,10,14,0.28);
+        background-image: linear-gradient(135deg, rgba(15,23,42,0.80), rgba(2,6,23,0.75));
+        color:#e2e8f0;
+        border:1px solid rgba(148,163,184,0.35);
+        border-radius:12px;
+        box-shadow:0 24px 60px rgba(0,0,0,.45);
+        display:flex;
+        flex-direction:column;
+        position:relative;
+        overflow:hidden;
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+      }
+      .modal::before {
+        content:"";
+        position:absolute;
+        inset:0;
+        background-image: url('/static/dash-assets/page-background-1920x1080.png');
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+        opacity: 0.45;
+        filter: saturate(0.35) brightness(0.6);
+        pointer-events:none;
+      }
+      .modal::after {
+        content:"";
+        position:absolute;
+        inset:0;
+        background-image: url('/static/dash-assets/page-background-tile-1024.png');
+        background-size: 520px 520px;
+        background-position: center;
+        background-repeat: repeat;
+        opacity: 0.35;
+        pointer-events:none;
+      }
+      .modal > * { position: relative; z-index: 1; }
       #pf-modal .modal { height: min(560px, 90vh); }
       #pf-modal .modal-body { display:flex; flex-direction:column; gap:12px; padding:12px 16px; flex:1 1 auto; min-height:0; }
       #pf-modal .pf-fields { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:10px; }
@@ -3790,8 +3829,20 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       #pf-modal .pf-span-2 { grid-column: span 2; }
       #pf-modal .pf-span-4 { grid-column: 1 / -1; }
       #pf-modal .pf-io { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px; flex:1 1 auto; min-height:0; }
-      #pf-modal .pf-io label { display:flex; flex-direction:column; gap:6px; min-height:0; }
+      #pf-modal .pf-io > * { display:flex; flex-direction:column; gap:6px; min-height:0; }
+      #pf-modal .pf-response { flex:1 1 auto; min-height:0; }
+      #pf-modal .pf-response-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+      #pf-modal .pf-response-toggle { display:flex; gap:6px; flex-wrap:wrap; }
+      #pf-modal .pf-response-toggle button { padding:4px 8px; font-size:11px; border-radius:999px; border:1px solid rgba(148,163,184,0.45); background: rgba(15,23,42,0.35); }
+      #pf-modal .pf-response-toggle button.active { border-color: rgba(251,192,45,0.65); color:#f8c32b; background: linear-gradient(180deg, rgba(251,192,45,0.22), rgba(15,23,42,0.35)); }
+      #pf-modal .pf-response-view { display:flex; flex-direction:column; flex:1 1 auto; min-height:0; }
+      #pf-modal .pf-response-view.hidden { display:none; }
       #pf-modal .pf-io textarea { flex:1 1 auto; min-height:0; width:100%; }
+      #pf-modal .pf-io textarea.scrollbar-hide { scrollbar-width:none; -ms-overflow-style:none; }
+      #pf-modal .pf-io textarea.scrollbar-hide::-webkit-scrollbar { width:0; height:0; }
+      #pf-modal .pf-preview { border:1px solid #334155; border-radius:8px; overflow:hidden; background:#0b0f14; scrollbar-width:none; -ms-overflow-style:none; }
+      #pf-modal .pf-preview::-webkit-scrollbar { width:0; height:0; }
+      #pf-modal .pf-preview iframe { width:100%; height:100%; border:0; background:#0b0f14; }
       #pf-modal .pf-controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:auto; }
       @media (max-width: 900px) {
         #pf-modal .pf-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -3803,9 +3854,28 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         #pf-modal .pf-fields { grid-template-columns: 1fr; }
         #pf-modal .pf-span-2, #pf-modal .pf-span-4 { grid-column: span 1; }
       }
-      .modal-header { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-bottom:1px solid #334155; }
-      .modal-body { padding:12px 14px; overflow:auto; }
-      .modal-footer { padding:10px 14px; border-top:1px solid #334155; display:flex; gap:8px; justify-content:flex-end; }
+      .modal-header {
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        padding:12px 16px;
+        border-bottom:1px solid rgba(148,163,184,0.35);
+        background: linear-gradient(90deg, rgba(15,23,42,0.72), rgba(2,6,23,0.15));
+        position: relative;
+      }
+      .modal-header::after {
+        content:"";
+        position:absolute;
+        left:16px;
+        right:16px;
+        bottom:0;
+        height:1px;
+        background: linear-gradient(90deg, transparent, rgba(251,192,45,0.55), transparent);
+        opacity:0.65;
+        pointer-events:none;
+      }
+      .modal-body { padding:12px 16px; overflow:auto; }
+      .modal-footer { padding:10px 16px; border-top:1px solid rgba(148,163,184,0.35); display:flex; gap:8px; justify-content:flex-end; }
       .modal.hidden { display:none; }
       .terminal-wrap { height:360px; border:1px solid #334155; border-radius:8px; background:#0b0f14; overflow:hidden; }
       .terminal-wrap .xterm-viewport { scrollbar-width: none; }
@@ -4036,11 +4106,23 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           </div>
           <div class=\"pf-io\">
             <label>Request
-              <textarea id=\"pf-request\" rows=\"4\" style=\"width:100%;\">GET / HTTP/1.1\nHost: localhost\nConnection: close\n\n</textarea>
+              <textarea id=\"pf-request\" rows=\"4\" class=\"scrollbar-hide\" style=\"width:100%;\">GET / HTTP/1.1\nHost: localhost\nConnection: close\n\n</textarea>
             </label>
-            <label>Response
-              <textarea id=\"pf-response\" rows=\"4\" style=\"width:100%;\" readonly></textarea>
-            </label>
+            <div class=\"pf-response\">
+              <div class=\"pf-response-head\">
+                <label for=\"pf-response\">Response</label>
+                <div class=\"pf-response-toggle\" role=\"group\" aria-label=\"Response view\">
+                  <button id=\"pf-view-source\" type=\"button\" class=\"pf-view-btn active\" data-pf-view=\"source\" aria-pressed=\"true\">Source</button>
+                  <button id=\"pf-view-preview\" type=\"button\" class=\"pf-view-btn\" data-pf-view=\"preview\" aria-pressed=\"false\">Preview</button>
+                </div>
+              </div>
+              <div id=\"pf-response-source\" class=\"pf-response-view pf-source\">
+                <textarea id=\"pf-response\" rows=\"4\" class=\"scrollbar-hide\" style=\"width:100%;\" readonly></textarea>
+              </div>
+              <div id=\"pf-preview\" class=\"pf-response-view pf-preview hidden\">
+                <iframe id=\"pf-preview-frame\" title=\"Port-forward response preview\" sandbox></iframe>
+              </div>
+            </div>
           </div>
           <div class=\"pf-controls\">
             <button id=\"pf-connect\" type=\"button\">Connect</button>
@@ -5058,11 +5140,123 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       var pfStatus = document.getElementById('pf-status');
       var pfEncoder = (window.TextEncoder ? new TextEncoder() : null);
       var pfDecoder = (window.TextDecoder ? new TextDecoder() : null);
+      var pfView = 'source';
+      var pfPreviewTimer = null;
 
       function pfSetStatus(txt, cls){
         if (!pfStatus) return;
         pfStatus.textContent = txt || '';
         if (cls) pfStatus.className = 'pill ' + cls;
+      }
+
+      function pfEscapeHtml(value){
+        return String(value || '').replace(/[&<>"']/g, function(ch){
+          if (ch === '&') return '&amp;';
+          if (ch === '<') return '&lt;';
+          if (ch === '>') return '&gt;';
+          if (ch === '"') return '&quot;';
+          if (ch === "'") return '&#39;';
+          return ch;
+        });
+      }
+
+      function parsePfResponse(raw){
+        var text = raw || '';
+        var sep = '\\r\\n\\r\\n';
+        var idx = text.indexOf(sep);
+        if (idx === -1) {
+          sep = '\\n\\n';
+          idx = text.indexOf(sep);
+        }
+        if (idx === -1) return { headers: '', body: text, status: '' };
+        var headers = text.slice(0, idx);
+        var body = text.slice(idx + sep.length);
+        var status = headers.split(/\\r?\\n/)[0] || '';
+        return { headers: headers, body: body, status: status };
+      }
+
+      function updatePfPreview(){
+        var frame = document.getElementById('pf-preview-frame');
+        var resp = document.getElementById('pf-response');
+        if (!frame || !resp) return;
+        var raw = resp.value || '';
+        var previewStyle = 'html,body{height:100%;}body{margin:0;padding:12px;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;color:#e2e8f0;background:#0b0f14;scrollbar-width:none;-ms-overflow-style:none;}body::-webkit-scrollbar{width:0;height:0;}';
+        function injectPreviewStyles(html){
+          if (!html) return '';
+          var styleTag = '<style>' + previewStyle + '</style>';
+          if (/<head[\\s>]/i.test(html)) {
+            return html.replace(/<head[^>]*>/i, function(match){ return match + styleTag; });
+          }
+          if (/<html[\\s>]/i.test(html)) {
+            return html.replace(/<html[^>]*>/i, function(match){ return match + '<head>' + styleTag + '</head>'; });
+          }
+          return '<!doctype html><html><head>' + styleTag + '</head><body>' + html + '</body></html>';
+        }
+        if (!raw) {
+          frame.srcdoc = '<!doctype html><html><head><meta charset="utf-8"><style>' + previewStyle.replace('#e2e8f0', '#94a3b8') + '</style></head><body>No response yet.</body></html>';
+          return;
+        }
+        var parsed = parsePfResponse(raw);
+        var headers = parsed.headers || '';
+        var body = parsed.body || '';
+        var contentType = '';
+        if (headers) {
+          var lines = headers.split(/\\r?\\n/);
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            if (!line) continue;
+            var idx = line.indexOf(':');
+            if (idx < 0) continue;
+            var key = line.slice(0, idx).trim().toLowerCase();
+            if (key === 'content-type') {
+              contentType = line.slice(idx + 1).trim().toLowerCase();
+              break;
+            }
+          }
+        }
+        var trimmed = body.trim();
+        var isHtml = false;
+        if (contentType) {
+          if (contentType.indexOf('text/html') !== -1 || contentType.indexOf('application/xhtml+xml') !== -1) {
+            isHtml = true;
+          }
+        } else if (trimmed.indexOf('<!doctype') === 0 || trimmed.indexOf('<html') === 0 || trimmed.indexOf('<body') === 0 || trimmed.indexOf('<svg') === 0) {
+          isHtml = true;
+        }
+        var doc = '';
+        if (isHtml) {
+          doc = injectPreviewStyles(body);
+        } else {
+          doc = '<!doctype html><html><head><meta charset="utf-8"><style>' + previewStyle + 'pre{margin:0;white-space:pre-wrap;}</style></head><body><pre>' + pfEscapeHtml(body) + '</pre></body></html>';
+        }
+        frame.srcdoc = doc;
+      }
+
+      function schedulePfPreviewUpdate(){
+        if (pfPreviewTimer) return;
+        pfPreviewTimer = setTimeout(function(){
+          pfPreviewTimer = null;
+          updatePfPreview();
+        }, 80);
+      }
+
+      function setPfView(view){
+        pfView = view || 'source';
+        var sourceWrap = document.getElementById('pf-response-source');
+        var previewWrap = document.getElementById('pf-preview');
+        var sourceBtn = document.getElementById('pf-view-source');
+        var previewBtn = document.getElementById('pf-view-preview');
+        if (sourceWrap) sourceWrap.classList.toggle('hidden', pfView !== 'source');
+        if (previewWrap) previewWrap.classList.toggle('hidden', pfView !== 'preview');
+        if (sourceBtn) {
+          sourceBtn.classList.toggle('active', pfView === 'source');
+          sourceBtn.setAttribute('aria-pressed', pfView === 'source' ? 'true' : 'false');
+        }
+        if (previewBtn) {
+          previewBtn.classList.toggle('active', pfView === 'preview');
+          previewBtn.setAttribute('aria-pressed', pfView === 'preview' ? 'true' : 'false');
+        }
+        if (pfView === 'preview') schedulePfPreviewUpdate();
       }
 
       function pfSendChannel(ch, data){
@@ -5176,6 +5370,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           if (ch === 0 || ch === 1) {
             var out = document.getElementById('pf-response');
             if (out) out.value = (out.value || '') + txt;
+            if (pfView === 'preview') schedulePfPreviewUpdate();
           }
         } catch(e){}
       }
@@ -5212,6 +5407,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         pfSetStatus('idle', 'muted');
         var resp = document.getElementById('pf-response');
         if (resp) resp.value = '';
+        setPfView('source');
         pfModal.classList.remove('hidden');
       }
 
@@ -5230,6 +5426,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
       try { document.getElementById('pf-connect').addEventListener('click', pfConnect); } catch(e){}
       try { document.getElementById('pf-send').addEventListener('click', pfSend); } catch(e){}
       try { document.getElementById('pf-disconnect').addEventListener('click', pfDisconnect); } catch(e){}
+      try { document.getElementById('pf-view-source').addEventListener('click', function(){ setPfView('source'); }); } catch(e){}
+      try { document.getElementById('pf-view-preview').addEventListener('click', function(){ setPfView('preview'); }); } catch(e){}
       window.addEventListener('resize', function(){ if (shellModal && !shellModal.classList.contains('hidden')) { fitShellNow(); } });
 
       function updateLogsHTMX(){
