@@ -146,24 +146,36 @@ class Reconciler:
         if not self._register_local_node:
             return
         try:
-            if self._state_store.list_nodes():
-                return
-        except Exception:
-            pass
-        try:
             node_id = os.getenv("AE_NODE_ID") or socket.gethostname()
             name = os.getenv("AE_NODE_NAME") or node_id
-            self._state_store.upsert_node(
-                node_id,
-                name=name,
-                labels={"role": "controller"},
-                taints=[],
-                backend=self._runtime_backend_name(),
-                endpoint=None,
-                pod_cidr=None,
-                wg_pubkey=None,
-            )
-            self._state_store.record_heartbeat(node_id, "Ready")
+            existing = None
+            try:
+                existing = self._state_store.get_node(node_id)
+            except Exception:
+                existing = None
+            if existing is None:
+                try:
+                    if self._state_store.list_nodes():
+                        return
+                except Exception:
+                    pass
+                self._state_store.upsert_node(
+                    node_id,
+                    name=name,
+                    labels={"role": "controller"},
+                    taints=[],
+                    backend=self._runtime_backend_name(),
+                    endpoint=None,
+                    pod_cidr=None,
+                    wg_pubkey=None,
+                )
+                self._state_store.record_heartbeat(node_id, "Ready")
+                return
+            node, _status = existing
+            # Refresh heartbeat only for local/controller nodes (no endpoint or role label).
+            labels = getattr(node, "labels", {}) or {}
+            if getattr(node, "endpoint", None) is None or labels.get("role") == "controller":
+                self._state_store.record_heartbeat(node_id, "Ready")
         except Exception:
             pass
 
