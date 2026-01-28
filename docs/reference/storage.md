@@ -71,6 +71,14 @@ NFS helper (`mount.nfs` or `mount.nfs4`). If these tools or the NFS mount fail,
 the agent records a PVC warning event; use `kubectl get events -n <ns>` to inspect
 `NfsPrereqFailed`, `MountFailed`, or `MountConflict` reasons.
 
+### NetFS capability matrix (current)
+
+| Backend | Dynamic provisioning | Attach/Detach | Mounts | Notes |
+| --- | --- | --- | --- | --- |
+| NFS (`k1s.io/nfs`) | Yes | No | Yes | RWX supported, mountOptions honored. |
+| CSI (static PVs) | No | Controller creates VolumeAttachment | Marker only | Requires PV.spec.csi.driver + volumeHandle; no CSI gRPC. |
+| local-path (`k1s.io/local-path`) | Yes | No | Yes | HostPath-backed (not network). |
+
 ### NetFS cloning (PVC dataSourceRef)
 
 For hostPath-backed provisioners (NFS/local-path), the controller can restore a
