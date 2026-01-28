@@ -725,6 +725,47 @@
 <li>HostPath binds under <code>spec.volumes</code> still work for simple dev paths.</li>
 <li>Future: <code>size</code> is reserved for advisory/validation.</li>
 </ul>
+<h3>NetFS StorageClass config</h3>
+<p>Provide StorageClass definitions via <code>AE_STORAGE_PROVISIONERS</code> (YAML file). The shim will seed these into its object store on startup.</p>
+<p>Example (see <code>docs/reference/storage-classes.yaml</code>):</p>
+<pre><code>export AE_STORAGE_PROVISIONERS=docs/reference/storage-classes.yaml</code></pre>
+<p>For dynamic NFS provisioning, include at least:</p>
+<ul>
+<li><code>parameters.server</code>: NFS server host/IP</li>
+<li><code>parameters.path</code>: exported base path (the controller will use a per-PVC subdir when possible)</li>
+<li><code>parameters.hostPath</code> (optional): local directory for the exported path; when set, the controller will create and clean up per-PVC directories under this root.</li>
+</ul>
+<h3>NetFS PVC mounts (apishim)</h3>
+<p>When running the node agent with <code>AE_ENABLE_NETFS=1</code>, PVC mounts from apishim workloads are resolved into hostPath mounts under <code>AE_NETFS_ROOT</code>. The agent currently reads PVC/PV bindings from the apishim store (sqlite/postgres) to locate the bound PV.</p>
+<pre><code>export AE_ENABLE_NETFS=1
+export AE_APISHIM_DB=state/apishim.db</code></pre>
+<p>NetFS currently supports NFS PVs. The node must have <code>mount</code>/<code>umount</code> plus an NFS helper (<code>mount.nfs</code> or <code>mount.nfs4</code>). If these tools or the NFS mount fail, the agent records a PVC warning event; use <code>kubectl get events -n &lt;ns&gt;</code> to inspect <code>NfsPrereqFailed</code>, <code>MountFailed</code>, or <code>MountConflict</code> reasons.</p>
+<h3>NetFS capability matrix (current)</h3>
+<table><thead><tr><th>Backend</th><th>Dynamic provisioning</th><th>Attach/Detach</th><th>Mounts</th><th>Notes</th></tr></thead><tbody><tr><td>NFS (<code>k1s.io/nfs</code>)</td><td>Yes</td><td>No</td><td>Yes</td><td>RWX supported, mountOptions honored.</td></tr><tr><td>CSI (static PVs)</td><td>No</td><td>Controller creates VolumeAttachment</td><td>Marker only</td><td>Requires PV.spec.csi.driver + volumeHandle; no CSI gRPC.</td></tr><tr><td>local-path (<code>k1s.io/local-path</code>)</td><td>Yes</td><td>No</td><td>Yes</td><td>HostPath-backed (not network).</td></tr></tbody></table>
+<h3>NetFS cloning (PVC dataSourceRef)</h3>
+<p>For hostPath-backed provisioners (NFS/local-path), the controller can restore a new PVC from a source PVC:</p>
+<ul>
+<li>Set <code>spec.dataSourceRef</code> with kind <code>PersistentVolumeClaim</code>.</li>
+<li>The source PVC must be <code>Bound</code>.</li>
+<li>Source and target must use the same StorageClass.</li>
+<li>Filesystem volumes only (<code>volumeMode: Filesystem</code>).</li>
+</ul>
+<p>Example: <code>specs/examples/netfs-clone.yaml</code>.</p>
+<h3>NetFS block devices</h3>
+<p>Block volumes are supported for hostPath-backed provisioners:</p>
+<ul>
+<li>PVC must set <code>volumeMode: Block</code>.</li>
+<li>k1s manifests should use <code>spec.pvcMounts[].devicePath</code> to map the device into the container (see <code>specs/examples/netfs-block-device.yaml</code>).</li>
+</ul>
+<h3>CSIStorageCapacity overrides</h3>
+<p>StorageClasses can publish static capacity (useful for external CSI drivers):</p>
+<ul>
+<li><code>parameters.capacity</code>: Kubernetes size string (e.g., <code>10Gi</code>).</li>
+<li><code>parameters.capacityBytes</code>: integer byte count.</li>
+</ul>
+<p>Example: <code>specs/examples/netfs-capacity-override.yaml</code>.</p>
+<h3>SELinux relabeling</h3>
+<p>When <code>seLinuxOptions</code> are provided via <code>podSecurity</code>, k1s attempts a best‑effort <code>chcon</code> on the mount path. For RWX/ROX volumes, set <code>AE_NETFS_SELINUX_RECURSIVE=1</code> to allow recursive relabeling.</p>
 <h3>Retention &amp; Purge</h3>
 <ul>
 <li><code>retention: Retain</code> (default) keeps data even if you delete the app:
@@ -744,6 +785,15 @@
     - name: data
       mountPath: /var/lib/echo
       retention: Delete</code></pre>
+<h3>NetFS smoke test</h3>
+<p>If apishim + controller + node agent are running, you can exercise static PV/PVC binding and a PVC-backed Deployment:</p>
+<pre><code>scripts/netfs_smoke.sh</code></pre>
+<p>To exercise dynamic provisioning, run:</p>
+<pre><code>NETFS_DYNAMIC=1 scripts/netfs_smoke.sh</code></pre>
+<h3>NetFS NFS harness</h3>
+<p>For an end-to-end NFS mount harness (NFS server container, apishim, node agent, and smoke test), run:</p>
+<pre><code>scripts/netfs_nfs_harness.sh</code></pre>
+<p>NFS mounts typically require root. Run the harness with <code>sudo</code> to exercise the mount path, or set <code>SKIP_MOUNT_PREFLIGHT=1</code> to continue without the preflight check. Use <code>KEEP_STATE=1</code> to preserve logs/state for debugging.</p>
     </div>
     <footer class="site-footer">
       <div class="container inner">

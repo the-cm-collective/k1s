@@ -706,6 +706,7 @@
 <p>Tip</p>
 <ul>
 <li>When running demos that read secrets, pass <code>--with-secrets-env</code> to <code>init_demo.sh</code> to export <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> and <code>SOPS_AGE_KEY_FILE=~/.config/ae/keys.txt</code> for the session.</li>
+<li>Demo/labs auto-register a local node by default (<code>AE_REGISTER_LOCAL_NODE=1</code>) so single-node runs behave like a ready Kubernetes node; unset it to enforce strict “no nodes, no scheduling.”</li>
 </ul>
 <h2>Demo script overview</h2>
 <p>The init script can stand up different demo combinations. Use the flags below to control which apps are applied. Add <code>-y</code> to auto-add hosts and <code>-d</code> to attach logs (Ctrl-C to exit).</p>
