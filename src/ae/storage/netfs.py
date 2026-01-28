@@ -626,7 +626,8 @@ class NetFSManager:
                 return Path(str(path))
         csi = pv_spec.get("csi") if isinstance(pv_spec, dict) else None
         if isinstance(csi, dict):
-            attrs = csi.get("volumeAttributes") if isinstance(csi.get("volumeAttributes"), dict) else {}
+            raw_attrs = csi.get("volumeAttributes")
+            attrs = raw_attrs if isinstance(raw_attrs, dict) else {}
             device = attrs.get("devicePath") or attrs.get("device_path")
             if device:
                 return Path(str(device))

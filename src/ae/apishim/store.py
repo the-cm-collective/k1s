@@ -21,6 +21,8 @@ except Exception:  # pragma: no cover - optional dependency
     psycopg = None  # type: ignore
     dict_row = None  # type: ignore
 
+from ae.resources import loader as resource_loader
+
 DB_PATH_DEFAULT = Path(os.getenv("AE_APISHIM_DB", "state/apishim.db"))
 QUEUE_SIZE_DEFAULT = int(os.getenv("AE_APISHIM_WATCH_QUEUE_SIZE", "1024") or "1024")
 
@@ -113,22 +115,7 @@ class ObjectStore:
         self._conn.row_factory = sqlite3.Row
         with self._conn:
             self._conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS objects (
-                  grp TEXT NOT NULL,
-                  ver TEXT NOT NULL,
-                  res TEXT NOT NULL,
-                  ns  TEXT NOT NULL,
-                  name TEXT NOT NULL,
-                  metadata TEXT NOT NULL,
-                  spec TEXT NOT NULL,
-                  status TEXT NOT NULL,
-                  rv INTEGER NOT NULL,
-                  created_at REAL NOT NULL,
-                  updated_at REAL NOT NULL,
-                  PRIMARY KEY (grp, ver, res, ns, name)
-                )
-                """
+                resource_loader.load_text("sql", "apishim", "create_objects_sqlite.sql")
             )
 
     def _init_pg(self) -> None:
@@ -136,42 +123,9 @@ class ObjectStore:
         self.backend = "postgres"
         self._conn = psycopg.connect(self._dsn, autocommit=True, row_factory=dict_row)  # type: ignore[arg-type]
         with self._conn.cursor() as cur:  # type: ignore[union-attr]
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS objects (
-                  grp TEXT NOT NULL,
-                  ver TEXT NOT NULL,
-                  res TEXT NOT NULL,
-                  ns  TEXT NOT NULL,
-                  name TEXT NOT NULL,
-                  metadata TEXT NOT NULL,
-                  spec TEXT NOT NULL,
-                  status TEXT NOT NULL,
-                  rv BIGINT NOT NULL,
-                  created_at DOUBLE PRECISION NOT NULL,
-                  updated_at DOUBLE PRECISION NOT NULL,
-                  PRIMARY KEY (grp, ver, res, ns, name)
-                )
-                """
-            )
+            cur.execute(resource_loader.load_text("sql", "apishim", "create_objects_pg.sql"))
             cur.execute("CREATE SEQUENCE IF NOT EXISTS apishim_rv_seq START WITH 1 INCREMENT BY 1")
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS watch_events (
-                  id BIGSERIAL PRIMARY KEY,
-                  source TEXT NOT NULL,
-                  grp TEXT NOT NULL,
-                  ver TEXT NOT NULL,
-                  res TEXT NOT NULL,
-                  ns TEXT NOT NULL,
-                  name TEXT NOT NULL,
-                  ev_type TEXT NOT NULL,
-                  rv BIGINT NOT NULL,
-                  payload TEXT NOT NULL,
-                  created_at DOUBLE PRECISION NOT NULL
-                )
-                """
-            )
+            cur.execute(resource_loader.load_text("sql", "apishim", "create_watch_events_pg.sql"))
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS watch_events_created_idx ON watch_events (created_at)"
             )
@@ -190,10 +144,9 @@ class ObjectStore:
     def _fetch_outbox_max_id(self) -> int:
         if not self._outbox_enabled:
             return 0
-        with self._lock:
-            with self._conn.cursor() as cur:  # type: ignore[union-attr]
-                cur.execute("SELECT COALESCE(MAX(id), 0) AS m FROM watch_events")
-                row = cur.fetchone()
+        with self._lock, self._conn.cursor() as cur:  # type: ignore[union-attr]
+            cur.execute("SELECT COALESCE(MAX(id), 0) AS m FROM watch_events")
+            row = cur.fetchone()
         try:
             return int(row["m"]) if row else 0
         except Exception:
@@ -202,19 +155,18 @@ class ObjectStore:
     def _fetch_outbox_since(self, last_id: int) -> list[dict[str, Any]]:
         if not self._outbox_enabled:
             return []
-        with self._lock:
-            with self._conn.cursor() as cur:  # type: ignore[union-attr]
-                cur.execute(
-                    """
-                    SELECT id, source, grp, ver, res, ns, name, ev_type, rv, payload
-                    FROM watch_events
-                    WHERE id > %s
-                    ORDER BY id
-                    LIMIT %s
-                    """,
-                    (last_id, self._outbox_batch),
-                )
-                rows = cur.fetchall()
+        with self._lock, self._conn.cursor() as cur:  # type: ignore[union-attr]
+            cur.execute(
+                """
+                SELECT id, source, grp, ver, res, ns, name, ev_type, rv, payload
+                FROM watch_events
+                WHERE id > %s
+                ORDER BY id
+                LIMIT %s
+                """,
+                (last_id, self._outbox_batch),
+            )
+            rows = cur.fetchall()
         return list(rows or [])
 
     def _cleanup_outbox(self, now: float | None = None) -> None:
@@ -222,9 +174,8 @@ class ObjectStore:
             return
         now = now or time.time()
         cutoff = now - self._outbox_ttl
-        with self._lock:
-            with self._conn.cursor() as cur:  # type: ignore[union-attr]
-                cur.execute("DELETE FROM watch_events WHERE created_at < %s", (cutoff,))
+        with self._lock, self._conn.cursor() as cur:  # type: ignore[union-attr]
+            cur.execute("DELETE FROM watch_events WHERE created_at < %s", (cutoff,))
 
     def _poll_outbox(self) -> None:
         last_cleanup = time.time()
@@ -233,10 +184,14 @@ class ObjectStore:
                 rows = self._fetch_outbox_since(self._outbox_last_id)
                 if rows:
                     for row in rows:
+                        row_id = None
                         try:
-                            self._outbox_last_id = max(self._outbox_last_id, int(row["id"]))
+                            row_id = int(row["id"])
                         except Exception:
+                            row_id = None
+                        if row_id is None:
                             continue
+                        self._outbox_last_id = max(self._outbox_last_id, row_id)
                         if row.get("source") == self._outbox_source_id:
                             self._metrics_outbox_skipped += 1
                             continue
@@ -688,27 +643,26 @@ class ObjectStore:
         )
         ns_val = obj.namespace or ""
         try:
-            with self._lock:
-                with self._conn.cursor() as cur:  # type: ignore[union-attr]
-                    cur.execute(
-                        """
-                        INSERT INTO watch_events
-                          (source, grp, ver, res, ns, name, ev_type, rv, payload, created_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            self._outbox_source_id,
-                            obj.group,
-                            obj.version,
-                            obj.resource,
-                            ns_val,
-                            obj.name,
-                            ev_type,
-                            int(obj.resource_version),
-                            payload,
-                            self._now(),
-                        ),
-                    )
+            with self._lock, self._conn.cursor() as cur:  # type: ignore[union-attr]
+                cur.execute(
+                    """
+                    INSERT INTO watch_events
+                      (source, grp, ver, res, ns, name, ev_type, rv, payload, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        self._outbox_source_id,
+                        obj.group,
+                        obj.version,
+                        obj.resource,
+                        ns_val,
+                        obj.name,
+                        ev_type,
+                        int(obj.resource_version),
+                        payload,
+                        self._now(),
+                    ),
+                )
             self._metrics_outbox_enqueued += 1
         except Exception:
             self._metrics_outbox_errors += 1

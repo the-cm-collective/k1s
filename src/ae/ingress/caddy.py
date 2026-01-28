@@ -169,10 +169,9 @@ class CaddyIngressManager:
         ]
         try:
             proc = subprocess.run(  # noqa: S603,S607 - fixed binaries; shell disabled
-                cmd,
+                cmd,  # noqa: S603
                 check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
             )
         except FileNotFoundError:
             return None
@@ -193,7 +192,7 @@ class CaddyIngressManager:
         except subprocess.TimeoutExpired as exc:
             LOGGER.error("Caddy reload timed out after %.1fs", (self._reload_timeout or 0))
             raise RuntimeError("Caddy reload timed out") from exc
-        except subprocess.CalledProcessError as exc:
+        except subprocess.CalledProcessError:
             if run_adapt:
                 raise
             raise
