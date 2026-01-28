@@ -5502,7 +5502,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         var hexH = baseHexH * hexScale;
         var labelGap = hexH * 0.14;
         var labelLift = hexH * 0.11;
-        var labelPadX = Math.max(10, hexW * 0.14);
 
         var nodes = [];
         var nodeById = {};
@@ -5579,15 +5578,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         } catch(e){}
 
         var hostCenter = {x: W*0.52, y: 70};
-        var systemCenter = {x: W*0.22, y: 150};
+        var baseSystemCenter = {x: W*0.22, y: 150};
+        var systemShiftY = hexH * 0.25;
+        var systemCenter = {x: baseSystemCenter.x, y: baseSystemCenter.y + systemShiftY};
         var leftX = Math.max(padX + hexW*1.4, W*0.24);
         var rightX = Math.min(W - padX - hexW*1.4, W*0.76);
-        var nsRowY = systemCenter.y + hexH * 2.2;
+        var nsRowY = baseSystemCenter.y + hexH * 2.2;
 
         if (narrow){
           hostCenter = {x: W*0.5, y: 70};
-          systemCenter = {x: W*0.5, y: hostCenter.y + hexH*1.3};
-          nsRowY = systemCenter.y + hexH*1.9;
+          baseSystemCenter = {x: W*0.5, y: hostCenter.y + hexH*1.3};
+          systemCenter = {x: baseSystemCenter.x, y: baseSystemCenter.y + systemShiftY};
+          nsRowY = baseSystemCenter.y + hexH*1.9;
           leftX = W*0.5;
           rightX = W*0.5;
         }
@@ -5701,7 +5703,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             appNodes.push(node);
           });
           var c = namespaceColors(ns);
-          var labelX = (minX != null) ? (minX - labelPadX) : center.x;
+          var labelShift = hexW * 0.25;
+          var labelX = (minX != null) ? (minX - labelShift) : center.x;
           var labelY = (minY != null)
             ? (minY - hexH * 0.5 - labelGap - labelLift)
             : (center.y - hexH*0.78 - labelGap - labelLift);
