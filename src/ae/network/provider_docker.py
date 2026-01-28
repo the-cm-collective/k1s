@@ -1,7 +1,7 @@
-"""Docker bridge provider for Service VIPs (Phase 1 stub).
+"""Docker bridge provider for Service VIPs.
 
 This provider focuses on single-node Service IP allocation and network creation.
-Dataplane (proxy) wiring is intentionally minimal; it will be expanded in Phase 1/2.
+Dataplane (proxy) wiring is intentionally minimal for lightweight setups.
 """
 
 from __future__ import annotations
