@@ -37,6 +37,9 @@ ae-node = "ae.node.server:main"
 [tool.setuptools]
 package-dir = {"" = "src"}
 
+[tool.setuptools.package-data]
+"ae.resources" = ["**/*.html", "**/*.md", "**/*.txt", "**/*.sql"]
+
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.in"]}
 

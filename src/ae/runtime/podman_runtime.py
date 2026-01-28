@@ -788,8 +788,8 @@ class PodmanRuntime(RuntimeAdapter):
             def recv(self, n: int) -> bytes:
                 try:
                     return os.read(self._fd, n)
-                except BlockingIOError:
-                    raise TimeoutError
+                except BlockingIOError as err:
+                    raise TimeoutError from err
 
             def sendall(self, data: bytes) -> None:
                 os.write(self._fd, data)

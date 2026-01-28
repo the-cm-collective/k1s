@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -161,11 +161,9 @@ class CRIRuntime(RuntimeAdapter):
         self._ensure_clients()
         removed = 0
         for pod in self._list_pods(app_name):
-            try:
+            with contextlib.suppress(Exception):
                 self._stop_and_remove_pod(None, pod)
                 removed += 1
-            except Exception:
-                continue
         return removed
 
     def remove_old_revisions(self, app_name: str, keep_revision: int) -> int:
@@ -175,11 +173,9 @@ class CRIRuntime(RuntimeAdapter):
             labels = self._pod_labels(pod)
             if labels.get(self.REVISION_LABEL) == str(keep_revision):
                 continue
-            try:
+            with contextlib.suppress(Exception):
                 self._stop_and_remove_pod(None, pod)
                 removed += 1
-            except Exception:
-                continue
         return removed
 
     def list_containers_info(self) -> list[dict]:
@@ -188,7 +184,7 @@ class CRIRuntime(RuntimeAdapter):
         pods = self._list_pods()
         host_ip = os.getenv("AE_NODE_ADVERTISE_IP") or "127.0.0.1"
         for pod in pods:
-            try:
+            with contextlib.suppress(Exception):
                 labels = self._pod_labels(pod)
                 replica_id = labels.get(self.REPLICA_LABEL) or self._pod_name(pod)
                 pod_id = getattr(pod, "id", None) or getattr(pod, "pod_sandbox_id", None)
@@ -218,8 +214,6 @@ class CRIRuntime(RuntimeAdapter):
                         "pod_ip": pod_ip,
                     }
                 )
-            except Exception:
-                continue
         return out
 
     def exec(self, replica_id: str, command: list[str], *, timeout: int | None = None) -> int:
@@ -265,7 +259,7 @@ class CRIRuntime(RuntimeAdapter):
         args.extend([str(x) for x in command])
         stderr = subprocess.STDOUT if tty else subprocess.PIPE
         proc = subprocess.Popen(  # noqa: S603 - crictl command with fixed args
-            args,
+            args,  # noqa: S603
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=stderr,
@@ -294,11 +288,9 @@ class CRIRuntime(RuntimeAdapter):
                         except Exception:
                             break
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     if proc.stdin:
                         proc.stdin.close()
-                except Exception:
-                    pass
 
         def _pump_stream(stream, stream_type: int | None) -> None:
             if not stream:
@@ -316,10 +308,8 @@ class CRIRuntime(RuntimeAdapter):
                     except Exception:
                         break
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     stream.close()
-                except Exception:
-                    pass
 
         def _watch() -> None:
             code = 0
@@ -375,13 +365,11 @@ class CRIRuntime(RuntimeAdapter):
             return results
         self._ensure_clients()
 
-        try:
+        with contextlib.suppress(Exception):
             if getattr(manifest.spec, "storage", None):
                 self.ensure_storage_volumes(
                     app_key_for_manifest(manifest), [s.model_dump() for s in manifest.spec.storage]
                 )
-        except Exception:
-            pass
 
         app_name = app_key_for_manifest(manifest)
         ns, _ = split_app_key(app_name)
@@ -396,10 +384,8 @@ class CRIRuntime(RuntimeAdapter):
             timeout = self._parse_timeout(
                 self._spec_value(spec, "timeout_seconds", "timeoutSeconds")
             )
-            try:
+            with contextlib.suppress(Exception):
                 self._ensure_image(str(image))
-            except Exception:
-                pass
 
             pod_name = f"{app_name}-init-{name}-{uuid.uuid4().hex[:8]}"
             pod_uid = self._pod_uid(pod_name, ns)
@@ -450,13 +436,11 @@ class CRIRuntime(RuntimeAdapter):
                 )
                 exit_code = self._wait_container_exit(container_id, timeout)
                 if exit_code is None:
-                    try:
+                    with contextlib.suppress(Exception):
                         self._runtime_call(
                             "StopContainer",
                             pb2.StopContainerRequest(container_id=container_id, timeout=0),
                         )
-                    except Exception:
-                        pass
                     results.append((str(name), 124, "timeout"))
                 else:
                     msg = "ok" if exit_code == 0 else "failed"
@@ -464,26 +448,20 @@ class CRIRuntime(RuntimeAdapter):
             except Exception as exc:
                 results.append((str(name), 1, f"error: {exc}"))
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     if container_id:
                         self._runtime_call(
                             "RemoveContainer", pb2.RemoveContainerRequest(container_id=container_id)
                         )
-                except Exception:
-                    pass
-                try:
+                with contextlib.suppress(Exception):
                     self._runtime_call(
                         "StopPodSandbox", pb2.StopPodSandboxRequest(pod_sandbox_id=str(pod_id))
                     )
-                except Exception:
-                    pass
-                try:
+                with contextlib.suppress(Exception):
                     self._runtime_call(
                         "RemovePodSandbox",
                         pb2.RemovePodSandboxRequest(pod_sandbox_id=str(pod_id)),
                     )
-                except Exception:
-                    pass
         return results
 
     # Storage lifecycle ------------------------------------------------
@@ -504,20 +482,21 @@ class CRIRuntime(RuntimeAdapter):
         removed = 0
         for n in names or []:
             path = root / app_name / str(n)
-            try:
-                if path.exists():
-                    for child in path.rglob("*"):
-                        try:
-                            if child.is_file() or child.is_symlink():
-                                child.unlink()
-                            elif child.is_dir():
-                                child.rmdir()
-                        except Exception:
-                            continue
+            with contextlib.suppress(Exception):
+                if not path.exists():
+                    continue
+                for child in path.rglob("*"):
+                    with contextlib.suppress(Exception):
+                        if child.is_file() or child.is_symlink():
+                            child.unlink()
+                        elif child.is_dir():
+                            child.rmdir()
+                removed_flag = False
+                with contextlib.suppress(Exception):
                     path.rmdir()
+                    removed_flag = True
+                if removed_flag:
                     removed += 1
-            except Exception:
-                continue
         return removed
 
     def list_storage_volumes(self, app_name: str | None = None) -> list[dict]:
@@ -711,14 +690,12 @@ class CRIRuntime(RuntimeAdapter):
     def _ensure_image(self, image_ref: str) -> None:
         pb2 = self._pb2()
         spec = pb2.ImageSpec(image=str(image_ref))
-        try:
+        with contextlib.suppress(Exception):
             status = self._images_call(
                 "ImageStatus", pb2.ImageStatusRequest(image=spec, verbose=False)
             )
             if getattr(status, "image", None):
                 return
-        except Exception:
-            pass
         auth = self._image_pull_auth(image_ref)
         req = pb2.PullImageRequest(image=spec)
         if auth is not None:
@@ -888,7 +865,7 @@ class CRIRuntime(RuntimeAdapter):
             return
         pb2 = self._pb2()
         existing: dict[str, Any] = {}
-        try:
+        with contextlib.suppress(Exception):
             flt = pb2.ContainerFilter(pod_sandbox_id=str(pod_id))
             resp = self._runtime_call("ListContainers", pb2.ListContainersRequest(filter=flt))
             containers = list(getattr(resp, "containers", None) or [])
@@ -897,8 +874,6 @@ class CRIRuntime(RuntimeAdapter):
                 cname = labels.get(self.CONTAINER_LABEL)
                 if cname and cname != "main":
                     existing[str(cname)] = c
-        except Exception:
-            existing = {}
 
         for spec in sidecars:
             cname = self._spec_value(spec, "name")
@@ -909,26 +884,20 @@ class CRIRuntime(RuntimeAdapter):
                 status = self._container_status(container.id)
                 if status is not None and self._is_container_running(status):
                     continue
-                try:
+                with contextlib.suppress(Exception):
                     self._runtime_call(
                         "StopContainer",
                         pb2.StopContainerRequest(container_id=container.id, timeout=0),
                     )
-                except Exception:
-                    pass
-                try:
+                with contextlib.suppress(Exception):
                     self._runtime_call(
                         "RemoveContainer", pb2.RemoveContainerRequest(container_id=container.id)
                     )
-                except Exception:
-                    pass
             image = self._spec_value(spec, "image")
             if not image:
                 continue
-            try:
+            with contextlib.suppress(Exception):
                 self._ensure_image(str(image))
-            except Exception:
-                pass
             config = self._container_config_for_spec(
                 manifest,
                 spec,
@@ -939,11 +908,9 @@ class CRIRuntime(RuntimeAdapter):
                 is_main=False,
             )
             pod_meta = None
-            try:
+            with contextlib.suppress(Exception):
                 pod_status = self._pod_status(str(pod_id))
                 pod_meta = getattr(pod_status, "metadata", None)
-            except Exception:
-                pod_meta = None
             if not pod_meta or not getattr(pod_meta, "uid", None):
                 app_name = app_key_for_manifest(manifest)
                 ns, _ = split_app_key(app_name)
@@ -1027,28 +994,20 @@ class CRIRuntime(RuntimeAdapter):
             except Exception:
                 timeout = 10
         for c in containers:
-            try:
+            with contextlib.suppress(Exception):
                 self._runtime_call(
                     "StopContainer", pb2.StopContainerRequest(container_id=c.id, timeout=timeout)
                 )
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 self._runtime_call("RemoveContainer", pb2.RemoveContainerRequest(container_id=c.id))
-            except Exception:
-                pass
-        try:
+        with contextlib.suppress(Exception):
             self._runtime_call(
                 "StopPodSandbox", pb2.StopPodSandboxRequest(pod_sandbox_id=str(pod_id))
             )
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             self._runtime_call(
                 "RemovePodSandbox", pb2.RemovePodSandboxRequest(pod_sandbox_id=str(pod_id))
             )
-        except Exception:
-            pass
 
     def _container_config(
         self,
@@ -1140,7 +1099,7 @@ class CRIRuntime(RuntimeAdapter):
         pb2 = self._pb2()
         mounts: list[Any] = []
         for v in manifest.spec.volumes or []:
-            try:
+            with contextlib.suppress(Exception):
                 host_path = getattr(v, "host_path", None)
                 if host_path and not os.path.isabs(host_path):
                     host_path = os.path.abspath(host_path)
@@ -1151,8 +1110,6 @@ class CRIRuntime(RuntimeAdapter):
                         readonly=bool(getattr(v, "read_only", False)),
                     )
                 )
-            except Exception:
-                continue
         if getattr(manifest.spec, "storage", None):
             self.ensure_storage_volumes(app_name, [s.model_dump() for s in manifest.spec.storage])
             for s in manifest.spec.storage:
@@ -1168,7 +1125,7 @@ class CRIRuntime(RuntimeAdapter):
         pmounts = self._spec_value(spec, "projection_mounts", "projectionMounts") or []
         if projection_root and pmounts:
             for pm in pmounts:
-                try:
+                with contextlib.suppress(Exception):
                     rel = self._spec_value(pm, "path")
                     mnt = self._spec_value(pm, "mount_path", "mountPath")
                     ro = self._spec_value(pm, "read_only", "readOnly")
@@ -1182,8 +1139,6 @@ class CRIRuntime(RuntimeAdapter):
                             readonly=bool(ro if ro is not None else True),
                         )
                     )
-                except Exception:
-                    continue
         return mounts
 
     def _build_resources_from_spec(self, spec: Any):
@@ -1228,23 +1183,19 @@ class CRIRuntime(RuntimeAdapter):
             try:
                 ctx.run_as_user.value = int(run_as_user)
             except Exception:
-                try:
+                with contextlib.suppress(Exception):
                     from google.protobuf.wrappers_pb2 import Int64Value
 
                     ctx.run_as_user.CopyFrom(Int64Value(value=int(run_as_user)))
-                except Exception:
-                    pass
         run_as_group = self._spec_value(sec, "run_as_group", "runAsGroup")
         if run_as_group is not None:
             try:
                 ctx.run_as_group.value = int(run_as_group)
             except Exception:
-                try:
+                with contextlib.suppress(Exception):
                     from google.protobuf.wrappers_pb2 import Int64Value
 
                     ctx.run_as_group.CopyFrom(Int64Value(value=int(run_as_group)))
-                except Exception:
-                    pass
         if bool(self._spec_value(sec, "read_only_root", "readOnlyRootFilesystem")):
             ctx.readonly_rootfs = True
         drops = list(self._spec_value(sec, "drop_caps", "dropCapabilities") or [])
@@ -1278,10 +1229,9 @@ class CRIRuntime(RuntimeAdapter):
                 started_at = self._timestamp_dt(getattr(c_status, "started_at", None))
                 finished_at = self._timestamp_dt(getattr(c_status, "finished_at", None))
                 is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
-                if is_job:
-                    ready = exit_code == 0 and status == "exited"
-                else:
-                    ready = status == "running"
+                ready = (
+                    exit_code == 0 and status == "exited" if is_job else status == "running"
+                )
             endpoint = self._endpoint_for_manifest(manifest, pod_ip)
             states.append(
                 ReplicaState(
@@ -1364,7 +1314,7 @@ class CRIRuntime(RuntimeAdapter):
 
         if getattr(svc, "ports", None):
             for sp in svc.ports:
-                try:
+                with contextlib.suppress(Exception):
                     target = getattr(sp, "target_port", None)
                     if target is None:
                         name = getattr(sp, "name", None)
@@ -1379,8 +1329,6 @@ class CRIRuntime(RuntimeAdapter):
                     if host_port is None:
                         continue
                     add_mapping(int(target), int(host_port), str(getattr(sp, "protocol", "TCP")))
-                except Exception:
-                    continue
         elif getattr(svc, "port", None) is not None:
             target = getattr(svc, "target_port", None)
             if target is None:
@@ -1408,11 +1356,9 @@ class CRIRuntime(RuntimeAdapter):
     def _projection_host_root(self, manifest: AppManifest, app_name: str) -> str | None:
         mount_root = f"/var/run/ae/config/{app_name}"
         for v in manifest.spec.volumes or []:
-            try:
+            with contextlib.suppress(Exception):
                 if str(getattr(v, "mount_path", "")).startswith(mount_root):
                     return str(getattr(v, "host_path", ""))
-            except Exception:
-                continue
         return None
 
     def _pod_log_dir(self, namespace: str | None, replica_id: str, uid: str) -> str:
@@ -1443,7 +1389,7 @@ class CRIRuntime(RuntimeAdapter):
         if raw is None:
             return None
         try:
-            return datetime.fromtimestamp(int(raw) / 1_000_000_000, tz=timezone.utc)
+            return datetime.fromtimestamp(int(raw) / 1_000_000_000, tz=UTC)
         except Exception:
             return None
 
@@ -1486,10 +1432,7 @@ class CRIRuntime(RuntimeAdapter):
 
         def reader():
             with fh:
-                if tail is not None:
-                    lines = fh.readlines()[-int(tail) :]
-                else:
-                    lines = fh.readlines()
+                lines = fh.readlines()[-int(tail) :] if tail is not None else fh.readlines()
                 for line in lines:
                     if since is not None:
                         ts = parse_time(line)
