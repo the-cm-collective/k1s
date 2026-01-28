@@ -45,6 +45,8 @@ def test_daemonset_status_reflects_nodes(tmp_path):
     # Register two nodes so desiredNumberScheduled matches
     state.upsert_node("n1", name="node1", labels={"zone": "a"})
     state.upsert_node("n2", name="node2", labels={"zone": "b"})
+    state.record_heartbeat("n1", "Ready")
+    state.record_heartbeat("n2", "Ready")
 
     md = {"name": "agent", "namespace": "default"}
     spec = {

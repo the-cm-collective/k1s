@@ -4,6 +4,7 @@ This guide summarizes the demo modes and example manifests available in `specs/e
 
 Tip
 - When running demos that read secrets, pass `--with-secrets-env` to `init_demo.sh` to export `AE_ALLOW_PLAINTEXT_SECRETS=1` and `SOPS_AGE_KEY_FILE=~/.config/ae/keys.txt` for the session.
+- Demo/labs auto-register a local node by default (`AE_REGISTER_LOCAL_NODE=1`) so single-node runs behave like a ready Kubernetes node; unset it to enforce strict “no nodes, no scheduling.”
 
 ## Demo script overview
 

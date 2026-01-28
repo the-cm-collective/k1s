@@ -12,6 +12,7 @@ Setup
     - `AE_SPECS_DIR=state/demo-specs make loop` (watches only the curated set)
     - `AE_SPECS_DIR=state/demo-specs make run` (single reconcile pass)
 - Tip: `scripts/init_demo.sh` seeds `state/demo-specs` and exports `AE_SPECS_DIR` + `AE_DEMO_MODE=1` for demo runs.
+  - Demo convenience: `AE_REGISTER_LOCAL_NODE=1` registers a local node when no nodes are present (keeps demo/labs single-node runs working while preserving Kubernetes scheduling semantics by default).
   - Reset state quickly when switching contexts: `./scripts/init_demo.sh --reset` (deletes `state/controller.db` and `state/projections/`).
   - Registry cache: `./scripts/init_demo.sh --reset-registry-cache` (clears `state/registry` to force re-pull into the local cache).
 - SOPS/age (secrets):

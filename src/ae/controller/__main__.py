@@ -110,6 +110,8 @@ def _local_node_id() -> str:
 def _register_local_node(store: SQLiteStateStore, runtime_backend: str) -> None:
     """Best-effort local node registration for single-controller setups."""
     try:
+        if store.list_nodes():
+            return
         node_id = _local_node_id()
         name = os.getenv("AE_NODE_NAME", node_id)
         store.upsert_node(
@@ -125,6 +127,11 @@ def _register_local_node(store: SQLiteStateStore, runtime_backend: str) -> None:
         store.record_heartbeat(node_id, "Ready")
     except Exception:
         pass
+
+
+def _truthy_env(name: str, default: str = "0") -> bool:
+    raw = os.getenv(name, default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -826,7 +833,8 @@ def _make_reconciler() -> Reconciler:
     secrets = secret_manager_factory()
     configs = config_manager_factory()
     svc_controller = service_controller_factory(store)
-    _register_local_node(store, runtime.__class__.__name__.lower())
+    if _truthy_env("AE_REGISTER_LOCAL_NODE"):
+        _register_local_node(store, runtime.__class__.__name__.lower())
     return Reconciler(
         runtime,
         store,
