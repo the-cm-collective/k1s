@@ -3859,7 +3859,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                   .node.pod.pending circle { fill:#f59e0b; stroke:#fde68a; filter: drop-shadow(0 0 6px rgba(245,158,11,0.35)); }
                   .link { stroke:rgba(148,163,184,0.55); stroke-width:1.4; fill:none; marker-end:url(#arrow); }
                   .link.flow { stroke-dasharray:6 6; }
-                  .link.trace { stroke:rgba(148,163,184,0.45); stroke-dasharray:4 6; marker-end:none; }
+                  .link.trace { stroke:rgba(245,197,66,0.9); stroke-width:1.6; stroke-dasharray:4 6; marker-end:none; filter: drop-shadow(0 0 4px rgba(245,197,66,0.35)); }
+                  .link.host-flow { stroke:rgba(203,213,225,0.8); }
                   .flow-fwd { animation: flow 1.8s linear infinite; }
                   .flow-rev { animation: flow 1.8s linear infinite reverse; }
                   .selected .hex-outer, .selected circle { stroke-width:6 !important; filter: drop-shadow(0 0 6px rgba(96,165,250,0.6)); }
@@ -5493,11 +5494,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if (graphHover) { graphHover.style.display='none'; }
         var wrapEl = document.getElementById('graph-wrap');
         var W = svg.clientWidth || (wrapEl ? wrapEl.clientWidth : 1000) || 1000;
-        var padX = 40, padY = 30;
+        var padX = 40, padY = 40;
         var baseHexW = 96.994;
         var baseHexH = 112;
         var narrow = W < 760;
-        var hexScale = W < 520 ? 0.6 : (narrow ? 0.68 : 0.82);
+        var hexScale = W < 520 ? 0.58 : (narrow ? 0.64 : 0.82);
         var hexW = baseHexW * hexScale;
         var hexH = baseHexH * hexScale;
         var labelGap = hexH * 0.14;
@@ -5598,8 +5599,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           }
         } catch(e){}
 
-        var hostCenter = {x: W*0.52, y: 70};
-        var baseSystemCenter = {x: W*0.22, y: 150};
+        var hostCenter = {x: W*0.52, y: 82};
+        var baseSystemCenter = {x: W*0.22, y: 162};
         var systemShiftY = hexH * 0.25;
         var systemCenter = {x: baseSystemCenter.x, y: baseSystemCenter.y + systemShiftY};
         var leftX = Math.max(padX + hexW*1.4, W*0.24);
@@ -5607,7 +5608,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         var nsRowY = baseSystemCenter.y + hexH * 2.2;
 
         if (narrow){
-          hostCenter = {x: W*0.5, y: 70};
+          hostCenter = {x: W*0.5, y: 82};
           baseSystemCenter = {x: W*0.5, y: hostCenter.y + hexH*1.3};
           systemCenter = {x: baseSystemCenter.x, y: baseSystemCenter.y + systemShiftY};
           nsRowY = baseSystemCenter.y + hexH*1.9;
@@ -5657,7 +5658,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           if (nsOrder.length > 0) {
             var nsClusterGapX = Math.max(hexW * 3.2, 260);
             var nsClusterGapY = hexH * 1.05;
-            var defaultX = clamp(hostCenter.x - nsClusterGapX * 0.55, padX + hexW, W - padX - hexW);
+            var defaultX = clamp(hostCenter.x - nsClusterGapX * 0.38, padX + hexW, W - padX - hexW);
             var defaultY = nsRowY + nsClusterGapY * 0.85;
             nsCenters[nsOrder[0]] = {x: defaultX, y: defaultY};
           }
@@ -5665,6 +5666,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             var demoX = clamp(hostCenter.x + Math.max(hexW * 3.0, 260), padX + hexW, rightX);
             var demoY = nsRowY - hexH * 0.1;
             nsCenters[nsOrder[1]] = {x: demoX, y: demoY};
+            if (nsOrder[0] === 'default' && nsOrder[1] === 'demo-helm') {
+              var systemRight = null;
+              sysIds.forEach(function(id){
+                var n = nodeById[id];
+                if (!n) return;
+                var right = n.x + hexW * 0.58;
+                systemRight = (systemRight == null) ? right : Math.max(systemRight, right);
+              });
+              var demoLeft = demoX - hexW * 0.58;
+              if (systemRight != null) {
+                var midpoint = (systemRight + demoLeft) * 0.5;
+                var baseDefaultX = nsCenters[nsOrder[0]].x;
+                var newDefaultX = clamp(midpoint, padX + hexW, W - padX - hexW);
+                var delta = newDefaultX - baseDefaultX;
+                nsCenters[nsOrder[0]].x = newDefaultX;
+                nsCenters[nsOrder[1]].x = clamp(demoX + delta, padX + hexW, W - padX - hexW);
+              }
+            }
           }
           if (nsOrder.length > 2) {
             var extraNs = nsOrder.slice(2);
@@ -5782,7 +5801,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           }
         });
 
-        var busXBase = systemBounds ? (systemBounds.maxX + hexW * 0.55) : (systemCenter.x + hexW * 1.4);
+        var busXBase = systemBounds ? (systemBounds.maxX + hexW * 0.7) : (systemCenter.x + hexW * 1.4);
         var ingressBusX = busXBase;
         var runtimeBusX = busXBase + Math.max(8, hexW * 0.12);
         var labelBottom = labelBounds ? labelBounds.maxY : null;
@@ -5795,6 +5814,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           } else {
             upperBase = (upperLow + upperHigh) * 0.5;
           }
+          var upperMin = Math.min(upperLow, upperHigh);
+          var upperMax = Math.max(upperLow, upperHigh);
+          upperBase = clamp(upperBase - hexH * 0.12, upperMin, upperMax);
         }
         var lowerBase = null;
         if (bottomApexMax != null) {
@@ -5921,21 +5943,27 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var dirY = faceDirs[startIndex].y;
           var startDist = hexH * 0.525 * 0.9;
           var traceLen = hexH * 0.525 * 0.9;
-          var startX = n.x + dirX * startDist;
-          var startY = n.y + dirY * startDist;
-          var endX = n.x + dirX * (startDist + traceLen);
-          var endY = n.y + dirY * (startDist + traceLen);
-          var state = Number(n.meta.ready||0) > 0 ? 'ready' : 'pending';
-          var podId = 'pod:' + n.meta.app;
-          addNode(podId, state, 'pod', endX, endY, {app:n.meta.app, ns:n.meta.ns, state:state});
-          link(n.id, podId, 'trace', {kind:'trace', start:{x:startX,y:startY}, end:{x:endX,y:endY}});
+          var readyCount = Math.max(0, Number(n.meta.ready || 0));
+          var desiredCount = Math.max(0, Number(n.meta.desired || 0));
+          var replicas = Math.max(1, desiredCount || readyCount || 1);
+          var perpX = -dirY;
+          var perpY = dirX;
+          var spacing = Math.max(8, hexW * 0.12);
+          for (var ri=0; ri<replicas; ri++){
+            var offset = (ri - (replicas - 1) / 2) * spacing;
+            var startX = n.x + dirX * startDist + perpX * offset;
+            var startY = n.y + dirY * startDist + perpY * offset;
+            var endX = n.x + dirX * (startDist + traceLen) + perpX * offset;
+            var endY = n.y + dirY * (startDist + traceLen) + perpY * offset;
+            var state = ri < readyCount ? 'ready' : 'pending';
+            var podId = 'pod:' + n.meta.app + ':' + ri;
+            addNode(podId, state, 'pod', endX, endY, {app:n.meta.app, ns:n.meta.ns, state:state});
+            link(n.id, podId, 'trace', {kind:'trace', start:{x:startX,y:startY}, end:{x:endX,y:endY}});
+          }
         });
 
         var hasIngress = !!(sys.ingress && (sys.ingress.sites||[]).length);
         link('host','controller','flow', {special:'host-flow'});
-        if (hasIngress) link('dns','ingress','flow');
-        link('controller','runtime','flow');
-        if (hasIngress) link('controller','ingress','flow');
         appNodes.forEach(function(n){
           if (nodeById.ingress) link('ingress', n.id, 'flow', {route:'ingress'});
           if (nodeById.runtime) link('runtime', n.id, 'flow', {route:'runtime'});
@@ -6242,6 +6270,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var stub = hexH * 0.28;
           var s1 = startDir ? {x: start.x + startDir.x * stub, y: start.y + startDir.y * stub} : {x:start.x, y:start.y};
           var e1 = endDir ? {x: end.x - endDir.x * stub, y: end.y - endDir.y * stub} : {x:end.x, y:end.y};
+          if (busX < s1.x + hexW * 0.08) {
+            busX = s1.x + hexW * 0.08;
+          }
+          if (narrow) {
+            busX = Math.max(s1.x, e1.x);
+          }
 
           var obstacles = flowObstacles.filter(function(r){ return r.id !== a.id && r.id !== b.id; }).concat(flowReserved);
           var pad = Math.max(10, hexH * 0.14);
@@ -6258,10 +6292,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             ];
           }
           var candidates = [busY, busY + hexH * 0.18, busY - hexH * 0.18, busY + hexH * 0.36, busY - hexH * 0.36];
+          var minClear = hexH * 0.18;
           for (var ci=0; ci<candidates.length; ci++){
             var y = candidates[ci];
-            if (rowKind === 'top' && y >= end.y - hexH * 0.12) continue;
-            if (rowKind === 'bottom' && y <= end.y + hexH * 0.12) continue;
+            if (rowKind === 'top' && y >= end.y - minClear) continue;
+            if (rowKind === 'bottom' && y <= end.y + minClear) continue;
             var pts = buildPoints(y);
             if (pathClear(pts, obstacles, pad)) return simplifyOrth(pts);
           }
@@ -6540,6 +6575,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           var p = document.createElementNS('http://www.w3.org/2000/svg','path');
           p.setAttribute('d', d);
           var klass = 'link ' + (L.cls||'');
+          if (L.meta && L.meta.special === 'host-flow') {
+            klass += ' host-flow';
+          }
           if ((L.cls||'').indexOf('flow') !== -1){
             var dx = end.x - start.x, dy = end.y - start.y;
             var horiz = Math.abs(dx) >= Math.abs(dy);
@@ -6547,6 +6585,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             klass += forward ? ' flow-fwd' : ' flow-rev';
           }
           p.setAttribute('class', klass);
+          if (isTrace) {
+            p.setAttribute('stroke', 'rgba(245,197,66,0.9)');
+            p.setAttribute('stroke-width', '1.6');
+            p.setAttribute('stroke-dasharray', '4 6');
+            p.setAttribute('marker-end', 'none');
+          }
           p.setAttribute('stroke-linecap','round');
           p.setAttribute('fill','none');
           gLinks.appendChild(p);
@@ -6575,7 +6619,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
               faceBot:'#e2e8f0',
               patternStroke:'rgba(148,163,184,0.25)',
               patternOpacity:0.35,
-              label:'#0f172a',
+              label:'#f8fafc',
               shadowAlpha:0.25
             };
           }
@@ -6705,7 +6749,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
           gInner.appendChild(text);
           gNodes.appendChild(g);
 
-          var labelMax = hexW * 1.62;
+          var labelMax = hexW * 1.2;
           var labelInfo = fitTextToWidth(text, n.label, labelMax);
           try {
             var bb = text.getBBox();
