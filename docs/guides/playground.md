@@ -43,7 +43,7 @@ Use this page to try k1s in minutes — no Kubernetes experience required. The p
 Quick start:
 
 - Step 1: Scroll to "A. Environment & Backend", enable <strong>Controlled Actions</strong>, click <strong>Use Token</strong> to load `AE_LABS_TOKEN`, then click `Start Session`.
-- Step 2: In "B. Apply Example", choose `shell-demo` and click `Apply Selected Example`.
+- Step 2: In "B. Apply Example", choose `echo` and click `Apply Selected Example`.
 - Step 3: In "F. Ingress Test", click `Open App` to view the service, and in "C. Logs & Events" watch activity live.
 
 <div class="callout" role="note">Tip: If the page says “Labs: unavailable”, you’re in read‑only mode — verifiers still run and CLI commands are shown to try locally.</div>
@@ -161,8 +161,8 @@ Pick a sample and apply it. In read-only mode the UI shows the exact CLI you can
 
 - Example:
   - <select id="example-select">
-      <option value="shell-demo" selected>shell-demo</option>
-      <option value="echo">echo</option>
+      <option value="echo" selected>echo</option>
+      <option value="shell-demo">shell-demo</option>
       <option value="multi-replica-echo">multi-replica-echo</option>
       <option value="echo-multiport">echo-multiport</option>
       <option value="echo-hpa">echo-hpa</option>
