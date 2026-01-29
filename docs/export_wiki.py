@@ -200,30 +200,30 @@ def _render_concepts_index(slug_to_title: dict[str, str]) -> str:
                     "concepts-in-practice-02-declarative-apply",
                 ),
                 (
-                    slug_to_title.get("concepts-in-practice-03-scheduling-placement"),
-                    "concepts-in-practice-03-scheduling-placement",
+                    slug_to_title.get("concepts-in-practice-03-runtime-adapters"),
+                    "concepts-in-practice-03-runtime-adapters",
                 ),
             ],
         ),
         (
-            "Runtime & Exposure",
+            "Scheduling & Observability",
             [
                 (
-                    slug_to_title.get("concepts-in-practice-04-runtime-adapters"),
-                    "concepts-in-practice-04-runtime-adapters",
+                    slug_to_title.get("concepts-in-practice-04-scheduling-placement"),
+                    "concepts-in-practice-04-scheduling-placement",
                 ),
                 (
-                    slug_to_title.get("concepts-in-practice-05-ingress-service-exposure"),
-                    "concepts-in-practice-05-ingress-service-exposure",
+                    slug_to_title.get("concepts-in-practice-05-observability"),
+                    "concepts-in-practice-05-observability",
                 ),
             ],
         ),
         (
-            "Reliability & Rollouts",
+            "Exposure & Rollouts",
             [
                 (
-                    slug_to_title.get("concepts-in-practice-06-observability"),
-                    "concepts-in-practice-06-observability",
+                    slug_to_title.get("concepts-in-practice-06-ingress-service-exposure"),
+                    "concepts-in-practice-06-ingress-service-exposure",
                 ),
                 (
                     slug_to_title.get("concepts-in-practice-07-health-probes"),
@@ -236,7 +236,7 @@ def _render_concepts_index(slug_to_title: dict[str, str]) -> str:
             ],
         ),
         (
-            "Policy & Operations",
+            "Config & Policy",
             [
                 (
                     slug_to_title.get("concepts-in-practice-09-configuration-secrets"),
