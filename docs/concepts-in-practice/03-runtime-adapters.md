@@ -1,4 +1,4 @@
-# Chapter 04 - Runtime Adapters and Container Execution
+# Chapter 03 - Runtime Adapters and Container Execution
 
 ## Concept
 The controller defines desired state, but runtime adapters execute it. The adapter layer abstracts the container engine so the orchestration logic can remain stable while runtimes vary (Podman, Docker, CRI/containerd, or remote agents).
@@ -145,5 +145,5 @@ def runtime_factory(registry_auth: RegistryAuthProvider | None = None) -> Runtim
     return DockerRuntime(registry_auth=registry_auth)
 ```
 ## Chapter navigation
-- Prev: [Chapter 03 - Scheduling and Placement (Where Work Runs)](concepts-in-practice-03-scheduling-placement.html)
-- Next: [Chapter 05 - Ingress and Service Exposure](concepts-in-practice-05-ingress-service-exposure.html)
+- Prev: [Chapter 02 - Declarative Specs and Apply Semantics](concepts-in-practice-02-declarative-apply.html)
+- Next: [Chapter 04 - Scheduling and Placement (Where Work Runs)](concepts-in-practice-04-scheduling-placement.html)

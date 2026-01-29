@@ -27,16 +27,16 @@ DOCS_MAPPING = {
     "concepts-in-practice/02-declarative-apply.md": (
         "concepts-in-practice-02-declarative-apply.html"
     ),
-    "concepts-in-practice/03-scheduling-placement.md": (
-        "concepts-in-practice-03-scheduling-placement.html"
+    "concepts-in-practice/03-runtime-adapters.md": (
+        "concepts-in-practice-03-runtime-adapters.html"
     ),
-    "concepts-in-practice/04-runtime-adapters.md": (
-        "concepts-in-practice-04-runtime-adapters.html"
+    "concepts-in-practice/04-scheduling-placement.md": (
+        "concepts-in-practice-04-scheduling-placement.html"
     ),
-    "concepts-in-practice/05-ingress-service-exposure.md": (
-        "concepts-in-practice-05-ingress-service-exposure.html"
+    "concepts-in-practice/05-observability.md": "concepts-in-practice-05-observability.html",
+    "concepts-in-practice/06-ingress-service-exposure.md": (
+        "concepts-in-practice-06-ingress-service-exposure.html"
     ),
-    "concepts-in-practice/06-observability.md": "concepts-in-practice-06-observability.html",
     "concepts-in-practice/07-health-probes.md": "concepts-in-practice-07-health-probes.html",
     "concepts-in-practice/08-rollouts-updates.md": (
         "concepts-in-practice-08-rollouts-updates.html"

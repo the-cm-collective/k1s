@@ -345,8 +345,11 @@ Advanced controls you can ignore on your first run. Use the slider to choose a s
 <details>
 <summary><strong>Final Notes</strong></summary>
 
-- Controlled actions require the dev-only orchestrator to be enabled (`AE_LABS=1`) and proxied by Caddy.
-- Backends: Auto detection prefers k1s-in-Docker when the compose stack is up, otherwise k1s-Host; k3s engages if a k3d cluster is detected or allowed to auto-provision.
+- If you see “Labs: unavailable”, you are in read‑only mode. To unlock Apply/Scale/Shell, start the controller with `AE_LABS=1`, set `AE_LABS_TOKEN`, then toggle “Enable Controlled Actions” and click “Use Token” + “Start Session”.
+- “Open App” only appears when the example defines `spec.ingress`. If it is blank, pick an ingress example (echo) or use the shell/port‑forward tools instead.
+- If the app host does not resolve, copy the DNS hint into your hosts file or use the Direct curl line in section F.
+- If logs/events look empty, switch Status to “App” after applying an example; cluster mode only shows totals.
+- Auto backend prefers k1s‑in‑Docker when compose is running, otherwise k1s‑host. Override the backend if the banner does not match what you started.
 
 </details>
 

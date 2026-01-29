@@ -1,4 +1,4 @@
-# Chapter 06 - Observability: Logs, Metrics, Events
+# Chapter 05 - Observability: Logs, Metrics, Events
 
 ## Concept
 Observability is the ability to understand system behavior from the outside. Metrics quantify state, events explain transitions, and logs provide raw evidence. Together, they enable fast diagnosis and safe operations.
@@ -109,5 +109,5 @@ def handle_events(...):
         print(f"{timestamp} rev={event.revision} {event.event_type}: {event.message}")
 ```
 ## Chapter navigation
-- Prev: [Chapter 05 - Ingress and Service Exposure](concepts-in-practice-05-ingress-service-exposure.html)
-- Next: [Chapter 07 - Health Probes and Readiness/Liveness](concepts-in-practice-07-health-probes.html)
+- Prev: [Chapter 04 - Scheduling and Placement (Where Work Runs)](concepts-in-practice-04-scheduling-placement.html)
+- Next: [Chapter 06 - Ingress and Service Exposure](concepts-in-practice-06-ingress-service-exposure.html)

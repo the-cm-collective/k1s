@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>05 Ingress Service Exposure</title>
+    <title>06 Ingress Service Exposure</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
     <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
     <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
@@ -701,7 +701,7 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Chapter 05 - Ingress and Service Exposure</h1>
+    <h1>Chapter 06 - Ingress and Service Exposure</h1>
 <h2>Concept</h2>
 <p>Service exposure is the boundary between internal workloads and external clients. L4 services provide stable networking, while L7 ingress handles routing, TLS, and hostname-based access. Both must be deterministic, declarative, and safe to update.</p>
 <pre class="mermaid">flowchart LR
@@ -827,8 +827,8 @@ docker compose -f ops/dev/docker-compose.yaml down</code></pre>
         self._provider.update_service_endpoints(app, backends[&quot;by_port&quot;])</code></pre>
 <h2>Chapter navigation</h2>
 <ul>
-<li>Prev: <a href="concepts-in-practice-04-runtime-adapters.html">Chapter 04 - Runtime Adapters and Container Execution</a></li>
-<li>Next: <a href="concepts-in-practice-06-observability.html">Chapter 06 - Observability: Logs, Metrics, Events</a></li>
+<li>Prev: <a href="concepts-in-practice-05-observability.html">Chapter 05 - Observability: Logs, Metrics, Events</a></li>
+<li>Next: <a href="concepts-in-practice-07-health-probes.html">Chapter 07 - Health Probes and Readiness/Liveness</a></li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -837,7 +837,7 @@ docker compose -f ops/dev/docker-compose.yaml down</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-28 10:37:59</span>
+        <span>Built 2026-01-28 16:59:10</span>
       </div>
     </footer>
     <script>

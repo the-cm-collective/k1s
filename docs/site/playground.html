@@ -671,7 +671,7 @@
     </script>
     <link rel="stylesheet" href="static/labs.css?v=4ff2fd646b"/>
 <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-<script>window.DOCS_LABS_TOKEN='D34DB33F';</script>
+<script>window.DOCS_LABS_TOKEN='';</script>
 <script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>
 <script defer src="static/labs.js?v=4ff2fd646b"></script>
@@ -869,8 +869,11 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
 <hr/>
 <details> <summary><strong>Final Notes</strong></summary>
 <ul>
-<li>Controlled actions require the dev-only orchestrator to be enabled (<code>AE_LABS=1</code>) and proxied by Caddy.</li>
-<li>Backends: Auto detection prefers k1s-in-Docker when the compose stack is up, otherwise k1s-Host; k3s engages if a k3d cluster is detected or allowed to auto-provision.</li>
+<li>If you see “Labs: unavailable”, you are in read‑only mode. To unlock Apply/Scale/Shell, start the controller with <code>AE_LABS=1</code>, set <code>AE_LABS_TOKEN</code>, then toggle “Enable Controlled Actions” and click “Use Token” + “Start Session”.</li>
+<li>“Open App” only appears when the example defines <code>spec.ingress</code>. If it is blank, pick an ingress example (echo) or use the shell/port‑forward tools instead.</li>
+<li>If the app host does not resolve, copy the DNS hint into your hosts file or use the Direct curl line in section F.</li>
+<li>If logs/events look empty, switch Status to “App” after applying an example; cluster mode only shows totals.</li>
+<li>Auto backend prefers k1s‑in‑Docker when compose is running, otherwise k1s‑host. Override the backend if the banner does not match what you started.</li>
 </ul>
 </details>
   </div>   <div class="playground-rail">     <button id="btn-reset-fab" class="lab-reset-fab" type="button" aria-label="Reset labs and playground" title="Reset lab environment and playground">       <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">         <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4V1L7 6l5 5V7c1.66 0 3.14.69 4.22 1.78S18 11.34 18 13c0 3.31-2.69 6-6 6s-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8c0-2.21-.9-4.21-2.35-5.65z"/>       </svg>     </button>   </div> </div>
@@ -881,7 +884,7 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-28 10:37:59</span>
+        <span>Built 2026-01-28 16:59:10</span>
       </div>
     </footer>
     <script>
