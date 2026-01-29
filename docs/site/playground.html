@@ -712,7 +712,7 @@
 <p>Quick start:</p>
 <ul>
 <li>Step 1: Scroll to "A. Environment & Backend", enable <strong>Controlled Actions</strong>, click <strong>Use Token</strong> to load <code>AE_LABS_TOKEN</code>, then click <code>Start Session</code>.</li>
-<li>Step 2: In "B. Apply Example", choose <code>shell-demo</code> and click <code>Apply Selected Example</code>.</li>
+<li>Step 2: In "B. Apply Example", choose <code>echo</code> and click <code>Apply Selected Example</code>.</li>
 <li>Step 3: In "F. Ingress Test", click <code>Open App</code> to view the service, and in "C. Logs & Events" watch activity live.</li>
 </ul>
 <div class="callout" role="note">Tip: If the page says “Labs: unavailable”, you’re in read‑only mode — verifiers still run and CLI commands are shown to try locally.</div>
@@ -786,7 +786,7 @@ helm uninstall demochart -n demo-helm &amp;&amp; kubectl delete namespace demo-h
 <ul>
 <li>Example:
 <ul>
-<li><select id="example-select"> <option value="shell-demo" selected>shell-demo</option> <option value="echo">echo</option> <option value="multi-replica-echo">multi-replica-echo</option> <option value="echo-multiport">echo-multiport</option> <option value="echo-hpa">echo-hpa</option> <option value="echo-resources">echo-resources</option> <option value="echo-stateful">echo-stateful</option> <option value="echo-sec">echo-sec</option> <option value="echo-sec-adv">echo-sec-adv</option> <option value="echo-tcp">echo-tcp</option> <option value="echo-exec">echo-exec</option> <option value="echo-storage">echo-storage</option> <option value="echo-storage-delete">echo-storage-delete</option> </select></li>
+<li><select id="example-select"> <option value="echo" selected>echo</option> <option value="shell-demo">shell-demo</option> <option value="multi-replica-echo">multi-replica-echo</option> <option value="echo-multiport">echo-multiport</option> <option value="echo-hpa">echo-hpa</option> <option value="echo-resources">echo-resources</option> <option value="echo-stateful">echo-stateful</option> <option value="echo-sec">echo-sec</option> <option value="echo-sec-adv">echo-sec-adv</option> <option value="echo-tcp">echo-tcp</option> <option value="echo-exec">echo-exec</option> <option value="echo-storage">echo-storage</option> <option value="echo-storage-delete">echo-storage-delete</option> </select></li>
 </ul>
 </li>
 <li>Action: <button id="btn-apply-echo" class="btn-primary" disabled>Apply Selected Example</button></li>
