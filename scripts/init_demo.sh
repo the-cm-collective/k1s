@@ -1325,7 +1325,7 @@ https://docs.home.arpa {
         reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT}
     }
     # Proxy shim API paths to the apishim on the host
-    @apishim path /api/v1* /apis*
+    @apishim path /api/v1 /api/v1/* /apis /apis/*
     handle @apishim {
         reverse_proxy https://${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${APISHIM_PORT} {
             transport http {
@@ -1333,7 +1333,8 @@ https://docs.home.arpa {
             }
         }
     }
-    @apipaths path /api* /labs* /status* /events* /logs* /swagger* /redoc* /system* /ui/features
+    # Keep /api/ scoped to the controller to avoid shadowing docs pages like /api-auth.html or /apishim-compatibility-matrix.html
+    @apipaths path /api/* /labs* /status* /events* /logs* /swagger* /redoc* /system* /ui/features
     handle @apipaths {
         reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT}
     }
@@ -1358,7 +1359,7 @@ https://api.home.arpa {
         respond 404
     }
 
-    @apishim path /api/v1* /apis*
+    @apishim path /api/v1 /api/v1/* /apis /apis/*
     handle @apishim {
         reverse_proxy https://${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${APISHIM_PORT} {
             transport http {
