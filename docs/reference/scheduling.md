@@ -2,7 +2,7 @@
 
 The controller includes a lightweight scheduler for multi-node runs. It:
 - Filters nodes by readiness/staleness (`AE_NODE_NOTREADY_AFTER`), cordon state, `nodeSelector`, and taints/tolerations.
-- Pins all replicas to a single node when `spec.storage` is declared (retained volumes stay on the node that created them).
+- Pins all pods to a single node when `spec.storage` is declared (retained volumes stay on the node that created them).
 - Spreads across eligible nodes round-robin by default; honors `topologySpreadConstraints` when a topology key is present.
 - Falls back to the local runtime when no nodes are eligible (emits a planner warning).
 
@@ -12,7 +12,7 @@ The controller includes a lightweight scheduler for multi-node runs. It:
 ae plan -f specs/examples/echo-multinode.yaml --verbose
 ```
 
-Verbose output shows replica IDs, chosen nodes/endpoints, storage bindings, and Service VIP hints. Warnings include stale nodes, missing labels for selectors, or hostPort use when VIPs are enabled.
+Verbose output shows pod names, chosen nodes/endpoints, storage bindings, and Service VIP hints. Warnings include stale nodes, missing labels for selectors, or hostPort use when VIPs are enabled.
 
 ### Managing Nodes
 

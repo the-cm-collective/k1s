@@ -109,5 +109,5 @@ def handle_events(...):
         print(f"{timestamp} rev={event.revision} {event.event_type}: {event.message}")
 ```
 ## Chapter navigation
-- Prev: [Chapter 04 - Scheduling and Placement (Where Work Runs)](concepts-in-practice-04-scheduling-placement.html)
-- Next: [Chapter 06 - Ingress and Service Exposure](concepts-in-practice-06-ingress-service-exposure.html)
+- Prev: [Chapter 04 - Scheduling & Placement](concepts-in-practice-04-scheduling-placement.html)
+- Next: [Chapter 06 - Ingress & Service Exposure](concepts-in-practice-06-ingress-service-exposure.html)

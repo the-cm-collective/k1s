@@ -1,4 +1,4 @@
-"""Docker-backed runtime adapter for managing application replicas."""
+"""Docker-backed runtime adapter for managing application pods."""
 
 # ruff: noqa: E501,S110,S112,S603,S607,S104,SIM105,SIM118,UP022,UP028,B009
 from __future__ import annotations
@@ -22,7 +22,7 @@ from ae.controller.spec import (
 )
 from ae.runtime.ports import choose_host_port
 
-from .base import ReplicaState, RuntimeAdapter, RuntimeResult
+from .base import PodState, RuntimeAdapter, RuntimeResult
 from .registry import RegistryAuthProvider
 
 LOGGER = logging.getLogger(__name__)
@@ -32,7 +32,8 @@ class DockerRuntime(RuntimeAdapter):
     """Ensures Docker containers match the desired manifest state."""
 
     APP_LABEL = "ae.app"
-    REPLICA_LABEL = "ae.replica_id"
+    POD_LABEL = "ae.pod_name"
+    LEGACY_REPLICA_LABEL = "ae.replica_id"
     REVISION_LABEL = "ae.revision"
     CONTAINER_LABEL = "ae.container"
     JOB_ATTEMPT_LABEL = "ae.job_attempt"
@@ -73,14 +74,14 @@ class DockerRuntime(RuntimeAdapter):
         *,
         keep_old: bool = False,
         limit_create: int | None = None,
-        replica_ids: list[str] | None = None,
+        pod_names: list[str] | None = None,
         node_id: str | None = None,
     ) -> RuntimeResult:
         app_name = app_key_for_manifest(manifest)
-        desired_replica_ids = (
-            list(replica_ids)
-            if replica_ids is not None
-            else self._desired_replica_ids(manifest, revision)
+        desired_pod_names = (
+            list(pod_names)
+            if pod_names is not None
+            else self._desired_pod_names(manifest, revision)
         )
         # Record node context so volume helpers can label ownership
         self._current_node_id = node_id
@@ -109,11 +110,11 @@ class DockerRuntime(RuntimeAdapter):
                 labels = container.labels or {}
             except NotFound:
                 continue
-            replica_label = labels.get(self.REPLICA_LABEL)
-            if not replica_label:
+            pod_label = self._pod_label(labels)
+            if not pod_label:
                 continue
             if labels.get(self.REVISION_LABEL) == str(revision):
-                containers_by_replica[replica_label] = container
+                containers_by_replica[pod_label] = container
             else:
                 old_revision_containers.append(container)
 
@@ -131,11 +132,11 @@ class DockerRuntime(RuntimeAdapter):
                 removed += 1
             old_revision_containers = []
 
-        if any(replica_id not in containers_by_replica for replica_id in desired_replica_ids):
+        if any(replica_id not in containers_by_replica for replica_id in desired_pod_names):
             self._registry.ensure_login(self._client, manifest.spec.image)
             self._pull_image(manifest)
 
-        for replica_id in desired_replica_ids:
+        for replica_id in desired_pod_names:
             container = containers_by_replica.get(replica_id)
             if container is None:
                 if limit_create is not None and created >= int(limit_create):
@@ -201,10 +202,10 @@ class DockerRuntime(RuntimeAdapter):
         final_containers = self._client.containers.list(
             all=True, filters={"label": f"{self.APP_LABEL}={app_name}"}
         )
-        replica_states = [
+        pod_states = [
             self._build_state(manifest, container)
             for container in final_containers
-            if container.labels.get(self.REPLICA_LABEL)
+            if self._pod_label(container.labels)
             and container.labels.get(self.REVISION_LABEL) == str(revision)
         ]
 
@@ -213,25 +214,29 @@ class DockerRuntime(RuntimeAdapter):
             created=created,
             updated=updated,
             removed=removed,
-            replica_states=replica_states,
+            pod_states=pod_states,
         )
 
     def read_logs(
         self,
-        replica_id: str,
+        pod_name: str,
         *,
         follow: bool = False,
         tail: int | None = None,
         since: int | None = None,
     ):
-        """Stream logs for a container labeled with the replica id."""
+        """Stream logs for a container labeled with the pod name."""
         try:
             containers = self._client.containers.list(
-                all=True,
-                filters={"label": f"{self.REPLICA_LABEL}={replica_id}"},
+                all=True, filters={"label": f"{self.POD_LABEL}={pod_name}"}
             )
+            if not containers:
+                containers = self._client.containers.list(
+                    all=True,
+                    filters={"label": f"{self.LEGACY_REPLICA_LABEL}={pod_name}"},
+                )
         except APIError as exc:
-            raise RuntimeError(f"Failed to query logs for {replica_id}: {exc}") from exc
+            raise RuntimeError(f"Failed to query logs for {pod_name}: {exc}") from exc
         if not containers:
             return iter(())
         container = containers[0]
@@ -261,14 +266,19 @@ class DockerRuntime(RuntimeAdapter):
                 for line in text.splitlines():
                     yield line
         except APIError as exc:
-            raise RuntimeError(f"Failed to read logs for {replica_id}: {exc}") from exc
+            raise RuntimeError(f"Failed to read logs for {pod_name}: {exc}") from exc
 
-    def exec(self, replica_id: str, command: list[str], *, timeout: int | None = None) -> int:  # type: ignore[override]
+    def exec(self, pod_name: str, command: list[str], *, timeout: int | None = None) -> int:  # type: ignore[override]
         _ = timeout
         try:
             containers = self._client.containers.list(
-                all=True, filters={"label": f"{self.REPLICA_LABEL}={replica_id}"}
+                all=True, filters={"label": f"{self.POD_LABEL}={pod_name}"}
             )
+            if not containers:
+                containers = self._client.containers.list(
+                    all=True,
+                    filters={"label": f"{self.LEGACY_REPLICA_LABEL}={pod_name}"},
+                )
         except APIError as exc:  # pragma: no cover
             raise RuntimeError(f"Failed to locate container for exec: {exc}") from exc
         if not containers:
@@ -313,7 +323,10 @@ class DockerRuntime(RuntimeAdapter):
 
     # Internal helpers -------------------------------------------------
 
-    def _desired_replica_ids(self, manifest: AppManifest, revision: int) -> list[str]:
+    def _pod_label(self, labels: dict) -> str | None:
+        return labels.get(self.POD_LABEL) or labels.get(self.LEGACY_REPLICA_LABEL)
+
+    def _desired_pod_names(self, manifest: AppManifest, revision: int) -> list[str]:
         app_name = app_key_for_manifest(manifest)
         return [f"{app_name}-rev{revision}-{replica}" for replica in range(manifest.spec.replicas)]
 
@@ -438,7 +451,8 @@ class DockerRuntime(RuntimeAdapter):
             labels = runtime_labels_for_manifest(manifest, app_name=app_name)
             labels.update(
                 {
-                    self.REPLICA_LABEL: replica_id,
+                    self.POD_LABEL: replica_id,
+                    self.LEGACY_REPLICA_LABEL: replica_id,
                     self.REVISION_LABEL: str(revision),
                     self.CONTAINER_LABEL: "main",
                     **({"ae.node": str(node_id)} if node_id else {}),
@@ -630,21 +644,22 @@ class DockerRuntime(RuntimeAdapter):
         revision: int,
         volumes: dict[str, dict],
     ) -> None:
-        """Ensure declared sidecar containers (spec.containers) are running for a replica."""
+        """Ensure declared sidecar containers (spec.containers) are running for a pod."""
         if not getattr(manifest.spec, "containers", None):
             return
         app_name = app_key_for_manifest(manifest)
         try:
-            existing = self._client.containers.list(
-                all=True,
-                filters={
-                    "label": [
-                        f"{self.APP_LABEL}={app_name}",
-                        f"{self.REPLICA_LABEL}={replica_id}",
-                        f"{self.REVISION_LABEL}={revision}",
-                    ]
-                },
-            )
+            filters = {
+                "label": [
+                    f"{self.APP_LABEL}={app_name}",
+                    f"{self.POD_LABEL}={replica_id}",
+                    f"{self.REVISION_LABEL}={revision}",
+                ]
+            }
+            existing = self._client.containers.list(all=True, filters=filters)
+            if not existing:
+                filters["label"][1] = f"{self.LEGACY_REPLICA_LABEL}={replica_id}"
+                existing = self._client.containers.list(all=True, filters=filters)
         except APIError:
             existing = []
         by_cname: dict[str, Container] = {}
@@ -718,7 +733,8 @@ class DockerRuntime(RuntimeAdapter):
                             volumes=vmap or None,
                             labels={
                                 **runtime_labels_for_manifest(manifest, app_name=app_name),
-                                self.REPLICA_LABEL: replica_id,
+                                self.POD_LABEL: replica_id,
+                                self.LEGACY_REPLICA_LABEL: replica_id,
                                 self.REVISION_LABEL: str(revision),
                                 self.CONTAINER_LABEL: cname,
                             },
@@ -826,7 +842,7 @@ class DockerRuntime(RuntimeAdapter):
     # Streaming exec/attach for kubectl exec (SPDY)
     def exec_attach(
         self,
-        replica_id: str,
+        pod_name: str,
         command: list[str],
         *,
         container: str | None = None,
@@ -835,10 +851,13 @@ class DockerRuntime(RuntimeAdapter):
         """Return (socket, exec_id) for an attached exec session."""
         target = None
         try:
-            filters = {"label": [f"{self.REPLICA_LABEL}={replica_id}"]}
+            filters = {"label": [f"{self.POD_LABEL}={pod_name}"]}
             if container:
                 filters["label"].append(f"{self.CONTAINER_LABEL}={container}")
             containers = self._client.containers.list(all=True, filters=filters)
+            if not containers:
+                filters["label"][0] = f"{self.LEGACY_REPLICA_LABEL}={pod_name}"
+                containers = self._client.containers.list(all=True, filters=filters)
             if containers:
                 target = containers[0]
             if target is None and container is None:
@@ -846,16 +865,16 @@ class DockerRuntime(RuntimeAdapter):
                 for c in self._client.containers.list(all=True):
                     labels = c.labels or {}
                     if (
-                        labels.get(self.REPLICA_LABEL) == replica_id
-                        or labels.get("ae.replica") == replica_id
-                        or c.name == replica_id
+                        self._pod_label(labels) == pod_name
+                        or labels.get("ae.replica") == pod_name
+                        or c.name == pod_name
                     ):
                         target = c
                         break
         except APIError:
             target = None
         if target is None:
-            raise RuntimeError("Replica not found for exec")
+            raise RuntimeError("Pod not found for exec")
         exec_id = self._client.api.exec_create(
             target.id,
             cmd=command,
@@ -885,10 +904,10 @@ class DockerRuntime(RuntimeAdapter):
         except APIError:
             return 0
 
-    def _build_state(self, manifest: AppManifest, container: Container) -> ReplicaState:
+    def _build_state(self, manifest: AppManifest, container: Container) -> PodState:
         self._reload(container)
         labels = container.labels or {}
-        replica_id = labels.get(self.REPLICA_LABEL, container.name)
+        pod_name = self._pod_label(labels) or container.name
 
         state = container.attrs.get("State", {})
         status = state.get("Status", container.status)
@@ -924,8 +943,8 @@ class DockerRuntime(RuntimeAdapter):
 
         started_at = self._parse_datetime(state.get("StartedAt"))
 
-        return ReplicaState(
-            replica_id=replica_id,
+        return PodState(
+            pod_name=pod_name,
             ready=ready,
             status=status,
             endpoint=endpoint,

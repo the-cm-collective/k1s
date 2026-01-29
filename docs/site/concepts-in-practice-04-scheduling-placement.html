@@ -41,7 +41,7 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
-        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-bg-image: url('static/dash-assets/page-background-tile-1024.png');
         --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
@@ -87,9 +87,9 @@
         flex-direction: column;
         background-color: var(--bg);
         background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
-        background-size: 100% 100%, auto 100%;
+        background-size: 100% 100%, 100% auto;
         background-position: center, center top;
-        background-repeat: repeat-y, repeat-y;
+        background-repeat: no-repeat, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -701,13 +701,13 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Chapter 04 - Scheduling and Placement (Where Work Runs)</h1>
+    <h1>Chapter 04 - Scheduling &amp; Placement</h1>
 <h2>Concept</h2>
 <p>Scheduling is the process of deciding where workloads run. It is not just &quot;pick a node,&quot; but &quot;pick a node that satisfies constraints.&quot; Placement becomes part of correctness when storage, network policy, or affinity rules are involved.</p>
 <pre class="mermaid">flowchart TB
   Workload[Workload spec] --&gt; Filters[Eligibility filters]
   Filters --&gt;|ready + not cordoned| Eligible[Eligible nodes]
-  Eligible --&gt;|spread| Placement[Replica placement plan]
+  Eligible --&gt;|spread| Placement[Pod placement plan]
   Placement --&gt; Runtime[Runtime execution]</pre>
 <h3>Theory</h3>
 <p>Schedulers perform a filter-and-score pipeline. First, they filter out nodes that cannot run the workload (not ready, cordoned, selector mismatch, taints not tolerated). Then they score remaining nodes to balance load or satisfy topology constraints. This separates hard constraints from soft preferences.</p>
@@ -722,7 +722,7 @@
   Check4 -- no --&gt; Reject
   Check4 -- yes --&gt; Eligible[Eligible]</pre>
 <h3>Design</h3>
-<p>k1s implements a lightweight scheduler that filters nodes by readiness, cordon status, nodeSelector, taints/tolerations, and then spreads replicas round-robin. If storage is declared, it pins placement to one node to avoid cross-node volume assumptions. When no nodes qualify, it falls back to the local runtime so single-node setups remain usable.</p>
+<p>k1s implements a lightweight scheduler that filters nodes by readiness, cordon status, nodeSelector, taints/tolerations, and then spreads pods round-robin. If storage is declared, it pins placement to one node to avoid cross-node volume assumptions. When no nodes qualify, it falls back to the local runtime so single-node setups remain usable.</p>
 <pre class="mermaid">flowchart TB
   Spec[AppSpec] --&gt;|storage declared| Pin[Pin to single node]
   Spec --&gt;|topology spread| Spread[Distribute by key]
@@ -743,15 +743,15 @@
   Labels -- yes --&gt; Reapply[Re-apply spec]</pre>
 <h2>Key Terms and Acronyms</h2>
 <ul>
-<li>Scheduler - Component that decides placement for replicas.</li>
+<li>Scheduler - Component that decides placement for pods.</li>
 <li>Node - Execution target for workloads.</li>
 <li>Cordon - Mark a node unschedulable.</li>
 <li>Taint - Node attribute that repels workloads unless tolerated.</li>
 <li>Toleration - Workload exception allowing tainted nodes.</li>
 <li>nodeSelector - Label-based placement constraint.</li>
-<li>Topology spread - Rule to distribute replicas across domains.</li>
-<li>Placement - The chosen nodes for replicas.</li>
-<li>Replica - A single instance of a workload.</li>
+<li>Topology spread - Rule to distribute pods across domains.</li>
+<li>Placement - The chosen nodes for pods.</li>
+<li>Pod - A single instance of a workload.</li>
 </ul>
 <h2>Commands (copy/paste)</h2>
 <pre><code>python -m ae.controller --loop --specs specs/ --metrics-port 9108
@@ -769,12 +769,12 @@ python -m ae.cli events echo --limit 20</code></pre>
 </ul>
 <h2>Code references (walkthrough anchors)</h2>
 <ul>
-<li>Scheduler placement logic: <code>src/ae/controller/scheduler.py:37</code></li>
+<li>Scheduler placement logic: <code>src/ae/controller/scheduler.py:61</code></li>
 </ul>
 <pre><code>    def plan(self, manifest: AppManifest, revision: int) -&gt; tuple[list[Placement], list[str]]:
         desired = int(manifest.spec.replicas)
         app_name = app_key_for_manifest(manifest)
-        replica_ids = [f&quot;{app_name}-rev{revision}-{i}&quot; for i in range(desired)]
+        pod_names = [f&quot;{app_name}-rev{revision}-{i}&quot; for i in range(desired)]
         ...
         for node, status in nodes:
             if bool(getattr(node, &quot;cordoned&quot;, False)):
@@ -789,7 +789,7 @@ python -m ae.cli events echo --limit 20</code></pre>
 
         if not eligible:
             warnings.append(&quot;no eligible nodes; falling back to local runtime&quot;)
-            return [Placement(node=None, agent_url=None, replica_ids=replica_ids)], warnings
+            return [Placement(node=None, agent_url=None, pod_names=pod_names)], warnings
         ...
         # Round-robin placement across eligible nodes.</code></pre>
 <ul>
@@ -823,7 +823,7 @@ python -m ae.cli events echo --limit 20</code></pre>
     )</code></pre>
 <h2>Chapter navigation</h2>
 <ul>
-<li>Prev: <a href="concepts-in-practice-03-runtime-adapters.html">Chapter 03 - Runtime Adapters and Container Execution</a></li>
+<li>Prev: <a href="concepts-in-practice-03-runtime-adapters.html">Chapter 03 - Runtime Adapters &amp; Container Execution</a></li>
 <li>Next: <a href="concepts-in-practice-05-observability.html">Chapter 05 - Observability: Logs, Metrics, Events</a></li>
 </ul>
     </div>
@@ -833,7 +833,7 @@ python -m ae.cli events echo --limit 20</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-28 17:12:24</span>
+        <span>Built 2026-01-28 18:29:44</span>
       </div>
     </footer>
     <script>

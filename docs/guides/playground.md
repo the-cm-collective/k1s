@@ -223,7 +223,7 @@ Open an interactive shell or run a lightweight port-forward check. These are Lab
     </div>
     <div class="modal-body">
       <div class="row" style="flex-wrap:wrap; gap:10px; margin-bottom:10px;">
-        <label>Replica <select id="labs-shell-pod"></select></label>
+        <label>Pod <select id="labs-shell-pod"></select></label>
         <label>Container <input id="labs-shell-container" type="text" placeholder="optional" /></label>
         <label>Command <input id="labs-shell-cmd" type="text" value="bash" /></label>
         <label>Shim API <input id="labs-shell-base" type="text" placeholder="http://127.0.0.1:8443" /></label>
@@ -248,7 +248,7 @@ Open an interactive shell or run a lightweight port-forward check. These are Lab
     </div>
     <div class="modal-body">
       <div class="row" style="flex-wrap:wrap; gap:10px; margin-bottom:10px;">
-        <label>Replica <select id="labs-pf-pod"></select></label>
+        <label>Pod <select id="labs-pf-pod"></select></label>
         <label>Port <input id="labs-pf-port" type="text" placeholder="8080" /></label>
         <label>Shim API <input id="labs-pf-base" type="text" placeholder="http://127.0.0.1:8443" /></label>
         <label>Token <input id="labs-pf-token" type="password" placeholder="apishim token" /></label>

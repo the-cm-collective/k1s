@@ -41,7 +41,7 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
-        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-bg-image: url('static/dash-assets/page-background-tile-1024.png');
         --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
@@ -87,9 +87,9 @@
         flex-direction: column;
         background-color: var(--bg);
         background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
-        background-size: 100% 100%, auto 100%;
+        background-size: 100% 100%, 100% auto;
         background-position: center, center top;
-        background-repeat: repeat-y, repeat-y;
+        background-repeat: no-repeat, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -701,13 +701,13 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Chapter 06 - Ingress and Service Exposure</h1>
+    <h1>Chapter 06 - Ingress &amp; Service Exposure</h1>
 <h2>Concept</h2>
 <p>Service exposure is the boundary between internal workloads and external clients. L4 services provide stable networking, while L7 ingress handles routing, TLS, and hostname-based access. Both must be deterministic, declarative, and safe to update.</p>
 <pre class="mermaid">flowchart LR
   Client[Client] --&gt; Ingress[Caddy ingress]
   Ingress --&gt; ServiceVIP[Service VIP]
-  ServiceVIP --&gt; Pod[Replica endpoint]</pre>
+  ServiceVIP --&gt; Pod[Pod endpoint]</pre>
 <h3>Theory</h3>
 <p>Layered networking separates concerns: service discovery and stable endpoints at L4, routing and policy at L7. Health checks gate traffic so that only ready backends are exposed. Ingress controllers react to declarative config and converge proxy state to match.</p>
 <pre class="mermaid">flowchart TB
@@ -720,7 +720,7 @@
   IngressSvc --&gt; Caddy[CaddyIngressManager]
   Caddy --&gt; Caddyfile[Caddy config snippets]</pre>
 <h3>Design</h3>
-<p>k1s implements a Service VIP controller for L4 and Caddy-based ingress for L7. The controller computes upstreams from healthy replicas and writes ingress config snippets, then reloads Caddy. It also supports canary weighting during rollouts. This mirrors the Kubernetes pattern of Services + Ingress controllers.</p>
+<p>k1s implements a Service VIP controller for L4 and Caddy-based ingress for L7. The controller computes upstreams from healthy pods and writes ingress config snippets, then reloads Caddy. It also supports canary weighting during rollouts. This mirrors the Kubernetes pattern of Services + Ingress controllers.</p>
 <pre class="mermaid">flowchart LR
   L4[L4 Service] --&gt;|Stable port + VIP| Traffic[Traffic]
   L7[L7 Ingress] --&gt;|Host/path routing| Traffic</pre>
@@ -828,7 +828,7 @@ docker compose -f ops/dev/docker-compose.yaml down</code></pre>
 <h2>Chapter navigation</h2>
 <ul>
 <li>Prev: <a href="concepts-in-practice-05-observability.html">Chapter 05 - Observability: Logs, Metrics, Events</a></li>
-<li>Next: <a href="concepts-in-practice-07-health-probes.html">Chapter 07 - Health Probes and Readiness/Liveness</a></li>
+<li>Next: <a href="concepts-in-practice-07-health-probes.html">Chapter 07 - Health Probes</a></li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -837,7 +837,7 @@ docker compose -f ops/dev/docker-compose.yaml down</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-28 17:12:24</span>
+        <span>Built 2026-01-28 18:29:44</span>
       </div>
     </footer>
     <script>

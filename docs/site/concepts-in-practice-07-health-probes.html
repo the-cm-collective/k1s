@@ -41,7 +41,7 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
-        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-bg-image: url('static/dash-assets/page-background-tile-1024.png');
         --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
@@ -87,9 +87,9 @@
         flex-direction: column;
         background-color: var(--bg);
         background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
-        background-size: 100% 100%, auto 100%;
+        background-size: 100% 100%, 100% auto;
         background-position: center, center top;
-        background-repeat: repeat-y, repeat-y;
+        background-repeat: no-repeat, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -701,7 +701,7 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Chapter 07 - Health Probes and Readiness/Liveness</h1>
+    <h1>Chapter 07 - Health Probes</h1>
 <h2>Concept</h2>
 <p>Health probes determine when a workload can receive traffic (readiness) and when it should be restarted (liveness). Startup probes protect slow-boot services. These signals are foundational to safe rollouts.</p>
 <pre class="mermaid">flowchart TB
@@ -717,7 +717,7 @@
   Thresholds -- yes --&gt; Status[Effective status]
   Thresholds -- no --&gt; Hold[Keep previous]</pre>
 <h3>Design</h3>
-<p>k1s evaluates probe outcomes per replica, tracks success/failure streaks, enforces probe periods, and applies backoff after failures. Results are aggregated into HealthReports, which feed rollout decisions and service endpoint selection. This aligns with Kubernetes probe semantics.</p>
+<p>k1s evaluates probe outcomes per pod, tracks success/failure streaks, enforces probe periods, and applies backoff after failures. Results are aggregated into HealthReports, which feed rollout decisions and service endpoint selection. This aligns with Kubernetes probe semantics.</p>
 <pre class="mermaid">flowchart TB
   Runtime[RuntimeResult] --&gt; Health[HealthManager.evaluate]
   Health --&gt; Report[HealthReport]
@@ -770,7 +770,7 @@ python -m ae.cli history echo --limit 20</code></pre>
         if startup_spec is not None:
             startup = self._evaluate_probe(...)
             if not startup.success:
-                replicas.append(ReplicaHealth(...))
+                pods.append(PodHealth(...))
                 continue
 
         readiness = self._evaluate_probe(..., probe_type=&quot;readiness&quot;)
@@ -799,8 +799,8 @@ python -m ae.cli history echo --limit 20</code></pre>
     periodSeconds: 5</code></pre>
 <h2>Chapter navigation</h2>
 <ul>
-<li>Prev: <a href="concepts-in-practice-06-ingress-service-exposure.html">Chapter 06 - Ingress and Service Exposure</a></li>
-<li>Next: <a href="concepts-in-practice-08-rollouts-updates.html">Chapter 08 - Rollouts, Updates, and Rollbacks</a></li>
+<li>Prev: <a href="concepts-in-practice-06-ingress-service-exposure.html">Chapter 06 - Ingress &amp; Service Exposure</a></li>
+<li>Next: <a href="concepts-in-practice-08-rollouts-updates.html">Chapter 08 - Rollouts, Updates, &amp; Rollbacks</a></li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -809,7 +809,7 @@ python -m ae.cli history echo --limit 20</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-28 17:12:24</span>
+        <span>Built 2026-01-28 18:29:44</span>
       </div>
     </footer>
     <script>

@@ -12,7 +12,7 @@ Owners: runtime/controller/apishim
 ## Decision
 - Introduce explicit job semantics in the app model via `AppSpec.workload`, defaulting to "service".
 - Map job pod template fields into `AppSpec` when converting Jobs (command, args, env, workingDir, resources, probes, securityContext).
-- Track per-replica exit codes and completion timestamps in runtime state.
+- Track per-pod exit codes and completion timestamps in runtime state.
 - Adjust runtime behavior for jobs to avoid restarting successful containers and to honor backoff limits on failures.
 - Update reconciler and apishim job status synthesis to report succeeded/failed/active correctly.
 

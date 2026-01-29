@@ -41,7 +41,7 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
-        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-bg-image: url('static/dash-assets/page-background-tile-1024.png');
         --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
@@ -87,9 +87,9 @@
         flex-direction: column;
         background-color: var(--bg);
         background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
-        background-size: 100% 100%, auto 100%;
+        background-size: 100% 100%, 100% auto;
         background-position: center, center top;
-        background-repeat: repeat-y, repeat-y;
+        background-repeat: no-repeat, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -669,12 +669,12 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="static/labs.css?v=4ff2fd646b"/>
+    <link rel="stylesheet" href="static/labs.css?v=5fbda357f1"/>
 <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
 <script>window.DOCS_LABS_TOKEN='';</script>
 <script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>
-<script defer src="static/labs.js?v=4ff2fd646b"></script>
+<script defer src="static/labs.js?v=5fbda357f1"></script>
   </head>
   <body>
     <nav>
@@ -805,8 +805,8 @@ helm uninstall demochart -n demo-helm &amp;&amp; kubectl delete namespace demo-h
 <h2>D. Debug Tools (Shell + Port-Forward)</h2>
 <p>Open an interactive shell or run a lightweight port-forward check. These are Labs‑only features: they require an active session and Controlled Actions enabled.</p>
 <div class="panel" id="labs-debug">   <div class="row" style="flex-wrap:wrap; gap:10px;">     <button id="btn-labs-shell" disabled>Open Remote Shell</button>     <button id="btn-labs-pf" disabled>Open Port-Forward</button>     <span class="muted">Uses apishim WebSocket exec + port-forward.</span>   </div>   <div class="muted" style="margin-top:6px;">If disabled, run locally: <code>ae shell &lt;app&gt;</code> (defaults to bash; use <code>-- sh</code> for minimal images), add <code>-n &lt;ns&gt;</code> if needed, or use <code>kubectl exec</code> / <code>kubectl port-forward</code>.</div> </div>
-<div id="labs-shell-modal" class="labs-modal hidden" role="dialog" aria-modal="true" aria-labelledby="labs-shell-title">   <div class="modal">     <div class="modal-header">       <strong id="labs-shell-title">Remote Shell</strong>       <button id="labs-shell-close" type="button">Close</button>     </div>     <div class="modal-body">       <div class="row" style="flex-wrap:wrap; gap:10px; margin-bottom:10px;">         <label>Replica <select id="labs-shell-pod"></select></label>         <label>Container <input id="labs-shell-container" type="text" placeholder="optional" /></label>         <label>Command <input id="labs-shell-cmd" type="text" value="bash" /></label>         <label>Shim API <input id="labs-shell-base" type="text" placeholder="http://127.0.0.1:8443" /></label>         <label>Token <input id="labs-shell-token" type="password" placeholder="apishim token" /></label>       </div>       <div id="labs-shell-terminal" class="terminal-wrap"></div>       <div class="row" style="margin-top:10px; gap:8px; align-items:center;">         <button id="labs-shell-connect" type="button">Connect</button>         <button id="labs-shell-disconnect" type="button">Disconnect</button>         <span id="labs-shell-status" class="pill"></span>         <span class="hint">WebSocket exec (v5.channel.k8s.io).</span>       </div>     </div>   </div> </div>
-<div id="labs-pf-modal" class="labs-modal hidden" role="dialog" aria-modal="true" aria-labelledby="labs-pf-title">   <div class="modal">     <div class="modal-header">       <strong id="labs-pf-title">Port-Forward (WS)</strong>       <button id="labs-pf-close" type="button">Close</button>     </div>     <div class="modal-body">       <div class="row" style="flex-wrap:wrap; gap:10px; margin-bottom:10px;">         <label>Replica <select id="labs-pf-pod"></select></label>         <label>Port <input id="labs-pf-port" type="text" placeholder="8080" /></label>         <label>Shim API <input id="labs-pf-base" type="text" placeholder="http://127.0.0.1:8443" /></label>         <label>Token <input id="labs-pf-token" type="password" placeholder="apishim token" /></label>       </div>       <div class="row" style="gap:10px; flex-wrap:wrap;">         <label style="flex:1 1 320px;">Request           <textarea id="labs-pf-request" rows="4" style="width:100%;">GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n</textarea>         </label>         <label style="flex:1 1 320px;">Response           <textarea id="labs-pf-response" rows="4" style="width:100%;" readonly></textarea>         </label>       </div>       <div class="row" style="margin-top:10px; gap:8px; align-items:center;">         <button id="labs-pf-connect" type="button">Connect</button>         <button id="labs-pf-send" type="button">Send Request</button>         <button id="labs-pf-disconnect" type="button">Disconnect</button>         <span id="labs-pf-status" class="pill"></span>         <span class="hint">WebSocket port-forward (portforward.k8s.io).</span>       </div>     </div>   </div> </div>
+<div id="labs-shell-modal" class="labs-modal hidden" role="dialog" aria-modal="true" aria-labelledby="labs-shell-title">   <div class="modal">     <div class="modal-header">       <strong id="labs-shell-title">Remote Shell</strong>       <button id="labs-shell-close" type="button">Close</button>     </div>     <div class="modal-body">       <div class="row" style="flex-wrap:wrap; gap:10px; margin-bottom:10px;">         <label>Pod <select id="labs-shell-pod"></select></label>         <label>Container <input id="labs-shell-container" type="text" placeholder="optional" /></label>         <label>Command <input id="labs-shell-cmd" type="text" value="bash" /></label>         <label>Shim API <input id="labs-shell-base" type="text" placeholder="http://127.0.0.1:8443" /></label>         <label>Token <input id="labs-shell-token" type="password" placeholder="apishim token" /></label>       </div>       <div id="labs-shell-terminal" class="terminal-wrap"></div>       <div class="row" style="margin-top:10px; gap:8px; align-items:center;">         <button id="labs-shell-connect" type="button">Connect</button>         <button id="labs-shell-disconnect" type="button">Disconnect</button>         <span id="labs-shell-status" class="pill"></span>         <span class="hint">WebSocket exec (v5.channel.k8s.io).</span>       </div>     </div>   </div> </div>
+<div id="labs-pf-modal" class="labs-modal hidden" role="dialog" aria-modal="true" aria-labelledby="labs-pf-title">   <div class="modal">     <div class="modal-header">       <strong id="labs-pf-title">Port-Forward (WS)</strong>       <button id="labs-pf-close" type="button">Close</button>     </div>     <div class="modal-body">       <div class="row" style="flex-wrap:wrap; gap:10px; margin-bottom:10px;">         <label>Pod <select id="labs-pf-pod"></select></label>         <label>Port <input id="labs-pf-port" type="text" placeholder="8080" /></label>         <label>Shim API <input id="labs-pf-base" type="text" placeholder="http://127.0.0.1:8443" /></label>         <label>Token <input id="labs-pf-token" type="password" placeholder="apishim token" /></label>       </div>       <div class="row" style="gap:10px; flex-wrap:wrap;">         <label style="flex:1 1 320px;">Request           <textarea id="labs-pf-request" rows="4" style="width:100%;">GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n</textarea>         </label>         <label style="flex:1 1 320px;">Response           <textarea id="labs-pf-response" rows="4" style="width:100%;" readonly></textarea>         </label>       </div>       <div class="row" style="margin-top:10px; gap:8px; align-items:center;">         <button id="labs-pf-connect" type="button">Connect</button>         <button id="labs-pf-send" type="button">Send Request</button>         <button id="labs-pf-disconnect" type="button">Disconnect</button>         <span id="labs-pf-status" class="pill"></span>         <span class="hint">WebSocket port-forward (portforward.k8s.io).</span>       </div>     </div>   </div> </div>
 <h2>E. Scale & Rollout</h2>
 <p>Try increasing replicas or enabling a tiny canary rollout. These buttons become active after a session starts and actions are enabled.</p>
 <ul>
@@ -884,7 +884,7 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-28 17:12:24</span>
+        <span>Built 2026-01-28 18:29:44</span>
       </div>
     </footer>
     <script>

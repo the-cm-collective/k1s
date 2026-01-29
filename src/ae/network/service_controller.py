@@ -122,15 +122,15 @@ class ServiceController:
         if not ports:
             return {"records": [], "by_port": {}}
 
-        states_by_id = {st.replica_id: st for st in runtime_result.replica_states}
+        states_by_id = {st.pod_name: st for st in runtime_result.pod_states}
         records: List[ServiceEndpoint] = []
         by_port: Dict[int, List[Tuple[str, int]]] = {}
         seen: set[Tuple[int, str, int]] = set()
 
-        for rep in getattr(health_report, "replicas", []) or []:
-            if not rep.ready:
+        for pod in getattr(health_report, "pods", []) or []:
+            if not pod.ready:
                 continue
-            st = states_by_id.get(rep.replica_id)
+            st = states_by_id.get(pod.pod_name)
             if st is None or not st.endpoint:
                 continue
             host, hp = self._split_host_port(st.endpoint)
