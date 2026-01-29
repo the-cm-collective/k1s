@@ -533,7 +533,7 @@ class Scheduler:
 
     @staticmethod
     def _spread_by_topology(
-        nodes: list[NodeRecord], replica_ids: list[str], topology_key: str
+        nodes: list[NodeRecord], pod_names: list[str], topology_key: str
     ) -> list[Placement]:
         nodes_by_val: dict[str, list[NodeRecord]] = {}
         for n in nodes:
@@ -548,7 +548,7 @@ class Scheduler:
         node_index: dict[str, int] = {k: 0 for k in nodes_by_val}
         assignments: dict[str, list[str]] = {n.node_id: [] for n in nodes}
 
-        for rid in replica_ids:
+        for pod_name in pod_names:
             # choose topology value with the smallest current count (ties by key)
             val = sorted(counts.items(), key=lambda kv: (kv[1], kv[0]))[0][0]
             bucket = nodes_by_val[val]
@@ -556,13 +556,13 @@ class Scheduler:
             node_index[val] += 1
             counts[val] += 1
             target = bucket[idx]
-            assignments[target.node_id].append(rid)
+            assignments[target.node_id].append(pod_name)
 
         placements: list[Placement] = []
         for n in nodes:
             ids = assignments.get(n.node_id, [])
             if ids:
-                placements.append(Placement(node=n, agent_url=n.endpoint, replica_ids=ids))
+                placements.append(Placement(node=n, agent_url=n.endpoint, pod_names=ids))
         return placements
 
 

@@ -63,7 +63,7 @@ def test_cri_runtime_lifecycle():
         running = False
         for _ in range(10):
             result = runtime.ensure_app(manifest, revision, keep_old=True)
-            if any(st.status == "running" for st in (result.replica_states or [])):
+            if any(st.status == "running" for st in (result.pod_states or [])):
                 running = True
                 break
             time.sleep(1)

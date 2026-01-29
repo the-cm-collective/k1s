@@ -70,7 +70,7 @@ class DummyRuntime:
                 "labels": {
                     "ae.namespace": "default",
                     "ae.app": "echo",
-                    "ae.replica_id": "echo-rev1-0",
+                    "ae.pod_name": "echo-rev1-0",
                 },
                 "running": bool(self._running),
             }
