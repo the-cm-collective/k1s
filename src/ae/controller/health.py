@@ -25,11 +25,11 @@ class ProbeOutcome:
 class PodHealth:
     """Health status for a single pod."""
 
-    pod_name: str = ""
     ready: bool
     live: bool
     readiness_message: str
     liveness_message: str
+    pod_name: str = ""
     replica_id: InitVar[str | None] = None
 
     def __post_init__(self, replica_id: str | None) -> None:

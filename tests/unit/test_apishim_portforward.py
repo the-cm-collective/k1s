@@ -61,7 +61,7 @@ def _base_container_info() -> dict:
         "labels": {
             "ae.namespace": "default",
             "ae.app": "echo",
-            "ae.replica_id": "echo-rev1-0",
+            "ae.pod_name": "echo-rev1-0",
         },
         "running": True,
         "host_ip": "192.0.2.10",

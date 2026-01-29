@@ -8,22 +8,35 @@ from ae.controller.spec import AppManifest, AppSpec, IngressSpec, Metadata
 from ae.controller.state import SQLiteStateStore
 from ae.observability import MetricsService
 from ae.observability.http_api import _ApiHandler
-from ae.runtime.base import ReplicaState, RuntimeAdapter, RuntimeResult
+from ae.runtime.base import PodState, RuntimeAdapter, RuntimeResult
 
 
 class _StubRuntime(RuntimeAdapter):
-    def ensure_app(self, manifest: AppManifest, revision: int) -> RuntimeResult:  # type: ignore[override]
+    def ensure_app(
+        self,
+        manifest: AppManifest,
+        revision: int,
+        *,
+        keep_old: bool = False,
+        limit_create: int | None = None,
+        pod_names: list[str] | None = None,
+        node_id: str | None = None,
+    ) -> RuntimeResult:  # type: ignore[override]
+        _ = (keep_old, limit_create, node_id)
         # Return all replicas ready/live
+        names = (
+            pod_names
+            if pod_names is not None
+            else [
+                f"{manifest.metadata.name}-rev{revision}-{i}"
+                for i in range(int(manifest.spec.replicas))
+            ]
+        )
         reps = [
-            ReplicaState(
-                replica_id=f"{manifest.metadata.name}-rev{revision}-{i}",
-                ready=True,
-                status="running",
-            )
-            for i in range(int(manifest.spec.replicas))
+            PodState(pod_name=pod_name, ready=True, status="running") for pod_name in names
         ]
         return RuntimeResult(
-            revision=revision, created=len(reps), updated=0, removed=0, replica_states=reps
+            revision=revision, created=len(reps), updated=0, removed=0, pod_states=reps
         )
 
 
