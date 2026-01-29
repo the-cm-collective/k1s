@@ -1236,6 +1236,292 @@ def _swagger_doc() -> dict[str, Any]:
     )
     paths: dict[str, dict[str, Any]] = {}
 
+    resource_hints: dict[str, dict[str, Any]] = {
+        "namespaces": {
+            "definition": "io.k8s.api.core.v1.Namespace",
+            "example": {
+                "apiVersion": "v1",
+                "kind": "Namespace",
+                "metadata": {"name": "demo"},
+            },
+        },
+        "configmaps": {
+            "definition": "io.k8s.api.core.v1.ConfigMap",
+            "example": {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {"name": "demo-config", "namespace": "default"},
+                "data": {"APP_MODE": "demo", "LOG_LEVEL": "info"},
+            },
+        },
+        "secrets": {
+            "definition": "io.k8s.api.core.v1.Secret",
+            "example": {
+                "apiVersion": "v1",
+                "kind": "Secret",
+                "metadata": {"name": "demo-secret", "namespace": "default"},
+                "type": "Opaque",
+                "data": {"TOKEN": "ZGVtby10b2tlbg=="},
+            },
+        },
+        "serviceaccounts": {
+            "definition": "io.k8s.api.core.v1.ServiceAccount",
+            "example": {
+                "apiVersion": "v1",
+                "kind": "ServiceAccount",
+                "metadata": {"name": "demo-sa", "namespace": "default"},
+            },
+        },
+        "services": {
+            "definition": "io.k8s.api.core.v1.Service",
+            "example": {
+                "apiVersion": "v1",
+                "kind": "Service",
+                "metadata": {"name": "demo-svc", "namespace": "default"},
+                "spec": {
+                    "selector": {"app": "demo"},
+                    "ports": [{"port": 80, "targetPort": 8080}],
+                },
+            },
+        },
+        "endpoints": {
+            "definition": "io.k8s.api.core.v1.Endpoints",
+            "example": {
+                "apiVersion": "v1",
+                "kind": "Endpoints",
+                "metadata": {"name": "demo-svc", "namespace": "default"},
+            },
+        },
+        "pods": {
+            "definition": "io.k8s.api.core.v1.Pod",
+            "example": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {"name": "demo-pod", "namespace": "default"},
+                "spec": {"containers": [{"name": "demo", "image": "nginx:latest"}]},
+            },
+        },
+        "events": {
+            "definition": "io.k8s.api.core.v1.Event",
+            "example": {
+                "apiVersion": "v1",
+                "kind": "Event",
+                "metadata": {"name": "demo.1", "namespace": "default"},
+                "message": "Demo event",
+                "type": "Normal",
+            },
+        },
+        "deployments": {
+            "definition": "io.k8s.api.apps.v1.Deployment",
+            "example": {
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "metadata": {"name": "demo", "namespace": "default"},
+                "spec": {
+                    "replicas": 1,
+                    "selector": {"matchLabels": {"app": "demo"}},
+                    "template": {
+                        "metadata": {"labels": {"app": "demo"}},
+                        "spec": {"containers": [{"name": "demo", "image": "nginx:latest"}]},
+                    },
+                },
+            },
+            "patch_example": {"spec": {"replicas": 2}},
+        },
+        "statefulsets": {
+            "definition": "io.k8s.api.apps.v1.StatefulSet",
+            "example": {
+                "apiVersion": "apps/v1",
+                "kind": "StatefulSet",
+                "metadata": {"name": "demo", "namespace": "default"},
+                "spec": {
+                    "serviceName": "demo",
+                    "replicas": 1,
+                    "selector": {"matchLabels": {"app": "demo"}},
+                    "template": {
+                        "metadata": {"labels": {"app": "demo"}},
+                        "spec": {"containers": [{"name": "demo", "image": "nginx:latest"}]},
+                    },
+                },
+            },
+            "patch_example": {"spec": {"replicas": 2}},
+        },
+        "daemonsets": {
+            "definition": "io.k8s.api.apps.v1.DaemonSet",
+            "example": {
+                "apiVersion": "apps/v1",
+                "kind": "DaemonSet",
+                "metadata": {"name": "demo", "namespace": "default"},
+                "spec": {
+                    "selector": {"matchLabels": {"app": "demo"}},
+                    "template": {
+                        "metadata": {"labels": {"app": "demo"}},
+                        "spec": {"containers": [{"name": "demo", "image": "nginx:latest"}]},
+                    },
+                },
+            },
+        },
+        "replicasets": {
+            "definition": "io.k8s.api.apps.v1.ReplicaSet",
+            "example": {
+                "apiVersion": "apps/v1",
+                "kind": "ReplicaSet",
+                "metadata": {"name": "demo", "namespace": "default"},
+                "spec": {
+                    "replicas": 1,
+                    "selector": {"matchLabels": {"app": "demo"}},
+                    "template": {
+                        "metadata": {"labels": {"app": "demo"}},
+                        "spec": {"containers": [{"name": "demo", "image": "nginx:latest"}]},
+                    },
+                },
+            },
+        },
+        "jobs": {
+            "definition": "io.k8s.api.batch.v1.Job",
+            "example": {
+                "apiVersion": "batch/v1",
+                "kind": "Job",
+                "metadata": {"name": "demo-job", "namespace": "default"},
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "restartPolicy": "Never",
+                            "containers": [{"name": "demo", "image": "busybox"}],
+                        }
+                    }
+                },
+            },
+        },
+        "cronjobs": {
+            "definition": "io.k8s.api.batch.v1.CronJob",
+            "example": {
+                "apiVersion": "batch/v1",
+                "kind": "CronJob",
+                "metadata": {"name": "demo-cron", "namespace": "default"},
+                "spec": {
+                    "schedule": "*/5 * * * *",
+                    "jobTemplate": {
+                        "spec": {
+                            "template": {
+                                "spec": {
+                                    "restartPolicy": "Never",
+                                    "containers": [
+                                        {"name": "demo", "image": "busybox", "args": ["echo", "hi"]}
+                                    ],
+                                }
+                            }
+                        }
+                    },
+                },
+            },
+        },
+        "ingresses": {
+            "definition": "io.k8s.api.networking.v1.Ingress",
+            "example": {
+                "apiVersion": "networking.k8s.io/v1",
+                "kind": "Ingress",
+                "metadata": {"name": "demo-ingress", "namespace": "default"},
+                "spec": {
+                    "rules": [
+                        {
+                            "host": "demo.local",
+                            "http": {
+                                "paths": [
+                                    {
+                                        "path": "/",
+                                        "pathType": "Prefix",
+                                        "backend": {
+                                            "service": {
+                                                "name": "demo-svc",
+                                                "port": {"number": 80},
+                                            }
+                                        },
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                },
+            },
+        },
+        "roles": {
+            "definition": "io.k8s.api.rbac.v1.Role",
+            "example": {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "Role",
+                "metadata": {"name": "demo-role", "namespace": "default"},
+            },
+        },
+        "rolebindings": {
+            "definition": "io.k8s.api.rbac.v1.RoleBinding",
+            "example": {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "RoleBinding",
+                "metadata": {"name": "demo-rb", "namespace": "default"},
+            },
+        },
+        "clusterroles": {
+            "definition": "io.k8s.api.rbac.v1.ClusterRole",
+            "example": {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "ClusterRole",
+                "metadata": {"name": "demo-cr"},
+            },
+        },
+        "clusterrolebindings": {
+            "definition": "io.k8s.api.rbac.v1.ClusterRoleBinding",
+            "example": {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "ClusterRoleBinding",
+                "metadata": {"name": "demo-crb"},
+            },
+        },
+        "poddisruptionbudgets": {
+            "definition": "io.k8s.api.policy.v1.PodDisruptionBudget",
+            "example": {
+                "apiVersion": "policy/v1",
+                "kind": "PodDisruptionBudget",
+                "metadata": {"name": "demo-pdb", "namespace": "default"},
+                "spec": {"minAvailable": 1, "selector": {"matchLabels": {"app": "demo"}}},
+            },
+        },
+        "horizontalpodautoscalers": {
+            "definition": "io.k8s.api.autoscaling.v2.HorizontalPodAutoscaler",
+            "example": {
+                "apiVersion": "autoscaling/v2",
+                "kind": "HorizontalPodAutoscaler",
+                "metadata": {"name": "demo-hpa", "namespace": "default"},
+                "spec": {"minReplicas": 1, "maxReplicas": 3},
+            },
+        },
+        "customresourcedefinitions": {
+            "definition": "io.k8s.api.apiextensions.k8s.io.v1.CustomResourceDefinition",
+            "example": {
+                "apiVersion": "apiextensions.k8s.io/v1",
+                "kind": "CustomResourceDefinition",
+                "metadata": {"name": "apps.ae.dev"},
+            },
+        },
+        "endpointslices": {
+            "definition": "io.k8s.api.discovery.k8s.io.v1.EndpointSlice",
+            "example": {
+                "apiVersion": "discovery.k8s.io/v1",
+                "kind": "EndpointSlice",
+                "metadata": {"name": "demo-slice", "namespace": "default"},
+            },
+        },
+        "apps": {
+            "definition": "io.k8s.api.ae.dev.v1alpha1.App",
+            "example": {
+                "apiVersion": "ae.dev/v1alpha1",
+                "kind": "App",
+                "metadata": {"name": "demo", "namespace": "default"},
+                "spec": {"image": "nginx:latest", "ports": [{"containerPort": 8080}]},
+            },
+        },
+    }
+
     def _op(
         *,
         tag: str,
@@ -1328,6 +1614,56 @@ def _swagger_doc() -> dict[str, Any]:
         params.append(_path_param("name", "Resource name"))
         return params
 
+    def _schema_for(plural: str) -> dict[str, Any] | None:
+        hint = resource_hints.get(plural)
+        if not hint:
+            return None
+        definition = hint.get("definition")
+        if not definition:
+            return None
+        return {"$ref": f"#/definitions/{definition}"}
+
+    def _example_for(plural: str) -> dict[str, Any] | None:
+        hint = resource_hints.get(plural)
+        if not hint:
+            return None
+        return hint.get("example")
+
+    def _patch_example_for(plural: str) -> dict[str, Any] | None:
+        hint = resource_hints.get(plural)
+        if not hint:
+            return None
+        return hint.get("patch_example")
+
+    def _list_schema(item_schema: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not item_schema:
+            return None
+        return {
+            "type": "object",
+            "properties": {"items": {"type": "array", "items": item_schema}},
+            "additionalProperties": True,
+        }
+
+    def _list_example(example: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not example:
+            return None
+        kind = str(example.get("kind") or "List")
+        api_version = example.get("apiVersion")
+        payload: dict[str, Any] = {"kind": f"{kind}List", "items": [example]}
+        if api_version:
+            payload["apiVersion"] = api_version
+        return payload
+
+    def _response_ok(
+        schema: dict[str, Any] | None = None, example: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        resp: dict[str, Any] = {"description": "OK"}
+        if schema:
+            resp["schema"] = schema
+        if example is not None:
+            resp["examples"] = {"application/json": example}
+        return resp
+
     def _describe_list(plural: str, namespaced: bool) -> str:
         scope = "namespace" if namespaced else "cluster"
         example = (
@@ -1376,6 +1712,27 @@ def _swagger_doc() -> dict[str, Any]:
 
     def _add_resource(base: str, plural: str, namespaced: bool, verbs: set[str]) -> None:
         tag = _tag_for_base(base)
+        item_schema = _schema_for(plural)
+        list_schema = _list_schema(item_schema)
+        example = _example_for(plural)
+        list_example = _list_example(example)
+        patch_example = _patch_example_for(plural)
+
+        def _body_for(
+            description: str,
+            *,
+            example_override: dict[str, Any] | None = None,
+            schema_override: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            param = _body_param(description)
+            schema = schema_override or item_schema
+            if schema:
+                param["schema"] = schema
+            ex = example_override if example_override is not None else example
+            if ex is not None:
+                param["x-example"] = ex
+            return param
+
         list_methods: list[str] = []
         if "list" in verbs or "watch" in verbs:
             list_methods.append("get")
@@ -1390,13 +1747,18 @@ def _swagger_doc() -> dict[str, Any]:
                     summary=f"List {plural}",
                     description=_describe_list(plural, namespaced=True),
                     parameters=_list_params(namespaced=True),
+                    responses={"200": _response_ok(list_schema, list_example)},
                 )
             if "post" in list_methods:
                 list_ops["post"] = _op(
                     tag=tag,
                     summary=f"Create {plural.rstrip('s')}",
                     description=_describe_create(plural),
-                    parameters=[_path_param("namespace", "Namespace name"), _body_param("Resource body")],
+                    parameters=[
+                        _path_param("namespace", "Namespace name"),
+                        _body_for("Resource body"),
+                    ],
+                    responses={"200": _response_ok(item_schema, example)},
                 )
             _add_path(ns_path, list_ops)
             if "list" in verbs or "watch" in verbs:
@@ -1408,6 +1770,7 @@ def _swagger_doc() -> dict[str, Any]:
                             summary=f"List {plural} across all namespaces",
                             description=_describe_list(plural, namespaced=False),
                             parameters=_list_params(namespaced=False),
+                            responses={"200": _response_ok(list_schema, list_example)},
                         )
                     },
                 )
@@ -1420,13 +1783,15 @@ def _swagger_doc() -> dict[str, Any]:
                     summary=f"List {plural}",
                     description=_describe_list(plural, namespaced=False),
                     parameters=_list_params(namespaced=False),
+                    responses={"200": _response_ok(list_schema, list_example)},
                 )
             if "post" in list_methods:
                 list_ops["post"] = _op(
                     tag=tag,
                     summary=f"Create {plural.rstrip('s')}",
                     description=_describe_create(plural),
-                    parameters=[_body_param("Resource body")],
+                    parameters=[_body_for("Resource body")],
+                    responses={"200": _response_ok(item_schema, example)},
                 )
             _add_path(f"{base}/{plural}", list_ops)
             item_path = f"{base}/{plural}/{{name}}"
@@ -1446,20 +1811,24 @@ def _swagger_doc() -> dict[str, Any]:
                 summary=f"Get {plural.rstrip('s')}",
                 description=_describe_get(plural, namespaced),
                 parameters=_item_params(namespaced),
+                responses={"200": _response_ok(item_schema, example)},
             )
         if "put" in item_methods:
             item_ops["put"] = _op(
                 tag=tag,
                 summary=f"Replace {plural.rstrip('s')}",
                 description=_describe_update(plural),
-                parameters=_item_params(namespaced) + [_body_param("Resource body")],
+                parameters=_item_params(namespaced) + [_body_for("Resource body")],
+                responses={"200": _response_ok(item_schema, example)},
             )
         if "patch" in item_methods:
             item_ops["patch"] = _op(
                 tag=tag,
                 summary=f"Patch {plural.rstrip('s')}",
                 description=_describe_patch(plural),
-                parameters=_item_params(namespaced) + [_body_param("Patch body")],
+                parameters=_item_params(namespaced)
+                + [_body_for("Patch body", example_override=patch_example or {"spec": {}})],
+                responses={"200": _response_ok(item_schema, example)},
             )
         if "delete" in item_methods:
             item_ops["delete"] = _op(
