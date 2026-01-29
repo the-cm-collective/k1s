@@ -37,7 +37,7 @@ Implemented:
 - PodSandbox + main container lifecycle, image pull + auth, ExecSync, log reading via log_path.
 - Command/args mapping follows Kubernetes semantics (command overrides entrypoint; args passed to entrypoint).
 - PodSandbox UID included in log directory for kube-compatible log tooling.
-- ReplicaState endpoint prefers pod IP + container port; hostPort only for replicas==1.
+- PodState endpoint prefers pod IP + container port; hostPort only for replicas==1.
 - Init containers (sequential, ephemeral sandbox) and sidecars in the same PodSandbox.
 - HostPath storage manager for `spec.storage`.
 - CNI preflight/smoke scripts and runbook updates.
@@ -64,7 +64,7 @@ Goal: implement the existing `RuntimeAdapter` interface against CRI gRPC.
 
 High-level responsibilities:
 - Translate `AppManifest` into PodSandbox/ContainerConfig.
-- Reconcile replicas by creating/stopping/removing CRI pods/containers.
+- Reconcile pods by creating/stopping/removing CRI pods/containers.
 - Provide minimal exec (ExecSync) for probes and hooks.
 - Provide best-effort logs and list_containers_info for status/ingress.
 
@@ -79,7 +79,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from ae.controller.spec import AppManifest, app_key_for_manifest, runtime_labels_for_manifest
-from ae.runtime.base import ReplicaState, RuntimeAdapter, RuntimeResult
+from ae.runtime.base import PodState, RuntimeAdapter, RuntimeResult
 from ae.runtime.ports import choose_host_port
 from ae.runtime.registry import RegistryAuthProvider
 
@@ -92,7 +92,8 @@ from ae.runtime.registry import RegistryAuthProvider
 
 class CRIRuntime(RuntimeAdapter):
     APP_LABEL = "ae.app"
-    REPLICA_LABEL = "ae.replica_id"
+    POD_LABEL = "ae.pod_name"
+    LEGACY_REPLICA_LABEL = "ae.replica_id"
     REVISION_LABEL = "ae.revision"
     CONTAINER_LABEL = "ae.container"
     JOB_ATTEMPT_LABEL = "ae.job_attempt"
@@ -125,20 +126,20 @@ class CRIRuntime(RuntimeAdapter):
         *,
         keep_old: bool = False,
         limit_create: int | None = None,
-        replica_ids: list[str] | None = None,
+        pod_names: list[str] | None = None,
         node_id: str | None = None,
     ) -> RuntimeResult:
         app = app_key_for_manifest(manifest)
         desired = (
-            list(replica_ids)
-            if replica_ids is not None
+            list(pod_names)
+            if pod_names is not None
             else [f"{app}-rev{revision}-{i}" for i in range(manifest.spec.replicas)]
         )
         self._current_node_id = node_id
 
         # 1) List existing sandboxes/containers by label
         # existing = self._list_app_pods(app)
-        # by_replica = {labels[REPLICA_LABEL]: pod for pod in existing}
+        # by_pod = {labels[POD_LABEL]: pod for pod in existing}
         # old = [pod for pod in existing if labels[REVISION_LABEL] != str(revision)]
 
         created = updated = removed = 0
@@ -148,7 +149,7 @@ class CRIRuntime(RuntimeAdapter):
 
         # 3) Create / start missing pods
         for rid in desired:
-            # if rid not in by_replica:
+            # if rid not in by_pod:
             #   self._run_pod(manifest, rid, revision)
             #   created += 1
             # else: ensure main container running; if job retry needed, recreate
@@ -159,19 +160,19 @@ class CRIRuntime(RuntimeAdapter):
             # for pod in old: self._stop_and_remove_pod(pod)
             pass
 
-        # 5) Build replica state list
+        # 5) Build pod state list
         # states = self._build_states(manifest, revision)
-        states: list[ReplicaState] = []
+        states: list[PodState] = []
 
         return RuntimeResult(
             revision=revision,
             created=created,
             updated=updated,
             removed=removed,
-            replica_states=states,
+            pod_states=states,
         )
 
-    def read_logs(self, replica_id: str, *, follow: bool = False, tail: int | None = None, since: int | None = None):
+    def read_logs(self, pod_name: str, *, follow: bool = False, tail: int | None = None, since: int | None = None):
         # CRI log path is in ContainerStatus or well-known pod log directory.
         # Read and yield lines; no remote streaming for now.
         return iter(())
@@ -184,15 +185,15 @@ class CRIRuntime(RuntimeAdapter):
         return 0
 
     def list_containers_info(self) -> list[dict]:
-        # Return one entry per replica (main container), with host_ports + port_map if mapped.
+        # Return one entry per pod (main container), with host_ports + port_map if mapped.
         return []
 
-    def exec(self, replica_id: str, command: list[str], *, timeout: int | None = None) -> int:
+    def exec(self, pod_name: str, command: list[str], *, timeout: int | None = None) -> int:
         # Use ExecSyncRequest and return exit_code.
         return 1
 
     # Optional streaming exec; can be wired later through a CRI streaming endpoint.
-    def exec_attach(self, replica_id: str, command: list[str], *, container: str | None = None, tty: bool = False):
+    def exec_attach(self, pod_name: str, command: list[str], *, container: str | None = None, tty: bool = False):
         raise NotImplementedError
 
     def exec_resize(self, exec_id: str, *, height: int | None = None, width: int | None = None) -> None:
@@ -242,18 +243,18 @@ This is a direct mapping of current `AppManifest` fields (see `src/ae/controller
 
 ### 2.1 PodSandboxConfig
 
-Use one PodSandbox per replica (replica_id is unique).
+Use one PodSandbox per pod (pod_name is unique).
 
-- `metadata.name`: `replica_id` (ex: `app-rev3-0`)
+- `metadata.name`: `pod_name` (ex: `app-rev3-0`)
 - `metadata.namespace`: `manifest.metadata.namespace` (default `default`)
-- `metadata.uid`: stable hash of `replica_id` (required for kube-compatible log paths)
+- `metadata.uid`: stable hash of `pod_name` (required for kube-compatible log paths)
 - `metadata.attempt`: job attempt (from labels or reconciler if tracked)
 - `labels`:
   - `runtime_labels_for_manifest(manifest)`
-  - `ae.replica_id`, `ae.revision`
+  - `ae.pod_name` (alias: `ae.replica_id`), `ae.revision`
   - `ae.node` if `node_id` known
 - `annotations`: optional; keep empty for now
-- `log_directory`: `/var/log/pods/<ns>_<replica_id>_<uid>`
+- `log_directory`: `/var/log/pods/<ns>_<pod_name>_<uid>`
 - `linux.security_context`: only if you need SELinux/AppArmor; for now, leave empty
 - `port_mappings`: publish host ports only when replicas==1 and `service.port`/`service.ports` are defined
 
@@ -275,7 +276,7 @@ Port mappings:
 - `working_dir`: `manifest.spec.working_dir`
 - `labels`:
   - `runtime_labels_for_manifest(manifest)`
-  - `ae.replica_id`, `ae.revision`, `ae.container=main`
+  - `ae.pod_name` (alias: `ae.replica_id`), `ae.revision`, `ae.container=main`
   - `ae.job_attempt` for jobs
 - `mounts`:
   - `manifest.spec.volumes` -> hostPath mounts (absolute host path)
@@ -307,7 +308,7 @@ Port mappings:
 - `metadata.name` = sidecar name.
 - Mount projection mounts for sidecars.
 
-### 2.5 ReplicaState + endpoint selection
+### 2.5 PodState + endpoint selection
 
 CRI does not expose a health check by default; keep current behavior:
 - `ready`: true if container is running (or exit_code == 0 for jobs)
@@ -427,8 +428,8 @@ Exit criteria:
 
 - Implement PodSandbox + main container create/start/stop/remove.
 - Implement image pull + basic auth in CRI adapter.
-- Implement `list_containers_info` (one record per replica), `exec` via ExecSync.
-- Implement `ReplicaState` population (status, exit_code, started/finished times).
+- Implement `list_containers_info` (one record per pod), `exec` via ExecSync.
+- Implement `PodState` population (status, exit_code, started/finished times).
 
 Exit criteria:
 - Single‑node reconcile works for 1‑replica app using containerd.
@@ -486,7 +487,7 @@ Exit criteria:
 - Add module: `src/ae/runtime/cri_runtime.py` (skeleton class + TODOs)
   - Align naming with Kubernetes/CRI: PodSandbox == Pod, ContainerConfig == Container, RuntimeService == `runtime.v1.RuntimeService`.
   - Preserve existing label keys (`ae.*`) but ensure `app.kubernetes.io/*` labels still flow from `runtime_labels_for_manifest`.
-  - Use PodSandbox `metadata.name` as the replica id and Container `metadata.name` as the container name (`main`/sidecar).
+  - Use PodSandbox `metadata.name` as the pod name and Container `metadata.name` as the container name (`main`/sidecar).
 - Add CRI deps in `requirements.in` (grpcio, protobuf)
   - Target CRI API v1 (Kubernetes 1.26+); avoid `v1alpha2` to keep names aligned with current kubelet/CRIs.
   - Ensure generated stubs expose `RuntimeService` and `ImageService` under `runtime.v1` (nomenclature must match CRI).
@@ -527,7 +528,7 @@ Exit criteria:
   - Use `ListPodSandboxRequest.filter.label_selector` to select Pods by label (PodSandbox labels).
   - Use `ListContainersRequest.filter.label_selector` and `pod_sandbox_id` for container scoping.
   - Use `ae.container=main` to identify the primary container, consistent with K8s "containers[0]".
-- Implement `RuntimeResult` + `ReplicaState` from CRI `ContainerStatus` + `PodSandboxStatus`
+- Implement `RuntimeResult` + `PodState` from CRI `ContainerStatus` + `PodSandboxStatus`
   - Map CRI state enum to strings (`CONTAINER_RUNNING` -> `running`, `CONTAINER_EXITED` -> `exited`).
   - Use `started_at`, `finished_at`, `exit_code` fields from CRI to match Kubernetes container status fields.
   - Use `PodSandboxStatus.network.ip` as `pod_ip` (Kubernetes `podIP` semantics).
@@ -548,7 +549,7 @@ Exit criteria:
   - Only fall back to hostPort for local/dev or when podIP is unavailable.
 - Done: update `list_containers_info` to return:
   - `host_ports`, `port_map`, `pod_ip`, `host_ip`
-  - one entry per replica (main container only)
+  - one entry per pod (main container only)
   - Map `uid` to PodSandbox ID (closest equivalent to Kubernetes Pod UID).
   - Preserve labels on the PodSandbox as the authoritative label set (Pod-level metadata).
 - Done: add CRI Service VIP provider (iptables NAT).
@@ -614,7 +615,7 @@ Use this as the source of truth for naming and alignment in code and docs.
 Alignment checklist:
 - Pod labels belong on PodSandbox, not per-container (unless you intentionally duplicate).
 - Container labels are allowed but should be minimal; prefer Pod labels for selection.
-- PodSandbox name should match replica_id; container name should match manifest container name.
+- PodSandbox name should match pod_name; container name should match manifest container name.
 - Readiness/liveness should target `podIP:containerPort` by default.
 - HostPort should be opt-in only (e.g., when Service requires it).
 

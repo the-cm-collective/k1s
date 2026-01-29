@@ -12,7 +12,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from ae.controller.spec import AppManifest
-from ae.runtime import RuntimeAdapter, RuntimeResult, ReplicaState
+from ae.runtime import RuntimeAdapter, RuntimeResult
 import requests
 
 LOGGER = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     int(payload.get("revision", 0)),
                     keep_old=bool(payload.get("keep_old", False)),
                     limit_create=payload.get("limit_create"),
-                    replica_ids=payload.get("replica_ids"),
+                    pod_names=payload.get("pod_names") or payload.get("replica_ids"),
                     node_id=payload.get("node_id"),
                 )
                 _json_response(self, 200, _result_to_dict(result))
@@ -78,8 +78,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                 _json_response(self, 200, {"removed": removed})
                 return
             if self.path == "/v1/exec":
+                pod_name = payload.get("pod_name") or payload.get("replica_id", "")
                 rc = self.runtime.exec(
-                    payload.get("replica_id", ""),
+                    pod_name,
                     payload.get("command", []),
                     timeout=payload.get("timeout"),
                 )
@@ -87,7 +88,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/v1/exec_attach":
                 # Upgrade to raw stream and proxy between client and runtime exec socket
-                rid = payload.get("replica_id", "")
+                rid = payload.get("pod_name") or payload.get("replica_id", "")
                 cmd = payload.get("command", [])
                 container = payload.get("container")
                 tty = bool(payload.get("tty", False))
@@ -180,7 +181,7 @@ class AgentHandler(BaseHTTPRequestHandler):
 
                 qs = _u.urlparse(self.path).query
                 params = dict(_u.parse_qsl(qs))
-                rid = params.get("replica_id", "")
+                rid = params.get("pod_name") or params.get("replica_id", "")
                 tail = params.get("tail")
                 tail_i = int(tail) if tail else None
                 since = params.get("since")
@@ -207,19 +208,30 @@ class AgentHandler(BaseHTTPRequestHandler):
 
 
 def _result_to_dict(res: RuntimeResult) -> dict:
+    pod_states = [
+        {
+            "pod_name": r.pod_name,
+            "replica_id": r.pod_name,
+            "ready": r.ready,
+            "status": r.status,
+            "endpoint": r.endpoint,
+        }
+        for r in res.pod_states
+    ]
     return {
         "revision": res.revision,
         "created": res.created,
         "updated": res.updated,
         "removed": res.removed,
+        "pod_states": pod_states,
         "replica_states": [
             {
-                "replica_id": r.replica_id,
-                "ready": r.ready,
-                "status": r.status,
-                "endpoint": r.endpoint,
+                "replica_id": item["pod_name"],
+                "ready": item["ready"],
+                "status": item["status"],
+                "endpoint": item["endpoint"],
             }
-            for r in res.replica_states
+            for item in pod_states
         ],
     }
 

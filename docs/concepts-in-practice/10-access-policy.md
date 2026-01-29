@@ -1,4 +1,4 @@
-# Chapter 10 - Access and Policy Boundaries
+# Chapter 10 - Access & Policy
 
 ## Concept
 An orchestration engine must enforce who can read, modify, or deploy workloads. Access controls and policy boundaries prevent accidental or malicious changes.
@@ -135,5 +135,4 @@ Format: base64url(node_id:exp_ts:nonce:signature)
 ...
 ```
 ## Chapter navigation
-- Prev: [Chapter 09 - Configuration and Secrets Management](concepts-in-practice-09-configuration-secrets.html)
-
+- Prev: [Chapter 09 - Config & Secrets](concepts-in-practice-09-configuration-secrets.html)

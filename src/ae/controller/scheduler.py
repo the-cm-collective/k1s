@@ -1,10 +1,10 @@
 # ruff: noqa: E501,S112,SIM110
-"""Replica placement planner for multi-node scheduling.
+"""Pod placement planner for multi-node scheduling.
 
 The scheduler is intentionally lightweight:
 - Filters nodes by readiness, staleness, cordon, nodeSelector, and taints/tolerations.
 - Defaults to round-robin across eligible nodes.
-- Pins all replicas to a single node when persistent storage is declared to avoid
+- Pins all pods to a single node when persistent storage is declared to avoid
   cross-node volume assumptions.
 - Falls back to the local runtime when no nodes are eligible.
 """
@@ -35,15 +35,23 @@ SELECTED_NODE_ANNOTATION = "volume.kubernetes.io/selected-node"
 
 @dataclass(slots=True)
 class Placement:
-    """Replica placement target."""
+    """Pod placement target."""
 
     node: NodeRecord | None
     agent_url: str | None
-    replica_ids: list[str]
+    pod_names: list[str]
+
+    @property
+    def replica_ids(self) -> list[str]:
+        return self.pod_names
+
+    @replica_ids.setter
+    def replica_ids(self, value: list[str]) -> None:
+        self.pod_names = value
 
 
 class Scheduler:
-    """Minimal scheduler that distributes replicas across Ready nodes."""
+    """Minimal scheduler that distributes pods across Ready nodes."""
 
     def __init__(self, store: SQLiteStateStore) -> None:
         self._store = store
@@ -64,7 +72,7 @@ class Scheduler:
             )
             desired = 1
 
-        replica_ids = [f"{app_name}-rev{revision}-{i}" for i in range(desired)]
+        pod_names = [f"{app_name}-rev{revision}-{i}" for i in range(desired)]
         nodes = self._store.list_nodes()
         grace = self._not_ready_grace_seconds()
         now = datetime.now(timezone.utc)
@@ -128,7 +136,7 @@ class Scheduler:
                         Placement(
                             node=bound_node,
                             agent_url=bound_node.endpoint,
-                            replica_ids=replica_ids,
+                            pod_names=pod_names,
                         )
                     ], warnings
                 warnings.append(
@@ -145,14 +153,14 @@ class Scheduler:
                 )
             if stale_nodes:
                 warnings.append(f"stale/not-ready nodes skipped: {', '.join(stale_nodes)}")
-            return [Placement(node=target, agent_url=target.endpoint, replica_ids=replica_ids)], warnings
+            return [Placement(node=target, agent_url=target.endpoint, pod_names=pod_names)], warnings
 
         # Topology spread / soft anti-affinity: if topologySpreadConstraints specify a
         # topologyKey and we have >1 eligible node, distribute replicas to minimize skew
         # across that key. This is a lightweight best-effort implementation.
         spread_key = self._topology_key(manifest)
         if spread_key and len(eligible) > 1:
-            placements = self._spread_by_topology(eligible, replica_ids, spread_key)
+            placements = self._spread_by_topology(eligible, pod_names, spread_key)
             if placements:
                 if stale_nodes:
                     warnings.append(f"stale/not-ready nodes skipped: {', '.join(stale_nodes)}")
@@ -160,7 +168,7 @@ class Scheduler:
 
         # Round-robin placement across eligible nodes.
         assignments: dict[str, list[str]] = {n.node_id: [] for n in eligible}
-        for idx, rid in enumerate(replica_ids):
+        for idx, rid in enumerate(pod_names):
             node = eligible[idx % len(eligible)]
             assignments[node.node_id].append(rid)
 
@@ -168,14 +176,12 @@ class Scheduler:
         for node in eligible:
             ids = assignments.get(node.node_id, [])
             if ids:
-                placements.append(Placement(node=node, agent_url=node.endpoint, replica_ids=ids))
+                placements.append(Placement(node=node, agent_url=node.endpoint, pod_names=ids))
 
         if stale_nodes:
             warnings.append(f"stale/not-ready nodes skipped: {', '.join(stale_nodes)}")
 
-        return placements or [
-            Placement(node=None, agent_url=None, replica_ids=replica_ids)
-        ], warnings
+        return placements or [Placement(node=None, agent_url=None, pod_names=pod_names)], warnings
 
     def _not_ready_grace_seconds(self) -> int:
         try:

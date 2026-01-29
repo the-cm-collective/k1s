@@ -41,7 +41,7 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
-        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-bg-image: url('static/dash-assets/page-background-tile-1024.png');
         --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
@@ -87,9 +87,9 @@
         flex-direction: column;
         background-color: var(--bg);
         background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
-        background-size: 100% 100%, auto 100%;
+        background-size: 100% 100%, 100% auto;
         background-position: center, center top;
-        background-repeat: repeat-y, repeat-y;
+        background-repeat: no-repeat, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -704,13 +704,13 @@
     <h1>k1s Concepts</h1>
 <p>This guide explains core concepts used throughout k1s.</p>
 <h2>Terminology map (k1s -&gt; Kubernetes)</h2>
-<table><thead><tr><th>k1s term</th><th>Kubernetes term</th><th>Notes</th></tr></thead><tbody><tr><td>App</td><td>Deployment (workload)</td><td>k1s native workload manifest (<code>kind: App</code>).</td></tr><tr><td>Replica</td><td>Pod</td><td>One container instance for an App revision.</td></tr><tr><td>Revision</td><td>ReplicaSet / Deployment revision</td><td>Immutable snapshot of desired state.</td></tr><tr><td>Service VIP</td><td>Service / ClusterIP</td><td>Stable virtual IP for service routing.</td></tr><tr><td>Spec / manifest</td><td>Manifest</td><td>YAML resource definition.</td></tr></tbody></table>
+<table><thead><tr><th>k1s term</th><th>Kubernetes term</th><th>Notes</th></tr></thead><tbody><tr><td>App</td><td>Deployment (workload)</td><td>k1s native workload manifest (<code>kind: App</code>).</td></tr><tr><td>Pod</td><td>Pod</td><td>One container instance for a Deployment/App revision.</td></tr><tr><td>Revision</td><td>ReplicaSet / Deployment revision</td><td>Immutable snapshot of desired state.</td></tr><tr><td>Service VIP</td><td>Service / ClusterIP</td><td>Stable virtual IP for service routing.</td></tr><tr><td>Spec / manifest</td><td>Manifest</td><td>YAML resource definition.</td></tr></tbody></table>
 <h2>App (Deployment-like workload)</h2>
 <p>The primary unit of deployment. Defined by an <code>App</code> manifest with a desired image, replicas, ports, health checks, and optional ingress/secrets/resources.</p>
-<h2>Replica (Pod)</h2>
-<p>An individual container instance belonging to an app revision. Replica IDs follow the pattern <code>&lt;app&gt;-rev&lt;revision&gt;-&lt;index&gt;</code> (e.g., <code>echo-rev3-0</code>).</p>
+<h2>Pod</h2>
+<p>An individual container instance belonging to an app revision. Pod names follow the pattern <code>&lt;app&gt;-rev&lt;revision&gt;-&lt;index&gt;</code> (e.g., <code>echo-rev3-0</code>).</p>
 <h2>Node</h2>
-<p>A registered worker (or the controller host) that can run replicas. Nodes send heartbeats, advertise labels/taints, and expose a runtime endpoint that the controller uses for ensure/logs/exec/probes. Nodes can be cordoned or drained via <code>ae nodes</code>.</p>
+<p>A registered worker (or the controller host) that can run pods. Nodes send heartbeats, advertise labels/taints, and expose a runtime endpoint that the controller uses for ensure/logs/exec/probes. Nodes can be cordoned or drained via <code>ae nodes</code>.</p>
 <h2>Service VIP (Service/ClusterIP)</h2>
 <p>A stable virtual IP allocated from the Service CIDR and fronted by the overlay provider. Ingress prefers VIPs when ready endpoints exist; hostPorts remain for single-node edge cases.</p>
 <h2>Revision (Deployment revision)</h2>
@@ -729,17 +729,17 @@
 </ul>
 <h2>Health</h2>
 <ul>
-<li>Readiness: Determines whether a replica should receive traffic (2xx HTTP implies success).</li>
-<li>Liveness: Indicates the replica is still alive (defaults to true if not specified).</li>
+<li>Readiness: Determines whether a pod should receive traffic (2xx HTTP implies success).</li>
+<li>Liveness: Indicates the pod is still alive (defaults to true if not specified).</li>
 <li>Initial delay: Allows the app to boot before probes start.</li>
-<li>Startup probes gate readiness/liveness until they succeed; lifecycle hooks (postStart/preStop) run around replica start/stop.</li>
+<li>Startup probes gate readiness/liveness until they succeed; lifecycle hooks (postStart/preStop) run around pod start/stop.</li>
 </ul>
 <h2>Status</h2>
 <p>Per‑app aggregate status is one of:</p>
 <ul>
 <li>ready: all desired replicas are ready</li>
 <li>progressing: desired count is live but not yet all ready</li>
-<li>degraded: no replicas present for the current revision</li>
+<li>degraded: no pods present for the current revision</li>
 </ul>
 <p>CLI examples:</p>
 <pre><code>ae status myapp --wide --events</code></pre>
@@ -756,7 +756,7 @@
 <pre><code>ae events myapp --limit 20</code></pre>
 <h2>Rollouts</h2>
 <p>Rolling replace with <code>maxUnavailable=0, maxSurge=1</code> semantics across one or more nodes:</p>
-<p>1. Start a new replica for the next revision. 2. Wait for readiness. 3. Switch ingress to the new Service VIP endpoints (or hostPort when VIP disabled). 4. Stop and remove old revision containers.</p>
+<p>1. Start a new pod for the next revision. 2. Wait for readiness. 3. Switch ingress to the new Service VIP endpoints (or hostPort when VIP disabled). 4. Stop and remove old revision containers.</p>
 <p>Rollback uses the recorded manifest for the target revision:</p>
 <pre><code>ae rollback myapp --to 3</code></pre>
 <h2>Resources &amp; Volumes</h2>
@@ -788,7 +788,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-28 17:12:24</span>
+        <span>Built 2026-01-28 18:29:44</span>
       </div>
     </footer>
     <script>

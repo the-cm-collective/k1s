@@ -214,13 +214,14 @@ def handle_get(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
         for st in statuses:
             if app_filter and st.app_name != app_filter:
                 continue
-            rows = store.list_replica_nodes(st.app_name)
+            rows = store.list_pod_nodes(st.app_name)
             for row in rows:
-                replica_id, node_id, ready, live, status, readiness, liveness = row
+                pod_name, node_id, ready, live, status, readiness, liveness = row
                 pods.append(
                     {
                         "app": st.app_name,
-                        "replica_id": replica_id,
+                        "pod_name": pod_name,
+                        "replica_id": pod_name,
                         "ready": bool(ready),
                         "live": bool(live),
                         "status": status,
@@ -354,10 +355,10 @@ def handle_describe(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
         return 1
     print(format_status(status))
 
-    replicas = store.list_replicas(ref.name)
-    for r in replicas:
+    pods = store.list_pods(ref.name)
+    for r in pods:
         print(
-            f"  - {r.replica_id}: ready={r.ready} live={r.live} status={r.status} | "
+            f"  - {r.pod_name}: ready={r.ready} live={r.live} status={r.status} | "
             f"readiness={r.readiness_message}; liveness={r.liveness_message}"
         )
     events = store.list_events(ref.name, limit=10)

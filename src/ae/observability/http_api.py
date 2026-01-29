@@ -5,8 +5,8 @@ Endpoints:
 - GET /status             -> JSON list of app statuses
 - GET /status/<app>       -> JSON object for app status (404 if missing)
 - GET /events/<app>?limit -> JSON list of recent events for app
- - GET /history/<app>?limit -> JSON list of recent probe evaluations (replica histories)
- - POST /k8s/preview      -> Render K8s YAML for a manifest (dev only; gated by AE_API_DEV_EXPORT=1)
+- GET /history/<app>?limit -> JSON list of recent probe evaluations (pod histories)
+- POST /k8s/preview      -> Render K8s YAML for a manifest (dev only; gated by AE_API_DEV_EXPORT=1)
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ _LABS_RESET_BLOCK_SECONDS = int(os.getenv("AE_LABS_RESET_BLOCK_SECONDS", "30") o
 _APP_CRASHLOOP_UNTIL: dict[str, float] = {}
 # Hook observations: (app, hook, type) -> (duration_seconds: float, success: bool)
 _HOOK_LAST: dict[tuple[str, str, str], tuple[float, bool]] = {}
-# Probe backoff: (app, replica, type) -> seconds
+# Probe backoff: (app, pod, type) -> seconds
 _PROBE_BACKOFF: dict[tuple[str, str, str], int] = {}
 _APP_ROLLOUT_OPS: dict[str, dict[str, int]] = {}
 # Canary tracking: latest weight and step counter per app
@@ -360,9 +360,9 @@ def increment_canary_step(app: str) -> None:
         pass
 
 
-def record_probe_backoff(app: str, replica: str, probe_type: str, seconds: int) -> None:
+def record_probe_backoff(app: str, pod_name: str, probe_type: str, seconds: int) -> None:
     try:
-        _PROBE_BACKOFF[(str(app), str(replica), str(probe_type))] = max(0, int(seconds))
+        _PROBE_BACKOFF[(str(app), str(pod_name), str(probe_type))] = max(0, int(seconds))
     except Exception:
         pass
 
@@ -950,7 +950,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 hist = self.store.get_probe_history(app, limit)
                 out = [
                     {
-                        "replica_id": h.replica_id,
+                        "pod_name": h.pod_name,
+                        "replica_id": h.pod_name,
                         "check_time": h.check_time.isoformat(),
                         "ready": bool(h.ready),
                         "live": bool(h.live),
@@ -2563,18 +2564,21 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     f"kube_deployment_status_replicas_unavailable{{{dep_labels}}} {unavailable}"
                 )
             for s0 in statuses:
-                reps = self.store.list_replicas(s0.app_name)
+                reps = self.store.list_pods(s0.app_name)
                 ns, _dep = split_app_key(s0.app_name)
                 for r in reps:
                     val = 1 if r.ready else 0
                     lines.append(
-                        f'ae_replica_ready{{app="{s0.app_name}",replica="{r.replica_id}"}} {val}'
+                        f'ae_pod_ready{{app="{s0.app_name}",pod="{r.pod_name}"}} {val}'
                     )
                     lines.append(
-                        f'kube_pod_status_ready{{namespace="{ns}",pod="{r.replica_id}",condition="true"}} {val}'
+                        f'ae_replica_ready{{app="{s0.app_name}",replica="{r.pod_name}"}} {val}'
                     )
                     lines.append(
-                        f'kube_pod_status_ready{{namespace="{ns}",pod="{r.replica_id}",condition="false"}} {1 - val}'
+                        f'kube_pod_status_ready{{namespace="{ns}",pod="{r.pod_name}",condition="true"}} {val}'
+                    )
+                    lines.append(
+                        f'kube_pod_status_ready{{namespace="{ns}",pod="{r.pod_name}",condition="false"}} {1 - val}'
                     )
         except Exception:
             pass
@@ -2721,9 +2725,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             pass
         # Probe backoff seconds
         try:
-            for (app, replica, ptype), secs in list(_PROBE_BACKOFF.items()):
+            for (app, pod_name, ptype), secs in list(_PROBE_BACKOFF.items()):
                 lines.append(
-                    f'ae_probe_backoff_seconds{{app="{app}",replica="{replica}",type="{ptype}"}} {int(secs)}'
+                    f'ae_pod_probe_backoff_seconds{{app="{app}",pod="{pod_name}",type="{ptype}"}} {int(secs)}'
+                )
+                lines.append(
+                    f'ae_probe_backoff_seconds{{app="{app}",replica="{pod_name}",type="{ptype}"}} {int(secs)}'
                 )
         except Exception:
             pass
@@ -3346,11 +3353,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if want_details:
             try:
                 manifest = self.store.get_revision_manifest(s.app_name, s.revision)
-                reps = self.store.list_replicas(s.app_name)
+                reps = self.store.list_pods(s.app_name)
                 data["manifest"] = manifest.model_dump()
-                data["replicas"] = [
+                pods = [
                     {
-                        "replica_id": r.replica_id,
+                        "pod_name": r.pod_name,
+                        "replica_id": r.pod_name,
                         "ready": bool(r.ready),
                         "live": bool(r.live),
                         "status": r.status,
@@ -3359,6 +3367,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     }
                     for r in reps
                 ]
+                data["pods"] = pods
+                data["replicas"] = pods
                 # Include per-container runtime info when system_info_fn is available
                 try:
                     sys = self.system_info_fn() if getattr(self, "system_info_fn", None) else None  # type: ignore[misc]
@@ -3664,7 +3674,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     rd = "yes" if r.ready else "no"
                     lv = "yes" if r.live else "no"
                     out.append(
-                        f"<tr><td>{esc(r.check_time.isoformat())}</td><td>{esc(r.replica_id)}</td><td>{rd}</td><td>{lv}</td>"
+                        f"<tr><td>{esc(r.check_time.isoformat())}</td><td>{esc(r.pod_name)}</td><td>{rd}</td><td>{lv}</td>"
                         f"<td>{esc(r.readiness_message or '')}</td><td>{esc(r.liveness_message or '')}</td></tr>"
                     )
                 out.append("</tbody></table>")

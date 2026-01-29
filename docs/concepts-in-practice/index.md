@@ -26,7 +26,7 @@
           <span class="hero-link-sub">Show how a declarative spec becomes the single source of truth, and how apply merges desired state into the controller's registry.</span>
         </a>
         <a class="hero-link hero-link--stack" href="concepts-in-practice-03-runtime-adapters.html">
-          <span class="hero-link-title">Chapter 03: Runtime Adapters</span>
+          <span class="hero-link-title">Chapter 03: Runtime Adapters &amp; Container Execution</span>
           <span class="hero-link-sub">Trace how k1s translates a manifest into runtime operations and how adapters make that portable across container engines.</span>
         </a>
       </div>
@@ -37,7 +37,7 @@
       <div class="hero-links hero-links--dense">
         <a class="hero-link hero-link--stack" href="concepts-in-practice-04-scheduling-placement.html">
           <span class="hero-link-title">Chapter 04: Scheduling &amp; Placement</span>
-          <span class="hero-link-sub">Explain how k1s decides replica placement and how that maps to Kubernetes scheduler behavior.</span>
+          <span class="hero-link-sub">Explain how k1s decides pod placement and how that maps to Kubernetes scheduler behavior.</span>
         </a>
         <a class="hero-link hero-link--stack" href="concepts-in-practice-05-observability.html">
           <span class="hero-link-title">Chapter 05: Observability</span>
@@ -50,7 +50,7 @@
       <p>Ingress, probes, and update safety.</p>
       <div class="hero-links hero-links--dense">
         <a class="hero-link hero-link--stack" href="concepts-in-practice-06-ingress-service-exposure.html">
-          <span class="hero-link-title">Chapter 06: Ingress &amp; Services</span>
+          <span class="hero-link-title">Chapter 06: Ingress &amp; Service Exposure</span>
           <span class="hero-link-sub">Walk through how k1s exposes services: L4 Service VIPs and L7 ingress via Caddy, then map to k8s Services and Ingress/Gateway.</span>
         </a>
         <a class="hero-link hero-link--stack" href="concepts-in-practice-07-health-probes.html">
@@ -58,7 +58,7 @@
           <span class="hero-link-sub">Explain how readiness/liveness/startup probes gate traffic and restarts, and show how k1s evaluates probe state.</span>
         </a>
         <a class="hero-link hero-link--stack" href="concepts-in-practice-08-rollouts-updates.html">
-          <span class="hero-link-title">Chapter 08: Rollouts &amp; Rollbacks</span>
+          <span class="hero-link-title">Chapter 08: Rollouts, Updates, &amp; Rollbacks</span>
           <span class="hero-link-sub">Show how k1s performs controlled updates, tracks revisions, and supports rollbacks, then map to k8s Deployment rollouts.</span>
         </a>
       </div>
@@ -68,7 +68,7 @@
       <p>Secrets, access, and enforcement boundaries.</p>
       <div class="hero-links hero-links--dense">
         <a class="hero-link hero-link--stack" href="concepts-in-practice-09-configuration-secrets.html">
-          <span class="hero-link-title">Chapter 09: Configs &amp; Secrets</span>
+          <span class="hero-link-title">Chapter 09: Config &amp; Secrets</span>
           <span class="hero-link-sub">Show how k1s loads configs and sealed secrets, projects them into env/files, and maps that to k8s ConfigMaps/Secrets.</span>
         </a>
         <a class="hero-link hero-link--stack" href="concepts-in-practice-10-access-policy.html">

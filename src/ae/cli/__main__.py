@@ -118,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     logs_parser.add_argument("name", help="Workload (App) name")
     logs_parser.add_argument("--follow", action="store_true", help="Stream logs continuously")
     logs_parser.add_argument(
-        "--container", help="Replica selector: index (e.g. 0) or replica id", default=None
+        "--container", help="Pod selector: index (e.g. 0) or pod name", default=None
     )
     logs_parser.add_argument("--revision", type=int, default=None, help="Filter by revision number")
     logs_parser.add_argument(
@@ -141,7 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_namespace_arg(exec_parser)
     exec_parser.add_argument("name", help="Workload (App) name")
     exec_parser.add_argument(
-        "--container", required=False, help="Target container name or replica id"
+        "--container", required=False, help="Target container name or pod name"
     )
     exec_parser.add_argument(
         "-i", "--stdin", action="store_true", help="Pass stdin to the container"
@@ -164,7 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_namespace_arg(shell_parser)
     shell_parser.add_argument("name", help="Workload (App) name")
     shell_parser.add_argument(
-        "--container", required=False, help="Target container name or replica id"
+        "--container", required=False, help="Target container name or pod name"
     )
     shell_parser.add_argument(
         "--apishim",
@@ -282,7 +282,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_namespace_arg(history_parser)
     history_parser.add_argument("name", help="Workload (App) name")
     history_parser.add_argument("--limit", type=int, default=20)
-    history_parser.add_argument("--replica", default=None, help="Filter by replica id")
+    history_parser.add_argument("--pod", dest="pod", default=None, help="Filter by pod name")
+    history_parser.add_argument(
+        "--replica",
+        dest="pod",
+        default=None,
+        help="Deprecated alias for --pod (filter by pod name)",
+    )
     history_parser.add_argument("--json", action="store_true", help="Emit JSON output")
     history_parser.add_argument(
         "--since", default=None, help="Show entries since a relative duration (e.g., 10m, 2h)"
@@ -363,7 +369,7 @@ def build_parser() -> argparse.ArgumentParser:
     # plan (dry-run scheduling/placement)
     plan = subparsers.add_parser("plan", help="Dry-run planner for manifest apply")
     plan.add_argument("-f", "--file", type=Path, required=True)
-    plan.add_argument("--verbose", action="store_true", help="Show replica placement details")
+    plan.add_argument("--verbose", action="store_true", help="Show pod placement details")
     plan.add_argument("--strict", action="store_true", help="Treat warnings as errors")
     plan.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
@@ -2376,12 +2382,13 @@ def handle_status(
                         )
                     )
                 )
-                # When --wide, include replicas and containers details if available
+                # When --wide, include pod and container details if available
                 if args.wide:
                     try:
-                        for r in data.get("replicas", []) or []:
+                        for r in (data.get("pods") or data.get("replicas") or []):
+                            pod_name = r.get("pod_name") or r.get("replica_id")
                             print(
-                                f"  - {r.get('replica_id')}: ready={bool(r.get('ready'))} "
+                                f"  - {pod_name}: ready={bool(r.get('ready'))} "
                                 f"live={bool(r.get('live'))} status={r.get('status')} | "
                                 f"readiness={r.get('readiness_message')}; liveness={r.get('liveness_message')}"
                             )
@@ -2467,20 +2474,20 @@ def handle_status(
                         print(f"    storage: {st_str}")
                 except Exception:
                     pass
-            replicas = store.list_replicas(app_name)
-            for replica in replicas:
+            pods = store.list_pods(app_name)
+            for pod in pods:
                 print(
-                    f"  - {replica.replica_id}: ready={replica.ready} "
-                    f"live={replica.live} status={replica.status} | "
-                    f"readiness={replica.readiness_message}; "
-                    f"liveness={replica.liveness_message}"
+                    f"  - {pod.pod_name}: ready={pod.ready} "
+                    f"live={pod.live} status={pod.status} | "
+                    f"readiness={pod.readiness_message}; "
+                    f"liveness={pod.liveness_message}"
                 )
             if args.history and args.history > 0:
                 history = store.get_probe_history(app_name, args.history)
                 for entry in history:
                     timestamp = entry.check_time.strftime("%Y-%m-%d %H:%M:%S")
                     print(
-                        f"    history {timestamp} {entry.replica_id}: ready={entry.ready} "
+                        f"    history {timestamp} {entry.pod_name}: ready={entry.ready} "
                         f"live={entry.live} | readiness={entry.readiness_message}; "
                         f"liveness={entry.liveness_message}"
                     )
@@ -2975,16 +2982,16 @@ def handle_logs(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
     if status is None:
         print(f"No status recorded for {_display_app_name(app_name)}")
         return 1
-    replicas = store.list_replicas(app_name)
-    if not replicas:
-        print(f"No replicas available for {_display_app_name(app_name)}")
+    pods = store.list_pods(app_name)
+    if not pods:
+        print(f"No pods available for {_display_app_name(app_name)}")
         return 1
     # optional revision filter
     if args.revision is not None:
         rev_tag = f"-rev{args.revision}-"
-        replicas = [r for r in replicas if rev_tag in r.replica_id]
-        if not replicas:
-            print(f"No replicas for {_display_app_name(app_name)} at revision {args.revision}")
+        pods = [r for r in pods if rev_tag in r.pod_name]
+        if not pods:
+            print(f"No pods for {_display_app_name(app_name)} at revision {args.revision}")
             return 1
 
     # select by container flag
@@ -2994,29 +3001,29 @@ def handle_logs(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
         if sel.isdigit():
             # match by replica index suffix
             suffix = f"-{sel}"
-            for r in replicas:
-                if r.replica_id.endswith(suffix):
+            for r in pods:
+                if r.pod_name.endswith(suffix):
                     target = r
                     break
         else:
             # exact match or contains
-            for r in replicas:
-                if r.replica_id == sel or sel in r.replica_id:
+            for r in pods:
+                if r.pod_name == sel or sel in r.pod_name:
                     target = r
                     break
         if target is None:
-            print(f"No matching replica for --container={sel}")
+            print(f"No matching pod for --container={sel}")
             return 1
     else:
-        # prefer a ready replica, otherwise first
-        target = next((r for r in replicas if r.ready), replicas[0])
+        # prefer a ready pod, otherwise first
+        target = next((r for r in pods if r.ready), pods[0])
 
     since_seconds = _parse_since_secs(args.since) if args.since else None
     if since_seconds is None and args.since_time:
         since_seconds = _parse_rfc3339_to_epoch(args.since_time)
 
     for line in runtime.read_logs(
-        target.replica_id,
+        target.pod_name,
         follow=args.follow,
         tail=args.tail,
         since=since_seconds,
@@ -3029,28 +3036,28 @@ def _resolve_exec_target(
     store: SQLiteStateStore, app_name: str, container_sel: str | None
 ) -> tuple[str | None, str | None]:
     status = store.get_status(app_name)
-    replicas = store.list_replicas(app_name) if status is not None else []
+    pods = store.list_pods(app_name) if status is not None else []
     pod_name: str | None = None
     container_name = container_sel
-    if replicas:
+    if pods:
         if container_sel:
             sel = str(container_sel)
             if sel.isdigit():
                 suffix = f"-{sel}"
-                for r in replicas:
-                    if r.replica_id.endswith(suffix):
-                        pod_name = r.replica_id
+                for r in pods:
+                    if r.pod_name.endswith(suffix):
+                        pod_name = r.pod_name
                         container_name = None
                         break
             if pod_name is None:
-                for r in replicas:
-                    if r.replica_id == sel or sel in r.replica_id:
-                        pod_name = r.replica_id
+                for r in pods:
+                    if r.pod_name == sel or sel in r.pod_name:
+                        pod_name = r.pod_name
                         container_name = None
                         break
         if pod_name is None:
-            target = next((r for r in replicas if r.ready), replicas[0])
-            pod_name = target.replica_id
+            target = next((r for r in pods if r.ready), pods[0])
+            pod_name = target.pod_name
     return pod_name, container_name
 
 
@@ -3688,9 +3695,9 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
     if status is None:
         print(f"No status recorded for {_display_app_name(app_name)}")
         return 1
-    replicas = store.list_replicas(app_name)
-    if not replicas:
-        print(f"No replicas available for {_display_app_name(app_name)}")
+    pods = store.list_pods(app_name)
+    if not pods:
+        print(f"No pods available for {_display_app_name(app_name)}")
         return 1
     timeout = getattr(args, "timeout", None)
     cmd = list(args.cmd or [])
@@ -3711,17 +3718,17 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
             except Exception as exc:  # noqa: BLE001
                 print(f"exec failed: {exc}")
                 return 1
-        # Fallback: select a replica by id substring
+        # Fallback: select a pod by name substring
         target = next(
-            (r for r in replicas if (r.replica_id == cname or cname in r.replica_id)), None
+            (r for r in pods if (r.pod_name == cname or cname in r.pod_name)), None
         )
         if not target:
-            print(f"No matching replica for --container={cname}")
+            print(f"No matching pod for --container={cname}")
             return 1
-        return int(runtime.exec(target.replica_id, cmd, timeout=timeout))
-    # Default: exec in a ready replica (main container context)
-    target = next((r for r in replicas if r.ready), replicas[0])
-    return int(runtime.exec(target.replica_id, cmd, timeout=timeout))
+        return int(runtime.exec(target.pod_name, cmd, timeout=timeout))
+    # Default: exec in a ready pod (main container context)
+    target = next((r for r in pods if r.ready), pods[0])
+    return int(runtime.exec(target.pod_name, cmd, timeout=timeout))
 
 
 def handle_exec_remote(args: argparse.Namespace, global_args: argparse.Namespace) -> int:
@@ -4088,7 +4095,7 @@ def handle_history(
             if not items:
                 print(f"No probe history for {_display_app_name(app_name)}.")
                 return 0
-            rep = getattr(args, "replica", None)
+            rep = getattr(args, "pod", None)
             import time
 
             cutoff = None
@@ -4098,7 +4105,8 @@ def handle_history(
                 cutoff = float(since_ts)
             shown = 0
             for h in items:
-                if rep and str(h.get("replica_id")) != str(rep):
+                hid = h.get("pod_name") or h.get("replica_id")
+                if rep and str(hid) != str(rep):
                     continue
                 if cutoff is not None:
                     try:
@@ -4113,7 +4121,7 @@ def handle_history(
                         pass
                 ts = h.get("check_time", "")
                 print(
-                    f"{ts} {h.get('replica_id')}: ready={bool(h.get('ready'))} live={bool(h.get('live'))} "
+                    f"{ts} {hid}: ready={bool(h.get('ready'))} live={bool(h.get('live'))} "
                     f"R='{h.get('readiness_message') or ''}' L='{h.get('liveness_message') or ''}'"
                 )
                 shown += 1
@@ -4150,7 +4158,8 @@ def handle_history(
 
         j = [
             {
-                "replica_id": h.replica_id,
+                "pod_name": h.pod_name,
+                "replica_id": h.pod_name,
                 "check_time": h.check_time.isoformat(),
                 "ready": bool(h.ready),
                 "live": bool(h.live),
@@ -4162,12 +4171,12 @@ def handle_history(
         ][:limit]
         print(_json.dumps(j, indent=2))
         return 0
-    rep = getattr(args, "replica", None)
+    rep = getattr(args, "pod", None)
     import time
 
     shown = 0
     for h in items:
-        if rep and str(h.replica_id) != str(rep):
+        if rep and str(h.pod_name) != str(rep):
             continue
         if since_secs or since_ts:
             try:
@@ -4178,7 +4187,7 @@ def handle_history(
                 pass
         ts = h.check_time.strftime("%Y-%m-%d %H:%M:%S")
         print(
-            f"{ts} {h.replica_id}: ready={h.ready} live={h.live} R='{h.readiness_message}' L='{h.liveness_message}'"
+            f"{ts} {h.pod_name}: ready={h.ready} live={h.live} R='{h.readiness_message}' L='{h.liveness_message}'"
         )
         shown += 1
         if shown >= limit:

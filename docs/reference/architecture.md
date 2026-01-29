@@ -44,11 +44,11 @@ Ordering
 - Runtime ensure: create/update/remove containers on each placement (respect rollout policy) via node agent RemoteRuntime.
 - Health gate: evaluate readiness/liveness/exec/tcp; decide revision status ready/progressing/degraded/paused.
 - Ingress: prefer Service VIP upstreams; optional canary weight/auto progression; remove ingress when omitted.
-- Persist: write app status, replicas, probe history, canary state, and revision record; emit events.
+- Persist: write app status, pods, probe history, canary state, and revision record; emit events.
 
 Idempotency & Diff
 - Spec hash drives revisions; reconciler tracks created/updated/removed per pass.
-- Docker containers are labeled with app/replica/revision; runtime lists by labels.
+- Docker containers are labeled with app/pod/revision; runtime lists by labels.
 - Old revision containers are removed when the new revision becomes live.
 
 Pseudocode (as implemented in src/ae/controller/reconciler.py)
@@ -62,7 +62,7 @@ for manifest in manifests:
   for placement in placements:
     res = runtime.ensure_app(
       manifest, rev, keep_old=True,
-      limit_create=..., replica_ids=placement.replica_ids,
+      limit_create=..., pod_names=placement.pod_names,
       node_id=placement.node.node_id if placement.node else None
     )
     aggregate.append(res)
@@ -91,8 +91,8 @@ sequenceDiagram
   SCH-->>C: placements (+warnings)
   C->>A: ensure_app(manifest, rev, placements)
   A->>R: ensure/exec/logs
-  R-->>A: RuntimeResult(replica states)
-  A-->>C: Replica states
+  R-->>A: RuntimeResult(pod states)
+  A-->>C: Pod states
   C->>H: evaluate(manifest, result)
   H-->>C: HealthReport(ready/live)
   alt ingress configured
@@ -154,20 +154,20 @@ spec:
 
 Tables (created in src/ae/controller/state.py)
 - app_status(app_name PK, desired_replicas, ready_replicas, live_replicas, revision, revision_status, image, created, updated, removed, ingress_host, ingress_path)
-- replica_status(app_name, replica_id, ready, live, status, readiness_message, liveness_message)
-- probe_history(id, app_name, replica_id, check_time, ready, live, readiness_message, liveness_message) [kept to 50 per replica]
+- pod_status(app_name, pod_name, ready, live, status, readiness_message, liveness_message)
+- probe_history(id, app_name, pod_name, check_time, ready, live, readiness_message, liveness_message) [kept to 50 per pod]
 - app_revisions(app_name, revision, spec_hash, spec_json, image, created_at, status)
 - app_events(id, app_name, revision, event_type, message, created_at)
 - rollout_canary(app_name PK, weight, next_step_at, step, max, updated_at)
 - nodes(node_id PK, name, labels json, taints json, endpoint, backend, pod_cidr, wg_pubkey, cordoned)
 - node_status(node_id FK, status, seen_at)
 - services(service_name PK, app_name, cluster_ip, provider, ports json, annotations json)
-- service_endpoints(service_name FK, replica_id, ip, port, ready, node_id)
+- service_endpoints(app_name, port, ip, target_port, ready)
 - storage_bindings(app_name, volume_name, node_id, created_at)
 
 Query surfaces
 - `list_status()`, `get_status(app)`
-- `list_replicas(app)`, `get_probe_history(app, N)`
+- `list_pods(app)` (alias: `list_replicas`), `get_probe_history(app, N)`
 - `list_revisions(app)`, `get_revision_manifest(app, rev)`
 - `list_events(app, limit)`
 
@@ -177,16 +177,16 @@ The controller talks to local Podman/Docker when no nodes are eligible; in multi
 
 Labels
 - `ae.app=<name>`
-- `ae.replica_id=<name>-rev<rev>-<index>`
+- `ae.pod_name=<name>-rev<rev>-<index>` (alias: `ae.replica_id`)
 - `ae.revision=<rev>`
 
 Ensure flow (Docker/Podman runtimes)
 - List existing containers by `ae.app` label.
 - Partition by current revision vs old; keep old during surge.
 - Pull image only when needed; prefer local `localhost/<image>` on Podman when present.
-- Create missing replicas with labels, env, ports, security, volumes/storage, restart policy.
+- Create missing pods with labels, env, ports, security, volumes/storage, restart policy.
 - Remove old revision containers after readiness thresholds.
-- Build `ReplicaState` from inspection (status, startedAt) and endpoints.
+- Build `PodState` from inspection (status, startedAt) and endpoints.
 
 Resources/Volumes
 - `limits.cpu` → container CLI flag (`--cpus` on Podman/Docker); Docker uses `nano_cpus=int(cpu*1e9)` internally.
@@ -194,7 +194,7 @@ Resources/Volumes
 - Volumes: hostPath bind mounts ro/rw; `spec.storage` becomes named engine volumes per app.
 
 Logs
-- `read_logs(replica_id, follow, tail, since)` adapts to Docker SDK parameters.
+- `read_logs(pod_name, follow, tail, since)` adapts to Docker SDK parameters (replica_id alias supported).
 
 Auth
 - `RegistryAuthProvider` reads `~/.config/ae/registries.yaml` and calls `client.login(...)` before pulls.
@@ -209,12 +209,12 @@ Auth
 
 ## Health
 
-- HTTP probe: GET `http://<replica.endpoint><path>`; success is 2xx.
+- HTTP probe: GET `http://<pod.endpoint><path>`; success is 2xx.
 - TCP probe: attempts a TCP connection to the declared port.
 - Exec probe: runs a command inside the container and checks exit code 0.
 - Initial delay honored using container `StartedAt`.
 - Liveness defaults to true when unspecified; readiness defaults to container state when unspecified.
-- `HealthReport` aggregates per‑replica `ready/live` and messages.
+- `HealthReport` aggregates per‑pod `ready/live` and messages.
 
 Revision status
 - ready: `ready_replicas >= desired`

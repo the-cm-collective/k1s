@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from ae.controller.spec import AppManifest, app_key_for_manifest, runtime_labels_for_manifest
 
-from .base import ReplicaState, RuntimeAdapter, RuntimeResult
+from .base import PodState, RuntimeAdapter, RuntimeResult
 
 
 class StubRuntime(RuntimeAdapter):
@@ -32,34 +32,34 @@ class StubRuntime(RuntimeAdapter):
         *,
         keep_old: bool = False,
         limit_create: int | None = None,
-        replica_ids: list[str] | None = None,
+        pod_names: list[str] | None = None,
         node_id: str | None = None,
     ) -> RuntimeResult:
         _ = (keep_old, node_id)
-        desired = len(replica_ids) if replica_ids is not None else manifest.spec.replicas
+        desired = len(pod_names) if pod_names is not None else manifest.spec.replicas
         is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
         # timezone.utc to remain compatible with current runtime; lint suppressed.
         now = datetime.now(timezone.utc)  # noqa: UP017
         count = desired if limit_create is None else max(0, min(desired, limit_create))
-        replica_states = []
+        pod_states = []
         containers: list[dict] = []
         app_name = app_key_for_manifest(manifest)
-        rid_list = (
-            list(replica_ids)
-            if replica_ids is not None
+        pod_list = (
+            list(pod_names)
+            if pod_names is not None
             else [f"{app_name}-rev{revision}-{i}" for i in range(desired)]
         )
         # Derive namespace/name for k8s-style labels
         base_labels = runtime_labels_for_manifest(manifest, app_name=app_name)
-        for idx, rid in enumerate(rid_list[:count]):
+        for idx, pod_name in enumerate(pod_list[:count]):
             host_port = self._backend_port + idx
-            uid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{self._default_namespace}/{rid}"))
+            uid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{self._default_namespace}/{pod_name}"))
             status = "exited" if is_job else "running"
             exit_code = 0 if is_job else None
             finished_at = now if is_job else None
-            replica_states.append(
-                ReplicaState(
-                    replica_id=rid,
+            pod_states.append(
+                PodState(
+                    pod_name=pod_name,
                     ready=True if is_job else True,
                     status=status,
                     endpoint=f"{self._backend_host}:{host_port}",
@@ -70,11 +70,12 @@ class StubRuntime(RuntimeAdapter):
             )
             containers.append(
                 {
-                    "name": rid,
+                    "name": pod_name,
                     "labels": {
                         **base_labels,
                         "ae.revision": str(revision),
-                        "ae.replica_id": rid,
+                        "ae.pod_name": pod_name,
+                        "ae.replica_id": pod_name,
                         "ae.container": "main",
                     },
                     "uid": uid,
@@ -93,12 +94,12 @@ class StubRuntime(RuntimeAdapter):
             created=count,
             updated=0,
             removed=0,
-            replica_states=replica_states,
+            pod_states=pod_states,
         )
 
     def read_logs(
         self,
-        replica_id: str,
+        pod_name: str,
         *,
         follow: bool = False,
         tail: int | None = None,
@@ -109,9 +110,9 @@ class StubRuntime(RuntimeAdapter):
         if follow:
             # emit a finite small stream for tests
             for i in range(3):
-                yield f"{replica_id}: log line {i}"
+                yield f"{pod_name}: log line {i}"
         else:
-            yield f"{replica_id}: recent log line"
+            yield f"{pod_name}: recent log line"
 
     def remove_app(self, app_name: str) -> int:  # type: ignore[override]
         _ = app_name
