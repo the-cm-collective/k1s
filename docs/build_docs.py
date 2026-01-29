@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import os
 import time
 from pathlib import Path
@@ -69,6 +70,20 @@ DASHBOARD_URL = detect_dashboard_url()
 EXPORT_NON_INTERACTIVE = _truthy_env("DOCS_NON_INTERACTIVE") or _truthy_env(
     "DOCS_EXPORT_NON_INTERACTIVE"
 )
+SWAGGER_UI_VENDOR = _truthy_env("DOCS_SWAGGER_VENDOR")
+SWAGGER_UI_VERSION = os.getenv("DOCS_SWAGGER_UI_VERSION", "5.11.0").strip()
+SWAGGER_UI_CDN_BASE = os.getenv(
+    "DOCS_SWAGGER_UI_CDN_BASE",
+    f"https://unpkg.com/swagger-ui-dist@{SWAGGER_UI_VERSION}",
+).strip()
+SWAGGER_UI_DEFAULT_URL = os.getenv(
+    "DOCS_SWAGGER_DEFAULT_URL",
+    "http://localhost:8080/k1s/swagger/openapi-v3.json",
+).strip()
+SWAGGER_UI_CONTROLLER_DEFAULT_URL = os.getenv(
+    "DOCS_SWAGGER_CONTROLLER_DEFAULT_URL",
+    "http://localhost:8080/k1s/openapi.json",
+).strip()
 
 RSS_FEED_URL = os.getenv("DOCS_RSS_FEED_URL", "https://codeberg.org/th3_4rchit3ct/k1s.rss").strip()
 RSS_FEED_TITLE = "k1s Repo Activity"
@@ -106,20 +121,45 @@ NAV_LINKS = [
     ("Concepts in Practice", "concepts-in-practice.html", False, False),
 ]
 
+STATIC_SWAGGER_LABEL = "Swagger (Static)"
+STATIC_SWAGGER_HREF = "swagger/"
+STATIC_SWAGGER_APISHIM_HREF = "swagger/apishim/"
+STATIC_SWAGGER_CONTROLLER_LABEL = "Controller API"
+STATIC_SWAGGER_APISHIM_LABEL = "API Shim"
+STATIC_SWAGGER_CONTROLLER_OUT_PATH = "swagger/index.html"
+STATIC_SWAGGER_APISHIM_OUT_PATH = "swagger/apishim/index.html"
+STATIC_SWAGGER_CONTROLLER_SPEC = "controller-openapi.json"
+STATIC_SWAGGER_APISHIM_SPEC = "openapi-v3.json"
+
 
 def is_interactive_href(href: str) -> bool:
     href_lower = href.strip().lower()
     return any(token in href_lower for token in INTERACTIVE_HREF_TOKENS)
 
 
-def render_nav(*, include_interactive: bool) -> str:
+def render_nav(
+    *,
+    include_interactive: bool,
+    include_static_swagger: bool = False,
+    href_prefix: str = "",
+) -> str:
+    def normalize_href(href: str) -> str:
+        if not href_prefix:
+            return href
+        if href.startswith(("http://", "https://", "/", "#")):
+            return href
+        return f"{href_prefix}{href}"
+
     parts = []
+    brand_href = normalize_href("index.html")
+    brand_logo_src = normalize_href("static/k1s-logo-circle.svg")
     parts.append(
-        '      <a class="nav-brand" href="index.html" aria-label="k1s docs home">'
-        '<img src="static/k1s-logo-circle.svg" alt="k1s logo" />'
+        f'      <a class="nav-brand" href="{brand_href}" aria-label="k1s docs home">'
+        f'<img src="{brand_logo_src}" alt="k1s logo" />'
         "<span>k1s docs</span>"
         "</a>"
     )
+    injected_static = False
     for label, href, interactive, external in NAV_LINKS:
         if interactive and not include_interactive:
             continue
@@ -128,7 +168,17 @@ def render_nav(*, include_interactive: bool) -> str:
             attrs.append('target="_blank"')
             attrs.append('rel="noopener"')
         attr_str = " " + " ".join(attrs) if attrs else ""
+        href = normalize_href(href)
         parts.append(f'      <a href="{href}"{attr_str}>{label}</a>')
+        if include_static_swagger and label == "HTTP API":
+            parts.append(
+                f'      <a href="{normalize_href(STATIC_SWAGGER_HREF)}">{STATIC_SWAGGER_LABEL}</a>'
+            )
+            injected_static = True
+    if include_static_swagger and not injected_static:
+        parts.append(
+            f'      <a href="{normalize_href(STATIC_SWAGGER_HREF)}">{STATIC_SWAGGER_LABEL}</a>'
+        )
     return "\n".join(parts)
 
 
@@ -143,6 +193,7 @@ def render_template(
     nav_html: str,
     api_mode_widget: str,
     api_mode_script: str,
+    base_tag: str = "",
 ) -> str:
     """Render TEMPLATE safely without str.format interfering with braces.
 
@@ -154,6 +205,7 @@ def render_template(
         .replace("{api_base}", "{__API_BASE__}")
         .replace("{dashboard_url}", "{__DASHBOARD_URL__}")
         .replace("{extra_head}", "{__EXTRA__}")
+        .replace("{base_tag}", "{__BASE__}")
         .replace("{footer_text}", "{__FOOT__}")
         .replace("{nav}", "{__NAV__}")
         .replace("{api_mode_widget}", "{__API_MODE_WIDGET__}")
@@ -164,6 +216,7 @@ def render_template(
     t = t.replace("{__API_BASE__}", api_base)
     t = t.replace("{__DASHBOARD_URL__}", dashboard_url)
     t = t.replace("{__EXTRA__}", extra_head)
+    t = t.replace("{__BASE__}", base_tag)
     t = t.replace("{__FOOT__}", footer_text)
     t = t.replace("{__NAV__}", nav_html)
     t = t.replace("{__API_MODE_WIDGET__}", api_mode_widget)
@@ -202,6 +255,209 @@ def _apply_stable_build_stamp(out_path: Path, html_text: str) -> str:
     return html_text.replace(BUILD_STAMP_PLACEHOLDER, _current_build_stamp())
 
 
+def _load_ae_version() -> str:
+    version_path = ROOT.parent / "src" / "ae" / "__init__.py"
+    try:
+        text = version_path.read_text(encoding="utf-8")
+    except Exception:
+        return "0.0.0"
+    match = re.search(r'__version__\s*=\s*"([^"]+)"', text)
+    if match:
+        return match.group(1)
+    return "0.0.0"
+
+
+def build_controller_openapi_doc() -> dict[str, object]:
+    # Keep in sync with src/ae/observability/http_api.py:_handle_openapi.
+    tokens_configured = bool(
+        os.getenv("AE_API_ADMIN_TOKEN")
+        or os.getenv("AE_API_SCALER_TOKEN")
+        or os.getenv("AE_API_READ_TOKEN")
+    )
+    version = _load_ae_version()
+    doc: dict[str, object] = {
+        "openapi": "3.0.0",
+        "info": {"title": "k1s Controller API", "version": version},
+        "components": {
+            "securitySchemes": {
+                "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}
+            },
+            "schemas": {
+                "AppStatus": {
+                    "type": "object",
+                    "properties": {
+                        "app_name": {"type": "string"},
+                        "name": {"type": "string"},
+                        "namespace": {"type": "string"},
+                        "deployment": {"type": "string"},
+                        "desired_replicas": {"type": "integer"},
+                        "ready_replicas": {"type": "integer"},
+                        "live_replicas": {"type": "integer"},
+                        "revision": {"type": "integer"},
+                        "revision_status": {"type": "string"},
+                        "image": {"type": "string"},
+                        "ingress_host": {"type": "string", "nullable": True},
+                        "ingress_path": {"type": "string", "nullable": True},
+                    },
+                    "required": [
+                        "app_name",
+                        "desired_replicas",
+                        "ready_replicas",
+                        "live_replicas",
+                        "revision",
+                        "revision_status",
+                        "image",
+                    ],
+                },
+                "Event": {
+                    "type": "object",
+                    "properties": {
+                        "app_name": {"type": "string"},
+                        "revision": {"type": "integer"},
+                        "event_type": {"type": "string"},
+                        "message": {"type": "string"},
+                        "created_at": {"type": "string", "format": "date-time"},
+                    },
+                    "required": ["app_name", "revision", "event_type", "message", "created_at"],
+                },
+            },
+        },
+        "paths": {
+            "/metrics": {
+                "get": {
+                    "summary": "Prometheus metrics",
+                    "responses": {"200": {"description": "Prometheus text"}},
+                }
+            },
+            "/health": {
+                "get": {"summary": "Controller health", "responses": {"200": {"description": "OK"}}}
+            },
+            "/status": {
+                "get": {
+                    "summary": "List app statuses (paginated)",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50}},
+                        {"name": "cursor", "in": "query", "schema": {"type": "string"}},
+                        {"name": "app", "in": "query", "schema": {"type": "string"}},
+                        {"name": "wildcard", "in": "query", "schema": {"type": "string"}},
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/status/{app}": {
+                "get": {
+                    "summary": "Get a single app status",
+                    "parameters": [
+                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                    ],
+                    "responses": {"200": {"description": "OK"}, "404": {"description": "Not Found"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/manifest/{app}": {
+                "get": {
+                    "summary": "Get the latest stored manifest for an app",
+                    "parameters": [
+                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                    ],
+                    "responses": {"200": {"description": "OK"}, "404": {"description": "Not Found"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/events/{app}": {
+                "get": {
+                    "summary": "List app events (paginated)",
+                    "parameters": [
+                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 20}},
+                        {"name": "cursor", "in": "query", "schema": {"type": "string"}},
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/scale/{app}": {
+                "post": {
+                    "summary": "Scale an app",
+                    "parameters": [
+                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/delete/{app}": {
+                "post": {
+                    "summary": "Delete an app",
+                    "parameters": [
+                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {"name": "purge", "in": "query", "schema": {"type": "boolean"}},
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/logs/{app}": {
+                "get": {
+                    "summary": "Tail application logs",
+                    "parameters": [
+                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {"name": "container", "in": "query", "schema": {"type": "string"}},
+                        {"name": "tail", "in": "query", "schema": {"type": "integer"}},
+                        {"name": "since", "in": "query", "schema": {"type": "integer"}},
+                        {"name": "follow", "in": "query", "schema": {"type": "boolean"}},
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/plan": {
+                "post": {
+                    "summary": "Validate a manifest and return plan diagnostics",
+                    "requestBody": {"required": True},
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/tls/verify": {
+                "get": {
+                    "summary": "Verify tlsSecretName resolvability under AE_TLS_DIR",
+                    "parameters": [
+                        {"name": "name", "in": "query", "required": True, "schema": {"type": "string"}},
+                        {"name": "root", "in": "query", "schema": {"type": "string"}},
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/rollout/pause/{app}": {
+                "post": {
+                    "summary": "Pause rollout for an app",
+                    "parameters": [
+                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/rollout/resume/{app}": {
+                "post": {
+                    "summary": "Resume rollout for an app",
+                    "parameters": [
+                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+        },
+    }
+    if tokens_configured:
+        doc["security"] = [{"bearerAuth": []}]
+    return doc
+
+
 def _hash_files(paths: list[Path]) -> str | None:
     h = hashlib.sha256()
     found = False
@@ -230,6 +486,7 @@ TEMPLATE = """<!doctype html>
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
+    {base_tag}
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>{title}</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
@@ -1908,10 +2165,190 @@ def build_one(
     out_path.write_text(html_out, encoding="utf-8")
 
 
+def copy_openapi_specs() -> None:
+    try:
+        src_root = SRC / "openapi"
+        if not src_root.exists():
+            return
+        out_root = OUT / "openapi"
+        out_root.mkdir(parents=True, exist_ok=True)
+        swagger_root = OUT / "swagger"
+        swagger_root.mkdir(parents=True, exist_ok=True)
+        swagger_apishim_root = swagger_root / "apishim"
+        swagger_apishim_root.mkdir(parents=True, exist_ok=True)
+        import shutil
+
+        v3_path = src_root / "openapi-v3.json"
+        if v3_path.exists():
+            try:
+                shutil.copy2(v3_path, swagger_root / STATIC_SWAGGER_APISHIM_SPEC)
+                shutil.copy2(v3_path, swagger_apishim_root / STATIC_SWAGGER_APISHIM_SPEC)
+            except Exception:
+                pass
+        try:
+            controller_doc = build_controller_openapi_doc()
+            controller_payload = json.dumps(controller_doc).encode("utf-8")
+            (swagger_root / STATIC_SWAGGER_CONTROLLER_SPEC).write_bytes(controller_payload)
+            (OUT / "openapi.json").write_bytes(controller_payload)
+        except Exception:
+            pass
+        for p in src_root.iterdir():
+            if not p.is_file():
+                continue
+            if p.suffix.lower() not in {".json", ".yml", ".yaml"}:
+                continue
+            try:
+                shutil.copy2(p, out_root / p.name)
+            except Exception:
+                pass
+    except Exception:
+        # Non-fatal: keep docs renderable if copy fails
+        pass
+
+
+def build_static_swagger_page(
+    *,
+    nav_html: str,
+    api_mode_widget: str,
+    api_mode_script: str,
+    use_vendor_assets: bool,
+    title: str,
+    spec_path: str,
+    default_url: str,
+    base_tag: str,
+    out_path: str,
+    active_tab: str,
+) -> None:
+    vendor_root = SRC / "static" / "swagger-ui"
+    if use_vendor_assets and vendor_root.exists():
+        css_href = "../static/swagger-ui/swagger-ui.css"
+        bundle_src = "../static/swagger-ui/swagger-ui-bundle.js"
+        preset_src = "../static/swagger-ui/swagger-ui-standalone-preset.js"
+    else:
+        css_href = f"{SWAGGER_UI_CDN_BASE}/swagger-ui.css"
+        bundle_src = f"{SWAGGER_UI_CDN_BASE}/swagger-ui-bundle.js"
+        preset_src = f"{SWAGGER_UI_CDN_BASE}/swagger-ui-standalone-preset.js"
+    default_url_js = json.dumps(default_url)
+    active_controller = " is-active" if active_tab == "controller" else ""
+    active_apishim = " is-active" if active_tab == "apishim" else ""
+    topbar = "\n".join(
+        [
+            '<div class="swagger-topbar">',
+            f'  <a class="swagger-tab{active_controller}" href="{STATIC_SWAGGER_HREF}">{STATIC_SWAGGER_CONTROLLER_LABEL}</a>',
+            f'  <a class="swagger-tab{active_apishim}" href="{STATIC_SWAGGER_APISHIM_HREF}">{STATIC_SWAGGER_APISHIM_LABEL}</a>',
+            "</div>",
+        ]
+    )
+    body = "\n".join(
+        [
+            topbar,
+            '<div class="swagger-shell">',
+            f"  <h1>{html.escape(title)}</h1>",
+            "  <p>Static API docs generated by docs-export.</p>",
+            '  <div id="swagger-ui"></div>',
+            "  <noscript>Enable JavaScript to view the API documentation.</noscript>",
+            "  <script>",
+            "    window.addEventListener('load', function() {",
+            "      if (!window.SwaggerUIBundle) return;",
+            "      var specUrl = new URL(",
+            f"        '{spec_path}',",
+            "        window.location.href",
+            "      ).toString();",
+            "      window.ui = SwaggerUIBundle({",
+            "        url: specUrl,",
+            "        dom_id: '#swagger-ui',",
+            "        deepLinking: true,",
+            "        presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],",
+            "        layout: 'StandaloneLayout'",
+            "      });",
+            f"      var defaultUrl = {default_url_js};",
+            "      if (defaultUrl) {",
+            "        var input = document.querySelector('.download-url-input');",
+            "        if (input) {",
+            "          input.value = defaultUrl;",
+            "          input.setAttribute('value', defaultUrl);",
+            "        }",
+            "      }",
+            "    });",
+            "  </script>",
+            "</div>",
+        ]
+    )
+    extra_head = "\n".join(
+        [
+            f'<link rel="stylesheet" href="{css_href}"/>',
+            "<style>",
+            "  .swagger-topbar {",
+            "    display: flex;",
+            "    gap: 12px;",
+            "    align-items: center;",
+            "    padding: 12px 16px;",
+            "    border-radius: 16px;",
+            "    background: color-mix(in srgb, var(--k1s-panel) 80%, #000000 20%);",
+            "    border: 1px solid var(--k1s-border);",
+            "    margin-bottom: 16px;",
+            "  }",
+            "  .swagger-tab {",
+            "    font-weight: 600;",
+            "    color: var(--fg);",
+            "    text-decoration: none;",
+            "    padding: 6px 10px;",
+            "    border-radius: 10px;",
+            "    border: 1px solid transparent;",
+            "  }",
+            "  .swagger-tab:hover {",
+            "    border-color: var(--k1s-border-soft);",
+            "    color: var(--link-hover);",
+            "  }",
+            "  .swagger-tab.is-active {",
+            "    background: color-mix(in srgb, var(--k1s-brand-gold) 20%, transparent);",
+            "    border-color: color-mix(in srgb, var(--k1s-brand-gold) 40%, var(--k1s-border));",
+            "  }",
+            "  .swagger-shell {",
+            "    background: #ffffff;",
+            "    color: #111111;",
+            "    padding: 16px;",
+            "    border-radius: 16px;",
+            "    box-shadow: 0 14px 34px rgba(0,0,0,0.24);",
+            "    color-scheme: light;",
+            "  }",
+            "  .swagger-shell p { color: #444444; }",
+            "  .swagger-shell .swagger-ui { color: #111111; }",
+            "</style>",
+            f'<script defer src="{bundle_src}"></script>',
+            f'<script defer src="{preset_src}"></script>',
+        ]
+    )
+    out_path = OUT / out_path
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    html_out = render_template(
+        title=title,
+        body=body,
+        api_base=API_BASE,
+        dashboard_url=DASHBOARD_URL,
+        extra_head=extra_head,
+        base_tag=base_tag,
+        footer_text=BUILD_STAMP_PLACEHOLDER,
+        nav_html=nav_html,
+        api_mode_widget=api_mode_widget,
+        api_mode_script=api_mode_script,
+    )
+    html_out = _apply_stable_build_stamp(out_path, html_out)
+    out_path.write_text(html_out, encoding="utf-8")
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     include_interactive = not EXPORT_NON_INTERACTIVE
-    nav_html = render_nav(include_interactive=include_interactive)
+    include_static_swagger = EXPORT_NON_INTERACTIVE
+    vendor_swagger_assets = SWAGGER_UI_VENDOR and (
+        (SRC / "static" / "swagger-ui" / "swagger-ui.css").exists()
+    )
+    nav_html = render_nav(
+        include_interactive=include_interactive,
+        include_static_swagger=include_static_swagger,
+    )
+    nav_html_swagger = nav_html
     api_mode_widget, api_mode_script = api_mode_fragments(include_interactive)
     # Copy static assets if present
     try:
@@ -1928,6 +2365,8 @@ def main() -> None:
                         existing.unlink()
             static_out.mkdir(parents=True, exist_ok=True)
             for p in static_src.iterdir():
+                if p.name == "swagger-ui" and (not EXPORT_NON_INTERACTIVE or not vendor_swagger_assets):
+                    continue
                 if p.is_dir():
                     shutil.copytree(p, static_out / p.name)
                 elif p.is_file():
@@ -1954,8 +2393,19 @@ def main() -> None:
         ("Live Hive Dashboard", "/dashboard", True, True),
         ("Interactive Lab Playground", "playground.html", True, False),
     ]
+    if include_static_swagger:
+        index_quick_links.append((STATIC_SWAGGER_LABEL, STATIC_SWAGGER_HREF, False, False))
     if rss_feed_url:
         index_quick_links.append(("RSS Feed", rss_feed_url, False, True))
+
+    networking_links = [
+        ("HTTP API", "http-api.html", False, False),
+        ("API Shim Compatibility", "apishim-compatibility-matrix.html", False, False),
+        ("Ingress", "ingress.html", False, False),
+        ("API Auth", "api-auth.html", False, False),
+    ]
+    if include_static_swagger:
+        networking_links.insert(1, (STATIC_SWAGGER_LABEL, STATIC_SWAGGER_HREF, False, False))
 
     index_sections = [
         {
@@ -1990,12 +2440,7 @@ def main() -> None:
         {
             "title": "Networking & API",
             "desc": "Ingress, auth, and API compatibility details.",
-            "links": [
-                ("HTTP API", "http-api.html", False, False),
-                ("API Shim Compatibility", "apishim-compatibility-matrix.html", False, False),
-                ("Ingress", "ingress.html", False, False),
-                ("API Auth", "api-auth.html", False, False),
-            ],
+            "links": networking_links,
         },
         {
             "title": "Ops & Observability",
@@ -2101,6 +2546,33 @@ def main() -> None:
     )
     index_html = _apply_stable_build_stamp(index_path, index_html)
     index_path.write_text(index_html, encoding="utf-8")
+
+    if EXPORT_NON_INTERACTIVE:
+        copy_openapi_specs()
+        build_static_swagger_page(
+            nav_html=nav_html_swagger,
+            api_mode_widget=api_mode_widget,
+            api_mode_script=api_mode_script,
+            use_vendor_assets=vendor_swagger_assets,
+            title="k1s Controller API",
+            spec_path=STATIC_SWAGGER_CONTROLLER_SPEC,
+            default_url=SWAGGER_UI_CONTROLLER_DEFAULT_URL,
+            base_tag='<base href="../"/>',
+            out_path=STATIC_SWAGGER_CONTROLLER_OUT_PATH,
+            active_tab="controller",
+        )
+        build_static_swagger_page(
+            nav_html=nav_html_swagger,
+            api_mode_widget=api_mode_widget,
+            api_mode_script=api_mode_script,
+            use_vendor_assets=vendor_swagger_assets,
+            title="API Shim",
+            spec_path=STATIC_SWAGGER_APISHIM_SPEC,
+            default_url=SWAGGER_UI_DEFAULT_URL,
+            base_tag='<base href="../../"/>',
+            out_path=STATIC_SWAGGER_APISHIM_OUT_PATH,
+            active_tab="apishim",
+        )
 
     for src_name, out_name in mapping.items():
         build_one(
