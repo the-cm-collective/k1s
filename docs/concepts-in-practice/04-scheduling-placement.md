@@ -1,4 +1,4 @@
-# Chapter 03 - Scheduling and Placement (Where Work Runs)
+# Chapter 04 - Scheduling and Placement (Where Work Runs)
 
 ## Concept
 Scheduling is the process of deciding where workloads run. It is not just "pick a node," but "pick a node that satisfies constraints." Placement becomes part of correctness when storage, network policy, or affinity rules are involved.
@@ -137,6 +137,5 @@ python -m ae.cli events echo --limit 20
     )
 ```
 ## Chapter navigation
-- Prev: [Chapter 02 - Declarative Specs and Apply Semantics](concepts-in-practice-02-declarative-apply.html)
-- Next: [Chapter 04 - Runtime Adapters and Container Execution](concepts-in-practice-04-runtime-adapters.html)
-
+- Prev: [Chapter 03 - Runtime Adapters and Container Execution](concepts-in-practice-03-runtime-adapters.html)
+- Next: [Chapter 05 - Observability: Logs, Metrics, Events](concepts-in-practice-05-observability.html)
