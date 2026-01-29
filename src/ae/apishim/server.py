@@ -633,6 +633,7 @@ def _inject_sa_projection(spec: dict[str, Any]) -> dict[str, Any]:
 
 def _swagger_doc() -> dict[str, Any]:
     # Minimal swagger doc for kubectl/helm discovery and --dry-run=server
+    # Note: this doc also powers the Swagger UI; keep descriptions concise but helpful.
     schemas = {
         "io.k8s.api.meta.v1.ObjectMeta": {
             "type": "object",
@@ -1235,14 +1236,146 @@ def _swagger_doc() -> dict[str, Any]:
     )
     paths: dict[str, dict[str, Any]] = {}
 
-    def _add_path(path: str, methods: list[str]) -> None:
-        if not methods:
+    def _op(
+        *,
+        tag: str,
+        summary: str,
+        description: str,
+        parameters: list[dict[str, Any]] | None = None,
+        responses: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        op: dict[str, Any] = {
+            "tags": [tag],
+            "summary": summary,
+            "description": description,
+            "responses": responses or {"200": {"description": "OK"}},
+        }
+        if parameters:
+            op["parameters"] = parameters
+        return op
+
+    def _add_path(path: str, ops: dict[str, dict[str, Any]]) -> None:
+        if not ops:
             return
         entry = paths.setdefault(path, {})
-        for method in methods:
-            entry.setdefault(method, {})
+        for method, op in ops.items():
+            entry.setdefault(method, op)
+
+    def _path_param(name: str, description: str) -> dict[str, Any]:
+        return {"name": name, "in": "path", "required": True, "type": "string", "description": description}
+
+    def _query_param(name: str, description: str, param_type: str, default: Any | None = None) -> dict[str, Any]:
+        param: dict[str, Any] = {
+            "name": name,
+            "in": "query",
+            "type": param_type,
+            "description": description,
+        }
+        if default is not None:
+            param["default"] = default
+        return param
+
+    def _body_param(description: str) -> dict[str, Any]:
+        return {
+            "name": "body",
+            "in": "body",
+            "required": True,
+            "description": description,
+            "schema": {"type": "object"},
+        }
+
+    def _tag_for_base(base: str) -> str:
+        return {
+            "/api/v1": "core/v1",
+            "/apis/apps/v1": "apps/v1",
+            "/apis/batch/v1": "batch/v1",
+            "/apis/networking.k8s.io/v1": "networking.k8s.io/v1",
+            "/apis/rbac.authorization.k8s.io/v1": "rbac.authorization.k8s.io/v1",
+            "/apis/authorization.k8s.io/v1": "authorization.k8s.io/v1",
+            "/apis/policy/v1": "policy/v1",
+            "/apis/autoscaling/v2": "autoscaling/v2",
+            "/apis/apiextensions.k8s.io/v1": "apiextensions.k8s.io/v1",
+            "/apis/discovery.k8s.io/v1": "discovery.k8s.io/v1",
+            "/apis/storage.k8s.io/v1": "storage.k8s.io/v1",
+            "/apis/snapshot.storage.k8s.io/v1": "snapshot.storage.k8s.io/v1",
+            "/apis/ae.dev/v1alpha1": "ae.dev/v1alpha1",
+        }.get(base, "discovery")
+
+    def _list_params(namespaced: bool) -> list[dict[str, Any]]:
+        params: list[dict[str, Any]] = []
+        if namespaced:
+            params.append(_path_param("namespace", "Namespace name"))
+        params.extend(
+            [
+                _query_param("limit", "Maximum number of items to return", "integer", 100),
+                _query_param("continue", "Continue token for pagination", "string"),
+                _query_param("labelSelector", "Label selector to filter results", "string"),
+                _query_param("fieldSelector", "Field selector to filter results", "string"),
+                _query_param(
+                    "watch",
+                    "Set to true to stream watch events instead of a list",
+                    "boolean",
+                ),
+                _query_param("timeoutSeconds", "Watch timeout in seconds", "integer"),
+            ]
+        )
+        return params
+
+    def _item_params(namespaced: bool) -> list[dict[str, Any]]:
+        params = []
+        if namespaced:
+            params.append(_path_param("namespace", "Namespace name"))
+        params.append(_path_param("name", "Resource name"))
+        return params
+
+    def _describe_list(plural: str, namespaced: bool) -> str:
+        scope = "namespace" if namespaced else "cluster"
+        example = (
+            f"kubectl get {plural} -n <namespace>"
+            if namespaced
+            else f"kubectl get {plural}"
+        )
+        return (
+            f"List {plural} in the {scope} scope. Use `watch=1` to stream changes."
+            f"\n\nExample:\n\n`{example}`"
+        )
+
+    def _describe_get(plural: str, namespaced: bool) -> str:
+        example = (
+            f"kubectl get {plural} <name> -n <namespace> -o yaml"
+            if namespaced
+            else f"kubectl get {plural} <name> -o yaml"
+        )
+        return f"Get a single {plural.rstrip('s')} by name.\n\nExample:\n\n`{example}`"
+
+    def _describe_create(plural: str) -> str:
+        return (
+            f"Create a new {plural.rstrip('s')} from a manifest."
+            "\n\nExample:\n\n`kubectl apply -f <manifest.yaml>`"
+        )
+
+    def _describe_update(plural: str) -> str:
+        return (
+            f"Replace a {plural.rstrip('s')} by name."
+            "\n\nExample:\n\n`kubectl apply -f <manifest.yaml>`"
+        )
+
+    def _describe_patch(plural: str) -> str:
+        return (
+            f"Patch a {plural.rstrip('s')} by name."
+            "\n\nExample:\n\n`kubectl patch "
+            f"{plural.rstrip('s')} <name> -p '{{\"spec\":{{}}}}'`"
+        )
+
+    def _describe_delete(plural: str) -> str:
+        return (
+            f"Delete a {plural.rstrip('s')} by name."
+            "\n\nExample:\n\n`kubectl delete "
+            f"{plural.rstrip('s')} <name>`"
+        )
 
     def _add_resource(base: str, plural: str, namespaced: bool, verbs: set[str]) -> None:
+        tag = _tag_for_base(base)
         list_methods: list[str] = []
         if "list" in verbs or "watch" in verbs:
             list_methods.append("get")
@@ -1250,12 +1383,52 @@ def _swagger_doc() -> dict[str, Any]:
             list_methods.append("post")
         if namespaced:
             ns_path = f"{base}/namespaces/{{namespace}}/{plural}"
-            _add_path(ns_path, list_methods)
+            list_ops: dict[str, dict[str, Any]] = {}
+            if "get" in list_methods:
+                list_ops["get"] = _op(
+                    tag=tag,
+                    summary=f"List {plural}",
+                    description=_describe_list(plural, namespaced=True),
+                    parameters=_list_params(namespaced=True),
+                )
+            if "post" in list_methods:
+                list_ops["post"] = _op(
+                    tag=tag,
+                    summary=f"Create {plural.rstrip('s')}",
+                    description=_describe_create(plural),
+                    parameters=[_path_param("namespace", "Namespace name"), _body_param("Resource body")],
+                )
+            _add_path(ns_path, list_ops)
             if "list" in verbs or "watch" in verbs:
-                _add_path(f"{base}/{plural}", ["get"])
+                _add_path(
+                    f"{base}/{plural}",
+                    {
+                        "get": _op(
+                            tag=tag,
+                            summary=f"List {plural} across all namespaces",
+                            description=_describe_list(plural, namespaced=False),
+                            parameters=_list_params(namespaced=False),
+                        )
+                    },
+                )
             item_path = f"{base}/namespaces/{{namespace}}/{plural}/{{name}}"
         else:
-            _add_path(f"{base}/{plural}", list_methods)
+            list_ops = {}
+            if "get" in list_methods:
+                list_ops["get"] = _op(
+                    tag=tag,
+                    summary=f"List {plural}",
+                    description=_describe_list(plural, namespaced=False),
+                    parameters=_list_params(namespaced=False),
+                )
+            if "post" in list_methods:
+                list_ops["post"] = _op(
+                    tag=tag,
+                    summary=f"Create {plural.rstrip('s')}",
+                    description=_describe_create(plural),
+                    parameters=[_body_param("Resource body")],
+                )
+            _add_path(f"{base}/{plural}", list_ops)
             item_path = f"{base}/{plural}/{{name}}"
         item_methods: list[str] = []
         if "get" in verbs:
@@ -1266,11 +1439,41 @@ def _swagger_doc() -> dict[str, Any]:
             item_methods.append("patch")
         if "delete" in verbs:
             item_methods.append("delete")
-        _add_path(item_path, item_methods)
+        item_ops: dict[str, dict[str, Any]] = {}
+        if "get" in item_methods:
+            item_ops["get"] = _op(
+                tag=tag,
+                summary=f"Get {plural.rstrip('s')}",
+                description=_describe_get(plural, namespaced),
+                parameters=_item_params(namespaced),
+            )
+        if "put" in item_methods:
+            item_ops["put"] = _op(
+                tag=tag,
+                summary=f"Replace {plural.rstrip('s')}",
+                description=_describe_update(plural),
+                parameters=_item_params(namespaced) + [_body_param("Resource body")],
+            )
+        if "patch" in item_methods:
+            item_ops["patch"] = _op(
+                tag=tag,
+                summary=f"Patch {plural.rstrip('s')}",
+                description=_describe_patch(plural),
+                parameters=_item_params(namespaced) + [_body_param("Patch body")],
+            )
+        if "delete" in item_methods:
+            item_ops["delete"] = _op(
+                tag=tag,
+                summary=f"Delete {plural.rstrip('s')}",
+                description=_describe_delete(plural),
+                parameters=_item_params(namespaced),
+            )
+        _add_path(item_path, item_ops)
 
     def _add_subresource(
         base: str, plural: str, subresource: str, namespaced: bool, verbs: set[str]
     ) -> None:
+        tag = _tag_for_base(base)
         if namespaced:
             path = f"{base}/namespaces/{{namespace}}/{plural}/{{name}}/{subresource}"
         else:
@@ -1286,9 +1489,48 @@ def _swagger_doc() -> dict[str, Any]:
             methods.append("patch")
         if "delete" in verbs:
             methods.append("delete")
-        _add_path(path, methods)
+        params = _item_params(namespaced)
+        desc = f"{plural.rstrip('s')} {subresource} subresource."
+        ops: dict[str, dict[str, Any]] = {}
+        if "get" in methods:
+            ops["get"] = _op(
+                tag=tag,
+                summary=f"Get {plural.rstrip('s')} {subresource}",
+                description=desc,
+                parameters=params,
+            )
+        if "post" in methods:
+            ops["post"] = _op(
+                tag=tag,
+                summary=f"Create {plural.rstrip('s')} {subresource}",
+                description=desc,
+                parameters=params + [_body_param("Subresource body")],
+            )
+        if "put" in methods:
+            ops["put"] = _op(
+                tag=tag,
+                summary=f"Update {plural.rstrip('s')} {subresource}",
+                description=desc,
+                parameters=params + [_body_param("Subresource body")],
+            )
+        if "patch" in methods:
+            ops["patch"] = _op(
+                tag=tag,
+                summary=f"Patch {plural.rstrip('s')} {subresource}",
+                description=desc,
+                parameters=params + [_body_param("Subresource body")],
+            )
+        if "delete" in methods:
+            ops["delete"] = _op(
+                tag=tag,
+                summary=f"Delete {plural.rstrip('s')} {subresource}",
+                description=desc,
+                parameters=params,
+            )
+        _add_path(path, ops)
 
     # Non-resource endpoints and discovery
+    discovery_tag = "discovery"
     for p in (
         "/api",
         "/apis",
@@ -1313,7 +1555,17 @@ def _swagger_doc() -> dict[str, Any]:
         "/apis/snapshot.storage.k8s.io/v1",
         "/apis/ae.dev/v1alpha1",
     ):
-        _add_path(p, ["get"])
+        _add_path(
+            p,
+            {
+                "get": _op(
+                    tag=discovery_tag,
+                    summary=f"GET {p}",
+                    description="Kubernetes discovery or health endpoint.",
+                    parameters=[],
+                )
+            },
+        )
 
     # Core API resources
     for plural, namespaced, verbs in (
@@ -1352,11 +1604,85 @@ def _swagger_doc() -> dict[str, Any]:
         _add_resource("/api/v1", plural, namespaced, verbs)
 
     # Core subresources and special endpoints
-    _add_path("/api/v1/namespaces/{namespace}/pods/{name}/log", ["get"])
-    _add_path("/api/v1/namespaces/{namespace}/pods/{name}/exec", ["get", "post"])
-    _add_path("/api/v1/namespaces/{namespace}/pods/{name}/portforward", ["get", "post"])
-    _add_path("/api/v1/namespaces/{namespace}/services/{name}/portforward", ["get", "post"])
-    _add_path("/api/v1/events/{name}", ["get"])
+    _add_path(
+        "/api/v1/namespaces/{namespace}/pods/{name}/log",
+        {
+            "get": _op(
+                tag="core/v1",
+                summary="Stream pod logs",
+                description="Tail logs for a specific pod (similar to `kubectl logs`).",
+                parameters=_item_params(True)
+                + [
+                    _query_param("container", "Container name", "string"),
+                    _query_param("tailLines", "Number of lines from the end", "integer"),
+                    _query_param("follow", "Follow the stream", "boolean"),
+                    _query_param("timestamps", "Include timestamps", "boolean"),
+                ],
+            )
+        },
+    )
+    _add_path(
+        "/api/v1/namespaces/{namespace}/pods/{name}/exec",
+        {
+            "get": _op(
+                tag="core/v1",
+                summary="Exec into a pod (GET)",
+                description="Exec streaming endpoint (SPDY/WebSocket). Used by `kubectl exec`.",
+                parameters=_item_params(True),
+            ),
+            "post": _op(
+                tag="core/v1",
+                summary="Exec into a pod (POST)",
+                description="Exec streaming endpoint (SPDY/WebSocket). Used by `kubectl exec`.",
+                parameters=_item_params(True),
+            ),
+        },
+    )
+    _add_path(
+        "/api/v1/namespaces/{namespace}/pods/{name}/portforward",
+        {
+            "get": _op(
+                tag="core/v1",
+                summary="Port-forward to a pod (GET)",
+                description="Port-forward streaming endpoint (SPDY/WebSocket).",
+                parameters=_item_params(True),
+            ),
+            "post": _op(
+                tag="core/v1",
+                summary="Port-forward to a pod (POST)",
+                description="Port-forward streaming endpoint (SPDY/WebSocket).",
+                parameters=_item_params(True),
+            ),
+        },
+    )
+    _add_path(
+        "/api/v1/namespaces/{namespace}/services/{name}/portforward",
+        {
+            "get": _op(
+                tag="core/v1",
+                summary="Port-forward to a service (GET)",
+                description="Port-forward streaming endpoint (SPDY/WebSocket).",
+                parameters=_item_params(True),
+            ),
+            "post": _op(
+                tag="core/v1",
+                summary="Port-forward to a service (POST)",
+                description="Port-forward streaming endpoint (SPDY/WebSocket).",
+                parameters=_item_params(True),
+            ),
+        },
+    )
+    _add_path(
+        "/api/v1/events/{name}",
+        {
+            "get": _op(
+                tag="core/v1",
+                summary="Get event by name",
+                description="Fetch a single event by name.",
+                parameters=_item_params(False),
+            )
+        },
+    )
 
     # apps/v1 resources
     for plural, verbs in (
@@ -1464,11 +1790,45 @@ def _swagger_doc() -> dict[str, Any]:
     )
     doc = {
         "swagger": "2.0",
-        "info": {"title": "k1s apishim", "version": "0.1.2.dev0"},
+        "info": {
+            "title": "k1s apishim",
+            "version": "0.1.2.dev0",
+            "description": (
+                "Kubernetes-compatible API shim for local k1s development. "
+                "Supports discovery, basic CRUD for core workloads, and a minimal OpenAPI schema "
+                "for kubectl/helm compatibility.\n\n"
+                "Usage tips:\n"
+                "- Use `/openapi/v3` for schema validation.\n"
+                "- Use `watch=1` on list endpoints to stream changes.\n"
+                "- Exec/port-forward endpoints use SPDY/WebSocket streaming."
+            ),
+        },
         "produces": ["application/json"],
         "schemes": ["http"],
         "paths": paths,
         "definitions": schemas,
+        "tags": [
+            {"name": "discovery", "description": "Discovery and non-resource endpoints"},
+            {"name": "core/v1", "description": "Core API resources"},
+            {"name": "apps/v1", "description": "Workload resources (apps)"},
+            {"name": "batch/v1", "description": "Batch resources (jobs/cronjobs)"},
+            {"name": "networking.k8s.io/v1", "description": "Networking resources"},
+            {"name": "rbac.authorization.k8s.io/v1", "description": "RBAC resources"},
+            {"name": "authorization.k8s.io/v1", "description": "Authorization reviews"},
+            {"name": "policy/v1", "description": "Policy resources"},
+            {"name": "autoscaling/v2", "description": "Autoscaling resources"},
+            {
+                "name": "apiextensions.k8s.io/v1",
+                "description": "CustomResourceDefinitions",
+            },
+            {"name": "discovery.k8s.io/v1", "description": "EndpointSlices"},
+            {"name": "storage.k8s.io/v1", "description": "Storage resources"},
+            {
+                "name": "snapshot.storage.k8s.io/v1",
+                "description": "Volume snapshot resources",
+            },
+            {"name": "ae.dev/v1alpha1", "description": "k1s custom resources"},
+        ],
     }
     return doc
 
@@ -1480,6 +1840,7 @@ def _openapi_v3_stub() -> dict[str, Any]:
         "info": doc.get("info", {}),
         "paths": doc.get("paths", {}),
         "components": {"schemas": doc.get("definitions", {})},
+        "tags": doc.get("tags", []),
         "x-k1s-note": "OpenAPI v3 mirrors /openapi/v2 and is kept authoritative alongside it",
     }
 
