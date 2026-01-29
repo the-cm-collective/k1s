@@ -1059,7 +1059,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         def _logs(
             app: str, container: str | None, tail: int | None, since: int | None, follow: bool
         ):
-            reps = store.list_replicas(app)
+            reps = store.list_pods(app)
             target = None
             if container:
                 # Prefer runtime's container-specific logs API when available
@@ -1067,10 +1067,10 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 if rt is not None and hasattr(rt, "read_logs_for_container"):
                     fn = getattr(rt, "read_logs_for_container")
                     return fn(app, str(container), follow=follow, tail=tail, since=since)
-                # Fallback to replica-id matching
+                # Fallback to pod-name matching
                 sel = str(container)
                 for r in reps:
-                    if r.replica_id == sel or sel in r.replica_id:
+                    if r.pod_name == sel or sel in r.pod_name:
                         target = r
                         break
             if not target and reps:
@@ -1078,7 +1078,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             if not target:
                 return []
             return reconciler._runtime.read_logs(
-                target.replica_id, follow=follow, tail=tail, since=since
+                target.pod_name, follow=follow, tail=tail, since=since
             )
 
         def _exec(app: str, container: str | None, cmd: list[str], timeout: int | None) -> int:
@@ -1089,13 +1089,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     return int(
                         getattr(rt, "exec_for_container")(app, str(container), cmd, timeout=timeout)
                     )
-                # Fallback: run in a matching replica id
-                reps = store.list_replicas(app)
+                # Fallback: run in a matching pod name
+                reps = store.list_pods(app)
                 target = next(
                     (
                         r
                         for r in reps
-                        if (r.replica_id == container or str(container) in r.replica_id)
+                        if (r.pod_name == container or str(container) in r.pod_name)
                     ),
                     None,
                 )
@@ -1103,13 +1103,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     target = reps[0]
                 if target is None:
                     return 127
-                return int(reconciler._runtime.exec(target.replica_id, cmd, timeout=timeout))
-            # Default: pick a ready replica
-            reps = store.list_replicas(app)
+                return int(reconciler._runtime.exec(target.pod_name, cmd, timeout=timeout))
+            # Default: pick a ready pod
+            reps = store.list_pods(app)
             target = next((r for r in reps if r.ready), reps[0] if reps else None)
             if not target:
                 return 127
-            return int(reconciler._runtime.exec(target.replica_id, cmd, timeout=timeout))
+            return int(reconciler._runtime.exec(target.pod_name, cmd, timeout=timeout))
 
         import logging, errno
 
@@ -1159,23 +1159,26 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             except Exception:
                 _nodes = []
 
-            # Placements: map replica_id -> node for dashboard
+            # Placements: map pod_name -> node for dashboard
             placements: dict[str, list[dict]] = {}
             for s in statuses:
                 try:
-                    repl_nodes = dict(store.list_replica_nodes(s.app_name))
+                    repl_nodes = {
+                        row[0]: row[1] for row in store.list_pod_nodes(s.app_name)
+                    }
                 except Exception:
                     repl_nodes = {}
                 try:
-                    reps = store.list_replicas(s.app_name)
+                    reps = store.list_pods(s.app_name)
                 except Exception:
                     reps = []
                 entries = []
                 for r in reps:
                     entries.append(
                         {
-                            "replica_id": r.replica_id,
-                            "node_id": repl_nodes.get(r.replica_id),
+                            "pod_name": r.pod_name,
+                            "replica_id": r.pod_name,
+                            "node_id": repl_nodes.get(r.pod_name),
                             "ready": bool(r.ready),
                             "live": bool(r.live),
                             "status": r.status,

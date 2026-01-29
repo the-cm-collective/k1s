@@ -1,4 +1,4 @@
-# Chapter 09 - Configuration and Secrets Management
+# Chapter 09 - Config & Secrets
 
 ## Concept
 Configuration defines application behavior, while secrets protect sensitive values. Both must be controlled, audited, and projected into workloads safely.
@@ -156,6 +156,5 @@ configRefs:
         file: config/app_mode.txt
 ```
 ## Chapter navigation
-- Prev: [Chapter 08 - Rollouts, Updates, and Rollbacks](concepts-in-practice-08-rollouts-updates.html)
-- Next: [Chapter 10 - Access and Policy Boundaries](concepts-in-practice-10-access-policy.html)
-
+- Prev: [Chapter 08 - Rollouts, Updates, & Rollbacks](concepts-in-practice-08-rollouts-updates.html)
+- Next: [Chapter 10 - Access & Policy](concepts-in-practice-10-access-policy.html)

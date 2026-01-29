@@ -349,7 +349,7 @@
             <div><strong>Namespace:</strong> <span id="d-namespace">-</span></div>
             <div><strong>Image:</strong> <span id="d-image">-</span></div>
             <div><strong>Ingress:</strong> <span id="d-ingress">-</span></div>
-            <div><strong>Replicas:</strong> <span id="d-replicas">-</span></div>
+            <div><strong>Pods:</strong> <span id="d-replicas">-</span></div>
             <div><strong>Revision:</strong> <span id="d-rev">-</span> (<span id="d-rev-status">-</span>)</div>
             <div><strong>Service:</strong> <span id="d-service">-</span></div>
             <div><strong>Rollout:</strong> <span id="d-rollout">-</span></div>
@@ -384,7 +384,7 @@
         </div>
         <div class="card" style="margin-top:12px;">
           <div class="row" style="align-items:center; justify-content:space-between;">
-            <strong>Replicas</strong>
+            <strong>Pods</strong>
             <label title="Rows history count">Show last
               <select id="hist-count" style="margin:0 4px;">
                 <option value="5" selected>5</option>
@@ -394,7 +394,7 @@
               checks
             </label>
           </div>
-          <table id="tbl-replicas"><thead><tr><th>Replica</th><th>Ready</th><th>Live</th><th>Status</th><th>Backoff</th></tr></thead><tbody></tbody></table>
+          <table id="tbl-replicas"><thead><tr><th>Pod</th><th>Ready</th><th>Live</th><th>Status</th><th>Backoff</th></tr></thead><tbody></tbody></table>
         </div>
         <div class="card" style="margin-top:12px;">
           <strong>System Graph</strong>
@@ -472,7 +472,7 @@
         <div class="row stretch" style="margin-top:12px;">
           <div class="card" style="flex:1;">
             <strong>Services</strong>
-            <table id="tbl-services"><thead><tr><th>App</th><th>Port</th><th>Target</th><th>Replicas</th></tr></thead><tbody></tbody></table>
+            <table id="tbl-services"><thead><tr><th>App</th><th>Port</th><th>Target</th><th>Pods</th></tr></thead><tbody></tbody></table>
           </div>
           <div class="card" style="flex:1;">
             <strong>Nodes</strong>
@@ -501,7 +501,7 @@
         </div>
         <div class="modal-body">
           <div class="row" style="flex-wrap:wrap; gap:10px; margin-bottom:10px;">
-            <label>Replica <select id="shell-pod"></select></label>
+            <label>Pod <select id="shell-pod"></select></label>
             <label>Container <input id="shell-container" type="text" placeholder="optional" /></label>
             <label>Command <input id="shell-cmd" type="text" value="sh -c &quot;echo connected; exec sh&quot;" /></label>
             <label>Shim API <input id="shell-base" type="text" placeholder="http://127.0.0.1:8443" /></label>
@@ -525,7 +525,7 @@
         </div>
         <div class="modal-body">
           <div class="pf-fields">
-            <label>Replica <select id="pf-pod"></select></label>
+            <label>Pod <select id="pf-pod"></select></label>
             <label>Port <input id="pf-port" type="text" placeholder="8080" /></label>
             <label class="pf-span-2">Shim API <input id="pf-base" type="text" placeholder="http://127.0.0.1:8443" /></label>
             <label class="pf-span-4">Token <input id="pf-token" type="password" placeholder="apishim token" /></label>
@@ -1084,7 +1084,7 @@ Connection: close
           try {
             var rbody = document.querySelector('#tbl-replicas tbody');
             if (rbody) {
-              var rows = (s.replicas||[]).map(function(r){
+              var rows = ((s.pods || s.replicas)||[]).map(function(r){
                 // Extract backoff seconds from readiness/liveness messages
                 function parseBackoff(msg){
                   var m = String(msg||'').match(/backoff \((\d+)s\)/);
@@ -1094,9 +1094,10 @@ Connection: close
                 var now = Date.now();
                 var deadline = bo > 0 ? (now + bo*1000) : 0;
                 var boText = bo>0 ? (String(bo)+'s') : '';
+                var pname = podName(r);
                 return {
-                  html: '<tr data-rid="'+escapeHtml(r.replica_id)+'" data-deadline="'+String(deadline)+'">'
-                        + '<td>'+escapeHtml(r.replica_id)+'</td>'
+                  html: '<tr data-rid="'+escapeHtml(pname)+'" data-deadline="'+String(deadline)+'">'
+                        + '<td>'+escapeHtml(pname)+'</td>'
                         + '<td>'+(r.ready?'yes':'no')+'</td>'
                         + '<td>'+(r.live?'yes':'no')+'</td>'
                         + '<td>'+escapeHtml(r.status||'')+'</td>'
@@ -1169,7 +1170,10 @@ Connection: close
           (historyCache ? Promise.resolve(historyCache) : fetchJSON('/history/' + encodeURIComponent(current) + '?limit=50'))
             .then(function(list){ historyCache = list; return list; })
             .then(function(list){
-              var items = (list||[]).filter(function(h){ return String(h.replica_id||'') === String(rid||''); }).slice(0, n);
+              var items = (list||[]).filter(function(h){
+                var hn = h.pod_name || h.replica_id || '';
+                return String(hn) === String(rid||'');
+              }).slice(0, n);
               if (!items.length) { td.innerHTML = '<div class="muted">No recent probe checks for '+escapeHtml(rid)+'</div>'; return; }
               var html = '<table class="mini"><thead><tr><th>Time</th><th>Ready</th><th>Live</th><th>R msg</th><th>L msg</th></tr></thead><tbody>'
                 + items.map(function(h){ return '<tr><td>'+escapeHtml(h.check_time)+'</td><td>'+(h.ready?'yes':'no')+'</td><td>'+(h.live?'yes':'no')+'</td><td>'+escapeHtml(h.readiness_message||'')+'</td><td>'+escapeHtml(h.liveness_message||'')+'</td></tr>'; }).join('')
@@ -1206,17 +1210,21 @@ Connection: close
         return out;
       }
 
+      function podName(r){
+        return (r && (r.pod_name || r.replica_id || r.name)) ? String(r.pod_name || r.replica_id || r.name) : '';
+      }
+
       function replicaList(){
-        var reps = (currentDetail && currentDetail.replicas) ? currentDetail.replicas : [];
+        var reps = (currentDetail && (currentDetail.pods || currentDetail.replicas)) ? (currentDetail.pods || currentDetail.replicas) : [];
         if (!Array.isArray(reps)) return [];
-        return reps.map(function(r){ return r.replica_id; }).filter(Boolean);
+        return reps.map(function(r){ return podName(r); }).filter(Boolean);
       }
 
       function defaultReplica(){
-        var reps = (currentDetail && currentDetail.replicas) ? currentDetail.replicas : [];
+        var reps = (currentDetail && (currentDetail.pods || currentDetail.replicas)) ? (currentDetail.pods || currentDetail.replicas) : [];
         if (!Array.isArray(reps) || !reps.length) return '';
         var ready = reps.find(function(r){ return r.ready; });
-        return (ready || reps[0]).replica_id;
+        return podName(ready || reps[0]);
       }
 
       function fillReplicaSelect(sel){
@@ -1384,7 +1392,7 @@ Connection: close
       function shellConnect(){
         var podSel = document.getElementById('shell-pod');
         var pod = podSel && podSel.value ? podSel.value : defaultReplica();
-        if (!pod) { shellSetStatus('no replica', 'warn'); return; }
+        if (!pod) { shellSetStatus('no pod', 'warn'); return; }
         var nsInfo = splitAppName(current || '');
         var ns = nsInfo && nsInfo.namespace ? nsInfo.namespace : 'default';
         var baseInput = document.getElementById('shell-base');
@@ -1701,7 +1709,7 @@ Connection: close
       function pfConnect(){
         var podSel = document.getElementById('pf-pod');
         var pod = podSel && podSel.value ? podSel.value : defaultReplica();
-        if (!pod) { pfSetStatus('no replica', 'warn'); return; }
+        if (!pod) { pfSetStatus('no pod', 'warn'); return; }
         var nsInfo = splitAppName(current || '');
         var ns = nsInfo && nsInfo.namespace ? nsInfo.namespace : 'default';
         var portInput = document.getElementById('pf-port');
@@ -3475,7 +3483,7 @@ Connection: close
             var info = [];
             info.push('App: ' + (ainfo.app||n.label));
             if (ainfo.ns) info.push('Namespace: ' + ainfo.ns);
-            info.push('Replicas: ' + (ainfo.ready||0) + '/' + (ainfo.desired||0));
+            info.push('Pods: ' + (ainfo.ready||0) + '/' + (ainfo.desired||0));
             if(ainfo.rev!=null) info.push('Revision: ' + ainfo.rev + ' (' + (ainfo.status||'-') + ')');
             title.textContent = info.join(String.fromCharCode(10));
           } else {
@@ -3593,7 +3601,7 @@ Connection: close
           runtime: {
             title:'Runtime (Docker)',
             body:[
-              'Container adapter that manages replicas for each app.',
+              'Container adapter that manages pods for each app.',
               'Reads logs, reports readiness/liveness, and lists ports.',
               'Ensures named storage volumes exist; prunes when retention=Delete.',
               'Provides container info for conflict checks and observability.'

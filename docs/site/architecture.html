@@ -41,7 +41,7 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
-        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-bg-image: url('static/dash-assets/page-background-tile-1024.png');
         --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
@@ -87,9 +87,9 @@
         flex-direction: column;
         background-color: var(--bg);
         background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
-        background-size: 100% 100%, auto 100%;
+        background-size: 100% 100%, 100% auto;
         background-position: center, center top;
-        background-repeat: repeat-y, repeat-y;
+        background-repeat: no-repeat, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -746,12 +746,12 @@
 <li>Runtime ensure: create/update/remove containers on each placement (respect rollout policy) via node agent RemoteRuntime.</li>
 <li>Health gate: evaluate readiness/liveness/exec/tcp; decide revision status ready/progressing/degraded/paused.</li>
 <li>Ingress: prefer Service VIP upstreams; optional canary weight/auto progression; remove ingress when omitted.</li>
-<li>Persist: write app status, replicas, probe history, canary state, and revision record; emit events.</li>
+<li>Persist: write app status, pods, probe history, canary state, and revision record; emit events.</li>
 </ul>
 <p>Idempotency &amp; Diff</p>
 <ul>
 <li>Spec hash drives revisions; reconciler tracks created/updated/removed per pass.</li>
-<li>Docker containers are labeled with app/replica/revision; runtime lists by labels.</li>
+<li>Docker containers are labeled with app/pod/revision; runtime lists by labels.</li>
 <li>Old revision containers are removed when the new revision becomes live.</li>
 </ul>
 <p>Pseudocode (as implemented in src/ae/controller/reconciler.py)</p>
@@ -764,7 +764,7 @@
   for placement in placements:
     res = runtime.ensure_app(
       manifest, rev, keep_old=True,
-      limit_create=..., replica_ids=placement.replica_ids,
+      limit_create=..., pod_names=placement.pod_names,
       node_id=placement.node.node_id if placement.node else None
     )
     aggregate.append(res)
@@ -789,8 +789,8 @@
   SCH--&gt;&gt;C: placements (+warnings)
   C-&gt;&gt;A: ensure_app(manifest, rev, placements)
   A-&gt;&gt;R: ensure/exec/logs
-  R--&gt;&gt;A: RuntimeResult(replica states)
-  A--&gt;&gt;C: Replica states
+  R--&gt;&gt;A: RuntimeResult(pod states)
+  A--&gt;&gt;C: Pod states
   C-&gt;&gt;H: evaluate(manifest, result)
   H--&gt;&gt;C: HealthReport(ready/live)
   alt ingress configured
@@ -849,21 +849,21 @@ spec:
 <p>Tables (created in src/ae/controller/state.py)</p>
 <ul>
 <li>app_status(app_name PK, desired_replicas, ready_replicas, live_replicas, revision, revision_status, image, created, updated, removed, ingress_host, ingress_path)</li>
-<li>replica_status(app_name, replica_id, ready, live, status, readiness_message, liveness_message)</li>
-<li>probe_history(id, app_name, replica_id, check_time, ready, live, readiness_message, liveness_message) [kept to 50 per replica]</li>
+<li>pod_status(app_name, pod_name, ready, live, status, readiness_message, liveness_message)</li>
+<li>probe_history(id, app_name, pod_name, check_time, ready, live, readiness_message, liveness_message) [kept to 50 per pod]</li>
 <li>app_revisions(app_name, revision, spec_hash, spec_json, image, created_at, status)</li>
 <li>app_events(id, app_name, revision, event_type, message, created_at)</li>
 <li>rollout_canary(app_name PK, weight, next_step_at, step, max, updated_at)</li>
 <li>nodes(node_id PK, name, labels json, taints json, endpoint, backend, pod_cidr, wg_pubkey, cordoned)</li>
 <li>node_status(node_id FK, status, seen_at)</li>
 <li>services(service_name PK, app_name, cluster_ip, provider, ports json, annotations json)</li>
-<li>service_endpoints(service_name FK, replica_id, ip, port, ready, node_id)</li>
+<li>service_endpoints(app_name, port, ip, target_port, ready)</li>
 <li>storage_bindings(app_name, volume_name, node_id, created_at)</li>
 </ul>
 <p>Query surfaces</p>
 <ul>
 <li><code>list_status()</code>, <code>get_status(app)</code></li>
-<li><code>list_replicas(app)</code>, <code>get_probe_history(app, N)</code></li>
+<li><code>list_pods(app)</code> (alias: <code>list_replicas</code>), <code>get_probe_history(app, N)</code></li>
 <li><code>list_revisions(app)</code>, <code>get_revision_manifest(app, rev)</code></li>
 <li><code>list_events(app, limit)</code></li>
 </ul>
@@ -872,7 +872,7 @@ spec:
 <p>Labels</p>
 <ul>
 <li><code>ae.app=&lt;name&gt;</code></li>
-<li><code>ae.replica_id=&lt;name&gt;-rev&lt;rev&gt;-&lt;index&gt;</code></li>
+<li><code>ae.pod_name=&lt;name&gt;-rev&lt;rev&gt;-&lt;index&gt;</code> (alias: <code>ae.replica_id</code>)</li>
 <li><code>ae.revision=&lt;rev&gt;</code></li>
 </ul>
 <p>Ensure flow (Docker/Podman runtimes)</p>
@@ -880,9 +880,9 @@ spec:
 <li>List existing containers by <code>ae.app</code> label.</li>
 <li>Partition by current revision vs old; keep old during surge.</li>
 <li>Pull image only when needed; prefer local <code>localhost/&lt;image&gt;</code> on Podman when present.</li>
-<li>Create missing replicas with labels, env, ports, security, volumes/storage, restart policy.</li>
+<li>Create missing pods with labels, env, ports, security, volumes/storage, restart policy.</li>
 <li>Remove old revision containers after readiness thresholds.</li>
-<li>Build <code>ReplicaState</code> from inspection (status, startedAt) and endpoints.</li>
+<li>Build <code>PodState</code> from inspection (status, startedAt) and endpoints.</li>
 </ul>
 <p>Resources/Volumes</p>
 <ul>
@@ -892,7 +892,7 @@ spec:
 </ul>
 <p>Logs</p>
 <ul>
-<li><code>read_logs(replica_id, follow, tail, since)</code> adapts to Docker SDK parameters.</li>
+<li><code>read_logs(pod_name, follow, tail, since)</code> adapts to Docker SDK parameters (replica_id alias supported).</li>
 </ul>
 <p>Auth</p>
 <ul>
@@ -908,12 +908,12 @@ spec:
 </ul>
 <h2>Health</h2>
 <ul>
-<li>HTTP probe: GET <code>http://&lt;replica.endpoint&gt;&lt;path&gt;</code>; success is 2xx.</li>
+<li>HTTP probe: GET <code>http://&lt;pod.endpoint&gt;&lt;path&gt;</code>; success is 2xx.</li>
 <li>TCP probe: attempts a TCP connection to the declared port.</li>
 <li>Exec probe: runs a command inside the container and checks exit code 0.</li>
 <li>Initial delay honored using container <code>StartedAt</code>.</li>
 <li>Liveness defaults to true when unspecified; readiness defaults to container state when unspecified.</li>
-<li><code>HealthReport</code> aggregates per‑replica <code>ready/live</code> and messages.</li>
+<li><code>HealthReport</code> aggregates per‑pod <code>ready/live</code> and messages.</li>
 </ul>
 <p>Revision status</p>
 <ul>
@@ -1030,7 +1030,7 @@ spec:
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-28 17:12:24</span>
+        <span>Built 2026-01-28 18:29:44</span>
       </div>
     </footer>
     <script>

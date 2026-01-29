@@ -12,7 +12,7 @@ import os
 import socket
 from typing import Any
 
-from ae.controller.health import HealthManager, HealthReport, ReplicaHealth
+from ae.controller.health import HealthManager, HealthReport, PodHealth
 from ae.controller.spec import AppManifest, VolumeSpec, app_key_for_manifest, load_manifest
 from ae.runtime import RuntimeAdapter, RuntimeResult
 from ae.storage.config import DEFAULT_CLASS_ANNOTATIONS
@@ -124,14 +124,12 @@ class Reconciler:
         except Exception:
             return self._runtime
 
-    def _exec_across_runtimes(
-        self, replica_id: str, command: list[str], timeout: int | None
-    ) -> int:
+    def _exec_across_runtimes(self, pod_name: str, command: list[str], timeout: int | None) -> int:
         """Try exec across known runtimes (local + cached remote)."""
         runtimes = [self._runtime] + list(self._runtime_cache.values())
         for rt in runtimes:
             try:
-                return int(rt.exec(replica_id, command, timeout=timeout))  # type: ignore[arg-type]
+                return int(rt.exec(pod_name, command, timeout=timeout))  # type: ignore[arg-type]
             except Exception:
                 continue
         return 127
@@ -187,7 +185,7 @@ class Reconciler:
         *,
         keep_old: bool,
         limit_create: int | None,
-        replica_ids: list[str] | None,
+        pod_names: list[str] | None,
         node_id: str | None,
     ) -> RuntimeResult:
         """Call ensure_app with backward-compatible fallbacks for older runtimes."""
@@ -197,13 +195,17 @@ class Reconciler:
                 revision,
                 keep_old=keep_old,
                 limit_create=limit_create,
-                replica_ids=replica_ids,
+                pod_names=pod_names,
                 node_id=node_id,
             )
         except TypeError:
             try:
                 return runtime.ensure_app(  # type: ignore[arg-type]
-                    manifest, revision, keep_old=keep_old, limit_create=limit_create
+                    manifest,
+                    revision,
+                    keep_old=keep_old,
+                    limit_create=limit_create,
+                    replica_ids=pod_names,
                 )
             except TypeError:
                 return runtime.ensure_app(manifest, revision)  # type: ignore[arg-type]
@@ -301,23 +303,23 @@ class Reconciler:
         if bool(rollout.get("pause", False)):
             # Build a health report from last known status (if any)
             prev = self._state_store.get_status(app_name)
-            replicas = self._state_store.list_replicas(app_name)
+            pods = self._state_store.list_pods(app_name)
             hr = HealthReport(
                 ready_replicas=prev.ready_replicas if prev else 0,
                 live_replicas=prev.live_replicas if prev else 0,
-                replicas=[
-                    ReplicaHealth(
-                        replica_id=r.replica_id,
+                pods=[
+                    PodHealth(
+                        pod_name=r.pod_name,
                         ready=r.ready,
                         live=r.live,
                         readiness_message=r.readiness_message,
                         liveness_message=r.liveness_message,
                     )
-                    for r in replicas
+                    for r in pods
                 ],
             )
             result = RuntimeResult(
-                revision=revision, created=0, updated=0, removed=0, replica_states=[]
+                revision=revision, created=0, updated=0, removed=0, pod_states=[]
             )
             revision_status = "paused"
             self._state_store.record_snapshot(
@@ -368,21 +370,21 @@ class Reconciler:
                 node_id = getattr(getattr(pl, "node", None), "node_id", None)
                 if not node_id:
                     continue
-                for rid in getattr(pl, "replica_ids", []) or []:
-                    node_rows.append((rid, node_id))
+                for pod_name in getattr(pl, "pod_names", []) or []:
+                    node_rows.append((pod_name, node_id))
             if node_rows:
-                self._state_store.set_replica_nodes(app_name, node_rows)
+                self._state_store.set_pod_nodes(app_name, node_rows)
         except Exception:
             pass
 
-        # Keep old replicas during rollout to respect surge/unavailable; we'll remove them after readiness check
+        # Keep old pods during rollout to respect surge/unavailable; we'll remove them after readiness check
         aggregate_states: list = []
         created = updated = removed = 0
         runtimes_used: list[RuntimeAdapter] = []
         remaining_limit = limit_create
         for placement in placements:
-            # Ensure replica_ids are unique per app/revision (avoid duplicate scheduling across nodes)
-            replica_ids = list(dict.fromkeys(getattr(placement, "replica_ids", []) or []))
+            # Ensure pod_names are unique per app/revision (avoid duplicate scheduling across nodes)
+            pod_names = list(dict.fromkeys(getattr(placement, "pod_names", []) or []))
             runtime = self._runtime_for_agent(getattr(placement, "agent_url", None))
             if runtime not in runtimes_used:
                 runtimes_used.append(runtime)
@@ -409,13 +411,13 @@ class Reconciler:
                 revision,
                 keep_old=True,
                 limit_create=per_limit,
-                replica_ids=replica_ids,
+                pod_names=pod_names,
                 node_id=getattr(getattr(placement, "node", None), "node_id", None),
             )
             created += res.created
             updated += res.updated
             removed += res.removed
-            aggregate_states.extend(res.replica_states)
+            aggregate_states.extend(res.pod_states)
             if remaining_limit is not None:
                 remaining_limit = max(0, remaining_limit - res.created)
 
@@ -424,7 +426,7 @@ class Reconciler:
             created=created,
             updated=updated,
             removed=removed,
-            replica_states=aggregate_states,
+            pod_states=aggregate_states,
         )
         health_report = self._health_manager.evaluate(manifest, result)
         # Service/IPAM: prefer Service VIPs when controller is available
@@ -448,18 +450,18 @@ class Reconciler:
                 except Exception:
                     return 0
 
-            for rep in getattr(health_report, "replicas", []) or []:
+            for pod in getattr(health_report, "pods", []) or []:
                 record_probe_backoff(
                     app_name,
-                    rep.replica_id,
+                    pod.pod_name,
                     "readiness",
-                    _parse_bo(getattr(rep, "readiness_message", "")),
+                    _parse_bo(getattr(pod, "readiness_message", "")),
                 )
                 record_probe_backoff(
                     app_name,
-                    rep.replica_id,
+                    pod.pod_name,
                     "liveness",
-                    _parse_bo(getattr(rep, "liveness_message", "")),
+                    _parse_bo(getattr(pod, "liveness_message", "")),
                 )
         except Exception:
             pass
@@ -680,7 +682,11 @@ class Reconciler:
                 continue
             if str(labels.get("ae.revision")) == str(keep_revision):
                 continue
-            rid = labels.get("ae.replica_id") or labels.get("ae.replica")
+            rid = (
+                labels.get("ae.pod_name")
+                or labels.get("ae.replica_id")
+                or labels.get("ae.replica")
+            )
             if not rid:
                 continue
             rc = None
@@ -699,7 +705,7 @@ class Reconciler:
                         app_name,
                         keep_revision,
                         "PreStopExec",
-                        f"replica={rid} rc={rc if rc is not None else 'n/a'}",
+                        f"pod={rid} rc={rc if rc is not None else 'n/a'}",
                     )
                 except Exception:
                     pass
@@ -724,7 +730,7 @@ class Reconciler:
                         app_name,
                         keep_revision,
                         "PreStopHTTP",
-                        f"replica={rid} {outcome}",
+                        f"pod={rid} {outcome}",
                     )
                 except Exception:
                     pass
@@ -747,7 +753,7 @@ class Reconciler:
                         app_name,
                         keep_revision,
                         "PreStopTCP",
-                        f"replica={rid} {outcome}",
+                        f"pod={rid} {outcome}",
                     )
                 except Exception:
                     pass
@@ -781,24 +787,24 @@ class Reconciler:
             timeout = int(hook.get("timeoutSeconds", 5))
         except Exception:
             timeout = 5
-        replicas = list(runtime_result.replica_states or [])
+        pods = list(runtime_result.pod_states or [])
         target = None
         # prefer ready
-        for r in replicas:
+        for r in pods:
             if getattr(r, "ready", False):
                 target = r
                 break
-        if target is None and replicas:
-            target = replicas[0]
+        if target is None and pods:
+            target = pods[0]
         if target is None:
-            return False, "no replicas available for hook"
+            return False, "no pods available for hook"
         # exec hook
         if "exec" in hook:
             cmd = hook.get("exec") or []
             if not isinstance(cmd, (list, tuple)) or not cmd:
                 return False, "exec hook missing/invalid command"
             try:
-                code = self._runtime.exec(target.replica_id, [str(x) for x in cmd], timeout=timeout)
+                code = self._runtime.exec(target.pod_name, [str(x) for x in cmd], timeout=timeout)
                 return (code == 0), (f"exec rc={code}")
             except Exception as exc:  # noqa: BLE001
                 return False, f"exec error: {exc}"
@@ -920,15 +926,15 @@ class Reconciler:
                 if any(ep.ready for ep in eps):
                     return [f"{svc.cluster_ip}:{svc_port}"]
 
-        states_by_id = {state.replica_id: state for state in result.replica_states}
+        states_by_id = {state.pod_name: state for state in result.pod_states}
 
         # Prefer only ready endpoints; defer ingress changes until at least one
         # replica is ready to avoid transient 502s during warm-up.
         ready_eps: list[str] = []
-        for replica in health_report.replicas:
-            if not replica.ready:
+        for pod in health_report.pods:
+            if not pod.ready:
                 continue
-            state = states_by_id.get(replica.replica_id)
+            state = states_by_id.get(pod.pod_name)
             if state and state.endpoint:
                 host, port = self._split_host_port(state.endpoint)
                 if host and port:
@@ -972,10 +978,10 @@ class Reconciler:
             return ready_eps
 
         # Fallback: allow loopback endpoints when nothing else is ready (useful for local/stub runtimes)
-        for replica in health_report.replicas:
-            if not replica.ready:
+        for pod in health_report.pods:
+            if not pod.ready:
                 continue
-            state = states_by_id.get(replica.replica_id)
+            state = states_by_id.get(pod.pod_name)
             if state and state.endpoint:
                 host, port = self._split_host_port(state.endpoint)
                 if host and port:
@@ -1069,7 +1075,7 @@ class Reconciler:
             succeeded = 0
             failed = 0
             running = 0
-            for rs in runtime_result.replica_states:
+            for rs in runtime_result.pod_states:
                 if getattr(rs, "status", "") == "running":
                     running += 1
                 rc = getattr(rs, "exit_code", None)
@@ -1083,14 +1089,14 @@ class Reconciler:
                 return "ready"
             if failed > 0 and running == 0:
                 return "degraded"
-            if len(report.replicas) > 0 or (runtime_result.created + runtime_result.updated) > 0:
+            if len(report.pods) > 0 or (runtime_result.created + runtime_result.updated) > 0:
                 return "progressing"
             return "degraded"
         desired = max(1, int(manifest.spec.replicas))
         if report.ready_replicas >= desired:
             return "ready"
         # Consider any recorded replica (regardless of liveness) as progressing.
-        if len(report.replicas) > 0:
+        if len(report.pods) > 0:
             return "progressing"
         # Race: runtime created/updated containers but list didn't return them yet
         if (runtime_result.created + runtime_result.updated) > 0:
@@ -1141,26 +1147,26 @@ class Reconciler:
         return manifest.model_copy(update={"spec": updated_spec})
 
     def _on_probe_event(
-        self, replica_id: str, probe_type: str, success: bool, message: str
+        self, pod_name: str, probe_type: str, success: bool, message: str
     ) -> None:
         """Hook from HealthManager when probe effective status changes."""
-        app_name = replica_id
+        app_name = pod_name
         try:
             import re
 
-            m = re.match(r"^(?P<app>.+)-rev\d+-\d+$", str(replica_id))
+            m = re.match(r"^(?P<app>.+)-rev\d+-\d+$", str(pod_name))
             if m:
                 app_name = m.group("app")
-            elif "-" in replica_id:
-                app_name = replica_id.split("-", 1)[0]
+            elif "-" in pod_name:
+                app_name = pod_name.split("-", 1)[0]
         except Exception:
-            app_name = replica_id.split("-", 1)[0] if "-" in replica_id else replica_id
+            app_name = pod_name.split("-", 1)[0] if "-" in pod_name else pod_name
         try:
             self._state_store.record_event(
                 app_name,
                 0,
                 f"{probe_type.capitalize()}{'OK' if success else 'Fail'}",
-                f"{replica_id}: {message}",
+                f"{pod_name}: {message}",
             )
             _record_event_metric_safe(f"{probe_type}_{'ok' if success else 'fail'}")
         except Exception:

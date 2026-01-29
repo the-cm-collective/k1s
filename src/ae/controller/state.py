@@ -7,7 +7,7 @@ import json
 import os
 import sqlite3
 import hashlib
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -54,10 +54,10 @@ class RegistryEntry:
 
 
 @dataclass(slots=True)
-class ReplicaStatus:
-    """Status for a single replica in the state store."""
+class PodStatus:
+    """Status for a single pod in the state store."""
 
-    replica_id: str
+    pod_name: str = ""
     ready: bool
     live: bool
     status: str
@@ -65,18 +65,47 @@ class ReplicaStatus:
     liveness_message: str
     exit_code: int | None = None
     finished_at: datetime | None = None
+    replica_id: InitVar[str | None] = None
+
+    def __post_init__(self, replica_id: str | None) -> None:
+        if not self.pod_name and replica_id:
+            self.pod_name = str(replica_id)
+
+    @property
+    def replica_id(self) -> str:
+        return self.pod_name
+
+    @replica_id.setter
+    def replica_id(self, value: str) -> None:
+        self.pod_name = value
+
+
+ReplicaStatus = PodStatus
 
 
 @dataclass(slots=True)
 class ProbeHistoryEntry:
     """Recorded probe evaluation for audit/history purposes."""
 
-    replica_id: str
+    pod_name: str = ""
     check_time: datetime
     ready: bool
     live: bool
     readiness_message: str
     liveness_message: str
+    replica_id: InitVar[str | None] = None
+
+    def __post_init__(self, replica_id: str | None) -> None:
+        if not self.pod_name and replica_id:
+            self.pod_name = str(replica_id)
+
+    @property
+    def replica_id(self) -> str:
+        return self.pod_name
+
+    @replica_id.setter
+    def replica_id(self, value: str) -> None:
+        self.pod_name = value
 
 
 @dataclass(slots=True)
@@ -194,6 +223,9 @@ class SQLiteStateStore:
 
     def _initialize(self) -> None:
         with self._connect() as conn:
+            # Drop legacy replica tables now that pod naming is canonical.
+            conn.execute("DROP TABLE IF EXISTS replica_nodes")
+            conn.execute("DROP TABLE IF EXISTS replica_status")
             needs_reset = not self._schema_matches(
                 conn,
                 "app_status",
@@ -213,10 +245,10 @@ class SQLiteStateStore:
                 ],
             ) or not self._schema_matches(
                 conn,
-                "replica_status",
+                "pod_status",
                 [
                     "app_name",
-                    "replica_id",
+                    "pod_name",
                     "ready",
                     "live",
                     "status",
@@ -228,8 +260,23 @@ class SQLiteStateStore:
             )
             if needs_reset:
                 conn.execute("DROP TABLE IF EXISTS probe_history")
-                conn.execute("DROP TABLE IF EXISTS replica_status")
+                conn.execute("DROP TABLE IF EXISTS pod_status")
                 conn.execute("DROP TABLE IF EXISTS app_status")
+            elif not self._schema_matches(
+                conn,
+                "probe_history",
+                [
+                    "id",
+                    "app_name",
+                    "pod_name",
+                    "check_time",
+                    "ready",
+                    "live",
+                    "readiness_message",
+                    "liveness_message",
+                ],
+            ):
+                conn.execute("DROP TABLE IF EXISTS probe_history")
 
             # Service tables are additive; drop and recreate only if schema mismatches.
             if not self._schema_matches(
@@ -255,6 +302,17 @@ class SQLiteStateStore:
                 ],
             ):
                 conn.execute("DROP TABLE IF EXISTS service_endpoints")
+            if not self._schema_matches(
+                conn,
+                "pod_nodes",
+                [
+                    "app_name",
+                    "pod_name",
+                    "node_id",
+                    "updated_at",
+                ],
+            ):
+                conn.execute("DROP TABLE IF EXISTS pod_nodes")
             if not self._schema_matches(
                 conn,
                 "nodes",
@@ -319,7 +377,7 @@ class SQLiteStateStore:
                 resource_loader.load_text("sql", "controller", "create_app_registry.sql")
             )
             conn.execute(
-                resource_loader.load_text("sql", "controller", "create_replica_status.sql")
+                resource_loader.load_text("sql", "controller", "create_pod_status.sql")
             )
             conn.execute(
                 resource_loader.render_text(
@@ -330,7 +388,7 @@ class SQLiteStateStore:
                 )
             )
             conn.execute(
-                resource_loader.load_text("sql", "controller", "create_replica_nodes.sql")
+                resource_loader.load_text("sql", "controller", "create_pod_nodes.sql")
             )
             conn.execute(
                 resource_loader.load_text("sql", "controller", "create_app_revisions.sql")
@@ -435,7 +493,7 @@ class SQLiteStateStore:
         revision: int,
         revision_status: str,
     ) -> None:
-        state_by_id = {state.replica_id: state for state in runtime_result.replica_states}
+        state_by_id = {state.pod_name: state for state in runtime_result.pod_states}
         app_name = app_key_for_manifest(manifest)
 
         with self._connect() as conn:
@@ -458,25 +516,25 @@ class SQLiteStateStore:
             )
 
             conn.execute(
-                "DELETE FROM replica_status WHERE app_name = ?",
+                "DELETE FROM pod_status WHERE app_name = ?",
                 (app_name,),
             )
 
             # Clean existing placements for this app; will be repopulated below
-            conn.execute("DELETE FROM replica_nodes WHERE app_name = ?", (app_name,))
+            conn.execute("DELETE FROM pod_nodes WHERE app_name = ?", (app_name,))
 
             rows = []
-            for replica in health_report.replicas:
-                state = state_by_id.get(replica.replica_id)
+            for pod in health_report.pods:
+                state = state_by_id.get(pod.pod_name)
                 rows.append(
                     (
                         app_name,
-                        replica.replica_id,
-                        int(replica.ready),
-                        int(replica.live),
+                        pod.pod_name,
+                        int(pod.ready),
+                        int(pod.live),
                         state.status if state else "unknown",
-                        replica.readiness_message,
-                        replica.liveness_message,
+                        pod.readiness_message,
+                        pod.liveness_message,
                         state.exit_code if state else None,
                         state.finished_at.isoformat() if state and state.finished_at else None,
                     )
@@ -484,7 +542,7 @@ class SQLiteStateStore:
             if rows:
                 conn.executemany(
                     resource_loader.load_text(
-                        "sql", "controller", "insert_replica_status.sql"
+                        "sql", "controller", "insert_pod_status.sql"
                     ),
                     rows,
                 )
@@ -493,14 +551,14 @@ class SQLiteStateStore:
             history_rows = [
                 (
                     app_name,
-                    replica.replica_id,
+                    pod.pod_name,
                     timestamp,
-                    int(replica.ready),
-                    int(replica.live),
-                    replica.readiness_message,
-                    replica.liveness_message,
+                    int(pod.ready),
+                    int(pod.live),
+                    pod.readiness_message,
+                    pod.liveness_message,
                 )
-                for replica in health_report.replicas
+                for pod in health_report.pods
             ]
             if history_rows:
                 conn.executemany(
@@ -509,23 +567,23 @@ class SQLiteStateStore:
                     ),
                     history_rows,
                 )
-                for replica in health_report.replicas:
+                for pod in health_report.pods:
                     conn.execute(
                         resource_loader.load_text(
                             "sql", "controller", "delete_probe_history_limit.sql"
                         ),
-                        (app_name, replica.replica_id),
+                        (app_name, pod.pod_name),
                     )
             # Persist placement mapping when runtime result contains node_id hints
             node_rows = []
-            for rs in runtime_result.replica_states:
+            for rs in runtime_result.pod_states:
                 node_id = getattr(rs, "node_id", None)
                 if not node_id:
                     continue
                 node_rows.append(
                     (
                         app_name,
-                        rs.replica_id,
+                        rs.pod_name,
                         node_id,
                         timestamp,
                     )
@@ -533,7 +591,7 @@ class SQLiteStateStore:
             if node_rows:
                 conn.executemany(
                     resource_loader.load_text(
-                        "sql", "controller", "insert_replica_nodes_upsert.sql"
+                        "sql", "controller", "insert_pod_nodes_upsert.sql"
                     ),
                     node_rows,
                 )
@@ -593,15 +651,15 @@ class SQLiteStateStore:
             for row in rows
         ]
 
-    def list_replicas(self, app_name: str) -> list[ReplicaStatus]:
+    def list_pods(self, app_name: str) -> list[PodStatus]:
         with self._connect() as conn:
             rows = conn.execute(
                 resource_loader.load_text(
-                    "sql", "controller", "select_replica_status_by_app.sql"
+                    "sql", "controller", "select_pod_status_by_app.sql"
                 ),
                 (app_name,),
             ).fetchall()
-        items: list[ReplicaStatus] = []
+        items: list[PodStatus] = []
         for row in rows:
             finished_at = None
             if row[7]:
@@ -610,8 +668,8 @@ class SQLiteStateStore:
                 except Exception:
                     finished_at = None
             items.append(
-                ReplicaStatus(
-                    replica_id=row[0],
+                PodStatus(
+                    pod_name=row[0],
                     ready=bool(row[1]),
                     live=bool(row[2]),
                     status=row[3],
@@ -623,29 +681,41 @@ class SQLiteStateStore:
             )
         return items
 
-    def list_replica_nodes(self, app_name: str) -> list[tuple[str, str]]:
+    def list_replicas(self, app_name: str) -> list[PodStatus]:
+        """Alias for list_pods (deprecated)."""
+        return self.list_pods(app_name)
+
+    def list_pod_nodes(self, app_name: str) -> list[tuple[str, str]]:
         with self._connect() as conn:
             rows = conn.execute(
                 resource_loader.load_text(
-                    "sql", "controller", "select_replica_nodes_with_status.sql"
+                    "sql", "controller", "select_pod_nodes_with_status.sql"
                 ),
                 (app_name,),
             ).fetchall()
         return [(row[0], row[1], row[2], row[3], row[4], row[5], row[6]) for row in rows]
 
-    def set_replica_nodes(self, app_name: str, placements: list[tuple[str, str]]) -> None:
+    def list_replica_nodes(self, app_name: str) -> list[tuple[str, str]]:
+        """Alias for list_pod_nodes (deprecated)."""
+        return self.list_pod_nodes(app_name)
+
+    def set_pod_nodes(self, app_name: str, placements: list[tuple[str, str]]) -> None:
         """Replace placement mapping for an app."""
         ts = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
-            conn.execute("DELETE FROM replica_nodes WHERE app_name = ?", (app_name,))
+            conn.execute("DELETE FROM pod_nodes WHERE app_name = ?", (app_name,))
             if placements:
                 conn.executemany(
                     resource_loader.load_text(
-                        "sql", "controller", "insert_replica_nodes.sql"
+                        "sql", "controller", "insert_pod_nodes.sql"
                     ),
                     [(app_name, rid, nid, ts) for rid, nid in placements],
                 )
             conn.commit()
+
+    def set_replica_nodes(self, app_name: str, placements: list[tuple[str, str]]) -> None:
+        """Alias for set_pod_nodes (deprecated)."""
+        self.set_pod_nodes(app_name, placements)
 
     def get_probe_history(self, app_name: str, limit: int) -> list[ProbeHistoryEntry]:
         with self._connect() as conn:
@@ -663,7 +733,7 @@ class SQLiteStateStore:
                 check_time = datetime.fromtimestamp(0, tz=timezone.utc)
             entries.append(
                 ProbeHistoryEntry(
-                    replica_id=row[0],
+                    pod_name=row[0],
                     check_time=check_time,
                     ready=bool(row[2]),
                     live=bool(row[3]),
@@ -1306,12 +1376,13 @@ class SQLiteStateStore:
 
     # --- Admin / maintenance helpers ---
     def delete_app_state(self, app_name: str, *, purge_history: bool = False) -> None:
-        """Remove status and replica rows for an app. Optionally purge events and revisions.
+        """Remove status and pod rows for an app. Optionally purge events and revisions.
 
         Does not affect running containers; the runtime is responsible for removing them.
         """
         with self._connect() as conn:
-            conn.execute("DELETE FROM replica_status WHERE app_name = ?", (app_name,))
+            conn.execute("DELETE FROM pod_status WHERE app_name = ?", (app_name,))
+            conn.execute("DELETE FROM pod_nodes WHERE app_name = ?", (app_name,))
             conn.execute("DELETE FROM app_status WHERE app_name = ?", (app_name,))
             conn.execute("DELETE FROM storage_bindings WHERE app_name = ?", (app_name,))
             conn.execute("DELETE FROM volume_attachments WHERE app_name = ?", (app_name,))

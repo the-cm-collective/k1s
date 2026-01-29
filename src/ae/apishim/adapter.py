@@ -522,11 +522,11 @@ class AdapterWorker(threading.Thread):
         failed = 0
         active = 0
         try:
-            reps = self._state.list_replicas(app_name)
+            pods = self._state.list_pods(app_name)
         except Exception:
-            reps = []
-        if reps:
-            for r in reps:
+            pods = []
+        if pods:
+            for r in pods:
                 if r.status == "running":
                     active += 1
                 if r.exit_code is None:

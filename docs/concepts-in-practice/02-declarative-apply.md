@@ -1,4 +1,4 @@
-# Chapter 02 - Declarative Specs and Apply Semantics
+# Chapter 02 - Declarative Specs & Apply
 
 ## Concept
 Declarative specs describe the desired outcome, not the step-by-step procedure. Applying a spec should be safe, repeatable, and converge the system to the same state regardless of prior actions. That is why apply is the primary interface: it merges intent into the system's source of truth.
@@ -145,5 +145,5 @@ spec:
       containerPort: 8080
 ```
 ## Chapter navigation
-- Prev: [Chapter 01 - Desired State and Reconciliation Loops](concepts-in-practice-01-desired-state-reconciliation.html)
-- Next: [Chapter 03 - Runtime Adapters and Container Execution](concepts-in-practice-03-runtime-adapters.html)
+- Prev: [Chapter 01 - Desired State & Reconciliation](concepts-in-practice-01-desired-state-reconciliation.html)
+- Next: [Chapter 03 - Runtime Adapters & Container Execution](concepts-in-practice-03-runtime-adapters.html)

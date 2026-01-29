@@ -41,7 +41,7 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
-        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-bg-image: url('static/dash-assets/page-background-tile-1024.png');
         --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
@@ -87,9 +87,9 @@
         flex-direction: column;
         background-color: var(--bg);
         background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
-        background-size: 100% 100%, auto 100%;
+        background-size: 100% 100%, 100% auto;
         background-position: center, center top;
-        background-repeat: repeat-y, repeat-y;
+        background-repeat: no-repeat, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -701,7 +701,7 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Chapter 02 - Declarative Specs and Apply Semantics</h1>
+    <h1>Chapter 02 - Declarative Specs &amp; Apply</h1>
 <h2>Concept</h2>
 <p>Declarative specs describe the desired outcome, not the step-by-step procedure. Applying a spec should be safe, repeatable, and converge the system to the same state regardless of prior actions. That is why apply is the primary interface: it merges intent into the system&#x27;s source of truth.</p>
 <pre class="mermaid">flowchart LR
@@ -831,8 +831,8 @@ spec:
       containerPort: 8080</code></pre>
 <h2>Chapter navigation</h2>
 <ul>
-<li>Prev: <a href="concepts-in-practice-01-desired-state-reconciliation.html">Chapter 01 - Desired State and Reconciliation Loops</a></li>
-<li>Next: <a href="concepts-in-practice-03-runtime-adapters.html">Chapter 03 - Runtime Adapters and Container Execution</a></li>
+<li>Prev: <a href="concepts-in-practice-01-desired-state-reconciliation.html">Chapter 01 - Desired State &amp; Reconciliation</a></li>
+<li>Next: <a href="concepts-in-practice-03-runtime-adapters.html">Chapter 03 - Runtime Adapters &amp; Container Execution</a></li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -841,7 +841,7 @@ spec:
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-28 17:12:24</span>
+        <span>Built 2026-01-28 18:29:44</span>
       </div>
     </footer>
     <script>

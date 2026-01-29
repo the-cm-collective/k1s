@@ -1,4 +1,4 @@
-# Chapter 07 - Health Probes and Readiness/Liveness
+# Chapter 07 - Health Probes
 
 ## Concept
 Health probes determine when a workload can receive traffic (readiness) and when it should be restarted (liveness). Startup probes protect slow-boot services. These signals are foundational to safe rollouts.
@@ -23,7 +23,7 @@ flowchart LR
 ```
 
 ### Design
-k1s evaluates probe outcomes per replica, tracks success/failure streaks, enforces probe periods, and applies backoff after failures. Results are aggregated into HealthReports, which feed rollout decisions and service endpoint selection. This aligns with Kubernetes probe semantics.
+k1s evaluates probe outcomes per pod, tracks success/failure streaks, enforces probe periods, and applies backoff after failures. Results are aggregated into HealthReports, which feed rollout decisions and service endpoint selection. This aligns with Kubernetes probe semantics.
 
 ```mermaid
 flowchart TB
@@ -84,7 +84,7 @@ python -m ae.cli history echo --limit 20
         if startup_spec is not None:
             startup = self._evaluate_probe(...)
             if not startup.success:
-                replicas.append(ReplicaHealth(...))
+                pods.append(PodHealth(...))
                 continue
 
         readiness = self._evaluate_probe(..., probe_type="readiness")
@@ -113,5 +113,5 @@ health:
     periodSeconds: 5
 ```
 ## Chapter navigation
-- Prev: [Chapter 06 - Ingress and Service Exposure](concepts-in-practice-06-ingress-service-exposure.html)
-- Next: [Chapter 08 - Rollouts, Updates, and Rollbacks](concepts-in-practice-08-rollouts-updates.html)
+- Prev: [Chapter 06 - Ingress & Service Exposure](concepts-in-practice-06-ingress-service-exposure.html)
+- Next: [Chapter 08 - Rollouts, Updates, & Rollbacks](concepts-in-practice-08-rollouts-updates.html)
