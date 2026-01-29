@@ -13,9 +13,9 @@ from ae.controller.spec import AppManifest
 class PodState:
     """Status for an individual pod in the runtime."""
 
-    pod_name: str = ""
     ready: bool
     status: str = "running"
+    pod_name: str = ""
     endpoint: str | None = None
     started_at: datetime | None = None
     exit_code: int | None = None

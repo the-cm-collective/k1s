@@ -1,6 +1,6 @@
 from ae.controller.health import HealthManager
 from ae.controller.spec import AppManifest, AppSpec, HealthSpec, Metadata, ProbeSpec
-from ae.runtime.base import ReplicaState, RuntimeResult
+from ae.runtime.base import PodState, RuntimeResult
 
 
 class DummyResp:
@@ -33,9 +33,9 @@ def test_readiness_success_threshold(monkeypatch):
         created=1,
         updated=0,
         removed=0,
-        replica_states=[
-            ReplicaState(
-                replica_id="t-rev1-0", ready=False, status="running", endpoint="127.0.0.1:8080"
+        pod_states=[
+            PodState(
+                pod_name="t-rev1-0", ready=False, status="running", endpoint="127.0.0.1:8080"
             )
         ],
     )
@@ -82,9 +82,9 @@ def test_readiness_failure_threshold(monkeypatch):
         created=1,
         updated=0,
         removed=0,
-        replica_states=[
-            ReplicaState(
-                replica_id="t-rev1-0", ready=False, status="running", endpoint="127.0.0.1:8080"
+        pod_states=[
+            PodState(
+                pod_name="t-rev1-0", ready=False, status="running", endpoint="127.0.0.1:8080"
             )
         ],
     )

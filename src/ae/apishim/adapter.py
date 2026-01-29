@@ -558,7 +558,7 @@ class AdapterWorker(threading.Thread):
             except Exception:
                 pass
         st = {
-            "active": active if reps else max(0, parallelism - succeeded),
+            "active": active if pods else max(0, parallelism - succeeded),
             "succeeded": succeeded,
             "failed": failed,
             "conditions": conditions,
