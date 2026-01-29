@@ -705,42 +705,42 @@
 <h2>Concept</h2>
 <p>Declarative specs describe the desired outcome, not the step-by-step procedure. Applying a spec should be safe, repeatable, and converge the system to the same state regardless of prior actions. That is why apply is the primary interface: it merges intent into the system&#x27;s source of truth.</p>
 <pre class="mermaid">flowchart LR
-  YAML[YAML spec] --&gt; Validate[Schema validation]
-  Validate --&gt; Manifest[AppManifest]
-  Manifest --&gt; Hash[Spec hash]
-  Hash --&gt; Changed{Spec changed?}
-  Changed -- yes --&gt; Revision[Create revision]
-  Revision --&gt; Reconcile[Reconcile to runtime]
-  Changed -- no --&gt; Noop[No-op apply]</pre>
+  YAML[&quot;YAML spec&quot;] --&gt; Validate[&quot;Schema validation&quot;]
+  Validate --&gt; Manifest[&quot;AppManifest&quot;]
+  Manifest --&gt; Hash[&quot;Spec hash&quot;]
+  Hash --&gt; Changed{&quot;Spec changed&quot;}
+  Changed -- yes --&gt; Revision[&quot;Create revision&quot;]
+  Revision --&gt; Reconcile[&quot;Reconcile to runtime&quot;]
+  Changed -- no --&gt; Noop[&quot;No-op apply&quot;]</pre>
 <h3>Theory</h3>
 <p>Declarative systems treat configuration as data. The &quot;apply&quot; operation is a reconciliation trigger: the controller compares the submitted desired state to the current desired state (stored in revisions) and decides whether a new revision is needed. This reduces hidden coupling and makes changes auditable.</p>
 <pre class="mermaid">flowchart TB
-  Apply[ae apply] --&gt; Load[Load YAML documents]
-  Load --&gt; Namespace[Apply namespace override (optional)]
-  Namespace --&gt; Detect{k8s kinds?}
-  Detect -- yes --&gt; Convert[k8s -&gt; AppManifest]
-  Detect -- no --&gt; Native[Native App manifest]
-  Convert --&gt; Store[Store revision]
+  Apply[&quot;ae apply&quot;] --&gt; Load[&quot;Load YAML documents&quot;]
+  Load --&gt; Namespace[&quot;Apply namespace override&quot;]
+  Namespace --&gt; Detect{&quot;k8s kinds&quot;}
+  Detect -- yes --&gt; Convert[&quot;k8s to AppManifest&quot;]
+  Detect -- no --&gt; Native[&quot;Native App manifest&quot;]
+  Convert --&gt; Store[&quot;Store revision&quot;]
   Native --&gt; Store
-  Store --&gt; Reconcile[Reconcile]</pre>
+  Store --&gt; Reconcile[&quot;Reconcile&quot;]</pre>
 <h3>Design</h3>
 <p>k1s validates YAML into a strict schema, normalizes it, and computes a hash to detect change. If the hash differs, a new revision is created and reconciled. If not, the controller does nothing--repeat applies are effectively no-ops. This design produces deterministic behavior and makes rollback trivial by reusing stored revisions.</p>
 <pre class="mermaid">flowchart LR
-  SpecV1[Spec v1] --&gt; Hash1[Hash A]
-  SpecV1 --&gt; Apply1[Apply]
-  Apply1 --&gt; Rev1[Revision 1]
-  SpecV1 --&gt; Apply2[Apply again]
+  SpecV1[&quot;Spec v1&quot;] --&gt; Hash1[&quot;Hash A&quot;]
+  SpecV1 --&gt; Apply1[&quot;Apply&quot;]
+  Apply1 --&gt; Rev1[&quot;Revision 1&quot;]
+  SpecV1 --&gt; Apply2[&quot;Apply again&quot;]
   Apply2 --&gt; Hash1
-  Hash1 --&gt; NoNewRev[No new revision]</pre>
+  Hash1 --&gt; NoNewRev[&quot;No new revision&quot;]</pre>
 <h3>Application</h3>
 <p>For developers, the spec is the API. Keep specs in version control, edit them for all changes, and apply them repeatedly without fear. When debugging, compare spec changes to revision events to see exactly what changed and why.</p>
 <pre class="mermaid">flowchart LR
-  Edit[Edit spec] --&gt; Apply[ae apply]
-  Apply --&gt; Hash[Spec hash]
-  Hash --&gt; Changed{Changed?}
-  Changed -- yes --&gt; NewRev[New revision]
-  NewRev --&gt; Reconcile[Reconcile]
-  Changed -- no --&gt; Noop[No-op apply]</pre>
+  Edit[&quot;Edit spec&quot;] --&gt; Apply[&quot;ae apply&quot;]
+  Apply --&gt; Hash[&quot;Spec hash&quot;]
+  Hash --&gt; Changed{&quot;Changed&quot;}
+  Changed -- yes --&gt; NewRev[&quot;New revision&quot;]
+  NewRev --&gt; Reconcile[&quot;Reconcile&quot;]
+  Changed -- no --&gt; Noop[&quot;No-op apply&quot;]</pre>
 <h2>Key Terms and Acronyms</h2>
 <ul>
 <li>Declarative config - Describe the outcome, not the steps.</li>
