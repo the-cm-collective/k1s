@@ -317,7 +317,7 @@ TEMPLATE = """<!doctype html>
         background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
         background-size: 100% 100%, auto 100%;
         background-position: center, center top;
-        background-repeat: no-repeat, no-repeat;
+        background-repeat: repeat-y, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
