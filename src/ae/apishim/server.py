@@ -1856,7 +1856,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             return None
         for c in containers:
             labels = c.get("labels", {}) or {}
-            rid = labels.get("ae.replica_id") or c.get("name")
+            rid = labels.get("ae.pod_name") or labels.get("ae.replica_id") or c.get("name")
             if rid != pod_name and c.get("name") != pod_name:
                 continue
             c_ns = labels.get("ae.namespace") or "default"
@@ -2036,7 +2036,9 @@ class ShimHandler(BaseHTTPRequestHandler):
         app = self._app_from_labels(labels) or pod_name
         if self.pod_state_check and hasattr(self.server, "state"):
             try:
-                fn = getattr(self.server.state, "list_replica_nodes", None)  # type: ignore[attr-defined]
+                fn = getattr(self.server.state, "list_pod_nodes", None)  # type: ignore[attr-defined]
+                if fn is None:
+                    fn = getattr(self.server.state, "list_replica_nodes", None)  # type: ignore[attr-defined]
                 if callable(fn):
                     found = False
                     for rid, _node, _ready, _live, _status, _rmsg, _lmsg in fn(app):
@@ -5402,22 +5404,19 @@ class ShimHandler(BaseHTTPRequestHandler):
             except Exception:
                 containers = []
             label_sel, field_sel = _selector_values_from_query(q)
-            # enrich with controller replica/node info when available
+            # enrich with controller pod/node info when available
             replica_info: dict[str, tuple[str | None, bool, bool, str, str, str]] = {}
             try:
                 # Build once for all apps to avoid N+1 queries
                 for app in {(c.get("labels", {}) or {}).get("ae.app") for c in containers}:
                     if not app:
                         continue
-                    for (
-                        rid,
-                        node_id,
-                        ready,
-                        live,
-                        status,
-                        rmsg,
-                        lmsg,
-                    ) in self.server.state.list_replica_nodes(app):  # type: ignore[attr-defined]
+                    rows = []
+                    try:
+                        rows = self.server.state.list_pod_nodes(app)  # type: ignore[attr-defined]
+                    except Exception:
+                        rows = self.server.state.list_replica_nodes(app)  # type: ignore[attr-defined]
+                    for rid, node_id, ready, live, status, rmsg, lmsg in rows:
                         replica_info[rid] = (node_id, ready, live, status, rmsg, lmsg)
             except Exception:
                 replica_info = {}
@@ -5428,7 +5427,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 c_ns = labels.get("ae.namespace") or "default"
                 if ns and c_ns != ns:
                     continue
-                rid = labels.get("ae.replica_id") or c.get("name")
+                rid = labels.get("ae.pod_name") or labels.get("ae.replica_id") or c.get("name")
                 rep_info = replica_info.get(str(rid))
                 node_name = labels.get("ae.node") or (rep_info[0] if rep_info else None)
                 pod_obj = _pod_obj(c, now_rv, node_name)
@@ -10907,10 +10906,12 @@ def _runtime_from_env() -> RuntimeAdapter:
 
 def _pod_obj(container: dict, rv: int, node_name: str | None) -> dict[str, Any]:
     labels = container.get("labels", {}) or {}
-    replica_id = labels.get("ae.replica_id") or container.get("name") or "replica"
+    pod_name = (
+        labels.get("ae.pod_name") or labels.get("ae.replica_id") or container.get("name") or "pod"
+    )
     ns = labels.get("ae.namespace") or "default"
     meta = {
-        "name": replica_id,
+        "name": pod_name,
         "namespace": ns,
         "labels": labels,
         "resourceVersion": str(rv),

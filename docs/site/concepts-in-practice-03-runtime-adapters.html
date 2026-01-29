@@ -41,7 +41,7 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
-        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-bg-image: url('static/dash-assets/page-background-tile-1024.png');
         --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
@@ -87,9 +87,9 @@
         flex-direction: column;
         background-color: var(--bg);
         background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
-        background-size: 100% 100%, auto 100%;
+        background-size: 100% 100%, 100% auto;
         background-position: center, center top;
-        background-repeat: repeat-y, repeat-y;
+        background-repeat: no-repeat, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -701,7 +701,7 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Chapter 03 - Runtime Adapters and Container Execution</h1>
+    <h1>Chapter 03 - Runtime Adapters &amp; Container Execution</h1>
 <h2>Concept</h2>
 <p>The controller defines desired state, but runtime adapters execute it. The adapter layer abstracts the container engine so the orchestration logic can remain stable while runtimes vary (Podman, Docker, CRI/containerd, or remote agents).</p>
 <pre class="mermaid">flowchart LR
@@ -723,7 +723,7 @@
   E--&gt;&gt;A: updated state
   A--&gt;&gt;C: RuntimeResult</pre>
 <h3>Design</h3>
-<p>k1s defines a RuntimeAdapter protocol and provides concrete implementations for Podman, Docker, and CRI/containerd. The controller calls <code>ensure_app</code>, which creates or updates containers to match the desired replica set. Backend selection is environment-driven, and fallback logic ensures the system remains functional even if the preferred runtime is unavailable.</p>
+<p>k1s defines a RuntimeAdapter protocol and provides concrete implementations for Podman, Docker, and CRI/containerd. The controller calls <code>ensure_app</code>, which creates or updates containers to match the desired pod set. Backend selection is environment-driven, and fallback logic ensures the system remains functional even if the preferred runtime is unavailable.</p>
 <pre class="mermaid">flowchart TB
   Env[AE_RUNTIME_BACKEND] --&gt; Select[Runtime factory]
   Select --&gt; Podman[PodmanRuntime]
@@ -755,8 +755,8 @@
 <li>CRI - Kubernetes Container Runtime Interface.</li>
 <li>OCI - Open Container Initiative spec for images/runtimes.</li>
 <li>containerd - Common CRI implementation used by k3s/k8s.</li>
-<li>ensure_app - Adapter method that enforces desired replicas.</li>
-<li>Replica state - Runtime-reported status for a replica.</li>
+<li>ensure_app - Adapter method that enforces desired pods.</li>
+<li>Pod state - Runtime-reported status for a pod.</li>
 <li>Image pull - Fetching a container image from a registry.</li>
 </ul>
 <h2>Commands (copy/paste)</h2>
@@ -773,7 +773,7 @@ python -m ae.cli events echo --limit 20</code></pre>
 </ul>
 <h2>Code references (walkthrough anchors)</h2>
 <ul>
-<li>Runtime adapter interface: <code>src/ae/runtime/base.py:12</code></li>
+<li>Runtime adapter interface: <code>src/ae/runtime/base.py:73</code></li>
 </ul>
 <pre><code>class RuntimeAdapter(Protocol):
     &quot;&quot;&quot;Adapter that drives container runtime operations.&quot;&quot;&quot;
@@ -785,26 +785,26 @@ python -m ae.cli events echo --limit 20</code></pre>
         *,
         keep_old: bool = False,
         limit_create: int | None = None,
-        replica_ids: list[str] | None = None,
+        pod_names: list[str] | None = None,
         node_id: str | None = None,
     ) -&gt; RuntimeResult:
         &quot;&quot;&quot;Ensure the runtime matches the manifest.&quot;&quot;&quot;</code></pre>
 <ul>
-<li>Docker adapter ensures replicas: <code>src/ae/runtime/docker_runtime.py:56</code></li>
+<li>Docker adapter ensures pods: <code>src/ae/runtime/docker_runtime.py:70</code></li>
 </ul>
 <pre><code>    def ensure_app(self, manifest: AppManifest, revision: int, *, ... ) -&gt; RuntimeResult:
         app_name = app_key_for_manifest(manifest)
-        desired_replica_ids = (
-            list(replica_ids)
-            if replica_ids is not None
-            else self._desired_replica_ids(manifest, revision)
+        desired_pod_names = (
+            list(pod_names)
+            if pod_names is not None
+            else self._desired_pod_names(manifest, revision)
         )
         ...
-        for replica_id in desired_replica_ids:
-            container = containers_by_replica.get(replica_id)
+        for pod_name in desired_pod_names:
+            container = containers_by_pod.get(pod_name)
             if container is None:
                 container = self._create_container(
-                    manifest, replica_id, revision, node_id=node_id, attempt=0
+                    manifest, pod_name, revision, node_id=node_id, attempt=0
                 )
                 created += 1
             else:
@@ -831,8 +831,8 @@ python -m ae.cli events echo --limit 20</code></pre>
     return DockerRuntime(registry_auth=registry_auth)</code></pre>
 <h2>Chapter navigation</h2>
 <ul>
-<li>Prev: <a href="concepts-in-practice-02-declarative-apply.html">Chapter 02 - Declarative Specs and Apply Semantics</a></li>
-<li>Next: <a href="concepts-in-practice-04-scheduling-placement.html">Chapter 04 - Scheduling and Placement (Where Work Runs)</a></li>
+<li>Prev: <a href="concepts-in-practice-02-declarative-apply.html">Chapter 02 - Declarative Specs &amp; Apply</a></li>
+<li>Next: <a href="concepts-in-practice-04-scheduling-placement.html">Chapter 04 - Scheduling &amp; Placement</a></li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -841,7 +841,7 @@ python -m ae.cli events echo --limit 20</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-28 17:12:24</span>
+        <span>Built 2026-01-28 18:29:44</span>
       </div>
     </footer>
     <script>

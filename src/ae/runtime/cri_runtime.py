@@ -1,4 +1,4 @@
-"""CRI-backed runtime adapter for managing application replicas."""
+"""CRI-backed runtime adapter for managing application pods."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from ae.controller.spec import (
 )
 from ae.runtime.ports import choose_host_port
 
-from .base import ReplicaState, RuntimeAdapter, RuntimeResult
+from .base import PodState, RuntimeAdapter, RuntimeResult
 from .registry import RegistryAuthProvider
 
 LOGGER = logging.getLogger(__name__)
@@ -36,7 +36,9 @@ class CRIRuntime(RuntimeAdapter):
     """CRI gRPC-backed runtime adapter (containerd/kubelet)."""
 
     APP_LABEL = "ae.app"
-    REPLICA_LABEL = "ae.replica_id"
+    POD_LABEL = "ae.pod_name"
+    LEGACY_REPLICA_LABEL = "ae.replica_id"
+    REPLICA_LABEL = POD_LABEL
     REVISION_LABEL = "ae.revision"
     CONTAINER_LABEL = "ae.container"
     JOB_ATTEMPT_LABEL = "ae.job_attempt"
@@ -73,13 +75,13 @@ class CRIRuntime(RuntimeAdapter):
         *,
         keep_old: bool = False,
         limit_create: int | None = None,
-        replica_ids: list[str] | None = None,
+        pod_names: list[str] | None = None,
         node_id: str | None = None,
     ) -> RuntimeResult:
         app_name = app_key_for_manifest(manifest)
         desired_replica_ids = (
-            list(replica_ids)
-            if replica_ids is not None
+            list(pod_names)
+            if pod_names is not None
             else self._desired_replica_ids(manifest, revision)
         )
         self._current_node_id = node_id
@@ -130,25 +132,25 @@ class CRIRuntime(RuntimeAdapter):
                 except Exception as exc:
                     LOGGER.warning("Failed to remove old pod: %s", exc)
 
-        replica_states = self._build_states(manifest, revision)
+        pod_states = self._build_states(manifest, revision)
         return RuntimeResult(
             revision=revision,
             created=created,
             updated=updated,
             removed=removed,
-            replica_states=replica_states,
+            pod_states=pod_states,
         )
 
     def read_logs(
         self,
-        replica_id: str,
+        pod_name: str,
         *,
         follow: bool = False,
         tail: int | None = None,
         since: int | None = None,
     ):
         self._ensure_clients()
-        container_id = self._container_id_for_replica(replica_id)
+        container_id = self._container_id_for_replica(pod_name)
         if not container_id:
             return iter(())
         status = self._container_status(container_id)
@@ -216,9 +218,9 @@ class CRIRuntime(RuntimeAdapter):
                 )
         return out
 
-    def exec(self, replica_id: str, command: list[str], *, timeout: int | None = None) -> int:
+    def exec(self, pod_name: str, command: list[str], *, timeout: int | None = None) -> int:
         self._ensure_clients()
-        container_id = self._container_id_for_replica(replica_id)
+        container_id = self._container_id_for_replica(pod_name)
         if not container_id:
             return 127
         pb2 = self._pb2()
@@ -235,7 +237,7 @@ class CRIRuntime(RuntimeAdapter):
 
     def exec_attach(
         self,
-        replica_id: str,
+        pod_name: str,
         command: list[str],
         *,
         container: str | None = None,
@@ -245,7 +247,7 @@ class CRIRuntime(RuntimeAdapter):
         if not command:
             raise RuntimeError("exec command is required")
         container_label = str(container or "main")
-        container_id = self._container_id_for_replica(replica_id, container_label=container_label)
+        container_id = self._container_id_for_replica(pod_name, container_label=container_label)
         if not container_id:
             raise RuntimeError("Replica not found for exec")
         crictl = os.getenv("CRICTL_BIN", "crictl")
@@ -634,11 +636,17 @@ class CRIRuntime(RuntimeAdapter):
     def _pod_labels(self, pod: Any) -> dict[str, str]:
         labels = getattr(pod, "labels", None)
         if labels:
-            return {str(k): str(v) for k, v in labels.items()}
+            out = {str(k): str(v) for k, v in labels.items()}
+            if self.POD_LABEL not in out and self.LEGACY_REPLICA_LABEL in out:
+                out[self.POD_LABEL] = out[self.LEGACY_REPLICA_LABEL]
+            return out
         meta = getattr(pod, "metadata", None)
         meta_labels = getattr(meta, "labels", None) if meta else None
         if meta_labels:
-            return {str(k): str(v) for k, v in meta_labels.items()}
+            out = {str(k): str(v) for k, v in meta_labels.items()}
+            if self.POD_LABEL not in out and self.LEGACY_REPLICA_LABEL in out:
+                out[self.POD_LABEL] = out[self.LEGACY_REPLICA_LABEL]
+            return out
         return {}
 
     def _pod_status(self, pod_id: str | None):
@@ -750,7 +758,8 @@ class CRIRuntime(RuntimeAdapter):
         labels = runtime_labels_for_manifest(manifest, app_name=app_name)
         labels.update(
             {
-                self.REPLICA_LABEL: replica_id,
+                self.POD_LABEL: replica_id,
+                self.LEGACY_REPLICA_LABEL: replica_id,
                 self.REVISION_LABEL: str(revision),
                 **({"ae.node": str(node_id)} if node_id else {}),
             }
@@ -1043,7 +1052,8 @@ class CRIRuntime(RuntimeAdapter):
         labels = runtime_labels_for_manifest(manifest, app_name=app_name)
         labels.update(
             {
-                self.REPLICA_LABEL: replica_id,
+                self.POD_LABEL: replica_id,
+                self.LEGACY_REPLICA_LABEL: replica_id,
                 self.REVISION_LABEL: str(revision),
                 self.CONTAINER_LABEL: str(name),
             }
@@ -1203,14 +1213,18 @@ class CRIRuntime(RuntimeAdapter):
             ctx.capabilities.drop_capabilities.extend([str(c) for c in drops])
         return ctx
 
-    def _build_states(self, manifest: AppManifest, revision: int) -> list[ReplicaState]:
-        states: list[ReplicaState] = []
+    def _build_states(self, manifest: AppManifest, revision: int) -> list[PodState]:
+        states: list[PodState] = []
         app_name = app_key_for_manifest(manifest)
         for pod in self._list_pods(app_name):
             labels = self._pod_labels(pod)
             if labels.get(self.REVISION_LABEL) != str(revision):
                 continue
-            replica_id = labels.get(self.REPLICA_LABEL) or self._pod_name(pod)
+            pod_name = (
+                labels.get(self.POD_LABEL)
+                or labels.get(self.LEGACY_REPLICA_LABEL)
+                or self._pod_name(pod)
+            )
             pod_id = getattr(pod, "id", None) or getattr(pod, "pod_sandbox_id", None)
             pod_status = self._pod_status(pod_id) if pod_id else None
             pod_ip = None
@@ -1234,8 +1248,8 @@ class CRIRuntime(RuntimeAdapter):
                 )
             endpoint = self._endpoint_for_manifest(manifest, pod_ip)
             states.append(
-                ReplicaState(
-                    replica_id=str(replica_id),
+                PodState(
+                    pod_name=str(pod_name),
                     ready=bool(ready),
                     status=status,
                     endpoint=endpoint,

@@ -26,7 +26,7 @@ from ae.controller.spec import (
     split_app_key,
 )
 
-from .base import ReplicaState, RuntimeAdapter, RuntimeResult
+from .base import PodState, RuntimeAdapter, RuntimeResult
 from .ports import choose_host_port
 
 
@@ -42,7 +42,9 @@ LOGGER = logging.getLogger(__name__)
 
 class PodmanRuntime(RuntimeAdapter):
     APP_LABEL = "ae.app"
-    REPLICA_LABEL = "ae.replica_id"
+    POD_LABEL = "ae.pod_name"
+    LEGACY_REPLICA_LABEL = "ae.replica_id"
+    REPLICA_LABEL = POD_LABEL
     REVISION_LABEL = "ae.revision"
     CONTAINER_LABEL = "ae.container"
     JOB_ATTEMPT_LABEL = "ae.job_attempt"
@@ -86,13 +88,13 @@ class PodmanRuntime(RuntimeAdapter):
         *,
         keep_old: bool = False,
         limit_create: int | None = None,
-        replica_ids: list[str] | None = None,
+        pod_names: list[str] | None = None,
         node_id: str | None = None,
     ) -> RuntimeResult:
         app = app_key_for_manifest(manifest)
         desired_ids = (
-            list(replica_ids)
-            if replica_ids is not None
+            list(pod_names)
+            if pod_names is not None
             else [f"{app}-rev{revision}-{i}" for i in range(manifest.spec.replicas)]
         )
         self._current_node_id = node_id
@@ -109,9 +111,12 @@ class PodmanRuntime(RuntimeAdapter):
         existing = self._list_app_containers(app)
 
         def _labels(obj: dict) -> dict:
-            return (obj.get("Config") or {}).get("Labels") or {}
+            labels = (obj.get("Config") or {}).get("Labels") or {}
+            if self.POD_LABEL not in labels and self.LEGACY_REPLICA_LABEL in labels:
+                labels = {**labels, self.POD_LABEL: labels[self.LEGACY_REPLICA_LABEL]}
+            return labels
 
-        by_replica = {_labels(c).get(self.REPLICA_LABEL): c for c in existing if _labels(c)}
+        by_replica = {_labels(c).get(self.POD_LABEL): c for c in existing if _labels(c)}
         old = [c for c in existing if _labels(c).get(self.REVISION_LABEL) != str(revision)]
 
         created = updated = removed = 0
@@ -276,7 +281,7 @@ class PodmanRuntime(RuntimeAdapter):
 
         # Compose replica states
         final = self._list_app_containers(app)
-        states: list[ReplicaState] = []
+        states: list[PodState] = []
         # Preferred container port for readiness
         preferred_port: int | None = None
         try:
@@ -293,7 +298,7 @@ class PodmanRuntime(RuntimeAdapter):
             labs = (c.get("Config") or {}).get("Labels") or {}
             if labs.get(self.REVISION_LABEL) != str(revision):
                 continue
-            rid = labs.get(self.REPLICA_LABEL) or ""
+            rid = labs.get(self.POD_LABEL) or labs.get(self.LEGACY_REPLICA_LABEL) or ""
             state = c.get("State") or {}
             st = state.get("Status", "")
             started = self._parse_dt(state.get("StartedAt"))
@@ -399,8 +404,8 @@ class PodmanRuntime(RuntimeAdapter):
             if is_job:
                 ready = False if st == "running" else exit_code == 0
             states.append(
-                ReplicaState(
-                    replica_id=rid,
+                PodState(
+                    pod_name=rid,
                     ready=ready,
                     status=st or "",
                     endpoint=endpoint,
@@ -415,7 +420,7 @@ class PodmanRuntime(RuntimeAdapter):
             created=created,
             updated=updated,
             removed=removed,
-            replica_states=states,
+            pod_states=states,
         )
 
     def _ensure_sidecars(self, manifest: AppManifest, replica_id: str, revision: int) -> None:
@@ -477,7 +482,8 @@ class PodmanRuntime(RuntimeAdapter):
                     labels = runtime_labels_for_manifest(manifest, app_name=app)
                     labels.update(
                         {
-                            self.REPLICA_LABEL: replica_id,
+                            self.POD_LABEL: replica_id,
+                            self.LEGACY_REPLICA_LABEL: replica_id,
                             self.REVISION_LABEL: str(revision),
                             self.CONTAINER_LABEL: cname,
                         }
@@ -549,14 +555,14 @@ class PodmanRuntime(RuntimeAdapter):
 
     def read_logs(
         self,
-        replica_id: str,
+        pod_name: str,
         *,
         follow: bool = False,
         tail: int | None = None,
         since: int | None = None,
     ):
         # Find container by label
-        cid = self._find_by_label(self.REPLICA_LABEL, replica_id)
+        cid = self._find_by_label(self.POD_LABEL, pod_name)
         if not cid:
             # Fallback: scan ps JSON and match Config.Labels
             try:
@@ -564,14 +570,17 @@ class PodmanRuntime(RuntimeAdapter):
                 arr = json.loads(r.out or "[]")
                 for it in arr:
                     labels = (it.get("Config") or {}).get("Labels") or {}
-                    if labels.get(self.REPLICA_LABEL) == replica_id:
+                    if (
+                        labels.get(self.POD_LABEL) == pod_name
+                        or labels.get(self.LEGACY_REPLICA_LABEL) == pod_name
+                    ):
                         cid = it.get("Id") or it.get("Names", [None])[0]
                         break
             except Exception:
                 pass
         # Fallback to well-known container name if label lookup fails
         if not cid:
-            cid = f"ae-{replica_id}"
+            cid = f"ae-{pod_name}"
             if follow:
                 try:
                     probe = self._run_ok([self._bin, "container", "exists", cid], allow_fail=True)
@@ -703,7 +712,7 @@ class PodmanRuntime(RuntimeAdapter):
     # Streaming exec for Podman (uses `podman exec --interactive --tty --attach` via varlink-less HTTP API)
     def exec_attach(
         self,
-        replica_id: str,
+        pod_name: str,
         command: list[str],
         *,
         container: str | None = None,
@@ -715,10 +724,10 @@ class PodmanRuntime(RuntimeAdapter):
             "yes",
             "on",
         }
-        # Locate container by replica_id label
+        # Locate container by pod label
         cid = None
         try:
-            labels = [f"label={self.REPLICA_LABEL}={replica_id}"]
+            labels = [f"label={self.POD_LABEL}={pod_name}"]
             if container:
                 labels.append(f"label={self.CONTAINER_LABEL}={container}")
             cmd_list = [
@@ -731,6 +740,18 @@ class PodmanRuntime(RuntimeAdapter):
             ]
             res = self._run_ok(cmd_list, allow_fail=True)
             cid = (res.out or "").strip().splitlines()[0]
+            if not cid:
+                labels[0] = f"label={self.LEGACY_REPLICA_LABEL}={pod_name}"
+                cmd_list = [
+                    self._bin,
+                    "ps",
+                    "-a",
+                    *sum([["--filter", x] for x in labels], []),
+                    "--format",
+                    "{{.ID}}",
+                ]
+                res = self._run_ok(cmd_list, allow_fail=True)
+                cid = (res.out or "").strip().splitlines()[0]
             if debug:
                 LOGGER.warning("podman exec_attach lookup %s => %s", cmd_list, cid)
         except Exception as exc:
@@ -738,7 +759,7 @@ class PodmanRuntime(RuntimeAdapter):
                 LOGGER.warning("podman exec_attach lookup failed: %s", exc)
             cid = None
         if not cid:
-            raise RuntimeError("Replica not found for exec")
+            raise RuntimeError("Pod not found for exec")
 
         # Use podman-remote exec attach over `podman system service --time=0` (HTTP API)
         # Fallback to stdio hijack via `podman exec --interactive --tty` and a pty.
@@ -1194,9 +1215,9 @@ class PodmanRuntime(RuntimeAdapter):
             )
         return out
 
-    def exec(self, replica_id: str, command: list[str], *, timeout: int | None = None) -> int:  # type: ignore[override]
+    def exec(self, pod_name: str, command: list[str], *, timeout: int | None = None) -> int:  # type: ignore[override]
         # Locate container by label
-        cid = self._find_by_label(self.REPLICA_LABEL, replica_id)
+        cid = self._find_by_label(self.POD_LABEL, pod_name)
         if not cid:
             return 127
         cmd = [self._bin, "exec"]
@@ -1235,7 +1256,8 @@ class PodmanRuntime(RuntimeAdapter):
         labels = runtime_labels_for_manifest(manifest, app_name=app)
         labels.update(
             {
-                self.REPLICA_LABEL: replica_id,
+                self.POD_LABEL: replica_id,
+                self.LEGACY_REPLICA_LABEL: replica_id,
                 self.REVISION_LABEL: str(revision),
                 self.CONTAINER_LABEL: "main",
             }
@@ -1529,6 +1551,20 @@ class PodmanRuntime(RuntimeAdapter):
             allow_fail=True,
         )
         cid = (r.out or "").strip().splitlines()
+        if not cid and key == self.POD_LABEL:
+            r = self._run_ok(
+                [
+                    self._bin,
+                    "ps",
+                    "-a",
+                    "--filter",
+                    f"label={self.LEGACY_REPLICA_LABEL}={value}",
+                    "--format",
+                    "{{.ID}}",
+                ],
+                allow_fail=True,
+            )
+            cid = (r.out or "").strip().splitlines()
         return cid[0] if cid else None
 
     def _parse_dt(self, raw: str | None) -> datetime | None:

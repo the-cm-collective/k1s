@@ -1,4 +1,4 @@
-# Chapter 08 - Rollouts, Updates, and Rollbacks
+# Chapter 08 - Rollouts, Updates, & Rollbacks
 
 ## Concept
 Rollouts are controlled transitions between revisions of a workload. They balance speed and safety by regulating how many replicas are updated at once, and they preserve the ability to revert.
@@ -134,6 +134,5 @@ def handle_rollback(...):
     print(f"Rolled back ... to revision {report.revision} ({report.revision_status})")
 ```
 ## Chapter navigation
-- Prev: [Chapter 07 - Health Probes and Readiness/Liveness](concepts-in-practice-07-health-probes.html)
-- Next: [Chapter 09 - Configuration and Secrets Management](concepts-in-practice-09-configuration-secrets.html)
-
+- Prev: [Chapter 07 - Health Probes](concepts-in-practice-07-health-probes.html)
+- Next: [Chapter 09 - Configs & Secrets](concepts-in-practice-09-configuration-secrets.html)

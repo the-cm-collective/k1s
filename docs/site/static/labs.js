@@ -830,7 +830,7 @@
     return base.replace(/^http/i, 'ws');
   }
 
-  async function fillReplicaSelect(sel) {
+  async function fillPodSelect(sel) {
     if (!sel) return;
     sel.innerHTML = '';
     const app = state.appName || '';
@@ -838,21 +838,24 @@
     try {
       if (app) {
         const s = await jsonGet(`${API}/status/${encodeURIComponent(app)}?details=1`);
-        const reps = Array.isArray(s?.replicas) ? s.replicas.map(r => r.replica_id).filter(Boolean) : [];
-        const list = reps.length ? reps : fallback;
-        list.forEach(rid => {
+        const items = Array.isArray(s?.pods)
+          ? s.pods
+          : (Array.isArray(s?.replicas) ? s.replicas : []);
+        const ids = items.map(r => r.pod_name || r.replica_id).filter(Boolean);
+        const list = ids.length ? ids : fallback;
+        list.forEach(podName => {
           const opt = document.createElement('option');
-          opt.value = rid;
-          opt.textContent = rid;
+          opt.value = podName;
+          opt.textContent = podName;
           sel.appendChild(opt);
         });
         return;
       }
     } catch {}
-    fallback.forEach(rid => {
+    fallback.forEach(podName => {
       const opt = document.createElement('option');
-      opt.value = rid;
-      opt.textContent = rid;
+      opt.value = podName;
+      opt.textContent = podName;
       sel.appendChild(opt);
     });
   }
@@ -922,7 +925,7 @@
       banner('Remote shell requires an active session and Controlled Actions.', 'fail');
       return;
     }
-    fillReplicaSelect(document.getElementById('labs-shell-pod'));
+    fillPodSelect(document.getElementById('labs-shell-pod'));
     const modal = document.getElementById('labs-shell-modal');
     if (!modal) return;
     modal.classList.remove('hidden');
@@ -958,7 +961,7 @@
   function labsShellConnect() {
     const podSel = document.getElementById('labs-shell-pod');
     const pod = podSel && podSel.value ? podSel.value : state.appName;
-    if (!pod) { labsShellStatus('no replica', 'warn'); return; }
+    if (!pod) { labsShellStatus('no pod', 'warn'); return; }
     const ns = splitAppName(state.appName || '').namespace || 'default';
     const baseInput = document.getElementById('labs-shell-base');
     const tokenInput = document.getElementById('labs-shell-token');
@@ -1064,7 +1067,7 @@
       banner('Port-forward requires an active session and Controlled Actions.', 'fail');
       return;
     }
-    fillReplicaSelect(document.getElementById('labs-pf-pod'));
+    fillPodSelect(document.getElementById('labs-pf-pod'));
     const modal = document.getElementById('labs-pf-modal');
     if (modal) modal.classList.remove('hidden');
     const resp = document.getElementById('labs-pf-response');
@@ -1082,7 +1085,7 @@
   function labsPfConnect() {
     const podSel = document.getElementById('labs-pf-pod');
     const pod = podSel && podSel.value ? podSel.value : state.appName;
-    if (!pod) { labsPfStatus('no replica', 'warn'); return; }
+    if (!pod) { labsPfStatus('no pod', 'warn'); return; }
     const ns = splitAppName(state.appName || '').namespace || 'default';
     const portInput = document.getElementById('labs-pf-port');
     const baseInput = document.getElementById('labs-pf-base');

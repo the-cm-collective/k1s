@@ -14,8 +14,11 @@ Prometheus-style text at `/metrics` includes aggregated gauges and labeled serie
   - `ae_app_desired_replicas{app="<name>"}`
   - `ae_app_ready_replicas{app="<name>"}`
   - `ae_app_live_replicas{app="<name>"}`
-- Per-replica:
-  - `ae_replica_ready{app="<name>",replica="<id>"}` 0/1
+- Per-pod:
+  - `ae_pod_ready{app="<name>",pod="<id>"}` 0/1
+  - Alias (deprecated): `ae_replica_ready{app="<name>",replica="<id>"}` 0/1
+- Probe backoff:
+  - `ae_pod_probe_backoff_seconds{app="<name>",pod="<id>",type="<readiness|liveness|startup>"}` (alias: `ae_probe_backoff_seconds{...replica=...}`)
 
 API shim (when enabled)
 - `apishim_watchers{group,version,resource,namespace}` — active watch streams
