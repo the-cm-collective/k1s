@@ -1,6 +1,6 @@
 from ae.controller.health import HealthManager
 from ae.controller.spec import AppManifest, AppSpec, HealthSpec, Metadata, ProbeSpec
-from ae.runtime.base import ReplicaState, RuntimeResult
+from ae.runtime.base import PodState, RuntimeResult
 
 
 def test_exec_probe_success():
@@ -24,8 +24,8 @@ def test_exec_probe_success():
         created=1,
         updated=0,
         removed=0,
-        replica_states=[
-            ReplicaState(replica_id="e1-rev1-0", ready=False, status="running", endpoint=None)
+        pod_states=[
+            PodState(pod_name="e1-rev1-0", ready=False, status="running", endpoint=None)
         ],
     )
     rep = hm.evaluate(m, r)
@@ -52,8 +52,8 @@ def test_exec_probe_failure():
         created=1,
         updated=0,
         removed=0,
-        replica_states=[
-            ReplicaState(replica_id="e2-rev1-0", ready=False, status="running", endpoint=None)
+        pod_states=[
+            PodState(pod_name="e2-rev1-0", ready=False, status="running", endpoint=None)
         ],
     )
     rep = hm.evaluate(m, r)

@@ -6,7 +6,7 @@ from requests import Response
 
 from ae.controller.health import HealthManager
 from ae.controller.spec import AppManifest, AppSpec, HealthSpec, Metadata, ProbeSpec
-from ae.runtime.base import ReplicaState, RuntimeResult
+from ae.runtime.base import PodState, RuntimeResult
 
 
 def test_health_manager_counts_ready():
@@ -22,9 +22,9 @@ def test_health_manager_counts_ready():
         created=2,
         updated=0,
         removed=0,
-        replica_states=[
-            ReplicaState(replica_id="demo-0", ready=True),
-            ReplicaState(replica_id="demo-1", ready=False),
+        pod_states=[
+            PodState(pod_name="demo-0", ready=True),
+            PodState(pod_name="demo-1", ready=False),
         ],
     )
 
@@ -32,9 +32,9 @@ def test_health_manager_counts_ready():
 
     assert report.ready_replicas == 1
     assert report.live_replicas == 2
-    assert len(report.replicas) == 2
-    assert any(replica.replica_id == "demo-1" and not replica.ready for replica in report.replicas)
-    assert all(replica.live for replica in report.replicas)
+    assert len(report.pods) == 2
+    assert any(replica.pod_name == "demo-1" and not replica.ready for replica in report.pods)
+    assert all(replica.live for replica in report.pods)
 
 
 def test_health_manager_http_probe(monkeypatch):
@@ -61,8 +61,8 @@ def test_health_manager_http_probe(monkeypatch):
         created=1,
         updated=0,
         removed=0,
-        replica_states=[
-            ReplicaState(replica_id="demo-0", ready=False, endpoint="127.0.0.1:8080"),
+        pod_states=[
+            PodState(pod_name="demo-0", ready=False, endpoint="127.0.0.1:8080"),
         ],
     )
 
@@ -79,8 +79,8 @@ def test_health_manager_http_probe(monkeypatch):
     report = HealthManager().evaluate(manifest, result)
 
     assert report.ready_replicas == 1
-    assert report.replicas[0].ready is True
-    assert "readiness http 200" in report.replicas[0].readiness_message
+    assert report.pods[0].ready is True
+    assert "readiness http 200" in report.pods[0].readiness_message
 
 
 def test_health_manager_loopback_fallback(monkeypatch):
@@ -109,8 +109,8 @@ def test_health_manager_loopback_fallback(monkeypatch):
         created=1,
         updated=0,
         removed=0,
-        replica_states=[
-            ReplicaState(replica_id="demo-0", ready=False, endpoint="127.0.0.1:8080"),
+        pod_states=[
+            PodState(pod_name="demo-0", ready=False, endpoint="127.0.0.1:8080"),
         ],
     )
 
@@ -157,9 +157,9 @@ def test_health_manager_initial_delay(monkeypatch):
         created=1,
         updated=0,
         removed=0,
-        replica_states=[
-            ReplicaState(
-                replica_id="demo-0",
+        pod_states=[
+            PodState(
+                pod_name="demo-0",
                 ready=True,
                 endpoint="127.0.0.1:8080",
                 started_at=start_time,
@@ -176,4 +176,4 @@ def test_health_manager_initial_delay(monkeypatch):
     report = HealthManager().evaluate(manifest, result)
 
     assert report.ready_replicas == 0
-    assert report.replicas[0].readiness_message.startswith("waiting initial delay")
+    assert report.pods[0].readiness_message.startswith("waiting initial delay")

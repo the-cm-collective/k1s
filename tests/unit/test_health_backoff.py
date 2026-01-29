@@ -2,12 +2,12 @@ import time
 
 from ae.controller.health import HealthManager
 from ae.controller.spec import ProbeSpec
-from ae.runtime.base import ReplicaState, RuntimeResult
+from ae.runtime.base import PodState, RuntimeResult
 
 
-def make_rep(replica_id: str, endpoint: str = "127.0.0.1:1"):
-    return ReplicaState(
-        replica_id=replica_id, ready=False, status="running", endpoint=endpoint, started_at=None
+def make_rep(pod_name: str, endpoint: str = "127.0.0.1:1"):
+    return PodState(
+        pod_name=pod_name, ready=False, status="running", endpoint=endpoint, started_at=None
     )
 
 
@@ -16,7 +16,7 @@ def test_backoff_after_failures():
     # Probe: small period and failureThreshold=1 to trigger backoff quickly
     p = ProbeSpec(tcpSocket={"port": 1}, periodSeconds=1, failureThreshold=1)  # type: ignore[arg-type]
     rep = make_rep("r1")
-    res = RuntimeResult(revision=1, created=0, updated=0, removed=0, replica_states=[rep])
+    res = RuntimeResult(revision=1, created=0, updated=0, removed=0, pod_states=[rep])
     # First evaluation attempts and fails
     hm.evaluate(
         type(
@@ -44,5 +44,5 @@ def test_backoff_after_failures():
         )(),
         res,
     )
-    msg = hr.replicas[0].readiness_message.lower()
+    msg = hr.pods[0].readiness_message.lower()
     assert ("backoff" in msg) or ("waiting period" in msg) or ("transient fail" in msg)

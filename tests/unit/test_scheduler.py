@@ -51,10 +51,10 @@ def test_scheduler_round_robin(tmp_path):
     placements, warnings = sched.plan(_manifest(replicas=3), revision=1)
     assert not warnings
     assert len(placements) == 2
-    total = sum(len(p.replica_ids) for p in placements)
+    total = sum(len(p.pod_names) for p in placements)
     assert total == 3
     # round-robin yields at least one replica per node when replicas >= nodes
-    ids_by_node = {p.node.node_id: p.replica_ids for p in placements if p.node}
+    ids_by_node = {p.node.node_id: p.pod_names for p in placements if p.node}
     assert "n1" in ids_by_node and "n2" in ids_by_node
     assert ids_by_node["n1"][0].startswith("app-rev1-")
 
@@ -81,7 +81,7 @@ def test_scheduler_storage_pins_single_node(tmp_path):
     placements, _warnings = sched.plan(man, revision=1)
     assert len(placements) == 1
     assert placements[0].node is not None
-    assert len(placements[0].replica_ids) == 2
+    assert len(placements[0].pod_names) == 2
 
 
 def test_scheduler_prefers_bound_storage_node(tmp_path):
@@ -193,7 +193,7 @@ def test_scheduler_spreads_by_topology_key(tmp_path):
     sched = Scheduler(store)
     placements, warnings = sched.plan(man, revision=1)
     assert not warnings
-    counts = {p.node.node_id: len(p.replica_ids) for p in placements if p.node}
+    counts = {p.node.node_id: len(p.pod_names) for p in placements if p.node}
     assert counts.get("n1") == 2
     assert counts.get("n2") == 2
 
@@ -221,7 +221,7 @@ def test_scheduler_spread_ignored_when_label_missing(tmp_path):
     sched = Scheduler(store)
     placements, warnings = sched.plan(man, revision=1)
     assert len(placements) == 2
-    total = sum(len(p.replica_ids) for p in placements)
+    total = sum(len(p.pod_names) for p in placements)
     assert total == 3
 
 
@@ -478,7 +478,7 @@ def test_scheduler_limits_replicas_for_rwop(tmp_path):
 
     sched = Scheduler(store)
     placements, warnings = sched.plan(man, revision=1)
-    total = sum(len(p.replica_ids) for p in placements)
+    total = sum(len(p.pod_names) for p in placements)
     assert total == 1
     assert any("ReadWriteOncePod PVCs limit replicas to 1" in w for w in warnings)
 

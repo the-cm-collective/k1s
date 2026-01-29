@@ -57,12 +57,12 @@ class RegistryEntry:
 class PodStatus:
     """Status for a single pod in the state store."""
 
-    pod_name: str = ""
     ready: bool
     live: bool
     status: str
     readiness_message: str
     liveness_message: str
+    pod_name: str = ""
     exit_code: int | None = None
     finished_at: datetime | None = None
     replica_id: InitVar[str | None] = None
@@ -87,12 +87,12 @@ ReplicaStatus = PodStatus
 class ProbeHistoryEntry:
     """Recorded probe evaluation for audit/history purposes."""
 
-    pod_name: str = ""
     check_time: datetime
     ready: bool
     live: bool
     readiness_message: str
     liveness_message: str
+    pod_name: str = ""
     replica_id: InitVar[str | None] = None
 
     def __post_init__(self, replica_id: str | None) -> None:

@@ -16,7 +16,7 @@ from ae.controller.spec import (
 from ae.controller.state import SQLiteStateStore
 from ae.ingress.service import IngressResult, IngressService
 from ae.observability import MetricsService
-from ae.runtime.base import ReplicaState, RuntimeAdapter, RuntimeResult
+from ae.runtime.base import PodState, RuntimeAdapter, RuntimeResult
 from ae.secrets import SecretManager
 
 
@@ -24,21 +24,36 @@ class StubRuntime(RuntimeAdapter):
     def __init__(self) -> None:
         self.manifests: list[AppManifest] = []
 
-    def ensure_app(self, manifest: AppManifest, revision: int) -> RuntimeResult:
+    def ensure_app(
+        self,
+        manifest: AppManifest,
+        revision: int,
+        *,
+        keep_old: bool = False,
+        limit_create: int | None = None,
+        pod_names: list[str] | None = None,
+        node_id: str | None = None,
+    ) -> RuntimeResult:
+        _ = (keep_old, limit_create, node_id)
         self.manifests.append(manifest)
+        names = (
+            pod_names
+            if pod_names is not None
+            else [f"{manifest.metadata.name}-rev{revision}-{idx}" for idx in range(manifest.spec.replicas)]
+        )
         return RuntimeResult(
             revision=revision,
-            created=manifest.spec.replicas,
+            created=len(names),
             updated=0,
             removed=0,
-            replica_states=[
-                ReplicaState(
-                    replica_id=f"{manifest.metadata.name}-rev{revision}-{idx}",
+            pod_states=[
+                PodState(
+                    pod_name=pod_name,
                     ready=True,
                     status="running",
                     endpoint=f"127.0.0.1:{9000 + idx}",
                 )
-                for idx in range(manifest.spec.replicas)
+                for idx, pod_name in enumerate(names)
             ],
         )
 
