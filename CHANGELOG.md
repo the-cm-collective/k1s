@@ -1,9 +1,27 @@
 # Changelog
 
-## Unreleased (2026-01-22)
+## Unreleased (2026-01-29)
 
 ### Added
 - TBD
+
+## 0.1.2 - 2026-01-30
+
+### Added
+- CSI storage API support: snapshots, PVC restore/clone flows, volume expansion, RWOP/multi-attach guardrails, topology constraints, capacity reporting, and volume health metrics/events.
+- NetFS/NFS storage plumbing: dynamic NFS provisioning, NetFS mounts with SELinux relabeling/options, fsGroup support, storage quotas, block device mappings, and capacity overrides.
+- CRI runtime support with ingress reload fallback and containerd CRI integration workflow coverage.
+- Apishim exec/port-forward foundations plus CRI port-forward proxy and expanded OpenAPI/docs tooling.
+- CLI namespace targeting, dashboard port-forward preview, and a shell-demo sample.
+
+### Changed
+- Dashboard visuals and system graph styling with refreshed background assets.
+- Docs and examples refreshed for storage, NetFS, and CRI (ADRs, runbook notes, and updated README screenshots).
+
+### Fixed
+- Local node registration/heartbeat gating and reconciler registration in tests.
+- Apishim proxy/routing/TLS hardening and pod-IP preference for port-forward.
+- Demo/lab auth bootstrap hardening plus CRI setup/test reliability in CI.
 
 ## 0.1.1 - 2026-01-22
 
