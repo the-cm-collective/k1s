@@ -5,7 +5,7 @@ docs.home.arpa:443, docs.home.arpa
 
     @static {
         path *
-        not path /swagger* /redoc* /dashboard* /openapi* /health* /status* /events* /logs* /metrics* /labs* /system* /ui/features /api/apishim/* /api/v1* /apis*
+        not path /swagger* /redoc* /dashboard* /openapi* /health* /status* /events* /logs* /metrics* /labs* /system* /ui/features /api/apishim/* /api/v1 /api/v1/* /apis /apis/*
     }
     handle @static {
         root * /srv/docs
@@ -25,7 +25,7 @@ docs.home.arpa:443, docs.home.arpa
 
     # Proxy shim API (exec/port-forward) to the apishim service
     @apishim {
-        path /api/v1* /apis*
+        path /api/v1 /api/v1/* /apis /apis/*
     }
     handle @apishim {
         reverse_proxy https://{$APISHIM_UPSTREAM:apishim:8445} {
