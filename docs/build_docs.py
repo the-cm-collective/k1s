@@ -315,9 +315,9 @@ TEMPLATE = """<!doctype html>
         flex-direction: column;
         background-color: var(--bg);
         background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
-        background-size: 100% 100%, 100% auto;
-        background-position: center, center top;
-        background-repeat: no-repeat, repeat-y;
+        background-size: 100% auto, 100% auto;
+        background-position: center top, center top;
+        background-repeat: repeat-y, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
