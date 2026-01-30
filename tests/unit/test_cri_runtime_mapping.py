@@ -197,3 +197,26 @@ def test_cri_init_containers_share_sandbox(monkeypatch):
     runtime.run_init_containers(manifest)
     assert calls.count("RunPodSandbox") == 1
     assert len(set(replica_ids)) == 1
+
+
+def test_cri_namespace_options_gate(monkeypatch):
+    runtime = CRIRuntime()
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo", "namespace": "default"},
+            "spec": {
+                "image": "alpine:3.20",
+                "hostNetwork": True,
+                "hostPID": True,
+                "hostIPC": True,
+                "shareProcessNamespace": True,
+            },
+        }
+    )
+    monkeypatch.delenv("AE_CRI_ALLOW_HOST_NS", raising=False)
+    assert runtime._sandbox_namespace_options(manifest) is None
+    monkeypatch.setenv("AE_CRI_ALLOW_HOST_NS", "1")
+    opts = runtime._sandbox_namespace_options(manifest)
+    assert opts is not None

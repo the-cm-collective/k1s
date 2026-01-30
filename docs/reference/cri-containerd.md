@@ -15,6 +15,7 @@ export AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock
 Defaults:
 - CRI endpoint: `AE_CRI_ENDPOINT` (default `unix:///run/containerd/containerd.sock`)
 - CRI sandbox image: `AE_CRI_SANDBOX_IMAGE` (pause image)
+ - Host namespaces gate: `AE_CRI_ALLOW_HOST_NS=1` to enable hostNetwork/hostPID/hostIPC/shareProcessNamespace
 
 ## Registry-first image flow (k8s aligned)
 
@@ -149,6 +150,7 @@ Kubernetes clusters.
 - `AE_CRI_REGISTRY_TRUST_SCHEME=http` to override scheme (default `https`)
 - `AE_CRI_REGISTRY_TRUST_RESTART=1` to restart containerd after writing trust
 - `AE_CRI_SOCKET_ACCESS=1` to grant temporary ACL access to the containerd socket (dev-only)
+- `AE_CRI_ALLOW_HOST_NS=1` to enable hostNetwork/hostPID/hostIPC/shareProcessNamespace (off by default)
 
 ### Temporary socket access (dev)
 

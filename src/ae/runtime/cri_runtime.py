@@ -420,6 +420,11 @@ class CRIRuntime(RuntimeAdapter):
             labels=runtime_labels_for_manifest(manifest, app_name=app_name),
             log_directory=self._pod_log_dir(ns, pod_name, pod_uid),
         )
+        namespace_opts = self._sandbox_namespace_options(manifest)
+        if namespace_opts is not None:
+            linux_cfg = pb2.LinuxPodSandboxConfig()
+            linux_cfg.security_context.namespace_options.CopyFrom(namespace_opts)
+            pod_config.linux.CopyFrom(linux_cfg)
         pod_id = None
         try:
             resp = self._runtime_call("RunPodSandbox", pb2.RunPodSandboxRequest(config=pod_config))
@@ -821,12 +826,17 @@ class CRIRuntime(RuntimeAdapter):
             attempt=int(attempt),
         )
         port_mappings, port_map = self._port_mappings(manifest)
+        namespace_opts = self._sandbox_namespace_options(manifest)
         pod_config = pb2.PodSandboxConfig(
             metadata=pod_meta,
             labels=labels,
             log_directory=self._pod_log_dir(ns, replica_id, pod_uid),
             port_mappings=port_mappings,
         )
+        if namespace_opts is not None:
+            linux_cfg = pb2.LinuxPodSandboxConfig()
+            linux_cfg.security_context.namespace_options.CopyFrom(namespace_opts)
+            pod_config.linux.CopyFrom(linux_cfg)
         runtime_handler = getattr(manifest.spec, "runtime_class_name", None)
         req = pb2.RunPodSandboxRequest(config=pod_config)
         if runtime_handler:
@@ -1478,6 +1488,8 @@ class CRIRuntime(RuntimeAdapter):
 
     def _port_mappings(self, manifest: AppManifest) -> tuple[list[Any], dict[int, int]]:
         pb2 = self._pb2()
+        if bool(getattr(manifest.spec, "host_network", False)):
+            return [], {}
         svc = getattr(manifest.spec, "service", None)
         if not svc or manifest.spec.replicas != 1:
             return [], {}
@@ -1553,6 +1565,26 @@ class CRIRuntime(RuntimeAdapter):
                 if str(getattr(v, "mount_path", "")).startswith(mount_root):
                     return str(getattr(v, "host_path", ""))
         return None
+
+    def _sandbox_namespace_options(self, manifest: AppManifest):
+        if os.getenv("AE_CRI_ALLOW_HOST_NS", "0") != "1":
+            return None
+        pb2 = self._pb2()
+        ns = pb2.NamespaceOption()
+        host_network = bool(getattr(manifest.spec, "host_network", False))
+        host_pid = bool(getattr(manifest.spec, "host_pid", False))
+        host_ipc = bool(getattr(manifest.spec, "host_ipc", False))
+        share_proc = bool(getattr(manifest.spec, "share_process_namespace", False))
+
+        ns.network = pb2.NamespaceMode.NODE if host_network else pb2.NamespaceMode.POD
+        ns.ipc = pb2.NamespaceMode.NODE if host_ipc else pb2.NamespaceMode.POD
+        if host_pid:
+            ns.pid = pb2.NamespaceMode.NODE
+        elif share_proc:
+            ns.pid = pb2.NamespaceMode.POD
+        else:
+            ns.pid = pb2.NamespaceMode.CONTAINER
+        return ns
 
     def _pod_log_dir(self, namespace: str | None, replica_id: str, uid: str) -> str:
         ns = namespace or DEFAULT_NAMESPACE
