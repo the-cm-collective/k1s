@@ -124,3 +124,52 @@ def test_cri_hostpid_namespace():
             os.environ.pop("AE_CRI_ALLOW_HOST_NS", None)
         else:
             os.environ["AE_CRI_ALLOW_HOST_NS"] = old_allow
+
+
+@pytest.mark.integration
+def test_cri_hostnetwork_namespace():
+    if os.getenv("AE_CRI_IT_HOSTNS", "0") != "1":
+        pytest.skip("set AE_CRI_IT_HOSTNS=1 to enable CRI host namespace test")
+    endpoint = _cri_endpoint()
+    if not _cri_ready(endpoint):
+        pytest.skip("CRI endpoint not ready or accessible")
+    image = os.getenv("AE_CRI_HOSTNS_IMAGE", "busybox:1.36")
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="cri-hostnet"),
+        spec=AppSpec(
+            image=image,
+            replicas=1,
+            host_network=True,
+            command=["sleep"],
+            args=["3600"],
+            service={"port": 8080, "targetPort": 8080},
+            ports=[{"name": "http", "containerPort": 8080}],
+        ),
+    )
+    runtime = CRIRuntime(endpoint=endpoint)
+    app_name = app_key_for_manifest(manifest)
+    revision = 1
+    old_allow = os.getenv("AE_CRI_ALLOW_HOST_NS")
+    os.environ["AE_CRI_ALLOW_HOST_NS"] = "1"
+    try:
+        running = False
+        for _ in range(10):
+            result = runtime.ensure_app(manifest, revision, keep_old=True)
+            if any(st.status == "running" for st in (result.pod_states or [])):
+                running = True
+                break
+            time.sleep(1)
+        assert running, "CRI hostNetwork pod did not reach running state"
+
+        replica_id = f"{app_name}-rev{revision}-0"
+        pod_meta = next((p for p in runtime.list_pods(app_name) if p.get("name") == replica_id), {})
+        port_map = pod_meta.get("port_map") or {}
+        assert port_map == {}, f"expected no port mappings for hostNetwork, got {port_map}"
+    finally:
+        runtime.remove_app(app_name)
+        if old_allow is None:
+            os.environ.pop("AE_CRI_ALLOW_HOST_NS", None)
+        else:
+            os.environ["AE_CRI_ALLOW_HOST_NS"] = old_allow
