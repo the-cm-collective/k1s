@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -414,6 +414,8 @@ class SecretRef(BaseModel):
     # Optional envFrom behavior: when true, exporter may emit envFrom for this secret
     env_from: bool = Field(default=False, alias="envFrom")
 
+    model_config = {"populate_by_name": True}
+
 
 class ConfigEnvMapping(BaseModel):
     """Mapping from config key to environment variable."""
@@ -433,6 +435,8 @@ class ConfigRef(BaseModel):
     # Optional envFrom behavior: when true, exporter may emit envFrom for this configmap
     env_from: bool = Field(default=False, alias="envFrom")
 
+    model_config = {"populate_by_name": True}
+
 
 class AppSpec(BaseModel):
     """Workload specification."""
@@ -445,7 +449,7 @@ class AppSpec(BaseModel):
     )
     command: Optional[List[str]] = None
     args: Optional[List[str]] = None
-    env: List[dict[str, str]] = Field(default_factory=list)
+    env: List[dict[str, Any]] = Field(default_factory=list)
     replicas: int = Field(default=1, ge=1)
     ports: List[PortSpec] = Field(default_factory=list)
     health: Optional[HealthSpec] = None
@@ -457,11 +461,19 @@ class AppSpec(BaseModel):
         image: str
         command: Optional[List[str]] = None
         args: Optional[List[str]] = None
-        env: List[dict[str, str]] = Field(default_factory=list)
+        env: List[dict[str, Any]] = Field(default_factory=list)
         ports: List[PortSpec] = Field(default_factory=list)
         resources: Optional[ResourcesSpec] = None
         security: Optional[SecuritySpec] = None
         working_dir: Optional[str] = Field(default=None, alias="workingDir")
+        image_pull_policy: Optional[Literal["Always", "IfNotPresent", "Never"]] = Field(
+            default=None, alias="imagePullPolicy"
+        )
+        volume_mounts: List[VolumeSpec] = Field(default_factory=list, alias="volumeMounts")
+        pvc_mounts: List[PvcMountSpec] = Field(default_factory=list, alias="pvcMounts")
+        volume_devices: List[VolumeDeviceSpec] = Field(
+            default_factory=list, alias="volumeDevices"
+        )
         # Optional per-container probes
         health: Optional[HealthSpec] = None
         # Optional timeout for init containers (seconds). Ignored for main containers.
@@ -545,6 +557,8 @@ class AppSpec(BaseModel):
     set_hostname_as_fqdn: Optional[bool] = Field(default=None, alias="setHostnameAsFQDN")
     host_pid: Optional[bool] = Field(default=None, alias="hostPID")
     host_ipc: Optional[bool] = Field(default=None, alias="hostIPC")
+    # Service account name (best-effort hint for pull secrets)
+    service_account_name: Optional[str] = Field(default=None, alias="serviceAccountName")
 
     model_config = {"populate_by_name": True}
 
@@ -654,6 +668,16 @@ def runtime_labels_for_manifest(
     labels["ae.app"] = app_name or app_key_for_manifest(manifest)
     labels["ae.namespace"] = getattr(manifest.metadata, "namespace", None) or DEFAULT_NAMESPACE
     return labels
+
+
+def all_pvc_mounts(manifest: "AppManifest") -> list[PvcMountSpec]:
+    mounts: list[PvcMountSpec] = []
+    mounts.extend(list(getattr(manifest.spec, "pvc_mounts", []) or []))
+    for c in getattr(manifest.spec, "containers", []) or []:
+        mounts.extend(list(getattr(c, "pvc_mounts", []) or []))
+    for c in getattr(manifest.spec, "init_containers", []) or []:
+        mounts.extend(list(getattr(c, "pvc_mounts", []) or []))
+    return mounts
 
 
 # ruff: noqa

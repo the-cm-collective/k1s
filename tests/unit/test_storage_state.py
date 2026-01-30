@@ -24,3 +24,19 @@ def test_apishim_storage_state_decodes_secret_data(tmp_path) -> None:
     secret = state.get_secret("demo", "creds")
     assert secret == {"username": "user", "password": "pass"}
 
+
+def test_apishim_storage_state_reads_configmap(tmp_path) -> None:
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    store.upsert(
+        "",
+        "v1",
+        "configmaps",
+        "demo",
+        "app-config",
+        {"name": "app-config", "namespace": "demo"},
+        {"MODE": "auto", "LOG_LEVEL": "debug"},
+        status={},
+    )
+    state = ApishimStorageState(store)
+    cfg = state.get_config_map("demo", "app-config")
+    assert cfg == {"MODE": "auto", "LOG_LEVEL": "debug"}

@@ -13,7 +13,13 @@ import socket
 from typing import Any
 
 from ae.controller.health import HealthManager, HealthReport, PodHealth
-from ae.controller.spec import AppManifest, VolumeSpec, app_key_for_manifest, load_manifest
+from ae.controller.spec import (
+    AppManifest,
+    VolumeSpec,
+    all_pvc_mounts,
+    app_key_for_manifest,
+    load_manifest,
+)
 from ae.runtime import RuntimeAdapter, RuntimeResult
 from ae.storage.config import DEFAULT_CLASS_ANNOTATIONS
 
@@ -1295,7 +1301,7 @@ class Reconciler:
     def _apply_selected_node_annotations(
         self, manifest: AppManifest, placements: list, revision: int
     ) -> None:
-        pvc_mounts = list(getattr(manifest.spec, "pvc_mounts", []) or [])
+        pvc_mounts = list(all_pvc_mounts(manifest) or [])
         if not pvc_mounts:
             return
         store = self._get_apishim_store()

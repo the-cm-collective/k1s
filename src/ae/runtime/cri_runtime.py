@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import json
 import logging
 import os
 import shutil
@@ -66,6 +68,9 @@ class CRIRuntime(RuntimeAdapter):
         self._exec_procs: dict[str, subprocess.Popen[bytes]] = {}
         self._exec_exit_codes: dict[str, int] = {}
         self._exec_lock = threading.Lock()
+        self._apishim_store_checked = False
+        self._apishim_store = None
+        self._apishim_state = None
 
     # --- RuntimeAdapter API -----------------------------------------
     def ensure_app(
@@ -102,7 +107,7 @@ class CRIRuntime(RuntimeAdapter):
 
         created = updated = removed = 0
         if any(rid not in by_replica for rid in desired_replica_ids):
-            self._ensure_image(manifest.spec.image)
+            self._ensure_image(manifest.spec.image, manifest=manifest, spec=manifest.spec)
 
         is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
         job_backoff_limit = self._job_backoff_limit(manifest) if is_job else None
@@ -420,10 +425,16 @@ class CRIRuntime(RuntimeAdapter):
             labels=runtime_labels_for_manifest(manifest, app_name=app_name),
             log_directory=self._pod_log_dir(ns, pod_name, pod_uid),
         )
-        namespace_opts = self._sandbox_namespace_options(manifest)
-        if namespace_opts is not None:
+        dns_cfg = self._dns_config(manifest)
+        if dns_cfg is not None:
+            pod_config.dns_config.CopyFrom(dns_cfg)
+        hostname = self._resolve_hostname(manifest, str(pod_name))
+        if hostname:
+            pod_config.hostname = str(hostname)
+        sandbox_ctx = self._build_sandbox_security_context(manifest)
+        if sandbox_ctx is not None:
             linux_cfg = pb2.LinuxPodSandboxConfig()
-            linux_cfg.security_context.namespace_options.CopyFrom(namespace_opts)
+            linux_cfg.security_context.CopyFrom(sandbox_ctx)
             pod_config.linux.CopyFrom(linux_cfg)
         pod_id = None
         try:
@@ -448,7 +459,7 @@ class CRIRuntime(RuntimeAdapter):
                     self._spec_value(spec, "timeout_seconds", "timeoutSeconds")
                 )
                 with contextlib.suppress(Exception):
-                    self._ensure_image(str(image))
+                    self._ensure_image(str(image), manifest=manifest, spec=spec)
 
                 container_id = None
                 try:
@@ -504,6 +515,8 @@ class CRIRuntime(RuntimeAdapter):
                 )
             with contextlib.suppress(Exception):
                 self._cleanup_empty_dirs(str(app_name), str(pod_name))
+            with contextlib.suppress(Exception):
+                self._cleanup_host_aliases(str(app_name), str(pod_name))
         return results
 
     # Storage lifecycle ------------------------------------------------
@@ -748,17 +761,32 @@ class CRIRuntime(RuntimeAdapter):
                 return str(container.id)
         return None
 
-    def _ensure_image(self, image_ref: str) -> None:
+    def _ensure_image(
+        self,
+        image_ref: str,
+        *,
+        manifest: AppManifest | None = None,
+        spec: Any | None = None,
+        policy: str | None = None,
+    ) -> None:
         pb2 = self._pb2()
-        spec = pb2.ImageSpec(image=str(image_ref))
-        with contextlib.suppress(Exception):
-            status = self._images_call(
-                "ImageStatus", pb2.ImageStatusRequest(image=spec, verbose=False)
-            )
-            if getattr(status, "image", None):
-                return
-        auth = self._image_pull_auth(image_ref)
-        req = pb2.PullImageRequest(image=spec)
+        policy_name = self._resolve_image_pull_policy(
+            image_ref, manifest=manifest, spec=spec, explicit=policy
+        )
+        spec_msg = pb2.ImageSpec(image=str(image_ref))
+
+        if policy_name == "Never":
+            if not self._image_present(spec_msg):
+                raise RuntimeError(
+                    f"imagePullPolicy=Never and image not present: {image_ref}"
+                )
+            return
+
+        if policy_name != "Always" and self._image_present(spec_msg):
+            return
+
+        auth = self._image_pull_auth(image_ref, manifest=manifest, spec=spec)
+        req = pb2.PullImageRequest(image=spec_msg)
         if auth is not None:
             req.auth = auth
         try:
@@ -766,9 +794,77 @@ class CRIRuntime(RuntimeAdapter):
         except Exception as exc:
             raise RuntimeError(f"Failed to pull image {image_ref}: {exc}") from exc
 
-    def _image_pull_auth(self, image_ref: str):
+    def _image_present(self, spec: Any) -> bool:
+        pb2 = self._pb2()
+        with contextlib.suppress(Exception):
+            status = self._images_call(
+                "ImageStatus", pb2.ImageStatusRequest(image=spec, verbose=False)
+            )
+            if getattr(status, "image", None):
+                return True
+        return False
+
+    def _resolve_image_pull_policy(
+        self,
+        image_ref: str,
+        *,
+        manifest: AppManifest | None = None,
+        spec: Any | None = None,
+        explicit: str | None = None,
+    ) -> str:
+        raw = explicit or self._spec_value(spec, "image_pull_policy", "imagePullPolicy")
+        if raw is None and manifest is not None:
+            raw = getattr(manifest.spec, "image_pull_policy", None)
+        if raw:
+            val = str(raw).strip().lower()
+            if val == "always":
+                return "Always"
+            if val == "ifnotpresent":
+                return "IfNotPresent"
+            if val == "never":
+                return "Never"
+
+        # Default Kubernetes semantics: :latest -> Always, otherwise IfNotPresent.
+        if "@" in str(image_ref):
+            return "IfNotPresent"
+        last = str(image_ref).rsplit("/", 1)[-1]
+        if ":" in last:
+            tag = last.split(":", 1)[1]
+            return "Always" if tag == "latest" else "IfNotPresent"
+        return "Always"
+
+    def _image_pull_auth(
+        self,
+        image_ref: str,
+        *,
+        manifest: AppManifest | None = None,
+        spec: Any | None = None,
+    ):
         pb2 = self._pb2()
         creds = self._registry.list_registries()
+        secret_creds = self._pull_secret_auths(manifest) if manifest is not None else {}
+        preferred: list[str] = []
+        if manifest is not None:
+            ref = getattr(manifest.spec, "registry_auth_ref", None)
+            if ref:
+                preferred.append(str(ref))
+            for sec in getattr(manifest.spec, "image_pull_secrets", []) or []:
+                if isinstance(sec, dict):
+                    name = sec.get("name")
+                    if name:
+                        preferred.append(str(name))
+                else:
+                    preferred.append(str(sec))
+
+        for host in preferred:
+            entry = creds.get(host) or secret_creds.get(host)
+            if entry and entry.get("username") and entry.get("password"):
+                return pb2.AuthConfig(
+                    username=str(entry.get("username")),
+                    password=str(entry.get("password")),
+                    server_address=str(host),
+                )
+
         registry = self._extract_registry(image_ref) or "docker.io"
         candidates = [registry]
         if registry == "docker.io":
@@ -780,13 +876,184 @@ class CRIRuntime(RuntimeAdapter):
                 ]
             )
         for host in candidates:
-            entry = creds.get(host)
+            entry = creds.get(host) or secret_creds.get(host)
             if entry and entry.get("username") and entry.get("password"):
                 return pb2.AuthConfig(
                     username=str(entry.get("username")),
                     password=str(entry.get("password")),
                     server_address=str(host),
                 )
+        return None
+
+    def _get_apishim_store(self):
+        if self._apishim_store_checked:
+            return self._apishim_store
+        self._apishim_store_checked = True
+        try:
+            from ae.apishim.store import ObjectStore
+        except Exception:
+            self._apishim_store = None
+            return None
+        dsn = os.getenv("AE_APISHIM_DSN")
+        db_env = os.getenv("AE_APISHIM_DB")
+        db_path = Path(db_env or "state/apishim.db")
+        if not dsn and not db_path.exists():
+            self._apishim_store = None
+            return None
+        try:
+            self._apishim_store = ObjectStore(dsn=dsn) if dsn else ObjectStore(db_path=db_path)
+        except Exception:
+            self._apishim_store = None
+        return self._apishim_store
+
+    def _get_apishim_state(self):
+        if self._apishim_state is not None:
+            return self._apishim_state
+        store = self._get_apishim_store()
+        if store is None:
+            return None
+        try:
+            from ae.storage.state import ApishimStorageState
+        except Exception:
+            return None
+        self._apishim_state = ApishimStorageState(store)
+        return self._apishim_state
+
+    def _pull_secret_auths(self, manifest: AppManifest) -> dict[str, dict[str, str]]:
+        state = self._get_apishim_state()
+        if state is None:
+            return {}
+        secrets = self._image_pull_secret_names(manifest)
+        if not secrets:
+            secrets = self._service_account_pull_secrets(manifest)
+        if not secrets:
+            return {}
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        auths: dict[str, dict[str, str]] = {}
+        for name, ns in secrets:
+            if not name:
+                continue
+            data = state.get_secret(str(ns or namespace), str(name))
+            if not data:
+                continue
+            raw = data.get(".dockerconfigjson") or data.get(".dockercfg")
+            if raw:
+                auths.update(self._parse_dockerconfigjson(str(raw)))
+                continue
+            # Fallback: allow simple secrets with username/password/registry keys
+            host = data.get("registry") or data.get("host") or data.get("server")
+            user = data.get("username")
+            pw = data.get("password")
+            if host and user and pw:
+                auths[str(host)] = {"username": str(user), "password": str(pw)}
+        return auths
+
+    def _parse_dockerconfigjson(self, raw: str) -> dict[str, dict[str, str]]:
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return {}
+        auths = payload.get("auths") if isinstance(payload, dict) else None
+        if isinstance(auths, dict):
+            entries = auths
+        elif isinstance(payload, dict):
+            entries = payload
+        else:
+            return {}
+        out: dict[str, dict[str, str]] = {}
+        for host, entry in entries.items():
+            if not isinstance(entry, dict):
+                continue
+            username = entry.get("username")
+            password = entry.get("password")
+            if (not username or not password) and entry.get("auth"):
+                try:
+                    decoded = base64.b64decode(str(entry["auth"]).encode("ascii")).decode("utf-8")
+                    if ":" in decoded:
+                        username, password = decoded.split(":", 1)
+                except Exception:
+                    username = None
+                    password = None
+            if username and password:
+                out[str(host)] = {"username": str(username), "password": str(password)}
+        return out
+
+    def _image_pull_secret_names(self, manifest: AppManifest) -> list[tuple[str | None, str | None]]:
+        secrets: list[tuple[str | None, str | None]] = []
+        for sec in getattr(manifest.spec, "image_pull_secrets", []) or []:
+            if isinstance(sec, dict):
+                secrets.append((sec.get("name"), sec.get("namespace")))
+            else:
+                secrets.append((str(sec), None))
+        return secrets
+
+    def _service_account_pull_secrets(
+        self, manifest: AppManifest
+    ) -> list[tuple[str | None, str | None]]:
+        store = self._get_apishim_store()
+        if store is None:
+            return []
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        sa_name = (
+            getattr(manifest.spec, "service_account_name", None)
+            or self._service_account_name_from_store(manifest, store)
+            or "default"
+        )
+        try:
+            sa = store.get("", "v1", "serviceaccounts", namespace, str(sa_name))
+        except Exception:
+            sa = None
+        if sa is None:
+            return []
+        spec = getattr(sa, "spec", None) or {}
+        if not isinstance(spec, dict):
+            return []
+        secrets = spec.get("imagePullSecrets") or []
+        out: list[tuple[str | None, str | None]] = []
+        for entry in secrets:
+            if isinstance(entry, dict):
+                out.append((entry.get("name"), None))
+            else:
+                out.append((str(entry), None))
+        return out
+
+    def _service_account_name_from_store(self, manifest: AppManifest, store: Any) -> str | None:
+        name = getattr(getattr(manifest, "metadata", None), "name", None)
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        if not name:
+            return None
+        candidates = [
+            ("apps", "v1", "deployments"),
+            ("apps", "v1", "daemonsets"),
+            ("apps", "v1", "statefulsets"),
+            ("batch", "v1", "jobs"),
+            ("batch", "v1", "cronjobs"),
+        ]
+        for group, version, resource in candidates:
+            try:
+                obj = store.get(group, version, resource, namespace, str(name))
+            except Exception:
+                obj = None
+            if obj is None:
+                continue
+            spec = getattr(obj, "spec", None) or {}
+            if not isinstance(spec, dict):
+                continue
+            template = None
+            if resource == "cronjobs":
+                template = (
+                    (spec.get("jobTemplate") or {}).get("spec") or {}
+                ).get("template")
+            else:
+                template = spec.get("template")
+            if not isinstance(template, dict):
+                continue
+            tpl_spec = template.get("spec") or {}
+            if not isinstance(tpl_spec, dict):
+                continue
+            sa = tpl_spec.get("serviceAccountName") or tpl_spec.get("serviceAccount")
+            if sa:
+                return str(sa)
         return None
 
     def _extract_registry(self, image: str) -> str | None:
@@ -826,16 +1093,22 @@ class CRIRuntime(RuntimeAdapter):
             attempt=int(attempt),
         )
         port_mappings, port_map = self._port_mappings(manifest)
-        namespace_opts = self._sandbox_namespace_options(manifest)
         pod_config = pb2.PodSandboxConfig(
             metadata=pod_meta,
             labels=labels,
             log_directory=self._pod_log_dir(ns, replica_id, pod_uid),
             port_mappings=port_mappings,
         )
-        if namespace_opts is not None:
+        dns_cfg = self._dns_config(manifest)
+        if dns_cfg is not None:
+            pod_config.dns_config.CopyFrom(dns_cfg)
+        hostname = self._resolve_hostname(manifest, str(replica_id))
+        if hostname:
+            pod_config.hostname = str(hostname)
+        sandbox_ctx = self._build_sandbox_security_context(manifest)
+        if sandbox_ctx is not None:
             linux_cfg = pb2.LinuxPodSandboxConfig()
-            linux_cfg.security_context.namespace_options.CopyFrom(namespace_opts)
+            linux_cfg.security_context.CopyFrom(sandbox_ctx)
             pod_config.linux.CopyFrom(linux_cfg)
         runtime_handler = getattr(manifest.spec, "runtime_class_name", None)
         req = pb2.RunPodSandboxRequest(config=pod_config)
@@ -867,6 +1140,8 @@ class CRIRuntime(RuntimeAdapter):
         container = self._find_container(pod_id, container_label="main")
         replica_id = self._pod_labels(pod).get(self.REPLICA_LABEL, "")
         if not container:
+            with contextlib.suppress(Exception):
+                self._ensure_image(manifest.spec.image, manifest=manifest, spec=manifest.spec)
             self._create_main_container(
                 manifest,
                 pod_id,
@@ -903,6 +1178,8 @@ class CRIRuntime(RuntimeAdapter):
             if job_backoff_limit is not None and attempt >= job_backoff_limit:
                 return False
         # Containers are single-use in CRI; recreate instead of restart.
+        with contextlib.suppress(Exception):
+            self._ensure_image(manifest.spec.image, manifest=manifest, spec=manifest.spec)
         self._runtime_call(
             "RemoveContainer", self._pb2().RemoveContainerRequest(container_id=container.id)
         )
@@ -964,7 +1241,7 @@ class CRIRuntime(RuntimeAdapter):
             if not image:
                 continue
             with contextlib.suppress(Exception):
-                self._ensure_image(str(image))
+                self._ensure_image(str(image), manifest=manifest, spec=spec)
             config = self._container_config_for_spec(
                 manifest,
                 spec,
@@ -1083,6 +1360,8 @@ class CRIRuntime(RuntimeAdapter):
         if app_name and replica_id:
             with contextlib.suppress(Exception):
                 self._cleanup_empty_dirs(str(app_name), str(replica_id))
+            with contextlib.suppress(Exception):
+                self._cleanup_host_aliases(str(app_name), str(replica_id))
 
     def _container_config(
         self,
@@ -1130,15 +1409,12 @@ class CRIRuntime(RuntimeAdapter):
         image = self._spec_value(spec, "image") or manifest.spec.image
         command = list(self._spec_value(spec, "command") or [])
         args = list(self._spec_value(spec, "args") or [])
-        env_items = self._spec_value(spec, "env") or []
-        envs = [
-            pb2.KeyValue(key=str(item.get("name")), value=str(item.get("value", "")))
-            for item in env_items
-            if isinstance(item, dict) and item.get("name")
-        ]
+        envs = self._resolve_env_vars(manifest, spec)
         working_dir = self._spec_value(spec, "working_dir", "workingDir")
-        mounts = self._build_mounts_for_container(manifest, app_name, spec, replica_id)
-        devices = self._build_devices_for_container(manifest)
+        mounts = self._build_mounts_for_container(
+            manifest, app_name, spec, replica_id, inherit_global=is_main
+        )
+        devices = self._build_devices_for_container(manifest, spec, inherit_global=is_main)
         resources = self._build_resources_from_spec(
             self._spec_value(spec, "resources") if not is_main else manifest.spec.resources
         )
@@ -1178,10 +1454,19 @@ class CRIRuntime(RuntimeAdapter):
         app_name: str,
         spec: Any,
         replica_id: str,
+        *,
+        inherit_global: bool = True,
     ) -> list[Any]:
         pb2 = self._pb2()
         mounts: list[Any] = []
-        for v in manifest.spec.volumes or []:
+        host_mounts = None
+        if self._spec_has_field(spec, "volume_mounts", "volumeMounts"):
+            host_mounts = self._spec_value(spec, "volume_mounts", "volumeMounts") or []
+        if host_mounts is None and inherit_global:
+            host_mounts = getattr(manifest.spec, "volumes", []) or []
+        if host_mounts is None:
+            host_mounts = []
+        for v in host_mounts or []:
             with contextlib.suppress(Exception):
                 host_path = getattr(v, "host_path", None)
                 if host_path and not os.path.isabs(host_path):
@@ -1259,6 +1544,15 @@ class CRIRuntime(RuntimeAdapter):
                             readonly=bool(ro if ro is not None else True),
                         )
                     )
+        hosts_path = self._ensure_hosts_file(manifest, app_name, replica_id)
+        if hosts_path is not None:
+            mounts.append(
+                pb2.Mount(
+                    host_path=str(hosts_path),
+                    container_path="/etc/hosts",
+                    readonly=True,
+                )
+            )
         return mounts
 
     def _empty_dir_root(self, medium: str | None) -> Path:
@@ -1319,10 +1613,23 @@ class CRIRuntime(RuntimeAdapter):
                 if path.exists():
                     shutil.rmtree(path)
 
-    def _build_devices_for_container(self, manifest: AppManifest) -> list[Any]:
+    def _build_devices_for_container(
+        self,
+        manifest: AppManifest,
+        spec: Any | None = None,
+        *,
+        inherit_global: bool = True,
+    ) -> list[Any]:
         pb2 = self._pb2()
         devices: list[Any] = []
-        for d in getattr(manifest.spec, "volume_devices", []) or []:
+        devs = None
+        if spec is not None and self._spec_has_field(spec, "volume_devices", "volumeDevices"):
+            devs = self._spec_value(spec, "volume_devices", "volumeDevices") or []
+        if devs is None and inherit_global:
+            devs = getattr(manifest.spec, "volume_devices", []) or []
+        if devs is None:
+            devs = []
+        for d in devs or []:
             with contextlib.suppress(Exception):
                 host_path = getattr(d, "host_path", None)
                 if host_path and not os.path.isabs(host_path):
@@ -1400,7 +1707,164 @@ class CRIRuntime(RuntimeAdapter):
         drops = list(self._spec_value(sec, "drop_caps", "dropCapabilities") or [])
         if drops:
             ctx.capabilities.drop_capabilities.extend([str(c) for c in drops])
+        seccomp_type = self._spec_value(sec, "seccomp_type", "seccompProfileType")
+        seccomp_local = self._spec_value(sec, "seccomp_localhost_profile", "seccompLocalhostProfile")
+        seccomp_profile = self._security_profile(seccomp_type, seccomp_local)
+        if seccomp_profile is not None:
+            ctx.seccomp.CopyFrom(seccomp_profile)
+        apparmor_profile = self._spec_value(sec, "apparmor_profile", "apparmorProfile")
+        apparmor = self._apparmor_profile(apparmor_profile)
+        if apparmor is not None:
+            ctx.apparmor.CopyFrom(apparmor)
         return ctx
+
+    def _resolve_env_vars(self, manifest: AppManifest, spec: Any) -> list[Any]:
+        pb2 = self._pb2()
+        env_map: dict[str, str] = {}
+        env_items = self._spec_value(spec, "env") or []
+        resources = self._spec_value(spec, "resources") if spec is not None else None
+        if resources is None:
+            resources = getattr(manifest.spec, "resources", None)
+        namespace = getattr(manifest.metadata, "namespace", None) or DEFAULT_NAMESPACE
+        needs_store = False
+        for item in env_items:
+            vf = item.get("valueFrom") if isinstance(item, dict) else None
+            if isinstance(vf, dict) and (
+                isinstance(vf.get("configMapKeyRef"), dict) or isinstance(vf.get("secretKeyRef"), dict)
+            ):
+                needs_store = True
+                break
+        state = self._get_apishim_state() if needs_store else None
+
+        def _merge_env_from_ref(
+            ref: dict[str, Any] | None, *, secret: bool, prefix: str | None = None
+        ) -> None:
+            if not ref or not isinstance(ref, dict):
+                return
+            name = ref.get("name")
+            if not name or state is None:
+                return
+            data = (
+                state.get_secret(namespace, str(name))
+                if secret
+                else state.get_config_map(namespace, str(name))
+            )
+            if not data:
+                return
+            for key, value in data.items():
+                env_key = f"{prefix}{key}" if prefix else str(key)
+                env_map[str(env_key)] = "" if value is None else str(value)
+
+        # Pass 1: envFrom markers (name empty + key empty) to populate base env.
+        for item in env_items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("name"):
+                continue
+            vf = item.get("valueFrom") if isinstance(item, dict) else None
+            if not isinstance(vf, dict):
+                continue
+            cm_ref = (
+                vf.get("configMapKeyRef") if isinstance(vf.get("configMapKeyRef"), dict) else None
+            )
+            if cm_ref is not None and not cm_ref.get("key"):
+                _merge_env_from_ref(cm_ref, secret=False, prefix=cm_ref.get("prefix"))
+            sec_ref = vf.get("secretKeyRef") if isinstance(vf.get("secretKeyRef"), dict) else None
+            if sec_ref is not None and not sec_ref.get("key"):
+                _merge_env_from_ref(sec_ref, secret=True, prefix=sec_ref.get("prefix"))
+
+        # Pass 2: explicit env entries (override envFrom)
+        for item in env_items:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if not name:
+                continue
+            if "value" in item:
+                env_map[str(name)] = str(item.get("value", ""))
+                continue
+            vf = item.get("valueFrom") if isinstance(item, dict) else None
+            if isinstance(vf, dict) and isinstance(vf.get("fieldRef"), dict):
+                fp = str(vf.get("fieldRef", {}).get("fieldPath", ""))
+                if fp == "metadata.name":
+                    env_map[str(name)] = str(manifest.metadata.name)
+                elif fp == "metadata.namespace":
+                    env_map[str(name)] = str(namespace)
+                continue
+            if isinstance(vf, dict) and isinstance(vf.get("resourceFieldRef"), dict):
+                rfr = vf.get("resourceFieldRef", {}) or {}
+                res = str(rfr.get("resource", ""))
+                divisor_raw = str(rfr.get("divisor", "")) if rfr.get("divisor") is not None else ""
+                try:
+                    if res in {"limits.cpu", "requests.cpu"}:
+                        obj = self._resource_quantities(
+                            resources, "limits" if res == "limits.cpu" else "requests"
+                        )
+                        cpuq = self._resource_value(obj, "cpu")
+                        if isinstance(cpuq, int | float):
+                            base_m = int(round(float(cpuq) * 1000))
+                            if divisor_raw:
+                                d = divisor_raw.strip().lower()
+                                if d.endswith("m"):
+                                    div_m = int(float(d[:-1] or 0)) or 1
+                                else:
+                                    div_m = int(round(float(d or "1") * 1000)) or 1
+                            else:
+                                div_m = 1000
+                            if div_m <= 0:
+                                div_m = 1
+                            env_map[str(name)] = str(int(base_m // div_m))
+                        continue
+                    if res in {"limits.memory", "requests.memory"}:
+                        obj = self._resource_quantities(
+                            resources, "limits" if res == "limits.memory" else "requests"
+                        )
+                        memq = self._resource_value(obj, "memory")
+                        if memq:
+                            bytes_val = self._parse_memory_bytes(str(memq)) or 0
+                            if divisor_raw:
+                                div_bytes = self._parse_memory_bytes(str(divisor_raw)) or 1
+                            else:
+                                div_bytes = 1
+                            if div_bytes <= 0:
+                                div_bytes = 1
+                            env_map[str(name)] = str(int(bytes_val // div_bytes))
+                        continue
+                except Exception:
+                    pass
+            if isinstance(vf, dict) and isinstance(vf.get("configMapKeyRef"), dict):
+                cm_ref = vf.get("configMapKeyRef") or {}
+                key = cm_ref.get("key")
+                if key and state is not None:
+                    data = state.get_config_map(namespace, str(cm_ref.get("name") or ""))
+                    if data and key in data:
+                        env_map[str(name)] = str(data[key])
+                continue
+            if isinstance(vf, dict) and isinstance(vf.get("secretKeyRef"), dict):
+                sec_ref = vf.get("secretKeyRef") or {}
+                key = sec_ref.get("key")
+                if key and state is not None:
+                    data = state.get_secret(namespace, str(sec_ref.get("name") or ""))
+                    if data and key in data:
+                        env_map[str(name)] = str(data[key])
+                continue
+        return [pb2.KeyValue(key=str(k), value=str(v)) for k, v in env_map.items()]
+
+    @staticmethod
+    def _resource_quantities(resources: Any, field: str):
+        if resources is None:
+            return None
+        if isinstance(resources, dict):
+            return resources.get(field)
+        return getattr(resources, field, None)
+
+    @staticmethod
+    def _resource_value(obj: Any, field: str):
+        if obj is None:
+            return None
+        if isinstance(obj, dict):
+            return obj.get(field)
+        return getattr(obj, field, None)
 
     def _build_states(self, manifest: AppManifest, revision: int) -> list[PodState]:
         states: list[PodState] = []
@@ -1586,6 +2050,260 @@ class CRIRuntime(RuntimeAdapter):
             ns.pid = pb2.NamespaceMode.CONTAINER
         return ns
 
+    def _normalize_profile_type(self, raw: str | None) -> str | None:
+        if raw is None:
+            return None
+        val = str(raw).strip()
+        if not val:
+            return None
+        lowered = val.lower()
+        if lowered in {"runtime/default", "runtimedefault", "runtime_default"}:
+            return "RuntimeDefault"
+        if lowered == "unconfined":
+            return "Unconfined"
+        if lowered == "localhost":
+            return "Localhost"
+        if val in {"RuntimeDefault", "Unconfined", "Localhost"}:
+            return val
+        return None
+
+    def _security_profile(self, profile_type: str | None, localhost_ref: str | None = None):
+        name = self._normalize_profile_type(profile_type)
+        if not name:
+            return None
+        pb2 = self._pb2()
+        try:
+            enum_val = pb2.SecurityProfile.ProfileType.Value(name)
+        except Exception:
+            return None
+        profile = pb2.SecurityProfile(profile_type=enum_val)
+        if name == "Localhost" and localhost_ref:
+            profile.localhost_ref = str(localhost_ref)
+        return profile
+
+    def _apparmor_profile(self, profile: str | None):
+        if profile is None:
+            return None
+        raw = str(profile).strip()
+        if not raw:
+            return None
+        lowered = raw.lower()
+        if lowered.startswith("localhost/"):
+            return self._security_profile("Localhost", raw.split("/", 1)[1])
+        if lowered in {"runtime/default", "runtimedefault", "runtime_default"}:
+            return self._security_profile("RuntimeDefault")
+        if lowered == "unconfined":
+            return self._security_profile("Unconfined")
+        if raw in {"RuntimeDefault", "Unconfined", "Localhost"}:
+            return self._security_profile(raw)
+        return None
+
+    def _build_sandbox_security_context(self, manifest: AppManifest):
+        pb2 = self._pb2()
+        ctx = pb2.LinuxSandboxSecurityContext()
+        changed = False
+        ns_opts = self._sandbox_namespace_options(manifest)
+        if ns_opts is not None:
+            ctx.namespace_options.CopyFrom(ns_opts)
+            changed = True
+
+        pod_sec = getattr(manifest.spec, "pod_security", None)
+        if pod_sec is not None:
+            fs_group = self._spec_value(pod_sec, "fs_group", "fsGroup")
+            if fs_group is not None:
+                try:
+                    ctx.supplemental_groups.append(int(fs_group))
+                    changed = True
+                except Exception:
+                    pass
+            selinux_user = self._spec_value(pod_sec, "selinux_user", "seLinuxUser")
+            selinux_role = self._spec_value(pod_sec, "selinux_role", "seLinuxRole")
+            selinux_type = self._spec_value(pod_sec, "selinux_type", "seLinuxType")
+            selinux_level = self._spec_value(pod_sec, "selinux_level", "seLinuxLevel")
+            if any(v is not None for v in (selinux_user, selinux_role, selinux_type, selinux_level)):
+                selinux = pb2.SELinuxOption()
+                if selinux_user is not None:
+                    selinux.user = str(selinux_user)
+                if selinux_role is not None:
+                    selinux.role = str(selinux_role)
+                if selinux_type is not None:
+                    selinux.type = str(selinux_type)
+                if selinux_level is not None:
+                    selinux.level = str(selinux_level)
+                ctx.selinux_options.CopyFrom(selinux)
+                changed = True
+
+            seccomp_type = self._spec_value(pod_sec, "seccomp_type", "seccompProfileType")
+            seccomp_local = self._spec_value(
+                pod_sec, "seccomp_localhost_profile", "seccompLocalhostProfile"
+            )
+            seccomp_profile = self._security_profile(seccomp_type, seccomp_local)
+            if seccomp_profile is not None:
+                ctx.seccomp.CopyFrom(seccomp_profile)
+                changed = True
+
+        return ctx if changed else None
+
+    def _dns_config(self, manifest: AppManifest):
+        dc = getattr(manifest.spec, "dns_config", None)
+        policy = self._resolve_dns_policy(manifest)
+        if policy == "None" and dc is None:
+            raise RuntimeError("dnsPolicy=None requires dnsConfig to be set")
+        pb2 = self._pb2()
+        cfg = pb2.DNSConfig()
+        nameservers = getattr(dc, "nameservers", None) or []
+        searches = getattr(dc, "searches", None) or []
+        options: list[str] = []
+        for opt in getattr(dc, "options", None) or []:
+            if isinstance(opt, dict):
+                name = opt.get("name")
+                value = opt.get("value")
+            else:
+                name = getattr(opt, "name", None)
+                value = getattr(opt, "value", None)
+            if not name:
+                continue
+            if value is None or value == "":
+                options.append(str(name))
+            else:
+                options.append(f"{name}:{value}")
+        cfg.servers.extend([str(s) for s in nameservers if s])
+        cfg.searches.extend([str(s) for s in searches if s])
+        cfg.options.extend([str(o) for o in options if o])
+        if policy in {"ClusterFirst", "ClusterFirstWithHostNet"}:
+            defaults = self._cluster_dns_defaults(manifest)
+            if defaults:
+                servers, domains = defaults
+                if not cfg.servers:
+                    cfg.servers.extend(servers)
+                if not cfg.searches:
+                    cfg.searches.extend(domains)
+        if not cfg.servers and not cfg.searches and not cfg.options:
+            return None
+        return cfg
+
+    def _hosts_root(self) -> Path:
+        return Path(os.getenv("AE_CRI_HOSTS_ROOT", "/var/lib/ae/hosts"))
+
+    def _cluster_dns_defaults(self, manifest: AppManifest) -> tuple[list[str], list[str]] | None:
+        raw = os.getenv("AE_CRI_CLUSTER_DNS", "").strip()
+        if not raw:
+            return None
+        servers = [s for s in raw.replace(",", " ").split() if s]
+        if not servers:
+            return None
+        domain = os.getenv("AE_CRI_CLUSTER_DOMAIN", "cluster.local").strip() or "cluster.local"
+        namespace = (
+            getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        )
+        searches = [
+            f"{namespace}.svc.{domain}",
+            f"svc.{domain}",
+            domain,
+        ]
+        return servers, searches
+
+    def _resolve_dns_policy(self, manifest: AppManifest) -> str:
+        raw = getattr(manifest.spec, "dns_policy", None)
+        if raw:
+            val = str(raw).strip().lower()
+            if val == "default":
+                return "Default"
+            if val == "none":
+                return "None"
+            if val == "clusterfirst":
+                return "ClusterFirst"
+            if val == "clusterfirstwithhostnet":
+                return "ClusterFirstWithHostNet"
+        # Default aligns with Kubernetes.
+        if self._host_network_allowed(manifest):
+            return "ClusterFirstWithHostNet"
+        return "ClusterFirst"
+
+    def _cluster_domain(self) -> str | None:
+        domain = os.getenv("AE_CRI_CLUSTER_DOMAIN")
+        return domain.strip() if domain else None
+
+    def _resolve_hostname(self, manifest: AppManifest, replica_id: str) -> str | None:
+        hostname = getattr(manifest.spec, "hostname", None)
+        subdomain = getattr(manifest.spec, "subdomain", None)
+        set_fqdn = bool(getattr(manifest.spec, "set_hostname_as_fqdn", False))
+        if not hostname and (subdomain or set_fqdn):
+            hostname = replica_id
+        if not hostname:
+            return None
+        if set_fqdn:
+            domain = self._cluster_domain()
+            namespace = (
+                getattr(getattr(manifest, "metadata", None), "namespace", None)
+                or DEFAULT_NAMESPACE
+            )
+            if subdomain:
+                if domain:
+                    return f"{hostname}.{subdomain}.{namespace}.svc.{domain}"
+                return f"{hostname}.{subdomain}"
+            return str(hostname)
+        return str(hostname)
+
+    def _host_network_allowed(self, manifest: AppManifest) -> bool:
+        if not bool(getattr(manifest.spec, "host_network", False)):
+            return False
+        return os.getenv("AE_CRI_ALLOW_HOST_NS", "0") == "1"
+
+    def _ensure_hosts_file(
+        self,
+        manifest: AppManifest,
+        app_name: str,
+        replica_id: str,
+    ) -> Path | None:
+        host_aliases = list(getattr(manifest.spec, "host_aliases", []) or [])
+        if not host_aliases:
+            return None
+        root = self._hosts_root() / str(app_name) / str(replica_id)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            LOGGER.warning("Failed to create hosts root %s: %s", root, exc)
+            return None
+        hosts_path = root / "hosts"
+        lines: list[str] = []
+        try:
+            lines = Path("/etc/hosts").read_text(encoding="utf-8").splitlines()
+        except Exception:
+            lines = [
+                "127.0.0.1 localhost",
+                "::1 localhost ip6-localhost ip6-loopback",
+                "fe00::0 ip6-localnet",
+                "ff00::0 ip6-mcastprefix",
+                "ff02::1 ip6-allnodes",
+                "ff02::2 ip6-allrouters",
+            ]
+        for alias in host_aliases:
+            if isinstance(alias, dict):
+                ip = alias.get("ip")
+                hostnames = alias.get("hostnames") or []
+            else:
+                ip = getattr(alias, "ip", None)
+                hostnames = getattr(alias, "hostnames", None) or []
+            if not ip or not hostnames:
+                continue
+            names = [str(h) for h in hostnames if h]
+            if not names:
+                continue
+            lines.append(f"{ip} {' '.join(names)}")
+        try:
+            hosts_path.write_text("\n".join([l for l in lines if l.strip()]) + "\n")
+        except Exception as exc:
+            LOGGER.warning("Failed to write hosts file %s: %s", hosts_path, exc)
+            return None
+        return hosts_path
+
+    def _cleanup_host_aliases(self, app_name: str, replica_id: str) -> None:
+        root = self._hosts_root() / str(app_name) / str(replica_id)
+        with contextlib.suppress(Exception):
+            if root.exists():
+                shutil.rmtree(root)
+
     def _pod_log_dir(self, namespace: str | None, replica_id: str, uid: str) -> str:
         ns = namespace or DEFAULT_NAMESPACE
         return f"/var/log/pods/{ns}_{replica_id}_{uid}"
@@ -1601,6 +2319,16 @@ class CRIRuntime(RuntimeAdapter):
             if alt and alt in spec:
                 return spec.get(alt)
         return getattr(spec, name, None) if spec is not None else None
+
+    def _spec_has_field(self, spec: Any, name: str, alt: str | None = None) -> bool:
+        if spec is None:
+            return False
+        if isinstance(spec, dict):
+            return name in spec or (alt in spec if alt else False)
+        fields = getattr(spec, "__pydantic_fields_set__", None)
+        if fields is None:
+            return False
+        return name in fields or (alt in fields if alt else False)
 
     def _parse_timeout(self, raw: Any) -> int | None:
         if raw is None:

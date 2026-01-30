@@ -17,6 +17,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
@@ -68,6 +69,8 @@ class PodmanRuntime(RuntimeAdapter):
         self._oci_runtime = (
             raw if raw and all(ch.isalnum() or ch in ("-", "_") for ch in raw) else None
         )
+        self._apishim_state_checked = False
+        self._apishim_state = None
 
     def _maybe_inject_runtime(self, argv: list[str]) -> None:
         """Inject --runtime into a `podman run` argv in-place when AE_OCI_RUNTIME is set."""
@@ -505,7 +508,17 @@ class PodmanRuntime(RuntimeAdapter):
                             vol_name = self._storage_volume_name(app, getattr(s, "name", ""))
                             mode = "ro" if getattr(s, "read_only", False) else "rw"
                             cmd += ["-v", f"{vol_name}:{getattr(s, 'mount_path', '')}:{mode}"]
-                    for v in getattr(manifest.spec, "volumes", []) or []:
+                    host_vols = None
+                    if isinstance(csp, dict):
+                        if "volumeMounts" in csp or "volume_mounts" in csp:
+                            host_vols = csp.get("volumeMounts") or csp.get("volume_mounts") or []
+                    else:
+                        fields = getattr(csp, "__pydantic_fields_set__", None)
+                        if fields and ("volume_mounts" in fields or "volumeMounts" in fields):
+                            host_vols = getattr(csp, "volume_mounts", []) or []
+                    if host_vols is None:
+                        host_vols = []
+                    for v in host_vols or []:
                         host = getattr(v, "host_path", None)
                         mnt = getattr(v, "mount_path", None)
                         ro = bool(getattr(v, "read_only", False))
@@ -513,6 +526,25 @@ class PodmanRuntime(RuntimeAdapter):
                             if host and not os.path.isabs(host):
                                 host = os.path.abspath(host)
                             cmd += ["-v", f"{host}:{mnt}:{'ro' if ro else 'rw'}"]
+                    devs = None
+                    if isinstance(csp, dict):
+                        if "volumeDevices" in csp or "volume_devices" in csp:
+                            devs = csp.get("volumeDevices") or csp.get("volume_devices") or []
+                    else:
+                        fields = getattr(csp, "__pydantic_fields_set__", None)
+                        if fields and ("volume_devices" in fields or "volumeDevices" in fields):
+                            devs = getattr(csp, "volume_devices", []) or []
+                    if devs is None:
+                        devs = []
+                    for d in devs or []:
+                        host = getattr(d, "host_path", None)
+                        dev = getattr(d, "device_path", None)
+                        ro = bool(getattr(d, "read_only", False))
+                        if host and dev:
+                            if host and not os.path.isabs(host):
+                                host = os.path.abspath(host)
+                            mode = "r" if ro else "rwm"
+                            cmd += ["--device", f"{host}:{dev}:{mode}"]
                     # Per-container projection mounts
                     try:
                         for pm in getattr(csp, "projection_mounts", []) or []:
@@ -539,9 +571,19 @@ class PodmanRuntime(RuntimeAdapter):
                     # Inject runtime override if requested
                     self._maybe_inject_runtime(cmd)
                     # Env
-                    for item in getattr(csp, "env", []) or []:
-                        if isinstance(item, dict) and "name" in item and "value" in item:
-                            cmd += ["-e", f"{item['name']}={item['value']}"]
+                    env_items = (
+                        getattr(csp, "env", None)
+                        or (csp.get("env") if isinstance(csp, dict) else [])
+                        or []
+                    )
+                    resources = (
+                        getattr(csp, "resources", None)
+                        if not isinstance(csp, dict)
+                        else csp.get("resources")
+                    )
+                    env_map = self._resolve_env_map(manifest, env_items, resources=resources)
+                    for key, value in env_map.items():
+                        cmd += ["-e", f"{key}={value}"]
                     # Image and command
                     img = getattr(csp, "image")  # noqa: B009
                     cmd += [img]
@@ -965,11 +1007,17 @@ class PodmanRuntime(RuntimeAdapter):
                 pass
             # Env
             try:
-                for item in (
+                env_items = (
                     getattr(c, "env", None) or (c.get("env") if isinstance(c, dict) else []) or []
-                ):
-                    if isinstance(item, dict) and "name" in item and "value" in item:
-                        argv += ["-e", f"{item['name']}={item['value']}"]
+                )
+                resources = (
+                    getattr(c, "resources", None)
+                    if not isinstance(c, dict)
+                    else c.get("resources")
+                )
+                env_map = self._resolve_env_map(manifest, env_items, resources=resources)
+                for key, value in env_map.items():
+                    argv += ["-e", f"{key}={value}"]
             except Exception:
                 pass
             # Volumes: mount app storage and hostPath volumes, plus projected config root when present
@@ -983,7 +1031,17 @@ class PodmanRuntime(RuntimeAdapter):
                         if vol_name and mnt:
                             mode = "ro" if getattr(s, "read_only", False) else "rw"
                             argv += ["-v", f"{vol_name}:{mnt}:{mode}"]
-                for v in getattr(manifest.spec, "volumes", []) or []:
+                host_vols = None
+                if isinstance(c, dict):
+                    if "volumeMounts" in c or "volume_mounts" in c:
+                        host_vols = c.get("volumeMounts") or c.get("volume_mounts") or []
+                else:
+                    fields = getattr(c, "__pydantic_fields_set__", None)
+                    if fields and ("volume_mounts" in fields or "volumeMounts" in fields):
+                        host_vols = getattr(c, "volume_mounts", []) or []
+                if host_vols is None:
+                    host_vols = []
+                for v in host_vols or []:
                     host = (
                         getattr(v, "host_path", None)
                         if not isinstance(v, dict)
@@ -1003,7 +1061,17 @@ class PodmanRuntime(RuntimeAdapter):
                         if host and not os.path.isabs(host):
                             host = os.path.abspath(host)
                         argv += ["-v", f"{host}:{mnt}:{'ro' if ro else 'rw'}"]
-                for d in getattr(manifest.spec, "volume_devices", []) or []:
+                devs = None
+                if isinstance(c, dict):
+                    if "volumeDevices" in c or "volume_devices" in c:
+                        devs = c.get("volumeDevices") or c.get("volume_devices") or []
+                else:
+                    fields = getattr(c, "__pydantic_fields_set__", None)
+                    if fields and ("volume_devices" in fields or "volumeDevices" in fields):
+                        devs = getattr(c, "volume_devices", []) or []
+                if devs is None:
+                    devs = []
+                for d in devs or []:
                     host = (
                         getattr(d, "host_path", None)
                         if not isinstance(d, dict)
@@ -1311,9 +1379,11 @@ class PodmanRuntime(RuntimeAdapter):
             pass
 
         # Env
-        for item in manifest.spec.env or []:
-            if "name" in item and "value" in item:
-                cmd += ["-e", f"{item['name']}={item['value']}"]
+        env_map = self._resolve_env_map(
+            manifest, manifest.spec.env or [], resources=getattr(manifest.spec, "resources", None)
+        )
+        for key, value in env_map.items():
+            cmd += ["-e", f"{key}={value}"]
 
         # Ports: publish service stable port if replicas==1. If no Service is defined
         # but the manifest declares ports, publish ephemeral host ports for exposed
@@ -1614,6 +1684,207 @@ class PodmanRuntime(RuntimeAdapter):
                 continue
 
             raise RuntimeError(f"podman failed: {' '.join(argv)} => {stderr.strip()}")
+
+    def _get_apishim_state(self):
+        if self._apishim_state_checked:
+            return self._apishim_state
+        self._apishim_state_checked = True
+        try:
+            from ae.apishim.store import ObjectStore
+            from ae.storage.state import ApishimStorageState
+        except Exception:
+            self._apishim_state = None
+            return None
+        dsn = os.getenv("AE_APISHIM_DSN")
+        db_env = os.getenv("AE_APISHIM_DB")
+        db_path = Path(db_env or "state/apishim.db")
+        if not dsn and not db_path.exists():
+            self._apishim_state = None
+            return None
+        try:
+            store = ObjectStore(dsn=dsn) if dsn else ObjectStore(db_path=db_path)
+        except Exception:
+            self._apishim_state = None
+            return None
+        self._apishim_state = ApishimStorageState(store)
+        return self._apishim_state
+
+    def _resolve_env_map(
+        self, manifest: AppManifest, env_items: list[dict] | list, *, resources=None
+    ) -> dict[str, str]:
+        env_map: dict[str, str] = {}
+        if resources is None:
+            resources = getattr(manifest.spec, "resources", None)
+        namespace = getattr(manifest.metadata, "namespace", None) or DEFAULT_NAMESPACE
+        needs_store = False
+        for item in env_items or []:
+            vf = item.get("valueFrom") if isinstance(item, dict) else None
+            if isinstance(vf, dict) and (
+                isinstance(vf.get("configMapKeyRef"), dict)
+                or isinstance(vf.get("secretKeyRef"), dict)
+            ):
+                needs_store = True
+                break
+        state = self._get_apishim_state() if needs_store else None
+
+        def _merge_env_from_ref(
+            ref: dict | None, *, secret: bool, prefix: str | None = None
+        ) -> None:
+            if not ref or not isinstance(ref, dict):
+                return
+            name = ref.get("name")
+            if not name or state is None:
+                return
+            data = (
+                state.get_secret(namespace, str(name))
+                if secret
+                else state.get_config_map(namespace, str(name))
+            )
+            if not data:
+                return
+            for key, value in data.items():
+                env_key = f"{prefix}{key}" if prefix else str(key)
+                env_map[str(env_key)] = "" if value is None else str(value)
+
+        for item in env_items or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("name"):
+                continue
+            vf = item.get("valueFrom") if isinstance(item, dict) else None
+            if not isinstance(vf, dict):
+                continue
+            cm_ref = (
+                vf.get("configMapKeyRef") if isinstance(vf.get("configMapKeyRef"), dict) else None
+            )
+            if cm_ref is not None and not cm_ref.get("key"):
+                _merge_env_from_ref(cm_ref, secret=False, prefix=cm_ref.get("prefix"))
+            sec_ref = vf.get("secretKeyRef") if isinstance(vf.get("secretKeyRef"), dict) else None
+            if sec_ref is not None and not sec_ref.get("key"):
+                _merge_env_from_ref(sec_ref, secret=True, prefix=sec_ref.get("prefix"))
+
+        for item in env_items or []:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if not name:
+                continue
+            if "value" in item:
+                env_map[str(name)] = str(item.get("value", ""))
+                continue
+            vf = item.get("valueFrom") if isinstance(item, dict) else None
+            if isinstance(vf, dict) and isinstance(vf.get("fieldRef"), dict):
+                fp = str(vf.get("fieldRef", {}).get("fieldPath", ""))
+                if fp == "metadata.name":
+                    env_map[str(name)] = str(manifest.metadata.name)
+                elif fp == "metadata.namespace":
+                    env_map[str(name)] = str(namespace)
+                continue
+            if isinstance(vf, dict) and isinstance(vf.get("resourceFieldRef"), dict):
+                rfr = vf.get("resourceFieldRef", {}) or {}
+                res = str(rfr.get("resource", ""))
+                divisor_raw = str(rfr.get("divisor", "")) if rfr.get("divisor") is not None else ""
+                try:
+                    if res in {"limits.cpu", "requests.cpu"}:
+                        obj = self._resource_quantities(
+                            resources, "limits" if res == "limits.cpu" else "requests"
+                        )
+                        cpuq = self._resource_value(obj, "cpu")
+                        if isinstance(cpuq, int | float):
+                            base_m = int(round(float(cpuq) * 1000))
+                            if divisor_raw:
+                                d = divisor_raw.strip().lower()
+                                if d.endswith("m"):
+                                    div_m = int(float(d[:-1] or 0)) or 1
+                                else:
+                                    div_m = int(round(float(d or "1") * 1000)) or 1
+                            else:
+                                div_m = 1000
+                            if div_m <= 0:
+                                div_m = 1
+                            env_map[str(name)] = str(int(base_m // div_m))
+                        continue
+                    if res in {"limits.memory", "requests.memory"}:
+                        obj = self._resource_quantities(
+                            resources, "limits" if res == "limits.memory" else "requests"
+                        )
+                        memq = self._resource_value(obj, "memory")
+                        if memq:
+                            bytes_val = self._parse_memory_bytes(str(memq)) or 0
+                            if divisor_raw:
+                                div_bytes = self._parse_memory_bytes(str(divisor_raw)) or 1
+                            else:
+                                div_bytes = 1
+                            if div_bytes <= 0:
+                                div_bytes = 1
+                            env_map[str(name)] = str(int(bytes_val // div_bytes))
+                        continue
+                except Exception:
+                    pass
+            if isinstance(vf, dict) and isinstance(vf.get("configMapKeyRef"), dict):
+                cm_ref = vf.get("configMapKeyRef") or {}
+                key = cm_ref.get("key")
+                if key and state is not None:
+                    data = state.get_config_map(namespace, str(cm_ref.get("name") or ""))
+                    if data and key in data:
+                        env_map[str(name)] = str(data[key])
+                continue
+            if isinstance(vf, dict) and isinstance(vf.get("secretKeyRef"), dict):
+                sec_ref = vf.get("secretKeyRef") or {}
+                key = sec_ref.get("key")
+                if key and state is not None:
+                    data = state.get_secret(namespace, str(sec_ref.get("name") or ""))
+                    if data and key in data:
+                        env_map[str(name)] = str(data[key])
+                continue
+        return env_map
+
+    @staticmethod
+    def _resource_quantities(resources, field):  # noqa: ANN001
+        if resources is None:
+            return None
+        if isinstance(resources, dict):
+            return resources.get(field)
+        return getattr(resources, field, None)
+
+    @staticmethod
+    def _resource_value(obj, field):  # noqa: ANN001
+        if obj is None:
+            return None
+        if isinstance(obj, dict):
+            return obj.get(field)
+        return getattr(obj, field, None)
+
+    @staticmethod
+    def _parse_memory_bytes(raw: str) -> int | None:
+        try:
+            s = raw.strip()
+            suffixes = {
+                "b": 1,
+                "k": 1024,
+                "kb": 1024,
+                "m": 1024**2,
+                "mb": 1024**2,
+                "mi": 1024**2,
+                "g": 1024**3,
+                "gb": 1024**3,
+                "gi": 1024**3,
+            }
+            if s.isdigit():
+                return int(s)
+            num = ""
+            unit = ""
+            for ch in s:
+                if ch.isdigit() or ch == ".":
+                    num += ch
+                else:
+                    unit += ch
+            if not num:
+                return None
+            factor = suffixes.get(unit.strip().lower(), 1)
+            return int(float(num) * factor)
+        except Exception:
+            return None
 
     def _image_exists(self, name: str) -> bool:
         def _dockerhub_aliases(image: str) -> set[str]:

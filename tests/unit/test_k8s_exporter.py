@@ -84,6 +84,27 @@ def test_envfrom_and_projected_volume_exports() -> None:
     assert any(vm.get("mountPath") == "/var/run/ae/config" for vm in vms)
 
 
+def test_export_envfrom_prefix_marker() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    env = list(man.spec.env)
+    env.append(
+        {
+            "name": "",
+            "valueFrom": {
+                "configMapKeyRef": {"name": "app-config", "key": "", "prefix": "APP_"}
+            },
+        }
+    )
+    man = man.model_copy(update={"spec": man.spec.model_copy(update={"env": env})})
+    docs = export_k8s_docs(man, options=ExportOptions(namespace="demo"))
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    c = dep["spec"]["template"]["spec"]["containers"][0]
+    env_from = c.get("envFrom", [])
+    entry = next((e for e in env_from if e.get("configMapRef", {}).get("name") == "app-config"), None)
+    assert entry is not None
+    assert entry.get("prefix") == "APP_"
+
+
 def test_k8s_check_echo_manifest() -> None:
     man = load_manifest(Path("specs/examples/echo.yaml"))
     issues = k8s_portability_issues(man)

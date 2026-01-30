@@ -33,6 +33,9 @@ class SecretManager:
         env: dict[str, str] = {}
         for ref in refs:
             decrypted = self._decrypt(Path(ref.path))
+            if getattr(ref, "env_from", False):
+                for key, value in decrypted.items():
+                    env[str(key)] = str(value)
             for mapping in ref.env:
                 if mapping.key not in decrypted:
                     raise KeyError(

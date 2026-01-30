@@ -1,4 +1,14 @@
-from ae.controller.spec import AppManifest, AppSpec, Metadata, ServiceSpec
+import base64
+
+from ae.apishim.store import ObjectStore
+from ae.controller.spec import (
+    AppManifest,
+    AppSpec,
+    Metadata,
+    ResourceQuantities,
+    ResourcesSpec,
+    ServiceSpec,
+)
 from ae.runtime.podman_runtime import PodmanRuntime
 
 
@@ -7,6 +17,10 @@ class DummyResult:
         self.code = code
         self.out = out
         self.err = err
+
+
+def _b64(value: str) -> str:
+    return base64.b64encode(value.encode("utf-8")).decode("ascii")
 
 
 def _manifest_single(image: str = "localhost/demo-blue:latest") -> AppManifest:
@@ -168,6 +182,218 @@ def test_oci_runtime_flag_in_init_containers(monkeypatch):
     assert any(
         c[:2] == [rt._bin, "run"] and "--runtime" in c and "crun" in c for c in captured
     ), f"--runtime crun missing in: {captured}"
+
+
+def test_podman_env_valuefrom_resolution(monkeypatch):
+    rt = PodmanRuntime()
+    calls: list[list[str]] = []
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        if argv[:3] == [rt._bin, "container", "exists"]:
+            return DummyResult(1)
+        if argv[:3] == [rt._bin, "images", "--format"]:
+            return DummyResult(0, "[]")
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *_a, **_k: None)
+
+    m = AppManifest(
+        api_version="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="demo", namespace="demo"),
+        spec=AppSpec(
+            image="busybox",
+            replicas=1,
+            resources=ResourcesSpec(
+                limits=ResourceQuantities(cpu=0.5),
+                requests=ResourceQuantities(memory="128Mi"),
+            ),
+            env=[
+                {"name": "APP_NAME", "value": "demo"},
+                {"name": "POD_NAME", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}},
+                {
+                    "name": "POD_NAMESPACE",
+                    "valueFrom": {"fieldRef": {"fieldPath": "metadata.namespace"}},
+                },
+                {
+                    "name": "CPU_UNITS",
+                    "valueFrom": {
+                        "resourceFieldRef": {"resource": "limits.cpu", "divisor": "100m"}
+                    },
+                },
+                {
+                    "name": "MEM_UNITS",
+                    "valueFrom": {
+                        "resourceFieldRef": {"resource": "requests.memory", "divisor": "1Mi"}
+                    },
+                },
+            ],
+        ),
+    )
+    rt._create_container(m, "demo-rev1-0", 1)
+    run_calls = [c for c in calls if c[:2] == [rt._bin, "run"]]
+    assert run_calls, f"expected podman run call, got: {calls}"
+    cmd = run_calls[0]
+    envs: dict[str, str] = {}
+    for idx, arg in enumerate(cmd):
+        if arg == "-e" and idx + 1 < len(cmd):
+            key, value = cmd[idx + 1].split("=", 1)
+            envs[key] = value
+    assert envs["APP_NAME"] == "demo"
+    assert envs["POD_NAME"] == "demo"
+    assert envs["POD_NAMESPACE"] == "demo"
+    assert envs["CPU_UNITS"] == "5"
+    assert envs["MEM_UNITS"] == "128"
+
+
+def test_podman_env_valuefrom_configmap_and_secret(monkeypatch, tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    store.upsert(
+        "",
+        "v1",
+        "configmaps",
+        "demo",
+        "app-config",
+        {"name": "app-config", "namespace": "demo"},
+        {"MODE": "auto", "LOG_LEVEL": "debug"},
+        status={},
+    )
+    store.upsert(
+        "",
+        "v1",
+        "secrets",
+        "demo",
+        "app-secret",
+        {"name": "app-secret", "namespace": "demo"},
+        {"PASSWORD": _b64("s3cr3t")},
+        status={},
+    )
+    monkeypatch.setenv("AE_APISHIM_DB", str(tmp_path / "apishim.db"))
+
+    rt = PodmanRuntime()
+    calls: list[list[str]] = []
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        if argv[:3] == [rt._bin, "container", "exists"]:
+            return DummyResult(1)
+        if argv[:3] == [rt._bin, "images", "--format"]:
+            return DummyResult(0, "[]")
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *_a, **_k: None)
+
+    m = AppManifest(
+        api_version="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="demo", namespace="demo"),
+        spec=AppSpec(
+            image="busybox",
+            replicas=1,
+            env=[
+                {
+                    "name": "",
+                    "valueFrom": {"configMapKeyRef": {"name": "app-config", "key": ""}},
+                },
+                {
+                    "name": "",
+                    "valueFrom": {"secretKeyRef": {"name": "app-secret", "key": ""}},
+                },
+                {
+                    "name": "LOG_LEVEL",
+                    "valueFrom": {
+                        "configMapKeyRef": {"name": "app-config", "key": "LOG_LEVEL"}
+                    },
+                },
+                {
+                    "name": "PASSWORD",
+                    "valueFrom": {
+                        "secretKeyRef": {"name": "app-secret", "key": "PASSWORD"}
+                    },
+                },
+                {"name": "LOG_LEVEL", "value": "info"},
+            ],
+        ),
+    )
+    rt._create_container(m, "demo-rev1-0", 1)
+    run_calls = [c for c in calls if c[:2] == [rt._bin, "run"]]
+    assert run_calls, f"expected podman run call, got: {calls}"
+    cmd = run_calls[0]
+    envs: dict[str, str] = {}
+    for idx, arg in enumerate(cmd):
+        if arg == "-e" and idx + 1 < len(cmd):
+            key, value = cmd[idx + 1].split("=", 1)
+            envs[key] = value
+    assert envs["MODE"] == "auto"
+    assert envs["PASSWORD"] == "s3cr3t"
+    assert envs["LOG_LEVEL"] == "info"
+
+
+def test_podman_envfrom_prefix(monkeypatch, tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    store.upsert(
+        "",
+        "v1",
+        "configmaps",
+        "demo",
+        "app-config",
+        {"name": "app-config", "namespace": "demo"},
+        {"MODE": "auto"},
+        status={},
+    )
+    monkeypatch.setenv("AE_APISHIM_DB", str(tmp_path / "apishim.db"))
+
+    rt = PodmanRuntime()
+    calls: list[list[str]] = []
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        if argv[:3] == [rt._bin, "container", "exists"]:
+            return DummyResult(1)
+        if argv[:3] == [rt._bin, "images", "--format"]:
+            return DummyResult(0, "[]")
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *_a, **_k: None)
+
+    m = AppManifest(
+        api_version="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="demo", namespace="demo"),
+        spec=AppSpec(
+            image="busybox",
+            replicas=1,
+            env=[
+                {
+                    "name": "",
+                    "valueFrom": {
+                        "configMapKeyRef": {
+                            "name": "app-config",
+                            "key": "",
+                            "prefix": "CFG_",
+                        }
+                    },
+                },
+            ],
+        ),
+    )
+    rt._create_container(m, "demo-rev1-0", 1)
+    run_calls = [c for c in calls if c[:2] == [rt._bin, "run"]]
+    assert run_calls, f"expected podman run call, got: {calls}"
+    cmd = run_calls[0]
+    envs: dict[str, str] = {}
+    for idx, arg in enumerate(cmd):
+        if arg == "-e" and idx + 1 < len(cmd):
+            key, value = cmd[idx + 1].split("=", 1)
+            envs[key] = value
+    assert envs["CFG_MODE"] == "auto"
 
 
 # ruff: noqa: E501
