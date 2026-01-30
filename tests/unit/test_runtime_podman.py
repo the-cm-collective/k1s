@@ -934,6 +934,58 @@ def test_podman_cpu_limit_maps_to_cpus(monkeypatch):
     assert "--cpus" in cmd and "0.5" in cmd
 
 
+def test_podman_list_containers_info_normalizes_host_ip(monkeypatch):
+    monkeypatch.setenv("AE_NODE_ADVERTISE_IP", "10.0.0.10")
+    rt = PodmanRuntime()
+
+    podman_ps = json.dumps([{"Id": "cid1", "Names": ["demo"]}])
+    podman_inspect = json.dumps(
+        [
+            {
+                "NetworkSettings": {
+                    "Ports": {"8080/tcp": [{"HostPort": "32001", "HostIp": "0.0.0.0"}]},
+                    "IPAddress": "10.1.2.3",
+                },
+                "State": {"RestartCount": 0, "StartedAt": "now"},
+            }
+        ]
+    )
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        if argv[:4] == [rt._bin, "ps", "-a", "--format"]:
+            return DummyResult(0, podman_ps)
+        if argv[:3] == [rt._bin, "inspect", "cid1"]:
+            return DummyResult(0, podman_inspect)
+        return DummyResult(0, "")
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+
+    info = rt.list_containers_info()
+    assert info
+    assert info[0].get("host_ip") == "10.0.0.10"
+
+
+def test_podman_host_port_free_check(monkeypatch):
+    rt = PodmanRuntime()
+
+    def fake_list(_app):  # noqa: ANN001
+        return [
+            {
+                "Names": ["other"],
+                "Config": {"Labels": {rt.APP_LABEL: "other"}},
+                "NetworkSettings": {
+                    "Ports": {"8080/tcp": [{"HostPort": "32000", "HostIp": "0.0.0.0"}]}
+                },
+            }
+        ]
+
+    monkeypatch.setattr(rt, "_list_app_containers", fake_list)
+
+    with pytest.raises(RuntimeError):
+        rt._ensure_host_port_free("blue", 32000)
+
+
 def test_podman_injects_pvc_mounts(monkeypatch):
     rt = PodmanRuntime()
     calls: list[list[str]] = []
