@@ -281,6 +281,40 @@ def test_cri_list_containers_info_includes_sidecars(monkeypatch):
     assert all(entry.get("running") for entry in info)
 
 
+def test_cri_read_logs_for_container(tmp_path, monkeypatch):
+    runtime = CRIRuntime()
+    log_path = tmp_path / "sidecar.log"
+    log_path.write_text("hello\nworld\n", encoding="utf-8")
+
+    class Container:
+        def __init__(self, cid, labels):  # noqa: ANN001
+            self.id = cid
+            self.labels = labels
+
+    class Status:
+        def __init__(self, path):  # noqa: ANN001
+            self.log_path = str(path)
+
+    containers = [
+        Container("c1", {"ae.app": "demo", "ae.container": "sidecar"}),
+    ]
+
+    class _Resp:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    def fake_runtime_call(method, _req):  # noqa: ANN001
+        if method == "ListContainers":
+            return _Resp(containers=containers)
+        return _Resp()
+
+    monkeypatch.setattr(runtime, "_runtime_call", fake_runtime_call)
+    monkeypatch.setattr(runtime, "_container_status", lambda *_a, **_k: Status(log_path))
+
+    lines = list(runtime.read_logs_for_container("demo", "sidecar"))
+    assert lines == ["hello", "world"]
+
+
 def test_cri_injects_pvc_mounts(monkeypatch):
     runtime = CRIRuntime()
     captured: dict[str, AppManifest] = {}
