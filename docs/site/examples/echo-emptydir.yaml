@@ -1,0 +1,17 @@
+apiVersion: ae.dev/v1alpha1
+kind: Deployment
+metadata:
+  name: echo-emptydir
+spec:
+  image: mendhak/http-https-echo:37
+  replicas: 1
+  ports:
+    - name: http
+      containerPort: 8080
+  health:
+    readiness:
+      httpGet: { path: /healthz, port: 8080 }
+      initialDelaySeconds: 1
+  emptyDirs:
+    - name: cache
+      mountPath: /var/cache/echo

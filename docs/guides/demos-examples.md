@@ -79,6 +79,14 @@ Note
 - Delete with purge to remove volumes marked `retention: Delete`:
   - `ae delete echo --purge`
 
+### EmptyDir (ephemeral)
+
+- Example manifest using `spec.emptyDirs`.
+- File: `specs/examples/echo-emptydir.yaml`
+- Notes:
+  - Exported K8s YAML uses `emptyDir`.
+  - CRI runtime maps to per‑pod host paths under `AE_CRI_EMPTYDIR_ROOT` (default `/var/lib/ae/emptydirs`).
+
 ### Docs Only
 
 - Starts the docs server and API; does not apply any apps.
