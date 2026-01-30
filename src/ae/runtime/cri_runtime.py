@@ -2006,6 +2006,7 @@ class CRIRuntime(RuntimeAdapter):
     def _build_states(self, manifest: AppManifest, revision: int) -> list[PodState]:
         states: list[PodState] = []
         app_name = app_key_for_manifest(manifest)
+        is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
         for pod in self._list_pods(app_name):
             labels = self._pod_labels(pod)
             if labels.get(self.REVISION_LABEL) != str(revision):
@@ -2020,34 +2021,55 @@ class CRIRuntime(RuntimeAdapter):
             pod_ip = None
             if pod_status and getattr(pod_status, "network", None):
                 pod_ip = getattr(pod_status.network, "ip", None)
-            container = self._find_container(pod_id, container_label="main") if pod_id else None
-            c_status = self._container_status(container.id) if container else None
-            status = "unknown"
-            exit_code = None
-            started_at = None
-            finished_at = None
-            ready = False
-            if c_status:
-                status = self._container_state_name(c_status)
-                exit_code = getattr(c_status, "exit_code", None)
-                started_at = self._timestamp_dt(getattr(c_status, "started_at", None))
-                finished_at = self._timestamp_dt(getattr(c_status, "finished_at", None))
-                is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
-                ready = (
-                    exit_code == 0 and status == "exited" if is_job else status == "running"
+            containers: list[Any] = []
+            if pod_id:
+                try:
+                    pb2 = self._pb2()
+                    flt = pb2.ContainerFilter(pod_sandbox_id=str(pod_id))
+                    resp = self._runtime_call(
+                        "ListContainers", pb2.ListContainersRequest(filter=flt)
+                    )
+                    containers = list(getattr(resp, "containers", None) or [])
+                except Exception:
+                    containers = []
+            if not containers:
+                main = self._find_container(pod_id, container_label="main") if pod_id else None
+                if main:
+                    containers = [main]
+            for container in containers:
+                c_labels = getattr(container, "labels", None) or {}
+                if c_labels.get(self.REVISION_LABEL) and c_labels.get(self.REVISION_LABEL) != str(
+                    revision
+                ):
+                    continue
+                c_status = self._container_status(container.id) if container else None
+                status = "unknown"
+                exit_code = None
+                started_at = None
+                finished_at = None
+                ready = False
+                if c_status:
+                    status = self._container_state_name(c_status)
+                    exit_code = getattr(c_status, "exit_code", None)
+                    started_at = self._timestamp_dt(getattr(c_status, "started_at", None))
+                    finished_at = self._timestamp_dt(getattr(c_status, "finished_at", None))
+                    ready = (
+                        exit_code == 0 and status == "exited" if is_job else status == "running"
+                    )
+                endpoint = None
+                if c_labels.get(self.CONTAINER_LABEL) == "main":
+                    endpoint = self._endpoint_for_manifest(manifest, pod_ip)
+                states.append(
+                    PodState(
+                        pod_name=str(pod_name),
+                        ready=bool(ready),
+                        status=status,
+                        endpoint=endpoint,
+                        started_at=started_at,
+                        exit_code=int(exit_code) if exit_code is not None else None,
+                        finished_at=finished_at,
+                    )
                 )
-            endpoint = self._endpoint_for_manifest(manifest, pod_ip)
-            states.append(
-                PodState(
-                    pod_name=str(pod_name),
-                    ready=bool(ready),
-                    status=status,
-                    endpoint=endpoint,
-                    started_at=started_at,
-                    exit_code=int(exit_code) if exit_code is not None else None,
-                    finished_at=finished_at,
-                )
-            )
         return states
 
     def _container_state_name(self, status: Any) -> str:

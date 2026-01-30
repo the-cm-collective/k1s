@@ -129,6 +129,86 @@ def test_cri_stop_pod_clears_port_assignments(monkeypatch):
     assert "demo-rev1-0" not in runtime._port_assignments
 
 
+def test_cri_build_states_includes_sidecars(monkeypatch):
+    runtime = CRIRuntime()
+
+    class Pod:
+        id = "pod1"
+        labels = {"ae.app": "demo", "ae.pod_name": "demo-rev1-0", "ae.revision": "1"}
+
+    class Net:
+        ip = "10.1.2.3"
+
+    class PodStatus:
+        network = Net()
+
+    class Container:
+        def __init__(self, cid, labels):  # noqa: ANN001
+            self.id = cid
+            self.labels = labels
+
+    class Status:
+        def __init__(self, state, exit_code=0):  # noqa: ANN001
+            self.state = state
+            self.exit_code = exit_code
+            self.started_at = None
+            self.finished_at = None
+
+    runtime._port_assignments["demo-rev1-0"] = {8080: 32000}
+    monkeypatch.setattr(runtime, "_list_pods", lambda *_a, **_k: [Pod()])
+    monkeypatch.setattr(runtime, "_pod_labels", lambda *_a, **_k: Pod.labels)
+    monkeypatch.setattr(runtime, "_pod_name", lambda *_a, **_k: "demo-rev1-0")
+    monkeypatch.setattr(runtime, "_pod_status", lambda *_a, **_k: PodStatus())
+
+    containers = [
+        Container(
+            "c1",
+            {
+                "ae.container": "main",
+                "ae.revision": "1",
+            },
+        ),
+        Container(
+            "c2",
+            {
+                "ae.container": "sidecar",
+                "ae.revision": "1",
+            },
+        ),
+    ]
+
+    class _Resp:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    def fake_runtime_call(method, _req):  # noqa: ANN001
+        if method == "ListContainers":
+            return _Resp(containers=containers)
+        return _Resp()
+
+    monkeypatch.setattr(runtime, "_runtime_call", fake_runtime_call)
+    monkeypatch.setattr(
+        runtime, "_container_status", lambda *_a, **_k: Status(runtime._pb2().ContainerState.CONTAINER_RUNNING)
+    )
+
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo", "namespace": "default"},
+            "spec": {
+                "image": "alpine:3.20",
+                "replicas": 1,
+                "ports": [{"name": "http", "containerPort": 8080}],
+            },
+        }
+    )
+    states = runtime._build_states(manifest, revision=1)
+    assert len(states) == 2
+    assert sum(1 for s in states if s.endpoint) == 1
+    assert all(s.status == "running" for s in states)
+
+
 def test_cri_injects_pvc_mounts(monkeypatch):
     runtime = CRIRuntime()
     captured: dict[str, AppManifest] = {}
