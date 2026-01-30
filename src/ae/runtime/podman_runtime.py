@@ -1499,6 +1499,9 @@ class PodmanRuntime(RuntimeAdapter):
         svc_port, svc_target, svc_ports_list = service
         published_any = False
         reserved_ports: set[int] = set()
+        svc_type = ""
+        if getattr(manifest.spec, "service", None):
+            svc_type = str(getattr(manifest.spec.service, "type", "") or "").lower()
         if not host_network:
             if svc_ports_list:
                 # Publish each declared service port as host:container mapping
@@ -1520,12 +1523,17 @@ class PodmanRuntime(RuntimeAdapter):
                     by_num = {}
                 for sp in svc_ports_list or []:
                     try:
-                        portnum = getattr(sp, "port", None)
+                        svc_port_num = getattr(sp, "port", None)
+                        portnum = svc_port_num
+                        if svc_type in {"nodeport", "loadbalancer"}:
+                            node_port = getattr(sp, "node_port", None)
+                            if node_port is not None:
+                                portnum = node_port
                         tgt = getattr(sp, "target_port", None)
                         name = getattr(sp, "name", None)
                         if tgt is None:
                             tgt = by_name.get(name) or (
-                                by_num.get(int(portnum)) if portnum is not None else None
+                                by_num.get(int(svc_port_num)) if svc_port_num is not None else None
                             )
                         if portnum is not None and tgt is not None:
                             chosen, used_preferred = choose_host_port(
