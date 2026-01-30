@@ -9,7 +9,16 @@ from dataclasses import dataclass
 from docker.errors import NotFound
 
 from ae.apishim.store import ObjectStore
-from ae.controller.spec import AppManifest, AppSpec, Metadata, PortSpec, ServiceSpec
+from ae.controller.spec import (
+    AppManifest,
+    AppSpec,
+    DNSConfig,
+    DNSConfigOption,
+    HostAlias,
+    Metadata,
+    PortSpec,
+    ServiceSpec,
+)
 from ae.runtime.docker_runtime import DockerRuntime
 
 try:
@@ -93,9 +102,17 @@ class FakeContainerManager:
         labels=None,
         ports=None,
         restart_policy=None,
+        **kwargs,
     ):  # noqa: ANN001,D401 - mimic docker
         _ = (image, command, detach, ports, restart_policy)
         self._client.last_env = environment or {}
+        self._client.last_run_kwargs = {
+            "environment": environment,
+            "labels": labels,
+            "ports": ports,
+            "restart_policy": restart_policy,
+            **kwargs,
+        }
         pod_name = labels.get("ae.pod_name")
         host_port = self._client.allocate_port()
         container = FakeContainer(
@@ -132,6 +149,7 @@ class FakeDockerClient:
         self._next_port = 32000
         self.logins: list[tuple[str, str, str]] = []
         self.last_env: dict[str, str] = {}
+        self.last_run_kwargs: dict = {}
 
     def allocate_port(self) -> int:
         port = self._next_port
@@ -247,6 +265,36 @@ def test_docker_image_pull_policy_never_missing():
 
     with pytest.raises(RuntimeError):
         runtime.ensure_app(manifest, revision=1)
+
+
+def test_docker_runtime_host_aliases_and_dns_config():
+    client = FakeDockerClient()
+    runtime = DockerRuntime(client=client)
+    manifest = make_manifest(replica_count=1, image="alpine:3.20")
+    manifest = manifest.model_copy(
+        update={
+            "spec": manifest.spec.model_copy(
+                update={
+                    "host_aliases": [
+                        HostAlias(ip="10.0.0.10", hostnames=["db.local", "cache.local"])
+                    ],
+                    "dns_config": DNSConfig(
+                        nameservers=["1.1.1.1"],
+                        searches=["svc.cluster.local"],
+                        options=[DNSConfigOption(name="ndots", value="5")],
+                    ),
+                }
+            )
+        }
+    )
+
+    runtime.ensure_app(manifest, revision=1)
+
+    extra_hosts = client.last_run_kwargs.get("extra_hosts")
+    assert extra_hosts == {"db.local": "10.0.0.10", "cache.local": "10.0.0.10"}
+    assert client.last_run_kwargs.get("dns") == ["1.1.1.1"]
+    assert client.last_run_kwargs.get("dns_search") == ["svc.cluster.local"]
+    assert client.last_run_kwargs.get("dns_opt") == ["ndots:5"]
 
 
 def test_port_mapping_with_multi_service_ports():
