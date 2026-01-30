@@ -8,6 +8,7 @@ import os
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import docker
 from docker.errors import APIError, NotFound
@@ -136,8 +137,7 @@ class DockerRuntime(RuntimeAdapter):
             old_revision_containers = []
 
         if any(replica_id not in containers_by_replica for replica_id in desired_pod_names):
-            self._registry.ensure_login(self._client, manifest.spec.image)
-            self._pull_image(manifest)
+            self._ensure_image(manifest.spec.image, manifest=manifest)
 
         for replica_id in desired_pod_names:
             container = containers_by_replica.get(replica_id)
@@ -333,16 +333,70 @@ class DockerRuntime(RuntimeAdapter):
         app_name = app_key_for_manifest(manifest)
         return [f"{app_name}-rev{revision}-{replica}" for replica in range(manifest.spec.replicas)]
 
-    def _pull_image(self, manifest: AppManifest) -> None:
-        image_ref = manifest.spec.image
+    def _image_present(self, image_ref: str) -> bool:
         try:
             self._client.images.get(image_ref)
-            LOGGER.debug("Image %s already present locally; skipping pull", image_ref)
-            return
+            return True
         except NotFound:
-            LOGGER.debug("Image %s not found locally; attempting pull", image_ref)
+            return False
+        except APIError:
+            return False
+
+    def _resolve_image_pull_policy(
+        self,
+        image_ref: str,
+        *,
+        manifest: AppManifest | None = None,
+        spec: Any | None = None,
+        explicit: str | None = None,
+    ) -> str:
+        raw = explicit
+        if raw is None and spec is not None:
+            if isinstance(spec, dict):
+                raw = spec.get("imagePullPolicy") or spec.get("image_pull_policy")
+            else:
+                raw = getattr(spec, "image_pull_policy", None)
+        if raw is None and manifest is not None:
+            raw = getattr(manifest.spec, "image_pull_policy", None)
+        if raw:
+            val = str(raw).strip().lower()
+            if val == "always":
+                return "Always"
+            if val == "ifnotpresent":
+                return "IfNotPresent"
+            if val == "never":
+                return "Never"
+
+        # Default Kubernetes semantics: :latest -> Always, otherwise IfNotPresent.
+        if "@" in str(image_ref):
+            return "IfNotPresent"
+        last = str(image_ref).rsplit("/", 1)[-1]
+        if ":" in last:
+            tag = last.split(":", 1)[1]
+            return "Always" if tag == "latest" else "IfNotPresent"
+        return "Always"
+
+    def _ensure_image(
+        self,
+        image_ref: str,
+        *,
+        manifest: AppManifest | None = None,
+        spec: Any | None = None,
+        policy: str | None = None,
+    ) -> None:
+        policy_name = self._resolve_image_pull_policy(
+            image_ref, manifest=manifest, spec=spec, explicit=policy
+        )
+        if policy_name == "Never":
+            if not self._image_present(image_ref):
+                raise RuntimeError(
+                    f"imagePullPolicy=Never and image not present: {image_ref}"
+                )
+            return
+        if policy_name != "Always" and self._image_present(image_ref):
+            return
         try:
-            LOGGER.debug("Pulling image %s", image_ref)
+            self._registry.ensure_login(self._client, image_ref)
             self._client.images.pull(image_ref)
         except APIError as exc:
             raise RuntimeError(f"Failed to pull image {image_ref}: {exc}") from exc
@@ -723,8 +777,11 @@ class DockerRuntime(RuntimeAdapter):
                     name_suffix = replica_id.split("-")[-1]
                     full_name = f"ae-{app_name}-rev{revision}-{name_suffix}-{cname}"
                     try:
+                        image_ref = getattr(csp, "image")  # noqa: B009
+                        if image_ref:
+                            self._ensure_image(str(image_ref), manifest=manifest, spec=csp)
                         sc = self._client.containers.run(
-                            getattr(csp, "image"),  # noqa: B009
+                            image_ref,  # noqa: B009
                             command=(
                                 list(getattr(csp, "command", []) or [])  # noqa: B009
                                 + list(getattr(csp, "args", []) or [])  # noqa: B009
@@ -1205,7 +1262,7 @@ class DockerRuntime(RuntimeAdapter):
             # Create ephemeral container to enforce timeout via wait()
             cont = None
             try:
-                self._pull_image(manifest)
+                self._ensure_image(str(image), manifest=manifest, spec=c)
             except Exception:
                 # best-effort pull; continue
                 pass
