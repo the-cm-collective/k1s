@@ -418,6 +418,11 @@ class PodmanRuntime(RuntimeAdapter):
                             pass
                 except Exception:
                     pass
+                if endpoint is None:
+                    LOGGER.warning(
+                        "podman readiness endpoint unavailable for %s; no published ports found",
+                        rid,
+                    )
             ready = st == "running"
             if is_job:
                 ready = False if st == "running" else exit_code == 0
@@ -1377,8 +1382,6 @@ class PodmanRuntime(RuntimeAdapter):
                             hip = b.get("HostIp") or b.get("HostIP")
                             if hip and host_ip is None:
                                 host_ip = self._normalize_host_ip(str(hip))
-                if host_ip is None and host_ports:
-                    host_ip = self._normalize_host_ip("")
                     for key, binds in (pmap or {}).items():
                         if not binds:
                             continue
@@ -1393,6 +1396,32 @@ class PodmanRuntime(RuntimeAdapter):
                                     port_map.setdefault(cport, int(hp))
                                 except Exception:
                                     pass
+                    if host_ip is None and host_ports:
+                        pr = self._run_ok(
+                            [self._bin, "port", it.get("Id", "")], allow_fail=True
+                        )
+                        for line in (pr.out or "").splitlines():
+                            try:
+                                _lhs, _arrow, rhs = line.partition("->")
+                                host = rhs.strip()
+                                if not host:
+                                    continue
+                                hip = ""
+                                if host.startswith("["):
+                                    end = host.find("]:")
+                                    if end != -1:
+                                        hip = host[1:end]
+                                else:
+                                    parts = host.rsplit(":", 1)
+                                    if len(parts) == 2:
+                                        hip = parts[0]
+                                if hip:
+                                    host_ip = self._normalize_host_ip(hip)
+                                    break
+                            except Exception:
+                                continue
+                    if host_ip is None and host_ports:
+                        host_ip = self._normalize_host_ip("")
                     try:
                         st = arr[0].get("State") or {}
                         rc = st.get("RestartCount", 0)
