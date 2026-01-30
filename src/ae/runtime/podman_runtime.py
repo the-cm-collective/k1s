@@ -1376,7 +1376,9 @@ class PodmanRuntime(RuntimeAdapter):
                                     pass
                             hip = b.get("HostIp") or b.get("HostIP")
                             if hip and host_ip is None:
-                                host_ip = hip
+                                host_ip = self._normalize_host_ip(str(hip))
+                if host_ip is None and host_ports:
+                    host_ip = self._normalize_host_ip("")
                     for key, binds in (pmap or {}).items():
                         if not binds:
                             continue
@@ -1430,6 +1432,33 @@ class PodmanRuntime(RuntimeAdapter):
         except Exception:
             return set()
         return ports
+
+    def _ensure_host_port_free(self, app_name: str, host_port: int) -> None:
+        try:
+            containers = self._list_app_containers(None)
+        except Exception:
+            containers = []
+        for c in containers:
+            labs = (c.get("Config") or {}).get("Labels") or {}
+            other_app = labs.get(self.APP_LABEL) or ""
+            if other_app == app_name:
+                continue
+            pmap = (c.get("NetworkSettings") or {}).get("Ports") or {}
+            for binds in pmap.values():
+                if not binds:
+                    continue
+                for b in binds:
+                    hp = b.get("HostPort")
+                    if not hp:
+                        continue
+                    try:
+                        if int(hp) == int(host_port):
+                            name = c.get("Names", [c.get("Id", "")])[0]
+                            raise RuntimeError(
+                                f"service.port {host_port} is already in use by container {name} (app '{other_app}')"
+                            )
+                    except ValueError:
+                        continue
 
     def exec(self, pod_name: str, command: list[str], *, timeout: int | None = None) -> int:  # type: ignore[override]
         # Locate container by label
@@ -1597,6 +1626,7 @@ class PodmanRuntime(RuntimeAdapter):
                             node_port = getattr(sp, "node_port", None)
                             if node_port is not None:
                                 portnum = node_port
+                                self._ensure_host_port_free(app, int(node_port))
                         tgt = getattr(sp, "target_port", None)
                         name = getattr(sp, "name", None)
                         if tgt is None:
@@ -1629,6 +1659,8 @@ class PodmanRuntime(RuntimeAdapter):
                         continue
             elif svc_port is not None:
                 target = int(svc_target) if svc_target is not None else int(svc_port)
+                if svc_type in {"nodeport", "loadbalancer"}:
+                    self._ensure_host_port_free(app, int(svc_port))
                 chosen, used_preferred = choose_host_port(
                     int(svc_port),
                     reserved=reserved_ports,
