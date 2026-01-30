@@ -366,6 +366,59 @@ def test_cri_init_containers_share_sandbox(monkeypatch):
     assert len(set(replica_ids)) == 1
 
 
+def test_cri_init_containers_for_pod_keeps_sandbox(monkeypatch):
+    class _Resp:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    runtime = CRIRuntime()
+    calls: list[str] = []
+    replica_ids: list[str] = []
+
+    def fake_runtime_call(method, req):  # noqa: ANN001
+        calls.append(method)
+        if method == "RunPodSandbox":
+            return _Resp(pod_sandbox_id="pod1")
+        if method == "CreateContainer":
+            return _Resp(container_id=f"c{calls.count('CreateContainer')}")
+        return _Resp()
+
+    def fake_wait(_cid, _timeout=None):  # noqa: ANN001
+        return 0
+
+    orig_cfg = runtime._container_config_for_spec
+
+    def wrapped_cfg(*args, **kwargs):  # noqa: ANN001
+        replica_ids.append(str(kwargs.get("replica_id")))
+        return orig_cfg(*args, **kwargs)
+
+    monkeypatch.setattr(runtime, "_runtime_call", fake_runtime_call)
+    monkeypatch.setattr(runtime, "_wait_container_exit", fake_wait)
+    monkeypatch.setattr(runtime, "_ensure_clients", lambda: None)
+    monkeypatch.setattr(runtime, "_ensure_image", lambda *_a, **_k: None)
+    monkeypatch.setattr(runtime, "_container_config_for_spec", wrapped_cfg)
+
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo", "namespace": "default"},
+            "spec": {
+                "image": "alpine:3.20",
+                "initContainers": [
+                    {"name": "init-a", "image": "alpine:3.20", "command": ["true"]},
+                    {"name": "init-b", "image": "alpine:3.20", "command": ["true"]},
+                ],
+            },
+        }
+    )
+    runtime.run_init_containers_for_pod(manifest, "demo-rev1-0", 1)
+    assert calls.count("RunPodSandbox") == 1
+    assert "StopPodSandbox" not in calls
+    assert "RemovePodSandbox" not in calls
+    assert set(replica_ids) == {"demo-rev1-0"}
+
+
 def test_cri_namespace_options_gate(monkeypatch):
     runtime = CRIRuntime()
     manifest = AppManifest.model_validate(
