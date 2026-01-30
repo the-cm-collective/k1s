@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import pytest
 from dataclasses import dataclass
 
@@ -265,6 +266,81 @@ def test_docker_image_pull_policy_never_missing():
 
     with pytest.raises(RuntimeError):
         runtime.ensure_app(manifest, revision=1)
+
+
+def test_docker_image_pull_secrets_login(monkeypatch, tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    store.upsert(
+        "",
+        "v1",
+        "secrets",
+        "default",
+        "pull-secret",
+        {"name": "pull-secret", "namespace": "default"},
+        {
+            ".dockerconfigjson": json.dumps(
+                {"auths": {"ghcr.io": {"username": "user", "password": "pass"}}}
+            )
+        },
+        status={},
+    )
+    monkeypatch.setenv("AE_APISHIM_DB", str(tmp_path / "apishim.db"))
+
+    client = FakeDockerClient()
+    runtime = DockerRuntime(client=client)
+    manifest = make_manifest(
+        replica_count=1, image="ghcr.io/acme/demo:1", image_pull_policy="Always"
+    )
+    manifest = manifest.model_copy(
+        update={
+            "spec": manifest.spec.model_copy(update={"image_pull_secrets": ["pull-secret"]})
+        }
+    )
+
+    runtime.ensure_app(manifest, revision=1)
+
+    assert ("ghcr.io", "user", "pass") in client.logins
+
+
+def test_docker_host_namespaces():
+    client = FakeDockerClient()
+    runtime = DockerRuntime(client=client)
+    manifest = make_manifest(replica_count=1)
+    manifest = manifest.model_copy(
+        update={
+            "spec": manifest.spec.model_copy(
+                update={"host_network": True, "host_pid": True, "host_ipc": True}
+            )
+        }
+    )
+
+    runtime.ensure_app(manifest, revision=1)
+
+    assert client.last_run_kwargs.get("network_mode") == "host"
+    assert client.last_run_kwargs.get("pid_mode") == "host"
+    assert client.last_run_kwargs.get("ipc_mode") == "host"
+    assert client.last_run_kwargs.get("ports") is None
+
+
+def test_docker_share_process_namespace_sidecar(monkeypatch):
+    client = FakeDockerClient()
+    runtime = DockerRuntime(client=client)
+    monkeypatch.setattr(client.containers, "list", lambda *a, **k: [])
+    manifest = make_manifest(replica_count=1)
+    manifest = manifest.model_copy(
+        update={
+            "spec": manifest.spec.model_copy(
+                update={
+                    "share_process_namespace": True,
+                    "containers": [AppSpec.ContainerSpec(name="sidecar", image="busybox")],
+                }
+            )
+        }
+    )
+
+    runtime._ensure_sidecars(manifest, "demo-rev1-0", 1, volumes={})
+
+    assert client.last_run_kwargs.get("pid_mode") == "container:ae-demo-rev1-0"
 
 
 def test_docker_runtime_host_aliases_and_dns_config():

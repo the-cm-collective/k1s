@@ -1,4 +1,5 @@
 import base64
+import json
 
 import pytest
 
@@ -457,6 +458,42 @@ def test_podman_image_pull_policy_never_missing(monkeypatch):
         rt._ensure_image("demo:2.0", manifest=manifest)
 
 
+def test_podman_image_pull_secrets_login(monkeypatch, tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    store.upsert(
+        "",
+        "v1",
+        "secrets",
+        "default",
+        "pull-secret",
+        {"name": "pull-secret", "namespace": "default"},
+        {
+            ".dockerconfigjson": json.dumps(
+                {"auths": {"ghcr.io": {"username": "user", "password": "pass"}}}
+            )
+        },
+        status={},
+    )
+    monkeypatch.setenv("AE_APISHIM_DB", str(tmp_path / "apishim.db"))
+
+    rt = PodmanRuntime()
+    logins: list[tuple[str, str, str]] = []
+
+    monkeypatch.setattr(rt, "_podman_login", lambda r, u, p: logins.append((r, u, p)))
+    monkeypatch.setattr(rt, "_image_present", lambda *_a, **_k: False)
+    monkeypatch.setattr(rt, "_run_ok", lambda *_a, **_k: DummyResult(0))  # type: ignore[arg-type]
+
+    manifest = _manifest_single(image="ghcr.io/acme/demo:1", image_pull_policy="Always")
+    manifest = manifest.model_copy(
+        update={
+            "spec": manifest.spec.model_copy(update={"image_pull_secrets": ["pull-secret"]})
+        }
+    )
+    rt._ensure_image("ghcr.io/acme/demo:1", manifest=manifest)
+
+    assert logins == [("ghcr.io", "user", "pass")]
+
+
 def test_podman_host_aliases_and_dns_config(monkeypatch):
     rt = PodmanRuntime()
     calls: list[list[str]] = []
@@ -504,6 +541,80 @@ def test_podman_host_aliases_and_dns_config(monkeypatch):
     assert "--dns" in cmd and "1.1.1.1" in cmd
     assert "--dns-search" in cmd and "svc.cluster.local" in cmd
     assert "--dns-opt" in cmd and "ndots:5" in cmd
+
+
+def test_podman_host_namespaces(monkeypatch):
+    rt = PodmanRuntime()
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(rt, "_image_exists", lambda *_a, **_k: True)
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        if argv[:3] == [rt._bin, "container", "exists"]:
+            return DummyResult(1)
+        if argv[:3] == [rt._bin, "images", "--format"]:
+            return DummyResult(0, "[]")
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *_a, **_k: None)
+
+    base = _manifest_single(image="demo:latest")
+    manifest = base.model_copy(
+        update={
+            "spec": base.spec.model_copy(
+                update={"host_network": True, "host_pid": True, "host_ipc": True}
+            )
+        }
+    )
+    rt._create_container(manifest, "blue-rev1-0", 1, service=(8080, 8080, None))
+
+    run_calls = [
+        c for c in calls if len(c) >= 3 and c[0] == rt._bin and c[1] == "run" and "-d" in c
+    ]
+    assert run_calls, f"expected podman run call, got: {calls}"
+    cmd = run_calls[0]
+    assert "--network" in cmd and "host" in cmd
+    assert "--pid" in cmd and "host" in cmd
+    assert "--ipc" in cmd and "host" in cmd
+    assert "-p" not in cmd
+
+
+def test_podman_share_process_namespace_sidecar(monkeypatch):
+    rt = PodmanRuntime()
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(rt, "_ensure_image", lambda *_a, **_k: None)
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+
+    base = _manifest_single(image="demo:latest")
+    manifest = base.model_copy(
+        update={
+            "spec": base.spec.model_copy(
+                update={
+                    "share_process_namespace": True,
+                    "containers": [AppSpec.ContainerSpec(name="sidecar", image="busybox")],
+                }
+            )
+        }
+    )
+
+    rt._ensure_sidecars(manifest, "blue-rev1-0", 1)
+
+    run_calls = [
+        c for c in calls if len(c) >= 3 and c[0] == rt._bin and c[1] == "run" and "-d" in c
+    ]
+    assert run_calls, f"expected podman run call, got: {calls}"
+    cmd = run_calls[0]
+    assert "--pid" in cmd and "container:ae-blue-rev1-0" in cmd
 
 
 # ruff: noqa: E501

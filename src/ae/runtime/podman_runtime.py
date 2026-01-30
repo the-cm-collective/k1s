@@ -8,6 +8,7 @@ of the system (ingress, status, events) continues to work unchanged.
 # ruff: noqa: E501,S110,S112,S603,S607,SIM105,SIM118,UP022,UP028
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -30,6 +31,7 @@ from ae.controller.spec import (
 
 from .base import PodState, RuntimeAdapter, RuntimeResult
 from .ports import choose_host_port
+from .registry import RegistryAuthProvider
 
 
 @dataclass
@@ -70,8 +72,11 @@ class PodmanRuntime(RuntimeAdapter):
         self._oci_runtime = (
             raw if raw and all(ch.isalnum() or ch in ("-", "_") for ch in raw) else None
         )
+        self._registry = RegistryAuthProvider()
         self._apishim_state_checked = False
         self._apishim_state = None
+        self._apishim_store_checked = False
+        self._apishim_store = None
 
     def _maybe_inject_runtime(self, argv: list[str]) -> None:
         """Inject --runtime into a `podman run` argv in-place when AE_OCI_RUNTIME is set."""
@@ -102,6 +107,7 @@ class PodmanRuntime(RuntimeAdapter):
             else [f"{app}-rev{revision}-{i}" for i in range(manifest.spec.replicas)]
         )
         self._current_node_id = node_id
+        host_network = bool(getattr(manifest.spec, "host_network", False))
         is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
         job_backoff_limit = None
         if is_job:
@@ -159,7 +165,7 @@ class PodmanRuntime(RuntimeAdapter):
                     node_id=node_id,
                 )
                 # If a shared network is configured, connect the new container to it
-                if self._network_name:
+                if self._network_name and not host_network:
                     cid = self._find_by_label(self.REPLICA_LABEL, rid)
                     if cid:
                         aliases = [
@@ -213,7 +219,7 @@ class PodmanRuntime(RuntimeAdapter):
                                 node_id=node_id,
                                 attempt=attempt + 1,
                             )
-                            if self._network_name:
+                            if self._network_name and not host_network:
                                 nid = self._find_by_label(self.REPLICA_LABEL, rid)
                                 if nid:
                                     aliases = [
@@ -293,27 +299,17 @@ class PodmanRuntime(RuntimeAdapter):
                 exit_code = None
             finished_at = self._parse_dt(state.get("FinishedAt"))
             endpoint = None
-            # Prefer published host ports (so Caddy can reach via host alias).
-            # Selection order: preferred probe port; 80/tcp; 8080/tcp; first non‑443 mapping.
-            try:
-                pmap = (c.get("NetworkSettings") or {}).get("Ports") or {}
-                # Prefer host-published ports
-                # 1) check preferred container port first
-                if preferred_port is not None:
-                    binds = (pmap or {}).get(f"{int(preferred_port)}/tcp")
-                    if binds:
-                        b0 = binds[0] or {}
-                        hp = b0.get("HostPort")
-                        if hp:
-                            hip = (b0.get("HostIp") or "").strip()
-                            loop_host = (
-                                "[::1]" if hip.startswith("[") or hip == "::" else "127.0.0.1"
-                            )
-                            endpoint = f"{loop_host}:{hp}"
-                # 2) common HTTP ports
-                if endpoint is None:
-                    for cp in (80, 8080):
-                        binds = (pmap or {}).get(f"{int(cp)}/tcp")
+            if host_network:
+                endpoint = self._endpoint_for_host_network(manifest, preferred_port)
+            else:
+                # Prefer published host ports (so Caddy can reach via host alias).
+                # Selection order: preferred probe port; 80/tcp; 8080/tcp; first non‑443 mapping.
+                try:
+                    pmap = (c.get("NetworkSettings") or {}).get("Ports") or {}
+                    # Prefer host-published ports
+                    # 1) check preferred container port first
+                    if preferred_port is not None:
+                        binds = (pmap or {}).get(f"{int(preferred_port)}/tcp")
                         if binds:
                             b0 = binds[0] or {}
                             hp = b0.get("HostPort")
@@ -323,66 +319,85 @@ class PodmanRuntime(RuntimeAdapter):
                                     "[::1]" if hip.startswith("[") or hip == "::" else "127.0.0.1"
                                 )
                                 endpoint = f"{loop_host}:{hp}"
-                                break
-                # 3) otherwise pick the first published host port that is not 443
-                if endpoint is None:
-                    for k, binds in (pmap or {}).items():
-                        if not binds:
-                            continue
-                        # Skip HTTPS container port to avoid http-over-https probe mismatch
-                        port_key = str(k).split("/")[0]
-                        if port_key.isdigit() and int(port_key) == 443:
-                            continue
-                        b0 = binds[0] or {}
-                        hp = b0.get("HostPort")
-                        if hp:
-                            hip = (b0.get("HostIp") or "").strip()
-                            loop_host = (
-                                "[::1]" if hip.startswith("[") or hip == "::" else "127.0.0.1"
-                            )
-                            endpoint = f"{loop_host}:{hp}"
-                            break
-                if endpoint is None:
-                    # Fallback to `podman port <id>` which reliably reports published mappings
-                    cid = c.get("Id") or ""
-                    if cid:
-                        pr = self._run_ok([self._bin, "port", cid], allow_fail=True)
-                        # Expected lines like: "8080/tcp -> 0.0.0.0:49213" or "8080/tcp -> [::]:49213"
-                        for line in (pr.out or "").splitlines():
-                            try:
-                                _lhs, _arrow, rhs = line.partition("->")
-                                host = rhs.strip()
-                                if host:
-                                    # host may be "0.0.0.0:PORT" or "[::]:PORT"; use 127.0.0.1 or ::1 accordingly
-                                    hp = host.split(":")[-1].strip()
-                                    if hp.isdigit():
-                                        loop_host = "[::1]" if host.startswith("[") else "127.0.0.1"
-                                        endpoint = f"{loop_host}:{hp}"
-                                        break
-                            except Exception:
+                    # 2) common HTTP ports
+                    if endpoint is None:
+                        for cp in (80, 8080):
+                            binds = (pmap or {}).get(f"{int(cp)}/tcp")
+                            if binds:
+                                b0 = binds[0] or {}
+                                hp = b0.get("HostPort")
+                                if hp:
+                                    hip = (b0.get("HostIp") or "").strip()
+                                    loop_host = (
+                                        "[::1]"
+                                        if hip.startswith("[") or hip == "::"
+                                        else "127.0.0.1"
+                                    )
+                                    endpoint = f"{loop_host}:{hp}"
+                                    break
+                    # 3) otherwise pick the first published host port that is not 443
+                    if endpoint is None:
+                        for k, binds in (pmap or {}).items():
+                            if not binds:
                                 continue
-                if endpoint is None and pmap:
-                    # Last resort: container DNS name (only usable from other containers on the network)
-                    for k in (pmap or {}).keys():
-                        port = k.split("/")[0]
-                        if port:
-                            endpoint = f"{(c.get('Name', '').lstrip('/'))}:{port}"
-                            break
-                if endpoint is None and self._network_name:
-                    try:
-                        nets = (c.get("NetworkSettings") or {}).get("Networks") or {}
-                        netinfo = nets.get(self._network_name) or {}
-                        ipaddr = netinfo.get("IPAddress")
-                        if ipaddr:
-                            p = preferred_port or 0
-                            if p == 0 and manifest.spec.ports:
-                                p = int(getattr(manifest.spec.ports[0], "container_port", 0))
-                            if p:
-                                endpoint = f"{ipaddr}:{p}"
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                            # Skip HTTPS container port to avoid http-over-https probe mismatch
+                            port_key = str(k).split("/")[0]
+                            if port_key.isdigit() and int(port_key) == 443:
+                                continue
+                            b0 = binds[0] or {}
+                            hp = b0.get("HostPort")
+                            if hp:
+                                hip = (b0.get("HostIp") or "").strip()
+                                loop_host = (
+                                    "[::1]"
+                                    if hip.startswith("[") or hip == "::"
+                                    else "127.0.0.1"
+                                )
+                                endpoint = f"{loop_host}:{hp}"
+                                break
+                    if endpoint is None:
+                        # Fallback to `podman port <id>` which reliably reports published mappings
+                        cid = c.get("Id") or ""
+                        if cid:
+                            pr = self._run_ok([self._bin, "port", cid], allow_fail=True)
+                            # Expected lines like: "8080/tcp -> 0.0.0.0:49213" or "8080/tcp -> [::]:49213"
+                            for line in (pr.out or "").splitlines():
+                                try:
+                                    _lhs, _arrow, rhs = line.partition("->")
+                                    host = rhs.strip()
+                                    if host:
+                                        # host may be "0.0.0.0:PORT" or "[::]:PORT"; use 127.0.0.1 or ::1 accordingly
+                                        hp = host.split(":")[-1].strip()
+                                        if hp.isdigit():
+                                            loop_host = (
+                                                "[::1]" if host.startswith("[") else "127.0.0.1"
+                                            )
+                                            endpoint = f"{loop_host}:{hp}"
+                                            break
+                                except Exception:
+                                    continue
+                    if endpoint is None and pmap:
+                        # Last resort: container DNS name (only usable from other containers on the network)
+                        for k in (pmap or {}).keys():
+                            port = k.split("/")[0]
+                            if port:
+                                endpoint = f"{(c.get('Name', '').lstrip('/'))}:{port}"
+                                break
+                    if endpoint is None and self._network_name:
+                        try:
+                            nets = (c.get("NetworkSettings") or {}).get("Networks") or {}
+                            netinfo = nets.get(self._network_name) or {}
+                            ipaddr = netinfo.get("IPAddress")
+                            if ipaddr:
+                                p = preferred_port or 0
+                                if p == 0 and manifest.spec.ports:
+                                    p = int(getattr(manifest.spec.ports[0], "container_port", 0))
+                                if p:
+                                    endpoint = f"{ipaddr}:{p}"
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
             ready = st == "running"
             if is_job:
                 ready = False if st == "running" else exit_code == 0
@@ -529,6 +544,19 @@ class PodmanRuntime(RuntimeAdapter):
                                 host = os.path.abspath(host)
                             mode = "r" if ro else "rwm"
                             cmd += ["--device", f"{host}:{dev}:{mode}"]
+                    host_network = bool(getattr(manifest.spec, "host_network", False))
+                    host_pid = bool(getattr(manifest.spec, "host_pid", False))
+                    host_ipc = bool(getattr(manifest.spec, "host_ipc", False))
+                    share_proc = bool(getattr(manifest.spec, "share_process_namespace", False))
+                    if host_network:
+                        cmd += ["--network", "host"]
+                    if host_pid:
+                        cmd += ["--pid", "host"]
+                    elif share_proc:
+                        main_name = f"ae-{app}-rev{revision}-{replica_id.split('-')[-1]}"
+                        cmd += ["--pid", f"container:{main_name}"]
+                    if host_ipc:
+                        cmd += ["--ipc", "host"]
                     # Per-container projection mounts
                     try:
                         for pm in getattr(csp, "projection_mounts", []) or []:
@@ -1012,6 +1040,15 @@ class PodmanRuntime(RuntimeAdapter):
                 pass
             argv += self._host_alias_args(manifest)
             argv += self._dns_args(manifest)
+            host_network = bool(getattr(manifest.spec, "host_network", False))
+            host_pid = bool(getattr(manifest.spec, "host_pid", False))
+            host_ipc = bool(getattr(manifest.spec, "host_ipc", False))
+            if host_network:
+                argv += ["--network", "host"]
+            if host_pid:
+                argv += ["--pid", "host"]
+            if host_ipc:
+                argv += ["--ipc", "host"]
             # Volumes: mount app storage and hostPath volumes, plus projected config root when present
             try:
                 if getattr(manifest.spec, "storage", None):
@@ -1378,6 +1415,15 @@ class PodmanRuntime(RuntimeAdapter):
             cmd += ["-e", f"{key}={value}"]
         cmd += self._host_alias_args(manifest)
         cmd += self._dns_args(manifest)
+        host_network = bool(getattr(manifest.spec, "host_network", False))
+        host_pid = bool(getattr(manifest.spec, "host_pid", False))
+        host_ipc = bool(getattr(manifest.spec, "host_ipc", False))
+        if host_network:
+            cmd += ["--network", "host"]
+        if host_pid:
+            cmd += ["--pid", "host"]
+        if host_ipc:
+            cmd += ["--ipc", "host"]
 
         # Ports: publish service stable port if replicas==1. If no Service is defined
         # but the manifest declares ports, publish ephemeral host ports for exposed
@@ -1387,88 +1433,89 @@ class PodmanRuntime(RuntimeAdapter):
         svc_port, svc_target, svc_ports_list = service
         published_any = False
         reserved_ports: set[int] = set()
-        if svc_ports_list:
-            # Publish each declared service port as host:container mapping
-            # Resolve targetPort similarly to the exporter rules
-            try:
-                by_name = {
-                    p.name: int(p.container_port)
-                    for p in (manifest.spec.ports or [])
-                    if getattr(p, "name", None)
-                }
-            except Exception:
-                by_name = {}
-            try:
-                by_num = {
-                    int(p.container_port): int(p.container_port)
-                    for p in (manifest.spec.ports or [])
-                }
-            except Exception:
-                by_num = {}
-            for sp in svc_ports_list or []:
+        if not host_network:
+            if svc_ports_list:
+                # Publish each declared service port as host:container mapping
+                # Resolve targetPort similarly to the exporter rules
                 try:
-                    portnum = getattr(sp, "port", None)
-                    tgt = getattr(sp, "target_port", None)
-                    name = getattr(sp, "name", None)
-                    if tgt is None:
-                        tgt = by_name.get(name) or (
-                            by_num.get(int(portnum)) if portnum is not None else None
-                        )
-                    if portnum is not None and tgt is not None:
-                        chosen, used_preferred = choose_host_port(
-                            int(portnum), reserved=reserved_ports
-                        )
-                        if chosen is None:
-                            LOGGER.warning(
-                                "service port %s for app %s is unavailable; skipping publish",
-                                portnum,
-                                app,
-                            )
-                            continue
-                        if not used_preferred:
-                            LOGGER.warning(
-                                "service port %s for app %s already in use; assigning %s",
-                                portnum,
-                                app,
-                                chosen,
-                            )
-                        cmd += ["-p", f"{int(chosen)}:{int(tgt)}"]
-                        published_any = True
+                    by_name = {
+                        p.name: int(p.container_port)
+                        for p in (manifest.spec.ports or [])
+                        if getattr(p, "name", None)
+                    }
                 except Exception:
-                    continue
-        elif svc_port is not None:
-            target = int(svc_target) if svc_target is not None else int(svc_port)
-            chosen, used_preferred = choose_host_port(int(svc_port), reserved=reserved_ports)
-            if chosen is None:
-                LOGGER.warning(
-                    "service port %s for app %s is unavailable; skipping publish",
-                    svc_port,
-                    app,
-                )
-            else:
-                if not used_preferred:
+                    by_name = {}
+                try:
+                    by_num = {
+                        int(p.container_port): int(p.container_port)
+                        for p in (manifest.spec.ports or [])
+                    }
+                except Exception:
+                    by_num = {}
+                for sp in svc_ports_list or []:
+                    try:
+                        portnum = getattr(sp, "port", None)
+                        tgt = getattr(sp, "target_port", None)
+                        name = getattr(sp, "name", None)
+                        if tgt is None:
+                            tgt = by_name.get(name) or (
+                                by_num.get(int(portnum)) if portnum is not None else None
+                            )
+                        if portnum is not None and tgt is not None:
+                            chosen, used_preferred = choose_host_port(
+                                int(portnum), reserved=reserved_ports
+                            )
+                            if chosen is None:
+                                LOGGER.warning(
+                                    "service port %s for app %s is unavailable; skipping publish",
+                                    portnum,
+                                    app,
+                                )
+                                continue
+                            if not used_preferred:
+                                LOGGER.warning(
+                                    "service port %s for app %s already in use; assigning %s",
+                                    portnum,
+                                    app,
+                                    chosen,
+                                )
+                            cmd += ["-p", f"{int(chosen)}:{int(tgt)}"]
+                            published_any = True
+                    except Exception:
+                        continue
+            elif svc_port is not None:
+                target = int(svc_target) if svc_target is not None else int(svc_port)
+                chosen, used_preferred = choose_host_port(int(svc_port), reserved=reserved_ports)
+                if chosen is None:
                     LOGGER.warning(
-                        "service port %s for app %s already in use; assigning %s",
+                        "service port %s for app %s is unavailable; skipping publish",
                         svc_port,
                         app,
-                        chosen,
                     )
-                cmd += ["-p", f"{int(chosen)}:{target}"]
-                published_any = True
-        else:
-            for p in manifest.spec.ports or []:
-                try:
-                    host = int(getattr(p, "hostPort", 0) or 0)
-                    cport = int(
-                        getattr(p, "container_port", 0) or getattr(p, "containerPort", 0) or 0
-                    )
-                    if host and cport:
-                        cmd += ["-p", f"{host}:{cport}"]
-                        published_any = True
-                except Exception:
-                    continue
-            # If no explicit host mappings were given but ports exist, publish exposed
-            # ports on ephemeral host ports (requires images to EXPOSE the ports).
+                else:
+                    if not used_preferred:
+                        LOGGER.warning(
+                            "service port %s for app %s already in use; assigning %s",
+                            svc_port,
+                            app,
+                            chosen,
+                        )
+                    cmd += ["-p", f"{int(chosen)}:{target}"]
+                    published_any = True
+            else:
+                for p in manifest.spec.ports or []:
+                    try:
+                        host = int(getattr(p, "hostPort", 0) or 0)
+                        cport = int(
+                            getattr(p, "container_port", 0) or getattr(p, "containerPort", 0) or 0
+                        )
+                        if host and cport:
+                            cmd += ["-p", f"{host}:{cport}"]
+                            published_any = True
+                    except Exception:
+                        continue
+                # If no explicit host mappings were given but ports exist, publish exposed
+                # ports on ephemeral host ports (requires images to EXPOSE the ports).
             if not published_any and (manifest.spec.ports or []):
                 cmd += ["-P"]
 
@@ -1758,6 +1805,232 @@ class PodmanRuntime(RuntimeAdapter):
                 args += ["--dns-opt", f"{name}:{value}" if value else str(name)]
         return args
 
+    def _endpoint_for_host_network(
+        self, manifest: AppManifest, preferred: int | None = None
+    ) -> str | None:
+        port = None
+        if preferred is not None:
+            port = int(preferred)
+        elif getattr(manifest.spec, "ports", None):
+            try:
+                port = int(manifest.spec.ports[0].container_port)
+            except Exception:
+                port = None
+        if port is None and getattr(manifest.spec, "service", None):
+            svc = manifest.spec.service
+            try:
+                target = getattr(svc, "target_port", None)
+                port = int(target if target is not None else getattr(svc, "port", None))
+            except Exception:
+                port = None
+        if port is None:
+            return None
+        host = os.getenv("AE_NODE_ADVERTISE_IP") or "127.0.0.1"
+        return f"{host}:{port}"
+
+    def _extract_registry(self, image: str) -> str | None:
+        if "/" not in image:
+            return None
+        host = image.split("/", 1)[0]
+        if "." not in host and ":" not in host:
+            return None
+        return host
+
+    def _parse_dockerconfigjson(self, raw: str) -> dict[str, dict[str, str]]:
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return {}
+        auths = payload.get("auths") if isinstance(payload, dict) else None
+        if isinstance(auths, dict):
+            entries = auths
+        elif isinstance(payload, dict):
+            entries = payload
+        else:
+            return {}
+        out: dict[str, dict[str, str]] = {}
+        for host, entry in entries.items():
+            if not isinstance(entry, dict):
+                continue
+            username = entry.get("username")
+            password = entry.get("password")
+            if (not username or not password) and entry.get("auth"):
+                try:
+                    decoded = base64.b64decode(str(entry["auth"]).encode("ascii")).decode("utf-8")
+                    if ":" in decoded:
+                        username, password = decoded.split(":", 1)
+                except Exception:
+                    username = None
+                    password = None
+            if username and password:
+                out[str(host)] = {"username": str(username), "password": str(password)}
+        return out
+
+    def _image_pull_secret_names(self, manifest: AppManifest) -> list[tuple[str | None, str | None]]:
+        secrets: list[tuple[str | None, str | None]] = []
+        for sec in getattr(manifest.spec, "image_pull_secrets", []) or []:
+            if isinstance(sec, dict):
+                secrets.append((sec.get("name"), sec.get("namespace")))
+            else:
+                secrets.append((str(sec), None))
+        return secrets
+
+    def _service_account_pull_secrets(
+        self, manifest: AppManifest
+    ) -> list[tuple[str | None, str | None]]:
+        store = self._get_apishim_store()
+        if store is None:
+            return []
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        sa_name = (
+            getattr(manifest.spec, "service_account_name", None)
+            or self._service_account_name_from_store(manifest, store)
+            or "default"
+        )
+        try:
+            sa = store.get("", "v1", "serviceaccounts", namespace, str(sa_name))
+        except Exception:
+            sa = None
+        if sa is None:
+            return []
+        spec = getattr(sa, "spec", None) or {}
+        if not isinstance(spec, dict):
+            return []
+        secrets = spec.get("imagePullSecrets") or []
+        out: list[tuple[str | None, str | None]] = []
+        for entry in secrets:
+            if isinstance(entry, dict):
+                out.append((entry.get("name"), None))
+            else:
+                out.append((str(entry), None))
+        return out
+
+    def _service_account_name_from_store(self, manifest: AppManifest, store: Any) -> str | None:
+        name = getattr(getattr(manifest, "metadata", None), "name", None)
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        if not name:
+            return None
+        candidates = [
+            ("apps", "v1", "deployments"),
+            ("apps", "v1", "daemonsets"),
+            ("apps", "v1", "statefulsets"),
+            ("batch", "v1", "jobs"),
+            ("batch", "v1", "cronjobs"),
+        ]
+        for group, version, resource in candidates:
+            try:
+                obj = store.get(group, version, resource, namespace, str(name))
+            except Exception:
+                obj = None
+            if obj is None:
+                continue
+            spec = getattr(obj, "spec", None) or {}
+            if not isinstance(spec, dict):
+                continue
+            template = None
+            if resource == "cronjobs":
+                template = ((spec.get("jobTemplate") or {}).get("spec") or {}).get("template")
+            else:
+                template = spec.get("template")
+            if not isinstance(template, dict):
+                continue
+            tpl_spec = template.get("spec") or {}
+            if not isinstance(tpl_spec, dict):
+                continue
+            sa = tpl_spec.get("serviceAccountName") or tpl_spec.get("serviceAccount")
+            if sa:
+                return str(sa)
+        return None
+
+    def _pull_secret_auths(self, manifest: AppManifest) -> dict[str, dict[str, str]]:
+        state = self._get_apishim_state()
+        if state is None:
+            return {}
+        secrets = self._image_pull_secret_names(manifest)
+        if not secrets:
+            secrets = self._service_account_pull_secrets(manifest)
+        if not secrets:
+            return {}
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        auths: dict[str, dict[str, str]] = {}
+        for name, ns in secrets:
+            if not name:
+                continue
+            data = state.get_secret(str(ns or namespace), str(name))
+            if not data:
+                continue
+            raw = data.get(".dockerconfigjson") or data.get(".dockercfg")
+            if raw:
+                auths.update(self._parse_dockerconfigjson(str(raw)))
+                continue
+            host = data.get("registry") or data.get("host") or data.get("server")
+            user = data.get("username")
+            pw = data.get("password")
+            if host and user and pw:
+                auths[str(host)] = {"username": str(user), "password": str(pw)}
+        return auths
+
+    def _image_pull_credentials(
+        self,
+        image_ref: str,
+        *,
+        manifest: AppManifest | None = None,
+        spec: Any | None = None,
+    ) -> tuple[str, str, str] | None:
+        creds = self._registry.list_registries()
+        secret_creds = self._pull_secret_auths(manifest) if manifest is not None else {}
+        preferred: list[str] = []
+        if manifest is not None:
+            ref = getattr(manifest.spec, "registry_auth_ref", None)
+            if ref:
+                preferred.append(str(ref))
+            for sec in getattr(manifest.spec, "image_pull_secrets", []) or []:
+                if isinstance(sec, dict):
+                    name = sec.get("name")
+                    if name:
+                        preferred.append(str(name))
+                else:
+                    preferred.append(str(sec))
+
+        for host in preferred:
+            entry = creds.get(host) or secret_creds.get(host)
+            if entry and entry.get("username") and entry.get("password"):
+                return str(host), str(entry.get("username")), str(entry.get("password"))
+
+        registry = self._extract_registry(image_ref) or "docker.io"
+        candidates = [registry]
+        if registry == "docker.io":
+            candidates.extend(
+                [
+                    "index.docker.io",
+                    "registry-1.docker.io",
+                    "https://index.docker.io/v1/",
+                ]
+            )
+        for host in candidates:
+            entry = creds.get(host) or secret_creds.get(host)
+            if entry and entry.get("username") and entry.get("password"):
+                return str(host), str(entry.get("username")), str(entry.get("password"))
+        return None
+
+    def _podman_login(self, registry: str, username: str, password: str) -> None:
+        cp = subprocess.run(
+            [
+                self._bin,
+                "login",
+                "--username",
+                str(username),
+                "--password-stdin",
+                str(registry),
+            ],
+            input=str(password),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if cp.returncode != 0:
+            raise RuntimeError(f"podman login failed: {cp.stderr.strip()}")
+
     def _ensure_image(
         self,
         image_ref: str,
@@ -1778,6 +2051,10 @@ class PodmanRuntime(RuntimeAdapter):
         if policy_name != "Always" and self._image_present(image_ref):
             return
         try:
+            creds = self._image_pull_credentials(image_ref, manifest=manifest, spec=spec)
+            if creds:
+                registry, username, password = creds
+                self._podman_login(registry, username, password)
             self._run_ok([self._bin, "pull", image_ref], allow_fail=False)
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"Failed to pull image {image_ref}: {exc}") from exc
@@ -1805,6 +2082,27 @@ class PodmanRuntime(RuntimeAdapter):
             return None
         self._apishim_state = ApishimStorageState(store)
         return self._apishim_state
+
+    def _get_apishim_store(self):
+        if self._apishim_store_checked:
+            return self._apishim_store
+        self._apishim_store_checked = True
+        try:
+            from ae.apishim.store import ObjectStore
+        except Exception:
+            self._apishim_store = None
+            return None
+        dsn = os.getenv("AE_APISHIM_DSN")
+        db_env = os.getenv("AE_APISHIM_DB")
+        db_path = Path(db_env or "state/apishim.db")
+        if not dsn and not db_path.exists():
+            self._apishim_store = None
+            return None
+        try:
+            self._apishim_store = ObjectStore(dsn=dsn) if dsn else ObjectStore(db_path=db_path)
+        except Exception:
+            self._apishim_store = None
+        return self._apishim_store
 
     def _resolve_env_map(
         self, manifest: AppManifest, env_items: list[dict] | list, *, resources=None
