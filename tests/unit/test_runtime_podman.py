@@ -15,6 +15,7 @@ from ae.controller.spec import (
     ResourceQuantities,
     ResourcesSpec,
     ServiceSpec,
+    VolumeDeviceSpec,
     VolumeSpec,
 )
 from ae.runtime.podman_runtime import PodmanRuntime
@@ -238,6 +239,45 @@ def test_podman_init_containers_share_process_namespace(monkeypatch):
     assert any(
         "--pid" in c and "container:ae-demo-rev1-0-pod" in c for c in captured
     ), f"--pid container:ae-demo-rev1-0-pod missing in: {captured}"
+
+
+def test_podman_init_containers_mount_global_volumes(monkeypatch):
+    rt = PodmanRuntime()
+    captured: list[list[str]] = []
+
+    class P:
+        def __init__(self) -> None:
+            self.returncode = 0
+            self.stdout = ""
+            self.stderr = ""
+
+    def fake_run(argv, **_kwargs):  # noqa: ANN001
+        captured.append(list(argv))
+        return P()
+
+    monkeypatch.setattr(rt, "_ensure_image", lambda *_a, **_k: None)
+    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *_a, **_k: None)
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    m = AppManifest(
+        api_version="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            volumes=[VolumeSpec(host_path="/tmp/shared", mount_path="/data")],
+            volume_devices=[VolumeDeviceSpec(host_path="/dev/sdb", device_path="/dev/xvdb")],
+            init_containers=[
+                {"name": "prep", "image": "alpine:3.20", "command": ["true"]}
+            ],
+        ),
+    )
+
+    res = rt.run_init_containers(m)
+    assert res and res[0][1] == 0
+    assert any("/tmp/shared:/data:rw" in c for c in captured)
+    assert any("/dev/sdb:/dev/xvdb:rwm" in c for c in captured)
 
 
 def test_podman_env_valuefrom_resolution(monkeypatch):

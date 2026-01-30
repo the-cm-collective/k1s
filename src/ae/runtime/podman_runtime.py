@@ -1123,6 +1123,15 @@ class PodmanRuntime(RuntimeAdapter):
                 argv += ["--ipc", "host"]
             # Volumes: mount app storage and hostPath volumes, plus projected config root when present
             try:
+                if getattr(manifest.spec, "volumes", None):
+                    for v in manifest.spec.volumes:
+                        host = getattr(v, "host_path", None)
+                        mnt = getattr(v, "mount_path", None)
+                        ro = bool(getattr(v, "read_only", False))
+                        if host and mnt:
+                            if host and not os.path.isabs(host):
+                                host = os.path.abspath(host)
+                            argv += ["-v", f"{host}:{mnt}:{'ro' if ro else 'rw'}"]
                 if getattr(manifest.spec, "storage", None):
                     for s in manifest.spec.storage:
                         vol_name = self._storage_volume_name(
@@ -1191,8 +1200,18 @@ class PodmanRuntime(RuntimeAdapter):
                     if host and dev:
                         if host and not os.path.isabs(host):
                             host = os.path.abspath(host)
-                        mode = "r" if ro else "rwm"
-                        argv += ["--device", f"{host}:{dev}:{mode}"]
+                            mode = "r" if ro else "rwm"
+                            argv += ["--device", f"{host}:{dev}:{mode}"]
+                if getattr(manifest.spec, "volume_devices", None):
+                    for d in manifest.spec.volume_devices:
+                        host = getattr(d, "host_path", None)
+                        dev = getattr(d, "device_path", None)
+                        ro = bool(getattr(d, "read_only", False))
+                        if host and dev:
+                            if host and not os.path.isabs(host):
+                                host = os.path.abspath(host)
+                            mode = "r" if ro else "rwm"
+                            argv += ["--device", f"{host}:{dev}:{mode}"]
             except Exception:
                 pass
 
