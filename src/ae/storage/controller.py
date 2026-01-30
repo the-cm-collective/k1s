@@ -63,6 +63,8 @@ SNAPSHOT_SOURCE_ANNOTATION = "k1s.io/snapshot-source"
 CLONE_SOURCE_ANNOTATION = "k1s.io/clone-source"
 SNAPSHOT_DIRNAME = ".snapshots"
 DEFAULT_LOCAL_ROOT = Path(os.getenv("AE_STORAGE_ROOT", "/var/lib/ae/storage"))
+PVC_PROTECTION_FINALIZER = "kubernetes.io/pvc-protection"
+PV_PROTECTION_FINALIZER = "kubernetes.io/pv-protection"
 
 
 class StorageController:
@@ -234,10 +236,14 @@ class StorageController:
             CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, heartbeat_seconds=5, allow_bookmarks=True
         )
         try:
-            for _ev, _obj in gen:
+            for ev, obj in gen:
                 if self._stop.is_set():
                     break
-                self._reconcile_pending()
+                if ev == "DELETED":
+                    self._handle_pv_deleted(obj)
+                    continue
+                if ev in {"ADDED", "MODIFIED"}:
+                    self._reconcile_pending()
         finally:
             with suppress(Exception):
                 gen.close()  # type: ignore[attr-defined]
@@ -579,6 +585,37 @@ class StorageController:
             status=pv_status,
         )
 
+    def _handle_pv_deleted(self, pv) -> None:
+        self._delete_volume_attachments(pv.name)
+        policy = self._pv_reclaim_policy(pv)
+        if policy == "Delete":
+            self._cleanup_backing_path(pv)
+        claim = (pv.spec or {}).get("claimRef") or {}
+        pvc_name = claim.get("name")
+        pvc_ns = claim.get("namespace")
+        if not pvc_name or not pvc_ns:
+            return
+        pvc = self._store.get(CORE_GROUP, CORE_VERSION, PVC_RESOURCE, pvc_ns, pvc_name)
+        if pvc is None:
+            return
+        pvc_status = dict(pvc.status or {})
+        if pvc_status.get("phase") == "Lost":
+            return
+        pvc_status["phase"] = "Lost"
+        self._store.upsert(
+            CORE_GROUP,
+            CORE_VERSION,
+            PVC_RESOURCE,
+            pvc.namespace,
+            pvc.name,
+            pvc.metadata,
+            pvc.spec,
+            status=pvc_status,
+        )
+        self._record_pvc_event(
+            pvc, "VolumeLost", f"persistent volume {pv.name} was deleted"
+        )
+
     def _pvc_is_bound(self, pvc) -> bool:
         spec = pvc.spec or {}
         status = pvc.status or {}
@@ -772,6 +809,12 @@ class StorageController:
         pvc_status = dict(pvc.status or {})
         pv_spec = dict(pv.spec or {})
         pv_status = dict(pv.status or {})
+        pvc_meta, pvc_meta_changed = self._ensure_finalizer(
+            pvc.metadata, PVC_PROTECTION_FINALIZER
+        )
+        pv_meta, pv_meta_changed = self._ensure_finalizer(
+            pv.metadata, PV_PROTECTION_FINALIZER
+        )
 
         if pvc_spec.get("volumeName") != pv.name:
             pvc_spec["volumeName"] = pv.name
@@ -795,35 +838,47 @@ class StorageController:
         if pv_status.get("phase") != "Bound":
             pv_status["phase"] = "Bound"
 
-        if not self._binding_up_to_date(pvc, pvc_spec, pvc_status):
+        if not self._binding_up_to_date(pvc, pvc_meta, pvc_spec, pvc_status) or pvc_meta_changed:
             self._store.upsert(
                 CORE_GROUP,
                 CORE_VERSION,
                 PVC_RESOURCE,
                 pvc.namespace,
                 pvc.name,
-                pvc.metadata,
+                pvc_meta,
                 pvc_spec,
                 status=pvc_status,
             )
-        if not self._binding_up_to_date(pv, pv_spec, pv_status):
+        if not self._binding_up_to_date(pv, pv_meta, pv_spec, pv_status) or pv_meta_changed:
             self._store.upsert(
                 CORE_GROUP,
                 CORE_VERSION,
                 PV_RESOURCE,
                 None,
                 pv.name,
-                pv.metadata,
+                pv_meta,
                 pv_spec,
                 status=pv_status,
             )
 
     @staticmethod
-    def _binding_up_to_date(obj, spec: dict[str, Any], status: dict[str, Any]) -> bool:
+    def _binding_up_to_date(
+        obj, metadata: dict[str, Any], spec: dict[str, Any], status: dict[str, Any]
+    ) -> bool:
         try:
-            return obj.spec == spec and obj.status == status
+            return obj.metadata == metadata and obj.spec == spec and obj.status == status
         except Exception:
             return False
+
+    @staticmethod
+    def _ensure_finalizer(metadata: dict[str, Any] | None, finalizer: str) -> tuple[dict, bool]:
+        meta = dict(metadata or {})
+        finalizers = list(meta.get("finalizers") or [])
+        if finalizer in finalizers:
+            return meta, False
+        finalizers.append(finalizer)
+        meta["finalizers"] = finalizers
+        return meta, True
 
     def _reconcile_csi_attachment(self, pvc, pv) -> None:
         pv_spec = pv.spec or {}

@@ -41,12 +41,13 @@ Kubernetes-aligned registry-first image flow and core runtime parity vs Podman.
 ## P1: Next parity items (close common chart gaps)
 
 - [~] PVC/PV/StorageClass controller parity (Pending/Bound/Released, default StorageClass).
+  - Updates: finalizers + reclaim transitions for PV/PVC; PV delete marks PVC Lost.
   - See: `docs/wip/storage-parity.md`
 - [~] NetFS mount lifecycle coverage on CRI nodes (NFS/SMB), PVC->mount reconciliation in apishim.
+  - Added: `scripts/netfs_smoke_suite.sh` to run smoke + snapshot/clone + CSI harness.
 - [~] CSI external provisioner hook + VolumeSnapshot/clone parity.
   - See: `docs/wip/csi.md`
 - [ ] StatefulSet volumeClaimTemplates per-ordinal mount naming for CRI runtime (if any gaps remain).
-- [ ] Storage reclaimPolicy + finalizers for PVC/PV parity.
 - [ ] Multi-node service proxy with podCIDR auto-discovery (reduce manual AE_POD_CIDR use).
 
 ## P2: Longer-term parity (k8s conformance adjacent)
