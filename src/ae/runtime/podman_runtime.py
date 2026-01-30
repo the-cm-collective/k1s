@@ -339,10 +339,7 @@ class PodmanRuntime(RuntimeAdapter):
                             hp = b0.get("HostPort")
                             if hp:
                                 hip = (b0.get("HostIp") or "").strip()
-                                loop_host = (
-                                    "[::1]" if hip.startswith("[") or hip == "::" else "127.0.0.1"
-                                )
-                                endpoint = f"{loop_host}:{hp}"
+                                endpoint = f"{self._normalize_host_ip(hip)}:{hp}"
                     # 2) common HTTP ports
                     if endpoint is None:
                         for cp in (80, 8080):
@@ -352,12 +349,7 @@ class PodmanRuntime(RuntimeAdapter):
                                 hp = b0.get("HostPort")
                                 if hp:
                                     hip = (b0.get("HostIp") or "").strip()
-                                    loop_host = (
-                                        "[::1]"
-                                        if hip.startswith("[") or hip == "::"
-                                        else "127.0.0.1"
-                                    )
-                                    endpoint = f"{loop_host}:{hp}"
+                                    endpoint = f"{self._normalize_host_ip(hip)}:{hp}"
                                     break
                     # 3) otherwise pick the first published host port that is not 443
                     if endpoint is None:
@@ -372,12 +364,7 @@ class PodmanRuntime(RuntimeAdapter):
                             hp = b0.get("HostPort")
                             if hp:
                                 hip = (b0.get("HostIp") or "").strip()
-                                loop_host = (
-                                    "[::1]"
-                                    if hip.startswith("[") or hip == "::"
-                                    else "127.0.0.1"
-                                )
-                                endpoint = f"{loop_host}:{hp}"
+                                endpoint = f"{self._normalize_host_ip(hip)}:{hp}"
                                 break
                     if endpoint is None:
                         # Fallback to `podman port <id>` which reliably reports published mappings
@@ -389,15 +376,24 @@ class PodmanRuntime(RuntimeAdapter):
                                 try:
                                     _lhs, _arrow, rhs = line.partition("->")
                                     host = rhs.strip()
-                                    if host:
-                                        # host may be "0.0.0.0:PORT" or "[::]:PORT"; use 127.0.0.1 or ::1 accordingly
-                                        hp = host.split(":")[-1].strip()
-                                        if hp.isdigit():
-                                            loop_host = (
-                                                "[::1]" if host.startswith("[") else "127.0.0.1"
-                                            )
-                                            endpoint = f"{loop_host}:{hp}"
-                                            break
+                                    if not host:
+                                        continue
+                                    hip = ""
+                                    hp = ""
+                                    if host.startswith("["):
+                                        end = host.find("]:")
+                                        if end != -1:
+                                            hip = host[1:end]
+                                            hp = host[end + 2 :]
+                                    else:
+                                        parts = host.rsplit(":", 1)
+                                        if len(parts) == 2:
+                                            hip, hp = parts
+                                    hip = hip.strip()
+                                    hp = hp.strip()
+                                    if hp.isdigit():
+                                        endpoint = f"{self._normalize_host_ip(hip)}:{hp}"
+                                        break
                                 except Exception:
                                     continue
                     if endpoint is None and pmap:
@@ -531,6 +527,15 @@ class PodmanRuntime(RuntimeAdapter):
                             vol_name = self._storage_volume_name(app, getattr(s, "name", ""))
                             mode = "ro" if getattr(s, "read_only", False) else "rw"
                             cmd += ["-v", f"{vol_name}:{getattr(s, 'mount_path', '')}:{mode}"]
+                    if getattr(manifest.spec, "volumes", None):
+                        for v in manifest.spec.volumes:
+                            host = getattr(v, "host_path", None)
+                            mnt = getattr(v, "mount_path", None)
+                            ro = bool(getattr(v, "read_only", False))
+                            if host and mnt:
+                                if host and not os.path.isabs(host):
+                                    host = os.path.abspath(host)
+                                cmd += ["-v", f"{host}:{mnt}:{'ro' if ro else 'rw'}"]
                     host_vols = None
                     if isinstance(csp, dict):
                         if "volumeMounts" in csp or "volume_mounts" in csp:
@@ -1941,6 +1946,13 @@ class PodmanRuntime(RuntimeAdapter):
             return None
         host = os.getenv("AE_NODE_ADVERTISE_IP") or "127.0.0.1"
         return f"{host}:{port}"
+
+    @staticmethod
+    def _normalize_host_ip(host_ip: str | None) -> str:
+        raw = (host_ip or "").strip()
+        if raw in {"", "0.0.0.0", "::", "[::]", "127.0.0.1", "::1", "[::1]"}:
+            return os.getenv("AE_NODE_ADVERTISE_IP") or "127.0.0.1"
+        return raw
 
     def _extract_registry(self, image: str) -> str | None:
         if "/" not in image:

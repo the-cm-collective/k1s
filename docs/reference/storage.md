@@ -103,10 +103,15 @@ export AE_ENABLE_NETFS=1
 export AE_APISHIM_DB=state/apishim.db
 ```
 
-NetFS currently supports NFS PVs. The node must have `mount`/`umount` plus an
-NFS helper (`mount.nfs` or `mount.nfs4`). If these tools or the NFS mount fail,
-the agent records a PVC warning event; use `kubectl get events -n <ns>` to inspect
-`NfsPrereqFailed`, `MountFailed`, or `MountConflict` reasons.
+NetFS supports NFS PVs and local-path (hostPath) PVs. For NFS, the node must have
+`mount`/`umount` plus an NFS helper (`mount.nfs` or `mount.nfs4`). If these tools
+or the NFS mount fail, the agent records a PVC warning event; use
+`kubectl get events -n <ns>` to inspect `NfsPrereqFailed`, `MountFailed`, or
+`MountConflict` reasons.
+
+For local-path PVs, the node bind-mounts the host path directly. If a PV carries
+`nodeAffinity`, k1s enforces it during mount resolution and emits a
+`NodeAffinityMismatch` warning when a pod lands on the wrong node.
 
 ### NetFS capability matrix (current)
 
