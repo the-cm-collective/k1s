@@ -209,6 +209,78 @@ def test_cri_build_states_includes_sidecars(monkeypatch):
     assert all(s.status == "running" for s in states)
 
 
+def test_cri_list_containers_info_includes_sidecars(monkeypatch):
+    runtime = CRIRuntime()
+
+    class Pod:
+        id = "pod1"
+        labels = {"ae.app": "demo", "ae.pod_name": "demo-rev1-0"}
+
+    class Net:
+        ip = "10.1.2.3"
+
+    class PodStatus:
+        network = Net()
+
+    class Container:
+        def __init__(self, cid, labels):  # noqa: ANN001
+            self.id = cid
+            self.labels = labels
+
+    class Status:
+        def __init__(self, state, restart_count=0):  # noqa: ANN001
+            self.state = state
+            self.restart_count = restart_count
+            self.started_at = None
+
+    containers = [
+        Container(
+            "c1",
+            {
+                "ae.container": "main",
+                "ae.revision": "1",
+            },
+        ),
+        Container(
+            "c2",
+            {
+                "ae.container": "sidecar",
+                "ae.revision": "1",
+            },
+        ),
+    ]
+
+    class _Resp:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    def fake_runtime_call(method, _req):  # noqa: ANN001
+        if method == "ListContainers":
+            return _Resp(containers=containers)
+        return _Resp()
+
+    runtime._port_assignments["demo-rev1-0"] = {8080: 32000}
+    monkeypatch.setattr(runtime, "_list_pods", lambda *_a, **_k: [Pod()])
+    monkeypatch.setattr(runtime, "_pod_labels", lambda *_a, **_k: Pod.labels)
+    monkeypatch.setattr(runtime, "_pod_name", lambda *_a, **_k: "demo-rev1-0")
+    monkeypatch.setattr(runtime, "_pod_status", lambda *_a, **_k: PodStatus())
+    monkeypatch.setattr(runtime, "_runtime_call", fake_runtime_call)
+    monkeypatch.setattr(
+        runtime,
+        "_container_status",
+        lambda *_a, **_k: Status(runtime._pb2().ContainerState.CONTAINER_RUNNING, 2),
+    )
+
+    info = runtime.list_containers_info()
+    assert len(info) == 2
+    names = {entry.get("name") for entry in info}
+    assert names == {"demo-rev1-0/main", "demo-rev1-0/sidecar"}
+    assert all(entry.get("host_ports") == [32000] for entry in info)
+    assert all(entry.get("port_map") == {8080: 32000} for entry in info)
+    assert all(entry.get("pod_ip") == "10.1.2.3" for entry in info)
+    assert all(entry.get("running") for entry in info)
+
+
 def test_cri_injects_pvc_mounts(monkeypatch):
     runtime = CRIRuntime()
     captured: dict[str, AppManifest] = {}

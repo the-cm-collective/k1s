@@ -193,6 +193,7 @@ class CRIRuntime(RuntimeAdapter):
         out: list[dict] = []
         pods = self._list_pods()
         host_ip = os.getenv("AE_NODE_ADVERTISE_IP") or "127.0.0.1"
+        pb2 = self._pb2()
         for pod in pods:
             with contextlib.suppress(Exception):
                 labels = self._pod_labels(pod)
@@ -202,13 +203,6 @@ class CRIRuntime(RuntimeAdapter):
                 pod_ip = None
                 if status and getattr(status, "network", None):
                     pod_ip = getattr(status.network, "ip", None)
-                container = self._find_container(pod_id, container_label="main") if pod_id else None
-                c_status = self._container_status(container.id) if container else None
-                running = False
-                started_at = None
-                if c_status:
-                    running = self._is_container_running(c_status)
-                    started_at = self._timestamp_iso(getattr(c_status, "started_at", None))
                 port_map = self._port_assignments.get(str(replica_id), {})
                 out.append(
                     {
@@ -219,11 +213,61 @@ class CRIRuntime(RuntimeAdapter):
                         "port_map": port_map,
                         "host_ip": host_ip,
                         "restart_count": 0,
-                        "started_at": started_at,
-                        "running": bool(running),
+                        "started_at": None,
+                        "running": False,
                         "pod_ip": pod_ip,
                     }
                 )
+                containers: list[Any] = []
+                if pod_id:
+                    try:
+                        flt = pb2.ContainerFilter(pod_sandbox_id=str(pod_id))
+                        resp = self._runtime_call(
+                            "ListContainers", pb2.ListContainersRequest(filter=flt)
+                        )
+                        containers = list(getattr(resp, "containers", None) or [])
+                    except Exception:
+                        containers = []
+                if not containers:
+                    continue
+                # Replace pod-level entry with per-container detail when available.
+                out.pop()
+                for container in containers:
+                    c_labels = getattr(container, "labels", None) or {}
+                    merged_labels = {**labels, **{str(k): str(v) for k, v in c_labels.items()}}
+                    cname = (
+                        merged_labels.get(self.CONTAINER_LABEL)
+                        or getattr(getattr(container, "metadata", None), "name", None)
+                        or "main"
+                    )
+                    name = f"{replica_id}/{cname}" if replica_id else str(container.id)
+                    running = False
+                    started_at = None
+                    restart_count = 0
+                    c_status = self._container_status(container.id) if container else None
+                    if c_status:
+                        running = self._is_container_running(c_status)
+                        started_at = self._timestamp_iso(getattr(c_status, "started_at", None))
+                        try:
+                            raw_rc = getattr(c_status, "restart_count", 0)
+                            if isinstance(raw_rc, int | float):
+                                restart_count = int(raw_rc)
+                        except Exception:
+                            restart_count = 0
+                    out.append(
+                        {
+                            "name": name,
+                            "labels": merged_labels,
+                            "uid": getattr(container, "id", None),
+                            "host_ports": list(port_map.values()),
+                            "port_map": port_map,
+                            "host_ip": host_ip,
+                            "restart_count": restart_count,
+                            "started_at": started_at,
+                            "running": bool(running),
+                            "pod_ip": pod_ip,
+                        }
+                    )
         return out
 
     def exec(self, pod_name: str, command: list[str], *, timeout: int | None = None) -> int:
