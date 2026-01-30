@@ -200,6 +200,45 @@ def test_oci_runtime_flag_in_init_containers(monkeypatch):
     ), f"--runtime crun missing in: {captured}"
 
 
+def test_podman_init_containers_share_process_namespace(monkeypatch):
+    rt = PodmanRuntime()
+    captured: list[list[str]] = []
+
+    class P:
+        def __init__(self) -> None:
+            self.returncode = 0
+            self.stdout = ""
+            self.stderr = ""
+
+    def fake_run(argv, **_kwargs):  # noqa: ANN001
+        captured.append(list(argv))
+        return P()
+
+    monkeypatch.setattr(rt, "_ensure_image", lambda *_a, **_k: None)
+    monkeypatch.setattr(rt, "_ensure_pod_sandbox", lambda *_a, **_k: "ae-demo-rev1-0-pod")
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    m = AppManifest(
+        api_version="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            share_process_namespace=True,
+            init_containers=[
+                {"name": "prep", "image": "alpine:3.20", "command": ["true"]}
+            ],
+        ),
+    )
+
+    res = rt.run_init_containers(m, replica_id="demo-rev1-0", revision=1)
+    assert res and res[0][1] == 0
+    assert any(
+        "--pid" in c and "container:ae-demo-rev1-0-pod" in c for c in captured
+    ), f"--pid container:ae-demo-rev1-0-pod missing in: {captured}"
+
+
 def test_podman_env_valuefrom_resolution(monkeypatch):
     rt = PodmanRuntime()
     calls: list[list[str]] = []

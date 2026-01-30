@@ -267,39 +267,6 @@ class Reconciler:
             updated_spec = manifest_for_runtime.spec.model_copy(update={"volumes": vols})
             manifest_for_runtime = manifest_for_runtime.model_copy(update={"spec": updated_spec})
 
-        # Run init containers if the runtime supports it
-        try:
-            inits = getattr(manifest_for_runtime.spec, "init_containers", []) or []
-            if inits and callable(getattr(self._runtime, "run_init_containers", None)):
-                # Emit start events
-                for c in inits:
-                    try:
-                        name = (
-                            getattr(c, "name", None) if not isinstance(c, dict) else c.get("name")
-                        )
-                        if name:
-                            self._state_store.record_event(
-                                app_name, revision, "InitStart", f"container={name}"
-                            )
-                            _record_event_metric_safe("init_start")
-                    except Exception:
-                        pass
-                results = self._runtime.run_init_containers(manifest_for_runtime)  # type: ignore[attr-defined]
-                for name, rc, msg in results:
-                    try:
-                        self._state_store.record_event(
-                            app_name,
-                            revision,
-                            "InitDone",
-                            f"container={name} rc={rc} {msg or ''}",
-                        )
-                        _record_event_metric_safe("init_done")
-                    except Exception:
-                        pass
-        except Exception:
-            # Do not block rollout on init container orchestration errors
-            pass
-
         # Rollout policy
         rollout = getattr(manifest.spec, "rollout", {}) or {}
         strategy = str(rollout.get("strategy", "parallel")).lower()
@@ -383,6 +350,26 @@ class Reconciler:
         except Exception:
             pass
 
+        init_containers = list(getattr(manifest_for_runtime.spec, "init_containers", []) or [])
+        init_names: list[str] = []
+        if init_containers:
+            for c in init_containers:
+                try:
+                    name = getattr(c, "name", None) if not isinstance(c, dict) else c.get("name")
+                    if name:
+                        init_names.append(str(name))
+                except Exception:
+                    pass
+        init_existing_pods: set[str] = set()
+        if init_containers:
+            try:
+                init_existing_pods = {
+                    str(p.pod_name) for p in (self._state_store.list_pods(app_name) or [])
+                }
+            except Exception:
+                init_existing_pods = set()
+        init_runtimes_done: set[RuntimeAdapter] = set()
+
         # Keep old pods during rollout to respect surge/unavailable; we'll remove them after readiness check
         aggregate_states: list = []
         created = updated = removed = 0
@@ -411,6 +398,91 @@ class Reconciler:
                         )
                 except Exception:
                     pass
+            # Run init containers before creating pods for this placement
+            try:
+                if init_containers:
+                    pod_names_for_init = [p for p in pod_names if p not in init_existing_pods]
+                    if per_limit is not None:
+                        pod_names_for_init = pod_names_for_init[:per_limit]
+                    if pod_names_for_init:
+                        run_per_pod = getattr(runtime, "run_init_containers_for_pod", None)
+                        node_id = getattr(getattr(placement, "node", None), "node_id", None)
+                        if callable(run_per_pod):
+                            for pod_name in pod_names_for_init:
+                                for name in init_names:
+                                    try:
+                                        self._state_store.record_event(
+                                            app_name,
+                                            revision,
+                                            "InitStart",
+                                            f"container={name} pod={pod_name}",
+                                        )
+                                        _record_event_metric_safe("init_start")
+                                    except Exception:
+                                        pass
+                                try:
+                                    try:
+                                        results = run_per_pod(
+                                            manifest_for_runtime,
+                                            pod_name,
+                                            revision,
+                                            node_id=node_id,
+                                        )
+                                    except TypeError:
+                                        results = run_per_pod(
+                                            manifest_for_runtime, pod_name, revision
+                                        )
+                                except Exception:
+                                    results = []
+                                for name, rc, msg in results or []:
+                                    try:
+                                        self._state_store.record_event(
+                                            app_name,
+                                            revision,
+                                            "InitDone",
+                                            f"container={name} pod={pod_name} rc={rc} {msg or ''}",
+                                        )
+                                        _record_event_metric_safe("init_done")
+                                    except Exception:
+                                        pass
+                        elif runtime not in init_runtimes_done and callable(
+                            getattr(runtime, "run_init_containers", None)
+                        ):
+                            for name in init_names:
+                                try:
+                                    self._state_store.record_event(
+                                        app_name, revision, "InitStart", f"container={name}"
+                                    )
+                                    _record_event_metric_safe("init_start")
+                                except Exception:
+                                    pass
+                            try:
+                                try:
+                                    results = runtime.run_init_containers(  # type: ignore[attr-defined]
+                                        manifest_for_runtime,
+                                        node_id=node_id,
+                                    )
+                                except TypeError:
+                                    results = runtime.run_init_containers(  # type: ignore[attr-defined]
+                                        manifest_for_runtime
+                                    )
+                            except Exception:
+                                results = []
+                            for name, rc, msg in results or []:
+                                try:
+                                    self._state_store.record_event(
+                                        app_name,
+                                        revision,
+                                        "InitDone",
+                                        f"container={name} rc={rc} {msg or ''}",
+                                    )
+                                    _record_event_metric_safe("init_done")
+                                except Exception:
+                                    pass
+                            init_runtimes_done.add(runtime)
+            except Exception:
+                # Do not block rollout on init container orchestration errors
+                pass
             res = self._ensure_on_runtime(
                 runtime,
                 manifest_for_runtime,

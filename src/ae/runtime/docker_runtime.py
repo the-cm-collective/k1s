@@ -1682,13 +1682,20 @@ class DockerRuntime(RuntimeAdapter):
         return None
 
     # Init containers ----------------------------------------------------
-    def run_init_containers(self, manifest):  # type: ignore[override]
+    def run_init_containers(  # type: ignore[override]
+        self,
+        manifest,
+        *,
+        replica_id: str | None = None,
+        revision: int | None = None,
+        node_id: str | None = None,
+    ):
         """Run initContainers sequentially with optional timeouts.
 
         Returns list of (name, rc, message).
         """
         manifest = self._maybe_inject_pvc_mounts(
-            manifest, node_id=getattr(self, "_current_node_id", None)
+            manifest, node_id=node_id or getattr(self, "_current_node_id", None)
         )
         results: list[tuple[str, int, str]] = []
         inits = getattr(manifest.spec, "init_containers", []) or []
@@ -1708,10 +1715,20 @@ class DockerRuntime(RuntimeAdapter):
         host_network = bool(getattr(manifest.spec, "host_network", False))
         host_pid = bool(getattr(manifest.spec, "host_pid", False))
         host_ipc = bool(getattr(manifest.spec, "host_ipc", False))
+        share_proc = bool(getattr(manifest.spec, "share_process_namespace", False))
         if host_network:
             init_kwargs["network_mode"] = "host"
         if host_pid:
             init_kwargs["pid_mode"] = "host"
+        elif share_proc and replica_id and revision is not None:
+            sandbox = self._ensure_pod_sandbox(
+                manifest,
+                replica_id,
+                int(revision),
+                node_id=node_id or getattr(self, "_current_node_id", None),
+            )
+            if sandbox:
+                init_kwargs["pid_mode"] = f"container:{sandbox}"
         if host_ipc:
             init_kwargs["ipc_mode"] = "host"
 
@@ -1808,6 +1825,8 @@ class DockerRuntime(RuntimeAdapter):
             except Exception:
                 env_map = {}
 
+            volumes_for_init = dict(volumes)
+            devices_for_init = list(devices)
             # Merge per-init container mounts/devices if provided
             try:
                 host_vols = None
@@ -1839,7 +1858,10 @@ class DockerRuntime(RuntimeAdapter):
                     if host and mnt:
                         if host and not os.path.isabs(host):
                             host = os.path.abspath(host)
-                        volumes[host] = {"bind": str(mnt), "mode": ("ro" if ro else "rw")}
+                        volumes_for_init[host] = {
+                            "bind": str(mnt),
+                            "mode": ("ro" if ro else "rw"),
+                        }
                 devs = None
                 if isinstance(c, dict):
                     if "volumeDevices" in c or "volume_devices" in c:
@@ -1870,7 +1892,7 @@ class DockerRuntime(RuntimeAdapter):
                         if host and not os.path.isabs(host):
                             host = os.path.abspath(host)
                         mode = "r" if ro else "rwm"
-                        devices.append(f"{host}:{dev}:{mode}")
+                        devices_for_init.append(f"{host}:{dev}:{mode}")
             except Exception:
                 pass
 
@@ -1886,8 +1908,8 @@ class DockerRuntime(RuntimeAdapter):
                     image,
                     command=(command + args) or None,
                     environment=env_map or None,
-                    volumes=volumes or None,
-                    devices=devices or None,
+                    volumes=volumes_for_init or None,
+                    devices=devices_for_init or None,
                     **init_kwargs,
                 )
                 cont.start()
@@ -1918,6 +1940,21 @@ class DockerRuntime(RuntimeAdapter):
                     pass
                 results.append((str(name), 1, f"error: {exc}"))
         return results
+
+    def run_init_containers_for_pod(
+        self,
+        manifest: AppManifest,
+        replica_id: str,
+        revision: int,
+        *,
+        node_id: str | None = None,
+    ):
+        return self.run_init_containers(
+            manifest,
+            replica_id=replica_id,
+            revision=revision,
+            node_id=node_id,
+        )
 
     def _get_apishim_state(self):
         if self._apishim_state_checked:
