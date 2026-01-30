@@ -11,6 +11,7 @@ from ae.controller.spec import (
     DNSConfigOption,
     HostAlias,
     Metadata,
+    PortSpec,
     ResourceQuantities,
     ResourcesSpec,
     ServiceSpec,
@@ -813,6 +814,49 @@ def test_podman_service_port_avoids_in_use(monkeypatch):
     assert "-p" in cmd
     assert "8081:8080" in cmd
     assert seen_blocked and 8080 in seen_blocked[0]
+
+
+def test_podman_publishes_declared_ports_when_no_service(monkeypatch):
+    rt = PodmanRuntime()
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(rt, "_ensure_image", lambda *_a, **_k: None)
+    monkeypatch.setattr(rt, "_host_ports_in_use", lambda: set())
+    monkeypatch.setattr("ae.runtime.podman_runtime.choose_host_port", lambda *_, **__: (32010, True))
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        if argv[:3] == [rt._bin, "container", "exists"]:
+            return DummyResult(1)
+        if argv[:3] == [rt._bin, "images", "--format"]:
+            return DummyResult(0, "[]")
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *_a, **_k: None)
+
+    manifest = AppManifest(
+        api_version="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="blue"),
+        spec=AppSpec(
+            image="demo:latest",
+            replicas=1,
+            ports=[PortSpec(name="http", container_port=8080)],
+        ),
+    )
+
+    rt._create_container(manifest, "blue-rev1-0", 1, service=(None, None, None))
+
+    run_calls = [
+        c for c in calls if len(c) >= 3 and c[0] == rt._bin and c[1] == "run" and "-d" in c
+    ]
+    assert run_calls, f"expected podman run call, got: {calls}"
+    cmd = run_calls[0]
+    assert "-p" in cmd
+    assert "32010:8080" in cmd
+    assert "-P" not in cmd
 
 
 def test_podman_injects_pvc_mounts(monkeypatch):
