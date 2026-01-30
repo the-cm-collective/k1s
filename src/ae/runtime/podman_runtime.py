@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
@@ -124,31 +125,10 @@ class PodmanRuntime(RuntimeAdapter):
 
         created = updated = removed = 0
 
-        # Ensure image is available locally (best-effort). Avoid unconditional pulls
-        # which can block startup when registry access is slow/unavailable. Mirror
-        # DockerRuntime behavior: pull only if the image is not present locally.
+        # Only pull when we need to create a pod (k8s semantics).
         image = manifest.spec.image
-        if not self._image_exists(image):
-            self._run_ok([self._bin, "pull", image], allow_fail=True)
-        if not self._image_exists(image):
-            # import from Docker daemon if present
-            try:
-                import shutil as _sh
-
-                if _sh.which("docker") is not None:
-                    di = subprocess.run(
-                        ["docker", "image", "inspect", image],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                    )
-                    if di.returncode == 0:
-                        self._run_ok([self._bin, "pull", f"docker-daemon:{image}"], allow_fail=True)
-            except Exception:
-                pass
-        if not self._image_exists(image) and "/" not in image:
-            # try localhost/<image> (podman local)
-            self._run_ok([self._bin, "pull", f"localhost/{image}"], allow_fail=True)
+        if any(rid not in by_replica for rid in desired_ids):
+            self._ensure_image(image, manifest=manifest)
 
         svc_port = None
         svc_target = None
@@ -482,6 +462,10 @@ class PodmanRuntime(RuntimeAdapter):
                 cid = (r.out or "").strip()
                 if not cid:
                     # Build run args
+                    img = getattr(csp, "image", None)  # noqa: B009
+                    if not img:
+                        continue
+                    self._ensure_image(str(img), manifest=manifest, spec=csp)
                     labels = runtime_labels_for_manifest(manifest, app_name=app)
                     labels.update(
                         {
@@ -585,8 +569,7 @@ class PodmanRuntime(RuntimeAdapter):
                     for key, value in env_map.items():
                         cmd += ["-e", f"{key}={value}"]
                     # Image and command
-                    img = getattr(csp, "image")  # noqa: B009
-                    cmd += [img]
+                    cmd += [str(img)]
                     combined: list[str] = []
                     combined += [str(x) for x in (getattr(csp, "command", []) or [])]  # noqa: B009
                     combined += [str(x) for x in (getattr(csp, "args", []) or [])]  # noqa: B009
@@ -953,6 +936,11 @@ class PodmanRuntime(RuntimeAdapter):
             image = getattr(c, "image", None) if not isinstance(c, dict) else c.get("image")
             if not image:
                 results.append((str(name), 1, "missing image"))
+                continue
+            try:
+                self._ensure_image(str(image), manifest=manifest, spec=c)
+            except Exception as exc:  # noqa: BLE001
+                results.append((str(name), 1, f"error: {exc}"))
                 continue
             timeout: int | None = None
             try:
@@ -1684,6 +1672,71 @@ class PodmanRuntime(RuntimeAdapter):
                 continue
 
             raise RuntimeError(f"podman failed: {' '.join(argv)} => {stderr.strip()}")
+
+    def _image_present(self, image_ref: str) -> bool:
+        if self._image_exists(image_ref):
+            return True
+        if "/" not in str(image_ref) and self._image_exists(f"localhost/{image_ref}"):
+            return True
+        return False
+
+    def _resolve_image_pull_policy(
+        self,
+        image_ref: str,
+        *,
+        manifest: AppManifest | None = None,
+        spec: Any | None = None,
+        explicit: str | None = None,
+    ) -> str:
+        raw = explicit
+        if raw is None and spec is not None:
+            if isinstance(spec, dict):
+                raw = spec.get("imagePullPolicy") or spec.get("image_pull_policy")
+            else:
+                raw = getattr(spec, "image_pull_policy", None)
+        if raw is None and manifest is not None:
+            raw = getattr(manifest.spec, "image_pull_policy", None)
+        if raw:
+            val = str(raw).strip().lower()
+            if val == "always":
+                return "Always"
+            if val == "ifnotpresent":
+                return "IfNotPresent"
+            if val == "never":
+                return "Never"
+
+        # Default Kubernetes semantics: :latest -> Always, otherwise IfNotPresent.
+        if "@" in str(image_ref):
+            return "IfNotPresent"
+        last = str(image_ref).rsplit("/", 1)[-1]
+        if ":" in last:
+            tag = last.split(":", 1)[1]
+            return "Always" if tag == "latest" else "IfNotPresent"
+        return "Always"
+
+    def _ensure_image(
+        self,
+        image_ref: str,
+        *,
+        manifest: AppManifest | None = None,
+        spec: Any | None = None,
+        policy: str | None = None,
+    ) -> None:
+        policy_name = self._resolve_image_pull_policy(
+            image_ref, manifest=manifest, spec=spec, explicit=policy
+        )
+        if policy_name == "Never":
+            if not self._image_present(image_ref):
+                raise RuntimeError(
+                    f"imagePullPolicy=Never and image not present: {image_ref}"
+                )
+            return
+        if policy_name != "Always" and self._image_present(image_ref):
+            return
+        try:
+            self._run_ok([self._bin, "pull", image_ref], allow_fail=False)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Failed to pull image {image_ref}: {exc}") from exc
 
     def _get_apishim_state(self):
         if self._apishim_state_checked:

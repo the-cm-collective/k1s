@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import pytest
 from dataclasses import dataclass
 
 from docker.errors import NotFound
@@ -162,7 +163,11 @@ class FakeDockerClient:
         self.register_container(pod_name, container)
 
 
-def make_manifest(replica_count: int = 1, image: str = "alpine:3.20") -> AppManifest:
+def make_manifest(
+    replica_count: int = 1,
+    image: str = "alpine:3.20",
+    image_pull_policy: str | None = None,
+) -> AppManifest:
     return AppManifest(
         apiVersion="ae.dev/v1alpha1",
         kind="App",
@@ -171,6 +176,7 @@ def make_manifest(replica_count: int = 1, image: str = "alpine:3.20") -> AppMani
             image=image,
             replicas=replica_count,
             ports=[PortSpec(name="http", containerPort=8080)],
+            image_pull_policy=image_pull_policy,
         ),
     )
 
@@ -215,11 +221,32 @@ def test_docker_runtime_skips_pull_when_image_local():
     client = FakeDockerClient()
     client.images._local["demo-blue:latest"] = "demo-blue:latest"
     runtime = DockerRuntime(client=client)
-    manifest = make_manifest(replica_count=1, image="demo-blue:latest")
+    manifest = make_manifest(
+        replica_count=1, image="demo-blue:latest", image_pull_policy="IfNotPresent"
+    )
 
     runtime.ensure_app(manifest, revision=1)
 
     assert client.images.pulled == []
+
+
+def test_docker_image_pull_policy_always_pulls():
+    client = FakeDockerClient()
+    client.images._local["demo:latest"] = "demo:latest"
+    runtime = DockerRuntime(client=client)
+    manifest = make_manifest(replica_count=1, image="demo:latest", image_pull_policy="Always")
+
+    runtime.ensure_app(manifest, revision=1)
+    assert client.images.pulled == ["demo:latest"]
+
+
+def test_docker_image_pull_policy_never_missing():
+    client = FakeDockerClient()
+    runtime = DockerRuntime(client=client)
+    manifest = make_manifest(replica_count=1, image="demo:1", image_pull_policy="Never")
+
+    with pytest.raises(RuntimeError):
+        runtime.ensure_app(manifest, revision=1)
 
 
 def test_port_mapping_with_multi_service_ports():

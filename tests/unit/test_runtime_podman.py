@@ -1,5 +1,7 @@
 import base64
 
+import pytest
+
 from ae.apishim.store import ObjectStore
 from ae.controller.spec import (
     AppManifest,
@@ -23,7 +25,10 @@ def _b64(value: str) -> str:
     return base64.b64encode(value.encode("utf-8")).decode("ascii")
 
 
-def _manifest_single(image: str = "localhost/demo-blue:latest") -> AppManifest:
+def _manifest_single(
+    image: str = "localhost/demo-blue:latest",
+    image_pull_policy: str | None = None,
+) -> AppManifest:
     return AppManifest(
         api_version="ae.dev/v1alpha1",
         kind="App",
@@ -33,6 +38,7 @@ def _manifest_single(image: str = "localhost/demo-blue:latest") -> AppManifest:
             replicas=1,
             env=[{"name": "APP_NAME", "value": "blue"}],
             service=ServiceSpec(port=8080, target_port=8080),
+            image_pull_policy=image_pull_policy,
         ),
     )
 
@@ -154,9 +160,14 @@ def test_oci_runtime_flag_in_init_containers(monkeypatch):
         spec=AppSpec(
             image="localhost/demo:latest",
             replicas=1,
-            init_containers=[
-                {"name": "prep", "image": "alpine", "command": ["sh", "-c"], "args": ["true"]}
-            ],
+                init_containers=[
+                    {
+                        "name": "prep",
+                        "image": "alpine:3.20",
+                        "command": ["sh", "-c"],
+                        "args": ["true"],
+                    }
+                ],
         ),
     )
 
@@ -394,6 +405,53 @@ def test_podman_envfrom_prefix(monkeypatch, tmp_path):
             key, value = cmd[idx + 1].split("=", 1)
             envs[key] = value
     assert envs["CFG_MODE"] == "auto"
+
+
+def test_podman_image_pull_policy_always_pulls(monkeypatch):
+    rt = PodmanRuntime()
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(rt, "_image_present", lambda *_a, **_k: True)
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+
+    manifest = _manifest_single(image="demo:latest", image_pull_policy="Always")
+    rt._ensure_image("demo:latest", manifest=manifest)
+
+    assert [rt._bin, "pull", "demo:latest"] in calls
+
+
+def test_podman_image_pull_policy_ifnotpresent_skips_pull(monkeypatch):
+    rt = PodmanRuntime()
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(rt, "_image_present", lambda *_a, **_k: True)
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+
+    manifest = _manifest_single(image="demo:1.0", image_pull_policy="IfNotPresent")
+    rt._ensure_image("demo:1.0", manifest=manifest)
+
+    assert calls == []
+
+
+def test_podman_image_pull_policy_never_missing(monkeypatch):
+    rt = PodmanRuntime()
+    monkeypatch.setattr(rt, "_image_present", lambda *_a, **_k: False)
+
+    manifest = _manifest_single(image="demo:2.0", image_pull_policy="Never")
+    with pytest.raises(RuntimeError):
+        rt._ensure_image("demo:2.0", manifest=manifest)
 
 
 # ruff: noqa: E501
