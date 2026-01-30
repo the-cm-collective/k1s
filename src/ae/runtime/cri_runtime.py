@@ -71,6 +71,8 @@ class CRIRuntime(RuntimeAdapter):
         self._apishim_store_checked = False
         self._apishim_store = None
         self._apishim_state = None
+        self._volume_manager_checked = False
+        self._volume_manager = None
 
     # --- RuntimeAdapter API -----------------------------------------
     def ensure_app(
@@ -90,6 +92,7 @@ class CRIRuntime(RuntimeAdapter):
             else self._desired_replica_ids(manifest, revision)
         )
         self._current_node_id = node_id
+        manifest = self._maybe_inject_pvc_mounts(manifest, node_id=node_id)
         self._ensure_clients()
 
         existing = self._list_pods(app_name)
@@ -434,6 +437,7 @@ class CRIRuntime(RuntimeAdapter):
         keep_sandbox: bool,
         label_pod: bool,
     ) -> list[tuple[str, int, str]]:
+        manifest = self._maybe_inject_pvc_mounts(manifest, node_id=node_id)
         results: list[tuple[str, int, str]] = []
         inits = list(getattr(manifest.spec, "init_containers", []) or [])
         if not inits:
@@ -1012,6 +1016,40 @@ class CRIRuntime(RuntimeAdapter):
             return None
         self._apishim_state = ApishimStorageState(store)
         return self._apishim_state
+
+    def _get_volume_manager(self):
+        if self._volume_manager_checked:
+            return self._volume_manager
+        self._volume_manager_checked = True
+        if os.getenv("AE_ENABLE_NETFS", "0") != "1":
+            self._volume_manager = None
+            return None
+        state = self._get_apishim_state()
+        if state is None:
+            self._volume_manager = None
+            return None
+        try:
+            from ae.storage import NetFSManager, NodeVolumeManager
+        except Exception:
+            self._volume_manager = None
+            return None
+        try:
+            netfs = NetFSManager(state)
+            self._volume_manager = NodeVolumeManager(netfs, node_id=self._current_node_id)
+        except Exception:
+            self._volume_manager = None
+        return self._volume_manager
+
+    def _maybe_inject_pvc_mounts(
+        self, manifest: AppManifest, *, node_id: str | None = None
+    ) -> AppManifest:
+        mgr = self._get_volume_manager()
+        if mgr is None:
+            return manifest
+        try:
+            return mgr.inject_pvc_mounts(manifest, node_id=node_id or self._current_node_id)
+        except Exception:
+            return manifest
 
     def _pull_secret_auths(self, manifest: AppManifest) -> dict[str, dict[str, str]]:
         state = self._get_apishim_state()

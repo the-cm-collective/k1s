@@ -3,7 +3,7 @@
 import base64
 from pathlib import Path
 
-from ae.controller.spec import AppManifest
+from ae.controller.spec import AppManifest, VolumeSpec
 from ae.apishim.store import ObjectStore
 from ae.runtime.cri_runtime import CRIRuntime
 
@@ -99,6 +99,42 @@ def test_cri_container_config_maps_volume_devices():
     assert dev.host_path == "/dev/sdb"
     assert dev.container_path == "/dev/xvdb"
     assert dev.permissions == "r"
+
+
+def test_cri_injects_pvc_mounts(monkeypatch):
+    runtime = CRIRuntime()
+    captured: dict[str, AppManifest] = {}
+
+    class StubVolumeManager:
+        def inject_pvc_mounts(self, manifest, node_id=None):  # noqa: ANN001
+            _ = node_id
+            vols = list(getattr(manifest.spec, "volumes", []) or [])
+            vols.append(VolumeSpec(host_path="/tmp/netfs", mount_path="/data"))
+            updated = manifest.spec.model_copy(update={"volumes": vols})
+            return manifest.model_copy(update={"spec": updated})
+
+    def fake_run_pod(manifest, *_a, **_k):  # noqa: ANN001
+        captured["manifest"] = manifest
+
+    monkeypatch.setattr(runtime, "_get_volume_manager", lambda: StubVolumeManager())
+    monkeypatch.setattr(runtime, "_ensure_clients", lambda: None)
+    monkeypatch.setattr(runtime, "_list_pods", lambda *_a, **_k: [])
+    monkeypatch.setattr(runtime, "_ensure_image", lambda *_a, **_k: None)
+    monkeypatch.setattr(runtime, "_run_pod", fake_run_pod)
+
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo", "namespace": "default"},
+            "spec": {"image": "alpine:3.20", "replicas": 1},
+        }
+    )
+    runtime.ensure_app(manifest, revision=1)
+    injected = captured.get("manifest")
+    assert injected is not None
+    vols = list(getattr(injected.spec, "volumes", []) or [])
+    assert any(v.host_path == "/tmp/netfs" and v.mount_path == "/data" for v in vols)
 
 
 def test_cri_env_valuefrom_resolution():
