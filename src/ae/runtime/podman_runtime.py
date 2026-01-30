@@ -568,6 +568,8 @@ class PodmanRuntime(RuntimeAdapter):
                     env_map = self._resolve_env_map(manifest, env_items, resources=resources)
                     for key, value in env_map.items():
                         cmd += ["-e", f"{key}={value}"]
+                    cmd += self._host_alias_args(manifest)
+                    cmd += self._dns_args(manifest)
                     # Image and command
                     cmd += [str(img)]
                     combined: list[str] = []
@@ -1008,6 +1010,8 @@ class PodmanRuntime(RuntimeAdapter):
                     argv += ["-e", f"{key}={value}"]
             except Exception:
                 pass
+            argv += self._host_alias_args(manifest)
+            argv += self._dns_args(manifest)
             # Volumes: mount app storage and hostPath volumes, plus projected config root when present
             try:
                 if getattr(manifest.spec, "storage", None):
@@ -1372,6 +1376,8 @@ class PodmanRuntime(RuntimeAdapter):
         )
         for key, value in env_map.items():
             cmd += ["-e", f"{key}={value}"]
+        cmd += self._host_alias_args(manifest)
+        cmd += self._dns_args(manifest)
 
         # Ports: publish service stable port if replicas==1. If no Service is defined
         # but the manifest declares ports, publish ephemeral host ports for exposed
@@ -1713,6 +1719,44 @@ class PodmanRuntime(RuntimeAdapter):
             tag = last.split(":", 1)[1]
             return "Always" if tag == "latest" else "IfNotPresent"
         return "Always"
+
+    def _host_alias_args(self, manifest: AppManifest) -> list[str]:
+        args: list[str] = []
+        for entry in getattr(manifest.spec, "host_aliases", []) or []:
+            if isinstance(entry, dict):
+                ip = entry.get("ip")
+                names = entry.get("hostnames") or entry.get("hostNames") or []
+            else:
+                ip = getattr(entry, "ip", None)
+                names = getattr(entry, "hostnames", None) or []
+            if not ip:
+                continue
+            for name in names or []:
+                if name:
+                    args += ["--add-host", f"{name}:{ip}"]
+        return args
+
+    def _dns_args(self, manifest: AppManifest) -> list[str]:
+        cfg = getattr(manifest.spec, "dns_config", None)
+        if not cfg:
+            return []
+        args: list[str] = []
+        for ns in getattr(cfg, "nameservers", None) or []:
+            if ns:
+                args += ["--dns", str(ns)]
+        for search in getattr(cfg, "searches", None) or []:
+            if search:
+                args += ["--dns-search", str(search)]
+        for opt in getattr(cfg, "options", None) or []:
+            if isinstance(opt, dict):
+                name = opt.get("name")
+                value = opt.get("value")
+            else:
+                name = getattr(opt, "name", None)
+                value = getattr(opt, "value", None)
+            if name:
+                args += ["--dns-opt", f"{name}:{value}" if value else str(name)]
+        return args
 
     def _ensure_image(
         self,

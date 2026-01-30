@@ -401,6 +401,42 @@ class DockerRuntime(RuntimeAdapter):
         except APIError as exc:
             raise RuntimeError(f"Failed to pull image {image_ref}: {exc}") from exc
 
+    def _resolve_extra_hosts(self, manifest: AppManifest) -> dict[str, str]:
+        hosts: dict[str, str] = {}
+        for entry in getattr(manifest.spec, "host_aliases", []) or []:
+            if isinstance(entry, dict):
+                ip = entry.get("ip")
+                names = entry.get("hostnames") or entry.get("hostNames") or []
+            else:
+                ip = getattr(entry, "ip", None)
+                names = getattr(entry, "hostnames", None) or []
+            if not ip:
+                continue
+            for name in names or []:
+                if name:
+                    hosts[str(name)] = str(ip)
+        return hosts
+
+    def _resolve_dns_config(
+        self, manifest: AppManifest
+    ) -> tuple[list[str], list[str], list[str]]:
+        cfg = getattr(manifest.spec, "dns_config", None)
+        if not cfg:
+            return [], [], []
+        nameservers = [str(x) for x in (getattr(cfg, "nameservers", None) or []) if x]
+        searches = [str(x) for x in (getattr(cfg, "searches", None) or []) if x]
+        options: list[str] = []
+        for opt in getattr(cfg, "options", None) or []:
+            if isinstance(opt, dict):
+                name = opt.get("name")
+                value = opt.get("value")
+            else:
+                name = getattr(opt, "name", None)
+                value = getattr(opt, "value", None)
+            if name:
+                options.append(f"{name}:{value}" if value else str(name))
+        return nameservers, searches, options
+
     def _create_container(
         self,
         manifest: AppManifest,
@@ -591,6 +627,16 @@ class DockerRuntime(RuntimeAdapter):
                 kwargs["volumes"] = volumes
             if getattr(manifest.spec, "working_dir", None):
                 kwargs["working_dir"] = str(manifest.spec.working_dir)
+            extra_hosts = self._resolve_extra_hosts(manifest)
+            if extra_hosts:
+                kwargs["extra_hosts"] = extra_hosts
+            dns, dns_search, dns_opt = self._resolve_dns_config(manifest)
+            if dns:
+                kwargs["dns"] = dns
+            if dns_search:
+                kwargs["dns_search"] = dns_search
+            if dns_opt:
+                kwargs["dns_opt"] = dns_opt
 
             container = run_fn(
                 manifest.spec.image, **{k: v for k, v in kwargs.items() if v is not None}
@@ -738,6 +784,17 @@ class DockerRuntime(RuntimeAdapter):
                     break
             except Exception:
                 continue
+        extra_hosts = self._resolve_extra_hosts(manifest)
+        dns, dns_search, dns_opt = self._resolve_dns_config(manifest)
+        sidecar_kwargs: dict[str, Any] = {}
+        if extra_hosts:
+            sidecar_kwargs["extra_hosts"] = extra_hosts
+        if dns:
+            sidecar_kwargs["dns"] = dns
+        if dns_search:
+            sidecar_kwargs["dns_search"] = dns_search
+        if dns_opt:
+            sidecar_kwargs["dns_opt"] = dns_opt
         # Build common env from manifest defaults
         for csp in manifest.spec.containers:
             try:
@@ -799,6 +856,7 @@ class DockerRuntime(RuntimeAdapter):
                                 self.CONTAINER_LABEL: cname,
                             },
                             restart_policy={"Name": "unless-stopped"},
+                            **sidecar_kwargs,
                         )
                         # Optional network join
                         if self._network_name:
@@ -1177,6 +1235,17 @@ class DockerRuntime(RuntimeAdapter):
         inits = getattr(manifest.spec, "init_containers", []) or []
         if not inits:
             return results
+        extra_hosts = self._resolve_extra_hosts(manifest)
+        dns, dns_search, dns_opt = self._resolve_dns_config(manifest)
+        init_kwargs: dict[str, Any] = {}
+        if extra_hosts:
+            init_kwargs["extra_hosts"] = extra_hosts
+        if dns:
+            init_kwargs["dns"] = dns
+        if dns_search:
+            init_kwargs["dns_search"] = dns_search
+        if dns_opt:
+            init_kwargs["dns_opt"] = dns_opt
 
         # Build shared volume bindings: hostPath volumes and storage volumes
         volumes = {}
@@ -1272,6 +1341,7 @@ class DockerRuntime(RuntimeAdapter):
                     command=(command + args) or None,
                     environment=env_map or None,
                     volumes=volumes or None,
+                    **init_kwargs,
                 )
                 cont.start()
                 if timeout is not None and timeout > 0:

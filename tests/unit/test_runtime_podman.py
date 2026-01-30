@@ -6,6 +6,9 @@ from ae.apishim.store import ObjectStore
 from ae.controller.spec import (
     AppManifest,
     AppSpec,
+    DNSConfig,
+    DNSConfigOption,
+    HostAlias,
     Metadata,
     ResourceQuantities,
     ResourcesSpec,
@@ -452,6 +455,55 @@ def test_podman_image_pull_policy_never_missing(monkeypatch):
     manifest = _manifest_single(image="demo:2.0", image_pull_policy="Never")
     with pytest.raises(RuntimeError):
         rt._ensure_image("demo:2.0", manifest=manifest)
+
+
+def test_podman_host_aliases_and_dns_config(monkeypatch):
+    rt = PodmanRuntime()
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(rt, "_image_exists", lambda *_a, **_k: True)
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        if argv[:3] == [rt._bin, "container", "exists"]:
+            return DummyResult(1)
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *_a, **_k: None)
+
+    base = _manifest_single(image="demo:3.0")
+    manifest = base.model_copy(
+        update={
+            "spec": base.spec.model_copy(
+                update={
+                    "host_aliases": [
+                        HostAlias(ip="10.0.0.10", hostnames=["db.local", "cache.local"])
+                    ],
+                    "dns_config": DNSConfig(
+                        nameservers=["1.1.1.1"],
+                        searches=["svc.cluster.local"],
+                        options=[DNSConfigOption(name="ndots", value="5")],
+                    ),
+                }
+            )
+        }
+    )
+
+    rt._create_container(manifest, "blue-rev1-0", 1, service=(None, None, None))
+
+    run_calls = [
+        c for c in calls if len(c) >= 3 and c[0] == rt._bin and c[1] == "run" and "-d" in c
+    ]
+    assert run_calls, f"expected podman run call, got: {calls}"
+    cmd = run_calls[0]
+    assert "--add-host" in cmd
+    assert "db.local:10.0.0.10" in cmd
+    assert "cache.local:10.0.0.10" in cmd
+    assert "--dns" in cmd and "1.1.1.1" in cmd
+    assert "--dns-search" in cmd and "svc.cluster.local" in cmd
+    assert "--dns-opt" in cmd and "ndots:5" in cmd
 
 
 # ruff: noqa: E501
