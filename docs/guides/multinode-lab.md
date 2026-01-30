@@ -25,6 +25,7 @@ python -m ae.node --runtime-backend podman --port 9109 --ensure-pod-net
   - `AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock python -m ae.node --runtime-backend cri --port 9109 --ensure-pod-net`
 - Leave `AE_POD_CIDR` empty to let the controller assign one on first heartbeat.
 - If WireGuard is disabled, drop `--ensure-pod-net` and set `AE_SERVICE_PROVIDER=bridge` on the controller (no cross-node routing).
+- For PVC/NetFS mounts, set `AE_ENABLE_NETFS=1` plus either `AE_APISHIM_DB` (shared DB) or `AE_APISHIM_URL` (apishim HTTP API).
 
 ### DaemonSet option (k8s-aligned)
 
@@ -57,6 +58,7 @@ Expected: one replica on each node, Service VIP allocated from `AE_SERVICE_IP_PO
 - Unit + integration (includes remote agent stub test): `pytest tests/unit/test_scheduler.py tests/integration/test_multinode_agent_flow.py`
 - Planner checks: `ae plan -f specs/examples/echo-multinode.yaml --strict`
 - End-to-end lab helper: `./ops/dev/multinode-lab.sh -h` for environment hints.
+- NodePort smoke: `AE_MN_NODEPORT_HOST=<worker-ip> scripts/multinode_nodeport_smoke.sh`
 
 ## Cleanup
 - `ae delete echo-mn`

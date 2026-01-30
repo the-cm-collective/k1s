@@ -335,7 +335,7 @@ def _health_from_k8s_container(
 
 def _container_mounts_from_k8s_container(
     container: dict[str, Any],
-    volume_claims: dict[str, tuple[str, bool]],
+    volume_claims: dict[str, tuple],
     volume_hosts: dict[str, str],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     pvc_mounts: list[dict[str, Any]] = []
@@ -350,7 +350,9 @@ def _container_mounts_from_k8s_container(
             continue
         entry = volume_claims.get(str(vname))
         if entry:
-            claim, vol_read_only = entry
+            claim = entry[0] if len(entry) > 0 else None
+            vol_read_only = bool(entry[1]) if len(entry) > 1 else False
+            is_template = bool(entry[2]) if len(entry) > 2 else False
             read_only = bool(vm.get("readOnly", False)) or bool(vol_read_only)
             record: dict[str, Any] = {
                 "claimName": str(claim),
@@ -360,6 +362,8 @@ def _container_mounts_from_k8s_container(
             sub_path = vm.get("subPath")
             if sub_path:
                 record["subPath"] = str(sub_path)
+            if is_template:
+                record["claimTemplate"] = True
             pvc_mounts.append(record)
         host_path = volume_hosts.get(str(vname))
         if host_path:
@@ -383,16 +387,19 @@ def _container_mounts_from_k8s_container(
             continue
         entry = volume_claims.get(str(vname))
         if entry:
-            claim, vol_read_only = entry
+            claim = entry[0] if len(entry) > 0 else None
+            vol_read_only = bool(entry[1]) if len(entry) > 1 else False
+            is_template = bool(entry[2]) if len(entry) > 2 else False
             read_only = bool(vol_read_only)
-            pvc_mounts.append(
-                {
-                    "claimName": str(claim),
-                    "mountPath": str(device_path),
-                    "devicePath": str(device_path),
-                    "readOnly": read_only,
-                }
-            )
+            record = {
+                "claimName": str(claim),
+                "mountPath": str(device_path),
+                "devicePath": str(device_path),
+                "readOnly": read_only,
+            }
+            if is_template:
+                record["claimTemplate"] = True
+            pvc_mounts.append(record)
         host_path = volume_hosts.get(str(vname))
         if host_path:
             read_only = bool(vd.get("readOnly", False))
@@ -406,6 +413,32 @@ def _container_mounts_from_k8s_container(
     return pvc_mounts, host_mounts, host_devices
 
 
+def _container_projection_mounts_from_k8s_container(
+    container: dict[str, Any],
+    volume_projections: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    projection_mounts: list[dict[str, Any]] = []
+    for vm in container.get("volumeMounts") or []:
+        if not isinstance(vm, dict):
+            continue
+        vname = vm.get("name")
+        mount_path = vm.get("mountPath")
+        if not vname or not mount_path:
+            continue
+        proj = volume_projections.get(str(vname))
+        if not proj:
+            continue
+        rel = f"k8s/volumes/{vname}"
+        sub_path = vm.get("subPath")
+        if sub_path:
+            rel = f"{rel}/{sub_path}"
+        read_only = bool(vm.get("readOnly", False)) or proj.get("type") == "secret"
+        projection_mounts.append(
+            {"path": str(rel), "mountPath": str(mount_path), "readOnly": read_only}
+        )
+    return projection_mounts
+
+
 def _container_spec_from_k8s(
     container: dict[str, Any],
     *,
@@ -413,6 +446,7 @@ def _container_spec_from_k8s(
     pvc_mounts: list[dict[str, Any]],
     host_mounts: list[dict[str, Any]],
     host_devices: list[dict[str, Any]],
+    projection_mounts: list[dict[str, Any]],
 ) -> AppSpec.ContainerSpec:
     name = container.get("name") or default_name
     image = container.get("image") or "busybox:latest"
@@ -435,6 +469,7 @@ def _container_spec_from_k8s(
         volume_mounts=host_mounts,
         pvc_mounts=pvc_mounts,
         volume_devices=host_devices,
+        projection_mounts=projection_mounts,
     )
 
 
@@ -443,9 +478,11 @@ def manifest_from_k8s_workload(
     *,
     service_spec: ServiceSpec | None = None,
     ingress_spec: IngressSpec | None = None,
+    volume_claim_templates: list[dict[str, Any]] | None = None,
 ) -> AppManifest:
     spec: dict[str, Any] = _spec(obj)
     tpl = (spec.get("template") or {}).get("spec") or {}
+    namespace = _namespace(obj) or DEFAULT_NAMESPACE
     containers = tpl.get("containers") or []
     init_containers_raw = tpl.get("initContainers") or []
     image_pull_policy = None
@@ -479,8 +516,26 @@ def manifest_from_k8s_workload(
     init_mounts: dict[
         int, tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]
     ] = {}
+    container_proj_mounts: dict[int, list[dict[str, Any]]] = {}
+    init_proj_mounts: dict[int, list[dict[str, Any]]] = {}
+    volume_projections: dict[str, dict[str, Any]] = {}
     try:
-        volume_claims: dict[str, tuple[str, bool]] = {}
+        volume_claims: dict[str, tuple] = {}
+        template_names: set[str] = set()
+        for claim_tpl in volume_claim_templates or []:
+            if not isinstance(claim_tpl, dict):
+                continue
+            meta = (
+                claim_tpl.get("metadata")
+                if isinstance(claim_tpl.get("metadata"), dict)
+                else {}
+            )
+            name = meta.get("name")
+            if not name:
+                continue
+            tpl_name = str(name)
+            template_names.add(tpl_name)
+            volume_claims[tpl_name] = (tpl_name, False, True)
         volume_hosts: dict[str, str] = {}
         for vol in tpl.get("volumes") or []:
             if not isinstance(vol, dict):
@@ -489,8 +544,12 @@ def manifest_from_k8s_workload(
             pvc = vol.get("persistentVolumeClaim") or {}
             if isinstance(pvc, dict):
                 claim = pvc.get("claimName")
-                if vname and claim:
-                    volume_claims[str(vname)] = (str(claim), bool(pvc.get("readOnly", False)))
+                if vname and claim and str(vname) not in template_names:
+                    volume_claims[str(vname)] = (
+                        str(claim),
+                        bool(pvc.get("readOnly", False)),
+                        False,
+                    )
             host = vol.get("hostPath")
             host_path = None
             if isinstance(host, dict):
@@ -499,7 +558,29 @@ def manifest_from_k8s_workload(
                 host_path = host
             if vname and host_path:
                 volume_hosts[str(vname)] = str(host_path)
-        if volume_claims or volume_hosts:
+            cfg = vol.get("configMap") if isinstance(vol.get("configMap"), dict) else None
+            if vname and cfg and cfg.get("name"):
+                volume_projections[str(vname)] = {
+                    "name": str(vname),
+                    "type": "configMap",
+                    "sourceName": str(cfg.get("name")),
+                    "optional": bool(cfg.get("optional", False)),
+                    "defaultMode": cfg.get("defaultMode"),
+                    "items": list(cfg.get("items") or []),
+                    "namespace": namespace,
+                }
+            sec = vol.get("secret") if isinstance(vol.get("secret"), dict) else None
+            if vname and sec and (sec.get("secretName") or sec.get("name")):
+                volume_projections[str(vname)] = {
+                    "name": str(vname),
+                    "type": "secret",
+                    "sourceName": str(sec.get("secretName") or sec.get("name")),
+                    "optional": bool(sec.get("optional", False)),
+                    "defaultMode": sec.get("defaultMode"),
+                    "items": list(sec.get("items") or []),
+                    "namespace": namespace,
+                }
+        if volume_claims or volume_hosts or volume_projections:
             for idx, container in enumerate(containers or []):
                 if not isinstance(container, dict):
                     continue
@@ -507,6 +588,10 @@ def manifest_from_k8s_workload(
                     container, volume_claims, volume_hosts
                 )
                 container_mounts[idx] = (c_pvc, c_host, c_devs)
+                if volume_projections:
+                    container_proj_mounts[idx] = _container_projection_mounts_from_k8s_container(
+                        container, volume_projections
+                    )
             for idx, container in enumerate(init_containers_raw or []):
                 if not isinstance(container, dict):
                     continue
@@ -514,13 +599,21 @@ def manifest_from_k8s_workload(
                     container, volume_claims, volume_hosts
                 )
                 init_mounts[idx] = (c_pvc, c_host, c_devs)
+                if volume_projections:
+                    init_proj_mounts[idx] = _container_projection_mounts_from_k8s_container(
+                        container, volume_projections
+                    )
     except Exception:  # noqa: S112 - best-effort PVC extraction
         pvc_mounts = []
         host_mounts = []
         volume_devices = []
         container_mounts = {}
         init_mounts = {}
+        container_proj_mounts = {}
+        init_proj_mounts = {}
+        volume_projections = {}
     main_pvc, main_host, main_devs = container_mounts.get(0, ([], [], []))
+    main_proj = container_proj_mounts.get(0, [])
     pvc_mounts = list(main_pvc)
     host_mounts = list(main_host)
     volume_devices = list(main_devs)
@@ -532,13 +625,13 @@ def manifest_from_k8s_workload(
     m_replicas = max(1, replicas)
 
     service_account = tpl.get("serviceAccountName") or tpl.get("serviceAccount") or "default"
-    namespace = _namespace(obj) or DEFAULT_NAMESPACE
     sidecars: list[AppSpec.ContainerSpec] = []
     if len(containers) > 1:
         for idx, container in enumerate(containers[1:], start=1):
             if not isinstance(container, dict):
                 continue
             c_pvc, c_host, c_devs = container_mounts.get(idx, ([], [], []))
+            c_proj = container_proj_mounts.get(idx, [])
             sidecars.append(
                 _container_spec_from_k8s(
                     container,
@@ -546,6 +639,7 @@ def manifest_from_k8s_workload(
                     pvc_mounts=c_pvc,
                     host_mounts=c_host,
                     host_devices=c_devs,
+                    projection_mounts=c_proj,
                 )
             )
     init_containers: list[AppSpec.ContainerSpec] = []
@@ -554,6 +648,7 @@ def manifest_from_k8s_workload(
             if not isinstance(container, dict):
                 continue
             c_pvc, c_host, c_devs = init_mounts.get(idx, ([], [], []))
+            c_proj = init_proj_mounts.get(idx, [])
             init_containers.append(
                 _container_spec_from_k8s(
                     container,
@@ -561,6 +656,7 @@ def manifest_from_k8s_workload(
                     pvc_mounts=c_pvc,
                     host_mounts=c_host,
                     host_devices=c_devs,
+                    projection_mounts=c_proj,
                 )
             )
 
@@ -583,6 +679,8 @@ def manifest_from_k8s_workload(
         image_pull_policy=image_pull_policy,
         containers=sidecars,
         init_containers=init_containers,
+        projection_mounts=main_proj,
+        projection_sources=list(volume_projections.values()) if volume_projections else [],
     )
     if raw_pull_secrets is None and not image_pull_secrets:
         sa_pull = _service_account_pull_secrets(namespace, service_account)
@@ -651,6 +749,7 @@ def service_spec_from_k8s(
         target_port=svc_ports[0].target_port,
         external_ips=spec.get("externalIPs", []),
         session_affinity=spec.get("sessionAffinity"),
+        health_check_node_port=spec.get("healthCheckNodePort"),
     )
 
 
@@ -690,10 +789,18 @@ def ingress_spec_from_k8s(
                 tls_enabled = True
                 tls_secret = entry.get("secretName")
                 break
+    ann = None
+    try:
+        meta = _metadata(ing)
+        if isinstance(meta, dict):
+            ann = meta.get("annotations")
+    except Exception:  # noqa: S112
+        ann = None
     ingress_spec = IngressSpec(
         host=host or "",
         path=path,
         tls=tls_enabled,
         tlsSecretName=tls_secret,
+        annotations=ann,
     )
     return target_key, ingress_spec

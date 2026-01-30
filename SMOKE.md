@@ -87,6 +87,7 @@ Troubleshooting
 ```
 - Verify Service VIP routing: `python3 -m ae.cli services --json | jq -r '.[0].cluster_ip'` then
   `curl http://<cluster-ip>:8080/healthz` from the controller host.
+- NodePort (multi-node, requires agent service proxy): `AE_MN_NODEPORT_HOST=<worker-ip> scripts/multinode_nodeport_smoke.sh`
 - Quick regression: `pytest tests/integration/test_multinode_agent_flow.py`.
   - Service VIP sanity: `pytest tests/integration/test_service_vip_routing.py` (requires docker-enabled env).
 - QEMU helper shortcut: `RUN_SMOKE=1 AE_TOKEN=dev-token ops/ci/multinode-qemu.sh start` runs apply → watch → VIP curl → kill worker1 agent → re-watch → VIP curl, then leaves the lab up for inspection.

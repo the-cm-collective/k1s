@@ -31,6 +31,7 @@ from ae.controller.spec import (
 
 from .base import PodState, RuntimeAdapter, RuntimeResult
 from .ports import choose_host_port
+from .projections import ensure_k8s_volume_projections
 from .registry import RegistryAuthProvider
 
 
@@ -110,7 +111,9 @@ class PodmanRuntime(RuntimeAdapter):
             else [f"{app}-rev{revision}-{i}" for i in range(manifest.spec.replicas)]
         )
         self._current_node_id = node_id
-        manifest = self._maybe_inject_pvc_mounts(manifest, node_id=node_id)
+        manifest = ensure_k8s_volume_projections(
+            manifest, revision, state=self._get_apishim_state(), logger=LOGGER
+        )
         host_network = bool(getattr(manifest.spec, "host_network", False))
         is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
         job_backoff_limit = None
@@ -169,12 +172,15 @@ class PodmanRuntime(RuntimeAdapter):
             old = []
 
         for rid in desired_ids:
+            rep_manifest = self._maybe_inject_pvc_mounts(
+                manifest, node_id=node_id, replica_id=rid
+            )
             c = by_replica.get(rid)
             if c is None:
                 if limit_create is not None and created >= int(limit_create):
                     continue
                 self._create_container(
-                    manifest,
+                    rep_manifest,
                     rid,
                     revision,
                     service=(svc_port, svc_target, svc_ports_list),
@@ -228,7 +234,7 @@ class PodmanRuntime(RuntimeAdapter):
                             # Retry by recreating the container with incremented attempt
                             self._stop_and_remove(cid)
                             self._create_container(
-                                manifest,
+                                rep_manifest,
                                 rid,
                                 revision,
                                 service=(svc_port, svc_target, svc_ports_list),
@@ -275,7 +281,7 @@ class PodmanRuntime(RuntimeAdapter):
 
             # Ensure sidecars for this replica when declared
             try:
-                self._ensure_sidecars(manifest, rid, revision)
+                self._ensure_sidecars(rep_manifest, rid, revision)
             except Exception:
                 pass
 
@@ -973,7 +979,9 @@ class PodmanRuntime(RuntimeAdapter):
         Returns a list of tuples: (name, rc, message).
         """
         manifest = self._maybe_inject_pvc_mounts(
-            manifest, node_id=node_id or getattr(self, "_current_node_id", None)
+            manifest,
+            node_id=node_id or getattr(self, "_current_node_id", None),
+            replica_id=replica_id,
         )
         results: list[tuple[str, int, str]] = []
         try:
@@ -1600,6 +1608,16 @@ class PodmanRuntime(RuntimeAdapter):
                 vol_name = self._storage_volume_name(app, s.name)
                 mode = "ro" if getattr(s, "read_only", False) else "rw"
                 cmd += ["-v", f"{vol_name}:{s.mount_path}:{mode}"]
+        proj_host_root = None
+        try:
+            for v in manifest.spec.volumes or []:
+                mpath = getattr(v, "mount_path", None)
+                hpath = getattr(v, "host_path", None)
+                if mpath and str(mpath).startswith(f"/var/run/ae/config/{app}") and hpath:
+                    proj_host_root = hpath
+                    break
+        except Exception:
+            proj_host_root = None
         if manifest.spec.volumes:
             for v in manifest.spec.volumes:
                 mode = "ro" if v.read_only else "rw"
@@ -1607,6 +1625,28 @@ class PodmanRuntime(RuntimeAdapter):
                 if host and not os.path.isabs(host):
                     host = os.path.abspath(host)
                 cmd += ["-v", f"{host}:{v.mount_path}:{mode}"]
+        if proj_host_root and getattr(manifest.spec, "projection_mounts", None):
+            for pm in getattr(manifest.spec, "projection_mounts", []) or []:
+                try:
+                    rel = getattr(pm, "path", None) if not isinstance(pm, dict) else pm.get("path")
+                    mnt = (
+                        getattr(pm, "mount_path", None)
+                        if not isinstance(pm, dict)
+                        else pm.get("mountPath") or pm.get("mount_path")
+                    )
+                    ro = (
+                        bool(getattr(pm, "read_only", True))
+                        if not isinstance(pm, dict)
+                        else bool(pm.get("readOnly", True))
+                    )
+                    if not rel or not mnt:
+                        continue
+                    host = os.path.join(str(proj_host_root), str(rel).lstrip("/"))
+                    if host and not os.path.isabs(host):
+                        host = os.path.abspath(host)
+                    cmd += ["-v", f"{host}:{mnt}:{'ro' if ro else 'rw'}"]
+                except Exception:
+                    continue
         if getattr(manifest.spec, "volume_devices", None):
             for d in manifest.spec.volume_devices:
                 host = d.host_path
@@ -2212,13 +2252,35 @@ class PodmanRuntime(RuntimeAdapter):
         return self._volume_manager
 
     def _maybe_inject_pvc_mounts(
-        self, manifest: AppManifest, *, node_id: str | None = None
+        self,
+        manifest: AppManifest,
+        *,
+        node_id: str | None = None,
+        replica_id: str | None = None,
     ) -> AppManifest:
         mgr = self._get_volume_manager()
         if mgr is None:
             return manifest
         try:
-            return mgr.inject_pvc_mounts(manifest, node_id=node_id or self._current_node_id)
+            if replica_id is not None:
+                return mgr.inject_pvc_mounts(
+                    manifest,
+                    node_id=node_id or self._current_node_id,
+                    replica_id=replica_id,
+                )
+            return mgr.inject_pvc_mounts(
+                manifest,
+                node_id=node_id or self._current_node_id,
+            )
+        except TypeError:
+            try:
+                return mgr.inject_pvc_mounts(
+                    manifest,
+                    node_id=node_id or self._current_node_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("PVC mount injection failed: %s", exc)
+                return manifest
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("PVC mount injection failed: %s", exc)
             return manifest
@@ -2257,22 +2319,23 @@ class PodmanRuntime(RuntimeAdapter):
         self._apishim_state_checked = True
         try:
             from ae.apishim.store import ObjectStore
-            from ae.storage.state import ApishimStorageState
+            from ae.storage.state import ApishimHttpStorageState, ApishimStorageState
         except Exception:
             self._apishim_state = None
             return None
         dsn = os.getenv("AE_APISHIM_DSN")
         db_env = os.getenv("AE_APISHIM_DB")
         db_path = Path(db_env or "state/apishim.db")
-        if not dsn and not db_path.exists():
-            self._apishim_state = None
-            return None
-        try:
-            store = ObjectStore(dsn=dsn) if dsn else ObjectStore(db_path=db_path)
-        except Exception:
-            self._apishim_state = None
-            return None
-        self._apishim_state = ApishimStorageState(store)
+        store = None
+        if dsn or db_path.exists():
+            try:
+                store = ObjectStore(dsn=dsn) if dsn else ObjectStore(db_path=db_path)
+            except Exception:
+                store = None
+        if store is not None:
+            self._apishim_state = ApishimStorageState(store)
+            return self._apishim_state
+        self._apishim_state = ApishimHttpStorageState.from_env()
         return self._apishim_state
 
     def _get_apishim_store(self):

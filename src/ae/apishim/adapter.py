@@ -59,9 +59,13 @@ def _manifest_from_deployment(
     *,
     service_spec: ServiceSpec | None = None,
     ingress_spec: IngressSpec | None = None,
+    volume_claim_templates: list[dict[str, Any]] | None = None,
 ) -> AppManifest:
     return k8s_convert.manifest_from_k8s_workload(
-        dep, service_spec=service_spec, ingress_spec=ingress_spec
+        dep,
+        service_spec=service_spec,
+        ingress_spec=ingress_spec,
+        volume_claim_templates=volume_claim_templates,
     )
 
 
@@ -330,10 +334,16 @@ class AdapterWorker(threading.Thread):
                     status=st,
                 )
             return
+        self._ensure_statefulset_claims(sts)
         dep_key = (sts.namespace, sts.name)
         svc_spec = self._service_specs.get(dep_key)
         ing_spec = self._ingress_specs.get(dep_key)
-        m = _manifest_from_deployment(sts, service_spec=svc_spec, ingress_spec=ing_spec)
+        m = _manifest_from_deployment(
+            sts,
+            service_spec=svc_spec,
+            ingress_spec=ing_spec,
+            volume_claim_templates=spec.get("volumeClaimTemplates"),
+        )
         try:
             labels = sts.metadata.get("labels") or None
         except Exception:
@@ -372,6 +382,62 @@ class AdapterWorker(threading.Thread):
                 sts.spec,
                 status=st,
             )
+
+    def _ensure_statefulset_claims(self, sts: K8sObject) -> None:
+        spec = sts.spec or {}
+        templates = spec.get("volumeClaimTemplates") or []
+        if not isinstance(templates, list) or not templates:
+            return
+        try:
+            replicas = max(1, int(spec.get("replicas", 1) or 1))
+        except Exception:
+            replicas = 1
+        namespace = sts.namespace or "default"
+        meta = sts.metadata or {}
+        owner_ref = {
+            "apiVersion": "apps/v1",
+            "kind": "StatefulSet",
+            "name": sts.name,
+            "controller": True,
+            "blockOwnerDeletion": True,
+        }
+        uid = meta.get("uid")
+        if uid:
+            owner_ref["uid"] = uid
+        for tpl in templates:
+            if not isinstance(tpl, dict):
+                continue
+            tpl_meta = tpl.get("metadata") if isinstance(tpl.get("metadata"), dict) else {}
+            tpl_name = tpl_meta.get("name")
+            if not tpl_name:
+                continue
+            tpl_name = str(tpl_name)
+            tpl_spec = tpl.get("spec") if isinstance(tpl.get("spec"), dict) else {}
+            for ordinal in range(replicas):
+                pvc_name = f"{tpl_name}-{sts.name}-{ordinal}"
+                existing = self._store.get(
+                    "", "v1", "persistentvolumeclaims", namespace, pvc_name
+                )
+                if existing is not None:
+                    continue
+                pvc_meta: dict[str, Any] = {"name": pvc_name, "namespace": namespace}
+                labels = tpl_meta.get("labels")
+                if isinstance(labels, dict) and labels:
+                    pvc_meta["labels"] = dict(labels)
+                annotations = tpl_meta.get("annotations")
+                if isinstance(annotations, dict) and annotations:
+                    pvc_meta["annotations"] = dict(annotations)
+                pvc_meta["ownerReferences"] = [owner_ref]
+                self._store.upsert(
+                    "",
+                    "v1",
+                    "persistentvolumeclaims",
+                    namespace,
+                    pvc_name,
+                    pvc_meta,
+                    tpl_spec or {},
+                    status={},
+                )
 
     def _apply_daemonset(self, ds: K8sObject) -> None:
         spec = ds.spec or {}

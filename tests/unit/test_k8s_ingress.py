@@ -36,3 +36,35 @@ def test_traefik_rejects_exact_pathtype() -> None:
 
     with pytest.raises(ValueError):
         export_k8s_docs(manifest=man, options=opts)
+
+
+def test_ingress_annotations_passthrough_requires_flag() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    ing = man.spec.ingress
+    assert ing is not None
+    man = man.model_copy(
+        update={
+            "spec": man.spec.model_copy(
+                update={
+                    "ingress": ing.model_copy(
+                        update={"annotations": {"nginx.ingress.kubernetes.io/rewrite-target": "/"}}
+                    )
+                }
+            )
+        }
+    )
+    opts = ExportOptions(namespace="demo", ingress_class_name="nginx")
+    ing_doc = next(d for d in export_k8s_docs(manifest=man, options=opts) if d["kind"] == "Ingress")
+    assert "annotations" not in ing_doc["metadata"]
+
+    opts = ExportOptions(
+        namespace="demo",
+        ingress_class_name="nginx",
+        allow_ingress_annotations=True,
+        ingress_annotations={"nginx.ingress.kubernetes.io/proxy-read-timeout": "60"},
+    )
+    ing_doc = next(d for d in export_k8s_docs(manifest=man, options=opts) if d["kind"] == "Ingress")
+    ann = ing_doc["metadata"].get("annotations", {})
+    assert ann.get("nginx.ingress.kubernetes.io/rewrite-target") == "/"
+    # Explicit flag values override spec values
+    assert ann.get("nginx.ingress.kubernetes.io/proxy-read-timeout") == "60"

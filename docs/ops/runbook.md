@@ -32,6 +32,12 @@ CRI nodes (containerd)
   - `AE_ENABLE_SERVICE_PROXY=1`
   - `AE_SERVICE_PROVIDER=iptables`
   - Run controller as root or with sufficient iptables permissions
+- Service VIP on **each CRI node** (kube-proxy style):
+  - `AE_AGENT_SERVICE_PROXY=1`
+  - `AE_AGENT_SERVICE_PROXY_URL=http://<controller>:9108`
+  - `AE_AGENT_SERVICE_PROXY_DB=/var/lib/ae/agent-services.db`
+  - If API auth is enabled: `AE_AGENT_SERVICE_PROXY_TOKEN=$AE_API_READ_TOKEN`
+  - Requires NET_ADMIN/root and `iptables` on PATH
 - Streaming exec/attach uses `crictl`; ensure it is installed and on PATH (`CRICTL_BIN` overrides).
 - CRI port-forward proxy (pods/services): set `AE_APISHIM_CRI_PORTFORWARD=1` (or `AE_APISHIM_CRI_PORTFORWARD_FORCE=1` to always prefer it).
 - Service VIP proxy on CRI uses iptables; set `AE_ENABLE_SERVICE_PROXY=1` and run as root.
@@ -206,6 +212,7 @@ Planning and CI Gating
 - Use `ae plan --json` for CI gating. The JSON includes a `diagnostics` object with:
   - `service`: `{ type, ports[], duplicates{names|ports|nodePorts}, outOfRangeNodePorts[], hostPortConflicts{port:[containers]} }`
   - `tls`: `{ ingress, secretName, root, resolved, cert?, key?, error? }`
+  - `network` (CRI best-effort): `{ serviceProxy{enabled,provider}, iptables{bin,available,root}, podCidrMissing[] }`
 
 Example:
 ```

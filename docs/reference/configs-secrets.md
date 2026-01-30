@@ -71,6 +71,24 @@ Inside the container this produces, for example:
 - `/var/run/ae/config/<app>/config/app_mode.txt`
 - `/var/run/ae/config/<app>/secret/token`
 
+### Kubernetes ConfigMap/Secret volumes (apishim)
+
+When apishim converts Kubernetes workloads, `configMap` and `secret` volumes are
+projected into the same projection root and mounted into containers via
+`projectionMounts`:
+
+- Host: `/var/lib/ae/projections/<app>-rev<revision>/k8s/volumes/<volume>/...`
+- Container: `/var/run/ae/config/<app>/k8s/volumes/<volume>/...`
+
+Notes:
+- `volumeMounts.subPath` and `items` are honored (best-effort).
+- `defaultMode` and per-item `mode` are applied when writing files.
+- `optional: true` skips missing ConfigMaps/Secrets without failing the reconcile.
+
+Configure the host root with `AE_PROJECTION_ROOT`, and ensure the node can read
+apishim state (either `AE_APISHIM_DB`/`AE_APISHIM_DSN` or `AE_APISHIM_URL` plus a
+read token).
+
 ### CLI Helpers
 - `ae config validate -f configs/app-config.yaml` — list top-level keys.
 - `ae secret validate -f specs/examples/demo-secret.sops.yaml` — list decrypted keys.

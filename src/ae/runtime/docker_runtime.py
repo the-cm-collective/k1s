@@ -27,6 +27,7 @@ from ae.controller.spec import (
 from ae.runtime.ports import choose_host_port
 
 from .base import PodState, RuntimeAdapter, RuntimeResult
+from .projections import ensure_k8s_volume_projections
 from .registry import RegistryAuthProvider
 
 LOGGER = logging.getLogger(__name__)
@@ -96,7 +97,9 @@ class DockerRuntime(RuntimeAdapter):
         )
         # Record node context so volume helpers can label ownership
         self._current_node_id = node_id
-        manifest = self._maybe_inject_pvc_mounts(manifest, node_id=node_id)
+        manifest = ensure_k8s_volume_projections(
+            manifest, revision, state=self._get_apishim_state(), logger=LOGGER
+        )
         is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
         job_backoff_limit = None
         if is_job:
@@ -150,12 +153,15 @@ class DockerRuntime(RuntimeAdapter):
             self._ensure_image(manifest.spec.image, manifest=manifest)
 
         for replica_id in desired_pod_names:
+            rep_manifest = self._maybe_inject_pvc_mounts(
+                manifest, node_id=node_id, replica_id=replica_id
+            )
             container = containers_by_replica.get(replica_id)
             if container is None:
                 if limit_create is not None and created >= int(limit_create):
                     continue
                 container = self._create_container(
-                    manifest, replica_id, revision, node_id=node_id, attempt=0
+                    rep_manifest, replica_id, revision, node_id=node_id, attempt=0
                 )
                 containers_by_replica[replica_id] = container
                 created += 1
@@ -189,7 +195,7 @@ class DockerRuntime(RuntimeAdapter):
                             except Exception:
                                 pass
                             container = self._create_container(
-                                manifest,
+                                rep_manifest,
                                 replica_id,
                                 revision,
                                 node_id=node_id,
@@ -752,13 +758,35 @@ class DockerRuntime(RuntimeAdapter):
         return self._volume_manager
 
     def _maybe_inject_pvc_mounts(
-        self, manifest: AppManifest, *, node_id: str | None = None
+        self,
+        manifest: AppManifest,
+        *,
+        node_id: str | None = None,
+        replica_id: str | None = None,
     ) -> AppManifest:
         mgr = self._get_volume_manager()
         if mgr is None:
             return manifest
         try:
-            return mgr.inject_pvc_mounts(manifest, node_id=node_id or self._current_node_id)
+            if replica_id is not None:
+                return mgr.inject_pvc_mounts(
+                    manifest,
+                    node_id=node_id or self._current_node_id,
+                    replica_id=replica_id,
+                )
+            return mgr.inject_pvc_mounts(
+                manifest,
+                node_id=node_id or self._current_node_id,
+            )
+        except TypeError:
+            try:
+                return mgr.inject_pvc_mounts(
+                    manifest,
+                    node_id=node_id or self._current_node_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("PVC mount injection failed: %s", exc)
+                return manifest
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("PVC mount injection failed: %s", exc)
             return manifest
@@ -871,6 +899,37 @@ class DockerRuntime(RuntimeAdapter):
                 if host_path and not os.path.isabs(host_path):
                     host_path = os.path.abspath(host_path)
                 volumes[host_path] = {"bind": v.mount_path, "mode": mode}
+        proj_host_root = None
+        for host_path, bind in (volumes or {}).items():
+            try:
+                dest = (bind or {}).get("bind") or ""
+                if str(dest).startswith(f"/var/run/ae/config/{app_name}"):
+                    proj_host_root = host_path
+                    break
+            except Exception:
+                continue
+        if proj_host_root and getattr(manifest.spec, "projection_mounts", None):
+            for pm in getattr(manifest.spec, "projection_mounts", []) or []:
+                try:
+                    rel = getattr(pm, "path", None) if not isinstance(pm, dict) else pm.get("path")
+                    mnt = (
+                        getattr(pm, "mount_path", None)
+                        if not isinstance(pm, dict)
+                        else pm.get("mountPath") or pm.get("mount_path")
+                    )
+                    ro = (
+                        bool(getattr(pm, "read_only", True))
+                        if not isinstance(pm, dict)
+                        else bool(pm.get("readOnly", True))
+                    )
+                    if not rel or not mnt:
+                        continue
+                    host = os.path.join(str(proj_host_root), str(rel).lstrip("/"))
+                    if host and not os.path.isabs(host):
+                        host = os.path.abspath(host)
+                    volumes[host] = {"bind": str(mnt), "mode": "ro" if ro else "rw"}
+                except Exception:
+                    continue
         if getattr(manifest.spec, "volume_devices", None):
             for d in manifest.spec.volume_devices:
                 mode = "r" if d.read_only else "rwm"
@@ -1708,7 +1767,9 @@ class DockerRuntime(RuntimeAdapter):
         Returns list of (name, rc, message).
         """
         manifest = self._maybe_inject_pvc_mounts(
-            manifest, node_id=node_id or getattr(self, "_current_node_id", None)
+            manifest,
+            node_id=node_id or getattr(self, "_current_node_id", None),
+            replica_id=replica_id,
         )
         results: list[tuple[str, int, str]] = []
         inits = getattr(manifest.spec, "init_containers", []) or []
@@ -1975,22 +2036,23 @@ class DockerRuntime(RuntimeAdapter):
         self._apishim_state_checked = True
         try:
             from ae.apishim.store import ObjectStore
-            from ae.storage.state import ApishimStorageState
+            from ae.storage.state import ApishimHttpStorageState, ApishimStorageState
         except Exception:
             self._apishim_state = None
             return None
         dsn = os.getenv("AE_APISHIM_DSN")
         db_env = os.getenv("AE_APISHIM_DB")
         db_path = Path(db_env or "state/apishim.db")
-        if not dsn and not db_path.exists():
-            self._apishim_state = None
-            return None
-        try:
-            store = ObjectStore(dsn=dsn) if dsn else ObjectStore(db_path=db_path)
-        except Exception:
-            self._apishim_state = None
-            return None
-        self._apishim_state = ApishimStorageState(store)
+        store = None
+        if dsn or db_path.exists():
+            try:
+                store = ObjectStore(dsn=dsn) if dsn else ObjectStore(db_path=db_path)
+            except Exception:
+                store = None
+        if store is not None:
+            self._apishim_state = ApishimStorageState(store)
+            return self._apishim_state
+        self._apishim_state = ApishimHttpStorageState.from_env()
         return self._apishim_state
 
     def _get_apishim_store(self):

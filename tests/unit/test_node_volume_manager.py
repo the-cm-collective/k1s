@@ -12,6 +12,18 @@ class _StubNetFS:
         return NetFSMount(pvc=pvc, pv=PvRef(name="pv1"), node_id=node_id, host_path="/dev/loop0")
 
 
+class _CaptureNetFS:
+    def __init__(self) -> None:
+        self.last_pvc: PvcRef | None = None
+
+    def ensure_mount(  # noqa: D401 - stub
+        self, pvc: PvcRef, *, node_id: str, fs_group=None, selinux=None, for_device=False
+    ) -> NetFSMount:
+        _ = (node_id, fs_group, selinux, for_device)
+        self.last_pvc = pvc
+        return NetFSMount(pvc=pvc, pv=PvRef(name="pv1"), node_id=node_id, host_path="/dev/loop0")
+
+
 def test_node_volume_manager_injects_device_mount() -> None:
     man = AppManifest(
         apiVersion="ae.dev/v1alpha1",
@@ -88,3 +100,27 @@ def test_node_volume_manager_scoped_container_mounts() -> None:
     assert any(v.mount_path == "/cache" for v in sidecar.volume_mounts)
     initc = out.spec.init_containers[0]
     assert any(v.mount_path == "/init" for v in initc.volume_mounts)
+
+
+def test_node_volume_manager_resolves_stateful_claim_template() -> None:
+    man = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="db"),
+        spec=AppSpec(
+            image="busybox",
+            pvc_mounts=[
+                PvcMountSpec(
+                    claim_name="data",
+                    mount_path="/data",
+                    claim_template=True,
+                )
+            ],
+        ),
+    )
+    netfs = _CaptureNetFS()
+    manager = NodeVolumeManager(netfs, node_id="node-a")
+    out = manager.inject_pvc_mounts(man, replica_id="db-rev3-2")
+    assert netfs.last_pvc is not None
+    assert netfs.last_pvc.name == "data-db-2"
+    assert any(v.mount_path == "/data" for v in out.spec.volumes)

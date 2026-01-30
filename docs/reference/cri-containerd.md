@@ -211,6 +211,8 @@ you may need to re‑grant access.
   - `volumes[].hostPath` → `spec.volumes` (mountPath + readOnly preserved).
   - `volumes[].persistentVolumeClaim` → `spec.pvcMounts` (requires NetFS on nodes).
   - `volumeDevices` → `spec.pvcMounts[].devicePath` for block volumes.
+- StatefulSet `volumeClaimTemplates` create per‑ordinal PVCs (`<tpl>-<sts>-<ordinal>`) and
+  mount via `claimTemplate` entries.
 - `spec.emptyDirs` map to per‑pod host directories on CRI nodes (ephemeral).
   - Defaults to `/var/lib/ae/emptydirs/<app>/<pod>/<name>`.
   - `medium: Memory` uses `/dev/shm/ae-emptydir` when available.
@@ -223,6 +225,14 @@ Enable NetFS PVC resolution on the node agent:
 ```
 export AE_ENABLE_NETFS=1
 export AE_APISHIM_DB=state/apishim.db
+```
+
+If the apishim DB is not shared with nodes, point at the apishim API instead:
+
+```
+export AE_ENABLE_NETFS=1
+export AE_APISHIM_URL=http://<controller-host>:8445
+export AE_APISHIM_READ_TOKEN=<read-token>
 ```
 
 ## DNS + host aliases (CRI)
@@ -352,6 +362,38 @@ export AE_SERVICE_PROVIDER=iptables
 
 When `spec.service.ports[].nodePort` is set (Service type NodePort or
 LoadBalancer), k1s programs NodePort DNAT rules to the same ready backends.
+
+### NodePort smoke test
+
+Run the NodePort smoke helper (requires root + iptables):
+
+```
+sudo scripts/cri_nodeport_smoke.sh
+```
+
+Defaults:
+- host: `AE_NODE_ADVERTISE_IP` or `127.0.0.1`
+- nodePort: `32080`
+- path: `/healthz`
+
+Override with `AE_CRI_NODEPORT_HOST`, `AE_CRI_NODEPORT_PORT`, and
+`AE_CRI_NODEPORT_PATH`.
+
+### Multi-node agent proxy
+
+For Kubernetes-aligned NodePort/ClusterIP on *each node*, enable the agent
+service proxy loop. This pulls service + endpoint snapshots from the controller
+and programs iptables on the node (kube-proxy style):
+
+```
+export AE_AGENT_SERVICE_PROXY=1
+export AE_AGENT_SERVICE_PROXY_URL=http://<controller>:9108
+export AE_AGENT_SERVICE_PROXY_DB=/var/lib/ae/agent-services.db
+# If API auth is enabled:
+export AE_AGENT_SERVICE_PROXY_TOKEN=$AE_API_READ_TOKEN
+```
+
+Requires root or NET_ADMIN on the agent container, and `iptables` on PATH.
 
 ## Node agent DaemonSet (k8s-aligned)
 

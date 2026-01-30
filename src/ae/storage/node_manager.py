@@ -33,13 +33,25 @@ class NodeVolumeManager:
         self._default_ns = default_namespace
 
     def inject_pvc_mounts(
-        self, manifest: AppManifest, *, node_id: str | None = None
+        self,
+        manifest: AppManifest,
+        *,
+        node_id: str | None = None,
+        replica_id: str | None = None,
     ) -> AppManifest:
         """Ensure PVC mounts are present and inject hostPath volumes into the manifest."""
+
+        ordinal = self._replica_ordinal(replica_id)
+        if ordinal is not None:
+            manifest = self._resolve_claim_templates(manifest, ordinal)
 
         pvc_mounts = list(all_pvc_mounts(manifest) or [])
         if not pvc_mounts:
             return manifest
+        if ordinal is None:
+            pvc_mounts = [pm for pm in pvc_mounts if not getattr(pm, "claim_template", False)]
+            if not pvc_mounts:
+                return manifest
 
         node = node_id or self._node_id
         ns = getattr(manifest.metadata, "namespace", None) or self._default_ns
@@ -108,6 +120,82 @@ class NodeVolumeManager:
     def _pvc_ref(pm: PvcMountSpec, *, namespace: str) -> PvcRef:
         ns = getattr(pm, "namespace", None) or namespace
         return PvcRef(name=str(pm.claim_name), namespace=str(ns))
+
+    @staticmethod
+    def _replica_ordinal(replica_id: str | None) -> int | None:
+        if not replica_id:
+            return None
+        raw = str(replica_id)
+        if not raw:
+            return None
+        tail = raw.rsplit("-", 1)
+        if len(tail) != 2:
+            return None
+        try:
+            return int(tail[1])
+        except Exception:
+            return None
+
+    def _resolve_claim_templates(self, manifest: AppManifest, ordinal: int) -> AppManifest:
+        name = getattr(manifest.metadata, "name", None) or ""
+        if not name:
+            return manifest
+
+        def _resolve_pm(pm):  # noqa: ANN001
+            try:
+                is_template = bool(getattr(pm, "claim_template", False))
+            except Exception:
+                is_template = False
+            if not is_template:
+                return pm
+            base = None
+            if isinstance(pm, dict):
+                base = pm.get("claimName") or pm.get("claim_name")
+            else:
+                base = getattr(pm, "claim_name", None)
+            if not base:
+                return pm
+            claim = f"{base}-{name}-{ordinal}"
+            if isinstance(pm, dict):
+                updated = dict(pm)
+                updated["claimName"] = claim
+                updated["claimTemplate"] = False
+                return updated
+            return pm.model_copy(update={"claim_name": claim, "claim_template": False})
+
+        def _resolve_container(container):  # noqa: ANN001
+            if not self._spec_has_field(container, "pvc_mounts", "pvcMounts"):
+                return container
+            pvc_mounts = list(getattr(container, "pvc_mounts", []) or [])
+            if not pvc_mounts:
+                return container
+            resolved = [_resolve_pm(pm) for pm in pvc_mounts]
+            if isinstance(container, dict):
+                updated = dict(container)
+                updated["pvc_mounts"] = resolved
+                return updated
+            return container.model_copy(update={"pvc_mounts": resolved})
+
+        spec = manifest.spec
+        updated_spec = spec
+        root_mounts = list(getattr(spec, "pvc_mounts", []) or [])
+        if root_mounts:
+            updated_spec = updated_spec.model_copy(
+                update={"pvc_mounts": [_resolve_pm(pm) for pm in root_mounts]}
+            )
+        containers = list(getattr(updated_spec, "containers", []) or [])
+        if containers:
+            updated_spec = updated_spec.model_copy(
+                update={"containers": [_resolve_container(c) for c in containers]}
+            )
+        init_containers = list(getattr(updated_spec, "init_containers", []) or [])
+        if init_containers:
+            updated_spec = updated_spec.model_copy(
+                update={"init_containers": [_resolve_container(c) for c in init_containers]}
+            )
+        if updated_spec is spec:
+            return manifest
+        return manifest.model_copy(update={"spec": updated_spec})
 
     @staticmethod
     def _spec_has_field(obj, name: str, alt: str | None = None) -> bool:  # noqa: ANN001

@@ -1,4 +1,4 @@
-from ae.k8s.convert import manifest_from_k8s_workload
+from ae.k8s.convert import manifest_from_k8s_workload, service_spec_from_k8s
 
 
 def test_convert_pvc_mounts() -> None:
@@ -118,6 +118,71 @@ def test_convert_image_pull_secrets_from_service_account(monkeypatch) -> None:
     }
     man = manifest_from_k8s_workload(dep)
     assert man.spec.image_pull_secrets == ["regcred"]
+
+
+def test_convert_configmap_secret_volume_mounts() -> None:
+    dep = {
+        "metadata": {"name": "app", "namespace": "demo"},
+        "spec": {
+            "replicas": 1,
+            "template": {
+                "spec": {
+                    "containers": [
+                        {
+                            "image": "nginx:latest",
+                            "volumeMounts": [
+                                {"name": "cfg", "mountPath": "/etc/config"},
+                                {
+                                    "name": "sec",
+                                    "mountPath": "/var/run/secret",
+                                    "subPath": "token",
+                                },
+                            ],
+                        }
+                    ],
+                    "volumes": [
+                        {
+                            "name": "cfg",
+                            "configMap": {
+                                "name": "app-config",
+                                "items": [{"key": "mode", "path": "mode.txt"}],
+                            },
+                        },
+                        {"name": "sec", "secret": {"secretName": "app-secret"}},
+                    ],
+                }
+            },
+        },
+    }
+    man = manifest_from_k8s_workload(dep)
+    sources = {s.name: s for s in getattr(man.spec, "projection_sources", []) or []}
+    assert sources["cfg"].source_type == "configMap"
+    assert sources["cfg"].source_name == "app-config"
+    assert sources["cfg"].items[0]["path"] == "mode.txt"
+    assert sources["sec"].source_type == "secret"
+    assert sources["sec"].source_name == "app-secret"
+    pmounts = list(getattr(man.spec, "projection_mounts", []) or [])
+    assert any(
+        pm.path == "k8s/volumes/cfg" and pm.mount_path == "/etc/config" for pm in pmounts
+    )
+    sec_mount = next(
+        pm for pm in pmounts if pm.mount_path == "/var/run/secret"
+    )
+    assert sec_mount.path == "k8s/volumes/sec/token"
+    assert sec_mount.read_only is True
+
+
+def test_convert_service_health_check_node_port() -> None:
+    svc = {
+        "spec": {
+            "type": "LoadBalancer",
+            "healthCheckNodePort": 32123,
+            "ports": [{"name": "http", "port": 80, "targetPort": 8080}],
+        }
+    }
+    spec = service_spec_from_k8s(svc, ports_by_name={"http": 8080})
+    assert spec is not None
+    assert spec.health_check_node_port == 32123
 
 
 def test_convert_empty_pull_secrets_no_sa_fallback(monkeypatch) -> None:

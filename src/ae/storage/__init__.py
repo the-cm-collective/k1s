@@ -10,7 +10,7 @@ from .config import (
 from .controller import StorageController, seed_storage_classes
 from .netfs import NetFSManager, StorageDriver
 from .node_manager import NodeVolumeManager
-from .state import ApishimStorageState, InMemoryStorageState, StorageState
+from .state import ApishimHttpStorageState, ApishimStorageState, InMemoryStorageState, StorageState
 from .types import NetFSMount, PvcRef, PvRef
 
 __all__ = [
@@ -27,6 +27,7 @@ __all__ = [
     "StorageState",
     "InMemoryStorageState",
     "ApishimStorageState",
+    "ApishimHttpStorageState",
     "PvcRef",
     "PvRef",
     "NetFSMount",
