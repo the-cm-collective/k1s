@@ -396,6 +396,44 @@ class CRIRuntime(RuntimeAdapter):
 
         Returns list of (name, rc, message).
         """
+        app_name = app_key_for_manifest(manifest)
+        pod_name = f"{app_name}-init-{uuid.uuid4().hex[:8]}"
+        return self._run_init_containers_in_pod(
+            manifest,
+            pod_name,
+            revision=0,
+            node_id=self._current_node_id,
+            keep_sandbox=False,
+            label_pod=False,
+        )
+
+    def run_init_containers_for_pod(
+        self,
+        manifest: AppManifest,
+        replica_id: str,
+        revision: int,
+        *,
+        node_id: str | None = None,
+    ):
+        return self._run_init_containers_in_pod(
+            manifest,
+            replica_id,
+            revision=revision,
+            node_id=node_id,
+            keep_sandbox=True,
+            label_pod=True,
+        )
+
+    def _run_init_containers_in_pod(
+        self,
+        manifest: AppManifest,
+        replica_id: str,
+        *,
+        revision: int,
+        node_id: str | None,
+        keep_sandbox: bool,
+        label_pod: bool,
+    ) -> list[tuple[str, int, str]]:
         results: list[tuple[str, int, str]] = []
         inits = list(getattr(manifest.spec, "init_containers", []) or [])
         if not inits:
@@ -412,41 +450,94 @@ class CRIRuntime(RuntimeAdapter):
         ns, _ = split_app_key(app_name)
         pb2 = self._pb2()
 
-        pod_name = f"{app_name}-init-{uuid.uuid4().hex[:8]}"
-        pod_uid = self._pod_uid(pod_name, ns)
-        pod_meta = pb2.PodSandboxMetadata(
-            name=str(pod_name),
-            namespace=ns or DEFAULT_NAMESPACE,
-            uid=str(pod_uid),
-            attempt=0,
-        )
-        pod_config = pb2.PodSandboxConfig(
-            metadata=pod_meta,
-            labels=runtime_labels_for_manifest(manifest, app_name=app_name),
-            log_directory=self._pod_log_dir(ns, pod_name, pod_uid),
-        )
-        dns_cfg = self._dns_config(manifest)
-        if dns_cfg is not None:
-            pod_config.dns_config.CopyFrom(dns_cfg)
-        hostname = self._resolve_hostname(manifest, str(pod_name))
-        if hostname:
-            pod_config.hostname = str(hostname)
-        sandbox_ctx = self._build_sandbox_security_context(manifest)
-        if sandbox_ctx is not None:
-            linux_cfg = pb2.LinuxPodSandboxConfig()
-            linux_cfg.security_context.CopyFrom(sandbox_ctx)
-            pod_config.linux.CopyFrom(linux_cfg)
         pod_id = None
+        pod_config = None
+        port_map: dict[int, int] = {}
+        existing_pod = None
         try:
-            resp = self._runtime_call("RunPodSandbox", pb2.RunPodSandboxRequest(config=pod_config))
-            pod_id = getattr(resp, "pod_sandbox_id", None)
-            if not pod_id:
-                raise RuntimeError("RunPodSandbox returned no pod_sandbox_id")
-        except Exception as exc:
-            for spec in inits:
-                name = self._spec_value(spec, "name") or "init"
-                results.append((str(name), 1, f"sandbox error: {exc}"))
-            return results
+            for pod in self._list_pods(app_name):
+                if self._pod_name(pod) == replica_id:
+                    existing_pod = pod
+                    break
+                labels = self._pod_labels(pod)
+                if labels.get(self.REPLICA_LABEL) == replica_id:
+                    existing_pod = pod
+                    break
+        except Exception:
+            existing_pod = None
+
+        if existing_pod is not None:
+            pod_id = getattr(existing_pod, "id", None) or getattr(
+                existing_pod, "pod_sandbox_id", None
+            )
+
+        if pod_id is None:
+            labels = runtime_labels_for_manifest(manifest, app_name=app_name)
+            if label_pod:
+                labels.update(
+                    {
+                        self.POD_LABEL: replica_id,
+                        self.LEGACY_REPLICA_LABEL: replica_id,
+                        self.REVISION_LABEL: str(revision),
+                        **({"ae.node": str(node_id)} if node_id else {}),
+                    }
+                )
+            pod_uid = self._pod_uid(replica_id, ns)
+            pod_meta = pb2.PodSandboxMetadata(
+                name=str(replica_id),
+                namespace=ns or DEFAULT_NAMESPACE,
+                uid=str(pod_uid),
+                attempt=0,
+            )
+            port_mappings, port_map = self._port_mappings(manifest)
+            pod_config = pb2.PodSandboxConfig(
+                metadata=pod_meta,
+                labels=labels,
+                log_directory=self._pod_log_dir(ns, replica_id, pod_uid),
+                port_mappings=port_mappings,
+            )
+            dns_cfg = self._dns_config(manifest)
+            if dns_cfg is not None:
+                pod_config.dns_config.CopyFrom(dns_cfg)
+            hostname = self._resolve_hostname(manifest, str(replica_id))
+            if hostname:
+                pod_config.hostname = str(hostname)
+            sandbox_ctx = self._build_sandbox_security_context(manifest)
+            if sandbox_ctx is not None:
+                linux_cfg = pb2.LinuxPodSandboxConfig()
+                linux_cfg.security_context.CopyFrom(sandbox_ctx)
+                pod_config.linux.CopyFrom(linux_cfg)
+            runtime_handler = getattr(manifest.spec, "runtime_class_name", None)
+            req = pb2.RunPodSandboxRequest(config=pod_config)
+            if runtime_handler:
+                req.runtime_handler = str(runtime_handler)
+            try:
+                resp = self._runtime_call("RunPodSandbox", req)
+                pod_id = getattr(resp, "pod_sandbox_id", None)
+                if not pod_id:
+                    raise RuntimeError("RunPodSandbox returned no pod_sandbox_id")
+            except Exception as exc:
+                for spec in inits:
+                    name = self._spec_value(spec, "name") or "init"
+                    results.append((str(name), 1, f"sandbox error: {exc}"))
+                return results
+            if port_map:
+                self._port_assignments[str(replica_id)] = port_map
+
+        if pod_config is None:
+            pod_meta = None
+            with contextlib.suppress(Exception):
+                pod_status = self._pod_status(str(pod_id))
+                pod_meta = getattr(pod_status, "metadata", None)
+            if not pod_meta or not getattr(pod_meta, "uid", None):
+                pod_uid = self._pod_uid(replica_id, ns)
+                pod_meta = pb2.PodSandboxMetadata(
+                    name=str(replica_id),
+                    namespace=ns or DEFAULT_NAMESPACE,
+                    uid=str(pod_uid),
+                    attempt=0,
+                )
+            pod_config = pb2.PodSandboxConfig(metadata=pod_meta)
 
         try:
             for spec in inits:
@@ -467,8 +558,8 @@ class CRIRuntime(RuntimeAdapter):
                         manifest,
                         spec,
                         name=str(name),
-                        replica_id=str(pod_name),
-                        revision=0,
+                        replica_id=str(replica_id),
+                        revision=int(revision),
                         attempt=0,
                         is_main=False,
                     )
@@ -505,18 +596,21 @@ class CRIRuntime(RuntimeAdapter):
                                 pb2.RemoveContainerRequest(container_id=container_id),
                             )
         finally:
-            with contextlib.suppress(Exception):
-                self._runtime_call(
-                    "StopPodSandbox", pb2.StopPodSandboxRequest(pod_sandbox_id=str(pod_id))
-                )
-            with contextlib.suppress(Exception):
-                self._runtime_call(
-                    "RemovePodSandbox", pb2.RemovePodSandboxRequest(pod_sandbox_id=str(pod_id))
-                )
-            with contextlib.suppress(Exception):
-                self._cleanup_empty_dirs(str(app_name), str(pod_name))
-            with contextlib.suppress(Exception):
-                self._cleanup_host_aliases(str(app_name), str(pod_name))
+            if not keep_sandbox:
+                with contextlib.suppress(Exception):
+                    self._runtime_call(
+                        "StopPodSandbox",
+                        pb2.StopPodSandboxRequest(pod_sandbox_id=str(pod_id)),
+                    )
+                with contextlib.suppress(Exception):
+                    self._runtime_call(
+                        "RemovePodSandbox",
+                        pb2.RemovePodSandboxRequest(pod_sandbox_id=str(pod_id)),
+                    )
+                with contextlib.suppress(Exception):
+                    self._cleanup_empty_dirs(str(app_name), str(replica_id))
+                with contextlib.suppress(Exception):
+                    self._cleanup_host_aliases(str(app_name), str(replica_id))
         return results
 
     # Storage lifecycle ------------------------------------------------
