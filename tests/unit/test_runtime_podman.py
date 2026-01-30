@@ -742,6 +742,40 @@ def test_podman_endpoint_uses_advertise_ip(monkeypatch):
     assert result.pod_states[0].endpoint == "10.0.0.10:32001"
 
 
+def test_podman_sidecar_connects_network(monkeypatch):
+    rt = PodmanRuntime()
+    rt._network_name = "ae-net"
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(rt, "_ensure_image", lambda *_a, **_k: None)
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        if argv[:3] == [rt._bin, "ps", "-a"]:
+            return DummyResult(0, "")
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+
+    base = _manifest_single(image="demo:latest")
+    manifest = base.model_copy(
+        update={
+            "spec": base.spec.model_copy(
+                update={"containers": [AppSpec.ContainerSpec(name="sidecar", image="busybox")]}
+            )
+        }
+    )
+
+    rt._ensure_sidecars(manifest, "blue-rev1-0", 1)
+
+    assert any(
+        c[:4] == [rt._bin, "network", "connect", "ae-net"]
+        and "ae-blue-rev1-0-sidecar" in c
+        for c in calls
+    )
+
+
 def test_podman_injects_pvc_mounts(monkeypatch):
     rt = PodmanRuntime()
     calls: list[list[str]] = []
