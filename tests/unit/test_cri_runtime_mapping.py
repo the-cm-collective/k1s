@@ -74,6 +74,10 @@ def test_cri_container_config_separates_command_args_and_mounts():
         m.host_path == "/tmp/ae-proj/config/db" and m.container_path == "/etc/db"
         for m in mounts
     )
+    assert any(
+        m.host_path == "/tmp/ae-proj" and m.container_path == "/var/run/ae/config/demo"
+        for m in mounts
+    )
 
 
 def test_cri_container_config_maps_volume_devices():
