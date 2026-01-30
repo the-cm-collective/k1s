@@ -960,13 +960,20 @@ class PodmanRuntime(RuntimeAdapter):
         return removed
 
     # Init containers --------------------------------------------------
-    def run_init_containers(self, manifest):  # type: ignore[override]
+    def run_init_containers(  # type: ignore[override]
+        self,
+        manifest,
+        *,
+        replica_id: str | None = None,
+        revision: int | None = None,
+        node_id: str | None = None,
+    ):
         """Run initContainers sequentially with optional timeouts.
 
         Returns a list of tuples: (name, rc, message).
         """
         manifest = self._maybe_inject_pvc_mounts(
-            manifest, node_id=getattr(self, "_current_node_id", None)
+            manifest, node_id=node_id or getattr(self, "_current_node_id", None)
         )
         results: list[tuple[str, int, str]] = []
         try:
@@ -1070,10 +1077,20 @@ class PodmanRuntime(RuntimeAdapter):
             host_network = bool(getattr(manifest.spec, "host_network", False))
             host_pid = bool(getattr(manifest.spec, "host_pid", False))
             host_ipc = bool(getattr(manifest.spec, "host_ipc", False))
+            share_proc = bool(getattr(manifest.spec, "share_process_namespace", False))
             if host_network:
                 argv += ["--network", "host"]
             if host_pid:
                 argv += ["--pid", "host"]
+            elif share_proc and replica_id and revision is not None:
+                sandbox = self._ensure_pod_sandbox(
+                    manifest,
+                    replica_id,
+                    int(revision),
+                    node_id=node_id or getattr(self, "_current_node_id", None),
+                )
+                if sandbox:
+                    argv += ["--pid", f"container:{sandbox}"]
             if host_ipc:
                 argv += ["--ipc", "host"]
             # Volumes: mount app storage and hostPath volumes, plus projected config root when present
@@ -1179,6 +1196,21 @@ class PodmanRuntime(RuntimeAdapter):
                 results.append((str(name), 1, f"error: {exc}"))
 
         return results
+
+    def run_init_containers_for_pod(
+        self,
+        manifest: AppManifest,
+        replica_id: str,
+        revision: int,
+        *,
+        node_id: str | None = None,
+    ):
+        return self.run_init_containers(
+            manifest,
+            replica_id=replica_id,
+            revision=revision,
+            node_id=node_id,
+        )
 
     # Volumes ----------------------------------------------------------
     def _storage_volume_name(self, app_name: str, vol_name: str) -> str:

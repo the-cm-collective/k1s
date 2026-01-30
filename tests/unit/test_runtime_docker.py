@@ -344,6 +344,60 @@ def test_docker_share_process_namespace_sidecar(monkeypatch):
     assert client.last_run_kwargs.get("pid_mode") == "container:ae-demo-rev1-0-pod"
 
 
+def test_docker_init_containers_share_process_namespace(monkeypatch):
+    class StubContainer:
+        def start(self) -> None:
+            return None
+
+        def wait(self, timeout=None):  # noqa: ANN001
+            _ = timeout
+            return {"StatusCode": 0}
+
+        def remove(self, force: bool = True) -> None:
+            _ = force
+            return None
+
+    class StubContainers:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def create(self, image: str, **kwargs):  # noqa: ANN001
+            self.calls.append({"image": image, **kwargs})
+            return StubContainer()
+
+    class StubClient:
+        def __init__(self) -> None:
+            self.containers = StubContainers()
+
+    runtime = DockerRuntime(client=StubClient())
+    monkeypatch.setattr(runtime, "_ensure_image", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        runtime, "_ensure_pod_sandbox", lambda *_a, **_k: "ae-demo-rev1-0-pod"
+    )
+    manifest = make_manifest(replica_count=1)
+    manifest = manifest.model_copy(
+        update={
+            "spec": manifest.spec.model_copy(
+                update={
+                    "share_process_namespace": True,
+                    "init_containers": [
+                        {"name": "init", "image": "alpine:3.20", "command": ["true"]}
+                    ],
+                }
+            )
+        }
+    )
+
+    res = runtime.run_init_containers(manifest, replica_id="demo-rev1-0", revision=1)
+
+    assert res and res[0][1] == 0
+    assert runtime._client.containers.calls
+    assert (
+        runtime._client.containers.calls[0].get("pid_mode")
+        == "container:ae-demo-rev1-0-pod"
+    )
+
+
 def test_docker_injects_pvc_mounts(monkeypatch):
     client = FakeDockerClient()
     runtime = DockerRuntime(client=client)
