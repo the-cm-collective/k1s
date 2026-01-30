@@ -105,6 +105,30 @@ def test_cri_container_config_maps_volume_devices():
     assert dev.permissions == "r"
 
 
+def test_cri_stop_pod_clears_port_assignments(monkeypatch):
+    class _Resp:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    runtime = CRIRuntime()
+    runtime._port_assignments["demo-rev1-0"] = {8080: 32000}
+
+    def fake_runtime_call(method, _req):  # noqa: ANN001
+        if method == "ListContainers":
+            return _Resp(containers=[])
+        return _Resp()
+
+    monkeypatch.setattr(runtime, "_runtime_call", fake_runtime_call)
+
+    class Pod:
+        id = "pod1"
+        labels = {"ae.app": "demo", "ae.pod_name": "demo-rev1-0"}
+
+    runtime._stop_and_remove_pod(None, Pod())
+
+    assert "demo-rev1-0" not in runtime._port_assignments
+
+
 def test_cri_injects_pvc_mounts(monkeypatch):
     runtime = CRIRuntime()
     captured: dict[str, AppManifest] = {}

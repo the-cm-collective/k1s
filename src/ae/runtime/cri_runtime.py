@@ -1489,11 +1489,16 @@ class CRIRuntime(RuntimeAdapter):
             labels = self._pod_labels(pod) or {}
         app_name = labels.get(self.APP_LABEL)
         replica_id = labels.get(self.REPLICA_LABEL) or labels.get(self.LEGACY_REPLICA_LABEL)
+        if not replica_id:
+            with contextlib.suppress(Exception):
+                replica_id = self._pod_name(pod)
         if app_name and replica_id:
             with contextlib.suppress(Exception):
                 self._cleanup_empty_dirs(str(app_name), str(replica_id))
             with contextlib.suppress(Exception):
                 self._cleanup_host_aliases(str(app_name), str(replica_id))
+        if replica_id:
+            self._port_assignments.pop(str(replica_id), None)
 
     def _container_config(
         self,
