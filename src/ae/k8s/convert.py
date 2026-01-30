@@ -136,6 +136,47 @@ def resolve_port_value(port: Any, ports_by_name: dict[str, int]) -> int | None:
     return None
 
 
+def _service_account_pull_secrets(
+    namespace: str, service_account: str, db_path: Path | None = None, dsn: str | None = None
+) -> list[str]:
+    try:
+        from ae.apishim.store import ObjectStore
+    except Exception:
+        return []
+    store = None
+    try:
+        if dsn or os.getenv("AE_APISHIM_DSN"):
+            store = ObjectStore(dsn=dsn or os.getenv("AE_APISHIM_DSN"))
+        else:
+            db = db_path or Path(os.getenv("AE_APISHIM_DB", "state/apishim.db"))
+            if not db.exists():
+                return []
+            store = ObjectStore(db_path=db)
+    except Exception:
+        store = None
+    if store is None:
+        return []
+    try:
+        sa = store.get("", "v1", "serviceaccounts", namespace, service_account)
+    except Exception:
+        sa = None
+    if sa is None:
+        return []
+    spec = getattr(sa, "spec", None) or {}
+    if not isinstance(spec, dict):
+        return []
+    secrets = spec.get("imagePullSecrets") or []
+    out: list[str] = []
+    for entry in secrets:
+        if isinstance(entry, dict):
+            name = entry.get("name")
+            if name:
+                out.append(str(name))
+        elif entry:
+            out.append(str(entry))
+    return out
+
+
 def probe_from_k8s(raw: dict | None, ports_by_name: dict[str, int]) -> dict | None:
     if not raw or not isinstance(raw, dict):
         return None
@@ -168,136 +209,66 @@ def probe_from_k8s(raw: dict | None, ports_by_name: dict[str, int]) -> dict | No
     return out or None
 
 
-def manifest_from_k8s_workload(
-    obj: Any,
-    *,
-    service_spec: ServiceSpec | None = None,
-    ingress_spec: IngressSpec | None = None,
-) -> AppManifest:
-    spec: dict[str, Any] = _spec(obj)
-    tpl = (spec.get("template") or {}).get("spec") or {}
-    containers = tpl.get("containers") or []
-    if not containers:
-        c0: dict[str, Any] = {}
-        image = "busybox:latest"
-        ports: list[PortSpec] = []
-    else:
-        c0 = containers[0]
-        image = c0.get("image") or "busybox:latest"
-        ports = []
-        for p in c0.get("ports") or []:
-            try:
-                port_num = int(p.get("containerPort"))
-            except Exception:  # noqa: S112
-                continue
-            name = p.get("name") or f"p{port_num}"
-            ports.append(PortSpec(name=name, containerPort=port_num))
-    ports_by_name = {p.name: int(p.container_port) for p in ports if getattr(p, "name", None)}
-    command = [str(x) for x in (c0.get("command") or [])]
-    args = [str(x) for x in (c0.get("args") or [])]
+def _ports_from_k8s_container(container: dict[str, Any]) -> list[PortSpec]:
+    ports: list[PortSpec] = []
+    for p in container.get("ports") or []:
+        try:
+            port_num = int(p.get("containerPort"))
+        except Exception:  # noqa: S112
+            continue
+        name = p.get("name") or f"p{port_num}"
+        ports.append(PortSpec(name=name, containerPort=port_num))
+    return ports
+
+
+def _env_from_k8s_container(container: dict[str, Any]) -> list[dict[str, Any]]:
     env: list[dict[str, str]] = []
-    for item in c0.get("env") or []:
-        if isinstance(item, dict) and "name" in item and "value" in item:
-            env.append({"name": str(item["name"]), "value": str(item.get("value") or "")})
-    working_dir = c0.get("workingDir")
-    pvc_mounts: list[dict[str, Any]] = []
-    host_mounts: list[dict[str, Any]] = []
-    try:
-        volume_claims: dict[str, tuple[str, bool]] = {}
-        volume_hosts: dict[str, str] = {}
-        for vol in tpl.get("volumes") or []:
-            if not isinstance(vol, dict):
-                continue
-            vname = vol.get("name")
-            pvc = vol.get("persistentVolumeClaim") or {}
-            if not isinstance(pvc, dict):
-                continue
-            claim = pvc.get("claimName")
-            if vname and claim:
-                volume_claims[str(vname)] = (str(claim), bool(pvc.get("readOnly", False)))
-            host = vol.get("hostPath")
-            host_path = None
-            if isinstance(host, dict):
-                host_path = host.get("path")
-            elif isinstance(host, str):
-                host_path = host
-            if vname and host_path:
-                volume_hosts[str(vname)] = str(host_path)
-        if volume_claims or volume_hosts:
-            seen_pvc: set[tuple[str, str, bool]] = set()
-            seen_hosts: set[tuple[str, str, bool]] = set()
-            for container in containers or []:
-                if not isinstance(container, dict):
-                    continue
-                for vm in container.get("volumeMounts") or []:
-                    if not isinstance(vm, dict):
-                        continue
-                    vname = vm.get("name")
-                    mount_path = vm.get("mountPath")
-                    if not mount_path:
-                        mount_path = None
-                    entry = volume_claims.get(str(vname)) if vname else None
-                    if entry and mount_path:
-                        claim, vol_read_only = entry
-                        read_only = bool(vm.get("readOnly", False)) or bool(vol_read_only)
-                        sub_path = vm.get("subPath")
-                        key = (str(claim), str(mount_path), bool(read_only))
-                        if key not in seen_pvc:
-                            seen_pvc.add(key)
-                            record: dict[str, Any] = {
-                                "claimName": str(claim),
-                                "mountPath": str(mount_path),
-                                "readOnly": read_only,
-                            }
-                            if sub_path:
-                                record["subPath"] = str(sub_path)
-                            pvc_mounts.append(record)
-                    host_path = volume_hosts.get(str(vname)) if vname else None
-                    if host_path and mount_path:
-                        read_only = bool(vm.get("readOnly", False))
-                        sub_path = vm.get("subPath")
-                        if sub_path:
-                            host_path = os.path.join(str(host_path), str(sub_path).lstrip("/"))
-                        key = (str(host_path), str(mount_path), bool(read_only))
-                        if key not in seen_hosts:
-                            seen_hosts.add(key)
-                            host_mounts.append(
-                                {
-                                    "hostPath": str(host_path),
-                                    "mountPath": str(mount_path),
-                                    "readOnly": read_only,
-                                }
-                            )
-                for vd in container.get("volumeDevices") or []:
-                    if not isinstance(vd, dict):
-                        continue
-                    vname = vd.get("name")
-                    entry = volume_claims.get(str(vname)) if vname else None
-                    if not entry:
-                        continue
-                    claim, vol_read_only = entry
-                    device_path = vd.get("devicePath")
-                    if not device_path:
-                        continue
-                    read_only = bool(vol_read_only)
-                    key = (str(claim), str(device_path), bool(read_only))
-                    if key in seen_pvc:
-                        continue
-                    seen_pvc.add(key)
-                    pvc_mounts.append(
-                        {
-                            "claimName": str(claim),
-                            "mountPath": str(device_path),
-                            "devicePath": str(device_path),
-                            "readOnly": read_only,
-                        }
-                    )
-    except Exception:  # noqa: S112 - best-effort PVC extraction
-        pvc_mounts = []
-        host_mounts = []
+    for item in container.get("env") or []:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not name:
+            continue
+        entry: dict[str, Any] = {"name": str(name)}
+        value_from = item.get("valueFrom")
+        if isinstance(value_from, dict):
+            entry["valueFrom"] = value_from
+        else:
+            entry["value"] = str(item.get("value") or "")
+        env.append(entry)
+    for ref in container.get("envFrom") or []:
+        if not isinstance(ref, dict):
+            continue
+        prefix = ref.get("prefix")
+        cm = ref.get("configMapRef") if isinstance(ref.get("configMapRef"), dict) else None
+        sec = ref.get("secretRef") if isinstance(ref.get("secretRef"), dict) else None
+        if cm and cm.get("name"):
+            entry: dict[str, Any] = {
+                "name": "",
+                "valueFrom": {"configMapKeyRef": {"name": str(cm["name"]), "key": ""}},
+            }
+            if prefix:
+                entry["valueFrom"]["configMapKeyRef"]["prefix"] = str(prefix)
+            env.append(
+                entry
+            )
+        if sec and sec.get("name"):
+            entry = {
+                "name": "",
+                "valueFrom": {"secretKeyRef": {"name": str(sec["name"]), "key": ""}},
+            }
+            if prefix:
+                entry["valueFrom"]["secretKeyRef"]["prefix"] = str(prefix)
+            env.append(
+                entry
+            )
+    return env
+
+
+def _resources_from_k8s_container(container: dict[str, Any]) -> dict[str, Any] | None:
     resources: dict[str, Any] | None = None
-    if isinstance(c0.get("resources"), dict):
-        res = c0.get("resources") or {}
+    if isinstance(container.get("resources"), dict):
+        res = container.get("resources") or {}
         if res.get("requests") or res.get("limits"):
             resources = {}
             if res.get("requests"):
@@ -312,8 +283,12 @@ def manifest_from_k8s_workload(
                 resources.pop("limits", None)
             if not resources:
                 resources = None
+    return resources
+
+
+def _security_from_k8s_container(container: dict[str, Any]) -> dict[str, Any] | None:
     security: dict[str, Any] | None = None
-    sec = c0.get("securityContext") or {}
+    sec = container.get("securityContext") or {}
     if isinstance(sec, dict) and sec:
         security = {}
         if sec.get("runAsUser") is not None:
@@ -337,10 +312,16 @@ def manifest_from_k8s_workload(
                 security["seccomp_localhost_profile"] = seccomp.get("localhostProfile")
         if not security:
             security = None
+    return security
+
+
+def _health_from_k8s_container(
+    container: dict[str, Any], ports_by_name: dict[str, int]
+) -> dict[str, Any] | None:
     health: dict[str, Any] | None = None
-    readiness = probe_from_k8s(c0.get("readinessProbe"), ports_by_name)
-    liveness = probe_from_k8s(c0.get("livenessProbe"), ports_by_name)
-    startup = probe_from_k8s(c0.get("startupProbe"), ports_by_name)
+    readiness = probe_from_k8s(container.get("readinessProbe"), ports_by_name)
+    liveness = probe_from_k8s(container.get("livenessProbe"), ports_by_name)
+    startup = probe_from_k8s(container.get("startupProbe"), ports_by_name)
     if readiness or liveness or startup:
         health = {}
         if readiness:
@@ -349,9 +330,239 @@ def manifest_from_k8s_workload(
             health["liveness"] = liveness
         if startup:
             health["startup"] = startup
+    return health
+
+
+def _container_mounts_from_k8s_container(
+    container: dict[str, Any],
+    volume_claims: dict[str, tuple[str, bool]],
+    volume_hosts: dict[str, str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    pvc_mounts: list[dict[str, Any]] = []
+    host_mounts: list[dict[str, Any]] = []
+    host_devices: list[dict[str, Any]] = []
+    for vm in container.get("volumeMounts") or []:
+        if not isinstance(vm, dict):
+            continue
+        vname = vm.get("name")
+        mount_path = vm.get("mountPath")
+        if not vname or not mount_path:
+            continue
+        entry = volume_claims.get(str(vname))
+        if entry:
+            claim, vol_read_only = entry
+            read_only = bool(vm.get("readOnly", False)) or bool(vol_read_only)
+            record: dict[str, Any] = {
+                "claimName": str(claim),
+                "mountPath": str(mount_path),
+                "readOnly": read_only,
+            }
+            sub_path = vm.get("subPath")
+            if sub_path:
+                record["subPath"] = str(sub_path)
+            pvc_mounts.append(record)
+        host_path = volume_hosts.get(str(vname))
+        if host_path:
+            read_only = bool(vm.get("readOnly", False))
+            sub_path = vm.get("subPath")
+            if sub_path:
+                host_path = os.path.join(str(host_path), str(sub_path).lstrip("/"))
+            host_mounts.append(
+                {
+                    "hostPath": str(host_path),
+                    "mountPath": str(mount_path),
+                    "readOnly": read_only,
+                }
+            )
+    for vd in container.get("volumeDevices") or []:
+        if not isinstance(vd, dict):
+            continue
+        vname = vd.get("name")
+        device_path = vd.get("devicePath")
+        if not vname or not device_path:
+            continue
+        entry = volume_claims.get(str(vname))
+        if entry:
+            claim, vol_read_only = entry
+            read_only = bool(vol_read_only)
+            pvc_mounts.append(
+                {
+                    "claimName": str(claim),
+                    "mountPath": str(device_path),
+                    "devicePath": str(device_path),
+                    "readOnly": read_only,
+                }
+            )
+        host_path = volume_hosts.get(str(vname))
+        if host_path:
+            read_only = bool(vd.get("readOnly", False))
+            host_devices.append(
+                {
+                    "hostPath": str(host_path),
+                    "devicePath": str(device_path),
+                    "readOnly": read_only,
+                }
+            )
+    return pvc_mounts, host_mounts, host_devices
+
+
+def _container_spec_from_k8s(
+    container: dict[str, Any],
+    *,
+    default_name: str,
+    pvc_mounts: list[dict[str, Any]],
+    host_mounts: list[dict[str, Any]],
+    host_devices: list[dict[str, Any]],
+) -> AppSpec.ContainerSpec:
+    name = container.get("name") or default_name
+    image = container.get("image") or "busybox:latest"
+    c_ports = _ports_from_k8s_container(container)
+    c_ports_by_name = {
+        p.name: int(p.container_port) for p in c_ports if getattr(p, "name", None)
+    }
+    return AppSpec.ContainerSpec(
+        name=str(name),
+        image=str(image),
+        command=[str(x) for x in (container.get("command") or [])] or None,
+        args=[str(x) for x in (container.get("args") or [])] or None,
+        env=_env_from_k8s_container(container),
+        ports=c_ports,
+        resources=_resources_from_k8s_container(container),
+        security=_security_from_k8s_container(container),
+        working_dir=container.get("workingDir"),
+        health=_health_from_k8s_container(container, c_ports_by_name),
+        image_pull_policy=container.get("imagePullPolicy"),
+        volume_mounts=host_mounts,
+        pvc_mounts=pvc_mounts,
+        volume_devices=host_devices,
+    )
+
+
+def manifest_from_k8s_workload(
+    obj: Any,
+    *,
+    service_spec: ServiceSpec | None = None,
+    ingress_spec: IngressSpec | None = None,
+) -> AppManifest:
+    spec: dict[str, Any] = _spec(obj)
+    tpl = (spec.get("template") or {}).get("spec") or {}
+    containers = tpl.get("containers") or []
+    init_containers_raw = tpl.get("initContainers") or []
+    image_pull_policy = None
+    if containers and isinstance(containers[0], dict):
+        c0 = containers[0]
+    else:
+        c0 = {}
+    image = c0.get("image") or "busybox:latest"
+    image_pull_policy = c0.get("imagePullPolicy")
+    ports = _ports_from_k8s_container(c0) if c0 else []
+    ports_by_name = {p.name: int(p.container_port) for p in ports if getattr(p, "name", None)}
+    command = [str(x) for x in (c0.get("command") or [])]
+    args = [str(x) for x in (c0.get("args") or [])]
+    env = _env_from_k8s_container(c0)
+    working_dir = c0.get("workingDir")
+    raw_pull_secrets = tpl.get("imagePullSecrets")
+    image_pull_secrets = []
+    for secret in (raw_pull_secrets or []):
+        if isinstance(secret, dict):
+            name = secret.get("name")
+            if name:
+                image_pull_secrets.append(str(name))
+        elif secret:
+            image_pull_secrets.append(str(secret))
+    pvc_mounts: list[dict[str, Any]] = []
+    host_mounts: list[dict[str, Any]] = []
+    volume_devices: list[dict[str, Any]] = []
+    container_mounts: dict[
+        int, tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]
+    ] = {}
+    init_mounts: dict[
+        int, tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]
+    ] = {}
+    try:
+        volume_claims: dict[str, tuple[str, bool]] = {}
+        volume_hosts: dict[str, str] = {}
+        for vol in tpl.get("volumes") or []:
+            if not isinstance(vol, dict):
+                continue
+            vname = vol.get("name")
+            pvc = vol.get("persistentVolumeClaim") or {}
+            if isinstance(pvc, dict):
+                claim = pvc.get("claimName")
+                if vname and claim:
+                    volume_claims[str(vname)] = (str(claim), bool(pvc.get("readOnly", False)))
+            host = vol.get("hostPath")
+            host_path = None
+            if isinstance(host, dict):
+                host_path = host.get("path")
+            elif isinstance(host, str):
+                host_path = host
+            if vname and host_path:
+                volume_hosts[str(vname)] = str(host_path)
+        if volume_claims or volume_hosts:
+            for idx, container in enumerate(containers or []):
+                if not isinstance(container, dict):
+                    continue
+                c_pvc, c_host, c_devs = _container_mounts_from_k8s_container(
+                    container, volume_claims, volume_hosts
+                )
+                container_mounts[idx] = (c_pvc, c_host, c_devs)
+            for idx, container in enumerate(init_containers_raw or []):
+                if not isinstance(container, dict):
+                    continue
+                c_pvc, c_host, c_devs = _container_mounts_from_k8s_container(
+                    container, volume_claims, volume_hosts
+                )
+                init_mounts[idx] = (c_pvc, c_host, c_devs)
+    except Exception:  # noqa: S112 - best-effort PVC extraction
+        pvc_mounts = []
+        host_mounts = []
+        volume_devices = []
+        container_mounts = {}
+        init_mounts = {}
+    main_pvc, main_host, main_devs = container_mounts.get(0, ([], [], []))
+    pvc_mounts = list(main_pvc)
+    host_mounts = list(main_host)
+    volume_devices = list(main_devs)
+    resources = _resources_from_k8s_container(c0)
+    security = _security_from_k8s_container(c0)
+    health = _health_from_k8s_container(c0, ports_by_name)
 
     replicas = int(spec.get("replicas", 1) or 1)
     m_replicas = max(1, replicas)
+
+    service_account = tpl.get("serviceAccountName") or tpl.get("serviceAccount") or "default"
+    namespace = _namespace(obj) or DEFAULT_NAMESPACE
+    sidecars: list[AppSpec.ContainerSpec] = []
+    if len(containers) > 1:
+        for idx, container in enumerate(containers[1:], start=1):
+            if not isinstance(container, dict):
+                continue
+            c_pvc, c_host, c_devs = container_mounts.get(idx, ([], [], []))
+            sidecars.append(
+                _container_spec_from_k8s(
+                    container,
+                    default_name=f"sidecar-{idx}",
+                    pvc_mounts=c_pvc,
+                    host_mounts=c_host,
+                    host_devices=c_devs,
+                )
+            )
+    init_containers: list[AppSpec.ContainerSpec] = []
+    if init_containers_raw:
+        for idx, container in enumerate(init_containers_raw):
+            if not isinstance(container, dict):
+                continue
+            c_pvc, c_host, c_devs = init_mounts.get(idx, ([], [], []))
+            init_containers.append(
+                _container_spec_from_k8s(
+                    container,
+                    default_name=f"init-{idx}",
+                    pvc_mounts=c_pvc,
+                    host_mounts=c_host,
+                    host_devices=c_devs,
+                )
+            )
 
     app_spec = AppSpec(
         image=image,
@@ -366,7 +577,20 @@ def manifest_from_k8s_workload(
         health=health,
         pvc_mounts=pvc_mounts,
         volumes=host_mounts,
+        volume_devices=volume_devices,
+        service_account_name=service_account,
+        image_pull_secrets=image_pull_secrets,
+        image_pull_policy=image_pull_policy,
+        containers=sidecars,
+        init_containers=init_containers,
     )
+    if raw_pull_secrets is None and not image_pull_secrets:
+        sa_pull = _service_account_pull_secrets(namespace, service_account)
+        if sa_pull:
+            image_pull_secrets = sa_pull
+            app_spec = app_spec.model_copy(update={"image_pull_secrets": image_pull_secrets})
+    if len(image_pull_secrets) == 1:
+        app_spec = app_spec.model_copy(update={"registry_auth_ref": image_pull_secrets[0]})
     if service_spec is not None:
         app_spec = app_spec.model_copy(update={"service": service_spec})
     if ingress_spec is not None:
@@ -376,8 +600,7 @@ def manifest_from_k8s_workload(
         meta_labels = _metadata(obj).get("labels") or None
     except Exception:  # noqa: S112
         meta_labels = None
-    ns = _namespace(obj) or DEFAULT_NAMESPACE
-    meta = Metadata(name=_name(obj), namespace=ns, labels=meta_labels)
+    meta = Metadata(name=_name(obj), namespace=namespace, labels=meta_labels)
     return AppManifest(
         apiVersion="ae.dev/v1alpha1", kind="Deployment", metadata=meta, spec=app_spec
     )

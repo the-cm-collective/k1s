@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ae.controller.spec import AppManifest, app_key_for_manifest
+from ae.controller.spec import AppManifest, all_pvc_mounts, app_key_for_manifest
 from ae.controller.state import NodeRecord, NodeStatus, SQLiteStateStore
 from ae.storage.config import DEFAULT_CLASS_ANNOTATIONS
 
@@ -205,7 +205,7 @@ class Scheduler:
             return None
 
     def _local_path_pinning(self, manifest: AppManifest) -> tuple[bool, str | None, list[str]]:
-        pvc_mounts = list(getattr(manifest.spec, "pvc_mounts", []) or [])
+        pvc_mounts = list(all_pvc_mounts(manifest) or [])
         if not pvc_mounts or self._shim_store is None:
             return False, None, []
 
@@ -263,7 +263,7 @@ class Scheduler:
 
     @staticmethod
     def _pvc_mount_refs(manifest: AppManifest) -> set[tuple[str, str]]:
-        pvc_mounts = list(getattr(manifest.spec, "pvc_mounts", []) or [])
+        pvc_mounts = list(all_pvc_mounts(manifest) or [])
         if not pvc_mounts:
             return set()
         namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or "default"

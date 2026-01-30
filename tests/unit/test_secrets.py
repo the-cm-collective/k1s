@@ -40,6 +40,50 @@ BAZ: qux
     assert env == {"FOO_ENV": "bar", "BAZ_ENV": "qux"}
 
 
+def test_secret_manager_env_from(tmp_path, monkeypatch):
+    secret_path = tmp_path / "secret.yaml"
+    write_secret(
+        secret_path,
+        """
+FOO: bar
+BAZ: qux
+        """.strip(),
+    )
+
+    monkeypatch.setenv("AE_ALLOW_PLAINTEXT_SECRETS", "1")
+    manager = SecretManager()
+    env = manager.load_env([SecretRef(name="demo", path=str(secret_path), env_from=True)])
+
+    assert env == {"FOO": "bar", "BAZ": "qux"}
+
+
+def test_secret_manager_env_from_allows_mapping_override(tmp_path, monkeypatch):
+    secret_path = tmp_path / "secret.yaml"
+    write_secret(
+        secret_path,
+        """
+FOO: bar
+ALT: qux
+        """.strip(),
+    )
+
+    monkeypatch.setenv("AE_ALLOW_PLAINTEXT_SECRETS", "1")
+    manager = SecretManager()
+    env = manager.load_env(
+        [
+            SecretRef(
+                name="demo",
+                path=str(secret_path),
+                env_from=True,
+                env=[SecretEnvMapping(name="FOO", key="ALT")],
+            )
+        ]
+    )
+
+    assert env["FOO"] == "qux"
+    assert env["ALT"] == "qux"
+
+
 def test_secret_manager_missing_key(tmp_path, monkeypatch):
     secret_path = tmp_path / "secret.json"
     write_secret(secret_path, '{"FOO": "bar"}')

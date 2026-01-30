@@ -21,6 +21,7 @@ SC_VERSION = "v1"
 SC_RESOURCE = "storageclasses"
 VA_RESOURCE = "volumeattachments"
 SECRETS_RESOURCE = "secrets"  # noqa: S105 - Kubernetes resource plural
+CONFIGMAPS_RESOURCE = "configmaps"
 
 
 class StorageState(Protocol):
@@ -49,6 +50,8 @@ class StorageState(Protocol):
     def get_volume_attachment(self, pv: PvRef, node_id: str) -> Any | None: ...
 
     def get_secret(self, namespace: str, name: str) -> dict[str, str] | None: ...
+
+    def get_config_map(self, namespace: str, name: str) -> dict[str, str] | None: ...
 
 
 class InMemoryStorageState:
@@ -113,6 +116,10 @@ class InMemoryStorageState:
         return None
 
     def get_secret(self, namespace: str, name: str) -> dict[str, str] | None:
+        _ = (namespace, name)
+        return None
+
+    def get_config_map(self, namespace: str, name: str) -> dict[str, str] | None:
         _ = (namespace, name)
         return None
 
@@ -196,6 +203,28 @@ class ApishimStorageState(InMemoryStorageState):
         for key, value in data.items():
             decoded[str(key)] = self._decode_secret_value(value)
         return decoded
+
+    def get_config_map(self, namespace: str, name: str) -> dict[str, str] | None:
+        if not namespace or not name:
+            return None
+        try:
+            cfg = self._store.get(
+                CORE_GROUP, CORE_VERSION, CONFIGMAPS_RESOURCE, namespace, name
+            )
+        except Exception:
+            return None
+        if cfg is None:
+            return None
+        spec = cfg.spec or {}
+        if not isinstance(spec, dict):
+            return None
+        data = spec.get("data") if isinstance(spec.get("data"), dict) else spec
+        if not isinstance(data, dict):
+            return None
+        out: dict[str, str] = {}
+        for key, value in data.items():
+            out[str(key)] = "" if value is None else str(value)
+        return out
 
     @staticmethod
     def _decode_secret_value(value: Any) -> str:

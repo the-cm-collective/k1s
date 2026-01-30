@@ -54,3 +54,37 @@ def test_node_volume_manager_injects_subpath_mount() -> None:
     vol = volumes[0]
     assert vol.host_path == "/dev/loop0/cache/subdir"
     assert vol.mount_path == "/data"
+
+
+def test_node_volume_manager_scoped_container_mounts() -> None:
+    man = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="busybox",
+            pvc_mounts=[PvcMountSpec(claim_name="data", mount_path="/data")],
+            containers=[
+                AppSpec.ContainerSpec(
+                    name="sidecar",
+                    image="busybox",
+                    pvc_mounts=[PvcMountSpec(claim_name="cache", mount_path="/cache")],
+                )
+            ],
+            init_containers=[
+                AppSpec.ContainerSpec(
+                    name="init",
+                    image="busybox",
+                    pvc_mounts=[PvcMountSpec(claim_name="init", mount_path="/init")],
+                )
+            ],
+        ),
+    )
+    manager = NodeVolumeManager(_StubNetFS(), node_id="node-a")
+    out = manager.inject_pvc_mounts(man)
+    assert any(v.mount_path == "/data" for v in out.spec.volumes)
+    assert all(v.mount_path != "/cache" for v in out.spec.volumes)
+    sidecar = out.spec.containers[0]
+    assert any(v.mount_path == "/cache" for v in sidecar.volume_mounts)
+    initc = out.spec.init_containers[0]
+    assert any(v.mount_path == "/init" for v in initc.volume_mounts)

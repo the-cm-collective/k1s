@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 
 from docker.errors import NotFound
 
+from ae.apishim.store import ObjectStore
 from ae.controller.spec import AppManifest, AppSpec, Metadata, PortSpec, ServiceSpec
 from ae.runtime.docker_runtime import DockerRuntime
 
@@ -57,6 +59,10 @@ class FakeContainer:
         self.client.remove_container(self.labels["ae.pod_name"])
 
 
+def _b64(value: str) -> str:
+    return base64.b64encode(value.encode("utf-8")).decode("ascii")
+
+
 class FakeContainerManager:
     def __init__(self, client: FakeDockerClient) -> None:
         self._client = client
@@ -87,7 +93,8 @@ class FakeContainerManager:
         ports=None,
         restart_policy=None,
     ):  # noqa: ANN001,D401 - mimic docker
-        _ = (image, command, detach, environment, ports, restart_policy)
+        _ = (image, command, detach, ports, restart_policy)
+        self._client.last_env = environment or {}
         pod_name = labels.get("ae.pod_name")
         host_port = self._client.allocate_port()
         container = FakeContainer(
@@ -123,6 +130,7 @@ class FakeDockerClient:
         self.containers_by_replica: dict[str, FakeContainer] = {}
         self._next_port = 32000
         self.logins: list[tuple[str, str, str]] = []
+        self.last_env: dict[str, str] = {}
 
     def allocate_port(self) -> int:
         port = self._next_port
@@ -360,6 +368,115 @@ def test_endpoint_normalizes_anyaddr_to_loopback():
     assert endpoint is not None
     # Should map to loopback, not 0.0.0.0
     assert endpoint.startswith("127.0.0.1:")
+
+
+def test_docker_env_valuefrom_configmap_and_secret(monkeypatch, tmp_path) -> None:
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    store.upsert(
+        "",
+        "v1",
+        "configmaps",
+        "demo",
+        "app-config",
+        {"name": "app-config", "namespace": "demo"},
+        {"MODE": "auto", "LOG_LEVEL": "debug"},
+        status={},
+    )
+    store.upsert(
+        "",
+        "v1",
+        "secrets",
+        "demo",
+        "app-secret",
+        {"name": "app-secret", "namespace": "demo"},
+        {"PASSWORD": _b64("s3cr3t")},
+        status={},
+    )
+    monkeypatch.setenv("AE_APISHIM_DB", str(tmp_path / "apishim.db"))
+
+    client = FakeDockerClient()
+    runtime = DockerRuntime(client=client)
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="demo", namespace="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            ports=[PortSpec(name="http", containerPort=8080)],
+            env=[
+                {
+                    "name": "",
+                    "valueFrom": {"configMapKeyRef": {"name": "app-config", "key": ""}},
+                },
+                {
+                    "name": "",
+                    "valueFrom": {"secretKeyRef": {"name": "app-secret", "key": ""}},
+                },
+                {
+                    "name": "LOG_LEVEL",
+                    "valueFrom": {
+                        "configMapKeyRef": {"name": "app-config", "key": "LOG_LEVEL"}
+                    },
+                },
+                {
+                    "name": "PASSWORD",
+                    "valueFrom": {
+                        "secretKeyRef": {"name": "app-secret", "key": "PASSWORD"}
+                    },
+                },
+                {"name": "LOG_LEVEL", "value": "info"},
+            ],
+        ),
+    )
+    runtime.ensure_app(manifest, revision=1)
+    env = client.last_env or {}
+    assert env["MODE"] == "auto"
+    assert env["PASSWORD"] == "s3cr3t"
+    assert env["LOG_LEVEL"] == "info"
+
+
+def test_docker_envfrom_prefix(monkeypatch, tmp_path) -> None:
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    store.upsert(
+        "",
+        "v1",
+        "configmaps",
+        "demo",
+        "app-config",
+        {"name": "app-config", "namespace": "demo"},
+        {"MODE": "auto"},
+        status={},
+    )
+    monkeypatch.setenv("AE_APISHIM_DB", str(tmp_path / "apishim.db"))
+
+    client = FakeDockerClient()
+    runtime = DockerRuntime(client=client)
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="demo", namespace="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            ports=[PortSpec(name="http", containerPort=8080)],
+            env=[
+                {
+                    "name": "",
+                    "valueFrom": {
+                        "configMapKeyRef": {
+                            "name": "app-config",
+                            "key": "",
+                            "prefix": "CFG_",
+                        }
+                    },
+                }
+            ],
+        ),
+    )
+    runtime.ensure_app(manifest, revision=1)
+    env = client.last_env or {}
+    assert env["CFG_MODE"] == "auto"
 
 
 def tmp_registry_config(_client: FakeDockerClient):  # noqa: ANN001

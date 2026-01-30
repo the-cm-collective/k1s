@@ -7,6 +7,7 @@ import logging
 import os
 from collections.abc import Iterable
 from datetime import datetime
+from pathlib import Path
 
 import docker
 from docker.errors import APIError, NotFound
@@ -66,6 +67,8 @@ class DockerRuntime(RuntimeAdapter):
 
         self._network_name = _os.getenv("AE_DOCKER_NETWORK") or _os.getenv("AE_NETWORK_NAME")
         self._serial_service_rollout = _os.getenv("AE_SERIAL_SERVICE_ROLLOUT", "0") == "1"
+        self._apishim_state_checked = False
+        self._apishim_state = None
 
     def ensure_app(
         self,
@@ -1189,11 +1192,13 @@ class DockerRuntime(RuntimeAdapter):
                 args = []
             env_map: dict[str, str] = {}
             try:
-                for item in (
+                env_items = (
                     getattr(c, "env", None) or (c.get("env") if isinstance(c, dict) else []) or []
-                ):
-                    if isinstance(item, dict) and "name" in item and "value" in item:
-                        env_map[item["name"]] = str(item.get("value", ""))
+                )
+                resources = (
+                    getattr(c, "resources", None) if not isinstance(c, dict) else c.get("resources")
+                )
+                env_map = self._resolve_env_map(manifest, env_items, resources=resources)
             except Exception:
                 env_map = {}
 
@@ -1240,35 +1245,111 @@ class DockerRuntime(RuntimeAdapter):
                 results.append((str(name), 1, f"error: {exc}"))
         return results
 
-    def _manifest_env(self, manifest: AppManifest) -> dict[str, str]:
+    def _get_apishim_state(self):
+        if self._apishim_state_checked:
+            return self._apishim_state
+        self._apishim_state_checked = True
+        try:
+            from ae.apishim.store import ObjectStore
+            from ae.storage.state import ApishimStorageState
+        except Exception:
+            self._apishim_state = None
+            return None
+        dsn = os.getenv("AE_APISHIM_DSN")
+        db_env = os.getenv("AE_APISHIM_DB")
+        db_path = Path(db_env or "state/apishim.db")
+        if not dsn and not db_path.exists():
+            self._apishim_state = None
+            return None
+        try:
+            store = ObjectStore(dsn=dsn) if dsn else ObjectStore(db_path=db_path)
+        except Exception:
+            self._apishim_state = None
+            return None
+        self._apishim_state = ApishimStorageState(store)
+        return self._apishim_state
+
+    def _resolve_env_map(
+        self, manifest: AppManifest, env_items: list[dict] | list, *, resources=None
+    ) -> dict[str, str]:
         env_map: dict[str, str] = {}
-        for item in manifest.spec.env:
-            name = item.get("name")
+        if resources is None:
+            resources = getattr(manifest.spec, "resources", None)
+        namespace = getattr(manifest.metadata, "namespace", None) or DEFAULT_NAMESPACE
+        needs_store = False
+        for item in env_items or []:
+            vf = item.get("valueFrom") if isinstance(item, dict) else None
+            if isinstance(vf, dict) and (
+                isinstance(vf.get("configMapKeyRef"), dict)
+                or isinstance(vf.get("secretKeyRef"), dict)
+            ):
+                needs_store = True
+                break
+        state = self._get_apishim_state() if needs_store else None
+
+        def _merge_env_from_ref(
+            ref: dict | None, *, secret: bool, prefix: str | None = None
+        ) -> None:
+            if not ref or not isinstance(ref, dict):
+                return
+            name = ref.get("name")
+            if not name or state is None:
+                return
+            data = (
+                state.get_secret(namespace, str(name))
+                if secret
+                else state.get_config_map(namespace, str(name))
+            )
+            if not data:
+                return
+            for key, value in data.items():
+                env_key = f"{prefix}{key}" if prefix else str(key)
+                env_map[str(env_key)] = "" if value is None else str(value)
+
+        for item in env_items or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("name"):
+                continue
+            vf = item.get("valueFrom") if isinstance(item, dict) else None
+            if not isinstance(vf, dict):
+                continue
+            cm_ref = (
+                vf.get("configMapKeyRef") if isinstance(vf.get("configMapKeyRef"), dict) else None
+            )
+            if cm_ref is not None and not cm_ref.get("key"):
+                _merge_env_from_ref(cm_ref, secret=False, prefix=cm_ref.get("prefix"))
+            sec_ref = (
+                vf.get("secretKeyRef") if isinstance(vf.get("secretKeyRef"), dict) else None
+            )
+            if sec_ref is not None and not sec_ref.get("key"):
+                _merge_env_from_ref(sec_ref, secret=True, prefix=sec_ref.get("prefix"))
+
+        for item in env_items or []:
+            name = item.get("name") if isinstance(item, dict) else None
             if not name:
                 continue
             if "value" in item:
-                env_map[name] = str(item.get("value", ""))
+                env_map[str(name)] = str(item.get("value", ""))
                 continue
-            # Minimal downward API: support metadata.name and metadata.namespace
             vf = item.get("valueFrom") if isinstance(item, dict) else None
             if isinstance(vf, dict) and isinstance(vf.get("fieldRef"), dict):
                 fp = str(vf.get("fieldRef", {}).get("fieldPath", ""))
                 if fp == "metadata.name":
-                    env_map[name] = manifest.metadata.name
+                    env_map[str(name)] = manifest.metadata.name
                 elif fp == "metadata.namespace":
-                    env_map[name] = "default"
+                    env_map[str(name)] = namespace
                 continue
-            # Minimal resourceFieldRef support for cpu/memory requests/limits
             if isinstance(vf, dict) and isinstance(vf.get("resourceFieldRef"), dict):
                 rfr = vf.get("resourceFieldRef", {}) or {}
                 res = str(rfr.get("resource", ""))
                 divisor_raw = str(rfr.get("divisor", "")) if rfr.get("divisor") is not None else ""
                 try:
-                    # CPU in millicores math: convert both base and divisor to mCPU and integer-divide
                     if res in {"limits.cpu", "requests.cpu"}:
-                        rs = getattr(manifest.spec, "resources", None)
-                        obj = rs.limits if res == "limits.cpu" else (rs.requests if rs else None)
-                        cpuq = getattr(obj, "cpu", None) if obj else None
+                        obj = self._resource_quantities(
+                            resources, "limits" if res == "limits.cpu" else "requests"
+                        )
+                        cpuq = self._resource_value(obj, "cpu")
                         if isinstance(cpuq, int | float):
                             base_m = int(round(float(cpuq) * 1000))
                             if divisor_raw:
@@ -1276,20 +1357,18 @@ class DockerRuntime(RuntimeAdapter):
                                 if d.endswith("m"):
                                     div_m = int(float(d[:-1] or 0)) or 1
                                 else:
-                                    # cores to mCPU
                                     div_m = int(round(float(d or "1") * 1000)) or 1
                             else:
-                                # default divisor 1 core
                                 div_m = 1000
                             if div_m <= 0:
                                 div_m = 1
-                            env_map[name] = str(int(base_m // div_m))
+                            env_map[str(name)] = str(int(base_m // div_m))
                         continue
-                    # Memory bytes: convert both to bytes and integer-divide
                     if res in {"limits.memory", "requests.memory"}:
-                        rs = getattr(manifest.spec, "resources", None)
-                        obj = rs.limits if res == "limits.memory" else (rs.requests if rs else None)
-                        memq = getattr(obj, "memory", None) if obj else None
+                        obj = self._resource_quantities(
+                            resources, "limits" if res == "limits.memory" else "requests"
+                        )
+                        memq = self._resource_value(obj, "memory")
                         if memq:
                             bytes_val = self._parse_memory_bytes(str(memq)) or 0
                             if divisor_raw:
@@ -1298,12 +1377,46 @@ class DockerRuntime(RuntimeAdapter):
                                 div_bytes = 1
                             if div_bytes <= 0:
                                 div_bytes = 1
-                            env_map[name] = str(int(bytes_val // div_bytes))
+                            env_map[str(name)] = str(int(bytes_val // div_bytes))
                         continue
                 except Exception:
-                    # ignore any parsing issues and skip resolution
                     pass
+            if isinstance(vf, dict) and isinstance(vf.get("configMapKeyRef"), dict):
+                cm_ref = vf.get("configMapKeyRef") or {}
+                key = cm_ref.get("key")
+                if key and state is not None:
+                    data = state.get_config_map(namespace, str(cm_ref.get("name") or ""))
+                    if data and key in data:
+                        env_map[str(name)] = str(data[key])
+                continue
+            if isinstance(vf, dict) and isinstance(vf.get("secretKeyRef"), dict):
+                sec_ref = vf.get("secretKeyRef") or {}
+                key = sec_ref.get("key")
+                if key and state is not None:
+                    data = state.get_secret(namespace, str(sec_ref.get("name") or ""))
+                    if data and key in data:
+                        env_map[str(name)] = str(data[key])
+                continue
         return env_map
+
+    def _manifest_env(self, manifest: AppManifest) -> dict[str, str]:
+        return self._resolve_env_map(manifest, manifest.spec.env, resources=manifest.spec.resources)
+
+    @staticmethod
+    def _resource_quantities(resources, field):  # noqa: ANN001
+        if resources is None:
+            return None
+        if isinstance(resources, dict):
+            return resources.get(field)
+        return getattr(resources, field, None)
+
+    @staticmethod
+    def _resource_value(obj, field):  # noqa: ANN001
+        if obj is None:
+            return None
+        if isinstance(obj, dict):
+            return obj.get(field)
+        return getattr(obj, field, None)
 
     def _reload(self, container: Container) -> None:
         try:

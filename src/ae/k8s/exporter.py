@@ -155,18 +155,37 @@ def _container_from_manifest(m: AppManifest, *, opts: ExportOptions) -> Dict[str
                     "valueFrom": {"secretKeyRef": {"name": ref.name, "key": mapp.key}},
                 }
             )
-    if env:
-        c["env"] = env
     # envFrom: opt-in on refs
-    env_from: List[Dict[str, Any]] = []
     for ref in getattr(spec, "config_refs", []) or []:
         if bool(getattr(ref, "env_from", False)):
-            env_from.append({"configMapRef": {"name": ref.name}})
+            env.append({"name": "", "valueFrom": {"configMapKeyRef": {"name": ref.name, "key": ""}}})
     for ref in getattr(spec, "secret_refs", []) or []:
         if bool(getattr(ref, "env_from", False)):
-            env_from.append({"secretRef": {"name": ref.name}})
-    if env_from:
-        c["envFrom"] = env_from
+            env.append({"name": "", "valueFrom": {"secretKeyRef": {"name": ref.name, "key": ""}}})
+    if env:
+        # sanitize envFrom hack entries by moving into envFrom list
+        env_from: List[Dict[str, Any]] = []
+        real_env: List[Dict[str, Any]] = []
+        for e in env:
+            if e.get("name") == "" and e.get("valueFrom"):  # our marker
+                if "configMapKeyRef" in e["valueFrom"]:
+                    cm_ref = e["valueFrom"]["configMapKeyRef"]
+                    entry: Dict[str, Any] = {"configMapRef": {"name": cm_ref["name"]}}
+                    if cm_ref.get("prefix"):
+                        entry["prefix"] = cm_ref.get("prefix")
+                    env_from.append(entry)
+                elif "secretKeyRef" in e["valueFrom"]:
+                    sec_ref = e["valueFrom"]["secretKeyRef"]
+                    entry = {"secretRef": {"name": sec_ref["name"]}}
+                    if sec_ref.get("prefix"):
+                        entry["prefix"] = sec_ref.get("prefix")
+                    env_from.append(entry)
+            else:
+                real_env.append(e)
+        if real_env:
+            c["env"] = real_env
+        if env_from:
+            c["envFrom"] = env_from
     # ports
     if spec.ports:
         c["ports"] = [{"name": p.name, "containerPort": int(p.container_port)} for p in spec.ports]
@@ -294,6 +313,11 @@ def _container_from_spec(
         c["command"] = list(_gf(csp, "command"))
     if _gf(csp, "args"):
         c["args"] = list(_gf(csp, "args"))
+    image_pull_policy = _gf(csp, "image_pull_policy")
+    if image_pull_policy is None and isinstance(csp, dict):
+        image_pull_policy = csp.get("imagePullPolicy")
+    if image_pull_policy:
+        c["imagePullPolicy"] = str(image_pull_policy)
     # env
     env: List[Dict[str, Any]] = []
     for item in _gf(csp, "env") or []:
@@ -322,11 +346,17 @@ def _container_from_spec(
         for e in env:
             if e.get("name") == "" and e.get("valueFrom"):  # our marker
                 if "configMapKeyRef" in e["valueFrom"]:
-                    env_from.append(
-                        {"configMapRef": {"name": e["valueFrom"]["configMapKeyRef"]["name"]}}
-                    )
+                    cm_ref = e["valueFrom"]["configMapKeyRef"]
+                    entry: Dict[str, Any] = {"configMapRef": {"name": cm_ref["name"]}}
+                    if cm_ref.get("prefix"):
+                        entry["prefix"] = cm_ref.get("prefix")
+                    env_from.append(entry)
                 elif "secretKeyRef" in e["valueFrom"]:
-                    env_from.append({"secretRef": {"name": e["valueFrom"]["secretKeyRef"]["name"]}})
+                    sec_ref = e["valueFrom"]["secretKeyRef"]
+                    entry = {"secretRef": {"name": sec_ref["name"]}}
+                    if sec_ref.get("prefix"):
+                        entry["prefix"] = sec_ref.get("prefix")
+                    env_from.append(entry)
             else:
                 real_env.append(e)
         if real_env:

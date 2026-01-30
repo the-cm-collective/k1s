@@ -11,6 +11,7 @@ from ae.controller.spec import (
     PvcMountSpec,
     VolumeDeviceSpec,
     VolumeSpec,
+    all_pvc_mounts,
 )
 
 from .netfs import NetFSManager
@@ -36,7 +37,7 @@ class NodeVolumeManager:
     ) -> AppManifest:
         """Ensure PVC mounts are present and inject hostPath volumes into the manifest."""
 
-        pvc_mounts = list(getattr(manifest.spec, "pvc_mounts", []) or [])
+        pvc_mounts = list(all_pvc_mounts(manifest) or [])
         if not pvc_mounts:
             return manifest
 
@@ -76,12 +77,82 @@ class NodeVolumeManager:
 
         volumes = list(getattr(manifest.spec, "volumes", []) or [])
         devices = list(getattr(manifest.spec, "volume_devices", []) or [])
-        seen = {(v.host_path, v.mount_path, bool(v.read_only)) for v in volumes}
-        seen_devices = {(d.host_path, d.device_path, bool(d.read_only)) for d in devices}
-        for pm in pvc_mounts:
+        main_pvc_mounts = list(getattr(manifest.spec, "pvc_mounts", []) or [])
+        self._extend_with_pvc_mounts(
+            volumes, devices, main_pvc_mounts, mounts_by_pvc, namespace=ns
+        )
+
+        containers = []
+        for c in getattr(manifest.spec, "containers", []) or []:
+            containers.append(
+                self._inject_container_pvcs(c, mounts_by_pvc, namespace=ns)
+            )
+
+        init_containers = []
+        for c in getattr(manifest.spec, "init_containers", []) or []:
+            init_containers.append(
+                self._inject_container_pvcs(c, mounts_by_pvc, namespace=ns)
+            )
+
+        updated_spec = manifest.spec.model_copy(
+            update={
+                "volumes": volumes,
+                "volume_devices": devices,
+                "containers": containers,
+                "init_containers": init_containers,
+            }
+        )
+        return manifest.model_copy(update={"spec": updated_spec})
+
+    @staticmethod
+    def _pvc_ref(pm: PvcMountSpec, *, namespace: str) -> PvcRef:
+        ns = getattr(pm, "namespace", None) or namespace
+        return PvcRef(name=str(pm.claim_name), namespace=str(ns))
+
+    @staticmethod
+    def _spec_has_field(obj, name: str, alt: str | None = None) -> bool:  # noqa: ANN001
+        if obj is None:
+            return False
+        if isinstance(obj, dict):
+            return name in obj or (alt in obj if alt else False)
+        fields = getattr(obj, "__pydantic_fields_set__", None)
+        if fields is None:
+            return False
+        return name in fields or (alt in fields if alt else False)
+
+    def _extend_with_pvc_mounts(
+        self,
+        volumes: list,
+        devices: list,
+        pvc_mounts: list,
+        mounts_by_pvc: dict[PvcRef, NetFSMount],
+        *,
+        namespace: str,
+    ) -> None:
+        def _vol_key(v):  # noqa: ANN001
+            if isinstance(v, dict):
+                return (
+                    v.get("hostPath") or v.get("host_path"),
+                    v.get("mountPath") or v.get("mount_path"),
+                    bool(v.get("readOnly", False)),
+                )
+            return (getattr(v, "host_path", None), getattr(v, "mount_path", None), bool(v.read_only))
+
+        def _dev_key(d):  # noqa: ANN001
+            if isinstance(d, dict):
+                return (
+                    d.get("hostPath") or d.get("host_path"),
+                    d.get("devicePath") or d.get("device_path"),
+                    bool(d.get("readOnly", False)),
+                )
+            return (getattr(d, "host_path", None), getattr(d, "device_path", None), bool(d.read_only))
+
+        seen = {_vol_key(v) for v in volumes}
+        seen_devices = {_dev_key(d) for d in devices}
+        for pm in pvc_mounts or []:
             if not getattr(pm, "mount_path", None) and not getattr(pm, "device_path", None):
                 continue
-            pvc = self._pvc_ref(pm, namespace=ns)
+            pvc = self._pvc_ref(pm, namespace=namespace)
             mount = mounts_by_pvc.get(pvc)
             if not mount:
                 continue
@@ -115,12 +186,24 @@ class NodeVolumeManager:
                 )
             )
 
-        updated_spec = manifest.spec.model_copy(
-            update={"volumes": volumes, "volume_devices": devices}
+    def _inject_container_pvcs(
+        self, container, mounts_by_pvc: dict[PvcRef, NetFSMount], *, namespace: str
+    ):  # noqa: ANN001
+        if not self._spec_has_field(container, "pvc_mounts", "pvcMounts"):
+            return container
+        pvc_mounts = list(getattr(container, "pvc_mounts", []) or [])
+        if not pvc_mounts:
+            return container
+        volume_mounts = list(getattr(container, "volume_mounts", []) or [])
+        volume_devices = list(getattr(container, "volume_devices", []) or [])
+        self._extend_with_pvc_mounts(
+            volume_mounts, volume_devices, pvc_mounts, mounts_by_pvc, namespace=namespace
         )
-        return manifest.model_copy(update={"spec": updated_spec})
-
-    @staticmethod
-    def _pvc_ref(pm: PvcMountSpec, *, namespace: str) -> PvcRef:
-        ns = getattr(pm, "namespace", None) or namespace
-        return PvcRef(name=str(pm.claim_name), namespace=str(ns))
+        if isinstance(container, dict):
+            updated = dict(container)
+            updated["volume_mounts"] = volume_mounts
+            updated["volume_devices"] = volume_devices
+            return updated
+        return container.model_copy(
+            update={"volume_mounts": volume_mounts, "volume_devices": volume_devices}
+        )
