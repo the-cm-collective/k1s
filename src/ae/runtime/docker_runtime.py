@@ -3,6 +3,8 @@
 # ruff: noqa: E501,S110,S112,S603,S607,S104,SIM105,SIM118,UP022,UP028,B009
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import os
 from collections.abc import Iterable
@@ -70,6 +72,8 @@ class DockerRuntime(RuntimeAdapter):
         self._serial_service_rollout = _os.getenv("AE_SERIAL_SERVICE_ROLLOUT", "0") == "1"
         self._apishim_state_checked = False
         self._apishim_state = None
+        self._apishim_store_checked = False
+        self._apishim_store = None
 
     def ensure_app(
         self,
@@ -396,10 +400,202 @@ class DockerRuntime(RuntimeAdapter):
         if policy_name != "Always" and self._image_present(image_ref):
             return
         try:
-            self._registry.ensure_login(self._client, image_ref)
+            creds = self._image_pull_credentials(image_ref, manifest=manifest, spec=spec)
+            if creds:
+                registry, username, password = creds
+                self._client.login(
+                    registry=registry, username=username or None, password=password or None
+                )
+            else:
+                self._registry.ensure_login(self._client, image_ref)
             self._client.images.pull(image_ref)
         except APIError as exc:
             raise RuntimeError(f"Failed to pull image {image_ref}: {exc}") from exc
+
+    def _extract_registry(self, image: str) -> str | None:
+        if "/" not in image:
+            return None
+        host = image.split("/", 1)[0]
+        if "." not in host and ":" not in host:
+            return None
+        return host
+
+    def _parse_dockerconfigjson(self, raw: str) -> dict[str, dict[str, str]]:
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return {}
+        auths = payload.get("auths") if isinstance(payload, dict) else None
+        if isinstance(auths, dict):
+            entries = auths
+        elif isinstance(payload, dict):
+            entries = payload
+        else:
+            return {}
+        out: dict[str, dict[str, str]] = {}
+        for host, entry in entries.items():
+            if not isinstance(entry, dict):
+                continue
+            username = entry.get("username")
+            password = entry.get("password")
+            if (not username or not password) and entry.get("auth"):
+                try:
+                    decoded = base64.b64decode(str(entry["auth"]).encode("ascii")).decode("utf-8")
+                    if ":" in decoded:
+                        username, password = decoded.split(":", 1)
+                except Exception:
+                    username = None
+                    password = None
+            if username and password:
+                out[str(host)] = {"username": str(username), "password": str(password)}
+        return out
+
+    def _image_pull_secret_names(self, manifest: AppManifest) -> list[tuple[str | None, str | None]]:
+        secrets: list[tuple[str | None, str | None]] = []
+        for sec in getattr(manifest.spec, "image_pull_secrets", []) or []:
+            if isinstance(sec, dict):
+                secrets.append((sec.get("name"), sec.get("namespace")))
+            else:
+                secrets.append((str(sec), None))
+        return secrets
+
+    def _service_account_pull_secrets(
+        self, manifest: AppManifest
+    ) -> list[tuple[str | None, str | None]]:
+        store = self._get_apishim_store()
+        if store is None:
+            return []
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        sa_name = (
+            getattr(manifest.spec, "service_account_name", None)
+            or self._service_account_name_from_store(manifest, store)
+            or "default"
+        )
+        try:
+            sa = store.get("", "v1", "serviceaccounts", namespace, str(sa_name))
+        except Exception:
+            sa = None
+        if sa is None:
+            return []
+        spec = getattr(sa, "spec", None) or {}
+        if not isinstance(spec, dict):
+            return []
+        secrets = spec.get("imagePullSecrets") or []
+        out: list[tuple[str | None, str | None]] = []
+        for entry in secrets:
+            if isinstance(entry, dict):
+                out.append((entry.get("name"), None))
+            else:
+                out.append((str(entry), None))
+        return out
+
+    def _service_account_name_from_store(self, manifest: AppManifest, store: Any) -> str | None:
+        name = getattr(getattr(manifest, "metadata", None), "name", None)
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        if not name:
+            return None
+        candidates = [
+            ("apps", "v1", "deployments"),
+            ("apps", "v1", "daemonsets"),
+            ("apps", "v1", "statefulsets"),
+            ("batch", "v1", "jobs"),
+            ("batch", "v1", "cronjobs"),
+        ]
+        for group, version, resource in candidates:
+            try:
+                obj = store.get(group, version, resource, namespace, str(name))
+            except Exception:
+                obj = None
+            if obj is None:
+                continue
+            spec = getattr(obj, "spec", None) or {}
+            if not isinstance(spec, dict):
+                continue
+            template = None
+            if resource == "cronjobs":
+                template = ((spec.get("jobTemplate") or {}).get("spec") or {}).get("template")
+            else:
+                template = spec.get("template")
+            if not isinstance(template, dict):
+                continue
+            tpl_spec = template.get("spec") or {}
+            if not isinstance(tpl_spec, dict):
+                continue
+            sa = tpl_spec.get("serviceAccountName") or tpl_spec.get("serviceAccount")
+            if sa:
+                return str(sa)
+        return None
+
+    def _pull_secret_auths(self, manifest: AppManifest) -> dict[str, dict[str, str]]:
+        state = self._get_apishim_state()
+        if state is None:
+            return {}
+        secrets = self._image_pull_secret_names(manifest)
+        if not secrets:
+            secrets = self._service_account_pull_secrets(manifest)
+        if not secrets:
+            return {}
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        auths: dict[str, dict[str, str]] = {}
+        for name, ns in secrets:
+            if not name:
+                continue
+            data = state.get_secret(str(ns or namespace), str(name))
+            if not data:
+                continue
+            raw = data.get(".dockerconfigjson") or data.get(".dockercfg")
+            if raw:
+                auths.update(self._parse_dockerconfigjson(str(raw)))
+                continue
+            host = data.get("registry") or data.get("host") or data.get("server")
+            user = data.get("username")
+            pw = data.get("password")
+            if host and user and pw:
+                auths[str(host)] = {"username": str(user), "password": str(pw)}
+        return auths
+
+    def _image_pull_credentials(
+        self,
+        image_ref: str,
+        *,
+        manifest: AppManifest | None = None,
+        spec: Any | None = None,
+    ) -> tuple[str, str, str] | None:
+        creds = self._registry.list_registries()
+        secret_creds = self._pull_secret_auths(manifest) if manifest is not None else {}
+        preferred: list[str] = []
+        if manifest is not None:
+            ref = getattr(manifest.spec, "registry_auth_ref", None)
+            if ref:
+                preferred.append(str(ref))
+            for sec in getattr(manifest.spec, "image_pull_secrets", []) or []:
+                if isinstance(sec, dict):
+                    name = sec.get("name")
+                    if name:
+                        preferred.append(str(name))
+                else:
+                    preferred.append(str(sec))
+
+        for host in preferred:
+            entry = creds.get(host) or secret_creds.get(host)
+            if entry and entry.get("username") and entry.get("password"):
+                return str(host), str(entry.get("username")), str(entry.get("password"))
+
+        registry = self._extract_registry(image_ref) or "docker.io"
+        candidates = [registry]
+        if registry == "docker.io":
+            candidates.extend(
+                [
+                    "index.docker.io",
+                    "registry-1.docker.io",
+                    "https://index.docker.io/v1/",
+                ]
+            )
+        for host in candidates:
+            entry = creds.get(host) or secret_creds.get(host)
+            if entry and entry.get("username") and entry.get("password"):
+                return str(host), str(entry.get("username")), str(entry.get("password"))
+        return None
 
     def _resolve_extra_hosts(self, manifest: AppManifest) -> dict[str, str]:
         hosts: dict[str, str] = {}
@@ -437,6 +633,29 @@ class DockerRuntime(RuntimeAdapter):
                 options.append(f"{name}:{value}" if value else str(name))
         return nameservers, searches, options
 
+    def _endpoint_for_host_network(
+        self, manifest: AppManifest, preferred: int | None = None
+    ) -> str | None:
+        port = None
+        if preferred is not None:
+            port = int(preferred)
+        elif getattr(manifest.spec, "ports", None):
+            try:
+                port = int(manifest.spec.ports[0].container_port)
+            except Exception:
+                port = None
+        if port is None and getattr(manifest.spec, "service", None):
+            svc = manifest.spec.service
+            try:
+                target = getattr(svc, "target_port", None)
+                port = int(target if target is not None else getattr(svc, "port", None))
+            except Exception:
+                port = None
+        if port is None:
+            return None
+        host = os.getenv("AE_NODE_ADVERTISE_IP") or "127.0.0.1"
+        return f"{host}:{port}"
+
     def _create_container(
         self,
         manifest: AppManifest,
@@ -451,6 +670,9 @@ class DockerRuntime(RuntimeAdapter):
         replica_suffix = replica_id.split("-")[-1]
         name = f"ae-{app_name}-rev{revision}-{replica_suffix}"
         env = self._manifest_env(manifest)
+        host_network = bool(getattr(manifest.spec, "host_network", False))
+        host_pid = bool(getattr(manifest.spec, "host_pid", False))
+        host_ipc = bool(getattr(manifest.spec, "host_ipc", False))
         # Build port mapping; if a Service is specified and replicas==1, publish a stable host port
         svc_port = None
         svc_target = None
@@ -461,18 +683,21 @@ class DockerRuntime(RuntimeAdapter):
             # Optional multi-port publishing for single-replica services
             if getattr(manifest.spec.service, "ports", None):
                 svc_ports_list = list(manifest.spec.service.ports)
-        ports, svc_bindings = self._port_mapping(
-            manifest.spec.ports,
-            app_name,
-            service_port=svc_port,
-            service_target=svc_target,
-            service_ports=svc_ports_list,
-        )
-        # Pre-flight conflict check for any published service host ports. This only raises
-        # when another app already owns the same host port, allowing single-app rollouts
-        # to fall back to different ports when necessary.
-        for host_port in {hp for hp in svc_bindings.values() if hp is not None}:
-            self._ensure_host_port_free(app_name, int(host_port))
+        if host_network:
+            ports, svc_bindings = {}, {}
+        else:
+            ports, svc_bindings = self._port_mapping(
+                manifest.spec.ports,
+                app_name,
+                service_port=svc_port,
+                service_target=svc_target,
+                service_ports=svc_ports_list,
+            )
+            # Pre-flight conflict check for any published service host ports. This only raises
+            # when another app already owns the same host port, allowing single-app rollouts
+            # to fall back to different ports when necessary.
+            for host_port in {hp for hp in svc_bindings.values() if hp is not None}:
+                self._ensure_host_port_free(app_name, int(host_port))
 
         # resource limits
         nano_cpus = None
@@ -627,6 +852,12 @@ class DockerRuntime(RuntimeAdapter):
                 kwargs["volumes"] = volumes
             if getattr(manifest.spec, "working_dir", None):
                 kwargs["working_dir"] = str(manifest.spec.working_dir)
+            if host_network:
+                kwargs["network_mode"] = "host"
+            if host_pid:
+                kwargs["pid_mode"] = "host"
+            if host_ipc:
+                kwargs["ipc_mode"] = "host"
             extra_hosts = self._resolve_extra_hosts(manifest)
             if extra_hosts:
                 kwargs["extra_hosts"] = extra_hosts
@@ -642,7 +873,7 @@ class DockerRuntime(RuntimeAdapter):
                 manifest.spec.image, **{k: v for k, v in kwargs.items() if v is not None}
             )
             # Attach to shared network if configured
-            if self._network_name:
+            if self._network_name and not host_network:
                 try:
                     net = self._client.networks.get(self._network_name)
                     aliases = [
@@ -801,6 +1032,20 @@ class DockerRuntime(RuntimeAdapter):
                 cname = str(getattr(csp, "name", "") or "").strip()
                 if not cname:
                     continue
+                host_network = bool(getattr(manifest.spec, "host_network", False))
+                host_pid = bool(getattr(manifest.spec, "host_pid", False))
+                host_ipc = bool(getattr(manifest.spec, "host_ipc", False))
+                share_proc = bool(getattr(manifest.spec, "share_process_namespace", False))
+                container_kwargs: dict[str, Any] = dict(sidecar_kwargs)
+                if host_network:
+                    container_kwargs["network_mode"] = "host"
+                if host_pid:
+                    container_kwargs["pid_mode"] = "host"
+                elif share_proc:
+                    main_name = f"ae-{app_name}-rev{revision}-{replica_id.split('-')[-1]}"
+                    container_kwargs["pid_mode"] = f"container:{main_name}"
+                if host_ipc:
+                    container_kwargs["ipc_mode"] = "host"
                 c = by_cname.get(cname)
                 if c is None:
                     env_map: dict[str, str] = {}
@@ -856,7 +1101,7 @@ class DockerRuntime(RuntimeAdapter):
                                 self.CONTAINER_LABEL: cname,
                             },
                             restart_policy={"Name": "unless-stopped"},
-                            **sidecar_kwargs,
+                            **container_kwargs,
                         )
                         # Optional network join
                         if self._network_name:
@@ -1055,9 +1300,12 @@ class DockerRuntime(RuntimeAdapter):
                     preferred_port = int(r.tcp_socket.port)
         except Exception:
             preferred_port = None
-        endpoint = self._endpoint_from_ports(
-            manifest.spec.ports, container, preferred=preferred_port
-        )
+        if bool(getattr(manifest.spec, "host_network", False)):
+            endpoint = self._endpoint_for_host_network(manifest, preferred_port)
+        else:
+            endpoint = self._endpoint_from_ports(
+                manifest.spec.ports, container, preferred=preferred_port
+            )
 
         started_at = self._parse_datetime(state.get("StartedAt"))
 
@@ -1246,6 +1494,15 @@ class DockerRuntime(RuntimeAdapter):
             init_kwargs["dns_search"] = dns_search
         if dns_opt:
             init_kwargs["dns_opt"] = dns_opt
+        host_network = bool(getattr(manifest.spec, "host_network", False))
+        host_pid = bool(getattr(manifest.spec, "host_pid", False))
+        host_ipc = bool(getattr(manifest.spec, "host_ipc", False))
+        if host_network:
+            init_kwargs["network_mode"] = "host"
+        if host_pid:
+            init_kwargs["pid_mode"] = "host"
+        if host_ipc:
+            init_kwargs["ipc_mode"] = "host"
 
         # Build shared volume bindings: hostPath volumes and storage volumes
         volumes = {}
@@ -1395,6 +1652,27 @@ class DockerRuntime(RuntimeAdapter):
             return None
         self._apishim_state = ApishimStorageState(store)
         return self._apishim_state
+
+    def _get_apishim_store(self):
+        if self._apishim_store_checked:
+            return self._apishim_store
+        self._apishim_store_checked = True
+        try:
+            from ae.apishim.store import ObjectStore
+        except Exception:
+            self._apishim_store = None
+            return None
+        dsn = os.getenv("AE_APISHIM_DSN")
+        db_env = os.getenv("AE_APISHIM_DB")
+        db_path = Path(db_env or "state/apishim.db")
+        if not dsn and not db_path.exists():
+            self._apishim_store = None
+            return None
+        try:
+            self._apishim_store = ObjectStore(dsn=dsn) if dsn else ObjectStore(db_path=db_path)
+        except Exception:
+            self._apishim_store = None
+        return self._apishim_store
 
     def _resolve_env_map(
         self, manifest: AppManifest, env_items: list[dict] | list, *, resources=None
