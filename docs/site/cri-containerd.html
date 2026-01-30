@@ -711,7 +711,11 @@ export AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock</code></pre>
 <p>Defaults:</p>
 <ul>
 <li>CRI endpoint: <code>AE_CRI_ENDPOINT</code> (default <code>unix:///run/containerd/containerd.sock</code>)</li>
-<li>CRI sandbox image: <code>AE_CRI_SANDBOX_IMAGE</code> (pause image)</li>
+<li>CRI sandbox image: <code>AE_CRI_SANDBOX_IMAGE</code> (pause image)
+<ul>
+<li>Host namespaces gate: <code>AE_CRI_ALLOW_HOST_NS=1</code> to enable hostNetwork/hostPID/hostIPC/shareProcessNamespace</li>
+</ul>
+</li>
 </ul>
 <h2>Registry-first image flow (k8s aligned)</h2>
 <p>1. Build images and push to a registry reachable by every node. 2. Reference those images in manifests. 3. Let containerd pull on demand (kubelet behavior). 4. Optionally pre-warm to reduce first-start latency.</p>
@@ -781,6 +785,7 @@ AE_USE_REGISTRY_CACHE=0</code></pre>
 <li><code>AE_CRI_REGISTRY_TRUST_SCHEME=http</code> to override scheme (default <code>https</code>)</li>
 <li><code>AE_CRI_REGISTRY_TRUST_RESTART=1</code> to restart containerd after writing trust</li>
 <li><code>AE_CRI_SOCKET_ACCESS=1</code> to grant temporary ACL access to the containerd socket (dev-only)</li>
+<li><code>AE_CRI_ALLOW_HOST_NS=1</code> to enable hostNetwork/hostPID/hostIPC/shareProcessNamespace (off by default)</li>
 </ul>
 <h3>Temporary socket access (dev)</h3>
 <p>If you want to run CRI demos without sudo, grant ACL access to the containerd socket for the current user:</p>
@@ -891,7 +896,7 @@ kubectl apply -f specs/examples/k1s-node-daemonset-k8s.yaml</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-29 17:01:46</span>
+        <span>Built 2026-01-29 17:53:56</span>
       </div>
     </footer>
     <script>
