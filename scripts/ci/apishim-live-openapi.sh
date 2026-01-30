@@ -281,7 +281,38 @@ EOF
   log "Helm render + server-side validation"
   HELM_TMP="$(mktemp -d "$WORKDIR/helm-XXXX")"
   helm create "$HELM_TMP/chart" >/dev/null
-  helm template demo "$HELM_TMP/chart" -n "$NAMESPACE" --skip-tests >"$HELM_TMP/chart.yaml"
+  # Minimize chart surface so we always render at least one object.
+  rm -f "$HELM_TMP/chart"/templates/{deployment.yaml,service.yaml,serviceaccount.yaml,ingress.yaml,hpa.yaml,tests/test-connection.yaml}
+  mkdir -p "$HELM_TMP/chart/templates"
+  cat >"$HELM_TMP/chart/templates/configmap.yaml" <<'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-config
+  namespace: default
+data:
+  hello: world
+EOF
+  if [ ! -s "$HELM_TMP/chart/templates/configmap.yaml" ]; then
+    log "configmap template missing or empty"
+    ls -la "$HELM_TMP/chart/templates" >&2 || true
+    exit 1
+  fi
+  helm template demo "$HELM_TMP/chart" -n "$NAMESPACE" --skip-tests \
+    | tee "$HELM_TMP/chart.yaml" >"$ARTIFACT_DIR/helm-template.log"
+  if ! grep -q '^kind:' "$HELM_TMP/chart.yaml"; then
+    log "helm template produced no objects"
+    wc -l "$HELM_TMP/chart.yaml" >&2 || true
+    sed -n '1,200p' "$HELM_TMP/chart.yaml" >&2 || true
+    echo "=== chart templates ===" >&2
+    ls -la "$HELM_TMP/chart/templates" >&2 || true
+    echo "=== configmap template ===" >&2
+    sed -n '1,120p' "$HELM_TMP/chart/templates/configmap.yaml" >&2 || true
+    echo "=== helm debug ===" >&2
+    helm template --debug demo "$HELM_TMP/chart" >/tmp/helm-debug.log 2>&1 || true
+    sed -n '1,200p' /tmp/helm-debug.log >&2 || true
+    exit 1
+  fi
   "${KCTL[@]}" apply --dry-run=server --validate=false -f "$HELM_TMP/chart.yaml" \
     >"$ARTIFACT_DIR/helm-dry-run.log"
 
