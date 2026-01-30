@@ -11,6 +11,7 @@ services:
     environment:
       - AE_LABS=1
       - AE_API_MUTATIONS=1
+      - AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-docker}
       - AE_LABS_HELM_SERVER=https://apishim:${APISHIM_PORT:-8445}
       - AE_APISHIM_MIRROR=1
       - AE_APISHIM_SOT=1

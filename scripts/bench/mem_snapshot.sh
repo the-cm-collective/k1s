@@ -145,7 +145,7 @@ PY
 )"
 fi
 if [[ "$collect_engine" == "docker" ]] && podman_available; then
-  foreign_ae_containers="$(podman_cmd ps -a --format json 2>/dev/null | python - << 'PY'
+  foreign_ae_containers="$(podman_cmd ps -a --format json 2>/dev/null | python -c '
 import json, sys
 try:
     arr = json.load(sys.stdin)
@@ -153,12 +153,12 @@ except Exception:
     print(0); sys.exit(0)
 c=0
 for x in arr or []:
-    labs=(x.get('Config') or {}).get('Labels') or (x.get('Labels') or {})
-    name=(x.get('Name') or '').strip('/ ')
-    if labs.get('ae.app') or name.startswith('ae-'):
+    labs=(x.get("Config") or {}).get("Labels") or (x.get("Labels") or {})
+    name=(x.get("Name") or "").strip("/ ")
+    if labs.get("ae.app") or name.startswith("ae-"):
         c+=1
 print(c)
-PY
+'
 )"
 fi
 if [[ "$foreign_ae_containers" != "0" ]]; then
