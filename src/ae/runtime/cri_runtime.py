@@ -167,6 +167,37 @@ class CRIRuntime(RuntimeAdapter):
             return iter(())
         return self._iter_log_file(Path(str(log_path)), follow=follow, tail=tail, since=since)
 
+    # Optional API used by HTTP UI to route logs by container name
+    def read_logs_for_container(
+        self,
+        app_name: str,
+        container_name: str,
+        *,
+        follow: bool = False,
+        tail: int | None = None,
+        since: int | None = None,
+    ):
+        self._ensure_clients()
+        pb2 = self._pb2()
+        selector = {self.APP_LABEL: app_name, self.CONTAINER_LABEL: container_name}
+        flt = pb2.ContainerFilter(label_selector=selector)
+        req = pb2.ListContainersRequest(filter=flt)
+        resp = self._runtime_call("ListContainers", req)
+        items = getattr(resp, "containers", None)
+        if items is None:
+            items = getattr(resp, "items", None)
+        containers = list(items or [])
+        if not containers:
+            return iter(())
+        container_id = getattr(containers[0], "id", None)
+        if not container_id:
+            return iter(())
+        status = self._container_status(str(container_id))
+        log_path = getattr(status, "log_path", None) if status else None
+        if not log_path:
+            return iter(())
+        return self._iter_log_file(Path(str(log_path)), follow=follow, tail=tail, since=since)
+
     def remove_app(self, app_name: str) -> int:
         self._ensure_clients()
         removed = 0
