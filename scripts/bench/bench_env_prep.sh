@@ -13,6 +13,7 @@ USAGE
 manifests=()
 metrics_port="9210"
 env_file="state/bench-env/env.sh"
+controller_mode="user"
 
 # Bench runs do not need ingress writes by default (avoids permission noise).
 BENCH_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS:-1}"
@@ -25,6 +26,8 @@ while [[ $# -gt 0 ]]; do
       metrics_port="$2"; shift 2;;
     --env-file)
       env_file="$2"; shift 2;;
+    --sudo-controller)
+      controller_mode="sudo"; shift;;
     -h|--help)
       usage; exit 0;;
     *)
@@ -49,6 +52,15 @@ if [[ ! -d "$specs_src" ]]; then
 fi
 
 export PYTHONPATH="${PYTHONPATH:-$repo_root/src}"
+python_bin="${PYTHON_BIN:-$(command -v python)}"
+if [[ -z "$python_bin" || ! -x "$python_bin" ]]; then
+  echo "[bench-env] python not found on PATH; set PYTHON_BIN explicitly" >&2
+  exit 3
+fi
+podman_bin="${AE_PODMAN_BIN:-$(command -v podman || true)}"
+if [[ -z "$podman_bin" ]]; then
+  podman_bin="podman"
+fi
 
 env_dir=$(dirname "$env_file")
 spec_dir="$env_dir/specs"
@@ -66,6 +78,11 @@ rm -rf "$spec_dir"
 cp -a "$specs_src/." "$spec_dir/"
 mkdir -p "$caddy_dir"
 rm -f "$state_db"
+
+# Pre-create controller log/pid files so sudo controller keeps user ownership.
+: > "$log_file"
+: > "$pid_file"
+chmod 664 "$log_file" "$pid_file" 2>/dev/null || true
 
 # Optional cleanup of rootful Podman containers to prevent port conflicts
 if command -v sudo >/dev/null 2>&1 && command -v podman >/dev/null 2>&1; then
@@ -97,7 +114,7 @@ if command -v sudo >/dev/null 2>&1 && command -v podman >/dev/null 2>&1; then
   fi
 fi
 
-python_output=$(python - "$specs_src" "${manifests[@]}" <<'PY'
+python_output=$("$python_bin" - "$specs_src" "${manifests[@]}" <<'PY'
 import sys, yaml, pathlib
 src_root = pathlib.Path(sys.argv[1]).resolve()
 manifest_paths = sys.argv[2:]
@@ -129,11 +146,15 @@ PY
 }
 
 mapfile -t parsed <<<"$python_output"
-IFS='|' read -r -a allowed_rel <<<"${parsed[0]}"
-primary_app_name="${parsed[1]}"
+IFS='|' read -r -a allowed_rel <<<"${parsed[0]:-}"
+if [[ ${#allowed_rel[@]} -eq 0 || -z "${allowed_rel[0]:-}" ]]; then
+  echo "[bench-env] failed to parse manifest list from helper" >&2
+  exit 4
+fi
+primary_app_name="${parsed[1]-}"
 primary_manifest_rel="${allowed_rel[0]}"
 
-python - "$spec_dir" "${allowed_rel[@]}" <<'PY'
+"$python_bin" - "$spec_dir" "${allowed_rel[@]}" <<'PY'
 import sys, yaml
 from pathlib import Path
 spec_root = Path(sys.argv[1])
@@ -161,27 +182,69 @@ if [[ -f "$pid_file" ]]; then
   rm -f "$pid_file"
 fi
 
-AE_SPECS_DIR="$spec_dir" AE_STATE_DB="$state_db" AE_CADDY_DIR="$caddy_dir" \
-AE_ALLOW_PLAINTEXT_SECRETS="${AE_ALLOW_PLAINTEXT_SECRETS:-1}" \
-AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-podman}" \
-AE_OCI_RUNTIME="${AE_OCI_RUNTIME:-}" \
-AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}" \
-nohup python -m ae.controller --loop --specs "$spec_dir" --watch --metrics-port "$metrics_port" \
-  >"$log_file" 2>&1 &
-controller_pid=$!
-echo "$controller_pid" > "$pid_file"
+if [[ "$controller_mode" == "sudo" ]]; then
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "[bench-env] sudo not found; cannot start controller with sudo" >&2
+    exit 3
+  fi
+  sudo env \
+    PYTHON_BIN="$python_bin" \
+    AE_PODMAN_BIN="$podman_bin" \
+    PYTHONPATH="${PYTHONPATH:-$repo_root/src}" \
+    HOME="/root" \
+    XDG_RUNTIME_DIR="/run/user/0" \
+    DBUS_SESSION_BUS_ADDRESS="" \
+    CONTAINER_HOST="" \
+    PODMAN_HOST="" \
+    AE_SPECS_DIR="$spec_dir" \
+    AE_STATE_DB="$state_db" \
+    AE_CADDY_DIR="$caddy_dir" \
+    AE_ALLOW_PLAINTEXT_SECRETS="${AE_ALLOW_PLAINTEXT_SECRETS:-1}" \
+    AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-podman}" \
+    AE_OCI_RUNTIME="${AE_OCI_RUNTIME:-}" \
+    AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}" \
+    BENCH_METRICS_PORT="$metrics_port" \
+    BENCH_LOG_FILE="$log_file" \
+    BENCH_PID_FILE="$pid_file" \
+    bash -lc 'install -d -m 0700 /run/user/0 || true; nohup "$PYTHON_BIN" -m ae.controller --loop --specs "$AE_SPECS_DIR" --watch --metrics-port "$BENCH_METRICS_PORT" >>"$BENCH_LOG_FILE" 2>&1 & echo $! > "$BENCH_PID_FILE"' </dev/null
+  controller_pid=$(cat "$pid_file" 2>/dev/null || true)
+else
+  AE_SPECS_DIR="$spec_dir" AE_STATE_DB="$state_db" AE_CADDY_DIR="$caddy_dir" \
+  AE_ALLOW_PLAINTEXT_SECRETS="${AE_ALLOW_PLAINTEXT_SECRETS:-1}" \
+  AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-podman}" \
+  AE_OCI_RUNTIME="${AE_OCI_RUNTIME:-}" \
+  AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}" \
+  nohup "$python_bin" -m ae.controller --loop --specs "$spec_dir" --watch --metrics-port "$metrics_port" \
+    >>"$log_file" 2>&1 &
+  controller_pid=$!
+  echo "$controller_pid" > "$pid_file"
+fi
 
 for _ in {1..30}; do
-  if ! kill -0 "$controller_pid" 2>/dev/null; then
-    tail -n 40 "$log_file" >&2
-    echo "[bench-env] controller exited early" >&2
-    exit 5
+  if [[ "$controller_mode" == "sudo" ]]; then
+    if ! sudo kill -0 "$controller_pid" 2>/dev/null; then
+      tail -n 40 "$log_file" >&2
+      echo "[bench-env] controller exited early" >&2
+      exit 5
+    fi
+  else
+    if ! kill -0 "$controller_pid" 2>/dev/null; then
+      tail -n 40 "$log_file" >&2
+      echo "[bench-env] controller exited early" >&2
+      exit 5
+    fi
   fi
   if grep -q "http api listening" "$log_file" >/dev/null 2>&1; then
     break
   fi
   sleep 1
 done
+
+if ! grep -q "http api listening" "$log_file" >/dev/null 2>&1; then
+  tail -n 40 "$log_file" >&2
+  echo "[bench-env] controller exited early" >&2
+  exit 5
+fi
 
 mkdir -p "$(dirname "$env_file")"
 cat > "$env_file" <<EOF
@@ -191,15 +254,18 @@ export AE_CADDY_DIR="$caddy_dir"
 export AE_ALLOW_PLAINTEXT_SECRETS="${AE_ALLOW_PLAINTEXT_SECRETS:-1}"
 export AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-podman}"
 export AE_OCI_RUNTIME="${AE_OCI_RUNTIME:-}"
+export AE_PODMAN_BIN="$podman_bin"
 export AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}"
 export BENCH_ENV_DIR="$env_dir"
 export BENCH_CONTROLLER_PID_FILE="$pid_file"
 export BENCH_CONTROLLER_PID="$controller_pid"
+export BENCH_CONTROLLER_SUDO="$([[ "$controller_mode" == "sudo" ]] && echo 1 || echo 0)"
 export BENCH_CONTROLLER_LOG="$log_file"
 export BENCH_SPEC_DIR="$spec_dir"
 export BENCH_PRIMARY_MANIFEST="$spec_dir/$primary_manifest_rel"
 export BENCH_PRIMARY_APP="$primary_app_name"
 export BENCH_METRICS_PORT="$metrics_port"
+export PYTHON_BIN="$python_bin"
 export WAIT_READY_TRIES="${WAIT_READY_TRIES:-60}"
 export WAIT_READY_DELAY="${WAIT_READY_DELAY:-2}"
 EOF

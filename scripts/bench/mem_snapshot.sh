@@ -16,8 +16,9 @@ outroot="snapshots"
 
 podman_bin="${AE_PODMAN_BIN:-podman}"
 podman_prefix=()
-if [[ "${AE_COLLECT_PODMAN_SUDO:-${AE_PODMAN_SUDO:-0}}" == "1" ]]; then
-  podman_prefix=(sudo -E)
+if [[ "${AE_COLLECT_PODMAN_SUDO:-${AE_PODMAN_SUDO:-0}}" == "1" && "$(id -u)" != "0" ]]; then
+  # Use a clean sudo env to avoid inheriting rootless Podman vars (e.g. XDG_RUNTIME_DIR).
+  podman_prefix=(sudo)
 fi
 
 podman_available() {
@@ -382,6 +383,29 @@ PY
   fi
 fi
 log_step "docker containers collected (if selected)"
+
+# Guard rail: fail fast if we expected containers but captured none.
+require_containers="${AE_REQUIRE_CONTAINERS:-}"
+if [[ -z "${require_containers}" ]]; then
+  label_lc="${label,,}"
+  if [[ "${AE_ALLOW_EMPTY_CONTAINERS:-0}" == "1" ]]; then
+    require_containers=0
+  elif [[ "${label_lc}" == *"idle"* ]]; then
+    require_containers=0
+  else
+    require_containers=1
+  fi
+fi
+if [[ "${require_containers}" == "1" ]]; then
+  row_count=0
+  if [[ -f "${outdir}/raw/containers_mem.csv" ]]; then
+    row_count=$(tail -n +2 "${outdir}/raw/containers_mem.csv" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t')
+  fi
+  if [[ "${row_count}" == "0" ]]; then
+    log_err "no containers captured (AE_REQUIRE_CONTAINERS=1); failing snapshot"
+    exit 4
+  fi
+fi
 
 # k3s extras: collect control-plane PSS and app cgroup bytes from inside k3d node containers
 if [[ "$mode" == "k3s" ]] && command -v docker >/dev/null 2>&1; then

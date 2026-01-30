@@ -455,7 +455,9 @@ bench-mem-e2e-minimal:
 .PHONY: bench-watch-runtime
 bench-watch-runtime:
 	@echo "[bench-watch] capturing podman/container debug output; press Ctrl+C to stop"
-	@sudo -E AE_BENCH_WATCH_APP=$${APP:-echo} \
+	@sudo env HOME=/root XDG_RUNTIME_DIR=/run/user/0 DBUS_SESSION_BUS_ADDRESS= CONTAINER_HOST= PODMAN_HOST= \
+		AE_PODMAN_BIN=$${AE_PODMAN_BIN:-podman} \
+		AE_BENCH_WATCH_APP=$${APP:-echo} \
 		AE_BENCH_WATCH_INTERVAL=$${INTERVAL:-10} \
 		AE_BENCH_WATCH_DIR=$${OUT_DIR:-state/bench-env/debug} \
 		AE_BENCH_CONTROLLER_LOG=$${CONTROLLER_LOG:-state/bench-env/controller.log} \
@@ -496,6 +498,19 @@ bench-fix-perms:
 	   fi; \
 	 done; \
 	 echo "[bench-fix-perms] done"
+
+.PHONY: bench-snapshots-clean bench-snapshots-clean-sudo
+# Remove invalid snapshots from the last N hours; optionally include quick-* labels.
+# Usage:
+#   make bench-snapshots-clean HOURS=24
+#   make bench-snapshots-clean NO_QUICK=1
+#   make bench-snapshots-clean DRY_RUN=1
+#   sudo make bench-snapshots-clean-sudo HOURS=24
+bench-snapshots-clean:
+	@python scripts/bench/cleanup_recent_snapshots.py --hours $${HOURS:-24} $${NO_QUICK:+--no-quick} $${DRY_RUN:+--dry-run}
+
+bench-snapshots-clean-sudo:
+	@sudo python scripts/bench/cleanup_recent_snapshots.py --hours $${HOURS:-24} $${NO_QUICK:+--no-quick} $${DRY_RUN:+--dry-run}
 
 .PHONY: bench-mem-backfill
 # Aggregate any snapshots missing summary.json, then rebuild combined, charts, and docs
@@ -556,13 +571,13 @@ bench-mem-backfill-oci-latest:
 #   DOCS_CHART_STALENESS_HOURS=168 (default) to tweak staleness window
 bench-mem-finalize-sudo:
 	@echo "[finalize] backfilling OCI across all snapshots" >&2
-	@sudo -E python scripts/bench/label_backfill.py "snapshots/*/*" --insert-into-label || true
+	@sudo env PATH="$${PATH}" PYTHONPATH="$${PYTHONPATH:-}" python scripts/bench/label_backfill.py "snapshots/*/*" --insert-into-label || true
 	@echo "[finalize] combining snapshots" >&2
-	@sudo -E python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
+	@sudo env PATH="$${PATH}" PYTHONPATH="$${PYTHONPATH:-}" python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@echo "[finalize] plotting charts (PLOT_LATEST=$${PLOT_LATEST:-500})" >&2
-	@sudo -E env PLOT_LATEST=$${PLOT_LATEST:-500} python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+	@sudo env PATH="$${PATH}" PYTHONPATH="$${PYTHONPATH:-}" PLOT_LATEST=$${PLOT_LATEST:-500} python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 	@echo "[finalize] building docs (DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168})" >&2
-	@sudo -E env DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168} python docs/build_docs.py
+	@sudo env PATH="$${PATH}" PYTHONPATH="$${PYTHONPATH:-}" DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168} python docs/build_docs.py
 	@$(MAKE) bench-fix-perms
 
 .PHONY: docs-watch

@@ -27,6 +27,24 @@ done
 
 require() { if ! command -v "$1" >/dev/null 2>&1; then echo "missing: $1" >&2; exit 2; fi; }
 require kubectl
+sudo_env_base=(
+  "HOME=/root"
+  "XDG_RUNTIME_DIR=/run/user/0"
+  "DBUS_SESSION_BUS_ADDRESS="
+  "CONTAINER_HOST="
+  "PODMAN_HOST="
+)
+sudo_env_snapshot=(
+  "${sudo_env_base[@]}"
+  "AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-podman}"
+  "AE_OCI_RUNTIME=${AE_OCI_RUNTIME:-}"
+  "AE_PODMAN_BIN=${AE_PODMAN_BIN:-podman}"
+  "AE_COLLECT_ENGINE=${AE_COLLECT_ENGINE:-}"
+  "AE_COLLECT_PODMAN_SUDO=${AE_COLLECT_PODMAN_SUDO:-}"
+  "AE_PODMAN_SUDO=${AE_PODMAN_SUDO:-}"
+  "AE_ENGINE_STRICT=${AE_ENGINE_STRICT:-0}"
+  "AE_SNAPSHOT_TRACE=${AE_SNAPSHOT_TRACE:-0}"
+)
 
 info(){ echo "[k3s-matrix] $*" >&2; }
 
@@ -68,9 +86,9 @@ wait_ready() {
 info "idle snapshot"
 if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
   if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-    sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-idle" --duration "$duration"
+    sudo env "${sudo_env_snapshot[@]}" scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-idle" --duration "$duration"
   else
-    sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-idle" --duration "$duration" || true
+    sudo env "${sudo_env_snapshot[@]}" scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-idle" --duration "$duration" || true
   fi
 else
   if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
@@ -93,15 +111,15 @@ for n in "${reps[@]}"; do
   info "snapshot label=${label_suite}-pods-${n}"
   if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-pods-${n}" --duration "$duration"
+      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-pods-${n}" --duration "$duration"
     else
-      sudo -E scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-pods-${n}" --duration "$duration" || true
+      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-pods-${n}" --duration "$duration" || true
     fi
   else
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-pods-${n}" --duration "$duration"
+      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-pods-${n}" --duration "$duration"
     else
-      scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-pods-${n}" --duration "$duration" || true
+      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-pods-${n}" --duration "$duration" || true
     fi
   fi
 done

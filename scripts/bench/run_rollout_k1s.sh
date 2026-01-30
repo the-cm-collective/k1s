@@ -27,7 +27,40 @@ while [[ $# -gt 0 ]]; do
 done
 
 require() { if ! command -v "$1" >/dev/null 2>&1; then echo "missing: $1" >&2; exit 2; fi; }
-require python
+python_bin="${PYTHON_BIN:-python}"
+require "$python_bin"
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+py_path="${PYTHONPATH:-$repo_root/src}"
+sudo_env_base=(
+  "HOME=/root"
+  "XDG_RUNTIME_DIR=/run/user/0"
+  "DBUS_SESSION_BUS_ADDRESS="
+  "CONTAINER_HOST="
+  "PODMAN_HOST="
+)
+sudo_env_snapshot=(
+  "${sudo_env_base[@]}"
+  "AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-podman}"
+  "AE_OCI_RUNTIME=${AE_OCI_RUNTIME:-}"
+  "AE_PODMAN_BIN=${AE_PODMAN_BIN:-podman}"
+  "AE_COLLECT_ENGINE=${AE_COLLECT_ENGINE:-}"
+  "AE_COLLECT_PODMAN_SUDO=${AE_COLLECT_PODMAN_SUDO:-}"
+  "AE_PODMAN_SUDO=${AE_PODMAN_SUDO:-}"
+  "AE_ENGINE_STRICT=${AE_ENGINE_STRICT:-0}"
+  "AE_SNAPSHOT_TRACE=${AE_SNAPSHOT_TRACE:-0}"
+)
+sudo_env_cli=(
+  "${sudo_env_base[@]}"
+  "AE_SPECS_DIR=${AE_SPECS_DIR:-specs}"
+  "AE_STATE_DB=${AE_STATE_DB:-state/controller.db}"
+  "AE_CADDY_DIR=${AE_CADDY_DIR:-state/caddy}"
+  "AE_ALLOW_PLAINTEXT_SECRETS=${AE_ALLOW_PLAINTEXT_SECRETS:-1}"
+  "AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-podman}"
+  "AE_OCI_RUNTIME=${AE_OCI_RUNTIME:-}"
+  "AE_PODMAN_BIN=${AE_PODMAN_BIN:-podman}"
+  "AE_DISABLE_INGRESS=${AE_DISABLE_INGRESS:-}"
+  "PYTHONPATH=${py_path}"
+)
 
 # Support running ae CLI inside the controller container for k1nd
 AE_CLI_CONTAINER=${AE_CLI_CONTAINER:-dev-controller-1}
@@ -44,8 +77,12 @@ PY
     sleep 2
   done
   ae() { docker exec "$AE_CLI_CONTAINER" python -m ae.cli "$@"; }
+elif [[ "${BENCH_CONTROLLER_SUDO:-0}" == "1" ]] && command -v sudo >/dev/null 2>&1; then
+  ae() {
+    sudo env "${sudo_env_cli[@]}" "$python_bin" -m ae.cli "$@";
+  }
 else
-  ae() { python -m ae.cli "$@"; }
+  ae() { "$python_bin" -m ae.cli "$@"; }
 fi
 
 info() { echo "[rollout] $*" >&2; }
@@ -313,19 +350,19 @@ echo "[rollout] snapshot DURING rollout" >&2
 if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label_suite}-rollout-${replicas}-during"/* >/dev/null 2>&1; then
   echo "[rollout] skip existing DURING snapshot ${label_suite}-rollout-${replicas}-during" >&2
 else
-if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-    sudo -E scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
+  if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+    sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
+    else
+    sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+    fi
   else
-    sudo -E scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+    AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
+    else
+    AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+    fi
   fi
-else
-  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-    scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
-  else
-    scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
-  fi
-fi
 fi
 
 echo "[rollout] wait ready post-rollout" >&2
@@ -336,19 +373,19 @@ echo "[rollout] snapshot POST rollout" >&2
 if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label_suite}-rollout-${replicas}-post"/* >/dev/null 2>&1; then
   echo "[rollout] skip existing POST snapshot ${label_suite}-rollout-${replicas}-post" >&2
 else
-if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-    sudo -E scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+  if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+    sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+    else
+    sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+    fi
   else
-    sudo -E scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+    AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+    else
+    AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+    fi
   fi
-else
-  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-    scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
-  else
-    scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
-  fi
-fi
 fi
 
 echo "[rollout] done" >&2

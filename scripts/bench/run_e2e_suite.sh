@@ -38,8 +38,8 @@ need_sudo() {
 
 stop_dev_stacks() {
   if command -v docker >/dev/null 2>&1; then
-    sudo -E docker compose -f ops/dev/docker-compose.yaml down >/dev/null 2>&1 || true
-    sudo -E docker compose -f ops/dev/labs-aio.yaml down >/dev/null 2>&1 || true
+    sudo docker compose -f ops/dev/docker-compose.yaml down >/dev/null 2>&1 || true
+    sudo docker compose -f ops/dev/labs-aio.yaml down >/dev/null 2>&1 || true
   fi
 }
 
@@ -60,7 +60,11 @@ run_script() {
 need_sudo
 stop_dev_stacks
 
-ENV_FILE=$(./scripts/bench/bench_env_prep.sh --manifest "$MANIFEST" --metrics-port "$METRICS_PORT")
+prep_args=(--manifest "$MANIFEST" --metrics-port "$METRICS_PORT")
+if [[ "$MODE" == "minimal" ]]; then
+  prep_args+=(--sudo-controller)
+fi
+ENV_FILE=$(./scripts/bench/bench_env_prep.sh "${prep_args[@]}")
 trap 'scripts/bench/bench_env_teardown.sh --env "$ENV_FILE"' EXIT
 
 # shellcheck disable=SC1090
@@ -91,4 +95,4 @@ run_make bench-mem-e2e-k1s-sudo "$LABEL_ROOTFUL"
 run_make bench-mem-e2e-k1s "$LABEL_ROOTLESS"
 run_make bench-mem-e2e-k1nd-sudo "$LABEL_K1ND"
 
-sudo -E make bench-mem-finalize-sudo
+sudo make bench-mem-finalize-sudo
