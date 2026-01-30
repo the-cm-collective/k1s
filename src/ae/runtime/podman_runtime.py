@@ -475,6 +475,8 @@ class PodmanRuntime(RuntimeAdapter):
                 cname = str(getattr(csp, "name", "") or "").strip()
                 if not cname:
                     continue
+                name_suffix = replica_id.split("-")[-1]
+                full_name = f"ae-{app}-rev{revision}-{name_suffix}-{cname}"
                 # Locate by labels
                 r = self._run_ok(
                     [
@@ -514,6 +516,8 @@ class PodmanRuntime(RuntimeAdapter):
                         self._bin,
                         "run",
                         "-d",
+                        "--name",
+                        full_name,
                         *sum(
                             [["--label", f"{k}={v}"] for k, v in labels.items()],
                             [],
@@ -639,7 +643,18 @@ class PodmanRuntime(RuntimeAdapter):
                     combined += [str(x) for x in (getattr(csp, "command", []) or [])]  # noqa: B009
                     combined += [str(x) for x in (getattr(csp, "args", []) or [])]  # noqa: B009
                     cmd += combined
-                    self._run_ok(cmd, allow_fail=True)
+                    res = self._run_ok(cmd, allow_fail=True)
+                    if self._network_name and not host_network and res.code == 0:
+                        self._run_ok(
+                            [
+                                self._bin,
+                                "network",
+                                "connect",
+                                self._network_name,
+                                full_name,
+                            ],
+                            allow_fail=True,
+                        )
             except Exception:
                 continue
 
