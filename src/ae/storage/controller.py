@@ -72,6 +72,8 @@ class StorageController:
         self._store = store
         self._config = config or StorageConfig.from_env()
         self._storage_classes = load_storage_classes(self._config.provisioners_path)
+        if not self._storage_classes and self._seed_defaults_enabled():
+            self._storage_classes = self._builtin_storage_classes()
         self._default_class = self._resolve_default(self._storage_classes)
         self._default_snapshot_class: str | None = None
         self._volume_health: dict[str, bool] = {}
@@ -91,6 +93,24 @@ class StorageController:
             self._seed_storage_class(sc)
             count += 1
         return count
+
+    @staticmethod
+    def _seed_defaults_enabled() -> bool:
+        raw = os.getenv("AE_STORAGE_SEED_DEFAULTS", "1")
+        return str(raw).lower() in {"1", "true", "yes", "on"}
+
+    def _builtin_storage_classes(self) -> list[StorageClassConfig]:
+        name = os.getenv("AE_STORAGE_LOCAL_CLASS", "k1s-local")
+        return [
+            StorageClassConfig(
+                name=str(name),
+                provisioner=LOCAL_PATH_PROVISIONER,
+                reclaim_policy="Delete",
+                volume_binding_mode=WAIT_FOR_FIRST_CONSUMER,
+                allow_volume_expansion=False,
+                is_default=True,
+            )
+        ]
 
     def start(self) -> None:
         """Start background PVC/PV reconciliation."""
