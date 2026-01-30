@@ -1512,6 +1512,11 @@ class PodmanRuntime(RuntimeAdapter):
                     cmd += ["--memory", mem]
                 except Exception:
                     pass
+            if lims is not None and getattr(lims, "cpu", None) is not None:  # noqa: B009
+                try:
+                    cmd += ["--cpus", str(float(getattr(lims, "cpu")))]  # noqa: B009
+                except Exception:
+                    pass
             reqs = getattr(getattr(manifest.spec, "resources", None), "requests", None)  # noqa: B009
             if reqs is not None:
                 if getattr(reqs, "cpu", None) is not None:  # noqa: B009
