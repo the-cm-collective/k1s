@@ -7,6 +7,21 @@ label="idle-k3s"
 duration=30
 use_sudo=1
 ns="default"
+sudo_env_snapshot=(
+  "HOME=/root"
+  "XDG_RUNTIME_DIR=/run/user/0"
+  "DBUS_SESSION_BUS_ADDRESS="
+  "CONTAINER_HOST="
+  "PODMAN_HOST="
+  "AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-podman}"
+  "AE_OCI_RUNTIME=${AE_OCI_RUNTIME:-}"
+  "AE_PODMAN_BIN=${AE_PODMAN_BIN:-podman}"
+  "AE_COLLECT_ENGINE=${AE_COLLECT_ENGINE:-}"
+  "AE_COLLECT_PODMAN_SUDO=${AE_COLLECT_PODMAN_SUDO:-}"
+  "AE_PODMAN_SUDO=${AE_PODMAN_SUDO:-}"
+  "AE_ENGINE_STRICT=${AE_ENGINE_STRICT:-0}"
+  "AE_SNAPSHOT_TRACE=${AE_SNAPSHOT_TRACE:-0}"
+)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -49,10 +64,10 @@ done
 cmd=(scripts/bench/mem_snapshot.sh --mode k3s --label "$label" --duration "$duration")
 if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
   if sudo -n true 2>/dev/null; then
-    snap_dir=$(sudo -E "${cmd[@]}")
+    snap_dir=$(sudo env "${sudo_env_snapshot[@]}" "${cmd[@]}")
   else
     echo "[idle-k3s] sudo may prompt for password..." >&2
-    snap_dir=$(sudo -E "${cmd[@]}")
+    snap_dir=$(sudo env "${sudo_env_snapshot[@]}" "${cmd[@]}")
   fi
 else
   snap_dir=$("${cmd[@]}")
@@ -87,4 +102,3 @@ print(f"  Total cgroups (MiB):     {round(mib(cont.get('total_mem_bytes',0)),2)}
 PY
 
 echo "[idle-k3s] snapshot: $snap_dir" >&2
-
