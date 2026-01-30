@@ -666,6 +666,82 @@ def test_podman_share_process_namespace_sidecar(monkeypatch):
     assert "--pid" in sidecar_cmd and "container:ae-blue-rev1-0-pod" in sidecar_cmd
 
 
+def test_podman_sidecar_includes_global_volumes(monkeypatch):
+    rt = PodmanRuntime()
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(rt, "_ensure_image", lambda *_a, **_k: None)
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+
+    base = _manifest_single(image="demo:latest")
+    manifest = base.model_copy(
+        update={
+            "spec": base.spec.model_copy(
+                update={
+                    "volumes": [VolumeSpec(host_path="/tmp/shared", mount_path="/data")],
+                    "containers": [AppSpec.ContainerSpec(name="sidecar", image="busybox")],
+                }
+            )
+        }
+    )
+
+    rt._ensure_sidecars(manifest, "blue-rev1-0", 1)
+
+    run_calls = [
+        c for c in calls if len(c) >= 3 and c[0] == rt._bin and c[1] == "run" and "-d" in c
+    ]
+    assert run_calls, f"expected podman run call, got: {calls}"
+    def _cmd_name(cmd):  # noqa: ANN001
+        try:
+            idx = cmd.index("--name")
+            return cmd[idx + 1]
+        except Exception:
+            return ""
+
+    sidecar_cmd = next(
+        (c for c in run_calls if _cmd_name(c) == "ae-blue-rev1-0-sidecar"), run_calls[0]
+    )
+    assert "-v" in sidecar_cmd
+    assert "/tmp/shared:/data:rw" in sidecar_cmd
+
+
+def test_podman_endpoint_uses_advertise_ip(monkeypatch):
+    monkeypatch.setenv("AE_NODE_ADVERTISE_IP", "10.0.0.10")
+    rt = PodmanRuntime()
+
+    container = {
+        "Config": {
+            "Labels": {
+                rt.REVISION_LABEL: "1",
+                rt.POD_LABEL: "blue-rev1-0",
+                rt.CONTAINER_LABEL: "main",
+            }
+        },
+        "State": {"Status": "running"},
+        "NetworkSettings": {
+            "Ports": {"8080/tcp": [{"HostPort": "32001", "HostIp": "0.0.0.0"}]}
+        },
+    }
+
+    monkeypatch.setattr(rt, "_list_app_containers", lambda _app: [container])
+    monkeypatch.setattr(rt, "_create_container", lambda *_a, **_k: None)
+    monkeypatch.setattr(rt, "_ensure_sidecars", lambda *_a, **_k: None)
+    monkeypatch.setattr(rt, "_image_exists", lambda *_a, **_k: True)
+    monkeypatch.setattr(rt, "_maybe_inject_pvc_mounts", lambda m, **_: m)
+
+    manifest = _manifest_single(image="demo:latest")
+    result = rt.ensure_app(manifest, revision=1)
+
+    assert result.pod_states
+    assert result.pod_states[0].endpoint == "10.0.0.10:32001"
+
+
 def test_podman_injects_pvc_mounts(monkeypatch):
     rt = PodmanRuntime()
     calls: list[list[str]] = []

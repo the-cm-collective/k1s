@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from ae.storage.netfs import NetFSManager
@@ -10,6 +12,7 @@ class FakeState(InMemoryStorageState):
         super().__init__()
         self._pv_obj = pv_obj
         self._sc_obj = sc_obj
+        self.events: list[tuple[str, str]] = []
 
     def get_pv_for_pvc(self, pvc: PvcRef) -> PvRef | None:
         return PvRef(name="pv1")
@@ -18,7 +21,13 @@ class FakeState(InMemoryStorageState):
         return self._pv_obj
 
     def get_storage_class(self, name: str):
-        return self._sc_obj if name == "k1s-nfs" else None
+        if self._sc_obj is None:
+            return None
+        return self._sc_obj
+
+    def record_pvc_event(self, pvc: PvcRef, reason: str, message: str) -> None:
+        _ = pvc
+        self.events.append((reason, message))
 
 
 def test_netfs_mount_uses_storageclass_options(tmp_path, monkeypatch) -> None:
@@ -192,3 +201,66 @@ def test_netfs_block_device_requires_device_path(tmp_path) -> None:
         PvcRef(name="pvc", namespace="default"), node_id="node1", for_device=True
     )
     assert mount.host_path == str(block_path)
+
+
+def test_netfs_hostpath_mount_creates_local_path(tmp_path) -> None:
+    host_path = tmp_path / "local-vol"
+    pv_obj = {
+        "metadata": {"annotations": {"k1s.io/local-host-path": str(host_path)}},
+        "spec": {
+            "hostPath": {"path": str(host_path)},
+            "storageClassName": "k1s-local",
+        },
+    }
+    sc_obj = {"spec": {"provisioner": "k1s.io/local-path"}}
+    state = FakeState(pv_obj, sc_obj)
+    manager = NetFSManager(state, root=tmp_path / "netfs-root")
+
+    mount = manager.ensure_mount(PvcRef(name="pvc", namespace="default"), node_id="node1")
+    assert Path(mount.host_path).is_dir()
+
+
+def test_netfs_hostpath_mount_respects_node_affinity(tmp_path) -> None:
+    host_path = tmp_path / "local-vol"
+    pv_obj = {
+        "spec": {
+            "hostPath": {"path": str(host_path)},
+            "nodeAffinity": {
+                "required": {
+                    "nodeSelectorTerms": [
+                        {
+                            "matchExpressions": [
+                                {
+                                    "key": "kubernetes.io/hostname",
+                                    "operator": "In",
+                                    "values": ["node-2"],
+                                }
+                            ]
+                        }
+                    ]
+                }
+            },
+        }
+    }
+    state = FakeState(pv_obj)
+    manager = NetFSManager(state, root=tmp_path / "netfs-root")
+
+    with pytest.raises(RuntimeError):
+        manager.ensure_mount(PvcRef(name="pvc", namespace="default"), node_id="node-1")
+    assert any(reason == "NodeAffinityMismatch" for reason, _msg in state.events)
+
+
+def test_netfs_hostpath_mount_respects_read_only_modes(tmp_path) -> None:
+    host_path = tmp_path / "local-vol"
+    host_path.mkdir()
+    pv_obj = {
+        "spec": {
+            "hostPath": {"path": str(host_path)},
+            "accessModes": ["ReadOnlyMany"],
+        }
+    }
+    state = FakeState(pv_obj)
+    manager = NetFSManager(state, root=tmp_path / "netfs-root")
+
+    mount = manager.ensure_mount(PvcRef(name="pvc", namespace="default"), node_id="node-1")
+    assert mount.read_only is True

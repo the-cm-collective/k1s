@@ -146,7 +146,20 @@ class NetFSManager:
             return self._ensure_csi_mount(
                 pvc, pv, pv_spec, csi, node_id=node_id, fs_group=fs_group, selinux=selinux
             )
-        msg = "NetFS supports NFS and CSI PVs in this phase"
+        host_path, host_type = self._host_path_from_pv(pv_spec)
+        if host_path is not None:
+            return self._ensure_host_path_mount(
+                pvc,
+                pv,
+                pv_obj,
+                pv_spec,
+                host_path,
+                host_type,
+                node_id=node_id,
+                fs_group=fs_group,
+                selinux=selinux,
+            )
+        msg = "NetFS supports NFS, CSI, and hostPath/local PVs in this phase"
         self._record_pvc_event(pvc, "UnsupportedVolume", msg)
         raise NotImplementedError(msg)
 
@@ -372,6 +385,51 @@ class NetFSManager:
             pv=pv,
             node_id=node_id,
             host_path=str(target),
+            read_only=read_only,
+        )
+        self._state.upsert_mount(mount)
+        return mount
+
+    def _ensure_host_path_mount(
+        self,
+        pvc: PvcRef,
+        pv: PvRef,
+        pv_obj: Any,
+        pv_spec: dict[str, Any],
+        host_path: Path,
+        host_type: str | None,
+        *,
+        node_id: str,
+        fs_group: int | None = None,
+        selinux: dict[str, str] | None = None,
+    ) -> NetFSMount:
+        if not self._node_affinity_allows(pv_spec, node_id):
+            msg = f"PV {pv.name} is not compatible with node {node_id}"
+            self._record_pvc_event(pvc, "NodeAffinityMismatch", msg)
+            raise RuntimeError(msg)
+        allow_create = self._is_local_path_pv(pv_obj, pv_spec)
+        try:
+            self._ensure_host_path(
+                pvc,
+                host_path,
+                host_type=host_type,
+                allow_create=allow_create,
+            )
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc) or "hostPath validation failed"
+            self._record_pvc_event(pvc, "HostPathInvalid", msg)
+            raise
+        read_only = self._read_only_from_modes(pv_spec)
+        if fs_group is not None:
+            self._apply_fs_group(pvc, host_path, fs_group)
+        if selinux:
+            recursive = self._selinux_recursive(pv_spec, host_path)
+            self._apply_selinux(pvc, host_path, selinux, recursive=recursive)
+        mount = NetFSMount(
+            pvc=pvc,
+            pv=pv,
+            node_id=node_id,
+            host_path=str(host_path),
             read_only=read_only,
         )
         self._state.upsert_mount(mount)
@@ -640,3 +698,130 @@ class NetFSManager:
         except Exception:
             return False
         return stat.S_ISBLK(st.st_mode) or stat.S_ISREG(st.st_mode)
+
+    @staticmethod
+    def _host_path_from_pv(pv_spec: dict[str, Any]) -> tuple[Path | None, str | None]:
+        if not isinstance(pv_spec, dict):
+            return None, None
+        host = pv_spec.get("hostPath")
+        if isinstance(host, dict):
+            path = host.get("path")
+            if path:
+                return Path(str(path)), host.get("type")
+        elif isinstance(host, str):
+            return Path(host), None
+        local = pv_spec.get("local")
+        if isinstance(local, dict):
+            path = local.get("path")
+            if path:
+                return Path(str(path)), None
+        return None, None
+
+    def _ensure_host_path(
+        self,
+        pvc: PvcRef,
+        host_path: Path,
+        *,
+        host_type: str | None,
+        allow_create: bool,
+    ) -> None:
+        if host_path.exists():
+            if host_type in {"Directory", "DirectoryOrCreate"} and not host_path.is_dir():
+                raise RuntimeError(f"hostPath {host_path} is not a directory")
+            if host_type in {"File", "FileOrCreate"} and not host_path.is_file():
+                raise RuntimeError(f"hostPath {host_path} is not a file")
+            return
+        if not allow_create:
+            raise FileNotFoundError(f"hostPath does not exist: {host_path}")
+        if host_type == "File":
+            raise FileNotFoundError(f"hostPath file does not exist: {host_path}")
+        try:
+            if host_type == "FileOrCreate":
+                host_path.parent.mkdir(parents=True, exist_ok=True)
+                host_path.touch(exist_ok=True)
+            else:
+                host_path.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc) or "failed to create hostPath"
+            self._record_pvc_event(pvc, "HostPathCreateFailed", msg)
+            raise
+
+    def _read_only_from_modes(self, pv_spec: dict[str, Any]) -> bool:
+        read_only = bool(pv_spec.get("readOnly", False)) if isinstance(pv_spec, dict) else False
+        if read_only:
+            return True
+        if not isinstance(pv_spec, dict):
+            return False
+        modes = pv_spec.get("accessModes")
+        if not isinstance(modes, list):
+            return False
+        return any(str(mode) == "ReadOnlyMany" for mode in modes)
+
+    @staticmethod
+    def _node_affinity_allows(pv_spec: dict[str, Any], node_id: str) -> bool:
+        if not isinstance(pv_spec, dict):
+            return True
+        affinity = pv_spec.get("nodeAffinity")
+        if not isinstance(affinity, dict):
+            return True
+        required = affinity.get("required")
+        if not isinstance(required, dict):
+            return True
+        terms = required.get("nodeSelectorTerms")
+        if not isinstance(terms, list):
+            return True
+        for term in terms:
+            if not isinstance(term, dict):
+                continue
+            exprs = term.get("matchExpressions")
+            if not isinstance(exprs, list):
+                continue
+            if NetFSManager._match_node_selector(exprs, node_id):
+                return True
+        return False
+
+    @staticmethod
+    def _match_node_selector(exprs: list[Any], node_id: str) -> bool:
+        for expr in exprs:
+            if not isinstance(expr, dict):
+                continue
+            key = expr.get("key")
+            if key != "kubernetes.io/hostname":
+                continue
+            op = str(expr.get("operator") or "")
+            values = expr.get("values") if isinstance(expr.get("values"), list) else []
+            if op == "In":
+                if node_id not in {str(v) for v in values}:
+                    return False
+            elif op == "NotIn":
+                if node_id in {str(v) for v in values}:
+                    return False
+            elif op == "Exists":
+                continue
+            elif op == "DoesNotExist":
+                return False
+        return True
+
+    def _is_local_path_pv(self, pv_obj: Any, pv_spec: dict[str, Any]) -> bool:
+        if self._local_path_annotation(pv_obj):
+            return True
+        sc_name = pv_spec.get("storageClassName") if isinstance(pv_spec, dict) else None
+        if not sc_name:
+            return False
+        sc_obj = self._state.get_storage_class(str(sc_name))
+        sc_spec = self._obj_spec(sc_obj)
+        return str(sc_spec.get("provisioner") or "") == "k1s.io/local-path"
+
+    @staticmethod
+    def _local_path_annotation(pv_obj: Any) -> bool:
+        if pv_obj is None:
+            return False
+        meta = None
+        if isinstance(pv_obj, dict):
+            meta = pv_obj.get("metadata")
+        else:
+            meta = getattr(pv_obj, "metadata", None)
+        if not isinstance(meta, dict):
+            return False
+        annotations = meta.get("annotations") if isinstance(meta.get("annotations"), dict) else {}
+        return "k1s.io/local-host-path" in annotations
