@@ -1544,7 +1544,7 @@ class CRIRuntime(RuntimeAdapter):
         envs = self._resolve_env_vars(manifest, spec)
         working_dir = self._spec_value(spec, "working_dir", "workingDir")
         mounts = self._build_mounts_for_container(
-            manifest, app_name, spec, replica_id, inherit_global=is_main
+            manifest, app_name, spec, replica_id, inherit_global=True
         )
         devices = self._build_devices_for_container(manifest, spec, inherit_global=is_main)
         resources = self._build_resources_from_spec(
