@@ -97,6 +97,9 @@ Troubleshooting
 Validate PVC/PV binding plus NetFS mount hooks through apishim.
 
 ```
+# Full NetFS suite (smoke + snapshot/clone + CSI harness)
+scripts/netfs_smoke_suite.sh
+
 # NFS (static PV)
 scripts/netfs_smoke.sh
 
