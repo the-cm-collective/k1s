@@ -776,6 +776,45 @@ def test_podman_sidecar_connects_network(monkeypatch):
     )
 
 
+def test_podman_service_port_avoids_in_use(monkeypatch):
+    rt = PodmanRuntime()
+    calls: list[list[str]] = []
+    seen_blocked: list[set[int]] = []
+
+    monkeypatch.setattr(rt, "_ensure_image", lambda *_a, **_k: None)
+    monkeypatch.setattr(rt, "_host_ports_in_use", lambda: {8080})
+
+    def fake_choose(preferred, *, reserved=None, blocked=None, search_span=200):  # noqa: ANN001
+        seen_blocked.append(set(blocked or set()))
+        return 8081, False
+
+    monkeypatch.setattr("ae.runtime.podman_runtime.choose_host_port", fake_choose)
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        if argv[:3] == [rt._bin, "container", "exists"]:
+            return DummyResult(1)
+        if argv[:3] == [rt._bin, "images", "--format"]:
+            return DummyResult(0, "[]")
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *_a, **_k: None)
+
+    manifest = _manifest_single(image="demo:latest")
+    rt._create_container(manifest, "blue-rev1-0", 1, service=(8080, 8080, None))
+
+    run_calls = [
+        c for c in calls if len(c) >= 3 and c[0] == rt._bin and c[1] == "run" and "-d" in c
+    ]
+    assert run_calls, f"expected podman run call, got: {calls}"
+    cmd = run_calls[0]
+    assert "-p" in cmd
+    assert "8081:8080" in cmd
+    assert seen_blocked and 8080 in seen_blocked[0]
+
+
 def test_podman_injects_pvc_mounts(monkeypatch):
     rt = PodmanRuntime()
     calls: list[list[str]] = []

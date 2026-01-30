@@ -1399,6 +1399,19 @@ class PodmanRuntime(RuntimeAdapter):
             )
         return out
 
+    def _host_ports_in_use(self) -> set[int]:
+        ports: set[int] = set()
+        try:
+            for info in self.list_containers_info():
+                for hp in info.get("host_ports") or []:
+                    try:
+                        ports.add(int(hp))
+                    except Exception:
+                        continue
+        except Exception:
+            return set()
+        return ports
+
     def exec(self, pod_name: str, command: list[str], *, timeout: int | None = None) -> int:  # type: ignore[override]
         # Locate container by label
         cid = self._find_by_label(self.POD_LABEL, pod_name)
@@ -1530,6 +1543,9 @@ class PodmanRuntime(RuntimeAdapter):
         svc_type = ""
         if getattr(manifest.spec, "service", None):
             svc_type = str(getattr(manifest.spec.service, "type", "") or "").lower()
+        blocked_ports: set[int] = set()
+        if svc_ports_list or svc_port is not None:
+            blocked_ports = self._host_ports_in_use()
         if not host_network:
             if svc_ports_list:
                 # Publish each declared service port as host:container mapping
@@ -1565,7 +1581,9 @@ class PodmanRuntime(RuntimeAdapter):
                             )
                         if portnum is not None and tgt is not None:
                             chosen, used_preferred = choose_host_port(
-                                int(portnum), reserved=reserved_ports
+                                int(portnum),
+                                reserved=reserved_ports,
+                                blocked=blocked_ports,
                             )
                             if chosen is None:
                                 LOGGER.warning(
@@ -1587,7 +1605,11 @@ class PodmanRuntime(RuntimeAdapter):
                         continue
             elif svc_port is not None:
                 target = int(svc_target) if svc_target is not None else int(svc_port)
-                chosen, used_preferred = choose_host_port(int(svc_port), reserved=reserved_ports)
+                chosen, used_preferred = choose_host_port(
+                    int(svc_port),
+                    reserved=reserved_ports,
+                    blocked=blocked_ports,
+                )
                 if chosen is None:
                     LOGGER.warning(
                         "service port %s for app %s is unavailable; skipping publish",
