@@ -74,6 +74,11 @@ class ExportOptions:
     inject_topology_spread: bool = False
     # Ingress annotations (passthrough)
     ingress_annotations: Optional[Dict[str, Any]] = None
+    # Allow ingress.annotations from manifest to pass through (explicit flag)
+    allow_ingress_annotations: bool = False
+    # RBAC cluster role presets (emit ClusterRole/ClusterRoleBinding)
+    rbac_cluster_preset: Optional[str] = None
+    rbac_cluster_role_name: Optional[str] = None
     # Ingress pathType selection (Prefix, Exact, ImplementationSpecific)
     ingress_path_type: Optional[str] = None
     # Job options
@@ -514,14 +519,14 @@ def _service_from_manifest(m: AppManifest, opts: ExportOptions) -> Optional[Dict
     spec = m.spec
     if not spec.ports:
         return None
+    # NodePort validation window (K8s default range)
+    NP_MIN, NP_MAX = 30000, 32767
     # If explicit multi-port mapping is provided, honor it
     svc_ports: List[Dict[str, Any]] = []
     if getattr(spec, "service", None) and getattr(spec.service, "ports", None):
         # Build a quick index of container ports by name/number
         by_name = {p.name: int(p.container_port) for p in spec.ports if getattr(p, "name", None)}
         by_num = {int(p.container_port): int(p.container_port) for p in spec.ports}
-        # NodePort validation window (K8s default range)
-        NP_MIN, NP_MAX = 30000, 32767
         # Duplicate detection
         seen_names: set[str] = set()
         seen_ports: set[int] = set()
@@ -596,6 +601,17 @@ def _service_from_manifest(m: AppManifest, opts: ExportOptions) -> Optional[Dict
             body["spec"]["type"] = spec.service.type
             if getattr(spec.service, "external_traffic_policy", None) is not None:
                 body["spec"]["externalTrafficPolicy"] = spec.service.external_traffic_policy
+            if getattr(spec.service, "health_check_node_port", None) is not None:
+                if spec.service.type != "LoadBalancer":
+                    raise ValueError(
+                        "healthCheckNodePort only applies to LoadBalancer Services"
+                    )
+                hcnp = int(spec.service.health_check_node_port)
+                if not (NP_MIN <= hcnp <= NP_MAX):
+                    raise ValueError(
+                        f"healthCheckNodePort {hcnp} out of allowed range [{NP_MIN}-{NP_MAX}]"
+                    )
+                body["spec"]["healthCheckNodePort"] = hcnp
         if getattr(spec.service, "external_ips", None):
             body["spec"]["externalIPs"] = list(spec.service.external_ips)
         # Session affinity pass-through
@@ -1210,8 +1226,15 @@ def _ingress_from_manifest(m: AppManifest, opts: ExportOptions) -> Optional[Dict
         "namespace": _resolve_namespace(m, opts),
         "labels": _resource_labels(m),
     }
+    annotations: Dict[str, Any] = {}
+    if opts.allow_ingress_annotations:
+        spec_ann = getattr(ing, "annotations", None)
+        if isinstance(spec_ann, dict):
+            annotations.update(spec_ann)
     if opts.ingress_annotations:
-        meta.setdefault("annotations", {}).update(dict(opts.ingress_annotations))
+        annotations.update(dict(opts.ingress_annotations))
+    if annotations:
+        meta.setdefault("annotations", {}).update(annotations)
     ing_res = {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "Ingress",
@@ -1386,6 +1409,42 @@ def _pvc_from_storage(app: AppManifest, s, opts: ExportOptions) -> Dict[str, Any
     return pvc
 
 
+def _cluster_rbac_preset_rules(preset: str) -> list[dict]:
+    name = str(preset or "").strip().lower()
+    if name == "admin":
+        return [{"apiGroups": ["*"], "resources": ["*"], "verbs": ["*"]}]
+    verbs_read = ["get", "list", "watch"]
+    verbs_edit = verbs_read + ["create", "update", "patch", "delete"]
+    base_resources = [
+        "pods",
+        "pods/log",
+        "services",
+        "endpoints",
+        "events",
+        "configmaps",
+        "persistentvolumeclaims",
+    ]
+    apps_resources = ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    batch_resources = ["jobs", "cronjobs"]
+    net_resources = ["ingresses", "networkpolicies"]
+    policy_resources = ["poddisruptionbudgets"]
+    discovery_resources = ["endpointslices"]
+    autoscale_resources = ["horizontalpodautoscalers"]
+    verbs = verbs_edit if name == "edit" else verbs_read
+    rules = [
+        {"apiGroups": [""], "resources": base_resources, "verbs": verbs},
+        {"apiGroups": ["apps"], "resources": apps_resources, "verbs": verbs},
+        {"apiGroups": ["batch"], "resources": batch_resources, "verbs": verbs},
+        {"apiGroups": ["networking.k8s.io"], "resources": net_resources, "verbs": verbs},
+        {"apiGroups": ["policy"], "resources": policy_resources, "verbs": verbs},
+        {"apiGroups": ["discovery.k8s.io"], "resources": discovery_resources, "verbs": verbs},
+        {"apiGroups": ["autoscaling"], "resources": autoscale_resources, "verbs": verbs},
+    ]
+    if name == "edit":
+        rules.append({"apiGroups": [""], "resources": ["secrets"], "verbs": verbs_edit})
+    return rules
+
+
 def export_k8s_docs(
     manifest: AppManifest, *, options: Optional[ExportOptions] = None
 ) -> List[Dict[str, Any]]:
@@ -1452,6 +1511,8 @@ def export_k8s_docs(
         if ing is not None:
             docs.append(ing)
     # Optional ServiceAccount
+    if opts.rbac_cluster_preset and not opts.service_account_name:
+        raise ValueError("rbac cluster preset requires --service-account")
     if opts.service_account_name:
         docs.append(
             {
@@ -1504,6 +1565,43 @@ def export_k8s_docs(
                 },
             }
         )
+        if opts.rbac_cluster_preset:
+            preset = str(opts.rbac_cluster_preset or "").strip().lower()
+            if preset not in {"view", "edit", "admin"}:
+                raise ValueError("rbac cluster preset must be one of: view, edit, admin")
+            cr_name = (
+                str(opts.rbac_cluster_role_name)
+                if opts.rbac_cluster_role_name
+                else f"{manifest.metadata.name}-{preset}-cluster"
+            )
+            crb_name = f"{cr_name}-binding"
+            docs.append(
+                {
+                    "apiVersion": "rbac.authorization.k8s.io/v1",
+                    "kind": "ClusterRole",
+                    "metadata": {"name": cr_name, "labels": labels},
+                    "rules": _cluster_rbac_preset_rules(preset),
+                }
+            )
+            docs.append(
+                {
+                    "apiVersion": "rbac.authorization.k8s.io/v1",
+                    "kind": "ClusterRoleBinding",
+                    "metadata": {"name": crb_name, "labels": labels},
+                    "subjects": [
+                        {
+                            "kind": "ServiceAccount",
+                            "name": opts.service_account_name,
+                            "namespace": ns,
+                        }
+                    ],
+                    "roleRef": {
+                        "apiGroup": "rbac.authorization.k8s.io",
+                        "kind": "ClusterRole",
+                        "name": cr_name,
+                    },
+                }
+            )
     # Optional PodDisruptionBudget (not applicable to Job/CronJob)
     if wk not in {"job", "cronjob"} and opts.emit_pdb and int(manifest.spec.replicas) > 1:
         # Choose either minAvailable or maxUnavailable; prefer explicit provided one.

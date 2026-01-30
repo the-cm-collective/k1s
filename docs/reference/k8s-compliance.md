@@ -49,7 +49,7 @@ The compliance status and per-sample details render below when a report is prese
 
 - NetworkPolicy enforcement depends on your CNI when exporting; k1s runtime does not enforce policies.
 - PodSecurityAdmission/admission webhooks are not implemented; exporter can emit PSA labels only.
-- PV/PVC/StorageClass/CSI provisioning beyond exported manifests; k1s runtime relies on retained named volumes.
+- CSI gRPC drivers are not implemented; PV/PVC/StorageClass support is limited to NetFS/local-path/NFS.
 - metrics.k8s.io/metrics-server and aggregated APIs are out of scope.
 - Advanced Ingress features (regex, weighted/canary annotations, multiple backends per rule) remain out of scope for now.
 
@@ -81,8 +81,9 @@ The compliance status and per-sample details render below when a report is prese
 - [x] Support `envFrom` for ConfigMap/Secret; exporter maps to envFrom.
 - [x] Support `imagePullSecrets` and `imagePullPolicy` in spec/exporter.
 - [x] Allow PDB percentage values and validate exclusivity with integers.
-- [ ] Add HPA scaleUp/scaleDown behavior knobs (stabilizationWindow, policies).
-- [ ] Model Config/Secret volume mounts and mountPaths; exporter emits volumes/volumeMounts.
-- [ ] PVC `storageClassName` and `accessModes` selection flags; document defaults.
-- [ ] Service healthCheckNodePort and advanced Ingress annotations (behind explicit flag).
-- [ ] RBAC: broaden exporter coverage for ClusterRole/ClusterRoleBinding presets.
+- [x] Add HPA scaleUp/scaleDown behavior knobs (stabilizationWindow, policies).
+- [x] Model Config/Secret volume mounts and mountPaths for apishim/runtime projections.
+- [x] PVC `storageClassName` and `accessModes` selection flags; document defaults.
+- [x] Service `healthCheckNodePort` export for LoadBalancer Services.
+- [x] Advanced Ingress annotations (behind explicit flag).
+- [x] RBAC: broaden exporter coverage for ClusterRole/ClusterRoleBinding presets.

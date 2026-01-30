@@ -10,6 +10,7 @@ import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 from ae.controller.spec import AppManifest
 from ae.runtime import RuntimeAdapter, RuntimeResult
@@ -53,16 +54,22 @@ class AgentHandler(BaseHTTPRequestHandler):
         try:
             if self.path == "/v1/ensure_app":
                 manifest = _parse_manifest(payload.get("manifest", {}))
+                pod_names = payload.get("pod_names") or payload.get("replica_ids")
+                replica_id = None
+                if isinstance(pod_names, list) and len(pod_names) == 1:
+                    replica_id = pod_names[0]
                 if self.volume_manager is not None:
                     manifest = self.volume_manager.inject_pvc_mounts(  # type: ignore[attr-defined]
-                        manifest, node_id=payload.get("node_id") or self.node_id
+                        manifest,
+                        node_id=payload.get("node_id") or self.node_id,
+                        replica_id=replica_id,
                     )
                 result = self.runtime.ensure_app(
                     manifest,
                     int(payload.get("revision", 0)),
                     keep_old=bool(payload.get("keep_old", False)),
                     limit_create=payload.get("limit_create"),
-                    pod_names=payload.get("pod_names") or payload.get("replica_ids"),
+                    pod_names=pod_names,
                     node_id=payload.get("node_id"),
                 )
                 _json_response(self, 200, _result_to_dict(result))
@@ -408,6 +415,135 @@ def _start_heartbeat_loop(
     threading.Thread(target=_loop, daemon=True, name="agent-heartbeat").start()
 
 
+def _start_service_proxy_loop(
+    *,
+    controller_url: str | None,
+    interval: int,
+    state_db: str,
+    token: str | None = None,
+    ca_file: str | None = None,
+    client_cert: str | None = None,
+    client_key: str | None = None,
+) -> None:
+    if os.getenv("AE_AGENT_SERVICE_PROXY", "0") != "1":
+        return
+    if not controller_url:
+        LOGGER.warning("service proxy enabled but AE_CONTROLLER_URL is not set")
+        return
+    try:
+        from ae.controller.state import ServiceEndpoint, SQLiteStateStore
+        from ae.network import IptablesProvider
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("service proxy unavailable: %s", exc)
+        return
+
+    db_path = Path(state_db)
+    try:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    store = SQLiteStateStore(db_path)
+    provider = IptablesProvider(
+        store,
+        service_cidr=os.getenv("AE_SERVICE_IP_POOL", "10.241.0.0/16"),
+        iptables_bin=os.getenv("AE_IPTABLES_BIN", "iptables"),
+    )
+    base = controller_url.rstrip("/")
+    url = f"{base}/services"
+
+    def _fetch_services() -> list[dict] | None:
+        headers = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        kwargs = {"headers": headers, "timeout": 5}
+        if ca_file:
+            kwargs["verify"] = ca_file
+        if client_cert and client_key:
+            kwargs["cert"] = (client_cert, client_key)
+        try:
+            resp = requests.get(url, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("service proxy fetch failed: %s", exc)
+            return None
+        if resp.status_code != 200:
+            LOGGER.debug("service proxy fetch status=%s", resp.status_code)
+            return None
+        try:
+            payload = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("service proxy invalid json: %s", exc)
+            return None
+        if isinstance(payload, dict) and "items" in payload:
+            items = payload.get("items") or []
+            return list(items) if isinstance(items, list) else None
+        if isinstance(payload, list):
+            return payload
+        return None
+
+    def _apply_services(services: list[dict]) -> None:
+        provider.ensure_network()
+        seen: set[str] = set()
+        for svc in services:
+            if not isinstance(svc, dict):
+                continue
+            app = svc.get("app") or svc.get("app_name")
+            cluster_ip = svc.get("cluster_ip") or svc.get("clusterIP")
+            ports = svc.get("ports") or {}
+            if not app or not cluster_ip or not ports:
+                continue
+            app = str(app)
+            store.upsert_service(app, str(cluster_ip), ports)
+            endpoints_raw = svc.get("endpoints") or []
+            endpoints: list[ServiceEndpoint] = []
+            backends_by_port: dict[int, list[tuple[str, int]]] = {}
+            for ep in endpoints_raw:
+                if not isinstance(ep, dict):
+                    continue
+                try:
+                    port = int(ep.get("port") or 0)
+                    target = int(ep.get("target_port") or ep.get("targetPort") or 0)
+                except Exception:
+                    continue
+                ip = str(ep.get("ip") or "")
+                ready = bool(ep.get("ready", True))
+                if not ip or port <= 0 or target <= 0:
+                    continue
+                endpoints.append(
+                    ServiceEndpoint(
+                        app_name=app,
+                        port=port,
+                        ip=ip,
+                        target_port=target,
+                        ready=ready,
+                    )
+                )
+                if ready:
+                    backends_by_port.setdefault(port, []).append((ip, target))
+            store.upsert_service_endpoints(app, endpoints)
+            provider.update_service_endpoints(app, backends_by_port)
+            seen.add(app)
+        try:
+            for rec in store.list_services():
+                if rec.app_name not in seen:
+                    provider.remove_service(rec.app_name)
+                    store.delete_service(rec.app_name)
+        except Exception:
+            pass
+
+    def _loop() -> None:
+        while True:
+            services = _fetch_services()
+            if services is not None:
+                try:
+                    _apply_services(services)
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.debug("service proxy apply failed: %s", exc)
+            time.sleep(max(1, interval))
+
+    LOGGER.info("service proxy loop enabled (controller=%s, interval=%ss)", base, interval)
+    threading.Thread(target=_loop, daemon=True, name="agent-service-proxy").start()
+
+
 def serve(
     runtime: RuntimeAdapter,
     host: str = "0.0.0.0",
@@ -460,6 +596,24 @@ def serve(
         client_cert=controller_client_cert,
         client_key=controller_client_key,
     )
+    try:
+        interval = int(os.getenv("AE_AGENT_SERVICE_PROXY_INTERVAL", "5") or 5)
+    except Exception:
+        interval = 5
+    proxy_token = os.getenv("AE_AGENT_SERVICE_PROXY_TOKEN") or os.getenv("AE_API_READ_TOKEN")
+    if not proxy_token:
+        proxy_token = os.getenv("AE_API_ADMIN_TOKEN")
+    proxy_url = os.getenv("AE_AGENT_SERVICE_PROXY_URL") or controller_url
+    proxy_db = os.getenv("AE_AGENT_SERVICE_PROXY_DB", "/var/lib/ae/agent-services.db")
+    _start_service_proxy_loop(
+        controller_url=proxy_url,
+        interval=interval,
+        state_db=proxy_db,
+        token=proxy_token,
+        ca_file=controller_ca,
+        client_cert=controller_client_cert,
+        client_key=controller_client_key,
+    )
     AgentHandler.runtime = runtime
     AgentHandler.node_id = node_id or socket.gethostname()
     if os.getenv("AE_ENABLE_NETFS", "0") == "1":
@@ -468,6 +622,7 @@ def serve(
 
             from ae.apishim.store import ObjectStore
             from ae.storage import (
+                ApishimHttpStorageState,
                 ApishimStorageState,
                 InMemoryStorageState,
                 NetFSManager,
@@ -483,6 +638,8 @@ def serve(
                     dsn=dsn,
                 )
                 state = ApishimStorageState(store)
+            if state is None:
+                state = ApishimHttpStorageState.from_env()
             if state is None:
                 state = InMemoryStorageState()
             netfs = NetFSManager(state)

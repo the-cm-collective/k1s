@@ -748,6 +748,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ingress annotation key=value (repeatable)",
     )
     xk.add_argument(
+        "--ingress-annotations-from-spec",
+        action="store_true",
+        help="Allow spec.ingress.annotations to pass through to exported Ingress",
+    )
+    xk.add_argument(
         "--ingress-preset",
         choices=["nginx-web", "traefik-web"],
         default=None,
@@ -826,6 +831,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     xk.add_argument(
         "--service-account", default=None, help="Attach ServiceAccount and emit it by this name"
+    )
+    xk.add_argument(
+        "--rbac-cluster-preset",
+        choices=["view", "edit", "admin"],
+        default=None,
+        help="Emit a ClusterRole/ClusterRoleBinding preset bound to --service-account",
+    )
+    xk.add_argument(
+        "--rbac-cluster-role-name",
+        default=None,
+        help="Override ClusterRole name for --rbac-cluster-preset",
     )
     xk.add_argument(
         "--emit-pdb", action="store_true", help="Emit a PodDisruptionBudget when replicas > 1"
@@ -2670,8 +2686,17 @@ def handle_apply(
                 continue
             ingress_spec = spec
 
+        claim_templates = None
+        if workload_kind == "StatefulSet":
+            spec = workload.get("spec") if isinstance(workload, dict) else {}
+            raw = spec.get("volumeClaimTemplates") if isinstance(spec, dict) else None
+            if isinstance(raw, list):
+                claim_templates = raw
         manifest = k8s_convert.manifest_from_k8s_workload(
-            workload, service_spec=service_spec, ingress_spec=ingress_spec
+            workload,
+            service_spec=service_spec,
+            ingress_spec=ingress_spec,
+            volume_claim_templates=claim_templates,
         )
         if workload_kind == "Job":
             spec = manifest.spec
@@ -5649,6 +5674,67 @@ def handle_plan(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
                 "spec.service defined with replicas>1; stable host port is not applied for multi-replica apps. Use ingress for HTTP or per-replica ports."
             )
 
+    # CRI service proxy diagnostics (best-effort)
+    svc_defined = bool(
+        svc and (getattr(svc, "port", None) is not None or getattr(svc, "ports", None))
+    )
+    runtime_backend = str(os.getenv("AE_RUNTIME_BACKEND", "podman")).lower() or "podman"
+    if svc_defined and runtime_backend in {"cri", "containerd"}:
+        net_diag = diagnostics.setdefault("network", {})
+        proxy_enabled = os.getenv("AE_ENABLE_SERVICE_PROXY", "0") == "1"
+        provider = os.getenv("AE_SERVICE_PROVIDER", "iptables")
+        net_diag["serviceProxy"] = {"enabled": proxy_enabled, "provider": provider}
+        if not proxy_enabled:
+            warnings.append(
+                "CRI service proxy disabled; set AE_ENABLE_SERVICE_PROXY=1 for ClusterIP/NodePort"
+            )
+        else:
+            if provider not in {"iptables", "kubeproxy", "cri"}:
+                warnings.append(
+                    f"AE_SERVICE_PROVIDER={provider} unsupported on CRI; use iptables"
+                )
+            ipt_bin = os.getenv("AE_IPTABLES_BIN", "iptables")
+            ipt_path = shutil.which(ipt_bin)
+            ipt_diag = {"bin": ipt_bin, "available": bool(ipt_path)}
+            try:
+                ipt_diag["root"] = os.geteuid() == 0
+            except Exception:
+                ipt_diag["root"] = None
+            net_diag["iptables"] = ipt_diag
+            if not ipt_path:
+                warnings.append(
+                    f"iptables binary '{ipt_bin}' not found; Service VIP proxy requires iptables"
+                )
+            if ipt_diag.get("root") is False:
+                warnings.append("Service VIP proxy requires root (iptables NAT rules)")
+
+    if runtime_backend in {"cri", "containerd"}:
+        state_db = os.getenv("AE_STATE_DB", "state/controller.db")
+        if not os.getenv("AE_STATE_DSN") and os.path.exists(state_db):
+            try:
+                import sqlite3
+
+                missing: list[str] = []
+                conn = sqlite3.connect(state_db)
+                try:
+                    rows = conn.execute(
+                        "SELECT node_id, backend, pod_cidr FROM nodes"
+                    ).fetchall()
+                finally:
+                    conn.close()
+                for node_id, backend, pod_cidr in rows:
+                    node_backend = str(backend or runtime_backend).lower()
+                    if node_backend in {"cri", "containerd"} and not pod_cidr:
+                        missing.append(str(node_id))
+                if missing:
+                    net_diag = diagnostics.setdefault("network", {})
+                    net_diag["podCidrMissing"] = missing
+                    warnings.append(
+                        "CRI nodes missing podCIDR; set AE_POD_CIDR or ensure agent reports pod CIDR"
+                    )
+            except Exception:
+                pass
+
     # Materialize service.port details for JSON diagnostics
     if svc:
         try:
@@ -5964,6 +6050,9 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
             if getattr(args, "ingress_annotation", None) is not None
             else None
         ),
+        allow_ingress_annotations=bool(
+            getattr(args, "ingress_annotations_from_spec", False)
+        ),
         service_port=args.service_port,
         emit_configs=bool(getattr(args, "emit_configs", False)),
         inline_configs=bool(getattr(args, "inline_configs", False)),
@@ -5974,6 +6063,8 @@ def handle_export_k8s(args: argparse.Namespace) -> int:
         storage_class_name=getattr(args, "storage_class_name", None),
         pvc_access_modes=(list(getattr(args, "pvc_access_modes", []) or []) or None),
         service_account_name=getattr(args, "service_account", None),
+        rbac_cluster_preset=getattr(args, "rbac_cluster_preset", None),
+        rbac_cluster_role_name=getattr(args, "rbac_cluster_role_name", None),
         emit_pdb=bool(getattr(args, "emit_pdb", False)),
         pdb_min_available=_min_avail,
         pdb_max_unavailable=_max_unavail,

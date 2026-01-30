@@ -117,6 +117,7 @@ class IngressSpec(BaseModel):
     # Phase 7: optional multi-paths and TLS secret passthrough
     paths: List[str] = Field(default_factory=list)
     tls_secret_name: Optional[str] = Field(default=None, alias="tlsSecretName")
+    annotations: dict | None = None
     # Optional BYO TLS for Caddy writer (host cert/key paths)
     tls_cert_path: Optional[str] = Field(default=None, alias="tlsCertPath")
     tls_key_path: Optional[str] = Field(default=None, alias="tlsKeyPath")
@@ -155,6 +156,7 @@ class ServiceSpec(BaseModel):
     external_traffic_policy: Optional[Literal["Cluster", "Local"]] = Field(
         default=None, alias="externalTrafficPolicy"
     )
+    health_check_node_port: Optional[int] = Field(default=None, alias="healthCheckNodePort")
 
     # Back-compat single-port fields (used by local runtime stable host port and
     # as defaults for exporter when ports[] is not provided)
@@ -326,6 +328,30 @@ class VolumeDeviceSpec(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class ProjectionMountSpec(BaseModel):
+    """Projection mount for config/secret file roots."""
+
+    path: str
+    mount_path: str = Field(alias="mountPath")
+    read_only: bool = Field(default=True, alias="readOnly")
+
+    model_config = {"populate_by_name": True}
+
+
+class ProjectionSourceSpec(BaseModel):
+    """Kubernetes ConfigMap/Secret volume projection source (apishim)."""
+
+    name: str
+    source_type: Literal["configMap", "secret"] = Field(alias="type")
+    source_name: str = Field(alias="sourceName")
+    optional: bool = False
+    default_mode: int | str | None = Field(default=None, alias="defaultMode")
+    items: list[dict] = Field(default_factory=list)
+    namespace: Optional[str] = None
+
+    model_config = {"populate_by_name": True}
+
+
 class PvcMountSpec(BaseModel):
     """PVC-backed volume mount request (resolved via NetFS)."""
 
@@ -334,6 +360,7 @@ class PvcMountSpec(BaseModel):
     read_only: bool = Field(default=False, alias="readOnly")
     device_path: Optional[str] = Field(default=None, alias="devicePath")
     sub_path: Optional[str] = Field(default=None, alias="subPath")
+    claim_template: bool = Field(default=False, alias="claimTemplate")
     namespace: Optional[str] = None
 
     model_config = {"populate_by_name": True}
@@ -478,20 +505,7 @@ class AppSpec(BaseModel):
         health: Optional[HealthSpec] = None
         # Optional timeout for init containers (seconds). Ignored for main containers.
         timeout_seconds: Optional[int] = Field(default=None, alias="timeoutSeconds")
-
-        # Optional additional mounts from the app's projection root (state/projections/...)
-        # Each entry binds a subpath under /var/run/ae/config/<app> into a custom mountPath
-        # inside this container. Useful to expose selected config/secret files at bespoke paths.
-        class ProjectionMount(BaseModel):
-            path: (
-                str  # relative to /var/run/ae/config/<app> (e.g., "config/db", "secret/creds.json")
-            )
-            mount_path: str = Field(alias="mountPath")
-            read_only: bool = Field(default=True, alias="readOnly")
-
-            model_config = {"populate_by_name": True}
-
-        projection_mounts: List[ProjectionMount] = Field(
+        projection_mounts: List[ProjectionMountSpec] = Field(
             default_factory=list, alias="projectionMounts"
         )
 
@@ -513,12 +527,18 @@ class AppSpec(BaseModel):
     registry_auth_ref: Optional[str] = Field(default=None, alias="registryAuthRef")
     secret_refs: List[SecretRef] = Field(default_factory=list, alias="secretRefs")
     config_refs: List[ConfigRef] = Field(default_factory=list, alias="configRefs")
+    projection_sources: List[ProjectionSourceSpec] = Field(
+        default_factory=list, alias="projectionSources"
+    )
     resources: Optional[ResourcesSpec] = None
     security: Optional[SecuritySpec] = None
     termination_grace_period_seconds: int = Field(default=10, alias="terminationGracePeriodSeconds")
     volumes: List[VolumeSpec] = Field(default_factory=list)
     volume_devices: List[VolumeDeviceSpec] = Field(default_factory=list, alias="volumeDevices")
     pvc_mounts: List[PvcMountSpec] = Field(default_factory=list, alias="pvcMounts")
+    projection_mounts: List[ProjectionMountSpec] = Field(
+        default_factory=list, alias="projectionMounts"
+    )
     storage: List[StorageSpec] = Field(default_factory=list)
     empty_dirs: List[EmptyDirSpec] = Field(default_factory=list, alias="emptyDirs")
     # Optional exporter hints (purely affects export/check tooling)

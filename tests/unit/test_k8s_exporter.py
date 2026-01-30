@@ -372,6 +372,30 @@ def test_service_type_loadbalancer_external_traffic_policy() -> None:
     assert "nodePort" not in svc["spec"]["ports"][0]
 
 
+def test_service_loadbalancer_health_check_node_port() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    from ae.controller.spec import ServiceSpec
+
+    man = man.model_copy(
+        update={
+            "spec": man.spec.model_copy(
+                update={
+                    "service": ServiceSpec(
+                        type="LoadBalancer",
+                        externalTrafficPolicy="Local",
+                        healthCheckNodePort=32123,
+                        ports=[ServiceSpec.ServicePort(name="http", port=80, targetPort=8080)],
+                    )
+                }
+            )
+        }
+    )
+    docs = export_k8s_docs(man, options=ExportOptions(namespace="demo"))
+    svc = next(d for d in docs if d["kind"] == "Service")
+    assert svc["spec"]["type"] == "LoadBalancer"
+    assert svc["spec"].get("healthCheckNodePort") == 32123
+
+
 def test_service_session_affinity_clientip_timeout() -> None:
     man = load_manifest(Path("specs/examples/echo.yaml"))
     from ae.controller.spec import ServiceSpec
@@ -395,6 +419,25 @@ def test_service_session_affinity_clientip_timeout() -> None:
     spec = svc["spec"]
     assert spec.get("sessionAffinity") == "ClientIP"
     assert spec.get("sessionAffinityConfig", {}).get("clientIP", {}).get("timeoutSeconds") == 10800
+
+
+def test_cluster_rbac_preset_emits_clusterrole_binding() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    opts = ExportOptions(
+        namespace="demo",
+        service_account_name="echo-sa",
+        rbac_cluster_preset="view",
+    )
+    docs = export_k8s_docs(man, options=opts)
+    cr = next(d for d in docs if d["kind"] == "ClusterRole")
+    crb = next(d for d in docs if d["kind"] == "ClusterRoleBinding")
+    assert cr["metadata"]["name"].startswith(man.metadata.name)
+    rules = cr.get("rules", [])
+    assert any("pods" in (r.get("resources") or []) for r in rules)
+    subj = crb["subjects"][0]
+    assert subj["kind"] == "ServiceAccount"
+    assert subj["name"] == "echo-sa"
+    assert subj["namespace"] == "demo"
 
 
 def test_scheduling_pass_through_affinity_tolerations_topology() -> None:

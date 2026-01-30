@@ -29,6 +29,7 @@ from ae.controller.spec import (
 from ae.runtime.ports import choose_host_port
 
 from .base import PodState, RuntimeAdapter, RuntimeResult
+from .projections import ensure_k8s_volume_projections
 from .registry import RegistryAuthProvider
 
 LOGGER = logging.getLogger(__name__)
@@ -92,7 +93,9 @@ class CRIRuntime(RuntimeAdapter):
             else self._desired_replica_ids(manifest, revision)
         )
         self._current_node_id = node_id
-        manifest = self._maybe_inject_pvc_mounts(manifest, node_id=node_id)
+        manifest = ensure_k8s_volume_projections(
+            manifest, revision, state=self._get_apishim_state(), logger=LOGGER
+        )
         self._ensure_clients()
 
         existing = self._list_pods(app_name)
@@ -116,15 +119,18 @@ class CRIRuntime(RuntimeAdapter):
         job_backoff_limit = self._job_backoff_limit(manifest) if is_job else None
 
         for rid in desired_replica_ids:
+            rep_manifest = self._maybe_inject_pvc_mounts(
+                manifest, node_id=node_id, replica_id=rid
+            )
             pod = by_replica.get(rid)
             if pod is None:
                 if limit_create is not None and created >= int(limit_create):
                     continue
-                self._run_pod(manifest, rid, revision, node_id=node_id, attempt=0)
+                self._run_pod(rep_manifest, rid, revision, node_id=node_id, attempt=0)
                 created += 1
                 continue
             if self._ensure_main_container(
-                manifest,
+                rep_manifest,
                 pod,
                 revision,
                 is_job=is_job,
@@ -512,7 +518,9 @@ class CRIRuntime(RuntimeAdapter):
         keep_sandbox: bool,
         label_pod: bool,
     ) -> list[tuple[str, int, str]]:
-        manifest = self._maybe_inject_pvc_mounts(manifest, node_id=node_id)
+        manifest = self._maybe_inject_pvc_mounts(
+            manifest, node_id=node_id, replica_id=replica_id
+        )
         results: list[tuple[str, int, str]] = []
         inits = list(getattr(manifest.spec, "init_containers", []) or [])
         if not inits:
@@ -1083,13 +1091,18 @@ class CRIRuntime(RuntimeAdapter):
         if self._apishim_state is not None:
             return self._apishim_state
         store = self._get_apishim_store()
-        if store is None:
-            return None
+        if store is not None:
+            try:
+                from ae.storage.state import ApishimStorageState
+            except Exception:
+                return None
+            self._apishim_state = ApishimStorageState(store)
+            return self._apishim_state
         try:
-            from ae.storage.state import ApishimStorageState
+            from ae.storage.state import ApishimHttpStorageState
         except Exception:
             return None
-        self._apishim_state = ApishimStorageState(store)
+        self._apishim_state = ApishimHttpStorageState.from_env()
         return self._apishim_state
 
     def _get_volume_manager(self):
@@ -1116,13 +1129,35 @@ class CRIRuntime(RuntimeAdapter):
         return self._volume_manager
 
     def _maybe_inject_pvc_mounts(
-        self, manifest: AppManifest, *, node_id: str | None = None
+        self,
+        manifest: AppManifest,
+        *,
+        node_id: str | None = None,
+        replica_id: str | None = None,
     ) -> AppManifest:
         mgr = self._get_volume_manager()
         if mgr is None:
             return manifest
         try:
-            return mgr.inject_pvc_mounts(manifest, node_id=node_id or self._current_node_id)
+            if replica_id is not None:
+                return mgr.inject_pvc_mounts(
+                    manifest,
+                    node_id=node_id or self._current_node_id,
+                    replica_id=replica_id,
+                )
+            return mgr.inject_pvc_mounts(
+                manifest,
+                node_id=node_id or self._current_node_id,
+            )
+        except TypeError:
+            # Backward-compatible with older/partial managers that lack replica_id.
+            try:
+                return mgr.inject_pvc_mounts(
+                    manifest,
+                    node_id=node_id or self._current_node_id,
+                )
+            except Exception:
+                return manifest
         except Exception:
             return manifest
 

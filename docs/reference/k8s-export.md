@@ -46,8 +46,10 @@ What’s supported
  - Lifecycle
    - Export: `lifecycle.postStart|preStop` with `exec|httpGet|tcpSocket` handlers.
    - Runtime: preStop is executed best‑effort when removing old replicas. Exec handlers run inside the container; HTTP/TCP handlers are fired against the first published host port. You can set a runtime‑only timeout via `lifecycle.preStop.timeoutSeconds` (defaults to `terminationGracePeriodSeconds`).
-- Services: multi-port mapping via `spec.service.ports[]` with NodePort validation; externalIPs passthrough.
+- Services: multi-port mapping via `spec.service.ports[]` with NodePort validation; externalIPs passthrough; `healthCheckNodePort` exported for LoadBalancer Services when set.
+- Storage: `spec.storage[].class` / `accessModes` pass through to PVCs when `--emit-storage` is set (defaults to cluster StorageClass + `ReadWriteOnce`).
 - Ingress: `networking.k8s.io/v1`, `PathType=Prefix`, optional `--ingress-class` and TLS `tlsSecretName`.
+  - `spec.ingress.annotations` is only passed through when `--ingress-annotations-from-spec` is set.
   - Note: For `Job`/`CronJob` workloads, Service/Ingress are not emitted by default.
   - TLS Secret helper: `ae tls kubesecret --name <name> --namespace <ns> --root <dir> -o <file.yaml>` converts PEMs under `AE_TLS_DIR` into a `kubernetes.io/tls` Secret you can apply to the cluster and reference via `ingress.tlsSecretName`.
   - PodSecurity (Namespace labels): `--emit-namespace --psa-enforce baseline|restricted` emits a Namespace with `pod-security.kubernetes.io/enforce: <level>` and `enforce-version: latest`. Apply Namespace first if you split files.
@@ -62,9 +64,17 @@ Flags you’ll likely use
 - `--workload statefulset` for stateful apps (adds headless Service and volumeClaimTemplates when `--emit-storage`).
 - `--emit-configs --emit-secrets` to include ConfigMap/Secret objects.
 - `--emit-storage` to emit PVCs (Deployment) or use `volumeClaimTemplates` (StatefulSet).
+- `--storage-class-name <name>` to force a PVC storageClassName (overrides per-volume `class`).
+- `--pvc-access-modes ReadWriteOnce [--pvc-access-modes ReadOnlyMany]` to override accessModes (defaults to `ReadWriteOnce`).
+- `--ingress-annotation key=value` to add explicit Ingress annotations.
+- `--ingress-annotations-from-spec` to allow `spec.ingress.annotations` passthrough.
 - `--service-account app-sa`, `--emit-pdb`, `--pdb-{min-available|max-unavailable}` (accepts integers or percent strings like `50%`).
   - When a ServiceAccount is provided, the exporter also emits a namespaced `Role` and `RoleBinding` binding that account to conservative read‑only permissions (pods, pods/log, services, endpoints, events, configmaps).
+- `--rbac-cluster-preset view|edit|admin` to emit ClusterRole/ClusterRoleBinding presets bound to the ServiceAccount (requires `--service-account`).
+- `--rbac-cluster-role-name <name>` to override the generated ClusterRole name.
 - `--hpa-min 2 --hpa-max 5 --hpa-cpu-target 70` (or memory targets; see `ae k8s-check --help`).
+- `--hpa-behavior-up '{"stabilizationWindowSeconds":60,"policies":[{"type":"Percent","value":50,"periodSeconds":60}]}'`
+  and `--hpa-behavior-down '{"stabilizationWindowSeconds":60}'` to set autoscaling/v2 behavior.
 - Batch:
   - Job: `--workload job [--job-backoff-limit N] [--job-ttl-seconds-after-finished S]`
   - CronJob: `--workload cronjob --cron-schedule "*/5 * * * *" [--cron-concurrency-policy Allow|Forbid|Replace] [--job-backoff-limit N] [--job-ttl-seconds-after-finished S] [--cron-starting-deadline-seconds S] [--cron-suspend]`

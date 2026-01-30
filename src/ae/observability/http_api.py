@@ -916,6 +916,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if path_only in ("/nodes", "/nodes/"):
             self._handle_nodes()
             return
+        if path_only in ("/services", "/services/"):
+            self._handle_services()
+            return
         if path_only.startswith("/status/"):
             # Enforce read scope for single-app read if configured
             app = self.path.split("/", 2)[2].split("?", 1)[0]
@@ -3316,6 +3319,35 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 }
             )
         self._json_ok({"nodes": items, "count": len(items), "stale_after_seconds": grace})
+
+    def _handle_services(self) -> None:
+        items = []
+        try:
+            services = self.store.list_services()
+        except Exception:
+            services = []
+        for svc in services:
+            try:
+                endpoints = self.store.list_service_endpoints(svc.app_name)
+            except Exception:
+                endpoints = []
+            items.append(
+                {
+                    "app": svc.app_name,
+                    "cluster_ip": svc.cluster_ip,
+                    "ports": svc.ports,
+                    "endpoints": [
+                        {
+                            "port": int(e.port),
+                            "ip": str(e.ip),
+                            "target_port": int(e.target_port),
+                            "ready": bool(e.ready),
+                        }
+                        for e in endpoints
+                    ],
+                }
+            )
+        self._json_ok(items)
 
     def _handle_status_single(self, app: str) -> None:
         # Support optional query on the path segment (e.g., "<app>?details=1")

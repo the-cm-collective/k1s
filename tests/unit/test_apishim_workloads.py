@@ -40,6 +40,44 @@ def test_statefulset_status_populated(tmp_path):
     assert st.get("currentRevision") == 2
 
 
+def test_statefulset_volumeclaimtemplates_create_pvcs(tmp_path):
+    store, _state, adapter = _make_adapter(tmp_path)
+    md = {"name": "db", "namespace": "default"}
+    spec = {
+        "replicas": 2,
+        "selector": {"matchLabels": {"app": "db"}},
+        "template": {
+            "metadata": {"labels": {"app": "db"}},
+            "spec": {
+                "containers": [
+                    {
+                        "name": "db",
+                        "image": "busybox",
+                        "volumeMounts": [{"name": "data", "mountPath": "/var/lib/data"}],
+                    }
+                ]
+            },
+        },
+        "volumeClaimTemplates": [
+            {
+                "metadata": {"name": "data"},
+                "spec": {
+                    "accessModes": ["ReadWriteOnce"],
+                    "resources": {"requests": {"storage": "1Gi"}},
+                },
+            }
+        ],
+    }
+    sts = K8sObject("apps", "v1", "statefulsets", "default", "db", md, spec, {}, 1)
+
+    adapter._apply_statefulset(sts)
+
+    pvcs = store.list("", "v1", "persistentvolumeclaims", "default")
+    names = {p.name for p in pvcs}
+    assert "data-db-0" in names
+    assert "data-db-1" in names
+
+
 def test_daemonset_status_reflects_nodes(tmp_path):
     store, state, adapter = _make_adapter(tmp_path)
     # Register two nodes so desiredNumberScheduled matches

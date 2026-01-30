@@ -11,11 +11,15 @@ spec:
     - name: data
       mountPath: /var/lib/app
       retention: Retain   # or Delete
+      class: fast         # optional: PVC storageClassName when exporting
+      accessModes: [ReadWriteOnce]  # optional: defaults to ReadWriteOnce
 ```
 
 - name: logical name for the volume; the engine volume will be named `ae-<app>-<name>`
 - mountPath: container path where the volume is mounted
 - retention: `Retain` (default) keeps the volume on `ae delete`; `Delete` removes it on `ae delete --purge`
+- class: optional StorageClass name when exporting to Kubernetes (`storageClassName` is also accepted)
+- accessModes: optional PVC access modes when exporting (defaults to `ReadWriteOnce`)
 
 ### CLI
 
@@ -78,6 +82,21 @@ locate the bound PV.
 
 Notes:
 - `spec.pvcMounts[].subPath` is supported and is appended to the resolved host path.
+- StatefulSet `volumeClaimTemplates` are expanded into per‑ordinal PVCs named
+  `<template>-<statefulset>-<ordinal>` (apishim adapter). k1s mounts resolve
+  `claimTemplate` entries to the correct PVC for each replica.
+
+If the apishim database is not shared with nodes, point the agent/runtime at the
+apishim HTTP API instead:
+
+```
+export AE_ENABLE_NETFS=1
+export AE_APISHIM_URL=http://<controller-host>:8445
+export AE_APISHIM_READ_TOKEN=<read-token>
+```
+
+Set `AE_APISHIM_INSECURE=1` for dev HTTPS without a trusted CA, or provide
+`AE_APISHIM_TLS_CA` to trust a custom CA.
 
 ```
 export AE_ENABLE_NETFS=1
