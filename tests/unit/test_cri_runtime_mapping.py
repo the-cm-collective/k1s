@@ -91,3 +91,29 @@ def test_cri_container_config_maps_volume_devices():
     assert dev.host_path == "/dev/sdb"
     assert dev.container_path == "/dev/xvdb"
     assert dev.permissions == "r"
+
+
+def test_cri_container_config_maps_empty_dirs(tmp_path, monkeypatch):
+    root = tmp_path / "emptydirs"
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo", "namespace": "default"},
+            "spec": {
+                "image": "alpine:3.20",
+                "replicas": 1,
+                "emptyDirs": [{"name": "cache", "mountPath": "/cache"}],
+            },
+        }
+    )
+    runtime = CRIRuntime()
+    runtime._endpoint = "unix:///run/containerd/containerd.sock"
+    runtime._sandbox_image = "registry.k8s.io/pause:3.9"
+    monkeypatch.setenv("AE_CRI_EMPTYDIR_ROOT", str(root))
+    cfg = runtime._container_config(manifest, "demo-rev1-0", 1, attempt=0)
+    mounts = list(cfg.mounts or [])
+    host_path = root / "demo" / "demo-rev1-0" / "cache"
+    assert any(
+        m.host_path == str(host_path) and m.container_path == "/cache" for m in mounts
+    )

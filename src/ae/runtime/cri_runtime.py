@@ -1060,6 +1060,14 @@ class CRIRuntime(RuntimeAdapter):
             self._runtime_call(
                 "RemovePodSandbox", pb2.RemovePodSandboxRequest(pod_sandbox_id=str(pod_id))
             )
+        labels = {}
+        with contextlib.suppress(Exception):
+            labels = self._pod_labels(pod) or {}
+        app_name = labels.get(self.APP_LABEL)
+        replica_id = labels.get(self.REPLICA_LABEL) or labels.get(self.LEGACY_REPLICA_LABEL)
+        if app_name and replica_id:
+            with contextlib.suppress(Exception):
+                self._cleanup_empty_dirs(str(app_name), str(replica_id))
 
     def _container_config(
         self,
@@ -1114,7 +1122,7 @@ class CRIRuntime(RuntimeAdapter):
             if isinstance(item, dict) and item.get("name")
         ]
         working_dir = self._spec_value(spec, "working_dir", "workingDir")
-        mounts = self._build_mounts_for_container(manifest, app_name, spec)
+        mounts = self._build_mounts_for_container(manifest, app_name, spec, replica_id)
         devices = self._build_devices_for_container(manifest)
         resources = self._build_resources_from_spec(
             self._spec_value(spec, "resources") if not is_main else manifest.spec.resources
@@ -1150,7 +1158,11 @@ class CRIRuntime(RuntimeAdapter):
         return pb2.ContainerConfig(**kwargs)
 
     def _build_mounts_for_container(
-        self, manifest: AppManifest, app_name: str, spec: Any
+        self,
+        manifest: AppManifest,
+        app_name: str,
+        spec: Any,
+        replica_id: str,
     ) -> list[Any]:
         pb2 = self._pb2()
         mounts: list[Any] = []
@@ -1166,6 +1178,33 @@ class CRIRuntime(RuntimeAdapter):
                         readonly=bool(getattr(v, "read_only", False)),
                     )
                 )
+        empty_dirs = list(getattr(manifest.spec, "empty_dirs", []) or [])
+        if empty_dirs:
+            for ed in empty_dirs:
+                with contextlib.suppress(Exception):
+                    name = getattr(ed, "name", None) if not isinstance(ed, dict) else ed.get("name")
+                    mount_path = (
+                        getattr(ed, "mount_path", None)
+                        if not isinstance(ed, dict)
+                        else (ed.get("mountPath") or ed.get("mount_path"))
+                    )
+                    if not name or not mount_path:
+                        continue
+                    medium = (
+                        getattr(ed, "medium", None)
+                        if not isinstance(ed, dict)
+                        else ed.get("medium")
+                    )
+                    root = self._empty_dir_root(str(medium) if medium is not None else None)
+                    host_path = root / app_name / str(replica_id) / str(name)
+                    host_path.mkdir(parents=True, exist_ok=True)
+                    mounts.append(
+                        pb2.Mount(
+                            host_path=str(host_path),
+                            container_path=str(mount_path),
+                            readonly=False,
+                        )
+                    )
         if getattr(manifest.spec, "storage", None):
             self.ensure_storage_volumes(app_name, [s.model_dump() for s in manifest.spec.storage])
             for s in manifest.spec.storage:
@@ -1196,6 +1235,27 @@ class CRIRuntime(RuntimeAdapter):
                         )
                     )
         return mounts
+
+    def _empty_dir_root(self, medium: str | None) -> Path:
+        root = Path(os.getenv("AE_CRI_EMPTYDIR_ROOT", "/var/lib/ae/emptydirs"))
+        if medium and str(medium).lower() == "memory":
+            tmpfs_root = Path(
+                os.getenv("AE_CRI_EMPTYDIR_TMPFS_ROOT", "/dev/shm/ae-emptydir")
+            )
+            if tmpfs_root.exists():
+                return tmpfs_root
+        return root
+
+    def _cleanup_empty_dirs(self, app_name: str, replica_id: str) -> None:
+        roots = {
+            Path(os.getenv("AE_CRI_EMPTYDIR_ROOT", "/var/lib/ae/emptydirs")),
+            Path(os.getenv("AE_CRI_EMPTYDIR_TMPFS_ROOT", "/dev/shm/ae-emptydir")),
+        }
+        for root in roots:
+            path = root / app_name / replica_id
+            with contextlib.suppress(Exception):
+                if path.exists():
+                    shutil.rmtree(path)
 
     def _build_devices_for_container(self, manifest: AppManifest) -> list[Any]:
         pb2 = self._pb2()

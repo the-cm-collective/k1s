@@ -177,6 +177,10 @@ you may need to re‑grant access.
   - `volumes[].hostPath` → `spec.volumes` (mountPath + readOnly preserved).
   - `volumes[].persistentVolumeClaim` → `spec.pvcMounts` (requires NetFS on nodes).
   - `volumeDevices` → `spec.pvcMounts[].devicePath` for block volumes.
+- `spec.emptyDirs` map to per‑pod host directories on CRI nodes (ephemeral).
+  - Defaults to `/var/lib/ae/emptydirs/<app>/<pod>/<name>`.
+  - `medium: Memory` uses `/dev/shm/ae-emptydir` when available.
+  - Override roots with `AE_CRI_EMPTYDIR_ROOT` / `AE_CRI_EMPTYDIR_TMPFS_ROOT`.
 
 Enable NetFS PVC resolution on the node agent:
 

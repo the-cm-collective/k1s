@@ -799,6 +799,13 @@ AE_USE_REGISTRY_CACHE=0</code></pre>
 <li><code>volumeDevices</code> → <code>spec.pvcMounts[].devicePath</code> for block volumes.</li>
 </ul>
 </li>
+<li><code>spec.emptyDirs</code> map to per‑pod host directories on CRI nodes (ephemeral).
+<ul>
+<li>Defaults to <code>/var/lib/ae/emptydirs/&lt;app&gt;/&lt;pod&gt;/&lt;name&gt;</code>.</li>
+<li><code>medium: Memory</code> uses <code>/dev/shm/ae-emptydir</code> when available.</li>
+<li>Override roots with <code>AE_CRI_EMPTYDIR_ROOT</code> / <code>AE_CRI_EMPTYDIR_TMPFS_ROOT</code>.</li>
+</ul>
+</li>
 </ul>
 <p>Enable NetFS PVC resolution on the node agent:</p>
 <pre><code>export AE_ENABLE_NETFS=1
@@ -883,7 +890,7 @@ kubectl apply -f specs/examples/k1s-node-daemonset-k8s.yaml</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-29 16:24:33</span>
+        <span>Built 2026-01-29 16:42:39</span>
       </div>
     </footer>
     <script>
