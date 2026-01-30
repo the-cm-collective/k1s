@@ -63,6 +63,9 @@ workloads are resolved into hostPath mounts under `AE_NETFS_ROOT`. The agent
 currently reads PVC/PV bindings from the apishim store (sqlite/postgres) to
 locate the bound PV.
 
+Notes:
+- `spec.pvcMounts[].subPath` is supported and is appended to the resolved host path.
+
 ```
 export AE_ENABLE_NETFS=1
 export AE_APISHIM_DB=state/apishim.db

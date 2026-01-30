@@ -407,93 +407,98 @@ class CRIRuntime(RuntimeAdapter):
         ns, _ = split_app_key(app_name)
         pb2 = self._pb2()
 
-        for spec in inits:
-            name = self._spec_value(spec, "name") or "init"
-            image = self._spec_value(spec, "image")
-            if not image:
-                results.append((str(name), 1, "missing image"))
-                continue
-            timeout = self._parse_timeout(
-                self._spec_value(spec, "timeout_seconds", "timeoutSeconds")
-            )
-            with contextlib.suppress(Exception):
-                self._ensure_image(str(image))
-
-            pod_name = f"{app_name}-init-{name}-{uuid.uuid4().hex[:8]}"
-            pod_uid = self._pod_uid(pod_name, ns)
-            pod_meta = pb2.PodSandboxMetadata(
-                name=str(pod_name),
-                namespace=ns or DEFAULT_NAMESPACE,
-                uid=str(pod_uid),
-                attempt=0,
-            )
-            pod_config = pb2.PodSandboxConfig(
-                metadata=pod_meta,
-                labels=runtime_labels_for_manifest(manifest, app_name=app_name),
-                log_directory=self._pod_log_dir(ns, pod_name, pod_uid),
-            )
-            try:
-                resp = self._runtime_call(
-                    "RunPodSandbox", pb2.RunPodSandboxRequest(config=pod_config)
-                )
-                pod_id = getattr(resp, "pod_sandbox_id", None)
-                if not pod_id:
-                    raise RuntimeError("RunPodSandbox returned no pod_sandbox_id")
-            except Exception as exc:
+        pod_name = f"{app_name}-init-{uuid.uuid4().hex[:8]}"
+        pod_uid = self._pod_uid(pod_name, ns)
+        pod_meta = pb2.PodSandboxMetadata(
+            name=str(pod_name),
+            namespace=ns or DEFAULT_NAMESPACE,
+            uid=str(pod_uid),
+            attempt=0,
+        )
+        pod_config = pb2.PodSandboxConfig(
+            metadata=pod_meta,
+            labels=runtime_labels_for_manifest(manifest, app_name=app_name),
+            log_directory=self._pod_log_dir(ns, pod_name, pod_uid),
+        )
+        pod_id = None
+        try:
+            resp = self._runtime_call("RunPodSandbox", pb2.RunPodSandboxRequest(config=pod_config))
+            pod_id = getattr(resp, "pod_sandbox_id", None)
+            if not pod_id:
+                raise RuntimeError("RunPodSandbox returned no pod_sandbox_id")
+        except Exception as exc:
+            for spec in inits:
+                name = self._spec_value(spec, "name") or "init"
                 results.append((str(name), 1, f"sandbox error: {exc}"))
-                continue
+            return results
 
-            container_id = None
-            try:
-                config = self._container_config_for_spec(
-                    manifest,
-                    spec,
-                    name=str(name),
-                    replica_id=str(pod_name),
-                    revision=0,
-                    attempt=0,
-                    is_main=False,
+        try:
+            for spec in inits:
+                name = self._spec_value(spec, "name") or "init"
+                image = self._spec_value(spec, "image")
+                if not image:
+                    results.append((str(name), 1, "missing image"))
+                    continue
+                timeout = self._parse_timeout(
+                    self._spec_value(spec, "timeout_seconds", "timeoutSeconds")
                 )
-                req = pb2.CreateContainerRequest(
-                    pod_sandbox_id=str(pod_id),
-                    config=config,
-                    sandbox_config=pod_config,
-                )
-                resp = self._runtime_call("CreateContainer", req)
-                container_id = getattr(resp, "container_id", None)
-                if not container_id:
-                    raise RuntimeError("CreateContainer returned no container_id")
-                self._runtime_call(
-                    "StartContainer", pb2.StartContainerRequest(container_id=container_id)
-                )
-                exit_code = self._wait_container_exit(container_id, timeout)
-                if exit_code is None:
+                with contextlib.suppress(Exception):
+                    self._ensure_image(str(image))
+
+                container_id = None
+                try:
+                    config = self._container_config_for_spec(
+                        manifest,
+                        spec,
+                        name=str(name),
+                        replica_id=str(pod_name),
+                        revision=0,
+                        attempt=0,
+                        is_main=False,
+                    )
+                    req = pb2.CreateContainerRequest(
+                        pod_sandbox_id=str(pod_id),
+                        config=config,
+                        sandbox_config=pod_config,
+                    )
+                    resp = self._runtime_call("CreateContainer", req)
+                    container_id = getattr(resp, "container_id", None)
+                    if not container_id:
+                        raise RuntimeError("CreateContainer returned no container_id")
+                    self._runtime_call(
+                        "StartContainer", pb2.StartContainerRequest(container_id=container_id)
+                    )
+                    exit_code = self._wait_container_exit(container_id, timeout)
+                    if exit_code is None:
+                        with contextlib.suppress(Exception):
+                            self._runtime_call(
+                                "StopContainer",
+                                pb2.StopContainerRequest(container_id=container_id, timeout=0),
+                            )
+                        results.append((str(name), 124, "timeout"))
+                    else:
+                        msg = "ok" if exit_code == 0 else "failed"
+                        results.append((str(name), int(exit_code), msg))
+                except Exception as exc:
+                    results.append((str(name), 1, f"error: {exc}"))
+                finally:
                     with contextlib.suppress(Exception):
-                        self._runtime_call(
-                            "StopContainer",
-                            pb2.StopContainerRequest(container_id=container_id, timeout=0),
-                        )
-                    results.append((str(name), 124, "timeout"))
-                else:
-                    msg = "ok" if exit_code == 0 else "failed"
-                    results.append((str(name), int(exit_code), msg))
-            except Exception as exc:
-                results.append((str(name), 1, f"error: {exc}"))
-            finally:
-                with contextlib.suppress(Exception):
-                    if container_id:
-                        self._runtime_call(
-                            "RemoveContainer", pb2.RemoveContainerRequest(container_id=container_id)
-                        )
-                with contextlib.suppress(Exception):
-                    self._runtime_call(
-                        "StopPodSandbox", pb2.StopPodSandboxRequest(pod_sandbox_id=str(pod_id))
-                    )
-                with contextlib.suppress(Exception):
-                    self._runtime_call(
-                        "RemovePodSandbox",
-                        pb2.RemovePodSandboxRequest(pod_sandbox_id=str(pod_id)),
-                    )
+                        if container_id:
+                            self._runtime_call(
+                                "RemoveContainer",
+                                pb2.RemoveContainerRequest(container_id=container_id),
+                            )
+        finally:
+            with contextlib.suppress(Exception):
+                self._runtime_call(
+                    "StopPodSandbox", pb2.StopPodSandboxRequest(pod_sandbox_id=str(pod_id))
+                )
+            with contextlib.suppress(Exception):
+                self._runtime_call(
+                    "RemovePodSandbox", pb2.RemovePodSandboxRequest(pod_sandbox_id=str(pod_id))
+                )
+            with contextlib.suppress(Exception):
+                self._cleanup_empty_dirs(str(app_name), str(pod_name))
         return results
 
     # Storage lifecycle ------------------------------------------------
@@ -1195,9 +1200,19 @@ class CRIRuntime(RuntimeAdapter):
                         if not isinstance(ed, dict)
                         else ed.get("medium")
                     )
+                    size_limit = (
+                        getattr(ed, "size_limit", None)
+                        if not isinstance(ed, dict)
+                        else ed.get("sizeLimit") or ed.get("size_limit")
+                    )
                     root = self._empty_dir_root(str(medium) if medium is not None else None)
                     host_path = root / app_name / str(replica_id) / str(name)
                     host_path.mkdir(parents=True, exist_ok=True)
+                    self._ensure_emptydir_mount(
+                        host_path,
+                        medium=str(medium) if medium is not None else None,
+                        size_limit=str(size_limit) if size_limit is not None else None,
+                    )
                     mounts.append(
                         pb2.Mount(
                             host_path=str(host_path),
@@ -1246,6 +1261,40 @@ class CRIRuntime(RuntimeAdapter):
                 return tmpfs_root
         return root
 
+    def _ensure_emptydir_mount(
+        self,
+        host_path: Path,
+        *,
+        medium: str | None,
+        size_limit: str | None,
+    ) -> None:
+        if not medium or str(medium).lower() != "memory":
+            if size_limit:
+                LOGGER.warning(
+                    "emptyDir sizeLimit is not enforced for disk-backed volumes in CRI"
+                )
+            return
+        if os.path.ismount(host_path):
+            return
+        if os.geteuid() != 0:
+            LOGGER.warning("emptyDir Memory requested but mount requires root; skipping tmpfs")
+            return
+        opts: list[str] = []
+        if size_limit:
+            size_bytes = self._parse_memory_bytes(str(size_limit))
+            if size_bytes:
+                opts.append(f"size={size_bytes}")
+            else:
+                LOGGER.warning("emptyDir sizeLimit %s is invalid; using default", size_limit)
+        cmd = ["mount", "-t", "tmpfs"]
+        if opts:
+            cmd.extend(["-o", ",".join(opts)])
+        cmd.extend(["tmpfs", str(host_path)])
+        try:
+            subprocess.run(cmd, check=True)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("emptyDir tmpfs mount failed: %s", exc)
+
     def _cleanup_empty_dirs(self, app_name: str, replica_id: str) -> None:
         roots = {
             Path(os.getenv("AE_CRI_EMPTYDIR_ROOT", "/var/lib/ae/emptydirs")),
@@ -1253,6 +1302,9 @@ class CRIRuntime(RuntimeAdapter):
         }
         for root in roots:
             path = root / app_name / replica_id
+            with contextlib.suppress(Exception):
+                if path.exists() and os.path.ismount(path):
+                    subprocess.run(["umount", "-l", str(path)], check=False)
             with contextlib.suppress(Exception):
                 if path.exists():
                     shutil.rmtree(path)
@@ -1602,12 +1654,26 @@ class CRIRuntime(RuntimeAdapter):
                 "b": 1,
                 "k": 1024,
                 "kb": 1024,
+                "ki": 1024,
+                "kib": 1024,
                 "m": 1024**2,
                 "mb": 1024**2,
                 "mi": 1024**2,
                 "g": 1024**3,
                 "gb": 1024**3,
                 "gi": 1024**3,
+                "t": 1024**4,
+                "tb": 1024**4,
+                "ti": 1024**4,
+                "tib": 1024**4,
+                "p": 1024**5,
+                "pb": 1024**5,
+                "pi": 1024**5,
+                "pib": 1024**5,
+                "e": 1024**6,
+                "eb": 1024**6,
+                "ei": 1024**6,
+                "eib": 1024**6,
             }
             if s.isdigit():
                 return int(s)
