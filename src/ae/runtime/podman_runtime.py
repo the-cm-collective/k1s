@@ -1638,10 +1638,46 @@ class PodmanRuntime(RuntimeAdapter):
                             published_any = True
                     except Exception:
                         continue
-                # If no explicit host mappings were given but ports exist, publish exposed
-                # ports on ephemeral host ports (requires images to EXPOSE the ports).
+                # If no explicit host mappings were given but ports exist, publish
+                # each declared container port on an available host port. This mirrors
+                # Docker's behavior even when the image doesn't EXPOSE ports.
             if not published_any and (manifest.spec.ports or []):
-                cmd += ["-P"]
+                try:
+                    blocked = self._host_ports_in_use()
+                except Exception:
+                    blocked = set()
+                for p in manifest.spec.ports or []:
+                    try:
+                        cport = int(
+                            getattr(p, "container_port", 0)
+                            or getattr(p, "containerPort", 0)
+                            or 0
+                        )
+                    except Exception:
+                        cport = 0
+                    if cport <= 0:
+                        continue
+                    chosen, used_preferred = choose_host_port(
+                        int(cport),
+                        reserved=reserved_ports,
+                        blocked=blocked,
+                    )
+                    if chosen is None:
+                        LOGGER.warning(
+                            "port %s for app %s is unavailable; skipping publish",
+                            cport,
+                            app,
+                        )
+                        continue
+                    if not used_preferred:
+                        LOGGER.warning(
+                            "port %s for app %s already in use; assigning %s",
+                            cport,
+                            app,
+                            chosen,
+                        )
+                    cmd += ["-p", f"{int(chosen)}:{int(cport)}"]
+                    published_any = True
 
         # Volumes
         if getattr(manifest.spec, "storage", None):
