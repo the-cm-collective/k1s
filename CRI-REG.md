@@ -296,10 +296,11 @@ cache and push directly to a host-reachable registry instead.
 **Goal:** when `scripts/stop_all.sh` or `make demo-down` runs, CRI pods/containers
 created by k1s should be stopped/removed (like Docker/Podman).
 
-**Proposed strategy**
-- Use CRI labels set by k1s: `ae.app` on pod/containers.
-- List pods via `crictl pods -o json`, filter by label, then stop/remove those
-  pods only. Avoid removing unrelated workloads.
+**Implementation**
+- `scripts/cri_teardown.sh` lists CRI pods via `crictl pods -o json`, filters
+  by the `ae.app` label, then stops/removes only those pods.
+- `scripts/stop_all.sh` and `scripts/init_demo.sh --down` call the helper
+  (best‑effort) so CRI cleanup happens automatically in dev flows.
 
 ## Suggested integration hooks
 

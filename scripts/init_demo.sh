@@ -717,6 +717,10 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
       "$STACK_BIN_DOWN" rm -f $ids || true
     fi
   fi
+  if [[ -x scripts/cri_teardown.sh ]]; then
+    log "Removing CRI pods (label=ae.app)"
+    ./scripts/cri_teardown.sh || true
+  fi
   # Clear dynamic Caddy site fragments to avoid stale host collisions on next start
   if [[ -d state/caddy ]]; then
     log "Clearing dynamic Caddy sites under state/caddy/*.caddy"
