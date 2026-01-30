@@ -14,6 +14,7 @@ from ae.controller.spec import (
     ResourceQuantities,
     ResourcesSpec,
     ServiceSpec,
+    VolumeSpec,
 )
 from ae.runtime.podman_runtime import PodmanRuntime
 
@@ -613,8 +614,56 @@ def test_podman_share_process_namespace_sidecar(monkeypatch):
         c for c in calls if len(c) >= 3 and c[0] == rt._bin and c[1] == "run" and "-d" in c
     ]
     assert run_calls, f"expected podman run call, got: {calls}"
+    def _cmd_name(cmd):  # noqa: ANN001
+        try:
+            idx = cmd.index("--name")
+            return cmd[idx + 1]
+        except Exception:
+            return ""
+
+    sidecar_cmd = next(
+        (c for c in run_calls if _cmd_name(c) == "ae-blue-rev1-0-sidecar"), run_calls[0]
+    )
+    assert "--pid" in sidecar_cmd and "container:ae-blue-rev1-0-pod" in sidecar_cmd
+
+
+def test_podman_injects_pvc_mounts(monkeypatch):
+    rt = PodmanRuntime()
+    calls: list[list[str]] = []
+
+    class StubVolumeManager:
+        def inject_pvc_mounts(self, manifest, node_id=None):  # noqa: ANN001
+            _ = node_id
+            vols = list(getattr(manifest.spec, "volumes", []) or [])
+            vols.append(VolumeSpec(host_path="/tmp/netfs", mount_path="/data"))
+            updated = manifest.spec.model_copy(update={"volumes": vols})
+            return manifest.model_copy(update={"spec": updated})
+
+    monkeypatch.setattr(rt, "_get_volume_manager", lambda: StubVolumeManager())
+    monkeypatch.setattr(rt, "_image_exists", lambda *_a, **_k: True)
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        if argv[:3] == [rt._bin, "container", "exists"]:
+            return DummyResult(1)
+        if argv[:3] == [rt._bin, "images", "--format"]:
+            return DummyResult(0, "[]")
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *_a, **_k: None)
+
+    manifest = _manifest_single(image="demo:latest")
+    rt.ensure_app(manifest, revision=1)
+
+    run_calls = [
+        c for c in calls if len(c) >= 3 and c[0] == rt._bin and c[1] == "run" and "-d" in c
+    ]
+    assert run_calls, f"expected podman run call, got: {calls}"
     cmd = run_calls[0]
-    assert "--pid" in cmd and "container:ae-blue-rev1-0" in cmd
+    assert "-v" in cmd
+    assert "/tmp/netfs:/data:rw" in cmd
 
 
 # ruff: noqa: E501

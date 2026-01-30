@@ -41,6 +41,7 @@ class DockerRuntime(RuntimeAdapter):
     REVISION_LABEL = "ae.revision"
     CONTAINER_LABEL = "ae.container"
     JOB_ATTEMPT_LABEL = "ae.job_attempt"
+    POD_SANDBOX_LABEL = "pod-sandbox"
 
     def __init__(
         self,
@@ -74,6 +75,8 @@ class DockerRuntime(RuntimeAdapter):
         self._apishim_state = None
         self._apishim_store_checked = False
         self._apishim_store = None
+        self._volume_manager_checked = False
+        self._volume_manager = None
 
     def ensure_app(
         self,
@@ -93,6 +96,7 @@ class DockerRuntime(RuntimeAdapter):
         )
         # Record node context so volume helpers can label ownership
         self._current_node_id = node_id
+        manifest = self._maybe_inject_pvc_mounts(manifest, node_id=node_id)
         is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
         job_backoff_limit = None
         if is_job:
@@ -121,8 +125,10 @@ class DockerRuntime(RuntimeAdapter):
             pod_label = self._pod_label(labels)
             if not pod_label:
                 continue
+            is_sandbox = labels.get(self.CONTAINER_LABEL) == self.POD_SANDBOX_LABEL
             if labels.get(self.REVISION_LABEL) == str(revision):
-                containers_by_replica[pod_label] = container
+                if not is_sandbox:
+                    containers_by_replica[pod_label] = container
             else:
                 old_revision_containers.append(container)
 
@@ -214,6 +220,7 @@ class DockerRuntime(RuntimeAdapter):
             for container in final_containers
             if self._pod_label(container.labels)
             and container.labels.get(self.REVISION_LABEL) == str(revision)
+            and container.labels.get(self.CONTAINER_LABEL) != self.POD_SANDBOX_LABEL
         ]
 
         return RuntimeResult(
@@ -633,6 +640,129 @@ class DockerRuntime(RuntimeAdapter):
                 options.append(f"{name}:{value}" if value else str(name))
         return nameservers, searches, options
 
+    def _sandbox_image(self) -> str:
+        return (
+            os.getenv("AE_POD_SANDBOX_IMAGE")
+            or os.getenv("AE_CRI_SANDBOX_IMAGE")
+            or "registry.k8s.io/pause:3.9"
+        )
+
+    def _pod_sandbox_name(self, manifest: AppManifest, replica_id: str, revision: int) -> str:
+        app_name = app_key_for_manifest(manifest)
+        suffix = replica_id.split("-")[-1]
+        return f"ae-{app_name}-rev{revision}-{suffix}-pod"
+
+    def _ensure_pod_sandbox(
+        self,
+        manifest: AppManifest,
+        replica_id: str,
+        revision: int,
+        *,
+        node_id: str | None = None,
+    ) -> str | None:
+        if not bool(getattr(manifest.spec, "share_process_namespace", False)):
+            return None
+        name = self._pod_sandbox_name(manifest, replica_id, revision)
+        app_name = app_key_for_manifest(manifest)
+        labels = runtime_labels_for_manifest(manifest, app_name=app_name)
+        labels.update(
+            {
+                self.POD_LABEL: replica_id,
+                self.LEGACY_REPLICA_LABEL: replica_id,
+                self.REVISION_LABEL: str(revision),
+                self.CONTAINER_LABEL: self.POD_SANDBOX_LABEL,
+                **({"ae.node": str(node_id)} if node_id else {}),
+            }
+        )
+        try:
+            existing = self._client.containers.list(
+                all=True,
+                filters={
+                    "label": [
+                        f"{self.APP_LABEL}={app_name}",
+                        f"{self.POD_LABEL}={replica_id}",
+                        f"{self.CONTAINER_LABEL}={self.POD_SANDBOX_LABEL}",
+                    ]
+                },
+            )
+        except APIError:
+            existing = []
+        if existing:
+            pod = existing[0]
+            try:
+                pod.reload()
+                if pod.status != "running":
+                    pod.start()
+            except Exception:
+                pass
+            return name
+        try:
+            self._ensure_image(self._sandbox_image(), manifest=manifest, policy="IfNotPresent")
+            self._client.containers.run(
+                self._sandbox_image(),
+                name=name,
+                detach=True,
+                labels=labels,
+                restart_policy={"Name": "unless-stopped"},
+            )
+            return name
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Failed to create pod sandbox for %s: %s", replica_id, exc)
+            return None
+
+    def _get_volume_manager(self):
+        if self._volume_manager_checked:
+            return self._volume_manager
+        self._volume_manager_checked = True
+        if os.getenv("AE_ENABLE_NETFS", "0") != "1":
+            self._volume_manager = None
+            return None
+        try:
+            from pathlib import Path
+
+            from ae.storage import (
+                ApishimStorageState,
+                InMemoryStorageState,
+                NetFSManager,
+                NodeVolumeManager,
+            )
+            from ae.apishim.store import ObjectStore
+        except Exception:
+            self._volume_manager = None
+            return None
+        state = None
+        dsn = os.getenv("AE_APISHIM_DSN")
+        db_path = os.getenv("AE_APISHIM_DB")
+        if dsn or db_path:
+            try:
+                store = ObjectStore(
+                    db_path=Path(db_path) if db_path else Path("state/apishim.db"),
+                    dsn=dsn,
+                )
+                state = ApishimStorageState(store)
+            except Exception:
+                state = None
+        if state is None:
+            state = InMemoryStorageState()
+        try:
+            netfs = NetFSManager(state)
+            self._volume_manager = NodeVolumeManager(netfs, node_id=self._current_node_id)
+        except Exception:
+            self._volume_manager = None
+        return self._volume_manager
+
+    def _maybe_inject_pvc_mounts(
+        self, manifest: AppManifest, *, node_id: str | None = None
+    ) -> AppManifest:
+        mgr = self._get_volume_manager()
+        if mgr is None:
+            return manifest
+        try:
+            return mgr.inject_pvc_mounts(manifest, node_id=node_id or self._current_node_id)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("PVC mount injection failed: %s", exc)
+            return manifest
+
     def _endpoint_for_host_network(
         self, manifest: AppManifest, preferred: int | None = None
     ) -> str | None:
@@ -673,6 +803,7 @@ class DockerRuntime(RuntimeAdapter):
         host_network = bool(getattr(manifest.spec, "host_network", False))
         host_pid = bool(getattr(manifest.spec, "host_pid", False))
         host_ipc = bool(getattr(manifest.spec, "host_ipc", False))
+        share_proc = bool(getattr(manifest.spec, "share_process_namespace", False))
         # Build port mapping; if a Service is specified and replicas==1, publish a stable host port
         svc_port = None
         svc_target = None
@@ -856,6 +987,12 @@ class DockerRuntime(RuntimeAdapter):
                 kwargs["network_mode"] = "host"
             if host_pid:
                 kwargs["pid_mode"] = "host"
+            elif share_proc:
+                sandbox = self._ensure_pod_sandbox(
+                    manifest, replica_id, revision, node_id=node_id
+                )
+                if sandbox:
+                    kwargs["pid_mode"] = f"container:{sandbox}"
             if host_ipc:
                 kwargs["ipc_mode"] = "host"
             extra_hosts = self._resolve_extra_hosts(manifest)
@@ -1042,8 +1179,14 @@ class DockerRuntime(RuntimeAdapter):
                 if host_pid:
                     container_kwargs["pid_mode"] = "host"
                 elif share_proc:
-                    main_name = f"ae-{app_name}-rev{revision}-{replica_id.split('-')[-1]}"
-                    container_kwargs["pid_mode"] = f"container:{main_name}"
+                    sandbox = self._ensure_pod_sandbox(
+                        manifest,
+                        replica_id,
+                        revision,
+                        node_id=getattr(self, "_current_node_id", None),
+                    )
+                    if sandbox:
+                        container_kwargs["pid_mode"] = f"container:{sandbox}"
                 if host_ipc:
                     container_kwargs["ipc_mode"] = "host"
                 c = by_cname.get(cname)
@@ -1054,7 +1197,71 @@ class DockerRuntime(RuntimeAdapter):
                             env_map[item["name"]] = str(item.get("value", ""))
                     # Merge per-container projection mounts
                     vmap = dict(volumes or {})
+                    devices: list[str] = []
                     try:
+                        # Per-container volume mounts
+                        host_vols = None
+                        if isinstance(csp, dict):
+                            if "volumeMounts" in csp or "volume_mounts" in csp:
+                                host_vols = csp.get("volumeMounts") or csp.get("volume_mounts") or []
+                        else:
+                            fields = getattr(csp, "__pydantic_fields_set__", None)
+                            if fields and ("volume_mounts" in fields or "volumeMounts" in fields):
+                                host_vols = getattr(csp, "volume_mounts", []) or []
+                        if host_vols is None:
+                            host_vols = []
+                        for v in host_vols or []:
+                            host = (
+                                getattr(v, "host_path", None)
+                                if not isinstance(v, dict)
+                                else v.get("hostPath")
+                            )
+                            mnt = (
+                                getattr(v, "mount_path", None)
+                                if not isinstance(v, dict)
+                                else v.get("mountPath")
+                            )
+                            ro = bool(
+                                getattr(v, "read_only", False)
+                                if not isinstance(v, dict)
+                                else v.get("readOnly", False)
+                            )
+                            if host and mnt:
+                                if host and not os.path.isabs(host):
+                                    host = os.path.abspath(host)
+                                vmap[str(host)] = {"bind": str(mnt), "mode": ("ro" if ro else "rw")}
+                        # Per-container devices
+                        devs = None
+                        if isinstance(csp, dict):
+                            if "volumeDevices" in csp or "volume_devices" in csp:
+                                devs = csp.get("volumeDevices") or csp.get("volume_devices") or []
+                        else:
+                            fields = getattr(csp, "__pydantic_fields_set__", None)
+                            if fields and ("volume_devices" in fields or "volumeDevices" in fields):
+                                devs = getattr(csp, "volume_devices", []) or []
+                        if devs is None:
+                            devs = []
+                        for d in devs or []:
+                            host = (
+                                getattr(d, "host_path", None)
+                                if not isinstance(d, dict)
+                                else d.get("hostPath")
+                            )
+                            dev = (
+                                getattr(d, "device_path", None)
+                                if not isinstance(d, dict)
+                                else d.get("devicePath")
+                            )
+                            ro = bool(
+                                getattr(d, "read_only", False)
+                                if not isinstance(d, dict)
+                                else d.get("readOnly", False)
+                            )
+                            if host and dev:
+                                if host and not os.path.isabs(host):
+                                    host = os.path.abspath(host)
+                                mode = "r" if ro else "rwm"
+                                devices.append(f"{host}:{dev}:{mode}")
                         for pm in getattr(csp, "projection_mounts", []) or []:
                             p = (
                                 getattr(pm, "path", None)
@@ -1101,6 +1308,7 @@ class DockerRuntime(RuntimeAdapter):
                                 self.CONTAINER_LABEL: cname,
                             },
                             restart_policy={"Name": "unless-stopped"},
+                            devices=devices or None,
                             **container_kwargs,
                         )
                         # Optional network join
@@ -1479,6 +1687,9 @@ class DockerRuntime(RuntimeAdapter):
 
         Returns list of (name, rc, message).
         """
+        manifest = self._maybe_inject_pvc_mounts(
+            manifest, node_id=getattr(self, "_current_node_id", None)
+        )
         results: list[tuple[str, int, str]] = []
         inits = getattr(manifest.spec, "init_containers", []) or []
         if not inits:
@@ -1506,6 +1717,7 @@ class DockerRuntime(RuntimeAdapter):
 
         # Build shared volume bindings: hostPath volumes and storage volumes
         volumes = {}
+        devices: list[str] = []
         try:
             if getattr(manifest.spec, "volumes", None):
                 for v in manifest.spec.volumes:
@@ -1515,6 +1727,17 @@ class DockerRuntime(RuntimeAdapter):
                         host_path = os.path.abspath(host_path)
                     if host_path and getattr(v, "mount_path", None):
                         volumes[host_path] = {"bind": str(v.mount_path), "mode": mode}
+        except Exception:
+            pass
+        try:
+            if getattr(manifest.spec, "volume_devices", None):
+                for d in manifest.spec.volume_devices:
+                    mode = "r" if getattr(d, "read_only", False) else "rwm"
+                    host_path = getattr(d, "host_path", None)
+                    if host_path and not os.path.isabs(host_path):
+                        host_path = os.path.abspath(host_path)
+                    if host_path and getattr(d, "device_path", None):
+                        devices.append(f"{host_path}:{d.device_path}:{mode}")
         except Exception:
             pass
         try:
@@ -1585,6 +1808,72 @@ class DockerRuntime(RuntimeAdapter):
             except Exception:
                 env_map = {}
 
+            # Merge per-init container mounts/devices if provided
+            try:
+                host_vols = None
+                if isinstance(c, dict):
+                    if "volumeMounts" in c or "volume_mounts" in c:
+                        host_vols = c.get("volumeMounts") or c.get("volume_mounts") or []
+                else:
+                    fields = getattr(c, "__pydantic_fields_set__", None)
+                    if fields and ("volume_mounts" in fields or "volumeMounts" in fields):
+                        host_vols = getattr(c, "volume_mounts", []) or []
+                if host_vols is None:
+                    host_vols = []
+                for v in host_vols or []:
+                    host = (
+                        getattr(v, "host_path", None)
+                        if not isinstance(v, dict)
+                        else v.get("hostPath")
+                    )
+                    mnt = (
+                        getattr(v, "mount_path", None)
+                        if not isinstance(v, dict)
+                        else v.get("mountPath")
+                    )
+                    ro = bool(
+                        getattr(v, "read_only", False)
+                        if not isinstance(v, dict)
+                        else v.get("readOnly", False)
+                    )
+                    if host and mnt:
+                        if host and not os.path.isabs(host):
+                            host = os.path.abspath(host)
+                        volumes[host] = {"bind": str(mnt), "mode": ("ro" if ro else "rw")}
+                devs = None
+                if isinstance(c, dict):
+                    if "volumeDevices" in c or "volume_devices" in c:
+                        devs = c.get("volumeDevices") or c.get("volume_devices") or []
+                else:
+                    fields = getattr(c, "__pydantic_fields_set__", None)
+                    if fields and ("volume_devices" in fields or "volumeDevices" in fields):
+                        devs = getattr(c, "volume_devices", []) or []
+                if devs is None:
+                    devs = []
+                for d in devs or []:
+                    host = (
+                        getattr(d, "host_path", None)
+                        if not isinstance(d, dict)
+                        else d.get("hostPath")
+                    )
+                    dev = (
+                        getattr(d, "device_path", None)
+                        if not isinstance(d, dict)
+                        else d.get("devicePath")
+                    )
+                    ro = bool(
+                        getattr(d, "read_only", False)
+                        if not isinstance(d, dict)
+                        else d.get("readOnly", False)
+                    )
+                    if host and dev:
+                        if host and not os.path.isabs(host):
+                            host = os.path.abspath(host)
+                        mode = "r" if ro else "rwm"
+                        devices.append(f"{host}:{dev}:{mode}")
+            except Exception:
+                pass
+
             # Create ephemeral container to enforce timeout via wait()
             cont = None
             try:
@@ -1598,6 +1887,7 @@ class DockerRuntime(RuntimeAdapter):
                     command=(command + args) or None,
                     environment=env_map or None,
                     volumes=volumes or None,
+                    devices=devices or None,
                     **init_kwargs,
                 )
                 cont.start()

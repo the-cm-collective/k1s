@@ -19,6 +19,7 @@ from ae.controller.spec import (
     Metadata,
     PortSpec,
     ServiceSpec,
+    VolumeSpec,
 )
 from ae.runtime.docker_runtime import DockerRuntime
 
@@ -340,7 +341,28 @@ def test_docker_share_process_namespace_sidecar(monkeypatch):
 
     runtime._ensure_sidecars(manifest, "demo-rev1-0", 1, volumes={})
 
-    assert client.last_run_kwargs.get("pid_mode") == "container:ae-demo-rev1-0"
+    assert client.last_run_kwargs.get("pid_mode") == "container:ae-demo-rev1-0-pod"
+
+
+def test_docker_injects_pvc_mounts(monkeypatch):
+    client = FakeDockerClient()
+    runtime = DockerRuntime(client=client)
+
+    class StubVolumeManager:
+        def inject_pvc_mounts(self, manifest, node_id=None):  # noqa: ANN001
+            _ = node_id
+            vols = list(getattr(manifest.spec, "volumes", []) or [])
+            vols.append(VolumeSpec(host_path="/tmp/netfs", mount_path="/data"))
+            updated = manifest.spec.model_copy(update={"volumes": vols})
+            return manifest.model_copy(update={"spec": updated})
+
+    monkeypatch.setattr(runtime, "_get_volume_manager", lambda: StubVolumeManager())
+
+    manifest = make_manifest(replica_count=1)
+    runtime.ensure_app(manifest, revision=1)
+
+    volumes = client.last_run_kwargs.get("volumes") or {}
+    assert "/tmp/netfs" in volumes
 
 
 def test_docker_runtime_host_aliases_and_dns_config():
