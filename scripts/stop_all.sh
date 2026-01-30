@@ -90,6 +90,11 @@ for bin in "${ENGINES[@]}"; do
   fi
 done
 
+if [[ -x scripts/cri_teardown.sh ]]; then
+  log "Removing CRI pods (label=ae.app)"
+  ./scripts/cri_teardown.sh || true
+fi
+
 log "Removing service proxy containers (name=ae-svc-*)"
 for bin in "${ENGINES[@]}"; do
   svc_ids=$("$bin" ps -aq --filter 'name=ae-svc-' 2>/dev/null || true)

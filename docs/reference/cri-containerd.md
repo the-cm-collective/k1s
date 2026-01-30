@@ -105,6 +105,38 @@ ae cri trust --host registry.k1s.home.arpa:32000 --ca /tmp/registry.crt --restar
 Registry auth for CRI pulls is read from:
 `~/.config/ae/registries.yaml`.
 
+### Image pull policy and secrets
+
+- `spec.imagePullPolicy` is honored by the CRI runtime:
+  - `Always` pulls on each (re)create.
+  - `IfNotPresent` pulls only if the image is missing.
+  - `Never` refuses to pull and requires the image to exist locally.
+  - Default aligns with Kubernetes: `:latest` (or no tag) → `Always`, otherwise `IfNotPresent`.
+- `spec.imagePullSecrets` and `spec.registryAuthRef` are treated as **registry host keys**
+  in `~/.config/ae/registries.yaml` and are preferred when pulling images via CRI.
+- When apishim storage is available (`AE_APISHIM_DB` or `AE_APISHIM_DSN`), the CRI
+  runtime also reads Kubernetes secrets of type `kubernetes.io/dockerconfigjson`
+  (or `.dockercfg`) referenced by `imagePullSecrets` and uses those creds for pulls.
+- If the pod spec omits `imagePullSecrets`, the CRI runtime will look up the
+  ServiceAccount for the originating Kubernetes workload (via apishim storage)
+  and use any `imagePullSecrets` defined there.
+- If a manifest was converted from Kubernetes (via apishim), the converted spec
+  stores `serviceAccountName` and CRI will prefer that ServiceAccount when
+  resolving pull secrets.
+- Kubernetes conversion defaults `serviceAccountName` to `default` when unset,
+  matching kubelet behavior for pull secret resolution.
+- Kubernetes conversion also carries `imagePullSecrets` from the pod template into
+  the k1s spec so CRI pulls can use them without apishim lookups.
+- If exactly one pull secret is present, conversion also sets `registryAuthRef`
+  to that secret name for convenience.
+- Kubernetes conversion also maps `imagePullPolicy` from the pod template into the
+  k1s spec (main container + sidecars), so CRI honors explicit pull policy settings.
+- ServiceAccount propagation applies to converted Deployment/StatefulSet/DaemonSet/Job/CronJob
+  pod templates (best-effort when templates are present).
+- When apishim storage is available, converted workloads can inherit
+  ServiceAccount `imagePullSecrets` only if the pod template omits the field
+  entirely (an explicit empty list disables the fallback, matching Kubernetes behavior).
+
 ## Image sync and prewarm
 
 ### Demo sync (push + CRI pull)
@@ -192,6 +224,29 @@ Enable NetFS PVC resolution on the node agent:
 export AE_ENABLE_NETFS=1
 export AE_APISHIM_DB=state/apishim.db
 ```
+
+## DNS + host aliases (CRI)
+
+- `spec.dnsConfig` is mapped into the CRI sandbox `dns_config` (nameservers, searches, options).
+- `spec.dnsPolicy` follows Kubernetes defaults (ClusterFirst / ClusterFirstWithHostNet) when
+  `AE_CRI_CLUSTER_DNS` is set. Use `AE_CRI_CLUSTER_DNS` (space or comma delimited) and
+  `AE_CRI_CLUSTER_DOMAIN` (default `cluster.local`) to enable cluster-style DNS search paths.
+  `dnsPolicy=None` requires `dnsConfig` to be set.
+- `spec.hostname`, `spec.subdomain`, and `spec.setHostnameAsFQDN` are mapped into the sandbox
+  hostname (best-effort; FQDN requires `AE_CRI_CLUSTER_DOMAIN` to be meaningful).
+- `spec.hostAliases` are applied by writing a per-pod `/etc/hosts` file under
+  `/var/lib/ae/hosts` (override with `AE_CRI_HOSTS_ROOT`) and mounting it into
+  each container. This is a best-effort substitute for kubelet's hostAlias behavior.
+
+## Security context (CRI)
+
+- **Container security**: `runAsUser`, `runAsGroup`, `readOnlyRootFilesystem`,
+  `dropCapabilities`, `seccompProfileType` (+ `seccompLocalhostProfile`), and
+  `apparmorProfile` map into CRI container security context.
+- **Pod security**: `podSecurity.fsGroup` maps to supplemental groups, and
+  `podSecurity.seccompProfileType`/`podSecurity.seLinux*` map into the sandbox
+  security context.
+- **Host namespaces** are gated by `AE_CRI_ALLOW_HOST_NS=1` as described above.
 
 ## Crictl-only image (default)
 
