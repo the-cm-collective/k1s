@@ -240,16 +240,18 @@ def manifest_from_k8s_workload(
                     if entry and mount_path:
                         claim, vol_read_only = entry
                         read_only = bool(vm.get("readOnly", False)) or bool(vol_read_only)
+                        sub_path = vm.get("subPath")
                         key = (str(claim), str(mount_path), bool(read_only))
                         if key not in seen_pvc:
                             seen_pvc.add(key)
-                            pvc_mounts.append(
-                                {
-                                    "claimName": str(claim),
-                                    "mountPath": str(mount_path),
-                                    "readOnly": read_only,
-                                }
-                            )
+                            record: dict[str, Any] = {
+                                "claimName": str(claim),
+                                "mountPath": str(mount_path),
+                                "readOnly": read_only,
+                            }
+                            if sub_path:
+                                record["subPath"] = str(sub_path)
+                            pvc_mounts.append(record)
                     host_path = volume_hosts.get(str(vname)) if vname else None
                     if host_path and mount_path:
                         read_only = bool(vm.get("readOnly", False))

@@ -181,6 +181,8 @@ you may need to re‑grant access.
   - Defaults to `/var/lib/ae/emptydirs/<app>/<pod>/<name>`.
   - `medium: Memory` uses `/dev/shm/ae-emptydir` when available.
   - Override roots with `AE_CRI_EMPTYDIR_ROOT` / `AE_CRI_EMPTYDIR_TMPFS_ROOT`.
+  - `sizeLimit` is best‑effort: enforced for `medium: Memory` when tmpfs mounts are available;
+    disk‑backed emptyDirs do not enforce size limits.
 
 Enable NetFS PVC resolution on the node agent:
 

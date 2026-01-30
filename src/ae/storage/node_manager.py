@@ -86,6 +86,9 @@ class NodeVolumeManager:
             if not mount:
                 continue
             host_path = mount.host_path
+            sub_path = getattr(pm, "sub_path", None)
+            if sub_path:
+                host_path = os.path.join(str(host_path), str(sub_path).lstrip("/"))
             read_only = bool(pm.read_only) or bool(mount.read_only)
             if getattr(pm, "device_path", None):
                 key = (host_path, str(pm.device_path), bool(read_only))

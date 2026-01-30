@@ -31,3 +31,26 @@ def test_node_volume_manager_injects_device_mount() -> None:
     dev = devices[0]
     assert dev.host_path == "/dev/loop0"
     assert dev.device_path == "/dev/block"
+
+
+def test_node_volume_manager_injects_subpath_mount() -> None:
+    man = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="busybox",
+            pvc_mounts=[
+                PvcMountSpec(
+                    claim_name="data", mount_path="/data", sub_path="cache/subdir"
+                )
+            ],
+        ),
+    )
+    manager = NodeVolumeManager(_StubNetFS(), node_id="node-a")
+    out = manager.inject_pvc_mounts(man)
+    volumes = out.spec.volumes
+    assert volumes
+    vol = volumes[0]
+    assert vol.host_path == "/dev/loop0/cache/subdir"
+    assert vol.mount_path == "/data"

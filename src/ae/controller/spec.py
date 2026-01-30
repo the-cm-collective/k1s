@@ -333,6 +333,7 @@ class PvcMountSpec(BaseModel):
     mount_path: str = Field(alias="mountPath")
     read_only: bool = Field(default=False, alias="readOnly")
     device_path: Optional[str] = Field(default=None, alias="devicePath")
+    sub_path: Optional[str] = Field(default=None, alias="subPath")
     namespace: Optional[str] = None
 
     model_config = {"populate_by_name": True}

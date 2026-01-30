@@ -740,6 +740,10 @@
 </ul>
 <h3>NetFS PVC mounts (apishim)</h3>
 <p>When running the node agent with <code>AE_ENABLE_NETFS=1</code>, PVC mounts from apishim workloads are resolved into hostPath mounts under <code>AE_NETFS_ROOT</code>. The agent currently reads PVC/PV bindings from the apishim store (sqlite/postgres) to locate the bound PV.</p>
+<p>Notes:</p>
+<ul>
+<li><code>spec.pvcMounts[].subPath</code> is supported and is appended to the resolved host path.</li>
+</ul>
 <pre><code>export AE_ENABLE_NETFS=1
 export AE_APISHIM_DB=state/apishim.db</code></pre>
 <p>NetFS currently supports NFS PVs. The node must have <code>mount</code>/<code>umount</code> plus an NFS helper (<code>mount.nfs</code> or <code>mount.nfs4</code>). If these tools or the NFS mount fail, the agent records a PVC warning event; use <code>kubectl get events -n &lt;ns&gt;</code> to inspect <code>NfsPrereqFailed</code>, <code>MountFailed</code>, or <code>MountConflict</code> reasons.</p>
@@ -804,7 +808,7 @@ export AE_APISHIM_DB=state/apishim.db</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-29 16:24:33</span>
+        <span>Built 2026-01-29 17:03:29</span>
       </div>
     </footer>
     <script>
