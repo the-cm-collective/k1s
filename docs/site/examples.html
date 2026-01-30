@@ -808,6 +808,17 @@
 </ul>
 </li>
 </ul>
+<h3>EmptyDir (ephemeral)</h3>
+<ul>
+<li>Example manifest using <code>spec.emptyDirs</code>.</li>
+<li>File: <code>specs/examples/echo-emptydir.yaml</code></li>
+<li>Notes:
+<ul>
+<li>Exported K8s YAML uses <code>emptyDir</code>.</li>
+<li>CRI runtime maps to per‑pod host paths under <code>AE_CRI_EMPTYDIR_ROOT</code> (default <code>/var/lib/ae/emptydirs</code>).</li>
+</ul>
+</li>
+</ul>
 <h3>Docs Only</h3>
 <ul>
 <li>Starts the docs server and API; does not apply any apps.</li>
@@ -874,7 +885,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-29 14:27:14</span>
+        <span>Built 2026-01-29 16:51:43</span>
       </div>
     </footer>
     <script>
