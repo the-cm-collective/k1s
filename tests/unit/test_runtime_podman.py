@@ -966,6 +966,73 @@ def test_podman_list_containers_info_normalizes_host_ip(monkeypatch):
     assert info[0].get("host_ip") == "10.0.0.10"
 
 
+def test_podman_list_containers_info_falls_back_to_port_host(monkeypatch):
+    monkeypatch.setenv("AE_NODE_ADVERTISE_IP", "10.0.0.10")
+    rt = PodmanRuntime()
+
+    podman_ps = json.dumps([{"Id": "cid1", "Names": ["demo"]}])
+    podman_inspect = json.dumps(
+        [
+            {
+                "NetworkSettings": {
+                    "Ports": {"8080/tcp": [{"HostPort": "32001", "HostIp": ""}]},
+                    "IPAddress": "10.1.2.3",
+                },
+                "State": {"RestartCount": 0, "StartedAt": "now"},
+            }
+        ]
+    )
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        if argv[:4] == [rt._bin, "ps", "-a", "--format"]:
+            return DummyResult(0, podman_ps)
+        if argv[:3] == [rt._bin, "inspect", "cid1"]:
+            return DummyResult(0, podman_inspect)
+        if argv[:2] == [rt._bin, "port"]:
+            return DummyResult(0, "8080/tcp -> 0.0.0.0:32001\\n")
+        return DummyResult(0, "")
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+
+    info = rt.list_containers_info()
+    assert info
+    assert info[0].get("host_ip") == "10.0.0.10"
+
+
+def test_podman_warns_when_endpoint_missing(monkeypatch, caplog):
+    rt = PodmanRuntime()
+
+    def fake_list(_app):  # noqa: ANN001
+        return [
+            {
+                "Id": "cid1",
+                "Name": "demo",
+                "Config": {
+                    "Labels": {
+                        rt.REVISION_LABEL: "1",
+                        rt.POD_LABEL: "demo-rev1-0",
+                        rt.CONTAINER_LABEL: "main",
+                    }
+                },
+                "State": {"Status": "running"},
+                "NetworkSettings": {"Ports": {}},
+            }
+        ]
+
+    monkeypatch.setattr(rt, "_list_app_containers", fake_list)
+    monkeypatch.setattr(rt, "_create_container", lambda *_a, **_k: None)
+    monkeypatch.setattr(rt, "_ensure_sidecars", lambda *_a, **_k: None)
+    monkeypatch.setattr(rt, "_image_exists", lambda *_a, **_k: True)
+    monkeypatch.setattr(rt, "_ensure_image", lambda *_a, **_k: None)
+    monkeypatch.setattr(rt, "_maybe_inject_pvc_mounts", lambda m, **_: m)
+
+    manifest = _manifest_single(image="demo:latest")
+    with caplog.at_level("WARNING"):
+        rt.ensure_app(manifest, revision=1)
+    assert any("readiness endpoint unavailable" in r.message for r in caplog.records)
+
+
 def test_podman_host_port_free_check(monkeypatch):
     rt = PodmanRuntime()
 
