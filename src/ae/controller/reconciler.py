@@ -754,6 +754,7 @@ class Reconciler:
             items = list(getattr(runtime, "list_containers_info", lambda: [])() or [])  # type: ignore[misc]
         except Exception:
             items = []
+        seen_replicas: set[str] = set()
         for it in items:
             labels = (it or {}).get("labels") or {}
             if (labels.get("ae.app") or "") != app_name:
@@ -767,6 +768,10 @@ class Reconciler:
             )
             if not rid:
                 continue
+            rid = str(rid)
+            if rid in seen_replicas:
+                continue
+            seen_replicas.add(rid)
             rc = None
             # Exec handler
             if getattr(handler, "exec", None) is not None:

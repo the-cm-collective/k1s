@@ -97,6 +97,59 @@ def test_prestop_exec_runs_before_removal(tmp_path: Path) -> None:
     assert rt.removed > 0
 
 
+def test_prestop_exec_dedupes_multi_container(tmp_path: Path) -> None:
+    class DummyRuntimeMulti(DummyRuntimeWithExec):
+        def list_containers_info(self):  # noqa: D401 - test stub
+            return [
+                {
+                    "name": "ae-echo-rev0-0-main",
+                    "labels": {
+                        "ae.app": "echo",
+                        "ae.revision": "0",
+                        "ae.pod_name": "echo-rev0-0",
+                        "ae.container": "main",
+                    },
+                    "host_ports": [18080],
+                },
+                {
+                    "name": "ae-echo-rev0-0-sidecar",
+                    "labels": {
+                        "ae.app": "echo",
+                        "ae.revision": "0",
+                        "ae.pod_name": "echo-rev0-0",
+                        "ae.container": "sidecar",
+                    },
+                    "host_ports": [18080],
+                },
+                {
+                    "name": "ae-echo-rev1-0",
+                    "labels": {
+                        "ae.app": "echo",
+                        "ae.revision": "1",
+                        "ae.pod_name": "echo-rev1-0",
+                    },
+                    "host_ports": [18080],
+                },
+            ]
+
+    store = SQLiteStateStore(tmp_path / "state.db")
+    rt = DummyRuntimeMulti()
+    rec = Reconciler(rt, store)
+    man = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="App",
+        metadata=Metadata(name="echo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            terminationGracePeriodSeconds=5,
+            lifecycle={"preStop": {"exec": {"command": ["/bin/sh", "-c", "echo bye"]}}},  # type: ignore[arg-type]
+        ),
+    )
+    rec.reconcile(man)
+    assert sum(1 for call in rt.exec_calls if call[0] == "echo-rev0-0") == 1
+
+
 def test_prestop_http_and_tcp_emit_events(tmp_path: Path, monkeypatch) -> None:
     store = SQLiteStateStore(tmp_path / "state.db")
     rt = DummyRuntimeWithExec()
