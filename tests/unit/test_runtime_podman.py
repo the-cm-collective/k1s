@@ -899,6 +899,41 @@ def test_podman_publishes_declared_ports_when_no_service(monkeypatch):
     assert "-P" not in cmd
 
 
+def test_podman_cpu_limit_maps_to_cpus(monkeypatch):
+    rt = PodmanRuntime()
+    calls: list[list[str]] = []
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        if argv[:3] == [rt._bin, "container", "exists"]:
+            return DummyResult(1)
+        if argv[:3] == [rt._bin, "images", "--format"]:
+            return DummyResult(0, "[]")
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *_a, **_k: None)
+
+    base = _manifest_single(image="demo:latest")
+    manifest = base.model_copy(
+        update={
+            "spec": base.spec.model_copy(
+                update={"resources": ResourcesSpec(limits=ResourceQuantities(cpu=0.5))}
+            )
+        }
+    )
+
+    rt._create_container(manifest, "blue-rev1-0", 1, service=(None, None, None))
+
+    run_calls = [
+        c for c in calls if len(c) >= 3 and c[0] == rt._bin and c[1] == "run" and "-d" in c
+    ]
+    assert run_calls, f"expected podman run call, got: {calls}"
+    cmd = run_calls[0]
+    assert "--cpus" in cmd and "0.5" in cmd
+
+
 def test_podman_injects_pvc_mounts(monkeypatch):
     rt = PodmanRuntime()
     calls: list[list[str]] = []
