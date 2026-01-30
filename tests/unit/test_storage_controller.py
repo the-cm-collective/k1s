@@ -4,6 +4,24 @@ from ae.apishim.store import ObjectStore
 from ae.storage.controller import StorageController
 
 
+def test_storage_controller_seeds_default_local_class(tmp_path, monkeypatch):
+    monkeypatch.delenv("AE_STORAGE_PROVISIONERS", raising=False)
+    monkeypatch.setenv("AE_STORAGE_SEED_DEFAULTS", "1")
+    monkeypatch.setenv("AE_STORAGE_LOCAL_CLASS", "k1s-local")
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+
+    seeded = controller.sync()
+    assert seeded == 1
+    sc = store.get("storage.k8s.io", "v1", "storageclasses", None, "k1s-local")
+    assert sc is not None
+    spec = sc.spec or {}
+    assert spec.get("provisioner") == "k1s.io/local-path"
+    assert spec.get("volumeBindingMode") == "WaitForFirstConsumer"
+    annotations = (sc.metadata or {}).get("annotations") or {}
+    assert annotations.get("storageclass.kubernetes.io/is-default-class") == "true"
+
+
 def test_storage_controller_binds_pvc(tmp_path):
     store = ObjectStore(db_path=tmp_path / "apishim.db")
     controller = StorageController(store)
