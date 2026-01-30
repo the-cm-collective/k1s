@@ -22,6 +22,34 @@ def test_storage_controller_seeds_default_local_class(tmp_path, monkeypatch):
     assert annotations.get("storageclass.kubernetes.io/is-default-class") == "true"
 
 
+def test_storage_controller_seeds_nfs_class_when_configured(tmp_path, monkeypatch):
+    monkeypatch.delenv("AE_STORAGE_PROVISIONERS", raising=False)
+    monkeypatch.setenv("AE_STORAGE_SEED_DEFAULTS", "1")
+    monkeypatch.setenv("AE_STORAGE_LOCAL_CLASS", "k1s-local")
+    monkeypatch.setenv("AE_STORAGE_NFS_SERVER", "127.0.0.1")
+    monkeypatch.setenv("AE_STORAGE_NFS_PATH", "/export/netfs")
+    monkeypatch.setenv("AE_STORAGE_NFS_HOSTPATH", str(tmp_path / "nfs-root"))
+
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+
+    seeded = controller.sync()
+    assert seeded == 2
+
+    sc = store.get("storage.k8s.io", "v1", "storageclasses", None, "k1s-nfs")
+    assert sc is not None
+    spec = sc.spec or {}
+    assert spec.get("provisioner") == "k1s.io/nfs"
+    params = spec.get("parameters") or {}
+    assert params.get("server") == "127.0.0.1"
+    assert params.get("path") == "/export/netfs"
+    assert params.get("hostPath") == str(tmp_path / "nfs-root")
+    assert spec.get("reclaimPolicy") == "Retain"
+    assert spec.get("volumeBindingMode") == "Immediate"
+    assert spec.get("allowVolumeExpansion") is True
+    annotations = (sc.metadata or {}).get("annotations") or {}
+    assert annotations.get("storageclass.kubernetes.io/is-default-class") != "true"
+
 def test_storage_controller_binds_pvc(tmp_path):
     store = ObjectStore(db_path=tmp_path / "apishim.db")
     controller = StorageController(store)

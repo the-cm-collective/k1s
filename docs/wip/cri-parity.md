@@ -40,10 +40,10 @@ Kubernetes-aligned registry-first image flow and core runtime parity vs Podman.
 
 ## P1: Next parity items (close common chart gaps)
 
-- [ ] PVC/PV/StorageClass controller parity (Pending/Bound/Released, default StorageClass).
+- [~] PVC/PV/StorageClass controller parity (Pending/Bound/Released, default StorageClass).
   - See: `docs/wip/storage-parity.md`
-- [ ] NetFS mount lifecycle coverage on CRI nodes (NFS/SMB), PVC->mount reconciliation in apishim.
-- [ ] CSI external provisioner hook + VolumeSnapshot/clone parity.
+- [~] NetFS mount lifecycle coverage on CRI nodes (NFS/SMB), PVC->mount reconciliation in apishim.
+- [~] CSI external provisioner hook + VolumeSnapshot/clone parity.
   - See: `docs/wip/csi.md`
 - [ ] StatefulSet volumeClaimTemplates per-ordinal mount naming for CRI runtime (if any gaps remain).
 - [ ] Storage reclaimPolicy + finalizers for PVC/PV parity.

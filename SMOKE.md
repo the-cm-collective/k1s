@@ -92,6 +92,25 @@ Troubleshooting
   - Service VIP sanity: `pytest tests/integration/test_service_vip_routing.py` (requires docker-enabled env).
 - QEMU helper shortcut: `RUN_SMOKE=1 AE_TOKEN=dev-token ops/ci/multinode-qemu.sh start` runs apply → watch → VIP curl → kill worker1 agent → re-watch → VIP curl, then leaves the lab up for inspection.
 
+## NetFS / CSI Smoke
+
+Validate PVC/PV binding plus NetFS mount hooks through apishim.
+
+```
+# NFS (static PV)
+scripts/netfs_smoke.sh
+
+# NFS (dynamic provisioning)
+NETFS_DYNAMIC=1 AE_STORAGE_NFS_SERVER=127.0.0.1 AE_STORAGE_NFS_PATH=/exports/netfs \
+  scripts/netfs_smoke.sh
+
+# CSI attachment + secrets (stub driver)
+scripts/netfs_csi_smoke.sh
+
+# Snapshot + clone (NFS hostPath required)
+scripts/netfs_snapshot_clone.sh
+```
+
 ## K8s Export Smoke
 
 Validate the exporter renders portable YAML and passes basic validation without a cluster.
