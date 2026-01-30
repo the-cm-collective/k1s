@@ -14,6 +14,7 @@ need_cmd() {
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
+PYTHON_BIN=${PYTHON_BIN:-python}
 STATE_ROOT=${STATE_ROOT:-"$ROOT_DIR/state"}
 mkdir -p "$STATE_ROOT"
 
@@ -98,7 +99,7 @@ trap cleanup EXIT INT TERM
 
 need_cmd docker
 need_cmd curl
-need_cmd python
+need_cmd "${PYTHON_BIN}"
 if [[ "${HARNESS_MODE}" != "csi" ]]; then
   need_cmd rpcinfo
 fi
@@ -180,7 +181,7 @@ AE_APISHIM_DB="${APISHIM_DB}" \
 AE_STATE_DB="${STATE_DB}" \
 AE_STORAGE_PROVISIONERS="${SC_FILE}" \
 AE_APISHIM_RUNTIME=docker \
-python -m ae.apishim serve \
+"${PYTHON_BIN}" -m ae.apishim serve \
   --host "${APISHIM_HOST}" \
   --port "${APISHIM_PORT}" \
   --allow-anon \
@@ -201,7 +202,7 @@ AE_APISHIM_DB="${APISHIM_DB}" \
 AE_NETFS_ROOT="${NETFS_ROOT}" \
 AE_NODE_ID="${NODE_ID}" \
 AE_NODE_NAME="${NODE_ID}" \
-python -m ae.node.server \
+"${PYTHON_BIN}" -m ae.node.server \
   --host "${AGENT_HOST}" \
   --port "${AGENT_PORT}" \
   >"${HARNESS_DIR}/agent.log" 2>&1 &
@@ -216,7 +217,7 @@ done
 curl -fsS "${AGENT_URL}/v1/containers" >/dev/null
 
 log "registering node ${NODE_ID} -> ${AGENT_URL}"
-python - <<PY
+"${PYTHON_BIN}" - <<PY
 from pathlib import Path
 from ae.controller.state import SQLiteStateStore
 
