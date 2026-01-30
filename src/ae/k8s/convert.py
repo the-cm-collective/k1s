@@ -612,7 +612,6 @@ def service_spec_from_k8s(
 ) -> ServiceSpec | None:
     spec = _spec(svc)
     svc_type = spec.get("type", "ClusterIP")
-    expose_host = svc_type in {"NodePort", "LoadBalancer"}
     ports_in = spec.get("ports") or []
     if not isinstance(ports_in, Iterable):
         return None
@@ -634,14 +633,13 @@ def service_spec_from_k8s(
         tgt_val = resolve_port_value(tgt_raw, ports_by_name)
         if tgt_val is None:
             tgt_val = fallback_port
-        host_port = node_port if node_port is not None and expose_host else None
         svc_ports.append(
             ServiceSpec.ServicePort(
                 name=entry.get("name") or f"port-{idx}",
-                port=int(host_port or svc_port),
+                port=int(svc_port),
                 target_port=tgt_val,
                 protocol=entry.get("protocol", "TCP"),
-                node_port=node_port if expose_host else None,
+                node_port=node_port if svc_type in {"NodePort", "LoadBalancer"} else None,
             )
         )
     if not svc_ports:
@@ -649,7 +647,7 @@ def service_spec_from_k8s(
     return ServiceSpec(
         type=svc_type,
         ports=svc_ports,
-        port=svc_ports[0].port if expose_host else None,
+        port=None,
         target_port=svc_ports[0].target_port,
         external_ips=spec.get("externalIPs", []),
         session_affinity=spec.get("sessionAffinity"),

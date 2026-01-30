@@ -32,6 +32,8 @@ class IptablesProvider(NetworkProvider):
         self._service_cidr = service_cidr
         self._iptables = iptables_bin or os.getenv("AE_IPTABLES_BIN", "iptables")
         self._chain_base = chain_base
+        self._nodeport_base = f"{chain_base}-NP"
+        self._nodeport_match = os.getenv("AE_NODEPORT_MATCH_DEST", "0.0.0.0/0")
         self._warned = False
         self._available: bool | None = None
 
@@ -42,6 +44,9 @@ class IptablesProvider(NetworkProvider):
         self._ensure_chain(self._chain_base)
         self._ensure_jump("PREROUTING", self._chain_base, dest=self._service_cidr)
         self._ensure_jump("OUTPUT", self._chain_base, dest=self._service_cidr)
+        self._ensure_chain(self._nodeport_base)
+        self._ensure_jump("PREROUTING", self._nodeport_base, dest=self._nodeport_match)
+        self._ensure_jump("OUTPUT", self._nodeport_base, dest=self._nodeport_match)
 
     def ensure_service(self, app_name: str, ports: dict) -> str:
         _ = ports
@@ -69,11 +74,13 @@ class IptablesProvider(NetworkProvider):
         if not record:
             return
         cluster_ip = record.cluster_ip
-        ports = self._ports_from_record(record.ports)
-        if not ports:
+        port_entries = self._port_entries_from_record(record.ports)
+        if not port_entries:
             return
         self._ensure_chain(self._chain_base)
-        for svc_port, proto in ports.items():
+        for entry in port_entries:
+            svc_port = entry["port"]
+            proto = entry["protocol"]
             chain = self._svc_chain(app_name, svc_port)
             self._ensure_chain(chain)
             self._ensure_jump(
@@ -87,6 +94,20 @@ class IptablesProvider(NetworkProvider):
             backends = backends_by_port.get(svc_port, [])
             if backends:
                 self._add_backend_rules(chain, backends, proto=proto)
+            node_port = entry.get("node_port")
+            if node_port:
+                np_chain = self._nodeport_chain(app_name, node_port)
+                self._ensure_chain(np_chain)
+                self._ensure_jump(
+                    self._nodeport_base,
+                    np_chain,
+                    dest=self._nodeport_match,
+                    dport=node_port,
+                    proto=proto,
+                )
+                self._flush_chain(np_chain)
+                if backends:
+                    self._add_backend_rules(np_chain, backends, proto=proto)
 
     def remove_service(self, app_name: str) -> None:
         if not self._check_available():
@@ -98,8 +119,10 @@ class IptablesProvider(NetworkProvider):
         if not record:
             return
         cluster_ip = record.cluster_ip
-        ports = self._ports_from_record(record.ports)
-        for svc_port, proto in ports.items():
+        port_entries = self._port_entries_from_record(record.ports)
+        for entry in port_entries:
+            svc_port = entry["port"]
+            proto = entry["protocol"]
             chain = self._svc_chain(app_name, svc_port)
             self._delete_jump(
                 self._chain_base,
@@ -109,6 +132,17 @@ class IptablesProvider(NetworkProvider):
                 proto=proto,
             )
             self._delete_chain(chain)
+            node_port = entry.get("node_port")
+            if node_port:
+                np_chain = self._nodeport_chain(app_name, node_port)
+                self._delete_jump(
+                    self._nodeport_base,
+                    np_chain,
+                    dest=self._nodeport_match,
+                    dport=node_port,
+                    proto=proto,
+                )
+                self._delete_chain(np_chain)
 
     # Internal helpers ---------------------------------------------------
     def _check_available(self) -> bool:
@@ -253,8 +287,12 @@ class IptablesProvider(NetworkProvider):
         digest = hashlib.sha256(f"{app_name}:{int(port)}".encode()).hexdigest()[:8]
         return f"{self._chain_base}-{digest}"
 
-    def _ports_from_record(self, ports: dict) -> dict[int, str]:
-        result: dict[int, str] = {}
+    def _nodeport_chain(self, app_name: str, port: int) -> str:
+        digest = hashlib.sha256(f"{app_name}:{int(port)}:np".encode()).hexdigest()[:8]
+        return f"{self._nodeport_base}-{digest}"
+
+    def _port_entries_from_record(self, ports: dict) -> list[dict[str, int | str | None]]:
+        entries: list[dict[str, int | str | None]] = []
         for entry in (ports or {}).get("ports", []) or []:
             port = None
             try:
@@ -263,8 +301,14 @@ class IptablesProvider(NetworkProvider):
                 port = None
             if port is None:
                 continue
+            node_port = None
+            try:
+                raw = entry.get("nodePort")
+                node_port = int(raw) if raw is not None else None
+            except Exception:
+                node_port = None
             proto = str(entry.get("protocol") or "TCP").lower()
             if proto not in {"tcp", "udp"}:
                 proto = "tcp"
-            result[port] = proto
-        return result
+            entries.append({"port": port, "node_port": node_port, "protocol": proto})
+        return entries

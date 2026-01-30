@@ -74,6 +74,7 @@ class ServiceController:
                             "port": int(p.port),
                             "targetPort": int(p.target_port) if p.target_port else int(p.port),
                             "protocol": p.protocol or "TCP",
+                            "nodePort": getattr(p, "node_port", None),
                         }
                     )
                 except Exception:

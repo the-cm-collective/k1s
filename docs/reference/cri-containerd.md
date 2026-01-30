@@ -340,6 +340,19 @@ export AE_APISHIM_CRI_PORTFORWARD=1
 export AE_APISHIM_CRI_PORTFORWARD_FORCE=1
 ```
 
+## Service VIP + NodePort (iptables)
+
+For Kubernetes-style ClusterIP/NodePort behavior on CRI nodes, enable the
+iptables service proxy (requires root and `iptables` on PATH):
+
+```
+export AE_ENABLE_SERVICE_PROXY=1
+export AE_SERVICE_PROVIDER=iptables
+```
+
+When `spec.service.ports[].nodePort` is set (Service type NodePort or
+LoadBalancer), k1s programs NodePort DNAT rules to the same ready backends.
+
 ## Node agent DaemonSet (k8s-aligned)
 
 For Kubernetes-aligned deployments, run the node agent as a DaemonSet with

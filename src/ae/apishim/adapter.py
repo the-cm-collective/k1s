@@ -1361,14 +1361,13 @@ class AdapterWorker(threading.Thread):
             if tgt_val is None:
                 # Fallback: when targetPort is a named port (e.g., "http"), just reuse service port
                 tgt_val = fallback_port
-            host_port = node_port if node_port is not None and expose_host else None
             svc_ports.append(
                 ServiceSpec.ServicePort(
                     name=entry.get("name") or f"port-{idx}",
-                    port=int(host_port or svc_port),
+                    port=int(svc_port),
                     target_port=tgt_val,
                     protocol=entry.get("protocol", "TCP"),
-                    node_port=node_port if expose_host else None,
+                    node_port=node_port if svc_type in {"NodePort", "LoadBalancer"} else None,
                 )
             )
         if not svc_ports:
@@ -1376,7 +1375,7 @@ class AdapterWorker(threading.Thread):
         svc_spec = ServiceSpec(
             type=svc_type,
             ports=svc_ports,
-            port=svc_ports[0].port if expose_host else None,
+            port=None,
             target_port=svc_ports[0].target_port,
             external_ips=spec.get("externalIPs", []),
             session_affinity=spec.get("sessionAffinity"),
@@ -1410,7 +1409,6 @@ class AdapterWorker(threading.Thread):
                     except Exception:
                         node_port = self._allocate_node_port(svc_key, port_id)
                     self._reserve_node_port(svc_key, port_id, node_port)
-                port_entry["port"] = node_port
             else:
                 self._release_port_assignment(svc_key, port_id)
             prepared.append(port_entry)

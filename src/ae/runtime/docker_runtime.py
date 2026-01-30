@@ -808,9 +808,11 @@ class DockerRuntime(RuntimeAdapter):
         svc_port = None
         svc_target = None
         svc_ports_list = None
+        svc_type = None
         if getattr(manifest.spec, "service", None) and manifest.spec.replicas == 1:
             svc_port = getattr(manifest.spec.service, "port", None)
             svc_target = getattr(manifest.spec.service, "target_port", None)
+            svc_type = getattr(manifest.spec.service, "type", None)
             # Optional multi-port publishing for single-replica services
             if getattr(manifest.spec.service, "ports", None):
                 svc_ports_list = list(manifest.spec.service.ports)
@@ -823,6 +825,7 @@ class DockerRuntime(RuntimeAdapter):
                 service_port=svc_port,
                 service_target=svc_target,
                 service_ports=svc_ports_list,
+                service_type=svc_type,
             )
             # Pre-flight conflict check for any published service host ports. This only raises
             # when another app already owns the same host port, allowing single-app rollouts
@@ -1535,11 +1538,13 @@ class DockerRuntime(RuntimeAdapter):
         service_port: int | None = None,
         service_target: int | None = None,
         service_ports: Iterable | None = None,
+        service_type: str | None = None,
     ) -> tuple[dict[str, int | None], dict[int, int | None]]:
         mapping: dict[str, int | None] = {}
         first_port = None
         reserved: set[int] = set()
         blocked_ports: set[int] = set()
+        svc_type = str(service_type or "").lower()
         if service_port is not None or service_ports is not None:
             blocked_ports = self._host_ports_in_use()
         # If multi-port service mapping is provided, build quick lookup from target->host
@@ -1558,9 +1563,17 @@ class DockerRuntime(RuntimeAdapter):
                 try:
                     tgt = getattr(sp, "target_port", None)
                     name = getattr(sp, "name", None)
-                    portnum = getattr(sp, "port", None)
+                    svc_port_num = getattr(sp, "port", None)
+                    portnum = svc_port_num
+                    if svc_type in {"nodeport", "loadbalancer"}:
+                        node_port = getattr(sp, "node_port", None)
+                        if node_port is not None:
+                            portnum = node_port
                     if tgt is None:
-                        tgt = by_name.get(name) or by_num.get(int(portnum))
+                        if svc_port_num is not None:
+                            tgt = by_name.get(name) or by_num.get(int(svc_port_num))
+                        else:
+                            tgt = by_name.get(name)
                     if tgt is not None and portnum is not None:
                         chosen, used_preferred = choose_host_port(
                             int(portnum), reserved=reserved, blocked=blocked_ports
