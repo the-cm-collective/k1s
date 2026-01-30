@@ -80,22 +80,30 @@ detect_oci_runtime() {
   local oci=""
   if [[ "$b" == "podman" || "$b" == "oci" ]]; then
     if podman_available; then
-      oci=$(podman_cmd info --format '{{ .Host.OCIRuntime.Name }}' 2>/dev/null | tr -d '"' || true)
-      if [[ -z "$oci" ]]; then
-        oci=$(podman_cmd info --format json 2>/dev/null | python - << 'PY'
-import json, sys
+      json_info="$(podman_cmd info --format json 2>/dev/null || true)"
+      if [[ -n "$json_info" ]]; then
+        OCI_JSON="$json_info" oci=$(python - << 'PY'
+import json, os, sys
+raw = os.environ.get("OCI_JSON", "")
 try:
-    d=json.load(sys.stdin)
+    d = json.loads(raw)
 except Exception:
     print(""); sys.exit(0)
 h = d.get('host') or d.get('Host') or {}
 oci = h.get('ociRuntime') or h.get('OCIRuntime') or {}
 name = (oci.get('name') or oci.get('Name') or oci.get('package') or oci.get('path') or '').strip()
 name = name.split('/')[-1]
-name = name.split()[0]
+name = name.split()[0] if name else ''
 print(name)
 PY
         )
+      fi
+      if [[ -z "$oci" ]]; then
+        oci=$(podman_cmd info --format '{{ .Host.OCIRuntime.Name }}' 2>/dev/null | tr -d '"' || true)
+      fi
+      oci=$(echo "${oci:-}" | tr -d '"' | tr '\n' ' ' | awk '{print $1}')
+      if [[ -n "$oci" && ! "$oci" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+        oci=""
       fi
     fi
   elif [[ "$b" == "docker" ]]; then
@@ -383,6 +391,121 @@ PY
   fi
 fi
 log_step "docker containers collected (if selected)"
+
+# k1nd extras: collect control-plane PSS from inside dev containers (when running in docker)
+if [[ "$mode" == "k1s" ]] && command -v docker >/dev/null 2>&1; then
+  {
+    k1nd_controller_name="${AE_K1ND_CONTROLLER_CONTAINER:-dev-controller-1}"
+    k1nd_apishim_name="${AE_K1ND_APISHIM_CONTAINER:-dev-apishim-1}"
+    k1nd_ingress_name="${AE_K1ND_INGRESS_CONTAINER:-dev-caddy-1}"
+    k1nd_project="${AE_K1ND_PROJECT:-}"
+
+    find_k1nd_container() {
+      local name="$1"
+      local service="$2"
+      local cid=""
+      if [[ -n "$name" ]]; then
+        cid=$(docker ps -q --filter "name=^${name}$" 2>/dev/null | head -n1 || true)
+      fi
+      if [[ -z "$cid" && -n "$service" ]]; then
+        if [[ -n "$k1nd_project" ]]; then
+          cid=$(docker ps -q --filter "label=com.docker.compose.service=${service}" \
+            --filter "label=com.docker.compose.project=${k1nd_project}" 2>/dev/null | head -n1 || true)
+        else
+          cid=$(docker ps -q --filter "label=com.docker.compose.service=${service}" 2>/dev/null | head -n1 || true)
+        fi
+      fi
+      echo "$cid"
+    }
+
+    pss_from_container_py() {
+      local cid="$1"
+      local pattern="$2"
+      docker exec -i "$cid" python - "$pattern" << 'PY' 2>/dev/null || true
+import os, re, sys
+pat = re.compile(sys.argv[1])
+total = 0
+for pid in os.listdir("/proc"):
+    if not pid.isdigit():
+        continue
+    try:
+        cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\x00", b" ").decode()
+    except Exception:
+        continue
+    if not pat.search(cmd):
+        continue
+    try:
+        with open(f"/proc/{pid}/smaps_rollup", "r", encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                if line.startswith("Pss:"):
+                    total += int(line.split()[1])
+                    break
+    except Exception:
+        continue
+print(total)
+PY
+    }
+
+    pss_from_container_sh() {
+      local cid="$1"
+      local comm="$2"
+      docker exec "$cid" sh -c '
+comm="$1"
+total=0
+for p in /proc/[0-9]*; do
+  pid="${p##*/}"
+  [ -r "$p/comm" ] || continue
+  name=$(cat "$p/comm" 2>/dev/null || true)
+  [ "$name" = "$comm" ] || continue
+  if [ -r "$p/smaps_rollup" ]; then
+    pss=$(sed -n "s/^Pss:[[:space:]]*\\([0-9]*\\) kB/\\1/p" "$p/smaps_rollup" | head -n1)
+    total=$((total + ${pss:-0}))
+  fi
+done
+echo "$total"
+' sh "$comm" 2>/dev/null || true
+    }
+
+    controller_cid=$(find_k1nd_container "$k1nd_controller_name" "controller")
+    apishim_cid=$(find_k1nd_container "$k1nd_apishim_name" "apishim")
+    ingress_cid=$(find_k1nd_container "$k1nd_ingress_name" "caddy")
+
+    controller_pss=0
+    apishim_pss=0
+    ingress_pss=0
+
+    if [[ -n "$controller_cid" ]]; then
+      controller_pss=$(pss_from_container_py "$controller_cid" "ae\\.controller") || controller_pss=0
+    fi
+    if [[ -n "$apishim_cid" ]]; then
+      apishim_pss=$(pss_from_container_py "$apishim_cid" "ae\\.apishim") || apishim_pss=0
+    fi
+    if [[ -n "$ingress_cid" ]]; then
+      ingress_pss=$(pss_from_container_sh "$ingress_cid" "caddy") || ingress_pss=0
+      if [[ -z "${ingress_pss:-}" || "${ingress_pss:-0}" == "0" ]]; then
+        ingress_pss=$(pss_from_container_py "$ingress_cid" "caddy") || ingress_pss=0
+      fi
+    fi
+
+    total_pss=$(( ${controller_pss:-0} + ${apishim_pss:-0} + ${ingress_pss:-0} ))
+    if [[ -n "$controller_cid$apishim_cid$ingress_cid" ]]; then
+      cat > "${outdir}/raw/k1nd_control_plane_pss_kb.json" <<EOF
+{
+  "controller_pss_kb": ${controller_pss:-0},
+  "apishim_pss_kb": ${apishim_pss:-0},
+  "ingress_pss_kb": ${ingress_pss:-0},
+  "total_pss_kb": ${total_pss:-0},
+  "containers": {
+    "controller": "${controller_cid:-}",
+    "apishim": "${apishim_cid:-}",
+    "ingress": "${ingress_cid:-}"
+  }
+}
+EOF
+      echo "[mem-snapshot] k1nd extras: controller=${controller_pss} apishim=${apishim_pss} ingress=${ingress_pss}" >&2
+    fi
+  } 2>>"${outdir}/status.log"
+fi
 
 # Guard rail: fail fast if we expected containers but captured none.
 require_containers="${AE_REQUIRE_CONTAINERS:-}"
