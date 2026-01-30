@@ -100,8 +100,9 @@ class StorageController:
         return str(raw).lower() in {"1", "true", "yes", "on"}
 
     def _builtin_storage_classes(self) -> list[StorageClassConfig]:
+        classes: list[StorageClassConfig] = []
         name = os.getenv("AE_STORAGE_LOCAL_CLASS", "k1s-local")
-        return [
+        classes.append(
             StorageClassConfig(
                 name=str(name),
                 provisioner=LOCAL_PATH_PROVISIONER,
@@ -110,7 +111,27 @@ class StorageController:
                 allow_volume_expansion=False,
                 is_default=True,
             )
-        ]
+        )
+        nfs_server = os.getenv("AE_STORAGE_NFS_SERVER")
+        nfs_path = os.getenv("AE_STORAGE_NFS_PATH")
+        if nfs_server and nfs_path:
+            nfs_name = os.getenv("AE_STORAGE_NFS_CLASS", "k1s-nfs")
+            params = {"server": str(nfs_server), "path": str(nfs_path)}
+            host_path = os.getenv("AE_STORAGE_NFS_HOSTPATH")
+            if host_path:
+                params["hostPath"] = str(host_path)
+            classes.append(
+                StorageClassConfig(
+                    name=str(nfs_name),
+                    provisioner=NFS_PROVISIONER,
+                    parameters=params,
+                    reclaim_policy="Retain",
+                    volume_binding_mode="Immediate",
+                    allow_volume_expansion=True,
+                    is_default=False,
+                )
+            )
+        return classes
 
     def start(self) -> None:
         """Start background PVC/PV reconciliation."""
