@@ -16,6 +16,7 @@ DOCS_MAPPING = {
     "reference/rollouts.md": "rollouts.html",
     "reference/storage.md": "storage.html",
     "reference/observability.md": "observability.html",
+    "reference/cri-containerd.md": "cri-containerd.html",
     "reference/scheduling.md": "scheduling.html",
     "guides/e2e.md": "e2e.html",
     "reference/k8s-compliance.md": "k8s-compliance.html",

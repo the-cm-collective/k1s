@@ -9,6 +9,7 @@ services:
       REGISTRY_PROXY_USERNAME: ${AE_REGISTRY_USERNAME:-}
       REGISTRY_PROXY_PASSWORD: ${AE_REGISTRY_PASSWORD:-}
       REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /var/lib/registry
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
     volumes:
       - ../../state/registry:/var/lib/registry
 

@@ -1011,6 +1011,60 @@ class AdapterWorker(threading.Thread):
             out["mem_bytes"] = sum(mem_bytes) / len(mem_bytes)
         return out
 
+    def _cri_uint64(self, val: Any) -> int | None:
+        try:
+            if val is None:
+                return None
+            if isinstance(val, int):
+                return int(val)
+            raw = getattr(val, "value", None)
+            if raw is None:
+                return None
+            return int(raw)
+        except Exception:
+            return None
+
+    def _cri_metrics(self, app_name: str) -> dict[str, float | None]:
+        out: dict[str, float | None] = {"cpu_util": None, "mem_util": None, "mem_bytes": None}
+        rt = getattr(self._reconciler, "_runtime", None)
+        if not isinstance(rt, CRIRuntime):
+            return out
+        try:
+            stats = rt.list_container_stats({rt.APP_LABEL: app_name})
+        except Exception:
+            return out
+        cpu_vals: list[float] = []
+        mem_utils: list[float] = []
+        mem_bytes: list[float] = []
+        for item in stats or []:
+            try:
+                cpu = getattr(item, "cpu", None)
+                if cpu is not None:
+                    nano_cores = self._cri_uint64(getattr(cpu, "usage_nano_cores", None))
+                    if nano_cores is not None:
+                        cpu_vals.append((float(nano_cores) / 1_000_000_000.0) * 100.0)
+                mem = getattr(item, "memory", None)
+                if mem is not None:
+                    usage = self._cri_uint64(getattr(mem, "working_set_bytes", None))
+                    if usage is None:
+                        usage = self._cri_uint64(getattr(mem, "usage_bytes", None))
+                    if usage is not None:
+                        mem_bytes.append(float(usage))
+                    available = self._cri_uint64(getattr(mem, "available_bytes", None))
+                    if usage is not None and available is not None:
+                        denom = float(usage) + float(available)
+                        if denom > 0:
+                            mem_utils.append((float(usage) / denom) * 100.0)
+            except Exception:
+                continue
+        if cpu_vals:
+            out["cpu_util"] = sum(cpu_vals) / len(cpu_vals)
+        if mem_utils:
+            out["mem_util"] = sum(mem_utils) / len(mem_utils)
+        if mem_bytes:
+            out["mem_bytes"] = sum(mem_bytes) / len(mem_bytes)
+        return out
+
     def _collect_metrics_for_app(self, app_name: str) -> dict[str, float | None]:
         metrics = {"cpu_util": None, "mem_util": None, "mem_bytes": None}
         try:
@@ -1019,6 +1073,8 @@ class AdapterWorker(threading.Thread):
                 metrics.update(self._docker_metrics(app_name))
             elif isinstance(rt, PodmanRuntime):
                 metrics.update(self._podman_metrics(app_name))
+            elif isinstance(rt, CRIRuntime):
+                metrics.update(self._cri_metrics(app_name))
         except Exception:
             pass
         return metrics

@@ -4,13 +4,22 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import contextlib
+import json
 import logging
 import os
+import shlex
 import shutil
+import ssl
+import subprocess
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from ae import __version__ as AE_VERSION
 from ae import build_info as AE_BUILD_INFO
@@ -71,6 +80,161 @@ def build_parser() -> argparse.ArgumentParser:
             "--namespace",
             default=argparse.SUPPRESS,
             help="Namespace to operate in when the app name is unqualified (overrides global --namespace)",
+        )
+
+    def _add_registry_remote_args(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "--registry",
+            default=os.getenv("AE_REGISTRY_HOST"),
+            help="Registry host:port (default AE_REGISTRY_HOST)",
+        )
+        p.add_argument(
+            "--scheme",
+            choices=["https", "http"],
+            default=os.getenv("AE_REGISTRY_SCHEME", "https"),
+            help="Registry scheme (default: https or AE_REGISTRY_SCHEME)",
+        )
+        p.add_argument(
+            "--insecure",
+            action="store_true",
+            help="Skip TLS verification (HTTPS only)",
+        )
+        p.add_argument(
+            "--ca",
+            default=None,
+            help="CA bundle path for TLS verification",
+        )
+        p.add_argument(
+            "--username",
+            default=None,
+            help="Basic auth username (overrides registries.yaml)",
+        )
+        p.add_argument(
+            "--password",
+            default=None,
+            help="Basic auth password (overrides registries.yaml)",
+        )
+        p.add_argument(
+            "--timeout",
+            type=int,
+            default=10,
+            help="HTTP timeout in seconds",
+        )
+        p.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    def _add_cri_build_args(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "--context",
+            type=Path,
+            required=True,
+            help="Build context path on the host (mounted into toolbox)",
+        )
+        p.add_argument(
+            "--image",
+            required=True,
+            help="Full image reference to build (e.g., registry.k1s.home.arpa:32000/app:tag)",
+        )
+        p.add_argument(
+            "--buildkit-namespace",
+            "--toolbox-namespace",
+            dest="buildkit_namespace",
+            default=(
+                os.getenv("AE_CRI_BUILDKIT_NS")
+                or os.getenv("AE_CRI_TOOLBOX_NS")
+                or "k1s-tools"
+            ),
+            help="Namespace for the buildkit pod (AE_CRI_BUILDKIT_NS)",
+        )
+        p.add_argument(
+            "--buildkit-pod",
+            "--toolbox-pod",
+            dest="buildkit_pod",
+            default=(
+                os.getenv("AE_CRI_BUILDKIT_POD")
+                or os.getenv("AE_CRI_TOOLBOX_POD")
+                or "cri-buildkit"
+            ),
+            help="Buildkit pod name (AE_CRI_BUILDKIT_POD)",
+        )
+        p.add_argument(
+            "--buildkit-manifest",
+            "--toolbox-manifest",
+            dest="buildkit_manifest",
+            type=Path,
+            default=Path(
+                os.getenv("AE_CRI_BUILDKIT_MANIFEST")
+                or os.getenv("AE_CRI_TOOLBOX_MANIFEST")
+                or "specs/examples/cri-buildkit-k8s.yaml"
+            ),
+            help="Manifest to apply for buildkit pod (AE_CRI_BUILDKIT_MANIFEST)",
+        )
+        p.add_argument(
+            "--kubectl-bin",
+            default=os.getenv("KUBECTL_BIN", "kubectl"),
+            help="kubectl binary to use (KUBECTL_BIN)",
+        )
+        p.add_argument(
+            "--timeout",
+            type=int,
+            default=180,
+            help="Seconds to wait for toolbox pod to become Ready",
+        )
+        p.add_argument(
+            "--skip-buildkit-apply",
+            "--skip-apply",
+            dest="skip_buildkit_apply",
+            action="store_true",
+            help="Skip applying the buildkit manifest (assume pod already exists)",
+        )
+        p.add_argument(
+            "--keep-buildkit-pod",
+            "--keep-pod",
+            dest="keep_buildkit_pod",
+            action="store_true",
+            default=(
+                os.getenv("AE_CRI_BUILDKIT_KEEP") == "1"
+                or os.getenv("AE_CRI_TOOLBOX_KEEP") == "1"
+            ),
+            help="Keep buildkit pod after build (AE_CRI_BUILDKIT_KEEP=1)",
+        )
+        p.add_argument(
+            "--crictl-namespace",
+            default=os.getenv("AE_CRI_CRICTL_NS", "k1s-tools"),
+            help="Namespace for crictl pod (AE_CRI_CRICTL_NS)",
+        )
+        p.add_argument(
+            "--crictl-pod",
+            default=os.getenv("AE_CRI_CRICTL_POD", "cri-crictl"),
+            help="crictl pod name (AE_CRI_CRICTL_POD)",
+        )
+        p.add_argument(
+            "--crictl-manifest",
+            type=Path,
+            default=Path(
+                os.getenv("AE_CRI_CRICTL_MANIFEST", "specs/examples/cri-crictl-k8s.yaml")
+            ),
+            help="Manifest to apply for crictl pod (AE_CRI_CRICTL_MANIFEST)",
+        )
+        p.add_argument(
+            "--skip-crictl-apply",
+            action="store_true",
+            help="Skip applying the crictl manifest (assume pod already exists)",
+        )
+        p.add_argument(
+            "--keep-crictl-pod",
+            action="store_true",
+            default=os.getenv("AE_CRI_CRICTL_KEEP") == "1",
+            help="Keep crictl pod after build (AE_CRI_CRICTL_KEEP=1)",
+        )
+        p.add_argument(
+            "--no-cri-pull",
+            action="store_true",
+            help="Skip CRI pull after build/push",
+        )
+        p.add_argument(
+            "--no-push",
+            action="store_true",
+            help="Build without pushing to the registry",
         )
 
     apply_parser = subparsers.add_parser("apply", help="Apply a workload manifest (App)")
@@ -263,6 +427,192 @@ def build_parser() -> argparse.ArgumentParser:
         help="Restrict to specific registry host(s); repeatable",
     )
     reg_secret.add_argument("--output", "-o", default="-", help="Output file ('-' for stdout)")
+
+    # registry remote helpers (HTTP API)
+    reg_catalog = reg_sub.add_parser("catalog", help="List repositories in a registry (HTTP API)")
+    _add_registry_remote_args(reg_catalog)
+    reg_catalog.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit the number of repositories (if registry supports paging)",
+    )
+
+    reg_tags = reg_sub.add_parser("tags", help="List tags for a repository (HTTP API)")
+    reg_tags.add_argument("repo", help="Repository name (no registry host)")
+    _add_registry_remote_args(reg_tags)
+
+    reg_manifest = reg_sub.add_parser("manifest", help="Fetch manifest metadata (HTTP API)")
+    reg_manifest.add_argument(
+        "ref",
+        help="Repository and tag or digest (e.g., demo-green:latest or demo-green@sha256:...)",
+    )
+    _add_registry_remote_args(reg_manifest)
+
+    reg_delete = reg_sub.add_parser("delete", help="Delete a manifest from a registry (HTTP API)")
+    reg_delete.add_argument(
+        "ref",
+        help="Repository and tag or digest (e.g., demo-green:latest or demo-green@sha256:...)",
+    )
+    reg_delete.add_argument(
+        "--force",
+        action="store_true",
+        help="Confirm deletion (registry must have delete enabled)",
+    )
+    _add_registry_remote_args(reg_delete)
+
+    # CRI helpers (images + toolbox build)
+    cri_parser = subparsers.add_parser("cri", help="CRI helpers (images, build)")
+    cri_sub = cri_parser.add_subparsers(dest="cri_cmd", required=True)
+
+    cri_images = cri_sub.add_parser("images", help="Manage CRI runtime images")
+    cri_images_sub = cri_images.add_subparsers(dest="cri_images_cmd", required=True)
+
+    cri_images_list = cri_images_sub.add_parser("list", help="List images in CRI")
+    cri_images_list.add_argument("--json", action="store_true", help="Emit JSON output")
+    cri_images_list.add_argument(
+        "--endpoint",
+        default=os.getenv("AE_CRI_ENDPOINT", "unix:///run/containerd/containerd.sock"),
+        help="CRI runtime endpoint (AE_CRI_ENDPOINT)",
+    )
+
+    cri_images_pull = cri_images_sub.add_parser("pull", help="Pull an image via CRI")
+    cri_images_pull.add_argument("image", help="Image reference to pull")
+    cri_images_pull.add_argument(
+        "--endpoint",
+        default=os.getenv("AE_CRI_ENDPOINT", "unix:///run/containerd/containerd.sock"),
+        help="CRI runtime endpoint (AE_CRI_ENDPOINT)",
+    )
+
+    cri_images_rm = cri_images_sub.add_parser("rm", help="Remove an image via CRI")
+    cri_images_rm.add_argument("image", help="Image reference to remove")
+    cri_images_rm.add_argument(
+        "--endpoint",
+        default=os.getenv("AE_CRI_ENDPOINT", "unix:///run/containerd/containerd.sock"),
+        help="CRI runtime endpoint (AE_CRI_ENDPOINT)",
+    )
+
+    cri_images_inspect = cri_images_sub.add_parser("inspect", help="Inspect an image via CRI")
+    cri_images_inspect.add_argument("image", help="Image reference to inspect")
+    cri_images_inspect.add_argument("--json", action="store_true", help="Emit JSON output")
+    cri_images_inspect.add_argument(
+        "--endpoint",
+        default=os.getenv("AE_CRI_ENDPOINT", "unix:///run/containerd/containerd.sock"),
+        help="CRI runtime endpoint (AE_CRI_ENDPOINT)",
+    )
+
+    cri_build = cri_sub.add_parser(
+        "build", help="Build and push an image using the CRI toolbox pod"
+    )
+    _add_cri_build_args(cri_build)
+
+    cri_registry = cri_sub.add_parser(
+        "registry",
+        help="Registry helpers for CRI workflows (HTTP API + build/push)",
+    )
+    cri_registry_sub = cri_registry.add_subparsers(dest="cri_registry_cmd", required=True)
+
+    cri_reg_list = cri_registry_sub.add_parser(
+        "list", help="List repositories in a registry (HTTP API)"
+    )
+    _add_registry_remote_args(cri_reg_list)
+    cri_reg_list.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit the number of repositories (if registry supports paging)",
+    )
+
+    cri_reg_tags = cri_registry_sub.add_parser(
+        "tags", help="List tags for a repository (HTTP API)"
+    )
+    cri_reg_tags.add_argument("repo", help="Repository name (no registry host)")
+    _add_registry_remote_args(cri_reg_tags)
+
+    cri_reg_manifest = cri_registry_sub.add_parser(
+        "manifest", help="Fetch manifest metadata (HTTP API)"
+    )
+    cri_reg_manifest.add_argument(
+        "ref",
+        help="Repository and tag or digest (e.g., demo-green:latest or demo-green@sha256:...)",
+    )
+    _add_registry_remote_args(cri_reg_manifest)
+
+    cri_reg_tag = cri_registry_sub.add_parser(
+        "tag", help="Create a new tag by copying a manifest (HTTP API)"
+    )
+    cri_reg_tag.add_argument(
+        "source",
+        help="Source reference (e.g., demo-green:latest or demo-green@sha256:...)",
+    )
+    cri_reg_tag.add_argument(
+        "dest",
+        help="Destination reference (must be a tag, e.g., demo-green:dev)",
+    )
+    _add_registry_remote_args(cri_reg_tag)
+
+    cri_reg_delete = cri_registry_sub.add_parser(
+        "delete", help="Delete a manifest from a registry (HTTP API)"
+    )
+    cri_reg_delete.add_argument(
+        "ref",
+        help="Repository and tag or digest (e.g., demo-green:latest or demo-green@sha256:...)",
+    )
+    cri_reg_delete.add_argument(
+        "--force",
+        action="store_true",
+        help="Confirm deletion (registry must have delete enabled)",
+    )
+    _add_registry_remote_args(cri_reg_delete)
+
+    cri_reg_rm = cri_registry_sub.add_parser("rm", help="Alias for delete (HTTP API)")
+    cri_reg_rm.add_argument(
+        "ref",
+        help="Repository and tag or digest (e.g., demo-green:latest or demo-green@sha256:...)",
+    )
+    cri_reg_rm.add_argument(
+        "--force",
+        action="store_true",
+        help="Confirm deletion (registry must have delete enabled)",
+    )
+    _add_registry_remote_args(cri_reg_rm)
+
+    cri_reg_push = cri_registry_sub.add_parser(
+        "push",
+        help="Build and push an image using buildkit (alias of 'ae cri build')",
+    )
+    _add_cri_build_args(cri_reg_push)
+
+    cri_trust = cri_sub.add_parser(
+        "trust", help="Write containerd registry trust config for CRI nodes"
+    )
+    cri_trust.add_argument(
+        "--host",
+        default=os.getenv("AE_REGISTRY_HOST"),
+        help="Registry host:port (default AE_REGISTRY_HOST)",
+    )
+    cri_trust.add_argument(
+        "--scheme",
+        choices=["https", "http"],
+        default=os.getenv("AE_REGISTRY_SCHEME", "https"),
+        help="Registry scheme (default: https or AE_REGISTRY_SCHEME)",
+    )
+    cri_trust.add_argument("--ca", default=None, help="CA bundle path (HTTPS only)")
+    cri_trust.add_argument(
+        "--insecure",
+        action="store_true",
+        help="Skip TLS verification (HTTPS only; dev-only)",
+    )
+    cri_trust.add_argument(
+        "--system-trust",
+        action="store_true",
+        help="Install CA into system trust store (Linux)",
+    )
+    cri_trust.add_argument(
+        "--restart",
+        action="store_true",
+        help="Restart containerd after writing hosts.toml",
+    )
 
     metrics_parser = subparsers.add_parser("metrics", help="Show aggregated metrics")
     metrics_parser.add_argument("--json", action="store_true", help="Emit JSON output")
@@ -941,6 +1291,218 @@ def _registry_save(host: str, username: str, password: str) -> None:
     p.write_text(_yaml.safe_dump(data, sort_keys=True), encoding="utf-8")
 
 
+class RegistryRemoteError(RuntimeError):
+    def __init__(self, status: int, headers: dict[str, str], body: bytes) -> None:
+        super().__init__(f"registry request failed with status {status}")
+        self.status = status
+        self.headers = headers
+        self.body = body
+
+
+def _registry_remote_parse_host(registry: str, scheme: str) -> tuple[str, str]:
+    reg = str(registry).strip()
+    if "://" in reg:
+        parsed = urlparse(reg)
+        if parsed.scheme:
+            scheme = parsed.scheme
+        host = parsed.netloc or parsed.path
+    else:
+        host = reg
+    host = host.strip().rstrip("/")
+    if not host:
+        raise ValueError("registry host is empty")
+    return scheme, host
+
+
+def _registry_remote_auth(
+    host: str, username: str | None, password: str | None
+) -> tuple[str | None, str | None]:
+    if username and password:
+        return username, password
+    prov = RegistryAuthProvider()
+    entries = prov.list_registries()
+    creds = entries.get(host)
+    if not creds and ":" in host and host.count(":") == 1:
+        host_no_port = host.split(":", 1)[0]
+        creds = entries.get(host_no_port)
+    if not creds:
+        return None, None
+    return creds.get("username"), creds.get("password")
+
+
+def _registry_remote_context(scheme: str, insecure: bool, ca: str | None) -> ssl.SSLContext | None:
+    if scheme != "https":
+        return None
+    if insecure:
+        return ssl._create_unverified_context()
+    if ca:
+        return ssl.create_default_context(cafile=ca)
+    return ssl.create_default_context()
+
+
+def _registry_remote_request(
+    method: str,
+    scheme: str,
+    host: str,
+    path: str,
+    username: str | None,
+    password: str | None,
+    insecure: bool,
+    ca: str | None,
+    headers: dict[str, str] | None = None,
+    data: bytes | None = None,
+    timeout: int = 10,
+) -> tuple[int, dict[str, str], bytes]:
+    url = f"{scheme}://{host}{path}"
+    req = urllib.request.Request(url, data=data, method=method.upper())
+    if headers:
+        for key, value in headers.items():
+            req.add_header(key, value)
+    if username and password:
+        token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+        req.add_header("Authorization", f"Basic {token}")
+    context = _registry_remote_context(scheme, insecure, ca)
+    try:
+        with urllib.request.urlopen(req, context=context, timeout=timeout) as resp:
+            body = resp.read() or b""
+            return resp.status, dict(resp.headers), body
+    except urllib.error.HTTPError as exc:
+        body = exc.read() or b""
+        raise RegistryRemoteError(exc.code, dict(exc.headers), body) from exc
+
+
+def _registry_remote_json(body: bytes) -> Any:
+    if not body:
+        return None
+    try:
+        return json.loads(body.decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _registry_remote_split_ref(ref: str) -> tuple[str, str]:
+    if "@" in ref:
+        repo, digest = ref.rsplit("@", 1)
+        return repo, digest
+    if ":" in ref:
+        repo, tag = ref.rsplit(":", 1)
+        return repo, tag
+    return ref, "latest"
+
+
+def _registry_remote_manifest_headers() -> dict[str, str]:
+    accept = ",".join(
+        [
+            "application/vnd.docker.distribution.manifest.v2+json",
+            "application/vnd.oci.image.manifest.v1+json",
+            "application/vnd.docker.distribution.manifest.list.v2+json",
+            "application/vnd.oci.image.index.v1+json",
+        ]
+    )
+    return {"Accept": accept}
+
+
+def _registry_remote_resolve_digest(
+    scheme: str,
+    host: str,
+    repo: str,
+    ref: str,
+    username: str | None,
+    password: str | None,
+    insecure: bool,
+    ca: str | None,
+    timeout: int,
+) -> str | None:
+    path = f"/v2/{repo}/manifests/{ref}"
+    headers = _registry_remote_manifest_headers()
+    try:
+        _status, resp_headers, _body = _registry_remote_request(
+            "HEAD",
+            scheme,
+            host,
+            path,
+            username,
+            password,
+            insecure,
+            ca,
+            headers=headers,
+            timeout=timeout,
+        )
+        digest = resp_headers.get("Docker-Content-Digest") or resp_headers.get(
+            "docker-content-digest"
+        )
+        if digest:
+            return digest
+    except RegistryRemoteError:
+        pass
+    status, resp_headers, _body = _registry_remote_request(
+        "GET",
+        scheme,
+        host,
+        path,
+        username,
+        password,
+        insecure,
+        ca,
+        headers=headers,
+        timeout=timeout,
+    )
+    _ = status
+    return resp_headers.get("Docker-Content-Digest") or resp_headers.get(
+        "docker-content-digest"
+    )
+
+
+def _registry_remote_tag(
+    scheme: str,
+    host: str,
+    source_ref: str,
+    dest_ref: str,
+    username: str | None,
+    password: str | None,
+    insecure: bool,
+    ca: str | None,
+    timeout: int,
+) -> None:
+    if "@" in dest_ref:
+        raise ValueError("destination must be a tag (not a digest)")
+    src_repo, src_manifest_ref = _registry_remote_split_ref(source_ref)
+    dest_repo, dest_manifest_ref = _registry_remote_split_ref(dest_ref)
+    if src_repo != dest_repo:
+        raise ValueError("source and destination repositories must match for tag")
+    path = f"/v2/{src_repo}/manifests/{src_manifest_ref}"
+    headers = _registry_remote_manifest_headers()
+    _status, resp_headers, body = _registry_remote_request(
+        "GET",
+        scheme,
+        host,
+        path,
+        username,
+        password,
+        insecure,
+        ca,
+        headers=headers,
+        timeout=timeout,
+    )
+    content_type = resp_headers.get("content-type") or resp_headers.get("Content-Type")
+    default_type = "application/vnd.docker.distribution.manifest.v2+json"
+    put_headers = {"Content-Type": content_type or default_type}
+    dest_path = f"/v2/{dest_repo}/manifests/{dest_manifest_ref}"
+    _registry_remote_request(
+        "PUT",
+        scheme,
+        host,
+        dest_path,
+        username,
+        password,
+        insecure,
+        ca,
+        headers=put_headers,
+        body=body,
+        timeout=timeout,
+    )
+
+
 def handle_registry(args: argparse.Namespace) -> int:
     cmd = getattr(args, "registry_cmd", None)
     if cmd == "kubesecret":
@@ -992,6 +1554,177 @@ def handle_registry(args: argparse.Namespace) -> int:
             _P(str(args.output)).write_text(out, encoding="utf-8")
             print(f"wrote Secret to {args.output}")
         return 0
+    if cmd in {"catalog", "tags", "manifest", "delete"}:
+        reg = getattr(args, "registry", None) or os.getenv("AE_REGISTRY_HOST")
+        if not reg:
+            print("error: --registry or AE_REGISTRY_HOST required")
+            return 2
+        try:
+            scheme, host = _registry_remote_parse_host(reg, getattr(args, "scheme", "https"))
+        except ValueError as exc:
+            print(f"error: {exc}")
+            return 2
+        user, pw = _registry_remote_auth(
+            host,
+            getattr(args, "username", None),
+            getattr(args, "password", None),
+        )
+        insecure = bool(getattr(args, "insecure", False))
+        ca = getattr(args, "ca", None)
+        timeout = int(getattr(args, "timeout", 10))
+        try:
+            if cmd == "catalog":
+                path = "/v2/_catalog"
+                limit = getattr(args, "limit", None)
+                if limit:
+                    path = f"{path}?n={limit}"
+                _status, _headers, body = _registry_remote_request(
+                    "GET",
+                    scheme,
+                    host,
+                    path,
+                    user,
+                    pw,
+                    insecure,
+                    ca,
+                    timeout=timeout,
+                )
+                data = _registry_remote_json(body) or {}
+                if getattr(args, "json", False):
+                    print(json.dumps(data, indent=2, sort_keys=True))
+                    return 0
+                repos = data.get("repositories") or []
+                for repo in repos:
+                    print(repo)
+                return 0
+
+            if cmd == "tags":
+                repo = str(getattr(args, "repo", "")).strip()
+                if not repo:
+                    print("error: repository is required")
+                    return 2
+                path = f"/v2/{repo}/tags/list"
+                _status, _headers, body = _registry_remote_request(
+                    "GET",
+                    scheme,
+                    host,
+                    path,
+                    user,
+                    pw,
+                    insecure,
+                    ca,
+                    timeout=timeout,
+                )
+                data = _registry_remote_json(body) or {}
+                if getattr(args, "json", False):
+                    print(json.dumps(data, indent=2, sort_keys=True))
+                    return 0
+                tags = data.get("tags") or []
+                for tag in tags:
+                    print(tag)
+                return 0
+
+            if cmd == "manifest":
+                ref = str(getattr(args, "ref", "")).strip()
+                if not ref:
+                    print("error: repository reference is required")
+                    return 2
+                repo, manifest_ref = _registry_remote_split_ref(ref)
+                path = f"/v2/{repo}/manifests/{manifest_ref}"
+                headers = _registry_remote_manifest_headers()
+                _status, resp_headers, body = _registry_remote_request(
+                    "GET",
+                    scheme,
+                    host,
+                    path,
+                    user,
+                    pw,
+                    insecure,
+                    ca,
+                    headers=headers,
+                    timeout=timeout,
+                )
+                digest = resp_headers.get("Docker-Content-Digest") or resp_headers.get(
+                    "docker-content-digest"
+                )
+                data = _registry_remote_json(body) or {}
+                if getattr(args, "json", False):
+                    out = {
+                        "digest": digest,
+                        "manifest": data,
+                    }
+                    print(json.dumps(out, indent=2, sort_keys=True))
+                    return 0
+                media_type = data.get("mediaType")
+                config = data.get("config") or {}
+                layers = data.get("layers") or []
+                size = 0
+                for layer in layers:
+                    try:
+                        size += int(layer.get("size", 0) or 0)
+                    except Exception:
+                        pass
+                print(f"digest={digest}" if digest else "digest=<unknown>")
+                if media_type:
+                    print(f"mediaType={media_type}")
+                if config.get("digest"):
+                    print(f"config={config.get('digest')}")
+                if layers:
+                    print(f"layers={len(layers)} size={size}")
+                return 0
+
+            if cmd == "delete":
+                if not getattr(args, "force", False):
+                    print("error: delete requires --force")
+                    return 2
+                ref = str(getattr(args, "ref", "")).strip()
+                if not ref:
+                    print("error: repository reference is required")
+                    return 2
+                repo, manifest_ref = _registry_remote_split_ref(ref)
+                digest = manifest_ref
+                if not digest.startswith("sha256:"):
+                    digest = _registry_remote_resolve_digest(
+                        scheme,
+                        host,
+                        repo,
+                        manifest_ref,
+                        user,
+                        pw,
+                        insecure,
+                        ca,
+                        timeout,
+                    ) or ""
+                if not digest:
+                    print("error: unable to resolve manifest digest (registry may not support it)")
+                    return 2
+                path = f"/v2/{repo}/manifests/{digest}"
+                _registry_remote_request(
+                    "DELETE",
+                    scheme,
+                    host,
+                    path,
+                    user,
+                    pw,
+                    insecure,
+                    ca,
+                    headers=_registry_remote_manifest_headers(),
+                    timeout=timeout,
+                )
+                print(f"deleted {repo}@{digest}")
+                return 0
+        except RegistryRemoteError as exc:
+            detail = ""
+            if exc.body:
+                try:
+                    detail = exc.body.decode("utf-8", "ignore").strip()
+                except Exception:
+                    detail = ""
+            if detail:
+                print(f"registry error {exc.status}: {detail}")
+            else:
+                print(f"registry error {exc.status}")
+            return 2
     if cmd == "list":
         prov = RegistryAuthProvider()
         entries = prov.list_registries()
@@ -1207,6 +1940,452 @@ def handle_registry(args: argparse.Namespace) -> int:
     return 2
 
 
+def _cri_normalize_endpoint(endpoint: str) -> str:
+    raw = str(endpoint)
+    if raw.startswith("unix://"):
+        path = raw[len("unix://") :]
+        if not path.startswith("/"):
+            path = f"/{path}"
+        return f"unix://{path}"
+    if raw.startswith("tcp://"):
+        return raw[len("tcp://") :]
+    return raw
+
+
+def _cri_load_image_client(endpoint: str):
+    try:
+        import grpc
+        from ae.runtime.cri.api.runtime.v1 import api_pb2, api_pb2_grpc
+    except Exception as exc:  # pragma: no cover - depends on generated stubs
+        raise RuntimeError(
+            "CRI stubs not available. Run scripts/cri_codegen.sh to generate them."
+        ) from exc
+    target = _cri_normalize_endpoint(endpoint)
+    channel = grpc.insecure_channel(target)
+    stub = api_pb2_grpc.ImageServiceStub(channel)
+    return api_pb2, stub, channel
+
+
+def _cri_pb2():
+    try:
+        from ae.runtime.cri.api.runtime.v1 import api_pb2
+
+        return api_pb2
+    except Exception as exc:  # pragma: no cover - depends on generated stubs
+        raise RuntimeError(
+            "CRI stubs not available. Run scripts/cri_codegen.sh to generate them."
+        ) from exc
+
+
+def _cri_extract_registry(image: str) -> str | None:
+    if "/" not in image:
+        return None
+    host = image.split("/", 1)[0]
+    if "." not in host and ":" not in host:
+        return None
+    return host
+
+
+def _cri_pull_auth(image_ref: str, registry: RegistryAuthProvider):
+    pb2 = _cri_pb2()
+    creds = registry.list_registries()
+    registry_host = _cri_extract_registry(image_ref) or "docker.io"
+    candidates = [registry_host]
+    if registry_host == "docker.io":
+        candidates.extend(
+            [
+                "index.docker.io",
+                "registry-1.docker.io",
+                "https://index.docker.io/v1/",
+            ]
+        )
+    for host in candidates:
+        entry = creds.get(host)
+        if entry and entry.get("username") and entry.get("password"):
+            return pb2.AuthConfig(
+                username=str(entry.get("username")),
+                password=str(entry.get("password")),
+                server_address=str(host),
+            )
+    return None
+
+
+def _registry_basic_creds(
+    image_ref: str, registry: RegistryAuthProvider
+) -> tuple[str, str] | None:
+    creds = registry.list_registries()
+    registry_host = _cri_extract_registry(image_ref) or "docker.io"
+    candidates = [registry_host]
+    if registry_host == "docker.io":
+        candidates.extend(
+            [
+                "index.docker.io",
+                "registry-1.docker.io",
+                "https://index.docker.io/v1/",
+            ]
+        )
+    for host in candidates:
+        entry = creds.get(host)
+        if entry and entry.get("username") and entry.get("password"):
+            return str(entry.get("username")), str(entry.get("password"))
+    return None
+
+
+def handle_cri(args: argparse.Namespace) -> int:
+    cmd = getattr(args, "cri_cmd", None)
+    if cmd == "images":
+        return handle_cri_images(args)
+    if cmd == "build":
+        return handle_cri_build(args)
+    if cmd == "registry":
+        return handle_cri_registry(args)
+    if cmd == "trust":
+        return handle_cri_trust(args)
+    print("unsupported cri command")
+    return 2
+
+
+def handle_cri_images(args: argparse.Namespace) -> int:
+    sub = getattr(args, "cri_images_cmd", None)
+    endpoint = getattr(args, "endpoint", None) or os.getenv(
+        "AE_CRI_ENDPOINT", "unix:///run/containerd/containerd.sock"
+    )
+    pb2, stub, channel = _cri_load_image_client(endpoint)
+    try:
+        if sub == "list":
+            resp = stub.ListImages(pb2.ListImagesRequest())
+            items = getattr(resp, "images", None) or getattr(resp, "items", None) or []
+            out = []
+            for img in items:
+                out.append(
+                    {
+                        "id": str(getattr(img, "id", "")),
+                        "repo_tags": list(getattr(img, "repo_tags", []) or []),
+                        "repo_digests": list(getattr(img, "repo_digests", []) or []),
+                        "size": int(getattr(img, "size", 0) or 0),
+                        "pinned": bool(getattr(img, "pinned", False)),
+                    }
+                )
+            if args.json:
+                print(json.dumps(out, indent=2, sort_keys=True))
+                return 0
+            for img in out:
+                tags = ", ".join(img["repo_tags"]) if img["repo_tags"] else "<none>"
+                print(f"{tags}\t{img['size']} bytes")
+            return 0
+
+        if sub == "pull":
+            image = str(args.image)
+            spec = pb2.ImageSpec(image=image)
+            req = pb2.PullImageRequest(image=spec)
+            auth = _cri_pull_auth(image, registry_auth_factory())
+            if auth is not None:
+                req.auth = auth
+            stub.PullImage(req)
+            print(f"pulled {image}")
+            return 0
+
+        if sub == "rm":
+            image = str(args.image)
+            spec = pb2.ImageSpec(image=image)
+            stub.RemoveImage(pb2.RemoveImageRequest(image=spec))
+            print(f"removed {image}")
+            return 0
+
+        if sub == "inspect":
+            image = str(args.image)
+            spec = pb2.ImageSpec(image=image)
+            resp = stub.ImageStatus(pb2.ImageStatusRequest(image=spec, verbose=True))
+            status = getattr(resp, "image", None)
+            if not status:
+                print("image not found")
+                return 1
+            info = {
+                "id": str(getattr(status, "id", "")),
+                "repo_tags": list(getattr(status, "repo_tags", []) or []),
+                "repo_digests": list(getattr(status, "repo_digests", []) or []),
+                "size": int(getattr(status, "size", 0) or 0),
+                "uid": getattr(status, "uid", None),
+                "username": getattr(status, "username", None),
+            }
+            if args.json:
+                print(json.dumps(info, indent=2, sort_keys=True))
+            else:
+                print(json.dumps(info, indent=2))
+            return 0
+    finally:
+        with contextlib.suppress(Exception):
+            channel.close()
+    print("unsupported cri images command")
+    return 2
+
+
+def handle_cri_build(args: argparse.Namespace) -> int:
+    context_path = Path(args.context).expanduser().resolve()
+    if not context_path.exists():
+        print(f"context path not found: {context_path}")
+        return 2
+    if not context_path.is_dir():
+        print(f"context path must be a directory: {context_path}")
+        return 2
+
+    kubectl = args.kubectl_bin
+    if shutil.which(kubectl) is None:
+        print(f"kubectl not found: {kubectl}")
+        return 2
+
+    buildkit_ns = args.buildkit_namespace
+    buildkit_pod = args.buildkit_pod
+    buildkit_manifest = Path(args.buildkit_manifest).expanduser().resolve()
+    created_buildkit = False
+    created_crictl = False
+    try:
+        if not args.skip_buildkit_apply:
+            if not buildkit_manifest.exists():
+                print(f"buildkit manifest not found: {buildkit_manifest}")
+                return 2
+            subprocess.run([kubectl, "apply", "-f", str(buildkit_manifest)], check=True)
+            created_buildkit = True
+
+        subprocess.run(
+            [
+                kubectl,
+                "-n",
+                buildkit_ns,
+                "wait",
+                "--for=condition=Ready",
+                f"pod/{buildkit_pod}",
+                f"--timeout={int(args.timeout)}s",
+            ],
+            check=True,
+        )
+
+        subprocess.run(
+            [
+                kubectl,
+                "-n",
+                buildkit_ns,
+                "exec",
+                buildkit_pod,
+                "--",
+                "/bin/sh",
+                "-c",
+                "rm -rf /workspace/context && mkdir -p /workspace/context",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                kubectl,
+                "-n",
+                buildkit_ns,
+                "cp",
+                f"{context_path}/.",
+                f"{buildkit_ns}/{buildkit_pod}:/workspace/context",
+            ],
+            check=True,
+        )
+
+        image_ref = str(args.image)
+        push_flag = "true" if not args.no_push else "false"
+        quoted_image = shlex.quote(image_ref)
+        build_cmd = (
+            "set -e\n"
+            "mkdir -p /run/buildkit\n"
+            "buildkitd --addr unix:///run/buildkit/buildkitd.sock >/tmp/buildkitd.log 2>&1 &\n"
+            "bkpid=$!\n"
+            "trap 'kill $bkpid >/dev/null 2>&1 || true' EXIT\n"
+            "for i in $(seq 1 40); do [ -S /run/buildkit/buildkitd.sock ] && break; sleep 0.25; done\n"
+            f"buildctl --addr unix:///run/buildkit/buildkitd.sock build "
+            f"--frontend dockerfile.v0 "
+            f"--local context=/workspace/context "
+            f"--local dockerfile=/workspace/context "
+            f"--output type=image,name={quoted_image},push={push_flag}\n"
+        )
+        subprocess.run(
+            [kubectl, "-n", buildkit_ns, "exec", buildkit_pod, "--", "/bin/sh", "-c", build_cmd],
+            check=True,
+        )
+        print(f"built {image_ref}")
+        if not args.no_push:
+            print(f"pushed {image_ref}")
+        if not args.no_cri_pull and not args.no_push:
+            crictl_ns = args.crictl_namespace
+            crictl_pod = args.crictl_pod
+            crictl_manifest = Path(args.crictl_manifest).expanduser().resolve()
+            if not args.skip_crictl_apply:
+                if not crictl_manifest.exists():
+                    print(f"crictl manifest not found: {crictl_manifest}")
+                    return 2
+                subprocess.run([kubectl, "apply", "-f", str(crictl_manifest)], check=True)
+                created_crictl = True
+            subprocess.run(
+                [
+                    kubectl,
+                    "-n",
+                    crictl_ns,
+                    "wait",
+                    "--for=condition=Ready",
+                    f"pod/{crictl_pod}",
+                    f"--timeout={int(args.timeout)}s",
+                ],
+                check=True,
+            )
+            creds = _registry_basic_creds(image_ref, registry_auth_factory())
+            creds_arg = ""
+            if creds:
+                user, pw = creds
+                creds_arg = f" --creds {shlex.quote(f'{user}:{pw}')}"
+            pull_cmd = (
+                f"crictl --runtime-endpoint \"${{CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}}\""
+                f"{creds_arg} pull {quoted_image}"
+            )
+            subprocess.run(
+                [kubectl, "-n", crictl_ns, "exec", crictl_pod, "--", "/bin/sh", "-c", pull_cmd],
+                check=True,
+            )
+            print(f"pulled {image_ref} via crictl")
+        elif args.no_push and not args.no_cri_pull:
+            print("skipping CRI pull because --no-push was set")
+        return 0
+    finally:
+        if created_buildkit and not args.keep_buildkit_pod:
+            subprocess.run(
+                [
+                    kubectl,
+                    "-n",
+                    buildkit_ns,
+                    "delete",
+                    "pod",
+                    buildkit_pod,
+                    "--ignore-not-found",
+                ],
+                check=False,
+            )
+        if created_crictl and not args.keep_crictl_pod:
+            subprocess.run(
+                [
+                    kubectl,
+                    "-n",
+                    args.crictl_namespace,
+                    "delete",
+                    "pod",
+                    args.crictl_pod,
+                    "--ignore-not-found",
+                ],
+                check=False,
+            )
+
+
+def handle_cri_registry(args: argparse.Namespace) -> int:
+    sub = getattr(args, "cri_registry_cmd", None)
+    if sub == "push":
+        return handle_cri_build(args)
+    mapping = {
+        "list": "catalog",
+        "tags": "tags",
+        "manifest": "manifest",
+        "delete": "delete",
+        "rm": "delete",
+    }
+    if sub in mapping:
+        args.registry_cmd = mapping[sub]
+        return handle_registry(args)
+    if sub == "tag":
+        reg = getattr(args, "registry", None) or os.getenv("AE_REGISTRY_HOST")
+        if not reg:
+            print("error: --registry or AE_REGISTRY_HOST required")
+            return 2
+        try:
+            scheme, host = _registry_remote_parse_host(reg, getattr(args, "scheme", "https"))
+        except ValueError as exc:
+            print(f"error: {exc}")
+            return 2
+        user, pw = _registry_remote_auth(
+            host,
+            getattr(args, "username", None),
+            getattr(args, "password", None),
+        )
+        insecure = bool(getattr(args, "insecure", False))
+        ca = getattr(args, "ca", None)
+        timeout = int(getattr(args, "timeout", 10))
+        source = str(getattr(args, "source", "")).strip()
+        dest = str(getattr(args, "dest", "")).strip()
+        if not source or not dest:
+            print("error: source and destination references are required")
+            return 2
+        try:
+            _registry_remote_tag(
+                scheme,
+                host,
+                source,
+                dest,
+                user,
+                pw,
+                insecure,
+                ca,
+                timeout,
+            )
+        except ValueError as exc:
+            print(f"error: {exc}")
+            return 2
+        except RegistryRemoteError as exc:
+            detail = ""
+            if exc.body:
+                try:
+                    detail = exc.body.decode("utf-8", "ignore").strip()
+                except Exception:
+                    detail = ""
+            if detail:
+                print(f"registry error {exc.status}: {detail}")
+            else:
+                print(f"registry error {exc.status}")
+            return 2
+        print(f"tagged {source} -> {dest}")
+        return 0
+    print("unsupported cri registry command")
+    return 2
+
+
+def _cri_trust_script_path() -> Path:
+    return Path(__file__).resolve().parents[3] / "scripts" / "containerd_registry_trust.sh"
+
+
+def handle_cri_trust(args: argparse.Namespace) -> int:
+    reg = getattr(args, "host", None) or os.getenv("AE_REGISTRY_HOST")
+    if not reg:
+        print("error: --host or AE_REGISTRY_HOST required")
+        return 2
+    scheme = getattr(args, "scheme", None) or os.getenv("AE_REGISTRY_SCHEME", "https")
+    try:
+        scheme, host = _registry_remote_parse_host(reg, scheme)
+    except ValueError as exc:
+        print(f"error: {exc}")
+        return 2
+    ca = getattr(args, "ca", None)
+    insecure = bool(getattr(args, "insecure", False))
+    system_trust = bool(getattr(args, "system_trust", False))
+    restart = bool(getattr(args, "restart", False))
+    if scheme == "https" and not ca and not insecure:
+        print("error: --ca is required for https (or use --insecure)")
+        return 2
+    script = _cri_trust_script_path()
+    if not script.exists():
+        print(f"error: trust helper not found: {script}")
+        return 2
+    cmd = [str(script), "--host", host, "--scheme", scheme]
+    if ca:
+        cmd += ["--ca", str(ca)]
+    if insecure:
+        cmd.append("--insecure")
+    if system_trust:
+        cmd.append("--system-trust")
+    if restart:
+        cmd.append("--restart")
+    subprocess.run(cmd, check=True)
+    return 0
+
+
 def ingress_service_factory() -> IngressService | None:
     if os.getenv("AE_DISABLE_INGRESS") == "1":
         logging.getLogger(__name__).info("Ingress disabled via AE_DISABLE_INGRESS=1")
@@ -1338,6 +2517,7 @@ def main(argv: list[str] | None = None) -> int:
         "auth": auth_handler,
         "tls": handle_tls,
         "registry": handle_registry,
+        "cri": handle_cri,
         "metrics": lambda ns: handle_metrics(ns, store),
         "events": lambda ns: handle_events(ns, store, args),
         "history": lambda ns: handle_history(ns, store, args),

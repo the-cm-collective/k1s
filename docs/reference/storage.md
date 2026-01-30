@@ -36,6 +36,8 @@ ae delete echo --purge
 
 - HostPath binds under `spec.volumes` still work for simple dev paths.
 - Future: `size` is reserved for advisory/validation.
+- K8s-style hostPath objects (`{ path, type }`) are accepted; `type` is ignored.
+- apishim converts K8s hostPath and PVC volumes into `spec.volumes` and `spec.pvcMounts`.
 
 ### NetFS StorageClass config
 

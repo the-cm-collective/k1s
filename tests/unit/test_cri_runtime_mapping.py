@@ -66,3 +66,28 @@ def test_cri_container_config_separates_command_args_and_mounts():
         m.host_path == "/tmp/ae-proj/config/db" and m.container_path == "/etc/db"
         for m in mounts
     )
+
+
+def test_cri_container_config_maps_volume_devices():
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo", "namespace": "default"},
+            "spec": {
+                "image": "alpine:3.20",
+                "replicas": 1,
+                "volumeDevices": [
+                    {"hostPath": "/dev/sdb", "devicePath": "/dev/xvdb", "readOnly": True}
+                ],
+            },
+        }
+    )
+    runtime = CRIRuntime()
+    cfg = runtime._container_config(manifest, "demo-rev1-0", 1, attempt=0)
+    devices = list(cfg.devices or [])
+    assert len(devices) == 1
+    dev = devices[0]
+    assert dev.host_path == "/dev/sdb"
+    assert dev.container_path == "/dev/xvdb"
+    assert dev.permissions == "r"
