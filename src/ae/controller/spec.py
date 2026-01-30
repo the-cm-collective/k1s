@@ -295,6 +295,15 @@ class VolumeSpec(BaseModel):
     mount_path: str = Field(alias="mountPath")
     read_only: bool = Field(default=False, alias="readOnly")
 
+    @field_validator("host_path", mode="before")
+    @classmethod
+    def _host_path_from_k8s(cls, v):  # noqa: D401 - simple guard
+        if isinstance(v, dict):
+            path = v.get("path")
+            if path is not None:
+                return path
+        return v
+
     model_config = {"populate_by_name": True}
 
 
@@ -304,6 +313,15 @@ class VolumeDeviceSpec(BaseModel):
     host_path: str = Field(alias="hostPath")
     device_path: str = Field(alias="devicePath")
     read_only: bool = Field(default=False, alias="readOnly")
+
+    @field_validator("host_path", mode="before")
+    @classmethod
+    def _host_path_from_k8s(cls, v):  # noqa: D401 - simple guard
+        if isinstance(v, dict):
+            path = v.get("path")
+            if path is not None:
+                return path
+        return v
 
     model_config = {"populate_by_name": True}
 

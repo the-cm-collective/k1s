@@ -1,0 +1,8 @@
+services:
+  registry:
+    environment:
+      REGISTRY_AUTH: htpasswd
+      REGISTRY_AUTH_HTPASSWD_REALM: ${AE_REGISTRY_AUTH_REALM:-k1s-registry}
+      REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd
+    volumes:
+      - ../../state/registry-auth:/auth:ro

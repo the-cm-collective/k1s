@@ -235,6 +235,36 @@ class CRIRuntime(RuntimeAdapter):
             return 1
         return int(getattr(resp, "exit_code", 1))
 
+    # Exec by container name (best-effort)
+    def exec_for_container(
+        self, app_name: str, container_name: str, command: list[str], *, timeout: int | None = None
+    ) -> int:  # type: ignore[override]
+        self._ensure_clients()
+        pb2 = self._pb2()
+        selector = {self.APP_LABEL: app_name, self.CONTAINER_LABEL: container_name}
+        flt = pb2.ContainerFilter(label_selector=selector)
+        req = pb2.ListContainersRequest(filter=flt)
+        resp = self._runtime_call("ListContainers", req)
+        items = getattr(resp, "containers", None)
+        if items is None:
+            items = getattr(resp, "items", None)
+        containers = list(items or [])
+        if not containers:
+            return 127
+        container_id = getattr(containers[0], "id", None)
+        if not container_id:
+            return 127
+        timeout_seconds = int(timeout) if timeout else 0
+        req = pb2.ExecSyncRequest(
+            container_id=str(container_id), cmd=command, timeout=timeout_seconds
+        )
+        try:
+            resp = self._runtime_call("ExecSync", req)
+        except Exception as exc:
+            LOGGER.warning("CRI exec failed: %s", exc)
+            return 1
+        return int(getattr(resp, "exit_code", 1))
+
     def exec_attach(
         self,
         pod_name: str,
@@ -531,6 +561,19 @@ class CRIRuntime(RuntimeAdapter):
         except Exception:
             return out
         return out
+
+    def list_container_stats(self, label_selector: dict[str, str] | None = None) -> list[Any]:
+        self._ensure_clients()
+        pb2 = self._pb2()
+        selector = label_selector or {}
+        if selector:
+            flt = pb2.ContainerStatsFilter(label_selector=selector)
+        else:
+            flt = pb2.ContainerStatsFilter()
+        req = pb2.ListContainerStatsRequest(filter=flt)
+        resp = self._runtime_call("ListContainerStats", req)
+        items = getattr(resp, "stats", None)
+        return list(items or [])
 
     # Internal helpers -------------------------------------------------
     def _ensure_clients(self) -> None:
@@ -1072,6 +1115,7 @@ class CRIRuntime(RuntimeAdapter):
         ]
         working_dir = self._spec_value(spec, "working_dir", "workingDir")
         mounts = self._build_mounts_for_container(manifest, app_name, spec)
+        devices = self._build_devices_for_container(manifest)
         resources = self._build_resources_from_spec(
             self._spec_value(spec, "resources") if not is_main else manifest.spec.resources
         )
@@ -1088,6 +1132,8 @@ class CRIRuntime(RuntimeAdapter):
             "labels": labels,
             "mounts": mounts,
         }
+        if devices:
+            kwargs["devices"] = devices
         if sec_ctx is not None or resources is not None:
             linux_cfg = pb2.LinuxContainerConfig()
             if sec_ctx is not None:
@@ -1150,6 +1196,27 @@ class CRIRuntime(RuntimeAdapter):
                         )
                     )
         return mounts
+
+    def _build_devices_for_container(self, manifest: AppManifest) -> list[Any]:
+        pb2 = self._pb2()
+        devices: list[Any] = []
+        for d in getattr(manifest.spec, "volume_devices", []) or []:
+            with contextlib.suppress(Exception):
+                host_path = getattr(d, "host_path", None)
+                if host_path and not os.path.isabs(host_path):
+                    host_path = os.path.abspath(host_path)
+                device_path = getattr(d, "device_path", None)
+                if not host_path or not device_path:
+                    continue
+                perms = "r" if bool(getattr(d, "read_only", False)) else "rwm"
+                devices.append(
+                    pb2.Device(
+                        host_path=str(host_path),
+                        container_path=str(device_path),
+                        permissions=str(perms),
+                    )
+                )
+        return devices
 
     def _build_resources_from_spec(self, spec: Any):
         pb2 = self._pb2()

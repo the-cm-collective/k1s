@@ -173,7 +173,7 @@ Query surfaces
 
 ## Runtime: Container Engine (Podman/Docker/CRI)
 
-The controller talks to local Podman/Docker when no nodes are eligible; in multi-node runs it proxies through RemoteRuntime to each node agent endpoint. Agents enforce auth via `AE_AGENT_API_TOKEN` and optionally mTLS. CRI/containerd nodes are supported via `AE_RUNTIME_BACKEND=cri` and use the CRI gRPC API; exec/attach/port-forward use `crictl` on the node.
+The controller talks to local Podman/Docker when no nodes are eligible; in multi-node runs it proxies through RemoteRuntime to each node agent endpoint. Agents enforce auth via `AE_AGENT_API_TOKEN` and optionally mTLS. CRI/containerd nodes are supported via `AE_RUNTIME_BACKEND=cri` and use the CRI gRPC API; streaming exec/attach/port-forward are handled by the node agent (crictl on the node), so apishim/controller do not need direct CRI socket access.
 
 Labels
 - `ae.app=<name>`

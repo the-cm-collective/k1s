@@ -81,7 +81,7 @@ Tips
 - Need only docs + API? Use `./scripts/init_demo.sh --docs-only -y -d` or `make demo ARGS="--docs-only -y -d"`.
 - Prefer Make: `make demo ARGS="--demo-standard -y -d"` and `make demo-down` (see `Makefile:1`).
 - Want to try multi-node? Follow Option C, then apply `specs/examples/echo-multinode.yaml`.
-- Podman registry cache: configure an insecure local registry to avoid HTTPS pull errors and Docker Hub rate limits, or disable the cache.
+- Podman registry cache: configure an insecure local registry (or enable TLS/auth; see CRI-REG.md) to avoid HTTPS pull errors and Docker Hub rate limits, or disable the cache.
   ```
   mkdir -p ~/.config/containers/registries.conf.d
   cat > ~/.config/containers/registries.conf.d/local-cache.conf <<'EOF'
@@ -116,7 +116,7 @@ docker compose -f ops/dev/docker-compose.yaml up -d
 ```
 python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch
 ```
-   - For CRI/containerd: `AE_RUNTIME_BACKEND=cri` and follow the CRI section in `docs/ops/runbook.md` for CNI init + smoke checks.
+   - For CRI/containerd: `AE_RUNTIME_BACKEND=cri` and follow `docs/reference/cri-containerd.md` (plus `docs/ops/runbook.md`) for setup, CNI init, and smoke checks.
 
 4) Apply and inspect a sample workload (App):
 ```

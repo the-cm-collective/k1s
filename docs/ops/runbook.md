@@ -15,6 +15,8 @@ Setup
   - Demo convenience: `AE_REGISTER_LOCAL_NODE=1` registers a local node when no nodes are present (keeps demo/labs single-node runs working while preserving Kubernetes scheduling semantics by default).
   - Reset state quickly when switching contexts: `./scripts/init_demo.sh --reset` (deletes `state/controller.db` and `state/projections/`).
   - Registry cache: `./scripts/init_demo.sh --reset-registry-cache` (clears `state/registry` to force re-pull into the local cache).
+  - Registry cache TLS/auth (optional): set `AE_REGISTRY_TLS=1` and/or `AE_REGISTRY_AUTH=1` and provide certs/htpasswd (see `CRI-REG.md`).
+  - CRI image sync (optional): `AE_CRI_IMAGE_SYNC=1 ./scripts/init_demo.sh` (push demo images to registry + `crictl pull`).
 - SOPS/age (secrets):
   - Generate an age identity: `mkdir -p ~/.config/ae && age-keygen -o ~/.config/ae/keys.txt && chmod 600 ~/.config/ae/keys.txt`
   - Point SOPS to it: `export SOPS_AGE_KEY_FILE=~/.config/ae/keys.txt`
@@ -33,6 +35,7 @@ CRI nodes (containerd)
 - Streaming exec/attach uses `crictl`; ensure it is installed and on PATH (`CRICTL_BIN` overrides).
 - CRI port-forward proxy (pods/services): set `AE_APISHIM_CRI_PORTFORWARD=1` (or `AE_APISHIM_CRI_PORTFORWARD_FORCE=1` to always prefer it).
 - Service VIP proxy on CRI uses iptables; set `AE_ENABLE_SERVICE_PROXY=1` and run as root.
+- Temporary socket ACL (dev): `AE_CRI_SOCKET_ACCESS=1 ./scripts/init_demo.sh` (or run `./scripts/containerd_socket_access.sh --grant`)
 - CNI dirs (defaults): `/opt/cni/bin` and `/etc/cni/net.d`
 - Init CNI configs (bridge + loopback) if missing: `./scripts/cni_init.sh`
 - If CNI version mismatches occur, force rewrite with a newer spec and restart containerd:
@@ -43,6 +46,34 @@ CRI nodes (containerd)
 - Optional pull test: `AE_CRI_SMOKE_PULL=1 pytest tests/integration/test_cri_smoke.py -k pull`
 - Optional lifecycle test: `AE_CRI_IT=1 pytest tests/integration/test_cri_runtime_integration.py -q`
 - CI-style bootstrap (installs containerd/CNI/crictl): `./scripts/cri_ci_setup.sh`
+- In-cluster registry (host containerd): set `AE_REGISTRY_HOST=registry.k1s.home.arpa:32000` (NodePort), ensure DNS/hosts map to the node IP, and disable the local dev cache with `AE_USE_REGISTRY_CACHE=0` if it is not needed.
+- Pre-warm images (real k8s): apply `specs/examples/cri-image-prewarm-k8s.yaml` and set `PREWARM_IMAGES` as needed.
+- Containerd registry trust helper: `scripts/containerd_registry_trust.sh --host registry.k1s.home.arpa:32000 --ca /tmp/registry.crt --restart`.
+- CLI wrapper: `ae cri trust --host registry.k1s.home.arpa:32000 --ca /tmp/registry.crt --restart`
+- Auto-trust in demo (optional): `AE_CRI_REGISTRY_TRUST=1 AE_CRI_REGISTRY_TRUST_CA=/tmp/registry.crt ./scripts/init_demo.sh`
+- For HTTP registries (e.g., MicroK8s): `AE_CRI_REGISTRY_TRUST=1 AE_CRI_REGISTRY_TRUST_SCHEME=http AE_CRI_REGISTRY_TRUST_INSECURE=1 ./scripts/init_demo.sh`
+- Pre-warm images (host CRI): `AE_CRI_PREWARM=1 AE_CRI_PREWARM_IMAGES="mendhak/http-https-echo:37" ./scripts/init_demo.sh` (uses `scripts/cri_image_prewarm.sh`).
+- MicroK8s registry (optional): set `AE_REGISTRY_HOST=localhost:32000` and configure containerd trust (see `CRI-REG.md`).
+- CRI crictl-only image (prewarm/ops): `AE_REGISTRY_HOST=registry.k1s.home.arpa:32000 scripts/build_cri_crictl_image.sh --push`.
+- CRI buildkit-only image (builds): `AE_REGISTRY_HOST=registry.k1s.home.arpa:32000 scripts/build_cri_buildkit_image.sh --push`.
+- CRI toolbox image (advanced): `AE_REGISTRY_HOST=registry.k1s.home.arpa:32000 scripts/build_cri_toolbox_image.sh --push`.
+- Demo/labs runs with `AE_RUNTIME_BACKEND=cri` build crictl + buildkit images by default (toggle with `AE_CRI_CRICTL_BUILD=0` or `AE_CRI_BUILDKIT_BUILD=0`).
+- CRI toolbox pod (build without Podman): `kubectl apply -f specs/examples/cri-toolbox-k8s.yaml`.
+- Security note: the toolbox pod mounts the host containerd socket (node-root). Restrict exec access and delete the pod when finished.
+- CRI image helpers (k1s native):
+  - `ae cri images list`
+  - `ae cri images pull <image>`
+  - `ae cri images rm <image>`
+  - `ae cri images inspect <image> --json`
+  - `ae cri build --context /path/to/context --image registry.k1s.home.arpa:32000/app:tag` (uses kubectl + buildkit pod; optionally pre-pulls via crictl; deletes pod after build)
+- CRI registry helpers (remote):
+  - `ae cri registry list --registry registry.k1s.home.arpa:32000`
+  - `ae cri registry tags <repo> --registry registry.k1s.home.arpa:32000`
+  - `ae cri registry manifest <repo>:<tag> --registry registry.k1s.home.arpa:32000`
+  - `ae cri registry tag <repo>:<tag> <repo>:<new-tag> --registry registry.k1s.home.arpa:32000`
+  - `ae cri registry delete <repo>:<tag> --registry registry.k1s.home.arpa:32000 --force`
+  - `ae cri registry rm <repo>:<tag> --registry registry.k1s.home.arpa:32000 --force`
+  - `ae cri registry push --context /path/to/context --image registry.k1s.home.arpa:32000/app:tag`
 
 Export and Validate K8s YAML
 - Hardened export with validation:

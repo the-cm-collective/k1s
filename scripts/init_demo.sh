@@ -247,6 +247,22 @@ Environment variables you can override:
   - AE_REGISTRY_PORT (default 5001), AE_REGISTRY_HOST (default localhost:${AE_REGISTRY_PORT})
   - AE_REGISTRY_IMAGE (default registry:2) to override the registry cache image
   - AE_REGISTRY_USERNAME/AE_REGISTRY_PASSWORD/AE_REGISTRY_REMOTEURL for upstream registry auth
+  - AE_REGISTRY_TLS (default 0) to enable TLS for the local registry cache
+  - AE_REGISTRY_AUTH (default 0) to enable htpasswd auth for the local registry cache
+  - AE_REGISTRY_AUTH_REALM (default k1s-registry) to customize the auth realm
+  - AE_CRI_IMAGE_SYNC (default 0) to push demo images to the registry and pre-pull via CRI
+  - AE_CRI_PREWARM (default 0) to pre-pull a list of images via CRI
+  - AE_CRI_PREWARM_IMAGES (default mendhak/http-https-echo:37) list of images to pre-pull
+  - AE_CRI_BUILDKIT_BUILD (default 1 for CRI) to build/push the buildkit-only image
+  - AE_CRI_TOOLBOX_BUILD (default 0 for CRI) to build/push the toolbox image
+  - AE_CRI_CRICTL_BUILD (default 1 for CRI) to build/push the crictl-only image
+  - AE_CRI_REGISTRY_TRUST (default 0) to write containerd trust for AE_REGISTRY_HOST
+  - AE_CRI_REGISTRY_TRUST_CA (default empty) CA cert path for trust helper
+  - AE_CRI_REGISTRY_TRUST_INSECURE (default 0) to skip TLS verification (dev-only)
+  - AE_CRI_REGISTRY_TRUST_SCHEME (default AE_REGISTRY_SCHEME or https)
+  - AE_CRI_REGISTRY_TRUST_SYSTEM (default 0) to install CA into system trust store
+  - AE_CRI_REGISTRY_TRUST_RESTART (default 0) to restart containerd after writing trust
+  - AE_CRI_SOCKET_ACCESS (default 0) to grant temporary ACL access to the containerd socket
 
 Endpoints after setup:
   - Apps via Caddy: https://blue.home.arpa:8443/ (multi‑arch echo) and https://green.home.arpa:8443/ (local build)
@@ -268,6 +284,84 @@ AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-podman}
 # Convenience: register a local node for demo/labs unless explicitly disabled
 AE_REGISTER_LOCAL_NODE=${AE_REGISTER_LOCAL_NODE:-1}
 AE_USE_REGISTRY_CACHE=${AE_USE_REGISTRY_CACHE:-1}
+AE_REGISTRY_TLS=${AE_REGISTRY_TLS:-0}
+AE_REGISTRY_AUTH=${AE_REGISTRY_AUTH:-0}
+AE_REGISTRY_AUTH_REALM=${AE_REGISTRY_AUTH_REALM:-k1s-registry}
+AE_CRI_IMAGE_SYNC=${AE_CRI_IMAGE_SYNC:-0}
+AE_CRI_PREWARM=${AE_CRI_PREWARM:-0}
+AE_CRI_PREWARM_IMAGES=${AE_CRI_PREWARM_IMAGES:-mendhak/http-https-echo:37}
+AE_CRI_BUILDKIT_BUILD=${AE_CRI_BUILDKIT_BUILD:-}
+AE_CRI_TOOLBOX_BUILD=${AE_CRI_TOOLBOX_BUILD:-}
+AE_CRI_CRICTL_BUILD=${AE_CRI_CRICTL_BUILD:-}
+AE_CRI_REGISTRY_TRUST=${AE_CRI_REGISTRY_TRUST:-0}
+AE_CRI_REGISTRY_TRUST_CA=${AE_CRI_REGISTRY_TRUST_CA:-}
+AE_CRI_REGISTRY_TRUST_INSECURE=${AE_CRI_REGISTRY_TRUST_INSECURE:-0}
+AE_CRI_REGISTRY_TRUST_SCHEME=${AE_CRI_REGISTRY_TRUST_SCHEME:-}
+AE_CRI_REGISTRY_TRUST_SYSTEM=${AE_CRI_REGISTRY_TRUST_SYSTEM:-0}
+AE_CRI_REGISTRY_TRUST_RESTART=${AE_CRI_REGISTRY_TRUST_RESTART:-0}
+AE_CRI_SOCKET_ACCESS=${AE_CRI_SOCKET_ACCESS:-0}
+export AE_REGISTRY_AUTH_REALM
+
+if [[ "${AE_RUNTIME_BACKEND}" == "cri" || "${AE_RUNTIME_BACKEND}" == "containerd" ]]; then
+  AE_CRI_BUILDKIT_BUILD=${AE_CRI_BUILDKIT_BUILD:-1}
+  AE_CRI_TOOLBOX_BUILD=${AE_CRI_TOOLBOX_BUILD:-0}
+  AE_CRI_CRICTL_BUILD=${AE_CRI_CRICTL_BUILD:-1}
+else
+  AE_CRI_BUILDKIT_BUILD=${AE_CRI_BUILDKIT_BUILD:-0}
+  AE_CRI_TOOLBOX_BUILD=${AE_CRI_TOOLBOX_BUILD:-0}
+  AE_CRI_CRICTL_BUILD=${AE_CRI_CRICTL_BUILD:-0}
+fi
+
+if [[ -z "${AE_REGISTRY_HOST:-}" ]] && \
+   [[ "${AE_RUNTIME_BACKEND}" == "cri" || "${AE_RUNTIME_BACKEND}" == "containerd" ]] && \
+   [[ "${AE_CRI_IMAGE_SYNC}" == "1" || "${AE_CRI_BUILDKIT_BUILD}" == "1" || "${AE_CRI_TOOLBOX_BUILD}" == "1" || "${AE_CRI_CRICTL_BUILD}" == "1" ]]; then
+  AE_REGISTRY_HOST="registry.k1s.home.arpa:32000"
+  export AE_REGISTRY_HOST
+  if [[ "${AE_USE_REGISTRY_CACHE}" == "1" ]]; then
+    log "Disabling local registry cache (AE_USE_REGISTRY_CACHE=0) for CRI registry default"
+    AE_USE_REGISTRY_CACHE=0
+  fi
+fi
+if [[ "${AE_CRI_REGISTRY_TRUST}" == "1" ]]; then
+  if [[ "${AE_RUNTIME_BACKEND}" != "cri" && "${AE_RUNTIME_BACKEND}" != "containerd" ]]; then
+    log "AE_CRI_REGISTRY_TRUST=1 set but runtime backend is ${AE_RUNTIME_BACKEND}; skipping"
+  elif [[ -z "${AE_REGISTRY_HOST:-}" ]]; then
+    log "AE_CRI_REGISTRY_TRUST=1 set but AE_REGISTRY_HOST is unset; skipping"
+  else
+    scheme="${AE_CRI_REGISTRY_TRUST_SCHEME:-${AE_REGISTRY_SCHEME:-https}}"
+    if [[ "${scheme}" == "https" && -z "${AE_CRI_REGISTRY_TRUST_CA}" && "${AE_CRI_REGISTRY_TRUST_INSECURE}" != "1" ]]; then
+      log "CRI registry trust requested but no CA provided; set AE_CRI_REGISTRY_TRUST_CA or AE_CRI_REGISTRY_TRUST_INSECURE=1"
+    else
+      trust_cmd=(./scripts/containerd_registry_trust.sh --host "${AE_REGISTRY_HOST}" --scheme "${scheme}")
+      if [[ -n "${AE_CRI_REGISTRY_TRUST_CA}" ]]; then
+        trust_cmd+=(--ca "${AE_CRI_REGISTRY_TRUST_CA}")
+      fi
+      if [[ "${AE_CRI_REGISTRY_TRUST_INSECURE}" == "1" ]]; then
+        trust_cmd+=(--insecure)
+      fi
+      if [[ "${AE_CRI_REGISTRY_TRUST_SYSTEM}" == "1" ]]; then
+        trust_cmd+=(--system-trust)
+      fi
+      if [[ "${AE_CRI_REGISTRY_TRUST_RESTART}" == "1" ]]; then
+        trust_cmd+=(--restart)
+      fi
+      log "Writing containerd trust for ${AE_REGISTRY_HOST} (${scheme})"
+      if ! "${trust_cmd[@]}"; then
+        log "CRI registry trust helper failed; continuing"
+      fi
+    fi
+  fi
+fi
+if [[ "${AE_CRI_SOCKET_ACCESS}" == "1" ]]; then
+  if [[ "${AE_RUNTIME_BACKEND}" != "cri" && "${AE_RUNTIME_BACKEND}" != "containerd" ]]; then
+    log "AE_CRI_SOCKET_ACCESS=1 set but runtime backend is ${AE_RUNTIME_BACKEND}; skipping"
+  else
+    log "Granting temporary containerd socket access"
+    if ! ./scripts/containerd_socket_access.sh --grant; then
+      log "containerd socket access helper failed; continuing"
+    fi
+  fi
+fi
 NO_SUPERVISOR=0
 DEBUG_ATTACH=0
 DEMO_CONFIGS=0
@@ -295,6 +389,12 @@ DEV_COMPOSE_FILES=(-f ops/dev/docker-compose.yaml)
 DEV_COMPOSE_FILES_WITH_CACHE=("${DEV_COMPOSE_FILES[@]}")
 if [[ -f ops/dev/docker-compose.cache.override.yml ]]; then
   DEV_COMPOSE_FILES_WITH_CACHE=(-f ops/dev/docker-compose.yaml -f ops/dev/docker-compose.cache.override.yml)
+  if [[ "${AE_REGISTRY_TLS}" == "1" && -f ops/dev/docker-compose.cache.tls.override.yml ]]; then
+    DEV_COMPOSE_FILES_WITH_CACHE+=(-f ops/dev/docker-compose.cache.tls.override.yml)
+  fi
+  if [[ "${AE_REGISTRY_AUTH}" == "1" && -f ops/dev/docker-compose.cache.auth.override.yml ]]; then
+    DEV_COMPOSE_FILES_WITH_CACHE+=(-f ops/dev/docker-compose.cache.auth.override.yml)
+  fi
   if [[ "${AE_USE_REGISTRY_CACHE}" == "1" ]]; then
     DEV_COMPOSE_FILES=("${DEV_COMPOSE_FILES_WITH_CACHE[@]}")
   fi
@@ -626,6 +726,10 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
     log "Clearing Labs shim artifacts under state/labs/"
     rm -f state/labs/helm-demo.log state/labs/apishim.env 2>/dev/null || true
   fi
+  if [[ -f state/containerd.sock.acl ]]; then
+    log "Restoring containerd socket ACL from state/containerd.sock.acl"
+    ./scripts/containerd_socket_access.sh --revoke || true
+  fi
   # Optional full reset of controller state/caches on --down --reset
   if [[ $RESET_FLAG -eq 1 ]]; then
     if [[ -f state/controller.db ]]; then
@@ -839,6 +943,8 @@ log "Installing Python dependencies inside virtualenv"
 "$PIP_BIN" install -e .[dev]
 
 log "Preparing demo images (backend=$AE_RUNTIME_BACKEND)"
+DEMO_GREEN_IMAGE="demo-green:latest"
+DEMO_SHELL_IMAGE="demo-shell:latest"
 # Pre-pull multi-arch echo image used by most samples for faster first run
 if command -v podman >/dev/null 2>&1; then
   podman pull mendhak/http-https-echo:37 >/dev/null 2>&1 || true
@@ -849,16 +955,20 @@ fi
 # Build local demo images (green + shell-demo); blue samples use the pre-pulled echo image
 if [[ "$AE_RUNTIME_BACKEND" == "podman" || "$AE_RUNTIME_BACKEND" == "oci" ]]; then
   if command -v podman >/dev/null 2>&1; then
-    podman build -t localhost/demo-green:latest samples/servers/green || true
-    podman build -t localhost/demo-shell:latest samples/servers/shell-demo || true
+    DEMO_GREEN_IMAGE="localhost/demo-green:latest"
+    DEMO_SHELL_IMAGE="localhost/demo-shell:latest"
+    podman build -t "$DEMO_GREEN_IMAGE" samples/servers/green || true
+    podman build -t "$DEMO_SHELL_IMAGE" samples/servers/shell-demo || true
   else
+    DEMO_GREEN_IMAGE="demo-green:latest"
+    DEMO_SHELL_IMAGE="demo-shell:latest"
     log "Podman not available; building images with Docker as a fallback"
-    docker build -t demo-green:latest samples/servers/green || true
-    docker build -t demo-shell:latest samples/servers/shell-demo || true
+    docker build -t "$DEMO_GREEN_IMAGE" samples/servers/green || true
+    docker build -t "$DEMO_SHELL_IMAGE" samples/servers/shell-demo || true
   fi
 else
-  docker build -t demo-green:latest samples/servers/green || true
-  docker build -t demo-shell:latest samples/servers/shell-demo || true
+  docker build -t "$DEMO_GREEN_IMAGE" samples/servers/green || true
+  docker build -t "$DEMO_SHELL_IMAGE" samples/servers/shell-demo || true
 fi
 
 log "Starting local dev stack"
@@ -904,18 +1014,42 @@ if [[ "${AE_USE_REGISTRY_CACHE}" == "1" && -f ops/dev/docker-compose.cache.overr
   if [[ "${AE_REGISTRY_PORT}" != "5001" ]]; then
     log "Registry cache default port 5001 busy; using ${AE_REGISTRY_PORT}"
   fi
-  if ! warn_insecure_registry "${AE_REGISTRY_HOST}" "${STACK_BIN}"; then
-    log "Registry cache requires an insecure registry entry for ${AE_REGISTRY_HOST}."
-    if prompt_yes_no "Continue without registry cache? This may hit Docker Hub pull limits." "N"; then
-      log "Continuing without registry cache (AE_USE_REGISTRY_CACHE=0)"
-      AE_USE_REGISTRY_CACHE=0
-    else
-      log "Aborting. Configure the insecure registry or rerun with AE_USE_REGISTRY_CACHE=0."
+  if [[ "${AE_REGISTRY_TLS}" == "1" ]]; then
+    mkdir -p state/registry-certs || true
+    if [[ ! -s state/registry-certs/registry.crt || ! -s state/registry-certs/registry.key ]]; then
+      log "Registry TLS enabled but cert/key missing under state/registry-certs."
+      log "Expected: state/registry-certs/registry.crt and state/registry-certs/registry.key"
+      log "Create certs or rerun with AE_REGISTRY_TLS=0."
       exit 1
     fi
+  fi
+  if [[ "${AE_REGISTRY_AUTH}" == "1" ]]; then
+    mkdir -p state/registry-auth || true
+    if [[ ! -s state/registry-auth/htpasswd ]]; then
+      log "Registry auth enabled but htpasswd missing at state/registry-auth/htpasswd."
+      log "Create it with: htpasswd -Bbc state/registry-auth/htpasswd <user> <pass>"
+      exit 1
+    fi
+  fi
+  if [[ "${AE_REGISTRY_TLS}" != "1" ]]; then
+    if ! warn_insecure_registry "${AE_REGISTRY_HOST}" "${STACK_BIN}"; then
+      log "Registry cache requires an insecure registry entry for ${AE_REGISTRY_HOST}."
+      if prompt_yes_no "Continue without registry cache? This may hit Docker Hub pull limits." "N"; then
+        log "Continuing without registry cache (AE_USE_REGISTRY_CACHE=0)"
+        AE_USE_REGISTRY_CACHE=0
+      else
+        log "Aborting. Configure the insecure registry or rerun with AE_USE_REGISTRY_CACHE=0."
+        exit 1
+      fi
+    else
+      log "Using local registry cache at ${AE_REGISTRY_HOST}"
+      log "Registry cache image set to ${AE_REGISTRY_IMAGE}"
+    fi
   else
-    log "Using local registry cache at ${AE_REGISTRY_HOST}"
-    log "Registry cache image set to ${AE_REGISTRY_IMAGE}"
+    log "Using TLS-secured registry cache at ${AE_REGISTRY_HOST}"
+  fi
+  if [[ "${AE_REGISTRY_AUTH}" == "1" ]]; then
+    log "Registry cache auth enabled (realm: ${AE_REGISTRY_AUTH_REALM})"
   fi
 fi
 # Ensure state directories exist with liberal perms for rootless Podman
@@ -923,6 +1057,12 @@ mkdir -p state/caddy-data state/caddy docs/site || true
 if [[ "${AE_USE_REGISTRY_CACHE}" == "1" && -f ops/dev/docker-compose.cache.override.yml ]]; then
   mkdir -p state/registry || true
   chmod -R 0777 state/registry || true
+  if [[ "${AE_REGISTRY_TLS}" == "1" ]]; then
+    mkdir -p state/registry-certs || true
+  fi
+  if [[ "${AE_REGISTRY_AUTH}" == "1" ]]; then
+    mkdir -p state/registry-auth || true
+  fi
 fi
 # Ensure Caddy can write to /data even under rootless runtimes; if the directory is
 # not writable (e.g., created by root from a previous run), replace it with a fresh one.
@@ -968,6 +1108,67 @@ if [[ "${AE_USE_REGISTRY_CACHE}" == "1" && -f ops/dev/docker-compose.cache.overr
   done
   if ! port_open "$registry_host" "$registry_port"; then
     log "Registry cache not reachable at ${registry_host}:${registry_port} (image pulls may fail)"
+  fi
+fi
+
+if [[ "${AE_RUNTIME_BACKEND}" == "cri" || "${AE_RUNTIME_BACKEND}" == "containerd" ]]; then
+  if [[ "${AE_CRI_CRICTL_BUILD}" == "1" ]]; then
+    if [[ -z "${AE_REGISTRY_HOST:-}" ]]; then
+      log "CRI crictl build requested but AE_REGISTRY_HOST is unset; skipping"
+    else
+      log "Building CRI crictl image for registry ${AE_REGISTRY_HOST}"
+      if ! ./scripts/build_cri_crictl_image.sh --registry "${AE_REGISTRY_HOST}" --tag "k1s-crictl:latest" --push; then
+        log "CRI crictl image build/push failed; continuing (set AE_CRI_CRICTL_BUILD=0 to skip)"
+      fi
+    fi
+  fi
+  if [[ "${AE_CRI_BUILDKIT_BUILD}" == "1" ]]; then
+    if [[ -z "${AE_REGISTRY_HOST:-}" ]]; then
+      log "CRI buildkit build requested but AE_REGISTRY_HOST is unset; skipping"
+    else
+      log "Building CRI buildkit image for registry ${AE_REGISTRY_HOST}"
+      if ! ./scripts/build_cri_buildkit_image.sh --registry "${AE_REGISTRY_HOST}" --tag "k1s-buildkit:latest" --push; then
+        log "CRI buildkit image build/push failed; continuing (set AE_CRI_BUILDKIT_BUILD=0 to skip)"
+      fi
+    fi
+  fi
+  if [[ "${AE_CRI_TOOLBOX_BUILD}" == "1" ]]; then
+    if [[ -z "${AE_REGISTRY_HOST:-}" ]]; then
+      log "CRI toolbox build requested but AE_REGISTRY_HOST is unset; skipping"
+    else
+      log "Building CRI toolbox image for registry ${AE_REGISTRY_HOST}"
+      if ! ./scripts/build_cri_toolbox_image.sh --registry "${AE_REGISTRY_HOST}" --tag "k1s-cri-toolbox:latest" --push; then
+        log "CRI toolbox image build/push failed; continuing (set AE_CRI_TOOLBOX_BUILD=0 to skip)"
+      fi
+    fi
+  fi
+fi
+
+if [[ "${AE_CRI_IMAGE_SYNC}" == "1" ]]; then
+  if [[ "${AE_RUNTIME_BACKEND}" != "cri" && "${AE_RUNTIME_BACKEND}" != "containerd" ]]; then
+    log "AE_CRI_IMAGE_SYNC=1 set but runtime backend is ${AE_RUNTIME_BACKEND}; skipping"
+  elif [[ -z "${AE_REGISTRY_HOST:-}" ]]; then
+    log "AE_CRI_IMAGE_SYNC=1 requires AE_REGISTRY_HOST (registry to push/pull from)"
+  else
+    log "Syncing demo images to CRI via registry ${AE_REGISTRY_HOST}"
+    if ! ./scripts/cri_image_sync.sh \
+      --registry "${AE_REGISTRY_HOST}" \
+      --local-image "${DEMO_GREEN_IMAGE}" \
+      --local-image "${DEMO_SHELL_IMAGE}" \
+      --image "mendhak/http-https-echo:37"; then
+      log "CRI image sync failed; continuing (set AE_CRI_IMAGE_SYNC=0 to skip)"
+    fi
+  fi
+fi
+
+if [[ "${AE_CRI_PREWARM}" == "1" ]]; then
+  if [[ "${AE_RUNTIME_BACKEND}" != "cri" && "${AE_RUNTIME_BACKEND}" != "containerd" ]]; then
+    log "AE_CRI_PREWARM=1 set but runtime backend is ${AE_RUNTIME_BACKEND}; skipping"
+  else
+    log "Pre-warming CRI images (${AE_CRI_PREWARM_IMAGES})"
+    if ! ./scripts/cri_image_prewarm.sh; then
+      log "CRI image prewarm failed; continuing (set AE_CRI_PREWARM=0 to skip)"
+    fi
   fi
 fi
   if ! ${STACK_COMPOSE[@]} "${DEV_COMPOSE_FILES[@]}" up -d; then
@@ -1402,7 +1603,19 @@ mkdir -p "$DEMO_SPECS_DIR"
 if [[ $DOCS_ONLY -ne 1 ]]; then
   # Helper to include a spec if the file exists
   add_spec() {
-    local f="$1"; if [[ -f "$f" ]]; then cp "$f" "$DEMO_SPECS_DIR/"; fi
+    local f="$1"
+    if [[ -f "$f" ]]; then
+      local dest="$DEMO_SPECS_DIR/$(basename "$f")"
+      if [[ "${AE_CRI_IMAGE_SYNC}" == "1" && -n "${AE_REGISTRY_HOST:-}" ]] && \
+         [[ "${AE_RUNTIME_BACKEND}" == "cri" || "${AE_RUNTIME_BACKEND}" == "containerd" ]]; then
+        sed \
+          -e "s|image: demo-green:latest|image: ${AE_REGISTRY_HOST}/demo-green:latest|" \
+          -e "s|image: demo-shell:latest|image: ${AE_REGISTRY_HOST}/demo-shell:latest|" \
+          "$f" > "$dest"
+      else
+        cp "$f" "$dest"
+      fi
+    fi
   }
   ANY_DEMO=$(( DEMO_CONFIGS | DEMO_STANDARD | DEMO_ECHO_MR | DEMO_ECHO_MULTI | DEMO_SECURITY | DEMO_TCP | DEMO_EXEC | DEMO_ROLLOUT | DEMO_STORAGE ))
   if [[ $DEMO_STANDARD -eq 1 || $ANY_DEMO -eq 0 ]]; then

@@ -132,6 +132,65 @@ class AgentHandler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
                 return
+            if self.path == "/v1/portforward/attach":
+                pod_id = payload.get("pod_id") or payload.get("uid")
+                pod_name = payload.get("pod_name") or payload.get("replica_id")
+                namespace = payload.get("namespace")
+                try:
+                    port = int(payload.get("port") or 0)
+                except Exception:
+                    port = 0
+                if not port:
+                    _json_response(self, 400, {"error": "port required"})
+                    return
+                target = self._resolve_portforward_target(
+                    pod_id=str(pod_id) if pod_id else None,
+                    pod_name=str(pod_name) if pod_name else None,
+                    namespace=str(namespace) if namespace else None,
+                    port=port,
+                )
+                if not target:
+                    _json_response(self, 404, {"error": "pod target not found"})
+                    return
+                host, target_port = target
+                try:
+                    upstream = socket.create_connection((host, int(target_port)), timeout=5.0)
+                    upstream.settimeout(0.05)
+                except Exception as exc:  # noqa: BLE001
+                    _json_response(self, 502, {"error": f"upstream connect failed: {exc}"})
+                    return
+                self.send_response(101, "Switching Protocols")
+                self.send_header("Connection", "Upgrade")
+                self.send_header("Upgrade", "ae-portforward")
+                self.end_headers()
+                client_sock = self.connection
+                client_sock.settimeout(0.05)
+                try:
+                    while True:
+                        try:
+                            data = client_sock.recv(4096)
+                        except socket.timeout:
+                            data = None
+                        if data:
+                            upstream.sendall(data)
+                        try:
+                            resp = upstream.recv(4096)
+                        except socket.timeout:
+                            resp = None
+                        if resp:
+                            client_sock.sendall(resp)
+                        if data == b"" or resp == b"":
+                            break
+                finally:
+                    try:
+                        upstream.close()
+                    except Exception:
+                        pass
+                    try:
+                        client_sock.close()
+                    except Exception:
+                        pass
+                return
             if self.path == "/v1/exec_resize":
                 exec_id = payload.get("exec_id", "")
                 h = payload.get("height")
@@ -205,6 +264,50 @@ class AgentHandler(BaseHTTPRequestHandler):
             _json_response(self, 500, {"error": str(exc)})
             return
         _json_response(self, 404, {"error": "unknown endpoint"})
+
+    def _resolve_portforward_target(
+        self,
+        *,
+        pod_id: str | None,
+        pod_name: str | None,
+        namespace: str | None,
+        port: int,
+    ) -> tuple[str, int] | None:
+        try:
+            containers = self.runtime.list_containers_info()
+        except Exception:
+            containers = []
+        target = None
+        for c in containers:
+            labels = c.get("labels", {}) or {}
+            rid = labels.get("ae.pod_name") or labels.get("ae.replica_id") or c.get("name")
+            c_ns = labels.get("ae.namespace") or "default"
+            if pod_id and (c.get("uid") == pod_id or c.get("id") == pod_id):
+                target = c
+                break
+            if pod_name and rid == pod_name and (not namespace or c_ns == namespace):
+                target = c
+                break
+        if not target:
+            return None
+        pod_ip = target.get("pod_ip")
+        host_ip = target.get("host_ip") or target.get("hostIP") or "127.0.0.1"
+        host_ports = target.get("host_ports") or target.get("hostPorts") or []
+        port_map = target.get("port_map") or target.get("portMap") or {}
+        target_port = int(port)
+        if not pod_ip:
+            # If we only have host ports, try to map container port -> host port.
+            if isinstance(port_map, dict):
+                if port in port_map:
+                    target_port = int(port_map.get(port) or port)
+                elif str(port) in port_map:
+                    target_port = int(port_map.get(str(port)) or port)
+            if target_port == int(port) and host_ports:
+                try:
+                    target_port = int(host_ports[0])
+                except Exception:
+                    target_port = int(port)
+        return (str(pod_ip) if pod_ip else str(host_ip), int(target_port))
 
 
 def _result_to_dict(res: RuntimeResult) -> dict:

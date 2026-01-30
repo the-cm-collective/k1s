@@ -24,6 +24,7 @@ This document standardizes how we create and manage the `k1s` service user for b
   - `docker`: grants access to `/var/run/docker.sock` so Docker can be used without sudo.
 - Optional (CRI/containerd runtime)
   - Access to `/run/containerd/containerd.sock` (typically root‑owned); run as root or grant socket access via group/ACL if you want CRI without sudo.
+  - Dev helper: `scripts/containerd_socket_access.sh --grant` (restores with `--revoke`).
 - Not required
   - No special `podman` group is needed; Podman rootless works per‑user.
   - `netdev` is not required for rootless networking (handled by `slirp4netns`).

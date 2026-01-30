@@ -679,6 +679,7 @@
       <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
       <a href="multinode-lab.html">Multi-Node</a>
+      <a href="cri-containerd.html">CRI containerd</a>
       <a href="http-api.html">HTTP API</a>
       <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
@@ -724,6 +725,8 @@
 <ul>
 <li>HostPath binds under <code>spec.volumes</code> still work for simple dev paths.</li>
 <li>Future: <code>size</code> is reserved for advisory/validation.</li>
+<li>K8s-style hostPath objects (<code>{ path, type }</code>) are accepted; <code>type</code> is ignored.</li>
+<li>apishim converts K8s hostPath and PVC volumes into <code>spec.volumes</code> and <code>spec.pvcMounts</code>.</li>
 </ul>
 <h3>NetFS StorageClass config</h3>
 <p>Provide StorageClass definitions via <code>AE_STORAGE_PROVISIONERS</code> (YAML file). The shim will seed these into its object store on startup.</p>
@@ -801,7 +804,7 @@ export AE_APISHIM_DB=state/apishim.db</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-28 21:04:42</span>
+        <span>Built 2026-01-29 16:24:33</span>
       </div>
     </footer>
     <script>

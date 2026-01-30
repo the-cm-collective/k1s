@@ -92,6 +92,7 @@ NAV_LINKS = [
     ("Demos", "examples.html", False, False),
     ("Architecture", "architecture.html", False, False),
     ("Multi-Node", "multinode-lab.html", False, False),
+    ("CRI containerd", "cri-containerd.html", False, False),
     ("HTTP API", "http-api.html", False, False),
     ("API Shim", "apishim-compatibility-matrix.html", False, False),
     ("OpenAPI v3", "/openapi/v3", True, True),
@@ -1985,6 +1986,7 @@ def main() -> None:
                 ("Rollouts", "rollouts.html", False, False),
                 ("Storage", "storage.html", False, False),
                 ("Scheduling", "scheduling.html", False, False),
+                ("CRI containerd", "cri-containerd.html", False, False),
             ],
         },
         {

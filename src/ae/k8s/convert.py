@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from typing import Any
 
@@ -200,8 +201,10 @@ def manifest_from_k8s_workload(
             env.append({"name": str(item["name"]), "value": str(item.get("value") or "")})
     working_dir = c0.get("workingDir")
     pvc_mounts: list[dict[str, Any]] = []
+    host_mounts: list[dict[str, Any]] = []
     try:
         volume_claims: dict[str, tuple[str, bool]] = {}
+        volume_hosts: dict[str, str] = {}
         for vol in tpl.get("volumes") or []:
             if not isinstance(vol, dict):
                 continue
@@ -212,8 +215,17 @@ def manifest_from_k8s_workload(
             claim = pvc.get("claimName")
             if vname and claim:
                 volume_claims[str(vname)] = (str(claim), bool(pvc.get("readOnly", False)))
-        if volume_claims:
-            seen: set[tuple[str, str, bool]] = set()
+            host = vol.get("hostPath")
+            host_path = None
+            if isinstance(host, dict):
+                host_path = host.get("path")
+            elif isinstance(host, str):
+                host_path = host
+            if vname and host_path:
+                volume_hosts[str(vname)] = str(host_path)
+        if volume_claims or volume_hosts:
+            seen_pvc: set[tuple[str, str, bool]] = set()
+            seen_hosts: set[tuple[str, str, bool]] = set()
             for container in containers or []:
                 if not isinstance(container, dict):
                     continue
@@ -221,27 +233,66 @@ def manifest_from_k8s_workload(
                     if not isinstance(vm, dict):
                         continue
                     vname = vm.get("name")
+                    mount_path = vm.get("mountPath")
+                    if not mount_path:
+                        mount_path = None
+                    entry = volume_claims.get(str(vname)) if vname else None
+                    if entry and mount_path:
+                        claim, vol_read_only = entry
+                        read_only = bool(vm.get("readOnly", False)) or bool(vol_read_only)
+                        key = (str(claim), str(mount_path), bool(read_only))
+                        if key not in seen_pvc:
+                            seen_pvc.add(key)
+                            pvc_mounts.append(
+                                {
+                                    "claimName": str(claim),
+                                    "mountPath": str(mount_path),
+                                    "readOnly": read_only,
+                                }
+                            )
+                    host_path = volume_hosts.get(str(vname)) if vname else None
+                    if host_path and mount_path:
+                        read_only = bool(vm.get("readOnly", False))
+                        sub_path = vm.get("subPath")
+                        if sub_path:
+                            host_path = os.path.join(str(host_path), str(sub_path).lstrip("/"))
+                        key = (str(host_path), str(mount_path), bool(read_only))
+                        if key not in seen_hosts:
+                            seen_hosts.add(key)
+                            host_mounts.append(
+                                {
+                                    "hostPath": str(host_path),
+                                    "mountPath": str(mount_path),
+                                    "readOnly": read_only,
+                                }
+                            )
+                for vd in container.get("volumeDevices") or []:
+                    if not isinstance(vd, dict):
+                        continue
+                    vname = vd.get("name")
                     entry = volume_claims.get(str(vname)) if vname else None
                     if not entry:
                         continue
                     claim, vol_read_only = entry
-                    mount_path = vm.get("mountPath")
-                    if not mount_path:
+                    device_path = vd.get("devicePath")
+                    if not device_path:
                         continue
-                    read_only = bool(vm.get("readOnly", False)) or bool(vol_read_only)
-                    key = (str(claim), str(mount_path), bool(read_only))
-                    if key in seen:
+                    read_only = bool(vol_read_only)
+                    key = (str(claim), str(device_path), bool(read_only))
+                    if key in seen_pvc:
                         continue
-                    seen.add(key)
+                    seen_pvc.add(key)
                     pvc_mounts.append(
                         {
                             "claimName": str(claim),
-                            "mountPath": str(mount_path),
+                            "mountPath": str(device_path),
+                            "devicePath": str(device_path),
                             "readOnly": read_only,
                         }
                     )
     except Exception:  # noqa: S112 - best-effort PVC extraction
         pvc_mounts = []
+        host_mounts = []
     resources: dict[str, Any] | None = None
     if isinstance(c0.get("resources"), dict):
         res = c0.get("resources") or {}
@@ -312,6 +363,7 @@ def manifest_from_k8s_workload(
         security=security,
         health=health,
         pvc_mounts=pvc_mounts,
+        volumes=host_mounts,
     )
     if service_spec is not None:
         app_spec = app_spec.model_copy(update={"service": service_spec})

@@ -1825,14 +1825,22 @@ class ShimHandler(BaseHTTPRequestHandler):
         return port_map, procs
 
     @staticmethod
-    def _stop_cri_port_forward(procs: list[subprocess.Popen]) -> None:
+    def _stop_cri_port_forward(procs: list[Any]) -> None:
         for proc in procs:
+            if hasattr(proc, "stop"):
+                try:
+                    proc.stop()
+                except Exception:
+                    pass
+                continue
             try:
                 if proc.poll() is None:
                     proc.terminate()
             except Exception:
                 pass
         for proc in procs:
+            if hasattr(proc, "stop"):
+                continue
             try:
                 proc.wait(timeout=2)
             except Exception:
@@ -2383,7 +2391,13 @@ class ShimHandler(BaseHTTPRequestHandler):
             return 0
 
     # ---------------- WebSocket port-forward (best-effort) ----------------
-    def _handle_port_forward_ws(self, target_host: str, target_port: int) -> None:
+    def _handle_port_forward_ws(
+        self,
+        target_host: str,
+        target_port: int,
+        *,
+        connector=None,
+    ) -> None:
         """Minimal WebSocket port-forward bridge (single connection, multi-port)."""
 
         key = self.headers.get("Sec-WebSocket-Key")
@@ -2498,7 +2512,10 @@ class ShimHandler(BaseHTTPRequestHandler):
             channel_error = 1
             upstream = None
             try:
-                upstream = socket.create_connection((target_host, target_port), timeout=5.0)
+                if connector:
+                    upstream = connector(int(target_port))
+                else:
+                    upstream = socket.create_connection((target_host, target_port), timeout=5.0)
                 upstream.settimeout(0.1)
             except Exception:
                 if PF_DEBUG:
@@ -2631,7 +2648,11 @@ class ShimHandler(BaseHTTPRequestHandler):
             ws_conn = WsConn(self.connection, _recv_ws, _send_ws)
             try:
                 self._handle_port_forward_spdy(
-                    target_host, [target_port], conn_override=ws_conn, suppress_handshake=True
+                    target_host,
+                    [target_port],
+                    conn_override=ws_conn,
+                    suppress_handshake=True,
+                    connector=connector,
                 )
             finally:
                 try:
@@ -2648,7 +2669,10 @@ class ShimHandler(BaseHTTPRequestHandler):
             if port in upstream_socks:
                 return upstream_socks[port]
             try:
-                s = socket.create_connection((target_host, port), timeout=5.0)
+                if connector:
+                    s = connector(int(port))
+                else:
+                    s = socket.create_connection((target_host, port), timeout=5.0)
                 s.settimeout(0.1)
                 upstream_socks[port] = s
                 return s
@@ -2756,6 +2780,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         port_map: dict[int, int] | None = None,
         *,
         conn_override=None,
+        connector=None,
         suppress_handshake: bool = False,
     ) -> None:
         """Implements the SPDY/3.1 port-forward protocol used by kubectl.
@@ -3097,22 +3122,25 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 continue
                             if stream_id not in upstream_cache:
                                 try:
-                                    dest_host = host_by_port.get(port, target_host)
-                                    dest_port = pf_port_map.get(port, port)
-                                    if isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
-                                        try:
-                                            dest_port = int(
-                                                os.getenv("AE_STUB_BACKEND_PORT", "8081")
-                                            )
-                                        except Exception:
-                                            dest_port = port
-                                        dest_host = os.getenv("AE_STUB_BACKEND_HOST", dest_host)
-                                    _pf_debug(
-                                        f"connect sid={stream_id} host={dest_host} port={dest_port}"
-                                    )
-                                    upstream_cache[stream_id] = socket.create_connection(
-                                        (dest_host, dest_port), timeout=5.0
-                                    )
+                                    if connector:
+                                        upstream_cache[stream_id] = connector(int(port))
+                                    else:
+                                        dest_host = host_by_port.get(port, target_host)
+                                        dest_port = pf_port_map.get(port, port)
+                                        if isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
+                                            try:
+                                                dest_port = int(
+                                                    os.getenv("AE_STUB_BACKEND_PORT", "8081")
+                                                )
+                                            except Exception:
+                                                dest_port = port
+                                            dest_host = os.getenv("AE_STUB_BACKEND_HOST", dest_host)
+                                        _pf_debug(
+                                            f"connect sid={stream_id} host={dest_host} port={dest_port}"
+                                        )
+                                        upstream_cache[stream_id] = socket.create_connection(
+                                            (dest_host, dest_port), timeout=5.0
+                                        )
                                     upstream_cache[stream_id].settimeout(0.05)
                                 except Exception as e:
                                     _pf_debug(f"connect-fail sid={stream_id} port={port} err={e}")
@@ -5846,22 +5874,31 @@ class ShimHandler(BaseHTTPRequestHandler):
             else:
                 target_host = "127.0.0.1"
             pf_port_map: dict[int, int] | None = None
-            cri_pf_procs: list[subprocess.Popen] = []
-            use_cri_pf = (
-                isinstance(self.server.runtime, CRIRuntime)  # type: ignore[attr-defined]
-                and pod_id
-                and (
-                    self._cri_pf_force()
-                    or (self._cri_pf_enabled() and not pod_ip and not host_ports)
-                )
+            cri_pf_procs: list = []
+            pf_connector = None
+            use_cri_pf = pod_id and (
+                self._cri_pf_force() or (self._cri_pf_enabled() and not pod_ip and not host_ports)
             )
             if use_cri_pf and requested_ports:
-                pf_port_map, cri_pf_procs = self._start_cri_port_forward(
-                    str(pod_id), requested_ports
-                )
-                if pf_port_map:
-                    target_host = "127.0.0.1"
-                    target_ports = list(requested_ports)
+                if hasattr(self.server.runtime, "port_forward_socket") and getattr(
+                    self.server.runtime, "_agent_url", None
+                ):  # type: ignore[attr-defined]
+                    def _connector(port: int):
+                        return self.server.runtime.port_forward_socket(  # type: ignore[attr-defined]
+                            pod_id=str(pod_id),
+                            pod_name=pod_name,
+                            namespace=ns,
+                            port=int(port),
+                        )
+
+                    pf_connector = _connector
+                elif isinstance(self.server.runtime, CRIRuntime):  # type: ignore[attr-defined]
+                    pf_port_map, cri_pf_procs = self._start_cri_port_forward(
+                        str(pod_id), requested_ports
+                    )
+                    if pf_port_map:
+                        target_host = "127.0.0.1"
+                        target_ports = list(requested_ports)
             if isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                 target_host = os.getenv("AE_STUB_BACKEND_HOST", target_host)
                 try:
@@ -5888,7 +5925,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     ws_port = target_ports[0]
                     if pf_port_map:
                         ws_port = pf_port_map.get(target_ports[0], ws_port)
-                    self._handle_port_forward_ws(target_host, ws_port)
+                    self._handle_port_forward_ws(
+                        target_host, ws_port, connector=pf_connector
+                    )
                 finally:
                     if cri_pf_procs:
                         self._stop_cri_port_forward(cri_pf_procs)
@@ -5907,7 +5946,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                     protocol="spdy",
                 )
                 try:
-                    self._handle_port_forward_spdy(target_host, target_ports, port_map=pf_port_map)
+                    self._handle_port_forward_spdy(
+                        target_host,
+                        target_ports,
+                        port_map=pf_port_map,
+                        connector=pf_connector,
+                    )
                 finally:
                     if cri_pf_procs:
                         self._stop_cri_port_forward(cri_pf_procs)
@@ -7357,20 +7401,33 @@ class ShimHandler(BaseHTTPRequestHandler):
             elif isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                 target_host = os.getenv("AE_STUB_BACKEND_HOST", target_host)
             pf_port_map: dict[int, int] | None = None
-            cri_pf_procs: list[subprocess.Popen] = []
-            use_cri_pf = (
-                isinstance(self.server.runtime, CRIRuntime)  # type: ignore[attr-defined]
-                and pod_id
-                and (self._cri_pf_force() or (self._cri_pf_enabled() and not pod_ip))
+            cri_pf_procs: list = []
+            pf_connector = None
+            use_cri_pf = pod_id and (
+                self._cri_pf_force() or (self._cri_pf_enabled() and not pod_ip)
             )
-            if use_cri_pf and requested_ports:
-                pf_port_map, cri_pf_procs = self._start_cri_port_forward(
-                    str(pod_id), requested_ports
-                )
-                if pf_port_map:
-                    target_host = "127.0.0.1"
-                    target_ports = list(requested_ports)
+            if use_cri_pf:
+                if hasattr(self.server.runtime, "port_forward_socket") and getattr(
+                    self.server.runtime, "_agent_url", None
+                ):  # type: ignore[attr-defined]
+                    def _connector(port: int):
+                        return self.server.runtime.port_forward_socket(  # type: ignore[attr-defined]
+                            pod_id=str(pod_id),
+                            pod_name=pod_name,
+                            namespace=ns,
+                            port=int(port),
+                        )
+
+                    pf_connector = _connector
                     use_host_ports = False
+                elif isinstance(self.server.runtime, CRIRuntime) and requested_ports:  # type: ignore[attr-defined]
+                    pf_port_map, cri_pf_procs = self._start_cri_port_forward(
+                        str(pod_id), requested_ports
+                    )
+                    if pf_port_map:
+                        target_host = "127.0.0.1"
+                        target_ports = list(requested_ports)
+                        use_host_ports = False
             upgrade = (self.headers.get("Upgrade") or "").lower()
             if upgrade.startswith("spdy"):
                 pf_ports = (
@@ -7391,6 +7448,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                         target_host,
                         pf_ports,
                         port_map=pf_port_map or (port_map if use_host_ports else None),
+                        connector=pf_connector,
                     )
                 finally:
                     if cri_pf_procs:
@@ -7414,7 +7472,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     ws_port = target_ports[0]
                     if pf_port_map:
                         ws_port = pf_port_map.get(target_ports[0], ws_port)
-                    self._handle_port_forward_ws(target_host, ws_port)
+                    self._handle_port_forward_ws(
+                        target_host, ws_port, connector=pf_connector
+                    )
                 finally:
                     if cri_pf_procs:
                         self._stop_cri_port_forward(cri_pf_procs)
@@ -10888,8 +10948,7 @@ def _node_obj(record, status, rv: int) -> dict[str, Any]:
     return {"apiVersion": "v1", "kind": "Node", "metadata": meta, "status": node_status}
 
 
-def _runtime_from_env() -> RuntimeAdapter:
-    backend = (os.getenv("AE_APISHIM_RUNTIME") or os.getenv("AE_RUNTIME_BACKEND") or "stub").lower()
+def _runtime_from_env_base(backend: str) -> RuntimeAdapter:
     if backend in {"stub", "test"}:
         return StubRuntime()
     if backend in {"cri", "containerd"}:
@@ -10899,9 +10958,17 @@ def _runtime_from_env() -> RuntimeAdapter:
             return PodmanRuntime()
         except Exception:
             return DockerRuntime()
-    if backend == "remote":
-        return RemoteRuntime()
     return DockerRuntime()
+
+
+def _runtime_from_env() -> RuntimeAdapter:
+    backend = (os.getenv("AE_APISHIM_RUNTIME") or os.getenv("AE_RUNTIME_BACKEND") or "stub").lower()
+    agent_url = os.getenv("AE_APISHIM_AGENT_URL") or os.getenv("AE_AGENT_URL")
+    if backend == "remote" or agent_url:
+        base_backend = (os.getenv("AE_RUNTIME_BACKEND") or "podman").lower()
+        base = _runtime_from_env_base(base_backend)
+        return RemoteRuntime(agent_url, base)  # type: ignore[arg-type]
+    return _runtime_from_env_base(backend)
 
 
 def _pod_obj(container: dict, rv: int, node_name: str | None) -> dict[str, Any]:

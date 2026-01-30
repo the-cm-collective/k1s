@@ -26,6 +26,19 @@ python -m ae.node --runtime-backend podman --port 9109 --ensure-pod-net
 - Leave `AE_POD_CIDR` empty to let the controller assign one on first heartbeat.
 - If WireGuard is disabled, drop `--ensure-pod-net` and set `AE_SERVICE_PROVIDER=bridge` on the controller (no cross-node routing).
 
+### DaemonSet option (k8s-aligned)
+
+If you prefer running the agent inside Kubernetes, build the node image and
+apply the DaemonSet manifest:
+
+```bash
+scripts/build_node_image.sh --push --registry registry.k1s.home.arpa:32000
+kubectl apply -f specs/examples/k1s-node-daemonset-k8s.yaml
+```
+
+Set `AE_CONTROLLER_URL` and `AE_AGENT_TOKEN` in the manifest to match the
+controller agent API.
+
 ## Deploy the demo app
 Use the multi-node friendly sample (`specs/examples/echo-multinode.yaml`):
 ```bash
