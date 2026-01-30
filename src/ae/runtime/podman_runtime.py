@@ -52,6 +52,7 @@ class PodmanRuntime(RuntimeAdapter):
     REVISION_LABEL = "ae.revision"
     CONTAINER_LABEL = "ae.container"
     JOB_ATTEMPT_LABEL = "ae.job_attempt"
+    POD_SANDBOX_LABEL = "pod-sandbox"
 
     def __init__(self) -> None:
         configured_bin = os.getenv("AE_PODMAN_BIN", "podman")
@@ -77,6 +78,8 @@ class PodmanRuntime(RuntimeAdapter):
         self._apishim_state = None
         self._apishim_store_checked = False
         self._apishim_store = None
+        self._volume_manager_checked = False
+        self._volume_manager = None
 
     def _maybe_inject_runtime(self, argv: list[str]) -> None:
         """Inject --runtime into a `podman run` argv in-place when AE_OCI_RUNTIME is set."""
@@ -107,6 +110,7 @@ class PodmanRuntime(RuntimeAdapter):
             else [f"{app}-rev{revision}-{i}" for i in range(manifest.spec.replicas)]
         )
         self._current_node_id = node_id
+        manifest = self._maybe_inject_pvc_mounts(manifest, node_id=node_id)
         host_network = bool(getattr(manifest.spec, "host_network", False))
         is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
         job_backoff_limit = None
@@ -126,8 +130,20 @@ class PodmanRuntime(RuntimeAdapter):
                 labels = {**labels, self.POD_LABEL: labels[self.LEGACY_REPLICA_LABEL]}
             return labels
 
-        by_replica = {_labels(c).get(self.POD_LABEL): c for c in existing if _labels(c)}
-        old = [c for c in existing if _labels(c).get(self.REVISION_LABEL) != str(revision)]
+        by_replica: dict[str, dict] = {}
+        old: list[dict] = []
+        for c in existing:
+            labs = _labels(c)
+            if not labs:
+                continue
+            if labs.get(self.REVISION_LABEL) != str(revision):
+                old.append(c)
+                continue
+            if labs.get(self.CONTAINER_LABEL) == self.POD_SANDBOX_LABEL:
+                continue
+            rid = labs.get(self.POD_LABEL)
+            if rid:
+                by_replica[rid] = c
 
         created = updated = removed = 0
 
@@ -286,6 +302,8 @@ class PodmanRuntime(RuntimeAdapter):
         for c in final:
             labs = (c.get("Config") or {}).get("Labels") or {}
             if labs.get(self.REVISION_LABEL) != str(revision):
+                continue
+            if labs.get(self.CONTAINER_LABEL) == self.POD_SANDBOX_LABEL:
                 continue
             rid = labs.get(self.POD_LABEL) or labs.get(self.LEGACY_REPLICA_LABEL) or ""
             state = c.get("State") or {}
@@ -553,8 +571,14 @@ class PodmanRuntime(RuntimeAdapter):
                     if host_pid:
                         cmd += ["--pid", "host"]
                     elif share_proc:
-                        main_name = f"ae-{app}-rev{revision}-{replica_id.split('-')[-1]}"
-                        cmd += ["--pid", f"container:{main_name}"]
+                        sandbox = self._ensure_pod_sandbox(
+                            manifest,
+                            replica_id,
+                            revision,
+                            node_id=getattr(self, "_current_node_id", None),
+                        )
+                        if sandbox:
+                            cmd += ["--pid", f"container:{sandbox}"]
                     if host_ipc:
                         cmd += ["--ipc", "host"]
                     # Per-container projection mounts
@@ -941,6 +965,9 @@ class PodmanRuntime(RuntimeAdapter):
 
         Returns a list of tuples: (name, rc, message).
         """
+        manifest = self._maybe_inject_pvc_mounts(
+            manifest, node_id=getattr(self, "_current_node_id", None)
+        )
         results: list[tuple[str, int, str]] = []
         try:
             inits = list(getattr(manifest.spec, "init_containers", []) or [])
@@ -1418,10 +1445,17 @@ class PodmanRuntime(RuntimeAdapter):
         host_network = bool(getattr(manifest.spec, "host_network", False))
         host_pid = bool(getattr(manifest.spec, "host_pid", False))
         host_ipc = bool(getattr(manifest.spec, "host_ipc", False))
+        share_proc = bool(getattr(manifest.spec, "share_process_namespace", False))
         if host_network:
             cmd += ["--network", "host"]
         if host_pid:
             cmd += ["--pid", "host"]
+        elif share_proc:
+            sandbox = self._ensure_pod_sandbox(
+                manifest, replica_id, revision, node_id=node_id
+            )
+            if sandbox:
+                cmd += ["--pid", f"container:{sandbox}"]
         if host_ipc:
             cmd += ["--ipc", "host"]
 
@@ -2030,6 +2064,124 @@ class PodmanRuntime(RuntimeAdapter):
         )
         if cp.returncode != 0:
             raise RuntimeError(f"podman login failed: {cp.stderr.strip()}")
+
+    def _sandbox_image(self) -> str:
+        return (
+            os.getenv("AE_POD_SANDBOX_IMAGE")
+            or os.getenv("AE_CRI_SANDBOX_IMAGE")
+            or "registry.k8s.io/pause:3.9"
+        )
+
+    def _pod_sandbox_name(self, manifest: AppManifest, replica_id: str, revision: int) -> str:
+        app_name = app_key_for_manifest(manifest)
+        suffix = replica_id.split("-")[-1]
+        return f"ae-{app_name}-rev{revision}-{suffix}-pod"
+
+    def _ensure_pod_sandbox(
+        self,
+        manifest: AppManifest,
+        replica_id: str,
+        revision: int,
+        *,
+        node_id: str | None = None,
+    ) -> str | None:
+        if not bool(getattr(manifest.spec, "share_process_namespace", False)):
+            return None
+        name = self._pod_sandbox_name(manifest, replica_id, revision)
+        app_name = app_key_for_manifest(manifest)
+        labels = runtime_labels_for_manifest(manifest, app_name=app_name)
+        labels.update(
+            {
+                self.POD_LABEL: replica_id,
+                self.LEGACY_REPLICA_LABEL: replica_id,
+                self.REVISION_LABEL: str(revision),
+                self.CONTAINER_LABEL: self.POD_SANDBOX_LABEL,
+                **({"ae.node": str(node_id)} if node_id else {}),
+            }
+        )
+        try:
+            exists = self._run_ok([self._bin, "container", "exists", name], allow_fail=True)
+            if exists.code == 0:
+                status = self._run_ok(
+                    [self._bin, "inspect", name, "--format", "{{.State.Status}}"],
+                    allow_fail=True,
+                )
+                if (status.out or "").strip() != "running":
+                    self._run_ok([self._bin, "start", name], allow_fail=True)
+                return name
+        except Exception:
+            pass
+        try:
+            self._ensure_image(self._sandbox_image(), manifest=manifest, policy="IfNotPresent")
+            cmd = [
+                self._bin,
+                "run",
+                "-d",
+                "--name",
+                name,
+                *sum([["--label", f"{k}={v}"] for k, v in labels.items()], []),
+                "--restart",
+                "unless-stopped",
+                self._sandbox_image(),
+            ]
+            self._run_ok(cmd, allow_fail=False)
+            return name
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Failed to create pod sandbox for %s: %s", replica_id, exc)
+            return None
+
+    def _get_volume_manager(self):
+        if self._volume_manager_checked:
+            return self._volume_manager
+        self._volume_manager_checked = True
+        if os.getenv("AE_ENABLE_NETFS", "0") != "1":
+            self._volume_manager = None
+            return None
+        try:
+            from pathlib import Path
+
+            from ae.storage import (
+                ApishimStorageState,
+                InMemoryStorageState,
+                NetFSManager,
+                NodeVolumeManager,
+            )
+            from ae.apishim.store import ObjectStore
+        except Exception:
+            self._volume_manager = None
+            return None
+        state = None
+        dsn = os.getenv("AE_APISHIM_DSN")
+        db_path = os.getenv("AE_APISHIM_DB")
+        if dsn or db_path:
+            try:
+                store = ObjectStore(
+                    db_path=Path(db_path) if db_path else Path("state/apishim.db"),
+                    dsn=dsn,
+                )
+                state = ApishimStorageState(store)
+            except Exception:
+                state = None
+        if state is None:
+            state = InMemoryStorageState()
+        try:
+            netfs = NetFSManager(state)
+            self._volume_manager = NodeVolumeManager(netfs, node_id=self._current_node_id)
+        except Exception:
+            self._volume_manager = None
+        return self._volume_manager
+
+    def _maybe_inject_pvc_mounts(
+        self, manifest: AppManifest, *, node_id: str | None = None
+    ) -> AppManifest:
+        mgr = self._get_volume_manager()
+        if mgr is None:
+            return manifest
+        try:
+            return mgr.inject_pvc_mounts(manifest, node_id=node_id or self._current_node_id)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("PVC mount injection failed: %s", exc)
+            return manifest
 
     def _ensure_image(
         self,
