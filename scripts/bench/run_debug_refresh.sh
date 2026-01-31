@@ -68,6 +68,7 @@ REPLICAS="${REPLICAS:-1}"
 WAIT_READY_TRIES="${WAIT_READY_TRIES:-30}"
 WAIT_READY_DELAY="${WAIT_READY_DELAY:-1}"
 K1ND_DEBUG_KEEP="${K1ND_DEBUG_KEEP:-1}"
+bench_specs_minimal="${BENCH_SPECS_MINIMAL:-1}"
 
 failures=0
 
@@ -87,6 +88,76 @@ sanitize_env_docker() {
   unset AE_STATE_DSN
   export AE_RUNTIME_BACKEND="docker"
   export AE_APISHIM_RUNTIME="docker"
+}
+
+port_is_free() {
+  local port="$1"
+  python - "$port" <<'PY' >/dev/null 2>&1
+import socket, sys
+port = int(sys.argv[1])
+s = socket.socket()
+try:
+    s.bind(("0.0.0.0", port))
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()
+PY
+}
+
+find_free_port() {
+  local start="${1:-18080}"
+  local end="${2:-18180}"
+  local p
+  for p in $(seq "$start" "$end"); do
+    if port_is_free "$p"; then
+      echo "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+
+patch_service_port() {
+  local manifest="$1"
+  local new_port="$2"
+  local tmp="${manifest}.tmp"
+  awk -v port="$new_port" '
+  function indent(line) { match(line, /^[ ]*/); return RLENGTH }
+  {
+    if ($0 ~ /^[[:space:]]*service:[[:space:]]*$/) {
+      in_service=1; svc_indent=indent($0); print; next
+    }
+    if (in_service) {
+      cur_indent=indent($0)
+      if (cur_indent <= svc_indent) { in_service=0 }
+    }
+    if (in_service && $0 ~ /^[[:space:]]*port:[[:space:]]*[0-9]+([[:space:]]*#.*)?$/) {
+      sub(/port:[[:space:]]*[0-9]+/, "port: " port)
+      in_service=0
+    }
+    print
+  }' "$manifest" >"$tmp" && mv "$tmp" "$manifest"
+}
+
+remove_service_port() {
+  local manifest="$1"
+  local tmp="${manifest}.tmp"
+  awk '
+  function indent(line) { match(line, /^[ ]*/); return RLENGTH }
+  {
+    if ($0 ~ /^[[:space:]]*service:[[:space:]]*$/) {
+      in_service=1; svc_indent=indent($0); print; next
+    }
+    if (in_service) {
+      cur_indent=indent($0)
+      if (cur_indent <= svc_indent) { in_service=0 }
+    }
+    if (in_service && $0 ~ /^[[:space:]]*port:[[:space:]]*[0-9]+([[:space:]]*#.*)?$/) {
+      next
+    }
+    print
+  }' "$manifest" >"$tmp" && mv "$tmp" "$manifest"
 }
 
 ensure_rootful_podman_socket() {
@@ -372,7 +443,7 @@ ROOTLESS_DIR="$DEBUG_ROOT/rootless"
 ROOTLESS_ENV_FILE="$ROOTLESS_DIR/env.sh"
 mkdir -p "$ROOTLESS_DIR"
 rootless_ok=1
-if ! BENCH_KEEP_ENV=1 ROOTLESS_ENV_FILE="$(./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9210 --env-file "$ROOTLESS_ENV_FILE")"; then
+if ! BENCH_SPECS_MINIMAL="$bench_specs_minimal" BENCH_KEEP_ENV=1 ROOTLESS_ENV_FILE="$(./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9210 --env-file "$ROOTLESS_ENV_FILE")"; then
   rootless_ok=0
   failures=$((failures + 1))
   log "rootless bench_env_prep failed; continuing"
@@ -424,7 +495,7 @@ ROOTFUL_DIR="$DEBUG_ROOT/rootful"
 ROOTFUL_ENV_FILE="$ROOTFUL_DIR/env.sh"
 mkdir -p "$ROOTFUL_DIR"
 rootful_ok=1
-if ! BENCH_KEEP_ENV=1 ROOTFUL_ENV_FILE="$(./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9211 --env-file "$ROOTFUL_ENV_FILE" --sudo-controller)"; then
+if ! BENCH_SPECS_MINIMAL="$bench_specs_minimal" BENCH_KEEP_ENV=1 ROOTFUL_ENV_FILE="$(./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9211 --env-file "$ROOTFUL_ENV_FILE" --sudo-controller)"; then
   rootful_ok=0
   failures=$((failures + 1))
   log "rootful bench_env_prep failed; continuing"
@@ -485,6 +556,31 @@ k1nd_state_abs="${repo_root}/${k1nd_state_rel}"
 rm -rf "$k1nd_state_abs"
 mkdir -p "$k1nd_state_abs"
 k1nd_state_db="${k1nd_state_rel}/controller.db"
+k1nd_manifest_rel="${k1nd_specs_rel}/$(basename "$app_src")"
+k1nd_manifest="${k1nd_specs_abs}/$(basename "$app_src")"
+k1nd_port_start="${BENCH_K1ND_PORT_START:-18080}"
+k1nd_port_end="${BENCH_K1ND_PORT_END:-18180}"
+if [[ -f "$k1nd_manifest" ]]; then
+  if [[ "${BENCH_K1ND_EPHEMERAL_PORTS:-0}" == "1" ]]; then
+    remove_service_port "$k1nd_manifest"
+    log "k1nd service port removed (ephemeral ports enabled)"
+  else
+    if port_is_free "$k1nd_port_start"; then
+      patch_service_port "$k1nd_manifest" "$k1nd_port_start"
+      log "k1nd service port set to ${k1nd_port_start}"
+    else
+      free_port="$(find_free_port "$k1nd_port_start" "$k1nd_port_end" || true)"
+      if [[ -n "$free_port" ]]; then
+        patch_service_port "$k1nd_manifest" "$free_port"
+        log "k1nd service port set to ${free_port}"
+      else
+        k1nd_ok=0
+        failures=$((failures + 1))
+        log "no free port found in ${k1nd_port_start}-${k1nd_port_end} for k1nd service"
+      fi
+    fi
+  fi
+fi
 
 if ! AE_SPECS_DIR="$k1nd_specs_rel" \
   AE_APISHIM_DSN="${k1nd_state_rel}/apishim.db" \
@@ -508,7 +604,7 @@ if (( k1nd_ok )); then
     AE_STATE_DB="/tmp/k1s-bench-${USER}-debug.db" SKIP_GUARDS=1 \
     AE_APISHIM_DSN="${k1nd_state_rel}/apishim.db" AE_STATE_DB="${k1nd_state_db}" \
     WARM_ENABLED=0 WAIT_READY_TRIES="$WAIT_READY_TRIES" WAIT_READY_DELAY="$WAIT_READY_DELAY" \
-    ./scripts/bench/run_matrix.sh --label-suite "$label_k1nd" --app "$APP" --app-name "$APP_NAME" --replicas "$REPLICAS" --duration "$DURATION" --sudo; then
+    ./scripts/bench/run_matrix.sh --label-suite "$label_k1nd" --app "$k1nd_manifest_rel" --app-name "$APP_NAME" --replicas "$REPLICAS" --duration "$DURATION" --sudo; then
     k1nd_ok=0
     failures=$((failures + 1))
     log "k1nd run_matrix failed; continuing"

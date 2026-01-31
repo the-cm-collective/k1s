@@ -45,7 +45,7 @@ if [[ $(id -u) -eq 0 ]]; then
 fi
 
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-specs_src="$repo_root/specs"
+specs_src="${BENCH_SPECS_SRC:-$repo_root/specs}"
 if [[ ! -d "$specs_src" ]]; then
   echo "[bench-env] cannot find specs directory at $specs_src" >&2
   exit 3
@@ -74,8 +74,6 @@ if [[ -d "$env_dir" && "${BENCH_REUSE_ENV:-0}" != "1" ]]; then
   rm -rf "$env_dir"
 fi
 mkdir -p "$env_dir"
-rm -rf "$spec_dir"
-cp -a "$specs_src/." "$spec_dir/"
 mkdir -p "$caddy_dir"
 rm -f "$state_db"
 
@@ -154,7 +152,22 @@ fi
 primary_app_name="${parsed[1]-}"
 primary_manifest_rel="${allowed_rel[0]}"
 
-"$python_bin" - "$spec_dir" "${allowed_rel[@]}" <<'PY'
+rm -rf "$spec_dir"
+if [[ "${BENCH_SPECS_MINIMAL:-0}" == "1" ]]; then
+  mkdir -p "$spec_dir"
+  for rel in "${allowed_rel[@]}"; do
+    src_path="$specs_src/$rel"
+    dest_path="$spec_dir/$rel"
+    if [[ ! -f "$src_path" ]]; then
+      echo "[bench-env] manifest not found at $src_path" >&2
+      exit 4
+    fi
+    mkdir -p "$(dirname "$dest_path")"
+    cp -f "$src_path" "$dest_path"
+  done
+else
+  cp -a "$specs_src/." "$spec_dir/"
+  "$python_bin" - "$spec_dir" "${allowed_rel[@]}" <<'PY'
 import sys, yaml
 from pathlib import Path
 spec_root = Path(sys.argv[1])
@@ -173,6 +186,7 @@ for path in files:
     if any(isinstance(doc, dict) and str(doc.get('kind', '')).lower() == 'app' for doc in docs):
         path.unlink(missing_ok=True)
 PY
+fi
 
 if [[ -f "$pid_file" ]]; then
   if kill -0 "$(cat "$pid_file")" 2>/dev/null; then
