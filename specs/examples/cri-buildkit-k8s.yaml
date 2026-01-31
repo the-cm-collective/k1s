@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k1s-tools
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cri-buildkit
+  namespace: k1s-tools
+spec:
+  automountServiceAccountToken: false
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: buildkit
+      image: registry.k1s.home.arpa:32000/k1s-buildkit:latest
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: BUILDKIT_HOST
+          value: unix:///run/buildkit/buildkitd.sock
+      command:
+        - /bin/sh
+        - -c
+        - sleep infinity
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: false
+        seccompProfile:
+          type: RuntimeDefault
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        - name: buildkit
+          mountPath: /run/buildkit
+  volumes:
+    - name: workspace
+      emptyDir: {}
+    - name: buildkit
+      emptyDir: {}

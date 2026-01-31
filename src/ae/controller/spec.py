@@ -637,4 +637,14 @@ def runtime_labels_for_manifest(
     return labels
 
 
+def all_pvc_mounts(manifest: "AppManifest") -> list[PvcMountSpec]:
+    mounts: list[PvcMountSpec] = []
+    mounts.extend(list(getattr(manifest.spec, "pvc_mounts", []) or []))
+    for c in getattr(manifest.spec, "containers", []) or []:
+        mounts.extend(list(getattr(c, "pvc_mounts", []) or []))
+    for c in getattr(manifest.spec, "init_containers", []) or []:
+        mounts.extend(list(getattr(c, "pvc_mounts", []) or []))
+    return mounts
+
+
 # ruff: noqa

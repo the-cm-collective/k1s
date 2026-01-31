@@ -66,6 +66,12 @@ class DockerRuntime(RuntimeAdapter):
 
         self._network_name = _os.getenv("AE_DOCKER_NETWORK") or _os.getenv("AE_NETWORK_NAME")
         self._serial_service_rollout = _os.getenv("AE_SERIAL_SERVICE_ROLLOUT", "0") == "1"
+        self._apishim_state_checked = False
+        self._apishim_state = None
+        self._apishim_store_checked = False
+        self._apishim_store = None
+        self._volume_manager_checked = False
+        self._volume_manager = None
 
     def ensure_app(
         self,
@@ -137,12 +143,27 @@ class DockerRuntime(RuntimeAdapter):
             self._pull_image(manifest)
 
         for replica_id in desired_pod_names:
+            try:
+                rep_manifest = self._maybe_inject_pvc_mounts(
+                    manifest, node_id=node_id, replica_id=replica_id
+                )
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    from ae.storage.netfs import PvcNotReadyError
+                except Exception:
+                    PvcNotReadyError = None  # type: ignore[assignment]
+                if PvcNotReadyError is not None and isinstance(exc, PvcNotReadyError):
+                    LOGGER.info(
+                        "Skipping %s: PVCs not ready for mount injection", replica_id
+                    )
+                    continue
+                raise
             container = containers_by_replica.get(replica_id)
             if container is None:
                 if limit_create is not None and created >= int(limit_create):
                     continue
                 container = self._create_container(
-                    manifest, replica_id, revision, node_id=node_id, attempt=0
+                    rep_manifest, replica_id, revision, node_id=node_id, attempt=0
                 )
                 containers_by_replica[replica_id] = container
                 created += 1
@@ -176,7 +197,7 @@ class DockerRuntime(RuntimeAdapter):
                             except Exception:
                                 pass
                             container = self._create_container(
-                                manifest,
+                                rep_manifest,
                                 replica_id,
                                 revision,
                                 node_id=node_id,
@@ -343,6 +364,401 @@ class DockerRuntime(RuntimeAdapter):
             self._client.images.pull(image_ref)
         except APIError as exc:
             raise RuntimeError(f"Failed to pull image {image_ref}: {exc}") from exc
+
+    def _extract_registry(self, image: str) -> str | None:
+        if "/" not in image:
+            return None
+        host = image.split("/", 1)[0]
+        if "." not in host and ":" not in host:
+            return None
+        return host
+
+    def _parse_dockerconfigjson(self, raw: str) -> dict[str, dict[str, str]]:
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return {}
+        auths = payload.get("auths") if isinstance(payload, dict) else None
+        if isinstance(auths, dict):
+            entries = auths
+        elif isinstance(payload, dict):
+            entries = payload
+        else:
+            return {}
+        out: dict[str, dict[str, str]] = {}
+        for host, entry in entries.items():
+            if not isinstance(entry, dict):
+                continue
+            username = entry.get("username")
+            password = entry.get("password")
+            if (not username or not password) and entry.get("auth"):
+                try:
+                    decoded = base64.b64decode(str(entry["auth"]).encode("ascii")).decode("utf-8")
+                    if ":" in decoded:
+                        username, password = decoded.split(":", 1)
+                except Exception:
+                    username = None
+                    password = None
+            if username and password:
+                out[str(host)] = {"username": str(username), "password": str(password)}
+        return out
+
+    def _image_pull_secret_names(self, manifest: AppManifest) -> list[tuple[str | None, str | None]]:
+        secrets: list[tuple[str | None, str | None]] = []
+        for sec in getattr(manifest.spec, "image_pull_secrets", []) or []:
+            if isinstance(sec, dict):
+                secrets.append((sec.get("name"), sec.get("namespace")))
+            else:
+                secrets.append((str(sec), None))
+        return secrets
+
+    def _service_account_pull_secrets(
+        self, manifest: AppManifest
+    ) -> list[tuple[str | None, str | None]]:
+        store = self._get_apishim_store()
+        if store is None:
+            return []
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        sa_name = (
+            getattr(manifest.spec, "service_account_name", None)
+            or self._service_account_name_from_store(manifest, store)
+            or "default"
+        )
+        try:
+            sa = store.get("", "v1", "serviceaccounts", namespace, str(sa_name))
+        except Exception:
+            sa = None
+        if sa is None:
+            return []
+        spec = getattr(sa, "spec", None) or {}
+        if not isinstance(spec, dict):
+            return []
+        secrets = spec.get("imagePullSecrets") or []
+        out: list[tuple[str | None, str | None]] = []
+        for entry in secrets:
+            if isinstance(entry, dict):
+                out.append((entry.get("name"), None))
+            else:
+                out.append((str(entry), None))
+        return out
+
+    def _service_account_name_from_store(self, manifest: AppManifest, store: Any) -> str | None:
+        name = getattr(getattr(manifest, "metadata", None), "name", None)
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        if not name:
+            return None
+        candidates = [
+            ("apps", "v1", "deployments"),
+            ("apps", "v1", "daemonsets"),
+            ("apps", "v1", "statefulsets"),
+            ("batch", "v1", "jobs"),
+            ("batch", "v1", "cronjobs"),
+        ]
+        for group, version, resource in candidates:
+            try:
+                obj = store.get(group, version, resource, namespace, str(name))
+            except Exception:
+                obj = None
+            if obj is None:
+                continue
+            spec = getattr(obj, "spec", None) or {}
+            if not isinstance(spec, dict):
+                continue
+            template = None
+            if resource == "cronjobs":
+                template = ((spec.get("jobTemplate") or {}).get("spec") or {}).get("template")
+            else:
+                template = spec.get("template")
+            if not isinstance(template, dict):
+                continue
+            tpl_spec = template.get("spec") or {}
+            if not isinstance(tpl_spec, dict):
+                continue
+            sa = tpl_spec.get("serviceAccountName") or tpl_spec.get("serviceAccount")
+            if sa:
+                return str(sa)
+        return None
+
+    def _pull_secret_auths(self, manifest: AppManifest) -> dict[str, dict[str, str]]:
+        state = self._get_apishim_state()
+        if state is None:
+            return {}
+        secrets = self._image_pull_secret_names(manifest)
+        if not secrets:
+            secrets = self._service_account_pull_secrets(manifest)
+        if not secrets:
+            return {}
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        auths: dict[str, dict[str, str]] = {}
+        for name, ns in secrets:
+            if not name:
+                continue
+            data = state.get_secret(str(ns or namespace), str(name))
+            if not data:
+                continue
+            raw = data.get(".dockerconfigjson") or data.get(".dockercfg")
+            if raw:
+                auths.update(self._parse_dockerconfigjson(str(raw)))
+                continue
+            host = data.get("registry") or data.get("host") or data.get("server")
+            user = data.get("username")
+            pw = data.get("password")
+            if host and user and pw:
+                auths[str(host)] = {"username": str(user), "password": str(pw)}
+        return auths
+
+    def _image_pull_credentials(
+        self,
+        image_ref: str,
+        *,
+        manifest: AppManifest | None = None,
+        spec: Any | None = None,
+    ) -> tuple[str, str, str] | None:
+        creds = self._registry.list_registries()
+        secret_creds = self._pull_secret_auths(manifest) if manifest is not None else {}
+        preferred: list[str] = []
+        if manifest is not None:
+            ref = getattr(manifest.spec, "registry_auth_ref", None)
+            if ref:
+                preferred.append(str(ref))
+            for sec in getattr(manifest.spec, "image_pull_secrets", []) or []:
+                if isinstance(sec, dict):
+                    name = sec.get("name")
+                    if name:
+                        preferred.append(str(name))
+                else:
+                    preferred.append(str(sec))
+
+        for host in preferred:
+            entry = creds.get(host) or secret_creds.get(host)
+            if entry and entry.get("username") and entry.get("password"):
+                return str(host), str(entry.get("username")), str(entry.get("password"))
+
+        registry = self._extract_registry(image_ref) or "docker.io"
+        candidates = [registry]
+        if registry == "docker.io":
+            candidates.extend(
+                [
+                    "index.docker.io",
+                    "registry-1.docker.io",
+                    "https://index.docker.io/v1/",
+                ]
+            )
+        for host in candidates:
+            entry = creds.get(host) or secret_creds.get(host)
+            if entry and entry.get("username") and entry.get("password"):
+                return str(host), str(entry.get("username")), str(entry.get("password"))
+        return None
+
+    def _resolve_extra_hosts(self, manifest: AppManifest) -> dict[str, str]:
+        hosts: dict[str, str] = {}
+        for entry in getattr(manifest.spec, "host_aliases", []) or []:
+            if isinstance(entry, dict):
+                ip = entry.get("ip")
+                names = entry.get("hostnames") or entry.get("hostNames") or []
+            else:
+                ip = getattr(entry, "ip", None)
+                names = getattr(entry, "hostnames", None) or []
+            if not ip:
+                continue
+            for name in names or []:
+                if name:
+                    hosts[str(name)] = str(ip)
+        return hosts
+
+    def _resolve_dns_config(
+        self, manifest: AppManifest
+    ) -> tuple[list[str], list[str], list[str]]:
+        cfg = getattr(manifest.spec, "dns_config", None)
+        if not cfg:
+            return [], [], []
+        nameservers = [str(x) for x in (getattr(cfg, "nameservers", None) or []) if x]
+        searches = [str(x) for x in (getattr(cfg, "searches", None) or []) if x]
+        options: list[str] = []
+        for opt in getattr(cfg, "options", None) or []:
+            if isinstance(opt, dict):
+                name = opt.get("name")
+                value = opt.get("value")
+            else:
+                name = getattr(opt, "name", None)
+                value = getattr(opt, "value", None)
+            if name:
+                options.append(f"{name}:{value}" if value else str(name))
+        return nameservers, searches, options
+
+    def _sandbox_image(self) -> str:
+        return (
+            os.getenv("AE_POD_SANDBOX_IMAGE")
+            or os.getenv("AE_CRI_SANDBOX_IMAGE")
+            or "registry.k8s.io/pause:3.9"
+        )
+
+    def _pod_sandbox_name(self, manifest: AppManifest, replica_id: str, revision: int) -> str:
+        app_name = app_key_for_manifest(manifest)
+        suffix = replica_id.split("-")[-1]
+        return f"ae-{app_name}-rev{revision}-{suffix}-pod"
+
+    def _ensure_pod_sandbox(
+        self,
+        manifest: AppManifest,
+        replica_id: str,
+        revision: int,
+        *,
+        node_id: str | None = None,
+    ) -> str | None:
+        if not bool(getattr(manifest.spec, "share_process_namespace", False)):
+            return None
+        name = self._pod_sandbox_name(manifest, replica_id, revision)
+        app_name = app_key_for_manifest(manifest)
+        labels = runtime_labels_for_manifest(manifest, app_name=app_name)
+        labels.update(
+            {
+                self.POD_LABEL: replica_id,
+                self.LEGACY_REPLICA_LABEL: replica_id,
+                self.REVISION_LABEL: str(revision),
+                self.CONTAINER_LABEL: self.POD_SANDBOX_LABEL,
+                **({"ae.node": str(node_id)} if node_id else {}),
+            }
+        )
+        try:
+            existing = self._client.containers.list(
+                all=True,
+                filters={
+                    "label": [
+                        f"{self.APP_LABEL}={app_name}",
+                        f"{self.POD_LABEL}={replica_id}",
+                        f"{self.CONTAINER_LABEL}={self.POD_SANDBOX_LABEL}",
+                    ]
+                },
+            )
+        except APIError:
+            existing = []
+        if existing:
+            pod = existing[0]
+            try:
+                pod.reload()
+                if pod.status != "running":
+                    pod.start()
+            except Exception:
+                pass
+            return name
+        try:
+            self._ensure_image(self._sandbox_image(), manifest=manifest, policy="IfNotPresent")
+            self._client.containers.run(
+                self._sandbox_image(),
+                name=name,
+                detach=True,
+                labels=labels,
+                restart_policy={"Name": "unless-stopped"},
+            )
+            return name
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Failed to create pod sandbox for %s: %s", replica_id, exc)
+            return None
+
+    def _get_volume_manager(self):
+        if self._volume_manager_checked:
+            return self._volume_manager
+        self._volume_manager_checked = True
+        if os.getenv("AE_ENABLE_NETFS", "0") != "1":
+            self._volume_manager = None
+            return None
+        try:
+            from pathlib import Path
+
+            from ae.storage import (
+                ApishimStorageState,
+                InMemoryStorageState,
+                NetFSManager,
+                NodeVolumeManager,
+            )
+            from ae.apishim.store import ObjectStore
+        except Exception:
+            self._volume_manager = None
+            return None
+        state = None
+        dsn = os.getenv("AE_APISHIM_DSN")
+        db_path = os.getenv("AE_APISHIM_DB")
+        if dsn or db_path:
+            try:
+                store = ObjectStore(
+                    db_path=Path(db_path) if db_path else Path("state/apishim.db"),
+                    dsn=dsn,
+                )
+                state = ApishimStorageState(store)
+            except Exception:
+                state = None
+        if state is None:
+            state = InMemoryStorageState()
+        try:
+            netfs = NetFSManager(state)
+            self._volume_manager = NodeVolumeManager(netfs, node_id=self._current_node_id)
+        except Exception:
+            self._volume_manager = None
+        return self._volume_manager
+
+    def _maybe_inject_pvc_mounts(
+        self,
+        manifest: AppManifest,
+        *,
+        node_id: str | None = None,
+        replica_id: str | None = None,
+    ) -> AppManifest:
+        mgr = self._get_volume_manager()
+        if mgr is None:
+            return manifest
+        try:
+            from ae.storage.netfs import PvcNotReadyError
+        except Exception:
+            PvcNotReadyError = None  # type: ignore[assignment]
+        try:
+            if replica_id is not None:
+                return mgr.inject_pvc_mounts(
+                    manifest,
+                    node_id=node_id or self._current_node_id,
+                    replica_id=replica_id,
+                )
+            return mgr.inject_pvc_mounts(
+                manifest,
+                node_id=node_id or self._current_node_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if PvcNotReadyError is not None and isinstance(exc, PvcNotReadyError):
+                raise
+            if isinstance(exc, TypeError):
+                try:
+                    return mgr.inject_pvc_mounts(
+                        manifest,
+                        node_id=node_id or self._current_node_id,
+                    )
+                except Exception as inner_exc:  # noqa: BLE001
+                    LOGGER.warning("PVC mount injection failed: %s", inner_exc)
+                    return manifest
+            LOGGER.warning("PVC mount injection failed: %s", exc)
+            return manifest
+
+    def _endpoint_for_host_network(
+        self, manifest: AppManifest, preferred: int | None = None
+    ) -> str | None:
+        port = None
+        if preferred is not None:
+            port = int(preferred)
+        elif getattr(manifest.spec, "ports", None):
+            try:
+                port = int(manifest.spec.ports[0].container_port)
+            except Exception:
+                port = None
+        if port is None and getattr(manifest.spec, "service", None):
+            svc = manifest.spec.service
+            try:
+                target = getattr(svc, "target_port", None)
+                port = int(target if target is not None else getattr(svc, "port", None))
+            except Exception:
+                port = None
+        if port is None:
+            return None
+        host = os.getenv("AE_NODE_ADVERTISE_IP") or "127.0.0.1"
+        return f"{host}:{port}"
 
     def _create_container(
         self,

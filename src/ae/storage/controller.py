@@ -63,6 +63,10 @@ SNAPSHOT_SOURCE_ANNOTATION = "k1s.io/snapshot-source"
 CLONE_SOURCE_ANNOTATION = "k1s.io/clone-source"
 SNAPSHOT_DIRNAME = ".snapshots"
 DEFAULT_LOCAL_ROOT = Path(os.getenv("AE_STORAGE_ROOT", "/var/lib/ae/storage"))
+PVC_PROTECTION_FINALIZER = "kubernetes.io/pvc-protection"
+PV_PROTECTION_FINALIZER = "kubernetes.io/pv-protection"
+PVC_RESIZE_CONDITION = "Resizing"
+PVC_FS_RESIZE_PENDING_CONDITION = "FileSystemResizePending"
 
 
 class StorageController:
@@ -72,6 +76,8 @@ class StorageController:
         self._store = store
         self._config = config or StorageConfig.from_env()
         self._storage_classes = load_storage_classes(self._config.provisioners_path)
+        if not self._storage_classes and self._seed_defaults_enabled():
+            self._storage_classes = self._builtin_storage_classes()
         self._default_class = self._resolve_default(self._storage_classes)
         self._default_snapshot_class: str | None = None
         self._volume_health: dict[str, bool] = {}
@@ -91,6 +97,45 @@ class StorageController:
             self._seed_storage_class(sc)
             count += 1
         return count
+
+    @staticmethod
+    def _seed_defaults_enabled() -> bool:
+        raw = os.getenv("AE_STORAGE_SEED_DEFAULTS", "1")
+        return str(raw).lower() in {"1", "true", "yes", "on"}
+
+    def _builtin_storage_classes(self) -> list[StorageClassConfig]:
+        classes: list[StorageClassConfig] = []
+        name = os.getenv("AE_STORAGE_LOCAL_CLASS", "k1s-local")
+        classes.append(
+            StorageClassConfig(
+                name=str(name),
+                provisioner=LOCAL_PATH_PROVISIONER,
+                reclaim_policy="Delete",
+                volume_binding_mode=WAIT_FOR_FIRST_CONSUMER,
+                allow_volume_expansion=False,
+                is_default=True,
+            )
+        )
+        nfs_server = os.getenv("AE_STORAGE_NFS_SERVER")
+        nfs_path = os.getenv("AE_STORAGE_NFS_PATH")
+        if nfs_server and nfs_path:
+            nfs_name = os.getenv("AE_STORAGE_NFS_CLASS", "k1s-nfs")
+            params = {"server": str(nfs_server), "path": str(nfs_path)}
+            host_path = os.getenv("AE_STORAGE_NFS_HOSTPATH")
+            if host_path:
+                params["hostPath"] = str(host_path)
+            classes.append(
+                StorageClassConfig(
+                    name=str(nfs_name),
+                    provisioner=NFS_PROVISIONER,
+                    parameters=params,
+                    reclaim_policy="Retain",
+                    volume_binding_mode="Immediate",
+                    allow_volume_expansion=True,
+                    is_default=False,
+                )
+            )
+        return classes
 
     def start(self) -> None:
         """Start background PVC/PV reconciliation."""
@@ -193,10 +238,14 @@ class StorageController:
             CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, heartbeat_seconds=5, allow_bookmarks=True
         )
         try:
-            for _ev, _obj in gen:
+            for ev, obj in gen:
                 if self._stop.is_set():
                     break
-                self._reconcile_pending()
+                if ev == "DELETED":
+                    self._handle_pv_deleted(obj)
+                    continue
+                if ev in {"ADDED", "MODIFIED"}:
+                    self._reconcile_pending()
         finally:
             with suppress(Exception):
                 gen.close()  # type: ignore[attr-defined]
@@ -487,6 +536,38 @@ class StorageController:
 
     def _reconcile_pvc(self, pvc) -> None:
         spec = pvc.spec or {}
+        pv_name = spec.get("volumeName")
+        if pv_name:
+            pv = self._store.get(CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, pv_name)
+            if pv is None:
+                self._ensure_pvc_phase(pvc, "Pending")
+                self._record_pvc_event(
+                    pvc,
+                    "VolumeNotFound",
+                    f"requested persistent volume {pv_name} not found",
+                )
+                return
+            phase = str((pv.status or {}).get("phase") or "")
+            if phase in {"Released", "Failed"}:
+                self._ensure_pvc_phase(pvc, "Pending")
+                self._record_pvc_event(
+                    pvc,
+                    "VolumeBindingFailed",
+                    f"persistent volume {pv_name} is {phase}",
+                )
+                return
+            if self._pv_claim_ref_conflicts(pv, pvc):
+                self._ensure_pvc_phase(pvc, "Pending")
+                self._record_pvc_event(
+                    pvc,
+                    "VolumeBindingFailed",
+                    f"persistent volume {pv_name} is already claimed",
+                )
+                return
+            self._bind(pvc, pv)
+            self._reconcile_csi_attachment(pvc, pv)
+            self._maybe_expand_bound_volume(pvc, pv)
+            return
         if self._pvc_is_bound(pvc):
             pv_name = spec.get("volumeName")
             if pv_name:
@@ -538,10 +619,54 @@ class StorageController:
             status=pv_status,
         )
 
+    def _handle_pv_deleted(self, pv) -> None:
+        self._delete_volume_attachments(pv.name)
+        policy = self._pv_reclaim_policy(pv)
+        if policy == "Delete":
+            self._cleanup_backing_path(pv)
+        claim = (pv.spec or {}).get("claimRef") or {}
+        pvc_name = claim.get("name")
+        pvc_ns = claim.get("namespace")
+        if not pvc_name or not pvc_ns:
+            return
+        pvc = self._store.get(CORE_GROUP, CORE_VERSION, PVC_RESOURCE, pvc_ns, pvc_name)
+        if pvc is None:
+            return
+        pvc_status = dict(pvc.status or {})
+        if pvc_status.get("phase") == "Lost":
+            return
+        pvc_status["phase"] = "Lost"
+        self._store.upsert(
+            CORE_GROUP,
+            CORE_VERSION,
+            PVC_RESOURCE,
+            pvc.namespace,
+            pvc.name,
+            pvc.metadata,
+            pvc.spec,
+            status=pvc_status,
+        )
+        self._record_pvc_event(
+            pvc, "VolumeLost", f"persistent volume {pv.name} was deleted"
+        )
+
     def _pvc_is_bound(self, pvc) -> bool:
         spec = pvc.spec or {}
         status = pvc.status or {}
-        return bool(spec.get("volumeName")) or status.get("phase") == "Bound"
+        if status.get("phase") == "Bound":
+            return True
+        volume_name = spec.get("volumeName")
+        if not volume_name:
+            return False
+        pv = self._store.get(CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, volume_name)
+        if pv is None:
+            return False
+        phase = str((pv.status or {}).get("phase") or "")
+        if phase in {"Released", "Failed"}:
+            return False
+        if self._pv_claim_ref_conflicts(pv, pvc):
+            return False
+        return True
 
     def _match_pv_for_pvc(self, pvc):
         spec = pvc.spec or {}
@@ -731,6 +856,12 @@ class StorageController:
         pvc_status = dict(pvc.status or {})
         pv_spec = dict(pv.spec or {})
         pv_status = dict(pv.status or {})
+        pvc_meta, pvc_meta_changed = self._ensure_finalizer(
+            pvc.metadata, PVC_PROTECTION_FINALIZER
+        )
+        pv_meta, pv_meta_changed = self._ensure_finalizer(
+            pv.metadata, PV_PROTECTION_FINALIZER
+        )
 
         if pvc_spec.get("volumeName") != pv.name:
             pvc_spec["volumeName"] = pv.name
@@ -754,35 +885,48 @@ class StorageController:
         if pv_status.get("phase") != "Bound":
             pv_status["phase"] = "Bound"
 
-        if not self._binding_up_to_date(pvc, pvc_spec, pvc_status):
-            self._store.upsert(
-                CORE_GROUP,
-                CORE_VERSION,
-                PVC_RESOURCE,
-                pvc.namespace,
-                pvc.name,
-                pvc.metadata,
-                pvc_spec,
-                status=pvc_status,
-            )
-        if not self._binding_up_to_date(pv, pv_spec, pv_status):
+        # Ensure PV is visible before PVC is marked Bound (avoids race in node mount injection).
+        if not self._binding_up_to_date(pv, pv_meta, pv_spec, pv_status) or pv_meta_changed:
             self._store.upsert(
                 CORE_GROUP,
                 CORE_VERSION,
                 PV_RESOURCE,
                 None,
                 pv.name,
-                pv.metadata,
+                pv_meta,
                 pv_spec,
                 status=pv_status,
             )
+        if not self._binding_up_to_date(pvc, pvc_meta, pvc_spec, pvc_status) or pvc_meta_changed:
+            self._store.upsert(
+                CORE_GROUP,
+                CORE_VERSION,
+                PVC_RESOURCE,
+                pvc.namespace,
+                pvc.name,
+                pvc_meta,
+                pvc_spec,
+                status=pvc_status,
+            )
 
     @staticmethod
-    def _binding_up_to_date(obj, spec: dict[str, Any], status: dict[str, Any]) -> bool:
+    def _binding_up_to_date(
+        obj, metadata: dict[str, Any], spec: dict[str, Any], status: dict[str, Any]
+    ) -> bool:
         try:
-            return obj.spec == spec and obj.status == status
+            return obj.metadata == metadata and obj.spec == spec and obj.status == status
         except Exception:
             return False
+
+    @staticmethod
+    def _ensure_finalizer(metadata: dict[str, Any] | None, finalizer: str) -> tuple[dict, bool]:
+        meta = dict(metadata or {})
+        finalizers = list(meta.get("finalizers") or [])
+        if finalizer in finalizers:
+            return meta, False
+        finalizers.append(finalizer)
+        meta["finalizers"] = finalizers
+        return meta, True
 
     def _reconcile_csi_attachment(self, pvc, pv) -> None:
         pv_spec = pv.spec or {}
@@ -900,11 +1044,33 @@ class StorageController:
             return
         if requested <= current:
             return
+        pvc_spec = dict(pvc.spec or {})
+        pvc_status = dict(pvc.status or {})
+        conditions = list(pvc_status.get("conditions") or [])
+
         if not self._quota_allows_expansion(pvc, requested):
             self._record_pvc_event(
                 pvc,
                 "StorageQuotaExceeded",
                 "expansion would exceed namespace storage quota",
+            )
+            conditions = self._merge_condition(
+                conditions,
+                PVC_RESIZE_CONDITION,
+                "False",
+                "ExpansionFailed",
+                "expansion would exceed namespace storage quota",
+            )
+            pvc_status["conditions"] = conditions
+            self._store.upsert(
+                CORE_GROUP,
+                CORE_VERSION,
+                PVC_RESOURCE,
+                pvc.namespace,
+                pvc.name,
+                pvc.metadata,
+                pvc_spec,
+                status=pvc_status,
             )
             return
 
@@ -914,7 +1080,33 @@ class StorageController:
                 "VolumeExpansionForbidden",
                 "storage class does not allow expansion",
             )
+            conditions = self._merge_condition(
+                conditions,
+                PVC_RESIZE_CONDITION,
+                "False",
+                "ExpansionFailed",
+                "storage class does not allow expansion",
+            )
+            pvc_status["conditions"] = conditions
+            self._store.upsert(
+                CORE_GROUP,
+                CORE_VERSION,
+                PVC_RESOURCE,
+                pvc.namespace,
+                pvc.name,
+                pvc.metadata,
+                pvc_spec,
+                status=pvc_status,
+            )
             return
+
+        conditions = self._merge_condition(
+            conditions,
+            PVC_RESIZE_CONDITION,
+            "True",
+            "Resizing",
+            f"expanding to {requested_raw}",
+        )
 
         capacity["storage"] = str(requested_raw)
         pv_spec["capacity"] = capacity
@@ -931,11 +1123,33 @@ class StorageController:
             status=pv_status,
         )
 
-        pvc_spec = dict(pvc.spec or {})
-        pvc_status = dict(pvc.status or {})
         pvc_status["capacity"] = capacity
         if pvc_status.get("phase") != "Bound":
             pvc_status["phase"] = "Bound"
+        conditions = self._merge_condition(
+            conditions,
+            PVC_RESIZE_CONDITION,
+            "False",
+            "ResizeComplete",
+            f"expanded to {requested_raw}",
+        )
+        volume_mode = str(
+            (pvc_spec.get("volumeMode") or pv_spec.get("volumeMode") or "Filesystem")
+        )
+        if volume_mode.lower() != "block":
+            if self._filesystem_resize_enabled(pv_spec):
+                conditions = self._remove_condition(
+                    conditions, PVC_FS_RESIZE_PENDING_CONDITION
+                )
+            else:
+                conditions = self._merge_condition(
+                    conditions,
+                    PVC_FS_RESIZE_PENDING_CONDITION,
+                    "True",
+                    "WaitingForNodeResize",
+                    "filesystem resize pending on node",
+                )
+        pvc_status["conditions"] = conditions
         self._store.upsert(
             CORE_GROUP,
             CORE_VERSION,
@@ -947,6 +1161,54 @@ class StorageController:
             status=pvc_status,
         )
         self._record_pvc_event(pvc, "VolumeExpanded", f"expanded to {requested_raw}")
+
+    @staticmethod
+    def _filesystem_resize_enabled(pv_spec: dict[str, Any]) -> bool:
+        raw = os.getenv("AE_NETFS_FS_RESIZE", "0")
+        return str(raw).lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _condition_time() -> str:
+        return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+    def _merge_condition(
+        self,
+        conditions: list[dict[str, Any]],
+        cond_type: str,
+        status: str,
+        reason: str,
+        message: str,
+    ) -> list[dict[str, Any]]:
+        now = self._condition_time()
+        for cond in conditions:
+            if not isinstance(cond, dict):
+                continue
+            if cond.get("type") != cond_type:
+                continue
+            if cond.get("status") != status:
+                cond["lastTransitionTime"] = now
+            cond["status"] = status
+            cond["reason"] = reason
+            cond["message"] = message
+            cond["lastProbeTime"] = now
+            return conditions
+        conditions.append(
+            {
+                "type": cond_type,
+                "status": status,
+                "reason": reason,
+                "message": message,
+                "lastTransitionTime": now,
+                "lastProbeTime": now,
+            }
+        )
+        return conditions
+
+    @staticmethod
+    def _remove_condition(
+        conditions: list[dict[str, Any]], cond_type: str
+    ) -> list[dict[str, Any]]:
+        return [c for c in conditions if not isinstance(c, dict) or c.get("type") != cond_type]
 
     def _storage_class_allows_expansion(self, pvc, pv) -> bool:
         sc_name = self._pv_storage_class(pv) or self._pvc_storage_class(pvc)
@@ -1960,7 +2222,15 @@ class StorageController:
     @staticmethod
     def _pv_claim_ref_matches(pv, pvc) -> bool:
         claim = (pv.spec or {}).get("claimRef") or {}
-        return claim.get("name") == pvc.name and claim.get("namespace") == (pvc.namespace or "")
+        if claim.get("name") != pvc.name:
+            return False
+        if claim.get("namespace") != (pvc.namespace or ""):
+            return False
+        pvc_uid = (pvc.metadata or {}).get("uid")
+        claim_uid = claim.get("uid")
+        if pvc_uid and claim_uid and str(pvc_uid) != str(claim_uid):
+            return False
+        return True
 
     @staticmethod
     def _pv_claim_ref_conflicts(pv, pvc) -> bool:
@@ -1968,6 +2238,10 @@ class StorageController:
         if not claim:
             return False
         if claim.get("name") == pvc.name and claim.get("namespace") == (pvc.namespace or ""):
+            pvc_uid = (pvc.metadata or {}).get("uid")
+            claim_uid = claim.get("uid")
+            if pvc_uid and claim_uid and str(pvc_uid) != str(claim_uid):
+                return True
             return False
         return True
 
