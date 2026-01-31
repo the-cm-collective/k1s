@@ -219,6 +219,100 @@ def test_storage_controller_explicit_volume_name_conflict(tmp_path):
     assert (pv.spec or {}).get("claimRef", {}).get("name") == "other"
 
 
+def test_storage_controller_explicit_volume_name_uid_mismatch(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    pv_spec = {
+        "capacity": {"storage": "1Gi"},
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "k1s-local",
+        "claimRef": {"namespace": "default", "name": "pvc-uid", "uid": "uid-other"},
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "k1s-local",
+        "volumeName": "pv-uid",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumes",
+        None,
+        "pv-uid",
+        {"name": "pv-uid"},
+        pv_spec,
+        status={"phase": "Bound"},
+    )
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "pvc-uid",
+        {"name": "pvc-uid", "namespace": "default", "uid": "uid-current"},
+        pvc_spec,
+        status={"phase": "Pending"},
+    )
+
+    controller.reconcile_once()
+
+    pvc = store.get("", "v1", "persistentvolumeclaims", "default", "pvc-uid")
+    assert pvc is not None
+    assert (pvc.status or {}).get("phase") == "Pending"
+    pv = store.get("", "v1", "persistentvolumes", None, "pv-uid")
+    assert pv is not None
+    claim_ref = (pv.spec or {}).get("claimRef") or {}
+    assert claim_ref.get("uid") == "uid-other"
+
+
+def test_storage_controller_explicit_volume_name_released(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    pv_spec = {
+        "capacity": {"storage": "1Gi"},
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "k1s-local",
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "k1s-local",
+        "volumeName": "pv-released",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumes",
+        None,
+        "pv-released",
+        {"name": "pv-released"},
+        pv_spec,
+        status={"phase": "Released"},
+    )
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "pvc-released",
+        {"name": "pvc-released", "namespace": "default", "uid": "uid-released"},
+        pvc_spec,
+        status={"phase": "Pending"},
+    )
+
+    controller.reconcile_once()
+
+    pvc = store.get("", "v1", "persistentvolumeclaims", "default", "pvc-released")
+    assert pvc is not None
+    assert (pvc.status or {}).get("phase") == "Pending"
+    pv = store.get("", "v1", "persistentvolumes", None, "pv-released")
+    assert pv is not None
+    assert (pv.status or {}).get("phase") == "Released"
+
+
 def test_storage_controller_dynamic_nfs_provisioning(tmp_path):
     store = ObjectStore(db_path=tmp_path / "apishim.db")
     controller = StorageController(store)
