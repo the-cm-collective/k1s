@@ -11618,8 +11618,7 @@ def _node_obj(record, status, rv: int) -> dict[str, Any]:
     return {"apiVersion": "v1", "kind": "Node", "metadata": meta, "status": node_status}
 
 
-def _runtime_from_env() -> RuntimeAdapter:
-    backend = (os.getenv("AE_APISHIM_RUNTIME") or os.getenv("AE_RUNTIME_BACKEND") or "stub").lower()
+def _runtime_from_env_base(backend: str) -> RuntimeAdapter:
     if backend in {"stub", "test"}:
         return StubRuntime()
     if backend in {"cri", "containerd"}:
@@ -11629,9 +11628,17 @@ def _runtime_from_env() -> RuntimeAdapter:
             return PodmanRuntime()
         except Exception:
             return DockerRuntime()
-    if backend == "remote":
-        return RemoteRuntime()
     return DockerRuntime()
+
+
+def _runtime_from_env() -> RuntimeAdapter:
+    backend = (os.getenv("AE_APISHIM_RUNTIME") or os.getenv("AE_RUNTIME_BACKEND") or "stub").lower()
+    agent_url = os.getenv("AE_APISHIM_AGENT_URL") or os.getenv("AE_AGENT_URL")
+    if backend == "remote" or agent_url:
+        base_backend = (os.getenv("AE_RUNTIME_BACKEND") or "podman").lower()
+        base = _runtime_from_env_base(base_backend)
+        return RemoteRuntime(agent_url, base)  # type: ignore[arg-type]
+    return _runtime_from_env_base(backend)
 
 
 def _pod_obj(container: dict, rv: int, node_name: str | None) -> dict[str, Any]:
