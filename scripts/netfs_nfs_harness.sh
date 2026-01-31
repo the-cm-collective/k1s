@@ -38,8 +38,8 @@ NODE_ID=${NODE_ID:-netfs-node}
 NFS_CONTAINER=${NFS_CONTAINER:-ae-netfs-nfs-harness}
 NFS_EXPORT_DIR=${NFS_EXPORT_DIR:-"$HARNESS_DIR/exports"}
 NFS_SERVER=${NFS_SERVER:-127.0.0.1}
-# The nfs-server-alpine image exports /exports as the NFSv4 pseudo-root (fsid=0),
-# so clients should mount subpaths relative to that root (e.g., /netfs).
+# The nfs-server-alpine image exports /exports with an NFSv4 pseudo-root, so
+# clients should mount subpaths relative to that root (e.g., /netfs).
 NFS_PATH=${NFS_PATH:-/netfs}
 
 PV_NAME=${PV_NAME:-netfs-pv-harness}
@@ -126,7 +126,7 @@ reclaimPolicy: Retain
 volumeBindingMode: Immediate
 allowVolumeExpansion: false
 mountOptions:
-  - vers=4.2
+  - vers=4
 EOF_SC
 
 if [[ "${HARNESS_MODE}" != "csi" ]]; then
@@ -160,7 +160,7 @@ if [[ "${HARNESS_MODE}" != "csi" ]]; then
     test_err="${HARNESS_DIR}/mount-preflight.err"
     mkdir -p "${test_mount}"
     set +e
-    timeout 15 mount -t nfs -o vers=4.2,ro "${NFS_SERVER}:${NFS_PATH}" "${test_mount}" \
+    timeout 15 mount -t nfs -o vers=4,ro "${NFS_SERVER}:${NFS_PATH}" "${test_mount}" \
       2>"${test_err}"
     rc=$?
     set -e
@@ -181,6 +181,10 @@ AE_APISHIM_DB="${APISHIM_DB}" \
 AE_STATE_DB="${STATE_DB}" \
 AE_STORAGE_PROVISIONERS="${SC_FILE}" \
 AE_APISHIM_RUNTIME=docker \
+AE_ENABLE_NETFS=1 \
+AE_NETFS_ROOT="${NETFS_ROOT}" \
+AE_NODE_ID="${NODE_ID}" \
+AE_NODE_NAME="${NODE_ID}" \
 "${PYTHON_BIN}" -m ae.apishim serve \
   --host "${APISHIM_HOST}" \
   --port "${APISHIM_PORT}" \

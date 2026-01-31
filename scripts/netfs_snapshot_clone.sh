@@ -6,6 +6,9 @@ TOKEN=${AE_APISHIM_TOKEN:-}
 NS=${NETFS_NAMESPACE:-default}
 SC=${NETFS_STORAGE_CLASS:-k1s-nfs}
 NETFS_ROOT=${NETFS_ROOT:-/var/lib/ae/netfs}
+PYTHON_BIN=${PYTHON_BIN:-python}
+SYNC_TIMEOUT=${NETFS_SYNC_TIMEOUT:-10}
+SYNC_SKIP=${NETFS_SYNC_SKIP:-0}
 
 SRC_PVC=${NETFS_SRC_PVC_NAME:-netfs-pvc-src}
 CLONE_PVC=${NETFS_CLONE_PVC_NAME:-netfs-pvc-clone}
@@ -48,19 +51,61 @@ delete_if_exists() {
   req DELETE "$url" >/dev/null 2>&1 || true
 }
 
+flush_data() {
+  local file_path=$1
+  if [[ "${SYNC_SKIP}" == "1" ]]; then
+    return 0
+  fi
+  if command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
+    if command -v timeout >/dev/null 2>&1; then
+      timeout "${SYNC_TIMEOUT}" "${PYTHON_BIN}" - "${file_path}" <<'PY' || true
+import os
+import sys
+
+target = sys.argv[1] if len(sys.argv) > 1 else ""
+if target:
+    with open(target, "rb") as fh:
+        os.fsync(fh.fileno())
+PY
+      return 0
+    fi
+    "${PYTHON_BIN}" - "${file_path}" <<'PY' || true
+import os
+import sys
+
+target = sys.argv[1] if len(sys.argv) > 1 else ""
+if target:
+    with open(target, "rb") as fh:
+        os.fsync(fh.fileno())
+PY
+    return 0
+  fi
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${SYNC_TIMEOUT}" sync || true
+  else
+    sync || true
+  fi
+}
+
 dump_recent_events() {
   log "recent events"
-  local events_json
+  set +e
+  local events_json tmp_events
   events_json=$(curl -fsS "${auth_args[@]}" "${APISHIM_URL}/api/v1/namespaces/${NS}/events" || true)
   if [[ -z "${events_json}" ]]; then
     log "no events returned from apishim"
+    set -e
     return 0
   fi
-  python - "${events_json}" <<'PY'
+  tmp_events=$(mktemp)
+  printf '%s' "${events_json}" >"${tmp_events}"
+  "${PYTHON_BIN}" - "${tmp_events}" <<'PY'
 import json
 import sys
 
-raw = sys.argv[1] if len(sys.argv) > 1 else ""
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fh:
+    raw = fh.read()
 if not raw.strip():
     raise SystemExit(0)
 data = json.loads(raw)
@@ -74,6 +119,82 @@ for ev in items[-25:]:
     if kind in {"PersistentVolumeClaim", "VolumeSnapshot"}:
         print(f"{kind} {name} {reason} - {msg}")
 PY
+  rm -f "${tmp_events}"
+  set -e
+}
+
+dump_storage_state() {
+  log "PVC ${SRC_PVC} status"
+  set +e
+  local tmp_pvc tmp_pvs tmp_sc
+  tmp_pvc=$(mktemp)
+  req GET "${APISHIM_URL}/api/v1/namespaces/${NS}/persistentvolumeclaims/${SRC_PVC}" >"${tmp_pvc}"
+  "${PYTHON_BIN}" - "${tmp_pvc}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fh:
+    raw = fh.read()
+if not raw.strip():
+    raise SystemExit(0)
+data = json.loads(raw)
+spec = data.get("spec") or {}
+status = data.get("status") or {}
+meta = data.get("metadata") or {}
+print(f"name={meta.get('name')} uid={meta.get('uid')} phase={status.get('phase')}")
+print("spec:", spec)
+print("status:", status)
+PY
+  rm -f "${tmp_pvc}"
+
+  log "PV list"
+  tmp_pvs=$(mktemp)
+  req GET "${APISHIM_URL}/api/v1/persistentvolumes" >"${tmp_pvs}"
+  "${PYTHON_BIN}" - "${tmp_pvs}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fh:
+    raw = fh.read()
+if not raw.strip():
+    raise SystemExit(0)
+data = json.loads(raw)
+items = data.get("items") or []
+for item in items:
+    meta = item.get("metadata") or {}
+    spec = item.get("spec") or {}
+    status = item.get("status") or {}
+    name = meta.get("name")
+    phase = status.get("phase")
+    nfs = spec.get("nfs") or {}
+    claim = (spec.get("claimRef") or {}).get("name")
+    print(f"pv={name} phase={phase} claim={claim} nfs={nfs}")
+PY
+  rm -f "${tmp_pvs}"
+
+  log "StorageClass list"
+  tmp_sc=$(mktemp)
+  req GET "${APISHIM_URL}/apis/storage.k8s.io/v1/storageclasses" >"${tmp_sc}"
+  "${PYTHON_BIN}" - "${tmp_sc}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fh:
+    raw = fh.read()
+if not raw.strip():
+    raise SystemExit(0)
+data = json.loads(raw)
+items = data.get("items") or []
+for item in items:
+    meta = item.get("metadata") or {}
+    spec = item.get("spec") or {}
+    print(f"sc={meta.get('name')} provisioner={spec.get('provisioner')} params={spec.get('parameters')}")
+PY
+  rm -f "${tmp_sc}"
+  set -e
 }
 
 cleanup() {
@@ -102,13 +223,16 @@ wait_pvc_bound() {
     local resp
     resp=$(req GET "${APISHIM_URL}/api/v1/namespaces/${NS}/persistentvolumeclaims/${pvc_name}" || true)
     local phase pv uid
-    read -r phase pv uid <<EOF_STATUS
-$(python - "${resp}" <<'PY'
+    local tmp_pvc parsed
+    tmp_pvc=$(mktemp)
+    printf '%s' "${resp}" >"${tmp_pvc}"
+    parsed=$("${PYTHON_BIN}" - "${tmp_pvc}" <<'PY'
 import json
 import sys
 
-raw = sys.argv[1] if len(sys.argv) > 1 else ""
-raw = raw.strip()
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fh:
+    raw = fh.read().strip()
 if not raw:
     print("\t\t")
     raise SystemExit(0)
@@ -126,7 +250,8 @@ uid = meta.get("uid", "")
 print(f"{phase}\t{pv}\t{uid}")
 PY
 )
-EOF_STATUS
+    rm -f "${tmp_pvc}"
+    read -r phase pv uid <<< "${parsed}"
     if [[ "${phase}" == "Bound" ]]; then
       printf '%s\t%s\n' "${pv}" "${uid}"
       return 0
@@ -152,28 +277,32 @@ wait_snapshot_ready() {
     local resp
     resp=$(req GET "${APISHIM_URL}/apis/snapshot.storage.k8s.io/v1/namespaces/${NS}/volumesnapshots/${SNAP_NAME}" || true)
     local ready content
-    read -r ready content <<EOF_SNAP
-$(python - "${resp}" <<'PY'
+    local tmp_snap parsed
+    tmp_snap=$(mktemp)
+    printf '%s' "${resp}" >"${tmp_snap}"
+    parsed=$("${PYTHON_BIN}" - "${tmp_snap}" <<'PY'
 import json
 import sys
 
-raw = sys.argv[1] if len(sys.argv) > 1 else ""
-raw = raw.strip()
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fh:
+    raw = fh.read().strip()
 if not raw:
-    print("\t")
+    print("	")
     raise SystemExit(0)
 try:
     data = json.loads(raw)
 except Exception:
-    print("\t")
+    print("	")
     raise SystemExit(0)
 status = data.get("status") or {}
 ready = bool(status.get("readyToUse"))
 content = status.get("boundVolumeSnapshotContentName", "")
-print(f"{ready}\t{content}")
+print(f"{ready}	{content}")
 PY
 )
-EOF_SNAP
+    rm -f "${tmp_snap}"
+    read -r ready content <<< "${parsed}"
     if [[ "${ready}" == "True" || "${ready}" == "true" ]]; then
       SNAP_CONTENT=${content}
       return 0
@@ -245,6 +374,7 @@ EOF_SRC_DEPLOY
 log "waiting for source PVC to bind"
 if ! src_status=$(wait_pvc_bound "${SRC_PVC}"); then
   dump_recent_events
+  dump_storage_state
   log "source PVC did not reach Bound phase"
   exit 1
 fi
@@ -261,7 +391,7 @@ fi
 log "writing source data"
 mkdir -p "${SRC_MOUNT}"
 echo "hello snapshot" >"${SRC_MOUNT}/data.txt"
-sync
+flush_data "${SRC_MOUNT}/data.txt"
 
 log "applying VolumeSnapshot ${SNAP_NAME}"
 cat <<EOF_SNAP | put_json "${APISHIM_URL}/apis/snapshot.storage.k8s.io/v1/namespaces/${NS}/volumesnapshots/${SNAP_NAME}"
