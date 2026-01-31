@@ -77,6 +77,19 @@ spec:
               value: http://$(NODE_IP):9109
             - name: AE_AGENT_HEARTBEAT_SECONDS
               value: "10"
+            # Optional: enable on-node Service VIP/NodePort proxy (iptables).
+            # Requires NET_ADMIN and root inside the pod.
+            # - name: AE_AGENT_SERVICE_PROXY
+            #   value: "1"
+            # - name: AE_AGENT_SERVICE_PROXY_URL
+            #   value: http://k1s-controller.k1s-system.svc.cluster.local:9110
+            # - name: AE_AGENT_SERVICE_PROXY_DB
+            #   value: /var/lib/ae/agent-services.db
+            # - name: AE_AGENT_SERVICE_PROXY_TOKEN
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: k1s-api-read-token
+            #       key: token
           ports:
             - name: agent
               containerPort: 9109
@@ -87,6 +100,9 @@ spec:
             readOnlyRootFilesystem: true
             seccompProfile:
               type: RuntimeDefault
+            # Uncomment for iptables access when AE_AGENT_SERVICE_PROXY=1.
+            # capabilities:
+            #   add: ["NET_ADMIN"]
           volumeMounts:
             - name: containerd-sock
               mountPath: /run/containerd/containerd.sock

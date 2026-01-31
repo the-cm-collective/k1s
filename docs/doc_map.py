@@ -4,6 +4,7 @@ DOCS_MAPPING = {
     "getting-started/start-here.md": "start-here.html",
     "getting-started/overview.md": "overview.html",
     "reference/architecture.md": "architecture.html",
+    "reference/cri-containerd.md": "cri-containerd.html",
     "guides/multinode-lab.md": "multinode-lab.html",
     "reference/http-api.md": "http-api.html",
     "reference/ingress.md": "ingress.html",

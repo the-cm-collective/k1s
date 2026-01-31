@@ -106,6 +106,7 @@ NAV_LINKS = [
     ("Overview", "overview.html", False, False),
     ("Demos", "examples.html", False, False),
     ("Architecture", "architecture.html", False, False),
+    ("CRI containerd", "cri-containerd.html", False, False),
     ("Multi-Node", "multinode-lab.html", False, False),
     ("HTTP API", "http-api.html", False, False),
     ("API Shim", "apishim-compatibility-matrix.html", False, False),
