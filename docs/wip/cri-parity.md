@@ -45,12 +45,19 @@ Kubernetes-aligned registry-first image flow and core runtime parity vs Podman.
 - [~] PVC/PV/StorageClass controller parity (Pending/Bound/Released, default StorageClass).
   - Updates: finalizers + reclaim transitions for PV/PVC; PV delete marks PVC Lost.
   - Added: explicit PVC volumeName now blocks dynamic provisioning when PV is missing/conflicting.
+  - Added: PVC resize conditions (`Resizing`, `FileSystemResizePending`) on expansion paths.
   - See: `docs/wip/storage-parity.md`
 - [~] NetFS mount lifecycle coverage on CRI nodes (NFS/SMB), PVC->mount reconciliation in apishim.
   - Added: `scripts/netfs_smoke_suite.sh` to run smoke + snapshot/clone + CSI harness.
   - Current state: harness green; production parity still depends on PVC/PV controller work above.
 - [~] CSI external provisioner hook + VolumeSnapshot/clone parity.
   - See: `docs/wip/csi.md`
+  - Key workstreams (plan after testing):
+    1. CSI driver registry + config (provisioner → driver endpoint/secret mapping; CSIDriver/CSINode in apishim).
+    2. Controller-side lifecycle (Create/Delete volume, ControllerPublish/Unpublish; keep VolumeAttachment + VolumeSnapshotContent synced).
+    3. Node-side publish (NodeStage/NodePublish orchestration + mount records).
+    4. Snapshot/restore path (VolumeSnapshot → Content → PVC restore for CSI-backed volumes).
+    5. Integration tests (minimal CSI driver fixture + e2e harness).
 - [x] StatefulSet volumeClaimTemplates per-ordinal PVC creation + mount naming (adapter + NetFS resolver).
 - [ ] Multi-node service proxy with podCIDR auto-discovery (reduce manual AE_POD_CIDR use).
 

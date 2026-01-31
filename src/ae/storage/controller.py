@@ -65,6 +65,8 @@ SNAPSHOT_DIRNAME = ".snapshots"
 DEFAULT_LOCAL_ROOT = Path(os.getenv("AE_STORAGE_ROOT", "/var/lib/ae/storage"))
 PVC_PROTECTION_FINALIZER = "kubernetes.io/pvc-protection"
 PV_PROTECTION_FINALIZER = "kubernetes.io/pv-protection"
+PVC_RESIZE_CONDITION = "Resizing"
+PVC_FS_RESIZE_PENDING_CONDITION = "FileSystemResizePending"
 
 
 class StorageController:
@@ -1042,11 +1044,33 @@ class StorageController:
             return
         if requested <= current:
             return
+        pvc_spec = dict(pvc.spec or {})
+        pvc_status = dict(pvc.status or {})
+        conditions = list(pvc_status.get("conditions") or [])
+
         if not self._quota_allows_expansion(pvc, requested):
             self._record_pvc_event(
                 pvc,
                 "StorageQuotaExceeded",
                 "expansion would exceed namespace storage quota",
+            )
+            conditions = self._merge_condition(
+                conditions,
+                PVC_RESIZE_CONDITION,
+                "False",
+                "ExpansionFailed",
+                "expansion would exceed namespace storage quota",
+            )
+            pvc_status["conditions"] = conditions
+            self._store.upsert(
+                CORE_GROUP,
+                CORE_VERSION,
+                PVC_RESOURCE,
+                pvc.namespace,
+                pvc.name,
+                pvc.metadata,
+                pvc_spec,
+                status=pvc_status,
             )
             return
 
@@ -1056,7 +1080,33 @@ class StorageController:
                 "VolumeExpansionForbidden",
                 "storage class does not allow expansion",
             )
+            conditions = self._merge_condition(
+                conditions,
+                PVC_RESIZE_CONDITION,
+                "False",
+                "ExpansionFailed",
+                "storage class does not allow expansion",
+            )
+            pvc_status["conditions"] = conditions
+            self._store.upsert(
+                CORE_GROUP,
+                CORE_VERSION,
+                PVC_RESOURCE,
+                pvc.namespace,
+                pvc.name,
+                pvc.metadata,
+                pvc_spec,
+                status=pvc_status,
+            )
             return
+
+        conditions = self._merge_condition(
+            conditions,
+            PVC_RESIZE_CONDITION,
+            "True",
+            "Resizing",
+            f"expanding to {requested_raw}",
+        )
 
         capacity["storage"] = str(requested_raw)
         pv_spec["capacity"] = capacity
@@ -1073,11 +1123,33 @@ class StorageController:
             status=pv_status,
         )
 
-        pvc_spec = dict(pvc.spec or {})
-        pvc_status = dict(pvc.status or {})
         pvc_status["capacity"] = capacity
         if pvc_status.get("phase") != "Bound":
             pvc_status["phase"] = "Bound"
+        conditions = self._merge_condition(
+            conditions,
+            PVC_RESIZE_CONDITION,
+            "False",
+            "ResizeComplete",
+            f"expanded to {requested_raw}",
+        )
+        volume_mode = str(
+            (pvc_spec.get("volumeMode") or pv_spec.get("volumeMode") or "Filesystem")
+        )
+        if volume_mode.lower() != "block":
+            if self._filesystem_resize_enabled(pv_spec):
+                conditions = self._remove_condition(
+                    conditions, PVC_FS_RESIZE_PENDING_CONDITION
+                )
+            else:
+                conditions = self._merge_condition(
+                    conditions,
+                    PVC_FS_RESIZE_PENDING_CONDITION,
+                    "True",
+                    "WaitingForNodeResize",
+                    "filesystem resize pending on node",
+                )
+        pvc_status["conditions"] = conditions
         self._store.upsert(
             CORE_GROUP,
             CORE_VERSION,
@@ -1089,6 +1161,54 @@ class StorageController:
             status=pvc_status,
         )
         self._record_pvc_event(pvc, "VolumeExpanded", f"expanded to {requested_raw}")
+
+    @staticmethod
+    def _filesystem_resize_enabled(pv_spec: dict[str, Any]) -> bool:
+        raw = os.getenv("AE_NETFS_FS_RESIZE", "0")
+        return str(raw).lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _condition_time() -> str:
+        return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+    def _merge_condition(
+        self,
+        conditions: list[dict[str, Any]],
+        cond_type: str,
+        status: str,
+        reason: str,
+        message: str,
+    ) -> list[dict[str, Any]]:
+        now = self._condition_time()
+        for cond in conditions:
+            if not isinstance(cond, dict):
+                continue
+            if cond.get("type") != cond_type:
+                continue
+            if cond.get("status") != status:
+                cond["lastTransitionTime"] = now
+            cond["status"] = status
+            cond["reason"] = reason
+            cond["message"] = message
+            cond["lastProbeTime"] = now
+            return conditions
+        conditions.append(
+            {
+                "type": cond_type,
+                "status": status,
+                "reason": reason,
+                "message": message,
+                "lastTransitionTime": now,
+                "lastProbeTime": now,
+            }
+        )
+        return conditions
+
+    @staticmethod
+    def _remove_condition(
+        conditions: list[dict[str, Any]], cond_type: str
+    ) -> list[dict[str, Any]]:
+        return [c for c in conditions if not isinstance(c, dict) or c.get("type") != cond_type]
 
     def _storage_class_allows_expansion(self, pvc, pv) -> bool:
         sc_name = self._pv_storage_class(pv) or self._pvc_storage_class(pvc)
