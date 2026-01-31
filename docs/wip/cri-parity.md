@@ -1,6 +1,6 @@
 # CRI parity tracking (containerd)
 
-Last updated: 2026-01-30
+Last updated: 2026-01-31
 
 Goal: make CRI/containerd a safe default backend for k1s dev/labs with a
 Kubernetes-aligned registry-first image flow and core runtime parity vs Podman.
@@ -45,6 +45,7 @@ Kubernetes-aligned registry-first image flow and core runtime parity vs Podman.
   - See: `docs/wip/storage-parity.md`
 - [~] NetFS mount lifecycle coverage on CRI nodes (NFS/SMB), PVC->mount reconciliation in apishim.
   - Added: `scripts/netfs_smoke_suite.sh` to run smoke + snapshot/clone + CSI harness.
+  - Fix in progress: gate workloads on PVC Bound + PVC watch to requeue (snapshot/clone mount race).
 - [~] CSI external provisioner hook + VolumeSnapshot/clone parity.
   - See: `docs/wip/csi.md`
 - [ ] StatefulSet volumeClaimTemplates per-ordinal mount naming for CRI runtime (if any gaps remain).
@@ -64,3 +65,12 @@ All P0 items are present in code and documented. Smoke and integration tests are
 available but remain gated for CRI-capable nodes. The remaining blockers for a
 CRI-default experience are storage parity items (PVC/PV/StorageClass) and CSI
 integration tracked in P1.
+
+## Recent findings (2026-01-31)
+
+- NetFS smoke passed; snapshot/clone phase failed to detect clone mount.
+- Root cause: clone Deployment can reconcile before PVC is Bound, so PVC mounts are
+  skipped and the pod starts without the hostPath mount. No requeue occurs when
+  the PVC later binds, leaving the mount absent.
+- Mitigation added (pending verification): apishim workload reconciliation now
+  gates on PVC Bound and re-triggers reconcile on PVC changes.
