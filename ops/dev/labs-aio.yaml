@@ -22,6 +22,7 @@ services:
       - AE_DEMO_MODE=1
       - AE_REGISTER_LOCAL_NODE=1
       - AE_SPECS_DIR=${AE_SPECS_DIR:-state/demo-specs}
+      - AE_STATE_DB=${AE_STATE_DB:-state/controller.db}
       - AE_PROBE_LOOPBACK_FALLBACK=host.docker.internal
       - AE_APISHIM_DSN=${AE_APISHIM_DSN:-}
       - AE_STATE_DSN=${AE_STATE_DSN:-}

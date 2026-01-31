@@ -202,6 +202,7 @@ if [[ "$controller_mode" == "sudo" ]]; then
     AE_ALLOW_PLAINTEXT_SECRETS="${AE_ALLOW_PLAINTEXT_SECRETS:-1}" \
     AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-podman}" \
     AE_OCI_RUNTIME="${AE_OCI_RUNTIME:-}" \
+    AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-}" \
     AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}" \
     BENCH_METRICS_PORT="$metrics_port" \
     BENCH_LOG_FILE="$log_file" \
@@ -213,6 +214,7 @@ else
   AE_ALLOW_PLAINTEXT_SECRETS="${AE_ALLOW_PLAINTEXT_SECRETS:-1}" \
   AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-podman}" \
   AE_OCI_RUNTIME="${AE_OCI_RUNTIME:-}" \
+  AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-}" \
   AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}" \
   nohup "$python_bin" -m ae.controller --loop --specs "$spec_dir" --watch --metrics-port "$metrics_port" \
     >>"$log_file" 2>&1 &

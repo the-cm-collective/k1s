@@ -154,7 +154,8 @@ PY
 )"
 fi
 if [[ "$collect_engine" == "docker" ]] && podman_available; then
-  foreign_ae_containers="$(podman_cmd ps -a --format json 2>/dev/null | python -c '
+  foreign_ae_containers="$(
+  (podman_cmd ps -a --format json 2>/dev/null || echo "[]") | python -c '
 import json, sys
 try:
     arr = json.load(sys.stdin)
@@ -168,7 +169,7 @@ for x in arr or []:
         c+=1
 print(c)
 '
-)"
+  )"
 fi
 if [[ "$foreign_ae_containers" != "0" ]]; then
   echo "[mem-snapshot] warn: foreign engine has ${foreign_ae_containers} ae.app container(s); excluding them from metrics" >&2
