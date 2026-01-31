@@ -133,6 +133,7 @@ class AdapterWorker(threading.Thread):
         self._pvc_thread: threading.Thread | None = None
         self._pvc_requeue_thread: threading.Thread | None = None
         self._pending_pvc_apps: set[tuple[str, str]] = set()
+        self._pvc_rescan_thread: threading.Thread | None = None
 
     def stop(self) -> None:
         self._stop.set()
@@ -181,6 +182,11 @@ class AdapterWorker(threading.Thread):
                 self._pvc_requeue_thread.join(timeout=0.2)
         except Exception:
             pass
+        try:
+            if self._pvc_rescan_thread and self._pvc_rescan_thread.is_alive():
+                self._pvc_rescan_thread.join(timeout=0.2)
+        except Exception:
+            pass
 
     def run(self) -> None:
         self._service_thread = threading.Thread(target=self._watch_services, daemon=True)
@@ -203,6 +209,10 @@ class AdapterWorker(threading.Thread):
             target=self._pvc_requeue_loop, daemon=True
         )
         self._pvc_requeue_thread.start()
+        self._pvc_rescan_thread = threading.Thread(
+            target=self._pvc_rescan_loop, daemon=True
+        )
+        self._pvc_rescan_thread.start()
         gen = self._store.watch(
             "apps", "v1", "deployments", None, heartbeat_seconds=5, allow_bookmarks=True
         )
@@ -910,6 +920,52 @@ class AdapterWorker(threading.Thread):
                 if self._stop.is_set():
                     break
                 self._trigger_reconcile(ns, name)
+
+    def _pvc_rescan_loop(self) -> None:
+        try:
+            interval = float(os.getenv("AE_APISHIM_PVC_RESCAN_SECONDS", "10") or 10)
+        except Exception:
+            interval = 10.0
+        if interval <= 0:
+            return
+        while not self._stop.is_set():
+            time.sleep(interval)
+            if self._stop.is_set():
+                break
+            self._rescan_pvc_workloads()
+
+    def _rescan_pvc_workloads(self) -> None:
+        for dep in self._store.list_all("apps", "v1", "deployments"):
+            pending = self._pending_pvc_mounts(
+                _manifest_from_deployment(
+                    dep,
+                    service_spec=self._service_specs.get((dep.namespace, dep.name)),
+                    ingress_spec=self._ingress_specs.get((dep.namespace, dep.name)),
+                )
+            )
+            if not pending:
+                self._apply_deployment(dep)
+        for sts in self._store.list_all("apps", "v1", "statefulsets"):
+            pending = self._pending_pvc_mounts(
+                _manifest_from_deployment(
+                    sts,
+                    service_spec=self._service_specs.get((sts.namespace, sts.name)),
+                    ingress_spec=self._ingress_specs.get((sts.namespace, sts.name)),
+                    volume_claim_templates=(sts.spec or {}).get("volumeClaimTemplates"),
+                )
+            )
+            if not pending:
+                self._apply_statefulset(sts)
+        for ds in self._store.list_all("apps", "v1", "daemonsets"):
+            pending = self._pending_pvc_mounts(
+                _manifest_from_deployment(
+                    ds,
+                    service_spec=self._service_specs.get((ds.namespace, ds.name)),
+                    ingress_spec=self._ingress_specs.get((ds.namespace, ds.name)),
+                )
+            )
+            if not pending:
+                self._apply_daemonset(ds)
 
     def _reconcile_dependents_for_pvc(self, pvc: K8sObject) -> None:
         ns = pvc.namespace
