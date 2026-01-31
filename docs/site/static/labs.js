@@ -1506,6 +1506,7 @@
             state.appApplied = true;
             clearCanaryInfo();
           } catch(_) { state.appApplied = true; }
+          try { armSSE(); } catch(_){}
           // Immediate, visible feedback like dashboard header
           try { banner(`Apply accepted for “${state.appName}” — reconciling…`, 'ok', 6000); } catch(_){}
           setTimeout(verifyApply, 800);
