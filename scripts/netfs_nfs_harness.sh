@@ -52,6 +52,7 @@ CLONE_MOUNT_PATH="${NETFS_ROOT}/default/${CLONE_PVC_NAME}"
 
 APISHIM_PID=""
 AGENT_PID=""
+HEARTBEAT_PID=""
 
 kill_quick() {
   local pid=$1
@@ -80,6 +81,9 @@ umount_if_mounted() {
 cleanup() {
   set +e
   log "cleaning up"
+  if [[ -n "${HEARTBEAT_PID}" ]]; then
+    kill_quick "${HEARTBEAT_PID}"
+  fi
   if [[ -n "${AGENT_PID}" ]]; then
     kill_quick "${AGENT_PID}"
   fi
@@ -229,6 +233,22 @@ store = SQLiteStateStore(Path("${STATE_DB}"))
 store.upsert_node("${NODE_ID}", name="${NODE_ID}", endpoint="${AGENT_URL}")
 store.record_heartbeat("${NODE_ID}", "Ready")
 PY
+
+NETFS_HEARTBEAT_INTERVAL=${NETFS_HEARTBEAT_INTERVAL:-5}
+log "starting heartbeat loop every ${NETFS_HEARTBEAT_INTERVAL}s"
+(
+  while true; do
+    "${PYTHON_BIN}" - <<PY
+from pathlib import Path
+from ae.controller.state import SQLiteStateStore
+
+store = SQLiteStateStore(Path("${STATE_DB}"))
+store.record_heartbeat("${NODE_ID}", "Ready")
+PY
+    sleep "${NETFS_HEARTBEAT_INTERVAL}"
+  done
+) >/dev/null 2>&1 &
+HEARTBEAT_PID=$!
 
 if [[ "${HARNESS_MODE}" == "snapshot" ]]; then
   log "running NetFS snapshot/clone smoke test"

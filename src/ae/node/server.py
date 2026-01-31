@@ -59,11 +59,37 @@ class AgentHandler(BaseHTTPRequestHandler):
                 if isinstance(pod_names, list) and len(pod_names) == 1:
                     replica_id = pod_names[0]
                 if self.volume_manager is not None:
-                    manifest = self.volume_manager.inject_pvc_mounts(  # type: ignore[attr-defined]
-                        manifest,
-                        node_id=payload.get("node_id") or self.node_id,
-                        replica_id=replica_id,
-                    )
+                    try:
+                        manifest = self.volume_manager.inject_pvc_mounts(  # type: ignore[attr-defined]
+                            manifest,
+                            node_id=payload.get("node_id") or self.node_id,
+                            replica_id=replica_id,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        try:
+                            from ae.storage.netfs import PvcNotReadyError
+                        except Exception:
+                            PvcNotReadyError = None  # type: ignore[assignment]
+                        if PvcNotReadyError is not None and isinstance(exc, PvcNotReadyError):
+                            names: list[str] = []
+                            if isinstance(pod_names, list):
+                                names = [str(n) for n in pod_names if n]
+                            elif pod_names:
+                                names = [str(pod_names)]
+                            pending_states = [
+                                PodState(ready=False, status="Pending", pod_name=name)
+                                for name in names
+                            ]
+                            result = RuntimeResult(
+                                revision=int(payload.get("revision", 0)),
+                                created=0,
+                                updated=0,
+                                removed=0,
+                                pod_states=pending_states,
+                            )
+                            _json_response(self, 200, _result_to_dict(result))
+                            return
+                        raise
                 result = self.runtime.ensure_app(
                     manifest,
                     int(payload.get("revision", 0)),
