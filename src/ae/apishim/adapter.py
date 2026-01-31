@@ -131,6 +131,8 @@ class AdapterWorker(threading.Thread):
         self._hpa_last_scale: dict[str, float] = {}
         self._hpa_cooldown_seconds = max(0, int(os.getenv("AE_HPA_COOLDOWN_SECONDS", "30")))
         self._pvc_thread: threading.Thread | None = None
+        self._pvc_requeue_thread: threading.Thread | None = None
+        self._pending_pvc_apps: set[tuple[str, str]] = set()
 
     def stop(self) -> None:
         self._stop.set()
@@ -174,6 +176,11 @@ class AdapterWorker(threading.Thread):
                 self._pvc_thread.join(timeout=0.2)
         except Exception:
             pass
+        try:
+            if self._pvc_requeue_thread and self._pvc_requeue_thread.is_alive():
+                self._pvc_requeue_thread.join(timeout=0.2)
+        except Exception:
+            pass
 
     def run(self) -> None:
         self._service_thread = threading.Thread(target=self._watch_services, daemon=True)
@@ -192,6 +199,10 @@ class AdapterWorker(threading.Thread):
         self._hpa_thread.start()
         self._pvc_thread = threading.Thread(target=self._watch_pvcs, daemon=True)
         self._pvc_thread.start()
+        self._pvc_requeue_thread = threading.Thread(
+            target=self._pvc_requeue_loop, daemon=True
+        )
+        self._pvc_requeue_thread.start()
         gen = self._store.watch(
             "apps", "v1", "deployments", None, heartbeat_seconds=5, allow_bookmarks=True
         )
@@ -276,7 +287,9 @@ class AdapterWorker(threading.Thread):
                 pending=sorted(pending),
                 kind="deployment",
             )
+            self._record_pending_app(dep.namespace, dep.name)
             return
+        self._clear_pending_app(dep.namespace, dep.name)
         self._reconciler.reconcile(m)
         # Reflect status from state store
         app_name = app_key_for_manifest(m)
@@ -383,7 +396,9 @@ class AdapterWorker(threading.Thread):
                 pending=sorted(pending),
                 kind="statefulset",
             )
+            self._record_pending_app(sts.namespace, sts.name)
             return
+        self._clear_pending_app(sts.namespace, sts.name)
         self._reconciler.reconcile(m)
         app_name = app_key_for_manifest(m)
         st_row = self._state.get_status(app_name)
@@ -538,7 +553,9 @@ class AdapterWorker(threading.Thread):
                 pending=sorted(pending),
                 kind="daemonset",
             )
+            self._record_pending_app(ds.namespace, ds.name)
             return
+        self._clear_pending_app(ds.namespace, ds.name)
         self._reconciler.reconcile(m)
         app_name = app_key_for_manifest(m)
         st_row = self._state.get_status(app_name)
@@ -879,6 +896,21 @@ class AdapterWorker(threading.Thread):
             except Exception:
                 pass
 
+    def _pvc_requeue_loop(self) -> None:
+        try:
+            interval = float(os.getenv("AE_APISHIM_PVC_REQUEUE_SECONDS", "5") or 5)
+        except Exception:
+            interval = 5.0
+        if interval <= 0:
+            return
+        while not self._stop.is_set():
+            time.sleep(interval)
+            pending = list(self._pending_pvc_apps)
+            for ns, name in pending:
+                if self._stop.is_set():
+                    break
+                self._trigger_reconcile(ns, name)
+
     def _reconcile_dependents_for_pvc(self, pvc: K8sObject) -> None:
         ns = pvc.namespace
         if not ns:
@@ -901,6 +933,16 @@ class AdapterWorker(threading.Thread):
                 continue
             if self._workload_uses_pvc(ds, name):
                 self._apply_daemonset(ds)
+
+    def _record_pending_app(self, namespace: str | None, name: str) -> None:
+        if not namespace or not name:
+            return
+        self._pending_pvc_apps.add((namespace, name))
+
+    def _clear_pending_app(self, namespace: str | None, name: str) -> None:
+        if not namespace or not name:
+            return
+        self._pending_pvc_apps.discard((namespace, name))
 
     @staticmethod
     def _workload_uses_pvc(obj: K8sObject, claim_name: str) -> bool:
