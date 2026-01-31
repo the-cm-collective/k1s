@@ -14,6 +14,8 @@ Kubernetes-aligned registry-first image flow and core runtime parity vs Podman.
 - Build pipeline without Podman (buildkit-only pod + crictl-only ops pod).
 - HostPath + emptyDir semantics, hostAliases, DNS config, security context mapping.
 - CRI smoke + NodePort smoke scripts (gated for CRI nodes).
+- NetFS harness: smoke + snapshot/clone + CSI path green (with heartbeat loop in harness).
+- Node agent returns Pending pod state when PVC mounts are not ready (avoids hard 500s).
 
 ## P0: Required for CRI as default backend (dev/labs)
 
@@ -42,10 +44,11 @@ Kubernetes-aligned registry-first image flow and core runtime parity vs Podman.
 
 - [~] PVC/PV/StorageClass controller parity (Pending/Bound/Released, default StorageClass).
   - Updates: finalizers + reclaim transitions for PV/PVC; PV delete marks PVC Lost.
+  - Added: explicit PVC volumeName now blocks dynamic provisioning when PV is missing/conflicting.
   - See: `docs/wip/storage-parity.md`
 - [~] NetFS mount lifecycle coverage on CRI nodes (NFS/SMB), PVC->mount reconciliation in apishim.
   - Added: `scripts/netfs_smoke_suite.sh` to run smoke + snapshot/clone + CSI harness.
-  - Fix in progress: gate workloads on PVC Bound + PVC watch to requeue (snapshot/clone mount race).
+  - Current state: harness green; production parity still depends on PVC/PV controller work above.
 - [~] CSI external provisioner hook + VolumeSnapshot/clone parity.
   - See: `docs/wip/csi.md`
 - [ ] StatefulSet volumeClaimTemplates per-ordinal mount naming for CRI runtime (if any gaps remain).
@@ -68,9 +71,6 @@ integration tracked in P1.
 
 ## Recent findings (2026-01-31)
 
-- NetFS smoke passed; snapshot/clone phase failed to detect clone mount.
-- Root cause: clone Deployment can reconcile before PVC is Bound, so PVC mounts are
-  skipped and the pod starts without the hostPath mount. No requeue occurs when
-  the PVC later binds, leaving the mount absent.
-- Mitigation added (pending verification): apishim workload reconciliation now
-  gates on PVC Bound and re-triggers reconcile on PVC changes.
+- NetFS snapshot/clone failures traced to node readiness expiring during long snapshot runs.
+- Fix: harness now runs a heartbeat loop to keep the node Ready throughout the suite.
+- Added: node agent surfaces Pending pod state when PVC mounts are not ready, preventing 500s.
