@@ -838,17 +838,7 @@ class StorageController:
         if pv_status.get("phase") != "Bound":
             pv_status["phase"] = "Bound"
 
-        if not self._binding_up_to_date(pvc, pvc_meta, pvc_spec, pvc_status) or pvc_meta_changed:
-            self._store.upsert(
-                CORE_GROUP,
-                CORE_VERSION,
-                PVC_RESOURCE,
-                pvc.namespace,
-                pvc.name,
-                pvc_meta,
-                pvc_spec,
-                status=pvc_status,
-            )
+        # Ensure PV is visible before PVC is marked Bound (avoids race in node mount injection).
         if not self._binding_up_to_date(pv, pv_meta, pv_spec, pv_status) or pv_meta_changed:
             self._store.upsert(
                 CORE_GROUP,
@@ -859,6 +849,17 @@ class StorageController:
                 pv_meta,
                 pv_spec,
                 status=pv_status,
+            )
+        if not self._binding_up_to_date(pvc, pvc_meta, pvc_spec, pvc_status) or pvc_meta_changed:
+            self._store.upsert(
+                CORE_GROUP,
+                CORE_VERSION,
+                PVC_RESOURCE,
+                pvc.namespace,
+                pvc.name,
+                pvc_meta,
+                pvc_spec,
+                status=pvc_status,
             )
 
     @staticmethod
