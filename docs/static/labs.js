@@ -13,6 +13,7 @@
     statusMode: 'cluster', // 'cluster' | 'app'
   };
   const helmDemo = { timer: null, running: false };
+  const exampleBaseNames = {};
 
   const xtermFallback = {
     css: '/static/vendor/xterm.css',
@@ -61,6 +62,40 @@
     if (!el) return;
     el.textContent = txt;
     if (cls) { el.className = cls; }
+  }
+
+  function extractExampleBaseName(yamlText) {
+    if (!yamlText) return null;
+    const lines = String(yamlText).split(/\r?\n/);
+    let inMeta = false;
+    let metaIndent = null;
+    for (const raw of lines) {
+      const line = raw.replace(/\t/g, '  ');
+      if (!line.trim() || line.trim().startsWith('#')) continue;
+      const indent = line.match(/^(\s*)/)[1].length;
+      if (!inMeta) {
+        if (/^metadata:\s*$/.test(line)) {
+          inMeta = true;
+          metaIndent = indent;
+        }
+        continue;
+      }
+      if (metaIndent !== null && indent <= metaIndent) {
+        inMeta = false;
+        metaIndent = null;
+        continue;
+      }
+      if (/^\s+name:\s*/.test(line)) {
+        let val = line.replace(/^\s+name:\s*/, '').trim();
+        val = val.replace(/^['"]|['"]$/g, '');
+        return val || null;
+      }
+    }
+    return null;
+  }
+
+  function resolveExampleBaseName(example) {
+    return exampleBaseNames[example] || example;
   }
 
   function setCanaryInfo(rev, base, weight) {
@@ -1254,6 +1289,10 @@
       const txt = r.ok ? await r.text() : '(example file not found)';
       const el = document.getElementById('example-yaml');
       if (el) el.textContent = txt;
+      try {
+        const base = extractExampleBaseName(txt);
+        if (base) exampleBaseNames[name] = base;
+      } catch(_){}
     } catch {
       try { const el = document.getElementById('example-yaml'); if (el) el.textContent = '(failed to load example)'; } catch(_){}
     }
@@ -1432,12 +1471,14 @@
       const actionsEnabled = $('#toggle-actions')?.checked && state.sessionId && state.orch.available;
       const selNow = document.getElementById('example-select');
       const example = selNow && selNow.value ? selNow.value : 'shell-demo';
+      const baseName = resolveExampleBaseName(example);
+      const expectedName = state.sessionId ? `${baseName}-${state.sessionId}` : baseName;
       if (!state.orch.available) {
         banner(`Controlled actions are unavailable. Start a session and enable "Enable Controlled Actions", or run: ae apply -f specs/examples/${example}.yaml`, 'fail');
         return;
       }
       if (!state.sessionId) {
-        banner('Start Session first to namespace your app (shell-demo-<session>).', 'fail');
+        banner(`Start Session first to namespace your app (${baseName}-<session>).`, 'fail');
         return;
       }
       if (!$('#toggle-actions')?.checked) {
@@ -1445,7 +1486,8 @@
         return;
       }
       const btn = e.currentTarget || document.getElementById('btn-apply-echo');
-      await withButtonFeedback(btn, `Submitting apply for “${state.appName}”…`, async () => {
+      state.appName = expectedName;
+      await withButtonFeedback(btn, `Submitting apply for “${expectedName}”…`, async () => {
         // use computed `example`
         try {
           const resp = await apiFetch(`/labs/apply`, {
