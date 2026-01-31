@@ -534,6 +534,29 @@ class StorageController:
 
     def _reconcile_pvc(self, pvc) -> None:
         spec = pvc.spec or {}
+        pv_name = spec.get("volumeName")
+        if pv_name:
+            pv = self._store.get(CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, pv_name)
+            if pv is None:
+                self._ensure_pvc_phase(pvc, "Pending")
+                self._record_pvc_event(
+                    pvc,
+                    "VolumeNotFound",
+                    f"requested persistent volume {pv_name} not found",
+                )
+                return
+            if self._pv_claim_ref_conflicts(pv, pvc):
+                self._ensure_pvc_phase(pvc, "Pending")
+                self._record_pvc_event(
+                    pvc,
+                    "VolumeBindingFailed",
+                    f"persistent volume {pv_name} is already claimed",
+                )
+                return
+            self._bind(pvc, pv)
+            self._reconcile_csi_attachment(pvc, pv)
+            self._maybe_expand_bound_volume(pvc, pv)
+            return
         if self._pvc_is_bound(pvc):
             pv_name = spec.get("volumeName")
             if pv_name:
@@ -619,7 +642,17 @@ class StorageController:
     def _pvc_is_bound(self, pvc) -> bool:
         spec = pvc.spec or {}
         status = pvc.status or {}
-        return bool(spec.get("volumeName")) or status.get("phase") == "Bound"
+        if status.get("phase") == "Bound":
+            return True
+        volume_name = spec.get("volumeName")
+        if not volume_name:
+            return False
+        pv = self._store.get(CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, volume_name)
+        if pv is None:
+            return False
+        if self._pv_claim_ref_conflicts(pv, pvc):
+            return False
+        return True
 
     def _match_pv_for_pvc(self, pvc):
         spec = pvc.spec or {}
