@@ -26,6 +26,76 @@ sanitize_env_docker() {
   export AE_APISHIM_RUNTIME="docker"
 }
 
+port_is_free() {
+  local port="$1"
+  python - "$port" <<'PY' >/dev/null 2>&1
+import socket, sys
+port = int(sys.argv[1])
+s = socket.socket()
+try:
+    s.bind(("0.0.0.0", port))
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()
+PY
+}
+
+find_free_port() {
+  local start="${1:-18080}"
+  local end="${2:-18180}"
+  local p
+  for p in $(seq "$start" "$end"); do
+    if port_is_free "$p"; then
+      echo "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+
+patch_service_port() {
+  local manifest="$1"
+  local new_port="$2"
+  local tmp="${manifest}.tmp"
+  awk -v port="$new_port" '
+  function indent(line) { match(line, /^[ ]*/); return RLENGTH }
+  {
+    if ($0 ~ /^[[:space:]]*service:[[:space:]]*$/) {
+      in_service=1; svc_indent=indent($0); print; next
+    }
+    if (in_service) {
+      cur_indent=indent($0)
+      if (cur_indent <= svc_indent) { in_service=0 }
+    }
+    if (in_service && $0 ~ /^[[:space:]]*port:[[:space:]]*[0-9]+([[:space:]]*#.*)?$/) {
+      sub(/port:[[:space:]]*[0-9]+/, \"port: \" port)
+      in_service=0
+    }
+    print
+  }' "$manifest" >"$tmp" && mv "$tmp" "$manifest"
+}
+
+remove_service_port() {
+  local manifest="$1"
+  local tmp="${manifest}.tmp"
+  awk '
+  function indent(line) { match(line, /^[ ]*/); return RLENGTH }
+  {
+    if ($0 ~ /^[[:space:]]*service:[[:space:]]*$/) {
+      in_service=1; svc_indent=indent($0); print; next
+    }
+    if (in_service) {
+      cur_indent=indent($0)
+      if (cur_indent <= svc_indent) { in_service=0 }
+    }
+    if (in_service && $0 ~ /^[[:space:]]*port:[[:space:]]*[0-9]+([[:space:]]*#.*)?$/) {
+      next
+    }
+    print
+  }' "$manifest" >"$tmp" && mv "$tmp" "$manifest"
+}
+
 ensure_rootful_podman_socket() {
   if ! command -v sudo >/dev/null 2>&1 || ! command -v podman >/dev/null 2>&1; then
     return 0
@@ -155,6 +225,7 @@ REPLICAS=1,5,10
 ROLL_REPLICAS=5
 APP=specs/examples/echo.yaml
 APP_NAME=echo
+bench_specs_minimal="${BENCH_SPECS_MINIMAL:-1}"
 
 # Prefer repo virtualenv if present so grpc is available for controller auto-start.
 if [[ -z "${PYTHON_BIN:-}" ]]; then
@@ -173,7 +244,7 @@ export AE_REGISTER_LOCAL_NODE=1
 export AE_ALLOW_PLAINTEXT_SECRETS=1
 
 # Rootless run in an isolated sandbox to avoid readonly state DB.
-ROOTLESS_ENV_FILE="$(./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9210)"
+ROOTLESS_ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" ./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9210)"
 # shellcheck disable=SC1090
 source "$ROOTLESS_ENV_FILE"
 
@@ -206,7 +277,7 @@ sanitize_env_podman
 if ! ensure_rootful_podman_socket; then
   exit 4
 fi
-ENV_FILE="$(./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9211 --sudo-controller)"
+ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" ./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9211 --sudo-controller)"
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 
@@ -248,6 +319,30 @@ k1nd_state_abs="${repo_root}/${k1nd_state_rel}"
 rm -rf "$k1nd_state_abs"
 mkdir -p "$k1nd_state_abs"
 k1nd_state_db="${k1nd_state_rel}/controller.db"
+k1nd_manifest_rel="${k1nd_specs_rel}/$(basename "$app_src")"
+k1nd_manifest="${k1nd_specs_abs}/$(basename "$app_src")"
+k1nd_port_start="${BENCH_K1ND_PORT_START:-18080}"
+k1nd_port_end="${BENCH_K1ND_PORT_END:-18180}"
+if [[ -f "$k1nd_manifest" ]]; then
+  if [[ "${BENCH_K1ND_EPHEMERAL_PORTS:-0}" == "1" ]]; then
+    remove_service_port "$k1nd_manifest"
+    echo "[full-refresh] k1nd service port removed (ephemeral ports enabled)" >&2
+  else
+    if port_is_free "$k1nd_port_start"; then
+      patch_service_port "$k1nd_manifest" "$k1nd_port_start"
+      echo "[full-refresh] k1nd service port set to ${k1nd_port_start}" >&2
+    else
+      free_port="$(find_free_port "$k1nd_port_start" "$k1nd_port_end" || true)"
+      if [[ -n "$free_port" ]]; then
+        patch_service_port "$k1nd_manifest" "$free_port"
+        echo "[full-refresh] k1nd service port set to ${free_port}" >&2
+      else
+        echo "[full-refresh] no free port found in ${k1nd_port_start}-${k1nd_port_end} for k1nd service" >&2
+        exit 4
+      fi
+    fi
+  fi
+fi
 AE_SPECS_DIR="$k1nd_specs_rel" \
 AE_APISHIM_DSN="${k1nd_state_rel}/apishim.db" \
 AE_STATE_DB="${k1nd_state_db}" \
@@ -260,11 +355,11 @@ AE_STATE_DB="/tmp/k1s-bench-$(id -un).db" SKIP_GUARDS=1 \
 AE_SPECS_DIR="$k1nd_specs_rel" \
 AE_APISHIM_DSN="${k1nd_state_rel}/apishim.db" AE_STATE_DB="${k1nd_state_db}" \
 LABEL_SUITE="${DATE}+docker+runc+k1nd" \
-APP="$APP" APP_NAME="$APP_NAME" \
+APP="$k1nd_manifest_rel" APP_NAME="$APP_NAME" \
 REPLICAS="$REPLICAS" DURATION="$DURATION" \
 bash ./scripts/bench/run_matrix.sh \
   --label-suite "${DATE}+docker+runc+k1nd" \
-  --app "$APP" \
+  --app "$k1nd_manifest_rel" \
   --app-name "$APP_NAME" \
   --replicas "$REPLICAS" \
   --duration "$DURATION" \
@@ -274,11 +369,11 @@ AE_STATE_DB="/tmp/k1s-bench-$(id -un).db" SKIP_GUARDS=1 \
 AE_SPECS_DIR="$k1nd_specs_rel" \
 AE_APISHIM_DSN="${k1nd_state_rel}/apishim.db" AE_STATE_DB="${k1nd_state_db}" \
 LABEL_SUITE_ROLL="${DATE}+docker+runc+k1nd" \
-APP="$APP" APP_NAME="$APP_NAME" \
+APP="$k1nd_manifest_rel" APP_NAME="$APP_NAME" \
 ROLL_REPLICAS="$ROLL_REPLICAS" DURATION="$DURATION" \
 bash ./scripts/bench/run_rollout_k1s.sh \
   --label-suite "${DATE}+docker+runc+k1nd" \
-  --app "$APP" \
+  --app "$k1nd_manifest_rel" \
   --app-name "$APP_NAME" \
   --replicas "$ROLL_REPLICAS" \
   --duration "$DURATION" \
