@@ -2,6 +2,7 @@
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
+    
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>Cri Containerd</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
@@ -678,8 +679,8 @@
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
-      <a href="multinode-lab.html">Multi-Node</a>
       <a href="cri-containerd.html">CRI containerd</a>
+      <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
       <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
@@ -717,7 +718,7 @@ export AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock</code></pre>
 </ul>
 </li>
 </ul>
-<h2>Registry-first image flow (k8s aligned)</h2>
+<h2>Registry-first image flow (Kubernetes-aligned)</h2>
 <p>1. Build images and push to a registry reachable by every node. 2. Reference those images in manifests. 3. Let containerd pull on demand (kubelet behavior). 4. Optionally pre-warm to reduce first-start latency.</p>
 <p>This avoids host-local imports and works across nodes.</p>
 <h2>Registry options</h2>
@@ -789,7 +790,7 @@ AE_USE_REGISTRY_CACHE=0</code></pre>
 <h3>Prewarm (host)</h3>
 <pre><code>AE_CRI_PREWARM=1 AE_CRI_PREWARM_IMAGES=&quot;mendhak/http-https-echo:37&quot; \
   ./scripts/init_demo.sh</code></pre>
-<h3>Prewarm (k8s)</h3>
+<h3>Prewarm (Kubernetes)</h3>
 <p>Apply the DaemonSet that pre-pulls images on every node:</p>
 <pre><code>kubectl apply -f specs/examples/cri-image-prewarm-k8s.yaml</code></pre>
 <p>This uses a minimal crictl-only image. For a hostPath crictl variant, use <code>specs/examples/cri-image-prewarm-k8s-hostpath.yaml</code>. Note: DaemonSets are emulated by the k1s shim; this is intended for real Kubernetes clusters.</p>
@@ -825,6 +826,7 @@ AE_USE_REGISTRY_CACHE=0</code></pre>
 <li><code>volumeDevices</code> → <code>spec.pvcMounts[].devicePath</code> for block volumes.</li>
 </ul>
 </li>
+<li>StatefulSet <code>volumeClaimTemplates</code> create per‑ordinal PVCs (<code>&lt;tpl&gt;-&lt;sts&gt;-&lt;ordinal&gt;</code>) and mount via <code>claimTemplate</code> entries.</li>
 <li><code>spec.emptyDirs</code> map to per‑pod host directories on CRI nodes (ephemeral).
 <ul>
 <li>Defaults to <code>/var/lib/ae/emptydirs/&lt;app&gt;/&lt;pod&gt;/&lt;name&gt;</code>.</li>
@@ -837,6 +839,10 @@ AE_USE_REGISTRY_CACHE=0</code></pre>
 <p>Enable NetFS PVC resolution on the node agent:</p>
 <pre><code>export AE_ENABLE_NETFS=1
 export AE_APISHIM_DB=state/apishim.db</code></pre>
+<p>If the apishim DB is not shared with nodes, point at the apishim API instead:</p>
+<pre><code>export AE_ENABLE_NETFS=1
+export AE_APISHIM_URL=http://&lt;controller-host&gt;:8445
+export AE_APISHIM_READ_TOKEN=&lt;read-token&gt;</code></pre>
 <h2>DNS + host aliases (CRI)</h2>
 <ul>
 <li><code>spec.dnsConfig</code> is mapped into the CRI sandbox <code>dns_config</code> (nameservers, searches, options).</li>
@@ -889,6 +895,29 @@ export AE_AGENT_URL=http://&lt;node&gt;:9109</code></pre>
 <pre><code>export AE_APISHIM_CRI_PORTFORWARD=1
 # force it even when pod IPs are present:
 export AE_APISHIM_CRI_PORTFORWARD_FORCE=1</code></pre>
+<h2>Service VIP + NodePort (iptables)</h2>
+<p>For Kubernetes-style ClusterIP/NodePort behavior on CRI nodes, enable the iptables service proxy (requires root and <code>iptables</code> on PATH):</p>
+<pre><code>export AE_ENABLE_SERVICE_PROXY=1
+export AE_SERVICE_PROVIDER=iptables</code></pre>
+<p>When <code>spec.service.ports[].nodePort</code> is set (Service type NodePort or LoadBalancer), k1s programs NodePort DNAT rules to the same ready backends.</p>
+<h3>NodePort smoke test</h3>
+<p>Run the NodePort smoke helper (requires root + iptables):</p>
+<pre><code>sudo scripts/cri_nodeport_smoke.sh</code></pre>
+<p>Defaults:</p>
+<ul>
+<li>host: <code>AE_NODE_ADVERTISE_IP</code> or <code>127.0.0.1</code></li>
+<li>nodePort: <code>32080</code></li>
+<li>path: <code>/healthz</code></li>
+</ul>
+<p>Override with <code>AE_CRI_NODEPORT_HOST</code>, <code>AE_CRI_NODEPORT_PORT</code>, and <code>AE_CRI_NODEPORT_PATH</code>.</p>
+<h3>Multi-node agent proxy</h3>
+<p>For Kubernetes-aligned NodePort/ClusterIP on *each node*, enable the agent service proxy loop. This pulls service + endpoint snapshots from the controller and programs iptables on the node (kube-proxy style):</p>
+<pre><code>export AE_AGENT_SERVICE_PROXY=1
+export AE_AGENT_SERVICE_PROXY_URL=http://&lt;controller&gt;:9108
+export AE_AGENT_SERVICE_PROXY_DB=/var/lib/ae/agent-services.db
+# If API auth is enabled:
+export AE_AGENT_SERVICE_PROXY_TOKEN=$AE_API_READ_TOKEN</code></pre>
+<p>Requires root or NET_ADMIN on the agent container, and <code>iptables</code> on PATH.</p>
 <h2>Node agent DaemonSet (k8s-aligned)</h2>
 <p>For Kubernetes-aligned deployments, run the node agent as a DaemonSet with host networking and a containerd socket mount:</p>
 <pre><code>scripts/build_node_image.sh --push \
@@ -930,7 +959,7 @@ kubectl apply -f specs/examples/k1s-node-daemonset-k8s.yaml</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-29 21:23:52</span>
+        <span>Built 2026-01-30 20:02:23</span>
       </div>
     </footer>
     <script>

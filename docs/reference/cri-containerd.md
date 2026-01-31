@@ -17,7 +17,7 @@ Defaults:
 - CRI sandbox image: `AE_CRI_SANDBOX_IMAGE` (pause image)
  - Host namespaces gate: `AE_CRI_ALLOW_HOST_NS=1` to enable hostNetwork/hostPID/hostIPC/shareProcessNamespace
 
-## Registry-first image flow (k8s aligned)
+## Registry-first image flow (Kubernetes-aligned)
 
 1. Build images and push to a registry reachable by every node.
 2. Reference those images in manifests.
@@ -155,7 +155,7 @@ AE_CRI_PREWARM=1 AE_CRI_PREWARM_IMAGES="mendhak/http-https-echo:37" \
   ./scripts/init_demo.sh
 ```
 
-### Prewarm (k8s)
+### Prewarm (Kubernetes)
 
 Apply the DaemonSet that pre-pulls images on every node:
 

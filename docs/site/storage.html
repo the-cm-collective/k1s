@@ -679,6 +679,7 @@
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
+      <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
       <a href="apishim-compatibility-matrix.html">API Shim</a>
@@ -730,6 +731,11 @@
 <p>Provide StorageClass definitions via <code>AE_STORAGE_PROVISIONERS</code> (YAML file). The shim will seed these into its object store on startup.</p>
 <p>Example (see <code>docs/reference/storage-classes.yaml</code>):</p>
 <pre><code>export AE_STORAGE_PROVISIONERS=docs/reference/storage-classes.yaml</code></pre>
+<h3>Default StorageClass (built-in)</h3>
+<p>When <code>AE_STORAGE_PROVISIONERS</code> is not set, k1s seeds a default local-path StorageClass named <code>k1s-local</code> (provisioner <code>k1s.io/local-path</code>) with <code>volumeBindingMode: WaitForFirstConsumer</code>, <code>reclaimPolicy: Delete</code>, and the default-class annotation. Disable this behavior with:</p>
+<pre><code>export AE_STORAGE_SEED_DEFAULTS=0</code></pre>
+<p>Override the class name with <code>AE_STORAGE_LOCAL_CLASS</code>.</p>
+<p>If <code>AE_STORAGE_NFS_SERVER</code> and <code>AE_STORAGE_NFS_PATH</code> are set, k1s also seeds a <code>k1s-nfs</code> StorageClass (provisioner <code>k1s.io/nfs</code>) with <code>reclaimPolicy: Retain</code>, <code>volumeBindingMode: Immediate</code>, and <code>allowVolumeExpansion: true</code>. Override the name with <code>AE_STORAGE_NFS_CLASS</code> and optionally set <code>AE_STORAGE_NFS_HOSTPATH</code> to allow the controller to create per-PVC directories under a host root.</p>
 <p>For dynamic NFS provisioning, include at least:</p>
 <ul>
 <li><code>parameters.server</code>: NFS server host/IP</li>
@@ -802,7 +808,7 @@ export AE_APISHIM_DB=state/apishim.db</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-29 20:34:01</span>
+        <span>Built 2026-01-30 20:02:23</span>
       </div>
     </footer>
     <script>
