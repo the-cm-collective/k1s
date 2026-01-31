@@ -117,6 +117,7 @@ class IngressSpec(BaseModel):
     # Phase 7: optional multi-paths and TLS secret passthrough
     paths: List[str] = Field(default_factory=list)
     tls_secret_name: Optional[str] = Field(default=None, alias="tlsSecretName")
+    annotations: dict | None = None
     # Optional BYO TLS for Caddy writer (host cert/key paths)
     tls_cert_path: Optional[str] = Field(default=None, alias="tlsCertPath")
     tls_key_path: Optional[str] = Field(default=None, alias="tlsKeyPath")
@@ -315,6 +316,8 @@ class PvcMountSpec(BaseModel):
     mount_path: str = Field(alias="mountPath")
     read_only: bool = Field(default=False, alias="readOnly")
     device_path: Optional[str] = Field(default=None, alias="devicePath")
+    sub_path: Optional[str] = Field(default=None, alias="subPath")
+    claim_template: bool = Field(default=False, alias="claimTemplate")
     namespace: Optional[str] = None
 
     model_config = {"populate_by_name": True}
@@ -413,6 +416,8 @@ class ConfigRef(BaseModel):
     files: List[dict] = Field(default_factory=list)
     # Optional envFrom behavior: when true, exporter may emit envFrom for this configmap
     env_from: bool = Field(default=False, alias="envFrom")
+
+    model_config = {"populate_by_name": True}
 
 
 class AppSpec(BaseModel):

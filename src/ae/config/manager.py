@@ -18,6 +18,9 @@ class ConfigManager:
         env: dict[str, str] = {}
         for ref in refs:
             data = self._load(Path(ref.path))
+            if getattr(ref, "env_from", False):
+                for key, value in data.items():
+                    env[str(key)] = str(value)
             for mapping in ref.env:
                 if mapping.key not in data:
                     raise KeyError(

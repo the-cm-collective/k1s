@@ -6,8 +6,12 @@ preserve single-node behavior.
 
 from __future__ import annotations
 
+import json
 import logging
+import socket
+import ssl
 from datetime import datetime
+from urllib.parse import urlparse
 
 import requests
 
@@ -30,6 +34,112 @@ class RemoteRuntime(RuntimeAdapter):
         cert = os.getenv("AE_AGENT_CERT_FILE")
         key = os.getenv("AE_AGENT_KEY_FILE")
         self._cert = (cert, key) if cert and key else None
+
+    def _agent_target(self) -> tuple[str, str, int, str]:
+        if not self._agent_url:
+            raise RuntimeError("agent_url not configured")
+        parsed = urlparse(self._agent_url)
+        scheme = parsed.scheme or "http"
+        host = parsed.hostname or ""
+        if not host:
+            raise RuntimeError("agent_url missing hostname")
+        port = parsed.port or (443 if scheme == "https" else 80)
+        base_path = parsed.path.rstrip("/")
+        return scheme, host, port, base_path
+
+    def _agent_ssl_context(self) -> ssl.SSLContext:
+        verify = self._verify
+        if verify is True:
+            ctx = ssl.create_default_context()
+        elif verify is False:
+            ctx = ssl._create_unverified_context()  # noqa: S504 - explicit opt-out
+        else:
+            ctx = ssl.create_default_context(cafile=str(verify))
+        if self._cert:
+            cert, key = self._cert
+            ctx.load_cert_chain(certfile=cert, keyfile=key)
+        return ctx
+
+    def _open_upgrade(self, path: str, payload: dict, upgrade: str) -> tuple[socket.socket, dict]:
+        scheme, host, port, base_path = self._agent_target()
+        sock = socket.create_connection((host, port), timeout=10)
+        if scheme == "https":
+            ctx = self._agent_ssl_context()
+            sock = ctx.wrap_socket(sock, server_hostname=host)
+        body = json.dumps(payload).encode("utf-8")
+        req_path = f"{base_path}{path}" if base_path else path
+        host_hdr = f"{host}:{port}" if port and port not in {80, 443} else host
+        headers = [
+            f"POST {req_path} HTTP/1.1",
+            f"Host: {host_hdr}",
+            "Connection: Upgrade",
+            f"Upgrade: {upgrade}",
+            "Content-Type: application/json",
+            f"Content-Length: {len(body)}",
+            "",
+            "",
+        ]
+        sock.sendall("\r\n".join(headers).encode("utf-8") + body)
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                sock.close()
+                raise RuntimeError("agent upgrade failed: no response")
+            buf += chunk
+            if len(buf) > 65536:
+                sock.close()
+                raise RuntimeError("agent upgrade failed: headers too large")
+        header_blob, rest = buf.split(b"\r\n\r\n", 1)
+        lines = header_blob.split(b"\r\n")
+        status_line = lines[0].decode("utf-8", "ignore")
+        parts = status_line.split()
+        status = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        resp_headers: dict[str, str] = {}
+        for line in lines[1:]:
+            if b":" not in line:
+                continue
+            key, val = line.split(b":", 1)
+            resp_headers[key.decode("utf-8", "ignore").lower()] = val.decode(
+                "utf-8", "ignore"
+            ).strip()
+        if status != 101:
+            detail = rest.decode("utf-8", "ignore").strip()
+            sock.close()
+            raise RuntimeError(
+                f"agent upgrade failed status={status} detail={detail or 'n/a'}"
+            )
+
+        if rest:
+
+            class _BufferedSocket:
+                def __init__(self, base_sock: socket.socket, initial: bytes) -> None:
+                    self._sock = base_sock
+                    self._buf = initial
+
+                def recv(self, n: int) -> bytes:
+                    if self._buf:
+                        out, self._buf = self._buf[:n], self._buf[n:]
+                        return out
+                    return self._sock.recv(n)
+
+                def sendall(self, data: bytes) -> None:
+                    self._sock.sendall(data)
+
+                def settimeout(self, value: float | None) -> None:
+                    self._sock.settimeout(value)
+
+                def shutdown(self, how: int) -> None:
+                    self._sock.shutdown(how)
+
+                def close(self) -> None:
+                    self._sock.close()
+
+                def fileno(self) -> int:
+                    return self._sock.fileno()
+
+            return _BufferedSocket(sock, rest), resp_headers
+        return sock, resp_headers
 
     def _use_local(self) -> bool:
         return not self._agent_url
@@ -143,14 +253,49 @@ class RemoteRuntime(RuntimeAdapter):
     ):
         if self._use_local():
             return self._local.exec_attach(pod_name, command, container=container, tty=tty)
-        msg = "remote exec_attach not implemented; use local runtime instead"
-        raise NotImplementedError(msg)
+        payload = {
+            "pod_name": pod_name,
+            "replica_id": pod_name,
+            "command": command,
+            "container": container,
+            "tty": bool(tty),
+        }
+        sock, headers = self._open_upgrade("/v1/exec_attach", payload, "ae-exec")
+        exec_id = headers.get("x-exec-id")
+        return sock, exec_id
+
+    def exec_resize(
+        self, exec_id: str, *, height: int | None = None, width: int | None = None
+    ) -> None:
+        if self._use_local():
+            return self._local.exec_resize(exec_id, height=height, width=width)
+        payload = {"exec_id": exec_id, "height": height, "width": width}
+        self._request("POST", "/v1/exec_resize", json=payload, timeout=5)
 
     def exec_exit_code(self, exec_id: str) -> int:
         if self._use_local():
             return self._local.exec_exit_code(exec_id)
         resp = self._request("POST", "/v1/exec_inspect", json={"exec_id": exec_id}, timeout=10)
         return int(resp.json().get("exit_code", 0))
+
+    def port_forward_socket(
+        self,
+        *,
+        pod_id: str | None,
+        pod_name: str | None,
+        namespace: str | None,
+        port: int,
+    ):
+        if self._use_local():
+            raise NotImplementedError("local port-forward socket not implemented")
+        payload = {
+            "pod_id": pod_id,
+            "pod_name": pod_name,
+            "namespace": namespace,
+            "port": int(port),
+        }
+        sock, _headers = self._open_upgrade("/v1/portforward/attach", payload, "ae-portforward")
+        return sock
 
     def ensure_storage_volumes(self, app_name: str, volumes: list[dict]) -> None:
         if self._use_local():
