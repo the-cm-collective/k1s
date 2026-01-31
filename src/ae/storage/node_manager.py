@@ -14,7 +14,7 @@ from ae.controller.spec import (
     all_pvc_mounts,
 )
 
-from .netfs import NetFSManager
+from .netfs import NetFSManager, PvcNotReadyError
 from .types import NetFSMount, PvcRef
 
 
@@ -78,13 +78,19 @@ class NodeVolumeManager:
             if pvc in mounts_by_pvc:
                 continue
             wants_device = bool(getattr(pm, "device_path", None))
-            mount = self._netfs.ensure_mount(
-                pvc,
-                node_id=node,
-                fs_group=fs_group,
-                selinux=selinux,
-                for_device=wants_device,
-            )
+            try:
+                mount = self._netfs.ensure_mount(
+                    pvc,
+                    node_id=node,
+                    fs_group=fs_group,
+                    selinux=selinux,
+                    for_device=wants_device,
+                )
+            except PvcNotReadyError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                msg = str(exc) or "PVC mount not ready"
+                raise PvcNotReadyError(pvc, msg) from exc
             mounts_by_pvc[pvc] = mount
 
         volumes = list(getattr(manifest.spec, "volumes", []) or [])
