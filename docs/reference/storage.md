@@ -48,6 +48,26 @@ Example (see `docs/reference/storage-classes.yaml`):
 export AE_STORAGE_PROVISIONERS=docs/reference/storage-classes.yaml
 ```
 
+### Default StorageClass (built-in)
+
+When `AE_STORAGE_PROVISIONERS` is not set, k1s seeds a default local-path
+StorageClass named `k1s-local` (provisioner `k1s.io/local-path`) with
+`volumeBindingMode: WaitForFirstConsumer`, `reclaimPolicy: Delete`, and the
+default-class annotation. Disable this behavior with:
+
+```
+export AE_STORAGE_SEED_DEFAULTS=0
+```
+
+Override the class name with `AE_STORAGE_LOCAL_CLASS`.
+
+If `AE_STORAGE_NFS_SERVER` and `AE_STORAGE_NFS_PATH` are set, k1s also seeds a
+`k1s-nfs` StorageClass (provisioner `k1s.io/nfs`) with
+`reclaimPolicy: Retain`, `volumeBindingMode: Immediate`, and
+`allowVolumeExpansion: true`. Override the name with `AE_STORAGE_NFS_CLASS` and
+optionally set `AE_STORAGE_NFS_HOSTPATH` to allow the controller to create
+per-PVC directories under a host root.
+
 For dynamic NFS provisioning, include at least:
 - `parameters.server`: NFS server host/IP
 - `parameters.path`: exported base path (the controller will use a per-PVC subdir when possible)

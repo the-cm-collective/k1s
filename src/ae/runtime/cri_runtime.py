@@ -108,15 +108,28 @@ class CRIRuntime(RuntimeAdapter):
         job_backoff_limit = self._job_backoff_limit(manifest) if is_job else None
 
         for rid in desired_replica_ids:
+            try:
+                rep_manifest = self._maybe_inject_pvc_mounts(
+                    manifest, node_id=node_id, replica_id=rid
+                )
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    from ae.storage.netfs import PvcNotReadyError
+                except Exception:
+                    PvcNotReadyError = None  # type: ignore[assignment]
+                if PvcNotReadyError is not None and isinstance(exc, PvcNotReadyError):
+                    LOGGER.info("Skipping %s: PVCs not ready for mount injection", rid)
+                    continue
+                raise
             pod = by_replica.get(rid)
             if pod is None:
                 if limit_create is not None and created >= int(limit_create):
                     continue
-                self._run_pod(manifest, rid, revision, node_id=node_id, attempt=0)
+                self._run_pod(rep_manifest, rid, revision, node_id=node_id, attempt=0)
                 created += 1
                 continue
             if self._ensure_main_container(
-                manifest,
+                rep_manifest,
                 pod,
                 revision,
                 is_job=is_job,
@@ -734,6 +747,244 @@ class CRIRuntime(RuntimeAdapter):
                     password=str(entry.get("password")),
                     server_address=str(host),
                 )
+        return None
+
+    def _get_apishim_store(self):
+        if self._apishim_store_checked:
+            return self._apishim_store
+        self._apishim_store_checked = True
+        try:
+            from ae.apishim.store import ObjectStore
+        except Exception:
+            self._apishim_store = None
+            return None
+        dsn = os.getenv("AE_APISHIM_DSN")
+        db_env = os.getenv("AE_APISHIM_DB")
+        db_path = Path(db_env or "state/apishim.db")
+        if not dsn and not db_path.exists():
+            self._apishim_store = None
+            return None
+        try:
+            self._apishim_store = ObjectStore(dsn=dsn) if dsn else ObjectStore(db_path=db_path)
+        except Exception:
+            self._apishim_store = None
+        return self._apishim_store
+
+    def _get_apishim_state(self):
+        if self._apishim_state is not None:
+            return self._apishim_state
+        store = self._get_apishim_store()
+        if store is not None:
+            try:
+                from ae.storage.state import ApishimStorageState
+            except Exception:
+                return None
+            self._apishim_state = ApishimStorageState(store)
+            return self._apishim_state
+        try:
+            from ae.storage.state import ApishimHttpStorageState
+        except Exception:
+            return None
+        self._apishim_state = ApishimHttpStorageState.from_env()
+        return self._apishim_state
+
+    def _get_volume_manager(self):
+        if self._volume_manager_checked:
+            return self._volume_manager
+        self._volume_manager_checked = True
+        if os.getenv("AE_ENABLE_NETFS", "0") != "1":
+            self._volume_manager = None
+            return None
+        state = self._get_apishim_state()
+        if state is None:
+            self._volume_manager = None
+            return None
+        try:
+            from ae.storage import NetFSManager, NodeVolumeManager
+        except Exception:
+            self._volume_manager = None
+            return None
+        try:
+            netfs = NetFSManager(state)
+            self._volume_manager = NodeVolumeManager(netfs, node_id=self._current_node_id)
+        except Exception:
+            self._volume_manager = None
+        return self._volume_manager
+
+    def _maybe_inject_pvc_mounts(
+        self,
+        manifest: AppManifest,
+        *,
+        node_id: str | None = None,
+        replica_id: str | None = None,
+    ) -> AppManifest:
+        mgr = self._get_volume_manager()
+        if mgr is None:
+            return manifest
+        try:
+            from ae.storage.netfs import PvcNotReadyError
+        except Exception:
+            PvcNotReadyError = None  # type: ignore[assignment]
+        try:
+            if replica_id is not None:
+                return mgr.inject_pvc_mounts(
+                    manifest,
+                    node_id=node_id or self._current_node_id,
+                    replica_id=replica_id,
+                )
+            return mgr.inject_pvc_mounts(
+                manifest,
+                node_id=node_id or self._current_node_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if PvcNotReadyError is not None and isinstance(exc, PvcNotReadyError):
+                raise
+            if isinstance(exc, TypeError):
+                # Backward-compatible with older/partial managers that lack replica_id.
+                try:
+                    return mgr.inject_pvc_mounts(
+                        manifest,
+                        node_id=node_id or self._current_node_id,
+                    )
+                except Exception:
+                    return manifest
+            return manifest
+
+    def _pull_secret_auths(self, manifest: AppManifest) -> dict[str, dict[str, str]]:
+        state = self._get_apishim_state()
+        if state is None:
+            return {}
+        secrets = self._image_pull_secret_names(manifest)
+        if not secrets:
+            secrets = self._service_account_pull_secrets(manifest)
+        if not secrets:
+            return {}
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        auths: dict[str, dict[str, str]] = {}
+        for name, ns in secrets:
+            if not name:
+                continue
+            data = state.get_secret(str(ns or namespace), str(name))
+            if not data:
+                continue
+            raw = data.get(".dockerconfigjson") or data.get(".dockercfg")
+            if raw:
+                auths.update(self._parse_dockerconfigjson(str(raw)))
+                continue
+            # Fallback: allow simple secrets with username/password/registry keys
+            host = data.get("registry") or data.get("host") or data.get("server")
+            user = data.get("username")
+            pw = data.get("password")
+            if host and user and pw:
+                auths[str(host)] = {"username": str(user), "password": str(pw)}
+        return auths
+
+    def _parse_dockerconfigjson(self, raw: str) -> dict[str, dict[str, str]]:
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return {}
+        auths = payload.get("auths") if isinstance(payload, dict) else None
+        if isinstance(auths, dict):
+            entries = auths
+        elif isinstance(payload, dict):
+            entries = payload
+        else:
+            return {}
+        out: dict[str, dict[str, str]] = {}
+        for host, entry in entries.items():
+            if not isinstance(entry, dict):
+                continue
+            username = entry.get("username")
+            password = entry.get("password")
+            if (not username or not password) and entry.get("auth"):
+                try:
+                    decoded = base64.b64decode(str(entry["auth"]).encode("ascii")).decode("utf-8")
+                    if ":" in decoded:
+                        username, password = decoded.split(":", 1)
+                except Exception:
+                    username = None
+                    password = None
+            if username and password:
+                out[str(host)] = {"username": str(username), "password": str(password)}
+        return out
+
+    def _image_pull_secret_names(self, manifest: AppManifest) -> list[tuple[str | None, str | None]]:
+        secrets: list[tuple[str | None, str | None]] = []
+        for sec in getattr(manifest.spec, "image_pull_secrets", []) or []:
+            if isinstance(sec, dict):
+                secrets.append((sec.get("name"), sec.get("namespace")))
+            else:
+                secrets.append((str(sec), None))
+        return secrets
+
+    def _service_account_pull_secrets(
+        self, manifest: AppManifest
+    ) -> list[tuple[str | None, str | None]]:
+        store = self._get_apishim_store()
+        if store is None:
+            return []
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        sa_name = (
+            getattr(manifest.spec, "service_account_name", None)
+            or self._service_account_name_from_store(manifest, store)
+            or "default"
+        )
+        try:
+            sa = store.get("", "v1", "serviceaccounts", namespace, str(sa_name))
+        except Exception:
+            sa = None
+        if sa is None:
+            return []
+        spec = getattr(sa, "spec", None) or {}
+        if not isinstance(spec, dict):
+            return []
+        secrets = spec.get("imagePullSecrets") or []
+        out: list[tuple[str | None, str | None]] = []
+        for entry in secrets:
+            if isinstance(entry, dict):
+                out.append((entry.get("name"), None))
+            else:
+                out.append((str(entry), None))
+        return out
+
+    def _service_account_name_from_store(self, manifest: AppManifest, store: Any) -> str | None:
+        name = getattr(getattr(manifest, "metadata", None), "name", None)
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        if not name:
+            return None
+        candidates = [
+            ("apps", "v1", "deployments"),
+            ("apps", "v1", "daemonsets"),
+            ("apps", "v1", "statefulsets"),
+            ("batch", "v1", "jobs"),
+            ("batch", "v1", "cronjobs"),
+        ]
+        for group, version, resource in candidates:
+            try:
+                obj = store.get(group, version, resource, namespace, str(name))
+            except Exception:
+                obj = None
+            if obj is None:
+                continue
+            spec = getattr(obj, "spec", None) or {}
+            if not isinstance(spec, dict):
+                continue
+            template = None
+            if resource == "cronjobs":
+                template = (
+                    (spec.get("jobTemplate") or {}).get("spec") or {}
+                ).get("template")
+            else:
+                template = spec.get("template")
+            if not isinstance(template, dict):
+                continue
+            tpl_spec = template.get("spec") or {}
+            if not isinstance(tpl_spec, dict):
+                continue
+            sa = tpl_spec.get("serviceAccountName") or tpl_spec.get("serviceAccount")
+            if sa:
+                return str(sa)
         return None
 
     def _extract_registry(self, image: str) -> str | None:

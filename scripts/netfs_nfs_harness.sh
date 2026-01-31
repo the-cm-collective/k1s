@@ -14,6 +14,7 @@ need_cmd() {
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
+PYTHON_BIN=${PYTHON_BIN:-python}
 STATE_ROOT=${STATE_ROOT:-"$ROOT_DIR/state"}
 mkdir -p "$STATE_ROOT"
 
@@ -37,8 +38,8 @@ NODE_ID=${NODE_ID:-netfs-node}
 NFS_CONTAINER=${NFS_CONTAINER:-ae-netfs-nfs-harness}
 NFS_EXPORT_DIR=${NFS_EXPORT_DIR:-"$HARNESS_DIR/exports"}
 NFS_SERVER=${NFS_SERVER:-127.0.0.1}
-# The nfs-server-alpine image exports /exports as the NFSv4 pseudo-root (fsid=0),
-# so clients should mount subpaths relative to that root (e.g., /netfs).
+# The nfs-server-alpine image exports /exports with an NFSv4 pseudo-root, so
+# clients should mount subpaths relative to that root (e.g., /netfs).
 NFS_PATH=${NFS_PATH:-/netfs}
 
 PV_NAME=${PV_NAME:-netfs-pv-harness}
@@ -51,6 +52,7 @@ CLONE_MOUNT_PATH="${NETFS_ROOT}/default/${CLONE_PVC_NAME}"
 
 APISHIM_PID=""
 AGENT_PID=""
+HEARTBEAT_PID=""
 
 kill_quick() {
   local pid=$1
@@ -79,6 +81,9 @@ umount_if_mounted() {
 cleanup() {
   set +e
   log "cleaning up"
+  if [[ -n "${HEARTBEAT_PID}" ]]; then
+    kill_quick "${HEARTBEAT_PID}"
+  fi
   if [[ -n "${AGENT_PID}" ]]; then
     kill_quick "${AGENT_PID}"
   fi
@@ -98,7 +103,7 @@ trap cleanup EXIT INT TERM
 
 need_cmd docker
 need_cmd curl
-need_cmd python
+need_cmd "${PYTHON_BIN}"
 if [[ "${HARNESS_MODE}" != "csi" ]]; then
   need_cmd rpcinfo
 fi
@@ -125,7 +130,7 @@ reclaimPolicy: Retain
 volumeBindingMode: Immediate
 allowVolumeExpansion: false
 mountOptions:
-  - vers=4.2
+  - vers=4
 EOF_SC
 
 if [[ "${HARNESS_MODE}" != "csi" ]]; then
@@ -159,7 +164,7 @@ if [[ "${HARNESS_MODE}" != "csi" ]]; then
     test_err="${HARNESS_DIR}/mount-preflight.err"
     mkdir -p "${test_mount}"
     set +e
-    timeout 15 mount -t nfs -o vers=4.2,ro "${NFS_SERVER}:${NFS_PATH}" "${test_mount}" \
+    timeout 15 mount -t nfs -o vers=4,ro "${NFS_SERVER}:${NFS_PATH}" "${test_mount}" \
       2>"${test_err}"
     rc=$?
     set -e
@@ -180,7 +185,11 @@ AE_APISHIM_DB="${APISHIM_DB}" \
 AE_STATE_DB="${STATE_DB}" \
 AE_STORAGE_PROVISIONERS="${SC_FILE}" \
 AE_APISHIM_RUNTIME=docker \
-python -m ae.apishim serve \
+AE_ENABLE_NETFS=1 \
+AE_NETFS_ROOT="${NETFS_ROOT}" \
+AE_NODE_ID="${NODE_ID}" \
+AE_NODE_NAME="${NODE_ID}" \
+"${PYTHON_BIN}" -m ae.apishim serve \
   --host "${APISHIM_HOST}" \
   --port "${APISHIM_PORT}" \
   --allow-anon \
@@ -201,7 +210,7 @@ AE_APISHIM_DB="${APISHIM_DB}" \
 AE_NETFS_ROOT="${NETFS_ROOT}" \
 AE_NODE_ID="${NODE_ID}" \
 AE_NODE_NAME="${NODE_ID}" \
-python -m ae.node.server \
+"${PYTHON_BIN}" -m ae.node.server \
   --host "${AGENT_HOST}" \
   --port "${AGENT_PORT}" \
   >"${HARNESS_DIR}/agent.log" 2>&1 &
@@ -216,7 +225,7 @@ done
 curl -fsS "${AGENT_URL}/v1/containers" >/dev/null
 
 log "registering node ${NODE_ID} -> ${AGENT_URL}"
-python - <<PY
+"${PYTHON_BIN}" - <<PY
 from pathlib import Path
 from ae.controller.state import SQLiteStateStore
 
@@ -224,6 +233,22 @@ store = SQLiteStateStore(Path("${STATE_DB}"))
 store.upsert_node("${NODE_ID}", name="${NODE_ID}", endpoint="${AGENT_URL}")
 store.record_heartbeat("${NODE_ID}", "Ready")
 PY
+
+NETFS_HEARTBEAT_INTERVAL=${NETFS_HEARTBEAT_INTERVAL:-5}
+log "starting heartbeat loop every ${NETFS_HEARTBEAT_INTERVAL}s"
+(
+  while true; do
+    "${PYTHON_BIN}" - <<PY
+from pathlib import Path
+from ae.controller.state import SQLiteStateStore
+
+store = SQLiteStateStore(Path("${STATE_DB}"))
+store.record_heartbeat("${NODE_ID}", "Ready")
+PY
+    sleep "${NETFS_HEARTBEAT_INTERVAL}"
+  done
+) >/dev/null 2>&1 &
+HEARTBEAT_PID=$!
 
 if [[ "${HARNESS_MODE}" == "snapshot" ]]; then
   log "running NetFS snapshot/clone smoke test"

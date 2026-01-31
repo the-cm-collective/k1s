@@ -15,6 +15,16 @@ from .state import StorageState
 from .types import NetFSMount, PvcRef, PvRef
 
 LOGGER = getLogger(__name__)
+NFS_HOST_ROOT_ANNOTATION = "k1s.io/nfs-host-root"
+NFS_HOST_PATH_ANNOTATION = "k1s.io/nfs-host-path"
+
+
+class PvcNotReadyError(RuntimeError):
+    """Raised when PVC/PV binding is not ready for mount injection."""
+
+    def __init__(self, pvc: PvcRef, message: str) -> None:
+        super().__init__(message)
+        self.pvc = pvc
 
 
 class StorageDriver(Protocol):
@@ -78,13 +88,13 @@ class NetFSManager:
         if pv is None:
             msg = f"PVC {pvc.namespace}/{pvc.name} is not bound to a PV"
             self._record_pvc_event(pvc, "PVCNotBound", msg)
-            raise KeyError(msg)
+            raise PvcNotReadyError(pvc, msg)
 
         pv_obj = self._state.get_pv(pv)
         if pv_obj is None:
             msg = f"PV {pv.name} not found for PVC {pvc.namespace}/{pvc.name}"
             self._record_pvc_event(pvc, "PVNotFound", msg)
-            raise KeyError(msg)
+            raise PvcNotReadyError(pvc, msg)
 
         pv_spec = self._obj_spec(pv_obj)
         volume_mode = str(pv_spec.get("volumeMode") or "Filesystem")
@@ -256,6 +266,10 @@ class NetFSManager:
             self._record_pvc_event(pvc, "InvalidVolume", msg)
             raise ValueError(msg)
 
+        pv_obj = self._state.get_pv(pv)
+        if pv_obj is not None:
+            self._ensure_nfs_export_path(pvc, pv_obj)
+
         target = self._mount_path(pvc)
         target.mkdir(parents=True, exist_ok=True)
         source = f"{server}:{path}"
@@ -307,6 +321,43 @@ class NetFSManager:
         )
         self._state.upsert_mount(mount)
         return mount
+
+    def _ensure_nfs_export_path(self, pvc: PvcRef, pv_obj) -> None:  # noqa: ANN001
+        try:
+            meta = pv_obj.metadata or {}
+        except Exception:
+            return
+        annotations = meta.get("annotations") if isinstance(meta, dict) else None
+        if not isinstance(annotations, dict):
+            return
+        host_root = annotations.get(NFS_HOST_ROOT_ANNOTATION)
+        host_path = annotations.get(NFS_HOST_PATH_ANNOTATION)
+        if not host_root or not host_path:
+            return
+        root = Path(str(host_root)).expanduser()
+        path = Path(str(host_path)).expanduser()
+        if not self._within_root(root, path):
+            msg = f"refusing to create NFS path outside root: {path}"
+            self._record_pvc_event(pvc, "NfsExportInvalid", msg)
+            return
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc) or f"failed to create NFS export path {path}"
+            self._record_pvc_event(pvc, "NfsExportCreateFailed", msg)
+
+    @staticmethod
+    def _within_root(root: Path, path: Path) -> bool:
+        try:
+            return path.resolve().is_relative_to(root.resolve())
+        except AttributeError:  # pragma: no cover - py<3.9 fallback
+            try:
+                path.resolve().relative_to(root.resolve())
+                return True
+            except Exception:
+                return False
+        except Exception:
+            return False
 
     def _ensure_csi_mount(
         self,

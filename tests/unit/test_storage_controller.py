@@ -3,6 +3,52 @@ from pathlib import Path
 from ae.apishim.store import ObjectStore
 from ae.storage.controller import StorageController
 
+def test_storage_controller_seeds_default_local_class(tmp_path, monkeypatch):
+    monkeypatch.delenv("AE_STORAGE_PROVISIONERS", raising=False)
+    monkeypatch.setenv("AE_STORAGE_SEED_DEFAULTS", "1")
+    monkeypatch.setenv("AE_STORAGE_LOCAL_CLASS", "k1s-local")
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+
+    seeded = controller.sync()
+    assert seeded == 1
+    sc = store.get("storage.k8s.io", "v1", "storageclasses", None, "k1s-local")
+    assert sc is not None
+    spec = sc.spec or {}
+    assert spec.get("provisioner") == "k1s.io/local-path"
+    assert spec.get("volumeBindingMode") == "WaitForFirstConsumer"
+    annotations = (sc.metadata or {}).get("annotations") or {}
+    assert annotations.get("storageclass.kubernetes.io/is-default-class") == "true"
+
+
+def test_storage_controller_seeds_nfs_class_when_configured(tmp_path, monkeypatch):
+    monkeypatch.delenv("AE_STORAGE_PROVISIONERS", raising=False)
+    monkeypatch.setenv("AE_STORAGE_SEED_DEFAULTS", "1")
+    monkeypatch.setenv("AE_STORAGE_LOCAL_CLASS", "k1s-local")
+    monkeypatch.setenv("AE_STORAGE_NFS_SERVER", "127.0.0.1")
+    monkeypatch.setenv("AE_STORAGE_NFS_PATH", "/export/netfs")
+    monkeypatch.setenv("AE_STORAGE_NFS_HOSTPATH", str(tmp_path / "nfs-root"))
+
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+
+    seeded = controller.sync()
+    assert seeded == 2
+
+    sc = store.get("storage.k8s.io", "v1", "storageclasses", None, "k1s-nfs")
+    assert sc is not None
+    spec = sc.spec or {}
+    assert spec.get("provisioner") == "k1s.io/nfs"
+    params = spec.get("parameters") or {}
+    assert params.get("server") == "127.0.0.1"
+    assert params.get("path") == "/export/netfs"
+    assert params.get("hostPath") == str(tmp_path / "nfs-root")
+    assert spec.get("reclaimPolicy") == "Retain"
+    assert spec.get("volumeBindingMode") == "Immediate"
+    assert spec.get("allowVolumeExpansion") is True
+    annotations = (sc.metadata or {}).get("annotations") or {}
+    assert annotations.get("storageclass.kubernetes.io/is-default-class") != "true"
+
 
 def test_storage_controller_binds_pvc(tmp_path):
     store = ObjectStore(db_path=tmp_path / "apishim.db")
@@ -42,6 +88,228 @@ def test_storage_controller_binds_pvc(tmp_path):
     assert claim_ref.get("name") == "pvc1"
     assert claim_ref.get("namespace") == "default"
     assert (pv.status or {}).get("phase") == "Bound"
+
+
+def test_storage_controller_adds_pvc_pv_finalizers(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    pv_spec = {
+        "capacity": {"storage": "1Gi"},
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "k1s-local",
+    }
+    store.upsert("", "v1", "persistentvolumes", None, "pv-final", {"name": "pv-final"}, pv_spec)
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "pvc-final",
+        {"name": "pvc-final", "namespace": "default"},
+        pvc_spec,
+    )
+
+    controller.reconcile_once()
+
+    pvc = store.get("", "v1", "persistentvolumeclaims", "default", "pvc-final")
+    pv = store.get("", "v1", "persistentvolumes", None, "pv-final")
+    assert pvc is not None
+    assert pv is not None
+    pvc_finalizers = (pvc.metadata or {}).get("finalizers") or []
+    pv_finalizers = (pv.metadata or {}).get("finalizers") or []
+    assert "kubernetes.io/pvc-protection" in pvc_finalizers
+    assert "kubernetes.io/pv-protection" in pv_finalizers
+
+
+def test_storage_controller_respects_explicit_volume_name(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    sc_spec = {
+        "provisioner": "k1s.io/local-path",
+        "parameters": {"hostPath": str(tmp_path / "local-root")},
+        "reclaimPolicy": "Delete",
+        "volumeBindingMode": "Immediate",
+    }
+    pvc_uid = "uid-explicit"
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "k1s-local",
+        "volumeName": "pv-explicit",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+
+    store.upsert(
+        "storage.k8s.io",
+        "v1",
+        "storageclasses",
+        None,
+        "k1s-local",
+        {"name": "k1s-local"},
+        sc_spec,
+    )
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "pvc-explicit",
+        {"name": "pvc-explicit", "namespace": "default", "uid": pvc_uid},
+        pvc_spec,
+        status={"phase": "Pending"},
+    )
+
+    controller.reconcile_once()
+
+    pvc = store.get("", "v1", "persistentvolumeclaims", "default", "pvc-explicit")
+    assert pvc is not None
+    assert (pvc.status or {}).get("phase") == "Pending"
+    assert store.get("", "v1", "persistentvolumes", None, "pv-explicit") is None
+    assert store.get("", "v1", "persistentvolumes", None, f"pvc-{pvc_uid}") is None
+
+
+def test_storage_controller_explicit_volume_name_conflict(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    pv_spec = {
+        "capacity": {"storage": "1Gi"},
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "k1s-local",
+        "claimRef": {"namespace": "default", "name": "other"},
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "k1s-local",
+        "volumeName": "pv-conflict",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumes",
+        None,
+        "pv-conflict",
+        {"name": "pv-conflict"},
+        pv_spec,
+        status={"phase": "Available"},
+    )
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "pvc-conflict",
+        {"name": "pvc-conflict", "namespace": "default", "uid": "uid-conflict"},
+        pvc_spec,
+        status={"phase": "Pending"},
+    )
+
+    controller.reconcile_once()
+
+    pvc = store.get("", "v1", "persistentvolumeclaims", "default", "pvc-conflict")
+    assert pvc is not None
+    assert (pvc.status or {}).get("phase") == "Pending"
+    pv = store.get("", "v1", "persistentvolumes", None, "pv-conflict")
+    assert pv is not None
+    assert (pv.spec or {}).get("claimRef", {}).get("name") == "other"
+
+
+def test_storage_controller_explicit_volume_name_uid_mismatch(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    pv_spec = {
+        "capacity": {"storage": "1Gi"},
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "k1s-local",
+        "claimRef": {"namespace": "default", "name": "pvc-uid", "uid": "uid-other"},
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "k1s-local",
+        "volumeName": "pv-uid",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumes",
+        None,
+        "pv-uid",
+        {"name": "pv-uid"},
+        pv_spec,
+        status={"phase": "Bound"},
+    )
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "pvc-uid",
+        {"name": "pvc-uid", "namespace": "default", "uid": "uid-current"},
+        pvc_spec,
+        status={"phase": "Pending"},
+    )
+
+    controller.reconcile_once()
+
+    pvc = store.get("", "v1", "persistentvolumeclaims", "default", "pvc-uid")
+    assert pvc is not None
+    assert (pvc.status or {}).get("phase") == "Pending"
+    pv = store.get("", "v1", "persistentvolumes", None, "pv-uid")
+    assert pv is not None
+    claim_ref = (pv.spec or {}).get("claimRef") or {}
+    assert claim_ref.get("uid") == "uid-other"
+
+
+def test_storage_controller_explicit_volume_name_released(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    pv_spec = {
+        "capacity": {"storage": "1Gi"},
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "k1s-local",
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "k1s-local",
+        "volumeName": "pv-released",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumes",
+        None,
+        "pv-released",
+        {"name": "pv-released"},
+        pv_spec,
+        status={"phase": "Released"},
+    )
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "pvc-released",
+        {"name": "pvc-released", "namespace": "default", "uid": "uid-released"},
+        pvc_spec,
+        status={"phase": "Pending"},
+    )
+
+    controller.reconcile_once()
+
+    pvc = store.get("", "v1", "persistentvolumeclaims", "default", "pvc-released")
+    assert pvc is not None
+    assert (pvc.status or {}).get("phase") == "Pending"
+    pv = store.get("", "v1", "persistentvolumes", None, "pv-released")
+    assert pv is not None
+    assert (pv.status or {}).get("phase") == "Released"
 
 
 def test_storage_controller_dynamic_nfs_provisioning(tmp_path):
@@ -294,6 +562,67 @@ def test_storage_controller_reclaim_policy_delete_cleans_backing(tmp_path):
     assert not backing.exists()
 
 
+def test_storage_controller_pvc_delete_retain_marks_pv_released(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    pvc_uid = "uid-retain"
+    pv_spec = {
+        "capacity": {"storage": "1Gi"},
+        "accessModes": ["ReadWriteMany"],
+        "persistentVolumeReclaimPolicy": "Retain",
+        "storageClassName": "k1s-nfs",
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteMany"],
+        "volumeName": "pv-retain",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    store.upsert("", "v1", "persistentvolumes", None, "pv-retain", {"name": "pv-retain"}, pv_spec)
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "pvc-retain",
+        {"name": "pvc-retain", "namespace": "default", "uid": pvc_uid},
+        pvc_spec,
+    )
+
+    controller._handle_pvc_deleted(
+        store.get("", "v1", "persistentvolumeclaims", "default", "pvc-retain")
+    )
+
+    pv = store.get("", "v1", "persistentvolumes", None, "pv-retain")
+    assert pv is not None
+    assert (pv.status or {}).get("phase") == "Released"
+
+
+def test_storage_controller_pv_delete_marks_pvc_lost(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "volumeName": "pv-gone",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    pvc_meta = {"name": "pvc-gone", "namespace": "default"}
+    pv_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "persistentVolumeReclaimPolicy": "Delete",
+        "claimRef": {"namespace": "default", "name": "pvc-gone"},
+    }
+    store.upsert("", "v1", "persistentvolumeclaims", "default", "pvc-gone", pvc_meta, pvc_spec)
+    store.upsert("", "v1", "persistentvolumes", None, "pv-gone", {"name": "pv-gone"}, pv_spec)
+
+    pv = store.get("", "v1", "persistentvolumes", None, "pv-gone")
+    assert pv is not None
+    controller._handle_pv_deleted(pv)
+
+    pvc = store.get("", "v1", "persistentvolumeclaims", "default", "pvc-gone")
+    assert pvc is not None
+    assert (pvc.status or {}).get("phase") == "Lost"
+
+
 def test_storage_controller_creates_volume_attachment_for_csi(tmp_path):
     store = ObjectStore(db_path=tmp_path / "apishim.db")
     controller = StorageController(store)
@@ -429,6 +758,12 @@ def test_storage_controller_expands_volume_when_allowed(tmp_path):
     assert pvc is not None
     assert ((pv.spec or {}).get("capacity") or {}).get("storage") == "2Gi"
     assert ((pvc.status or {}).get("capacity") or {}).get("storage") == "2Gi"
+    conds = (pvc.status or {}).get("conditions") or []
+    resize_cond = next((c for c in conds if c.get("type") == "Resizing"), {})
+    assert resize_cond.get("status") == "False"
+    assert resize_cond.get("reason") == "ResizeComplete"
+    fs_cond = next((c for c in conds if c.get("type") == "FileSystemResizePending"), {})
+    assert fs_cond.get("status") == "True"
     events = store.list_all("", "v1", "events")
     reasons = [(e.spec or {}).get("reason") for e in events]
     assert "VolumeExpanded" in reasons
@@ -491,6 +826,10 @@ def test_storage_controller_blocks_expansion_when_forbidden(tmp_path):
     assert pvc is not None
     assert ((pv.spec or {}).get("capacity") or {}).get("storage") == "1Gi"
     assert ((pvc.status or {}).get("capacity") or {}).get("storage") == "1Gi"
+    conds = (pvc.status or {}).get("conditions") or []
+    resize_cond = next((c for c in conds if c.get("type") == "Resizing"), {})
+    assert resize_cond.get("status") == "False"
+    assert resize_cond.get("reason") == "ExpansionFailed"
     events = store.list_all("", "v1", "events")
     reasons = [(e.spec or {}).get("reason") for e in events]
     assert "VolumeExpansionForbidden" in reasons
