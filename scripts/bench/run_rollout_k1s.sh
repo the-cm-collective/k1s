@@ -87,6 +87,30 @@ fi
 
 info() { echo "[rollout] $*" >&2; }
 
+# Resolve demo images for rollout based on backend (podman prefers localhost/* to avoid short-name lookups)
+backend="${AE_RUNTIME_BACKEND:-podman}"
+if [[ "$backend" != "podman" && "$backend" != "docker" && "$backend" != "oci" ]]; then
+  if command -v podman >/dev/null 2>&1; then backend=podman; elif command -v docker >/dev/null 2>&1; then backend=docker; else backend=podman; fi
+fi
+if [[ -n "${AE_ROLLOUT_IMAGE_BLUE:-}" ]]; then
+  rollout_blue_image="${AE_ROLLOUT_IMAGE_BLUE}"
+else
+  if [[ "$backend" == "podman" || "$backend" == "oci" ]]; then
+    rollout_blue_image="localhost/demo-blue:latest"
+  else
+    rollout_blue_image="demo-blue:latest"
+  fi
+fi
+if [[ -n "${AE_ROLLOUT_IMAGE_GREEN:-}" ]]; then
+  rollout_green_image="${AE_ROLLOUT_IMAGE_GREEN}"
+else
+  if [[ "$backend" == "podman" || "$backend" == "oci" ]]; then
+    rollout_green_image="localhost/demo-green:latest"
+  else
+    rollout_green_image="demo-green:latest"
+  fi
+fi
+
 # Quick bench profile
 if [[ "${AE_BENCH_QUICK:-0}" == "1" ]]; then
   : "${DURATION:=5}"; export DURATION
@@ -332,8 +356,8 @@ wait_ready "$app_name" "$replicas" || true
 
 base_img=$(current_image)
 target_img="$base_img"
-if [[ "$base_img" == *demo-blue* ]]; then target_img="demo-green:latest"; fi
-if [[ "$base_img" == *demo-green* || -z "$base_img" ]]; then target_img="demo-blue:latest"; fi
+if [[ "$base_img" == *demo-blue* ]]; then target_img="$rollout_green_image"; fi
+if [[ "$base_img" == *demo-green* || -z "$base_img" ]]; then target_img="$rollout_blue_image"; fi
 
 if [[ "$IN_CONTAINER" == "1" ]]; then
   tmpman="state/rollout-${app_name}-${replicas}.yaml"

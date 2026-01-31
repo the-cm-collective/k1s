@@ -130,6 +130,38 @@ stop_docker_dev_stack() {
   fi
 }
 
+ensure_demo_images() {
+  local blue="$1"
+  local green="$2"
+  shift 2
+  local runner=("$@")
+  if [[ ${#runner[@]} -eq 0 ]]; then
+    return 0
+  fi
+  local images
+  images="$("${runner[@]}" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null || true)"
+  if ! grep -q "^${blue}$" <<<"$images"; then
+    echo "[full-refresh] building ${blue}" >&2
+    "${runner[@]}" build -t "${blue}" "${repo_root}/samples/servers/blue" >/dev/null 2>&1 || true
+  fi
+  if ! grep -q "^${green}$" <<<"$images"; then
+    echo "[full-refresh] building ${green}" >&2
+    "${runner[@]}" build -t "${green}" "${repo_root}/samples/servers/green" >/dev/null 2>&1 || true
+  fi
+}
+
+clean_podman_rootless() {
+  if ! command -v podman >/dev/null 2>&1; then
+    return 0
+  fi
+  local ids
+  ids="$(podman ps -aq 2>/dev/null || true)"
+  if [[ -n "${ids}" ]]; then
+    podman rm -f ${ids} >/dev/null 2>&1 || true
+    podman pod rm -fa >/dev/null 2>&1 || true
+  fi
+}
+
 wait_k1nd_controller_ready() {
   local cid
   cid=$(docker ps -q --filter "name=^dev-controller-1$" 2>/dev/null | head -n1 || true)
@@ -248,6 +280,8 @@ ROOTLESS_ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" ./scripts/bench/
 # shellcheck disable=SC1090
 source "$ROOTLESS_ENV_FILE"
 
+ensure_demo_images "localhost/demo-blue:latest" "localhost/demo-green:latest" podman
+
 AE_ENGINE_STRICT=1 \
 LABEL_SUITE="${DATE}+podman+crun+rootless+cg2" \
 APP="$BENCH_PRIMARY_MANIFEST" APP_NAME="$BENCH_PRIMARY_APP" \
@@ -281,6 +315,8 @@ ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" ./scripts/bench/bench_env
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 
+ensure_demo_images "localhost/demo-blue:latest" "localhost/demo-green:latest" sudo podman
+
 # Fail fast if rootful Podman isn't creating app containers.
 sleep 5
 if ! sudo podman ps -a --filter label=ae.app --format '{{.Names}}' | grep -q '.'; then
@@ -297,12 +333,17 @@ make bench-mem-e2e-k1s-sudo
 
 ./scripts/bench/bench_env_teardown.sh --env "$ENV_FILE"
 
+# Clear rootless Podman before k1nd to avoid foreign-engine contamination.
+clean_podman_rootless
+
 export AE_RUNTIME_BACKEND=docker
 export AE_APISHIM_RUNTIME=docker
 
 sanitize_env_docker
 stop_docker_dev_stack || true
 scripts/bench/k1nd_sanitize.sh pre
+
+ensure_demo_images "demo-blue:latest" "demo-green:latest" docker
 k1nd_specs_rel="${BENCH_K1ND_SPECS_DIR:-state/bench-k1nd-specs}"
 k1nd_specs_abs="${repo_root}/${k1nd_specs_rel}"
 rm -rf "$k1nd_specs_abs"
