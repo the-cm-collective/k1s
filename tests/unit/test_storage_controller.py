@@ -759,6 +759,12 @@ def test_storage_controller_expands_volume_when_allowed(tmp_path):
     assert pvc is not None
     assert ((pv.spec or {}).get("capacity") or {}).get("storage") == "2Gi"
     assert ((pvc.status or {}).get("capacity") or {}).get("storage") == "2Gi"
+    conds = (pvc.status or {}).get("conditions") or []
+    resize_cond = next((c for c in conds if c.get("type") == "Resizing"), {})
+    assert resize_cond.get("status") == "False"
+    assert resize_cond.get("reason") == "ResizeComplete"
+    fs_cond = next((c for c in conds if c.get("type") == "FileSystemResizePending"), {})
+    assert fs_cond.get("status") == "True"
     events = store.list_all("", "v1", "events")
     reasons = [(e.spec or {}).get("reason") for e in events]
     assert "VolumeExpanded" in reasons
@@ -821,6 +827,10 @@ def test_storage_controller_blocks_expansion_when_forbidden(tmp_path):
     assert pvc is not None
     assert ((pv.spec or {}).get("capacity") or {}).get("storage") == "1Gi"
     assert ((pvc.status or {}).get("capacity") or {}).get("storage") == "1Gi"
+    conds = (pvc.status or {}).get("conditions") or []
+    resize_cond = next((c for c in conds if c.get("type") == "Resizing"), {})
+    assert resize_cond.get("status") == "False"
+    assert resize_cond.get("reason") == "ExpansionFailed"
     events = store.list_all("", "v1", "events")
     reasons = [(e.spec or {}).get("reason") for e in events]
     assert "VolumeExpansionForbidden" in reasons
