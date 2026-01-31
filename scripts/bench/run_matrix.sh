@@ -208,7 +208,7 @@ ensure_controller() {
   SPECS_DIR="${AE_SPECS_DIR:-specs}"
   LOG_FILE="${TMPDIR:-/tmp}/k1s_ctrl_bench.$(id -un).$$.log"
   rm -f "$LOG_FILE" 2>/dev/null || true
-  nohup python -m ae.controller --loop --specs "$SPECS_DIR" --metrics-port 9108 --watch >"$LOG_FILE" 2>&1 &
+  PYTHONPATH="${py_path}" nohup "$python_bin" -m ae.controller --loop --specs "$SPECS_DIR" --metrics-port 9108 --watch >"$LOG_FILE" 2>&1 &
   sleep 3
   if pgrep -f "python\s*-m\s*ae\.controller" >/dev/null 2>&1; then
     echo "[matrix] controller started (logs: $LOG_FILE)" >&2

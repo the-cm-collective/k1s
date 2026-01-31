@@ -228,6 +228,11 @@ bench-mem-k1s:
 bench-mem-k3s:
 	@./scripts/bench/mem_snapshot.sh --mode k3s --label $${LABEL:-manual} --duration $${DURATION:-30}
 
+.PHONY: bench-mem-debug
+# Short sanity-check run for rootless, rootful, and k1nd with debug artifacts.
+bench-mem-debug:
+	@./scripts/bench/run_debug_refresh.sh
+
 # Aggregate latest snapshot under snapshots/<LABEL>/
 bench-mem-agg:
 	@python scripts/bench/mem_aggregate.py $$(ls -d snapshots/$${LABEL:-manual}/* | sort | tail -n1)
@@ -511,6 +516,15 @@ bench-snapshots-clean:
 
 bench-snapshots-clean-sudo:
 	@sudo python scripts/bench/cleanup_recent_snapshots.py --hours $${HOURS:-24} $${NO_QUICK:+--no-quick} $${DRY_RUN:+--dry-run}
+
+.PHONY: bench-state-clean dev-state-clean
+# Remove benchmark-only state (state/bench-*)
+bench-state-clean:
+	@./scripts/bench/clean_state.sh --bench
+
+# Wipe full state/ directory (requires CONFIRM=1)
+dev-state-clean:
+	@CONFIRM=$${CONFIRM:-0} ./scripts/bench/clean_state.sh --dev $${CONFIRM:+--confirm}
 
 .PHONY: bench-mem-backfill
 # Aggregate any snapshots missing summary.json, then rebuild combined, charts, and docs
