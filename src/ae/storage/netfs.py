@@ -19,6 +19,14 @@ NFS_HOST_ROOT_ANNOTATION = "k1s.io/nfs-host-root"
 NFS_HOST_PATH_ANNOTATION = "k1s.io/nfs-host-path"
 
 
+class PvcNotReadyError(RuntimeError):
+    """Raised when PVC/PV binding is not ready for mount injection."""
+
+    def __init__(self, pvc: PvcRef, message: str) -> None:
+        super().__init__(message)
+        self.pvc = pvc
+
+
 class StorageDriver(Protocol):
     """CSI-aligned storage driver interface (controller + node)."""
 
@@ -80,13 +88,13 @@ class NetFSManager:
         if pv is None:
             msg = f"PVC {pvc.namespace}/{pvc.name} is not bound to a PV"
             self._record_pvc_event(pvc, "PVCNotBound", msg)
-            raise KeyError(msg)
+            raise PvcNotReadyError(pvc, msg)
 
         pv_obj = self._state.get_pv(pv)
         if pv_obj is None:
             msg = f"PV {pv.name} not found for PVC {pvc.namespace}/{pvc.name}"
             self._record_pvc_event(pvc, "PVNotFound", msg)
-            raise KeyError(msg)
+            raise PvcNotReadyError(pvc, msg)
 
         pv_spec = self._obj_spec(pv_obj)
         volume_mode = str(pv_spec.get("volumeMode") or "Filesystem")

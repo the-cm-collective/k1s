@@ -172,9 +172,19 @@ class PodmanRuntime(RuntimeAdapter):
             old = []
 
         for rid in desired_ids:
-            rep_manifest = self._maybe_inject_pvc_mounts(
-                manifest, node_id=node_id, replica_id=rid
-            )
+            try:
+                rep_manifest = self._maybe_inject_pvc_mounts(
+                    manifest, node_id=node_id, replica_id=rid
+                )
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    from ae.storage.netfs import PvcNotReadyError
+                except Exception:
+                    PvcNotReadyError = None  # type: ignore[assignment]
+                if PvcNotReadyError is not None and isinstance(exc, PvcNotReadyError):
+                    LOGGER.info("Skipping %s: PVCs not ready for mount injection", rid)
+                    continue
+                raise
             c = by_replica.get(rid)
             if c is None:
                 if limit_create is not None and created >= int(limit_create):
@@ -2432,6 +2442,10 @@ class PodmanRuntime(RuntimeAdapter):
         if mgr is None:
             return manifest
         try:
+            from ae.storage.netfs import PvcNotReadyError
+        except Exception:
+            PvcNotReadyError = None  # type: ignore[assignment]
+        try:
             if replica_id is not None:
                 return mgr.inject_pvc_mounts(
                     manifest,
@@ -2442,16 +2456,18 @@ class PodmanRuntime(RuntimeAdapter):
                 manifest,
                 node_id=node_id or self._current_node_id,
             )
-        except TypeError:
-            try:
-                return mgr.inject_pvc_mounts(
-                    manifest,
-                    node_id=node_id or self._current_node_id,
-                )
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.warning("PVC mount injection failed: %s", exc)
-                return manifest
         except Exception as exc:  # noqa: BLE001
+            if PvcNotReadyError is not None and isinstance(exc, PvcNotReadyError):
+                raise
+            if isinstance(exc, TypeError):
+                try:
+                    return mgr.inject_pvc_mounts(
+                        manifest,
+                        node_id=node_id or self._current_node_id,
+                    )
+                except Exception as inner_exc:  # noqa: BLE001
+                    LOGGER.warning("PVC mount injection failed: %s", inner_exc)
+                    return manifest
             LOGGER.warning("PVC mount injection failed: %s", exc)
             return manifest
 

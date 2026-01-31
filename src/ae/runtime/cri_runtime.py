@@ -119,9 +119,19 @@ class CRIRuntime(RuntimeAdapter):
         job_backoff_limit = self._job_backoff_limit(manifest) if is_job else None
 
         for rid in desired_replica_ids:
-            rep_manifest = self._maybe_inject_pvc_mounts(
-                manifest, node_id=node_id, replica_id=rid
-            )
+            try:
+                rep_manifest = self._maybe_inject_pvc_mounts(
+                    manifest, node_id=node_id, replica_id=rid
+                )
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    from ae.storage.netfs import PvcNotReadyError
+                except Exception:
+                    PvcNotReadyError = None  # type: ignore[assignment]
+                if PvcNotReadyError is not None and isinstance(exc, PvcNotReadyError):
+                    LOGGER.info("Skipping %s: PVCs not ready for mount injection", rid)
+                    continue
+                raise
             pod = by_replica.get(rid)
             if pod is None:
                 if limit_create is not None and created >= int(limit_create):
@@ -1139,6 +1149,10 @@ class CRIRuntime(RuntimeAdapter):
         if mgr is None:
             return manifest
         try:
+            from ae.storage.netfs import PvcNotReadyError
+        except Exception:
+            PvcNotReadyError = None  # type: ignore[assignment]
+        try:
             if replica_id is not None:
                 return mgr.inject_pvc_mounts(
                     manifest,
@@ -1149,16 +1163,18 @@ class CRIRuntime(RuntimeAdapter):
                 manifest,
                 node_id=node_id or self._current_node_id,
             )
-        except TypeError:
-            # Backward-compatible with older/partial managers that lack replica_id.
-            try:
-                return mgr.inject_pvc_mounts(
-                    manifest,
-                    node_id=node_id or self._current_node_id,
-                )
-            except Exception:
-                return manifest
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            if PvcNotReadyError is not None and isinstance(exc, PvcNotReadyError):
+                raise
+            if isinstance(exc, TypeError):
+                # Backward-compatible with older/partial managers that lack replica_id.
+                try:
+                    return mgr.inject_pvc_mounts(
+                        manifest,
+                        node_id=node_id or self._current_node_id,
+                    )
+                except Exception:
+                    return manifest
             return manifest
 
     def _pull_secret_auths(self, manifest: AppManifest) -> dict[str, dict[str, str]]:
