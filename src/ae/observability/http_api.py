@@ -1670,7 +1670,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     _LABS_APPS.add(new_name)
                 except Exception:
                     pass
-                self._json_ok(report)
+                try:
+                    if isinstance(report, dict):
+                        payload_out = dict(report)
+                    else:
+                        payload_out = {"result": report}
+                    payload_out.setdefault("app", new_name)
+                    self._json_ok(payload_out)
+                except Exception:
+                    self._json_ok({"app": new_name, "result": report})
             except Exception as exc:  # pragma: no cover
                 self._json_error(500, str(exc))
             return
