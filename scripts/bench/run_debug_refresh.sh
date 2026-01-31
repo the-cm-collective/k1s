@@ -443,7 +443,7 @@ ROOTLESS_DIR="$DEBUG_ROOT/rootless"
 ROOTLESS_ENV_FILE="$ROOTLESS_DIR/env.sh"
 mkdir -p "$ROOTLESS_DIR"
 rootless_ok=1
-if ! BENCH_SPECS_MINIMAL="$bench_specs_minimal" BENCH_KEEP_ENV=1 ROOTLESS_ENV_FILE="$(./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9210 --env-file "$ROOTLESS_ENV_FILE")"; then
+if ! ROOTLESS_ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" BENCH_KEEP_ENV=1 ./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9210 --env-file "$ROOTLESS_ENV_FILE")"; then
   rootless_ok=0
   failures=$((failures + 1))
   log "rootless bench_env_prep failed; continuing"
@@ -495,7 +495,7 @@ ROOTFUL_DIR="$DEBUG_ROOT/rootful"
 ROOTFUL_ENV_FILE="$ROOTFUL_DIR/env.sh"
 mkdir -p "$ROOTFUL_DIR"
 rootful_ok=1
-if ! BENCH_SPECS_MINIMAL="$bench_specs_minimal" BENCH_KEEP_ENV=1 ROOTFUL_ENV_FILE="$(./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9211 --env-file "$ROOTFUL_ENV_FILE" --sudo-controller)"; then
+if ! ROOTFUL_ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" BENCH_KEEP_ENV=1 ./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9211 --env-file "$ROOTFUL_ENV_FILE" --sudo-controller)"; then
   rootful_ok=0
   failures=$((failures + 1))
   log "rootful bench_env_prep failed; continuing"
