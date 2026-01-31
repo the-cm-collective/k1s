@@ -14,7 +14,13 @@ from pathlib import Path
 from typing import Any
 
 from ae.controller.reconciler import Reconciler
-from ae.controller.spec import AppManifest, IngressSpec, ServiceSpec, app_key_for_manifest
+from ae.controller.spec import (
+    AppManifest,
+    IngressSpec,
+    ServiceSpec,
+    all_pvc_mounts,
+    app_key_for_manifest,
+)
 from ae.controller.state import SQLiteStateStore
 from ae.k8s import convert as k8s_convert
 from ae.runtime import CRIRuntime, DockerRuntime, PodmanRuntime, RuntimeAdapter, StubRuntime
@@ -124,6 +130,7 @@ class AdapterWorker(threading.Thread):
         self._hpa_thread: threading.Thread | None = None
         self._hpa_last_scale: dict[str, float] = {}
         self._hpa_cooldown_seconds = max(0, int(os.getenv("AE_HPA_COOLDOWN_SECONDS", "30")))
+        self._pvc_thread: threading.Thread | None = None
 
     def stop(self) -> None:
         self._stop.set()
@@ -162,6 +169,11 @@ class AdapterWorker(threading.Thread):
                 self._hpa_thread.join(timeout=0.2)
         except Exception:
             pass
+        try:
+            if self._pvc_thread and self._pvc_thread.is_alive():
+                self._pvc_thread.join(timeout=0.2)
+        except Exception:
+            pass
 
     def run(self) -> None:
         self._service_thread = threading.Thread(target=self._watch_services, daemon=True)
@@ -178,6 +190,8 @@ class AdapterWorker(threading.Thread):
         self._job_thread.start()
         self._cronjob_thread.start()
         self._hpa_thread.start()
+        self._pvc_thread = threading.Thread(target=self._watch_pvcs, daemon=True)
+        self._pvc_thread.start()
         gen = self._store.watch(
             "apps", "v1", "deployments", None, heartbeat_seconds=5, allow_bookmarks=True
         )
@@ -254,6 +268,15 @@ class AdapterWorker(threading.Thread):
             self._state.register_app(m, source="apishim", labels=labels)
         except Exception:
             pass
+        pending = self._pending_pvc_mounts(m)
+        if pending:
+            self._update_workload_pending_status(
+                dep,
+                desired=desired,
+                pending=sorted(pending),
+                kind="deployment",
+            )
+            return
         self._reconciler.reconcile(m)
         # Reflect status from state store
         app_name = app_key_for_manifest(m)
@@ -352,6 +375,15 @@ class AdapterWorker(threading.Thread):
             self._state.register_app(m, source="apishim", labels=labels)
         except Exception:
             pass
+        pending = self._pending_pvc_mounts(m)
+        if pending:
+            self._update_workload_pending_status(
+                sts,
+                desired=desired,
+                pending=sorted(pending),
+                kind="statefulset",
+            )
+            return
         self._reconciler.reconcile(m)
         app_name = app_key_for_manifest(m)
         st_row = self._state.get_status(app_name)
@@ -498,6 +530,15 @@ class AdapterWorker(threading.Thread):
             self._state.register_app(m, source="apishim", labels=labels)
         except Exception:
             pass
+        pending = self._pending_pvc_mounts(m)
+        if pending:
+            self._update_workload_pending_status(
+                ds,
+                desired=desired,
+                pending=sorted(pending),
+                kind="daemonset",
+            )
+            return
         self._reconciler.reconcile(m)
         app_name = app_key_for_manifest(m)
         st_row = self._state.get_status(app_name)
@@ -820,6 +861,161 @@ class AdapterWorker(threading.Thread):
                 gen.close()
             except Exception:
                 pass
+
+    def _watch_pvcs(self) -> None:
+        gen = self._store.watch(
+            "", "v1", "persistentvolumeclaims", None, heartbeat_seconds=5, allow_bookmarks=True
+        )
+        try:
+            for ev, obj in gen:
+                if self._stop.is_set():
+                    break
+                if ev not in {"ADDED", "MODIFIED"}:
+                    continue
+                self._reconcile_dependents_for_pvc(obj)
+        finally:
+            try:
+                gen.close()
+            except Exception:
+                pass
+
+    def _reconcile_dependents_for_pvc(self, pvc: K8sObject) -> None:
+        ns = pvc.namespace
+        if not ns:
+            return
+        name = pvc.name
+        if not name:
+            return
+        for dep in self._store.list_all("apps", "v1", "deployments"):
+            if dep.namespace != ns:
+                continue
+            if self._workload_uses_pvc(dep, name):
+                self._apply_deployment(dep)
+        for sts in self._store.list_all("apps", "v1", "statefulsets"):
+            if sts.namespace != ns:
+                continue
+            if self._workload_uses_pvc(sts, name):
+                self._apply_statefulset(sts)
+        for ds in self._store.list_all("apps", "v1", "daemonsets"):
+            if ds.namespace != ns:
+                continue
+            if self._workload_uses_pvc(ds, name):
+                self._apply_daemonset(ds)
+
+    @staticmethod
+    def _workload_uses_pvc(obj: K8sObject, claim_name: str) -> bool:
+        try:
+            spec = obj.spec or {}
+            tpl = (spec.get("template") or {}).get("spec") or {}
+            volumes = tpl.get("volumes") or []
+        except Exception:
+            return False
+        for vol in volumes:
+            if not isinstance(vol, dict):
+                continue
+            pvc = vol.get("persistentVolumeClaim")
+            if not isinstance(pvc, dict):
+                continue
+            claim = pvc.get("claimName")
+            if claim and str(claim) == claim_name:
+                return True
+        return False
+
+    def _pending_pvc_mounts(self, manifest: AppManifest) -> set[str]:
+        mounts = list(all_pvc_mounts(manifest) or [])
+        if not mounts:
+            return set()
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or "default"
+        pending: set[str] = set()
+        for pm in mounts:
+            claim_template = False
+            claim_name = None
+            pm_ns = None
+            if isinstance(pm, dict):
+                claim_template = bool(pm.get("claimTemplate", False))
+                claim_name = pm.get("claimName") or pm.get("claim_name")
+                pm_ns = pm.get("namespace")
+            else:
+                claim_template = bool(getattr(pm, "claim_template", False))
+                claim_name = getattr(pm, "claim_name", None)
+                pm_ns = getattr(pm, "namespace", None)
+            if claim_template or not claim_name:
+                continue
+            ns = str(pm_ns or namespace)
+            pvc = self._store.get("", "v1", "persistentvolumeclaims", ns, str(claim_name))
+            if pvc is None or not self._pvc_is_bound(pvc):
+                pending.add(f"{ns}/{claim_name}")
+        return pending
+
+    @staticmethod
+    def _pvc_is_bound(pvc: K8sObject) -> bool:
+        spec = pvc.spec or {}
+        status = pvc.status or {}
+        vol = spec.get("volumeName") if isinstance(spec, dict) else None
+        phase = status.get("phase") if isinstance(status, dict) else None
+        return bool(vol) or phase == "Bound"
+
+    def _update_workload_pending_status(
+        self,
+        obj: K8sObject,
+        *,
+        desired: int,
+        pending: list[str],
+        kind: str,
+    ) -> None:
+        msg = "waiting on PVC(s): " + ", ".join(pending)
+        if kind == "deployment":
+            st = {
+                "replicas": desired,
+                "updatedReplicas": 0,
+                "readyReplicas": 0,
+                "availableReplicas": 0,
+                "unavailableReplicas": desired,
+                "conditions": [
+                    {"type": "Available", "status": "False", "reason": "PVCsNotBound"},
+                    {"type": "Progressing", "status": "False", "reason": "PVCsNotBound"},
+                ],
+                "message": msg,
+            }
+            resource = "deployments"
+        elif kind == "statefulset":
+            st = {
+                "replicas": desired,
+                "readyReplicas": 0,
+                "currentReplicas": 0,
+                "updatedReplicas": 0,
+                "currentRevision": obj.metadata.get("generation", 1),
+                "updateRevision": obj.metadata.get("generation", 1),
+                "conditions": [{"type": "Ready", "status": "False", "reason": "PVCsNotBound"}],
+                "message": msg,
+            }
+            resource = "statefulsets"
+        else:
+            st = {
+                "desiredNumberScheduled": desired,
+                "currentNumberScheduled": 0,
+                "numberReady": 0,
+                "numberAvailable": 0,
+                "updatedNumberScheduled": 0,
+                "message": msg,
+            }
+            resource = "daemonsets"
+        try:
+            still_exists = self._store.get("apps", "v1", resource, obj.namespace, obj.name)
+        except Exception:
+            still_exists = None
+        if still_exists is None:
+            return
+        self._store.upsert_if_not_deleted(
+            "apps",
+            "v1",
+            resource,
+            obj.namespace,
+            obj.name,
+            obj.metadata,
+            obj.spec,
+            status=st,
+        )
 
     def _watch_jobs(self) -> None:
         gen = self._store.watch(
