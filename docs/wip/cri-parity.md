@@ -51,7 +51,7 @@ Kubernetes-aligned registry-first image flow and core runtime parity vs Podman.
   - Current state: harness green; production parity still depends on PVC/PV controller work above.
 - [~] CSI external provisioner hook + VolumeSnapshot/clone parity.
   - See: `docs/wip/csi.md`
-- [ ] StatefulSet volumeClaimTemplates per-ordinal mount naming for CRI runtime (if any gaps remain).
+- [x] StatefulSet volumeClaimTemplates per-ordinal PVC creation + mount naming (adapter + NetFS resolver).
 - [ ] Multi-node service proxy with podCIDR auto-discovery (reduce manual AE_POD_CIDR use).
 
 ## P2: Longer-term parity (k8s conformance adjacent)

@@ -545,6 +545,15 @@ class StorageController:
                     f"requested persistent volume {pv_name} not found",
                 )
                 return
+            phase = str((pv.status or {}).get("phase") or "")
+            if phase in {"Released", "Failed"}:
+                self._ensure_pvc_phase(pvc, "Pending")
+                self._record_pvc_event(
+                    pvc,
+                    "VolumeBindingFailed",
+                    f"persistent volume {pv_name} is {phase}",
+                )
+                return
             if self._pv_claim_ref_conflicts(pv, pvc):
                 self._ensure_pvc_phase(pvc, "Pending")
                 self._record_pvc_event(
@@ -649,6 +658,9 @@ class StorageController:
             return False
         pv = self._store.get(CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, volume_name)
         if pv is None:
+            return False
+        phase = str((pv.status or {}).get("phase") or "")
+        if phase in {"Released", "Failed"}:
             return False
         if self._pv_claim_ref_conflicts(pv, pvc):
             return False
@@ -2090,7 +2102,15 @@ class StorageController:
     @staticmethod
     def _pv_claim_ref_matches(pv, pvc) -> bool:
         claim = (pv.spec or {}).get("claimRef") or {}
-        return claim.get("name") == pvc.name and claim.get("namespace") == (pvc.namespace or "")
+        if claim.get("name") != pvc.name:
+            return False
+        if claim.get("namespace") != (pvc.namespace or ""):
+            return False
+        pvc_uid = (pvc.metadata or {}).get("uid")
+        claim_uid = claim.get("uid")
+        if pvc_uid and claim_uid and str(pvc_uid) != str(claim_uid):
+            return False
+        return True
 
     @staticmethod
     def _pv_claim_ref_conflicts(pv, pvc) -> bool:
@@ -2098,6 +2118,10 @@ class StorageController:
         if not claim:
             return False
         if claim.get("name") == pvc.name and claim.get("namespace") == (pvc.namespace or ""):
+            pvc_uid = (pvc.metadata or {}).get("uid")
+            claim_uid = claim.get("uid")
+            if pvc_uid and claim_uid and str(pvc_uid) != str(claim_uid):
+                return True
             return False
         return True
 
