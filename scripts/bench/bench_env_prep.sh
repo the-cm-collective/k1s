@@ -17,6 +17,8 @@ controller_mode="user"
 
 # Bench runs do not need ingress writes by default (avoids permission noise).
 BENCH_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS:-1}"
+# Keep nodes eligible during long bench runs (override via BENCH_NODE_NOTREADY_AFTER or AE_NODE_NOTREADY_AFTER).
+bench_node_notready_after="${BENCH_NODE_NOTREADY_AFTER:-${AE_NODE_NOTREADY_AFTER:-600}}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -64,6 +66,7 @@ fi
 
 env_dir=$(dirname "$env_file")
 spec_dir="$env_dir/specs"
+apply_dir="$env_dir/apply"
 caddy_dir="$env_dir/caddy"
 state_db="$env_dir/controller.db"
 pid_file="$env_dir/controller.pid"
@@ -153,11 +156,15 @@ primary_app_name="${parsed[1]-}"
 primary_manifest_rel="${allowed_rel[0]}"
 
 rm -rf "$spec_dir"
-if [[ "${BENCH_SPECS_MINIMAL:-0}" == "1" ]]; then
-  mkdir -p "$spec_dir"
+rm -rf "$apply_dir"
+primary_manifest_path=""
+if [[ "${BENCH_SPECS_EMPTY:-0}" == "1" ]]; then
+  # Keep the controller's spec dir empty so file-based reconcile doesn't
+  # overwrite bench-driven scale/apply changes.
+  mkdir -p "$spec_dir" "$apply_dir"
   for rel in "${allowed_rel[@]}"; do
     src_path="$specs_src/$rel"
-    dest_path="$spec_dir/$rel"
+    dest_path="$apply_dir/$rel"
     if [[ ! -f "$src_path" ]]; then
       echo "[bench-env] manifest not found at $src_path" >&2
       exit 4
@@ -165,9 +172,23 @@ if [[ "${BENCH_SPECS_MINIMAL:-0}" == "1" ]]; then
     mkdir -p "$(dirname "$dest_path")"
     cp -f "$src_path" "$dest_path"
   done
+  primary_manifest_path="$apply_dir/$primary_manifest_rel"
 else
-  cp -a "$specs_src/." "$spec_dir/"
-  "$python_bin" - "$spec_dir" "${allowed_rel[@]}" <<'PY'
+  if [[ "${BENCH_SPECS_MINIMAL:-0}" == "1" ]]; then
+    mkdir -p "$spec_dir"
+    for rel in "${allowed_rel[@]}"; do
+      src_path="$specs_src/$rel"
+      dest_path="$spec_dir/$rel"
+      if [[ ! -f "$src_path" ]]; then
+        echo "[bench-env] manifest not found at $src_path" >&2
+        exit 4
+      fi
+      mkdir -p "$(dirname "$dest_path")"
+      cp -f "$src_path" "$dest_path"
+    done
+  else
+    cp -a "$specs_src/." "$spec_dir/"
+    "$python_bin" - "$spec_dir" "${allowed_rel[@]}" <<'PY'
 import sys, yaml
 from pathlib import Path
 spec_root = Path(sys.argv[1])
@@ -184,8 +205,10 @@ for path in files:
     except Exception:
         continue
     if any(isinstance(doc, dict) and str(doc.get('kind', '')).lower() == 'app' for doc in docs):
-        path.unlink(missing_ok=True)
+  path.unlink(missing_ok=True)
 PY
+  fi
+  primary_manifest_path="$spec_dir/$primary_manifest_rel"
 fi
 
 if [[ -f "$pid_file" ]]; then
@@ -217,6 +240,7 @@ if [[ "$controller_mode" == "sudo" ]]; then
     AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-podman}" \
     AE_OCI_RUNTIME="${AE_OCI_RUNTIME:-}" \
     AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-}" \
+    AE_NODE_NOTREADY_AFTER="${bench_node_notready_after}" \
     AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}" \
     BENCH_METRICS_PORT="$metrics_port" \
     BENCH_LOG_FILE="$log_file" \
@@ -229,6 +253,7 @@ else
   AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-podman}" \
   AE_OCI_RUNTIME="${AE_OCI_RUNTIME:-}" \
   AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-}" \
+  AE_NODE_NOTREADY_AFTER="${bench_node_notready_after}" \
   AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}" \
   nohup "$python_bin" -m ae.controller --loop --specs "$spec_dir" --watch --metrics-port "$metrics_port" \
     >>"$log_file" 2>&1 &
@@ -272,13 +297,15 @@ export AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-podman}"
 export AE_OCI_RUNTIME="${AE_OCI_RUNTIME:-}"
 export AE_PODMAN_BIN="$podman_bin"
 export AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}"
+export AE_NODE_NOTREADY_AFTER="${bench_node_notready_after}"
 export BENCH_ENV_DIR="$env_dir"
 export BENCH_CONTROLLER_PID_FILE="$pid_file"
 export BENCH_CONTROLLER_PID="$controller_pid"
 export BENCH_CONTROLLER_SUDO="$([[ "$controller_mode" == "sudo" ]] && echo 1 || echo 0)"
 export BENCH_CONTROLLER_LOG="$log_file"
 export BENCH_SPEC_DIR="$spec_dir"
-export BENCH_PRIMARY_MANIFEST="$spec_dir/$primary_manifest_rel"
+export BENCH_APPLY_DIR="$apply_dir"
+export BENCH_PRIMARY_MANIFEST="$primary_manifest_path"
 export BENCH_PRIMARY_APP="$primary_app_name"
 export BENCH_METRICS_PORT="$metrics_port"
 export PYTHON_BIN="$python_bin"

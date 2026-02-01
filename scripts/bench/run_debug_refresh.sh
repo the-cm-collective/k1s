@@ -69,11 +69,14 @@ WAIT_READY_TRIES="${WAIT_READY_TRIES:-30}"
 WAIT_READY_DELAY="${WAIT_READY_DELAY:-1}"
 K1ND_DEBUG_KEEP="${K1ND_DEBUG_KEEP:-1}"
 bench_specs_minimal="${BENCH_SPECS_MINIMAL:-1}"
+bench_specs_empty="${BENCH_SPECS_EMPTY:-1}"
 
 failures=0
 
 export AE_ALLOW_PLAINTEXT_SECRETS="${AE_ALLOW_PLAINTEXT_SECRETS:-1}"
 export AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-1}"
+# Prevent local node from going stale during long bench runs.
+export AE_NODE_NOTREADY_AFTER="${BENCH_NODE_NOTREADY_AFTER:-${AE_NODE_NOTREADY_AFTER:-600}}"
 export AE_RUNTIME_BACKEND="podman"
 export AE_APISHIM_RUNTIME="podman"
 
@@ -443,7 +446,7 @@ ROOTLESS_DIR="$DEBUG_ROOT/rootless"
 ROOTLESS_ENV_FILE="$ROOTLESS_DIR/env.sh"
 mkdir -p "$ROOTLESS_DIR"
 rootless_ok=1
-if ! ROOTLESS_ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" BENCH_KEEP_ENV=1 ./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9210 --env-file "$ROOTLESS_ENV_FILE")"; then
+if ! ROOTLESS_ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" BENCH_SPECS_EMPTY="$bench_specs_empty" BENCH_KEEP_ENV=1 ./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9210 --env-file "$ROOTLESS_ENV_FILE")"; then
   rootless_ok=0
   failures=$((failures + 1))
   log "rootless bench_env_prep failed; continuing"
@@ -495,7 +498,7 @@ ROOTFUL_DIR="$DEBUG_ROOT/rootful"
 ROOTFUL_ENV_FILE="$ROOTFUL_DIR/env.sh"
 mkdir -p "$ROOTFUL_DIR"
 rootful_ok=1
-if ! ROOTFUL_ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" BENCH_KEEP_ENV=1 ./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9211 --env-file "$ROOTFUL_ENV_FILE" --sudo-controller)"; then
+if ! ROOTFUL_ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" BENCH_SPECS_EMPTY="$bench_specs_empty" BENCH_KEEP_ENV=1 ./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9211 --env-file "$ROOTFUL_ENV_FILE" --sudo-controller)"; then
   rootful_ok=0
   failures=$((failures + 1))
   log "rootful bench_env_prep failed; continuing"
@@ -541,23 +544,31 @@ if ! ./scripts/bench/k1nd_sanitize.sh pre; then
   log "k1nd pre-sanitize failed; continuing"
 fi
 k1nd_specs_rel="${BENCH_K1ND_SPECS_DIR:-state/bench-debug/${RUN_ID}/k1nd-specs}"
+k1nd_apply_rel="${BENCH_K1ND_APPLY_DIR:-state/bench-debug/${RUN_ID}/k1nd-apply}"
+k1nd_specs_empty="${BENCH_K1ND_SPECS_EMPTY:-$bench_specs_empty}"
 k1nd_specs_abs="${repo_root}/${k1nd_specs_rel}"
 rm -rf "$k1nd_specs_abs"
 mkdir -p "$k1nd_specs_abs"
+k1nd_apply_abs="${repo_root}/${k1nd_apply_rel}"
+rm -rf "$k1nd_apply_abs"
+mkdir -p "$k1nd_apply_abs"
 app_src="$APP"
 if [[ "$app_src" != /* ]]; then
   app_src="${repo_root}/${app_src}"
 fi
 if [[ -f "$app_src" ]]; then
-  cp -f "$app_src" "$k1nd_specs_abs/$(basename "$app_src")"
+  cp -f "$app_src" "$k1nd_apply_abs/$(basename "$app_src")"
+  if [[ "$k1nd_specs_empty" != "1" ]]; then
+    cp -f "$app_src" "$k1nd_specs_abs/$(basename "$app_src")"
+  fi
 fi
 k1nd_state_rel="${BENCH_K1ND_STATE_DIR:-state/bench-debug/${RUN_ID}/k1nd-state}"
 k1nd_state_abs="${repo_root}/${k1nd_state_rel}"
 rm -rf "$k1nd_state_abs"
 mkdir -p "$k1nd_state_abs"
 k1nd_state_db="${k1nd_state_rel}/controller.db"
-k1nd_manifest_rel="${k1nd_specs_rel}/$(basename "$app_src")"
-k1nd_manifest="${k1nd_specs_abs}/$(basename "$app_src")"
+k1nd_manifest_rel="${k1nd_apply_rel}/$(basename "$app_src")"
+k1nd_manifest="${k1nd_apply_abs}/$(basename "$app_src")"
 k1nd_port_start="${BENCH_K1ND_PORT_START:-18080}"
 k1nd_port_end="${BENCH_K1ND_PORT_END:-18180}"
 if [[ -f "$k1nd_manifest" ]]; then
