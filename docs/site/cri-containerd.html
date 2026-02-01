@@ -712,14 +712,16 @@ export AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock</code></pre>
 <p>Defaults:</p>
 <ul>
 <li>CRI endpoint: <code>AE_CRI_ENDPOINT</code> (default <code>unix:///run/containerd/containerd.sock</code>)</li>
-<li>CRI sandbox image: <code>AE_CRI_SANDBOX_IMAGE</code> (pause image)
-<ul>
+<li>CRI sandbox image: <code>AE_CRI_SANDBOX_IMAGE</code> (pause image)</li>
 <li>Host namespaces gate: <code>AE_CRI_ALLOW_HOST_NS=1</code> to enable hostNetwork/hostPID/hostIPC/shareProcessNamespace</li>
 </ul>
-</li>
-</ul>
 <h2>Registry-first image flow (Kubernetes-aligned)</h2>
-<p>1. Build images and push to a registry reachable by every node. 2. Reference those images in manifests. 3. Let containerd pull on demand (kubelet behavior). 4. Optionally pre-warm to reduce first-start latency.</p>
+<ul>
+<li>Build images and push to a registry reachable by every node.</li>
+<li>Reference those images in manifests.</li>
+<li>Let containerd pull on demand (kubelet behavior).</li>
+<li>Optionally pre-warm to reduce first-start latency.</li>
+</ul>
 <p>This avoids host-local imports and works across nodes.</p>
 <h2>Registry options</h2>
 <h3>In-cluster registry (NodePort)</h3>
@@ -772,7 +774,7 @@ AE_USE_REGISTRY_CACHE=0</code></pre>
 <li>Default aligns with Kubernetes: <code>:latest</code> (or no tag) → <code>Always</code>, otherwise <code>IfNotPresent</code>.</li>
 </ul>
 </li>
-<li><code>spec.imagePullSecrets</code> and <code>spec.registryAuthRef</code> are treated as **registry host keys** in <code>~/.config/ae/registries.yaml</code> and are preferred when pulling images via CRI.</li>
+<li><code>spec.imagePullSecrets</code> and <code>spec.registryAuthRef</code> are treated as registry host keys in <code>~/.config/ae/registries.yaml</code> and are preferred when pulling images via CRI.</li>
 <li>When apishim storage is available (<code>AE_APISHIM_DB</code> or <code>AE_APISHIM_DSN</code>), the CRI runtime also reads Kubernetes secrets of type <code>kubernetes.io/dockerconfigjson</code> (or <code>.dockercfg</code>) referenced by <code>imagePullSecrets</code> and uses those creds for pulls.</li>
 <li>If the pod spec omits <code>imagePullSecrets</code>, the CRI runtime will look up the ServiceAccount for the originating Kubernetes workload (via apishim storage) and use any <code>imagePullSecrets</code> defined there.</li>
 <li>If a manifest was converted from Kubernetes (via apishim), the converted spec stores <code>serviceAccountName</code> and CRI will prefer that ServiceAccount when resolving pull secrets.</li>
@@ -852,9 +854,9 @@ export AE_APISHIM_READ_TOKEN=&lt;read-token&gt;</code></pre>
 </ul>
 <h2>Security context (CRI)</h2>
 <ul>
-<li>**Container security**: <code>runAsUser</code>, <code>runAsGroup</code>, <code>readOnlyRootFilesystem</code>, <code>dropCapabilities</code>, <code>seccompProfileType</code> (+ <code>seccompLocalhostProfile</code>), and <code>apparmorProfile</code> map into CRI container security context.</li>
-<li>**Pod security**: <code>podSecurity.fsGroup</code> maps to supplemental groups, and <code>podSecurity.seccompProfileType</code>/<code>podSecurity.seLinux*</code> map into the sandbox security context.</li>
-<li>**Host namespaces** are gated by <code>AE_CRI_ALLOW_HOST_NS=1</code> as described above.</li>
+<li>Container security: <code>runAsUser</code>, <code>runAsGroup</code>, <code>readOnlyRootFilesystem</code>, <code>dropCapabilities</code>, <code>seccompProfileType</code> (+ <code>seccompLocalhostProfile</code>), and <code>apparmorProfile</code> map into CRI container security context.</li>
+<li>Pod security: <code>podSecurity.fsGroup</code> maps to supplemental groups, and <code>podSecurity.seccompProfileType</code>/<code>podSecurity.seLinux*</code> map into the sandbox security context.</li>
+<li>Host namespaces are gated by <code>AE_CRI_ALLOW_HOST_NS=1</code> as described above.</li>
 </ul>
 <h2>Crictl-only image (default)</h2>
 <p>Build and push the crictl-only image:</p>
@@ -871,7 +873,7 @@ export AE_APISHIM_READ_TOKEN=&lt;read-token&gt;</code></pre>
   --image registry.k1s.home.arpa:32000/demo-green:latest</code></pre>
 <p>By default the buildkit pod is deleted after the build. Use <code>--keep-buildkit-pod</code> (or set <code>AE_CRI_BUILDKIT_KEEP=1</code>) to reuse it. The helper can also pre-pull the image via a crictl-only pod; pass <code>--no-cri-pull</code> to skip that step. Pre-pull uses registry credentials from <code>~/.config/ae/registries.yaml</code> if present.</p>
 <h2>Toolbox image (advanced)</h2>
-<p>The toolbox bundles crictl + nerdctl + buildkitd/buildctl. Use it for advanced manual workflows (direct containerd builds).</p>
+<p>The toolbox bundles crictl + nerdctl + buildkitd/buildctl. Use it for advanced manual workflows (direct containerd builds). Note: this is dev-only and effectively node-root when the containerd socket is mounted; use only on trusted lab nodes. Prefer the buildkit-only pod or CI builds for production pipelines.</p>
 <p>Build and push:</p>
 <pre><code>AE_REGISTRY_HOST=registry.k1s.home.arpa:32000 \
   scripts/build_cri_toolbox_image.sh --push</code></pre>
@@ -959,7 +961,7 @@ kubectl apply -f specs/examples/k1s-node-daemonset-k8s.yaml</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-30 20:02:23</span>
+        <span>Built 2026-01-31 14:13:50</span>
       </div>
     </footer>
     <script>

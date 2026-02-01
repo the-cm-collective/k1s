@@ -741,7 +741,7 @@
 <ul>
 <li>ready: all desired replicas are ready</li>
 <li>progressing: desired count is live but not yet all ready</li>
-<li>degraded: no pods present for the current revision</li>
+<li>degraded: otherwise (e.g., live replicas below desired or readiness fails)</li>
 </ul>
 <p>CLI examples:</p>
 <pre><code>ae status myapp --wide --events</code></pre>
@@ -759,6 +759,11 @@
 <h2>Rollouts</h2>
 <p>Rolling replace with <code>maxUnavailable=0, maxSurge=1</code> semantics across one or more nodes:</p>
 <p>1. Start a new pod for the next revision. 2. Wait for readiness. 3. Switch ingress to the new Service VIP endpoints (or hostPort when VIP disabled). 4. Stop and remove old revision containers.</p>
+<p>Pause/resume and canary:</p>
+<ul>
+<li>Pause/resume: <code>ae rollout pause|resume &lt;app&gt;</code> halts or resumes rollout progression.</li>
+<li>Canary: set <code>spec.rollout.strategy: canary</code> and <code>spec.rollout.weight</code> (optional <code>auto</code> ramp) to bias routing.</li>
+</ul>
 <p>Rollback uses the recorded manifest for the target revision:</p>
 <pre><code>ae rollback myapp --to 3</code></pre>
 <h2>Resources &amp; Volumes</h2>
@@ -773,14 +778,16 @@
 <h2>HTTP API</h2>
 <p>Read‑only status/metrics/events published at:</p>
 <ul>
-<li><code>/metrics</code>, <code>/status</code>, <code>/status/&lt;app&gt;</code>, <code>/events/&lt;app&gt;</code></li>
+<li><code>/metrics</code>, <code>/health</code>, <code>/status</code>, <code>/status/&lt;app&gt;</code>, <code>/events/&lt;app&gt;</code></li>
+<li><code>/history/&lt;app&gt;</code> for probe history, <code>/manifest/&lt;app&gt;</code> for latest stored manifest</li>
 <li><code>/nodes</code> for node inventory + heartbeat staleness</li>
 <li><code>/system</code> + <code>/dashboard</code> for a quick UI snapshot</li>
 <li><code>/openapi.json</code> and a tiny docs page at <code>/docs</code></li>
 </ul>
+<p>Note: when any token is configured, reads require the READ token.</p>
 <p>Kubernetes API shim (optional):</p>
 <ul>
-<li><code>python -m ae.apishim serve --token &lt;bearer&gt;</code> exposes <code>/api</code>, <code>/apis</code>, <code>/openapi/v2|v3</code> with SSA/patch and port-forward.</li>
+<li><code>AE_APISHIM_ENABLE=1 python -m ae.apishim serve --token &lt;bearer&gt;</code> exposes <code>/api</code>, <code>/apis</code>, <code>/openapi/v2|v3</code> with SSA/patch and port-forward (HTTP by default; add <code>--tls</code> for HTTPS).</li>
 <li>Works with kubectl/helm for Deployments/Services/Ingress/HPA/RBAC; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated (see <code>docs/reference/apishim-compatibility-matrix.md</code>).</li>
 </ul>
     </div>
@@ -790,7 +797,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-30 20:02:23</span>
+        <span>Built 2026-01-31 14:17:23</span>
       </div>
     </footer>
     <script>

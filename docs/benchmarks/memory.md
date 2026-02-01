@@ -92,7 +92,7 @@ make bench-mem-e2e-k1s LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICA
 ```
 This runs matrix + rollout, combines all summaries, and writes charts/.
 
-End-to-end (k1nd one-liner; compose must be up)
+End-to-end (k1nd one-liner; labs-aio compose is started if needed)
 ```
 make bench-mem-e2e-k1nd LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5
 ```

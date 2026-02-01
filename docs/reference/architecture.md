@@ -271,40 +271,43 @@ Revision status
 
 ## Environment Variables
 
-- AE_STATE_DB, AE_SPECS_DIR
-- AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER
-- AE_REGISTRY_CONFIG
+- AE_STATE_DB (default: `state/controller.db`), AE_STATE_DSN (Postgres DSN), AE_SPECS_DIR (default: `specs`)
+- AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER, AE_CONTAINER_CLI, AE_CADDY_RELOAD_TIMEOUT
+- AE_TLS_DIR (default: `state/tls`)
+- AE_REGISTRY_CONFIG (default: `~/.config/ae/registries.yaml`)
 - AE_SOPS_BIN, AE_ALLOW_PLAINTEXT_SECRETS
-- AE_RUNTIME_BACKEND ("podman" [default], "docker", "cri|containerd", "stub")
-- AE_PODMAN_BIN (default: podman)
-- AE_PODMAN_NETWORK (name of shared network for multi-replica + ingress)
-- AE_DOCKER_NETWORK (name of shared network when using Docker)
-- AE_CONTAINER_CLI ("docker"|"podman") for ingress reloads inside the Caddy container
-- AE_CRI_ENDPOINT (default: unix:///run/containerd/containerd.sock)
-- AE_CRI_SANDBOX_IMAGE (default: registry.k8s.io/pause:3.9)
-- CRICTL_BIN (path override for crictl; used for exec/attach/port-forward on CRI)
+- AE_RUNTIME_BACKEND ("podman" [default], "oci" alias, "docker", "cri|containerd", "stub")
+- AE_PODMAN_BIN (default: podman), AE_PODMAN_NETWORK (shared network for multi-replica ingress)
+- AE_DOCKER_NETWORK (shared network when using Docker), AE_DOCKER_BIN
+- AE_ENABLE_SERVICE_PROXY, AE_SERVICE_PROVIDER, AE_OVERLAY_NET, AE_SERVICE_IP_POOL
+- AE_APISHIM_ENABLE, AE_APISHIM_TOKEN, AE_APISHIM_READ_TOKEN, AE_APISHIM_EXEC_TOKEN, AE_APISHIM_PORTFORWARD_TOKEN
+- AE_APISHIM_DSN / AE_APISHIM_DB, AE_APISHIM_ALLOW_ANON
 - AE_APISHIM_CRI_PORTFORWARD / AE_APISHIM_CRI_PORTFORWARD_FORCE (enable/force CRI port-forward proxy)
+- AE_API_READ_TOKEN / AE_API_SCALER_TOKEN / AE_API_ADMIN_TOKEN / AE_API_MUTATIONS
+- AE_CRI_ENDPOINT (default: `unix:///run/containerd/containerd.sock`)
+- AE_CRI_SANDBOX_IMAGE (default: `registry.k8s.io/pause:3.9`)
+- CRICTL_BIN (path override for crictl; used for exec/attach/port-forward on CRI)
 - AE_LOG_LEVEL
 
 ## Testing Strategy
 
-- Unit tests for CLI surface, state store, Docker runtime (via fakes), reconciler health decisions.
-- Integration tests can run against a local Docker daemon for end‑to‑end validation.
+- Unit tests cover CLI commands, scheduler/health logic, apishim RBAC/patch paths, ingress/runtime adapters, and state store behavior.
+- Integration tests run against local Podman/Docker for end‑to‑end and multi‑node agent validation (`pytest tests/integration/ --docker`).
 - CRI integration tests run via `scripts/cri_ci_setup.sh` and `tests/integration/test_cri_*` (see `docs/ops/runbook.md`).
 
 ## Performance & Footprint
 
-- Controller + API + metrics: ~40–80 MiB resident in Python.
-- Caddy: ~20–40 MiB.
-- Docker daemon: ~100–150 MiB.
+- Controller + API + metrics: ~85–90 MiB PSS in recent Podman+crun rootless idle snapshots (Jan 2026).
+- Caddy: ~40–50 MiB PSS in k1nd (Docker + Caddy) idle runs; runtime daemon footprint varies by engine.
+- See `docs/benchmarks/memory.md` for updated measurements and charts.
 - Suitable for 1–3 small services with sane limits on a 2 GB VPS.
 
 ## Future Work
 
-- TCP/exec probes; richer rollout strategies (pause/canary).
-- Resource requests and automatic cgroups beyond Docker flags.
-- More ingress features (headers, multiple paths, TLS config surface).
-- Multi‑node scheduling (out of scope for now).
+- Full Job/CronJob/DaemonSet/StatefulSet semantics in apishim (completion, one‑per‑node, PVC templates).
+- Resource requests/QoS enforcement beyond container limits (cgroup tuning, priorities).
+- Advanced ingress routing (header manipulation, rewrites/regex, richer traffic shaping).
+- Multi‑controller HA/leader election and broader K8s parity (metrics.k8s.io, admission/policy, CSI/CNI plugins).
 
 
 ### Configs and Secrets → Environment

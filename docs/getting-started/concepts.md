@@ -57,7 +57,7 @@ Per‑app aggregate status is one of:
 
 - ready: all desired replicas are ready
 - progressing: desired count is live but not yet all ready
-- degraded: no pods present for the current revision
+- degraded: otherwise (e.g., live replicas below desired or readiness fails)
 
 CLI examples:
 
@@ -90,6 +90,10 @@ Rolling replace with `maxUnavailable=0, maxSurge=1` semantics across one or more
 3. Switch ingress to the new Service VIP endpoints (or hostPort when VIP disabled).
 4. Stop and remove old revision containers.
 
+Pause/resume and canary:
+- Pause/resume: `ae rollout pause|resume <app>` halts or resumes rollout progression.
+- Canary: set `spec.rollout.strategy: canary` and `spec.rollout.weight` (optional `auto` ramp) to bias routing.
+
 Rollback uses the recorded manifest for the target revision:
 
 ```
@@ -112,12 +116,15 @@ In multi-node runs, ingress prefers Service VIPs supplied by the overlay provide
 
 Read‑only status/metrics/events published at:
 
-- `/metrics`, `/status`, `/status/<app>`, `/events/<app>`
+- `/metrics`, `/health`, `/status`, `/status/<app>`, `/events/<app>`
+- `/history/<app>` for probe history, `/manifest/<app>` for latest stored manifest
 - `/nodes` for node inventory + heartbeat staleness
 - `/system` + `/dashboard` for a quick UI snapshot
 - `/openapi.json` and a tiny docs page at `/docs`
 
+Note: when any token is configured, reads require the READ token.
+
 Kubernetes API shim (optional):
 
-- `python -m ae.apishim serve --token <bearer>` exposes `/api`, `/apis`, `/openapi/v2|v3` with SSA/patch and port-forward.
+- `AE_APISHIM_ENABLE=1 python -m ae.apishim serve --token <bearer>` exposes `/api`, `/apis`, `/openapi/v2|v3` with SSA/patch and port-forward (HTTP by default; add `--tls` for HTTPS).
 - Works with kubectl/helm for Deployments/Services/Ingress/HPA/RBAC; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated (see `docs/reference/apishim-compatibility-matrix.md`).

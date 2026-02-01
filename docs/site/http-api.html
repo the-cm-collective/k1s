@@ -725,7 +725,8 @@
 <li>GET <code>/status</code>
 <ul>
 <li>Content-Type: <code>application/json</code></li>
-<li>200 OK: JSON array of app status objects</li>
+<li>200 OK: <code>{ &quot;items&quot;: [ ... ], &quot;next&quot;: &quot;cursor&quot; | null }</code></li>
+<li>Query params: <code>limit</code>, <code>cursor</code>, <code>app</code>, <code>wildcard</code></li>
 <li>Example item:</li>
 </ul>
 </li>
@@ -760,7 +761,7 @@
 <ul>
 <li>GET <code>/events/&lt;app&gt;?limit=N</code>
 <ul>
-<li>200 OK: JSON array of recent events for <code>&lt;app&gt;</code></li>
+<li>200 OK: JSON array of recent events for <code>&lt;app&gt;</code> (limit only; cursor is not implemented)</li>
 <li>Example item:</li>
 </ul>
 </li>
@@ -781,18 +782,21 @@
 </ul>
 <p>Notes</p>
 <ul>
-<li>This API is read-only by design; mutating operations happen via the CLI.</li>
+<li>Read-only by default; mutations require <code>AE_API_MUTATIONS=1</code> plus tokens.</li>
+<li><code>/plan</code> is a read-only POST endpoint used by the dashboard/labs UI; <code>/k8s/preview</code> requires <code>AE_API_DEV_EXPORT=1</code>.</li>
 <li>The API shares the controller’s SQLite/Postgres store; results are eventually consistent with reconcile intervals.</li>
 <li>When any token is set, all GETs require at least the READ token.</li>
 </ul>
 <p>Extras</p>
 <ul>
-<li>GET <code>/openapi.json</code> — Minimal OpenAPI 3 document for the read-only endpoints.</li>
+<li>GET <code>/openapi.json</code> — OpenAPI 3 document for controller endpoints.</li>
 <li>GET <code>/docs</code> — Lightweight HTML that lists available paths by fetching <code>/openapi.json</code>.</li>
+<li>When apishim is enabled, <code>/openapi/v3</code> and <code>/openapi/v2</code> expose the Kubernetes shim spec.</li>
 </ul>
 <p>Mutations (opt-in; dev only)</p>
 <ul>
-<li>Enable by setting env <code>AE_API_MUTATIONS=1</code> on the controller process. Optionally set <code>AE_API_TOKEN</code> and send <code>Authorization: Bearer &lt;token&gt;</code> on requests.</li>
+<li>Enable by setting <code>AE_API_MUTATIONS=1</code> on the controller process.</li>
+<li>Mutations require bearer tokens when auth is configured: <code>AE_API_SCALER_TOKEN</code> (scale) and <code>AE_API_ADMIN_TOKEN</code> (admin). Send <code>Authorization: Bearer &lt;token&gt;</code>.</li>
 </ul>
 <ul>
 <li>POST <code>/scale/&lt;app&gt;</code>
@@ -810,6 +814,11 @@
 </ul>
 </li>
 </ul>
+<ul>
+<li>POST <code>/rollout/pause/&lt;app&gt;</code> and <code>/rollout/resume/&lt;app&gt;</code> (admin)</li>
+<li>POST <code>/apply</code> (admin; JSON App manifest)</li>
+<li>POST <code>/exec/&lt;app&gt;</code> (admin; remote exec payload)</li>
+</ul>
 <p>AuthN/AuthZ (optional)</p>
 <ul>
 <li>Set tokens in the controller environment to enable role-based access:
@@ -821,10 +830,13 @@
 </li>
 <li>When any token is configured, GETs require at least the READ token.</li>
 <li>Mutations require tokens and <code>AE_API_MUTATIONS=1</code>.</li>
+<li>Optional scoping: <code>AE_API_ADMIN_SCOPE</code> / <code>AE_API_SCALER_SCOPE</code> / <code>AE_API_READ_SCOPE</code> (comma‑separated glob patterns).</li>
+<li>Optional expiry: <code>AE_API_*_TOKEN_EXPIRES</code> (UTC ISO8601).</li>
 </ul>
 <p>Endpoints</p>
 <ul>
 <li>GET <code>/health</code> — Controller health summary (uptime, last reconcile, app/replica counts)</li>
+<li>GET <code>/metrics</code> — Prometheus metrics</li>
 <li>GET <code>/status</code> — Paginated list of app statuses
 <ul>
 <li>Query: <code>limit</code>, <code>cursor</code>, <code>app</code>, <code>wildcard</code> (glob)</li>
@@ -832,17 +844,19 @@
 </ul>
 </li>
 <li>GET <code>/status/&lt;app&gt;</code> — JSON status object</li>
-<li>GET <code>/events/&lt;app&gt;?limit=N&amp;cursor=...</code> — Paginated recent events
-<ul>
-<li>Response: <code>{ items: [...], next: &quot;cursor&quot; | null }</code></li>
-</ul>
-</li>
+<li>GET <code>/manifest/&lt;app&gt;</code> — Latest stored manifest for an app</li>
+<li>GET <code>/events/&lt;app&gt;?limit=N</code> — Recent events array</li>
+<li>GET <code>/history/&lt;app&gt;?limit=N</code> — Probe history (readiness/liveness)</li>
 <li>GET <code>/nodes</code> — Node inventory and staleness info</li>
+<li>GET <code>/system</code> and <code>/dashboard</code> — Dashboard snapshot</li>
+<li>POST <code>/plan</code> — Read-only planner (requires READ token when configured)</li>
 <li>POST <code>/scale/&lt;app&gt;</code> — Body: <code>{ &quot;replicas&quot;: &lt;int&gt; }</code> (requires scaler/admin)</li>
 <li>POST <code>/delete/&lt;app&gt;?purge=1</code> — Delete app (requires admin)</li>
-<li>Logs: GET <code>/logs/&lt;app&gt;?container=&amp;tail=&amp;since=&amp;follow=</code> (requires READ)
+<li>POST <code>/rollout/pause/&lt;app&gt;</code> and <code>/rollout/resume/&lt;app&gt;</code> — Pause/resume rollouts (admin)</li>
+<li>Logs: GET <code>/logs/&lt;app&gt;?container=&amp;tail=&amp;since=&amp;follow=</code> (requires READ when tokens are configured)
 <ul>
 <li>When <code>follow=1</code>, streams plain text lines; otherwise JSON: <code>{ lines: [...] }</code></li>
+<li>SSE stream: GET <code>/logs/&lt;app&gt;/stream</code></li>
 </ul>
 </li>
 </ul>
@@ -853,7 +867,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-30 20:02:23</span>
+        <span>Built 2026-01-31 14:17:23</span>
       </div>
     </footer>
     <script>
