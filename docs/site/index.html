@@ -390,7 +390,7 @@
         padding: 10px 12px;
         display: flex;
         flex-wrap: wrap;
-        align-items: center;
+        align-items: flex-start;
         gap: 6px 10px;
         border: 1px solid var(--k1s-border);
         border-radius: 12px;
@@ -400,6 +400,24 @@
       .hero-repo-label {
         font-size: 0.7rem;
         letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         color: var(--k1s-text-muted);
       }
@@ -719,8 +737,17 @@
       <a class="hero-link" href="https://codeberg.org/th3_4rchit3ct/k1s.rss" target="_blank" rel="noopener">RSS Feed</a>
     </div>
     <div class="hero-repo">
-      <span class="hero-repo-label">Canonical (Upstream) Repository</span>
-      <a class="hero-repo-link" href="https://codeberg.org/th3_4rchit3ct/k1s" target="_blank" rel="noopener">https://codeberg.org/th3_4rchit3ct/k1s</a>
+      <span class="hero-repo-label">Repositories</span>
+      <div class="hero-repo-list">
+      <div class="hero-repo-item">
+        <span class="hero-repo-item-label">Upstream Repository</span>
+        <a class="hero-repo-link" href="https://codeberg.org/th3_4rchit3ct/k1s" target="_blank" rel="noopener">https://codeberg.org/th3_4rchit3ct/k1s</a>
+      </div>
+      <div class="hero-repo-item">
+        <span class="hero-repo-item-label">Issues &amp; PRs (GitHub)</span>
+        <a class="hero-repo-link" href="https://github.com/the-cm-collective/k1s" target="_blank" rel="noopener">https://github.com/the-cm-collective/k1s</a>
+      </div>
+      </div>
     </div>
   </div>
   <div class="hero-actions">
@@ -790,7 +817,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-30 20:02:22</span>
+        <span>Built 2026-01-31 16:17:28</span>
       </div>
     </footer>
     <script>
