@@ -1514,7 +1514,43 @@ class PodmanRuntime(RuntimeAdapter):
 
         # Respect AE_OCI_RUNTIME for container creation
         self._maybe_inject_runtime(cmd)
-        self._run_ok(cmd)
+        try:
+            self._run_ok(cmd)
+        except RuntimeError as exc:
+            if attempt < 2 and self._is_name_conflict(str(exc)):
+                labels: dict[str, str] = {}
+                try:
+                    insp = self._run_ok(
+                        [self._bin, "inspect", name, "--format", "{{json .Config.Labels}}"],
+                        allow_fail=True,
+                    )
+                    labels = json.loads(insp.out or "{}") or {}
+                except Exception:
+                    labels = {}
+                if (
+                    isinstance(labels, dict)
+                    and labels.get(self.APP_LABEL) == app
+                    and labels.get(self.REVISION_LABEL) == str(revision)
+                ):
+                    return
+                if not labels:
+                    # If labels are unreadable, assume a concurrent create won the race.
+                    return
+                try:
+                    self._stop_and_remove(name)
+                except Exception:
+                    return
+                time.sleep(0.2)
+                self._create_container(
+                    manifest,
+                    replica_id,
+                    revision,
+                    service=service,
+                    node_id=node_id,
+                    attempt=attempt + 1,
+                )
+                return
+            raise
 
     def _stop_and_remove(self, cid: str) -> None:
         if not cid:
@@ -1608,6 +1644,14 @@ class PodmanRuntime(RuntimeAdapter):
     def _should_retry_podman(self, stderr: str) -> bool:
         lowered = (stderr or "").lower()
         return "permission denied" in lowered and "crun" in lowered and "/run/user" in lowered
+
+    def _is_name_conflict(self, stderr: str) -> bool:
+        lowered = (stderr or "").lower()
+        return (
+            "name" in lowered
+            and ("already in use" in lowered or "conflict" in lowered)
+            and "container" in lowered
+        )
 
     def _run_ok(self, argv: list[str], *, allow_fail: bool = False) -> _RunResult:
         retries = self._podman_retry_max if not allow_fail else 0
