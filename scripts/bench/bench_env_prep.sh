@@ -132,9 +132,11 @@ for idx, raw in enumerate(manifest_paths):
     if idx == 0:
         with open(path, 'r', encoding='utf-8') as fh:
             for doc in yaml.safe_load_all(fh):
-                if isinstance(doc, dict) and doc.get('kind') == 'App':
-                    primary_name = (doc.get('metadata') or {}).get('name') or ''
-                    break
+                if isinstance(doc, dict):
+                    kind = str(doc.get('kind', '')).strip().lower()
+                    if kind in ('app', 'deployment'):
+                        primary_name = (doc.get('metadata') or {}).get('name') or ''
+                        break
 print('|'.join(allowed))
 print(primary_name)
 PY
@@ -204,7 +206,11 @@ for path in files:
         docs = list(yaml.safe_load_all(path.read_text(encoding='utf-8')))
     except Exception:
         continue
-    if any(isinstance(doc, dict) and str(doc.get('kind', '')).lower() == 'app' for doc in docs):
+    if any(
+        isinstance(doc, dict)
+        and str(doc.get('kind', '')).strip().lower() in ('app', 'deployment')
+        for doc in docs
+    ):
         path.unlink(missing_ok=True)
 PY
   fi
@@ -313,7 +319,7 @@ export BENCH_PRIMARY_MANIFEST="$primary_manifest_path"
 export BENCH_PRIMARY_APP="$primary_app_name"
 export BENCH_METRICS_PORT="$metrics_port"
 export PYTHON_BIN="$python_bin"
-export WAIT_READY_TRIES="${WAIT_READY_TRIES:-60}"
+export WAIT_READY_TRIES="${WAIT_READY_TRIES:-180}"
 export WAIT_READY_DELAY="${WAIT_READY_DELAY:-2}"
 EOF
 
