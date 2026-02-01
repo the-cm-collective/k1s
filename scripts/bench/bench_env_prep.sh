@@ -205,7 +205,7 @@ for path in files:
     except Exception:
         continue
     if any(isinstance(doc, dict) and str(doc.get('kind', '')).lower() == 'app' for doc in docs):
-  path.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
 PY
   fi
   primary_manifest_path="$spec_dir/$primary_manifest_rel"
@@ -239,6 +239,8 @@ if [[ "$controller_mode" == "sudo" ]]; then
     AE_ALLOW_PLAINTEXT_SECRETS="${AE_ALLOW_PLAINTEXT_SECRETS:-1}" \
     AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-podman}" \
     AE_OCI_RUNTIME="${AE_OCI_RUNTIME:-}" \
+    AE_CRI_ENDPOINT="${AE_CRI_ENDPOINT:-}" \
+    AE_CRI_SANDBOX_IMAGE="${AE_CRI_SANDBOX_IMAGE:-}" \
     AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-}" \
     AE_NODE_NOTREADY_AFTER="${bench_node_notready_after}" \
     AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}" \
@@ -295,6 +297,8 @@ export AE_CADDY_DIR="$caddy_dir"
 export AE_ALLOW_PLAINTEXT_SECRETS="${AE_ALLOW_PLAINTEXT_SECRETS:-1}"
 export AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-podman}"
 export AE_OCI_RUNTIME="${AE_OCI_RUNTIME:-}"
+export AE_CRI_ENDPOINT="${AE_CRI_ENDPOINT:-}"
+export AE_CRI_SANDBOX_IMAGE="${AE_CRI_SANDBOX_IMAGE:-}"
 export AE_PODMAN_BIN="$podman_bin"
 export AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}"
 export AE_NODE_NOTREADY_AFTER="${bench_node_notready_after}"
