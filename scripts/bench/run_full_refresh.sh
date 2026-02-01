@@ -270,6 +270,7 @@ ROLL_REPLICAS=5
 APP=specs/examples/echo.yaml
 APP_NAME=echo
 bench_specs_minimal="${BENCH_SPECS_MINIMAL:-1}"
+bench_specs_empty="${BENCH_SPECS_EMPTY:-1}"
 
 # Prefer repo virtualenv if present so grpc is available for controller auto-start.
 if [[ -z "${PYTHON_BIN:-}" ]]; then
@@ -284,11 +285,13 @@ fi
 
 # Ensure local node is registered so pods can schedule.
 export AE_REGISTER_LOCAL_NODE=1
+# Prevent local node from going stale during long bench runs.
+export AE_NODE_NOTREADY_AFTER="${BENCH_NODE_NOTREADY_AFTER:-${AE_NODE_NOTREADY_AFTER:-600}}"
 # Bench runs typically use plaintext demo secrets.
 export AE_ALLOW_PLAINTEXT_SECRETS=1
 
 # Rootless run in an isolated sandbox to avoid readonly state DB.
-ROOTLESS_ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" ./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9210)"
+ROOTLESS_ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" BENCH_SPECS_EMPTY="$bench_specs_empty" ./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9210)"
 # shellcheck disable=SC1090
 source "$ROOTLESS_ENV_FILE"
 
@@ -323,18 +326,22 @@ sanitize_env_podman
 if ! ensure_rootful_podman_socket; then
   exit 4
 fi
-ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" ./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9211 --sudo-controller)"
+ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" BENCH_SPECS_EMPTY="$bench_specs_empty" ./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9211 --sudo-controller)"
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 
 ensure_demo_images "localhost/demo-blue:latest" "localhost/demo-green:latest" sudo podman
 
-# Fail fast if rootful Podman isn't creating app containers.
-sleep 5
-if ! sudo podman ps -a --filter label=ae.app --format '{{.Names}}' | grep -q '.'; then
-  echo "[full-refresh] rootful podman has no ae.app containers; check $BENCH_CONTROLLER_LOG" >&2
-  ./scripts/bench/bench_env_teardown.sh --env "$ENV_FILE"
-  exit 4
+# Fail fast if rootful Podman isn't creating app containers (skip when specs dir is empty).
+if [[ "$bench_specs_empty" != "1" ]]; then
+  sleep 5
+  if ! sudo podman ps -a --filter label=ae.app --format '{{.Names}}' | grep -q '.'; then
+    echo "[full-refresh] rootful podman has no ae.app containers; check $BENCH_CONTROLLER_LOG" >&2
+    ./scripts/bench/bench_env_teardown.sh --env "$ENV_FILE"
+    exit 4
+  fi
+else
+  echo "[full-refresh] skipping rootful ae.app precheck (BENCH_SPECS_EMPTY=1)" >&2
 fi
 
 AE_ENGINE_STRICT=1 AE_COLLECT_PODMAN_SUDO=1 BENCH_CONTROLLER_SUDO=1 \
@@ -358,23 +365,33 @@ scripts/bench/k1nd_sanitize.sh pre
 
 ensure_demo_images "demo-blue:latest" "demo-green:latest" docker
 k1nd_specs_rel="${BENCH_K1ND_SPECS_DIR:-state/bench-k1nd-specs}"
+k1nd_apply_rel="${BENCH_K1ND_APPLY_DIR:-state/bench-k1nd-apply}"
+k1nd_specs_empty="${BENCH_K1ND_SPECS_EMPTY:-$bench_specs_empty}"
 k1nd_specs_abs="${repo_root}/${k1nd_specs_rel}"
 rm -rf "$k1nd_specs_abs"
 mkdir -p "$k1nd_specs_abs"
+k1nd_apply_abs="${repo_root}/${k1nd_apply_rel}"
+rm -rf "$k1nd_apply_abs"
+mkdir -p "$k1nd_apply_abs"
 app_src="$APP"
 if [[ "$app_src" != /* ]]; then
   app_src="${repo_root}/${app_src}"
 fi
 if [[ -f "$app_src" ]]; then
-  cp -f "$app_src" "$k1nd_specs_abs/$(basename "$app_src")"
+  # Always copy a standalone manifest for apply/scale operations.
+  cp -f "$app_src" "$k1nd_apply_abs/$(basename "$app_src")"
+  # Optionally keep the controller spec dir empty to avoid file reconcile resets.
+  if [[ "$k1nd_specs_empty" != "1" ]]; then
+    cp -f "$app_src" "$k1nd_specs_abs/$(basename "$app_src")"
+  fi
 fi
 k1nd_state_rel="${BENCH_K1ND_STATE_DIR:-state/bench-k1nd-state}"
 k1nd_state_abs="${repo_root}/${k1nd_state_rel}"
 rm -rf "$k1nd_state_abs"
 mkdir -p "$k1nd_state_abs"
 k1nd_state_db="${k1nd_state_rel}/controller.db"
-k1nd_manifest_rel="${k1nd_specs_rel}/$(basename "$app_src")"
-k1nd_manifest="${k1nd_specs_abs}/$(basename "$app_src")"
+k1nd_manifest_rel="${k1nd_apply_rel}/$(basename "$app_src")"
+k1nd_manifest="${k1nd_apply_abs}/$(basename "$app_src")"
 k1nd_port_start="${BENCH_K1ND_PORT_START:-18080}"
 k1nd_port_end="${BENCH_K1ND_PORT_END:-18180}"
 if [[ -f "$k1nd_manifest" ]]; then

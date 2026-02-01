@@ -21,6 +21,7 @@ services:
       - AE_DOCKER_NETWORK=dev_default
       - AE_DEMO_MODE=1
       - AE_REGISTER_LOCAL_NODE=1
+      - AE_NODE_NOTREADY_AFTER=${AE_NODE_NOTREADY_AFTER:-40}
       - AE_SPECS_DIR=${AE_SPECS_DIR:-state/demo-specs}
       - AE_STATE_DB=${AE_STATE_DB:-state/controller.db}
       - AE_PROBE_LOOPBACK_FALLBACK=host.docker.internal
