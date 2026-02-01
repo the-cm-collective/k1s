@@ -765,7 +765,7 @@
 <li><code>make demo ARGS=&quot;--demo-echo-multi -y -d&quot;</code></li>
 </ul>
 </li>
-<li>Endpoint: <code>https://echo-mr.home.arpa:8443/</code></li>
+<li>Endpoint: <code>https://echo-multi.home.arpa:8443/</code></li>
 </ul>
 <h3>Hardened Echo (echo-hardened)</h3>
 <ul>
@@ -822,6 +822,7 @@
 <ul>
 <li>Docs: <code>https://docs.home.arpa:8443/</code> and <code>http://127.0.0.1:9109/</code></li>
 <li>API:  <code>https://api.home.arpa:8443/swagger</code> and <code>http://127.0.0.1:9108/swagger</code></li>
+<li>Dashboard: <code>https://dash.home.arpa:8443/dashboard</code> and <code>http://127.0.0.1:9108/dashboard</code></li>
 </ul>
 </li>
 </ul>
@@ -836,11 +837,10 @@
 </ul>
 <h3>Notes</h3>
 <ul>
-<li>Caddy HTTP: <code>:8888</code>, HTTPS: <code>:8443</code>.</li>
-<li>Hosts entries (added with <code>-y</code>): <code>blue|green|echo-mr|docs|api.home.arpa</code> → <code>127.0.0.1</code>.
+<li>Caddy HTTP: <code>:8888</code>, HTTPS: <code>:8443</code> (the demo auto-picks free ports if these are busy).</li>
+<li>Hosts entries (added with <code>-y</code>) include: <code>docs.home.arpa</code>, <code>api.home.arpa</code>, <code>dash.home.arpa</code>, <code>blue.home.arpa</code>, <code>green.home.arpa</code>, plus the selected <code>echo-*</code> demo hosts (e.g., <code>echo-mr</code>, <code>echo-multi</code>, <code>echo-hardened</code>, <code>echo-sec</code>, <code>echo-exec</code>, <code>echo-tcp</code>, <code>echo-storage</code>).
 <ul>
-<li>Also: <code>echo-hardened.home.arpa</code> when running the hardened demo.</li>
-<li>Dashboard lives under the API host: <code>https://api.home.arpa:8443/dashboard</code> (or <code>http://127.0.0.1:9108/dashboard</code> directly).</li>
+<li>Dashboard: <code>https://dash.home.arpa:8443/dashboard</code> (or <code>http://127.0.0.1:9108/dashboard</code> directly).</li>
 </ul>
 </li>
 <li>Health checks are disabled by default for compatibility; enable with <code>AE_CADDY_ACTIVE_HEALTH=1</code> if your Caddy supports the directive.</li>
@@ -875,7 +875,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-30 20:02:23</span>
+        <span>Built 2026-01-31 14:13:50</span>
       </div>
     </footer>
     <script>

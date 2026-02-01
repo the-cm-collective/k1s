@@ -26,7 +26,7 @@ AE_AGENT_API_REQUIRE_CLIENT_CERT=${AE_AGENT_API_REQUIRE_CLIENT_CERT:-0} \
 python -m ae.controller --loop --specs specs/ --metrics-port 9108
 ```
 
-Optional: point the controller at Postgres for state (`AE_STATE_BACKEND=postgres AE_STATE_DSN=postgresql://...`) to mirror production.
+Optional: point the controller at Postgres for state (`AE_STATE_DSN=postgresql://...`) to mirror production.
 
 ## Start agents on workers
 Generate per-node WireGuard config (or reuse your own) and start the agent:
@@ -58,8 +58,8 @@ ae status echo-mn --watch
 Expected: one replica on each node, Service VIP allocated from `AE_SERVICE_IP_POOL`, Caddy (or your ingress) targets the Service VIP instead of hostPorts.
 
 ## Validate routing and failover
-- Verify Service VIP reachability from the controller host: `curl http://$AE_SERVICE_IP_POOL_FIRST_IP/healthz` (replace with the allocated ClusterIP from `ae services list`).
-- Simulate node loss: `ae nodes --cordon <node>` then stop the agent; reconcile should reschedule replicas to the surviving node (storage-bound apps will remain pending by design).
+- Verify Service VIP reachability from the controller host: `ae services` to find the ClusterIP, then `curl http://<cluster-ip>/healthz`.
+- Simulate node loss: `ae nodes <node> --cordon` then stop the agent; reconcile should reschedule replicas to the surviving node (storage-bound apps will remain pending by design).
 - Exec/logs proxied via agent: `ae exec echo-mn -- id` and `ae logs echo-mn --tail 5` (add `-n <ns>` if the app is not in `default`).
 
 ## Fast smoke commands

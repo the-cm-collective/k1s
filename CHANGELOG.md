@@ -1,9 +1,13 @@
 # Changelog
 
-## Unreleased (2026-01-30)
+## Unreleased (2026-01-31)
 
-### Added
-- TBD
+### Changed
+- Docs refresh: Start Here, Overview, Examples, and Concepts updated for dashboard URLs, API shim enablement, and CLI guidance.
+- Reference docs updated for HTTP API, API auth, ingress, architecture env vars, CRI containerd, multi-node lab, and benchmarks.
+
+### Fixed
+- Corrected demo host/endpoints (dashboard + multiport), CRI list formatting, and k1nd benchmark notes.
 
 ## 0.1.2 - 2026-01-30
 

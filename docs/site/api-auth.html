@@ -703,11 +703,12 @@
       </svg>
     </button>
     <div class="container">
-    <p>API Auth and Mutations</p>
-<p>Overview</p>
+    <h1>API Auth and Mutations</h1>
+<h2>Overview</h2>
 <ul>
 <li>Read-only endpoints (/status, /events, /metrics, /logs, /health, /openapi.json) are available by default.</li>
-<li>Mutating endpoints (/scale/&lt;app&gt;, /delete/&lt;app&gt;) are disabled unless AE_API_MUTATIONS=1.</li>
+<li>If any token is configured, all GETs require at least the READ token.</li>
+<li>Mutating endpoints (/scale/&lt;app&gt;, /delete/&lt;app&gt;, /rollout/*, /apply) are disabled unless AE_API_MUTATIONS=1.</li>
 <li>Optional Bearer tokens gate access per role:
 <ul>
 <li>AE_API_READ_TOKEN   (read)</li>
@@ -715,43 +716,47 @@
 <li>AE_API_ADMIN_TOKEN  (admin)</li>
 </ul>
 </li>
+<li>Optional scoping/expiry: AE_API_ADMIN_SCOPE / AE_API_SCALER_SCOPE / AE_API_READ_SCOPE (glob patterns) and AE_API_*_TOKEN_EXPIRES (UTC ISO8601).</li>
 </ul>
-<p>Enabling mutations (dev) 1) Export tokens and enable mutations for the controller process:</p>
-<ul>
-<li>AE_API_MUTATIONS=1</li>
-<li>AE_API_ADMIN_TOKEN=changeme</li>
-</ul>
-<p>2) Start controller with --metrics-port and Caddy fronting the API.</p>
-<p>Remote CLI usage</p>
+<h2>Enabling mutations (dev)</h2>
+<p>1) Generate tokens and enable mutations for the controller process:</p>
+<pre><code>ae api tokens --generate --ttl-hours 24 -o .env.api
+source .env.api
+export AE_API_MUTATIONS=1</code></pre>
+<p>2) Start controller with --metrics-port and (optional) Caddy fronting the API.</p>
+<p>Tip: <code>ae auth remote -o .env.api</code> also emits apishim tokens and <code>AE_API_MUTATIONS=1</code>.</p>
+<h2>Remote CLI usage</h2>
 <ul>
 <li>Scale:
 <ul>
-<li>ae --server https://api.home.arpa:8443 --token $SCALER scale echo --replicas 2</li>
+<li><code>ae --server https://api.home.arpa:8443 --token $AE_API_SCALER_TOKEN scale echo --replicas 2</code></li>
 </ul>
 </li>
 <li>Delete:
 <ul>
-<li>ae --server https://api.home.arpa:8443 --token $ADMIN delete echo --purge</li>
+<li><code>ae --server https://api.home.arpa:8443 --token $AE_API_ADMIN_TOKEN delete echo --purge</code></li>
 </ul>
 </li>
 <li>Logs (requires READ token when any token is configured):
 <ul>
-<li>ae --server https://api.home.arpa:8443 --token $READ logs echo --tail 100</li>
+<li><code>ae --server https://api.home.arpa:8443 --token $AE_API_READ_TOKEN logs echo --tail 100</code></li>
 </ul>
 </li>
 </ul>
-<p>Security notes</p>
+<h2>Security notes</h2>
 <ul>
 <li>For production, place the API behind TLS (Caddy) and use client auth or network ACLs.</li>
 <li>Prefer short-lived tokens and minimal roles for automation.</li>
-<li>Kubernetes API shim tokens: <code>AE_APISHIM_TOKEN</code> is required by default for <code>python -m ae.apishim serve</code>; set <code>AE_APISHIM_ALLOW_ANON=1</code> only for local labs. Shim RBAC evaluates Role/ClusterRole bindings and exposes a <code>SubjectAccessReview</code>-compatible endpoint.</li>
+<li>Kubernetes API shim: set <code>AE_APISHIM_ENABLE=1</code> and <code>AE_APISHIM_TOKEN</code> for <code>python -m ae.apishim serve</code>; use <code>AE_APISHIM_ALLOW_ANON=1</code> only for local labs. Shim RBAC evaluates Role/ClusterRole bindings and exposes a SubjectAccessReview-compatible endpoint.</li>
 </ul>
-<p>Registry Auth (private images)</p>
+<h2>Registry Auth (private images)</h2>
 <ul>
 <li>Credentials are stored at <code>~/.config/ae/registries.yaml</code> and used by the runtime before pulls.</li>
 <li>List configured hosts:
 <ul>
 <li><code>ae registry list</code></li>
+</ul>
+</li>
 <li>Docker Hub:
 <ul>
 <li>Short image names (e.g., <code>caddy:2.8</code>, <code>python:3.12-slim</code>) are treated as <code>docker.io</code>.</li>
@@ -759,8 +764,6 @@
 <ul>
 <li><code>ae registry login custom --registry docker.io --username &lt;you&gt; --password &lt;token&gt;</code></li>
 <li>Or run <code>docker login</code> once; the runtime will reuse your local Docker credentials.</li>
-</ul>
-</li>
 </ul>
 </li>
 </ul>
@@ -790,7 +793,7 @@
 </ul>
 </li>
 </ul>
-<p>Refreshing short‑lived tokens</p>
+<h2>Refreshing short‑lived tokens</h2>
 <ul>
 <li>Some providers issue short‑lived credentials (GCR/ECR). Refresh any saved hosts with:
 <ul>
@@ -807,7 +810,7 @@
 </ul>
 </li>
 </ul>
-<p>Planner hint</p>
+<h2>Planner hint</h2>
 <ul>
 <li>If the image host looks private (e.g., <code>ghcr.io</code>, <code>gcr.io</code>, <code>*.ecr.*.amazonaws.com</code>) and no entry exists in <code>registries.yaml</code>, <code>ae plan</code> emits a warning with the matching <code>ae registry login</code> command suggestion.</li>
 </ul>
@@ -818,7 +821,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-30 20:02:23</span>
+        <span>Built 2026-01-31 14:17:23</span>
       </div>
     </footer>
     <script>

@@ -50,7 +50,7 @@ Note
 - Commands:
   - `./scripts/init_demo.sh --demo-echo-multi -y`
   - `make demo ARGS="--demo-echo-multi -y -d"`
-- Endpoint: `https://echo-mr.home.arpa:8443/`
+- Endpoint: `https://echo-multi.home.arpa:8443/`
 
 ### Hardened Echo (echo-hardened)
 
@@ -88,6 +88,7 @@ Note
 - Endpoints:
   - Docs: `https://docs.home.arpa:8443/` and `http://127.0.0.1:9109/`
   - API:  `https://api.home.arpa:8443/swagger` and `http://127.0.0.1:9108/swagger`
+  - Dashboard: `https://dash.home.arpa:8443/dashboard` and `http://127.0.0.1:9108/dashboard`
 
 ### Helpful Flags & Targets
 
@@ -100,10 +101,9 @@ Note
 
 ### Notes
 
-- Caddy HTTP: `:8888`, HTTPS: `:8443`.
-- Hosts entries (added with `-y`): `blue|green|echo-mr|docs|api.home.arpa` → `127.0.0.1`.
-  - Also: `echo-hardened.home.arpa` when running the hardened demo.
-  - Dashboard lives under the API host: `https://api.home.arpa:8443/dashboard` (or `http://127.0.0.1:9108/dashboard` directly).
+- Caddy HTTP: `:8888`, HTTPS: `:8443` (the demo auto-picks free ports if these are busy).
+- Hosts entries (added with `-y`) include: `docs.home.arpa`, `api.home.arpa`, `dash.home.arpa`, `blue.home.arpa`, `green.home.arpa`, plus the selected `echo-*` demo hosts (e.g., `echo-mr`, `echo-multi`, `echo-hardened`, `echo-sec`, `echo-exec`, `echo-tcp`, `echo-storage`).
+  - Dashboard: `https://dash.home.arpa:8443/dashboard` (or `http://127.0.0.1:9108/dashboard` directly).
 - Health checks are disabled by default for compatibility; enable with `AE_CADDY_ACTIVE_HEALTH=1` if your Caddy supports the directive.
 
 ## Example manifests (standalone)

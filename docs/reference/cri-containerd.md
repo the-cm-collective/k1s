@@ -15,14 +15,14 @@ export AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock
 Defaults:
 - CRI endpoint: `AE_CRI_ENDPOINT` (default `unix:///run/containerd/containerd.sock`)
 - CRI sandbox image: `AE_CRI_SANDBOX_IMAGE` (pause image)
- - Host namespaces gate: `AE_CRI_ALLOW_HOST_NS=1` to enable hostNetwork/hostPID/hostIPC/shareProcessNamespace
+- Host namespaces gate: `AE_CRI_ALLOW_HOST_NS=1` to enable hostNetwork/hostPID/hostIPC/shareProcessNamespace
 
 ## Registry-first image flow (Kubernetes-aligned)
 
-1. Build images and push to a registry reachable by every node.
-2. Reference those images in manifests.
-3. Let containerd pull on demand (kubelet behavior).
-4. Optionally pre-warm to reduce first-start latency.
+- Build images and push to a registry reachable by every node.
+- Reference those images in manifests.
+- Let containerd pull on demand (kubelet behavior).
+- Optionally pre-warm to reduce first-start latency.
 
 This avoids host-local imports and works across nodes.
 
@@ -112,7 +112,7 @@ Registry auth for CRI pulls is read from:
   - `IfNotPresent` pulls only if the image is missing.
   - `Never` refuses to pull and requires the image to exist locally.
   - Default aligns with Kubernetes: `:latest` (or no tag) → `Always`, otherwise `IfNotPresent`.
-- `spec.imagePullSecrets` and `spec.registryAuthRef` are treated as **registry host keys**
+- `spec.imagePullSecrets` and `spec.registryAuthRef` are treated as registry host keys
   in `~/.config/ae/registries.yaml` and are preferred when pulling images via CRI.
 - When apishim storage is available (`AE_APISHIM_DB` or `AE_APISHIM_DSN`), the CRI
   runtime also reads Kubernetes secrets of type `kubernetes.io/dockerconfigjson`
@@ -250,13 +250,13 @@ export AE_APISHIM_READ_TOKEN=<read-token>
 
 ## Security context (CRI)
 
-- **Container security**: `runAsUser`, `runAsGroup`, `readOnlyRootFilesystem`,
+- Container security: `runAsUser`, `runAsGroup`, `readOnlyRootFilesystem`,
   `dropCapabilities`, `seccompProfileType` (+ `seccompLocalhostProfile`), and
   `apparmorProfile` map into CRI container security context.
-- **Pod security**: `podSecurity.fsGroup` maps to supplemental groups, and
+- Pod security: `podSecurity.fsGroup` maps to supplemental groups, and
   `podSecurity.seccompProfileType`/`podSecurity.seLinux*` map into the sandbox
   security context.
-- **Host namespaces** are gated by `AE_CRI_ALLOW_HOST_NS=1` as described above.
+- Host namespaces are gated by `AE_CRI_ALLOW_HOST_NS=1` as described above.
 
 ## Crictl-only image (default)
 
@@ -298,6 +298,7 @@ Pre-pull uses registry credentials from `~/.config/ae/registries.yaml` if presen
 
 The toolbox bundles crictl + nerdctl + buildkitd/buildctl. Use it for advanced
 manual workflows (direct containerd builds).
+Note: this is dev-only and effectively node-root when the containerd socket is mounted; use only on trusted lab nodes. Prefer the buildkit-only pod or CI builds for production pipelines.
 
 Build and push:
 

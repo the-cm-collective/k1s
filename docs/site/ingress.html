@@ -703,7 +703,7 @@
       </svg>
     </button>
     <div class="container">
-    <p>Ingress Guide (Caddy)</p>
+    <h1>Ingress Guide (Caddy)</h1>
 <p>Overview</p>
 <ul>
 <li>The controller writes one Caddy site per App manifest with spec.ingress.</li>
@@ -718,6 +718,8 @@
 <li>AE_CADDY_CONTAINER: name of the Caddy container (enables docker/podman exec reload).</li>
 <li>AE_CONTAINER_CLI: podman or docker (default: docker).</li>
 <li>AE_CADDY_RELOAD_TIMEOUT: seconds to wait on reload (default: 10).</li>
+<li>AE_DISABLE_INGRESS=1: disable ingress rendering/reload entirely.</li>
+<li>AE_TLS_DIR: TLS material root (default: state/tls).</li>
 </ul>
 <p>BYO TLS options 1) Direct file paths in your manifest</p>
 <ul>
@@ -780,7 +782,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-30 20:02:23</span>
+        <span>Built 2026-01-31 14:17:23</span>
       </div>
     </footer>
     <script>
