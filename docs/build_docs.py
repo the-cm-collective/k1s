@@ -90,7 +90,13 @@ RSS_FEED_TITLE = "k1s Repo Activity"
 SOURCE_REPO_URL = os.getenv(
     "DOCS_SOURCE_REPO_URL", "https://codeberg.org/th3_4rchit3ct/k1s"
 ).strip()
-SOURCE_REPO_LABEL = "Canonical (Upstream) Repository"
+SOURCE_REPO_LABEL = os.getenv("DOCS_SOURCE_REPO_LABEL", "Upstream Repository").strip()
+COLLAB_REPO_URL = os.getenv(
+    "DOCS_COLLAB_REPO_URL", "https://github.com/the-cm-collective/k1s"
+).strip()
+COLLAB_REPO_LABEL = os.getenv(
+    "DOCS_COLLAB_REPO_LABEL", "Issues & PRs (GitHub)"
+).strip()
 
 INTERACTIVE_HREF_TOKENS = (
     "/swagger",
@@ -875,7 +881,7 @@ TEMPLATE = """<!doctype html>
         padding: 10px 12px;
         display: flex;
         flex-wrap: wrap;
-        align-items: center;
+        align-items: flex-start;
         gap: 6px 10px;
         border: 1px solid var(--k1s-border);
         border-radius: 12px;
@@ -885,6 +891,24 @@ TEMPLATE = """<!doctype html>
       .hero-repo-label {
         font-size: 0.7rem;
         letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         color: var(--k1s-text-muted);
       }
@@ -2383,6 +2407,8 @@ def main() -> None:
     rss_feed_title = RSS_FEED_TITLE
     source_repo_url = SOURCE_REPO_URL
     source_repo_label = SOURCE_REPO_LABEL
+    collab_repo_url = COLLAB_REPO_URL
+    collab_repo_label = COLLAB_REPO_LABEL
 
     def render_link(label: str, href: str, external: bool) -> str:
         attrs = ' target="_blank" rel="noopener"' if external else ""
@@ -2493,16 +2519,35 @@ def main() -> None:
         )
 
     repo_section = ""
+    repo_items = []
     if source_repo_url:
+        repo_items.append((source_repo_label, source_repo_url))
+    if collab_repo_url:
+        repo_items.append((collab_repo_label, collab_repo_url))
+    if repo_items:
+        repo_bits = []
+        for label, url in repo_items:
+            repo_bits.append(
+                "\n".join(
+                    [
+                        '      <div class="hero-repo-item">',
+                        f'        <span class="hero-repo-item-label">{html.escape(label)}</span>',
+                        (
+                            f'        <a class="hero-repo-link" href="{html.escape(url)}" '
+                            'target="_blank" rel="noopener">'
+                            f"{html.escape(url)}</a>"
+                        ),
+                        "      </div>",
+                    ]
+                )
+            )
         repo_section = "\n".join(
             [
                 '    <div class="hero-repo">',
-                f'      <span class="hero-repo-label">{html.escape(source_repo_label)}</span>',
-                (
-                    f'      <a class="hero-repo-link" href="{html.escape(source_repo_url)}" '
-                    'target="_blank" rel="noopener">'
-                    f"{html.escape(source_repo_url)}</a>"
-                ),
+                '      <span class="hero-repo-label">Repositories</span>',
+                '      <div class="hero-repo-list">',
+                "\n".join(repo_bits),
+                "      </div>",
                 "    </div>",
             ]
         )
