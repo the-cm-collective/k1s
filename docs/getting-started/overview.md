@@ -2,6 +2,8 @@
 
 k1s is a small, multi‑node application engine that now supports a controller + worker agents, Service VIPs over an overlay network, and a Kubernetes‑compatible API shim. You can declare apps in YAML, run them on one or more hosts (Podman preferred; Docker supported), and expose them through Caddy or your own proxy while keeping resource usage low.
 
+Status: k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.
+
 - Goal: predictable rollouts and Kubernetes‑style ergonomics on 1–4 nodes without a heavyweight control plane.
 - Non‑goal: full upstream conformance or cloud‑provider controllers; we target a curated “compatibility” subset instead.
 

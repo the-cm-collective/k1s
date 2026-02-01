@@ -723,6 +723,7 @@
     <div class="container">
     <h1>k1s Overview</h1>
 <p>k1s is a small, multi‑node application engine that now supports a controller + worker agents, Service VIPs over an overlay network, and a Kubernetes‑compatible API shim. You can declare apps in YAML, run them on one or more hosts (Podman preferred; Docker supported), and expose them through Caddy or your own proxy while keeping resource usage low.</p>
+<p>Status: k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.</p>
 <ul>
 <li>Goal: predictable rollouts and Kubernetes‑style ergonomics on 1–4 nodes without a heavyweight control plane.</li>
 <li>Non‑goal: full upstream conformance or cloud‑provider controllers; we target a curated “compatibility” subset instead.</li>
@@ -857,7 +858,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-31 16:07:03</span>
+        <span>Built 2026-01-31 17:21:37</span>
       </div>
     </footer>
     <script>

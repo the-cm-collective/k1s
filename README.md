@@ -12,6 +12,10 @@ So, what is k1s? In short, it’s a lightweight multi-node application engine wi
 
 Development is ongoing, and we're always looking for feedback and contributions. If you're interested in learning more or getting involved, please check out the documentation and reach out to us.
 
+## Status & Production Use
+
+k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.
+
 ## Documentation
 
 - Multi-node architecture and lab: `docs/adr/0007-multinode-architecture-scope.md`, `docs/guides/multinode-lab.md`

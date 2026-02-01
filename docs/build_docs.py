@@ -90,12 +90,14 @@ RSS_FEED_TITLE = "k1s Repo Activity"
 SOURCE_REPO_URL = os.getenv(
     "DOCS_SOURCE_REPO_URL", "https://codeberg.org/th3_4rchit3ct/k1s"
 ).strip()
-SOURCE_REPO_LABEL = os.getenv("DOCS_SOURCE_REPO_LABEL", "Upstream Repository").strip()
+SOURCE_REPO_LABEL = os.getenv(
+    "DOCS_SOURCE_REPO_LABEL", "Upstream Repository (CODEBERG)"
+).strip()
 COLLAB_REPO_URL = os.getenv(
     "DOCS_COLLAB_REPO_URL", "https://github.com/the-cm-collective/k1s"
 ).strip()
 COLLAB_REPO_LABEL = os.getenv(
-    "DOCS_COLLAB_REPO_LABEL", "Issues & PRs (GitHub)"
+    "DOCS_COLLAB_REPO_LABEL", "Issues & PRs / SPONSORS (GitHub)"
 ).strip()
 
 INTERACTIVE_HREF_TOKENS = (
@@ -2561,6 +2563,7 @@ def main() -> None:
             "    </div>",
             "    <h1>k1s Documentation</h1>",
             '    <p class="hero-tagline">Guides, labs, and reference for building, operating, and observing k1s clusters.</p>',
+            '    <p class="hero-tagline">Status: k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.</p>',
             '    <div class="hero-links">',
             "      " + "\n      ".join(quick_links_html),
             "    </div>",
