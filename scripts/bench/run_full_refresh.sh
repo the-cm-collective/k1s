@@ -162,6 +162,18 @@ clean_podman_rootless() {
   fi
 }
 
+clean_podman_rootful() {
+  if ! command -v sudo >/dev/null 2>&1 || ! command -v podman >/dev/null 2>&1; then
+    return 0
+  fi
+  local ids
+  ids="$(sudo podman ps -aq 2>/dev/null || true)"
+  if [[ -n "${ids}" ]]; then
+    sudo podman rm -f ${ids} >/dev/null 2>&1 || true
+    sudo podman pod rm -fa >/dev/null 2>&1 || true
+  fi
+}
+
 wait_k1nd_controller_ready() {
   local cid
   cid=$(docker ps -q --filter "name=^dev-controller-1$" 2>/dev/null | head -n1 || true)
@@ -333,8 +345,9 @@ make bench-mem-e2e-k1s-sudo
 
 ./scripts/bench/bench_env_teardown.sh --env "$ENV_FILE"
 
-# Clear rootless Podman before k1nd to avoid foreign-engine contamination.
+# Clear Podman before k1nd to avoid foreign-engine contamination.
 clean_podman_rootless
+clean_podman_rootful
 
 export AE_RUNTIME_BACKEND=docker
 export AE_APISHIM_RUNTIME=docker
