@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from collections.abc import Iterable
 from datetime import datetime
 
@@ -985,6 +986,47 @@ class DockerRuntime(RuntimeAdapter):
                 pass
             return container
         except APIError as exc:
+            msg = str(exc).lower()
+            if attempt < 2 and ("already in use" in msg or "conflict" in msg):
+                try:
+                    existing = self._client.containers.get(name)
+                except NotFound:
+                    time.sleep(0.2)
+                    return self._create_container(
+                        manifest,
+                        replica_id,
+                        revision,
+                        node_id=node_id,
+                        attempt=attempt + 1,
+                    )
+                labels: dict[str, str] = {}
+                try:
+                    labels = existing.labels or {}
+                except Exception:
+                    labels = {}
+                if (
+                    labels.get(self.APP_LABEL) == app_name
+                    and labels.get(self.REVISION_LABEL) == str(revision)
+                ):
+                    return existing
+                if not labels:
+                    # If we can't read labels, assume another reconcile created it.
+                    return existing
+                try:
+                    LOGGER.warning(
+                        "Name conflict for %s; removing container with labels %s", name, labels
+                    )
+                    existing.remove(force=True)
+                except Exception:
+                    return existing
+                time.sleep(0.2)
+                return self._create_container(
+                    manifest,
+                    replica_id,
+                    revision,
+                    node_id=node_id,
+                    attempt=attempt + 1,
+                )
             raise RuntimeError(f"Failed to create container {name}: {exc}") from exc
 
     def _ensure_host_port_free(self, app_name: str, host_port: int) -> None:
