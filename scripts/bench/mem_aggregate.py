@@ -197,6 +197,33 @@ def aggregate(snapshot_dir: Path) -> Dict:
     except Exception:
         pass
 
+    # k1nd extras: allow docker-exec based metrics to fill gaps when smaps aren't readable
+    try:
+        if mode == "k1s":
+            k1nd_path = raw / "k1nd_control_plane_pss_kb.json"
+            if k1nd_path.exists():
+                data = json.loads(k1nd_path.read_text() or "{}")
+                ctrl = int(data.get("controller_pss_kb", 0) or 0)
+                apishim = int(data.get("apishim_pss_kb", 0) or 0)
+                ingress = int(data.get("ingress_pss_kb", 0) or 0)
+                ctrl_total = ctrl + apishim
+                if ctrl_total > 0:
+                    ctrl_bucket = by_class.setdefault(
+                        "controller", {"rss_kb": 0, "pss_kb": 0, "uss_kb": 0}
+                    )
+                    if ctrl_bucket.get("pss_kb", 0) == 0:
+                        ctrl_bucket["pss_kb"] = ctrl_total
+                        proc_totals["pss_kb"] += ctrl_total
+                if ingress > 0:
+                    ing_bucket = by_class.setdefault(
+                        "ingress", {"rss_kb": 0, "pss_kb": 0, "uss_kb": 0}
+                    )
+                    if ing_bucket.get("pss_kb", 0) == 0:
+                        ing_bucket["pss_kb"] = ingress
+                        proc_totals["pss_kb"] += ingress
+    except Exception:
+        pass
+
     # --- Host system cgroups (cg2 preferred) ---------------------------------
     def _detect_cgv2() -> bool:
         try:
@@ -344,6 +371,13 @@ def aggregate(snapshot_dir: Path) -> Dict:
             insp_p = raw / "podman_inspect.json"
             if insp_p.exists():
                 for c in json.loads(insp_p.read_text()):
+                    inspect[c.get("Id", "")[:12]] = c
+        except Exception:
+            pass
+        try:
+            insp_c = raw / "cri_inspect.json"
+            if insp_c.exists():
+                for c in json.loads(insp_c.read_text()):
                     inspect[c.get("Id", "")[:12]] = c
         except Exception:
             pass

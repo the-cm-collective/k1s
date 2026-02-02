@@ -16,8 +16,9 @@ outroot="snapshots"
 
 podman_bin="${AE_PODMAN_BIN:-podman}"
 podman_prefix=()
-if [[ "${AE_COLLECT_PODMAN_SUDO:-${AE_PODMAN_SUDO:-0}}" == "1" ]]; then
-  podman_prefix=(sudo -E)
+if [[ "${AE_COLLECT_PODMAN_SUDO:-${AE_PODMAN_SUDO:-0}}" == "1" && "$(id -u)" != "0" ]]; then
+  # Use a clean sudo env to avoid inheriting rootless Podman vars (e.g. XDG_RUNTIME_DIR).
+  podman_prefix=(sudo)
 fi
 
 podman_available() {
@@ -68,7 +69,7 @@ detect_backend() {
   else
     b="${AE_RUNTIME_BACKEND:-podman}"
   fi
-  if [[ "$b" != "podman" && "$b" != "docker" && "$b" != "oci" ]]; then
+  if [[ "$b" != "podman" && "$b" != "docker" && "$b" != "oci" && "$b" != "cri" ]]; then
     if podman_available; then b=podman; elif command -v docker >/dev/null 2>&1; then b=docker; else b=unknown; fi
   fi
   echo "$b"
@@ -79,22 +80,30 @@ detect_oci_runtime() {
   local oci=""
   if [[ "$b" == "podman" || "$b" == "oci" ]]; then
     if podman_available; then
-      oci=$(podman_cmd info --format '{{ .Host.OCIRuntime.Name }}' 2>/dev/null | tr -d '"' || true)
-      if [[ -z "$oci" ]]; then
-        oci=$(podman_cmd info --format json 2>/dev/null | python - << 'PY'
-import json, sys
+      json_info="$(podman_cmd info --format json 2>/dev/null || true)"
+      if [[ -n "$json_info" ]]; then
+        OCI_JSON="$json_info" oci=$(python - << 'PY'
+import json, os, sys
+raw = os.environ.get("OCI_JSON", "")
 try:
-    d=json.load(sys.stdin)
+    d = json.loads(raw)
 except Exception:
     print(""); sys.exit(0)
 h = d.get('host') or d.get('Host') or {}
 oci = h.get('ociRuntime') or h.get('OCIRuntime') or {}
 name = (oci.get('name') or oci.get('Name') or oci.get('package') or oci.get('path') or '').strip()
 name = name.split('/')[-1]
-name = name.split()[0]
+name = name.split()[0] if name else ''
 print(name)
 PY
         )
+      fi
+      if [[ -z "$oci" ]]; then
+        oci=$(podman_cmd info --format '{{ .Host.OCIRuntime.Name }}' 2>/dev/null | tr -d '"' || true)
+      fi
+      oci=$(echo "${oci:-}" | tr -d '"' | tr '\n' ' ' | awk '{print $1}')
+      if [[ -n "$oci" && ! "$oci" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+        oci=""
       fi
     fi
   elif [[ "$b" == "docker" ]]; then
@@ -110,11 +119,17 @@ PY
 
 # Decide which engine's containers to collect
 collect_engine="both"
-if [[ "${AE_COLLECT_ENGINE:-}" == "podman" || "${AE_COLLECT_ENGINE:-}" == "docker" ]]; then
+if [[ "${AE_COLLECT_ENGINE:-}" == "podman" || "${AE_COLLECT_ENGINE:-}" == "docker" || "${AE_COLLECT_ENGINE:-}" == "cri" ]]; then
   collect_engine="${AE_COLLECT_ENGINE}"
 else
   case "${mode}" in
-    k1s) collect_engine="podman";;
+    k1s)
+      if [[ "${AE_RUNTIME_BACKEND:-podman}" == "cri" ]]; then
+        collect_engine="cri"
+      else
+        collect_engine="podman"
+      fi
+      ;;
     k3s) collect_engine="docker";;
     *) collect_engine="both";;
   esac
@@ -145,7 +160,8 @@ PY
 )"
 fi
 if [[ "$collect_engine" == "docker" ]] && podman_available; then
-  foreign_ae_containers="$(podman_cmd ps -a --format json 2>/dev/null | python - << 'PY'
+  foreign_ae_containers="$(
+  (podman_cmd ps -a --format json 2>/dev/null || echo "[]") | python -c '
 import json, sys
 try:
     arr = json.load(sys.stdin)
@@ -153,13 +169,13 @@ except Exception:
     print(0); sys.exit(0)
 c=0
 for x in arr or []:
-    labs=(x.get('Config') or {}).get('Labels') or (x.get('Labels') or {})
-    name=(x.get('Name') or '').strip('/ ')
-    if labs.get('ae.app') or name.startswith('ae-'):
+    labs=(x.get("Config") or {}).get("Labels") or (x.get("Labels") or {})
+    name=(x.get("Name") or "").strip("/ ")
+    if labs.get("ae.app") or name.startswith("ae-"):
         c+=1
 print(c)
-PY
-)"
+'
+  )"
 fi
 if [[ "$foreign_ae_containers" != "0" ]]; then
   echo "[mem-snapshot] warn: foreign engine has ${foreign_ae_containers} ae.app container(s); excluding them from metrics" >&2
@@ -239,8 +255,130 @@ log_step "process smaps/status captured"
   echo "container_id,name,pid,mem_current_bytes,cg_path"
 } > "${outdir}/raw/containers_mem.csv"
 
+# CRI (only when selected)
+if [[ "$collect_engine" == "cri" ]]; then
+  crictl_bin="${AE_CRICTL_BIN:-crictl}"
+  if command -v "$crictl_bin" >/dev/null 2>&1; then
+    python - "$outdir" "$crictl_bin" "${AE_CRI_ENDPOINT:-}" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
+import json, os, subprocess, sys
+from typing import Optional
+
+root = sys.argv[1]
+crictl = sys.argv[2]
+endpoint = sys.argv[3] if len(sys.argv) > 3 else ""
+
+def run(args: list[str]) -> str:
+    cmd = [crictl]
+    if endpoint:
+        cmd += ["--runtime-endpoint", endpoint]
+    cmd += args
+    return subprocess.run(cmd, capture_output=True, text=True, check=False).stdout
+
+def detect_cgv2() -> bool:
+    return os.path.exists("/sys/fs/cgroup/cgroup.controllers")
+
+def normalize_cg(path: str) -> str:
+    if not path:
+        return ""
+    return path if path.startswith("/") else "/" + path
+
+def cgroup_path_for_pid(pid: str, want: str = "memory") -> Optional[str]:
+    try:
+        with open(f"/proc/{pid}/cgroup", "r") as fh:
+            lines = [ln.strip() for ln in fh if ln.strip()]
+        if not lines:
+            return None
+        if detect_cgv2():
+            for ln in lines:
+                parts = ln.split(":", 2)
+                if len(parts) == 3 and parts[0] == "0":
+                    return normalize_cg(parts[2])
+            last = lines[-1].split(":", 2)[-1]
+            return normalize_cg(last)
+        for ln in lines:
+            parts = ln.split(":", 2)
+            if len(parts) == 3 and want in (parts[1] or "").split(","):
+                return normalize_cg(parts[2])
+        return None
+    except Exception:
+        return None
+
+def read_mem_for_cg(cg: str) -> int:
+    try:
+        if not cg:
+            return -1
+        if detect_cgv2():
+            mc = f"/sys/fs/cgroup{cg}/memory.current"
+        else:
+            mc = f"/sys/fs/cgroup/memory{cg}/memory.usage_in_bytes"
+        return int(open(mc, "r").read().strip()) if os.path.exists(mc) else -1
+    except Exception:
+        return -1
+
+def read_mem_bytes_and_path(pid: str, cg_path: str = ""):
+    cg = cgroup_path_for_pid(pid, "memory") if pid and pid != "0" else None
+    if cg:
+        return read_mem_for_cg(cg), cg
+    if cg_path:
+        cg = normalize_cg(cg_path)
+        return read_mem_for_cg(cg), cg
+    return -1, ""
+
+ps_raw = run(["ps", "-a", "-o", "json"])
+try:
+    ps_data = json.loads(ps_raw or "{}")
+except Exception:
+    ps_data = {}
+
+containers = ps_data.get("containers") or ps_data.get("items") or []
+inspect_out = []
+
+for item in containers:
+    cid = item.get("id") or item.get("container_id") or ""
+    if not cid:
+        continue
+    ins_raw = run(["inspect", "-o", "json", cid])
+    try:
+        ins = json.loads(ins_raw or "{}")
+    except Exception:
+        ins = {}
+    status = ins.get("status") or {}
+    info = ins.get("info") or {}
+    name = ""
+    md = status.get("metadata") or item.get("metadata") or {}
+    if isinstance(md, dict):
+        name = md.get("name") or ""
+    if not name:
+        name = item.get("name") or cid[:12]
+    labels = status.get("labels") or {}
+    # Try to grab cgroupsPath from runtimeSpec (containerd info)
+    cg_path = ""
+    if isinstance(info, dict):
+        rt = info.get("runtimeSpec") or {}
+        if isinstance(rt, dict):
+            cg_path = ((rt.get("linux") or {}).get("cgroupsPath") or "")
+        cg_path = cg_path or (info.get("cgroupsPath") or "")
+    pid = str(info.get("pid") or status.get("pid") or 0)
+    mem, cg = read_mem_bytes_and_path(pid, cg_path)
+    print(f"{cid[:12]},{name},{pid},{mem},{cg}")
+    inspect_out.append({
+        "Id": cid,
+        "Name": name,
+        "Labels": labels,
+        "Config": {"Labels": labels},
+    })
+
+with open(os.path.join(root, "raw", "cri_inspect.json"), "w", encoding="utf-8") as fh:
+    json.dump(inspect_out, fh)
+PY
+  else
+    echo "[mem-snapshot] crictl not found (engine_filter=cri); container metrics skipped." >&2
+  fi
+fi
+log_step "cri containers collected (if selected)"
+
 # Podman (only when selected)
-if [[ "$collect_engine" != "docker" ]] && podman_available; then
+if [[ "$collect_engine" == "podman" || "$collect_engine" == "both" ]] && podman_available; then
   podman_cmd ps -a --format json > "${outdir}/raw/podman_ps.json" 2>/dev/null || true
   ids=$(podman_cmd ps -aq 2>/dev/null || true)
   if [[ -n "${ids}" ]]; then
@@ -311,7 +449,7 @@ fi
 log_step "podman containers collected (if selected)"
 
 # Docker (only when selected)
-if [[ "$collect_engine" != "podman" ]] && command -v docker >/dev/null 2>&1; then
+if [[ "$collect_engine" == "docker" || "$collect_engine" == "both" ]] && command -v docker >/dev/null 2>&1; then
   docker ps -a --no-trunc --format '{{.ID}} {{.Names}} {{.Status}}' > "${outdir}/raw/docker_ps.txt" || true
   if docker ps -aq >/dev/null 2>&1; then
     ids=$(docker ps -aq)
@@ -382,6 +520,144 @@ PY
   fi
 fi
 log_step "docker containers collected (if selected)"
+
+# k1nd extras: collect control-plane PSS from inside dev containers (when running in docker)
+if [[ "$mode" == "k1s" ]] && command -v docker >/dev/null 2>&1; then
+  {
+    k1nd_controller_name="${AE_K1ND_CONTROLLER_CONTAINER:-dev-controller-1}"
+    k1nd_apishim_name="${AE_K1ND_APISHIM_CONTAINER:-dev-apishim-1}"
+    k1nd_ingress_name="${AE_K1ND_INGRESS_CONTAINER:-dev-caddy-1}"
+    k1nd_project="${AE_K1ND_PROJECT:-}"
+
+    find_k1nd_container() {
+      local name="$1"
+      local service="$2"
+      local cid=""
+      if [[ -n "$name" ]]; then
+        cid=$(docker ps -q --filter "name=^${name}$" 2>/dev/null | head -n1 || true)
+      fi
+      if [[ -z "$cid" && -n "$service" ]]; then
+        if [[ -n "$k1nd_project" ]]; then
+          cid=$(docker ps -q --filter "label=com.docker.compose.service=${service}" \
+            --filter "label=com.docker.compose.project=${k1nd_project}" 2>/dev/null | head -n1 || true)
+        else
+          cid=$(docker ps -q --filter "label=com.docker.compose.service=${service}" 2>/dev/null | head -n1 || true)
+        fi
+      fi
+      echo "$cid"
+    }
+
+    pss_from_container_py() {
+      local cid="$1"
+      local pattern="$2"
+      docker exec -i "$cid" python - "$pattern" << 'PY' 2>/dev/null || true
+import os, re, sys
+pat = re.compile(sys.argv[1])
+total = 0
+for pid in os.listdir("/proc"):
+    if not pid.isdigit():
+        continue
+    try:
+        cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\x00", b" ").decode()
+    except Exception:
+        continue
+    if not pat.search(cmd):
+        continue
+    try:
+        with open(f"/proc/{pid}/smaps_rollup", "r", encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                if line.startswith("Pss:"):
+                    total += int(line.split()[1])
+                    break
+    except Exception:
+        continue
+print(total)
+PY
+    }
+
+    pss_from_container_sh() {
+      local cid="$1"
+      local comm="$2"
+      docker exec "$cid" sh -c '
+comm="$1"
+total=0
+for p in /proc/[0-9]*; do
+  pid="${p##*/}"
+  [ -r "$p/comm" ] || continue
+  name=$(cat "$p/comm" 2>/dev/null || true)
+  [ "$name" = "$comm" ] || continue
+  if [ -r "$p/smaps_rollup" ]; then
+    pss=$(sed -n "s/^Pss:[[:space:]]*\\([0-9]*\\) kB/\\1/p" "$p/smaps_rollup" | head -n1)
+    total=$((total + ${pss:-0}))
+  fi
+done
+echo "$total"
+' sh "$comm" 2>/dev/null || true
+    }
+
+    controller_cid=$(find_k1nd_container "$k1nd_controller_name" "controller")
+    apishim_cid=$(find_k1nd_container "$k1nd_apishim_name" "apishim")
+    ingress_cid=$(find_k1nd_container "$k1nd_ingress_name" "caddy")
+
+    controller_pss=0
+    apishim_pss=0
+    ingress_pss=0
+
+    if [[ -n "$controller_cid" ]]; then
+      controller_pss=$(pss_from_container_py "$controller_cid" "ae\\.controller") || controller_pss=0
+    fi
+    if [[ -n "$apishim_cid" ]]; then
+      apishim_pss=$(pss_from_container_py "$apishim_cid" "ae\\.apishim") || apishim_pss=0
+    fi
+    if [[ -n "$ingress_cid" ]]; then
+      ingress_pss=$(pss_from_container_sh "$ingress_cid" "caddy") || ingress_pss=0
+      if [[ -z "${ingress_pss:-}" || "${ingress_pss:-0}" == "0" ]]; then
+        ingress_pss=$(pss_from_container_py "$ingress_cid" "caddy") || ingress_pss=0
+      fi
+    fi
+
+    total_pss=$(( ${controller_pss:-0} + ${apishim_pss:-0} + ${ingress_pss:-0} ))
+    if [[ -n "$controller_cid$apishim_cid$ingress_cid" ]]; then
+      cat > "${outdir}/raw/k1nd_control_plane_pss_kb.json" <<EOF
+{
+  "controller_pss_kb": ${controller_pss:-0},
+  "apishim_pss_kb": ${apishim_pss:-0},
+  "ingress_pss_kb": ${ingress_pss:-0},
+  "total_pss_kb": ${total_pss:-0},
+  "containers": {
+    "controller": "${controller_cid:-}",
+    "apishim": "${apishim_cid:-}",
+    "ingress": "${ingress_cid:-}"
+  }
+}
+EOF
+      echo "[mem-snapshot] k1nd extras: controller=${controller_pss} apishim=${apishim_pss} ingress=${ingress_pss}" >&2
+    fi
+  } 2>>"${outdir}/status.log"
+fi
+
+# Guard rail: fail fast if we expected containers but captured none.
+require_containers="${AE_REQUIRE_CONTAINERS:-}"
+if [[ -z "${require_containers}" ]]; then
+  label_lc="${label,,}"
+  if [[ "${AE_ALLOW_EMPTY_CONTAINERS:-0}" == "1" ]]; then
+    require_containers=0
+  elif [[ "${label_lc}" == *"idle"* ]]; then
+    require_containers=0
+  else
+    require_containers=1
+  fi
+fi
+if [[ "${require_containers}" == "1" ]]; then
+  row_count=0
+  if [[ -f "${outdir}/raw/containers_mem.csv" ]]; then
+    row_count=$(tail -n +2 "${outdir}/raw/containers_mem.csv" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t')
+  fi
+  if [[ "${row_count}" == "0" ]]; then
+    log_err "no containers captured (AE_REQUIRE_CONTAINERS=1); failing snapshot"
+    exit 4
+  fi
+fi
 
 # k3s extras: collect control-plane PSS and app cgroup bytes from inside k3d node containers
 if [[ "$mode" == "k3s" ]] && command -v docker >/dev/null 2>&1; then

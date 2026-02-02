@@ -15,7 +15,9 @@ This is not a full Markdown implementation — just enough for our docs.
 
 from __future__ import annotations
 
+import hashlib
 import html
+import json
 import os
 import time
 from pathlib import Path
@@ -49,37 +51,94 @@ def detect_api_base() -> str:
 
 
 API_BASE = detect_api_base()
+
+
+def detect_dashboard_url() -> str:
+    env = os.getenv("DOCS_DASHBOARD_URL")
+    if env:
+        return env.strip()
+    try:
+        hosts = Path("/etc/hosts").read_text(encoding="utf-8", errors="ignore")
+        if "dash.home.arpa" in hosts:
+            return "https://dash.home.arpa:8443/dashboard"
+    except Exception:
+        pass
+    return "/dashboard"
+
+
+DASHBOARD_URL = detect_dashboard_url()
 EXPORT_NON_INTERACTIVE = _truthy_env("DOCS_NON_INTERACTIVE") or _truthy_env(
     "DOCS_EXPORT_NON_INTERACTIVE"
 )
+SWAGGER_UI_VENDOR = _truthy_env("DOCS_SWAGGER_VENDOR")
+SWAGGER_UI_VERSION = os.getenv("DOCS_SWAGGER_UI_VERSION", "5.11.0").strip()
+SWAGGER_UI_CDN_BASE = os.getenv(
+    "DOCS_SWAGGER_UI_CDN_BASE",
+    f"https://unpkg.com/swagger-ui-dist@{SWAGGER_UI_VERSION}",
+).strip()
+SWAGGER_UI_DEFAULT_URL = os.getenv(
+    "DOCS_SWAGGER_DEFAULT_URL",
+    "http://localhost:8080/k1s/swagger/openapi-v3.json",
+).strip()
+SWAGGER_UI_CONTROLLER_DEFAULT_URL = os.getenv(
+    "DOCS_SWAGGER_CONTROLLER_DEFAULT_URL",
+    "http://localhost:8080/k1s/openapi.json",
+).strip()
 
 RSS_FEED_URL = os.getenv("DOCS_RSS_FEED_URL", "https://codeberg.org/th3_4rchit3ct/k1s.rss").strip()
 RSS_FEED_TITLE = "k1s Repo Activity"
 SOURCE_REPO_URL = os.getenv(
     "DOCS_SOURCE_REPO_URL", "https://codeberg.org/th3_4rchit3ct/k1s"
 ).strip()
-SOURCE_REPO_LABEL = "Canonical (Upstream) Repository"
+SOURCE_REPO_LABEL = os.getenv(
+    "DOCS_SOURCE_REPO_LABEL", "Upstream Repository (CODEBERG)"
+).strip()
+COLLAB_REPO_URL = os.getenv(
+    "DOCS_COLLAB_REPO_URL", "https://github.com/the-cm-collective/k1s"
+).strip()
+COLLAB_REPO_LABEL = os.getenv(
+    "DOCS_COLLAB_REPO_LABEL", "Issues & PRs / SPONSORS (GitHub)"
+).strip()
 
-INTERACTIVE_HREF_TOKENS = ("/swagger", "/redoc", "/dashboard", "playground.html", "/playground")
+INTERACTIVE_HREF_TOKENS = (
+    "/swagger",
+    "/redoc",
+    "/dashboard",
+    "/openapi/v3",
+    "playground.html",
+    "/playground",
+)
 
 NAV_LINKS = [
     ("Start Here", "start-here.html", False, False),
     ("Overview", "overview.html", False, False),
     ("Demos", "examples.html", False, False),
     ("Architecture", "architecture.html", False, False),
+    ("CRI containerd", "cri-containerd.html", False, False),
     ("Multi-Node", "multinode-lab.html", False, False),
     ("HTTP API", "http-api.html", False, False),
     ("API Shim", "apishim-compatibility-matrix.html", False, False),
+    ("OpenAPI v3", "/openapi/v3", True, True),
     ("Ingress", "ingress.html", False, False),
     ("API Auth", "api-auth.html", False, False),
     ("Concepts", "concepts.html", False, False),
     ("Benchmarks", "benchmarks.html", False, False),
     ("Swagger", "/swagger", True, True),
     ("ReDoc", "/redoc", True, True),
-    ("Dashboard", "/dashboard", True, True),
+    ("Dashboard", DASHBOARD_URL, True, True),
     ("Playground", "playground.html", True, False),
     ("Concepts in Practice", "concepts-in-practice.html", False, False),
 ]
+
+STATIC_SWAGGER_LABEL = "Swagger (Static)"
+STATIC_SWAGGER_HREF = "swagger/"
+STATIC_SWAGGER_APISHIM_HREF = "swagger/apishim/"
+STATIC_SWAGGER_CONTROLLER_LABEL = "Controller API"
+STATIC_SWAGGER_APISHIM_LABEL = "API Shim"
+STATIC_SWAGGER_CONTROLLER_OUT_PATH = "swagger/index.html"
+STATIC_SWAGGER_APISHIM_OUT_PATH = "swagger/apishim/index.html"
+STATIC_SWAGGER_CONTROLLER_SPEC = "controller-openapi.json"
+STATIC_SWAGGER_APISHIM_SPEC = "openapi-v3.json"
 
 
 def is_interactive_href(href: str) -> bool:
@@ -87,14 +146,29 @@ def is_interactive_href(href: str) -> bool:
     return any(token in href_lower for token in INTERACTIVE_HREF_TOKENS)
 
 
-def render_nav(*, include_interactive: bool) -> str:
+def render_nav(
+    *,
+    include_interactive: bool,
+    include_static_swagger: bool = False,
+    href_prefix: str = "",
+) -> str:
+    def normalize_href(href: str) -> str:
+        if not href_prefix:
+            return href
+        if href.startswith(("http://", "https://", "/", "#")):
+            return href
+        return f"{href_prefix}{href}"
+
     parts = []
+    brand_href = normalize_href("index.html")
+    brand_logo_src = normalize_href("static/k1s-logo-circle.svg")
     parts.append(
-        '      <a class="nav-brand" href="index.html" aria-label="k1s docs home">'
-        '<img src="static/k1s-logo-circle.svg" alt="k1s logo" />'
+        f'      <a class="nav-brand" href="{brand_href}" aria-label="k1s docs home">'
+        f'<img src="{brand_logo_src}" alt="k1s logo" />'
         "<span>k1s docs</span>"
         "</a>"
     )
+    injected_static = False
     for label, href, interactive, external in NAV_LINKS:
         if interactive and not include_interactive:
             continue
@@ -103,7 +177,17 @@ def render_nav(*, include_interactive: bool) -> str:
             attrs.append('target="_blank"')
             attrs.append('rel="noopener"')
         attr_str = " " + " ".join(attrs) if attrs else ""
+        href = normalize_href(href)
         parts.append(f'      <a href="{href}"{attr_str}>{label}</a>')
+        if include_static_swagger and label == "HTTP API":
+            parts.append(
+                f'      <a href="{normalize_href(STATIC_SWAGGER_HREF)}">{STATIC_SWAGGER_LABEL}</a>'
+            )
+            injected_static = True
+    if include_static_swagger and not injected_static:
+        parts.append(
+            f'      <a href="{normalize_href(STATIC_SWAGGER_HREF)}">{STATIC_SWAGGER_LABEL}</a>'
+        )
     return "\n".join(parts)
 
 
@@ -112,11 +196,13 @@ def render_template(
     title: str,
     body: str,
     api_base: str,
+    dashboard_url: str,
     extra_head: str,
     footer_text: str,
     nav_html: str,
     api_mode_widget: str,
     api_mode_script: str,
+    base_tag: str = "",
 ) -> str:
     """Render TEMPLATE safely without str.format interfering with braces.
 
@@ -126,7 +212,9 @@ def render_template(
         TEMPLATE.replace("{title}", "{__TITLE__}")
         .replace("{body}", "{__BODY__}")
         .replace("{api_base}", "{__API_BASE__}")
+        .replace("{dashboard_url}", "{__DASHBOARD_URL__}")
         .replace("{extra_head}", "{__EXTRA__}")
+        .replace("{base_tag}", "{__BASE__}")
         .replace("{footer_text}", "{__FOOT__}")
         .replace("{nav}", "{__NAV__}")
         .replace("{api_mode_widget}", "{__API_MODE_WIDGET__}")
@@ -135,7 +223,9 @@ def render_template(
     t = t.replace("{__TITLE__}", title)
     t = t.replace("{__BODY__}", body)
     t = t.replace("{__API_BASE__}", api_base)
+    t = t.replace("{__DASHBOARD_URL__}", dashboard_url)
     t = t.replace("{__EXTRA__}", extra_head)
+    t = t.replace("{__BASE__}", base_tag)
     t = t.replace("{__FOOT__}", footer_text)
     t = t.replace("{__NAV__}", nav_html)
     t = t.replace("{__API_MODE_WIDGET__}", api_mode_widget)
@@ -143,10 +233,269 @@ def render_template(
     return t
 
 
+BUILD_STAMP_RE = re.compile(r"Built\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}")
+BUILD_STAMP_PLACEHOLDER = "Built __DOCS_BUILD_TS__"
+
+
+def _normalize_build_stamp(text: str) -> str:
+    return BUILD_STAMP_RE.sub(BUILD_STAMP_PLACEHOLDER, text)
+
+
+def _extract_build_stamp(text: str) -> str | None:
+    match = BUILD_STAMP_RE.search(text)
+    return match.group(0) if match else None
+
+
+def _current_build_stamp() -> str:
+    return f"Built {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
+
+def _apply_stable_build_stamp(out_path: Path, html_text: str) -> str:
+    if out_path.exists():
+        try:
+            previous = out_path.read_text(encoding="utf-8")
+        except Exception:
+            previous = ""
+        if previous:
+            if _normalize_build_stamp(previous) == html_text:
+                prev_stamp = _extract_build_stamp(previous)
+                if prev_stamp:
+                    return html_text.replace(BUILD_STAMP_PLACEHOLDER, prev_stamp)
+    return html_text.replace(BUILD_STAMP_PLACEHOLDER, _current_build_stamp())
+
+
+def _load_ae_version() -> str:
+    version_path = ROOT.parent / "src" / "ae" / "__init__.py"
+    try:
+        text = version_path.read_text(encoding="utf-8")
+    except Exception:
+        return "0.0.0"
+    match = re.search(r'__version__\s*=\s*"([^"]+)"', text)
+    if match:
+        return match.group(1)
+    return "0.0.0"
+
+
+def build_controller_openapi_doc() -> dict[str, object]:
+    # Keep in sync with src/ae/observability/http_api.py:_handle_openapi.
+    tokens_configured = bool(
+        os.getenv("AE_API_ADMIN_TOKEN")
+        or os.getenv("AE_API_SCALER_TOKEN")
+        or os.getenv("AE_API_READ_TOKEN")
+    )
+    version = _load_ae_version()
+    doc: dict[str, object] = {
+        "openapi": "3.0.0",
+        "info": {"title": "k1s Controller API", "version": version},
+        "components": {
+            "securitySchemes": {
+                "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}
+            },
+            "schemas": {
+                "AppStatus": {
+                    "type": "object",
+                    "properties": {
+                        "app_name": {"type": "string"},
+                        "name": {"type": "string"},
+                        "namespace": {"type": "string"},
+                        "deployment": {"type": "string"},
+                        "desired_replicas": {"type": "integer"},
+                        "ready_replicas": {"type": "integer"},
+                        "live_replicas": {"type": "integer"},
+                        "revision": {"type": "integer"},
+                        "revision_status": {"type": "string"},
+                        "image": {"type": "string"},
+                        "ingress_host": {"type": "string", "nullable": True},
+                        "ingress_path": {"type": "string", "nullable": True},
+                    },
+                    "required": [
+                        "app_name",
+                        "desired_replicas",
+                        "ready_replicas",
+                        "live_replicas",
+                        "revision",
+                        "revision_status",
+                        "image",
+                    ],
+                },
+                "Event": {
+                    "type": "object",
+                    "properties": {
+                        "app_name": {"type": "string"},
+                        "revision": {"type": "integer"},
+                        "event_type": {"type": "string"},
+                        "message": {"type": "string"},
+                        "created_at": {"type": "string", "format": "date-time"},
+                    },
+                    "required": ["app_name", "revision", "event_type", "message", "created_at"],
+                },
+            },
+        },
+        "paths": {
+            "/metrics": {
+                "get": {
+                    "summary": "Prometheus metrics",
+                    "responses": {"200": {"description": "Prometheus text"}},
+                }
+            },
+            "/health": {
+                "get": {"summary": "Controller health", "responses": {"200": {"description": "OK"}}}
+            },
+            "/status": {
+                "get": {
+                    "summary": "List app statuses (paginated)",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50}},
+                        {"name": "cursor", "in": "query", "schema": {"type": "string"}},
+                        {"name": "app", "in": "query", "schema": {"type": "string"}},
+                        {"name": "wildcard", "in": "query", "schema": {"type": "string"}},
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/status/{app}": {
+                "get": {
+                    "summary": "Get a single app status",
+                    "parameters": [
+                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                    ],
+                    "responses": {"200": {"description": "OK"}, "404": {"description": "Not Found"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/manifest/{app}": {
+                "get": {
+                    "summary": "Get the latest stored manifest for an app",
+                    "parameters": [
+                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                    ],
+                    "responses": {"200": {"description": "OK"}, "404": {"description": "Not Found"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/events/{app}": {
+                "get": {
+                    "summary": "List app events (paginated)",
+                    "parameters": [
+                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 20}},
+                        {"name": "cursor", "in": "query", "schema": {"type": "string"}},
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/scale/{app}": {
+                "post": {
+                    "summary": "Scale an app",
+                    "parameters": [
+                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/delete/{app}": {
+                "post": {
+                    "summary": "Delete an app",
+                    "parameters": [
+                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {"name": "purge", "in": "query", "schema": {"type": "boolean"}},
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/logs/{app}": {
+                "get": {
+                    "summary": "Tail application logs",
+                    "parameters": [
+                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {"name": "container", "in": "query", "schema": {"type": "string"}},
+                        {"name": "tail", "in": "query", "schema": {"type": "integer"}},
+                        {"name": "since", "in": "query", "schema": {"type": "integer"}},
+                        {"name": "follow", "in": "query", "schema": {"type": "boolean"}},
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/plan": {
+                "post": {
+                    "summary": "Validate a manifest and return plan diagnostics",
+                    "requestBody": {"required": True},
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/tls/verify": {
+                "get": {
+                    "summary": "Verify tlsSecretName resolvability under AE_TLS_DIR",
+                    "parameters": [
+                        {"name": "name", "in": "query", "required": True, "schema": {"type": "string"}},
+                        {"name": "root", "in": "query", "schema": {"type": "string"}},
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/rollout/pause/{app}": {
+                "post": {
+                    "summary": "Pause rollout for an app",
+                    "parameters": [
+                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+            "/rollout/resume/{app}": {
+                "post": {
+                    "summary": "Resume rollout for an app",
+                    "parameters": [
+                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
+        },
+    }
+    if tokens_configured:
+        doc["security"] = [{"bearerAuth": []}]
+    return doc
+
+
+def _hash_files(paths: list[Path]) -> str | None:
+    h = hashlib.sha256()
+    found = False
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            h.update(path.read_bytes())
+            found = True
+        except Exception:
+            continue
+    if not found:
+        return None
+    return h.hexdigest()[:10]
+
+
+def _labs_asset_version() -> str:
+    static_root = SRC / "static"
+    ver = _hash_files([static_root / "labs.css", static_root / "labs.js"])
+    if ver:
+        return ver
+    return str(int(time.time()))
+
+
 TEMPLATE = """<!doctype html>
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
+    {base_tag}
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>{title}</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
@@ -186,6 +535,8 @@ TEMPLATE = """<!doctype html>
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
+        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
@@ -206,6 +557,7 @@ TEMPLATE = """<!doctype html>
         --k1s-card-bg: #ffffff;
         --k1s-header-bg: rgba(255,255,255,0.82);
         --code-bg: #f5f6f8;
+        --k1s-page-overlay: linear-gradient(rgba(244,245,247,0.9), rgba(244,245,247,0.9));
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
         --muted: var(--k1s-panel);
@@ -227,7 +579,11 @@ TEMPLATE = """<!doctype html>
         min-height: 100vh;
         display: flex;
         flex-direction: column;
-        background: var(--bg);
+        background-color: var(--bg);
+        background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
+        background-size: 100% 100%, auto 100%;
+        background-position: center top, center top;
+        background-repeat: repeat-y, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -527,7 +883,7 @@ TEMPLATE = """<!doctype html>
         padding: 10px 12px;
         display: flex;
         flex-wrap: wrap;
-        align-items: center;
+        align-items: flex-start;
         gap: 6px 10px;
         border: 1px solid var(--k1s-border);
         border-radius: 12px;
@@ -537,6 +893,24 @@ TEMPLATE = """<!doctype html>
       .hero-repo-label {
         font-size: 0.7rem;
         letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         color: var(--k1s-text-muted);
       }
@@ -750,6 +1124,7 @@ TEMPLATE = """<!doctype html>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
     <script>window.DOCS_API_BASE='{api_base}';</script>
+    <script>window.DOCS_DASHBOARD_URL='{dashboard_url}';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -873,6 +1248,64 @@ def api_mode_fragments(include: bool) -> tuple[str, str]:
             "          if (location.pathname.endsWith('playground.html')) location.reload();",
             "        });",
             "        label();",
+            "      })();",
+            "    </script>",
+            "    <script>",
+            "      (function() {",
+            "        function hideLinks(match) {",
+            "          var links = document.querySelectorAll('a[href]');",
+            "          links.forEach(function(a) {",
+            "            var href = a.getAttribute('href') || '';",
+            "            if (match(href)) { a.style.display = 'none'; }",
+            "          });",
+            "        }",
+            "        function rewriteDashboardLinks(target) {",
+            "          if (!target) return;",
+            "          var links = document.querySelectorAll('a[href]');",
+            "          links.forEach(function(a) {",
+            "            var href = a.getAttribute('href') || '';",
+            "            if (href.indexOf('/dashboard') === 0) {",
+            "              a.setAttribute('href', target);",
+            "              if (!a.getAttribute('target')) {",
+            "                a.setAttribute('target', '_blank');",
+            "                a.setAttribute('rel', 'noopener');",
+            "              }",
+            "            }",
+            "          });",
+            "        }",
+            "        function disablePlaygroundPage() {",
+            "          var path = (location && location.pathname) ? location.pathname : '';",
+            "          if (!/playground/i.test(path)) return;",
+            "          var container = document.querySelector('.container');",
+            "          if (container) container.style.display = 'none';",
+            "          var msg = document.createElement('div');",
+            "          msg.style.maxWidth = '960px';",
+            "          msg.style.margin = '32px auto';",
+            "          msg.style.padding = '16px 20px';",
+            "          msg.style.border = '1px solid var(--border)';",
+            "          msg.style.borderRadius = '12px';",
+            "          msg.style.background = 'var(--k1s-panel)';",
+            "          msg.style.color = 'var(--k1s-text)';",
+            "          msg.innerHTML = '<h2 style=\"margin:0 0 8px\">Playground disabled</h2>' +",
+            "            '<p style=\"margin:0;color:var(--k1s-text-muted)\">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';",
+            "          document.body.insertBefore(msg, document.body.firstChild);",
+            "        }",
+            "        fetch('/ui/features', { credentials: 'same-origin' })",
+            "          .then(function(r) { return r.ok ? r.json() : null; })",
+            "          .then(function(f) {",
+            "            if (!f) return;",
+            "            if (f.dashboard === false) {",
+            "              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });",
+            "            } else {",
+            "              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();",
+            "              rewriteDashboardLinks(dashUrl);",
+            "            }",
+            "            if (f.playground === false) {",
+            "              hideLinks(function(h) { return h.indexOf('playground') !== -1; });",
+            "              disablePlaygroundPage();",
+            "            }",
+            "          })",
+            "          .catch(function() {});",
             "      })();",
             "    </script>",
         ]
@@ -1336,6 +1769,8 @@ def build_one(
                             return "k1s rootless"
                         if mode == "k1s" and backend == "podman" and root_tag == "priv":
                             return "k1s rootful"
+                        if mode == "k1s" and backend == "cri":
+                            return "k1s cri"
                         if mode == "k1s" and backend == "docker":
                             return "k1nd"
                         if mode == "k3s":
@@ -1370,9 +1805,12 @@ def build_one(
                             latest[key] = r
 
                     # Desired column order
-                    col_order = ["k1s rootless", "k1s rootful", "k1nd", "k3d"]
+                    col_order = ["k1s rootless", "k1s rootful", "k1s cri", "k1nd", "k3d"]
                     # Gather all stages we have across these columns
                     stages = sorted({k[1] for k in latest.keys()})
+                    coverage_min = float(os.getenv("DOCS_COVERAGE_MIN", "0.8") or 0.8)
+                    coverage_map: dict[str, float] = {}
+                    low_coverage: set[str] = set()
 
                     # Heatmap coloring helper (lower is better)
                     def color_for(values: list[float], val: float) -> str:
@@ -1389,10 +1827,19 @@ def build_one(
                     def render_metric_table(title_txt: str, extractor) -> str:
                         html_parts: list[str] = []
                         html_parts.append(f"<h3>{html.escape(title_txt)}</h3>")
+                        header_cells: list[str] = []
+                        for c in col_order:
+                            if c in low_coverage:
+                                cov = coverage_map.get(c, 0.0)
+                                header_cells.append(
+                                    f"<th title='coverage {cov:.0%} (min {coverage_min:.0%})'>{c} ⚠</th>"
+                                )
+                            else:
+                                header_cells.append(f"<th>{c}</th>")
                         html_parts.append(
                             "<table class='mini' style='border-collapse:collapse;width:100%'>"
                             + "<thead><tr><th>Stage</th>"
-                            + "".join([f"<th>{c}</th>" for c in col_order])
+                            + "".join(header_cells)
                             + "</tr></thead><tbody>"
                         )
                         for st in stages:
@@ -1512,14 +1959,18 @@ def build_one(
                             adjusted = (avg * coverage) + (1.0 * (1.0 - coverage))
                             ranking.append((adjusted, avg, c, n, coverage))
                         ranking.sort(key=lambda x: x[0])
-                        # Apply coverage threshold to filter scenarios from ranking/tables
-                        coverage_min = float(os.getenv("DOCS_COVERAGE_MIN", "0.8") or 0.8)
+                        # Apply coverage threshold to filter scenarios from ranking (tables still show all).
                         allowed_cols = [
                             c
                             for (_adj, _avg, c, n, coverage) in ranking
                             if (max_n and (coverage >= coverage_min))
                         ]
-                        hidden_cols = [c for c in col_order if c not in allowed_cols]
+                        coverage_map = {
+                            c: coverage for (_adj, _avg, c, _n, coverage) in ranking
+                        }
+                        low_coverage = {
+                            c for c in col_order if coverage_map.get(c, 0.0) < coverage_min
+                        }
                         # Winner band (only allowed columns)
                         parts.append(
                             "<style> .pill { display:inline-block; padding:4px 10px; border:1px solid var(--border); border-radius:999px; margin-right:8px; }"
@@ -1536,6 +1987,12 @@ def build_one(
                             for (adj, _avg, c, n, cov) in ranking
                             if c in allowed_cols
                         ]
+                        if not shown:
+                            shown = [
+                                (adj, _avg, c, n, cov)
+                                for (adj, _avg, c, n, cov) in ranking
+                                if cov > 0
+                            ] or ranking
                         for idx, (adjusted, _avg, c, n, coverage) in enumerate(shown):
                             cls = (
                                 "win"
@@ -1548,16 +2005,14 @@ def build_one(
                                 f"<span class='pill {cls}' title='{title}'> {c} <span style='opacity:.85'>&nbsp;({score})</span></span>"
                             )
                         bl.append("</div>")
-                        if hidden_cols:
+                        if low_coverage:
                             bl.append(
-                                "<div class='band' style='opacity:.8'>Hidden for low coverage (set DOCS_COVERAGE_MIN to adjust): "
-                                + ", ".join(hidden_cols)
+                                "<div class='band' style='opacity:.8'>Low coverage (shown but excluded from ranking until "
+                                + f"≥{coverage_min:.0%}): "
+                                + ", ".join(sorted(low_coverage))
                                 + "</div>"
                             )
                         parts.append("".join(bl))
-                        # Use filtered columns for tables below
-                        if allowed_cols:
-                            col_order = allowed_cols
                     except Exception:
                         pass
                     parts.append(
@@ -1728,7 +2183,7 @@ def build_one(
         pass
     extra_head = ""
     if md_path.name == "playground.md":
-        ver = str(int(datetime.now().timestamp()))
+        ver = _labs_asset_version()
         extra_head = "\n".join(
             [
                 f'<link rel="stylesheet" href="static/labs.css?v={ver}"/>',
@@ -1744,25 +2199,205 @@ def build_one(
         )
         # Removed: no extra Echo YAML dump at the end of the page
     title = md_path.stem.replace("-", " ").title()
-    out_path.write_text(
-        render_template(
-            title=title,
-            body=html_body,
-            api_base=API_BASE,
-            extra_head=extra_head,
-            footer_text=f"Built {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            nav_html=nav_html,
-            api_mode_widget=api_mode_widget,
-            api_mode_script=api_mode_script,
-        ),
-        encoding="utf-8",
+    html_out = render_template(
+        title=title,
+        body=html_body,
+        api_base=API_BASE,
+        dashboard_url=DASHBOARD_URL,
+        extra_head=extra_head,
+        footer_text=BUILD_STAMP_PLACEHOLDER,
+        nav_html=nav_html,
+        api_mode_widget=api_mode_widget,
+        api_mode_script=api_mode_script,
     )
+    html_out = _apply_stable_build_stamp(out_path, html_out)
+    out_path.write_text(html_out, encoding="utf-8")
+
+
+def copy_openapi_specs() -> None:
+    try:
+        src_root = SRC / "openapi"
+        if not src_root.exists():
+            return
+        out_root = OUT / "openapi"
+        out_root.mkdir(parents=True, exist_ok=True)
+        swagger_root = OUT / "swagger"
+        swagger_root.mkdir(parents=True, exist_ok=True)
+        swagger_apishim_root = swagger_root / "apishim"
+        swagger_apishim_root.mkdir(parents=True, exist_ok=True)
+        import shutil
+
+        v3_path = src_root / "openapi-v3.json"
+        if v3_path.exists():
+            try:
+                shutil.copy2(v3_path, swagger_root / STATIC_SWAGGER_APISHIM_SPEC)
+                shutil.copy2(v3_path, swagger_apishim_root / STATIC_SWAGGER_APISHIM_SPEC)
+            except Exception:
+                pass
+        try:
+            controller_doc = build_controller_openapi_doc()
+            controller_payload = json.dumps(controller_doc).encode("utf-8")
+            (swagger_root / STATIC_SWAGGER_CONTROLLER_SPEC).write_bytes(controller_payload)
+            (OUT / "openapi.json").write_bytes(controller_payload)
+        except Exception:
+            pass
+        for p in src_root.iterdir():
+            if not p.is_file():
+                continue
+            if p.suffix.lower() not in {".json", ".yml", ".yaml"}:
+                continue
+            try:
+                shutil.copy2(p, out_root / p.name)
+            except Exception:
+                pass
+    except Exception:
+        # Non-fatal: keep docs renderable if copy fails
+        pass
+
+
+def build_static_swagger_page(
+    *,
+    nav_html: str,
+    api_mode_widget: str,
+    api_mode_script: str,
+    use_vendor_assets: bool,
+    title: str,
+    spec_path: str,
+    default_url: str,
+    base_tag: str,
+    out_path: str,
+    active_tab: str,
+) -> None:
+    vendor_root = SRC / "static" / "swagger-ui"
+    if use_vendor_assets and vendor_root.exists():
+        css_href = "../static/swagger-ui/swagger-ui.css"
+        bundle_src = "../static/swagger-ui/swagger-ui-bundle.js"
+        preset_src = "../static/swagger-ui/swagger-ui-standalone-preset.js"
+    else:
+        css_href = f"{SWAGGER_UI_CDN_BASE}/swagger-ui.css"
+        bundle_src = f"{SWAGGER_UI_CDN_BASE}/swagger-ui-bundle.js"
+        preset_src = f"{SWAGGER_UI_CDN_BASE}/swagger-ui-standalone-preset.js"
+    default_url_js = json.dumps(default_url)
+    active_controller = " is-active" if active_tab == "controller" else ""
+    active_apishim = " is-active" if active_tab == "apishim" else ""
+    topbar = "\n".join(
+        [
+            '<div class="swagger-topbar">',
+            f'  <a class="swagger-tab{active_controller}" href="{STATIC_SWAGGER_HREF}">{STATIC_SWAGGER_CONTROLLER_LABEL}</a>',
+            f'  <a class="swagger-tab{active_apishim}" href="{STATIC_SWAGGER_APISHIM_HREF}">{STATIC_SWAGGER_APISHIM_LABEL}</a>',
+            "</div>",
+        ]
+    )
+    body = "\n".join(
+        [
+            topbar,
+            '<div class="swagger-shell">',
+            f"  <h1>{html.escape(title)}</h1>",
+            "  <p>Static API docs generated by docs-export.</p>",
+            '  <div id="swagger-ui"></div>',
+            "  <noscript>Enable JavaScript to view the API documentation.</noscript>",
+            "  <script>",
+            "    window.addEventListener('load', function() {",
+            "      if (!window.SwaggerUIBundle) return;",
+            "      var specUrl = new URL(",
+            f"        '{spec_path}',",
+            "        window.location.href",
+            "      ).toString();",
+            "      window.ui = SwaggerUIBundle({",
+            "        url: specUrl,",
+            "        dom_id: '#swagger-ui',",
+            "        deepLinking: true,",
+            "        presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],",
+            "        layout: 'StandaloneLayout'",
+            "      });",
+            f"      var defaultUrl = {default_url_js};",
+            "      if (defaultUrl) {",
+            "        var input = document.querySelector('.download-url-input');",
+            "        if (input) {",
+            "          input.value = defaultUrl;",
+            "          input.setAttribute('value', defaultUrl);",
+            "        }",
+            "      }",
+            "    });",
+            "  </script>",
+            "</div>",
+        ]
+    )
+    extra_head = "\n".join(
+        [
+            f'<link rel="stylesheet" href="{css_href}"/>',
+            "<style>",
+            "  .swagger-topbar {",
+            "    display: flex;",
+            "    gap: 12px;",
+            "    align-items: center;",
+            "    padding: 12px 16px;",
+            "    border-radius: 16px;",
+            "    background: color-mix(in srgb, var(--k1s-panel) 80%, #000000 20%);",
+            "    border: 1px solid var(--k1s-border);",
+            "    margin-bottom: 16px;",
+            "  }",
+            "  .swagger-tab {",
+            "    font-weight: 600;",
+            "    color: var(--fg);",
+            "    text-decoration: none;",
+            "    padding: 6px 10px;",
+            "    border-radius: 10px;",
+            "    border: 1px solid transparent;",
+            "  }",
+            "  .swagger-tab:hover {",
+            "    border-color: var(--k1s-border-soft);",
+            "    color: var(--link-hover);",
+            "  }",
+            "  .swagger-tab.is-active {",
+            "    background: color-mix(in srgb, var(--k1s-brand-gold) 20%, transparent);",
+            "    border-color: color-mix(in srgb, var(--k1s-brand-gold) 40%, var(--k1s-border));",
+            "  }",
+            "  .swagger-shell {",
+            "    background: #ffffff;",
+            "    color: #111111;",
+            "    padding: 16px;",
+            "    border-radius: 16px;",
+            "    box-shadow: 0 14px 34px rgba(0,0,0,0.24);",
+            "    color-scheme: light;",
+            "  }",
+            "  .swagger-shell p { color: #444444; }",
+            "  .swagger-shell .swagger-ui { color: #111111; }",
+            "</style>",
+            f'<script defer src="{bundle_src}"></script>',
+            f'<script defer src="{preset_src}"></script>',
+        ]
+    )
+    out_path = OUT / out_path
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    html_out = render_template(
+        title=title,
+        body=body,
+        api_base=API_BASE,
+        dashboard_url=DASHBOARD_URL,
+        extra_head=extra_head,
+        base_tag=base_tag,
+        footer_text=BUILD_STAMP_PLACEHOLDER,
+        nav_html=nav_html,
+        api_mode_widget=api_mode_widget,
+        api_mode_script=api_mode_script,
+    )
+    html_out = _apply_stable_build_stamp(out_path, html_out)
+    out_path.write_text(html_out, encoding="utf-8")
 
 
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     include_interactive = not EXPORT_NON_INTERACTIVE
-    nav_html = render_nav(include_interactive=include_interactive)
+    include_static_swagger = EXPORT_NON_INTERACTIVE
+    vendor_swagger_assets = SWAGGER_UI_VENDOR and (
+        (SRC / "static" / "swagger-ui" / "swagger-ui.css").exists()
+    )
+    nav_html = render_nav(
+        include_interactive=include_interactive,
+        include_static_swagger=include_static_swagger,
+    )
+    nav_html_swagger = nav_html
     api_mode_widget, api_mode_script = api_mode_fragments(include_interactive)
     # Copy static assets if present
     try:
@@ -1779,6 +2414,8 @@ def main() -> None:
                         existing.unlink()
             static_out.mkdir(parents=True, exist_ok=True)
             for p in static_src.iterdir():
+                if p.name == "swagger-ui" and (not EXPORT_NON_INTERACTIVE or not vendor_swagger_assets):
+                    continue
                 if p.is_dir():
                     shutil.copytree(p, static_out / p.name)
                 elif p.is_file():
@@ -1794,6 +2431,8 @@ def main() -> None:
     rss_feed_title = RSS_FEED_TITLE
     source_repo_url = SOURCE_REPO_URL
     source_repo_label = SOURCE_REPO_LABEL
+    collab_repo_url = COLLAB_REPO_URL
+    collab_repo_label = COLLAB_REPO_LABEL
 
     def render_link(label: str, href: str, external: bool) -> str:
         attrs = ' target="_blank" rel="noopener"' if external else ""
@@ -1805,8 +2444,19 @@ def main() -> None:
         ("Live Hive Dashboard", "/dashboard", True, True),
         ("Interactive Lab Playground", "playground.html", True, False),
     ]
+    if include_static_swagger:
+        index_quick_links.append((STATIC_SWAGGER_LABEL, STATIC_SWAGGER_HREF, False, False))
     if rss_feed_url:
         index_quick_links.append(("RSS Feed", rss_feed_url, False, True))
+
+    networking_links = [
+        ("HTTP API", "http-api.html", False, False),
+        ("API Shim Compatibility", "apishim-compatibility-matrix.html", False, False),
+        ("Ingress", "ingress.html", False, False),
+        ("API Auth", "api-auth.html", False, False),
+    ]
+    if include_static_swagger:
+        networking_links.insert(1, (STATIC_SWAGGER_LABEL, STATIC_SWAGGER_HREF, False, False))
 
     index_sections = [
         {
@@ -1841,12 +2491,7 @@ def main() -> None:
         {
             "title": "Networking & API",
             "desc": "Ingress, auth, and API compatibility details.",
-            "links": [
-                ("HTTP API", "http-api.html", False, False),
-                ("API Shim Compatibility", "apishim-compatibility-matrix.html", False, False),
-                ("Ingress", "ingress.html", False, False),
-                ("API Auth", "api-auth.html", False, False),
-            ],
+            "links": networking_links,
         },
         {
             "title": "Ops & Observability",
@@ -1898,16 +2543,35 @@ def main() -> None:
         )
 
     repo_section = ""
+    repo_items = []
     if source_repo_url:
+        repo_items.append((source_repo_label, source_repo_url))
+    if collab_repo_url:
+        repo_items.append((collab_repo_label, collab_repo_url))
+    if repo_items:
+        repo_bits = []
+        for label, url in repo_items:
+            repo_bits.append(
+                "\n".join(
+                    [
+                        '      <div class="hero-repo-item">',
+                        f'        <span class="hero-repo-item-label">{html.escape(label)}</span>',
+                        (
+                            f'        <a class="hero-repo-link" href="{html.escape(url)}" '
+                            'target="_blank" rel="noopener">'
+                            f"{html.escape(url)}</a>"
+                        ),
+                        "      </div>",
+                    ]
+                )
+            )
         repo_section = "\n".join(
             [
                 '    <div class="hero-repo">',
-                f'      <span class="hero-repo-label">{html.escape(source_repo_label)}</span>',
-                (
-                    f'      <a class="hero-repo-link" href="{html.escape(source_repo_url)}" '
-                    'target="_blank" rel="noopener">'
-                    f"{html.escape(source_repo_url)}</a>"
-                ),
+                '      <span class="hero-repo-label">Repositories</span>',
+                '      <div class="hero-repo-list">',
+                "\n".join(repo_bits),
+                "      </div>",
                 "    </div>",
             ]
         )
@@ -1921,6 +2585,7 @@ def main() -> None:
             "    </div>",
             "    <h1>k1s Documentation</h1>",
             '    <p class="hero-tagline">Guides, labs, and reference for building, operating, and observing k1s clusters.</p>',
+            '    <p class="hero-tagline">Status: k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.</p>',
             '    <div class="hero-links">',
             "      " + "\n      ".join(quick_links_html),
             "    </div>",
@@ -1938,19 +2603,47 @@ def main() -> None:
             f'<link rel="alternate" type="application/rss+xml" '
             f'title="{html.escape(rss_feed_title)}" href="{html.escape(rss_feed_url)}"/>'
         )
-    (OUT / "index.html").write_text(
-        render_template(
-            title="k1s Docs",
-            body=index,
-            api_base=API_BASE,
-            extra_head=index_extra_head,
-            footer_text=f"Built {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            nav_html=nav_html,
+    index_path = OUT / "index.html"
+    index_html = render_template(
+        title="k1s Docs",
+        body=index,
+        api_base=API_BASE,
+        dashboard_url=DASHBOARD_URL,
+        extra_head=index_extra_head,
+        footer_text=BUILD_STAMP_PLACEHOLDER,
+        nav_html=nav_html,
+        api_mode_widget=api_mode_widget,
+        api_mode_script=api_mode_script,
+    )
+    index_html = _apply_stable_build_stamp(index_path, index_html)
+    index_path.write_text(index_html, encoding="utf-8")
+
+    if EXPORT_NON_INTERACTIVE:
+        copy_openapi_specs()
+        build_static_swagger_page(
+            nav_html=nav_html_swagger,
             api_mode_widget=api_mode_widget,
             api_mode_script=api_mode_script,
-        ),
-        encoding="utf-8",
-    )
+            use_vendor_assets=vendor_swagger_assets,
+            title="k1s Controller API",
+            spec_path=STATIC_SWAGGER_CONTROLLER_SPEC,
+            default_url=SWAGGER_UI_CONTROLLER_DEFAULT_URL,
+            base_tag='<base href="../"/>',
+            out_path=STATIC_SWAGGER_CONTROLLER_OUT_PATH,
+            active_tab="controller",
+        )
+        build_static_swagger_page(
+            nav_html=nav_html_swagger,
+            api_mode_widget=api_mode_widget,
+            api_mode_script=api_mode_script,
+            use_vendor_assets=vendor_swagger_assets,
+            title="API Shim",
+            spec_path=STATIC_SWAGGER_APISHIM_SPEC,
+            default_url=SWAGGER_UI_DEFAULT_URL,
+            base_tag='<base href="../../"/>',
+            out_path=STATIC_SWAGGER_APISHIM_OUT_PATH,
+            active_tab="apishim",
+        )
 
     for src_name, out_name in mapping.items():
         build_one(
