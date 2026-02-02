@@ -1229,6 +1229,8 @@
         try { setCurlHint(href); } catch(_){}
         // Kick a best‑effort ingress check only after a successful session
         try { if (state.sessionId && state.orch.available) verifyIngress(); } catch(_){}
+      } else if (link) {
+        clearIngressUI('not configured');
       }
     } catch (e) {
       try {
@@ -1370,6 +1372,24 @@
       ingressCheckTimer = null;
       verifyIngress();
     }, 2500);
+  }
+
+  function clearIngressUI(reason){
+    const label = reason || 'not configured';
+    try {
+      const link = document.getElementById('ingress-link');
+      if (link) {
+        link.textContent = label;
+        link.href = '#';
+      }
+    } catch(_){}
+    try { setText('#ingress-check', label, 'pending'); } catch(_){}
+    try { setText('#ingress-curl',''); const b=document.getElementById('ingress-curl-copy'); if (b) b.disabled=true; } catch(_){}
+    try { setHostsHint(''); } catch(_){}
+    ingressCheckOk = null;
+    ingressCheckAttempts = 0;
+    ingressCheckUrl = '';
+    clearIngressRetry();
   }
 
   async function verifyIngress(){
@@ -1805,7 +1825,12 @@
     // Observe tail toggle
     const observeBtn = document.getElementById('btn-observe-toggle');
     let esLogs = null, esEvents = null, esStatus = null;
-    function stopStreams(){ try { if (esLogs) { esLogs.close(); esLogs=null; } } catch(_){} try { if (esEvents) { esEvents.close(); esEvents=null; } } catch(_){} try { if (esStatus) { esStatus.close(); esStatus=null; } } catch(_){} }
+    function stopStreams(){
+      try { if (esLogs) { esLogs.close(); esLogs=null; } } catch(_){}
+      try { if (esEvents) { esEvents.close(); esEvents=null; } } catch(_){}
+      try { if (esStatus) { esStatus.close(); esStatus=null; } } catch(_){}
+      if (state._logsTimer) { clearInterval(state._logsTimer); state._logsTimer=null; }
+    }
     async function pollEventsOnce(){
       try {
         const ev = await jsonGet(`${API}/events/${encodeURIComponent(state.appName)}?limit=20`);
@@ -1818,6 +1843,31 @@
             const msg = (e.message||'');
             return `<div class="log-entry"><code>${ts}</code> ${msg}</div>`;
           }).join('') || '<div class="log-entry">No recent events</div>';
+          follow(box);
+        }
+      } catch {}
+    }
+    async function pollLogsOnce(){
+      try {
+        const qs = new URLSearchParams({ tail: '200' });
+        const url = `${API}/logs/${encodeURIComponent(state.appName)}?` + qs.toString();
+        const r = await fetch(url, { headers: labsHeaders({ 'Accept': 'application/json' }) });
+        if (!r.ok) return;
+        const data = await r.json();
+        const lines = Array.isArray(data?.lines) ? data.lines : [];
+        const box = document.getElementById('observe-logs');
+        if (box) {
+          box.innerHTML = '';
+          if (!lines.length) {
+            box.innerHTML = '<div class="log-entry">No recent log lines</div>';
+          } else {
+            lines.forEach((line) => {
+              const div = document.createElement('div');
+              div.className = 'log-entry';
+              div.textContent = String(line);
+              box.appendChild(div);
+            });
+          }
           follow(box);
         }
       } catch {}
@@ -1845,7 +1895,14 @@
               box.appendChild(div);
               follow(box);
             };
-            esLogs.onerror = () => { /* retry by EventSource */ };
+            esLogs.onerror = () => {
+              try { esLogs?.close(); } catch(_){}
+              esLogs = null;
+              if (!state._logsTimer) {
+                pollLogsOnce();
+                state._logsTimer = setInterval(pollLogsOnce, 2000);
+              }
+            };
           } catch(e){ console.error('EventSource logs error', e); }
           // Events SSE (labs) with fallback to polling
           try {
@@ -1898,6 +1955,8 @@
                       if (ingressCheckOk !== true && !ingressCheckTimer) verifyIngress();
                     }
                   } catch(_){}
+                } else if (link) {
+                  clearIngressUI('not configured');
                 }
               } catch {}
             };
