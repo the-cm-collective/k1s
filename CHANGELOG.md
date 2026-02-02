@@ -19,6 +19,7 @@
 - Playground log tail now prefers the current revision and ready pods to avoid attaching to terminating containers.
 - Playground log streaming now reselects a live pod after scale/rollout and skips replica shutdown noise so logs keep flowing across changes.
 - Playground ingress checks now retry after transient failures, show auth-required states, and render the curl hint as a multiline command.
+- Playground ingress checks now surface ingress-disabled states when `AE_DISABLE_INGRESS=1`.
 - Playground remote shell defaults to `sh` for minimal images.
 - Dashboard exec/port-forward token minting now prefers the labs token to avoid read-only auth failures.
 - Service proxy ingestion now commits services and endpoints together, preventing transient empty endpoint reads.

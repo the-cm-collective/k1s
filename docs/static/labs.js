@@ -1395,6 +1395,15 @@
       }
       if (!r.ok) { setText('#ingress-check','unreachable','fail'); ingressCheckOk = false; scheduleIngressRetry(); return; }
       const j = await r.json();
+      if (j && j.disabled) {
+        setText('#ingress-check', 'disabled (AE_DISABLE_INGRESS=1)', 'pending');
+        ingressCheckOk = null;
+        ingressCheckAttempts = 0;
+        clearIngressRetry();
+        setHostsHint('');
+        try { setText('#ingress-curl',''); const b=document.getElementById('ingress-curl-copy'); if (b) b.disabled=true; } catch(_){}
+        return;
+      }
       const dt = Number(j.elapsed_ms||0);
       if (j.ok) {
         setText('#ingress-check', `reachable (~${dt}ms)`, 'ok');

@@ -1949,6 +1949,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         # Ingress reachability check (server-side to avoid browser TLS issues in dev)
         if path == "/labs/ingress_check":
             try:
+                import os as _os
+
+                if _os.getenv("AE_DISABLE_INGRESS") == "1":
+                    self._json_ok(
+                        {
+                            "ok": False,
+                            "code": 0,
+                            "disabled": True,
+                            "reason": "ingress disabled via AE_DISABLE_INGRESS=1",
+                        }
+                    )
+                    return
                 url = str(payload.get("url") or "").strip()
                 if not url:
                     # Support host+path form
@@ -1974,7 +1986,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 import time as _t
                 from urllib.parse import urlparse as _urlparse
 
-                import os as _os
                 import requests as _req
 
                 verify_path = "state/certs/combined-dev-ca.pem"
