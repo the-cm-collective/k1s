@@ -185,6 +185,36 @@ cleanup_demo_containers() {
   fi
 }
 
+cleanup_demo_state() {
+  local dbs=()
+  dbs+=("state/controller.db")
+  if [[ -n "${AE_STATE_DB:-}" ]]; then
+    dbs+=("${AE_STATE_DB}")
+  fi
+  if [[ -f state/env.sh ]]; then
+    # shellcheck disable=SC1090
+    source state/env.sh >/dev/null 2>&1 || true
+    if [[ -n "${AE_STATE_DB:-}" ]]; then
+      dbs+=("${AE_STATE_DB}")
+    fi
+  fi
+  if [[ -d state/bench-env ]]; then
+    dbs+=("state/bench-env/controller.db")
+  fi
+  declare -A seen=()
+  for db in "${dbs[@]}"; do
+    if [[ -n "${db}" && -f "${db}" && -z "${seen[$db]:-}" ]]; then
+      log "Removing controller state DB (${db})"
+      rm -f "${db}" 2>/dev/null || true
+      seen["$db"]=1
+    fi
+  done
+  if [[ -d state/projections ]]; then
+    log "Removing projected config/state under state/projections/"
+    rm -rf state/projections 2>/dev/null || true
+  fi
+}
+
 usage() {
   cat <<USAGE
 Usage:
@@ -625,17 +655,8 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
     log "Clearing Labs shim artifacts under state/labs/"
     rm -f state/labs/helm-demo.log state/labs/apishim.env 2>/dev/null || true
   fi
-  # Optional full reset of controller state/caches on --down --reset
-  if [[ $RESET_FLAG -eq 1 ]]; then
-    if [[ -f state/controller.db ]]; then
-      log "Removing controller state DB (state/controller.db)"
-      rm -f state/controller.db 2>/dev/null || true
-    fi
-    if [[ -d state/projections ]]; then
-      log "Removing projected config/state under state/projections/"
-      rm -rf state/projections 2>/dev/null || true
-    fi
-  fi
+  # Clear controller state to drop any non-default demo apps.
+  cleanup_demo_state
   if [[ $RESET_REGISTRY_CACHE -eq 1 ]]; then
     log "Removing local registry cache under state/registry"
     rm -rf state/registry 2>/dev/null || true
@@ -690,14 +711,7 @@ if [[ $RESET_FLAG -eq 1 ]]; then
   stop_by_pattern '[p]ython.* -m ae\.controller' 'controller(s)'
   stop_apishim
   # Clear state
-  if [[ -f state/controller.db ]]; then
-    log "Removing controller state DB (state/controller.db)"
-    rm -f state/controller.db 2>/dev/null || true
-  fi
-  if [[ -d state/projections ]]; then
-    log "Removing projected config/state under state/projections/"
-    rm -rf state/projections 2>/dev/null || true
-  fi
+  cleanup_demo_state
   if [[ -d state/caddy ]]; then
     log "Clearing dynamic Caddy sites under state/caddy/*.caddy"
     rm -f state/caddy/*.caddy 2>/dev/null || true
@@ -1108,6 +1122,11 @@ if command -v docker >/dev/null 2>&1 || command -v podman >/dev/null 2>&1; then
   fi
 fi
 export AE_STATE_DB=${AE_STATE_DB:-state/controller.db}
+# Guard against bench env leakage into demo runs.
+if [[ "${AE_STATE_DB}" == *"bench-env"* ]]; then
+  log "AE_STATE_DB points to bench env (${AE_STATE_DB}); using state/controller.db for demo"
+  export AE_STATE_DB="state/controller.db"
+fi
 # Guard: ensure controller DB is writable (bench runs with sudo can leave it root-owned)
 DB_DIR="$(dirname -- "${AE_STATE_DB}")"
 mkdir -p "${DB_DIR}" || true

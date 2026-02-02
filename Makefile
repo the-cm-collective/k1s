@@ -200,6 +200,13 @@ demo-reset:
 	@rm -f state/caddy/*.caddy 2>/dev/null || true
 	@echo "[demo-reset] removing controller DB (state/controller.db)"
 	@rm -f state/controller.db 2>/dev/null || true
+	@{ if [ -f state/env.sh ]; then \
+	  . state/env.sh >/dev/null 2>&1 || true; \
+	  if [ -n "$$AE_STATE_DB" ] && [ "$$AE_STATE_DB" != "state/controller.db" ]; then \
+	    echo "[demo-reset] removing controller DB ($$AE_STATE_DB)"; \
+	    rm -f "$$AE_STATE_DB" 2>/dev/null || true; \
+	  fi; \
+	fi; }
 	@echo "[demo-reset] removing shim DB (state/apishim.db)"
 	@rm -f state/apishim.db 2>/dev/null || true
 	@echo "[demo-reset] pruning ae.app volumes (docker/podman)"

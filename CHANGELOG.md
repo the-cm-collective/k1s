@@ -22,6 +22,7 @@
 - Playground ingress checks now surface ingress-disabled states when `AE_DISABLE_INGRESS=1`.
 - Playground now disables ingress checks for apps without ingress mappings instead of surfacing 502 errors.
 - Playground log streaming now falls back to polling when SSE fails.
+- Demo down/reset now clears controller state even when a bench DB path leaked into the demo environment, preventing stale session apps.
 - Playground remote shell defaults to `sh` for minimal images.
 - Dashboard exec/port-forward token minting now prefers the labs token to avoid read-only auth failures.
 - Service proxy ingestion now commits services and endpoints together, preventing transient empty endpoint reads.
