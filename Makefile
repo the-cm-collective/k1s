@@ -334,6 +334,18 @@ bench-mem-e2e-k1s-sudo:
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 
+.PHONY: bench-mem-cri bench-mem-cri-quick
+# End-to-end: CRI backend (containerd) matrix + rollout + combine + plot
+bench-mem-cri:
+	@./scripts/bench/run_cri_refresh.sh
+
+# Quick CRI run (override DURATION/REPLICAS/ROLL_REPLICAS as needed)
+bench-mem-cri-quick:
+	@DURATION=$${DURATION:-10} \
+	 REPLICAS=$${REPLICAS:-1,5,10} \
+	 ROLL_REPLICAS=$${ROLL_REPLICAS:-5} \
+	 ./scripts/bench/run_cri_refresh.sh
+
 .PHONY: bench-mem-e2e-k1nd
 # End-to-end: k1nd (k1s-in-Docker via labs-aio compose) matrix + rollout + combine + plot
 # - Ensures the compose stack with controller + caddy is running

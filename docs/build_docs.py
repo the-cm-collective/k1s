@@ -1769,6 +1769,8 @@ def build_one(
                             return "k1s rootless"
                         if mode == "k1s" and backend == "podman" and root_tag == "priv":
                             return "k1s rootful"
+                        if mode == "k1s" and backend == "cri":
+                            return "k1s cri"
                         if mode == "k1s" and backend == "docker":
                             return "k1nd"
                         if mode == "k3s":
@@ -1803,9 +1805,12 @@ def build_one(
                             latest[key] = r
 
                     # Desired column order
-                    col_order = ["k1s rootless", "k1s rootful", "k1nd", "k3d"]
+                    col_order = ["k1s rootless", "k1s rootful", "k1s cri", "k1nd", "k3d"]
                     # Gather all stages we have across these columns
                     stages = sorted({k[1] for k in latest.keys()})
+                    coverage_min = float(os.getenv("DOCS_COVERAGE_MIN", "0.8") or 0.8)
+                    coverage_map: dict[str, float] = {}
+                    low_coverage: set[str] = set()
 
                     # Heatmap coloring helper (lower is better)
                     def color_for(values: list[float], val: float) -> str:
@@ -1822,10 +1827,19 @@ def build_one(
                     def render_metric_table(title_txt: str, extractor) -> str:
                         html_parts: list[str] = []
                         html_parts.append(f"<h3>{html.escape(title_txt)}</h3>")
+                        header_cells: list[str] = []
+                        for c in col_order:
+                            if c in low_coverage:
+                                cov = coverage_map.get(c, 0.0)
+                                header_cells.append(
+                                    f"<th title='coverage {cov:.0%} (min {coverage_min:.0%})'>{c} ⚠</th>"
+                                )
+                            else:
+                                header_cells.append(f"<th>{c}</th>")
                         html_parts.append(
                             "<table class='mini' style='border-collapse:collapse;width:100%'>"
                             + "<thead><tr><th>Stage</th>"
-                            + "".join([f"<th>{c}</th>" for c in col_order])
+                            + "".join(header_cells)
                             + "</tr></thead><tbody>"
                         )
                         for st in stages:
@@ -1945,14 +1959,18 @@ def build_one(
                             adjusted = (avg * coverage) + (1.0 * (1.0 - coverage))
                             ranking.append((adjusted, avg, c, n, coverage))
                         ranking.sort(key=lambda x: x[0])
-                        # Apply coverage threshold to filter scenarios from ranking/tables
-                        coverage_min = float(os.getenv("DOCS_COVERAGE_MIN", "0.8") or 0.8)
+                        # Apply coverage threshold to filter scenarios from ranking (tables still show all).
                         allowed_cols = [
                             c
                             for (_adj, _avg, c, n, coverage) in ranking
                             if (max_n and (coverage >= coverage_min))
                         ]
-                        hidden_cols = [c for c in col_order if c not in allowed_cols]
+                        coverage_map = {
+                            c: coverage for (_adj, _avg, c, _n, coverage) in ranking
+                        }
+                        low_coverage = {
+                            c for c in col_order if coverage_map.get(c, 0.0) < coverage_min
+                        }
                         # Winner band (only allowed columns)
                         parts.append(
                             "<style> .pill { display:inline-block; padding:4px 10px; border:1px solid var(--border); border-radius:999px; margin-right:8px; }"
@@ -1969,6 +1987,12 @@ def build_one(
                             for (adj, _avg, c, n, cov) in ranking
                             if c in allowed_cols
                         ]
+                        if not shown:
+                            shown = [
+                                (adj, _avg, c, n, cov)
+                                for (adj, _avg, c, n, cov) in ranking
+                                if cov > 0
+                            ] or ranking
                         for idx, (adjusted, _avg, c, n, coverage) in enumerate(shown):
                             cls = (
                                 "win"
@@ -1981,16 +2005,14 @@ def build_one(
                                 f"<span class='pill {cls}' title='{title}'> {c} <span style='opacity:.85'>&nbsp;({score})</span></span>"
                             )
                         bl.append("</div>")
-                        if hidden_cols:
+                        if low_coverage:
                             bl.append(
-                                "<div class='band' style='opacity:.8'>Hidden for low coverage (set DOCS_COVERAGE_MIN to adjust): "
-                                + ", ".join(hidden_cols)
+                                "<div class='band' style='opacity:.8'>Low coverage (shown but excluded from ranking until "
+                                + f"≥{coverage_min:.0%}): "
+                                + ", ".join(sorted(low_coverage))
                                 + "</div>"
                             )
                         parts.append("".join(bl))
-                        # Use filtered columns for tables below
-                        if allowed_cols:
-                            col_order = allowed_cols
                     except Exception:
                         pass
                     parts.append(
