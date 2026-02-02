@@ -22,6 +22,8 @@
 - Playground ingress checks now surface ingress-disabled states when `AE_DISABLE_INGRESS=1`.
 - Playground now disables ingress checks for apps without ingress mappings instead of surfacing 502 errors.
 - Playground log streaming now falls back to polling when SSE fails.
+- Playground events stream now rearms after apply, and the apply banner stays in sync with the selected example.
+- Labs apply now returns the applied app name to keep clients in sync.
 - Demo down/reset now clears controller state even when a bench DB path leaked into the demo environment, preventing stale session apps.
 - Playground remote shell defaults to `sh` for minimal images.
 - Dashboard exec/port-forward token minting now prefers the labs token to avoid read-only auth failures.
@@ -29,6 +31,7 @@
 - Demo apishim autostart now restarts on runtime mismatches to keep exec/port-forward working with Podman or Docker.
 - Local auth now exports `AE_STATE_DB`, and demo env exports the state DB path, so CLI status matches controller state.
 - Labs ingress reachability checks no longer fail on missing `os` imports, restoring consistent "Last check" status.
+- Bench automation now clears rootful Podman before k1nd, hardens CRI waits, and isolates bench specs/guards to reduce flakiness.
 - Corrected demo host/endpoints (dashboard + multiport), CRI list formatting, and k1nd benchmark notes.
 
 ## 0.1.2 - 2026-01-30

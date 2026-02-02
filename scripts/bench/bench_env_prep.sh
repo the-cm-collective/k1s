@@ -66,6 +66,40 @@ if [[ -z "$podman_bin" ]]; then
   podman_bin="podman"
 fi
 
+check_netavark_isolation() {
+  if [[ "$controller_mode" != "sudo" ]]; then
+    return 0
+  fi
+  if ! command -v sudo >/dev/null 2>&1 || ! command -v podman >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! command -v nft >/dev/null 2>&1; then
+    return 0
+  fi
+  local backend
+  backend=$(sudo podman info --format '{{.Host.NetworkBackend}}' 2>/dev/null | tr -d '\r')
+  if [[ "$backend" != "netavark" ]]; then
+    return 0
+  fi
+  local chain decision
+  chain=$(sudo nft -a list chain inet netavark NETAVARK-ISOLATION-3 2>/dev/null || true)
+  if [[ -z "$chain" ]]; then
+    return 0
+  fi
+  decision=$(printf '%s\n' "$chain" | awk '
+    /oifname "podman0"/ {
+      if ($0 ~ /accept/) { print "accept"; exit }
+      if ($0 ~ /drop/) { print "drop"; exit }
+    }
+  ')
+  if [[ "$decision" == "drop" ]]; then
+    echo "[bench-env] netavark isolation drops podman0; host-port forwarding will fail for rootful Podman." >&2
+    echo "[bench-env] Fix (insert before drop): sudo nft insert rule inet netavark NETAVARK-ISOLATION-3 oifname \"podman0\" accept" >&2
+    echo "[bench-env] Or temporarily flush: sudo nft flush chain inet netavark NETAVARK-ISOLATION-3" >&2
+    exit 6
+  fi
+}
+
 env_dir=$(dirname "$env_file")
 spec_dir="$env_dir/specs"
 apply_dir="$env_dir/apply"
@@ -232,6 +266,7 @@ if [[ "$controller_mode" == "sudo" ]]; then
     echo "[bench-env] sudo not found; cannot start controller with sudo" >&2
     exit 3
   fi
+  check_netavark_isolation
   sudo env \
     PYTHON_BIN="$python_bin" \
     AE_PODMAN_BIN="$podman_bin" \
