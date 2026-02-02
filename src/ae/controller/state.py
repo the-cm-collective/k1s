@@ -7,7 +7,7 @@ import json
 import os
 import sqlite3
 import hashlib
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -19,6 +19,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 from ae.controller.health import HealthReport
 from ae.controller.spec import AppManifest, app_key_for_manifest
+from ae.resources import loader as resource_loader
 from ae.runtime import RuntimeResult
 
 
@@ -53,29 +54,58 @@ class RegistryEntry:
 
 
 @dataclass(slots=True)
-class ReplicaStatus:
-    """Status for a single replica in the state store."""
+class PodStatus:
+    """Status for a single pod in the state store."""
 
-    replica_id: str
     ready: bool
     live: bool
     status: str
     readiness_message: str
     liveness_message: str
+    pod_name: str = ""
     exit_code: int | None = None
     finished_at: datetime | None = None
+    replica_id: InitVar[str | None] = None
+
+    def __post_init__(self, replica_id: str | None) -> None:
+        if not self.pod_name and replica_id:
+            self.pod_name = str(replica_id)
+
+    @property
+    def replica_id(self) -> str:
+        return self.pod_name
+
+    @replica_id.setter
+    def replica_id(self, value: str) -> None:
+        self.pod_name = value
+
+
+ReplicaStatus = PodStatus
 
 
 @dataclass(slots=True)
 class ProbeHistoryEntry:
     """Recorded probe evaluation for audit/history purposes."""
 
-    replica_id: str
     check_time: datetime
     ready: bool
     live: bool
     readiness_message: str
     liveness_message: str
+    pod_name: str = ""
+    replica_id: InitVar[str | None] = None
+
+    def __post_init__(self, replica_id: str | None) -> None:
+        if not self.pod_name and replica_id:
+            self.pod_name = str(replica_id)
+
+    @property
+    def replica_id(self) -> str:
+        return self.pod_name
+
+    @replica_id.setter
+    def replica_id(self, value: str) -> None:
+        self.pod_name = value
 
 
 @dataclass(slots=True)
@@ -120,6 +150,17 @@ class ServiceListItem:
 @dataclass(slots=True)
 class StorageBinding:
     """Mapping of a persistent volume to the node that owns it."""
+
+    app_name: str
+    volume_name: str
+    node_id: str
+    retention: str | None
+    created_at: datetime
+
+
+@dataclass(slots=True)
+class VolumeAttachment:
+    """Attachment record for a volume bound to a node."""
 
     app_name: str
     volume_name: str
@@ -182,6 +223,9 @@ class SQLiteStateStore:
 
     def _initialize(self) -> None:
         with self._connect() as conn:
+            # Drop legacy replica tables now that pod naming is canonical.
+            conn.execute("DROP TABLE IF EXISTS replica_nodes")
+            conn.execute("DROP TABLE IF EXISTS replica_status")
             needs_reset = not self._schema_matches(
                 conn,
                 "app_status",
@@ -201,10 +245,10 @@ class SQLiteStateStore:
                 ],
             ) or not self._schema_matches(
                 conn,
-                "replica_status",
+                "pod_status",
                 [
                     "app_name",
-                    "replica_id",
+                    "pod_name",
                     "ready",
                     "live",
                     "status",
@@ -216,8 +260,23 @@ class SQLiteStateStore:
             )
             if needs_reset:
                 conn.execute("DROP TABLE IF EXISTS probe_history")
-                conn.execute("DROP TABLE IF EXISTS replica_status")
+                conn.execute("DROP TABLE IF EXISTS pod_status")
                 conn.execute("DROP TABLE IF EXISTS app_status")
+            elif not self._schema_matches(
+                conn,
+                "probe_history",
+                [
+                    "id",
+                    "app_name",
+                    "pod_name",
+                    "check_time",
+                    "ready",
+                    "live",
+                    "readiness_message",
+                    "liveness_message",
+                ],
+            ):
+                conn.execute("DROP TABLE IF EXISTS probe_history")
 
             # Service tables are additive; drop and recreate only if schema mismatches.
             if not self._schema_matches(
@@ -243,6 +302,17 @@ class SQLiteStateStore:
                 ],
             ):
                 conn.execute("DROP TABLE IF EXISTS service_endpoints")
+            if not self._schema_matches(
+                conn,
+                "pod_nodes",
+                [
+                    "app_name",
+                    "pod_name",
+                    "node_id",
+                    "updated_at",
+                ],
+            ):
+                conn.execute("DROP TABLE IF EXISTS pod_nodes")
             if not self._schema_matches(
                 conn,
                 "nodes",
@@ -283,183 +353,84 @@ class SQLiteStateStore:
                 ],
             ):
                 conn.execute("DROP TABLE IF EXISTS storage_bindings")
+            if not self._schema_matches(
+                conn,
+                "volume_attachments",
+                [
+                    "app_name",
+                    "volume_name",
+                    "node_id",
+                    "retention",
+                    "created_at",
+                ],
+            ):
+                conn.execute("DROP TABLE IF EXISTS volume_attachments")
             auto_inc = (
                 "INTEGER PRIMARY KEY AUTOINCREMENT"
                 if self.backend == "sqlite"
                 else "SERIAL PRIMARY KEY"
             )
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS app_status (
-                    app_name TEXT PRIMARY KEY,
-                    desired_replicas INTEGER NOT NULL,
-                    ready_replicas INTEGER NOT NULL,
-                    live_replicas INTEGER NOT NULL,
-                    revision INTEGER NOT NULL,
-                    revision_status TEXT NOT NULL,
-                    image TEXT NOT NULL,
-                    created INTEGER NOT NULL,
-                    updated INTEGER NOT NULL,
-                    removed INTEGER NOT NULL,
-                    ingress_host TEXT,
-                    ingress_path TEXT
-                )
-                """
+                resource_loader.load_text("sql", "controller", "create_app_status.sql")
             )
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS app_registry (
-                    app_name TEXT PRIMARY KEY,
-                    spec_hash TEXT NOT NULL,
-                    spec_json TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    labels TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """
+                resource_loader.load_text("sql", "controller", "create_app_registry.sql")
             )
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS replica_status (
-                    app_name TEXT NOT NULL,
-                    replica_id TEXT NOT NULL,
-                    ready INTEGER NOT NULL,
-                    live INTEGER NOT NULL,
-                    status TEXT NOT NULL,
-                    readiness_message TEXT NOT NULL,
-                    liveness_message TEXT NOT NULL,
-                    exit_code INTEGER,
-                    finished_at TEXT,
-                    PRIMARY KEY (app_name, replica_id)
-                )
-                """
+                resource_loader.load_text("sql", "controller", "create_pod_status.sql")
             )
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS probe_history (
-                    id %s,
-                    app_name TEXT NOT NULL,
-                    replica_id TEXT NOT NULL,
-                    check_time TEXT NOT NULL,
-                    ready INTEGER NOT NULL,
-                    live INTEGER NOT NULL,
-                    readiness_message TEXT NOT NULL,
-                    liveness_message TEXT NOT NULL
+                resource_loader.render_text(
+                    "sql",
+                    "controller",
+                    "create_probe_history.sql",
+                    AUTO_INC=auto_inc,
                 )
-                """
-                % auto_inc
             )
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS replica_nodes (
-                    app_name TEXT NOT NULL,
-                    replica_id TEXT NOT NULL,
-                    node_id TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY (app_name, replica_id)
-                )
-                """
+                resource_loader.load_text("sql", "controller", "create_pod_nodes.sql")
             )
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS app_revisions (
-                    app_name TEXT NOT NULL,
-                    revision INTEGER NOT NULL,
-                    spec_hash TEXT NOT NULL,
-                    spec_json TEXT NOT NULL,
-                    image TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    PRIMARY KEY (app_name, revision)
-                )
-                """
+                resource_loader.load_text("sql", "controller", "create_app_revisions.sql")
             )
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS app_events (
-                    id %s,
-                    app_name TEXT NOT NULL,
-                    revision INTEGER NOT NULL,
-                    event_type TEXT NOT NULL,
-                    message TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                resource_loader.render_text(
+                    "sql",
+                    "controller",
+                    "create_app_events.sql",
+                    AUTO_INC=auto_inc,
                 )
-                """
-                % auto_inc
             )
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS rollout_canary (
-                    app_name TEXT PRIMARY KEY,
-                    weight REAL NOT NULL,
-                    next_step_at TEXT NOT NULL,
-                    step REAL NOT NULL,
-                    max REAL NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """
+                resource_loader.load_text("sql", "controller", "create_rollout_canary.sql")
             )
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS services (
-                    app_name TEXT PRIMARY KEY,
-                    cluster_ip TEXT NOT NULL,
-                    ports TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-                """
+                resource_loader.load_text("sql", "controller", "create_services.sql")
             )
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS service_endpoints (
-                    app_name TEXT NOT NULL,
-                    port INTEGER NOT NULL,
-                    ip TEXT NOT NULL,
-                    target_port INTEGER NOT NULL,
-                    ready INTEGER NOT NULL,
-                    PRIMARY KEY (app_name, port, ip)
+                resource_loader.load_text(
+                    "sql", "controller", "create_service_endpoints.sql"
                 )
-                """
             )
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS nodes (
-                    node_id TEXT PRIMARY KEY,
-                    name TEXT,
-                    labels TEXT DEFAULT '{}',
-                    taints TEXT DEFAULT '[]',
-                    backend TEXT,
-                    endpoint TEXT,
-                    pod_cidr TEXT,
-                    wg_pubkey TEXT,
-                    cordoned INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """
+                resource_loader.load_text("sql", "controller", "create_nodes.sql")
             )
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS node_heartbeats (
-                    node_id TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    seen_at TEXT NOT NULL,
-                    PRIMARY KEY (node_id)
+                resource_loader.load_text(
+                    "sql", "controller", "create_node_heartbeats.sql"
                 )
-                """
             )
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS storage_bindings (
-                    app_name TEXT NOT NULL,
-                    volume_name TEXT NOT NULL,
-                    node_id TEXT NOT NULL,
-                    retention TEXT,
-                    created_at TEXT NOT NULL,
-                    PRIMARY KEY (app_name, volume_name)
+                resource_loader.load_text(
+                    "sql", "controller", "create_storage_bindings.sql"
                 )
-                """
             )
+            conn.execute(
+                resource_loader.load_text(
+                    "sql", "controller", "create_volume_attachments.sql"
+                )
+            )
+            self._migrate_storage_bindings(conn)
             conn.commit()
 
     def _connect(self):
@@ -483,6 +454,37 @@ class SQLiteStateStore:
         # For Postgres we skip strict schema match; rely on CREATE IF NOT EXISTS.
         return True
 
+    def _migrate_storage_bindings(self, conn) -> None:
+        """Best-effort migration from legacy storage_bindings to volume_attachments."""
+        try:
+            rows = conn.execute(
+                resource_loader.load_text(
+                    "sql", "controller", "select_storage_bindings_all.sql"
+                )
+            ).fetchall()
+        except Exception:
+            return
+        if not rows:
+            return
+        try:
+            existing = conn.execute(
+                resource_loader.load_text("sql", "controller", "count_volume_attachments.sql")
+            ).fetchone()
+            if existing and int(existing[0]) > 0:
+                return
+        except Exception:
+            return
+        for row in rows:
+            try:
+                conn.execute(
+                    resource_loader.load_text(
+                        "sql", "controller", "insert_volume_attachments_ignore.sql"
+                    ),
+                    (row[0], row[1], row[2], row[3], row[4]),
+                )
+            except Exception:
+                continue
+
     def record_snapshot(
         self,
         manifest: AppManifest,
@@ -491,27 +493,12 @@ class SQLiteStateStore:
         revision: int,
         revision_status: str,
     ) -> None:
-        state_by_id = {state.replica_id: state for state in runtime_result.replica_states}
+        state_by_id = {state.pod_name: state for state in runtime_result.pod_states}
         app_name = app_key_for_manifest(manifest)
 
         with self._connect() as conn:
             conn.execute(
-                """
-                INSERT INTO app_status(app_name, desired_replicas, ready_replicas, live_replicas, revision, revision_status, image, created, updated, removed, ingress_host, ingress_path)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(app_name) DO UPDATE SET
-                    desired_replicas=excluded.desired_replicas,
-                    ready_replicas=excluded.ready_replicas,
-                    live_replicas=excluded.live_replicas,
-                    revision=excluded.revision,
-                    revision_status=excluded.revision_status,
-                    image=excluded.image,
-                    created=excluded.created,
-                    updated=excluded.updated,
-                    removed=excluded.removed,
-                    ingress_host=excluded.ingress_host,
-                    ingress_path=excluded.ingress_path
-                """,
+                resource_loader.load_text("sql", "controller", "upsert_app_status.sql"),
                 (
                     app_name,
                     manifest.spec.replicas,
@@ -529,35 +516,34 @@ class SQLiteStateStore:
             )
 
             conn.execute(
-                "DELETE FROM replica_status WHERE app_name = ?",
+                "DELETE FROM pod_status WHERE app_name = ?",
                 (app_name,),
             )
 
             # Clean existing placements for this app; will be repopulated below
-            conn.execute("DELETE FROM replica_nodes WHERE app_name = ?", (app_name,))
+            conn.execute("DELETE FROM pod_nodes WHERE app_name = ?", (app_name,))
 
             rows = []
-            for replica in health_report.replicas:
-                state = state_by_id.get(replica.replica_id)
+            for pod in health_report.pods:
+                state = state_by_id.get(pod.pod_name)
                 rows.append(
                     (
                         app_name,
-                        replica.replica_id,
-                        int(replica.ready),
-                        int(replica.live),
+                        pod.pod_name,
+                        int(pod.ready),
+                        int(pod.live),
                         state.status if state else "unknown",
-                        replica.readiness_message,
-                        replica.liveness_message,
+                        pod.readiness_message,
+                        pod.liveness_message,
                         state.exit_code if state else None,
                         state.finished_at.isoformat() if state and state.finished_at else None,
                     )
                 )
             if rows:
                 conn.executemany(
-                    """
-                    INSERT INTO replica_status(app_name, replica_id, ready, live, status, readiness_message, liveness_message, exit_code, finished_at)
-                    VALUES(?,?,?,?,?,?,?,?,?)
-                    """,
+                    resource_loader.load_text(
+                        "sql", "controller", "insert_pod_status.sql"
+                    ),
                     rows,
                 )
 
@@ -565,67 +551,54 @@ class SQLiteStateStore:
             history_rows = [
                 (
                     app_name,
-                    replica.replica_id,
+                    pod.pod_name,
                     timestamp,
-                    int(replica.ready),
-                    int(replica.live),
-                    replica.readiness_message,
-                    replica.liveness_message,
+                    int(pod.ready),
+                    int(pod.live),
+                    pod.readiness_message,
+                    pod.liveness_message,
                 )
-                for replica in health_report.replicas
+                for pod in health_report.pods
             ]
             if history_rows:
                 conn.executemany(
-                    """
-                    INSERT INTO probe_history(app_name, replica_id, check_time, ready, live, readiness_message, liveness_message)
-                    VALUES(?,?,?,?,?,?,?)
-                    """,
+                    resource_loader.load_text(
+                        "sql", "controller", "insert_probe_history.sql"
+                    ),
                     history_rows,
                 )
-                for replica in health_report.replicas:
+                for pod in health_report.pods:
                     conn.execute(
-                        """
-                        DELETE FROM probe_history
-                        WHERE id IN (
-                            SELECT id FROM probe_history
-                            WHERE app_name = ? AND replica_id = ?
-                            ORDER BY id DESC
-                            LIMIT -1 OFFSET 50
-                        )
-                        """,
-                        (app_name, replica.replica_id),
+                        resource_loader.load_text(
+                            "sql", "controller", "delete_probe_history_limit.sql"
+                        ),
+                        (app_name, pod.pod_name),
                     )
             # Persist placement mapping when runtime result contains node_id hints
             node_rows = []
-            for rs in runtime_result.replica_states:
+            for rs in runtime_result.pod_states:
                 node_id = getattr(rs, "node_id", None)
                 if not node_id:
                     continue
                 node_rows.append(
                     (
                         app_name,
-                        rs.replica_id,
+                        rs.pod_name,
                         node_id,
                         timestamp,
                     )
                 )
             if node_rows:
                 conn.executemany(
-                    """
-                    INSERT INTO replica_nodes(app_name, replica_id, node_id, updated_at)
-                    VALUES(?,?,?,?)
-                    ON CONFLICT(app_name, replica_id) DO UPDATE SET
-                        node_id=excluded.node_id,
-                        updated_at=excluded.updated_at
-                    """,
+                    resource_loader.load_text(
+                        "sql", "controller", "insert_pod_nodes_upsert.sql"
+                    ),
                     node_rows,
                 )
             conn.execute(
-                """
-                UPDATE app_revisions
-                SET status = ?, image = ?, spec_hash = spec_hash
-                WHERE app_name = ? AND revision = ?
-                """,
+                resource_loader.load_text(
+                    "sql", "controller", "update_app_revisions_status.sql"
+                ),
                 (revision_status, manifest.spec.image, app_name, revision),
             )
             conn.commit()
@@ -633,10 +606,9 @@ class SQLiteStateStore:
     def get_status(self, app_name: str) -> AppStatus | None:
         with self._connect() as conn:
             row = conn.execute(
-                """
-                SELECT app_name, desired_replicas, ready_replicas, live_replicas, revision, revision_status, image, created, updated, removed, ingress_host, ingress_path
-                FROM app_status WHERE app_name = ?
-                """,
+                resource_loader.load_text(
+                    "sql", "controller", "select_app_status_by_name.sql"
+                ),
                 (app_name,),
             ).fetchone()
             if row is None:
@@ -659,10 +631,7 @@ class SQLiteStateStore:
     def list_status(self) -> list[AppStatus]:
         with self._connect() as conn:
             rows = conn.execute(
-                """
-                SELECT app_name, desired_replicas, ready_replicas, live_replicas, revision, revision_status, image, created, updated, removed, ingress_host, ingress_path
-                FROM app_status ORDER BY app_name
-                """
+                resource_loader.load_text("sql", "controller", "select_app_status_all.sql")
             ).fetchall()
         return [
             AppStatus(
@@ -682,18 +651,15 @@ class SQLiteStateStore:
             for row in rows
         ]
 
-    def list_replicas(self, app_name: str) -> list[ReplicaStatus]:
+    def list_pods(self, app_name: str) -> list[PodStatus]:
         with self._connect() as conn:
             rows = conn.execute(
-                """
-                SELECT replica_id, ready, live, status, readiness_message, liveness_message, exit_code, finished_at
-                FROM replica_status
-                WHERE app_name = ?
-                ORDER BY replica_id
-                """,
+                resource_loader.load_text(
+                    "sql", "controller", "select_pod_status_by_app.sql"
+                ),
                 (app_name,),
             ).fetchall()
-        items: list[ReplicaStatus] = []
+        items: list[PodStatus] = []
         for row in rows:
             finished_at = None
             if row[7]:
@@ -702,8 +668,8 @@ class SQLiteStateStore:
                 except Exception:
                     finished_at = None
             items.append(
-                ReplicaStatus(
-                    replica_id=row[0],
+                PodStatus(
+                    pod_name=row[0],
                     ready=bool(row[1]),
                     live=bool(row[2]),
                     status=row[3],
@@ -715,45 +681,48 @@ class SQLiteStateStore:
             )
         return items
 
-    def list_replica_nodes(self, app_name: str) -> list[tuple[str, str]]:
+    def list_replicas(self, app_name: str) -> list[PodStatus]:
+        """Alias for list_pods (deprecated)."""
+        return self.list_pods(app_name)
+
+    def list_pod_nodes(self, app_name: str) -> list[tuple[str, str]]:
         with self._connect() as conn:
             rows = conn.execute(
-                """
-                SELECT rs.replica_id, rn.node_id, rs.ready, rs.live, rs.status, rs.readiness_message, rs.liveness_message
-                FROM replica_status rs
-                LEFT JOIN replica_nodes rn ON rs.app_name = rn.app_name AND rs.replica_id = rn.replica_id
-                WHERE rs.app_name = ?
-                ORDER BY rs.replica_id
-                """,
+                resource_loader.load_text(
+                    "sql", "controller", "select_pod_nodes_with_status.sql"
+                ),
                 (app_name,),
             ).fetchall()
         return [(row[0], row[1], row[2], row[3], row[4], row[5], row[6]) for row in rows]
 
-    def set_replica_nodes(self, app_name: str, placements: list[tuple[str, str]]) -> None:
+    def list_replica_nodes(self, app_name: str) -> list[tuple[str, str]]:
+        """Alias for list_pod_nodes (deprecated)."""
+        return self.list_pod_nodes(app_name)
+
+    def set_pod_nodes(self, app_name: str, placements: list[tuple[str, str]]) -> None:
         """Replace placement mapping for an app."""
         ts = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
-            conn.execute("DELETE FROM replica_nodes WHERE app_name = ?", (app_name,))
+            conn.execute("DELETE FROM pod_nodes WHERE app_name = ?", (app_name,))
             if placements:
                 conn.executemany(
-                    """
-                    INSERT INTO replica_nodes(app_name, replica_id, node_id, updated_at)
-                    VALUES(?,?,?,?)
-                    """,
+                    resource_loader.load_text(
+                        "sql", "controller", "insert_pod_nodes.sql"
+                    ),
                     [(app_name, rid, nid, ts) for rid, nid in placements],
                 )
             conn.commit()
 
+    def set_replica_nodes(self, app_name: str, placements: list[tuple[str, str]]) -> None:
+        """Alias for set_pod_nodes (deprecated)."""
+        self.set_pod_nodes(app_name, placements)
+
     def get_probe_history(self, app_name: str, limit: int) -> list[ProbeHistoryEntry]:
         with self._connect() as conn:
             rows = conn.execute(
-                """
-                SELECT replica_id, check_time, ready, live, readiness_message, liveness_message
-                FROM probe_history
-                WHERE app_name = ?
-                ORDER BY id DESC
-                LIMIT ?
-                """,
+                resource_loader.load_text(
+                    "sql", "controller", "select_probe_history_by_app.sql"
+                ),
                 (app_name, limit),
             ).fetchall()
         entries: list[ProbeHistoryEntry] = []
@@ -764,7 +733,7 @@ class SQLiteStateStore:
                 check_time = datetime.fromtimestamp(0, tz=timezone.utc)
             entries.append(
                 ProbeHistoryEntry(
-                    replica_id=row[0],
+                    pod_name=row[0],
                     check_time=check_time,
                     ready=bool(row[2]),
                     live=bool(row[3]),
@@ -786,11 +755,7 @@ class SQLiteStateStore:
 
         with self._connect() as conn:
             conn.execute(
-                """
-                INSERT INTO app_revisions(app_name, revision, spec_hash, spec_json, image, created_at, status)
-                VALUES(?,?,?,?,?,?,?)
-                ON CONFLICT(app_name, revision) DO NOTHING
-                """,
+                resource_loader.load_text("sql", "controller", "insert_app_revisions.sql"),
                 (
                     app_name,
                     next_revision,
@@ -849,16 +814,9 @@ class SQLiteStateStore:
         source_val = str(source or existing_source or "unknown")
         with self._connect() as conn:
             conn.execute(
-                """
-                INSERT INTO app_registry(app_name, spec_hash, spec_json, source, labels, updated_at)
-                VALUES(?,?,?,?,?,?)
-                ON CONFLICT(app_name) DO UPDATE SET
-                    spec_hash=excluded.spec_hash,
-                    spec_json=excluded.spec_json,
-                    source=excluded.source,
-                    labels=excluded.labels,
-                    updated_at=excluded.updated_at
-                """,
+                resource_loader.load_text(
+                    "sql", "controller", "insert_app_registry_upsert.sql"
+                ),
                 (
                     app_name,
                     spec_hash,
@@ -873,11 +831,9 @@ class SQLiteStateStore:
     def list_registered_apps(self) -> list[RegistryEntry]:
         with self._connect() as conn:
             rows = conn.execute(
-                """
-                SELECT app_name, spec_hash, spec_json, source, labels, updated_at
-                FROM app_registry
-                ORDER BY app_name
-                """
+                resource_loader.load_text(
+                    "sql", "controller", "select_app_registry_all.sql"
+                )
             ).fetchall()
         entries: list[RegistryEntry] = []
         for row in rows:
@@ -894,11 +850,9 @@ class SQLiteStateStore:
     def get_registered_entry(self, app_name: str) -> RegistryEntry | None:
         with self._connect() as conn:
             row = conn.execute(
-                """
-                SELECT app_name, spec_hash, spec_json, source, labels, updated_at
-                FROM app_registry
-                WHERE app_name = ?
-                """,
+                resource_loader.load_text(
+                    "sql", "controller", "select_app_registry_by_name.sql"
+                ),
                 (app_name,),
             ).fetchone()
         if row is None:
@@ -950,13 +904,7 @@ class SQLiteStateStore:
     def _get_latest_revision(self, app_name: str) -> Optional[RevisionInfo]:
         with self._connect() as conn:
             row = conn.execute(
-                """
-                SELECT revision, spec_hash, status, image, created_at
-                FROM app_revisions
-                WHERE app_name = ?
-                ORDER BY revision DESC
-                LIMIT 1
-                """,
+                resource_loader.load_text("sql", "controller", "select_latest_revision.sql"),
                 (app_name,),
             ).fetchone()
         if row is None:
@@ -976,11 +924,9 @@ class SQLiteStateStore:
     def get_revision_manifest(self, app_name: str, revision: int) -> AppManifest:
         with self._connect() as conn:
             row = conn.execute(
-                """
-                SELECT spec_json
-                FROM app_revisions
-                WHERE app_name = ? AND revision = ?
-                """,
+                resource_loader.load_text(
+                    "sql", "controller", "select_revision_spec_json.sql"
+                ),
                 (app_name, revision),
             ).fetchone()
         if row is None:
@@ -990,13 +936,9 @@ class SQLiteStateStore:
     def list_revisions(self, app_name: str, limit: int = 10) -> list[RevisionInfo]:
         with self._connect() as conn:
             rows = conn.execute(
-                """
-                SELECT revision, spec_hash, status, image, created_at
-                FROM app_revisions
-                WHERE app_name = ?
-                ORDER BY revision DESC
-                LIMIT ?
-                """,
+                resource_loader.load_text(
+                    "sql", "controller", "select_revisions_by_app.sql"
+                ),
                 (app_name, limit),
             ).fetchall()
         result: list[RevisionInfo] = []
@@ -1020,10 +962,7 @@ class SQLiteStateStore:
         created_at = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
-                """
-                INSERT INTO app_events(app_name, revision, event_type, message, created_at)
-                VALUES(?,?,?,?,?)
-                """,
+                resource_loader.load_text("sql", "controller", "insert_app_events.sql"),
                 (app_name, revision, event_type, message, created_at),
             )
             conn.commit()
@@ -1031,13 +970,9 @@ class SQLiteStateStore:
     def list_events(self, app_name: str, limit: int = 20) -> list[AppEvent]:
         with self._connect() as conn:
             rows = conn.execute(
-                """
-                SELECT revision, event_type, message, created_at
-                FROM app_events
-                WHERE app_name = ?
-                ORDER BY id DESC
-                LIMIT ?
-                """,
+                resource_loader.load_text(
+                    "sql", "controller", "select_app_events_by_app.sql"
+                ),
                 (app_name, limit),
             ).fetchall()
         events: list[AppEvent] = []
@@ -1063,13 +998,9 @@ class SQLiteStateStore:
                 (app_name,),
             ).fetchone()[0]
             rows = conn.execute(
-                """
-                SELECT revision, event_type, message, created_at
-                FROM app_events
-                WHERE app_name = ?
-                ORDER BY id DESC
-                LIMIT ? OFFSET ?
-                """,
+                resource_loader.load_text(
+                    "sql", "controller", "select_app_events_paginated.sql"
+                ),
                 (app_name, limit, offset),
             ).fetchall()
         events: list[AppEvent] = []
@@ -1091,10 +1022,9 @@ class SQLiteStateStore:
     def get_canary_state(self, app_name: str) -> dict | None:
         with self._connect() as conn:
             row = conn.execute(
-                """
-                SELECT weight, next_step_at, step, max, updated_at
-                FROM rollout_canary WHERE app_name = ?
-                """,
+                resource_loader.load_text(
+                    "sql", "controller", "select_rollout_canary.sql"
+                ),
                 (app_name,),
             ).fetchone()
         if row is None:
@@ -1113,11 +1043,7 @@ class SQLiteStateStore:
         updated_at = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
-                """
-                INSERT INTO rollout_canary(app_name, weight, next_step_at, step, max, updated_at)
-                VALUES(?,?,?,?,?,?)
-                ON CONFLICT(app_name) DO UPDATE SET weight=excluded.weight, next_step_at=excluded.next_step_at, step=excluded.step, max=excluded.max, updated_at=excluded.updated_at
-                """,
+                resource_loader.load_text("sql", "controller", "upsert_rollout_canary.sql"),
                 (app_name, float(weight), next_step_at, float(step), float(max_weight), updated_at),
             )
             conn.commit()
@@ -1130,13 +1056,34 @@ class SQLiteStateStore:
         ports_json = json.dumps(ports, sort_keys=True)
         with self._connect() as conn:
             conn.execute(
-                """
-                INSERT INTO services(app_name, cluster_ip, ports, created_at)
-                VALUES(?,?,?,?)
-                ON CONFLICT(app_name) DO UPDATE SET cluster_ip=excluded.cluster_ip, ports=excluded.ports
-                """,
+                resource_loader.load_text("sql", "controller", "upsert_services.sql"),
                 (app_name, cluster_ip, ports_json, created_at),
             )
+            conn.commit()
+
+    def upsert_service_snapshot(
+        self, app_name: str, cluster_ip: str, ports: dict, endpoints: list[ServiceEndpoint]
+    ) -> None:
+        """Persist service metadata and endpoints together."""
+        created_at = datetime.now(timezone.utc).isoformat()
+        ports_json = json.dumps(ports, sort_keys=True)
+        with self._connect() as conn:
+            conn.execute(
+                resource_loader.load_text("sql", "controller", "upsert_services.sql"),
+                (app_name, cluster_ip, ports_json, created_at),
+            )
+            conn.execute("DELETE FROM service_endpoints WHERE app_name = ?", (app_name,))
+            rows = [
+                (ep.app_name, ep.port, ep.ip, ep.target_port, int(ep.ready))
+                for ep in endpoints
+            ]
+            if rows:
+                conn.executemany(
+                    resource_loader.load_text(
+                        "sql", "controller", "insert_service_endpoints.sql"
+                    ),
+                    rows,
+                )
             conn.commit()
 
     def delete_service(self, app_name: str) -> None:
@@ -1169,10 +1116,9 @@ class SQLiteStateStore:
             ]
             if rows:
                 conn.executemany(
-                    """
-                    INSERT INTO service_endpoints(app_name, port, ip, target_port, ready)
-                    VALUES(?,?,?,?,?)
-                    """,
+                    resource_loader.load_text(
+                        "sql", "controller", "insert_service_endpoints.sql"
+                    ),
                     rows,
                 )
             conn.commit()
@@ -1180,12 +1126,9 @@ class SQLiteStateStore:
     def list_service_endpoints(self, app_name: str) -> list[ServiceEndpoint]:
         with self._connect() as conn:
             rows = conn.execute(
-                """
-                SELECT app_name, port, ip, target_port, ready
-                FROM service_endpoints
-                WHERE app_name = ?
-                ORDER BY port, ip
-                """,
+                resource_loader.load_text(
+                    "sql", "controller", "select_service_endpoints_by_app.sql"
+                ),
                 (app_name,),
             ).fetchall()
         return [
@@ -1231,20 +1174,7 @@ class SQLiteStateStore:
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
-                """
-                INSERT INTO nodes(node_id, name, labels, taints, backend, endpoint, pod_cidr, wg_pubkey, cordoned, created_at, updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(node_id) DO UPDATE SET
-                    name=excluded.name,
-                    labels=excluded.labels,
-                    taints=excluded.taints,
-                    backend=excluded.backend,
-                    endpoint=excluded.endpoint,
-                    pod_cidr=excluded.pod_cidr,
-                    wg_pubkey=excluded.wg_pubkey,
-                    cordoned=excluded.cordoned,
-                    updated_at=excluded.updated_at
-                """,
+                resource_loader.load_text("sql", "controller", "upsert_nodes.sql"),
                 (
                     node_id,
                     name,
@@ -1265,11 +1195,7 @@ class SQLiteStateStore:
         seen = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
-                """
-                INSERT INTO node_heartbeats(node_id, status, seen_at)
-                VALUES(?,?,?)
-                ON CONFLICT(node_id) DO UPDATE SET status=excluded.status, seen_at=excluded.seen_at
-                """,
+                resource_loader.load_text("sql", "controller", "upsert_node_heartbeats.sql"),
                 (node_id, status, seen),
             )
             conn.commit()
@@ -1295,13 +1221,9 @@ class SQLiteStateStore:
     def list_nodes(self) -> list[tuple[NodeRecord, NodeStatus | None]]:
         with self._connect() as conn:
             rows = conn.execute(
-                """
-                SELECT n.node_id, n.name, n.labels, n.taints, n.backend, n.endpoint, n.pod_cidr, n.wg_pubkey, n.created_at, n.updated_at,
-                       n.cordoned, hb.status, hb.seen_at
-                FROM nodes n
-                LEFT JOIN node_heartbeats hb ON hb.node_id = n.node_id
-                ORDER BY n.node_id
-                """
+                resource_loader.load_text(
+                    "sql", "controller", "select_nodes_with_heartbeat.sql"
+                )
             ).fetchall()
         result: list[tuple[NodeRecord, NodeStatus | None]] = []
         for row in rows:
@@ -1349,13 +1271,7 @@ class SQLiteStateStore:
     def get_node(self, node_id: str) -> tuple[NodeRecord, NodeStatus | None] | None:
         with self._connect() as conn:
             row = conn.execute(
-                """
-                SELECT n.node_id, n.name, n.labels, n.taints, n.backend, n.endpoint, n.pod_cidr, n.wg_pubkey, n.created_at, n.updated_at,
-                       n.cordoned, hb.status, hb.seen_at
-                FROM nodes n
-                LEFT JOIN node_heartbeats hb ON hb.node_id = n.node_id
-                WHERE n.node_id = ?
-                """,
+                resource_loader.load_text("sql", "controller", "select_node_by_id.sql"),
                 (node_id,),
             ).fetchone()
         if row is None:
@@ -1400,47 +1316,47 @@ class SQLiteStateStore:
             status = NodeStatus(node_id=row[0], status=row[11], seen_at=seen_at)
         return node, status
 
-    # --- Storage bindings ----------------------------------------------
+    # --- Volume attachments --------------------------------------------
 
-    def upsert_storage_binding(
+    def upsert_volume_attachment(
         self, app_name: str, volume_name: str, node_id: str, retention: str | None = None
     ) -> None:
-        """Record that a persistent volume resides on a specific node."""
+        """Record that a volume is attached to a specific node."""
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
-                """
-                INSERT INTO storage_bindings(app_name, volume_name, node_id, retention, created_at)
-                VALUES(?,?,?,?,?)
-                ON CONFLICT(app_name, volume_name) DO UPDATE SET
-                    node_id=excluded.node_id,
-                    retention=excluded.retention,
-                    created_at=excluded.created_at
-                """,
+                resource_loader.load_text(
+                    "sql", "controller", "upsert_volume_attachments.sql"
+                ),
                 (app_name, volume_name, node_id, retention, now),
             )
             conn.commit()
 
-    def list_storage_bindings(self, app_name: str) -> list[StorageBinding]:
-        """Return recorded bindings for an app's persistent volumes."""
+    def list_volume_attachments(self, app_name: str) -> list[VolumeAttachment]:
+        """Return recorded volume attachments for an app."""
         with self._connect() as conn:
             rows = conn.execute(
-                """
-                SELECT app_name, volume_name, node_id, retention, created_at
-                FROM storage_bindings
-                WHERE app_name = ?
-                ORDER BY volume_name
-                """,
+                resource_loader.load_text(
+                    "sql", "controller", "select_volume_attachments_by_app.sql"
+                ),
                 (app_name,),
             ).fetchall()
-        out: list[StorageBinding] = []
+            # Back-compat: if no attachments are present, consult storage_bindings.
+            if not rows:
+                rows = conn.execute(
+                    resource_loader.load_text(
+                        "sql", "controller", "select_storage_bindings_by_app.sql"
+                    ),
+                    (app_name,),
+                ).fetchall()
+        out: list[VolumeAttachment] = []
         for row in rows:
             try:
                 created = datetime.fromisoformat(row[4])
             except Exception:
                 created = datetime.fromtimestamp(0, tz=timezone.utc)
             out.append(
-                StorageBinding(
+                VolumeAttachment(
                     app_name=row[0],
                     volume_name=row[1],
                     node_id=row[2],
@@ -1450,22 +1366,51 @@ class SQLiteStateStore:
             )
         return out
 
+    def delete_volume_attachments(self, app_name: str) -> None:
+        """Remove all volume attachments for an app (e.g., on delete)."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM volume_attachments WHERE app_name = ?", (app_name,))
+            conn.commit()
+
+    # --- Storage bindings (legacy) ------------------------------------
+
+    def upsert_storage_binding(
+        self, app_name: str, volume_name: str, node_id: str, retention: str | None = None
+    ) -> None:
+        """Record that a persistent volume resides on a specific node."""
+        self.upsert_volume_attachment(app_name, volume_name, node_id, retention)
+
+    def list_storage_bindings(self, app_name: str) -> list[StorageBinding]:
+        """Return recorded bindings for an app's persistent volumes."""
+        out: list[StorageBinding] = []
+        for att in self.list_volume_attachments(app_name):
+            out.append(
+                StorageBinding(
+                    app_name=att.app_name,
+                    volume_name=att.volume_name,
+                    node_id=att.node_id,
+                    retention=att.retention,
+                    created_at=att.created_at,
+                )
+            )
+        return out
+
     def delete_storage_bindings(self, app_name: str) -> None:
         """Remove all bindings for an app (e.g., on delete)."""
-        with self._connect() as conn:
-            conn.execute("DELETE FROM storage_bindings WHERE app_name = ?", (app_name,))
-            conn.commit()
+        self.delete_volume_attachments(app_name)
 
     # --- Admin / maintenance helpers ---
     def delete_app_state(self, app_name: str, *, purge_history: bool = False) -> None:
-        """Remove status and replica rows for an app. Optionally purge events and revisions.
+        """Remove status and pod rows for an app. Optionally purge events and revisions.
 
         Does not affect running containers; the runtime is responsible for removing them.
         """
         with self._connect() as conn:
-            conn.execute("DELETE FROM replica_status WHERE app_name = ?", (app_name,))
+            conn.execute("DELETE FROM pod_status WHERE app_name = ?", (app_name,))
+            conn.execute("DELETE FROM pod_nodes WHERE app_name = ?", (app_name,))
             conn.execute("DELETE FROM app_status WHERE app_name = ?", (app_name,))
             conn.execute("DELETE FROM storage_bindings WHERE app_name = ?", (app_name,))
+            conn.execute("DELETE FROM volume_attachments WHERE app_name = ?", (app_name,))
             if purge_history:
                 conn.execute("DELETE FROM app_events WHERE app_name = ?", (app_name,))
                 conn.execute("DELETE FROM app_revisions WHERE app_name = ?", (app_name,))
