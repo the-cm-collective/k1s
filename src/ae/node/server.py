@@ -519,7 +519,6 @@ def _start_service_proxy_loop(
             if not app or not cluster_ip or not ports:
                 continue
             app = str(app)
-            store.upsert_service(app, str(cluster_ip), ports)
             endpoints_raw = svc.get("endpoints") or []
             endpoints: list[ServiceEndpoint] = []
             backends_by_port: dict[int, list[tuple[str, int]]] = {}
@@ -546,7 +545,7 @@ def _start_service_proxy_loop(
                 )
                 if ready:
                     backends_by_port.setdefault(port, []).append((ip, target))
-            store.upsert_service_endpoints(app, endpoints)
+            store.upsert_service_snapshot(app, str(cluster_ip), ports, endpoints)
             provider.update_service_endpoints(app, backends_by_port)
             seen.add(app)
         try:

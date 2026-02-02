@@ -30,7 +30,7 @@
 .status-bar .api-curl{display:flex;gap:8px;align-items:center;flex:1 1 360px;min-width:280px}
 .status-bar .api-curl code{white-space:nowrap;display:block;overflow:auto;max-width:100%;padding:2px 6px;border-radius:6px;border:1px solid var(--border);background:var(--k1s-card-bg, var(--muted));scrollbar-width:none;-ms-overflow-style:none}
 .status-bar .api-curl code::-webkit-scrollbar{height:0}
-#ingress-curl{white-space:nowrap;display:block;overflow:auto;max-width:100%;padding:2px 6px;border-radius:6px;border:1px solid var(--border);background:var(--k1s-card-bg, var(--muted));scrollbar-width:none;-ms-overflow-style:none}
+#ingress-curl{white-space:pre-wrap;word-break:break-word;display:block;overflow:auto;max-width:100%;padding:2px 6px;border-radius:6px;border:1px solid var(--border);background:var(--k1s-card-bg, var(--muted));scrollbar-width:none;-ms-overflow-style:none}
 #ingress-curl::-webkit-scrollbar{height:0}
 .container pre{max-width:100%;overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none}
 .container pre::-webkit-scrollbar{height:0}

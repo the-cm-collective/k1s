@@ -901,8 +901,18 @@ Connection: close
         if (status >= 200 && status < 300) { clearAuthBanner(); }
       }
 
+      function shimAuthToken(){
+        var tok = labsToken || '';
+        if (!tok) {
+          try { tok = localStorage.getItem('ae_token') || ''; } catch(e) { tok = ''; }
+        }
+        return tok;
+      }
+
       function mintShimToken(role, scope){
-        var headers = Object.assign({'Content-Type': 'application/json'}, authHeaders());
+        var headers = { 'Content-Type': 'application/json' };
+        var tok = shimAuthToken();
+        if (tok) headers['Authorization'] = 'Bearer ' + tok;
         var payload = { role: role };
         if (scope) payload.scope = scope;
         return fetch('/api/apishim/session', {

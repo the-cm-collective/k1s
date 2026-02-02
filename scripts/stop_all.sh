@@ -80,6 +80,21 @@ for bin in "${ENGINES[@]}"; do
   "$bin" compose -f ops/dev/labs-compose.yaml down >/dev/null 2>&1 || true
 done
 
+if command -v crictl >/dev/null 2>&1; then
+  log "Stopping CRI pods/containers (k1s-managed)"
+  label="app.kubernetes.io/managed-by=k1s"
+  pods=$(crictl pods -q --label "$label" 2>/dev/null || true)
+  if [[ -n "${pods}" ]]; then
+    crictl stopp ${pods} >/dev/null 2>&1 || true
+    crictl rmp ${pods} >/dev/null 2>&1 || true
+  fi
+  containers=$(crictl ps -a -q --label "$label" 2>/dev/null || true)
+  if [[ -n "${containers}" ]]; then
+    crictl stop ${containers} >/dev/null 2>&1 || true
+    crictl rm ${containers} >/dev/null 2>&1 || true
+  fi
+fi
+
 log "Removing demo app containers (label=ae.app or name=ae-*)"
 for bin in "${ENGINES[@]}"; do
   ids_label=$("$bin" ps -aq --filter 'label=ae.app' 2>/dev/null || true)
