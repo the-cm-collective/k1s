@@ -2,6 +2,7 @@
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
+    
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>02 Declarative Apply</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
@@ -41,6 +42,8 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
+        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
@@ -61,6 +64,7 @@
         --k1s-card-bg: #ffffff;
         --k1s-header-bg: rgba(255,255,255,0.82);
         --code-bg: #f5f6f8;
+        --k1s-page-overlay: linear-gradient(rgba(244,245,247,0.9), rgba(244,245,247,0.9));
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
         --muted: var(--k1s-panel);
@@ -82,7 +86,11 @@
         min-height: 100vh;
         display: flex;
         flex-direction: column;
-        background: var(--bg);
+        background-color: var(--bg);
+        background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
+        background-size: 100% 100%, auto 100%;
+        background-position: center top, center top;
+        background-repeat: repeat-y, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -382,7 +390,7 @@
         padding: 10px 12px;
         display: flex;
         flex-wrap: wrap;
-        align-items: center;
+        align-items: flex-start;
         gap: 6px 10px;
         border: 1px solid var(--k1s-border);
         border-radius: 12px;
@@ -392,6 +400,24 @@
       .hero-repo-label {
         font-size: 0.7rem;
         letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         color: var(--k1s-text-muted);
       }
@@ -605,6 +631,7 @@
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
     <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -670,16 +697,18 @@
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
+      <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
       <a href="apishim-compatibility-matrix.html">API Shim</a>
+      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -692,45 +721,46 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Chapter 02 - Declarative Specs and Apply Semantics</h1>
+    <h1>Chapter 02 - Declarative Specs &amp; Apply</h1>
 <h2>Concept</h2>
 <p>Declarative specs describe the desired outcome, not the step-by-step procedure. Applying a spec should be safe, repeatable, and converge the system to the same state regardless of prior actions. That is why apply is the primary interface: it merges intent into the system&#x27;s source of truth.</p>
 <pre class="mermaid">flowchart LR
-  YAML[YAML spec] --&gt; Validate[Schema validation]
-  Validate --&gt; Manifest[AppManifest]
-  Manifest --&gt; Hash[Spec hash]
-  Hash --&gt; Changed{Spec changed?}
-  Changed -- yes --&gt; Revision[Create revision]
-  Revision --&gt; Reconcile[Reconcile to runtime]
-  Changed -- no --&gt; Noop[No-op apply]</pre>
+  YAML[&quot;YAML spec&quot;] --&gt; Validate[&quot;Schema validation&quot;]
+  Validate --&gt; Manifest[&quot;AppManifest&quot;]
+  Manifest --&gt; Hash[&quot;Spec hash&quot;]
+  Hash --&gt; Changed{&quot;Spec changed&quot;}
+  Changed -- yes --&gt; Revision[&quot;Create revision&quot;]
+  Revision --&gt; Reconcile[&quot;Reconcile to runtime&quot;]
+  Changed -- no --&gt; Noop[&quot;No-op apply&quot;]</pre>
 <h3>Theory</h3>
 <p>Declarative systems treat configuration as data. The &quot;apply&quot; operation is a reconciliation trigger: the controller compares the submitted desired state to the current desired state (stored in revisions) and decides whether a new revision is needed. This reduces hidden coupling and makes changes auditable.</p>
 <pre class="mermaid">flowchart TB
-  Apply[ae apply] --&gt; Load[Load YAML documents]
-  Load --&gt; Detect{k8s kinds?}
-  Detect -- yes --&gt; Convert[k8s -&gt; AppManifest]
-  Detect -- no --&gt; Native[Native App manifest]
-  Convert --&gt; Store[Store revision]
+  Apply[&quot;ae apply&quot;] --&gt; Load[&quot;Load YAML documents&quot;]
+  Load --&gt; Namespace[&quot;Apply namespace override&quot;]
+  Namespace --&gt; Detect{&quot;k8s kinds&quot;}
+  Detect -- yes --&gt; Convert[&quot;k8s to AppManifest&quot;]
+  Detect -- no --&gt; Native[&quot;Native App manifest&quot;]
+  Convert --&gt; Store[&quot;Store revision&quot;]
   Native --&gt; Store
-  Store --&gt; Reconcile[Reconcile]</pre>
+  Store --&gt; Reconcile[&quot;Reconcile&quot;]</pre>
 <h3>Design</h3>
 <p>k1s validates YAML into a strict schema, normalizes it, and computes a hash to detect change. If the hash differs, a new revision is created and reconciled. If not, the controller does nothing--repeat applies are effectively no-ops. This design produces deterministic behavior and makes rollback trivial by reusing stored revisions.</p>
 <pre class="mermaid">flowchart LR
-  SpecV1[Spec v1] --&gt; Hash1[Hash A]
-  SpecV1 --&gt; Apply1[Apply]
-  Apply1 --&gt; Rev1[Revision 1]
-  SpecV1 --&gt; Apply2[Apply again]
+  SpecV1[&quot;Spec v1&quot;] --&gt; Hash1[&quot;Hash A&quot;]
+  SpecV1 --&gt; Apply1[&quot;Apply&quot;]
+  Apply1 --&gt; Rev1[&quot;Revision 1&quot;]
+  SpecV1 --&gt; Apply2[&quot;Apply again&quot;]
   Apply2 --&gt; Hash1
-  Hash1 --&gt; NoNewRev[No new revision]</pre>
+  Hash1 --&gt; NoNewRev[&quot;No new revision&quot;]</pre>
 <h3>Application</h3>
 <p>For developers, the spec is the API. Keep specs in version control, edit them for all changes, and apply them repeatedly without fear. When debugging, compare spec changes to revision events to see exactly what changed and why.</p>
 <pre class="mermaid">flowchart LR
-  Edit[Edit spec] --&gt; Apply[ae apply]
-  Apply --&gt; Hash[Spec hash]
-  Hash --&gt; Changed{Changed?}
-  Changed -- yes --&gt; NewRev[New revision]
-  NewRev --&gt; Reconcile[Reconcile]
-  Changed -- no --&gt; Noop[No-op apply]</pre>
+  Edit[&quot;Edit spec&quot;] --&gt; Apply[&quot;ae apply&quot;]
+  Apply --&gt; Hash[&quot;Spec hash&quot;]
+  Hash --&gt; Changed{&quot;Changed&quot;}
+  Changed -- yes --&gt; NewRev[&quot;New revision&quot;]
+  NewRev --&gt; Reconcile[&quot;Reconcile&quot;]
+  Changed -- no --&gt; Noop[&quot;No-op apply&quot;]</pre>
 <h2>Key Terms and Acronyms</h2>
 <ul>
 <li>Declarative config - Describe the outcome, not the steps.</li>
@@ -746,7 +776,8 @@
 </ul>
 <h2>Commands (copy/paste)</h2>
 <pre><code>python -m ae.cli apply -f specs/examples/echo.yaml
-python -m ae.cli status echo --wide
+python -m ae.cli apply -n demo --force-namespace -f specs/examples/echo.yaml
+python -m ae.cli status -n demo echo --wide
 python -m ae.cli events echo --limit 20</code></pre>
 <h2>Docs references (source + site)</h2>
 <ul>
@@ -820,8 +851,8 @@ spec:
       containerPort: 8080</code></pre>
 <h2>Chapter navigation</h2>
 <ul>
-<li>Prev: <a href="concepts-in-practice-01-desired-state-reconciliation.html">Chapter 01 - Desired State and Reconciliation Loops</a></li>
-<li>Next: <a href="concepts-in-practice-03-scheduling-placement.html">Chapter 03 - Scheduling and Placement (Where Work Runs)</a></li>
+<li>Prev: <a href="concepts-in-practice-01-desired-state-reconciliation.html">Chapter 01 - Desired State &amp; Reconciliation</a></li>
+<li>Next: <a href="concepts-in-practice-03-runtime-adapters.html">Chapter 03 - Runtime Adapters &amp; Container Execution</a></li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -830,7 +861,7 @@ spec:
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-22 14:47:44</span>
+        <span>Built 2026-01-31 16:07:03</span>
       </div>
     </footer>
     <script>
@@ -858,6 +889,64 @@ spec:
           if (location.pathname.endsWith('playground.html')) location.reload();
         });
         label();
+      })();
+    </script>
+    <script>
+      (function() {
+        function hideLinks(match) {
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (match(href)) { a.style.display = 'none'; }
+          });
+        }
+        function rewriteDashboardLinks(target) {
+          if (!target) return;
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (href.indexOf('/dashboard') === 0) {
+              a.setAttribute('href', target);
+              if (!a.getAttribute('target')) {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener');
+              }
+            }
+          });
+        }
+        function disablePlaygroundPage() {
+          var path = (location && location.pathname) ? location.pathname : '';
+          if (!/playground/i.test(path)) return;
+          var container = document.querySelector('.container');
+          if (container) container.style.display = 'none';
+          var msg = document.createElement('div');
+          msg.style.maxWidth = '960px';
+          msg.style.margin = '32px auto';
+          msg.style.padding = '16px 20px';
+          msg.style.border = '1px solid var(--border)';
+          msg.style.borderRadius = '12px';
+          msg.style.background = 'var(--k1s-panel)';
+          msg.style.color = 'var(--k1s-text)';
+          msg.innerHTML = '<h2 style="margin:0 0 8px">Playground disabled</h2>' +
+            '<p style="margin:0;color:var(--k1s-text-muted)">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';
+          document.body.insertBefore(msg, document.body.firstChild);
+        }
+        fetch('/ui/features', { credentials: 'same-origin' })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(f) {
+            if (!f) return;
+            if (f.dashboard === false) {
+              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });
+            } else {
+              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();
+              rewriteDashboardLinks(dashUrl);
+            }
+            if (f.playground === false) {
+              hideLinks(function(h) { return h.indexOf('playground') !== -1; });
+              disablePlaygroundPage();
+            }
+          })
+          .catch(function() {});
       })();
     </script>
   </body>

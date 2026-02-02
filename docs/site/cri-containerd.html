@@ -2,8 +2,9 @@
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
+    
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>05 Ingress Service Exposure</title>
+    <title>Cri Containerd</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
     <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
     <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
@@ -41,6 +42,8 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
+        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
@@ -61,6 +64,7 @@
         --k1s-card-bg: #ffffff;
         --k1s-header-bg: rgba(255,255,255,0.82);
         --code-bg: #f5f6f8;
+        --k1s-page-overlay: linear-gradient(rgba(244,245,247,0.9), rgba(244,245,247,0.9));
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
         --muted: var(--k1s-panel);
@@ -82,7 +86,11 @@
         min-height: 100vh;
         display: flex;
         flex-direction: column;
-        background: var(--bg);
+        background-color: var(--bg);
+        background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
+        background-size: 100% 100%, auto 100%;
+        background-position: center top, center top;
+        background-repeat: repeat-y, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -382,7 +390,7 @@
         padding: 10px 12px;
         display: flex;
         flex-wrap: wrap;
-        align-items: center;
+        align-items: flex-start;
         gap: 6px 10px;
         border: 1px solid var(--k1s-border);
         border-radius: 12px;
@@ -392,6 +400,24 @@
       .hero-repo-label {
         font-size: 0.7rem;
         letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         color: var(--k1s-text-muted);
       }
@@ -605,6 +631,7 @@
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
     <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -670,16 +697,18 @@
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
+      <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
       <a href="apishim-compatibility-matrix.html">API Shim</a>
+      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -692,135 +721,257 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Chapter 05 - Ingress and Service Exposure</h1>
-<h2>Concept</h2>
-<p>Service exposure is the boundary between internal workloads and external clients. L4 services provide stable networking, while L7 ingress handles routing, TLS, and hostname-based access. Both must be deterministic, declarative, and safe to update.</p>
-<pre class="mermaid">flowchart LR
-  Client[Client] --&gt; Ingress[Caddy ingress]
-  Ingress --&gt; ServiceVIP[Service VIP]
-  ServiceVIP --&gt; Pod[Replica endpoint]</pre>
-<h3>Theory</h3>
-<p>Layered networking separates concerns: service discovery and stable endpoints at L4, routing and policy at L7. Health checks gate traffic so that only ready backends are exposed. Ingress controllers react to declarative config and converge proxy state to match.</p>
-<pre class="mermaid">flowchart TB
-  Manifest[App spec] --&gt; ServiceCtl[ServiceController]
-  ServiceCtl --&gt; Network[NetworkProvider]
-  Network --&gt; VIP[Cluster IP / VIP]
-  ServiceCtl --&gt; Endpoints[Service endpoints]
+    <h1>CRI containerd</h1>
+<p>This page documents running k1s with containerd (CRI), the registry-first image flow, and the tooling available for CRI operations.</p>
+<h2>Runtime selection</h2>
+<p>Use the CRI backend:</p>
+<pre><code>export AE_RUNTIME_BACKEND=cri
+export AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock</code></pre>
+<p>Defaults:</p>
+<ul>
+<li>CRI endpoint: <code>AE_CRI_ENDPOINT</code> (default <code>unix:///run/containerd/containerd.sock</code>)</li>
+<li>CRI sandbox image: <code>AE_CRI_SANDBOX_IMAGE</code> (pause image)</li>
+<li>Host namespaces gate: <code>AE_CRI_ALLOW_HOST_NS=1</code> to enable hostNetwork/hostPID/hostIPC/shareProcessNamespace</li>
+</ul>
+<h2>Registry-first image flow (Kubernetes-aligned)</h2>
+<ul>
+<li>Build images and push to a registry reachable by every node.</li>
+<li>Reference those images in manifests.</li>
+<li>Let containerd pull on demand (kubelet behavior).</li>
+<li>Optionally pre-warm to reduce first-start latency.</li>
+</ul>
+<p>This avoids host-local imports and works across nodes.</p>
+<h2>Registry options</h2>
+<h3>In-cluster registry (NodePort)</h3>
+<p>Use the in-cluster registry manifest and expose it via NodePort so host containerd can reach it:</p>
+<pre><code>openssl req -x509 -newkey rsa:4096 -sha256 -days 365 -nodes \
+  -keyout /tmp/registry.key \
+  -out /tmp/registry.crt \
+  -subj &quot;/CN=registry.k1s.home.arpa&quot; \
+  -addext &quot;subjectAltName=DNS:registry.k1s.home.arpa,IP:127.0.0.1&quot;
+kubectl -n k1s-registry create secret tls registry-tls \
+  --cert=/tmp/registry.crt --key=/tmp/registry.key
 
-  Manifest --&gt; IngressSvc[IngressService]
-  IngressSvc --&gt; Caddy[CaddyIngressManager]
-  Caddy --&gt; Caddyfile[Caddy config snippets]</pre>
-<h3>Design</h3>
-<p>k1s implements a Service VIP controller for L4 and Caddy-based ingress for L7. The controller computes upstreams from healthy replicas and writes ingress config snippets, then reloads Caddy. It also supports canary weighting during rollouts. This mirrors the Kubernetes pattern of Services + Ingress controllers.</p>
-<pre class="mermaid">flowchart LR
-  L4[L4 Service] --&gt;|Stable port + VIP| Traffic[Traffic]
-  L7[L7 Ingress] --&gt;|Host/path routing| Traffic</pre>
-<h3>Application</h3>
-<p>For engineers, start with <code>spec.service</code> for stable ports and <code>spec.ingress</code> for HTTP routing. Verify readiness probes so that only healthy endpoints appear in services. Use events to confirm when ingress is configured and updated during rollouts.</p>
-<pre class="mermaid">sequenceDiagram
-  participant Client
-  participant Ingress
-  participant Service as Service VIP
-  participant Pod as Endpoint
-  Client-&gt;&gt;Ingress: HTTP request
-  Ingress-&gt;&gt;Service: Route by host/path
-  Service-&gt;&gt;Pod: Forward to ready endpoint
-  Pod--&gt;&gt;Client: Response</pre>
-<h2>Key Terms and Acronyms</h2>
+htpasswd -Bbc /tmp/htpasswd k1s test123
+kubectl -n k1s-registry create secret generic registry-auth \
+  --from-file=htpasswd=/tmp/htpasswd
+
+kubectl apply -f ops/dev/registry-k8s.yaml</code></pre>
+<p>Defaults:</p>
 <ul>
-<li>Service - L4 abstraction that provides stable ports/endpoints.</li>
-<li>VIP - Virtual IP for a service.</li>
-<li>Ingress - L7 routing by host/path.</li>
-<li>Upstream - Backend endpoint targeted by a proxy.</li>
-<li>TLS - Transport Layer Security for HTTPS.</li>
-<li>Canary - Weighted routing between revisions.</li>
-<li>L4/L7 - Networking layers (transport/application).</li>
-<li>Gateway API - Kubernetes successor to Ingress.</li>
-<li>Endpoint - Concrete backend address for routing.</li>
+<li>Hostname: <code>registry.k1s.home.arpa</code></li>
+<li>NodePort: <code>32000</code></li>
+<li>Full host: <code>registry.k1s.home.arpa:32000</code></li>
 </ul>
-<h2>Commands (copy/paste)</h2>
-<pre><code>docker compose -f ops/dev/docker-compose.yaml up
-python -m ae.controller --loop --specs specs/ --metrics-port 9108
-python -m ae.cli apply -f specs/examples/echo.yaml
-python -m ae.cli services
-python -m ae.cli events echo --limit 20
-docker compose -f ops/dev/docker-compose.yaml down</code></pre>
-<h2>Docs references (source + site)</h2>
+<p>The manifest enables TLS + htpasswd auth and deletes: <code>REGISTRY_STORAGE_DELETE_ENABLED=true</code>. For single-node dev, add <code>registry.k1s.home.arpa</code> to <code>/etc/hosts</code>.</p>
+<p>When this default is selected for CRI demos, <code>scripts/init_demo.sh</code> will also disable the local registry cache (<code>AE_USE_REGISTRY_CACHE=0</code>) to avoid routing dev-stack images through the in-cluster registry.</p>
+<h3>Local dev registry cache</h3>
+<p>The dev stack can run a pull-through cache at <code>AE_REGISTRY_HOST</code> (default <code>localhost:5001</code>). Containerd can only use it if you configure trust in <code>/etc/containerd/certs.d/&lt;host&gt;/hosts.toml</code>.</p>
+<h3>MicroK8s registry (common dev case)</h3>
+<p>If <code>microk8s enable registry</code> is used on the same host, it typically exposes <code>localhost:32000</code>. You can point k1s at it:</p>
+<pre><code>AE_REGISTRY_HOST=localhost:32000
+AE_USE_REGISTRY_CACHE=0</code></pre>
+<p>Then trust it with:</p>
+<pre><code>scripts/containerd_registry_trust.sh --host localhost:32000 --scheme http --insecure --restart</code></pre>
+<h2>Trust and auth (containerd)</h2>
+<p>Containerd requires explicit trust config for insecure registries or custom CA. Use the helper to write <code>/etc/containerd/certs.d/&lt;host&gt;/hosts.toml</code>:</p>
+<pre><code>scripts/containerd_registry_trust.sh \
+  --host registry.k1s.home.arpa:32000 \
+  --ca /tmp/registry.crt \
+  --restart</code></pre>
+<p>Or use the CLI wrapper:</p>
+<pre><code>ae cri trust --host registry.k1s.home.arpa:32000 --ca /tmp/registry.crt --restart</code></pre>
+<p>Registry auth for CRI pulls is read from: <code>~/.config/ae/registries.yaml</code>.</p>
+<h3>Image pull policy and secrets</h3>
 <ul>
-<li>Source: <code>docs/reference/ingress.md</code></li>
-<li>Source: <code>docs/guides/l4-services.md</code></li>
-<li>Source: <code>docs/design/clusterip.md</code></li>
-<li>Site: <code>docs/site/ingress.html</code></li>
-<li>Site: <code>docs/site/rollouts.html</code></li>
-</ul>
-<h2>Code references (walkthrough anchors)</h2>
+<li><code>spec.imagePullPolicy</code> is honored by the CRI runtime:
 <ul>
-<li>Ingress orchestration (TLS + canary weights): <code>src/ae/ingress/service.py:35</code></li>
+<li><code>Always</code> pulls on each (re)create.</li>
+<li><code>IfNotPresent</code> pulls only if the image is missing.</li>
+<li><code>Never</code> refuses to pull and requires the image to exist locally.</li>
+<li>Default aligns with Kubernetes: <code>:latest</code> (or no tag) → <code>Always</code>, otherwise <code>IfNotPresent</code>.</li>
 </ul>
-<pre><code>    def apply(self, manifest: AppManifest, upstream) -&gt; IngressResult:
-        if manifest.spec.ingress is None:
-            ...
-        readiness_path = None
-        if (
-            manifest.spec.health
-            and manifest.spec.health.readiness
-            and manifest.spec.health.readiness.http_get
-        ):
-            readiness_path = manifest.spec.health.readiness.http_get.path or &quot;/&quot;
-        ...
-        rollout = getattr(manifest.spec, &quot;rollout&quot;, {}) or {}
-        strategy = str(rollout.get(&quot;strategy&quot;, &quot;parallel&quot;)).lower()
-        canary_weight = int(rollout.get(&quot;weight&quot;, 1)) if strategy == &quot;canary&quot; else 1
-        ...
-        site_path = self._manager.apply(
-            manifest,
-            upstream,
-            readiness_path,
-            prefer_first=prefer_first,
-            first_weight=canary_weight,
-        )</code></pre>
+</li>
+<li><code>spec.imagePullSecrets</code> and <code>spec.registryAuthRef</code> are treated as registry host keys in <code>~/.config/ae/registries.yaml</code> and are preferred when pulling images via CRI.</li>
+<li>When apishim storage is available (<code>AE_APISHIM_DB</code> or <code>AE_APISHIM_DSN</code>), the CRI runtime also reads Kubernetes secrets of type <code>kubernetes.io/dockerconfigjson</code> (or <code>.dockercfg</code>) referenced by <code>imagePullSecrets</code> and uses those creds for pulls.</li>
+<li>If the pod spec omits <code>imagePullSecrets</code>, the CRI runtime will look up the ServiceAccount for the originating Kubernetes workload (via apishim storage) and use any <code>imagePullSecrets</code> defined there.</li>
+<li>If a manifest was converted from Kubernetes (via apishim), the converted spec stores <code>serviceAccountName</code> and CRI will prefer that ServiceAccount when resolving pull secrets.</li>
+<li>Kubernetes conversion defaults <code>serviceAccountName</code> to <code>default</code> when unset, matching kubelet behavior for pull secret resolution.</li>
+<li>Kubernetes conversion also carries <code>imagePullSecrets</code> from the pod template into the k1s spec so CRI pulls can use them without apishim lookups.</li>
+<li>If exactly one pull secret is present, conversion also sets <code>registryAuthRef</code> to that secret name for convenience.</li>
+<li>Kubernetes conversion also maps <code>imagePullPolicy</code> from the pod template into the k1s spec (main container + sidecars), so CRI honors explicit pull policy settings.</li>
+<li>ServiceAccount propagation applies to converted Deployment/StatefulSet/DaemonSet/Job/CronJob pod templates (best-effort when templates are present).</li>
+<li>When apishim storage is available, converted workloads can inherit ServiceAccount <code>imagePullSecrets</code> only if the pod template omits the field entirely (an explicit empty list disables the fallback, matching Kubernetes behavior).</li>
+</ul>
+<h2>Image sync and prewarm</h2>
+<h3>Demo sync (push + CRI pull)</h3>
+<pre><code>AE_CRI_IMAGE_SYNC=1 ./scripts/init_demo.sh</code></pre>
+<p>This pushes demo images to the registry and pulls them via CRI. When enabled, demo specs are rewritten to reference <code>AE_REGISTRY_HOST</code>.</p>
+<h3>Prewarm (host)</h3>
+<pre><code>AE_CRI_PREWARM=1 AE_CRI_PREWARM_IMAGES=&quot;mendhak/http-https-echo:37&quot; \
+  ./scripts/init_demo.sh</code></pre>
+<h3>Prewarm (Kubernetes)</h3>
+<p>Apply the DaemonSet that pre-pulls images on every node:</p>
+<pre><code>kubectl apply -f specs/examples/cri-image-prewarm-k8s.yaml</code></pre>
+<p>This uses a minimal crictl-only image. For a hostPath crictl variant, use <code>specs/examples/cri-image-prewarm-k8s-hostpath.yaml</code>. Note: DaemonSets are emulated by the k1s shim; this is intended for real Kubernetes clusters.</p>
+<h3>Key env vars</h3>
 <ul>
-<li>Caddy site template + write path: <code>src/ae/ingress/caddy.py:18</code></li>
+<li><code>AE_CRI_IMAGE_SYNC=1</code> to push demo images to the registry and pull via CRI</li>
+<li><code>AE_CRI_PREWARM=1</code> and <code>AE_CRI_PREWARM_IMAGES=&quot;img1 img2&quot;</code> for host prewarm</li>
+<li><code>AE_CRI_BUILDKIT_BUILD=1</code> to build/push the buildkit-only image on demo/labs</li>
+<li><code>AE_CRI_CRICTL_BUILD=1</code> to build/push the crictl-only image on demo/labs</li>
+<li><code>AE_CRI_TOOLBOX_BUILD=1</code> to build/push the toolbox image (advanced)</li>
+<li><code>AE_CRI_BUILDKIT_KEEP=1</code> to keep the buildkit pod after <code>ae cri build</code></li>
+<li><code>AE_CRI_REGISTRY_TRUST=1</code> to write containerd trust for <code>AE_REGISTRY_HOST</code> during <code>init_demo.sh</code></li>
+<li><code>AE_CRI_REGISTRY_TRUST_CA=/path/to/ca.crt</code> or <code>AE_CRI_REGISTRY_TRUST_INSECURE=1</code> (dev)</li>
+<li><code>AE_CRI_REGISTRY_TRUST_SCHEME=http</code> to override scheme (default <code>https</code>)</li>
+<li><code>AE_CRI_REGISTRY_TRUST_RESTART=1</code> to restart containerd after writing trust</li>
+<li><code>AE_CRI_SOCKET_ACCESS=1</code> to grant temporary ACL access to the containerd socket (dev-only)</li>
+<li><code>AE_CRI_ALLOW_HOST_NS=1</code> to enable hostNetwork/hostPID/hostIPC/shareProcessNamespace (off by default)</li>
 </ul>
-<pre><code>SITE_TEMPLATE = Template(
-    &quot;&quot;&quot;https://$host {
-    log {
-        output stdout
-        format console
-    }
-    # Ensure upstream HSTS does not stick during dev
-    header -Strict-Transport-Security
-    $tls_block
-    $routes
-}
-&quot;&quot;&quot;
-)
-...
-    site_config = self._render_site(
-        ingress, upstream, readiness_path, prefer_first, first_weight
-    )
-    site_path = self._site_path(app_key_for_manifest(manifest))
-    site_path.write_text(site_config)</code></pre>
+<h3>Temporary socket access (dev)</h3>
+<p>If you want to run CRI demos without sudo, grant ACL access to the containerd socket for the current user:</p>
+<pre><code>AE_CRI_SOCKET_ACCESS=1 ./scripts/init_demo.sh</code></pre>
+<p>Manual helpers:</p>
+<pre><code>./scripts/containerd_socket_access.sh --grant
+./scripts/containerd_socket_access.sh --revoke</code></pre>
+<p>The helper records the previous ACLs in <code>state/containerd.sock.acl</code> and restores them on revoke. Note: if containerd restarts, the socket may be recreated and you may need to re‑grant access.</p>
+<h2>Volumes (hostPath + PVC)</h2>
 <ul>
-<li>Service VIP reconciliation: <code>src/ae/network/service_controller.py:23</code></li>
-</ul>
-<pre><code>    def reconcile(...):
-        svc_spec = getattr(manifest.spec, &quot;service&quot;, None)
-        app = app_key_for_manifest(manifest)
-        if not svc_spec:
-            self._cleanup(app)
-            return None
-        ...
-        self._provider.ensure_network()
-        cluster_ip = self._provider.ensure_service(app, ports)
-        backends = self._build_backends(app, svc_spec, runtime_result, health_report)
-        self._store.upsert_service(app, cluster_ip, ports)
-        self._provider.update_service_endpoints(app, backends[&quot;by_port&quot;])</code></pre>
-<h2>Chapter navigation</h2>
+<li><code>spec.volumes</code> (hostPath) works the same as Podman/Docker for CRI nodes.</li>
+<li>Kubernetes workloads applied via apishim map:
 <ul>
-<li>Prev: <a href="concepts-in-practice-04-runtime-adapters.html">Chapter 04 - Runtime Adapters and Container Execution</a></li>
-<li>Next: <a href="concepts-in-practice-06-observability.html">Chapter 06 - Observability: Logs, Metrics, Events</a></li>
+<li><code>volumes[].hostPath</code> → <code>spec.volumes</code> (mountPath + readOnly preserved).</li>
+<li><code>volumes[].persistentVolumeClaim</code> → <code>spec.pvcMounts</code> (requires NetFS on nodes).</li>
+<li><code>volumeDevices</code> → <code>spec.pvcMounts[].devicePath</code> for block volumes.</li>
 </ul>
+</li>
+<li>StatefulSet <code>volumeClaimTemplates</code> create per‑ordinal PVCs (<code>&lt;tpl&gt;-&lt;sts&gt;-&lt;ordinal&gt;</code>) and mount via <code>claimTemplate</code> entries.</li>
+<li><code>spec.emptyDirs</code> map to per‑pod host directories on CRI nodes (ephemeral).
+<ul>
+<li>Defaults to <code>/var/lib/ae/emptydirs/&lt;app&gt;/&lt;pod&gt;/&lt;name&gt;</code>.</li>
+<li><code>medium: Memory</code> uses <code>/dev/shm/ae-emptydir</code> when available.</li>
+<li>Override roots with <code>AE_CRI_EMPTYDIR_ROOT</code> / <code>AE_CRI_EMPTYDIR_TMPFS_ROOT</code>.</li>
+<li><code>sizeLimit</code> is best‑effort: enforced for <code>medium: Memory</code> when tmpfs mounts are available; disk‑backed emptyDirs do not enforce size limits.</li>
+</ul>
+</li>
+</ul>
+<p>Enable NetFS PVC resolution on the node agent:</p>
+<pre><code>export AE_ENABLE_NETFS=1
+export AE_APISHIM_DB=state/apishim.db</code></pre>
+<p>If the apishim DB is not shared with nodes, point at the apishim API instead:</p>
+<pre><code>export AE_ENABLE_NETFS=1
+export AE_APISHIM_URL=http://&lt;controller-host&gt;:8445
+export AE_APISHIM_READ_TOKEN=&lt;read-token&gt;</code></pre>
+<h2>DNS + host aliases (CRI)</h2>
+<ul>
+<li><code>spec.dnsConfig</code> is mapped into the CRI sandbox <code>dns_config</code> (nameservers, searches, options).</li>
+<li><code>spec.dnsPolicy</code> follows Kubernetes defaults (ClusterFirst / ClusterFirstWithHostNet) when <code>AE_CRI_CLUSTER_DNS</code> is set. Use <code>AE_CRI_CLUSTER_DNS</code> (space or comma delimited) and <code>AE_CRI_CLUSTER_DOMAIN</code> (default <code>cluster.local</code>) to enable cluster-style DNS search paths. <code>dnsPolicy=None</code> requires <code>dnsConfig</code> to be set.</li>
+<li><code>spec.hostname</code>, <code>spec.subdomain</code>, and <code>spec.setHostnameAsFQDN</code> are mapped into the sandbox hostname (best-effort; FQDN requires <code>AE_CRI_CLUSTER_DOMAIN</code> to be meaningful).</li>
+<li><code>spec.hostAliases</code> are applied by writing a per-pod <code>/etc/hosts</code> file under <code>/var/lib/ae/hosts</code> (override with <code>AE_CRI_HOSTS_ROOT</code>) and mounting it into each container. This is a best-effort substitute for kubelet&#x27;s hostAlias behavior.</li>
+</ul>
+<h2>Security context (CRI)</h2>
+<ul>
+<li>Container security: <code>runAsUser</code>, <code>runAsGroup</code>, <code>readOnlyRootFilesystem</code>, <code>dropCapabilities</code>, <code>seccompProfileType</code> (+ <code>seccompLocalhostProfile</code>), and <code>apparmorProfile</code> map into CRI container security context.</li>
+<li>Pod security: <code>podSecurity.fsGroup</code> maps to supplemental groups, and <code>podSecurity.seccompProfileType</code>/<code>podSecurity.seLinux*</code> map into the sandbox security context.</li>
+<li>Host namespaces are gated by <code>AE_CRI_ALLOW_HOST_NS=1</code> as described above.</li>
+</ul>
+<h2>Crictl-only image (default)</h2>
+<p>Build and push the crictl-only image:</p>
+<pre><code>AE_REGISTRY_HOST=registry.k1s.home.arpa:32000 \
+  scripts/build_cri_crictl_image.sh --push</code></pre>
+<p>The prewarm DaemonSet uses this image by default. For a short-lived ops pod, apply <code>specs/examples/cri-crictl-k8s.yaml</code>.</p>
+<h2>Buildkit-only image and <code>ae cri build</code></h2>
+<p>The buildkit-only image runs buildkitd/buildctl without mounting the host containerd socket. It is the default for <code>ae cri build</code>.</p>
+<p>Build and push:</p>
+<pre><code>AE_REGISTRY_HOST=registry.k1s.home.arpa:32000 \
+  scripts/build_cri_buildkit_image.sh --push</code></pre>
+<p>Build and push with the buildkit pod (<code>specs/examples/cri-buildkit-k8s.yaml</code>):</p>
+<pre><code>ae cri build --context /path/to/context \
+  --image registry.k1s.home.arpa:32000/demo-green:latest</code></pre>
+<p>By default the buildkit pod is deleted after the build. Use <code>--keep-buildkit-pod</code> (or set <code>AE_CRI_BUILDKIT_KEEP=1</code>) to reuse it. The helper can also pre-pull the image via a crictl-only pod; pass <code>--no-cri-pull</code> to skip that step. Pre-pull uses registry credentials from <code>~/.config/ae/registries.yaml</code> if present.</p>
+<h2>Toolbox image (advanced)</h2>
+<p>The toolbox bundles crictl + nerdctl + buildkitd/buildctl. Use it for advanced manual workflows (direct containerd builds). Note: this is dev-only and effectively node-root when the containerd socket is mounted; use only on trusted lab nodes. Prefer the buildkit-only pod or CI builds for production pipelines.</p>
+<p>Build and push:</p>
+<pre><code>AE_REGISTRY_HOST=registry.k1s.home.arpa:32000 \
+  scripts/build_cri_toolbox_image.sh --push</code></pre>
+<p>Manifest: <code>specs/examples/cri-toolbox-k8s.yaml</code>.</p>
+<p>You can also point <code>ae cri build</code> at the toolbox pod (for an all-in-one pod with nerdctl + buildkit) by swapping the manifest and pod name:</p>
+<pre><code>ae cri build --context /path/to/context \
+  --image registry.k1s.home.arpa:32000/demo-green:latest \
+  --buildkit-manifest specs/examples/cri-toolbox-k8s.yaml \
+  --buildkit-namespace k1s-tools \
+  --buildkit-pod cri-toolbox</code></pre>
+<h3>Auto-build on demo/labs</h3>
+<p>When <code>AE_RUNTIME_BACKEND=cri</code>, <code>scripts/init_demo.sh</code> builds and pushes the buildkit-only and crictl-only images by default. You can disable either:</p>
+<pre><code>AE_CRI_BUILDKIT_BUILD=0
+AE_CRI_CRICTL_BUILD=0</code></pre>
+<h2>Streaming exec/port-forward via node agent</h2>
+<p>For CRI setups, keep the containerd socket on the node and let the node agent handle streaming exec/port-forward. Point apishim at the agent endpoint so the API layer does not need direct CRI access:</p>
+<pre><code>export AE_APISHIM_AGENT_URL=http://&lt;node&gt;:9109
+# or reuse the controller agent URL:
+export AE_AGENT_URL=http://&lt;node&gt;:9109</code></pre>
+<p>If apishim cannot reach pod IPs (common in multi-node overlays), enable the agent-backed port-forward path:</p>
+<pre><code>export AE_APISHIM_CRI_PORTFORWARD=1
+# force it even when pod IPs are present:
+export AE_APISHIM_CRI_PORTFORWARD_FORCE=1</code></pre>
+<h2>Service VIP + NodePort (iptables)</h2>
+<p>For Kubernetes-style ClusterIP/NodePort behavior on CRI nodes, enable the iptables service proxy (requires root and <code>iptables</code> on PATH):</p>
+<pre><code>export AE_ENABLE_SERVICE_PROXY=1
+export AE_SERVICE_PROVIDER=iptables</code></pre>
+<p>When <code>spec.service.ports[].nodePort</code> is set (Service type NodePort or LoadBalancer), k1s programs NodePort DNAT rules to the same ready backends.</p>
+<h3>NodePort smoke test</h3>
+<p>Run the NodePort smoke helper (requires root + iptables):</p>
+<pre><code>sudo scripts/cri_nodeport_smoke.sh</code></pre>
+<p>Defaults:</p>
+<ul>
+<li>host: <code>AE_NODE_ADVERTISE_IP</code> or <code>127.0.0.1</code></li>
+<li>nodePort: <code>32080</code></li>
+<li>path: <code>/healthz</code></li>
+</ul>
+<p>Override with <code>AE_CRI_NODEPORT_HOST</code>, <code>AE_CRI_NODEPORT_PORT</code>, and <code>AE_CRI_NODEPORT_PATH</code>.</p>
+<h3>Multi-node agent proxy</h3>
+<p>For Kubernetes-aligned NodePort/ClusterIP on *each node*, enable the agent service proxy loop. This pulls service + endpoint snapshots from the controller and programs iptables on the node (kube-proxy style):</p>
+<pre><code>export AE_AGENT_SERVICE_PROXY=1
+export AE_AGENT_SERVICE_PROXY_URL=http://&lt;controller&gt;:9108
+export AE_AGENT_SERVICE_PROXY_DB=/var/lib/ae/agent-services.db
+# If API auth is enabled:
+export AE_AGENT_SERVICE_PROXY_TOKEN=$AE_API_READ_TOKEN</code></pre>
+<p>Requires root or NET_ADMIN on the agent container, and <code>iptables</code> on PATH.</p>
+<h2>Node agent DaemonSet (k8s-aligned)</h2>
+<p>For Kubernetes-aligned deployments, run the node agent as a DaemonSet with host networking and a containerd socket mount:</p>
+<pre><code>scripts/build_node_image.sh --push \
+  --registry registry.k1s.home.arpa:32000
+
+kubectl apply -f specs/examples/k1s-node-daemonset-k8s.yaml</code></pre>
+<p>Update the manifest to set <code>AE_CONTROLLER_URL</code> (controller agent API) and <code>AE_AGENT_TOKEN</code> (shared secret). The manifest defaults to CRI containerd; for Podman/Docker nodes, change <code>AE_RUNTIME_BACKEND</code> and remove the socket mount.</p>
+<h2>k1s CLI helpers</h2>
+<p>CRI runtime images:</p>
+<ul>
+<li><code>ae cri images list</code></li>
+<li><code>ae cri images pull &lt;image&gt;</code></li>
+<li><code>ae cri images rm &lt;image&gt;</code></li>
+<li><code>ae cri images inspect &lt;image&gt; --json</code></li>
+</ul>
+<p>CRI registry helpers (HTTP API + build/push):</p>
+<ul>
+<li><code>ae cri registry list --registry registry.k1s.home.arpa:32000</code></li>
+<li><code>ae cri registry tags &lt;repo&gt; --registry registry.k1s.home.arpa:32000</code></li>
+<li><code>ae cri registry manifest &lt;repo&gt;:&lt;tag&gt; --registry registry.k1s.home.arpa:32000</code></li>
+<li><code>ae cri registry tag &lt;repo&gt;:&lt;tag&gt; &lt;repo&gt;:&lt;new-tag&gt; --registry registry.k1s.home.arpa:32000</code></li>
+<li><code>ae cri registry delete &lt;repo&gt;:&lt;tag&gt; --registry registry.k1s.home.arpa:32000 --force</code></li>
+<li><code>ae cri registry rm &lt;repo&gt;:&lt;tag&gt; --registry registry.k1s.home.arpa:32000 --force</code></li>
+<li><code>ae cri registry push --context /path/to/context --image registry.k1s.home.arpa:32000/app:tag</code></li>
+</ul>
+<p>Containerd trust helper:</p>
+<ul>
+<li><code>ae cri trust --host registry.k1s.home.arpa:32000 --ca /tmp/registry.crt --restart</code></li>
+<li><code>ae cri trust --host localhost:32000 --scheme http --insecure --restart</code></li>
+</ul>
+<p>The registry <code>push</code> helper uses buildkit (same path as <code>ae cri build</code>).</p>
+<p>Delete requires a registry with deletes enabled (registry:2 uses <code>REGISTRY_STORAGE_DELETE_ENABLED=true</code>). Helpers use basic auth from <code>~/.config/ae/registries.yaml</code> or <code>--username/--password</code>. For HTTP registries (for example <code>localhost:5001</code> or MicroK8s), use <code>--scheme http</code>. For TLS with a custom CA, pass <code>--ca /path/to/ca.crt</code> or use <code>--insecure</code> for dev-only.</p>
+<h2>Security notes</h2>
+<p>Mounting the host containerd socket is effectively node-root. Restrict exec access, keep pods short-lived, and avoid extra hostPath mounts. For tighter security, use the buildkit-only pod (no containerd socket) or build in CI and push to the registry, then let CRI pull on demand.</p>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -828,7 +979,7 @@ docker compose -f ops/dev/docker-compose.yaml down</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-22 14:47:44</span>
+        <span>Built 2026-01-31 16:07:03</span>
       </div>
     </footer>
     <script>
@@ -856,6 +1007,64 @@ docker compose -f ops/dev/docker-compose.yaml down</code></pre>
           if (location.pathname.endsWith('playground.html')) location.reload();
         });
         label();
+      })();
+    </script>
+    <script>
+      (function() {
+        function hideLinks(match) {
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (match(href)) { a.style.display = 'none'; }
+          });
+        }
+        function rewriteDashboardLinks(target) {
+          if (!target) return;
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (href.indexOf('/dashboard') === 0) {
+              a.setAttribute('href', target);
+              if (!a.getAttribute('target')) {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener');
+              }
+            }
+          });
+        }
+        function disablePlaygroundPage() {
+          var path = (location && location.pathname) ? location.pathname : '';
+          if (!/playground/i.test(path)) return;
+          var container = document.querySelector('.container');
+          if (container) container.style.display = 'none';
+          var msg = document.createElement('div');
+          msg.style.maxWidth = '960px';
+          msg.style.margin = '32px auto';
+          msg.style.padding = '16px 20px';
+          msg.style.border = '1px solid var(--border)';
+          msg.style.borderRadius = '12px';
+          msg.style.background = 'var(--k1s-panel)';
+          msg.style.color = 'var(--k1s-text)';
+          msg.innerHTML = '<h2 style="margin:0 0 8px">Playground disabled</h2>' +
+            '<p style="margin:0;color:var(--k1s-text-muted)">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';
+          document.body.insertBefore(msg, document.body.firstChild);
+        }
+        fetch('/ui/features', { credentials: 'same-origin' })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(f) {
+            if (!f) return;
+            if (f.dashboard === false) {
+              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });
+            } else {
+              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();
+              rewriteDashboardLinks(dashUrl);
+            }
+            if (f.playground === false) {
+              hideLinks(function(h) { return h.indexOf('playground') !== -1; });
+              disablePlaygroundPage();
+            }
+          })
+          .catch(function() {});
       })();
     </script>
   </body>

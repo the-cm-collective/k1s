@@ -2,6 +2,7 @@
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
+    
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>Storage</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
@@ -41,6 +42,8 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
+        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
@@ -61,6 +64,7 @@
         --k1s-card-bg: #ffffff;
         --k1s-header-bg: rgba(255,255,255,0.82);
         --code-bg: #f5f6f8;
+        --k1s-page-overlay: linear-gradient(rgba(244,245,247,0.9), rgba(244,245,247,0.9));
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
         --muted: var(--k1s-panel);
@@ -82,7 +86,11 @@
         min-height: 100vh;
         display: flex;
         flex-direction: column;
-        background: var(--bg);
+        background-color: var(--bg);
+        background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
+        background-size: 100% 100%, auto 100%;
+        background-position: center top, center top;
+        background-repeat: repeat-y, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -382,7 +390,7 @@
         padding: 10px 12px;
         display: flex;
         flex-wrap: wrap;
-        align-items: center;
+        align-items: flex-start;
         gap: 6px 10px;
         border: 1px solid var(--k1s-border);
         border-radius: 12px;
@@ -392,6 +400,24 @@
       .hero-repo-label {
         font-size: 0.7rem;
         letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         color: var(--k1s-text-muted);
       }
@@ -605,6 +631,7 @@
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
     <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -670,16 +697,18 @@
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
+      <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
       <a href="apishim-compatibility-matrix.html">API Shim</a>
+      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -716,6 +745,52 @@
 <li>HostPath binds under <code>spec.volumes</code> still work for simple dev paths.</li>
 <li>Future: <code>size</code> is reserved for advisory/validation.</li>
 </ul>
+<h3>NetFS StorageClass config</h3>
+<p>Provide StorageClass definitions via <code>AE_STORAGE_PROVISIONERS</code> (YAML file). The shim will seed these into its object store on startup.</p>
+<p>Example (see <code>docs/reference/storage-classes.yaml</code>):</p>
+<pre><code>export AE_STORAGE_PROVISIONERS=docs/reference/storage-classes.yaml</code></pre>
+<h3>Default StorageClass (built-in)</h3>
+<p>When <code>AE_STORAGE_PROVISIONERS</code> is not set, k1s seeds a default local-path StorageClass named <code>k1s-local</code> (provisioner <code>k1s.io/local-path</code>) with <code>volumeBindingMode: WaitForFirstConsumer</code>, <code>reclaimPolicy: Delete</code>, and the default-class annotation. Disable this behavior with:</p>
+<pre><code>export AE_STORAGE_SEED_DEFAULTS=0</code></pre>
+<p>Override the class name with <code>AE_STORAGE_LOCAL_CLASS</code>.</p>
+<p>If <code>AE_STORAGE_NFS_SERVER</code> and <code>AE_STORAGE_NFS_PATH</code> are set, k1s also seeds a <code>k1s-nfs</code> StorageClass (provisioner <code>k1s.io/nfs</code>) with <code>reclaimPolicy: Retain</code>, <code>volumeBindingMode: Immediate</code>, and <code>allowVolumeExpansion: true</code>. Override the name with <code>AE_STORAGE_NFS_CLASS</code> and optionally set <code>AE_STORAGE_NFS_HOSTPATH</code> to allow the controller to create per-PVC directories under a host root.</p>
+<p>For dynamic NFS provisioning, include at least:</p>
+<ul>
+<li><code>parameters.server</code>: NFS server host/IP</li>
+<li><code>parameters.path</code>: exported base path (the controller will use a per-PVC subdir when possible)</li>
+<li><code>parameters.hostPath</code> (optional): local directory for the exported path; when set, the controller will create and clean up per-PVC directories under this root.</li>
+</ul>
+<h3>NetFS PVC mounts (apishim)</h3>
+<p>When running the node agent with <code>AE_ENABLE_NETFS=1</code>, PVC mounts from apishim workloads are resolved into hostPath mounts under <code>AE_NETFS_ROOT</code>. The agent currently reads PVC/PV bindings from the apishim store (sqlite/postgres) to locate the bound PV.</p>
+<pre><code>export AE_ENABLE_NETFS=1
+export AE_APISHIM_DB=state/apishim.db</code></pre>
+<p>NetFS currently supports NFS PVs. The node must have <code>mount</code>/<code>umount</code> plus an NFS helper (<code>mount.nfs</code> or <code>mount.nfs4</code>). If these tools or the NFS mount fail, the agent records a PVC warning event; use <code>kubectl get events -n &lt;ns&gt;</code> to inspect <code>NfsPrereqFailed</code>, <code>MountFailed</code>, or <code>MountConflict</code> reasons.</p>
+<h3>NetFS capability matrix (current)</h3>
+<table><thead><tr><th>Backend</th><th>Dynamic provisioning</th><th>Attach/Detach</th><th>Mounts</th><th>Notes</th></tr></thead><tbody><tr><td>NFS (<code>k1s.io/nfs</code>)</td><td>Yes</td><td>No</td><td>Yes</td><td>RWX supported, mountOptions honored.</td></tr><tr><td>CSI (static PVs)</td><td>No</td><td>Controller creates VolumeAttachment</td><td>Marker only</td><td>Requires PV.spec.csi.driver + volumeHandle; no CSI gRPC.</td></tr><tr><td>local-path (<code>k1s.io/local-path</code>)</td><td>Yes</td><td>No</td><td>Yes</td><td>HostPath-backed (not network).</td></tr></tbody></table>
+<h3>NetFS cloning (PVC dataSourceRef)</h3>
+<p>For hostPath-backed provisioners (NFS/local-path), the controller can restore a new PVC from a source PVC:</p>
+<ul>
+<li>Set <code>spec.dataSourceRef</code> with kind <code>PersistentVolumeClaim</code>.</li>
+<li>The source PVC must be <code>Bound</code>.</li>
+<li>Source and target must use the same StorageClass.</li>
+<li>Filesystem volumes only (<code>volumeMode: Filesystem</code>).</li>
+</ul>
+<p>Example: <code>specs/examples/netfs-clone.yaml</code>.</p>
+<h3>NetFS block devices</h3>
+<p>Block volumes are supported for hostPath-backed provisioners:</p>
+<ul>
+<li>PVC must set <code>volumeMode: Block</code>.</li>
+<li>k1s manifests should use <code>spec.pvcMounts[].devicePath</code> to map the device into the container (see <code>specs/examples/netfs-block-device.yaml</code>).</li>
+</ul>
+<h3>CSIStorageCapacity overrides</h3>
+<p>StorageClasses can publish static capacity (useful for external CSI drivers):</p>
+<ul>
+<li><code>parameters.capacity</code>: Kubernetes size string (e.g., <code>10Gi</code>).</li>
+<li><code>parameters.capacityBytes</code>: integer byte count.</li>
+</ul>
+<p>Example: <code>specs/examples/netfs-capacity-override.yaml</code>.</p>
+<h3>SELinux relabeling</h3>
+<p>When <code>seLinuxOptions</code> are provided via <code>podSecurity</code>, k1s attempts a best‑effort <code>chcon</code> on the mount path. For RWX/ROX volumes, set <code>AE_NETFS_SELINUX_RECURSIVE=1</code> to allow recursive relabeling.</p>
 <h3>Retention &amp; Purge</h3>
 <ul>
 <li><code>retention: Retain</code> (default) keeps data even if you delete the app:
@@ -735,6 +810,15 @@
     - name: data
       mountPath: /var/lib/echo
       retention: Delete</code></pre>
+<h3>NetFS smoke test</h3>
+<p>If apishim + controller + node agent are running, you can exercise static PV/PVC binding and a PVC-backed Deployment:</p>
+<pre><code>scripts/netfs_smoke.sh</code></pre>
+<p>To exercise dynamic provisioning, run:</p>
+<pre><code>NETFS_DYNAMIC=1 scripts/netfs_smoke.sh</code></pre>
+<h3>NetFS NFS harness</h3>
+<p>For an end-to-end NFS mount harness (NFS server container, apishim, node agent, and smoke test), run:</p>
+<pre><code>scripts/netfs_nfs_harness.sh</code></pre>
+<p>NFS mounts typically require root. Run the harness with <code>sudo</code> to exercise the mount path, or set <code>SKIP_MOUNT_PREFLIGHT=1</code> to continue without the preflight check. Use <code>KEEP_STATE=1</code> to preserve logs/state for debugging.</p>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -742,7 +826,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-22 14:47:44</span>
+        <span>Built 2026-01-31 16:07:03</span>
       </div>
     </footer>
     <script>
@@ -770,6 +854,64 @@
           if (location.pathname.endsWith('playground.html')) location.reload();
         });
         label();
+      })();
+    </script>
+    <script>
+      (function() {
+        function hideLinks(match) {
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (match(href)) { a.style.display = 'none'; }
+          });
+        }
+        function rewriteDashboardLinks(target) {
+          if (!target) return;
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (href.indexOf('/dashboard') === 0) {
+              a.setAttribute('href', target);
+              if (!a.getAttribute('target')) {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener');
+              }
+            }
+          });
+        }
+        function disablePlaygroundPage() {
+          var path = (location && location.pathname) ? location.pathname : '';
+          if (!/playground/i.test(path)) return;
+          var container = document.querySelector('.container');
+          if (container) container.style.display = 'none';
+          var msg = document.createElement('div');
+          msg.style.maxWidth = '960px';
+          msg.style.margin = '32px auto';
+          msg.style.padding = '16px 20px';
+          msg.style.border = '1px solid var(--border)';
+          msg.style.borderRadius = '12px';
+          msg.style.background = 'var(--k1s-panel)';
+          msg.style.color = 'var(--k1s-text)';
+          msg.innerHTML = '<h2 style="margin:0 0 8px">Playground disabled</h2>' +
+            '<p style="margin:0;color:var(--k1s-text-muted)">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';
+          document.body.insertBefore(msg, document.body.firstChild);
+        }
+        fetch('/ui/features', { credentials: 'same-origin' })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(f) {
+            if (!f) return;
+            if (f.dashboard === false) {
+              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });
+            } else {
+              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();
+              rewriteDashboardLinks(dashUrl);
+            }
+            if (f.playground === false) {
+              hideLinks(function(h) { return h.indexOf('playground') !== -1; });
+              disablePlaygroundPage();
+            }
+          })
+          .catch(function() {});
       })();
     </script>
   </body>

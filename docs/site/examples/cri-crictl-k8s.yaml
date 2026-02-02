@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k1s-tools
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cri-crictl
+  namespace: k1s-tools
+spec:
+  automountServiceAccountToken: false
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: crictl
+      image: registry.k1s.home.arpa:32000/k1s-crictl:latest
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: CRI_ENDPOINT
+          value: unix:///run/containerd/containerd.sock
+        - name: TMPDIR
+          value: /tmp
+      command:
+        - /bin/sh
+        - -c
+        - sleep infinity
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        seccompProfile:
+          type: RuntimeDefault
+      volumeMounts:
+        - name: containerd-sock
+          mountPath: /run/containerd/containerd.sock
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: containerd-sock
+      hostPath:
+        # Access to the containerd socket is highly privileged; scope usage tightly.
+        path: /run/containerd/containerd.sock
+        type: Socket
+    - name: tmp
+      emptyDir: {}

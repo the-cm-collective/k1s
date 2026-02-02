@@ -2,6 +2,7 @@
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
+    
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>Playground</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
@@ -41,6 +42,8 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
+        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
@@ -61,6 +64,7 @@
         --k1s-card-bg: #ffffff;
         --k1s-header-bg: rgba(255,255,255,0.82);
         --code-bg: #f5f6f8;
+        --k1s-page-overlay: linear-gradient(rgba(244,245,247,0.9), rgba(244,245,247,0.9));
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
         --muted: var(--k1s-panel);
@@ -82,7 +86,11 @@
         min-height: 100vh;
         display: flex;
         flex-direction: column;
-        background: var(--bg);
+        background-color: var(--bg);
+        background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
+        background-size: 100% 100%, auto 100%;
+        background-position: center top, center top;
+        background-repeat: repeat-y, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -382,7 +390,7 @@
         padding: 10px 12px;
         display: flex;
         flex-wrap: wrap;
-        align-items: center;
+        align-items: flex-start;
         gap: 6px 10px;
         border: 1px solid var(--k1s-border);
         border-radius: 12px;
@@ -392,6 +400,24 @@
       .hero-repo-label {
         font-size: 0.7rem;
         letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         color: var(--k1s-text-muted);
       }
@@ -605,6 +631,7 @@
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
     <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -661,12 +688,12 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="static/labs.css?v=1769122064"/>
+    <link rel="stylesheet" href="static/labs.css?v=5dd7e3d65b"/>
 <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
 <script>window.DOCS_LABS_TOKEN='D34DB33F';</script>
 <script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>
-<script defer src="static/labs.js?v=1769122064"></script>
+<script defer src="static/labs.js?v=5dd7e3d65b"></script>
   </head>
   <body>
     <nav>
@@ -675,16 +702,18 @@
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
+      <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
       <a href="apishim-compatibility-matrix.html">API Shim</a>
+      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -698,12 +727,13 @@
     </button>
     <div class="container">
     <div class="playground-shell">   <div class="playground-main">     <div class="playground-hero">       <h2>Interactive Lab Playground</h2>     </div>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" onerror="this.onerror=null; this.href='/static/vendor/xterm.css';" /> <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js" onerror="window.__xterm_cdn_failed=true;"></script> <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js" onerror="window.__xterm_fit_cdn_failed=true;"></script> <script> (function(){   function loadScript(src){     var s = document.createElement('script');     s.src = src;     s.defer = true;     document.head.appendChild(s);   }   function loadCss(href){     var l = document.createElement('link');     l.rel = 'stylesheet';     l.href = href;     document.head.appendChild(l);   }   function ensureLocal(){     if (window.__xterm_cdn_failed || !window.Terminal) {       loadCss('/static/vendor/xterm.css');       loadScript('/static/vendor/xterm.js');     }     if (window.__xterm_fit_cdn_failed || !(window.FitAddon && window.FitAddon.FitAddon)) {       loadScript('/static/vendor/xterm-addon-fit.js');     }   }   if (document.readyState === 'complete') {     ensureLocal();   } else {     window.addEventListener('load', ensureLocal);   } })(); </script>
 <p>Use this page to try k1s in minutes — no Kubernetes experience required. The playground can run fully read‑only or, when enabled, perform safe actions like "apply example" and "scale".</p>
 <p>Quick start:</p>
 <ul>
 <li>Step 1: Scroll to "A. Environment & Backend", enable <strong>Controlled Actions</strong>, click <strong>Use Token</strong> to load <code>AE_LABS_TOKEN</code>, then click <code>Start Session</code>.</li>
 <li>Step 2: In "B. Apply Example", choose <code>echo</code> and click <code>Apply Selected Example</code>.</li>
-<li>Step 3: In "E. Ingress Test", click <code>Open App</code> to view the service, and in "C. Logs & Events" watch activity live.</li>
+<li>Step 3: In "F. Ingress Test", click <code>Open App</code> to view the service, and in "C. Logs & Events" watch activity live.</li>
 </ul>
 <div class="callout" role="note">Tip: If the page says “Labs: unavailable”, you’re in read‑only mode — verifiers still run and CLI commands are shown to try locally.</div>
 <p>This page prefers HTMX + SSE for live updates and uses a small <code>labs.js</code> helper for sessions. If the dev‑only lab orchestrator is not running, the page falls back to read‑only checks with copyable CLI commands.</p>
@@ -772,11 +802,11 @@ helm uninstall demochart -n demo-helm &amp;&amp; kubectl delete namespace demo-h
 <p>Back in the playground:</p>
 <p>1. Set Backend to <code>k1s-Host</code>, click <code>Start Session</code>, and use **Quick Links → Open Dashboard**. 2. The release appears as <code>demo-helm--demochart</code> (namespace <code>demo-helm</code>); sections **B–E** stream logs, events, ingress health, and nodePort hints while Helm reconciles. 3. When you run <code>helm uninstall</code>, the dashboard reflects the teardown in real time.</p>
 <h2>B. Apply Example</h2>
-<p>Pick a sample and apply it. In read-only mode the UI shows the exact CLI you can run locally. Each example is an <code>App</code> spec YAML: <code>apiVersion</code> and <code>kind</code> identify the schema, <code>metadata.name</code> becomes the app's ID, and <code>spec</code> is where you describe what to run and how it should behave. Typical <code>spec</code> fields include <code>image</code> (container), <code>replicas</code> (how many), <code>ports</code>/<code>service</code> (how traffic reaches it), <code>health</code> checks, plus optional sections like <code>ingress</code>, <code>resources</code>, <code>security</code>, <code>storage</code>, and <code>configRefs</code>/<code>secretRefs</code> for configuration.</p>
+<p>Pick a sample and apply it. In read-only mode the UI shows the exact CLI you can run locally. Each example is a <code>Deployment</code> spec YAML (k1s native; <code>kind: App</code> still works but is deprecated): <code>apiVersion</code> and <code>kind</code> identify the schema, <code>metadata.name</code> becomes the app's ID, and <code>spec</code> is where you describe what to run and how it should behave. Typical <code>spec</code> fields include <code>image</code> (container), <code>replicas</code> (how many), <code>ports</code>/<code>service</code> (how traffic reaches it), <code>health</code> checks, plus optional sections like <code>ingress</code>, <code>resources</code>, <code>security</code>, <code>storage</code>, and <code>configRefs</code>/<code>secretRefs</code> for configuration.</p>
 <ul>
 <li>Example:
 <ul>
-<li><select id="example-select"> <option value="echo" selected>echo</option> <option value="multi-replica-echo">multi-replica-echo</option> <option value="echo-multiport">echo-multiport</option> <option value="echo-hpa">echo-hpa</option> <option value="echo-resources">echo-resources</option> <option value="echo-stateful">echo-stateful</option> <option value="echo-sec">echo-sec</option> <option value="echo-sec-adv">echo-sec-adv</option> <option value="echo-tcp">echo-tcp</option> <option value="echo-exec">echo-exec</option> <option value="echo-storage">echo-storage</option> <option value="echo-storage-delete">echo-storage-delete</option> </select></li>
+<li><select id="example-select"> <option value="echo" selected>echo</option> <option value="shell-demo">shell-demo</option> <option value="multi-replica-echo">multi-replica-echo</option> <option value="echo-multiport">echo-multiport</option> <option value="echo-hpa">echo-hpa</option> <option value="echo-resources">echo-resources</option> <option value="echo-stateful">echo-stateful</option> <option value="echo-sec">echo-sec</option> <option value="echo-sec-adv">echo-sec-adv</option> <option value="echo-tcp">echo-tcp</option> <option value="echo-exec">echo-exec</option> <option value="echo-storage">echo-storage</option> <option value="echo-storage-delete">echo-storage-delete</option> </select></li>
 </ul>
 </li>
 <li>Action: <button id="btn-apply-echo" class="btn-primary" disabled>Apply Selected Example</button></li>
@@ -792,11 +822,16 @@ helm uninstall demochart -n demo-helm &amp;&amp; kubectl delete namespace demo-h
 <h2>C. Logs & Events</h2>
 <p>Live feed of events and logs for your sample app. When sessions are enabled, this switches to streaming mode automatically.</p>
 <div id="observe">   <button id="btn-observe-toggle" disabled>Start Tail</button>   <label style="margin-left:10px"><input type="checkbox" id="follow-tail" checked/> Follow tail</label>   <div id="observe-events" class="panel scrollbar-hide" aria-live="polite" aria-busy="true" data-source="events" style="height:220px;max-height:220px;overflow:auto;"></div>   <div id="observe-logs" class="panel scrollbar-hide" aria-live="polite" aria-busy="true" data-source="logs" style="height:220px;max-height:220px;overflow:auto;"></div>   <!-- HTMX SSE variant for logs; labs.js will arm sse-connect once a session exists -->   <div id="logs-sse" class="panel hidden scrollbar-hide" hx-ext="sse" sse-connect="" sse-swap="message" hx-swap="beforeend" style="height:220px;max-height:220px;overflow:auto;"></div>   <!-- HTMX SSE variant for events; labs.js will arm sse-connect once a session exists -->   <div id="events-sse" class="panel hidden scrollbar-hide" hx-ext="sse" sse-connect="" sse-swap="message" style="height:220px;max-height:220px;overflow:auto;"></div> </div>
-<h2>D. Scale & Rollout</h2>
+<h2>D. Debug Tools (Shell + Port-Forward)</h2>
+<p>Open an interactive shell or run a lightweight port-forward check. These are Labs‑only features: they require an active session and Controlled Actions enabled.</p>
+<div class="panel" id="labs-debug">   <div class="row" style="flex-wrap:wrap; gap:10px;">     <button id="btn-labs-shell" disabled>Open Remote Shell</button>     <button id="btn-labs-pf" disabled>Open Port-Forward</button>     <span class="muted">Uses apishim WebSocket exec + port-forward.</span>   </div>   <div class="muted" style="margin-top:6px;">If disabled, run locally: <code>ae shell &lt;app&gt;</code> (defaults to sh; use <code>-- bash</code> when available), add <code>-n &lt;ns&gt;</code> if needed, or use <code>kubectl exec</code> / <code>kubectl port-forward</code>.</div> </div>
+<div id="labs-shell-modal" class="labs-modal hidden" role="dialog" aria-modal="true" aria-labelledby="labs-shell-title">   <div class="modal">     <div class="modal-header">       <strong id="labs-shell-title">Remote Shell</strong>       <button id="labs-shell-close" type="button">Close</button>     </div>     <div class="modal-body">       <div class="row" style="flex-wrap:wrap; gap:10px; margin-bottom:10px;">         <label>Pod <select id="labs-shell-pod"></select></label>         <label>Container <input id="labs-shell-container" type="text" placeholder="optional" /></label>         <label>Command <input id="labs-shell-cmd" type="text" value="sh" /></label>         <label>Shim API <input id="labs-shell-base" type="text" placeholder="http://127.0.0.1:8443" /></label>         <label>Token <input id="labs-shell-token" type="password" placeholder="apishim token" /></label>       </div>       <div id="labs-shell-terminal" class="terminal-wrap"></div>       <div class="row" style="margin-top:10px; gap:8px; align-items:center;">         <button id="labs-shell-connect" type="button">Connect</button>         <button id="labs-shell-disconnect" type="button">Disconnect</button>         <span id="labs-shell-status" class="pill"></span>         <span class="hint">WebSocket exec (v5.channel.k8s.io).</span>       </div>     </div>   </div> </div>
+<div id="labs-pf-modal" class="labs-modal hidden" role="dialog" aria-modal="true" aria-labelledby="labs-pf-title">   <div class="modal">     <div class="modal-header">       <strong id="labs-pf-title">Port-Forward (WS)</strong>       <button id="labs-pf-close" type="button">Close</button>     </div>     <div class="modal-body">       <div class="row" style="flex-wrap:wrap; gap:10px; margin-bottom:10px;">         <label>Pod <select id="labs-pf-pod"></select></label>         <label>Port <input id="labs-pf-port" type="text" placeholder="8080" /></label>         <label>Shim API <input id="labs-pf-base" type="text" placeholder="http://127.0.0.1:8443" /></label>         <label>Token <input id="labs-pf-token" type="password" placeholder="apishim token" /></label>       </div>       <div class="row" style="gap:10px; flex-wrap:wrap;">         <label style="flex:1 1 320px;">Request           <textarea id="labs-pf-request" rows="4" style="width:100%;">GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n</textarea>         </label>         <label style="flex:1 1 320px;">Response           <textarea id="labs-pf-response" rows="4" style="width:100%;" readonly></textarea>         </label>       </div>       <div class="row" style="margin-top:10px; gap:8px; align-items:center;">         <button id="labs-pf-connect" type="button">Connect</button>         <button id="labs-pf-send" type="button">Send Request</button>         <button id="labs-pf-disconnect" type="button">Disconnect</button>         <span id="labs-pf-status" class="pill"></span>         <span class="hint">WebSocket port-forward (portforward.k8s.io).</span>       </div>     </div>   </div> </div>
+<h2>E. Scale & Rollout</h2>
 <p>Try increasing replicas or enabling a tiny canary rollout. These buttons become active after a session starts and actions are enabled.</p>
 <ul>
 <li>Scale to 2/3: updates the app's desired replica count. The controller reconciles containers until readyReplicas matches the new spec. Watch the status badge and events to see the change propagate.</li>
-<li>Canary 10%: enables a canary rollout policy and shifts a small portion of traffic to a new revision. This is a safe way to test changes with limited impact. You can later fine‑tune weight in "F. Rollout Controls" or revert to 0%.</li>
+<li>Canary 10%: enables a canary rollout policy and shifts a small portion of traffic to a new revision. This is a safe way to test changes with limited impact. You can later fine‑tune weight in "G. Rollout Controls" or revert to 0%.</li>
 <li>Requirements: an active session, "Enable Controlled Actions" toggled on, and an example applied (e.g., echo).</li>
 </ul>
 <p>How to read canary results: a canary is not a separate app. It is a new revision of the same app created when the manifest changes. The base revision is the previous spec, the canary revision is the latest. If you only toggle canary, both revisions may run the same image and look identical — make a small change (like <code>spec.image</code> or an env value) to see a visible difference. The dashboard shows the base vs canary revision IDs in “Canary routes to revision” below.</p>
@@ -824,7 +859,7 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
 <li>Scaling edits only <code>spec.replicas</code>; the current image revision stays the same.</li>
 <li>Canary weights bias routing between the old and new revision; readiness gates still apply before traffic shifts.</li>
 <li>Canary actions bump replicas to at least 2 so the dashboard shows a distinct canary revision.</li>
-<li>To fully roll forward, increase weight gradually (see section "F. Rollout Controls"). To roll back, set weight to 0 or re‑apply the previous image.</li>
+<li>To fully roll forward, increase weight gradually (see section "G. Rollout Controls"). To roll back, set weight to 0 or re‑apply the previous image.</li>
 </ul>
 <h3>Verifiers</h3>
 <ul>
@@ -832,14 +867,14 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
 <li>Metrics present for app: <span id="v-scale-metrics" data-v="pending">pending</span></li>
 <li>Canary routes to revision: <span id="canary-revision">n/a</span> (base: <span id="canary-base">n/a</span>)</li>
 </ul>
-<h2>E. Ingress Test</h2>
+<h2>F. Ingress Test</h2>
 <ul>
 <li>Open App: <a id="ingress-link" href="#" target="_blank" rel="noopener">(disabled)</a></li>
 <li>Last check: <span id="ingress-check">n/a</span></li>
 <li>DNS hint: <code id="ingress-hosts-hint"></code> <button id="ingress-hosts-copy" disabled>Copy</button></li>
 <li>Direct curl (no hosts):<br/><code id="ingress-curl"></code> <button id="ingress-curl-copy" disabled>Copy</button></li>
 </ul>
-<h2>F. Rollout Controls</h2>
+<h2>G. Rollout Controls</h2>
 <p>Advanced controls you can ignore on your first run. Use the slider to choose a small weight, then "Apply" to shift a portion of traffic to the canary image.</p>
 <ul>
 <li><button id="btn-rollout-pause" disabled>Pause Rollout</button></li>
@@ -847,15 +882,18 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
 <li>Canary weight: <input type="range" id="canary-weight" min="0" max="10" step="1" value="3"/> <span id="canary-weight-val">3</span></li>
 <li><button id="btn-canary-apply" disabled>Apply Canary Weight</button></li>
 </ul>
-<h2>G. Reset</h2>
+<h2>H. Reset</h2>
 <ul>
 <li><button id="btn-reset" type="button">Reset Session</button></li>
 </ul>
 <hr/>
 <details> <summary><strong>Final Notes</strong></summary>
 <ul>
-<li>Controlled actions require the dev-only orchestrator to be enabled (<code>AE_LABS=1</code>) and proxied by Caddy.</li>
-<li>Backends: Auto detection prefers k1s-in-Docker when the compose stack is up, otherwise k1s-Host; k3s engages if a k3d cluster is detected or allowed to auto-provision.</li>
+<li>If you see “Labs: unavailable”, you are in read‑only mode. To unlock Apply/Scale/Shell, start the controller with <code>AE_LABS=1</code>, set <code>AE_LABS_TOKEN</code>, then toggle “Enable Controlled Actions” and click “Use Token” + “Start Session”.</li>
+<li>“Open App” only appears when the example defines <code>spec.ingress</code>. If it is blank, pick an ingress example (echo) or use the shell/port‑forward tools instead.</li>
+<li>If the app host does not resolve, copy the DNS hint into your hosts file or use the Direct curl line in section F.</li>
+<li>If logs/events look empty, switch Status to “App” after applying an example; cluster mode only shows totals.</li>
+<li>Auto backend prefers k1s‑in‑Docker when compose is running, otherwise k1s‑host. Override the backend if the banner does not match what you started.</li>
 </ul>
 </details>
   </div>   <div class="playground-rail">     <button id="btn-reset-fab" class="lab-reset-fab" type="button" aria-label="Reset labs and playground" title="Reset lab environment and playground">       <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">         <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4V1L7 6l5 5V7c1.66 0 3.14.69 4.22 1.78S18 11.34 18 13c0 3.31-2.69 6-6 6s-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8c0-2.21-.9-4.21-2.35-5.65z"/>       </svg>     </button>   </div> </div>
@@ -866,7 +904,7 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-22 14:47:44</span>
+        <span>Built 2026-02-01 23:24:32</span>
       </div>
     </footer>
     <script>
@@ -894,6 +932,64 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
           if (location.pathname.endsWith('playground.html')) location.reload();
         });
         label();
+      })();
+    </script>
+    <script>
+      (function() {
+        function hideLinks(match) {
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (match(href)) { a.style.display = 'none'; }
+          });
+        }
+        function rewriteDashboardLinks(target) {
+          if (!target) return;
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (href.indexOf('/dashboard') === 0) {
+              a.setAttribute('href', target);
+              if (!a.getAttribute('target')) {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener');
+              }
+            }
+          });
+        }
+        function disablePlaygroundPage() {
+          var path = (location && location.pathname) ? location.pathname : '';
+          if (!/playground/i.test(path)) return;
+          var container = document.querySelector('.container');
+          if (container) container.style.display = 'none';
+          var msg = document.createElement('div');
+          msg.style.maxWidth = '960px';
+          msg.style.margin = '32px auto';
+          msg.style.padding = '16px 20px';
+          msg.style.border = '1px solid var(--border)';
+          msg.style.borderRadius = '12px';
+          msg.style.background = 'var(--k1s-panel)';
+          msg.style.color = 'var(--k1s-text)';
+          msg.innerHTML = '<h2 style="margin:0 0 8px">Playground disabled</h2>' +
+            '<p style="margin:0;color:var(--k1s-text-muted)">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';
+          document.body.insertBefore(msg, document.body.firstChild);
+        }
+        fetch('/ui/features', { credentials: 'same-origin' })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(f) {
+            if (!f) return;
+            if (f.dashboard === false) {
+              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });
+            } else {
+              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();
+              rewriteDashboardLinks(dashUrl);
+            }
+            if (f.playground === false) {
+              hideLinks(function(h) { return h.indexOf('playground') !== -1; });
+              disablePlaygroundPage();
+            }
+          })
+          .catch(function() {});
       })();
     </script>
   </body>

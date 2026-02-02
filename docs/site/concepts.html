@@ -2,6 +2,7 @@
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
+    
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>Concepts</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
@@ -41,6 +42,8 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
+        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
@@ -61,6 +64,7 @@
         --k1s-card-bg: #ffffff;
         --k1s-header-bg: rgba(255,255,255,0.82);
         --code-bg: #f5f6f8;
+        --k1s-page-overlay: linear-gradient(rgba(244,245,247,0.9), rgba(244,245,247,0.9));
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
         --muted: var(--k1s-panel);
@@ -82,7 +86,11 @@
         min-height: 100vh;
         display: flex;
         flex-direction: column;
-        background: var(--bg);
+        background-color: var(--bg);
+        background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
+        background-size: 100% 100%, auto 100%;
+        background-position: center top, center top;
+        background-repeat: repeat-y, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -382,7 +390,7 @@
         padding: 10px 12px;
         display: flex;
         flex-wrap: wrap;
-        align-items: center;
+        align-items: flex-start;
         gap: 6px 10px;
         border: 1px solid var(--k1s-border);
         border-radius: 12px;
@@ -392,6 +400,24 @@
       .hero-repo-label {
         font-size: 0.7rem;
         letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         color: var(--k1s-text-muted);
       }
@@ -605,6 +631,7 @@
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
     <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -670,16 +697,18 @@
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
+      <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
       <a href="apishim-compatibility-matrix.html">API Shim</a>
+      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -695,13 +724,13 @@
     <h1>k1s Concepts</h1>
 <p>This guide explains core concepts used throughout k1s.</p>
 <h2>Terminology map (k1s -&gt; Kubernetes)</h2>
-<table><thead><tr><th>k1s term</th><th>Kubernetes term</th><th>Notes</th></tr></thead><tbody><tr><td>App</td><td>Deployment (workload)</td><td>k1s native workload manifest (<code>kind: App</code>).</td></tr><tr><td>Replica</td><td>Pod</td><td>One container instance for an App revision.</td></tr><tr><td>Revision</td><td>ReplicaSet / Deployment revision</td><td>Immutable snapshot of desired state.</td></tr><tr><td>Service VIP</td><td>Service / ClusterIP</td><td>Stable virtual IP for service routing.</td></tr><tr><td>Spec / manifest</td><td>Manifest</td><td>YAML resource definition.</td></tr></tbody></table>
+<table><thead><tr><th>k1s term</th><th>Kubernetes term</th><th>Notes</th></tr></thead><tbody><tr><td>App</td><td>Deployment (workload)</td><td>k1s native workload manifest (<code>kind: App</code>).</td></tr><tr><td>Pod</td><td>Pod</td><td>One container instance for a Deployment/App revision.</td></tr><tr><td>Revision</td><td>ReplicaSet / Deployment revision</td><td>Immutable snapshot of desired state.</td></tr><tr><td>Service VIP</td><td>Service / ClusterIP</td><td>Stable virtual IP for service routing.</td></tr><tr><td>Spec / manifest</td><td>Manifest</td><td>YAML resource definition.</td></tr></tbody></table>
 <h2>App (Deployment-like workload)</h2>
 <p>The primary unit of deployment. Defined by an <code>App</code> manifest with a desired image, replicas, ports, health checks, and optional ingress/secrets/resources.</p>
-<h2>Replica (Pod)</h2>
-<p>An individual container instance belonging to an app revision. Replica IDs follow the pattern <code>&lt;app&gt;-rev&lt;revision&gt;-&lt;index&gt;</code> (e.g., <code>echo-rev3-0</code>).</p>
+<h2>Pod</h2>
+<p>An individual container instance belonging to an app revision. Pod names follow the pattern <code>&lt;app&gt;-rev&lt;revision&gt;-&lt;index&gt;</code> (e.g., <code>echo-rev3-0</code>).</p>
 <h2>Node</h2>
-<p>A registered worker (or the controller host) that can run replicas. Nodes send heartbeats, advertise labels/taints, and expose a runtime endpoint that the controller uses for ensure/logs/exec/probes. Nodes can be cordoned or drained via <code>ae nodes</code>.</p>
+<p>A registered worker (or the controller host) that can run pods. Nodes send heartbeats, advertise labels/taints, and expose a runtime endpoint that the controller uses for ensure/logs/exec/probes. Nodes can be cordoned or drained via <code>ae nodes</code>.</p>
 <h2>Service VIP (Service/ClusterIP)</h2>
 <p>A stable virtual IP allocated from the Service CIDR and fronted by the overlay provider. Ingress prefers VIPs when ready endpoints exist; hostPorts remain for single-node edge cases.</p>
 <h2>Revision (Deployment revision)</h2>
@@ -720,17 +749,17 @@
 </ul>
 <h2>Health</h2>
 <ul>
-<li>Readiness: Determines whether a replica should receive traffic (2xx HTTP implies success).</li>
-<li>Liveness: Indicates the replica is still alive (defaults to true if not specified).</li>
+<li>Readiness: Determines whether a pod should receive traffic (2xx HTTP implies success).</li>
+<li>Liveness: Indicates the pod is still alive (defaults to true if not specified).</li>
 <li>Initial delay: Allows the app to boot before probes start.</li>
-<li>Startup probes gate readiness/liveness until they succeed; lifecycle hooks (postStart/preStop) run around replica start/stop.</li>
+<li>Startup probes gate readiness/liveness until they succeed; lifecycle hooks (postStart/preStop) run around pod start/stop.</li>
 </ul>
 <h2>Status</h2>
 <p>Per‑app aggregate status is one of:</p>
 <ul>
 <li>ready: all desired replicas are ready</li>
 <li>progressing: desired count is live but not yet all ready</li>
-<li>degraded: no replicas present for the current revision</li>
+<li>degraded: otherwise (e.g., live replicas below desired or readiness fails)</li>
 </ul>
 <p>CLI examples:</p>
 <pre><code>ae status myapp --wide --events</code></pre>
@@ -747,7 +776,12 @@
 <pre><code>ae events myapp --limit 20</code></pre>
 <h2>Rollouts</h2>
 <p>Rolling replace with <code>maxUnavailable=0, maxSurge=1</code> semantics across one or more nodes:</p>
-<p>1. Start a new replica for the next revision. 2. Wait for readiness. 3. Switch ingress to the new Service VIP endpoints (or hostPort when VIP disabled). 4. Stop and remove old revision containers.</p>
+<p>1. Start a new pod for the next revision. 2. Wait for readiness. 3. Switch ingress to the new Service VIP endpoints (or hostPort when VIP disabled). 4. Stop and remove old revision containers.</p>
+<p>Pause/resume and canary:</p>
+<ul>
+<li>Pause/resume: <code>ae rollout pause|resume &lt;app&gt;</code> halts or resumes rollout progression.</li>
+<li>Canary: set <code>spec.rollout.strategy: canary</code> and <code>spec.rollout.weight</code> (optional <code>auto</code> ramp) to bias routing.</li>
+</ul>
 <p>Rollback uses the recorded manifest for the target revision:</p>
 <pre><code>ae rollback myapp --to 3</code></pre>
 <h2>Resources &amp; Volumes</h2>
@@ -762,14 +796,16 @@
 <h2>HTTP API</h2>
 <p>Read‑only status/metrics/events published at:</p>
 <ul>
-<li><code>/metrics</code>, <code>/status</code>, <code>/status/&lt;app&gt;</code>, <code>/events/&lt;app&gt;</code></li>
+<li><code>/metrics</code>, <code>/health</code>, <code>/status</code>, <code>/status/&lt;app&gt;</code>, <code>/events/&lt;app&gt;</code></li>
+<li><code>/history/&lt;app&gt;</code> for probe history, <code>/manifest/&lt;app&gt;</code> for latest stored manifest</li>
 <li><code>/nodes</code> for node inventory + heartbeat staleness</li>
 <li><code>/system</code> + <code>/dashboard</code> for a quick UI snapshot</li>
 <li><code>/openapi.json</code> and a tiny docs page at <code>/docs</code></li>
 </ul>
+<p>Note: when any token is configured, reads require the READ token.</p>
 <p>Kubernetes API shim (optional):</p>
 <ul>
-<li><code>python -m ae.apishim serve --token &lt;bearer&gt;</code> exposes <code>/api</code>, <code>/apis</code>, <code>/openapi/v2|v3</code> with SSA/patch and port-forward.</li>
+<li><code>AE_APISHIM_ENABLE=1 python -m ae.apishim serve --token &lt;bearer&gt;</code> exposes <code>/api</code>, <code>/apis</code>, <code>/openapi/v2|v3</code> with SSA/patch and port-forward (HTTP by default; add <code>--tls</code> for HTTPS).</li>
 <li>Works with kubectl/helm for Deployments/Services/Ingress/HPA/RBAC; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated (see <code>docs/reference/apishim-compatibility-matrix.md</code>).</li>
 </ul>
     </div>
@@ -779,7 +815,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-22 14:47:44</span>
+        <span>Built 2026-01-31 16:07:03</span>
       </div>
     </footer>
     <script>
@@ -807,6 +843,64 @@
           if (location.pathname.endsWith('playground.html')) location.reload();
         });
         label();
+      })();
+    </script>
+    <script>
+      (function() {
+        function hideLinks(match) {
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (match(href)) { a.style.display = 'none'; }
+          });
+        }
+        function rewriteDashboardLinks(target) {
+          if (!target) return;
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (href.indexOf('/dashboard') === 0) {
+              a.setAttribute('href', target);
+              if (!a.getAttribute('target')) {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener');
+              }
+            }
+          });
+        }
+        function disablePlaygroundPage() {
+          var path = (location && location.pathname) ? location.pathname : '';
+          if (!/playground/i.test(path)) return;
+          var container = document.querySelector('.container');
+          if (container) container.style.display = 'none';
+          var msg = document.createElement('div');
+          msg.style.maxWidth = '960px';
+          msg.style.margin = '32px auto';
+          msg.style.padding = '16px 20px';
+          msg.style.border = '1px solid var(--border)';
+          msg.style.borderRadius = '12px';
+          msg.style.background = 'var(--k1s-panel)';
+          msg.style.color = 'var(--k1s-text)';
+          msg.innerHTML = '<h2 style="margin:0 0 8px">Playground disabled</h2>' +
+            '<p style="margin:0;color:var(--k1s-text-muted)">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';
+          document.body.insertBefore(msg, document.body.firstChild);
+        }
+        fetch('/ui/features', { credentials: 'same-origin' })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(f) {
+            if (!f) return;
+            if (f.dashboard === false) {
+              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });
+            } else {
+              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();
+              rewriteDashboardLinks(dashUrl);
+            }
+            if (f.playground === false) {
+              hideLinks(function(h) { return h.indexOf('playground') !== -1; });
+              disablePlaygroundPage();
+            }
+          })
+          .catch(function() {});
       })();
     </script>
   </body>

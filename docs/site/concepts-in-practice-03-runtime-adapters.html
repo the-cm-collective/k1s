@@ -2,8 +2,9 @@
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
+    
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>04 Runtime Adapters</title>
+    <title>03 Runtime Adapters</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
     <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
     <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
@@ -41,6 +42,8 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
+        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
@@ -61,6 +64,7 @@
         --k1s-card-bg: #ffffff;
         --k1s-header-bg: rgba(255,255,255,0.82);
         --code-bg: #f5f6f8;
+        --k1s-page-overlay: linear-gradient(rgba(244,245,247,0.9), rgba(244,245,247,0.9));
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
         --muted: var(--k1s-panel);
@@ -82,7 +86,11 @@
         min-height: 100vh;
         display: flex;
         flex-direction: column;
-        background: var(--bg);
+        background-color: var(--bg);
+        background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
+        background-size: 100% 100%, auto 100%;
+        background-position: center top, center top;
+        background-repeat: repeat-y, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -382,7 +390,7 @@
         padding: 10px 12px;
         display: flex;
         flex-wrap: wrap;
-        align-items: center;
+        align-items: flex-start;
         gap: 6px 10px;
         border: 1px solid var(--k1s-border);
         border-radius: 12px;
@@ -392,6 +400,24 @@
       .hero-repo-label {
         font-size: 0.7rem;
         letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         color: var(--k1s-text-muted);
       }
@@ -605,6 +631,7 @@
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
     <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -670,16 +697,18 @@
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
+      <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
       <a href="apishim-compatibility-matrix.html">API Shim</a>
+      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -692,9 +721,9 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Chapter 04 - Runtime Adapters and Container Execution</h1>
+    <h1>Chapter 03 - Runtime Adapters &amp; Container Execution</h1>
 <h2>Concept</h2>
-<p>The controller defines desired state, but runtime adapters execute it. The adapter layer abstracts the container engine so the orchestration logic can remain stable while runtimes vary (Podman, Docker, or remote agents).</p>
+<p>The controller defines desired state, but runtime adapters execute it. The adapter layer abstracts the container engine so the orchestration logic can remain stable while runtimes vary (Podman, Docker, CRI/containerd, or remote agents).</p>
 <pre class="mermaid">flowchart LR
   Controller[Reconciler] --&gt; Adapter[RuntimeAdapter]
   Adapter --&gt; Engine[Container engine]
@@ -714,14 +743,16 @@
   E--&gt;&gt;A: updated state
   A--&gt;&gt;C: RuntimeResult</pre>
 <h3>Design</h3>
-<p>k1s defines a RuntimeAdapter protocol and provides concrete implementations for Podman and Docker. The controller calls <code>ensure_app</code>, which creates or updates containers to match the desired replica set. Backend selection is environment-driven, and fallback logic ensures the system remains functional even if the preferred runtime is unavailable.</p>
+<p>k1s defines a RuntimeAdapter protocol and provides concrete implementations for Podman, Docker, and CRI/containerd. The controller calls <code>ensure_app</code>, which creates or updates containers to match the desired pod set. Backend selection is environment-driven, and fallback logic ensures the system remains functional even if the preferred runtime is unavailable.</p>
 <pre class="mermaid">flowchart TB
   Env[AE_RUNTIME_BACKEND] --&gt; Select[Runtime factory]
   Select --&gt; Podman[PodmanRuntime]
   Select --&gt; Docker[DockerRuntime]
+  Select --&gt; CRI[CRIRuntime]
   Select --&gt; Stub[StubRuntime]
   Podman --&gt; Adapter[RuntimeAdapter]
   Docker --&gt; Adapter
+  CRI --&gt; Adapter
   Stub --&gt; Adapter</pre>
 <h3>Application</h3>
 <p>To extend k1s, implement the RuntimeAdapter contract for a new engine, then wire it into runtime selection. When debugging runtime issues, focus on adapter logs and verify container labels and lifecycle transitions. This mirrors how kubelet integrates CRI runtimes in Kubernetes.</p>
@@ -740,11 +771,12 @@
 <h2>Key Terms and Acronyms</h2>
 <ul>
 <li>Runtime adapter - Abstraction translating reconcile actions to runtime ops.</li>
-<li>Container runtime - Engine that runs containers (Docker/Podman).</li>
+<li>Container runtime - Engine that runs containers (Podman, Docker, containerd).</li>
 <li>CRI - Kubernetes Container Runtime Interface.</li>
 <li>OCI - Open Container Initiative spec for images/runtimes.</li>
-<li>ensure_app - Adapter method that enforces desired replicas.</li>
-<li>Replica state - Runtime-reported status for a replica.</li>
+<li>containerd - Common CRI implementation used by k3s/k8s.</li>
+<li>ensure_app - Adapter method that enforces desired pods.</li>
+<li>Pod state - Runtime-reported status for a pod.</li>
 <li>Image pull - Fetching a container image from a registry.</li>
 </ul>
 <h2>Commands (copy/paste)</h2>
@@ -761,7 +793,7 @@ python -m ae.cli events echo --limit 20</code></pre>
 </ul>
 <h2>Code references (walkthrough anchors)</h2>
 <ul>
-<li>Runtime adapter interface: <code>src/ae/runtime/base.py:12</code></li>
+<li>Runtime adapter interface: <code>src/ae/runtime/base.py:73</code></li>
 </ul>
 <pre><code>class RuntimeAdapter(Protocol):
     &quot;&quot;&quot;Adapter that drives container runtime operations.&quot;&quot;&quot;
@@ -773,26 +805,26 @@ python -m ae.cli events echo --limit 20</code></pre>
         *,
         keep_old: bool = False,
         limit_create: int | None = None,
-        replica_ids: list[str] | None = None,
+        pod_names: list[str] | None = None,
         node_id: str | None = None,
     ) -&gt; RuntimeResult:
         &quot;&quot;&quot;Ensure the runtime matches the manifest.&quot;&quot;&quot;</code></pre>
 <ul>
-<li>Docker adapter ensures replicas: <code>src/ae/runtime/docker_runtime.py:56</code></li>
+<li>Docker adapter ensures pods: <code>src/ae/runtime/docker_runtime.py:70</code></li>
 </ul>
 <pre><code>    def ensure_app(self, manifest: AppManifest, revision: int, *, ... ) -&gt; RuntimeResult:
         app_name = app_key_for_manifest(manifest)
-        desired_replica_ids = (
-            list(replica_ids)
-            if replica_ids is not None
-            else self._desired_replica_ids(manifest, revision)
+        desired_pod_names = (
+            list(pod_names)
+            if pod_names is not None
+            else self._desired_pod_names(manifest, revision)
         )
         ...
-        for replica_id in desired_replica_ids:
-            container = containers_by_replica.get(replica_id)
+        for pod_name in desired_pod_names:
+            container = containers_by_pod.get(pod_name)
             if container is None:
                 container = self._create_container(
-                    manifest, replica_id, revision, node_id=node_id, attempt=0
+                    manifest, pod_name, revision, node_id=node_id, attempt=0
                 )
                 created += 1
             else:
@@ -807,6 +839,8 @@ python -m ae.cli events echo --limit 20</code></pre>
     backend = os.getenv(&quot;AE_RUNTIME_BACKEND&quot;, &quot;podman&quot;).lower()
     if backend == &quot;stub&quot;:
         return StubRuntime()
+    if backend in {&quot;cri&quot;, &quot;containerd&quot;}:
+        return CRIRuntime()
     if backend in {&quot;podman&quot;, &quot;oci&quot;}:
         try:
             if shutil.which(os.getenv(&quot;AE_PODMAN_BIN&quot;, &quot;podman&quot;)) is None:
@@ -817,8 +851,8 @@ python -m ae.cli events echo --limit 20</code></pre>
     return DockerRuntime(registry_auth=registry_auth)</code></pre>
 <h2>Chapter navigation</h2>
 <ul>
-<li>Prev: <a href="concepts-in-practice-03-scheduling-placement.html">Chapter 03 - Scheduling and Placement (Where Work Runs)</a></li>
-<li>Next: <a href="concepts-in-practice-05-ingress-service-exposure.html">Chapter 05 - Ingress and Service Exposure</a></li>
+<li>Prev: <a href="concepts-in-practice-02-declarative-apply.html">Chapter 02 - Declarative Specs &amp; Apply</a></li>
+<li>Next: <a href="concepts-in-practice-04-scheduling-placement.html">Chapter 04 - Scheduling &amp; Placement</a></li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -827,7 +861,7 @@ python -m ae.cli events echo --limit 20</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-22 14:47:44</span>
+        <span>Built 2026-01-31 16:07:03</span>
       </div>
     </footer>
     <script>
@@ -855,6 +889,64 @@ python -m ae.cli events echo --limit 20</code></pre>
           if (location.pathname.endsWith('playground.html')) location.reload();
         });
         label();
+      })();
+    </script>
+    <script>
+      (function() {
+        function hideLinks(match) {
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (match(href)) { a.style.display = 'none'; }
+          });
+        }
+        function rewriteDashboardLinks(target) {
+          if (!target) return;
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (href.indexOf('/dashboard') === 0) {
+              a.setAttribute('href', target);
+              if (!a.getAttribute('target')) {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener');
+              }
+            }
+          });
+        }
+        function disablePlaygroundPage() {
+          var path = (location && location.pathname) ? location.pathname : '';
+          if (!/playground/i.test(path)) return;
+          var container = document.querySelector('.container');
+          if (container) container.style.display = 'none';
+          var msg = document.createElement('div');
+          msg.style.maxWidth = '960px';
+          msg.style.margin = '32px auto';
+          msg.style.padding = '16px 20px';
+          msg.style.border = '1px solid var(--border)';
+          msg.style.borderRadius = '12px';
+          msg.style.background = 'var(--k1s-panel)';
+          msg.style.color = 'var(--k1s-text)';
+          msg.innerHTML = '<h2 style="margin:0 0 8px">Playground disabled</h2>' +
+            '<p style="margin:0;color:var(--k1s-text-muted)">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';
+          document.body.insertBefore(msg, document.body.firstChild);
+        }
+        fetch('/ui/features', { credentials: 'same-origin' })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(f) {
+            if (!f) return;
+            if (f.dashboard === false) {
+              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });
+            } else {
+              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();
+              rewriteDashboardLinks(dashUrl);
+            }
+            if (f.playground === false) {
+              hideLinks(function(h) { return h.indexOf('playground') !== -1; });
+              disablePlaygroundPage();
+            }
+          })
+          .catch(function() {});
       })();
     </script>
   </body>

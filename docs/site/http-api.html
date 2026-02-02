@@ -2,6 +2,7 @@
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
+    
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>Http Api</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
@@ -41,6 +42,8 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
+        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
@@ -61,6 +64,7 @@
         --k1s-card-bg: #ffffff;
         --k1s-header-bg: rgba(255,255,255,0.82);
         --code-bg: #f5f6f8;
+        --k1s-page-overlay: linear-gradient(rgba(244,245,247,0.9), rgba(244,245,247,0.9));
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
         --muted: var(--k1s-panel);
@@ -82,7 +86,11 @@
         min-height: 100vh;
         display: flex;
         flex-direction: column;
-        background: var(--bg);
+        background-color: var(--bg);
+        background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
+        background-size: 100% 100%, auto 100%;
+        background-position: center top, center top;
+        background-repeat: repeat-y, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -382,7 +390,7 @@
         padding: 10px 12px;
         display: flex;
         flex-wrap: wrap;
-        align-items: center;
+        align-items: flex-start;
         gap: 6px 10px;
         border: 1px solid var(--k1s-border);
         border-radius: 12px;
@@ -392,6 +400,24 @@
       .hero-repo-label {
         font-size: 0.7rem;
         letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         color: var(--k1s-text-muted);
       }
@@ -605,6 +631,7 @@
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
     <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -670,16 +697,18 @@
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
+      <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
       <a href="apishim-compatibility-matrix.html">API Shim</a>
+      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -714,7 +743,8 @@
 <li>GET <code>/status</code>
 <ul>
 <li>Content-Type: <code>application/json</code></li>
-<li>200 OK: JSON array of app status objects</li>
+<li>200 OK: <code>{ &quot;items&quot;: [ ... ], &quot;next&quot;: &quot;cursor&quot; | null }</code></li>
+<li>Query params: <code>limit</code>, <code>cursor</code>, <code>app</code>, <code>wildcard</code></li>
 <li>Example item:</li>
 </ul>
 </li>
@@ -749,7 +779,7 @@
 <ul>
 <li>GET <code>/events/&lt;app&gt;?limit=N</code>
 <ul>
-<li>200 OK: JSON array of recent events for <code>&lt;app&gt;</code></li>
+<li>200 OK: JSON array of recent events for <code>&lt;app&gt;</code> (limit only; cursor is not implemented)</li>
 <li>Example item:</li>
 </ul>
 </li>
@@ -770,18 +800,21 @@
 </ul>
 <p>Notes</p>
 <ul>
-<li>This API is read-only by design; mutating operations happen via the CLI.</li>
+<li>Read-only by default; mutations require <code>AE_API_MUTATIONS=1</code> plus tokens.</li>
+<li><code>/plan</code> is a read-only POST endpoint used by the dashboard/labs UI; <code>/k8s/preview</code> requires <code>AE_API_DEV_EXPORT=1</code>.</li>
 <li>The API shares the controller’s SQLite/Postgres store; results are eventually consistent with reconcile intervals.</li>
 <li>When any token is set, all GETs require at least the READ token.</li>
 </ul>
 <p>Extras</p>
 <ul>
-<li>GET <code>/openapi.json</code> — Minimal OpenAPI 3 document for the read-only endpoints.</li>
+<li>GET <code>/openapi.json</code> — OpenAPI 3 document for controller endpoints.</li>
 <li>GET <code>/docs</code> — Lightweight HTML that lists available paths by fetching <code>/openapi.json</code>.</li>
+<li>When apishim is enabled, <code>/openapi/v3</code> and <code>/openapi/v2</code> expose the Kubernetes shim spec.</li>
 </ul>
 <p>Mutations (opt-in; dev only)</p>
 <ul>
-<li>Enable by setting env <code>AE_API_MUTATIONS=1</code> on the controller process. Optionally set <code>AE_API_TOKEN</code> and send <code>Authorization: Bearer &lt;token&gt;</code> on requests.</li>
+<li>Enable by setting <code>AE_API_MUTATIONS=1</code> on the controller process.</li>
+<li>Mutations require bearer tokens when auth is configured: <code>AE_API_SCALER_TOKEN</code> (scale) and <code>AE_API_ADMIN_TOKEN</code> (admin). Send <code>Authorization: Bearer &lt;token&gt;</code>.</li>
 </ul>
 <ul>
 <li>POST <code>/scale/&lt;app&gt;</code>
@@ -799,6 +832,11 @@
 </ul>
 </li>
 </ul>
+<ul>
+<li>POST <code>/rollout/pause/&lt;app&gt;</code> and <code>/rollout/resume/&lt;app&gt;</code> (admin)</li>
+<li>POST <code>/apply</code> (admin; JSON App manifest)</li>
+<li>POST <code>/exec/&lt;app&gt;</code> (admin; remote exec payload)</li>
+</ul>
 <p>AuthN/AuthZ (optional)</p>
 <ul>
 <li>Set tokens in the controller environment to enable role-based access:
@@ -810,10 +848,13 @@
 </li>
 <li>When any token is configured, GETs require at least the READ token.</li>
 <li>Mutations require tokens and <code>AE_API_MUTATIONS=1</code>.</li>
+<li>Optional scoping: <code>AE_API_ADMIN_SCOPE</code> / <code>AE_API_SCALER_SCOPE</code> / <code>AE_API_READ_SCOPE</code> (comma‑separated glob patterns).</li>
+<li>Optional expiry: <code>AE_API_*_TOKEN_EXPIRES</code> (UTC ISO8601).</li>
 </ul>
 <p>Endpoints</p>
 <ul>
 <li>GET <code>/health</code> — Controller health summary (uptime, last reconcile, app/replica counts)</li>
+<li>GET <code>/metrics</code> — Prometheus metrics</li>
 <li>GET <code>/status</code> — Paginated list of app statuses
 <ul>
 <li>Query: <code>limit</code>, <code>cursor</code>, <code>app</code>, <code>wildcard</code> (glob)</li>
@@ -821,17 +862,19 @@
 </ul>
 </li>
 <li>GET <code>/status/&lt;app&gt;</code> — JSON status object</li>
-<li>GET <code>/events/&lt;app&gt;?limit=N&amp;cursor=...</code> — Paginated recent events
-<ul>
-<li>Response: <code>{ items: [...], next: &quot;cursor&quot; | null }</code></li>
-</ul>
-</li>
+<li>GET <code>/manifest/&lt;app&gt;</code> — Latest stored manifest for an app</li>
+<li>GET <code>/events/&lt;app&gt;?limit=N</code> — Recent events array</li>
+<li>GET <code>/history/&lt;app&gt;?limit=N</code> — Probe history (readiness/liveness)</li>
 <li>GET <code>/nodes</code> — Node inventory and staleness info</li>
+<li>GET <code>/system</code> and <code>/dashboard</code> — Dashboard snapshot</li>
+<li>POST <code>/plan</code> — Read-only planner (requires READ token when configured)</li>
 <li>POST <code>/scale/&lt;app&gt;</code> — Body: <code>{ &quot;replicas&quot;: &lt;int&gt; }</code> (requires scaler/admin)</li>
 <li>POST <code>/delete/&lt;app&gt;?purge=1</code> — Delete app (requires admin)</li>
-<li>Logs: GET <code>/logs/&lt;app&gt;?container=&amp;tail=&amp;since=&amp;follow=</code> (requires READ)
+<li>POST <code>/rollout/pause/&lt;app&gt;</code> and <code>/rollout/resume/&lt;app&gt;</code> — Pause/resume rollouts (admin)</li>
+<li>Logs: GET <code>/logs/&lt;app&gt;?container=&amp;tail=&amp;since=&amp;follow=</code> (requires READ when tokens are configured)
 <ul>
 <li>When <code>follow=1</code>, streams plain text lines; otherwise JSON: <code>{ lines: [...] }</code></li>
+<li>SSE stream: GET <code>/logs/&lt;app&gt;/stream</code></li>
 </ul>
 </li>
 </ul>
@@ -842,7 +885,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-22 14:47:44</span>
+        <span>Built 2026-01-31 16:07:03</span>
       </div>
     </footer>
     <script>
@@ -870,6 +913,64 @@
           if (location.pathname.endsWith('playground.html')) location.reload();
         });
         label();
+      })();
+    </script>
+    <script>
+      (function() {
+        function hideLinks(match) {
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (match(href)) { a.style.display = 'none'; }
+          });
+        }
+        function rewriteDashboardLinks(target) {
+          if (!target) return;
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (href.indexOf('/dashboard') === 0) {
+              a.setAttribute('href', target);
+              if (!a.getAttribute('target')) {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener');
+              }
+            }
+          });
+        }
+        function disablePlaygroundPage() {
+          var path = (location && location.pathname) ? location.pathname : '';
+          if (!/playground/i.test(path)) return;
+          var container = document.querySelector('.container');
+          if (container) container.style.display = 'none';
+          var msg = document.createElement('div');
+          msg.style.maxWidth = '960px';
+          msg.style.margin = '32px auto';
+          msg.style.padding = '16px 20px';
+          msg.style.border = '1px solid var(--border)';
+          msg.style.borderRadius = '12px';
+          msg.style.background = 'var(--k1s-panel)';
+          msg.style.color = 'var(--k1s-text)';
+          msg.innerHTML = '<h2 style="margin:0 0 8px">Playground disabled</h2>' +
+            '<p style="margin:0;color:var(--k1s-text-muted)">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';
+          document.body.insertBefore(msg, document.body.firstChild);
+        }
+        fetch('/ui/features', { credentials: 'same-origin' })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(f) {
+            if (!f) return;
+            if (f.dashboard === false) {
+              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });
+            } else {
+              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();
+              rewriteDashboardLinks(dashUrl);
+            }
+            if (f.playground === false) {
+              hideLinks(function(h) { return h.indexOf('playground') !== -1; });
+              disablePlaygroundPage();
+            }
+          })
+          .catch(function() {});
       })();
     </script>
   </body>
