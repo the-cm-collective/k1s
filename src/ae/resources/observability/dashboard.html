@@ -1,0 +1,3686 @@
+
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>k1s Hive Dashboard</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="data:image/png;base64,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" />
+    <script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2" crossorigin="anonymous"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" onerror="this.onerror=null; this.href='/static/vendor/xterm.css';" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js" onerror="window.__xterm_cdn_failed=true;"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js" onerror="window.__xterm_fit_cdn_failed=true;"></script>
+    <script>
+      (function(){
+        function loadScript(src){
+          var s = document.createElement('script');
+          s.src = src;
+          s.defer = true;
+          document.head.appendChild(s);
+        }
+        function loadCss(href){
+          var l = document.createElement('link');
+          l.rel = 'stylesheet';
+          l.href = href;
+          document.head.appendChild(l);
+        }
+        function ensureLocal(){
+          if (window.__xterm_cdn_failed || !window.Terminal) {
+            loadCss('/static/vendor/xterm.css');
+            loadScript('/static/vendor/xterm.js');
+          }
+          if (window.__xterm_fit_cdn_failed || !(window.FitAddon && window.FitAddon.FitAddon)) {
+            loadScript('/static/vendor/xterm-addon-fit.js');
+          }
+        }
+        if (document.readyState === 'complete') {
+          ensureLocal();
+        } else {
+          window.addEventListener('load', ensureLocal);
+        }
+      })();
+    </script>
+    <style>
+      :root { color-scheme: light dark; --header-h: 60px; --k1s-brand-gold: #fbc02d; --k1s-brand-graphite: #404040; }
+      body {
+        margin:0;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        overflow-x:hidden;
+        background-color:#0b0f14;
+        background-image:
+          linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72)),
+          url('/static/dash-assets/page-background-3840x2160.png');
+        background-size: 100% 100%, auto 100%;
+        background-position: center, center top;
+        background-repeat: no-repeat, no-repeat;
+      }
+      header { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; background:#0a0a0a10; position:sticky; top:0; backdrop-filter: blur(4px); z-index: 40; border-bottom:1px solid #8884; }
+      header::after { content:""; position:absolute; left:14px; right:14px; bottom:0; height:2px; border-radius:999px; background: linear-gradient(90deg, transparent, var(--k1s-brand-gold), transparent); opacity:.5; pointer-events:none; }
+      .brand-title { display:flex; align-items:center; gap:10px; font-size:18px; letter-spacing:.01em; }
+      .brand-logo { width:28px; height:28px; border-radius:999px; box-shadow:0 6px 14px rgba(0,0,0,.2); }
+      .brand-accent { color: var(--k1s-brand-gold); }
+      h1 { margin:0; font-size: 18px; }
+      main { display:grid; grid-template-columns: 1fr; gap:12px; padding:12px 12px 48px; overflow-x:hidden; align-items:start; margin-left:222px; transition: margin-left .15s ease; }
+      #detail { min-width:0; overflow:hidden; }
+      #apps { width:210px; }
+      /* Collapsible left apps pane */
+      body.apps-collapsed main { margin-left: 22px; }
+      /* Apps rail fixed under the header; independent scroll */
+      #apps { position:fixed; left:0; top: calc(var(--header-h, 60px)); border-right:1px solid #8884; padding:0 8px 0 0; min-height:0; height: calc(100vh - var(--header-h, 60px)); background: transparent; box-sizing: border-box; }
+      body.apps-collapsed #apps { border-right:0; padding-right:0; }
+      .scrollbar-hide { scrollbar-width: none; -ms-overflow-style: none; }
+      .scrollbar-hide::-webkit-scrollbar { width:0; height:0; }
+      .hidden { display:none; }
+      #apps-list { display:block; overflow-y:auto; height: calc(100vh - (var(--header-h, 60px)) - 12px); padding:6px 6px 12px; }
+      body.apps-collapsed #apps-list { display:none; }
+      .ns-header { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:#94a3b8; display:flex; align-items:center; gap:6px; margin:8px 6px 4px; }
+      .ns-header .ns-dot { width:8px; height:8px; border-radius:999px; background:var(--ns-color, #64748b); box-shadow:0 0 0 2px rgba(0,0,0,.25); }
+      .ns-header .ns-count { margin-left:auto; font-size:11px; opacity:.7; }
+      .app { padding:6px 8px; border-radius:6px; cursor:pointer; border-left:3px solid var(--ns-color, #334155); background:linear-gradient(90deg, var(--ns-tint, transparent), transparent 70%); margin:2px 0; }
+      .app.active { background:linear-gradient(90deg, var(--ns-tint, rgba(31,41,55,.65)), #1f2937 70%); color:#e5e7eb; }
+      .app-title { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+      .app-sub { font-size:12px; color:#94a3b8; }
+      .pill { display:inline-block; padding:1px 6px; border-radius:999px; font-size:12px; margin-left:6px; }
+      .ns-pill { display:inline-block; padding:1px 6px; border-radius:999px; font-size:12px; border:1px solid var(--ns-color, #64748b); background:var(--ns-tint, #33415533); color:#e2e8f0; }
+      .ok { background:#16a34a33; color:#16a34a; }
+      .warn { background:#f59e0b33; color:#b45309; }
+      .bad { background:#ef444433; color:#b91c1c; }
+      .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+      .row.stretch { align-items: stretch; flex-wrap: nowrap; overflow-x: hidden; }
+      .row.stretch::-webkit-scrollbar { height:0; }
+      .card {
+        border:1px solid #8884;
+        border-radius:8px;
+        padding:8px 10px;
+        min-width:0;
+        max-width:100%;
+        overflow:hidden;
+        position: relative;
+        background-color: rgba(7, 10, 14, 0.18);
+        background-image: linear-gradient(135deg, rgba(25, 30, 36, 0.35), rgba(25, 30, 36, 0.45));
+        background-size: 100% 100%;
+        background-position: center;
+        background-repeat: no-repeat;
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+      }
+      .card::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background-image: url('/static/dash-assets/page-background-3840x2160.png');
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+        opacity: 0.12;
+        filter: saturate(0.28) brightness(0.5);
+        pointer-events: none;
+      }
+      .card > * { position: relative; z-index: 1; }
+      .card table { display:block; overflow:auto; white-space: nowrap; scrollbar-width: none; -ms-overflow-style: none; }
+      .card table::-webkit-scrollbar { width:0; height:0; }
+      .card pre { overflow:auto; }
+      .banner { margin-top:8px; padding:6px 10px; border-radius:6px; font-size:12px; border:1px solid transparent; }
+      .banner.warn { background:#fef3c733; color:#b45309; border-color:#f59e0b; }
+      .banner.err { background:#fee2e233; color:#b91c1c; border-color:#ef4444; }
+      /* Ensure flex children can shrink and let inner boxes scroll */
+      .row.stretch > .card { min-width: 0; }
+      .detail-card { flex: 0 0 320px; }
+      /* Reduce default Logs panel height by ~20% (294px → ~235px) */
+      .logbox { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; width:100%; box-sizing:border-box; height:235px; overflow:auto; overflow-x:auto; white-space: pre; background:#0001; padding:8px; border-radius:6px; }
+      .scrollcap { max-height:180px; overflow:auto; overflow-x:auto; white-space: normal; max-width:100%; width:100%; }
+      /* Ensure detail text uses compact line spacing */
+      #desc { line-height: 1.3; min-height: 12em; max-height: none; overflow-y: hidden; }
+      /* Match events panel baseline height to keep row stable */
+      #events { min-height: 12em; }
+      .log-entry { white-space: pre; }
+      /* Ensure events panel never widens the layout; scroll inside */
+      #events { max-width:100%; width:100%; overflow-x:auto; }
+      .log-entry code { opacity:0.8; margin-right:6px; }
+      #controls { gap:8px; }
+      /* Unified rounded controls */
+      input[type=text], input[type=password], select, textarea { padding:6px; border:1px solid #8884; border-radius:6px; background:#0001; color:inherit; }
+      /* All selects — dark UI: light text on dark background */
+      select { background:#0f172a; color:#e5e7eb; border-color:#334155; color-scheme: dark; }
+      select option { background:#0f172a; color:#e5e7eb; }
+      button { padding:6px 10px; border:1px solid #8884; border-radius:6px; background:#0001; color:inherit; cursor:pointer; }
+      /* Emphasize primary dashboard actions */
+      .action-btn { font-weight:600; border-color: var(--action-border, #f8c32b); background: linear-gradient(180deg, var(--action-bg-start, rgba(248,195,43,0.2)), var(--action-bg-end, rgba(241,241,241,0.05))); box-shadow: 0 2px 6px rgba(0,0,0,0.18); transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease, background .12s ease; }
+      .action-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(0,0,0,0.24); }
+      .action-shell { --action-border: #f8c32b; --action-bg-start: rgba(248,195,43,0.22); --action-bg-end: rgba(248,195,43,0.08); }
+      .action-port { --action-border: #a7a7a7; --action-bg-start: rgba(64,64,64,0.18); --action-bg-end: rgba(241,241,241,0.05); }
+      @media (prefers-color-scheme: light) {
+        .action-btn { color:#1f2937; }
+      }
+      /* Hide legacy header toggle and add pane handle */
+      header #apps-toggle { display:none !important; }
+      /* Small round chevron handle; positioned by JS for exact edge alignment */
+      #apps-pane-toggle { position:fixed; left: 0; top: 50vh; transform: translateY(-50%); width:28px; height:28px; border-radius:9999px; padding:0; border:1px solid #334155; background:#0f172a; color:#e5e7eb; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 6px rgba(0,0,0,.2); cursor:pointer; z-index: 10; transition: left .12s ease, top .12s ease; }
+      /* When collapsed, keep the handle fully within the thin bar */
+      /* Collapsed state handled in JS so the button centers on the 16px rail */
+      #apps-pane-toggle:hover { background:#111827; }
+      #apps-pane-toggle svg { width:18px; height:18px; transition: transform .15s ease; }
+      /* Chevron points left (collapse) when expanded; rotate to point right when collapsed */
+      body.apps-collapsed #apps-pane-toggle svg { transform: rotate(180deg); }
+      table { border-collapse:collapse; width:100%; }
+      th, td { border-bottom:1px solid #8884; padding:6px; text-align:left; font-size:13px; }
+      code { background:#0001; padding:2px 4px; border-radius:4px; }
+      h2 { font-size:14px; margin: 14px 4px 6px; opacity:0.9; }
+      .divider { border-top:1px solid #8884; margin:16px 0; }
+      footer.site-footer { margin: 0 12px 12px; border-top:1px solid #8884; padding-top:10px; opacity:.85; }
+      .hover-card { position:absolute; display:none; max-width:280px; font-size:12px; line-height:1.35; background:rgba(255,255,255,0.95); color:inherit; border:1px solid #888; border-radius:6px; padding:8px 10px; box-shadow:0 2px 8px rgba(0,0,0,0.1); pointer-events:none; z-index: 1000; }
+      @media (prefers-color-scheme: dark) { .hover-card { background:rgba(17,17,17,0.9); border-color:#555; } }
+      .graph-surface {
+        position:relative;
+        width:100%;
+        height:420px;
+        margin-top:8px;
+        border-radius:12px;
+        border:1px solid rgba(148,163,184,0.25);
+        background-color: rgba(2,6,23,0.4);
+        overflow:hidden;
+        box-shadow: inset 0 0 0 1px rgba(15,23,42,0.6), 0 12px 30px rgba(2,6,23,0.35);
+      }
+      .graph-surface::before {
+        content:"";
+        position:absolute;
+        inset:0;
+        background-image: url('/static/dash-assets/system-graph-background-1920x1080.png');
+        background-position: center;
+        background-size: cover;
+        background-repeat: no-repeat;
+        opacity: 0.45;
+        z-index: 0;
+        pointer-events:none;
+      }
+      .graph-surface::after {
+        content:"";
+        position:absolute;
+        inset:0;
+        background:
+          radial-gradient(circle at 15% 20%, rgba(30,41,59,0.10), rgba(2,6,23,0.35) 65%),
+          linear-gradient(135deg, rgba(2,6,23,0.10), rgba(15,23,42,0.30));
+        z-index: 1;
+        pointer-events:none;
+      }
+      #sys-graph { position:relative; z-index:2; }
+      h2 { font-size:14px; margin: 14px 4px 6px; opacity:0.9; }
+      .divider { border-top:1px solid #8884; margin:16px 0; }
+      .modal-overlay { position:fixed; inset:0; background:rgba(2,6,23,0.70); display:flex; align-items:center; justify-content:center; z-index: 90; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+      .modal-overlay.hidden { display:none; }
+      .modal {
+        width:min(980px, 96vw);
+        max-height:90vh;
+        background-color: rgba(7,10,14,0.28);
+        background-image: linear-gradient(135deg, rgba(15,23,42,0.80), rgba(2,6,23,0.75));
+        color:#e2e8f0;
+        border:1px solid rgba(148,163,184,0.35);
+        border-radius:12px;
+        box-shadow:0 24px 60px rgba(0,0,0,.45);
+        display:flex;
+        flex-direction:column;
+        position:relative;
+        overflow:hidden;
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+      }
+      .modal::before {
+        content:"";
+        position:absolute;
+        inset:0;
+        background-image: url('/static/dash-assets/page-background-1920x1080.png');
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+        opacity: 0.45;
+        filter: saturate(0.35) brightness(0.6);
+        pointer-events:none;
+      }
+      .modal::after {
+        content:"";
+        position:absolute;
+        inset:0;
+        background-image: url('/static/dash-assets/page-background-tile-1024.png');
+        background-size: 520px 520px;
+        background-position: center;
+        background-repeat: repeat;
+        opacity: 0.35;
+        pointer-events:none;
+      }
+      .modal > * { position: relative; z-index: 1; }
+      #pf-modal .modal { height: min(560px, 90vh); }
+      #pf-modal .modal-body { display:flex; flex-direction:column; gap:12px; padding:12px 16px; flex:1 1 auto; min-height:0; }
+      #pf-modal .pf-fields { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:10px; }
+      #pf-modal .pf-fields label { display:flex; flex-direction:column; gap:6px; min-width:0; }
+      #pf-modal .pf-fields input, #pf-modal .pf-fields select { width:100%; }
+      #pf-modal .pf-span-2 { grid-column: span 2; }
+      #pf-modal .pf-span-4 { grid-column: 1 / -1; }
+      #pf-modal .pf-io { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px; flex:1 1 auto; min-height:0; }
+      #pf-modal .pf-io > * { display:flex; flex-direction:column; gap:6px; min-height:0; }
+      #pf-modal .pf-response { flex:1 1 auto; min-height:0; }
+      #pf-modal .pf-response-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+      #pf-modal .pf-response-toggle { display:flex; gap:6px; flex-wrap:wrap; }
+      #pf-modal .pf-response-toggle button { padding:4px 8px; font-size:11px; border-radius:999px; border:1px solid rgba(148,163,184,0.45); background: rgba(15,23,42,0.35); }
+      #pf-modal .pf-response-toggle button.active { border-color: rgba(251,192,45,0.65); color:#f8c32b; background: linear-gradient(180deg, rgba(251,192,45,0.22), rgba(15,23,42,0.35)); }
+      #pf-modal .pf-response-view { display:flex; flex-direction:column; flex:1 1 auto; min-height:0; }
+      #pf-modal .pf-response-view.hidden { display:none; }
+      #pf-modal .pf-io textarea { flex:1 1 auto; min-height:0; width:100%; }
+      #pf-modal .pf-io textarea.scrollbar-hide { scrollbar-width:none; -ms-overflow-style:none; }
+      #pf-modal .pf-io textarea.scrollbar-hide::-webkit-scrollbar { width:0; height:0; }
+      #pf-modal .pf-preview { border:1px solid #334155; border-radius:8px; overflow:hidden; background:#0b0f14; scrollbar-width:none; -ms-overflow-style:none; }
+      #pf-modal .pf-preview::-webkit-scrollbar { width:0; height:0; }
+      #pf-modal .pf-preview iframe { width:100%; height:100%; border:0; background:#0b0f14; }
+      #pf-modal .pf-controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:auto; }
+      @media (max-width: 900px) {
+        #pf-modal .pf-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        #pf-modal .pf-span-2 { grid-column: span 2; }
+        #pf-modal .pf-span-4 { grid-column: span 2; }
+        #pf-modal .pf-io { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 640px) {
+        #pf-modal .pf-fields { grid-template-columns: 1fr; }
+        #pf-modal .pf-span-2, #pf-modal .pf-span-4 { grid-column: span 1; }
+      }
+      .modal-header {
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        padding:12px 16px;
+        border-bottom:1px solid rgba(148,163,184,0.35);
+        background: linear-gradient(90deg, rgba(15,23,42,0.72), rgba(2,6,23,0.15));
+        position: relative;
+      }
+      .modal-header::after {
+        content:"";
+        position:absolute;
+        left:16px;
+        right:16px;
+        bottom:0;
+        height:1px;
+        background: linear-gradient(90deg, transparent, rgba(251,192,45,0.55), transparent);
+        opacity:0.65;
+        pointer-events:none;
+      }
+      .modal-body { padding:12px 16px; overflow:auto; }
+      .modal-footer { padding:10px 16px; border-top:1px solid rgba(148,163,184,0.35); display:flex; gap:8px; justify-content:flex-end; }
+      .modal.hidden { display:none; }
+      .terminal-wrap { height:360px; border:1px solid #334155; border-radius:8px; background:#0b0f14; overflow:hidden; }
+      .terminal-wrap .xterm-viewport { scrollbar-width: none; }
+      .terminal-wrap .xterm-viewport::-webkit-scrollbar { width:0; height:0; }
+      .modal .row input[type=text], .modal .row input[type=password], .modal .row select { min-width: 140px; }
+      .modal .hint { font-size:12px; opacity:.8; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="row" style="gap:10px; align-items:center;">
+        <button id="apps-toggle" class="icon-btn" title="Collapse apps pane" aria-pressed="false" aria-label="Toggle apps panel">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+        </button>
+        <h1 class="brand-title">
+          <img class="brand-logo" alt="k1s logo" src="data:image/png;base64,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" />
+          <span><span class="brand-accent">k1s</span> Hive Dashboard</span>
+        </h1>
+      </div>
+      <div class="row" id="controls"> 
+        <label>Poll <select id="poll-interval">
+          <option value="0">off</option>
+          <option value="2000">2s</option>
+          <option value="5000" selected>5s</option>
+          <option value="10000">10s</option>
+        </select></label>
+        <label>Log filter <input id="log-filter" name="filter" type="text" size="24" placeholder="substring" /></label>
+        <button id="pause-btn">Pause Logs</button>
+        <label>Bearer <input id="auth-token" type="password" size="22" placeholder="read/scaler/admin token" title="Optional bearer token. Roles: read (GET), scaler (POST /scale), admin (mutations & rollout)." /></label>
+        <button id="save-token">Save</button>
+        <button id="clear-token">Clear</button>
+        <label title="Hide healthy counters (show warn/bad only)"><input type="checkbox" id="hide-healthy" /> Hide Healthy</label>
+        <label title="Hide less critical counters (services, volumes, containers, restarts)"><input type="checkbox" id="compact-counters" /> Compact Counters</label>
+      </div>
+      <div id="auth-banner" class="banner hidden" role="status" aria-live="polite"></div>
+    </header>
+    <main>
+  <section id="apps"><div id="apps-list" class="scrollbar-hide"></div><button id="apps-pane-toggle" title="Collapse apps pane" aria-pressed="false" aria-label="Toggle apps panel"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="0" fill="none"/><path d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg></button></section>
+      <section id="detail">
+        <h2>Application</h2>
+        <div class="row stretch">
+          <div class="card detail-card" style="display:flex; flex-direction:column;">
+            <div id="desc" class="scrollcap scrollbar-hide">
+            <div><strong>App:</strong> <span id="d-app">-</span></div>
+            <div><strong>Namespace:</strong> <span id="d-namespace">-</span></div>
+            <div><strong>Image:</strong> <span id="d-image">-</span></div>
+            <div><strong>Ingress:</strong> <span id="d-ingress">-</span></div>
+            <div><strong>Pods:</strong> <span id="d-replicas">-</span></div>
+            <div><strong>Revision:</strong> <span id="d-rev">-</span> (<span id="d-rev-status">-</span>)</div>
+            <div><strong>Service:</strong> <span id="d-service">-</span></div>
+            <div><strong>Rollout:</strong> <span id="d-rollout">-</span></div>
+            <div><strong>Secrets:</strong> <span id="d-secrets">-</span></div>
+            <div><strong>Storage:</strong> <span id="d-storage">-</span></div>
+            </div>
+            <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
+              <button id="btn-shell" type="button" class="action-btn action-shell">Remote Shell</button>
+              <button id="btn-portforward" type="button" class="action-btn action-port">Port-Forward</button>
+            </div>
+          </div>
+          <div class="card" style="flex:1; display:flex; flex-direction:column;">
+            <strong>Events</strong>
+            <div class="scrollcap scrollbar-hide" id="events"></div>
+          </div>
+        </div>
+        <!-- Logs directly below Application/Events -->
+        <div class="card" style="margin-top:12px;">
+          <strong>Logs</strong>
+          <div id="logs" class="logbox scrollbar-hide" style="height:235px;" hx-get="/dashboard/partials/logs" hx-trigger="refresh" hx-include="#log-filter" hx-swap="innerHTML" hx-on::after-settle="this.scrollTop=this.scrollHeight"></div>
+        </div>
+        <div class="card" style="margin-top:12px;"> 
+          <strong>System</strong>
+          <div class="row" id="sys-counters" style="gap:10px; margin-top:6px; flex-wrap:wrap; justify-content:center;"></div>
+        </div>
+        <div class="card" style="margin-top:12px;">
+          <strong>Probe History</strong>
+          <div id="probe-history" class="scrollcap scrollbar-hide" style="max-height:220px;"
+               hx-get="/dashboard/partials/probe-history"
+               hx-trigger="refresh"
+               hx-swap="innerHTML"></div>
+        </div>
+        <div class="card" style="margin-top:12px;">
+          <div class="row" style="align-items:center; justify-content:space-between;">
+            <strong>Pods</strong>
+            <label title="Rows history count">Show last
+              <select id="hist-count" style="margin:0 4px;">
+                <option value="5" selected>5</option>
+                <option value="10">10</option>
+                <option value="20">20</option>
+              </select>
+              checks
+            </label>
+          </div>
+          <table id="tbl-replicas"><thead><tr><th>Pod</th><th>Ready</th><th>Live</th><th>Status</th><th>Backoff</th></tr></thead><tbody></tbody></table>
+        </div>
+        <div class="card" style="margin-top:12px;">
+          <strong>System Graph</strong>
+          <div id="graph-wrap" class="graph-surface">
+            <svg id="sys-graph" viewBox="0 0 1000 420" preserveAspectRatio="xMidYMid meet" style="width:100%; height:100%;">
+              <defs>
+                <marker id="arrow" markerWidth="10" markerHeight="10" refX="10" refY="3" orient="auto">
+                  <path d="M0,0 L10,3 L0,6 Z" fill="#9ca3af" />
+                </marker>
+                <style>
+                  .node { cursor: default; }
+                  .hex-node text { font-size:16px; font-weight:700; letter-spacing:.01em; pointer-events:none; paint-order: stroke; stroke:rgba(0,0,0,0.35); stroke-width:3; }
+                  .hex-label { dominant-baseline: middle; }
+                  .hex-outer { stroke-linejoin: round; }
+                  .hex-inner { stroke-linejoin: round; }
+                  .hex-pattern { }
+                  .node.pod circle { fill:#e5e7eb; stroke:#94a3b8; stroke-width:1.2; }
+                  .node.pod.ready circle { fill:#22c55e; stroke:#bbf7d0; filter: drop-shadow(0 0 6px rgba(34,197,94,0.35)); }
+                  .node.pod.pending circle { fill:#f59e0b; stroke:#fde68a; filter: drop-shadow(0 0 6px rgba(245,158,11,0.35)); }
+                  .link { stroke:rgba(148,163,184,0.55); stroke-width:1.4; fill:none; marker-end:url(#arrow); }
+                  .link.flow { stroke-dasharray:6 6; }
+                  .link.trace { stroke:rgba(245,197,66,0.9); stroke-width:1.6; stroke-dasharray:4 6; marker-end:none; filter: drop-shadow(0 0 4px rgba(245,197,66,0.35)); }
+                  .link.host-flow { stroke:rgba(203,213,225,0.8); }
+                  .flow-fwd { animation: flow 1.8s linear infinite; }
+                  .flow-rev { animation: flow 1.8s linear infinite reverse; }
+                  .selected .hex-outer, .selected circle { stroke-width:6 !important; filter: drop-shadow(0 0 6px rgba(96,165,250,0.6)); }
+                  .selected.link { stroke:#60a5fa; }
+                  .ns-peer { opacity:0.75; }
+                  .faded { opacity:0.3; }
+                  @keyframes flow { to { stroke-dashoffset: -24; } }
+                </style>
+              </defs>
+              <g id="links"></g>
+              <g id="nodes"></g>
+              <g id="labels"></g>
+            </svg>
+            <div id="graph-legend" style="position:absolute; right:8px; top:8px; background:rgba(17,24,39,0.82); color:#e5e7eb; padding:6px 8px; border-radius:6px; border:1px solid #334155; backdrop-filter: blur(2px); font-size:12px; z-index:2;">
+              <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                <span><svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z" fill="#1f2937" stroke="#94a3b8" stroke-width="1.6"/></svg> Host</span>
+                <span><svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z" fill="#f8fafc" fill-opacity="0.2" stroke="#e5e7eb" stroke-opacity="0.25" stroke-width="1.6"/></svg> System</span>
+                <span id="legend-namespace" title="Namespace: default" style="--ns-color:#3b82f6;"><svg width="16" height="16" viewBox="0 0 24 24"><path id="legend-namespace-hex" d="M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z" fill="#0f172a" stroke="var(--ns-color)" stroke-width="1.6"/></svg> Namespace (current)</span>
+                <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#dcfce7" stroke="#16a34a"/></svg> Pod ready</span>
+                <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#fef3c7" stroke="#f59e0b"/></svg> Pod pending</span>
+                <span><svg width="30" height="8"><path d="M1 4 L22 4" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="6 6"/><polygon points="22,1 29,4 22,7" fill="#9ca3af"/></svg> Flow</span>
+                <span><button id="graph-path-toggle" style="font-size:12px; padding:4px 8px; border:1px solid #4b5563; border-radius:6px; background:#111827; color:#e5e7eb; cursor:pointer;">Paths: Orth</button></span>
+              </div>
+            </div>
+            <div id="graph-hover" class="hover-card"></div>
+          </div>
+        </div>
+        <div class="row stretch" style="margin-top:12px; gap:12px;"> 
+          <div class="card detail-card" style="flex:0 0 360px;">
+            <strong>Plan Diagnostics</strong>
+            <div style="font-size:12px; opacity:.9; margin:6px 0;">Paste a Deployment/App manifest (YAML or JSON) to preview warnings and diagnostics before applying. Or use the button to load the selected app's last applied manifest.</div>
+            <form id="plan-form" onsubmit="return false;">
+              <div><textarea id="plan-json" rows="12" cols="40" placeholder="Paste Deployment/App manifest YAML or JSON here..."></textarea></div>
+              <div class="row" style="margin-top:6px">
+                <button type="button" id="plan-run">Run Plan</button>
+                <button type="button" id="plan-load">Load from App</button>
+                <span id="plan-status" class="pill" style="margin-left:8px"></span>
+              </div>
+            </form>
+          </div>
+          <div class="card" style="flex:1;"> 
+            <div class="row" style="justify-content:space-between; align-items:center;">
+              <strong>Plan Result</strong>
+              <button type="button" id="plan-copy" title="Copy JSON to clipboard">Copy</button>
+            </div>
+            <pre id="plan-output" class="logbox scrollbar-hide" style="height:280px"></pre>
+          </div>
+        </div>
+        
+        <div class="divider"></div>
+        <h2>Ingress, Services & Storage</h2>
+        <div class="row stretch" style="margin-top:12px;">
+          <div class="card" style="flex:1;">
+            <strong>Services</strong>
+            <table id="tbl-services"><thead><tr><th>App</th><th>Port</th><th>Target</th><th>Pods</th></tr></thead><tbody></tbody></table>
+          </div>
+          <div class="card" style="flex:1;">
+            <strong>Nodes</strong>
+            <table id="tbl-nodes"><thead><tr><th>Name</th><th>Status</th><th>Cordoned</th><th>Last Seen (s)</th></tr></thead><tbody></tbody></table>
+          </div>
+          <div class="card" style="flex:1;">
+            <strong>Ingress</strong>
+            <table id="tbl-ingress"><thead><tr><th>App</th><th>Host</th><th>Config Path</th><th>Exists</th></tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+        <div class="card" style="margin-top:12px;">
+          <strong>Storage Volumes</strong>
+          <table id="tbl-vols"><thead><tr><th>Name</th><th>App</th><th>Driver</th><th>Mountpoint</th></tr></thead><tbody></tbody></table>
+        </div>
+        <div class="card" style="margin-top:12px;">
+          <strong>Runtime Containers</strong>
+          <table id="tbl-containers"><thead><tr><th>Name</th><th>App</th><th>Host Ports</th><th>Restarts</th><th>Restarts (1m)</th></tr></thead><tbody></tbody></table>
+        </div>
+      </section>
+    </main>
+    <div id="shell-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="shell-title">
+      <div class="modal">
+        <div class="modal-header">
+          <strong id="shell-title">Remote Shell</strong>
+          <button id="shell-close" type="button">Close</button>
+        </div>
+        <div class="modal-body">
+          <div class="row" style="flex-wrap:wrap; gap:10px; margin-bottom:10px;">
+            <label>Pod <select id="shell-pod"></select></label>
+            <label>Container <input id="shell-container" type="text" placeholder="optional" /></label>
+            <label>Command <input id="shell-cmd" type="text" value="sh -c &quot;echo connected; exec sh&quot;" /></label>
+            <label>Shim API <input id="shell-base" type="text" placeholder="http://127.0.0.1:8443" /></label>
+            <label>Token <input id="shell-token" type="password" placeholder="apishim token" /></label>
+          </div>
+          <div id="shell-terminal" class="terminal-wrap"></div>
+          <div class="row" style="margin-top:10px; gap:8px; align-items:center;">
+            <button id="shell-connect" type="button">Connect</button>
+            <button id="shell-disconnect" type="button">Disconnect</button>
+            <span id="shell-status" class="pill"></span>
+            <span class="hint">Uses WebSocket exec (v5.channel.k8s.io).</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="pf-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="pf-title">
+      <div class="modal">
+        <div class="modal-header">
+          <strong id="pf-title">Port-Forward (WS)</strong>
+          <button id="pf-close" type="button">Close</button>
+        </div>
+        <div class="modal-body">
+          <div class="pf-fields">
+            <label>Pod <select id="pf-pod"></select></label>
+            <label>Port <input id="pf-port" type="text" placeholder="8080" /></label>
+            <label class="pf-span-2">Shim API <input id="pf-base" type="text" placeholder="http://127.0.0.1:8443" /></label>
+            <label class="pf-span-4">Token <input id="pf-token" type="password" placeholder="apishim token" /></label>
+          </div>
+          <div class="pf-io">
+            <label>Request
+              <textarea id="pf-request" rows="4" class="scrollbar-hide" style="width:100%;">GET / HTTP/1.1
+Host: localhost
+Connection: close
+
+</textarea>
+            </label>
+            <div class="pf-response">
+              <div class="pf-response-head">
+                <label for="pf-response">Response</label>
+                <div class="pf-response-toggle" role="group" aria-label="Response view">
+                  <button id="pf-view-source" type="button" class="pf-view-btn active" data-pf-view="source" aria-pressed="true">Source</button>
+                  <button id="pf-view-preview" type="button" class="pf-view-btn" data-pf-view="preview" aria-pressed="false">Preview</button>
+                </div>
+              </div>
+              <div id="pf-response-source" class="pf-response-view pf-source">
+                <textarea id="pf-response" rows="4" class="scrollbar-hide" style="width:100%;" readonly></textarea>
+              </div>
+              <div id="pf-preview" class="pf-response-view pf-preview hidden">
+                <iframe id="pf-preview-frame" title="Port-forward response preview" sandbox></iframe>
+              </div>
+            </div>
+          </div>
+          <div class="pf-controls">
+            <button id="pf-connect" type="button">Connect</button>
+            <button id="pf-send" type="button">Send Request</button>
+            <button id="pf-disconnect" type="button">Disconnect</button>
+            <span id="pf-status" class="pill"></span>
+            <span class="hint">Uses WebSocket port-forward (portforward.k8s.io).</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <footer class="site-footer"> 
+      <div class="row" style="justify-content:space-between;">
+        <span>k1s Hive Dashboard</span>
+        <span id="build-ts"></span>
+      </div>
+    </footer>
+    <script>
+      (function(){
+        try { document.getElementById('build-ts').textContent = new Date().toLocaleString(); } catch (e) {}
+      })();
+    </script>
+    <script>
+      var labsToken = __LABS_TOKEN__;
+      var apishimBase = __APISHIM_BASE__;
+      var elApps = document.getElementById('apps');
+      var elAppsList = document.getElementById('apps-list');
+      var elEvents = document.getElementById('events');
+      var pollSel = document.getElementById('poll-interval');
+      var logFilter = document.getElementById('log-filter');
+      var pauseBtn = document.getElementById('pause-btn');
+      var appsToggle = document.getElementById('apps-pane-toggle');
+      var current = null;
+      var pollTimer = null;
+      var pauseLogs = false;
+      var logSource = null;
+      var eventsSource = null;
+      var lastSystem = null;
+      var lastStatuses = [];
+      var currentDetail = null;
+      var graphHover = null;
+      var graphPathMode = (localStorage.getItem('graph_path_mode') || 'orth'); // 'orth' or 'straight'
+      // Keep apps rail aligned under the header
+      function syncHeaderHeight(){
+        try {
+          var hdr = document.querySelector('header');
+          if (!hdr) return;
+          var apps = document.getElementById('apps');
+          var list = document.getElementById('apps-list');
+          var h = hdr.getBoundingClientRect().height || hdr.offsetHeight || 60;
+          document.documentElement.style.setProperty('--header-h', (h) + 'px');
+          // Fixed rail already uses CSS calc with var(--header-h); no per-element top needed
+          if (list) {
+            var listHeight = Math.max(120, Math.floor(window.innerHeight - h - 12));
+            list.style.height = listHeight + 'px';
+          }
+        } catch(e){}
+      }
+      try { syncHeaderHeight(); window.addEventListener('resize', syncHeaderHeight); } catch(e){}
+
+      // Token helpers
+      var tokInput = document.getElementById('auth-token');
+      var saveBtn = document.getElementById('save-token');
+      var clearBtn = document.getElementById('clear-token');
+      var authBanner = document.getElementById('auth-banner');
+      try { tokInput.value = localStorage.getItem('ae_token') || ''; } catch(e) {}
+      saveBtn.addEventListener('click', function(){ try { localStorage.setItem('ae_token', tokInput.value||''); } catch(e){}; window.location.reload(); });
+      clearBtn.addEventListener('click', function(){ try { localStorage.removeItem('ae_token'); } catch(e){}; window.location.reload(); });
+
+      // UI prefs: hide healthy pills / compact counters
+      var hideHealthy = false, compactCounters = false;
+      var hhStored = '', ccStored = '';
+      try { hhStored = (localStorage.getItem('ae_hide_healthy')||''); } catch(e){}
+      try { ccStored = (localStorage.getItem('ae_compact_counters')||''); } catch(e){}
+      try { hideHealthy = (hhStored==='1'); } catch(e){}
+      try { compactCounters = (ccStored==='1'); } catch(e){}
+      // Mobile default: if no stored pref, default hideHealthy/compactCounters on small screens
+      try {
+        var isMobile = (window.matchMedia && window.matchMedia('(max-width: 640px)').matches) || (Math.min(screen.width, screen.height) <= 640);
+        if (!hhStored && isMobile) hideHealthy = true;
+        if (!ccStored && isMobile) compactCounters = true;
+      } catch(e){}
+      try { var hh = document.getElementById('hide-healthy'); if (hh) { hh.checked = hideHealthy; hh.addEventListener('change', function(){ try{ localStorage.setItem('ae_hide_healthy', hh.checked?'1':''); }catch(e){}; renderCounters(lastSystem||{}); }); } } catch(e){}
+      try { var cc = document.getElementById('compact-counters'); if (cc) { cc.checked = compactCounters; cc.addEventListener('change', function(){ try{ localStorage.setItem('ae_compact_counters', cc.checked?'1':''); }catch(e){}; renderCounters(lastSystem||{}); }); } } catch(e){}
+
+      // Apps pane collapse/expand (expanded by default)
+      try {
+        var initCollapsed = (localStorage.getItem('dash_apps_collapsed')||'') === '1';
+        if (initCollapsed) {
+          document.body.classList.add('apps-collapsed');
+          appsToggle.setAttribute('aria-pressed','true');
+          appsToggle.title='Expand apps pane';
+          try { requestAnimationFrame(positionAppsToggle); } catch(e){}
+        }
+        appsToggle.addEventListener('click', function(){
+          var collapsed = document.body.classList.toggle('apps-collapsed');
+          try { localStorage.setItem('dash_apps_collapsed', collapsed ? '1' : ''); } catch(e){}
+          appsToggle.setAttribute('aria-pressed', collapsed ? 'true' : 'false');
+          appsToggle.title = collapsed ? 'Expand apps pane' : 'Collapse apps pane';
+          try { requestAnimationFrame(function(){ requestAnimationFrame(positionAppsToggle); }); } catch(e){}
+        });
+      } catch(e){}
+
+      // Precisely position the chevron relative to the apps pane (account for collapse/expand)
+      function positionAppsToggle(){
+        try {
+          var pane = document.getElementById('apps');
+          var btn = document.getElementById('apps-pane-toggle');
+          if (!pane || !btn) return;
+          var rect = pane.getBoundingClientRect();
+          var isCollapsed = document.body.classList.contains('apps-collapsed');
+          // Horizontal target (center the 28px button explicitly since we removed translateX):
+          //  - Expanded: hug the pane's right edge (inset 12px)
+          //  - Collapsed: center on the 16px rail, then nudge left by ~50px per feedback
+          var btnW = (btn.getBoundingClientRect().width || 28);
+          // Collapsed: place handle at a fixed gutter (visual spec: ~8px from viewport left).
+          // Expanded: hug apps pane right edge minus 12px (minus half button width to center).
+          var targetX = isCollapsed
+            ? (8 - btnW / 2)  // center the button at an 8px gutter
+            : (rect.right - 12 - btnW / 2);
+          btn.style.left = Math.round(targetX) + 'px';
+          // Let CSS keep the vertical centering via top:50vh; avoid JS scroll offset bugs.
+        } catch(_){}
+      }
+      // Initial placement and on interactions
+      try { positionAppsToggle(); } catch(_){}
+      window.addEventListener('scroll', positionAppsToggle, { passive: true });
+      window.addEventListener('resize', positionAppsToggle);
+
+      // Removed dynamic apps pane sizer; rely on CSS max-height.
+
+      pauseBtn.addEventListener('click', function () {
+        pauseLogs = !pauseLogs;
+        pauseBtn.textContent = pauseLogs ? 'Resume Logs' : 'Pause Logs';
+        updateLogsHTMX();
+        updateLogStreaming();
+      });
+      pollSel.addEventListener('change', function () { schedulePoll(); updateLogsHTMX(); });
+
+      function badge(cls, text){ return '<span class="pill ' + cls + '">' + text + '</span>'; }
+
+      function splitAppName(full){
+        var s = String(full || '');
+        var idx = s.indexOf('--');
+        if (idx > 0) {
+          return { namespace: s.slice(0, idx), name: s.slice(idx + 2) };
+        }
+        return { namespace: 'default', name: s };
+      }
+
+      function hashHue(str){
+        var h = 0;
+        for (var i = 0; i < str.length; i++) {
+          h = (h * 31 + str.charCodeAt(i)) % 360;
+        }
+        return h;
+      }
+
+      function namespaceColors(ns){
+        var n = (ns && String(ns)) ? String(ns) : 'default';
+        if (n === 'default') {
+          return { color: '#3b82f6', tint: 'rgba(59,130,246,0.18)' };
+        }
+        if (n === 'demo-helm') {
+          return { color: '#fbbf24', tint: 'rgba(251,191,36,0.2)' };
+        }
+        var hue = hashHue(n);
+        return { color: 'hsl(' + hue + ', 70%, 55%)', tint: 'hsla(' + hue + ', 70%, 20%, 0.18)' };
+      }
+
+      function clamp(n, lo, hi){ return Math.min(hi, Math.max(lo, n)); }
+
+      function parseHslColor(str){
+        var m = String(str || '').match(/hsla?\(\s*([0-9.]+)\s*,\s*([0-9.]+)%\s*,\s*([0-9.]+)%/i);
+        if (!m) return null;
+        return { h: parseFloat(m[1]), s: parseFloat(m[2]), l: parseFloat(m[3]) };
+      }
+
+      function hexToRgb(str){
+        var hex = String(str || '').trim().replace(/^#/, '');
+        if (hex.length === 3){
+          hex = hex[0]+hex[0] + hex[1]+hex[1] + hex[2]+hex[2];
+        }
+        if (hex.length !== 6) return null;
+        var num = parseInt(hex, 16);
+        if (Number.isNaN(num)) return null;
+        return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+      }
+
+      function rgbToHsl(r, g, b){
+        r /= 255; g /= 255; b /= 255;
+        var max = Math.max(r, g, b), min = Math.min(r, g, b);
+        var h = 0, s = 0, l = (max + min) / 2;
+        if (max !== min){
+          var d = max - min;
+          s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+          switch (max) {
+            case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+            case g: h = (b - r) / d + 2; break;
+            case b: h = (r - g) / d + 4; break;
+          }
+          h *= 60;
+        }
+        return { h: h, s: s * 100, l: l * 100 };
+      }
+
+      function shadeHsl(color, deltaL){
+        var hsl = parseHslColor(color);
+        if (!hsl){
+          var rgb = String(color || '').trim().startsWith('#') ? hexToRgb(color) : null;
+          if (rgb) hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+        }
+        if (!hsl) return String(color || '');
+        var l = clamp(hsl.l + deltaL, 0, 100);
+        return 'hsl(' + Math.round(hsl.h) + ', ' + Math.round(hsl.s) + '%, ' + Math.round(l) + '%)';
+      }
+
+      function namespaceGradient(ns){
+        var c = namespaceColors(ns);
+        return {
+          top: shadeHsl(c.color, 8),
+          bottom: shadeHsl(c.color, -8)
+        };
+      }
+
+      function renderNamespacePill(ns){
+        var c = namespaceColors(ns);
+        return '<span class="ns-pill" style="--ns-color:' + c.color + '; --ns-tint:' + c.tint + ';">' + escapeHtml(ns) + '</span>';
+      }
+
+      function updateLegendNamespace(ns){
+        try {
+          var legend = document.getElementById('legend-namespace');
+          if (!legend) return;
+          var name = (ns && String(ns)) ? String(ns) : '';
+          var color = name ? namespaceColors(name).color : '#64748b';
+          legend.style.setProperty('--ns-color', color);
+          legend.title = 'Namespace: ' + (name || '-');
+          var hex = document.getElementById('legend-namespace-hex');
+          if (hex) { hex.setAttribute('stroke', color); }
+        } catch(e){}
+      }
+
+      function fetchJSON(path){
+        return fetch(path, {headers: authHeaders()}).then(function(r){
+          if(!r.ok) return r.text().then(function(t){
+            if (r.status === 401 || r.status === 403) { noteAuthStatus(r.status); }
+            var err = new Error(t || ('status ' + r.status));
+            err.status = r.status;
+            throw err;
+          });
+          noteAuthStatus(r.status);
+          return r.json();
+        });
+      }
+
+      function fetchFragment(path, el, opts){
+        if (!el) return Promise.resolve();
+        return fetch(path, {headers: authHeaders()}).then(function(r){
+          if(!r.ok) return r.text().then(function(t){
+            if (r.status === 401 || r.status === 403) { noteAuthStatus(r.status); }
+            var err = new Error(t || ('status ' + r.status));
+            err.status = r.status;
+            throw err;
+          });
+          noteAuthStatus(r.status);
+          return r.text();
+        }).then(function(html){
+          el.innerHTML = html;
+          if (opts && typeof opts.after === 'function') { try { opts.after(el); } catch(e){} }
+        }).catch(function(err){
+          try {
+            el.innerHTML = '<div class="muted">error: ' + escapeHtml(String(err && err.message || err || 'failed')) + '</div>';
+          } catch(e){}
+        });
+      }
+
+      function activeToken(){
+        var tok = '';
+        try { tok = localStorage.getItem('ae_token') || ''; } catch(e) { tok = ''; }
+        if (!tok && labsToken) tok = labsToken;
+        return tok;
+      }
+
+      function authHeaders(){
+        var tok = activeToken();
+        return tok ? { 'Authorization': 'Bearer ' + tok } : {};
+      }
+
+      function setHtmxAuth(el){
+        if (!el) return;
+        var tok = activeToken();
+        if (tok) {
+          try { el.setAttribute('hx-headers', JSON.stringify({ 'Authorization': 'Bearer ' + tok })); } catch(e){}
+        } else {
+          try { el.removeAttribute('hx-headers'); } catch(e){}
+        }
+      }
+
+      function sseToken(){
+        var tok = labsToken || '';
+        if (!tok) {
+          try { tok = localStorage.getItem('ae_token') || ''; } catch(e) { tok = ''; }
+        }
+        return tok;
+      }
+
+      if (window.htmx) {
+        window.htmx.on('configRequest', function(evt){
+          var hdrs = authHeaders();
+          for (var k in hdrs) { evt.detail.headers[k] = hdrs[k]; }
+        });
+        window.htmx.on('responseError', function(evt){
+          try {
+            var st = evt && evt.detail && evt.detail.xhr ? evt.detail.xhr.status : 0;
+            if (st) { noteAuthStatus(st); }
+          } catch(e){}
+        });
+        window.htmx.on('afterOnLoad', function(evt){
+          try {
+            var st = evt && evt.detail && evt.detail.xhr ? evt.detail.xhr.status : 0;
+            if (st) { noteAuthStatus(st); }
+          } catch(e){}
+        });
+      }
+
+      function showAuthBanner(status){
+        if (!authBanner) return;
+        var msg = (status === 403)
+          ? 'Forbidden (403). Token lacks read access.'
+          : 'Unauthorized (401). Paste a read/scaler/admin token and click Save.';
+        authBanner.textContent = msg;
+        authBanner.classList.remove('hidden');
+        authBanner.classList.remove('warn', 'err');
+        authBanner.classList.add(status === 403 ? 'warn' : 'err');
+      }
+
+      function clearAuthBanner(){
+        if (!authBanner) return;
+        authBanner.classList.add('hidden');
+      }
+
+      function noteAuthStatus(status){
+        if (!status) return;
+        if (status === 401 || status === 403) { showAuthBanner(status); return; }
+        if (status >= 200 && status < 300) { clearAuthBanner(); }
+      }
+
+      function shimAuthToken(){
+        var tok = labsToken || '';
+        if (!tok) {
+          try { tok = localStorage.getItem('ae_token') || ''; } catch(e) { tok = ''; }
+        }
+        return tok;
+      }
+
+      function mintShimToken(role, scope){
+        var headers = { 'Content-Type': 'application/json' };
+        var tok = shimAuthToken();
+        if (tok) headers['Authorization'] = 'Bearer ' + tok;
+        var payload = { role: role };
+        if (scope) payload.scope = scope;
+        return fetch('/api/apishim/session', {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify(payload)
+        }).then(function(r){
+          if (!r.ok) {
+            return r.text().then(function(t){ throw new Error(t || ('status ' + r.status)); });
+          }
+          return r.json();
+        }).then(function(data){
+          return data || {};
+        });
+      }
+
+      // Clear detail panels/logs when the selected app disappears
+      function clearDetailPanels(){
+        currentDetail = null;
+        try { document.getElementById('d-app').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-namespace').textContent = '-'; } catch(e){}
+        try { updateLegendNamespace(null); } catch(e){}
+        try { document.getElementById('d-image').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-ingress').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-replicas').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-rev').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-rev-status').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-service').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-rollout').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-secrets').textContent = '-'; } catch(e){}
+        try { document.getElementById('d-storage').textContent = '-'; } catch(e){}
+        try {
+          var rbody = document.querySelector('#tbl-replicas tbody');
+          if (rbody) rbody.innerHTML = '';
+        } catch(e){}
+        try { if (elEvents) elEvents.innerHTML = '<div class="log-entry">No recent events</div>'; } catch(e){}
+        clearLogs();
+        updateProbeHistoryHTMX();
+      }
+
+      function refreshApps(){
+        return fetchJSON('/status?limit=200').then(function(data){
+          if (elAppsList) elAppsList.innerHTML = '';
+          var items = data.items || [];
+          lastStatuses = items;
+          var names = items.map(function(s){ return s.app_name; });
+          var groups = {};
+          items.forEach(function(s){
+            var info = splitAppName(s.app_name);
+            s._ns = info.namespace;
+            s._short = info.name;
+            if (!groups[info.namespace]) groups[info.namespace] = [];
+            groups[info.namespace].push(s);
+          });
+          var namespaces = Object.keys(groups);
+          namespaces.sort(function(a, b){
+            if (a === 'default') return -1;
+            if (b === 'default') return 1;
+            return String(a).localeCompare(String(b));
+          });
+          namespaces.forEach(function(ns){
+            var colors = namespaceColors(ns);
+            if (elAppsList) {
+              var header = document.createElement('div');
+              header.className = 'ns-header';
+              header.style.setProperty('--ns-color', colors.color);
+              header.style.setProperty('--ns-tint', colors.tint);
+              header.innerHTML = '<span class="ns-dot"></span><span class="ns-name">' + escapeHtml(ns) + '</span><span class="ns-count">' + String(groups[ns].length) + '</span>';
+              elAppsList.appendChild(header);
+            }
+            groups[ns].sort(function(a, b){
+              return String(a._short || a.app_name).localeCompare(String(b._short || b.app_name));
+            });
+            groups[ns].forEach(function(s){
+              // Use server-derived revision_status for the primary badge to avoid
+              // drift with controller semantics (ready/progressing/degraded).
+              var statusBadge = '';
+              var rs = String(s.revision_status||'').toLowerCase();
+              if (rs === 'ready') statusBadge = badge('ok','ready');
+              else if (rs === 'progressing') statusBadge = badge('warn','progressing');
+              else statusBadge = badge('bad','degraded');
+              var div = document.createElement('div');
+              div.className = 'app' + (current===s.app_name ? ' active' : '');
+              div.style.setProperty('--ns-color', colors.color);
+              div.style.setProperty('--ns-tint', colors.tint);
+              try { div.dataset.app = s.app_name; div.dataset.ns = ns; } catch(e){}
+              // Canary pill if rollout strategy is canary with weight>0
+              var canary = '';
+              var pausedPill = '';
+              try {
+                var ro = s.rollout || null;
+                var w = (ro && ro.weight!=null) ? Number(ro.weight) : 0;
+                if (ro && String((ro.strategy||'')).toLowerCase()==='canary' && w>0) {
+                  canary = badge('warn', 'canary ' + String(w) + '%');
+                }
+                if (ro && ro.pause === true) {
+                  pausedPill = badge('warn', 'paused');
+                }
+              } catch(e){}
+              var crash = (lastSystem && lastSystem.crashloop && lastSystem.crashloop[s.app_name]) ? badge('bad','crashloop') : '';
+              var cdsec = (lastSystem && lastSystem.cooldown && lastSystem.cooldown[s.app_name]) ? Number(lastSystem.cooldown[s.app_name]||0) : 0;
+              var cd = cdsec>0 ? badge('warn','cooldown '+String(cdsec)+'s') : '';
+              var displayName = s._short || s.app_name;
+              var line1 = '<div class="app-title"><strong class="app-name">' + escapeHtml(displayName) + '</strong> ' + statusBadge + ' ' + canary + ' ' + pausedPill + ' ' + crash + ' ' + cd + '</div>';
+              var revStatus = String(s.revision_status || '-');
+              var line2 = '<div class="app-sub">' + String(s.ready_replicas) + '/' + String(s.desired_replicas) + ' ready - rev ' + escapeHtml(revStatus) + '</div>';
+              div.innerHTML = line1 + line2;
+              try {
+                var nameEl = div.querySelector('.app-name');
+                if (nameEl) nameEl.title = s.app_name;
+              } catch(e){}
+              div.onclick = function(){ selectApp(s.app_name); };
+              if (elAppsList) elAppsList.appendChild(div);
+            });
+          });
+          // If the currently viewed app was removed, fall back to the first available.
+          if (current && names.indexOf(current) === -1) {
+            current = null;
+            historyCache = null;
+            clearDetailPanels();
+            updateLogStreaming();
+            updateEventsStreaming();
+          }
+          if(!current && items.length){ selectApp(items[0].app_name); }
+          else if(!current && !items.length){ clearDetailPanels(); }
+          renderGraphIfReady();
+        });
+      }
+
+      function refreshDetail(){
+        if(!current) return Promise.resolve();
+        return fetchJSON('/status/' + encodeURIComponent(current) + '?details=1').then(function(s){
+          currentDetail = s;
+          document.getElementById('d-app').textContent = s.app_name;
+          try {
+            var nsInfo = splitAppName(s.app_name);
+            var nsEl = document.getElementById('d-namespace');
+            if (nsEl) { nsEl.innerHTML = renderNamespacePill(nsInfo.namespace); }
+            updateLegendNamespace(nsInfo.namespace);
+          } catch(e){}
+          document.getElementById('d-image').textContent = s.image || '-';
+          var inh = (s.ingress_host || '-') + (s.ingress_path || '');
+          document.getElementById('d-ingress').textContent = inh;
+          var repText = s.ready_replicas + '/' + s.desired_replicas + ' (live ' + s.live_replicas + ')';
+          if (lastSystem && lastSystem.crashloop && lastSystem.crashloop[s.app_name]) { repText += '  crashloop'; }
+          try {
+            var cdsec = (lastSystem && lastSystem.cooldown && lastSystem.cooldown[s.app_name]) ? Number(lastSystem.cooldown[s.app_name]||0) : 0;
+            if (cdsec>0) { repText += '  cooldown ' + String(cdsec) + 's'; }
+          } catch(e){}
+          document.getElementById('d-replicas').textContent = repText;
+          document.getElementById('d-rev').textContent = s.revision;
+          document.getElementById('d-rev-status').textContent = s.revision_status;
+          try {
+            var man = (s.manifest || {});
+            var svc = (man.spec || {}).service || null;
+            var svcText = svc ? (String(svc.port) + (svc.target_port ? (' -> ' + String(svc.target_port)) : '')) : '-';
+            document.getElementById('d-service').textContent = svcText;
+            // Rollout config (show strategy/weight/pause when present)
+            var ro = (man.spec || {}).rollout || null;
+            var roText = '-';
+            if (ro) {
+              var strat = String(ro.strategy||'parallel');
+              var weight = (ro.weight!=null) ? Number(ro.weight) : null;
+              var paused = (ro.pause===true);
+              if (strat==='canary') {
+                roText = 'canary' + (weight!=null? (' weight '+String(weight)+'%'):'');
+              } else {
+                roText = strat;
+              }
+              if (paused) roText += ' (paused)';
+            }
+            document.getElementById('d-rollout').textContent = roText;
+            var secRefs = ((man.spec || {}).secret_refs || []).length;
+            document.getElementById('d-secrets').textContent = secRefs ? (secRefs + ' ref' + (secRefs>1?'s':'')) : '-';
+            var storage = ((man.spec || {}).storage || []).map(function(v){ return v.name || ''; }).filter(Boolean);
+            document.getElementById('d-storage').textContent = storage.length ? storage.join(', ') : '-';
+          } catch(e) { }
+          // Render replicas table with backoff countdown
+          try {
+            var rbody = document.querySelector('#tbl-replicas tbody');
+            if (rbody) {
+              var rows = ((s.pods || s.replicas)||[]).map(function(r){
+                // Extract backoff seconds from readiness/liveness messages
+                function parseBackoff(msg){
+                  var m = String(msg||'').match(/backoff \((\d+)s\)/);
+                  return m ? Number(m[1]) : 0;
+                }
+                var bo = Math.max(parseBackoff(r.readiness_message), parseBackoff(r.liveness_message));
+                var now = Date.now();
+                var deadline = bo > 0 ? (now + bo*1000) : 0;
+                var boText = bo>0 ? (String(bo)+'s') : '';
+                var pname = podName(r);
+                return {
+                  html: '<tr data-rid="'+escapeHtml(pname)+'" data-deadline="'+String(deadline)+'">'
+                        + '<td>'+escapeHtml(pname)+'</td>'
+                        + '<td>'+(r.ready?'yes':'no')+'</td>'
+                        + '<td>'+(r.live?'yes':'no')+'</td>'
+                        + '<td>'+escapeHtml(r.status||'')+'</td>'
+                        + '<td class="bo">'+boText+'</td>'
+                        + '</tr>'
+                };
+              });
+              rbody.innerHTML = rows.map(function(x){ return x.html; }).join('');
+              scheduleBackoffTick();
+              attachReplicaHistoryHandlers();
+            }
+          } catch(e) { console.error('replica table', e); }
+          // Events are now streamed via SSE; keep logs HTMX config fresh
+          updateLogsHTMX();
+        });
+      }
+
+      function schedulePoll(){
+        if(pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        var ms = parseInt(pollSel.value, 10) || 0;
+        if(ms > 0){ pollTimer = setInterval(function(){ Promise.all([refreshApps(), refreshDetail(), refreshSystem()]).catch(console.error); }, ms); }
+      }
+
+      var backoffTimer = null;
+      function scheduleBackoffTick(){
+        if (backoffTimer) return;
+        backoffTimer = setInterval(function(){
+          try {
+            var rows = Array.from(document.querySelectorAll('#tbl-replicas tbody tr'));
+            var now = Date.now();
+            rows.forEach(function(tr){
+              var td = tr.querySelector('td.bo');
+              var deadline = Number(tr.getAttribute('data-deadline')||'0');
+              if (!td || !deadline) { if(td) td.textContent=''; return; }
+              var rem = Math.max(0, Math.floor((deadline - now)/1000));
+              td.textContent = rem>0 ? (String(rem)+'s') : '';
+              if (rem <= 0) tr.setAttribute('data-deadline','0');
+            });
+          } catch(e){}
+        }, 1000);
+      }
+
+      var historyCache = null; // cache last fetched /history for current app
+      function attachReplicaHistoryHandlers(){
+        try {
+          var tbody = document.querySelector('#tbl-replicas tbody');
+          if (!tbody) return;
+          Array.from(tbody.querySelectorAll('tr')).forEach(function(tr){
+            tr.addEventListener('click', function(){ toggleReplicaHistory(tr); });
+          });
+        } catch(e){}
+      }
+      function toggleReplicaHistory(tr){
+        try {
+          var rid = tr.getAttribute('data-rid');
+          // If next row is a history row, remove it
+          var next = tr.nextElementSibling;
+          if (next && next.classList.contains('hist')) { next.parentNode.removeChild(next); return; }
+          // else insert one and populate
+          var row = document.createElement('tr');
+          row.className = 'hist';
+          var td = document.createElement('td');
+          td.colSpan = 5;
+          td.textContent = 'loading…';
+          row.appendChild(td);
+          tr.parentNode.insertBefore(row, tr.nextSibling);
+          var nSel = document.getElementById('hist-count');
+          var n = 5;
+          try { n = parseInt(nSel && nSel.value || '5', 10) || 5; } catch(e) { n = 5; }
+          (historyCache ? Promise.resolve(historyCache) : fetchJSON('/history/' + encodeURIComponent(current) + '?limit=50'))
+            .then(function(list){ historyCache = list; return list; })
+            .then(function(list){
+              var items = (list||[]).filter(function(h){
+                var hn = h.pod_name || h.replica_id || '';
+                return String(hn) === String(rid||'');
+              }).slice(0, n);
+              if (!items.length) { td.innerHTML = '<div class="muted">No recent probe checks for '+escapeHtml(rid)+'</div>'; return; }
+              var html = '<table class="mini"><thead><tr><th>Time</th><th>Ready</th><th>Live</th><th>R msg</th><th>L msg</th></tr></thead><tbody>'
+                + items.map(function(h){ return '<tr><td>'+escapeHtml(h.check_time)+'</td><td>'+(h.ready?'yes':'no')+'</td><td>'+(h.live?'yes':'no')+'</td><td>'+escapeHtml(h.readiness_message||'')+'</td><td>'+escapeHtml(h.liveness_message||'')+'</td></tr>'; }).join('')
+                + '</tbody></table>';
+              td.innerHTML = html;
+            })
+            .catch(function(err){ td.innerHTML = '<div class="bad">history error: '+escapeHtml(String(err))+'</div>'; });
+        } catch(e){}
+      }
+
+      function selectApp(name){
+        current = name;
+        try { updateLegendNamespace(splitAppName(name).namespace); } catch(e){}
+        clearLogs();
+        updateLogsHTMX();
+        updateProbeHistoryHTMX();
+        updateLogStreaming();
+        updateEventsStreaming();
+        refreshDetail().then(function(){ refreshApps(); focusAppListItem(name); renderGraphIfReady(); });
+      }
+
+      function escapeHtml(s){
+        s = (s === null || s === undefined) ? '' : String(s);
+        return s.replace(/[&<>]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]); });
+      }
+
+      function splitArgs(cmd){
+        var out = [];
+        var re = /[^\s"']+|"([^"]*)"|'([^']*)'/g;
+        var m;
+        while ((m = re.exec(String(cmd||''))) !== null) {
+          out.push(m[1] || m[2] || m[0]);
+        }
+        return out;
+      }
+
+      function podName(r){
+        return (r && (r.pod_name || r.replica_id || r.name)) ? String(r.pod_name || r.replica_id || r.name) : '';
+      }
+
+      function replicaList(){
+        var reps = (currentDetail && (currentDetail.pods || currentDetail.replicas)) ? (currentDetail.pods || currentDetail.replicas) : [];
+        if (!Array.isArray(reps)) return [];
+        return reps.map(function(r){ return podName(r); }).filter(Boolean);
+      }
+
+      function defaultReplica(){
+        var reps = (currentDetail && (currentDetail.pods || currentDetail.replicas)) ? (currentDetail.pods || currentDetail.replicas) : [];
+        if (!Array.isArray(reps) || !reps.length) return '';
+        var ready = reps.find(function(r){ return r.ready; });
+        return podName(ready || reps[0]);
+      }
+
+      function fillReplicaSelect(sel){
+        if (!sel) return;
+        var list = replicaList();
+        sel.innerHTML = '';
+        list.forEach(function(rid){
+          var opt = document.createElement('option');
+          opt.value = rid;
+          opt.textContent = rid;
+          sel.appendChild(opt);
+        });
+        var def = defaultReplica();
+        if (def) sel.value = def;
+      }
+
+      function normalizeBase(val){
+        var base = String(val||'').trim();
+        if (!base) base = localStorage.getItem('ae_apishim_base') || '';
+        if (!base && apishimBase) base = String(apishimBase || '').trim();
+        if (!base) base = location.origin;
+        base = base.replace(/\/$/, '');
+        return base;
+      }
+
+      function wsBase(base){
+        return base.replace(/^http/i, 'ws');
+      }
+
+      function parseSessionToken(tok){
+        if (!tok || tok.indexOf('sess1.') !== 0) return null;
+        var parts = tok.split('.');
+        if (parts.length !== 3) return null;
+        var payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        var pad = payload.length % 4;
+        if (pad) payload += '===='.slice(pad);
+        try {
+          var raw = atob(payload);
+          return JSON.parse(raw);
+        } catch(e){
+          return null;
+        }
+      }
+
+      function sessionTokenExp(tok){
+        var info = parseSessionToken(tok);
+        if (!info) return 0;
+        return parseInt(info.exp || '0', 10) || 0;
+      }
+
+      function sessionTokenExpired(tok, skewSec){
+        if (!tok || tok.indexOf('sess1.') !== 0) return false;
+        var exp = sessionTokenExp(tok);
+        if (!exp) return true;
+        var now = Math.floor(Date.now() / 1000);
+        return exp <= (now + (skewSec || 0));
+      }
+
+      function scopePatternMatch(pat, value){
+        if (!pat) return false;
+        if (pat === value) return true;
+        var raw = String(pat || '');
+        var esc = '';
+        var specials = '\\^$+?.()|{}[]';
+        for (var i = 0; i < raw.length; i++) {
+          var ch = raw[i];
+          if (ch === '*') { esc += '.*'; continue; }
+          if (ch === '?') { esc += '.'; continue; }
+          if (specials.indexOf(ch) !== -1) { esc += '\\' + ch; continue; }
+          esc += ch;
+        }
+        var re = '^' + esc + '$';
+        try { return new RegExp(re).test(String(value || '')); } catch(e){ return false; }
+      }
+
+      function sessionTokenAllowsScope(tok, scope){
+        var info = parseSessionToken(tok);
+        if (!info) return false;
+        var scopesVal = info.scopes || info.scope || [];
+        var scopes = [];
+        if (typeof scopesVal === 'string') scopes = [scopesVal];
+        else if (Array.isArray(scopesVal)) scopes = scopesVal.map(function(s){ return String(s || ''); }).filter(Boolean);
+        if (!scopes.length) return true;
+        for (var i=0; i<scopes.length; i++){
+          if (scopePatternMatch(scopes[i], scope)) return true;
+        }
+        return false;
+      }
+
+      function clearStoredSession(kind){
+        try { localStorage.removeItem('ae_apishim_' + kind + '_token'); } catch(e){}
+        try { localStorage.removeItem('ae_apishim_' + kind + '_scope'); } catch(e){}
+        try { localStorage.removeItem('ae_apishim_' + kind + '_exp'); } catch(e){}
+      }
+
+      function termWriteLine(term, text){
+        if (!term) return;
+        if (typeof term.writeln === 'function') { term.writeln(text); }
+        else { term.write(String(text || '') + '\r\n'); }
+      }
+
+      function shellTargetSummary(meta){
+        if (!meta) return '';
+        var parts = [];
+        if (meta.app) parts.push('app=' + meta.app);
+        if (meta.pod) parts.push('pod=' + meta.pod);
+        if (meta.container) parts.push('container=' + meta.container);
+        if (meta.cmd) {
+          var cmd = String(meta.cmd || '').replace(/"/g, "'");
+          parts.push('cmd="' + cmd + '"');
+        }
+        if (meta.base) parts.push('base=' + meta.base);
+        return parts.join(' ');
+      }
+
+      function shellWriteMarker(kind, meta, extra){
+        if (!shellTerm) return;
+        var ts = new Date().toISOString();
+        var summary = shellTargetSummary(meta);
+        var line = '---- shell ' + kind + ' ' + ts;
+        if (summary) line += ' ' + summary;
+        if (extra) line += ' ' + extra;
+        line += ' ----';
+        termWriteLine(shellTerm, line);
+      }
+
+      var shellModal = document.getElementById('shell-modal');
+      var shellTerm = null;
+      var shellFit = null;
+      var shellSocket = null;
+      var shellStatus = document.getElementById('shell-status');
+      var shellEncoder = (window.TextEncoder ? new TextEncoder() : null);
+      var shellDecoder = (window.TextDecoder ? new TextDecoder() : null);
+
+      function ensureShellFitAddon(){
+        if (!shellTerm || shellFit) return;
+        if (window.FitAddon && window.FitAddon.FitAddon) {
+          try {
+            shellFit = new window.FitAddon.FitAddon();
+            shellTerm.loadAddon(shellFit);
+          } catch(e){}
+        }
+      }
+
+      function fitShellNow(){
+        ensureShellFitAddon();
+        if (shellFit) { try { shellFit.fit(); } catch(e){} }
+      }
+
+      function shellSendChannel(ch, data){
+        if (!shellSocket || shellSocket.readyState !== 1) return;
+        var payload = data instanceof Uint8Array ? data : (shellEncoder ? shellEncoder.encode(String(data||'')) : new Uint8Array());
+        var out = new Uint8Array(payload.length + 1);
+        out[0] = ch;
+        out.set(payload, 1);
+        shellSocket.send(out);
+      }
+
+      function shellSetStatus(txt, cls){
+        if (!shellStatus) return;
+        shellStatus.textContent = txt || '';
+        if (cls) shellStatus.className = 'pill ' + cls;
+      }
+
+      function shellConnect(){
+        var podSel = document.getElementById('shell-pod');
+        var pod = podSel && podSel.value ? podSel.value : defaultReplica();
+        if (!pod) { shellSetStatus('no pod', 'warn'); return; }
+        var nsInfo = splitAppName(current || '');
+        var ns = nsInfo && nsInfo.namespace ? nsInfo.namespace : 'default';
+        var baseInput = document.getElementById('shell-base');
+        var tokenInput = document.getElementById('shell-token');
+        var cmdInput = document.getElementById('shell-cmd');
+        var containerInput = document.getElementById('shell-container');
+        var base = normalizeBase(baseInput && baseInput.value);
+        if (baseInput) baseInput.value = base;
+        var scope = (nsInfo && nsInfo.name) ? (ns + '/' + nsInfo.name) : (ns + '/' + pod);
+        var storedToken = '';
+        var storedScope = '';
+        try {
+          storedToken = localStorage.getItem('ae_apishim_exec_token') || localStorage.getItem('ae_apishim_token') || '';
+        } catch(e){}
+        try { storedScope = localStorage.getItem('ae_apishim_exec_scope') || ''; } catch(e){}
+        if (storedToken && storedToken.indexOf('sess1.') === 0) {
+          if (sessionTokenExpired(storedToken, 15)) {
+            clearStoredSession('exec');
+            storedToken = '';
+            storedScope = '';
+          } else if (storedScope && storedScope !== scope) {
+            clearStoredSession('exec');
+            storedToken = '';
+            storedScope = '';
+          }
+        }
+        if (tokenInput && !tokenInput.value && storedToken) {
+          tokenInput.value = storedToken;
+        }
+        if (tokenInput && tokenInput.value && tokenInput.value.indexOf('sess1.') === 0) {
+          if (sessionTokenExpired(tokenInput.value, 15) || !sessionTokenAllowsScope(tokenInput.value, scope)) {
+            clearStoredSession('exec');
+            tokenInput.value = '';
+          }
+        }
+        if (tokenInput && tokenInput.value && storedScope && storedScope !== scope && tokenInput.value.indexOf('sess1.') === 0) {
+          try {
+            clearStoredSession('exec');
+          } catch(e){}
+          tokenInput.value = '';
+        }
+        try { localStorage.setItem('ae_apishim_base', base); } catch(e){}
+        if (shellSocket) { shellDisconnect(); }
+        var attempt = {
+          app: (nsInfo && nsInfo.name) ? (ns + '/' + nsInfo.name) : (current || ''),
+          pod: pod,
+          container: (containerInput && containerInput.value) ? containerInput.value : '',
+          cmd: (cmdInput && cmdInput.value) ? cmdInput.value : 'sh',
+          base: base
+        };
+        function doConnect(){
+          var params = new URLSearchParams();
+          var cmd = splitArgs(cmdInput && cmdInput.value ? cmdInput.value : 'sh');
+          cmd.forEach(function(c){ params.append('command', c); });
+          params.set('stdin', '1');
+          params.set('stdout', '1');
+          params.set('stderr', '1');
+          params.set('tty', '1');
+          if (containerInput && containerInput.value) params.set('container', containerInput.value);
+          if (tokenInput && tokenInput.value) params.set('token', tokenInput.value);
+          var url = wsBase(base) + '/api/v1/namespaces/' + encodeURIComponent(ns) + '/pods/' + encodeURIComponent(pod) + '/exec?' + params.toString();
+          try {
+            shellSocket = new WebSocket(url, 'v5.channel.k8s.io');
+          } catch(e) {
+            shellSetStatus('ws error', 'bad');
+            return;
+          }
+          var socket = shellSocket;
+          socket.__meta = { attempt: attempt, active: null, connected: false, closeReason: '' };
+          socket.binaryType = 'arraybuffer';
+          socket.onopen = function(){
+            var meta = socket.__meta || {};
+            meta.connected = true;
+            meta.active = meta.attempt || attempt;
+            meta.attempt = null;
+            shellSetStatus('connected', 'ok');
+            shellWriteMarker('connect', meta.active);
+            if (shellTerm) { shellTerm.focus(); }
+            fitShellNow();
+            if (shellTerm) {
+              try { shellSendChannel(4, JSON.stringify({ Width: shellTerm.cols, Height: shellTerm.rows })); } catch(e){}
+            }
+          };
+          socket.onmessage = function(ev){
+            var data = ev.data;
+            if (data instanceof Blob) {
+              data.arrayBuffer().then(function(buf){ handleShellMessage(socket, buf); }).catch(function(){});
+            } else {
+              handleShellMessage(socket, data);
+            }
+          };
+          socket.onclose = function(){
+            shellSetStatus('disconnected', 'warn');
+            var meta = socket.__meta || {};
+            if (meta.connected && meta.active) {
+              shellWriteMarker('disconnect', meta.active, meta.closeReason ? ('reason=' + meta.closeReason) : '');
+            } else if (meta.attempt) {
+              shellWriteMarker('failed', meta.attempt, meta.closeReason ? ('reason=' + meta.closeReason) : '');
+            }
+            if (shellSocket === socket) { shellSocket = null; }
+          };
+          socket.onerror = function(){
+            shellSetStatus('error', 'bad');
+            var meta = socket.__meta || {};
+            if (!meta.connected && !meta.closeReason) meta.closeReason = 'ws-error';
+          };
+        }
+        if (tokenInput && !tokenInput.value) {
+          shellSetStatus('minting token', 'muted');
+          mintShimToken('exec', scope).then(function(info){
+            var tok = (info && info.token) ? info.token : '';
+            if (tok && tokenInput) tokenInput.value = tok;
+            try {
+              if (tok) {
+                localStorage.setItem('ae_apishim_exec_token', tok);
+                localStorage.setItem('ae_apishim_exec_scope', scope);
+                if (info && info.expires_at) {
+                  localStorage.setItem('ae_apishim_exec_exp', String(info.expires_at));
+                }
+              }
+            } catch(e){}
+            doConnect();
+          }).catch(function(){ doConnect(); });
+          return;
+        }
+        doConnect();
+      }
+
+      function handleShellMessage(sock, data){
+        try {
+          var buf = data instanceof ArrayBuffer ? new Uint8Array(data) : (shellEncoder ? shellEncoder.encode(String(data||'')) : new Uint8Array());
+          if (!buf || buf.length < 1) return;
+          var ch = buf[0];
+          var payload = buf.slice(1);
+          if (ch === 1 || ch === 2) {
+            if (shellTerm && shellDecoder) shellTerm.write(shellDecoder.decode(payload));
+          } else if (ch === 3) {
+            try {
+              var msg = shellDecoder ? shellDecoder.decode(payload) : '';
+              var status = JSON.parse(msg || '{}');
+              var code = (status && status.details && status.details.exitCode != null) ? status.details.exitCode : status.code;
+              shellSetStatus('exit ' + String(code||0), 'muted');
+              if (sock && sock.__meta) sock.__meta.closeReason = 'exit=' + String(code||0);
+            } catch(e){}
+            if (sock) { try { sock.close(); } catch(e){} }
+          }
+        } catch(e){}
+      }
+
+      function shellDisconnect(){
+        if (shellSocket && shellSocket.__meta) shellSocket.__meta.closeReason = 'manual';
+        if (shellSocket) { try { shellSocket.close(); } catch(e){} }
+        shellSocket = null;
+      }
+
+      function openShellModal(){
+        if (!shellModal) return;
+        var sel = document.getElementById('shell-pod');
+        fillReplicaSelect(sel);
+        if (!shellTerm && window.Terminal) {
+          shellTerm = new Terminal({ cursorBlink: true, convertEol: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', theme: { background: '#0b0f14' } });
+          ensureShellFitAddon();
+          shellTerm.open(document.getElementById('shell-terminal'));
+          fitShellNow();
+          shellTerm.onData(function(data){ shellSendChannel(0, data); });
+          shellTerm.onResize(function(size){ try { shellSendChannel(4, JSON.stringify({ Width: size.cols, Height: size.rows })); } catch(e){} });
+        }
+        if (shellStatus) shellSetStatus('idle', 'muted');
+        shellModal.classList.remove('hidden');
+        setTimeout(fitShellNow, 50);
+        setTimeout(fitShellNow, 250);
+        setTimeout(fitShellNow, 900);
+      }
+
+      function closeShellModal(){
+        if (!shellModal) return;
+        shellDisconnect();
+        shellModal.classList.add('hidden');
+      }
+
+      var pfModal = document.getElementById('pf-modal');
+      var pfSocket = null;
+      var pfStatus = document.getElementById('pf-status');
+      var pfEncoder = (window.TextEncoder ? new TextEncoder() : null);
+      var pfDecoder = (window.TextDecoder ? new TextDecoder() : null);
+      var pfView = 'source';
+      var pfPreviewTimer = null;
+
+      function pfSetStatus(txt, cls){
+        if (!pfStatus) return;
+        pfStatus.textContent = txt || '';
+        if (cls) pfStatus.className = 'pill ' + cls;
+      }
+
+      function pfEscapeHtml(value){
+        return String(value || '').replace(/[&<>"']/g, function(ch){
+          if (ch === '&') return '&amp;';
+          if (ch === '<') return '&lt;';
+          if (ch === '>') return '&gt;';
+          if (ch === '"') return '&quot;';
+          if (ch === "'") return '&#39;';
+          return ch;
+        });
+      }
+
+      function parsePfResponse(raw){
+        var text = raw || '';
+        var sep = '\r\n\r\n';
+        var idx = text.indexOf(sep);
+        if (idx === -1) {
+          sep = '\n\n';
+          idx = text.indexOf(sep);
+        }
+        if (idx === -1) return { headers: '', body: text, status: '' };
+        var headers = text.slice(0, idx);
+        var body = text.slice(idx + sep.length);
+        var status = headers.split(/\r?\n/)[0] || '';
+        return { headers: headers, body: body, status: status };
+      }
+
+      function updatePfPreview(){
+        var frame = document.getElementById('pf-preview-frame');
+        var resp = document.getElementById('pf-response');
+        if (!frame || !resp) return;
+        var raw = resp.value || '';
+        var previewStyle = 'html,body{height:100%;}body{margin:0;padding:12px;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;color:#e2e8f0;background:#0b0f14;scrollbar-width:none;-ms-overflow-style:none;}body::-webkit-scrollbar{width:0;height:0;}';
+        function injectPreviewStyles(html){
+          if (!html) return '';
+          var styleTag = '<style>' + previewStyle + '</style>';
+          if (/<head[\s>]/i.test(html)) {
+            return html.replace(/<head[^>]*>/i, function(match){ return match + styleTag; });
+          }
+          if (/<html[\s>]/i.test(html)) {
+            return html.replace(/<html[^>]*>/i, function(match){ return match + '<head>' + styleTag + '</head>'; });
+          }
+          return '<!doctype html><html><head>' + styleTag + '</head><body>' + html + '</body></html>';
+        }
+        if (!raw) {
+          frame.srcdoc = '<!doctype html><html><head><meta charset="utf-8"><style>' + previewStyle.replace('#e2e8f0', '#94a3b8') + '</style></head><body>No response yet.</body></html>';
+          return;
+        }
+        var parsed = parsePfResponse(raw);
+        var headers = parsed.headers || '';
+        var body = parsed.body || '';
+        var contentType = '';
+        if (headers) {
+          var lines = headers.split(/\r?\n/);
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            if (!line) continue;
+            var idx = line.indexOf(':');
+            if (idx < 0) continue;
+            var key = line.slice(0, idx).trim().toLowerCase();
+            if (key === 'content-type') {
+              contentType = line.slice(idx + 1).trim().toLowerCase();
+              break;
+            }
+          }
+        }
+        var trimmed = body.trim();
+        var isHtml = false;
+        if (contentType) {
+          if (contentType.indexOf('text/html') !== -1 || contentType.indexOf('application/xhtml+xml') !== -1) {
+            isHtml = true;
+          }
+        } else if (trimmed.indexOf('<!doctype') === 0 || trimmed.indexOf('<html') === 0 || trimmed.indexOf('<body') === 0 || trimmed.indexOf('<svg') === 0) {
+          isHtml = true;
+        }
+        var doc = '';
+        if (isHtml) {
+          doc = injectPreviewStyles(body);
+        } else {
+          doc = '<!doctype html><html><head><meta charset="utf-8"><style>' + previewStyle + 'pre{margin:0;white-space:pre-wrap;}</style></head><body><pre>' + pfEscapeHtml(body) + '</pre></body></html>';
+        }
+        frame.srcdoc = doc;
+      }
+
+      function schedulePfPreviewUpdate(){
+        if (pfPreviewTimer) return;
+        pfPreviewTimer = setTimeout(function(){
+          pfPreviewTimer = null;
+          updatePfPreview();
+        }, 80);
+      }
+
+      function setPfView(view){
+        pfView = view || 'source';
+        var sourceWrap = document.getElementById('pf-response-source');
+        var previewWrap = document.getElementById('pf-preview');
+        var sourceBtn = document.getElementById('pf-view-source');
+        var previewBtn = document.getElementById('pf-view-preview');
+        if (sourceWrap) sourceWrap.classList.toggle('hidden', pfView !== 'source');
+        if (previewWrap) previewWrap.classList.toggle('hidden', pfView !== 'preview');
+        if (sourceBtn) {
+          sourceBtn.classList.toggle('active', pfView === 'source');
+          sourceBtn.setAttribute('aria-pressed', pfView === 'source' ? 'true' : 'false');
+        }
+        if (previewBtn) {
+          previewBtn.classList.toggle('active', pfView === 'preview');
+          previewBtn.setAttribute('aria-pressed', pfView === 'preview' ? 'true' : 'false');
+        }
+        if (pfView === 'preview') schedulePfPreviewUpdate();
+      }
+
+      function pfSendChannel(ch, data){
+        if (!pfSocket || pfSocket.readyState !== 1) return;
+        var payload = data instanceof Uint8Array ? data : (pfEncoder ? pfEncoder.encode(String(data||'')) : new Uint8Array());
+        var out = new Uint8Array(payload.length + 1);
+        out[0] = ch;
+        out.set(payload, 1);
+        pfSocket.send(out);
+      }
+
+      function pfConnect(){
+        var podSel = document.getElementById('pf-pod');
+        var pod = podSel && podSel.value ? podSel.value : defaultReplica();
+        if (!pod) { pfSetStatus('no pod', 'warn'); return; }
+        var nsInfo = splitAppName(current || '');
+        var ns = nsInfo && nsInfo.namespace ? nsInfo.namespace : 'default';
+        var portInput = document.getElementById('pf-port');
+        var baseInput = document.getElementById('pf-base');
+        var tokenInput = document.getElementById('pf-token');
+        var portVal = portInput && portInput.value ? portInput.value.trim() : '';
+        if (!portVal) { pfSetStatus('port required', 'warn'); return; }
+        var base = normalizeBase(baseInput && baseInput.value);
+        if (baseInput) baseInput.value = base;
+        var pfScope = (nsInfo && nsInfo.name) ? (ns + '/' + nsInfo.name) : (ns + '/' + pod);
+        var pfStoredToken = '';
+        var pfStoredScope = '';
+        try {
+          pfStoredToken = localStorage.getItem('ae_apishim_pf_token') || localStorage.getItem('ae_apishim_token') || '';
+        } catch(e){}
+        try { pfStoredScope = localStorage.getItem('ae_apishim_pf_scope') || ''; } catch(e){}
+        if (pfStoredToken && pfStoredToken.indexOf('sess1.') === 0) {
+          if (sessionTokenExpired(pfStoredToken, 15)) {
+            clearStoredSession('pf');
+            pfStoredToken = '';
+            pfStoredScope = '';
+          } else if (pfStoredScope && pfStoredScope !== pfScope) {
+            clearStoredSession('pf');
+            pfStoredToken = '';
+            pfStoredScope = '';
+          }
+        }
+        if (tokenInput && !tokenInput.value && pfStoredToken) {
+          tokenInput.value = pfStoredToken;
+        }
+        if (tokenInput && tokenInput.value && tokenInput.value.indexOf('sess1.') === 0) {
+          if (sessionTokenExpired(tokenInput.value, 15) || !sessionTokenAllowsScope(tokenInput.value, pfScope)) {
+            clearStoredSession('pf');
+            tokenInput.value = '';
+          }
+        }
+        if (tokenInput && tokenInput.value && pfStoredScope && pfStoredScope !== pfScope && tokenInput.value.indexOf('sess1.') === 0) {
+          try {
+            clearStoredSession('pf');
+          } catch(e){}
+          tokenInput.value = '';
+        }
+        try { localStorage.setItem('ae_apishim_base', base); } catch(e){}
+        function doConnect(){
+          var params = new URLSearchParams();
+          params.append('ports', portVal);
+          if (tokenInput && tokenInput.value) params.set('token', tokenInput.value);
+          var url = wsBase(base) + '/api/v1/namespaces/' + encodeURIComponent(ns) + '/pods/' + encodeURIComponent(pod) + '/portforward?' + params.toString();
+          try {
+            pfSocket = new WebSocket(url, 'portforward.k8s.io');
+          } catch(e) {
+            pfSetStatus('ws error', 'bad');
+            return;
+          }
+          pfSocket.binaryType = 'arraybuffer';
+          pfSocket.onopen = function(){ pfSetStatus('connected', 'ok'); };
+          pfSocket.onmessage = function(ev){
+            var data = ev.data;
+            if (data instanceof Blob) {
+              data.arrayBuffer().then(handlePfMessage).catch(function(){});
+            } else {
+              handlePfMessage(data);
+            }
+          };
+          pfSocket.onclose = function(){ pfSetStatus('disconnected', 'warn'); };
+          pfSocket.onerror = function(){ pfSetStatus('error', 'bad'); };
+        }
+        if (tokenInput && !tokenInput.value) {
+          pfSetStatus('minting token', 'muted');
+          mintShimToken('portforward', pfScope).then(function(info){
+            var tok = (info && info.token) ? info.token : '';
+            if (tok && tokenInput) tokenInput.value = tok;
+            try {
+              if (tok) {
+                localStorage.setItem('ae_apishim_pf_token', tok);
+                localStorage.setItem('ae_apishim_pf_scope', pfScope);
+                if (info && info.expires_at) {
+                  localStorage.setItem('ae_apishim_pf_exp', String(info.expires_at));
+                }
+              }
+            } catch(e){}
+            doConnect();
+          }).catch(function(){ doConnect(); });
+          return;
+        }
+        doConnect();
+      }
+
+      function handlePfMessage(data){
+        try {
+          var buf = data instanceof ArrayBuffer ? new Uint8Array(data) : (pfEncoder ? pfEncoder.encode(String(data||'')) : new Uint8Array());
+          if (!buf || buf.length < 1) return;
+          var ch = buf[0];
+          var payload = buf.slice(1);
+          var txt = pfDecoder ? pfDecoder.decode(payload) : '';
+          if (ch === 0 || ch === 1) {
+            var out = document.getElementById('pf-response');
+            if (out) out.value = (out.value || '') + txt;
+            if (pfView === 'preview') schedulePfPreviewUpdate();
+          }
+        } catch(e){}
+      }
+
+      function normalizePfPayload(payload){
+        if (payload == null) return '';
+        var text = String(payload);
+        if (text.indexOf('\\r') !== -1 || text.indexOf('\\n') !== -1) {
+          text = text.replace(/\\r\\n/g, '\r\n').replace(/\\n/g, '\n').replace(/\\r/g, '\r');
+        }
+        if (text.indexOf('\n') !== -1) {
+          text = text.replace(/\r?\n/g, '\r\n');
+        }
+        return text;
+      }
+
+      function pfSend(){
+        var req = document.getElementById('pf-request');
+        var payload = req && req.value ? req.value : '';
+        if (!payload) return;
+        if (!pfSocket || pfSocket.readyState !== 1) { pfSetStatus('not connected', 'warn'); return; }
+        pfSendChannel(0, normalizePfPayload(payload));
+      }
+
+      function pfDisconnect(){
+        if (pfSocket) { try { pfSocket.close(); } catch(e){} }
+        pfSocket = null;
+      }
+
+      function openPfModal(){
+        if (!pfModal) return;
+        var sel = document.getElementById('pf-pod');
+        fillReplicaSelect(sel);
+        pfSetStatus('idle', 'muted');
+        var resp = document.getElementById('pf-response');
+        if (resp) resp.value = '';
+        setPfView('source');
+        pfModal.classList.remove('hidden');
+      }
+
+      function closePfModal(){
+        if (!pfModal) return;
+        pfDisconnect();
+        pfModal.classList.add('hidden');
+      }
+
+      try { document.getElementById('btn-shell').addEventListener('click', openShellModal); } catch(e){}
+      try { document.getElementById('btn-portforward').addEventListener('click', openPfModal); } catch(e){}
+      try { document.getElementById('shell-close').addEventListener('click', closeShellModal); } catch(e){}
+      try { document.getElementById('pf-close').addEventListener('click', closePfModal); } catch(e){}
+      try { document.getElementById('shell-connect').addEventListener('click', shellConnect); } catch(e){}
+      try { document.getElementById('shell-disconnect').addEventListener('click', shellDisconnect); } catch(e){}
+      try { document.getElementById('pf-connect').addEventListener('click', pfConnect); } catch(e){}
+      try { document.getElementById('pf-send').addEventListener('click', pfSend); } catch(e){}
+      try { document.getElementById('pf-disconnect').addEventListener('click', pfDisconnect); } catch(e){}
+      try { document.getElementById('pf-view-source').addEventListener('click', function(){ setPfView('source'); }); } catch(e){}
+      try { document.getElementById('pf-view-preview').addEventListener('click', function(){ setPfView('preview'); }); } catch(e){}
+      window.addEventListener('resize', function(){ if (shellModal && !shellModal.classList.contains('hidden')) { fitShellNow(); } });
+
+      function updateLogsHTMX(){
+        var el = document.getElementById('logs');
+        if(!el) return;
+        var app = current ? encodeURIComponent(current) : '';
+        var filt = '';
+        try { filt = (logFilter && logFilter.value) ? String(logFilter.value) : ''; } catch(e){ filt = ''; }
+        var url = '/dashboard/partials/logs' + (app ? ('?app=' + app + '&tail=200' + (filt ? ('&filter=' + encodeURIComponent(filt)) : '')) : '');
+        fetchFragment(url, el, { after: function(node){ try { node.scrollTop = node.scrollHeight; } catch(e){} } });
+      }
+
+      var probeTimer = null;
+      function ensureProbeTimer(){
+        if (probeTimer) return;
+        probeTimer = setInterval(function(){
+          try {
+            if (!current) return;
+            fetchProbeHistoryFragment();
+          } catch(e){}
+        }, 10000);
+      }
+
+      function fetchProbeHistoryFragment(){
+        var el = document.getElementById('probe-history');
+        if(!el) return;
+        var app = current ? encodeURIComponent(current) : '';
+        var url = '/dashboard/partials/probe-history' + (app ? ('?app=' + app + '&limit=50') : '');
+        fetchFragment(url, el);
+      }
+
+      function updateProbeHistoryHTMX(){
+        fetchProbeHistoryFragment();
+        ensureProbeTimer();
+      }
+
+      function clearLogs(){ var el = document.getElementById('logs'); if (el) el.innerHTML = ''; }
+
+      function updateLogStreaming(){
+        // Close existing source
+        if (logSource) { try { logSource.close(); } catch(e){} logSource = null; }
+        if (pauseLogs || !current) return;
+        var el = document.getElementById('logs');
+        if (el) { updateLogsHTMX(); }
+        var logParams = new URLSearchParams({ tail: '200' });
+        var logTok = sseToken();
+        if (logTok) logParams.set('token', logTok);
+        var url = '/logs/' + encodeURIComponent(current) + '/stream?' + logParams.toString();
+        try {
+          var es = new EventSource(url);
+          logSource = es;
+          es.onmessage = function(ev){
+            var line = ev.data || '';
+            var filt = (logFilter.value || '').toLowerCase();
+            if (filt && String(line).toLowerCase().indexOf(filt) === -1) return;
+            var ts='-', msg=line; var i=line.indexOf(' ');
+            if (i>18 && line.indexOf('T')>0 && line.indexOf('T')<25){ ts=line.slice(0,i); msg=line.slice(i+1); }
+            var row = document.createElement('div');
+            row.className='log-entry';
+            row.innerHTML='<code>'+escapeHtml(ts)+'</code> '+escapeHtml(msg);
+            var box = document.getElementById('logs');
+            if(!box) return;
+            box.appendChild(row);
+            // Always follow newest line to bottom edge
+            box.scrollTop = box.scrollHeight;
+          };
+          es.onerror = function(){ /* default retry */ };
+        } catch (e) { console.error('EventSource failed', e); }
+      }
+      function updateEventsStreaming(){
+        if (eventsSource) { try { eventsSource.close(); } catch(e){} eventsSource = null; }
+        if (!current) return;
+        var evParams = new URLSearchParams({ app: current, limit: '50' });
+        var evTok = sseToken();
+        if (evTok) evParams.set('token', evTok);
+        var url = '/dashboard/sse/events?' + evParams.toString();
+        try {
+          var es = new EventSource(url);
+          eventsSource = es;
+          es.onmessage = function(ev){
+            var list = [];
+            try { list = JSON.parse(ev.data || '[]') || []; } catch(_) { list = []; }
+            list = list.slice().reverse();
+            elEvents.innerHTML = list.map(function(e){ return '<div class="log-entry"><code>' + e.created_at + '</code> ' + e.event_type + ' - ' + escapeHtml(e.message) + '</div>'; }).join('') || '<div class="log-entry">No recent events</div>';
+            try { elEvents.scrollTop = elEvents.scrollHeight; } catch(_){}
+          };
+          es.onerror = function(){ /* default retry */ };
+        } catch (e) { console.error('EventSource events failed', e); }
+      }
+
+      // Plan diagnostics UI
+      function runPlan(){
+        var txt = document.getElementById('plan-json').value || '';
+        var out = document.getElementById('plan-output');
+        var status = document.getElementById('plan-status');
+        status.textContent = '…'; status.className='pill';
+        out.textContent = '';
+        var payload = null;
+        try {
+          if (txt.trim().startsWith('{')) {
+            payload = JSON.parse(txt);
+          } else if (window.jsyaml) {
+            payload = window.jsyaml.load(txt);
+          } else {
+            payload = JSON.parse(txt);
+          }
+        } catch(e) { status.textContent='Invalid YAML/JSON'; status.className='pill bad'; return; }
+        function postJSON(url, data){
+          return fetch(url, { method: 'POST', headers: Object.assign({'Content-Type':'application/json'}, authHeaders()), body: JSON.stringify(data) })
+            .then(function(r){ return r.text().then(function(t){ if(!r.ok){ throw new Error(t || ('HTTP '+r.status)); } try { return t ? JSON.parse(t) : {}; } catch(e){ throw new Error('Bad JSON'); } }); });
+        }
+        postJSON('/plan', payload)
+          .catch(function(){ return postJSON('/dashboard/plan', payload); })
+          .catch(function(){ return postJSON('/labs/plan', payload); })
+          .then(function(data){ out.textContent = JSON.stringify(data, null, 2); var ok=!!data.ok; status.textContent = ok? 'ok' : 'warnings'; status.className='pill '+(ok?'ok':'warn'); })
+          .catch(function(err){ status.textContent='error'; status.className='pill bad'; out.textContent=String(err); });
+      }
+      function loadPlanFromApp(){
+        if (!current) { return; }
+        // Prefer /status?details=1 (proxied by docs) to avoid /manifest proxy gaps
+        fetchJSON('/status/' + encodeURIComponent(current) + '?details=1')
+          .then(function(s){
+            var man = (s && s.manifest) ? s.manifest : null;
+            if (!man) throw new Error('no manifest on status');
+            document.getElementById('plan-json').value = JSON.stringify(man, null, 2);
+          })
+          .catch(function(){
+            // Fallback to /manifest/<app>
+            return fetch('/manifest/' + encodeURIComponent(current), { headers: authHeaders() })
+              .then(function(r){ if(!r.ok) throw new Error('manifest not found'); return r.json(); })
+              .then(function(data){ document.getElementById('plan-json').value = JSON.stringify(data, null, 2); })
+              .catch(function(err){ console.error('load manifest failed', err); });
+          });
+      }
+
+      function focusAppListItem(name){
+        try {
+          var el = Array.from(document.querySelectorAll('#apps .app')).find(function(e){ return (e.dataset && e.dataset.app)===name; });
+          if (el) { el.scrollIntoView({block:'nearest'}); }
+        } catch(e){}
+      }
+      try { document.getElementById('plan-run').addEventListener('click', runPlan); } catch(e) {}
+      try { document.getElementById('plan-load').addEventListener('click', loadPlanFromApp); } catch(e) {}
+      try { document.getElementById('plan-copy').addEventListener('click', function(){
+        try { navigator.clipboard.writeText(document.getElementById('plan-output').textContent || ''); } catch(e){}
+      }); } catch(e) {}
+
+      function renderCounters(sys){
+        var el = document.getElementById('sys-counters');
+        if(!el) return;
+        var lastTs = sys.controller && sys.controller.last_reconcile_timestamp ? new Date(sys.controller.last_reconcile_timestamp*1000).toISOString() : '-';
+        var lastDur = sys.controller && sys.controller.last_reconcile_duration != null ? (Number(sys.controller.last_reconcile_duration).toFixed(3) + 's') : '-';
+        var ingressSites = (sys.ingress && sys.ingress.sites) ? sys.ingress.sites.length : 0;
+        var services = (sys.services || []).length;
+        var serviceReady = 0;
+        try {
+          var se = sys.service_endpoints || {};
+          Object.keys(se).forEach(function(k){ serviceReady += Number(se[k].ready||0); });
+        } catch(e){}
+        var volumes = (sys.volumes || []).length;
+        var containers = (sys.containers || []);
+        var containerCount = containers.length;
+        var restartSum = containers.reduce(function(acc, c){ return acc + (Number(c.restart_count||0)||0); }, 0);
+        var nodes = sys.nodes || [];
+        var readyNodes = nodes.filter(function(n){ return String(n.status||'').toLowerCase()==='ready' && !n.stale; }).length;
+        var staleNodes = nodes.filter(function(n){ return n.stale; }).length;
+        var ov = sys.overlay || {};
+        var pills = [
+          {k:'Last Reconcile', v:lastTs},
+          {k:'Duration', v:lastDur},
+          {k:'Ingress Sites', v:String(ingressSites)},
+          {k:'Services', v:String(services)},
+          {k:'Service Endpoints Ready', v:String(serviceReady)},
+          {k:'Volumes', v:String(volumes)},
+          {k:'Containers', v:String(containerCount)},
+          {k:'Restarts', v:String(restartSum)},
+          {k:'Nodes', v: readyNodes + ' / ' + nodes.length},
+          {k:'Stale Nodes', v: String(staleNodes)},
+          {k:'Overlay Peers', v: ov.peers!=null ? String(ov.peers) : '-'},
+          {k:'Overlay OK', v: ov.ok ? 'yes' : 'no'},
+          {k:'Mutations', v: (sys.rbac && sys.rbac.mutations_enabled) ? 'enabled' : 'disabled'},
+        ];
+        try {
+          var docs = sys.docs || null;
+          if (docs) {
+            pills.push({k:'Docs', v: (docs.ok ? ('up :'+String(docs.port)) : 'down')});
+          }
+          var api = sys.api || null;
+          if (api) { pills.push({k:'API', v: (api.ok ? ('up :'+String(api.port)) : 'down')}); }
+        } catch(e){}
+        el.innerHTML = pills.map(function(p){ return '<div class="pill" style="background:#0001">'+escapeHtml(p.k)+': <strong>'+escapeHtml(p.v)+'</strong></div>'; }).join('');
+      }
+
+      // Restart sparkline state (per-container ring buffers)
+      var restartSeries = {}; // name -> [{t, rc}]
+      function _seriesCap(){
+        try {
+          var ms = parseInt(pollSel.value, 10) || 0;
+          if (ms <= 0) return 60; // default when manual refresh
+          return Math.max(10, Math.min(120, Math.floor(60000 / ms)));
+        } catch(e){ return 60; }
+      }
+      function _updateRestartSeries(containers){
+        var now = Date.now();
+        var cap = _seriesCap(); // ~last minute worth of samples
+        (containers||[]).forEach(function(c){
+          var name = String(c.name||'');
+          if (!name) return;
+          var rc = Number(c.restart_count||0)||0;
+          var arr = restartSeries[name] || [];
+          arr.push({t: now, rc: rc});
+          if (arr.length > cap) arr = arr.slice(arr.length - cap);
+          restartSeries[name] = arr;
+        });
+      }
+      function _sparklineSVG(name){
+        var arr = restartSeries[name] || [];
+        var W = 60, H = 12;
+        if (arr.length < 2) return '<svg width="'+W+'" height="'+H+'"></svg>';
+        // Build deltas across samples
+        var deltas = [];
+        for (var i=1;i<arr.length;i++){ var d = Math.max(0, (arr[i].rc - arr[i-1].rc)); deltas.push(d); }
+        var maxd = 0; for (var j=0;j<deltas.length;j++){ if (deltas[j]>maxd) maxd=deltas[j]; }
+        // Choose color by severity
+        var color = '#9ca3af'; // gray baseline
+        if (maxd <= 0) color = '#9ca3af';
+        else if (maxd === 1) color = '#16a34a';       // green for occasional single restarts
+        else if (maxd <= 3) color = '#f59e0b';        // orange for moderate
+        else color = '#ef4444';                       // red for high
+        // Avoid division by zero; flat line near bottom when no restarts
+        var points = [];
+        for (var k=0;k<deltas.length;k++){
+          var x = Math.floor(k * (W-1) / Math.max(1, deltas.length-1));
+          var y;
+          if (maxd <= 0){ y = H-2; }
+          else { var v = deltas[k] / maxd; y = Math.max(1, H - 1 - Math.floor(v * (H-2))); }
+          points.push(x+','+y);
+        }
+        var tip = '';
+        try {
+          var tail = deltas.slice(-5);
+          tip = ' last deltas: ' + tail.join(', ');
+        } catch(e){}
+        var poly = '<polyline fill="none" stroke="'+color+'" stroke-width="1" points="'+points.join(' ')+'" />';
+        return '<svg width="'+W+'" height="'+H+'"><title>'+('Restarts per sample,'+tip)+'</title>'+poly+'</svg>';
+      }
+
+      function refreshSystem(){
+        return fetchJSON('/system').then(function(sys){
+          lastSystem = sys;
+          renderCounters(sys);
+          var sbody = document.querySelector('#tbl-services tbody');
+          if(sbody){ sbody.innerHTML = (sys.services||[]).map(function(s){
+            return '<tr><td>'+escapeHtml(s.app||'')+'</td><td>'+(s.port!=null?escapeHtml(String(s.port)):'-')+'</td><td>'+(s.target_port!=null?escapeHtml(String(s.target_port)):'-')+'</td><td>'+(s.replicas!=null?escapeHtml(String(s.replicas)):'-')+'</td></tr>';
+          }).join(''); }
+          var ibody = document.querySelector('#tbl-ingress tbody');
+          if(ibody){ ibody.innerHTML = ((sys.ingress&&sys.ingress.sites)||[]).map(function(r){
+            return '<tr><td>'+escapeHtml(r.app||'')+'</td><td>'+escapeHtml((r.host||'')||'-')+'</td><td>'+escapeHtml(String(r.path||''))+'</td><td>'+(r.exists?'yes':'no')+'</td></tr>';
+          }).join(''); }
+          var nbody = document.querySelector('#tbl-nodes tbody');
+          if(nbody){ nbody.innerHTML = (sys.nodes||[]).map(function(n){
+            var st = String(n.status||'').toLowerCase();
+            var stale = n.stale ? ' (stale)' : '';
+            var age = n.last_seen_seconds!=null ? Math.round(n.last_seen_seconds) : '-';
+            return '<tr><td>'+escapeHtml(n.name||n.id||'')+'</td><td>'+escapeHtml(st)+stale+'</td><td>'+(n.cordoned?'yes':'no')+'</td><td>'+age+'</td></tr>';
+          }).join(''); }
+          var vbody = document.querySelector('#tbl-vols tbody');
+          if(vbody){ vbody.innerHTML = (sys.volumes||[]).map(function(v){
+            var app = (v.labels&&v.labels['ae.app'])||'';
+            return '<tr><td>'+escapeHtml(v.name||'')+'</td><td>'+escapeHtml(app)+'</td><td>'+escapeHtml(v.driver||'')+'</td><td>'+escapeHtml(v.mountpoint||'')+'</td></tr>';
+          }).join(''); }
+          // Update restart series, then render containers
+          _updateRestartSeries(sys.containers||[]);
+          var cbody = document.querySelector('#tbl-containers tbody');
+          if(cbody){ cbody.innerHTML = (sys.containers||[]).map(function(c){
+            var app = (c.labels&&c.labels['ae.app'])||'';
+            var ports = (c.host_ports||[]).join(', ');
+            var restarts = Number(c.restart_count||0)||0;
+            var spark = _sparklineSVG(String(c.name||''));
+            return '<tr><td>'+escapeHtml(c.name||'')+'</td><td>'+escapeHtml(app)+'</td><td>'+escapeHtml(ports)+'</td><td>'+String(restarts)+'</td><td>'+spark+'</td></tr>';
+          }).join(''); }
+          renderGraphIfReady();
+        });
+      }
+
+      function renderGraphIfReady(){
+        if (!lastSystem || !lastStatuses) return;
+        try { drawSystemGraph(lastSystem, lastStatuses); } catch(e){ console.error('graph', e); }
+      }
+
+      // Legend toggle for path mode
+      (function(){
+        function setLabel(){
+          var b = document.getElementById('graph-path-toggle');
+          if (!b) return;
+          b.textContent = 'Paths: ' + (graphPathMode==='orth' ? 'Orth' : 'Straight');
+        }
+        var btn = document.getElementById('graph-path-toggle');
+        if (btn){
+          setLabel();
+          btn.addEventListener('click', function(){
+            graphPathMode = (graphPathMode==='orth' ? 'straight' : 'orth');
+            try { localStorage.setItem('graph_path_mode', graphPathMode); } catch(e){}
+            setLabel();
+            renderGraphIfReady();
+          });
+        }
+      })();
+
+      function fitTextToWidth(textEl, label, maxWidth){
+        var full = String(label || '');
+        if (!textEl) return { text: full, truncated: false, full: full };
+        try {
+          textEl.textContent = full;
+          if (textEl.getComputedTextLength() <= maxWidth) {
+            return { text: full, truncated: false, full: full };
+          }
+          var lo = 0, hi = full.length, best = '…';
+          while (lo <= hi) {
+            var mid = Math.floor((lo + hi) / 2);
+            var cand = full.slice(0, Math.max(0, mid)) + '…';
+            textEl.textContent = cand;
+            var w = textEl.getComputedTextLength();
+            if (w <= maxWidth) { best = cand; lo = mid + 1; }
+            else { hi = mid - 1; }
+          }
+          textEl.textContent = best;
+          return { text: best, truncated: true, full: full };
+        } catch(e){
+          textEl.textContent = full;
+          return { text: full, truncated: false, full: full };
+        }
+      }
+
+      function drawSystemGraph(sys, statuses){
+        var svg = document.getElementById('sys-graph');
+        if(!svg) return;
+        graphHover = graphHover || document.getElementById('graph-hover');
+        if (graphHover) { graphHover.style.display='none'; }
+        var wrapEl = document.getElementById('graph-wrap');
+        var W = svg.clientWidth || (wrapEl ? wrapEl.clientWidth : 1000) || 1000;
+        var padX = 40, padY = 40;
+        var baseHexW = 96.994;
+        var baseHexH = 112;
+        var narrow = W < 760;
+        var hexScale = W < 520 ? 0.58 : (narrow ? 0.64 : 0.82);
+        var hexW = baseHexW * hexScale;
+        var hexH = baseHexH * hexScale;
+        var labelGap = hexH * 0.14;
+        var labelLift = hexH * 0.11;
+
+        var nodes = [];
+        var nodeById = {};
+        var labelNodes = [];
+        var links = [];
+        var hexCounter = 0;
+        var labelMeasureCtx = null;
+
+        function measureLabelText(text){
+          if (!labelMeasureCtx) {
+            try {
+              var canvas = document.createElement('canvas');
+              labelMeasureCtx = canvas.getContext('2d');
+              labelMeasureCtx.font = '700 15px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial';
+            } catch(e){ labelMeasureCtx = null; }
+          }
+          var label = String(text || '');
+          if (!labelMeasureCtx) {
+            return {w: label.length * 7.2, h: 18};
+          }
+          try {
+            var metrics = labelMeasureCtx.measureText(label);
+            return {w: metrics.width || (label.length * 7.2), h: 18};
+          } catch(e){
+            return {w: label.length * 7.2, h: 18};
+          }
+        }
+
+        function addNode(id, label, type, x, y, meta){
+          var n={id:id,label:label,type:type,x:x,y:y,meta:meta||{}};
+          nodes.push(n); nodeById[id]=n; return n;
+        }
+        function addLabel(id, text, x, y, color, textColor, anchor){
+          labelNodes.push({id:id, text:text, x:x, y:y, color:color, textColor:textColor, anchor:anchor});
+        }
+        function link(a,b, cls, meta){ links.push({a:a,b:b,cls:cls||'',meta:meta||{}}); }
+
+        function clusterOffsets(count){
+          var gap = 5;
+          var stepX = hexW + gap;
+          var stepY = (hexH * 0.75) + gap;
+          if (count <= 1) return [{x:0,y:0,row:0,col:0,band:0}];
+          if (count === 2) {
+            return [
+              {x:-stepX*0.5, y:0, row:0, col:0, band:0},
+              {x:stepX*0.5, y:0, row:0, col:1, band:0}
+            ];
+          }
+          if (count === 3) {
+            return [
+              {x:-stepX*0.5, y:-stepY*0.5, row:0, col:0, band:0},
+              {x:stepX*0.5, y:-stepY*0.5, row:0, col:1, band:0},
+              {x:0, y:stepY*0.5, row:1, col:0, band:0}
+            ];
+          }
+          if (count === 4) {
+            return [
+              {x:-stepX*0.75, y:-stepY*0.5, row:0, col:0, band:0},
+              {x:stepX*0.25, y:-stepY*0.5, row:0, col:1, band:0},
+              {x:-stepX*0.25, y:stepY*0.5, row:1, col:0, band:0},
+              {x:stepX*0.75, y:stepY*0.5, row:1, col:1, band:0}
+            ];
+          }
+          var maxCols = Math.max(2, Math.floor((W - padX * 2) / stepX));
+          maxCols = Math.min(maxCols, 6);
+          var colsPerBand = Math.max(2, Math.min(maxCols, Math.ceil(count / 2)));
+          var bandCapacity = colsPerBand * 2;
+          var bands = Math.ceil(count / bandCapacity);
+          var offsets = [];
+          for (var band=0; band<bands; band++){
+            var remaining = count - (band * bandCapacity);
+            var bandCount = Math.min(bandCapacity, remaining);
+            var cols = Math.min(colsPerBand, Math.ceil(bandCount / 2));
+            var rows = Math.min(2, Math.ceil(bandCount / cols));
+            for (var r=0;r<rows;r++){
+              for (var c=0;c<cols;c++){
+                var idx = band * bandCapacity + r * cols + c;
+                if (idx >= count) break;
+                var x = (c - (cols-1)/2) * stepX;
+                if (r % 2 === 1) x += stepX/2;
+                var y = (r - (rows-1)/2) * stepY + band * (stepY * 2.2);
+                offsets.push({x:x, y:y, row:(r + band * 2), col:c, band:band});
+              }
+            }
+          }
+          return offsets;
+        }
+
+        var hostName = 'h4cktop';
+        try {
+          if (sys && sys.nodes && sys.nodes.length){
+            var h = sys.nodes[0];
+            hostName = h.name || h.id || hostName;
+          }
+        } catch(e){}
+
+        var hostCenter = {x: W*0.52, y: 82};
+        var baseSystemCenter = {x: W*0.22, y: 162};
+        var systemShiftY = hexH * 0.25;
+        var systemCenter = {x: baseSystemCenter.x, y: baseSystemCenter.y + systemShiftY};
+        var leftX = Math.max(padX + hexW*1.4, W*0.24);
+        var rightX = Math.min(W - padX - hexW*1.4, W*0.76);
+        var nsRowY = baseSystemCenter.y + hexH * 2.2;
+
+        if (narrow){
+          hostCenter = {x: W*0.5, y: 82};
+          baseSystemCenter = {x: W*0.5, y: hostCenter.y + hexH*1.3};
+          systemCenter = {x: baseSystemCenter.x, y: baseSystemCenter.y + systemShiftY};
+          nsRowY = baseSystemCenter.y + hexH*1.9;
+          leftX = W*0.5;
+          rightX = W*0.5;
+        }
+
+        addNode('host', hostName, 'host', hostCenter.x, hostCenter.y, {title:'Host'});
+
+        var sysLabels = ['DNS','Ingress','Controller','Runtime'];
+        var sysIds = ['dns','ingress','controller','runtime'];
+        var sysOffsets = clusterOffsets(4);
+        sysLabels.forEach(function(label, idx){
+          var off = sysOffsets[idx] || {x:0,y:0};
+          addNode(sysIds[idx], label, 'system', systemCenter.x + off.x, systemCenter.y + off.y, {system:sysIds[idx]});
+        });
+        var sysLabelX = systemCenter.x;
+        var sysLabelY = systemCenter.y - hexH * 0.5 - labelGap - labelLift;
+        if (nodeById.dns && nodeById.ingress){
+          sysLabelX = (nodeById.dns.x + nodeById.ingress.x) / 2;
+          sysLabelY = nodeById.dns.y - hexH * 0.5 - labelGap - labelLift;
+        }
+        addLabel('label:system', 'system', sysLabelX, sysLabelY, '#e5e7eb', '#e2e8f0', 'middle');
+
+        var apps = (statuses||[]).slice();
+        var byNs = {};
+        apps.forEach(function(s){
+          var info = splitAppName(s.app_name);
+          if (!byNs[info.namespace]) byNs[info.namespace] = [];
+          byNs[info.namespace].push({status:s, info:info});
+        });
+        Object.keys(byNs).forEach(function(ns){
+          byNs[ns].sort(function(a,b){ return String(a.info.name||'').localeCompare(String(b.info.name||'')); });
+        });
+        var nsOrder = [];
+        if (byNs['default']) nsOrder.push('default');
+        if (byNs['demo-helm']) nsOrder.push('demo-helm');
+        Object.keys(byNs).filter(function(ns){ return nsOrder.indexOf(ns)===-1; }).sort().forEach(function(ns){ nsOrder.push(ns); });
+
+        var nsCenters = {};
+        if (narrow){
+          var startY = nsRowY;
+          nsOrder.forEach(function(ns, idx){
+            nsCenters[ns] = {x: W*0.5, y: startY + idx * hexH * 2.0};
+          });
+        } else {
+          if (nsOrder.length > 0) {
+            var nsClusterGapX = Math.max(hexW * 3.2, 260);
+            var nsClusterGapY = hexH * 1.05;
+            var defaultX = clamp(hostCenter.x - nsClusterGapX * 0.38, padX + hexW, W - padX - hexW);
+            var defaultY = nsRowY + nsClusterGapY * 0.85;
+            nsCenters[nsOrder[0]] = {x: defaultX, y: defaultY};
+          }
+          if (nsOrder.length > 1) {
+            var demoX = clamp(hostCenter.x + Math.max(hexW * 3.0, 260), padX + hexW, rightX);
+            var demoY = nsRowY - hexH * 0.1;
+            nsCenters[nsOrder[1]] = {x: demoX, y: demoY};
+            if (nsOrder[0] === 'default' && nsOrder[1] === 'demo-helm') {
+              var systemRight = null;
+              sysIds.forEach(function(id){
+                var n = nodeById[id];
+                if (!n) return;
+                var right = n.x + hexW * 0.58;
+                systemRight = (systemRight == null) ? right : Math.max(systemRight, right);
+              });
+              var demoLeft = demoX - hexW * 0.58;
+              if (systemRight != null) {
+                var midpoint = (systemRight + demoLeft) * 0.5;
+                var baseDefaultX = nsCenters[nsOrder[0]].x;
+                var newDefaultX = clamp(midpoint, padX + hexW, W - padX - hexW);
+                var delta = newDefaultX - baseDefaultX;
+                nsCenters[nsOrder[0]].x = newDefaultX;
+                nsCenters[nsOrder[1]].x = clamp(demoX + delta, padX + hexW, W - padX - hexW);
+              }
+            }
+          }
+          if (nsOrder.length > 2) {
+            var extraNs = nsOrder.slice(2);
+            var extraCols = Math.min(3, extraNs.length);
+            var extraGap = (W - padX*2) / (extraCols + 1);
+            var extraStartY = nsRowY + hexH * 2.0;
+            extraNs.forEach(function(ns, idx){
+              var col = idx % extraCols;
+              var row = Math.floor(idx / extraCols);
+              nsCenters[ns] = {x: padX + extraGap * (col + 1), y: extraStartY + row * hexH * 1.5};
+            });
+          }
+        }
+
+        var appNodes = [];
+        nsOrder.forEach(function(ns){
+          var list = byNs[ns] || [];
+          if (!list.length) return;
+          var center = nsCenters[ns] || {x:leftX, y:nsRowY};
+          var offsets = clusterOffsets(list.length);
+          var rowCount = 1;
+          offsets.forEach(function(off){
+            if (typeof off.row === 'number') rowCount = Math.max(rowCount, off.row + 1);
+          });
+          var minX = null, maxX = null, minY = null;
+          list.forEach(function(entry, idx){
+            var s = entry.status;
+            var info = entry.info;
+            var off = offsets[idx] || {x:0,y:0};
+            var row = (off.row != null) ? off.row : (off.y < 0 ? 0 : 1);
+            var col = (off.col != null) ? off.col : (off.x < 0 ? 0 : 1);
+            var faceShift = 0;
+            if (rowCount === 1 && col === 0) {
+              faceShift = 1;
+            }
+            if (list.length === 4) {
+              if (row === 0 && col === 0) faceShift = 2;
+              else if ((row === 0 && col === 1) || (row === 1 && col === 0)) faceShift = 1;
+            }
+            var node = addNode('app:'+s.app_name, info.name, 'app', center.x + off.x, center.y + off.y, {
+              app:s.app_name,
+              app_short: info.name,
+              ns: info.namespace,
+              ready:s.ready_replicas,
+              desired:s.desired_replicas,
+              rev:s.revision,
+              status:s.revision_status,
+              clusterCenter: center,
+              row: row,
+              col: col,
+              faceShift: faceShift,
+              clusterRows: rowCount
+            });
+            minX = (minX==null) ? node.x : Math.min(minX, node.x);
+            maxX = (maxX==null) ? node.x : Math.max(maxX, node.x);
+            minY = (minY==null) ? node.y : Math.min(minY, node.y);
+            appNodes.push(node);
+          });
+          var c = namespaceColors(ns);
+          var labelShift = hexW * 0.25;
+          var labelX = (minX != null) ? (minX - labelShift) : center.x;
+          var labelY = (minY != null)
+            ? (minY - hexH * 0.5 - labelGap - labelLift)
+            : (center.y - hexH*0.78 - labelGap - labelLift);
+          addLabel('label:'+ns, ns, labelX, labelY, c.color, '#e2e8f0', 'end');
+        });
+
+        function appRowKind(n){
+          var rows = (n.meta && n.meta.clusterRows) ? n.meta.clusterRows : 1;
+          var rowIndex = (n.meta && typeof n.meta.row === 'number') ? n.meta.row : 0;
+          if (rows <= 1) return 'top';
+          return (rowIndex % 2 === 0) ? 'top' : 'bottom';
+        }
+
+        var systemBounds = null;
+        sysIds.forEach(function(id){
+          var n = nodeById[id];
+          if (!n) return;
+          var r = rectFromNode(n, hexH * 0.1);
+          if (!systemBounds) systemBounds = {minX:r.x1, maxX:r.x2, minY:r.y1, maxY:r.y2};
+          else {
+            systemBounds.minX = Math.min(systemBounds.minX, r.x1);
+            systemBounds.maxX = Math.max(systemBounds.maxX, r.x2);
+            systemBounds.minY = Math.min(systemBounds.minY, r.y1);
+            systemBounds.maxY = Math.max(systemBounds.maxY, r.y2);
+          }
+        });
+
+        var labelBounds = null;
+        labelNodes.forEach(function(l){
+          if (l.id === 'label:system') return;
+          var r = rectFromLabel(l);
+          if (!labelBounds) labelBounds = {minX:r.x1, maxX:r.x2, minY:r.y1, maxY:r.y2};
+          else {
+            labelBounds.minX = Math.min(labelBounds.minX, r.x1);
+            labelBounds.maxX = Math.max(labelBounds.maxX, r.x2);
+            labelBounds.minY = Math.min(labelBounds.minY, r.y1);
+            labelBounds.maxY = Math.max(labelBounds.maxY, r.y2);
+          }
+        });
+
+        var topApps = [];
+        var bottomApps = [];
+        var topApexMin = null;
+        var bottomApexMax = null;
+        appNodes.forEach(function(n){
+          var kind = appRowKind(n);
+          var apex = apexPoint(n);
+          if (kind === 'bottom') {
+            bottomApps.push(n);
+            bottomApexMax = (bottomApexMax == null) ? apex.point.y : Math.max(bottomApexMax, apex.point.y);
+          } else {
+            topApps.push(n);
+            topApexMin = (topApexMin == null) ? apex.point.y : Math.min(topApexMin, apex.point.y);
+          }
+        });
+
+        var busXBase = systemBounds ? (systemBounds.maxX + hexW * 0.7) : (systemCenter.x + hexW * 1.4);
+        var ingressBusX = busXBase;
+        var runtimeBusX = busXBase + Math.max(8, hexW * 0.12);
+        var labelBottom = labelBounds ? labelBounds.maxY : null;
+        var upperBase = null;
+        if (topApexMin != null) {
+          var upperLow = (labelBottom != null) ? (labelBottom + hexH * 0.08) : (topApexMin - hexH * 0.35);
+          var upperHigh = topApexMin - hexH * 0.12;
+          if (upperHigh < upperLow) {
+            upperBase = upperHigh;
+          } else {
+            upperBase = (upperLow + upperHigh) * 0.5;
+          }
+          var upperMin = Math.min(upperLow, upperHigh);
+          var upperMax = Math.max(upperLow, upperHigh);
+          upperBase = clamp(upperBase - hexH * 0.12, upperMin, upperMax);
+        }
+        var lowerBase = null;
+        if (bottomApexMax != null) {
+          lowerBase = bottomApexMax + hexH * 0.38;
+        } else if (topApexMin != null) {
+          lowerBase = topApexMin + hexH * 0.9;
+        } else if (systemBounds) {
+          lowerBase = systemBounds.maxY + hexH * 0.9;
+        }
+        var busGap = Math.max(8, hexH * 0.12);
+        var ingressUpperY = upperBase != null ? (upperBase - busGap * 0.35) : null;
+        var runtimeUpperY = upperBase != null ? (upperBase + busGap * 0.35) : null;
+        var ingressLowerY = lowerBase != null ? (lowerBase - busGap * 0.35) : null;
+        var runtimeLowerY = lowerBase != null ? (lowerBase + busGap * 0.35) : null;
+
+        var flowLaneMap = {};
+        function assignFlowLanes(key, nodes){
+          if (!nodes || !nodes.length) return;
+          var ordered = nodes.slice().sort(function(a,b){ return a.x - b.x; });
+          var n = ordered.length;
+          var gap = Math.max(6, hexH * 0.09);
+          ordered.forEach(function(node, idx){
+            var offset = (idx - (n - 1) / 2) * gap;
+            flowLaneMap[key + ':' + node.id] = offset;
+          });
+        }
+        assignFlowLanes('ingress:top', topApps);
+        assignFlowLanes('runtime:top', topApps);
+        assignFlowLanes('ingress:bottom', bottomApps);
+        assignFlowLanes('runtime:bottom', bottomApps);
+
+        var faceDirs = [
+          {x:1, y:0},
+          {x:0.5, y:-0.866},
+          {x:-0.5, y:-0.866},
+          {x:-1, y:0},
+          {x:-0.5, y:0.866},
+          {x:0.5, y:0.866}
+        ];
+        function segmentDistanceSq(ax, ay, bx, by, cx, cy){
+          var vx = bx - ax;
+          var vy = by - ay;
+          var wx = cx - ax;
+          var wy = cy - ay;
+          var c1 = vx * wx + vy * wy;
+          if (c1 <= 0) return wx*wx + wy*wy;
+          var c2 = vx * vx + vy * vy;
+          if (c2 <= c1) {
+            var dx = cx - bx;
+            var dy = cy - by;
+            return dx*dx + dy*dy;
+          }
+          var t = c1 / c2;
+          var px = ax + t * vx;
+          var py = ay + t * vy;
+          var dx2 = cx - px;
+          var dy2 = cy - py;
+          return dx2*dx2 + dy2*dy2;
+        }
+        function isFaceBlocked(start, end, n, neighbors){
+          var radius = hexH * 0.6;
+          for (var i=0;i<neighbors.length;i++){
+            var other = neighbors[i];
+            if (other === n) continue;
+            var distSq = segmentDistanceSq(start.x, start.y, end.x, end.y, other.x, other.y);
+            if (distSq < radius * radius) return true;
+          }
+          return false;
+        }
+        function apexPoint(n){
+          var rows = (n.meta && n.meta.clusterRows) ? n.meta.clusterRows : 1;
+          var rowIndex = (n.meta && typeof n.meta.row === 'number') ? n.meta.row : 0;
+          var bottom = (rows > 1 && (rowIndex % 2) === 1);
+          var dy = bottom ? (hexH * 0.5) : (-hexH * 0.5);
+          var approach = {x:0, y: bottom ? -1 : 1};
+          return {point:{x:n.x, y:n.y + dy}, dir:approach};
+        }
+        function neighborNodes(n){
+          if (n.type === 'app') {
+            return appNodes.filter(function(o){ return o !== n && o.meta && n.meta && o.meta.ns === n.meta.ns; });
+          }
+          if (n.type === 'system') {
+            return sysIds.map(function(id){ return nodeById[id]; }).filter(function(o){ return o && o !== n; });
+          }
+          return [];
+        }
+        function faceAnchor(n, target, shift, neighbors){
+          var vx = target.x - n.x;
+          var vy = target.y - n.y;
+          var baseIndex = 0;
+          var bestScore = -1e9;
+          for (var i=0;i<faceDirs.length;i++){
+            var d = faceDirs[i];
+            var score = d.x * vx + d.y * vy;
+            if (score > bestScore) { bestScore = score; baseIndex = i; }
+          }
+          var startIndex = (baseIndex + (shift || 0) + faceDirs.length) % faceDirs.length;
+          var faceDist = hexH * 0.52;
+          var stub = hexH * 0.24;
+          var dir = faceDirs[startIndex];
+          if (neighbors && neighbors.length){
+            for (var step=0; step<faceDirs.length; step++){
+              var idx = (startIndex + step) % faceDirs.length;
+              var ddir = faceDirs[idx];
+              var sX = n.x + ddir.x * faceDist;
+              var sY = n.y + ddir.y * faceDist;
+              var eX = n.x + ddir.x * (faceDist + stub);
+              var eY = n.y + ddir.y * (faceDist + stub);
+              if (!isFaceBlocked({x:sX,y:sY}, {x:eX,y:eY}, n, neighbors)){
+                dir = ddir;
+                break;
+              }
+            }
+          }
+          return {point:{x:n.x + dir.x * faceDist, y:n.y + dir.y * faceDist}, dir:dir};
+        }
+        appNodes.forEach(function(n){
+          if (!n.meta || !n.meta.clusterCenter) return;
+          var rows = (n.meta && n.meta.clusterRows) ? n.meta.clusterRows : 1;
+          var rowIndex = (n.meta && typeof n.meta.row === 'number') ? n.meta.row : 0;
+          var rowKind = (rows === 1) ? 'single' : (((rowIndex % 2) === 0) ? 'top' : 'bottom');
+          var startIndex = (rowKind === 'top') ? 1 : 5;
+          var dirX = faceDirs[startIndex].x;
+          var dirY = faceDirs[startIndex].y;
+          var startDist = hexH * 0.525 * 0.9;
+          var traceLen = hexH * 0.525 * 0.9;
+          var readyCount = Math.max(0, Number(n.meta.ready || 0));
+          var desiredCount = Math.max(0, Number(n.meta.desired || 0));
+          var replicas = Math.max(1, desiredCount || readyCount || 1);
+          var perpX = -dirY;
+          var perpY = dirX;
+          var spacing = Math.max(8, hexW * 0.12);
+          for (var ri=0; ri<replicas; ri++){
+            var offset = (ri - (replicas - 1) / 2) * spacing;
+            var startX = n.x + dirX * startDist + perpX * offset;
+            var startY = n.y + dirY * startDist + perpY * offset;
+            var endX = n.x + dirX * (startDist + traceLen) + perpX * offset;
+            var endY = n.y + dirY * (startDist + traceLen) + perpY * offset;
+            var state = ri < readyCount ? 'ready' : 'pending';
+            var podId = 'pod:' + n.meta.app + ':' + ri;
+            addNode(podId, state, 'pod', endX, endY, {app:n.meta.app, ns:n.meta.ns, state:state});
+            link(n.id, podId, 'trace', {kind:'trace', start:{x:startX,y:startY}, end:{x:endX,y:endY}});
+          }
+        });
+
+        var hasIngress = !!(sys.ingress && (sys.ingress.sites||[]).length);
+        link('host','controller','flow', {special:'host-flow'});
+        appNodes.forEach(function(n){
+          if (nodeById.ingress) link('ingress', n.id, 'flow', {route:'ingress'});
+          if (nodeById.runtime) link('runtime', n.id, 'flow', {route:'runtime'});
+        });
+
+        var gNodes = svg.querySelector('#nodes');
+        var gLinks = svg.querySelector('#links');
+        var gLabels = svg.querySelector('#labels');
+        if(!gNodes||!gLinks||!gLabels) return;
+        gNodes.innerHTML = '';
+        gLinks.innerHTML = '';
+        gLabels.innerHTML = '';
+
+        function rectFromNode(n, pad){
+          var px = (hexW * 0.58) + (pad || 0);
+          var py = (hexH * 0.58) + (pad || 0);
+          return {x1:n.x - px, y1:n.y - py, x2:n.x + px, y2:n.y + py, id:n.id, kind:'node'};
+        }
+        function rectFromLabel(l){
+          var m = measureLabelText(l.text);
+          var w = (m.w || 0) + 16;
+          var h = (m.h || 18) + 8;
+          var x = l.x;
+          if (l.anchor === 'end') x -= w;
+          else if (l.anchor === 'middle') x -= w * 0.5;
+          var y = l.y - h * 0.8;
+          var pad = 6;
+          return {x1:x - pad, y1:y - pad, x2:x + w + pad, y2:y + h + pad, kind:'label'};
+        }
+        function pointInRect(x, y, r){
+          return x >= r.x1 && x <= r.x2 && y >= r.y1 && y <= r.y2;
+        }
+        function segmentHitsRect(ax, ay, bx, by, r){
+          if (ax === bx){
+            if (ax < r.x1 || ax > r.x2) return false;
+            var y1 = Math.min(ay, by), y2 = Math.max(ay, by);
+            return !(y2 < r.y1 || y1 > r.y2);
+          }
+          if (ay === by){
+            if (ay < r.y1 || ay > r.y2) return false;
+            var x1 = Math.min(ax, bx), x2 = Math.max(ax, bx);
+            return !(x2 < r.x1 || x1 > r.x2);
+          }
+          var minX = Math.min(ax, bx), maxX = Math.max(ax, bx);
+          var minY = Math.min(ay, by), maxY = Math.max(ay, by);
+          return !(maxX < r.x1 || minX > r.x2 || maxY < r.y1 || minY > r.y2);
+        }
+        function segmentClear(ax, ay, bx, by, obstacles, pad){
+          if (!obstacles || !obstacles.length) return true;
+          var expanded = obstacles;
+          if (pad && pad > 0){
+            expanded = obstacles.map(function(r){ return expandRect(r, pad); });
+          }
+          for (var i=0; i<expanded.length; i++){
+            if (segmentHitsRect(ax, ay, bx, by, expanded[i])) return false;
+          }
+          return true;
+        }
+        function pathClear(points, obstacles, pad){
+          if (!points || points.length < 2) return true;
+          for (var i=0; i<points.length-1; i++){
+            var a = points[i], b = points[i+1];
+            if (!segmentClear(a[0], a[1], b[0], b[1], obstacles, pad)) return false;
+          }
+          return true;
+        }
+        function expandRect(r, pad){
+          return {x1:r.x1 - pad, y1:r.y1 - pad, x2:r.x2 + pad, y2:r.y2 + pad, id:r.id, kind:r.kind};
+        }
+        function uniqueSorted(values){
+          var out = [];
+          var seen = {};
+          for (var i=0;i<values.length;i++){
+            var key = values[i].toFixed(2);
+            if (seen[key]) continue;
+            seen[key] = true;
+            out.push(values[i]);
+          }
+          out.sort(function(a,b){ return a-b; });
+          return out;
+        }
+        function buildOrthPath(start, end, obstacles){
+          if (!start || !end) return null;
+          var pad = Math.max(6, hexH * 0.1);
+          var routeObstacles = (obstacles || []).map(function(r){ return expandRect(r, pad); });
+          var xs = [start.x, end.x];
+          var ys = [start.y, end.y];
+          routeObstacles.forEach(function(r){
+            xs.push(r.x1, r.x2);
+            ys.push(r.y1, r.y2);
+          });
+          xs = uniqueSorted(xs);
+          ys = uniqueSorted(ys);
+
+          function isBlocked(x, y){
+            if ((x === start.x && y === start.y) || (x === end.x && y === end.y)) return false;
+            for (var i=0;i<routeObstacles.length;i++){
+              if (pointInRect(x, y, routeObstacles[i])) return true;
+            }
+            return false;
+          }
+          function key(x, y){ return x.toFixed(2) + ',' + y.toFixed(2); }
+
+          var pts = [];
+          var idxMap = {};
+          for (var xi=0; xi<xs.length; xi++){
+            for (var yi=0; yi<ys.length; yi++){
+              var x = xs[xi], y = ys[yi];
+              if (isBlocked(x, y)) continue;
+              var idx = pts.length;
+              pts.push({x:x, y:y});
+              idxMap[key(x,y)] = idx;
+            }
+          }
+          var startKey = key(start.x, start.y);
+          var endKey = key(end.x, end.y);
+          if (idxMap[startKey] == null){
+            idxMap[startKey] = pts.length;
+            pts.push({x:start.x, y:start.y});
+          }
+          if (idxMap[endKey] == null){
+            idxMap[endKey] = pts.length;
+            pts.push({x:end.x, y:end.y});
+          }
+          var startIdx = idxMap[startKey];
+          var endIdx = idxMap[endKey];
+          var adj = new Array(pts.length);
+          for (var ai=0; ai<adj.length; ai++) adj[ai] = [];
+
+          for (var xi2=0; xi2<xs.length; xi2++){
+            var xcol = xs[xi2];
+            var col = [];
+            for (var yi2=0; yi2<ys.length; yi2++){
+              var ycol = ys[yi2];
+              var k = key(xcol, ycol);
+              if (idxMap[k] != null) col.push({y:ycol, idx:idxMap[k]});
+            }
+            col.sort(function(a,b){ return a.y - b.y; });
+            for (var ci=0; ci<col.length-1; ci++){
+              var a = col[ci], b = col[ci+1];
+              var blocked = false;
+              for (var oi=0; oi<routeObstacles.length; oi++){
+                if (segmentHitsRect(xcol, a.y, xcol, b.y, routeObstacles[oi])) { blocked = true; break; }
+              }
+              if (!blocked){
+                var dist = Math.abs(b.y - a.y);
+                adj[a.idx].push({to:b.idx, w:dist});
+                adj[b.idx].push({to:a.idx, w:dist});
+              }
+            }
+          }
+          for (var yi3=0; yi3<ys.length; yi3++){
+            var yrow = ys[yi3];
+            var row = [];
+            for (var xi3=0; xi3<xs.length; xi3++){
+              var xrow = xs[xi3];
+              var k2 = key(xrow, yrow);
+              if (idxMap[k2] != null) row.push({x:xrow, idx:idxMap[k2]});
+            }
+            row.sort(function(a,b){ return a.x - b.x; });
+            for (var ri=0; ri<row.length-1; ri++){
+              var ra = row[ri], rb = row[ri+1];
+              var blocked2 = false;
+              for (var oi2=0; oi2<routeObstacles.length; oi2++){
+                if (segmentHitsRect(ra.x, yrow, rb.x, yrow, routeObstacles[oi2])) { blocked2 = true; break; }
+              }
+              if (!blocked2){
+                var dist2 = Math.abs(rb.x - ra.x);
+                adj[ra.idx].push({to:rb.idx, w:dist2});
+                adj[rb.idx].push({to:ra.idx, w:dist2});
+              }
+            }
+          }
+          var distArr = new Array(pts.length);
+          var prev = new Array(pts.length);
+          var seen = new Array(pts.length);
+          for (var di=0; di<distArr.length; di++){ distArr[di] = Infinity; prev[di] = -1; seen[di] = false; }
+          distArr[startIdx] = 0;
+          for (var iter=0; iter<pts.length; iter++){
+            var best = -1;
+            var bestDist = Infinity;
+            for (var vi=0; vi<pts.length; vi++){
+              if (seen[vi]) continue;
+              if (distArr[vi] < bestDist) { bestDist = distArr[vi]; best = vi; }
+            }
+            if (best === -1) break;
+            if (best === endIdx) break;
+            seen[best] = true;
+            var neighbors = adj[best];
+            for (var ni=0; ni<neighbors.length; ni++){
+              var nb = neighbors[ni];
+              var cand = distArr[best] + nb.w;
+              if (cand < distArr[nb.to]){
+                distArr[nb.to] = cand;
+                prev[nb.to] = best;
+              }
+            }
+          }
+          if (prev[endIdx] === -1 && startIdx !== endIdx) return null;
+          var path = [];
+          var cur = endIdx;
+          while (cur !== -1){
+            path.push([pts[cur].x, pts[cur].y]);
+            if (cur === startIdx) break;
+            cur = prev[cur];
+          }
+          path.reverse();
+          return path;
+        }
+        function simplifyOrth(points){
+          if (!points || points.length < 3) return points || [];
+          var cleaned = [points[0]];
+          for (var i=1; i<points.length; i++){
+            var p = points[i];
+            if (cleaned.length < 2) {
+              cleaned.push(p);
+              continue;
+            }
+            var a = cleaned[cleaned.length-2];
+            var b = cleaned[cleaned.length-1];
+            var colinear = ((a[0] === b[0] && b[0] === p[0]) || (a[1] === b[1] && b[1] === p[1]));
+            if (colinear) {
+              cleaned[cleaned.length-1] = p;
+            } else {
+              cleaned.push(p);
+            }
+          }
+          return cleaned;
+        }
+
+        var flowReserved = [];
+        var flowLaneCounts = {};
+        var flowLaneGap = Math.max(10, hexH * 0.16);
+        function nextLaneOffset(key){
+          var idx = flowLaneCounts[key] || 0;
+          flowLaneCounts[key] = idx + 1;
+          if (idx === 0) return 0;
+          var step = Math.ceil(idx / 2);
+          return (idx % 2 === 1 ? 1 : -1) * step * flowLaneGap;
+        }
+        function reserveFlowPath(points){
+          var pad = Math.max(6, hexH * 0.1);
+          if (!points || points.length < 2) return;
+          for (var i=0; i<points.length-1; i++){
+            var a = points[i], b = points[i+1];
+            if (a[0] === b[0]) {
+              flowReserved.push({x1:a[0]-pad, x2:a[0]+pad, y1:Math.min(a[1], b[1])-pad, y2:Math.max(a[1], b[1])+pad, kind:'flow'});
+            } else if (a[1] === b[1]) {
+              flowReserved.push({x1:Math.min(a[0], b[0])-pad, x2:Math.max(a[0], b[0])+pad, y1:a[1]-pad, y2:a[1]+pad, kind:'flow'});
+            }
+          }
+        }
+
+        var flowObstacles = [];
+        nodes.forEach(function(n){
+          if (n.type === 'pod') return;
+          flowObstacles.push(rectFromNode(n, Math.max(6, hexH * 0.1)));
+        });
+        labelNodes.forEach(function(l){
+          flowObstacles.push(rectFromLabel(l));
+        });
+        nodes.forEach(function(n){
+          if (n.type !== 'pod') return;
+          flowObstacles.push(rectFromNode(n, Math.max(6, hexH * 0.14)));
+        });
+        links.forEach(function(L){
+          if ((L.cls||'').indexOf('trace') === -1) return;
+          if (!L.meta || !L.meta.start || !L.meta.end) return;
+          var minX = Math.min(L.meta.start.x, L.meta.end.x);
+          var maxX = Math.max(L.meta.start.x, L.meta.end.x);
+          var minY = Math.min(L.meta.start.y, L.meta.end.y);
+          var maxY = Math.max(L.meta.start.y, L.meta.end.y);
+          var pad = Math.max(6, hexH * 0.12);
+          flowObstacles.push({x1:minX - pad, y1:minY - pad, x2:maxX + pad, y2:maxY + pad, kind:'trace'});
+        });
+        var systemFlowY = systemBounds ? (systemBounds.maxY + hexH * 0.8) : (hexH * 3);
+
+        function appendSegment(points, seg){
+          if (!seg || !seg.length) return;
+          for (var i=0; i<seg.length; i++){
+            var pt = seg[i];
+            if (points.length) {
+              var last = points[points.length-1];
+              if (last[0] === pt[0] && last[1] === pt[1]) continue;
+            }
+            points.push([pt[0], pt[1]]);
+          }
+        }
+        function buildBusFlowRoute(a, b, start, end, startDir, endDir, meta){
+          if (!meta || !meta.route || !b || b.type !== 'app') return null;
+          var route = meta.route;
+          var rowKind = appRowKind(b);
+          var busY = null;
+          if (rowKind === 'bottom') {
+            busY = (route === 'ingress') ? ingressLowerY : runtimeLowerY;
+          } else {
+            busY = (route === 'ingress') ? ingressUpperY : runtimeUpperY;
+          }
+          if (busY == null) return null;
+          var laneKey = route + ':' + rowKind;
+          var laneOffset = flowLaneMap[laneKey + ':' + b.id] || 0;
+          busY += laneOffset;
+          var busX = (route === 'ingress') ? ingressBusX : runtimeBusX;
+          var stub = hexH * 0.28;
+          var s1 = startDir ? {x: start.x + startDir.x * stub, y: start.y + startDir.y * stub} : {x:start.x, y:start.y};
+          var e1 = endDir ? {x: end.x - endDir.x * stub, y: end.y - endDir.y * stub} : {x:end.x, y:end.y};
+          if (busX < s1.x + hexW * 0.08) {
+            busX = s1.x + hexW * 0.08;
+          }
+          if (narrow) {
+            busX = Math.max(s1.x, e1.x);
+          }
+
+          var obstacles = flowObstacles.filter(function(r){ return r.id !== a.id && r.id !== b.id; }).concat(flowReserved);
+          var pad = Math.max(10, hexH * 0.14);
+
+          function buildPoints(y){
+            return [
+              [start.x, start.y],
+              [s1.x, s1.y],
+              [busX, s1.y],
+              [busX, y],
+              [e1.x, y],
+              [e1.x, e1.y],
+              [end.x, end.y]
+            ];
+          }
+          var candidates = [busY, busY + hexH * 0.18, busY - hexH * 0.18, busY + hexH * 0.36, busY - hexH * 0.36];
+          var minClear = hexH * 0.18;
+          for (var ci=0; ci<candidates.length; ci++){
+            var y = candidates[ci];
+            if (rowKind === 'top' && y >= end.y - minClear) continue;
+            if (rowKind === 'bottom' && y <= end.y + minClear) continue;
+            var pts = buildPoints(y);
+            if (pathClear(pts, obstacles, pad)) return simplifyOrth(pts);
+          }
+          return simplifyOrth(buildPoints(busY));
+        }
+        function buildFlowRoute(a, b, start, end, startDir, endDir, meta){
+          var stub = hexH * 0.28;
+          var s1 = startDir ? {x: start.x + startDir.x * stub, y: start.y + startDir.y * stub} : {x:start.x, y:start.y};
+          var e1 = endDir ? {x: end.x - endDir.x * stub, y: end.y - endDir.y * stub} : {x:end.x, y:end.y};
+          var baseObstacles = flowObstacles.filter(function(r){ return r.id !== a.id && r.id !== b.id; });
+          var hardObstacles = baseObstacles.concat(flowReserved);
+          var pad = Math.max(10, hexH * 0.14);
+
+          function simpleRoute(obstacles){
+            var points = [[start.x, start.y]];
+            var startStep = s1;
+            var endStep = e1;
+            if (a.type === 'system' && !(meta && meta.special === 'host-flow')) {
+              startStep = {x:start.x, y:start.y + stub};
+              var laneOffset = nextLaneOffset('sys:' + a.id);
+              var dropBase = Math.max(systemFlowY, startStep.y + hexH * 0.2);
+              if (endDir && endDir.y < 0) {
+                dropBase = Math.max(dropBase, end.y + hexH * 0.6);
+              }
+              var baseDrop = dropBase + laneOffset;
+              var deltas = [0, hexH * 0.25, -hexH * 0.25, hexH * 0.5, -hexH * 0.5];
+              for (var di=0; di<deltas.length; di++){
+                var dropY = baseDrop + deltas[di];
+                var pts = [
+                  [start.x, start.y],
+                  [startStep.x, startStep.y],
+                  [startStep.x, dropY],
+                  [endStep.x, dropY],
+                  [endStep.x, endStep.y],
+                  [end.x, end.y]
+                ];
+                if (pathClear(pts, obstacles, pad)) return simplifyOrth(pts);
+              }
+            } else {
+              var ptsA = [
+                [start.x, start.y],
+                [startStep.x, startStep.y],
+                [endStep.x, startStep.y],
+                [endStep.x, endStep.y],
+                [end.x, end.y]
+              ];
+              if (pathClear(ptsA, obstacles, pad)) return simplifyOrth(ptsA);
+              var ptsB = [
+                [start.x, start.y],
+                [startStep.x, startStep.y],
+                [startStep.x, endStep.y],
+                [endStep.x, endStep.y],
+                [end.x, end.y]
+              ];
+              if (pathClear(ptsB, obstacles, pad)) return simplifyOrth(ptsB);
+            }
+            return null;
+          }
+
+          var simple = simpleRoute(hardObstacles);
+          if (!simple && flowReserved.length) {
+            simple = simpleRoute(baseObstacles);
+          }
+          if (simple) return simple;
+
+          var obstacles = hardObstacles;
+          function pointBlocked(x, y){
+            for (var i=0; i<obstacles.length; i++){
+              var r = expandRect(obstacles[i], pad);
+              if (pointInRect(x, y, r)) return true;
+            }
+            return false;
+          }
+
+          var points = [[start.x, start.y]];
+          var vias = [];
+          if (a.type === 'system' && !(meta && meta.special === 'host-flow')) {
+            s1 = {x: start.x, y: start.y + stub};
+            var laneOffset2 = nextLaneOffset('sys:' + a.id);
+            var dropBase2 = Math.max(systemFlowY, s1.y + hexH * 0.2);
+            if (endDir && endDir.y < 0) {
+              dropBase2 = Math.max(dropBase2, end.y + hexH * 0.6);
+            }
+            var dropY2 = dropBase2 + laneOffset2;
+            var guard = 0;
+            while (pointBlocked(s1.x, dropY2) && guard < 6){
+              dropY2 += hexH * 0.2;
+              guard += 1;
+            }
+            vias.push({x: s1.x, y: dropY2});
+          }
+          if (s1.x !== start.x || s1.y !== start.y) {
+            points.push([s1.x, s1.y]);
+          }
+          var curr = {x:s1.x, y:s1.y};
+          for (var vi=0; vi<vias.length; vi++){
+            var v = vias[vi];
+            var seg = buildOrthPath(curr, v, obstacles);
+            if (!seg && flowReserved.length){
+              obstacles = baseObstacles;
+              seg = buildOrthPath(curr, v, obstacles);
+            }
+            if (!seg) return null;
+            appendSegment(points, seg);
+            curr = {x:v.x, y:v.y};
+          }
+          var seg2 = buildOrthPath(curr, e1, obstacles);
+          if (!seg2 && flowReserved.length){
+            obstacles = baseObstacles;
+            seg2 = buildOrthPath(curr, e1, obstacles);
+          }
+          if (!seg2) return null;
+          appendSegment(points, seg2);
+          if (e1.x !== points[points.length-1][0] || e1.y !== points[points.length-1][1]) {
+            points.push([e1.x, e1.y]);
+          }
+          if (end.x !== points[points.length-1][0] || end.y !== points[points.length-1][1]) {
+            points.push([end.x, end.y]);
+          }
+          return simplifyOrth(points);
+        }
+
+        function drawLink(L){
+          var a = nodeById[L.a], b = nodeById[L.b];
+          if(!a||!b) return;
+          var start = {x:a.x, y:a.y};
+          var end = {x:b.x, y:b.y};
+          var startDir = null;
+          var endDir = null;
+          var points = [];
+          var isTrace = (L.cls||'').indexOf('trace') !== -1;
+          var isFlow = (L.cls||'').indexOf('flow') !== -1;
+          if (isTrace && L.meta && L.meta.start && L.meta.end) {
+            start = L.meta.start;
+            end = L.meta.end;
+          }
+          if (!isTrace) {
+            if (L.meta && L.meta.special === 'host-flow') {
+              start = {x:a.x, y:a.y + hexH * 0.5};
+              var ingress = nodeById['ingress'];
+              var runtime = nodeById['runtime'];
+              if (ingress && runtime) {
+                end = {
+                  x: Math.max(ingress.x, runtime.x) + hexW * 0.5,
+                  y: (ingress.y + runtime.y) / 2
+                };
+              } else {
+                end = {x: systemCenter.x + hexW * 0.5, y: systemCenter.y};
+              }
+              startDir = {x:0, y:1};
+              var hvx = start.x - end.x;
+              var hvy = start.y - end.y;
+              var hlen = Math.sqrt(hvx*hvx + hvy*hvy) || 1;
+              endDir = {x: hvx / hlen, y: hvy / hlen};
+            } else {
+              var aShift = (a.meta && a.meta.faceShift) ? a.meta.faceShift : 0;
+              var aAnchor = faceAnchor(a, b, aShift, neighborNodes(a));
+              start = aAnchor.point;
+              startDir = aAnchor.dir;
+              if (b.type === 'app') {
+                var apex = apexPoint(b);
+                var endGap = isFlow ? 0 : Math.max(6, hexH * 0.08);
+                endDir = apex.dir;
+                end = {
+                  x: apex.point.x - endDir.x * endGap,
+                  y: apex.point.y - endDir.y * endGap
+                };
+              } else {
+                var bShift = (b.meta && b.meta.faceShift) ? b.meta.faceShift : 0;
+                var bAnchor = faceAnchor(b, a, bShift, neighborNodes(b));
+                end = bAnchor.point;
+                endDir = bAnchor.dir;
+              }
+            }
+          }
+          if (isFlow && endDir && b.type !== 'app') {
+            endDir = {x:-endDir.x, y:-endDir.y};
+          }
+          if (graphPathMode === 'straight' || isTrace){
+            points = [[start.x, start.y], [end.x, end.y]];
+          } else if (isFlow) {
+            var flowPoints = null;
+            if (L.meta && L.meta.route) {
+              flowPoints = buildBusFlowRoute(a, b, start, end, startDir, endDir, L.meta);
+            }
+            if (!flowPoints) {
+              flowPoints = buildFlowRoute(a, b, start, end, startDir, endDir, L.meta);
+            }
+            if (flowPoints && flowPoints.length){
+              points = flowPoints;
+            } else {
+              points = [[start.x, start.y], [start.x, end.y], [end.x, end.y]];
+            }
+          } else {
+            var stub = hexH * 0.28;
+            var sdx = startDir ? startDir.x : 0;
+            var sdy = startDir ? startDir.y : 0;
+            var edx = endDir ? endDir.x : 0;
+            var edy = endDir ? endDir.y : 0;
+            var s1 = {x: start.x + sdx * stub, y: start.y + sdy * stub};
+            var e1 = {x: end.x - edx * stub, y: end.y - edy * stub};
+            var midA = {x: e1.x, y: s1.y};
+            var midB = {x: s1.x, y: e1.y};
+            var ptsA = [[start.x, start.y], [s1.x, s1.y], [midA.x, midA.y], [e1.x, e1.y], [end.x, end.y]];
+            var ptsB = [[start.x, start.y], [s1.x, s1.y], [midB.x, midB.y], [e1.x, e1.y], [end.x, end.y]];
+            var obstacles = nodes.filter(function(n){ return n.type !== 'pod' && n.id !== a.id && n.id !== b.id; });
+            var thresh = (hexH * 0.62) * (hexH * 0.62);
+            function pathPenalty(pts){
+              var hits = 0;
+              for (var si=0; si<pts.length-1; si++){
+                var ax = pts[si][0], ay = pts[si][1];
+                var bx = pts[si+1][0], by = pts[si+1][1];
+                for (var oi=0; oi<obstacles.length; oi++){
+                  var o = obstacles[oi];
+                  var distSq = segmentDistanceSq(ax, ay, bx, by, o.x, o.y);
+                  if (distSq < thresh) hits += 1;
+                }
+              }
+              return hits;
+            }
+            var scoreA = pathPenalty(ptsA);
+            var scoreB = pathPenalty(ptsB);
+            if (scoreB < scoreA) {
+              points = ptsB;
+            } else if (scoreA < scoreB) {
+              points = ptsA;
+            } else {
+              var dxA = Math.abs(s1.x - e1.x);
+              var dyA = Math.abs(s1.y - e1.y);
+              points = (dxA > dyA) ? ptsA : ptsB;
+            }
+            var cleaned = [];
+            for (var pi=0; pi<points.length; pi++){
+              var prev = cleaned.length ? cleaned[cleaned.length-1] : null;
+              if (!prev || prev[0] !== points[pi][0] || prev[1] !== points[pi][1]) {
+                cleaned.push(points[pi]);
+              }
+            }
+            points = cleaned;
+          }
+          if (isFlow && graphPathMode !== 'straight' && points.length) {
+            reserveFlowPath(points);
+          }
+          var d = '';
+          if (graphPathMode === 'straight' || isTrace){
+            for (var i=0;i<points.length;i++){
+              d += (i===0 ? 'M ' : ' L ') + points[i][0] + ' ' + points[i][1];
+            }
+          } else {
+            var r = isFlow ? Math.max(12, hexH * 0.16) : 8;
+            if (points.length > 0){ d = 'M ' + points[0][0] + ' ' + points[0][1]; }
+            for (var i=1;i<points.length;i++){
+              var prev = points[i-1];
+              var curr = points[i];
+              var next = (i+1<points.length) ? points[i+1] : null;
+              if (!next){
+                d += ' L ' + curr[0] + ' ' + curr[1];
+                break;
+              }
+              var v1x = curr[0]-prev[0], v1y = curr[1]-prev[1];
+              var v2x = next[0]-curr[0], v2y = next[1]-curr[1];
+              var colinear = (v1x===0 && v2x===0) || (v1y===0 && v2y===0);
+              if (colinear){ d += ' L ' + curr[0] + ' ' + curr[1]; continue; }
+              var rin = Math.min(r, Math.floor((Math.abs(v1x)+Math.abs(v1y))/2), Math.floor((Math.abs(v2x)+Math.abs(v2y))/2));
+              var u1x = v1x===0 ? 0 : (v1x>0?1:-1);
+              var u1y = v1y===0 ? 0 : (v1y>0?1:-1);
+              var pInX = curr[0] - u1x * rin;
+              var pInY = curr[1] - u1y * rin;
+              var u2x = v2x===0 ? 0 : (v2x>0?1:-1);
+              var u2y = v2y===0 ? 0 : (v2y>0?1:-1);
+              var pOutX = curr[0] + u2x * rin;
+              var pOutY = curr[1] + u2y * rin;
+              d += ' L ' + pInX + ' ' + pInY + ' Q ' + curr[0] + ' ' + curr[1] + ' ' + pOutX + ' ' + pOutY;
+            }
+          }
+          var p = document.createElementNS('http://www.w3.org/2000/svg','path');
+          p.setAttribute('d', d);
+          var klass = 'link ' + (L.cls||'');
+          if (L.meta && L.meta.special === 'host-flow') {
+            klass += ' host-flow';
+          }
+          if ((L.cls||'').indexOf('flow') !== -1){
+            var dx = end.x - start.x, dy = end.y - start.y;
+            var horiz = Math.abs(dx) >= Math.abs(dy);
+            var forward = horiz ? (dx >= 0) : (dy >= 0);
+            klass += forward ? ' flow-fwd' : ' flow-rev';
+          }
+          p.setAttribute('class', klass);
+          if (isTrace) {
+            p.setAttribute('stroke', 'rgba(245,197,66,0.9)');
+            p.setAttribute('stroke-width', '1.6');
+            p.setAttribute('stroke-dasharray', '4 6');
+            p.setAttribute('marker-end', 'none');
+          }
+          p.setAttribute('stroke-linecap','round');
+          p.setAttribute('fill','none');
+          gLinks.appendChild(p);
+        }
+
+        function hexTheme(n){
+          if (n.type === 'host') {
+            return {
+              accent:'rgba(148,163,184,0.55)',
+              shellFill:'rgba(20,22,26,0.80)',
+              innerStroke:'rgba(255,255,255,0.10)',
+              faceTop:'#2b2f36',
+              faceBot:'#15181d',
+              patternStroke:'rgba(255,255,255,0.10)',
+              patternOpacity:0.35,
+              label:'#e2e8f0',
+              shadowAlpha:0.4
+            };
+          }
+          if (n.type === 'system') {
+            return {
+              accent:'rgba(229,231,235,0.25)',
+              shellFill:'rgba(248,250,252,0.20)',
+              innerStroke:'rgba(148,163,184,0.10)',
+              faceTop:'rgba(248,250,252,0.20)',
+              faceBot:'rgba(203,213,225,0.35)',
+              patternStroke:'rgba(148,163,184,0.10)',
+              patternOpacity:0.12,
+              label:'#f8fafc',
+              shadowAlpha:0.12
+            };
+          }
+          var c = namespaceColors(n.meta && n.meta.ns ? n.meta.ns : 'default');
+          return {
+            accent:c.color,
+            shellFill:'rgba(12,16,22,0.92)',
+            innerStroke:'rgba(255,255,255,0.2)',
+            faceTop:shadeHsl(c.color, 18),
+            faceBot:shadeHsl(c.color, -18),
+            patternStroke:'rgba(255,255,255,0.2)',
+            patternOpacity:0.45,
+            label:'#f8fafc',
+            shadowAlpha:0.45
+          };
+        }
+
+        function drawHexNode(n){
+          var g = document.createElementNS('http://www.w3.org/2000/svg','g');
+          g.setAttribute('class','node hex-node ' + n.type);
+          g.setAttribute('transform','translate(' + n.x + ' ' + n.y + ')');
+          var gInner = document.createElementNS('http://www.w3.org/2000/svg','g');
+          gInner.setAttribute('transform','scale(' + hexScale + ')');
+          g.appendChild(gInner);
+
+          var appName = null;
+          if(n.id.indexOf('app:')===0) appName = n.id.slice(4);
+          if(n.id.indexOf('pod:')===0 && n.meta && n.meta.app) appName = n.meta.app;
+          if(appName){ g.setAttribute('data-app', appName); g.style.cursor='pointer';
+            g.addEventListener('click', function(ev){ ev.preventDefault(); ev.stopPropagation(); try { selectApp(appName); focusAppListItem(appName); } catch(e){} });
+          }
+
+          var t = hexTheme(n);
+          var uid = 'hc-' + (hexCounter++);
+          var shadowId = uid + '-shadow';
+          var combId = uid + '-comb';
+          var gradId = uid + '-grad';
+
+          var defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
+          var filter = document.createElementNS('http://www.w3.org/2000/svg','filter');
+          filter.setAttribute('id', shadowId);
+          filter.setAttribute('x','-40%'); filter.setAttribute('y','-40%');
+          filter.setAttribute('width','180%'); filter.setAttribute('height','180%');
+          var blur = document.createElementNS('http://www.w3.org/2000/svg','feGaussianBlur');
+          blur.setAttribute('in','SourceAlpha'); blur.setAttribute('stdDeviation','3'); blur.setAttribute('result','b');
+          var offset = document.createElementNS('http://www.w3.org/2000/svg','feOffset');
+          offset.setAttribute('in','b'); offset.setAttribute('dx','0'); offset.setAttribute('dy','4'); offset.setAttribute('result','o');
+          var matrix = document.createElementNS('http://www.w3.org/2000/svg','feColorMatrix');
+          matrix.setAttribute('in','o');
+          matrix.setAttribute('type','matrix');
+          var a = (t.shadowAlpha!=null) ? t.shadowAlpha : 0.55;
+          matrix.setAttribute('values','0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 ' + a + ' 0');
+          matrix.setAttribute('result','s');
+          var merge = document.createElementNS('http://www.w3.org/2000/svg','feMerge');
+          var mn1 = document.createElementNS('http://www.w3.org/2000/svg','feMergeNode');
+          mn1.setAttribute('in','s');
+          var mn2 = document.createElementNS('http://www.w3.org/2000/svg','feMergeNode');
+          mn2.setAttribute('in','SourceGraphic');
+          merge.appendChild(mn1); merge.appendChild(mn2);
+          filter.appendChild(blur); filter.appendChild(offset); filter.appendChild(matrix); filter.appendChild(merge);
+
+          var pattern = document.createElementNS('http://www.w3.org/2000/svg','pattern');
+          pattern.setAttribute('id', combId);
+          pattern.setAttribute('width','18');
+          pattern.setAttribute('height','15.588');
+          pattern.setAttribute('patternUnits','userSpaceOnUse');
+          var pPath = document.createElementNS('http://www.w3.org/2000/svg','path');
+          pPath.setAttribute('d','M 4.5 0 L 13.5 0 L 18 7.794 L 13.5 15.588 L 4.5 15.588 L 0 7.794 Z');
+          pPath.setAttribute('fill','none');
+          pPath.setAttribute('stroke', t.patternStroke || 'rgba(255,255,255,0.16)');
+          pPath.setAttribute('stroke-width','1.2');
+          pattern.appendChild(pPath);
+
+          var grad = document.createElementNS('http://www.w3.org/2000/svg','linearGradient');
+          grad.setAttribute('id', gradId);
+          grad.setAttribute('x1','0'); grad.setAttribute('y1','-80');
+          grad.setAttribute('x2','0'); grad.setAttribute('y2','80');
+          grad.setAttribute('gradientUnits','userSpaceOnUse');
+          var s1 = document.createElementNS('http://www.w3.org/2000/svg','stop');
+          s1.setAttribute('offset','0'); s1.setAttribute('stop-color', t.faceTop);
+          var s2 = document.createElementNS('http://www.w3.org/2000/svg','stop');
+          s2.setAttribute('offset','1'); s2.setAttribute('stop-color', t.faceBot);
+          grad.appendChild(s1); grad.appendChild(s2);
+
+          defs.appendChild(filter);
+          defs.appendChild(pattern);
+          defs.appendChild(grad);
+          gInner.appendChild(defs);
+
+          var outer = document.createElementNS('http://www.w3.org/2000/svg','path');
+          outer.setAttribute('d','M 48.497 28.000 L 0.000 56.000 L -48.497 28.000 L -48.497 -28.000 L -0.000 -56.000 L 48.497 -28.000 Z');
+          outer.setAttribute('fill', t.shellFill);
+          outer.setAttribute('stroke', t.accent);
+          outer.setAttribute('stroke-width','5');
+          outer.setAttribute('filter','url(#' + shadowId + ')');
+          outer.setAttribute('class','hex-outer');
+          gInner.appendChild(outer);
+
+          var inner = document.createElementNS('http://www.w3.org/2000/svg','path');
+          inner.setAttribute('d','M 39.837 23.000 L 0.000 46.000 L -39.837 23.000 L -39.837 -23.000 L -0.000 -46.000 L 39.837 -23.000 Z');
+          inner.setAttribute('fill','url(#' + gradId + ')');
+          inner.setAttribute('stroke', t.innerStroke);
+          inner.setAttribute('stroke-width','2');
+          inner.setAttribute('class','hex-inner');
+          gInner.appendChild(inner);
+
+          var comb = document.createElementNS('http://www.w3.org/2000/svg','path');
+          comb.setAttribute('d','M 39.837 23.000 L 0.000 46.000 L -39.837 23.000 L -39.837 -23.000 L -0.000 -46.000 L 39.837 -23.000 Z');
+          comb.setAttribute('fill','url(#' + combId + ')');
+          comb.setAttribute('opacity', String(t.patternOpacity != null ? t.patternOpacity : 0.45));
+          comb.setAttribute('class','hex-pattern');
+          gInner.appendChild(comb);
+
+          var text = document.createElementNS('http://www.w3.org/2000/svg','text');
+          var rowShift = 0;
+          if (n.type === 'app' && n.meta && typeof n.meta.row === 'number') {
+            rowShift = (n.meta.row % 2 === 0) ? -10 : 10;
+          }
+          text.setAttribute('x','0'); text.setAttribute('y', String(8 + rowShift));
+          text.setAttribute('text-anchor','middle');
+          text.setAttribute('font-family','ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial');
+          text.setAttribute('font-size','16');
+          text.setAttribute('font-weight','700');
+          text.setAttribute('class','hex-label');
+          text.setAttribute('fill', t.label);
+          text.textContent = String(n.label || '');
+          gInner.appendChild(text);
+          gNodes.appendChild(g);
+
+          var labelMax = hexW * 1.2;
+          var labelInfo = fitTextToWidth(text, n.label, labelMax);
+          try {
+            var bb = text.getBBox();
+            var lab = document.createElementNS('http://www.w3.org/2000/svg','rect');
+            lab.setAttribute('x', String(bb.x - 7));
+            lab.setAttribute('y', String(bb.y - 5));
+            lab.setAttribute('width', String(bb.width + 14));
+            lab.setAttribute('height', String(bb.height + 10));
+            lab.setAttribute('rx','6'); lab.setAttribute('ry','6');
+            lab.setAttribute('fill','rgba(15,23,42,0.45)');
+            lab.setAttribute('stroke', t.accent);
+            lab.setAttribute('stroke-width','1.1');
+            gInner.insertBefore(lab, text);
+          } catch(e){}
+          var title = document.createElementNS('http://www.w3.org/2000/svg','title');
+          if(n.id.indexOf('app:')===0){
+            var ainfo = n.meta || {};
+            var info = [];
+            info.push('App: ' + (ainfo.app||n.label));
+            if (ainfo.ns) info.push('Namespace: ' + ainfo.ns);
+            info.push('Pods: ' + (ainfo.ready||0) + '/' + (ainfo.desired||0));
+            if(ainfo.rev!=null) info.push('Revision: ' + ainfo.rev + ' (' + (ainfo.status||'-') + ')');
+            title.textContent = info.join(String.fromCharCode(10));
+          } else {
+            title.textContent = labelInfo.full || String(n.label||'');
+          }
+          g.appendChild(title);
+
+          if(n.type==='system' && (n.id==='ingress' || n.id==='controller' || n.id==='runtime')){
+            g.addEventListener('mouseenter', function(ev){ showHoverCard(n.id, ev); });
+            g.addEventListener('mousemove', function(ev){ showHoverCard(n.id, ev); });
+            g.addEventListener('mouseleave', function(){ hideHoverCard(); });
+          }
+        }
+
+        function drawPodNode(n){
+          var g = document.createElementNS('http://www.w3.org/2000/svg','g');
+          g.setAttribute('class','node pod ' + (n.meta && n.meta.state ? n.meta.state : ''));
+          g.setAttribute('transform','translate('+(n.x-6)+','+(n.y-6)+')');
+          if(n.meta && n.meta.app){ g.setAttribute('data-app', n.meta.app); }
+          var c = document.createElementNS('http://www.w3.org/2000/svg','circle');
+          c.setAttribute('r','6'); c.setAttribute('cx','6'); c.setAttribute('cy','6');
+          g.appendChild(c);
+          var title = document.createElementNS('http://www.w3.org/2000/svg','title');
+          var parts = [];
+          if(n.meta && n.meta.app) parts.push('App: '+n.meta.app);
+          if(n.meta && n.meta.ns) parts.push('Namespace: '+n.meta.ns);
+          parts.push('State: ' + (n.meta && n.meta.state ? n.meta.state : n.label));
+          title.textContent = parts.join(String.fromCharCode(10));
+          g.appendChild(title);
+          gNodes.appendChild(g);
+        }
+
+        function drawLabel(l){
+          var g = document.createElementNS('http://www.w3.org/2000/svg','g');
+          var base = l.color || '#94a3b8';
+          var gradId = 'label-grad-' + Math.random().toString(36).slice(2);
+          var defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
+          var grad = document.createElementNS('http://www.w3.org/2000/svg','linearGradient');
+          grad.setAttribute('id', gradId);
+          grad.setAttribute('x1','0'); grad.setAttribute('y1','0');
+          grad.setAttribute('x2','0'); grad.setAttribute('y2','1');
+          var stopTop = document.createElementNS('http://www.w3.org/2000/svg','stop');
+          stopTop.setAttribute('offset','0%');
+          stopTop.setAttribute('stop-color', shadeHsl(base, 14));
+          stopTop.setAttribute('stop-opacity','0.7');
+          var stopBot = document.createElementNS('http://www.w3.org/2000/svg','stop');
+          stopBot.setAttribute('offset','100%');
+          stopBot.setAttribute('stop-color', shadeHsl(base, -6));
+          stopBot.setAttribute('stop-opacity','0.45');
+          grad.appendChild(stopTop);
+          grad.appendChild(stopBot);
+          defs.appendChild(grad);
+          g.appendChild(defs);
+          var t = document.createElementNS('http://www.w3.org/2000/svg','text');
+          t.setAttribute('x', String(l.x));
+          t.setAttribute('y', String(l.y));
+          t.setAttribute('text-anchor', l.anchor || 'middle');
+          t.setAttribute('font-size','15');
+          t.setAttribute('font-weight','700');
+          t.setAttribute('fill', l.textColor || '#e2e8f0');
+          t.textContent = String(l.text || '');
+          g.appendChild(t);
+          gLabels.appendChild(g);
+          try {
+            var bbox = t.getBBox();
+            var rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+            rect.setAttribute('x', String(bbox.x - 8));
+            rect.setAttribute('y', String(bbox.y - 4));
+            rect.setAttribute('width', String(bbox.width + 16));
+            rect.setAttribute('height', String(bbox.height + 8));
+            rect.setAttribute('rx','8'); rect.setAttribute('ry','8');
+            rect.setAttribute('fill','url(#' + gradId + ')');
+            rect.setAttribute('stroke', base);
+            rect.setAttribute('stroke-width','1.2');
+            g.insertBefore(rect, t);
+          } catch(e){}
+        }
+
+        var maxY = 0;
+        nodes.forEach(function(n){
+          var r = (n.type === 'pod') ? 12 : hexH * 0.6;
+          maxY = Math.max(maxY, n.y + r);
+        });
+        labelNodes.forEach(function(l){ maxY = Math.max(maxY, l.y + 20); });
+        var totalHeight = Math.max(420, Math.ceil(maxY + padY));
+        if (wrapEl) {
+          wrapEl.style.height = totalHeight + 'px';
+        }
+        svg.setAttribute('viewBox', '0 0 ' + Math.max(1000, W) + ' ' + totalHeight);
+
+        links.forEach(function(L){ drawLink(L); });
+        nodes.forEach(function(n){ if (n.type === 'pod') drawPodNode(n); else drawHexNode(n); });
+        labelNodes.forEach(drawLabel);
+
+        var sysHelp = {
+          ingress: {
+            title:'Ingress (Caddy)',
+            body:[
+              'Front door for HTTP/HTTPS traffic.',
+              'Routes host/path to healthy app endpoints after readiness.',
+              'Controller writes site snippets and reloads the proxy on rollouts.',
+              'When proxy runs in a container, upstream 127.0.0.1 is rewritten to host.docker.internal.'
+            ].join('<br>')
+          },
+          controller: {
+            title:'Controller',
+            body:[
+              'Reconciliation loop for registered apps (imported from specs/).',
+              'Computes desired state and converges containers and ingress.',
+              'Single-node rollout: maxUnavailable=0, maxSurge=1 (zero-downtime).',
+              'Records events, exposes /status, /events, /metrics, and serves the dashboard.',
+              'Cleans up old revisions after switching traffic.'
+            ].join('<br>')
+          },
+          runtime: {
+            title:'Runtime (Docker)',
+            body:[
+              'Container adapter that manages pods for each app.',
+              'Reads logs, reports readiness/liveness, and lists ports.',
+              'Ensures named storage volumes exist; prunes when retention=Delete.',
+              'Provides container info for conflict checks and observability.'
+            ].join('<br>')
+          }
+        };
+
+        function showHoverCard(kind, evt){
+          if (!graphHover) return;
+          var wrap = document.getElementById('graph-wrap');
+          var rect = wrap.getBoundingClientRect();
+          var x = (evt.clientX - rect.left) + 10;
+          var y = (evt.clientY - rect.top) + 10;
+          var info = sysHelp[kind];
+          if (!info) return;
+          graphHover.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">'+info.title+'</div><div>'+info.body+'</div>';
+          graphHover.style.left = x + 'px';
+          graphHover.style.top = y + 'px';
+          graphHover.style.display = 'block';
+        }
+        function hideHoverCard(){ if (graphHover) graphHover.style.display='none'; }
+
+        // Highlight selection
+        try {
+          var sel = (typeof current==='string' && current) ? String(current) : null;
+          if (sel){
+            var selNs = null;
+            try {
+              var selNode = nodeById['app:' + sel];
+              if (selNode && selNode.meta && selNode.meta.ns) selNs = selNode.meta.ns;
+            } catch(e){}
+            if (!selNs) {
+              try { selNs = splitAppName(sel).namespace; } catch(e){}
+            }
+            // nodes
+            Array.from(gNodes.children).forEach(function(n){
+              var a = n.getAttribute('data-app');
+              var isSel = (a===sel);
+              if (isSel){
+                n.classList.add('selected');
+                return;
+              }
+              if (n.className.baseVal.indexOf('system') !== -1 || n.className.baseVal.indexOf('host') !== -1) return;
+              if (selNs && a){
+                var nsInfo = splitAppName(a);
+                if (nsInfo && nsInfo.namespace === selNs){
+                  n.classList.add('ns-peer');
+                  return;
+                }
+              }
+              n.classList.add('faded');
+            });
+            // links
+            Array.from(gLinks.children).forEach(function(p){
+              var d = p.getAttribute('d')||''; // fallback: we can't easily parse ends; recompute using id map instead
+            });
+            // More precise: mark links whose endpoints include the selected app
+            links.forEach(function(L, i){
+              var p = gLinks.children[i];
+              if(!p) return;
+              var involved = (L.a.indexOf('app:'+sel)===0) || (L.b.indexOf('app:'+sel)===0) || (L.b.indexOf('pod:'+sel)===0) || (L.a.indexOf('pod:'+sel)===0);
+              if(involved) p.classList.add('selected'); else p.classList.add('faded');
+            });
+          }
+        } catch(e){}
+      }
+
+      refreshApps().then(function(){ updateLogsHTMX(); updateProbeHistoryHTMX(); updateLogStreaming(); return Promise.all([refreshDetail(), refreshSystem()]); }).catch(console.error);
+      schedulePoll();
+    </script>
+  </body>
+</html>
