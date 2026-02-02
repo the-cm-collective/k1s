@@ -12,6 +12,7 @@ Setup
     - `AE_SPECS_DIR=state/demo-specs make loop` (watches only the curated set)
     - `AE_SPECS_DIR=state/demo-specs make run` (single reconcile pass)
 - Tip: `scripts/init_demo.sh` seeds `state/demo-specs` and exports `AE_SPECS_DIR` + `AE_DEMO_MODE=1` for demo runs.
+  - Demo convenience: `AE_REGISTER_LOCAL_NODE=1` registers a local node when no nodes are present (keeps demo/labs single-node runs working while preserving Kubernetes scheduling semantics by default).
   - Reset state quickly when switching contexts: `./scripts/init_demo.sh --reset` (deletes `state/controller.db` and `state/projections/`).
   - Registry cache: `./scripts/init_demo.sh --reset-registry-cache` (clears `state/registry` to force re-pull into the local cache).
 - SOPS/age (secrets):
@@ -19,6 +20,29 @@ Setup
   - Point SOPS to it: `export SOPS_AGE_KEY_FILE=~/.config/ae/keys.txt`
   - Seal sample secret: `make secrets-seal-demo` (uses `AE_AGE_RECIPIENT` or your keys.txt)
   - Convenience for demos: run `./scripts/init_demo.sh --with-secrets-env` to export both `AE_ALLOW_PLAINTEXT_SECRETS=1` and `SOPS_AGE_KEY_FILE` automatically.
+
+CRI nodes (containerd)
+- Required env:
+  - `AE_RUNTIME_BACKEND=cri`
+  - `AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock`
+  - `AE_CRI_SANDBOX_IMAGE=registry.k8s.io/pause:3.9`
+- Service VIP (optional):
+  - `AE_ENABLE_SERVICE_PROXY=1`
+  - `AE_SERVICE_PROVIDER=iptables`
+  - Run controller as root or with sufficient iptables permissions
+- Streaming exec/attach uses `crictl`; ensure it is installed and on PATH (`CRICTL_BIN` overrides).
+- CRI port-forward proxy (pods/services): set `AE_APISHIM_CRI_PORTFORWARD=1` (or `AE_APISHIM_CRI_PORTFORWARD_FORCE=1` to always prefer it).
+- Service VIP proxy on CRI uses iptables; set `AE_ENABLE_SERVICE_PROXY=1` and run as root.
+- CNI dirs (defaults): `/opt/cni/bin` and `/etc/cni/net.d`
+- Init CNI configs (bridge + loopback) if missing: `./scripts/cni_init.sh`
+- If CNI version mismatches occur, force rewrite with a newer spec and restart containerd:
+  - `AE_CNI_FORCE=1 AE_CNI_VERSION=1.0.0 ./scripts/cni_init.sh`
+  - `sudo systemctl restart containerd`
+- Preflight checks: `./scripts/cri_preflight.sh`
+- Smoke check (requires crictl): `./scripts/cri_smoke.sh`
+- Optional pull test: `AE_CRI_SMOKE_PULL=1 pytest tests/integration/test_cri_smoke.py -k pull`
+- Optional lifecycle test: `AE_CRI_IT=1 pytest tests/integration/test_cri_runtime_integration.py -q`
+- CI-style bootstrap (installs containerd/CNI/crictl): `./scripts/cri_ci_setup.sh`
 
 Export and Validate K8s YAML
 - Hardened export with validation:
@@ -72,10 +96,11 @@ API tokens
 
 API shim (kubectl/helm)
 - Start shim locally: `AE_APISHIM_ENABLE=1 AE_APISHIM_TOKEN=changeme python -m ae.apishim serve --host 127.0.0.1 --port 8445` (add `--allow-anonymous` only for dev). Postgres backend: set `AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname`; default is SQLite at `AE_APISHIM_DB` (`state/apishim.db`).
+- WS exec/port-forward smoke: `AE_APISHIM_EXEC_TOKEN=exec AE_APISHIM_PORTFORWARD_TOKEN=pf AE_RUNTIME_BACKEND=docker ./scripts/dev/apishim_ws_smoke.sh` (optional: `PF_JS=1` for JS client, `PF_RAW_DUMP=1` to capture raw frames).
 - Kubeconfig helper: `python -m ae.apishim kubeconfig --server http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN --insecure-skip-tls-verify > ~/.kube/k1s-apishim.yaml`.
 - Storage migration: `python -m ae.apishim migrate --source state/apishim.db --target $AE_APISHIM_DSN` copies objects while preserving resourceVersion between SQLite and Postgres.
 - Shim metrics: `/metrics` (token required unless anonymous allowed) exposes `apishim_watch_*` counters/gauges for watch queue depth, enqueued, dropped, streams started, and `apishim_store_backend_info`.
-- Helm/kubectl dry-run: shim serves `/openapi/v2` with enriched schemas and `/openapi/v3` mirroring it; both are exported during release and attached as artifacts.
+- Helm/kubectl dry-run: shim serves `/openapi/v3` as the primary schema endpoint with `/openapi/v2` as a compatibility mirror; both are exported during release and attached as artifacts.
 
 Controller state store
 - Default: SQLite at `state/controller.db`.
@@ -261,6 +286,7 @@ Two easy ways to run it:
   - Serve docs via compose:
     - `docker compose -f ops/dev/labs-compose.yaml up -d`
   - Open https://localhost:8443/playground.html
+  - Dashboard (separate host): https://dash.home.arpa:8443/dashboard
   - Optional token gate:
     - Export `AE_LABS_TOKEN=…` for the controller; paste it into “Labs Token” on the page.
 
@@ -268,6 +294,7 @@ Two easy ways to run it:
   - Recommended: `make labs-aio-up` (generates shim tokens before compose)
   - Or: `./scripts/ensure_apishim_env.sh && docker compose -f ops/dev/labs-aio.yaml up -d`
   - Open https://localhost:8443/playground.html
+  - Dashboard (separate host): https://dash.home.arpa:8443/dashboard
   - API shim starts by default on `127.0.0.1:8445` with per-run tokens stored in `state/labs/apishim.env`
   - To override tokens, set `AE_APISHIM_TOKEN` / `AE_APISHIM_READ_TOKEN` in `.env` (long values; weak tokens are rejected)
   - To run with a local Postgres backend for controller + shim, set `AE_LABS_USE_POSTGRES=1` before bringing the stack up
@@ -278,6 +305,7 @@ Tips
 - The page auto‑detects the API base; use the “API Mode” button in the footer to switch proxy vs. direct.
 - k3s/k3d: click “Create k3d Cluster” to bootstrap a local k3d for the Kubernetes track; ports default to 8081/8444 and are shown in the banner.
 - If ingress uses a custom TLS secret, make sure it’s synced (see “Ingress and TLS” above) so the app hostname resolves under Caddy.
+- Gates: set `AE_PLAYGROUND=0` to disable the playground UI and labs endpoints, and `AE_DASHBOARD=0` to disable the dashboard UI.
 
 DNS/hosts for local domains
 - Add entries to your hosts file so browsers resolve the dev domains:
@@ -287,12 +315,14 @@ DNS/hosts for local domains
 ```
 127.0.0.1 docs.home.arpa
 127.0.0.1 api.home.arpa
+127.0.0.1 dash.home.arpa
 ```
 
 Caddy site config (dev)
 - The repo ships site snippets under `ops/dev/caddy/sites/`:
-  - `docs.caddy`: serves the docs at `https://docs.home.arpa:8443/` and proxies API paths (`/health`, `/status`, `/events`, `/logs`, `/metrics`, `/swagger`, `/redoc`, `/dashboard`, `/labs`, `/system`) to the controller on `host.docker.internal:9108`.
-  - `api.caddy`: exposes the API directly at `https://api.home.arpa:8443/` (handy for Swagger/ReDoc).
+  - `docs.caddy`: serves the docs at `https://docs.home.arpa:8443/` and proxies API paths (`/health`, `/status`, `/events`, `/logs`, `/metrics`, `/swagger`, `/redoc`, `/labs`, `/system`, `/ui/features`, `/api/apishim/*`) to the controller on `host.docker.internal:9108`.
+  - `dash.caddy`: exposes the dashboard UI at `https://dash.home.arpa:8443/dashboard` (controller-backed).
+  - `api.caddy`: exposes the API directly at `https://api.home.arpa:8443/` and routes `/api/v1` + `/apis` to the API shim (exec/port-forward).
 - After updating site files, restart Caddy:
   - `docker compose -f ops/dev/labs-compose.yaml restart caddy` (or bring the stack up again)
 ## Probe History: Dashboard and CLI
@@ -324,3 +354,32 @@ For rapid iteration on exporter options, enable a development-only endpoint to r
 
 - Ingress: use `--ingress-preset nginx-web|traefik-web` to apply common, opt‑in annotations. Combine with `--ingress-class` and custom `--ingress-annotation key=value` for fine‑tuning.
 - Storage: `--storage-class-name <name>` and `--pvc-access-modes <mode>` override defaults for generated PVCs and StatefulSet `volumeClaimTemplates`.
+
+## NetFS Storage Operations
+
+Operational toggles:
+- `AE_NETFS_ROOT` controls the node mount root (default `/var/lib/ae/netfs`).
+- `AE_NETFS_FS_RESIZE=1` enables best-effort filesystem resize on bound volumes.
+- `AE_NETFS_SELINUX_RECURSIVE=1` allows recursive `chcon -R` on RWX/ROX volumes.
+
+PVC cloning (filesystem volumes only):
+- Set `spec.dataSourceRef` with kind `PersistentVolumeClaim` on the target PVC.
+- Source PVC must be `Bound` and hostPath-backed (NFS/local-path provisioners).
+- The target StorageClass must match the source StorageClass.
+- Not supported for `volumeMode: Block`.
+
+CSIStorageCapacity overrides:
+- StorageClasses can publish static capacity for external CSI drivers via
+  `parameters.capacity` (e.g., `5Gi`) or `parameters.capacityBytes` (integer bytes).
+- This bypasses hostPath disk probes and only affects the advertised capacity object.
+
+Common failure reasons (PVC events):
+- `CloneNotReady` / `CloneNotFound`: source PVC missing or not bound.
+- `CloneUnsupported`: block volume or non-hostPath-backed source.
+- `CloneInvalid`: mismatched StorageClass or invalid `dataSourceRef`.
+- `VolumeNotAttached`: CSI volume lacks a matching VolumeAttachment.
+- `SelinuxRelabelFailed`: SELinux relabel attempt failed; check privileges and `chcon`.
+
+Useful checks:
+- `ae events <app>` for recent PVC/PV events.
+- `ae status --verbose` to verify node mount paths and permissions.

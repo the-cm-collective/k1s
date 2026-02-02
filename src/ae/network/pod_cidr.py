@@ -1,4 +1,4 @@
-"""Pod CIDR allocator for multi-node overlay (Phase 3 bootstrap).
+"""Pod CIDR allocator for multi-node overlay networking.
 
 The allocator is intentionally simple: it walks subnets of a configured pool
 and assigns the first free block to a node. Allocations are persisted in the
