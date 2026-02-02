@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from ae.controller.health import HealthReport, ReplicaHealth
+from ae.controller.health import HealthReport, PodHealth
 from ae.controller.reconciler import Reconciler, ReconcileReport
 from ae.controller.spec import (
     AppManifest,
@@ -14,23 +14,38 @@ from ae.controller.spec import (
     ServiceSpec,
 )
 from ae.controller.state import ServiceEndpoint, SQLiteStateStore
-from ae.runtime.base import ReplicaState, RuntimeAdapter, RuntimeResult
+from ae.runtime.base import PodState, RuntimeAdapter, RuntimeResult
 
 
 class StubRuntime(RuntimeAdapter):
     def __init__(self) -> None:
         self.last_manifest: AppManifest | None = None
 
-    def ensure_app(self, manifest: AppManifest, revision: int) -> RuntimeResult:
+    def ensure_app(
+        self,
+        manifest: AppManifest,
+        revision: int,
+        *,
+        keep_old: bool = False,
+        limit_create: int | None = None,
+        pod_names: list[str] | None = None,
+        node_id: str | None = None,
+    ) -> RuntimeResult:
+        _ = (keep_old, limit_create, node_id)
         self.last_manifest = manifest
+        name = (
+            pod_names[0]
+            if pod_names
+            else f"{manifest.metadata.name}-rev{revision}-0"
+        )
         return RuntimeResult(
             revision=revision,
             created=1,
             updated=0,
             removed=0,
-            replica_states=[
-                ReplicaState(
-                    replica_id=f"{manifest.metadata.name}-rev{revision}-0",
+            pod_states=[
+                PodState(
+                    pod_name=name,
                     ready=True,
                     status="running",
                     endpoint="127.0.0.1:32000",
@@ -52,9 +67,9 @@ class FailingLivenessRuntime(RuntimeAdapter):
             created=1,
             updated=0,
             removed=0,
-            replica_states=[
-                ReplicaState(
-                    replica_id=f"{_manifest.metadata.name}-rev{revision}-0",
+            pod_states=[
+                PodState(
+                    pod_name=f"{_manifest.metadata.name}-rev{revision}-0",
                     ready=False,
                     status="created",
                     endpoint=None,
@@ -97,13 +112,23 @@ class CreateButEmptyStatesRuntime(RuntimeAdapter):
     an immediate `ps/inspect` does not include the new container.
     """
 
-    def ensure_app(self, _manifest: AppManifest, revision: int) -> RuntimeResult:  # type: ignore[override]
+    def ensure_app(
+        self,
+        _manifest: AppManifest,
+        revision: int,
+        *,
+        pod_names: list[str] | None = None,
+        node_id: str | None = None,
+        keep_old: bool = False,
+        limit_create: int | None = None,
+    ) -> RuntimeResult:  # type: ignore[override]
+        _ = (pod_names, node_id, keep_old, limit_create)
         return RuntimeResult(
             revision=revision,
             created=1,
             updated=0,
             removed=0,
-            replica_states=[],
+            pod_states=[],
         )
 
 
@@ -168,7 +193,7 @@ def test_reconciler_updates_state(tmp_path: Path) -> None:
     assert status.revision_status in {"ready", "progressing"}
     assert status.image == "alpine:3.20"
     assert status.created == 1
-    replicas = state.list_replicas("demo")
+    replicas = state.list_pods("demo")
     assert len(replicas) == 1
     assert replicas[0].live is True
     events = state.list_events("demo", limit=5)
@@ -243,9 +268,9 @@ def test_select_upstreams_prefers_service_vip(tmp_path: Path) -> None:
         created=0,
         updated=0,
         removed=0,
-        replica_states=[
-            ReplicaState(
-                replica_id="demo-rev1-0",
+        pod_states=[
+            PodState(
+                pod_name="demo-rev1-0",
                 ready=True,
                 status="running",
                 endpoint="10.42.0.12:8080",
@@ -255,9 +280,9 @@ def test_select_upstreams_prefers_service_vip(tmp_path: Path) -> None:
     health_report = HealthReport(
         ready_replicas=1,
         live_replicas=1,
-        replicas=[
-            ReplicaHealth(
-                replica_id="demo-rev1-0",
+        pods=[
+            PodHealth(
+                pod_name="demo-rev1-0",
                 ready=True,
                 live=True,
                 readiness_message="ok",

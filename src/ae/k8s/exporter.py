@@ -678,6 +678,17 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
             ):
                 sec["localhostProfile"] = str(m.spec.pod_security.seccomp_localhost_profile)
             psc["seccompProfile"] = sec
+        selinux = {}
+        if getattr(m.spec.pod_security, "selinux_user", None):
+            selinux["user"] = str(m.spec.pod_security.selinux_user)
+        if getattr(m.spec.pod_security, "selinux_role", None):
+            selinux["role"] = str(m.spec.pod_security.selinux_role)
+        if getattr(m.spec.pod_security, "selinux_type", None):
+            selinux["type"] = str(m.spec.pod_security.selinux_type)
+        if getattr(m.spec.pod_security, "selinux_level", None):
+            selinux["level"] = str(m.spec.pod_security.selinux_level)
+        if selinux:
+            psc["seLinuxOptions"] = selinux
         if psc:
             pod_spec["securityContext"] = psc
     # Scheduling pass-through
@@ -720,7 +731,10 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
                 continue
             claim = _storage_claim_name(m.metadata.name, s_name)
             volume_specs.append({"name": claim, "persistentVolumeClaim": {"claimName": claim}})
-            volume_mounts.append({"name": claim, "mountPath": s_mount})
+            vm = {"name": claim, "mountPath": s_mount}
+            if _storage_read_only(s):
+                vm["readOnly"] = True
+            volume_mounts.append(vm)
     # emptyDir ephemeral volumes
     if getattr(m.spec, "empty_dirs", None):
         for ed in m.spec.empty_dirs:
@@ -798,6 +812,61 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
 
 def _storage_claim_name(app: str, name: str) -> str:
     return f"{app}-{name}"
+
+
+def _storage_field(s, attr: str, *aliases: str) -> Any:
+    if isinstance(s, dict):
+        for key in (attr, *aliases):
+            if key in s:
+                return s.get(key)
+        return None
+    return getattr(s, attr, None)
+
+
+def _coerce_str_list(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, set)):
+        return [str(v) for v in value if v is not None]
+    if isinstance(value, str):
+        return [value]
+    return None
+
+
+def _storage_access_modes(s, opts: ExportOptions) -> list[str]:
+    if opts.pvc_access_modes is not None:
+        return list(opts.pvc_access_modes)
+    modes = _coerce_str_list(_storage_field(s, "access_modes", "accessModes", "access_modes"))
+    return modes or ["ReadWriteOnce"]
+
+
+def _storage_class_name(s, opts: ExportOptions) -> str | None:
+    if opts.storage_class_name is not None:
+        return str(opts.storage_class_name)
+    raw = _storage_field(
+        s, "storage_class", "class", "storageClassName", "storage_class_name"
+    )
+    if raw in (None, ""):
+        return None
+    return str(raw)
+
+
+def _storage_volume_mode(s) -> str | None:
+    raw = _storage_field(s, "volume_mode", "volumeMode", "volume_mode")
+    if raw in (None, ""):
+        return None
+    return str(raw)
+
+
+def _storage_read_only(s) -> bool:
+    raw = _storage_field(s, "read_only", "readOnly", "read_only")
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(raw)
 
 
 def _headless_service_for_statefulset(
@@ -945,6 +1014,17 @@ def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str,
             ):
                 sec["localhostProfile"] = str(m.spec.pod_security.seccomp_localhost_profile)
             psc["seccompProfile"] = sec
+        selinux = {}
+        if getattr(m.spec.pod_security, "selinux_user", None):
+            selinux["user"] = str(m.spec.pod_security.selinux_user)
+        if getattr(m.spec.pod_security, "selinux_role", None):
+            selinux["role"] = str(m.spec.pod_security.selinux_role)
+        if getattr(m.spec.pod_security, "selinux_type", None):
+            selinux["type"] = str(m.spec.pod_security.selinux_type)
+        if getattr(m.spec.pod_security, "selinux_level", None):
+            selinux["level"] = str(m.spec.pod_security.selinux_level)
+        if selinux:
+            psc["seLinuxOptions"] = selinux
         if psc:
             pod_spec["securityContext"] = psc
 
@@ -974,16 +1054,27 @@ def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str,
             req_size = (
                 getattr(s, "size", None) if not isinstance(s, dict) else s.get("size")
             ) or opts.default_pvc_size
+            access_modes = _storage_access_modes(s, opts)
+            storage_class = _storage_class_name(s, opts)
+            volume_mode = _storage_volume_mode(s)
+            spec: Dict[str, Any] = {
+                "accessModes": access_modes,
+                "resources": {"requests": {"storage": str(req_size)}},
+            }
+            if storage_class:
+                spec["storageClassName"] = storage_class
+            if volume_mode:
+                spec["volumeMode"] = volume_mode
             vcts.append(
                 {
                     "metadata": {"name": claim},
-                    "spec": {
-                        "accessModes": ["ReadWriteOnce"],
-                        "resources": {"requests": {"storage": str(req_size)}},
-                    },
+                    "spec": spec,
                 }
             )
-            volume_mounts.append({"name": claim, "mountPath": s_mount})
+            vm = {"name": claim, "mountPath": s_mount}
+            if _storage_read_only(s):
+                vm["readOnly"] = True
+            volume_mounts.append(vm)
     if volume_mounts:
         for c in pod_spec.get("containers", []) or []:
             c.setdefault("volumeMounts", []).extend(volume_mounts)
@@ -1242,6 +1333,9 @@ def _pvc_from_storage(app: AppManifest, s, opts: ExportOptions) -> Dict[str, Any
     s_name = getattr(s, "name", None) if not isinstance(s, dict) else s.get("name")
     s_size = getattr(s, "size", None) if not isinstance(s, dict) else s.get("size")
     size = s_size or opts.default_pvc_size
+    access_modes = _storage_access_modes(s, opts)
+    storage_class = _storage_class_name(s, opts)
+    volume_mode = _storage_volume_mode(s)
     pvc = {
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
@@ -1251,12 +1345,14 @@ def _pvc_from_storage(app: AppManifest, s, opts: ExportOptions) -> Dict[str, Any
             "labels": _resource_labels(app),
         },
         "spec": {
-            "accessModes": list(opts.pvc_access_modes or ["ReadWriteOnce"]),
+            "accessModes": access_modes,
             "resources": {"requests": {"storage": str(size)}},
         },
     }
-    if opts.storage_class_name:
-        pvc["spec"]["storageClassName"] = str(opts.storage_class_name)
+    if storage_class:
+        pvc["spec"]["storageClassName"] = storage_class
+    if volume_mode:
+        pvc["spec"]["volumeMode"] = volume_mode
     return pvc
 
 

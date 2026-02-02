@@ -3,7 +3,7 @@ from pathlib import Path
 from ae.controller.reconciler import Reconciler
 from ae.controller.spec import AppManifest, AppSpec, Metadata
 from ae.controller.state import SQLiteStateStore
-from ae.runtime.base import ReplicaState, RuntimeResult
+from ae.runtime.base import PodState, RuntimeResult
 
 
 class DummyRuntimeWithExec:
@@ -11,16 +11,31 @@ class DummyRuntimeWithExec:
         self.exec_calls: list[tuple[str, list[str], int | None]] = []
         self.removed = 0
 
-    def ensure_app(self, manifest, revision, *, _keep_old=False, _limit_create=None):  # noqa: ANN001
-        # Create one new replica state so readiness gating passes
+    def ensure_app(
+        self,
+        manifest,
+        revision,
+        *,
+        keep_old=False,
+        limit_create=None,
+        pod_names: list[str] | None = None,
+        node_id: str | None = None,
+    ):  # noqa: ANN001
+        _ = (keep_old, limit_create, node_id)
+        # Create one new pod state so readiness gating passes
+        name = (
+            pod_names[0]
+            if pod_names
+            else f"{manifest.metadata.name}-rev{revision}-0"
+        )
         return RuntimeResult(
             revision=revision,
             created=1,
             updated=0,
             removed=0,
-            replica_states=[
-                ReplicaState(
-                    replica_id=f"{manifest.metadata.name}-rev{revision}-0",
+            pod_states=[
+                PodState(
+                    pod_name=name,
                     ready=True,
                     status="running",
                     endpoint="127.0.0.1:9000",
@@ -29,14 +44,14 @@ class DummyRuntimeWithExec:
         )
 
     def list_containers_info(self):  # noqa: D401 - test stub
-        # One old replica and one current; only old should be targeted
+        # One old pod and one current; only old should be targeted
         return [
             {
                 "name": "ae-echo-rev0-0",
                 "labels": {
                     "ae.app": "echo",
                     "ae.revision": "0",
-                    "ae.replica_id": "echo-rev0-0",
+                    "ae.pod_name": "echo-rev0-0",
                 },
                 "host_ports": [18080],
             },
@@ -45,14 +60,14 @@ class DummyRuntimeWithExec:
                 "labels": {
                     "ae.app": "echo",
                     "ae.revision": "1",
-                    "ae.replica_id": "echo-rev1-0",
+                    "ae.pod_name": "echo-rev1-0",
                 },
                 "host_ports": [18080],
             },
         ]
 
-    def exec(self, replica_id, command, timeout=None):  # noqa: ANN001
-        self.exec_calls.append((replica_id, list(command), timeout))
+    def exec(self, pod_name, command, timeout=None):  # noqa: ANN001
+        self.exec_calls.append((pod_name, list(command), timeout))
         return 0
 
     def remove_old_revisions(self, _app_name: str, _keep_revision: int) -> int:
@@ -76,7 +91,7 @@ def test_prestop_exec_runs_before_removal(tmp_path: Path) -> None:
         ),
     )
     rec.reconcile(man)
-    # Should have attempted exec on old replica id only
+    # Should have attempted exec on old pod name only
     assert any(call[0] == "echo-rev0-0" for call in rt.exec_calls)
     assert all(isinstance(call[2], int) and call[2] == 5 for call in rt.exec_calls)
     assert rt.removed > 0

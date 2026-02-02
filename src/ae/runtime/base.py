@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass, field
 from datetime import datetime
 from typing import Protocol
 
@@ -10,16 +10,32 @@ from ae.controller.spec import AppManifest
 
 
 @dataclass(slots=True)
-class ReplicaState:
-    """Status for an individual replica in the runtime."""
+class PodState:
+    """Status for an individual pod in the runtime."""
 
-    replica_id: str
     ready: bool
     status: str = "running"
+    pod_name: str = ""
     endpoint: str | None = None
     started_at: datetime | None = None
     exit_code: int | None = None
     finished_at: datetime | None = None
+    replica_id: InitVar[str | None] = None
+
+    def __post_init__(self, replica_id: str | None) -> None:
+        if not self.pod_name and replica_id:
+            self.pod_name = str(replica_id)
+
+    @property
+    def replica_id(self) -> str:
+        return self.pod_name
+
+    @replica_id.setter
+    def replica_id(self, value: str) -> None:
+        self.pod_name = value
+
+
+ReplicaState = PodState
 
 
 @dataclass(slots=True)
@@ -30,7 +46,28 @@ class RuntimeResult:
     created: int
     updated: int
     removed: int
-    replica_states: list[ReplicaState]
+    pod_states: list[PodState] = field(default_factory=list)
+
+    def __init__(
+        self,
+        revision: int,
+        created: int,
+        updated: int,
+        removed: int,
+        pod_states: list[PodState] | None = None,
+        replica_states: list[PodState] | None = None,
+    ) -> None:
+        if pod_states is None:
+            pod_states = list(replica_states) if replica_states is not None else []
+        self.revision = revision
+        self.created = created
+        self.updated = updated
+        self.removed = removed
+        self.pod_states = list(pod_states)
+
+    @property
+    def replica_states(self) -> list[PodState]:
+        return self.pod_states
 
 
 class RuntimeAdapter(Protocol):
@@ -43,22 +80,22 @@ class RuntimeAdapter(Protocol):
         *,
         keep_old: bool = False,
         limit_create: int | None = None,
-        replica_ids: list[str] | None = None,
+        pod_names: list[str] | None = None,
         node_id: str | None = None,
     ) -> RuntimeResult:
         """Ensure the runtime matches the manifest."""
 
     def read_logs(
         self,
-        replica_id: str,
+        pod_name: str,
         *,
         follow: bool = False,
         tail: int | None = None,
         since: int | None = None,
     ):
-        """Yield log lines for a given replica identifier.
+        """Yield log lines for a given pod identifier.
 
-        Implementations should locate the container by the `replica_id` label and
+        Implementations should locate the container by the pod label and
         yield decoded UTF-8 lines. If `follow` is True, continue streaming.
         """
 
@@ -97,11 +134,11 @@ class RuntimeAdapter(Protocol):
         """
         return []
 
-    def exec(self, replica_id: str, command: list[str], *, timeout: int | None = None) -> int:
-        """Execute a command inside the target replica's container.
+    def exec(self, pod_name: str, command: list[str], *, timeout: int | None = None) -> int:
+        """Execute a command inside the target pod's container.
 
         Returns the exit code. Implementations should locate the container by
-        the `ae.replica_id` label and run the command non-interactively.
+        the pod label and run the command non-interactively.
         """
 
     # Optional API for container-scoped exec when multi-container is enabled.
@@ -115,7 +152,7 @@ class RuntimeAdapter(Protocol):
     # Optional streaming exec (stdin/stdout/stderr) for kubectl exec
     def exec_attach(
         self,
-        replica_id: str,
+        pod_name: str,
         command: list[str],
         *,
         container: str | None = None,

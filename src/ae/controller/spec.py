@@ -117,6 +117,7 @@ class IngressSpec(BaseModel):
     # Phase 7: optional multi-paths and TLS secret passthrough
     paths: List[str] = Field(default_factory=list)
     tls_secret_name: Optional[str] = Field(default=None, alias="tlsSecretName")
+    annotations: dict | None = None
     # Optional BYO TLS for Caddy writer (host cert/key paths)
     tls_cert_path: Optional[str] = Field(default=None, alias="tlsCertPath")
     tls_key_path: Optional[str] = Field(default=None, alias="tlsKeyPath")
@@ -256,6 +257,7 @@ class PodSecuritySpec(BaseModel):
 
     - fsGroup: numeric GID applied to mounted volumes
     - seccompProfile at Pod level (type + localhostProfile)
+    - seLinuxOptions fields for SELinux context
     """
 
     fs_group: Optional[int] = Field(default=None, alias="fsGroup")
@@ -263,6 +265,10 @@ class PodSecuritySpec(BaseModel):
         default=None, alias="seccompProfileType"
     )
     seccomp_localhost_profile: Optional[str] = Field(default=None, alias="seccompLocalhostProfile")
+    selinux_user: Optional[str] = Field(default=None, alias="seLinuxUser")
+    selinux_role: Optional[str] = Field(default=None, alias="seLinuxRole")
+    selinux_type: Optional[str] = Field(default=None, alias="seLinuxType")
+    selinux_level: Optional[str] = Field(default=None, alias="seLinuxLevel")
 
     model_config = {"populate_by_name": True}
 
@@ -293,6 +299,30 @@ class VolumeSpec(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class VolumeDeviceSpec(BaseModel):
+    """Raw device mapping (block volumes)."""
+
+    host_path: str = Field(alias="hostPath")
+    device_path: str = Field(alias="devicePath")
+    read_only: bool = Field(default=False, alias="readOnly")
+
+    model_config = {"populate_by_name": True}
+
+
+class PvcMountSpec(BaseModel):
+    """PVC-backed volume mount request (resolved via NetFS)."""
+
+    claim_name: str = Field(alias="claimName")
+    mount_path: str = Field(alias="mountPath")
+    read_only: bool = Field(default=False, alias="readOnly")
+    device_path: Optional[str] = Field(default=None, alias="devicePath")
+    sub_path: Optional[str] = Field(default=None, alias="subPath")
+    claim_template: bool = Field(default=False, alias="claimTemplate")
+    namespace: Optional[str] = None
+
+    model_config = {"populate_by_name": True}
+
+
 class StorageRetention(str):
     Retain = "Retain"
     Delete = "Delete"
@@ -303,12 +333,19 @@ class StorageSpec(BaseModel):
 
     The controller creates a Docker named volume per entry and mounts it at
     the specified path. Retention controls removal on app deletion.
+
+    Optional fields (class/accessModes/volumeMode/readOnly) are reserved for
+    NetFS-backed PVC mapping and future runtime integrations.
     """
 
     name: str
     mount_path: str = Field(alias="mountPath")
     retention: str = Field(default=StorageRetention.Retain)
     size: str | None = None  # reserved for future use
+    storage_class: str | None = Field(default=None, alias="class")
+    access_modes: list[str] | None = Field(default=None, alias="accessModes")
+    volume_mode: str | None = Field(default=None, alias="volumeMode")
+    read_only: bool = Field(default=False, alias="readOnly")
 
     model_config = {"populate_by_name": True}
 
@@ -379,6 +416,8 @@ class ConfigRef(BaseModel):
     files: List[dict] = Field(default_factory=list)
     # Optional envFrom behavior: when true, exporter may emit envFrom for this configmap
     env_from: bool = Field(default=False, alias="envFrom")
+
+    model_config = {"populate_by_name": True}
 
 
 class AppSpec(BaseModel):
@@ -452,6 +491,8 @@ class AppSpec(BaseModel):
     security: Optional[SecuritySpec] = None
     termination_grace_period_seconds: int = Field(default=10, alias="terminationGracePeriodSeconds")
     volumes: List[VolumeSpec] = Field(default_factory=list)
+    volume_devices: List[VolumeDeviceSpec] = Field(default_factory=list, alias="volumeDevices")
+    pvc_mounts: List[PvcMountSpec] = Field(default_factory=list, alias="pvcMounts")
     storage: List[StorageSpec] = Field(default_factory=list)
     empty_dirs: List[EmptyDirSpec] = Field(default_factory=list, alias="emptyDirs")
     # Optional exporter hints (purely affects export/check tooling)
@@ -599,6 +640,16 @@ def runtime_labels_for_manifest(
     labels["ae.app"] = app_name or app_key_for_manifest(manifest)
     labels["ae.namespace"] = getattr(manifest.metadata, "namespace", None) or DEFAULT_NAMESPACE
     return labels
+
+
+def all_pvc_mounts(manifest: "AppManifest") -> list[PvcMountSpec]:
+    mounts: list[PvcMountSpec] = []
+    mounts.extend(list(getattr(manifest.spec, "pvc_mounts", []) or []))
+    for c in getattr(manifest.spec, "containers", []) or []:
+        mounts.extend(list(getattr(c, "pvc_mounts", []) or []))
+    for c in getattr(manifest.spec, "init_containers", []) or []:
+        mounts.extend(list(getattr(c, "pvc_mounts", []) or []))
+    return mounts
 
 
 # ruff: noqa

@@ -9,18 +9,33 @@ class DummyRuntimeWithInit:
     def __init__(self):
         self.calls = []
 
-    def ensure_app(self, manifest, revision, *, _keep_old=False, _limit_create=None):  # noqa: ANN001
-        from ae.runtime.base import ReplicaState, RuntimeResult
+    def ensure_app(
+        self,
+        manifest,
+        revision,
+        *,
+        keep_old=False,
+        limit_create=None,
+        pod_names: list[str] | None = None,
+        node_id: str | None = None,
+    ):  # noqa: ANN001
+        from ae.runtime.base import PodState, RuntimeResult
 
+        _ = (keep_old, limit_create, node_id)
         self.calls.append("ensure")
+        name = (
+            pod_names[0]
+            if pod_names
+            else f"{manifest.metadata.name}-rev{revision}-0"
+        )
         return RuntimeResult(
             revision=revision,
             created=1,
             updated=0,
             removed=0,
-            replica_states=[
-                ReplicaState(
-                    replica_id=f"{manifest.metadata.name}-rev{revision}-0",
+            pod_states=[
+                PodState(
+                    pod_name=name,
                     ready=True,
                     status="running",
                     endpoint="127.0.0.1:9000",

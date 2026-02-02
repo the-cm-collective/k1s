@@ -18,6 +18,7 @@ import os
 import time
 import signal
 import socket
+import re
 from collections.abc import Iterable
 from pathlib import Path
 from datetime import datetime
@@ -46,10 +47,38 @@ def service_controller_factory(store: SQLiteStateStore):
     if os.getenv("AE_ENABLE_SERVICE_PROXY", "0") != "1":
         return None
     try:
-        from ae.network import DockerBridgeProvider, OverlayProvider, ServiceController
+        from ae.network import (
+            DockerBridgeProvider,
+            IptablesProvider,
+            OverlayProvider,
+            ServiceController,
+        )
 
-        provider_name = os.getenv("AE_SERVICE_PROVIDER", "bridge").lower()
-        if provider_name in {"overlay", "kubeproxy"}:
+        backend = os.getenv("AE_RUNTIME_BACKEND", "podman").lower()
+        provider_name = os.getenv(
+            "AE_SERVICE_PROVIDER", "iptables" if backend in {"cri", "containerd"} else "bridge"
+        ).lower()
+        if backend in {"cri", "containerd"} and provider_name not in {
+            "iptables",
+            "kubeproxy",
+            "cri",
+        }:
+            try:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Service provider %s unsupported on CRI; using iptables.", provider_name
+                )
+            except Exception:
+                pass
+            provider_name = "iptables"
+        if provider_name in {"iptables", "kubeproxy", "cri"}:
+            provider = IptablesProvider(
+                store,
+                service_cidr=os.getenv("AE_SERVICE_IP_POOL", "10.241.0.0/16"),
+                iptables_bin=os.getenv("AE_IPTABLES_BIN", "iptables"),
+            )
+        elif provider_name in {"overlay"}:
             provider = OverlayProvider(
                 store,
                 network_name=os.getenv("AE_OVERLAY_NET", "ae-overlay"),
@@ -75,10 +104,16 @@ def service_controller_factory(store: SQLiteStateStore):
         return None
 
 
+def _local_node_id() -> str:
+    return os.getenv("AE_NODE_ID", socket.gethostname())
+
+
 def _register_local_node(store: SQLiteStateStore, runtime_backend: str) -> None:
     """Best-effort local node registration for single-controller setups."""
     try:
-        node_id = os.getenv("AE_NODE_ID", socket.gethostname())
+        if store.list_nodes():
+            return
+        node_id = _local_node_id()
         name = os.getenv("AE_NODE_NAME", node_id)
         store.upsert_node(
             node_id,
@@ -93,6 +128,11 @@ def _register_local_node(store: SQLiteStateStore, runtime_backend: str) -> None:
         store.record_heartbeat(node_id, "Ready")
     except Exception:
         pass
+
+
+def _truthy_env(name: str, default: str = "0") -> bool:
+    raw = os.getenv(name, default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -794,7 +834,8 @@ def _make_reconciler() -> Reconciler:
     secrets = secret_manager_factory()
     configs = config_manager_factory()
     svc_controller = service_controller_factory(store)
-    _register_local_node(store, runtime.__class__.__name__.lower())
+    if _truthy_env("AE_REGISTER_LOCAL_NODE"):
+        _register_local_node(store, runtime.__class__.__name__.lower())
     return Reconciler(
         runtime,
         store,
@@ -1019,7 +1060,44 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         def _logs(
             app: str, container: str | None, tail: int | None, since: int | None, follow: bool
         ):
-            reps = store.list_replicas(app)
+            def _select_target(reps):
+                if not reps:
+                    return None
+                # Prefer pods from the current revision when known, and pick ready/live first.
+                rev = None
+                try:
+                    st = store.get_status(app)
+                    if st is not None and st.revision is not None:
+                        rev = int(st.revision)
+                except Exception:
+                    rev = None
+
+                candidates = reps
+                if rev is not None:
+                    rev_tag = f"-rev{rev}-"
+                    by_rev = [r for r in reps if rev_tag in r.pod_name]
+                    if by_rev:
+                        candidates = by_rev
+
+                def _pod_rev(name: str) -> int:
+                    m = re.search(r"-rev(\d+)-", name)
+                    return int(m.group(1)) if m else -1
+
+                def _rank(pod) -> tuple[int, int, str]:
+                    ready = 1 if (pod.ready or pod.live) else 0
+                    return (ready, _pod_rev(pod.pod_name), pod.pod_name)
+
+                return max(candidates, key=_rank)
+
+            def _is_shutdown_line(line: str) -> bool:
+                lowered = line.lower()
+                return (
+                    "got a kill signal" in lowered
+                    or "servers closed" in lowered
+                    or "asking process to exit" in lowered
+                )
+
+            reps = store.list_pods(app)
             target = None
             if container:
                 # Prefer runtime's container-specific logs API when available
@@ -1027,19 +1105,62 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 if rt is not None and hasattr(rt, "read_logs_for_container"):
                     fn = getattr(rt, "read_logs_for_container")
                     return fn(app, str(container), follow=follow, tail=tail, since=since)
-                # Fallback to replica-id matching
+                # Fallback to pod-name matching
                 sel = str(container)
                 for r in reps:
-                    if r.replica_id == sel or sel in r.replica_id:
+                    if r.pod_name == sel or sel in r.pod_name:
                         target = r
                         break
+
             if not target and reps:
-                target = next((r for r in reps if r.ready), reps[0])
-            if not target:
-                return []
-            return reconciler._runtime.read_logs(
-                target.replica_id, follow=follow, tail=tail, since=since
-            )
+                target = _select_target(reps)
+
+            if not follow:
+                if not target:
+                    return []
+                return reconciler._runtime.read_logs(
+                    target.pod_name, follow=False, tail=tail, since=since
+                )
+
+            # Follow mode: if the target exits (e.g., scaling/rollout), reselect and continue.
+            if container:
+                if not target:
+                    return []
+                return reconciler._runtime.read_logs(
+                    target.pod_name, follow=True, tail=tail, since=since
+                )
+
+            def _stream_follow():
+                last_since = since
+                while True:
+                    reps_local = store.list_pods(app)
+                    target_local = _select_target(reps_local)
+                    if not target_local:
+                        time.sleep(0.5)
+                        continue
+                    try:
+                        for line in reconciler._runtime.read_logs(
+                            target_local.pod_name,
+                            follow=True,
+                            tail=tail,
+                            since=last_since,
+                        ):
+                            text = (
+                                line.decode("utf-8", "replace")
+                                if isinstance(line, (bytes, bytearray))
+                                else str(line)
+                            )
+                            if _is_shutdown_line(text):
+                                break
+                            yield text
+                    except Exception:
+                        pass
+                    # After the first pass, drop "since" to avoid skipping new logs
+                    last_since = None
+                    # Short pause before reselecting (avoid tight loops on failures)
+                    time.sleep(0.2)
+
+            return _stream_follow()
 
         def _exec(app: str, container: str | None, cmd: list[str], timeout: int | None) -> int:
             # Prefer runtime container-scoped exec when container is provided
@@ -1049,13 +1170,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     return int(
                         getattr(rt, "exec_for_container")(app, str(container), cmd, timeout=timeout)
                     )
-                # Fallback: run in a matching replica id
-                reps = store.list_replicas(app)
+                # Fallback: run in a matching pod name
+                reps = store.list_pods(app)
                 target = next(
                     (
                         r
                         for r in reps
-                        if (r.replica_id == container or str(container) in r.replica_id)
+                        if (r.pod_name == container or str(container) in r.pod_name)
                     ),
                     None,
                 )
@@ -1063,13 +1184,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     target = reps[0]
                 if target is None:
                     return 127
-                return int(reconciler._runtime.exec(target.replica_id, cmd, timeout=timeout))
-            # Default: pick a ready replica
-            reps = store.list_replicas(app)
+                return int(reconciler._runtime.exec(target.pod_name, cmd, timeout=timeout))
+            # Default: pick a ready pod
+            reps = store.list_pods(app)
             target = next((r for r in reps if r.ready), reps[0] if reps else None)
             if not target:
                 return 127
-            return int(reconciler._runtime.exec(target.replica_id, cmd, timeout=timeout))
+            return int(reconciler._runtime.exec(target.pod_name, cmd, timeout=timeout))
 
         import logging, errno
 
@@ -1119,23 +1240,26 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             except Exception:
                 _nodes = []
 
-            # Placements: map replica_id -> node for dashboard
+            # Placements: map pod_name -> node for dashboard
             placements: dict[str, list[dict]] = {}
             for s in statuses:
                 try:
-                    repl_nodes = dict(store.list_replica_nodes(s.app_name))
+                    repl_nodes = {
+                        row[0]: row[1] for row in store.list_pod_nodes(s.app_name)
+                    }
                 except Exception:
                     repl_nodes = {}
                 try:
-                    reps = store.list_replicas(s.app_name)
+                    reps = store.list_pods(s.app_name)
                 except Exception:
                     reps = []
                 entries = []
                 for r in reps:
                     entries.append(
                         {
-                            "replica_id": r.replica_id,
-                            "node_id": repl_nodes.get(r.replica_id),
+                            "pod_name": r.pod_name,
+                            "replica_id": r.pod_name,
+                            "node_id": repl_nodes.get(r.pod_name),
                             "ready": bool(r.ready),
                             "live": bool(r.live),
                             "status": r.status,
@@ -1526,6 +1650,12 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
     # loop mode
     stop = False
+    try:
+        heartbeat_grace = int(os.getenv("AE_NODE_NOTREADY_AFTER", "40") or 40)
+    except Exception:
+        heartbeat_grace = 40
+    heartbeat_interval = max(5, min(20, max(1, heartbeat_grace // 2)))
+    last_heartbeat = 0.0
 
     def _graceful(*_):
         nonlocal stop
@@ -1577,6 +1707,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     try:
         while not stop:
             now = time.time()
+            if now - last_heartbeat >= heartbeat_interval:
+                try:
+                    store.record_heartbeat(_local_node_id(), "Ready")
+                except Exception:
+                    pass
+                else:
+                    last_heartbeat = now
             do_full = changed or (now - last_full) >= max(1, int(args.interval))
             if do_full:
                 t0 = time.time()
