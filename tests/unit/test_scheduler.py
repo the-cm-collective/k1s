@@ -138,7 +138,8 @@ def test_scheduler_skips_when_bound_node_unavailable(tmp_path):
     assert any("bound to node n2" in w for w in warnings)
 
 
-def test_scheduler_filters_cordoned_and_stale(tmp_path):
+def test_scheduler_filters_cordoned_and_stale(tmp_path, monkeypatch):
+    monkeypatch.setenv("AE_NODE_NOTREADY_AFTER", "40")
     store = _store_with_nodes(tmp_path)
     store.upsert_node(
         "n1", name="n1", labels={}, taints=[], backend="podman", endpoint="http://n1:9109"

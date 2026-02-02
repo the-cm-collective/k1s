@@ -14,6 +14,10 @@
   };
   const helmDemo = { timer: null, running: false };
   const exampleBaseNames = {};
+  let ingressCheckTimer = null;
+  let ingressCheckAttempts = 0;
+  let ingressCheckUrl = '';
+  let ingressCheckOk = null;
 
   const xtermFallback = {
     css: '/static/vendor/xterm.css',
@@ -340,7 +344,12 @@
         const qs = u.search || '';
         const full = `${scheme}://${host}:${port}${path}${qs}`;
         const k = (scheme === 'https') ? '-k ' : '';
-        cmd = `curl ${k}-sS --resolve "${host}:${port}:127.0.0.1" "${full}"`;
+        const parts = [
+          `curl ${k}-sS`,
+          `  --resolve "${host}:${port}:127.0.0.1"`,
+          `  "${full}"`,
+        ];
+        cmd = parts.join(' \\\n');
       } catch { cmd = ''; }
       el.textContent = cmd;
       btn.disabled = !(cmd && cmd.trim());
@@ -758,6 +767,10 @@
     try { setText('#ingress-check','n/a','pending'); } catch(_){}
     try { setText('#ingress-curl',''); const b=document.getElementById('ingress-curl-copy'); if (b) b.disabled=true; } catch(_){}
     try { setHostsHint(''); } catch(_){}
+    ingressCheckOk = null;
+    ingressCheckAttempts = 0;
+    ingressCheckUrl = '';
+    clearIngressRetry();
     // Reset status to cluster-wide summary and refresh
     try { setStatusMode('cluster'); refreshStatusNow(); } catch(_){}
     // Disable action buttons now that we have no session
@@ -1334,24 +1347,76 @@
     }
   }
 
+  function resetIngressCheck(url){
+    if (url && url !== ingressCheckUrl) {
+      ingressCheckUrl = url;
+      ingressCheckAttempts = 0;
+      ingressCheckOk = null;
+    }
+  }
+
+  function clearIngressRetry(){
+    if (ingressCheckTimer) {
+      try { clearTimeout(ingressCheckTimer); } catch(_){}
+      ingressCheckTimer = null;
+    }
+  }
+
+  function scheduleIngressRetry(){
+    if (ingressCheckTimer) return;
+    if (ingressCheckAttempts >= 4) return;
+    ingressCheckAttempts += 1;
+    ingressCheckTimer = setTimeout(() => {
+      ingressCheckTimer = null;
+      verifyIngress();
+    }, 2500);
+  }
+
   async function verifyIngress(){
     // Use server-side check to avoid browser TLS constraints in dev
     const a = document.getElementById('ingress-link');
-    if (!a || !a.href || a.href === '#' ) { setText('#ingress-check','n/a','pending'); return; }
+    if (!a || !a.href || a.href === '#' ) {
+      setText('#ingress-check','n/a','pending');
+      ingressCheckOk = null;
+      return;
+    }
+    resetIngressCheck(a.href);
     const payload = { url: a.href };
     try {
       const r = await apiFetch(`/labs/ingress_check`, {
-        method: 'POST', headers: { 'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {}) },
+        method: 'POST',
+        headers: labsHeaders({ 'Content-Type':'application/json' }),
         body: JSON.stringify(payload)
       });
-      if (!r.ok) { setText('#ingress-check','unreachable','fail'); return; }
+      if (r.status === 401 || r.status === 403) {
+        setText('#ingress-check','auth required','fail');
+        ingressCheckOk = false;
+        return;
+      }
+      if (!r.ok) { setText('#ingress-check','unreachable','fail'); ingressCheckOk = false; scheduleIngressRetry(); return; }
       const j = await r.json();
       const dt = Number(j.elapsed_ms||0);
-      if (j.ok) { setText('#ingress-check', `reachable (~${dt}ms)`, 'ok'); setHostsHint(''); return; }
+      if (j.ok) {
+        setText('#ingress-check', `reachable (~${dt}ms)`, 'ok');
+        setHostsHint('');
+        ingressCheckOk = true;
+        ingressCheckAttempts = 0;
+        clearIngressRetry();
+        return;
+      }
       // Allow local override for self-signed TLS
       const allow = (localStorage.getItem('labsAllowUntrusted')||'').trim() === '1';
-      if (allow) { setText('#ingress-check', 'untrusted TLS (dev)', 'ok'); setHostsHint(''); return; }
+      if (allow) {
+        setText('#ingress-check', 'untrusted TLS (dev)', 'ok');
+        setHostsHint('');
+        ingressCheckOk = true;
+        ingressCheckAttempts = 0;
+        clearIngressRetry();
+        return;
+      }
       setText('#ingress-check', j.code ? `error ${j.code}` : 'unreachable', 'fail');
+      ingressCheckOk = false;
+      scheduleIngressRetry();
       try {
         const u = new URL(a.href); const host = u.hostname;
         if (host && /\.home\.arpa$/i.test(host)) setHostsHint(`Add to /etc/hosts: 127.0.0.1 ${host}`);
@@ -1359,6 +1424,8 @@
       } catch(_){}
     } catch {
       setText('#ingress-check','unreachable','fail');
+      ingressCheckOk = false;
+      scheduleIngressRetry();
     }
   }
 
@@ -1418,6 +1485,10 @@
       try { setText('#ingress-check','n/a','pending'); } catch(_){}
       try { setText('#ingress-curl',''); const b=document.getElementById('ingress-curl-copy'); if (b) b.disabled=true; } catch(_){}
       try { setHostsHint(''); } catch(_){}
+      ingressCheckOk = null;
+      ingressCheckAttempts = 0;
+      ingressCheckUrl = '';
+      clearIngressRetry();
       try {
         const backendSel = document.getElementById('backend-select');
         if (backendSel) {
@@ -1812,6 +1883,12 @@
                     ? s.ingress_host + (s.ingress_path||'/')
                     : makeIngressUrl(s.ingress_host, s.ingress_path);
                   link.href = href;
+                  try {
+                    if (state.sessionId && state.orch.available) {
+                      if (href !== ingressCheckUrl) resetIngressCheck(href);
+                      if (ingressCheckOk !== true && !ingressCheckTimer) verifyIngress();
+                    }
+                  } catch(_){}
                 }
               } catch {}
             };

@@ -1061,6 +1061,31 @@ class SQLiteStateStore:
             )
             conn.commit()
 
+    def upsert_service_snapshot(
+        self, app_name: str, cluster_ip: str, ports: dict, endpoints: list[ServiceEndpoint]
+    ) -> None:
+        """Persist service metadata and endpoints together."""
+        created_at = datetime.now(timezone.utc).isoformat()
+        ports_json = json.dumps(ports, sort_keys=True)
+        with self._connect() as conn:
+            conn.execute(
+                resource_loader.load_text("sql", "controller", "upsert_services.sql"),
+                (app_name, cluster_ip, ports_json, created_at),
+            )
+            conn.execute("DELETE FROM service_endpoints WHERE app_name = ?", (app_name,))
+            rows = [
+                (ep.app_name, ep.port, ep.ip, ep.target_port, int(ep.ready))
+                for ep in endpoints
+            ]
+            if rows:
+                conn.executemany(
+                    resource_loader.load_text(
+                        "sql", "controller", "insert_service_endpoints.sql"
+                    ),
+                    rows,
+                )
+            conn.commit()
+
     def delete_service(self, app_name: str) -> None:
         """Remove service metadata and endpoints for an app."""
         with self._connect() as conn:

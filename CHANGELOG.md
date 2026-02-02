@@ -4,6 +4,7 @@
 
 ### Added
 - Benchmark tooling: CRI (`crictl`) container snapshot/inspect capture plus make targets and env pass-through for CRI matrix/rollout runs.
+- Project metadata now includes a version codename in `pyproject.toml` (Snow Moon).
 
 ### Changed
 - Docs refresh: Start Here, Overview, Examples, and Concepts updated for dashboard URLs, API shim enablement, and CLI guidance.
@@ -14,8 +15,13 @@
 - Benchmark snapshots now honor the selected container engine when running CRI captures to avoid cross-engine contamination.
 - Demo Caddy config now redirects API-host `/dashboard` and `/playground` hits to the dedicated dashboard host to avoid 404s.
 - Demo now reloads Caddy after writing base sites so `dash.home.arpa` is available without a manual reload.
+- Demo reset now stops CRI pods/containers to prevent stale workloads after cleanup.
 - Playground log tail now prefers the current revision and ready pods to avoid attaching to terminating containers.
 - Playground log streaming now reselects a live pod after scale/rollout and skips replica shutdown noise so logs keep flowing across changes.
+- Playground ingress checks now retry after transient failures, show auth-required states, and render the curl hint as a multiline command.
+- Playground remote shell defaults to `sh` for minimal images.
+- Dashboard exec/port-forward token minting now prefers the labs token to avoid read-only auth failures.
+- Service proxy ingestion now commits services and endpoints together, preventing transient empty endpoint reads.
 - Demo apishim autostart now restarts on runtime mismatches to keep exec/port-forward working with Podman or Docker.
 - Local auth now exports `AE_STATE_DB`, and demo env exports the state DB path, so CLI status matches controller state.
 - Labs ingress reachability checks no longer fail on missing `os` imports, restoring consistent "Last check" status.
