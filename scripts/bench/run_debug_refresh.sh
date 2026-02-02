@@ -164,25 +164,10 @@ remove_service_port() {
 }
 
 ensure_rootful_podman_socket() {
-  if ! command -v sudo >/dev/null 2>&1 || ! command -v podman >/dev/null 2>&1; then
-    return 0
-  fi
-  if sudo podman info >/dev/null 2>&1; then
-    return 0
-  fi
-  sudo systemctl start podman.socket >/dev/null 2>&1 || true
-  sleep 1
-  if sudo podman info >/dev/null 2>&1; then
-    return 0
-  fi
-  # Fallback: run a transient rootful service
-  sudo podman system service -t 0 >/dev/null 2>&1 &
-  sleep 2
-  if sudo podman info >/dev/null 2>&1; then
-    return 0
-  fi
-  log "rootful podman socket not available (expected /run/podman/podman.sock)"
-  return 1
+  "$repo_root/scripts/bench/podman_rootful_socket.sh" || {
+    log "rootful podman socket not available (expected /run/podman/podman.sock)"
+    return 1
+  }
 }
 
 stop_docker_dev_stack() {

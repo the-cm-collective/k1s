@@ -225,6 +225,12 @@ ensure_controller() {
 preflight_runtime() {
   backend=${AE_RUNTIME_BACKEND:-podman}
   if [[ "$backend" == "podman" || "$backend" == "oci" ]]; then
+    if [[ "$use_sudo" == "1" ]]; then
+      if ! "$repo_root/scripts/bench/podman_rootful_socket.sh"; then
+        echo "[matrix] rootful Podman socket not available (expected /run/podman/podman.sock)." >&2
+        exit 2
+      fi
+    fi
     if ! command -v podman >/dev/null 2>&1; then
       echo "[matrix] Podman not found. Set AE_RUNTIME_BACKEND=docker or install Podman." >&2
       exit 2

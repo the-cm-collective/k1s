@@ -267,6 +267,10 @@ if [[ "$controller_mode" == "sudo" ]]; then
     exit 3
   fi
   check_netavark_isolation
+  if ! "$repo_root/scripts/bench/podman_rootful_socket.sh"; then
+    echo "[bench-env] rootful podman socket not available; aborting" >&2
+    exit 5
+  fi
   sudo env \
     PYTHON_BIN="$python_bin" \
     AE_PODMAN_BIN="$podman_bin" \
