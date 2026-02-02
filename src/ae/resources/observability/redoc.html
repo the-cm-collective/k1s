@@ -1,0 +1,27 @@
+
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>__TITLE__</title>
+    <style>
+      body { margin: 0; font-family: system-ui, sans-serif; }
+      .topbar { padding: 10px 16px; border-bottom: 1px solid #e3e3e3; background: #f8f8f8; }
+      .topbar a { margin-right: 12px; color: #1b1b1b; text-decoration: none; font-weight: 600; }
+      #redoc { width: 100vw; height: calc(100vh - 48px); }
+    </style>
+    <script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script>
+  </head>
+  <body>
+    <div class="topbar">
+      <a href="/redoc">Controller API</a>
+      <a href="/redoc/apishim">API Shim</a>
+    </div>
+    <div id="redoc"></div>
+    <script>
+      document.addEventListener('DOMContentLoaded', function () {
+        Redoc.init(__SPEC_URL__, {}, document.getElementById('redoc'));
+      });
+    </script>
+  </body>
+</html>
