@@ -1,5 +1,5 @@
 # ruff: noqa: E501,I001,E402,S110,S112,SIM102,SIM105,SIM108,SIM114,SIM118,UP034,UP038
-"""Reconcile loop skeleton for the application engine."""
+"""Reconcile loop coordinating manifests, runtime operations, and health."""
 
 from __future__ import annotations
 
@@ -9,10 +9,13 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import socket
+from typing import Any
 
-from ae.controller.health import HealthManager, HealthReport, ReplicaHealth
+from ae.controller.health import HealthManager, HealthReport, PodHealth
 from ae.controller.spec import AppManifest, VolumeSpec, app_key_for_manifest, load_manifest
 from ae.runtime import RuntimeAdapter, RuntimeResult
+from ae.storage.config import DEFAULT_CLASS_ANNOTATIONS
 
 
 def _record_event_metric_safe(name: str) -> None:
@@ -25,11 +28,27 @@ def _record_event_metric_safe(name: str) -> None:
         pass
 
 
+def _truthy_env(name: str, default: str = "0") -> bool:
+    raw = os.getenv(name, default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 from .state import SQLiteStateStore
 from ae.ingress.service import IngressService
 from ae.secrets import SecretManager
 from ae.config.manager import ConfigManager
 from ae.controller.scheduler import Scheduler
+
+SC_GROUP = "storage.k8s.io"
+SC_VERSION = "v1"
+SC_RESOURCE = "storageclasses"
+CORE_GROUP = ""
+CORE_VERSION = "v1"
+PVC_RESOURCE = "persistentvolumeclaims"
+PV_RESOURCE = "persistentvolumes"
+LOCAL_PATH_PROVISIONER = "k1s.io/local-path"
+WAIT_FOR_FIRST_CONSUMER = "WaitForFirstConsumer"
+SELECTED_NODE_ANNOTATION = "volume.kubernetes.io/selected-node"
 
 
 @dataclass(slots=True)
@@ -83,6 +102,10 @@ class Reconciler:
         self._last_restart_ts: dict[str, float] = {}
         # Create cooldowns: app -> unix timestamp until which we avoid creating new replicas
         self._create_cooldown_until: dict[str, float] = {}
+        self._apishim_store = None
+        self._apishim_store_checked = False
+        self._default_sc_name: str | None = None
+        self._register_local_node = _truthy_env("AE_REGISTER_LOCAL_NODE")
 
     def _runtime_for_agent(self, agent_url: str | None) -> RuntimeAdapter:
         """Return a runtime bound to the target agent URL (cached)."""
@@ -101,17 +124,58 @@ class Reconciler:
         except Exception:
             return self._runtime
 
-    def _exec_across_runtimes(
-        self, replica_id: str, command: list[str], timeout: int | None
-    ) -> int:
+    def _exec_across_runtimes(self, pod_name: str, command: list[str], timeout: int | None) -> int:
         """Try exec across known runtimes (local + cached remote)."""
         runtimes = [self._runtime] + list(self._runtime_cache.values())
         for rt in runtimes:
             try:
-                return int(rt.exec(replica_id, command, timeout=timeout))  # type: ignore[arg-type]
+                return int(rt.exec(pod_name, command, timeout=timeout))  # type: ignore[arg-type]
             except Exception:
                 continue
         return 127
+
+    def _runtime_backend_name(self) -> str:
+        env_backend = os.getenv("AE_RUNTIME_BACKEND")
+        if env_backend:
+            return str(env_backend).strip().lower()
+        return self._runtime.__class__.__name__.lower()
+
+    def _ensure_local_node(self) -> None:
+        if not self._register_local_node:
+            return
+        try:
+            node_id = os.getenv("AE_NODE_ID") or socket.gethostname()
+            name = os.getenv("AE_NODE_NAME") or node_id
+            existing = None
+            try:
+                existing = self._state_store.get_node(node_id)
+            except Exception:
+                existing = None
+            if existing is None:
+                try:
+                    if self._state_store.list_nodes():
+                        return
+                except Exception:
+                    pass
+                self._state_store.upsert_node(
+                    node_id,
+                    name=name,
+                    labels={"role": "controller"},
+                    taints=[],
+                    backend=self._runtime_backend_name(),
+                    endpoint=None,
+                    pod_cidr=None,
+                    wg_pubkey=None,
+                )
+                self._state_store.record_heartbeat(node_id, "Ready")
+                return
+            node, _status = existing
+            # Refresh heartbeat only for local/controller nodes (no endpoint or role label).
+            labels = getattr(node, "labels", {}) or {}
+            if getattr(node, "endpoint", None) is None or labels.get("role") == "controller":
+                self._state_store.record_heartbeat(node_id, "Ready")
+        except Exception:
+            pass
 
     def _ensure_on_runtime(
         self,
@@ -121,7 +185,7 @@ class Reconciler:
         *,
         keep_old: bool,
         limit_create: int | None,
-        replica_ids: list[str] | None,
+        pod_names: list[str] | None,
         node_id: str | None,
     ) -> RuntimeResult:
         """Call ensure_app with backward-compatible fallbacks for older runtimes."""
@@ -131,13 +195,17 @@ class Reconciler:
                 revision,
                 keep_old=keep_old,
                 limit_create=limit_create,
-                replica_ids=replica_ids,
+                pod_names=pod_names,
                 node_id=node_id,
             )
         except TypeError:
             try:
                 return runtime.ensure_app(  # type: ignore[arg-type]
-                    manifest, revision, keep_old=keep_old, limit_create=limit_create
+                    manifest,
+                    revision,
+                    keep_old=keep_old,
+                    limit_create=limit_create,
+                    replica_ids=pod_names,
                 )
             except TypeError:
                 return runtime.ensure_app(manifest, revision)  # type: ignore[arg-type]
@@ -235,23 +303,23 @@ class Reconciler:
         if bool(rollout.get("pause", False)):
             # Build a health report from last known status (if any)
             prev = self._state_store.get_status(app_name)
-            replicas = self._state_store.list_replicas(app_name)
+            pods = self._state_store.list_pods(app_name)
             hr = HealthReport(
                 ready_replicas=prev.ready_replicas if prev else 0,
                 live_replicas=prev.live_replicas if prev else 0,
-                replicas=[
-                    ReplicaHealth(
-                        replica_id=r.replica_id,
+                pods=[
+                    PodHealth(
+                        pod_name=r.pod_name,
                         ready=r.ready,
                         live=r.live,
                         readiness_message=r.readiness_message,
                         liveness_message=r.liveness_message,
                     )
-                    for r in replicas
+                    for r in pods
                 ],
             )
             result = RuntimeResult(
-                revision=revision, created=0, updated=0, removed=0, replica_states=[]
+                revision=revision, created=0, updated=0, removed=0, pod_states=[]
             )
             revision_status = "paused"
             self._state_store.record_snapshot(
@@ -278,6 +346,7 @@ class Reconciler:
                 revision_status=revision_status,
             )
 
+        self._ensure_local_node()
         import time as _t
 
         now_ts = float(_t.time())
@@ -293,6 +362,7 @@ class Reconciler:
                 self._state_store.record_event(app_name, revision, "ScheduleWarning", w)
             except Exception:
                 pass
+        self._apply_selected_node_annotations(manifest_for_runtime, placements, revision)
         # Persist placement hints before reconcile (so dashboard can render)
         try:
             node_rows: list[tuple[str, str]] = []
@@ -300,21 +370,21 @@ class Reconciler:
                 node_id = getattr(getattr(pl, "node", None), "node_id", None)
                 if not node_id:
                     continue
-                for rid in getattr(pl, "replica_ids", []) or []:
-                    node_rows.append((rid, node_id))
+                for pod_name in getattr(pl, "pod_names", []) or []:
+                    node_rows.append((pod_name, node_id))
             if node_rows:
-                self._state_store.set_replica_nodes(app_name, node_rows)
+                self._state_store.set_pod_nodes(app_name, node_rows)
         except Exception:
             pass
 
-        # Keep old replicas during rollout to respect surge/unavailable; we'll remove them after readiness check
+        # Keep old pods during rollout to respect surge/unavailable; we'll remove them after readiness check
         aggregate_states: list = []
         created = updated = removed = 0
         runtimes_used: list[RuntimeAdapter] = []
         remaining_limit = limit_create
         for placement in placements:
-            # Ensure replica_ids are unique per app/revision (avoid duplicate scheduling across nodes)
-            replica_ids = list(dict.fromkeys(getattr(placement, "replica_ids", []) or []))
+            # Ensure pod_names are unique per app/revision (avoid duplicate scheduling across nodes)
+            pod_names = list(dict.fromkeys(getattr(placement, "pod_names", []) or []))
             runtime = self._runtime_for_agent(getattr(placement, "agent_url", None))
             if runtime not in runtimes_used:
                 runtimes_used.append(runtime)
@@ -327,7 +397,7 @@ class Reconciler:
             ):
                 try:
                     for s in manifest_for_runtime.spec.storage:
-                        self._state_store.upsert_storage_binding(
+                        self._state_store.upsert_volume_attachment(
                             app_name,
                             getattr(s, "name", ""),
                             placement.node.node_id,  # type: ignore[union-attr]
@@ -341,13 +411,13 @@ class Reconciler:
                 revision,
                 keep_old=True,
                 limit_create=per_limit,
-                replica_ids=replica_ids,
+                pod_names=pod_names,
                 node_id=getattr(getattr(placement, "node", None), "node_id", None),
             )
             created += res.created
             updated += res.updated
             removed += res.removed
-            aggregate_states.extend(res.replica_states)
+            aggregate_states.extend(res.pod_states)
             if remaining_limit is not None:
                 remaining_limit = max(0, remaining_limit - res.created)
 
@@ -356,7 +426,7 @@ class Reconciler:
             created=created,
             updated=updated,
             removed=removed,
-            replica_states=aggregate_states,
+            pod_states=aggregate_states,
         )
         health_report = self._health_manager.evaluate(manifest, result)
         # Service/IPAM: prefer Service VIPs when controller is available
@@ -380,18 +450,18 @@ class Reconciler:
                 except Exception:
                     return 0
 
-            for rep in getattr(health_report, "replicas", []) or []:
+            for pod in getattr(health_report, "pods", []) or []:
                 record_probe_backoff(
                     app_name,
-                    rep.replica_id,
+                    pod.pod_name,
                     "readiness",
-                    _parse_bo(getattr(rep, "readiness_message", "")),
+                    _parse_bo(getattr(pod, "readiness_message", "")),
                 )
                 record_probe_backoff(
                     app_name,
-                    rep.replica_id,
+                    pod.pod_name,
                     "liveness",
-                    _parse_bo(getattr(rep, "liveness_message", "")),
+                    _parse_bo(getattr(pod, "liveness_message", "")),
                 )
         except Exception:
             pass
@@ -612,7 +682,11 @@ class Reconciler:
                 continue
             if str(labels.get("ae.revision")) == str(keep_revision):
                 continue
-            rid = labels.get("ae.replica_id") or labels.get("ae.replica")
+            rid = (
+                labels.get("ae.pod_name")
+                or labels.get("ae.replica_id")
+                or labels.get("ae.replica")
+            )
             if not rid:
                 continue
             rc = None
@@ -631,7 +705,7 @@ class Reconciler:
                         app_name,
                         keep_revision,
                         "PreStopExec",
-                        f"replica={rid} rc={rc if rc is not None else 'n/a'}",
+                        f"pod={rid} rc={rc if rc is not None else 'n/a'}",
                     )
                 except Exception:
                     pass
@@ -641,13 +715,14 @@ class Reconciler:
                     import requests as _req
 
                     path = str(handler.http_get.path or "/")  # type: ignore[union-attr]
-                    host_ports = (it or {}).get("host_ports") or []
-                    if host_ports:
-                        url = f"http://127.0.0.1:{int(host_ports[0])}{path}"
+                    target = self._endpoint_from_container_info(it, handler.http_get.port)  # type: ignore[union-attr]
+                    if target:
+                        host, port = target
+                        url = f"http://{host}:{int(port)}{path}"
                         _req.get(url, timeout=max(1, int(timeout)))
                         outcome = "ok"
                     else:
-                        outcome = "skipped(no-host-port)"
+                        outcome = "skipped(no-endpoint)"
                 except Exception as exc:  # noqa: BLE001
                     outcome = f"error({exc.__class__.__name__})"
                 try:
@@ -655,7 +730,7 @@ class Reconciler:
                         app_name,
                         keep_revision,
                         "PreStopHTTP",
-                        f"replica={rid} {outcome}",
+                        f"pod={rid} {outcome}",
                     )
                 except Exception:
                     pass
@@ -664,14 +739,13 @@ class Reconciler:
                 import socket as _sock
 
                 try:
-                    host_ports = (it or {}).get("host_ports") or []
-                    if host_ports:
-                        with _sock.create_connection(
-                            ("127.0.0.1", int(host_ports[0])), timeout=max(1, int(timeout))
-                        ):
+                    target = self._endpoint_from_container_info(it, handler.tcp_socket.port)  # type: ignore[union-attr]
+                    if target:
+                        host, port = target
+                        with _sock.create_connection((host, int(port)), timeout=max(1, int(timeout))):
                             outcome = "ok"
                     else:
-                        outcome = "skipped(no-host-port)"
+                        outcome = "skipped(no-endpoint)"
                 except OSError:
                     outcome = "error"
                 try:
@@ -679,7 +753,7 @@ class Reconciler:
                         app_name,
                         keep_revision,
                         "PreStopTCP",
-                        f"replica={rid} {outcome}",
+                        f"pod={rid} {outcome}",
                     )
                 except Exception:
                     pass
@@ -713,24 +787,24 @@ class Reconciler:
             timeout = int(hook.get("timeoutSeconds", 5))
         except Exception:
             timeout = 5
-        replicas = list(runtime_result.replica_states or [])
+        pods = list(runtime_result.pod_states or [])
         target = None
         # prefer ready
-        for r in replicas:
+        for r in pods:
             if getattr(r, "ready", False):
                 target = r
                 break
-        if target is None and replicas:
-            target = replicas[0]
+        if target is None and pods:
+            target = pods[0]
         if target is None:
-            return False, "no replicas available for hook"
+            return False, "no pods available for hook"
         # exec hook
         if "exec" in hook:
             cmd = hook.get("exec") or []
             if not isinstance(cmd, (list, tuple)) or not cmd:
                 return False, "exec hook missing/invalid command"
             try:
-                code = self._runtime.exec(target.replica_id, [str(x) for x in cmd], timeout=timeout)
+                code = self._runtime.exec(target.pod_name, [str(x) for x in cmd], timeout=timeout)
                 return (code == 0), (f"exec rc={code}")
             except Exception as exc:  # noqa: BLE001
                 return False, f"exec error: {exc}"
@@ -852,15 +926,15 @@ class Reconciler:
                 if any(ep.ready for ep in eps):
                     return [f"{svc.cluster_ip}:{svc_port}"]
 
-        states_by_id = {state.replica_id: state for state in result.replica_states}
+        states_by_id = {state.pod_name: state for state in result.pod_states}
 
         # Prefer only ready endpoints; defer ingress changes until at least one
         # replica is ready to avoid transient 502s during warm-up.
         ready_eps: list[str] = []
-        for replica in health_report.replicas:
-            if not replica.ready:
+        for pod in health_report.pods:
+            if not pod.ready:
                 continue
-            state = states_by_id.get(replica.replica_id)
+            state = states_by_id.get(pod.pod_name)
             if state and state.endpoint:
                 host, port = self._split_host_port(state.endpoint)
                 if host and port:
@@ -877,6 +951,7 @@ class Reconciler:
                 items = self._runtime.list_containers_info()  # type: ignore[attr-defined]
             except Exception:
                 items = []
+            preferred_port = self._preferred_container_port(manifest)
             prev_eps: list[str] = []
             cur_rev = str(result.revision)
             for it in items or []:
@@ -885,14 +960,10 @@ class Reconciler:
                     continue
                 if (labs.get("ae.revision") or "") == cur_rev:
                     continue
-                ports = list(it.get("host_ports") or [])
-                if not ports:
-                    continue
-                try:
-                    ep = f"127.0.0.1:{int(ports[0])}"
-                    prev_eps.append(ep)
-                except Exception:
-                    continue
+                target = self._endpoint_from_container_info(it, preferred_port)
+                if target:
+                    host, port = target
+                    prev_eps.append(f"{host}:{int(port)}")
             # Merge, de-duplicating, keeping new first to honor prefer-first policy
             seen = set()
             merged: list[str] = []
@@ -907,10 +978,10 @@ class Reconciler:
             return ready_eps
 
         # Fallback: allow loopback endpoints when nothing else is ready (useful for local/stub runtimes)
-        for replica in health_report.replicas:
-            if not replica.ready:
+        for pod in health_report.pods:
+            if not pod.ready:
                 continue
-            state = states_by_id.get(replica.replica_id)
+            state = states_by_id.get(pod.pod_name)
             if state and state.endpoint:
                 host, port = self._split_host_port(state.endpoint)
                 if host and port:
@@ -929,6 +1000,52 @@ class Reconciler:
             return host, int(port)
         except Exception:
             return None, None
+
+    def _preferred_container_port(self, manifest: AppManifest) -> int | None:
+        try:
+            if manifest.spec.health and manifest.spec.health.readiness:
+                r = manifest.spec.health.readiness
+                if getattr(r, "http_get", None) is not None:
+                    return int(r.http_get.port)
+                if getattr(r, "tcp_socket", None) is not None:
+                    return int(r.tcp_socket.port)
+        except Exception:
+            pass
+        try:
+            if manifest.spec.service and getattr(manifest.spec.service, "target_port", None):
+                return int(manifest.spec.service.target_port)
+        except Exception:
+            pass
+        try:
+            if manifest.spec.ports:
+                return int(manifest.spec.ports[0].container_port)
+        except Exception:
+            pass
+        return None
+
+    def _endpoint_from_container_info(
+        self, info: dict, port_hint: int | None
+    ) -> tuple[str, int] | None:
+        pod_ip = (info or {}).get("pod_ip")
+        host_ip = (info or {}).get("host_ip") or "127.0.0.1"
+        port_map = (info or {}).get("port_map") or {}
+        host_ports = list((info or {}).get("host_ports") or [])
+        if pod_ip and port_hint:
+            return str(pod_ip), int(port_hint)
+        if port_hint is not None and port_map:
+            try:
+                if port_hint in port_map:
+                    return str(host_ip), int(port_map[port_hint])
+                if str(port_hint) in port_map:
+                    return str(host_ip), int(port_map[str(port_hint)])
+            except Exception:
+                pass
+        if host_ports:
+            try:
+                return str(host_ip), int(host_ports[0])
+            except Exception:
+                return None
+        return None
 
     def _compute_spec_hash(self, manifest: AppManifest) -> str:
         payload = json.dumps(
@@ -958,7 +1075,7 @@ class Reconciler:
             succeeded = 0
             failed = 0
             running = 0
-            for rs in runtime_result.replica_states:
+            for rs in runtime_result.pod_states:
                 if getattr(rs, "status", "") == "running":
                     running += 1
                 rc = getattr(rs, "exit_code", None)
@@ -972,14 +1089,14 @@ class Reconciler:
                 return "ready"
             if failed > 0 and running == 0:
                 return "degraded"
-            if len(report.replicas) > 0 or (runtime_result.created + runtime_result.updated) > 0:
+            if len(report.pods) > 0 or (runtime_result.created + runtime_result.updated) > 0:
                 return "progressing"
             return "degraded"
         desired = max(1, int(manifest.spec.replicas))
         if report.ready_replicas >= desired:
             return "ready"
         # Consider any recorded replica (regardless of liveness) as progressing.
-        if len(report.replicas) > 0:
+        if len(report.pods) > 0:
             return "progressing"
         # Race: runtime created/updated containers but list didn't return them yet
         if (runtime_result.created + runtime_result.updated) > 0:
@@ -1030,26 +1147,26 @@ class Reconciler:
         return manifest.model_copy(update={"spec": updated_spec})
 
     def _on_probe_event(
-        self, replica_id: str, probe_type: str, success: bool, message: str
+        self, pod_name: str, probe_type: str, success: bool, message: str
     ) -> None:
         """Hook from HealthManager when probe effective status changes."""
-        app_name = replica_id
+        app_name = pod_name
         try:
             import re
 
-            m = re.match(r"^(?P<app>.+)-rev\d+-\d+$", str(replica_id))
+            m = re.match(r"^(?P<app>.+)-rev\d+-\d+$", str(pod_name))
             if m:
                 app_name = m.group("app")
-            elif "-" in replica_id:
-                app_name = replica_id.split("-", 1)[0]
+            elif "-" in pod_name:
+                app_name = pod_name.split("-", 1)[0]
         except Exception:
-            app_name = replica_id.split("-", 1)[0] if "-" in replica_id else replica_id
+            app_name = pod_name.split("-", 1)[0] if "-" in pod_name else pod_name
         try:
             self._state_store.record_event(
                 app_name,
                 0,
                 f"{probe_type.capitalize()}{'OK' if success else 'Fail'}",
-                f"{replica_id}: {message}",
+                f"{pod_name}: {message}",
             )
             _record_event_metric_safe(f"{probe_type}_{'ok' if success else 'fail'}")
         except Exception:
@@ -1153,6 +1270,180 @@ class Reconciler:
         except Exception:
             abs_root = root
         return abs_root if wrote else None
+
+    def _get_apishim_store(self):
+        if self._apishim_store_checked:
+            return self._apishim_store
+        self._apishim_store_checked = True
+        try:
+            from ae.apishim.store import ObjectStore
+        except Exception:
+            self._apishim_store = None
+            return None
+        dsn = os.getenv("AE_APISHIM_DSN")
+        db_env = os.getenv("AE_APISHIM_DB")
+        db_path = Path(db_env or "state/apishim.db")
+        if not dsn and not db_path.exists():
+            self._apishim_store = None
+            return None
+        try:
+            self._apishim_store = ObjectStore(dsn=dsn) if dsn else ObjectStore(db_path=db_path)
+        except Exception:
+            self._apishim_store = None
+        return self._apishim_store
+
+    def _apply_selected_node_annotations(
+        self, manifest: AppManifest, placements: list, revision: int
+    ) -> None:
+        pvc_mounts = list(getattr(manifest.spec, "pvc_mounts", []) or [])
+        if not pvc_mounts:
+            return
+        store = self._get_apishim_store()
+        if store is None:
+            return
+        nodes = [
+            getattr(getattr(pl, "node", None), "node_id", None)
+            for pl in placements
+            if getattr(getattr(pl, "node", None), "node_id", None)
+        ]
+        if not nodes:
+            return
+        target_node = nodes[0]
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or "default"
+        pvcs = {
+            (str(pm.claim_name), str(getattr(pm, "namespace", None) or namespace))
+            for pm in pvc_mounts
+        }
+        warnings: list[str] = []
+        for claim_name, ns in pvcs:
+            pvc = store.get(CORE_GROUP, CORE_VERSION, PVC_RESOURCE, ns, claim_name)
+            if pvc is None:
+                continue
+            if not self._pvc_needs_selected_node(store, pvc):
+                continue
+            selected = self._pvc_selected_node(pvc)
+            if selected and selected != target_node:
+                warnings.append(
+                    f"PVC {ns}/{claim_name} already selected node {selected}; scheduled node is {target_node}"
+                )
+                continue
+            if selected == target_node:
+                continue
+            meta = dict(getattr(pvc, "metadata", None) or {})
+            annotations = dict(meta.get("annotations") or {})
+            annotations[SELECTED_NODE_ANNOTATION] = target_node
+            meta["annotations"] = annotations
+            try:
+                store.upsert(
+                    CORE_GROUP,
+                    CORE_VERSION,
+                    PVC_RESOURCE,
+                    ns,
+                    claim_name,
+                    meta,
+                    dict(getattr(pvc, "spec", None) or {}),
+                    status=dict(getattr(pvc, "status", None) or {}),
+                )
+            except Exception as exc:
+                warnings.append(f"failed to set selected node on PVC {ns}/{claim_name}: {exc}")
+
+        if len(set(nodes)) > 1:
+            warnings.append(
+                "multiple nodes scheduled while single-writer PVCs require a single selected node"
+            )
+        if not warnings:
+            return
+        app_name = app_key_for_manifest(manifest)
+        for w in warnings:
+            try:
+                self._state_store.record_event(app_name, revision, "ScheduleWarning", w)
+            except Exception:
+                continue
+
+    def _pvc_needs_selected_node(self, store, pvc) -> bool:
+        pv = self._bound_pv(store, pvc)
+        if pv is not None:
+            pv_spec = self._obj_spec(pv)
+            csi = pv_spec.get("csi") if isinstance(pv_spec, dict) else None
+            if isinstance(csi, dict) and self._is_single_writer(pv_spec):
+                return True
+        sc_name = self._pvc_storage_class_name(pvc) or self._default_storage_class_name(store)
+        if not sc_name:
+            return False
+        sc = store.get(SC_GROUP, SC_VERSION, SC_RESOURCE, None, sc_name)
+        if sc is None:
+            return False
+        sc_spec = self._obj_spec(sc)
+        provisioner = str(sc_spec.get("provisioner") or "")
+        binding_mode = str(sc_spec.get("volumeBindingMode") or "")
+        return provisioner == LOCAL_PATH_PROVISIONER and binding_mode == WAIT_FOR_FIRST_CONSUMER
+
+    def _default_storage_class_name(self, store) -> str | None:
+        if self._default_sc_name:
+            return self._default_sc_name
+        try:
+            classes = store.list_all(SC_GROUP, SC_VERSION, SC_RESOURCE)
+        except Exception:
+            return None
+        for sc in classes:
+            meta = getattr(sc, "metadata", None)
+            annotations = meta.get("annotations") if isinstance(meta, dict) else {}
+            if not isinstance(annotations, dict):
+                continue
+            for key in DEFAULT_CLASS_ANNOTATIONS:
+                raw = annotations.get(key)
+                if raw is not None and str(raw).lower() in {"true", "1", "yes"}:
+                    self._default_sc_name = sc.name
+                    return self._default_sc_name
+        if classes:
+            self._default_sc_name = classes[0].name
+            return self._default_sc_name
+        return None
+
+    def _bound_pv(self, store, pvc):
+        spec = getattr(pvc, "spec", None)
+        pv_name = spec.get("volumeName") if isinstance(spec, dict) else None
+        if not pv_name:
+            return None
+        try:
+            return store.get(CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, str(pv_name))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _obj_spec(obj: Any) -> dict[str, Any]:
+        spec = getattr(obj, "spec", None)
+        return spec if isinstance(spec, dict) else {}
+
+    @staticmethod
+    def _pvc_storage_class_name(pvc) -> str | None:
+        spec = getattr(pvc, "spec", None)
+        if not isinstance(spec, dict):
+            return None
+        name = spec.get("storageClassName")
+        return str(name) if name else None
+
+    @staticmethod
+    def _pvc_selected_node(pvc) -> str | None:
+        meta = getattr(pvc, "metadata", None)
+        annotations = meta.get("annotations") if isinstance(meta, dict) else {}
+        if not isinstance(annotations, dict):
+            return None
+        node = annotations.get(SELECTED_NODE_ANNOTATION)
+        return str(node) if node else None
+
+    @staticmethod
+    def _pvc_is_bound(pvc) -> bool:
+        spec = getattr(pvc, "spec", None)
+        status = getattr(pvc, "status", None)
+        vol = spec.get("volumeName") if isinstance(spec, dict) else None
+        phase = status.get("phase") if isinstance(status, dict) else None
+        return bool(vol) or phase == "Bound"
+
+    @staticmethod
+    def _is_single_writer(spec: dict[str, Any]) -> bool:
+        modes = set(spec.get("accessModes") or []) if isinstance(spec, dict) else set()
+        return not bool(modes & {"ReadWriteMany", "ReadOnlyMany"})
 
 
 # ruff: noqa

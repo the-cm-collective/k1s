@@ -172,6 +172,7 @@ def manifest_from_k8s_workload(
     *,
     service_spec: ServiceSpec | None = None,
     ingress_spec: IngressSpec | None = None,
+    volume_claim_templates: list[dict[str, Any]] | None = None,
 ) -> AppManifest:
     spec: dict[str, Any] = _spec(obj)
     tpl = (spec.get("template") or {}).get("spec") or {}
@@ -199,6 +200,64 @@ def manifest_from_k8s_workload(
         if isinstance(item, dict) and "name" in item and "value" in item:
             env.append({"name": str(item["name"]), "value": str(item.get("value") or "")})
     working_dir = c0.get("workingDir")
+    pvc_mounts: list[dict[str, Any]] = []
+    try:
+        volume_claims: dict[str, tuple[str, bool, bool]] = {}
+        template_names: set[str] = set()
+        for claim_tpl in volume_claim_templates or []:
+            if not isinstance(claim_tpl, dict):
+                continue
+            meta = claim_tpl.get("metadata") if isinstance(claim_tpl.get("metadata"), dict) else {}
+            name = meta.get("name")
+            if not name:
+                continue
+            tpl_name = str(name)
+            template_names.add(tpl_name)
+            volume_claims[tpl_name] = (tpl_name, False, True)
+        for vol in tpl.get("volumes") or []:
+            if not isinstance(vol, dict):
+                continue
+            vname = vol.get("name")
+            pvc = vol.get("persistentVolumeClaim") or {}
+            if not isinstance(pvc, dict):
+                continue
+            claim = pvc.get("claimName")
+            if vname and claim and str(vname) not in template_names:
+                volume_claims[str(vname)] = (str(claim), bool(pvc.get("readOnly", False)), False)
+        if volume_claims:
+            seen: set[tuple[str, str, bool, bool, str | None]] = set()
+            for container in containers or []:
+                if not isinstance(container, dict):
+                    continue
+                for vm in container.get("volumeMounts") or []:
+                    if not isinstance(vm, dict):
+                        continue
+                    vname = vm.get("name")
+                    entry = volume_claims.get(str(vname)) if vname else None
+                    if not entry:
+                        continue
+                    claim, vol_read_only, is_template = entry
+                    mount_path = vm.get("mountPath")
+                    if not mount_path:
+                        continue
+                    read_only = bool(vm.get("readOnly", False)) or bool(vol_read_only)
+                    sub_path = vm.get("subPath")
+                    key = (str(claim), str(mount_path), bool(read_only), bool(is_template), str(sub_path) if sub_path else None)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    record: dict[str, Any] = {
+                        "claimName": str(claim),
+                        "mountPath": str(mount_path),
+                        "readOnly": read_only,
+                    }
+                    if sub_path:
+                        record["subPath"] = str(sub_path)
+                    if is_template:
+                        record["claimTemplate"] = True
+                    pvc_mounts.append(record)
+    except Exception:  # noqa: S112 - best-effort PVC extraction
+        pvc_mounts = []
     resources: dict[str, Any] | None = None
     if isinstance(c0.get("resources"), dict):
         res = c0.get("resources") or {}
@@ -268,6 +327,7 @@ def manifest_from_k8s_workload(
         resources=resources,
         security=security,
         health=health,
+        pvc_mounts=pvc_mounts,
     )
     if service_spec is not None:
         app_spec = app_spec.model_copy(update={"service": service_spec})
@@ -291,7 +351,6 @@ def service_spec_from_k8s(
 ) -> ServiceSpec | None:
     spec = _spec(svc)
     svc_type = spec.get("type", "ClusterIP")
-    expose_host = svc_type in {"NodePort", "LoadBalancer"}
     ports_in = spec.get("ports") or []
     if not isinstance(ports_in, Iterable):
         return None
@@ -313,14 +372,13 @@ def service_spec_from_k8s(
         tgt_val = resolve_port_value(tgt_raw, ports_by_name)
         if tgt_val is None:
             tgt_val = fallback_port
-        host_port = node_port if node_port is not None and expose_host else None
         svc_ports.append(
             ServiceSpec.ServicePort(
                 name=entry.get("name") or f"port-{idx}",
-                port=int(host_port or svc_port),
+                port=int(svc_port),
                 target_port=tgt_val,
                 protocol=entry.get("protocol", "TCP"),
-                node_port=node_port if expose_host else None,
+                node_port=node_port if svc_type in {"NodePort", "LoadBalancer"} else None,
             )
         )
     if not svc_ports:
@@ -328,7 +386,7 @@ def service_spec_from_k8s(
     return ServiceSpec(
         type=svc_type,
         ports=svc_ports,
-        port=svc_ports[0].port if expose_host else None,
+        port=None,
         target_port=svc_ports[0].target_port,
         external_ips=spec.get("externalIPs", []),
         session_affinity=spec.get("sessionAffinity"),
@@ -371,10 +429,18 @@ def ingress_spec_from_k8s(
                 tls_enabled = True
                 tls_secret = entry.get("secretName")
                 break
+    ann = None
+    try:
+        meta = _metadata(ing)
+        if isinstance(meta, dict):
+            ann = meta.get("annotations")
+    except Exception:  # noqa: S112
+        ann = None
     ingress_spec = IngressSpec(
         host=host or "",
         path=path,
         tls=tls_enabled,
         tlsSecretName=tls_secret,
+        annotations=ann,
     )
     return target_key, ingress_spec

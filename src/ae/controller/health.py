@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 import os
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -10,7 +10,7 @@ from typing import Optional
 from requests import RequestException, get
 
 from ae.controller.spec import AppManifest, ProbeSpec
-from ae.runtime import ReplicaState, RuntimeResult
+from ae.runtime import PodState, RuntimeResult
 
 
 @dataclass(slots=True)
@@ -22,14 +22,27 @@ class ProbeOutcome:
 
 
 @dataclass(slots=True)
-class ReplicaHealth:
-    """Health status for a single replica."""
+class PodHealth:
+    """Health status for a single pod."""
 
-    replica_id: str
     ready: bool
     live: bool
     readiness_message: str
     liveness_message: str
+    pod_name: str = ""
+    replica_id: InitVar[str | None] = None
+
+    def __post_init__(self, replica_id: str | None) -> None:
+        if not self.pod_name and replica_id:
+            self.pod_name = str(replica_id)
+
+    @property
+    def replica_id(self) -> str:
+        return self.pod_name
+
+    @replica_id.setter
+    def replica_id(self, value: str) -> None:
+        self.pod_name = value
 
 
 @dataclass(slots=True)
@@ -38,7 +51,11 @@ class HealthReport:
 
     ready_replicas: int
     live_replicas: int
-    replicas: list[ReplicaHealth]
+    pods: list[PodHealth]
+
+    @property
+    def replicas(self) -> list[PodHealth]:
+        return self.pods
 
 
 class HealthManager:
@@ -69,7 +86,7 @@ class HealthManager:
         self._event_cb = fn
 
     def evaluate(self, manifest: AppManifest, result: RuntimeResult) -> HealthReport:
-        replicas: list[ReplicaHealth] = []
+        pods: list[PodHealth] = []
 
         readiness_spec = manifest.spec.health.readiness if manifest.spec.health else None
         liveness_spec = manifest.spec.health.liveness if manifest.spec.health else None
@@ -78,12 +95,12 @@ class HealthManager:
         )
         is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
 
-        # Group runtime states by replica_id to support multi-container replicas
-        groups: dict[str, list[ReplicaState]] = {}
-        for rs in result.replica_states:
-            groups.setdefault(rs.replica_id, []).append(rs)
+        # Group runtime states by pod name to support multi-container pods
+        groups: dict[str, list[PodState]] = {}
+        for rs in result.pod_states:
+            groups.setdefault(rs.pod_name, []).append(rs)
 
-        for replica_id, members in groups.items():
+        for pod_name, members in groups.items():
             # Choose a primary state for probe evaluation: prefer the one with an endpoint
             primary = None
             for m in members:
@@ -101,20 +118,20 @@ class HealthManager:
                 )
             else:
                 sidecars_ok = all((getattr(m, "status", "running") == "running") for m in members)
-            replica = primary
+            pod = primary
             # If startupProbe is defined, gate readiness/liveness until it succeeds.
             if startup_spec is not None:
                 startup = self._evaluate_probe(
-                    replica=replica,
+                    pod=pod,
                     probe=startup_spec,
                     default_success=False,
                     probe_type="startup",
                 )
                 if not startup.success:
                     # While startup is pending/failing, treat liveness as OK and readiness as False.
-                    replicas.append(
-                        ReplicaHealth(
-                            replica_id=replica_id,
+                    pods.append(
+                        PodHealth(
+                            pod_name=pod_name,
                             ready=False,
                             live=True if sidecars_ok else False,
                             readiness_message=f"startup pending: {startup.message}",
@@ -129,13 +146,13 @@ class HealthManager:
                     continue
 
             readiness = self._evaluate_probe(
-                replica=replica,
+                pod=pod,
                 probe=readiness_spec,
-                default_success=replica.ready,
+                default_success=pod.ready,
                 probe_type="readiness",
             )
             liveness = self._evaluate_probe(
-                replica=replica,
+                pod=pod,
                 probe=liveness_spec,
                 default_success=True,
                 probe_type="liveness",
@@ -147,9 +164,9 @@ class HealthManager:
             ready = readiness.success and sidecars_ok
             live = liveness.success and sidecars_ok
 
-            replicas.append(
-                ReplicaHealth(
-                    replica_id=replica_id,
+            pods.append(
+                PodHealth(
+                    pod_name=pod_name,
                     ready=ready,
                     live=live,
                     readiness_message=readiness.message,
@@ -159,19 +176,19 @@ class HealthManager:
                 )
             )
 
-        ready_count = sum(1 for replica in replicas if replica.ready)
-        live_count = sum(1 for replica in replicas if replica.live)
-        return HealthReport(ready_replicas=ready_count, live_replicas=live_count, replicas=replicas)
+        ready_count = sum(1 for pod in pods if pod.ready)
+        live_count = sum(1 for pod in pods if pod.live)
+        return HealthReport(ready_replicas=ready_count, live_replicas=live_count, pods=pods)
 
     def _evaluate_probe(
         self,
-        replica: ReplicaState,
+        pod: PodState,
         probe: Optional[ProbeSpec],
         *,
         default_success: bool,
         probe_type: str,
     ) -> ProbeOutcome:
-        key = (replica.replica_id, probe_type)
+        key = (pod.pod_name, probe_type)
         st = self._state.get(
             key,
             {
@@ -199,7 +216,7 @@ class HealthManager:
             self._state[key] = st
             if prev_effective != default_success:
                 self._emit_probe_event(
-                    replica.replica_id,
+                    pod.pod_name,
                     probe_type,
                     default_success,
                     f"{probe_type} default {'ok' if default_success else 'pending'}",
@@ -232,8 +249,8 @@ class HealthManager:
                 bool(st.get("effective", default_success)), f"{probe_type} backoff ({remaining}s)"
             )
 
-        if probe.initial_delay_seconds > 0 and replica.started_at is not None:
-            started_at = replica.started_at
+        if probe.initial_delay_seconds > 0 and pod.started_at is not None:
+            started_at = pod.started_at
             if started_at.tzinfo is None:
                 started_at = started_at.replace(tzinfo=timezone.utc)
             elapsed = (now - started_at).total_seconds()
@@ -275,11 +292,11 @@ class HealthManager:
                     )
 
         if probe.http_get:
-            outcome = self._evaluate_http_probe(replica, probe.http_get.path, probe, probe_type)
+            outcome = self._evaluate_http_probe(pod, probe.http_get.path, probe, probe_type)
         elif getattr(probe, "tcp_socket", None) is not None:
-            outcome = self._evaluate_tcp_probe(replica, probe.tcp_socket.port, probe, probe_type)  # type: ignore[union-attr]
+            outcome = self._evaluate_tcp_probe(pod, probe.tcp_socket.port, probe, probe_type)  # type: ignore[union-attr]
         elif getattr(probe, "exec", None) is not None:
-            outcome = self._evaluate_exec_probe(replica, probe.exec.command, probe, probe_type)  # type: ignore[union-attr]
+            outcome = self._evaluate_exec_probe(pod, probe.exec.command, probe, probe_type)  # type: ignore[union-attr]
         else:
             outcome = ProbeOutcome(
                 success=default_success,
@@ -309,7 +326,7 @@ class HealthManager:
                 msg = f"{probe_type} waiting successThreshold ({st['succ']}/{need})"
             self._state[key] = st
             if st["effective"] != prev_effective:
-                self._emit_probe_event(replica.replica_id, probe_type, st["effective"], msg)
+                self._emit_probe_event(pod.pod_name, probe_type, st["effective"], msg)
             return ProbeOutcome(st["effective"], msg)
 
         # Failure requires failureThreshold consecutive fails; otherwise retain previous effective
@@ -337,17 +354,17 @@ class HealthManager:
         self._state[key] = st
         if st.get("effective", False) != prev_effective:
             self._emit_probe_event(
-                replica.replica_id, probe_type, bool(st.get("effective", False)), msg
+                pod.pod_name, probe_type, bool(st.get("effective", False)), msg
             )
         return ProbeOutcome(bool(st["effective"]), msg)
 
     def _emit_probe_event(
-        self, replica_id: str, probe_type: str, success: bool, message: str
+        self, pod_name: str, probe_type: str, success: bool, message: str
     ) -> None:
         if self._event_cb is None:
             return
         try:
-            self._event_cb(replica_id, probe_type, success, message)
+            self._event_cb(pod_name, probe_type, success, message)
         except Exception:
             pass
 
@@ -388,15 +405,15 @@ class HealthManager:
 
     def _evaluate_http_probe(
         self,
-        replica: ReplicaState,
+        pod: PodState,
         path: str,
         probe: ProbeSpec,
         probe_type: str,
     ) -> ProbeOutcome:
-        if not replica.endpoint:
+        if not pod.endpoint:
             return ProbeOutcome(False, f"{probe_type} endpoint missing")
 
-        host, port = self._split_endpoint(str(replica.endpoint))
+        host, port = self._split_endpoint(str(pod.endpoint))
         host = self._rewrite_probe_host(host)
         endpoint = self._format_endpoint(host, port)
         url = f"http://{endpoint}{path}"
@@ -412,16 +429,16 @@ class HealthManager:
 
     def _evaluate_tcp_probe(
         self,
-        replica: ReplicaState,
+        pod: PodState,
         port: int,
         probe: ProbeSpec,
         probe_type: str,
     ) -> ProbeOutcome:
         import socket as _sock
 
-        if not replica.endpoint:
+        if not pod.endpoint:
             return ProbeOutcome(False, f"{probe_type} endpoint missing")
-        host, ep_port = self._split_endpoint(str(replica.endpoint))
+        host, ep_port = self._split_endpoint(str(pod.endpoint))
         host = self._rewrite_probe_host(host)
         target_port = int(ep_port or port)
         try:
@@ -433,7 +450,7 @@ class HealthManager:
 
     def _evaluate_exec_probe(
         self,
-        replica: ReplicaState,
+        pod: PodState,
         command: list[str],
         probe: ProbeSpec,
         probe_type: str,
@@ -445,7 +462,7 @@ class HealthManager:
         except Exception:
             timeout = 1
         try:
-            code = self._exec_cb(replica.replica_id, list(command), timeout)  # type: ignore[misc]
+            code = self._exec_cb(pod.pod_name, list(command), timeout)  # type: ignore[misc]
         except Exception as exc:  # pragma: no cover
             return ProbeOutcome(False, f"{probe_type} exec error: {exc}")
         return ProbeOutcome(code == 0, f"{probe_type} exec rc={code}")

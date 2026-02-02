@@ -54,7 +54,7 @@ class FakeContainer:
         self.reload()
 
     def remove(self) -> None:
-        self.client.remove_container(self.labels["ae.replica_id"])
+        self.client.remove_container(self.labels["ae.pod_name"])
 
 
 class FakeContainerManager:
@@ -88,7 +88,7 @@ class FakeContainerManager:
         restart_policy=None,
     ):  # noqa: ANN001,D401 - mimic docker
         _ = (image, command, detach, environment, ports, restart_policy)
-        replica_id = labels.get("ae.replica_id")
+        pod_name = labels.get("ae.pod_name")
         host_port = self._client.allocate_port()
         container = FakeContainer(
             client=self._client,
@@ -96,7 +96,7 @@ class FakeContainerManager:
             labels=labels,
             host_port=host_port,
         )
-        self._client.register_container(replica_id, container)
+        self._client.register_container(pod_name, container)
         return container
 
 
@@ -129,29 +129,29 @@ class FakeDockerClient:
         self._next_port += 1
         return port
 
-    def register_container(self, replica_id: str, container: FakeContainer) -> None:
-        self.containers_by_replica[replica_id] = container
+    def register_container(self, pod_name: str, container: FakeContainer) -> None:
+        self.containers_by_replica[pod_name] = container
 
-    def remove_container(self, replica_id: str) -> None:
-        self.containers_by_replica.pop(replica_id, None)
+    def remove_container(self, pod_name: str) -> None:
+        self.containers_by_replica.pop(pod_name, None)
 
     def login(self, registry: str, username: str | None, password: str | None) -> None:
         self.logins.append((registry, username or "", password or ""))
 
     # helper for tests
     def seed_container(self, app_name: str, replica_suffix: int, revision: int) -> None:
-        replica_id = f"{app_name}-rev{revision}-{replica_suffix}"
+        pod_name = f"{app_name}-rev{revision}-{replica_suffix}"
         container = FakeContainer(
             client=self,
             name=f"ae-{app_name}-rev{revision}-{replica_suffix}",
             labels={
                 "ae.app": app_name,
-                "ae.replica_id": replica_id,
+                "ae.pod_name": pod_name,
                 "ae.revision": str(revision),
             },
             host_port=self.allocate_port(),
         )
-        self.register_container(replica_id, container)
+        self.register_container(pod_name, container)
 
 
 def make_manifest(replica_count: int = 1, image: str = "alpine:3.20") -> AppManifest:
@@ -178,10 +178,10 @@ def test_docker_runtime_creates_missing_replicas():
     assert result.revision == 1
     assert result.created == 2
     assert result.removed == 0
-    assert len(result.replica_states) == 2
+    assert len(result.pod_states) == 2
     assert client.images.pulled == ["alpine:3.20"]
     assert client.logins == [("ghcr.io", "user", "pass")]
-    for state in result.replica_states:
+    for state in result.pod_states:
         assert state.ready is True
         assert state.endpoint is not None
 
@@ -198,7 +198,7 @@ def test_docker_runtime_removes_extra_replicas():
 
     assert result.removed == 2
     assert result.created == 1
-    assert len(result.replica_states) == 1
+    assert len(result.pod_states) == 1
     assert "demo-rev1-0" in client.containers_by_replica
     assert "demo-rev0-1" not in client.containers_by_replica
 
@@ -378,7 +378,7 @@ def test_build_state_prefers_readiness_port_for_endpoint():
     class C:
         def __init__(self) -> None:
             self.name = "ae-echo-rev1-0"
-            self.labels = {"ae.replica_id": "echo-rev1-0"}
+            self.labels = {"ae.pod_name": "echo-rev1-0"}
             self.status = "running"
             self.attrs = {
                 "State": {"Status": "running", "StartedAt": "2025-10-23T00:00:00+00:00"},

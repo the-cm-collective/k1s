@@ -1,10 +1,11 @@
-"""Docker-backed runtime adapter for managing application replicas."""
+"""Docker-backed runtime adapter for managing application pods."""
 
 # ruff: noqa: E501,S110,S112,S603,S607,S104,SIM105,SIM118,UP022,UP028,B009
 from __future__ import annotations
 
 import logging
 import os
+import time
 from collections.abc import Iterable
 from datetime import datetime
 
@@ -22,7 +23,7 @@ from ae.controller.spec import (
 )
 from ae.runtime.ports import choose_host_port
 
-from .base import ReplicaState, RuntimeAdapter, RuntimeResult
+from .base import PodState, RuntimeAdapter, RuntimeResult
 from .registry import RegistryAuthProvider
 
 LOGGER = logging.getLogger(__name__)
@@ -32,7 +33,8 @@ class DockerRuntime(RuntimeAdapter):
     """Ensures Docker containers match the desired manifest state."""
 
     APP_LABEL = "ae.app"
-    REPLICA_LABEL = "ae.replica_id"
+    POD_LABEL = "ae.pod_name"
+    LEGACY_REPLICA_LABEL = "ae.replica_id"
     REVISION_LABEL = "ae.revision"
     CONTAINER_LABEL = "ae.container"
     JOB_ATTEMPT_LABEL = "ae.job_attempt"
@@ -43,7 +45,20 @@ class DockerRuntime(RuntimeAdapter):
         registry_auth: RegistryAuthProvider | None = None,
     ) -> None:
         try:
-            self._client = client or docker.from_env()
+            if client is None:
+                if not os.environ.get("DOCKER_CERT_PATH"):
+                    tls_dir = os.environ.get("DOCKER_TLS_CERTDIR")
+                    if tls_dir:
+                        candidate = os.path.join(tls_dir, "client")
+                        cert_ok = (
+                            os.path.isfile(os.path.join(candidate, "cert.pem"))
+                            and os.path.isfile(os.path.join(candidate, "key.pem"))
+                        )
+                        if cert_ok:
+                            os.environ["DOCKER_CERT_PATH"] = candidate
+                self._client = docker.from_env()
+            else:
+                self._client = client
         except Exception as exc:  # pragma: no cover - defensive guard, validated in tests
             raise RuntimeError(f"Failed to initialize Docker client: {exc}") from exc
         self._registry = registry_auth or RegistryAuthProvider()
@@ -52,6 +67,12 @@ class DockerRuntime(RuntimeAdapter):
 
         self._network_name = _os.getenv("AE_DOCKER_NETWORK") or _os.getenv("AE_NETWORK_NAME")
         self._serial_service_rollout = _os.getenv("AE_SERIAL_SERVICE_ROLLOUT", "0") == "1"
+        self._apishim_state_checked = False
+        self._apishim_state = None
+        self._apishim_store_checked = False
+        self._apishim_store = None
+        self._volume_manager_checked = False
+        self._volume_manager = None
 
     def ensure_app(
         self,
@@ -60,14 +81,14 @@ class DockerRuntime(RuntimeAdapter):
         *,
         keep_old: bool = False,
         limit_create: int | None = None,
-        replica_ids: list[str] | None = None,
+        pod_names: list[str] | None = None,
         node_id: str | None = None,
     ) -> RuntimeResult:
         app_name = app_key_for_manifest(manifest)
-        desired_replica_ids = (
-            list(replica_ids)
-            if replica_ids is not None
-            else self._desired_replica_ids(manifest, revision)
+        desired_pod_names = (
+            list(pod_names)
+            if pod_names is not None
+            else self._desired_pod_names(manifest, revision)
         )
         # Record node context so volume helpers can label ownership
         self._current_node_id = node_id
@@ -96,11 +117,11 @@ class DockerRuntime(RuntimeAdapter):
                 labels = container.labels or {}
             except NotFound:
                 continue
-            replica_label = labels.get(self.REPLICA_LABEL)
-            if not replica_label:
+            pod_label = self._pod_label(labels)
+            if not pod_label:
                 continue
             if labels.get(self.REVISION_LABEL) == str(revision):
-                containers_by_replica[replica_label] = container
+                containers_by_replica[pod_label] = container
             else:
                 old_revision_containers.append(container)
 
@@ -118,17 +139,32 @@ class DockerRuntime(RuntimeAdapter):
                 removed += 1
             old_revision_containers = []
 
-        if any(replica_id not in containers_by_replica for replica_id in desired_replica_ids):
+        if any(replica_id not in containers_by_replica for replica_id in desired_pod_names):
             self._registry.ensure_login(self._client, manifest.spec.image)
             self._pull_image(manifest)
 
-        for replica_id in desired_replica_ids:
+        for replica_id in desired_pod_names:
+            try:
+                rep_manifest = self._maybe_inject_pvc_mounts(
+                    manifest, node_id=node_id, replica_id=replica_id
+                )
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    from ae.storage.netfs import PvcNotReadyError
+                except Exception:
+                    PvcNotReadyError = None  # type: ignore[assignment]
+                if PvcNotReadyError is not None and isinstance(exc, PvcNotReadyError):
+                    LOGGER.info(
+                        "Skipping %s: PVCs not ready for mount injection", replica_id
+                    )
+                    continue
+                raise
             container = containers_by_replica.get(replica_id)
             if container is None:
                 if limit_create is not None and created >= int(limit_create):
                     continue
                 container = self._create_container(
-                    manifest, replica_id, revision, node_id=node_id, attempt=0
+                    rep_manifest, replica_id, revision, node_id=node_id, attempt=0
                 )
                 containers_by_replica[replica_id] = container
                 created += 1
@@ -162,7 +198,7 @@ class DockerRuntime(RuntimeAdapter):
                             except Exception:
                                 pass
                             container = self._create_container(
-                                manifest,
+                                rep_manifest,
                                 replica_id,
                                 revision,
                                 node_id=node_id,
@@ -188,10 +224,10 @@ class DockerRuntime(RuntimeAdapter):
         final_containers = self._client.containers.list(
             all=True, filters={"label": f"{self.APP_LABEL}={app_name}"}
         )
-        replica_states = [
+        pod_states = [
             self._build_state(manifest, container)
             for container in final_containers
-            if container.labels.get(self.REPLICA_LABEL)
+            if self._pod_label(container.labels)
             and container.labels.get(self.REVISION_LABEL) == str(revision)
         ]
 
@@ -200,25 +236,29 @@ class DockerRuntime(RuntimeAdapter):
             created=created,
             updated=updated,
             removed=removed,
-            replica_states=replica_states,
+            pod_states=pod_states,
         )
 
     def read_logs(
         self,
-        replica_id: str,
+        pod_name: str,
         *,
         follow: bool = False,
         tail: int | None = None,
         since: int | None = None,
     ):
-        """Stream logs for a container labeled with the replica id."""
+        """Stream logs for a container labeled with the pod name."""
         try:
             containers = self._client.containers.list(
-                all=True,
-                filters={"label": f"{self.REPLICA_LABEL}={replica_id}"},
+                all=True, filters={"label": f"{self.POD_LABEL}={pod_name}"}
             )
+            if not containers:
+                containers = self._client.containers.list(
+                    all=True,
+                    filters={"label": f"{self.LEGACY_REPLICA_LABEL}={pod_name}"},
+                )
         except APIError as exc:
-            raise RuntimeError(f"Failed to query logs for {replica_id}: {exc}") from exc
+            raise RuntimeError(f"Failed to query logs for {pod_name}: {exc}") from exc
         if not containers:
             return iter(())
         container = containers[0]
@@ -248,14 +288,19 @@ class DockerRuntime(RuntimeAdapter):
                 for line in text.splitlines():
                     yield line
         except APIError as exc:
-            raise RuntimeError(f"Failed to read logs for {replica_id}: {exc}") from exc
+            raise RuntimeError(f"Failed to read logs for {pod_name}: {exc}") from exc
 
-    def exec(self, replica_id: str, command: list[str], *, timeout: int | None = None) -> int:  # type: ignore[override]
+    def exec(self, pod_name: str, command: list[str], *, timeout: int | None = None) -> int:  # type: ignore[override]
         _ = timeout
         try:
             containers = self._client.containers.list(
-                all=True, filters={"label": f"{self.REPLICA_LABEL}={replica_id}"}
+                all=True, filters={"label": f"{self.POD_LABEL}={pod_name}"}
             )
+            if not containers:
+                containers = self._client.containers.list(
+                    all=True,
+                    filters={"label": f"{self.LEGACY_REPLICA_LABEL}={pod_name}"},
+                )
         except APIError as exc:  # pragma: no cover
             raise RuntimeError(f"Failed to locate container for exec: {exc}") from exc
         if not containers:
@@ -300,7 +345,10 @@ class DockerRuntime(RuntimeAdapter):
 
     # Internal helpers -------------------------------------------------
 
-    def _desired_replica_ids(self, manifest: AppManifest, revision: int) -> list[str]:
+    def _pod_label(self, labels: dict) -> str | None:
+        return labels.get(self.POD_LABEL) or labels.get(self.LEGACY_REPLICA_LABEL)
+
+    def _desired_pod_names(self, manifest: AppManifest, revision: int) -> list[str]:
         app_name = app_key_for_manifest(manifest)
         return [f"{app_name}-rev{revision}-{replica}" for replica in range(manifest.spec.replicas)]
 
@@ -317,6 +365,401 @@ class DockerRuntime(RuntimeAdapter):
             self._client.images.pull(image_ref)
         except APIError as exc:
             raise RuntimeError(f"Failed to pull image {image_ref}: {exc}") from exc
+
+    def _extract_registry(self, image: str) -> str | None:
+        if "/" not in image:
+            return None
+        host = image.split("/", 1)[0]
+        if "." not in host and ":" not in host:
+            return None
+        return host
+
+    def _parse_dockerconfigjson(self, raw: str) -> dict[str, dict[str, str]]:
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return {}
+        auths = payload.get("auths") if isinstance(payload, dict) else None
+        if isinstance(auths, dict):
+            entries = auths
+        elif isinstance(payload, dict):
+            entries = payload
+        else:
+            return {}
+        out: dict[str, dict[str, str]] = {}
+        for host, entry in entries.items():
+            if not isinstance(entry, dict):
+                continue
+            username = entry.get("username")
+            password = entry.get("password")
+            if (not username or not password) and entry.get("auth"):
+                try:
+                    decoded = base64.b64decode(str(entry["auth"]).encode("ascii")).decode("utf-8")
+                    if ":" in decoded:
+                        username, password = decoded.split(":", 1)
+                except Exception:
+                    username = None
+                    password = None
+            if username and password:
+                out[str(host)] = {"username": str(username), "password": str(password)}
+        return out
+
+    def _image_pull_secret_names(self, manifest: AppManifest) -> list[tuple[str | None, str | None]]:
+        secrets: list[tuple[str | None, str | None]] = []
+        for sec in getattr(manifest.spec, "image_pull_secrets", []) or []:
+            if isinstance(sec, dict):
+                secrets.append((sec.get("name"), sec.get("namespace")))
+            else:
+                secrets.append((str(sec), None))
+        return secrets
+
+    def _service_account_pull_secrets(
+        self, manifest: AppManifest
+    ) -> list[tuple[str | None, str | None]]:
+        store = self._get_apishim_store()
+        if store is None:
+            return []
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        sa_name = (
+            getattr(manifest.spec, "service_account_name", None)
+            or self._service_account_name_from_store(manifest, store)
+            or "default"
+        )
+        try:
+            sa = store.get("", "v1", "serviceaccounts", namespace, str(sa_name))
+        except Exception:
+            sa = None
+        if sa is None:
+            return []
+        spec = getattr(sa, "spec", None) or {}
+        if not isinstance(spec, dict):
+            return []
+        secrets = spec.get("imagePullSecrets") or []
+        out: list[tuple[str | None, str | None]] = []
+        for entry in secrets:
+            if isinstance(entry, dict):
+                out.append((entry.get("name"), None))
+            else:
+                out.append((str(entry), None))
+        return out
+
+    def _service_account_name_from_store(self, manifest: AppManifest, store: Any) -> str | None:
+        name = getattr(getattr(manifest, "metadata", None), "name", None)
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        if not name:
+            return None
+        candidates = [
+            ("apps", "v1", "deployments"),
+            ("apps", "v1", "daemonsets"),
+            ("apps", "v1", "statefulsets"),
+            ("batch", "v1", "jobs"),
+            ("batch", "v1", "cronjobs"),
+        ]
+        for group, version, resource in candidates:
+            try:
+                obj = store.get(group, version, resource, namespace, str(name))
+            except Exception:
+                obj = None
+            if obj is None:
+                continue
+            spec = getattr(obj, "spec", None) or {}
+            if not isinstance(spec, dict):
+                continue
+            template = None
+            if resource == "cronjobs":
+                template = ((spec.get("jobTemplate") or {}).get("spec") or {}).get("template")
+            else:
+                template = spec.get("template")
+            if not isinstance(template, dict):
+                continue
+            tpl_spec = template.get("spec") or {}
+            if not isinstance(tpl_spec, dict):
+                continue
+            sa = tpl_spec.get("serviceAccountName") or tpl_spec.get("serviceAccount")
+            if sa:
+                return str(sa)
+        return None
+
+    def _pull_secret_auths(self, manifest: AppManifest) -> dict[str, dict[str, str]]:
+        state = self._get_apishim_state()
+        if state is None:
+            return {}
+        secrets = self._image_pull_secret_names(manifest)
+        if not secrets:
+            secrets = self._service_account_pull_secrets(manifest)
+        if not secrets:
+            return {}
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        auths: dict[str, dict[str, str]] = {}
+        for name, ns in secrets:
+            if not name:
+                continue
+            data = state.get_secret(str(ns or namespace), str(name))
+            if not data:
+                continue
+            raw = data.get(".dockerconfigjson") or data.get(".dockercfg")
+            if raw:
+                auths.update(self._parse_dockerconfigjson(str(raw)))
+                continue
+            host = data.get("registry") or data.get("host") or data.get("server")
+            user = data.get("username")
+            pw = data.get("password")
+            if host and user and pw:
+                auths[str(host)] = {"username": str(user), "password": str(pw)}
+        return auths
+
+    def _image_pull_credentials(
+        self,
+        image_ref: str,
+        *,
+        manifest: AppManifest | None = None,
+        spec: Any | None = None,
+    ) -> tuple[str, str, str] | None:
+        creds = self._registry.list_registries()
+        secret_creds = self._pull_secret_auths(manifest) if manifest is not None else {}
+        preferred: list[str] = []
+        if manifest is not None:
+            ref = getattr(manifest.spec, "registry_auth_ref", None)
+            if ref:
+                preferred.append(str(ref))
+            for sec in getattr(manifest.spec, "image_pull_secrets", []) or []:
+                if isinstance(sec, dict):
+                    name = sec.get("name")
+                    if name:
+                        preferred.append(str(name))
+                else:
+                    preferred.append(str(sec))
+
+        for host in preferred:
+            entry = creds.get(host) or secret_creds.get(host)
+            if entry and entry.get("username") and entry.get("password"):
+                return str(host), str(entry.get("username")), str(entry.get("password"))
+
+        registry = self._extract_registry(image_ref) or "docker.io"
+        candidates = [registry]
+        if registry == "docker.io":
+            candidates.extend(
+                [
+                    "index.docker.io",
+                    "registry-1.docker.io",
+                    "https://index.docker.io/v1/",
+                ]
+            )
+        for host in candidates:
+            entry = creds.get(host) or secret_creds.get(host)
+            if entry and entry.get("username") and entry.get("password"):
+                return str(host), str(entry.get("username")), str(entry.get("password"))
+        return None
+
+    def _resolve_extra_hosts(self, manifest: AppManifest) -> dict[str, str]:
+        hosts: dict[str, str] = {}
+        for entry in getattr(manifest.spec, "host_aliases", []) or []:
+            if isinstance(entry, dict):
+                ip = entry.get("ip")
+                names = entry.get("hostnames") or entry.get("hostNames") or []
+            else:
+                ip = getattr(entry, "ip", None)
+                names = getattr(entry, "hostnames", None) or []
+            if not ip:
+                continue
+            for name in names or []:
+                if name:
+                    hosts[str(name)] = str(ip)
+        return hosts
+
+    def _resolve_dns_config(
+        self, manifest: AppManifest
+    ) -> tuple[list[str], list[str], list[str]]:
+        cfg = getattr(manifest.spec, "dns_config", None)
+        if not cfg:
+            return [], [], []
+        nameservers = [str(x) for x in (getattr(cfg, "nameservers", None) or []) if x]
+        searches = [str(x) for x in (getattr(cfg, "searches", None) or []) if x]
+        options: list[str] = []
+        for opt in getattr(cfg, "options", None) or []:
+            if isinstance(opt, dict):
+                name = opt.get("name")
+                value = opt.get("value")
+            else:
+                name = getattr(opt, "name", None)
+                value = getattr(opt, "value", None)
+            if name:
+                options.append(f"{name}:{value}" if value else str(name))
+        return nameservers, searches, options
+
+    def _sandbox_image(self) -> str:
+        return (
+            os.getenv("AE_POD_SANDBOX_IMAGE")
+            or os.getenv("AE_CRI_SANDBOX_IMAGE")
+            or "registry.k8s.io/pause:3.9"
+        )
+
+    def _pod_sandbox_name(self, manifest: AppManifest, replica_id: str, revision: int) -> str:
+        app_name = app_key_for_manifest(manifest)
+        suffix = replica_id.split("-")[-1]
+        return f"ae-{app_name}-rev{revision}-{suffix}-pod"
+
+    def _ensure_pod_sandbox(
+        self,
+        manifest: AppManifest,
+        replica_id: str,
+        revision: int,
+        *,
+        node_id: str | None = None,
+    ) -> str | None:
+        if not bool(getattr(manifest.spec, "share_process_namespace", False)):
+            return None
+        name = self._pod_sandbox_name(manifest, replica_id, revision)
+        app_name = app_key_for_manifest(manifest)
+        labels = runtime_labels_for_manifest(manifest, app_name=app_name)
+        labels.update(
+            {
+                self.POD_LABEL: replica_id,
+                self.LEGACY_REPLICA_LABEL: replica_id,
+                self.REVISION_LABEL: str(revision),
+                self.CONTAINER_LABEL: self.POD_SANDBOX_LABEL,
+                **({"ae.node": str(node_id)} if node_id else {}),
+            }
+        )
+        try:
+            existing = self._client.containers.list(
+                all=True,
+                filters={
+                    "label": [
+                        f"{self.APP_LABEL}={app_name}",
+                        f"{self.POD_LABEL}={replica_id}",
+                        f"{self.CONTAINER_LABEL}={self.POD_SANDBOX_LABEL}",
+                    ]
+                },
+            )
+        except APIError:
+            existing = []
+        if existing:
+            pod = existing[0]
+            try:
+                pod.reload()
+                if pod.status != "running":
+                    pod.start()
+            except Exception:
+                pass
+            return name
+        try:
+            self._ensure_image(self._sandbox_image(), manifest=manifest, policy="IfNotPresent")
+            self._client.containers.run(
+                self._sandbox_image(),
+                name=name,
+                detach=True,
+                labels=labels,
+                restart_policy={"Name": "unless-stopped"},
+            )
+            return name
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Failed to create pod sandbox for %s: %s", replica_id, exc)
+            return None
+
+    def _get_volume_manager(self):
+        if self._volume_manager_checked:
+            return self._volume_manager
+        self._volume_manager_checked = True
+        if os.getenv("AE_ENABLE_NETFS", "0") != "1":
+            self._volume_manager = None
+            return None
+        try:
+            from pathlib import Path
+
+            from ae.storage import (
+                ApishimStorageState,
+                InMemoryStorageState,
+                NetFSManager,
+                NodeVolumeManager,
+            )
+            from ae.apishim.store import ObjectStore
+        except Exception:
+            self._volume_manager = None
+            return None
+        state = None
+        dsn = os.getenv("AE_APISHIM_DSN")
+        db_path = os.getenv("AE_APISHIM_DB")
+        if dsn or db_path:
+            try:
+                store = ObjectStore(
+                    db_path=Path(db_path) if db_path else Path("state/apishim.db"),
+                    dsn=dsn,
+                )
+                state = ApishimStorageState(store)
+            except Exception:
+                state = None
+        if state is None:
+            state = InMemoryStorageState()
+        try:
+            netfs = NetFSManager(state)
+            self._volume_manager = NodeVolumeManager(netfs, node_id=self._current_node_id)
+        except Exception:
+            self._volume_manager = None
+        return self._volume_manager
+
+    def _maybe_inject_pvc_mounts(
+        self,
+        manifest: AppManifest,
+        *,
+        node_id: str | None = None,
+        replica_id: str | None = None,
+    ) -> AppManifest:
+        mgr = self._get_volume_manager()
+        if mgr is None:
+            return manifest
+        try:
+            from ae.storage.netfs import PvcNotReadyError
+        except Exception:
+            PvcNotReadyError = None  # type: ignore[assignment]
+        try:
+            if replica_id is not None:
+                return mgr.inject_pvc_mounts(
+                    manifest,
+                    node_id=node_id or self._current_node_id,
+                    replica_id=replica_id,
+                )
+            return mgr.inject_pvc_mounts(
+                manifest,
+                node_id=node_id or self._current_node_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if PvcNotReadyError is not None and isinstance(exc, PvcNotReadyError):
+                raise
+            if isinstance(exc, TypeError):
+                try:
+                    return mgr.inject_pvc_mounts(
+                        manifest,
+                        node_id=node_id or self._current_node_id,
+                    )
+                except Exception as inner_exc:  # noqa: BLE001
+                    LOGGER.warning("PVC mount injection failed: %s", inner_exc)
+                    return manifest
+            LOGGER.warning("PVC mount injection failed: %s", exc)
+            return manifest
+
+    def _endpoint_for_host_network(
+        self, manifest: AppManifest, preferred: int | None = None
+    ) -> str | None:
+        port = None
+        if preferred is not None:
+            port = int(preferred)
+        elif getattr(manifest.spec, "ports", None):
+            try:
+                port = int(manifest.spec.ports[0].container_port)
+            except Exception:
+                port = None
+        if port is None and getattr(manifest.spec, "service", None):
+            svc = manifest.spec.service
+            try:
+                target = getattr(svc, "target_port", None)
+                port = int(target if target is not None else getattr(svc, "port", None))
+            except Exception:
+                port = None
+        if port is None:
+            return None
+        host = os.getenv("AE_NODE_ADVERTISE_IP") or "127.0.0.1"
+        return f"{host}:{port}"
 
     def _create_container(
         self,
@@ -383,6 +826,7 @@ class DockerRuntime(RuntimeAdapter):
 
         # volumes
         volumes = {}
+        devices: list[str] = []
         if manifest.spec.volumes:
             for v in manifest.spec.volumes:
                 mode = "ro" if v.read_only else "rw"
@@ -392,11 +836,19 @@ class DockerRuntime(RuntimeAdapter):
                 if host_path and not os.path.isabs(host_path):
                     host_path = os.path.abspath(host_path)
                 volumes[host_path] = {"bind": v.mount_path, "mode": mode}
+        if getattr(manifest.spec, "volume_devices", None):
+            for d in manifest.spec.volume_devices:
+                mode = "r" if d.read_only else "rwm"
+                host_path = d.host_path
+                if host_path and not os.path.isabs(host_path):
+                    host_path = os.path.abspath(host_path)
+                devices.append(f"{host_path}:{d.device_path}:{mode}")
         if getattr(manifest.spec, "storage", None):
             self.ensure_storage_volumes(app_name, [s.model_dump() for s in manifest.spec.storage])
             for s in manifest.spec.storage:
+                mode = "ro" if getattr(s, "read_only", False) else "rw"
                 vol_name = self._storage_volume_name(app_name, s.name)
-                volumes[vol_name] = {"bind": s.mount_path, "mode": "rw"}
+                volumes[vol_name] = {"bind": s.mount_path, "mode": mode}
 
         try:
             run_fn = self._client.containers.run
@@ -416,7 +868,8 @@ class DockerRuntime(RuntimeAdapter):
             labels = runtime_labels_for_manifest(manifest, app_name=app_name)
             labels.update(
                 {
-                    self.REPLICA_LABEL: replica_id,
+                    self.POD_LABEL: replica_id,
+                    self.LEGACY_REPLICA_LABEL: replica_id,
                     self.REVISION_LABEL: str(revision),
                     self.CONTAINER_LABEL: "main",
                     **({"ae.node": str(node_id)} if node_id else {}),
@@ -433,6 +886,8 @@ class DockerRuntime(RuntimeAdapter):
                 "ports": ports if ports else None,
                 "restart_policy": {"Name": "no"} if is_job else {"Name": "unless-stopped"},
             }
+            if devices:
+                kwargs["devices"] = devices
             # Security context mapping
             sec = getattr(manifest.spec, "security", None)
             if sec is not None:
@@ -531,6 +986,47 @@ class DockerRuntime(RuntimeAdapter):
                 pass
             return container
         except APIError as exc:
+            msg = str(exc).lower()
+            if attempt < 2 and ("already in use" in msg or "conflict" in msg):
+                try:
+                    existing = self._client.containers.get(name)
+                except NotFound:
+                    time.sleep(0.2)
+                    return self._create_container(
+                        manifest,
+                        replica_id,
+                        revision,
+                        node_id=node_id,
+                        attempt=attempt + 1,
+                    )
+                labels: dict[str, str] = {}
+                try:
+                    labels = existing.labels or {}
+                except Exception:
+                    labels = {}
+                if (
+                    labels.get(self.APP_LABEL) == app_name
+                    and labels.get(self.REVISION_LABEL) == str(revision)
+                ):
+                    return existing
+                if not labels:
+                    # If we can't read labels, assume another reconcile created it.
+                    return existing
+                try:
+                    LOGGER.warning(
+                        "Name conflict for %s; removing container with labels %s", name, labels
+                    )
+                    existing.remove(force=True)
+                except Exception:
+                    return existing
+                time.sleep(0.2)
+                return self._create_container(
+                    manifest,
+                    replica_id,
+                    revision,
+                    node_id=node_id,
+                    attempt=attempt + 1,
+                )
             raise RuntimeError(f"Failed to create container {name}: {exc}") from exc
 
     def _ensure_host_port_free(self, app_name: str, host_port: int) -> None:
@@ -606,21 +1102,22 @@ class DockerRuntime(RuntimeAdapter):
         revision: int,
         volumes: dict[str, dict],
     ) -> None:
-        """Ensure declared sidecar containers (spec.containers) are running for a replica."""
+        """Ensure declared sidecar containers (spec.containers) are running for a pod."""
         if not getattr(manifest.spec, "containers", None):
             return
         app_name = app_key_for_manifest(manifest)
         try:
-            existing = self._client.containers.list(
-                all=True,
-                filters={
-                    "label": [
-                        f"{self.APP_LABEL}={app_name}",
-                        f"{self.REPLICA_LABEL}={replica_id}",
-                        f"{self.REVISION_LABEL}={revision}",
-                    ]
-                },
-            )
+            filters = {
+                "label": [
+                    f"{self.APP_LABEL}={app_name}",
+                    f"{self.POD_LABEL}={replica_id}",
+                    f"{self.REVISION_LABEL}={revision}",
+                ]
+            }
+            existing = self._client.containers.list(all=True, filters=filters)
+            if not existing:
+                filters["label"][1] = f"{self.LEGACY_REPLICA_LABEL}={replica_id}"
+                existing = self._client.containers.list(all=True, filters=filters)
         except APIError:
             existing = []
         by_cname: dict[str, Container] = {}
@@ -694,7 +1191,8 @@ class DockerRuntime(RuntimeAdapter):
                             volumes=vmap or None,
                             labels={
                                 **runtime_labels_for_manifest(manifest, app_name=app_name),
-                                self.REPLICA_LABEL: replica_id,
+                                self.POD_LABEL: replica_id,
+                                self.LEGACY_REPLICA_LABEL: replica_id,
                                 self.REVISION_LABEL: str(revision),
                                 self.CONTAINER_LABEL: cname,
                             },
@@ -802,7 +1300,7 @@ class DockerRuntime(RuntimeAdapter):
     # Streaming exec/attach for kubectl exec (SPDY)
     def exec_attach(
         self,
-        replica_id: str,
+        pod_name: str,
         command: list[str],
         *,
         container: str | None = None,
@@ -811,16 +1309,30 @@ class DockerRuntime(RuntimeAdapter):
         """Return (socket, exec_id) for an attached exec session."""
         target = None
         try:
-            filters = {"label": [f"{self.REPLICA_LABEL}={replica_id}"]}
+            filters = {"label": [f"{self.POD_LABEL}={pod_name}"]}
             if container:
                 filters["label"].append(f"{self.CONTAINER_LABEL}={container}")
             containers = self._client.containers.list(all=True, filters=filters)
+            if not containers:
+                filters["label"][0] = f"{self.LEGACY_REPLICA_LABEL}={pod_name}"
+                containers = self._client.containers.list(all=True, filters=filters)
             if containers:
                 target = containers[0]
+            if target is None and container is None:
+                # Fallback for legacy or mismatched labels: scan by name/alternate labels.
+                for c in self._client.containers.list(all=True):
+                    labels = c.labels or {}
+                    if (
+                        self._pod_label(labels) == pod_name
+                        or labels.get("ae.replica") == pod_name
+                        or c.name == pod_name
+                    ):
+                        target = c
+                        break
         except APIError:
             target = None
         if target is None:
-            raise RuntimeError("Replica not found for exec")
+            raise RuntimeError("Pod not found for exec")
         exec_id = self._client.api.exec_create(
             target.id,
             cmd=command,
@@ -830,6 +1342,9 @@ class DockerRuntime(RuntimeAdapter):
             tty=tty,
         )
         sock = self._client.api.exec_start(exec_id, tty=tty, stream=True, socket=True, demux=False)
+        # docker-py returns a SocketIO wrapper; unwrap to raw socket for recv/sendall.
+        if hasattr(sock, "_sock"):
+            sock = sock._sock
         return sock, exec_id
 
     def exec_resize(
@@ -847,10 +1362,10 @@ class DockerRuntime(RuntimeAdapter):
         except APIError:
             return 0
 
-    def _build_state(self, manifest: AppManifest, container: Container) -> ReplicaState:
+    def _build_state(self, manifest: AppManifest, container: Container) -> PodState:
         self._reload(container)
         labels = container.labels or {}
-        replica_id = labels.get(self.REPLICA_LABEL, container.name)
+        pod_name = self._pod_label(labels) or container.name
 
         state = container.attrs.get("State", {})
         status = state.get("Status", container.status)
@@ -886,8 +1401,8 @@ class DockerRuntime(RuntimeAdapter):
 
         started_at = self._parse_datetime(state.get("StartedAt"))
 
-        return ReplicaState(
-            replica_id=replica_id,
+        return PodState(
+            pod_name=pod_name,
             ready=ready,
             status=status,
             endpoint=endpoint,
@@ -1081,8 +1596,9 @@ class DockerRuntime(RuntimeAdapter):
                     app_name, [s.model_dump() for s in manifest.spec.storage]
                 )
                 for s in manifest.spec.storage:
+                    mode = "ro" if getattr(s, "read_only", False) else "rw"
                     vol_name = self._storage_volume_name(app_name, s.name)
-                    volumes[vol_name] = {"bind": str(s.mount_path), "mode": "rw"}
+                    volumes[vol_name] = {"bind": str(s.mount_path), "mode": mode}
         except Exception:
             pass
 
@@ -1304,17 +1820,29 @@ class DockerRuntime(RuntimeAdapter):
         for c in containers:
             try:
                 ports: list[int] = []
+                port_map: dict[int, int] = {}
+                host_ip = None
                 pmap = (c.attrs or {}).get("NetworkSettings", {}).get("Ports", {}) or {}
-                for binds in pmap.values():
+                for key, binds in pmap.items():
                     if not binds:
                         continue
+                    try:
+                        cport = int(str(key).split("/", 1)[0])
+                    except Exception:
+                        cport = None
                     for b in binds:
                         hp = b.get("HostPort")
                         if hp:
                             try:
-                                ports.append(int(hp))
+                                hp_i = int(hp)
+                                ports.append(hp_i)
+                                if cport is not None:
+                                    port_map.setdefault(cport, hp_i)
                             except ValueError:
                                 continue
+                        hip = b.get("HostIp") or b.get("HostIP")
+                        if hip and host_ip is None:
+                            host_ip = hip
                 state = (c.attrs or {}).get("State", {})
                 restarts = (
                     int(state.get("RestartCount", 0))
@@ -1328,7 +1856,10 @@ class DockerRuntime(RuntimeAdapter):
                     {
                         "name": c.name,
                         "labels": c.labels or {},
+                        "uid": getattr(c, "id", None),
                         "host_ports": ports,
+                        "port_map": port_map,
+                        "host_ip": host_ip,
                         "restart_count": restarts,
                         "started_at": started_at,
                         "running": bool(running),
@@ -1340,6 +1871,7 @@ class DockerRuntime(RuntimeAdapter):
                     {
                         "name": getattr(c, "name", ""),
                         "labels": {},
+                        "uid": getattr(c, "id", None),
                         "host_ports": [],
                         "restart_count": 0,
                         "started_at": None,

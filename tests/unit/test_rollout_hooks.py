@@ -2,18 +2,27 @@ import socket
 import threading
 
 from ae.controller.reconciler import Reconciler
-from ae.runtime.base import ReplicaState, RuntimeAdapter, RuntimeResult
+from ae.runtime.base import PodState, RuntimeAdapter, RuntimeResult
 
 
 class FakeRuntime(RuntimeAdapter):  # type: ignore[misc]
     def __init__(self, rc: int = 0):
         self._rc = rc
 
-    def ensure_app(self, _manifest, revision, *, keep_old=False, limit_create=None):  # type: ignore[no-untyped-def]
-        _ = (keep_old, limit_create)
-        return RuntimeResult(revision=revision, created=0, updated=0, removed=0, replica_states=[])
+    def ensure_app(
+        self,
+        _manifest,
+        revision,
+        *,
+        keep_old=False,
+        limit_create=None,
+        pod_names: list[str] | None = None,
+        node_id: str | None = None,
+    ):  # type: ignore[no-untyped-def]
+        _ = (keep_old, limit_create, pod_names, node_id)
+        return RuntimeResult(revision=revision, created=0, updated=0, removed=0, pod_states=[])
 
-    def read_logs(self, _replica_id, *, _follow=False, _tail=None, _since=None):  # type: ignore[no-untyped-def]
+    def read_logs(self, _pod_name, *, _follow=False, _tail=None, _since=None):  # type: ignore[no-untyped-def]
         return []
 
     def remove_app(self, _app_name: str) -> int:  # type: ignore[override]
@@ -34,7 +43,7 @@ class FakeRuntime(RuntimeAdapter):  # type: ignore[misc]
     def list_containers_info(self) -> list[dict]:  # type: ignore[override]
         return []
 
-    def exec(self, _replica_id: str, _command: list[str], *, timeout: int | None = None) -> int:  # type: ignore[override]
+    def exec(self, _pod_name: str, _command: list[str], *, timeout: int | None = None) -> int:  # type: ignore[override]
         _ = timeout
         return int(self._rc)
 
@@ -56,14 +65,14 @@ def _reconciler_with_rep(replica_ready=True, endpoint="127.0.0.1:9", rc=0):
         config_manager=ConfigManager(),
     )
     # runtime_result with one replica
-    rep = ReplicaState(
-        replica_id="r1",
+    rep = PodState(
+        pod_name="r1",
         ready=bool(replica_ready),
         status="running",
         endpoint=endpoint,
         started_at=None,
     )
-    rr = RuntimeResult(revision=1, created=0, updated=0, removed=0, replica_states=[rep])
+    rr = RuntimeResult(revision=1, created=0, updated=0, removed=0, pod_states=[rep])
 
     # simple manifest stub
     class M:

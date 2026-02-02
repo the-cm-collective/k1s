@@ -143,6 +143,40 @@ def test_export_with_storage_and_serviceaccount() -> None:
     assert set(names) >= {"cpu", "memory"}
 
 
+def test_export_storage_fields_to_pvc_and_mounts() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    man = man.model_copy(
+        update={
+            "spec": man.spec.model_copy(
+                update={
+                    "storage": [
+                        {
+                            "name": "data",
+                            "mountPath": "/data",
+                            "size": "2Gi",
+                            "class": "fast",
+                            "accessModes": ["ReadWriteMany"],
+                            "volumeMode": "Filesystem",
+                            "readOnly": True,
+                        }
+                    ]
+                }
+            )
+        }
+    )
+    opts = ExportOptions(namespace="demo", emit_storage=True)
+    docs = export_k8s_docs(man, options=opts)
+    pvc = next(d for d in docs if d["kind"] == "PersistentVolumeClaim")
+    spec = pvc.get("spec", {})
+    assert spec.get("storageClassName") == "fast"
+    assert spec.get("accessModes") == ["ReadWriteMany"]
+    assert spec.get("volumeMode") == "Filesystem"
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    mounts = dep["spec"]["template"]["spec"]["containers"][0].get("volumeMounts", [])
+    mnt = next(m for m in mounts if m.get("mountPath") == "/data")
+    assert mnt.get("readOnly") is True
+
+
 def test_pdb_max_unavailable() -> None:
     man = load_manifest(Path("specs/examples/echo.yaml"))
     man = man.model_copy(update={"spec": man.spec.model_copy(update={"replicas": 2})})
@@ -473,7 +507,10 @@ def test_pod_security_fs_group_and_pod_seccomp() -> None:
     from ae.controller.spec import PodSecuritySpec
 
     psec = PodSecuritySpec(
-        fs_group=2000, seccomp_type="Localhost", seccomp_localhost_profile="profiles/pod.json"
+        fs_group=2000,
+        seccomp_type="Localhost",
+        seccomp_localhost_profile="profiles/pod.json",
+        selinux_type="container_file_t",
     )
     man = man.model_copy(update={"spec": man.spec.model_copy(update={"pod_security": psec})})
     docs = export_k8s_docs(man, options=ExportOptions(namespace="demo"))
@@ -482,6 +519,7 @@ def test_pod_security_fs_group_and_pod_seccomp() -> None:
     assert psec.get("fsGroup") == 2000
     assert psec.get("seccompProfile", {}).get("type") == "Localhost"
     assert psec.get("seccompProfile", {}).get("localhostProfile") == "profiles/pod.json"
+    assert psec.get("seLinuxOptions", {}).get("type") == "container_file_t"
 
 
 def test_lifecycle_hooks_exported() -> None:

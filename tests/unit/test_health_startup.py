@@ -10,7 +10,7 @@ from ae.controller.spec import (
     Metadata,
     ProbeSpec,
 )
-from ae.runtime.base import ReplicaState, RuntimeResult
+from ae.runtime.base import PodState, RuntimeResult
 
 
 def test_startup_gates_liveness_and_readiness(monkeypatch):
@@ -35,9 +35,9 @@ def test_startup_gates_liveness_and_readiness(monkeypatch):
         created=1,
         updated=0,
         removed=0,
-        replica_states=[
-            ReplicaState(
-                replica_id="demo-0",
+        pod_states=[
+            PodState(
+                pod_name="demo-0",
                 ready=False,
                 endpoint="127.0.0.1:8080",
                 started_at=start_time,
@@ -54,9 +54,9 @@ def test_startup_gates_liveness_and_readiness(monkeypatch):
     report = HealthManager().evaluate(manifest, result)
     assert report.ready_replicas == 0
     assert report.live_replicas == 1
-    assert report.replicas[0].ready is False
-    assert report.replicas[0].live is True
-    assert "startup" in report.replicas[0].readiness_message.lower()
+    assert report.pods[0].ready is False
+    assert report.pods[0].live is True
+    assert "startup" in report.pods[0].readiness_message.lower()
 
 
 def test_startup_pass_enables_probes(monkeypatch):
@@ -83,8 +83,8 @@ def test_startup_pass_enables_probes(monkeypatch):
         created=1,
         updated=0,
         removed=0,
-        replica_states=[
-            ReplicaState(replica_id="demo-0", ready=False, endpoint="127.0.0.1:8080"),
+        pod_states=[
+            PodState(pod_name="demo-0", ready=False, endpoint="127.0.0.1:8080"),
         ],
     )
 
@@ -100,6 +100,6 @@ def test_startup_pass_enables_probes(monkeypatch):
     report = hm.evaluate(manifest, result)
     assert report.live_replicas == 1
     assert report.ready_replicas == 1
-    r = report.replicas[0]
+    r = report.pods[0]
     assert r.ready is True and r.live is True
     assert "http 200" in r.readiness_message
