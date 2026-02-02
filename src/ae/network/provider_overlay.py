@@ -1,4 +1,4 @@
-"""Overlay-friendly Service provider (Phase 3).
+"""Overlay-friendly Service provider.
 
 This is a thin adaptation of the Docker bridge provider that:
 - Creates/uses a dedicated overlay network name (`AE_OVERLAY_NET`, default `ae-overlay`)

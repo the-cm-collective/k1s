@@ -2,6 +2,7 @@
 
 from .provider import NetworkProvider, NullProvider
 from .provider_docker import DockerBridgeProvider
+from .provider_iptables import IptablesProvider
 from .provider_overlay import OverlayProvider
 from .service_controller import ServiceController
 
@@ -14,6 +15,7 @@ __all__ = [
     "NetworkProvider",
     "NullProvider",
     "DockerBridgeProvider",
+    "IptablesProvider",
     "OverlayProvider",
     "ServiceController",
     "PodCIDRAllocator",

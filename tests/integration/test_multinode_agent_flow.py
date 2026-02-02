@@ -18,7 +18,7 @@ from ae.controller.health import HealthManager
 from ae.controller.reconciler import Reconciler
 from ae.controller.spec import AppManifest, AppSpec, Metadata
 from ae.controller.state import SQLiteStateStore
-from ae.runtime.base import ReplicaState, RuntimeAdapter, RuntimeResult
+from ae.runtime.base import PodState, RuntimeAdapter, RuntimeResult
 
 
 class DummyLocalRuntime(RuntimeAdapter):
@@ -33,13 +33,14 @@ class DummyLocalRuntime(RuntimeAdapter):
         manifest: AppManifest,
         revision: int,
         *,
-        _keep_old: bool = False,
-        _limit_create: int | None = None,
-        replica_ids: list[str] | None = None,
-        _node_id: str | None = None,
+        keep_old: bool = False,
+        limit_create: int | None = None,
+        pod_names: list[str] | None = None,
+        node_id: str | None = None,
     ) -> RuntimeResult:
         self.ensure_calls += 1
-        rids = replica_ids or [
+        _ = (keep_old, limit_create, node_id)
+        rids = pod_names or [
             f"{manifest.metadata.name}-rev{revision}-{i}" for i in range(manifest.spec.replicas)
         ]
         return RuntimeResult(
@@ -47,8 +48,8 @@ class DummyLocalRuntime(RuntimeAdapter):
             created=len(rids),
             updated=0,
             removed=0,
-            replica_states=[
-                ReplicaState(replica_id=rid, ready=True, status="running", endpoint="127.0.0.1:0")
+            pod_states=[
+                PodState(pod_name=rid, ready=True, status="running", endpoint="127.0.0.1:0")
                 for rid in rids
             ],
         )
@@ -62,7 +63,7 @@ class DummyLocalRuntime(RuntimeAdapter):
 
     def read_logs(
         self,
-        _replica_id: str,
+        _pod_name: str,
         *,
         _follow: bool = False,
         _tail: int | None = None,
@@ -84,7 +85,7 @@ class DummyLocalRuntime(RuntimeAdapter):
     def list_containers_info(self) -> list[dict]:  # pragma: no cover
         return []
 
-    def exec(self, _replica_id: str, _command: list[str], *, _timeout: int | None = None) -> int:
+    def exec(self, _pod_name: str, _command: list[str], *, _timeout: int | None = None) -> int:
         return 0
 
 
@@ -109,15 +110,15 @@ def _start_agent(node_id: str):
 
             if self.path == "/v1/ensure_app":
                 ensure_calls.append(payload)
-                rids = payload.get("replica_ids") or []
+                rids = payload.get("pod_names") or []
                 resp = {
                     "revision": int(payload.get("revision", 0)),
                     "created": len(rids),
                     "updated": 0,
                     "removed": 0,
-                    "replica_states": [
+                    "pod_states": [
                         {
-                            "replica_id": rid,
+                            "pod_name": rid,
                             "ready": True,
                             "status": "running",
                             "endpoint": f"{node_id}:10000",
@@ -187,12 +188,12 @@ def test_reconcile_targets_per_node_agents(tmp_path):
         assert len(ensure2) == 1
         assert ensure1[0].get("node_id") == "n1"
         assert ensure2[0].get("node_id") == "n2"
-        assigned = (ensure1[0].get("replica_ids") or []) + (ensure2[0].get("replica_ids") or [])
+        assigned = (ensure1[0].get("pod_names") or []) + (ensure2[0].get("pod_names") or [])
         # unique replica ids across nodes
         assert len(set(assigned)) == 2
         assert len(assigned) == 2
 
-        replicas = store.list_replicas("echo-mn")
+        replicas = store.list_pods("echo-mn")
         assert len(replicas) == 2
         assert all(r.ready for r in replicas)
     finally:
