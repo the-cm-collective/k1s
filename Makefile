@@ -1,4 +1,4 @@
-.PHONY: install test lint run loop dev-up dev-down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke
+.PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke
 .PHONY: shim-helm-demo
 
 install:
@@ -19,6 +19,9 @@ dev-up:
 
 dev-down:
 	docker compose -f ops/dev/docker-compose.yaml down
+
+down:
+	@bash scripts/stop_all.sh
 
 loop:
 	python -m ae.controller --loop --specs $${AE_SPECS_DIR:-specs} --metrics-port 9108 --watch
@@ -105,6 +108,10 @@ labs-k3d-down:
 
 .PHONY: labs-up labs-down labs-aio-up labs-aio-down labs-apishim-env
 labs-up:
+	@./scripts/ensure_dev_env.sh
+	@./scripts/ensure_apishim_env.sh >/dev/null
+	@LABS_TOKEN=$$(awk -F= '/^AE_LABS_TOKEN=/{print $$2}' state/labs/apishim.env); \
+	  if [ -n "$$LABS_TOKEN" ]; then DOCS_LABS_TOKEN="$$LABS_TOKEN" python docs/build_docs.py || true; fi
 	docker compose -f ops/dev/labs-compose.yaml up -d
 
 labs-down:
@@ -126,6 +133,9 @@ apishim-smoke:
 
 labs-aio-up:
 	@./scripts/ensure_apishim_env.sh
+	@./scripts/ensure_dev_env.sh
+	@LABS_TOKEN=$$(awk -F= '/^AE_LABS_TOKEN=/{print $$2}' state/labs/apishim.env); \
+	  if [ -n "$$LABS_TOKEN" ]; then DOCS_LABS_TOKEN="$$LABS_TOKEN" python docs/build_docs.py || true; fi
 	@if [ "$${AE_LABS_USE_POSTGRES:-0}" = "1" ]; then \
 	  if [ -z "$${AE_APISHIM_DSN:-}" ] && [ -z "$${AE_STATE_DSN:-}" ]; then \
 	    export AE_APISHIM_DSN="postgresql://shim:shim@postgres:5432/shim"; \
@@ -182,12 +192,21 @@ demo-hardened:
 demo-reset:
 	@echo "[demo-reset] stopping controller/docs and dev stacks"
 	@bash scripts/stop_all.sh
-	@{ docker compose -f ops/dev/labs-aio.yaml down >/dev/null 2>&1 || true; }
-	@{ docker compose -f ops/dev/labs-compose.yaml down >/dev/null 2>&1 || true; }
+	@{ command -v docker >/dev/null 2>&1 && docker compose -f ops/dev/labs-aio.yaml down >/dev/null 2>&1 || true; }
+	@{ command -v podman >/dev/null 2>&1 && podman compose -f ops/dev/labs-aio.yaml down >/dev/null 2>&1 || true; }
+	@{ command -v docker >/dev/null 2>&1 && docker compose -f ops/dev/labs-compose.yaml down >/dev/null 2>&1 || true; }
+	@{ command -v podman >/dev/null 2>&1 && podman compose -f ops/dev/labs-compose.yaml down >/dev/null 2>&1 || true; }
 	@echo "[demo-reset] clearing dynamic Caddy sites"
 	@rm -f state/caddy/*.caddy 2>/dev/null || true
 	@echo "[demo-reset] removing controller DB (state/controller.db)"
 	@rm -f state/controller.db 2>/dev/null || true
+	@{ if [ -f state/env.sh ]; then \
+	  . state/env.sh >/dev/null 2>&1 || true; \
+	  if [ -n "$$AE_STATE_DB" ] && [ "$$AE_STATE_DB" != "state/controller.db" ]; then \
+	    echo "[demo-reset] removing controller DB ($$AE_STATE_DB)"; \
+	    rm -f "$$AE_STATE_DB" 2>/dev/null || true; \
+	  fi; \
+	fi; }
 	@echo "[demo-reset] removing shim DB (state/apishim.db)"
 	@rm -f state/apishim.db 2>/dev/null || true
 	@echo "[demo-reset] pruning ae.app volumes (docker/podman)"
@@ -215,6 +234,11 @@ bench-mem-k1s:
 
 bench-mem-k3s:
 	@./scripts/bench/mem_snapshot.sh --mode k3s --label $${LABEL:-manual} --duration $${DURATION:-30}
+
+.PHONY: bench-mem-debug
+# Short sanity-check run for rootless, rootful, and k1nd with debug artifacts.
+bench-mem-debug:
+	@./scripts/bench/run_debug_refresh.sh
 
 # Aggregate latest snapshot under snapshots/<LABEL>/
 bench-mem-agg:
@@ -316,6 +340,18 @@ bench-mem-e2e-k1s-sudo:
 		--sudo
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+
+.PHONY: bench-mem-cri bench-mem-cri-quick
+# End-to-end: CRI backend (containerd) matrix + rollout + combine + plot
+bench-mem-cri:
+	@./scripts/bench/run_cri_refresh.sh
+
+# Quick CRI run (override DURATION/REPLICAS/ROLL_REPLICAS as needed)
+bench-mem-cri-quick:
+	@DURATION=$${DURATION:-10} \
+	 REPLICAS=$${REPLICAS:-1,5,10} \
+	 ROLL_REPLICAS=$${ROLL_REPLICAS:-5} \
+	 ./scripts/bench/run_cri_refresh.sh
 
 .PHONY: bench-mem-e2e-k1nd
 # End-to-end: k1nd (k1s-in-Docker via labs-aio compose) matrix + rollout + combine + plot
@@ -443,7 +479,9 @@ bench-mem-e2e-minimal:
 .PHONY: bench-watch-runtime
 bench-watch-runtime:
 	@echo "[bench-watch] capturing podman/container debug output; press Ctrl+C to stop"
-	@sudo -E AE_BENCH_WATCH_APP=$${APP:-echo} \
+	@sudo env HOME=/root XDG_RUNTIME_DIR=/run/user/0 DBUS_SESSION_BUS_ADDRESS= CONTAINER_HOST= PODMAN_HOST= \
+		AE_PODMAN_BIN=$${AE_PODMAN_BIN:-podman} \
+		AE_BENCH_WATCH_APP=$${APP:-echo} \
 		AE_BENCH_WATCH_INTERVAL=$${INTERVAL:-10} \
 		AE_BENCH_WATCH_DIR=$${OUT_DIR:-state/bench-env/debug} \
 		AE_BENCH_CONTROLLER_LOG=$${CONTROLLER_LOG:-state/bench-env/controller.log} \
@@ -484,6 +522,28 @@ bench-fix-perms:
 	   fi; \
 	 done; \
 	 echo "[bench-fix-perms] done"
+
+.PHONY: bench-snapshots-clean bench-snapshots-clean-sudo
+# Remove invalid snapshots from the last N hours; optionally include quick-* labels.
+# Usage:
+#   make bench-snapshots-clean HOURS=24
+#   make bench-snapshots-clean NO_QUICK=1
+#   make bench-snapshots-clean DRY_RUN=1
+#   sudo make bench-snapshots-clean-sudo HOURS=24
+bench-snapshots-clean:
+	@python scripts/bench/cleanup_recent_snapshots.py --hours $${HOURS:-24} $${NO_QUICK:+--no-quick} $${DRY_RUN:+--dry-run}
+
+bench-snapshots-clean-sudo:
+	@sudo python scripts/bench/cleanup_recent_snapshots.py --hours $${HOURS:-24} $${NO_QUICK:+--no-quick} $${DRY_RUN:+--dry-run}
+
+.PHONY: bench-state-clean dev-state-clean
+# Remove benchmark-only state (state/bench-*)
+bench-state-clean:
+	@./scripts/bench/clean_state.sh --bench
+
+# Wipe full state/ directory (requires CONFIRM=1)
+dev-state-clean:
+	@CONFIRM=$${CONFIRM:-0} ./scripts/bench/clean_state.sh --dev $${CONFIRM:+--confirm}
 
 .PHONY: bench-mem-backfill
 # Aggregate any snapshots missing summary.json, then rebuild combined, charts, and docs
@@ -544,13 +604,13 @@ bench-mem-backfill-oci-latest:
 #   DOCS_CHART_STALENESS_HOURS=168 (default) to tweak staleness window
 bench-mem-finalize-sudo:
 	@echo "[finalize] backfilling OCI across all snapshots" >&2
-	@sudo -E python scripts/bench/label_backfill.py "snapshots/*/*" --insert-into-label || true
+	@sudo env PATH="$${PATH}" PYTHONPATH="$${PYTHONPATH:-}" python scripts/bench/label_backfill.py "snapshots/*/*" --insert-into-label || true
 	@echo "[finalize] combining snapshots" >&2
-	@sudo -E python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
+	@sudo env PATH="$${PATH}" PYTHONPATH="$${PYTHONPATH:-}" python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@echo "[finalize] plotting charts (PLOT_LATEST=$${PLOT_LATEST:-500})" >&2
-	@sudo -E env PLOT_LATEST=$${PLOT_LATEST:-500} python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+	@sudo env PATH="$${PATH}" PYTHONPATH="$${PYTHONPATH:-}" PLOT_LATEST=$${PLOT_LATEST:-500} python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 	@echo "[finalize] building docs (DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168})" >&2
-	@sudo -E env DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168} python docs/build_docs.py
+	@sudo env PATH="$${PATH}" PYTHONPATH="$${PYTHONPATH:-}" DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168} python docs/build_docs.py
 	@$(MAKE) bench-fix-perms
 
 .PHONY: docs-watch
