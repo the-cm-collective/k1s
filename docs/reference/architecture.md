@@ -154,16 +154,19 @@ spec:
 
 Tables (created in src/ae/controller/state.py)
 - app_status(app_name PK, desired_replicas, ready_replicas, live_replicas, revision, revision_status, image, created, updated, removed, ingress_host, ingress_path)
-- pod_status(app_name, pod_name, ready, live, status, readiness_message, liveness_message)
-- probe_history(id, app_name, pod_name, check_time, ready, live, readiness_message, liveness_message) [kept to 50 per pod]
-- app_revisions(app_name, revision, spec_hash, spec_json, image, created_at, status)
-- app_events(id, app_name, revision, event_type, message, created_at)
+- app_registry(app_name PK, spec_hash, spec_json, source, labels, updated_at)
+- app_revisions(app_name, revision, spec_hash, spec_json, image, created_at, status) [PK (app_name, revision)]
+- app_events(id PK, app_name, revision, event_type, message, created_at)
+- pod_status(app_name, pod_name, ready, live, status, readiness_message, liveness_message, exit_code, finished_at) [PK (app_name, pod_name)]
+- pod_nodes(app_name, pod_name, node_id, updated_at) [PK (app_name, pod_name)]
+- probe_history(id PK, app_name, pod_name, check_time, ready, live, readiness_message, liveness_message) [kept to 50 per pod]
 - rollout_canary(app_name PK, weight, next_step_at, step, max, updated_at)
-- nodes(node_id PK, name, labels json, taints json, endpoint, backend, pod_cidr, wg_pubkey, cordoned)
-- node_status(node_id FK, status, seen_at)
-- services(service_name PK, app_name, cluster_ip, provider, ports json, annotations json)
-- service_endpoints(app_name, port, ip, target_port, ready)
-- storage_bindings(app_name, volume_name, node_id, created_at)
+- nodes(node_id PK, name, labels json, taints json, backend, endpoint, pod_cidr, wg_pubkey, cordoned, created_at, updated_at)
+- node_heartbeats(node_id PK, status, seen_at)
+- services(app_name PK, cluster_ip, ports json, created_at)
+- service_endpoints(app_name, port, ip, target_port, ready) [PK (app_name, port, ip)]
+- storage_bindings(app_name, volume_name, node_id, retention, created_at) [PK (app_name, volume_name)]
+- volume_attachments(app_name, volume_name, node_id, retention, created_at) [PK (app_name, volume_name)]
 
 Query surfaces
 - `list_status()`, `get_status(app)`

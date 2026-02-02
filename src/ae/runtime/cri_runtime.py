@@ -66,6 +66,8 @@ class CRIRuntime(RuntimeAdapter):
         self._exec_procs: dict[str, subprocess.Popen[bytes]] = {}
         self._exec_exit_codes: dict[str, int] = {}
         self._exec_lock = threading.Lock()
+        self._volume_manager_checked = False
+        self._volume_manager = None
 
     # --- RuntimeAdapter API -----------------------------------------
     def ensure_app(
