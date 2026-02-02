@@ -1356,7 +1356,7 @@ https://api.home.arpa {
 
     @ui path /dashboard* /playground*
     handle @ui {
-        respond 404
+        redir https://dash.home.arpa:${CADDY_HTTPS_PORT}{uri} 302
     }
 
     @apishim path /api/v1 /api/v1/* /apis /apis/*
@@ -1390,6 +1390,14 @@ https://dash.home.arpa {
     reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT}
 }
 DASH
+
+# Ensure Caddy picks up the freshly written base sites (docs/api/dash).
+if [[ -n "${AE_CADDY_CONTAINER:-}" && -n "${AE_CONTAINER_CLI:-}" ]]; then
+  if "$AE_CONTAINER_CLI" ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "${AE_CADDY_CONTAINER}"; then
+    log "Reloading Caddy to apply base sites (docs/api/dash)"
+    "$AE_CONTAINER_CLI" exec "${AE_CADDY_CONTAINER}" caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true
+  fi
+fi
 
 # Start apishim for labs/demo sessions (exec/port-forward)
 start_apishim
@@ -1917,7 +1925,8 @@ Demo setup complete.
 - Blue app:   https://blue.home.arpa:${CADDY_HTTPS_PORT}/
 - Green app:  https://green.home.arpa:${CADDY_HTTPS_PORT}/
 - Docs site:  https://docs.home.arpa:${CADDY_HTTPS_PORT}/ (via Caddy) and http://${DOCS_BIND}:${DOCS_PORT}/ (direct)
-  API UIs:    https://api.home.arpa:${CADDY_HTTPS_PORT}/swagger, https://api.home.arpa:${CADDY_HTTPS_PORT}/redoc, https://api.home.arpa:${CADDY_HTTPS_PORT}/dashboard
+  API UIs:    https://api.home.arpa:${CADDY_HTTPS_PORT}/swagger, https://api.home.arpa:${CADDY_HTTPS_PORT}/redoc
+  Dashboard:  https://dash.home.arpa:${CADDY_HTTPS_PORT}/dashboard
   API direct: http://127.0.0.1:9108/swagger, http://127.0.0.1:9108/redoc, http://127.0.0.1:9108/dashboard
 
 If hosts mapping was added, you can also visit:

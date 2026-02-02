@@ -1,12 +1,22 @@
 # Changelog
 
-## Unreleased (2026-01-31)
+## Unreleased (2026-02-02)
+
+### Added
+- Benchmark tooling: CRI (`crictl`) container snapshot/inspect capture plus make targets and env pass-through for CRI matrix/rollout runs.
 
 ### Changed
 - Docs refresh: Start Here, Overview, Examples, and Concepts updated for dashboard URLs, API shim enablement, and CLI guidance.
 - Reference docs updated for HTTP API, API auth, ingress, architecture env vars, CRI containerd, multi-node lab, and benchmarks.
+- Benchmark docs and charts refreshed with the new CRI scenario column and coverage annotations.
 
 ### Fixed
+- Benchmark snapshots now honor the selected container engine when running CRI captures to avoid cross-engine contamination.
+- Demo Caddy config now redirects API-host `/dashboard` and `/playground` hits to the dedicated dashboard host to avoid 404s.
+- Demo now reloads Caddy after writing base sites so `dash.home.arpa` is available without a manual reload.
+- Playground log tail now prefers the current revision and ready pods to avoid attaching to terminating containers.
+- Playground log streaming now reselects a live pod after scale/rollout and skips replica shutdown noise so logs keep flowing across changes.
+- Labs ingress reachability checks no longer fail on missing `os` imports, restoring consistent "Last check" status.
 - Corrected demo host/endpoints (dashboard + multiport), CRI list formatting, and k1nd benchmark notes.
 
 ## 0.1.2 - 2026-01-30

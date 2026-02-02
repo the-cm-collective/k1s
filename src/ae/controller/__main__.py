@@ -18,6 +18,7 @@ import os
 import time
 import signal
 import socket
+import re
 from collections.abc import Iterable
 from pathlib import Path
 from datetime import datetime
@@ -1059,6 +1060,43 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         def _logs(
             app: str, container: str | None, tail: int | None, since: int | None, follow: bool
         ):
+            def _select_target(reps):
+                if not reps:
+                    return None
+                # Prefer pods from the current revision when known, and pick ready/live first.
+                rev = None
+                try:
+                    st = store.get_status(app)
+                    if st is not None and st.revision is not None:
+                        rev = int(st.revision)
+                except Exception:
+                    rev = None
+
+                candidates = reps
+                if rev is not None:
+                    rev_tag = f"-rev{rev}-"
+                    by_rev = [r for r in reps if rev_tag in r.pod_name]
+                    if by_rev:
+                        candidates = by_rev
+
+                def _pod_rev(name: str) -> int:
+                    m = re.search(r"-rev(\d+)-", name)
+                    return int(m.group(1)) if m else -1
+
+                def _rank(pod) -> tuple[int, int, str]:
+                    ready = 1 if (pod.ready or pod.live) else 0
+                    return (ready, _pod_rev(pod.pod_name), pod.pod_name)
+
+                return max(candidates, key=_rank)
+
+            def _is_shutdown_line(line: str) -> bool:
+                lowered = line.lower()
+                return (
+                    "got a kill signal" in lowered
+                    or "servers closed" in lowered
+                    or "asking process to exit" in lowered
+                )
+
             reps = store.list_pods(app)
             target = None
             if container:
@@ -1073,13 +1111,56 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     if r.pod_name == sel or sel in r.pod_name:
                         target = r
                         break
+
             if not target and reps:
-                target = next((r for r in reps if r.ready), reps[0])
-            if not target:
-                return []
-            return reconciler._runtime.read_logs(
-                target.pod_name, follow=follow, tail=tail, since=since
-            )
+                target = _select_target(reps)
+
+            if not follow:
+                if not target:
+                    return []
+                return reconciler._runtime.read_logs(
+                    target.pod_name, follow=False, tail=tail, since=since
+                )
+
+            # Follow mode: if the target exits (e.g., scaling/rollout), reselect and continue.
+            if container:
+                if not target:
+                    return []
+                return reconciler._runtime.read_logs(
+                    target.pod_name, follow=True, tail=tail, since=since
+                )
+
+            def _stream_follow():
+                last_since = since
+                while True:
+                    reps_local = store.list_pods(app)
+                    target_local = _select_target(reps_local)
+                    if not target_local:
+                        time.sleep(0.5)
+                        continue
+                    try:
+                        for line in reconciler._runtime.read_logs(
+                            target_local.pod_name,
+                            follow=True,
+                            tail=tail,
+                            since=last_since,
+                        ):
+                            text = (
+                                line.decode("utf-8", "replace")
+                                if isinstance(line, (bytes, bytearray))
+                                else str(line)
+                            )
+                            if _is_shutdown_line(text):
+                                break
+                            yield text
+                    except Exception:
+                        pass
+                    # After the first pass, drop "since" to avoid skipping new logs
+                    last_since = None
+                    # Short pause before reselecting (avoid tight loops on failures)
+                    time.sleep(0.2)
+
+            return _stream_follow()
 
         def _exec(app: str, container: str | None, cmd: list[str], timeout: int | None) -> int:
             # Prefer runtime container-scoped exec when container is provided
