@@ -320,9 +320,15 @@ bench-mem-e2e-k1s:
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 
+.PHONY: bench-podman-rootful-socket
+# Ensure rootful Podman socket is available (systemd socket or service fallback).
+bench-podman-rootful-socket:
+	@./scripts/bench/podman_rootful_socket.sh
+
 .PHONY: bench-mem-e2e-k1s-sudo
 # End-to-end: k1s matrix + rollout, but escalate snapshots with --sudo
 bench-mem-e2e-k1s-sudo:
+	@$(MAKE) bench-podman-rootful-socket
 	@./scripts/bench/engines_clear.sh --confirm
 	@PYTHONPATH=$${PYTHONPATH:-src} AE_COLLECT_PODMAN_SUDO=$${AE_COLLECT_PODMAN_SUDO:-1} ./scripts/bench/run_matrix.sh \
 		--label-suite $${LABEL_SUITE:-baseline} \

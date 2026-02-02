@@ -190,6 +190,12 @@ ensure_controller() {
 preflight_runtime() {
   backend=${AE_RUNTIME_BACKEND:-podman}
   if [[ "$backend" == "podman" || "$backend" == "oci" ]]; then
+    if [[ "$use_sudo" == "1" ]]; then
+      if ! "$repo_root/scripts/bench/podman_rootful_socket.sh"; then
+        echo "[rollout] rootful Podman socket not available (expected /run/podman/podman.sock)." >&2
+        exit 2
+      fi
+    fi
     if ! command -v podman >/dev/null 2>&1; then
       echo "[rollout] Podman not found. Set AE_RUNTIME_BACKEND=docker or install Podman." >&2
       exit 2
@@ -211,6 +217,26 @@ preflight_runtime() {
   fi
 }
 
+ensure_demo_images() {
+  local blue="$1"
+  local green="$2"
+  shift 2
+  local runner=("$@")
+  if [[ ${#runner[@]} -eq 0 ]]; then
+    return 0
+  fi
+  local images
+  images="$("${runner[@]}" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null || true)"
+  if ! grep -q "^${blue}$" <<<"$images"; then
+    info "building ${blue}"
+    "${runner[@]}" build -t "${blue}" "${repo_root}/samples/servers/blue" >/dev/null 2>&1 || true
+  fi
+  if ! grep -q "^${green}$" <<<"$images"; then
+    info "building ${green}"
+    "${runner[@]}" build -t "${green}" "${repo_root}/samples/servers/green" >/dev/null 2>&1 || true
+  fi
+}
+
 secrets_guard() {
   if [[ "${AE_ALLOW_PLAINTEXT_SECRETS:-0}" != "1" ]]; then
     if ! command -v sops >/dev/null 2>&1; then
@@ -224,6 +250,30 @@ if [[ "${SKIP_GUARDS:-0}" != "1" ]]; then
   ensure_controller
   preflight_runtime
   secrets_guard
+fi
+
+# Ensure demo rollout images exist for the selected engine (rootless/rootful).
+default_blue=""
+default_green=""
+if [[ "$backend" == "podman" || "$backend" == "oci" ]]; then
+  default_blue="localhost/demo-blue:latest"
+  default_green="localhost/demo-green:latest"
+elif [[ "$backend" == "docker" ]]; then
+  default_blue="demo-blue:latest"
+  default_green="demo-green:latest"
+fi
+if [[ -n "$default_blue" && -n "$default_green" ]]; then
+  if [[ "$rollout_blue_image" == "$default_blue" && "$rollout_green_image" == "$default_green" ]]; then
+    if [[ "$backend" == "podman" || "$backend" == "oci" ]]; then
+      if [[ "$use_sudo" == "1" ]]; then
+        ensure_demo_images "$default_blue" "$default_green" sudo podman
+      else
+        ensure_demo_images "$default_blue" "$default_green" podman
+      fi
+    elif [[ "$backend" == "docker" ]]; then
+      ensure_demo_images "$default_blue" "$default_green" docker
+    fi
+  fi
 fi
 
 # If user kept default label 'baseline-roll', switch to an auto label
