@@ -1974,10 +1974,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 import time as _t
                 from urllib.parse import urlparse as _urlparse
 
+                import os as _os
                 import requests as _req
 
                 verify_path = "state/certs/combined-dev-ca.pem"
-                # Use the already-imported _os rather than os to avoid NameError
                 verify = verify_path if _os.path.exists(verify_path) else False
                 t0 = _t.time()
                 # For dev *.home.arpa, try known host gateways since this process

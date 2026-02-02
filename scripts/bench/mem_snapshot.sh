@@ -69,7 +69,7 @@ detect_backend() {
   else
     b="${AE_RUNTIME_BACKEND:-podman}"
   fi
-  if [[ "$b" != "podman" && "$b" != "docker" && "$b" != "oci" ]]; then
+  if [[ "$b" != "podman" && "$b" != "docker" && "$b" != "oci" && "$b" != "cri" ]]; then
     if podman_available; then b=podman; elif command -v docker >/dev/null 2>&1; then b=docker; else b=unknown; fi
   fi
   echo "$b"
@@ -119,11 +119,17 @@ PY
 
 # Decide which engine's containers to collect
 collect_engine="both"
-if [[ "${AE_COLLECT_ENGINE:-}" == "podman" || "${AE_COLLECT_ENGINE:-}" == "docker" ]]; then
+if [[ "${AE_COLLECT_ENGINE:-}" == "podman" || "${AE_COLLECT_ENGINE:-}" == "docker" || "${AE_COLLECT_ENGINE:-}" == "cri" ]]; then
   collect_engine="${AE_COLLECT_ENGINE}"
 else
   case "${mode}" in
-    k1s) collect_engine="podman";;
+    k1s)
+      if [[ "${AE_RUNTIME_BACKEND:-podman}" == "cri" ]]; then
+        collect_engine="cri"
+      else
+        collect_engine="podman"
+      fi
+      ;;
     k3s) collect_engine="docker";;
     *) collect_engine="both";;
   esac
@@ -249,8 +255,130 @@ log_step "process smaps/status captured"
   echo "container_id,name,pid,mem_current_bytes,cg_path"
 } > "${outdir}/raw/containers_mem.csv"
 
+# CRI (only when selected)
+if [[ "$collect_engine" == "cri" ]]; then
+  crictl_bin="${AE_CRICTL_BIN:-crictl}"
+  if command -v "$crictl_bin" >/dev/null 2>&1; then
+    python - "$outdir" "$crictl_bin" "${AE_CRI_ENDPOINT:-}" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
+import json, os, subprocess, sys
+from typing import Optional
+
+root = sys.argv[1]
+crictl = sys.argv[2]
+endpoint = sys.argv[3] if len(sys.argv) > 3 else ""
+
+def run(args: list[str]) -> str:
+    cmd = [crictl]
+    if endpoint:
+        cmd += ["--runtime-endpoint", endpoint]
+    cmd += args
+    return subprocess.run(cmd, capture_output=True, text=True, check=False).stdout
+
+def detect_cgv2() -> bool:
+    return os.path.exists("/sys/fs/cgroup/cgroup.controllers")
+
+def normalize_cg(path: str) -> str:
+    if not path:
+        return ""
+    return path if path.startswith("/") else "/" + path
+
+def cgroup_path_for_pid(pid: str, want: str = "memory") -> Optional[str]:
+    try:
+        with open(f"/proc/{pid}/cgroup", "r") as fh:
+            lines = [ln.strip() for ln in fh if ln.strip()]
+        if not lines:
+            return None
+        if detect_cgv2():
+            for ln in lines:
+                parts = ln.split(":", 2)
+                if len(parts) == 3 and parts[0] == "0":
+                    return normalize_cg(parts[2])
+            last = lines[-1].split(":", 2)[-1]
+            return normalize_cg(last)
+        for ln in lines:
+            parts = ln.split(":", 2)
+            if len(parts) == 3 and want in (parts[1] or "").split(","):
+                return normalize_cg(parts[2])
+        return None
+    except Exception:
+        return None
+
+def read_mem_for_cg(cg: str) -> int:
+    try:
+        if not cg:
+            return -1
+        if detect_cgv2():
+            mc = f"/sys/fs/cgroup{cg}/memory.current"
+        else:
+            mc = f"/sys/fs/cgroup/memory{cg}/memory.usage_in_bytes"
+        return int(open(mc, "r").read().strip()) if os.path.exists(mc) else -1
+    except Exception:
+        return -1
+
+def read_mem_bytes_and_path(pid: str, cg_path: str = ""):
+    cg = cgroup_path_for_pid(pid, "memory") if pid and pid != "0" else None
+    if cg:
+        return read_mem_for_cg(cg), cg
+    if cg_path:
+        cg = normalize_cg(cg_path)
+        return read_mem_for_cg(cg), cg
+    return -1, ""
+
+ps_raw = run(["ps", "-a", "-o", "json"])
+try:
+    ps_data = json.loads(ps_raw or "{}")
+except Exception:
+    ps_data = {}
+
+containers = ps_data.get("containers") or ps_data.get("items") or []
+inspect_out = []
+
+for item in containers:
+    cid = item.get("id") or item.get("container_id") or ""
+    if not cid:
+        continue
+    ins_raw = run(["inspect", "-o", "json", cid])
+    try:
+        ins = json.loads(ins_raw or "{}")
+    except Exception:
+        ins = {}
+    status = ins.get("status") or {}
+    info = ins.get("info") or {}
+    name = ""
+    md = status.get("metadata") or item.get("metadata") or {}
+    if isinstance(md, dict):
+        name = md.get("name") or ""
+    if not name:
+        name = item.get("name") or cid[:12]
+    labels = status.get("labels") or {}
+    # Try to grab cgroupsPath from runtimeSpec (containerd info)
+    cg_path = ""
+    if isinstance(info, dict):
+        rt = info.get("runtimeSpec") or {}
+        if isinstance(rt, dict):
+            cg_path = ((rt.get("linux") or {}).get("cgroupsPath") or "")
+        cg_path = cg_path or (info.get("cgroupsPath") or "")
+    pid = str(info.get("pid") or status.get("pid") or 0)
+    mem, cg = read_mem_bytes_and_path(pid, cg_path)
+    print(f"{cid[:12]},{name},{pid},{mem},{cg}")
+    inspect_out.append({
+        "Id": cid,
+        "Name": name,
+        "Labels": labels,
+        "Config": {"Labels": labels},
+    })
+
+with open(os.path.join(root, "raw", "cri_inspect.json"), "w", encoding="utf-8") as fh:
+    json.dump(inspect_out, fh)
+PY
+  else
+    echo "[mem-snapshot] crictl not found (engine_filter=cri); container metrics skipped." >&2
+  fi
+fi
+log_step "cri containers collected (if selected)"
+
 # Podman (only when selected)
-if [[ "$collect_engine" != "docker" ]] && podman_available; then
+if [[ "$collect_engine" == "podman" || "$collect_engine" == "both" ]] && podman_available; then
   podman_cmd ps -a --format json > "${outdir}/raw/podman_ps.json" 2>/dev/null || true
   ids=$(podman_cmd ps -aq 2>/dev/null || true)
   if [[ -n "${ids}" ]]; then
@@ -321,7 +449,7 @@ fi
 log_step "podman containers collected (if selected)"
 
 # Docker (only when selected)
-if [[ "$collect_engine" != "podman" ]] && command -v docker >/dev/null 2>&1; then
+if [[ "$collect_engine" == "docker" || "$collect_engine" == "both" ]] && command -v docker >/dev/null 2>&1; then
   docker ps -a --no-trunc --format '{{.ID}} {{.Names}} {{.Status}}' > "${outdir}/raw/docker_ps.txt" || true
   if docker ps -aq >/dev/null 2>&1; then
     ids=$(docker ps -aq)
