@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+k1s Honeycomb Hex (Dynamic Color)
+
+How to theme:
+- Set CSS vars on the <svg> tag (inline style) or via a CSS class.
+
+Example:
+<svg class="k1s-hex" style="--accent:#3aa0ff; --label:#e8eaed">...</svg>
+
+Vars (defaults below):
+--accent        : primary border/glow color (namespace color)
+--shellFill     : outer shell fill
+--innerStroke   : inner stroke
+--faceTop       : inner face gradient top
+--faceBot       : inner face gradient bottom
+--patternStroke : honeycomb pattern stroke color
+--patternOpacity: pattern opacity
+--label         : label text color
+--shadowAlpha   : shadow alpha strength (0..1)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="-80 -80 160 160"
+     style="
+       --accent: rgba(154,160,166,0.80);
+       --shellFill: rgba(38,38,38,0.92);
+       --innerStroke: rgba(245,245,245,0.18);
+       --faceTop: #262b33;
+       --faceBot: #13161a;
+       --patternStroke: rgba(245,245,245,0.16);
+       --patternOpacity: 0.45;
+       --label: #e8eaed;
+       --shadowAlpha: 0.55;
+     ">
+  <defs>
+    <filter id="shadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="3" result="b"/>
+      <feOffset in="b" dx="0" dy="4" result="o"/>
+      <feColorMatrix in="o" type="matrix"
+        values="0 0 0 0 0
+                0 0 0 0 0
+                0 0 0 0 0
+                0 0 0 var(--shadowAlpha) 0" result="s"/>
+      <feMerge><feMergeNode in="s"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <pattern id="comb" width="18" height="15.588" patternUnits="userSpaceOnUse">
+      <path d="M 4.5 0 L 13.5 0 L 18 7.794 L 13.5 15.588 L 4.5 15.588 L 0 7.794 Z"
+            fill="none" stroke="var(--patternStroke)" stroke-width="1.2"/>
+    </pattern>
+
+    <linearGradient id="faceGrad" x1="0" y1="-80" x2="0" y2="80" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="var(--faceTop)"/>
+      <stop offset="1" stop-color="var(--faceBot)"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Paths are flat-top hexes centered at 0,0 -->
+  <path d="M 48.497 28.000 L 0.000 56.000 L -48.497 28.000 L -48.497 -28.000 L -0.000 -56.000 L 48.497 -28.000 Z"
+        fill="var(--shellFill)" stroke="var(--accent)" stroke-width="5" filter="url(#shadow)"/>
+
+  <path d="M 39.837 23.000 L 0.000 46.000 L -39.837 23.000 L -39.837 -23.000 L -0.000 -46.000 L 39.837 -23.000 Z"
+        fill="url(#faceGrad)" stroke="var(--innerStroke)" stroke-width="2"/>
+
+  <path d="M 39.837 23.000 L 0.000 46.000 L -39.837 23.000 L -39.837 -23.000 L -0.000 -46.000 L 39.837 -23.000 Z"
+        fill="url(#comb)" opacity="var(--patternOpacity)"/>
+
+  <!-- Replace LABEL in your renderer, or remove this node -->
+  <text x="0" y="8" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial"
+        font-size="18" font-weight="800" text-anchor="middle"
+        fill="var(--label)">LABEL</text>
+</svg>

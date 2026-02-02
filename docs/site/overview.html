@@ -2,6 +2,7 @@
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
+    
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>Overview</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
@@ -41,6 +42,8 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
+        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
@@ -61,6 +64,7 @@
         --k1s-card-bg: #ffffff;
         --k1s-header-bg: rgba(255,255,255,0.82);
         --code-bg: #f5f6f8;
+        --k1s-page-overlay: linear-gradient(rgba(244,245,247,0.9), rgba(244,245,247,0.9));
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
         --muted: var(--k1s-panel);
@@ -82,7 +86,11 @@
         min-height: 100vh;
         display: flex;
         flex-direction: column;
-        background: var(--bg);
+        background-color: var(--bg);
+        background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
+        background-size: 100% 100%, auto 100%;
+        background-position: center top, center top;
+        background-repeat: repeat-y, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -382,7 +390,7 @@
         padding: 10px 12px;
         display: flex;
         flex-wrap: wrap;
-        align-items: center;
+        align-items: flex-start;
         gap: 6px 10px;
         border: 1px solid var(--k1s-border);
         border-radius: 12px;
@@ -392,6 +400,24 @@
       .hero-repo-label {
         font-size: 0.7rem;
         letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         color: var(--k1s-text-muted);
       }
@@ -605,6 +631,7 @@
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
     <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -670,16 +697,18 @@
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
+      <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
       <a href="apishim-compatibility-matrix.html">API Shim</a>
+      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -694,6 +723,7 @@
     <div class="container">
     <h1>k1s Overview</h1>
 <p>k1s is a small, multi‑node application engine that now supports a controller + worker agents, Service VIPs over an overlay network, and a Kubernetes‑compatible API shim. You can declare apps in YAML, run them on one or more hosts (Podman preferred; Docker supported), and expose them through Caddy or your own proxy while keeping resource usage low.</p>
+<p>Status: k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.</p>
 <ul>
 <li>Goal: predictable rollouts and Kubernetes‑style ergonomics on 1–4 nodes without a heavyweight control plane.</li>
 <li>Non‑goal: full upstream conformance or cloud‑provider controllers; we target a curated “compatibility” subset instead.</li>
@@ -703,9 +733,10 @@
 <li>Multi‑node: controller manages registered nodes with heartbeats, cordon/drain, and a minimal scheduler that respects <code>nodeSelector</code>, taints/tolerations, topology spread, and storage pinning. Agents expose runtime exec/logs/probes over mTLS; Service VIPs ride a WireGuard/VXLAN overlay with HAProxy provider. HostPorts are still supported for single‑node edge cases.</li>
 <li>Networking/Ingress: Service CIDR + overlay provider (<code>AE_SERVICE_PROVIDER=overlay</code>) with ClusterIP allocation, EndpointSlice projection, and Caddy templates that prefer Service VIPs. Bridge provider remains for single‑node or no‑overlay labs.</li>
 <li>State: SQLite by default; Postgres supported for shim HA and multi‑node durability (<code>AE_STATE_DSN</code> / <code>AE_APISHIM_DSN</code>).</li>
-<li>API surface: native HTTP API plus the Kubernetes API shim (<code>ae.apishim serve</code>) covering Deployments/Services/Ingress/HPA/RBAC with SSA/patch support; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated as Deployment-like apps (see <code>docs/reference/apishim-compatibility-matrix.md</code>).</li>
-<li>Tooling: <code>k1s</code> kubectl‑style wrapper, <code>ae nodes</code> for inventory/cordon, <code>ae plan</code> for placement hints, <code>export-k8s</code> and <code>k8s-report</code> for parity/compliance, dashboard at <code>/dashboard</code>, and <code>/nodes</code> + enriched <code>/metrics</code> for node/service visibility.</li>
-<li>Footprint: stays well below k3s while adding overlay + shim; recent lab runs keep controller+agent PSS under ~450 MB on Podman+crun.</li>
+<li>Runtime backends: Podman (default), Docker fallback, and CRI/containerd (<code>AE_RUNTIME_BACKEND=cri</code>) for CRI‑native nodes.</li>
+<li>API surface: native HTTP API plus the Kubernetes API shim (<code>AE_APISHIM_ENABLE=1 python -m ae.apishim serve</code>) covering Deployments/Services/Ingress/HPA/RBAC with SSA/patch support; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated as Deployment-like apps (see <code>docs/reference/apishim-compatibility-matrix.md</code>).</li>
+<li>Tooling: <code>k1s</code> kubectl‑style wrapper, <code>ae nodes</code> for inventory/cordon, <code>ae plan</code> for placement hints, <code>export-k8s</code> and <code>k8s-report</code> for parity/compliance, dashboard at <code>/dashboard</code> (direct on <code>:9108</code>, or <code>https://dash.home.arpa:8443/dashboard</code> in demos), and <code>/nodes</code> + enriched <code>/metrics</code> for node/service visibility.</li>
+<li>Footprint: recent Jan 2026 idle benchmarks show ~85–90 MiB PSS for controller+API on Podman+crun rootless, and ~170–180 MiB PSS for k1nd (Docker + Caddy). See <code>docs/benchmarks/memory.md</code> for the latest numbers.</li>
 </ul>
 <h2>Features (High‑Level)</h2>
 <ul>
@@ -741,7 +772,7 @@
 <h2>Requirements</h2>
 <ul>
 <li>Python 3.11+</li>
-<li>Podman (preferred) or Docker</li>
+<li>Podman (preferred), Docker, or containerd (for CRI)</li>
 <li>Optional: WireGuard tools for overlay, Postgres for HA shim/multi-node durability</li>
 <li>Optional: Caddy (for ingress), SOPS/age (for secrets), watchdog (for live file watch)</li>
 </ul>
@@ -779,24 +810,30 @@
 <li>JSON and metrics: <code>curl :9108/status</code>, <code>curl :9108/metrics</code></li>
 <li>OpenAPI and docs: <code>curl :9108/openapi.json</code>, open <code>http://localhost:9108/docs</code></li>
 <li>Nodes: <code>curl :9108/nodes</code> (with tokens if configured) for inventory/heartbeat state</li>
-<li>Dashboard: <code>http://localhost:9108/dashboard</code></li>
+<li>Dashboard: <code>http://localhost:9108/dashboard</code> (or <code>https://dash.home.arpa:8443/dashboard</code> when Caddy demo stack is running)</li>
 </ul>
 <h2>Configuration (Quick Reference)</h2>
 <ul>
 <li>AE_STATE_DB: path to SQLite DB (default <code>state/controller.db</code>)</li>
+<li>AE_STATE_DSN: Postgres DSN for controller state (overrides SQLite)</li>
 <li>AE_SPECS_DIR: specs directory (default <code>specs</code>)</li>
 <li>AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER: ingress tuning</li>
+<li>AE_TLS_DIR: TLS material root (default <code>state/tls</code>)</li>
 <li>AE_REGISTRY_CONFIG: registry credentials file (default <code>~/.config/ae/registries.yaml</code>)</li>
 <li>AE_ALLOW_PLAINTEXT_SECRETS=1: allow bypassing SOPS (dev only)</li>
 <li>AE_LOG_LEVEL: logging level (DEBUG/INFO/…)</li>
 <li>AE_AGENT_API_TOKEN / AE_AGENT_API_PORT: controller → agent auth/port</li>
-<li>AE_SERVICE_PROVIDER / AE_OVERLAY_NET / AE_SERVICE_IP_POOL: Service VIP provider + overlay settings</li>
-<li>AE_APISHIM_TOKEN / AE_APISHIM_DSN: Kubernetes API shim auth + backing store</li>
+<li>AE_ENABLE_SERVICE_PROXY / AE_SERVICE_PROVIDER / AE_OVERLAY_NET / AE_SERVICE_IP_POOL: Service VIP provider + overlay settings</li>
+<li>AE_RUNTIME_BACKEND / AE_PODMAN_NETWORK / AE_DOCKER_NETWORK: runtime selection + shared networks for multi-replica ingress</li>
+<li>AE_APISHIM_ENABLE / AE_APISHIM_TOKEN / AE_APISHIM_DSN: Kubernetes API shim auth + backing store</li>
+<li>AE_API_READ_TOKEN / AE_API_SCALER_TOKEN / AE_API_ADMIN_TOKEN / AE_API_MUTATIONS: HTTP API auth + mutation gate</li>
+<li>AE_CRI_ENDPOINT / AE_CRI_SANDBOX_IMAGE: CRI runtime endpoint + pause image</li>
+<li>CRICTL_BIN: path override for crictl (exec/attach/port-forward on CRI)</li>
 </ul>
 <h2>Project Layout</h2>
 <ul>
 <li>src/ae/controller: reconcile loop, scheduler, state, health, spec models</li>
-<li>src/ae/runtime: Podman (default) and Docker adapters, RemoteRuntime client for agents</li>
+<li>src/ae/runtime: Podman (default), Docker, and CRI adapters, RemoteRuntime client for agents</li>
 <li>src/ae/node: node agent entrypoint wrapping runtime and probes/logs/exec</li>
 <li>src/ae/ingress: Caddy templating + reload</li>
 <li>src/ae/network: Service/VIP providers (overlay/bridge)</li>
@@ -821,7 +858,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-22 14:47:44</span>
+        <span>Built 2026-01-31 17:21:37</span>
       </div>
     </footer>
     <script>
@@ -849,6 +886,64 @@
           if (location.pathname.endsWith('playground.html')) location.reload();
         });
         label();
+      })();
+    </script>
+    <script>
+      (function() {
+        function hideLinks(match) {
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (match(href)) { a.style.display = 'none'; }
+          });
+        }
+        function rewriteDashboardLinks(target) {
+          if (!target) return;
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (href.indexOf('/dashboard') === 0) {
+              a.setAttribute('href', target);
+              if (!a.getAttribute('target')) {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener');
+              }
+            }
+          });
+        }
+        function disablePlaygroundPage() {
+          var path = (location && location.pathname) ? location.pathname : '';
+          if (!/playground/i.test(path)) return;
+          var container = document.querySelector('.container');
+          if (container) container.style.display = 'none';
+          var msg = document.createElement('div');
+          msg.style.maxWidth = '960px';
+          msg.style.margin = '32px auto';
+          msg.style.padding = '16px 20px';
+          msg.style.border = '1px solid var(--border)';
+          msg.style.borderRadius = '12px';
+          msg.style.background = 'var(--k1s-panel)';
+          msg.style.color = 'var(--k1s-text)';
+          msg.innerHTML = '<h2 style="margin:0 0 8px">Playground disabled</h2>' +
+            '<p style="margin:0;color:var(--k1s-text-muted)">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';
+          document.body.insertBefore(msg, document.body.firstChild);
+        }
+        fetch('/ui/features', { credentials: 'same-origin' })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(f) {
+            if (!f) return;
+            if (f.dashboard === false) {
+              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });
+            } else {
+              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();
+              rewriteDashboardLinks(dashUrl);
+            }
+            if (f.playground === false) {
+              hideLinks(function(h) { return h.indexOf('playground') !== -1; });
+              disablePlaygroundPage();
+            }
+          })
+          .catch(function() {});
       })();
     </script>
   </body>

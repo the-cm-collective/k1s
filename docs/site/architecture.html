@@ -2,6 +2,7 @@
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
+    
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>Architecture</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
@@ -41,6 +42,8 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
+        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
@@ -61,6 +64,7 @@
         --k1s-card-bg: #ffffff;
         --k1s-header-bg: rgba(255,255,255,0.82);
         --code-bg: #f5f6f8;
+        --k1s-page-overlay: linear-gradient(rgba(244,245,247,0.9), rgba(244,245,247,0.9));
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
         --muted: var(--k1s-panel);
@@ -82,7 +86,11 @@
         min-height: 100vh;
         display: flex;
         flex-direction: column;
-        background: var(--bg);
+        background-color: var(--bg);
+        background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
+        background-size: 100% 100%, auto 100%;
+        background-position: center top, center top;
+        background-repeat: repeat-y, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -382,7 +390,7 @@
         padding: 10px 12px;
         display: flex;
         flex-wrap: wrap;
-        align-items: center;
+        align-items: flex-start;
         gap: 6px 10px;
         border: 1px solid var(--k1s-border);
         border-radius: 12px;
@@ -392,6 +400,24 @@
       .hero-repo-label {
         font-size: 0.7rem;
         letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         color: var(--k1s-text-muted);
       }
@@ -605,6 +631,7 @@
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
     <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -670,16 +697,18 @@
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
+      <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
       <a href="apishim-compatibility-matrix.html">API Shim</a>
+      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -696,7 +725,7 @@
 <p>This document describes k1s in depth: components, data model, reconcile algorithms, interfaces, and operational behavior. It is intentionally verbose.</p>
 <h2>Scope and Principles</h2>
 <ul>
-<li>Multi-node first. Controller manages one or more nodes via agents; Podman (OCI) is preferred, Docker is the fallback when Podman is unavailable.</li>
+<li>Multi-node first. Controller manages one or more nodes via agents; Podman (OCI) is preferred, Docker is the fallback when Podman is unavailable, and CRI/containerd is supported where needed.</li>
 <li>Declarative spec → idempotent reconcile. The controller continuously applies desired state and converges.</li>
 <li>Small surface. Prefer composition over features; leave seams to extend later.</li>
 <li>Fail well. A crash restarts cleanly; reconcile rebuilds reality from Docker + SQLite.</li>
@@ -706,7 +735,7 @@
 <li>Controller (src/ae/controller): orchestrates reconcile, scheduling, service VIPs, state, and events.</li>
 <li>Scheduler (src/ae/controller/scheduler.py): chooses Ready nodes honoring <code>nodeSelector</code>, taints/tolerations, topology spread, and storage pinning.</li>
 <li>Node agent (src/ae/node): exposes runtime ensure/logs/exec/probes for the controller over HTTP/mTLS; reports heartbeats.</li>
-<li>Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback; RemoteRuntime client proxies to agents.</li>
+<li>Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback, CRI/containerd supported; RemoteRuntime client proxies to agents.</li>
 <li>Service/overlay (src/ae/network): allocates Service CIDR VIPs and wires overlay providers (HAProxy overlay or bridge).</li>
 <li>Ingress (src/ae/ingress): writes Caddy site fragments and triggers reloads (prefers Service VIP upstreams).</li>
 <li>Health (src/ae/controller/health.py): readiness/liveness/exec/tcp evaluation (startup probe aware).</li>
@@ -737,12 +766,12 @@
 <li>Runtime ensure: create/update/remove containers on each placement (respect rollout policy) via node agent RemoteRuntime.</li>
 <li>Health gate: evaluate readiness/liveness/exec/tcp; decide revision status ready/progressing/degraded/paused.</li>
 <li>Ingress: prefer Service VIP upstreams; optional canary weight/auto progression; remove ingress when omitted.</li>
-<li>Persist: write app status, replicas, probe history, canary state, and revision record; emit events.</li>
+<li>Persist: write app status, pods, probe history, canary state, and revision record; emit events.</li>
 </ul>
 <p>Idempotency &amp; Diff</p>
 <ul>
 <li>Spec hash drives revisions; reconciler tracks created/updated/removed per pass.</li>
-<li>Docker containers are labeled with app/replica/revision; runtime lists by labels.</li>
+<li>Docker containers are labeled with app/pod/revision; runtime lists by labels.</li>
 <li>Old revision containers are removed when the new revision becomes live.</li>
 </ul>
 <p>Pseudocode (as implemented in src/ae/controller/reconciler.py)</p>
@@ -755,7 +784,7 @@
   for placement in placements:
     res = runtime.ensure_app(
       manifest, rev, keep_old=True,
-      limit_create=..., replica_ids=placement.replica_ids,
+      limit_create=..., pod_names=placement.pod_names,
       node_id=placement.node.node_id if placement.node else None
     )
     aggregate.append(res)
@@ -780,8 +809,8 @@
   SCH--&gt;&gt;C: placements (+warnings)
   C-&gt;&gt;A: ensure_app(manifest, rev, placements)
   A-&gt;&gt;R: ensure/exec/logs
-  R--&gt;&gt;A: RuntimeResult(replica states)
-  A--&gt;&gt;C: Replica states
+  R--&gt;&gt;A: RuntimeResult(pod states)
+  A--&gt;&gt;C: Pod states
   C-&gt;&gt;H: evaluate(manifest, result)
   H--&gt;&gt;C: HealthReport(ready/live)
   alt ingress configured
@@ -840,30 +869,33 @@ spec:
 <p>Tables (created in src/ae/controller/state.py)</p>
 <ul>
 <li>app_status(app_name PK, desired_replicas, ready_replicas, live_replicas, revision, revision_status, image, created, updated, removed, ingress_host, ingress_path)</li>
-<li>replica_status(app_name, replica_id, ready, live, status, readiness_message, liveness_message)</li>
-<li>probe_history(id, app_name, replica_id, check_time, ready, live, readiness_message, liveness_message) [kept to 50 per replica]</li>
-<li>app_revisions(app_name, revision, spec_hash, spec_json, image, created_at, status)</li>
-<li>app_events(id, app_name, revision, event_type, message, created_at)</li>
+<li>app_registry(app_name PK, spec_hash, spec_json, source, labels, updated_at)</li>
+<li>app_revisions(app_name, revision, spec_hash, spec_json, image, created_at, status) [PK (app_name, revision)]</li>
+<li>app_events(id PK, app_name, revision, event_type, message, created_at)</li>
+<li>pod_status(app_name, pod_name, ready, live, status, readiness_message, liveness_message, exit_code, finished_at) [PK (app_name, pod_name)]</li>
+<li>pod_nodes(app_name, pod_name, node_id, updated_at) [PK (app_name, pod_name)]</li>
+<li>probe_history(id PK, app_name, pod_name, check_time, ready, live, readiness_message, liveness_message) [kept to 50 per pod]</li>
 <li>rollout_canary(app_name PK, weight, next_step_at, step, max, updated_at)</li>
-<li>nodes(node_id PK, name, labels json, taints json, endpoint, backend, pod_cidr, wg_pubkey, cordoned)</li>
-<li>node_status(node_id FK, status, seen_at)</li>
-<li>services(service_name PK, app_name, cluster_ip, provider, ports json, annotations json)</li>
-<li>service_endpoints(service_name FK, replica_id, ip, port, ready, node_id)</li>
-<li>storage_bindings(app_name, volume_name, node_id, created_at)</li>
+<li>nodes(node_id PK, name, labels json, taints json, backend, endpoint, pod_cidr, wg_pubkey, cordoned, created_at, updated_at)</li>
+<li>node_heartbeats(node_id PK, status, seen_at)</li>
+<li>services(app_name PK, cluster_ip, ports json, created_at)</li>
+<li>service_endpoints(app_name, port, ip, target_port, ready) [PK (app_name, port, ip)]</li>
+<li>storage_bindings(app_name, volume_name, node_id, retention, created_at) [PK (app_name, volume_name)]</li>
+<li>volume_attachments(app_name, volume_name, node_id, retention, created_at) [PK (app_name, volume_name)]</li>
 </ul>
 <p>Query surfaces</p>
 <ul>
 <li><code>list_status()</code>, <code>get_status(app)</code></li>
-<li><code>list_replicas(app)</code>, <code>get_probe_history(app, N)</code></li>
+<li><code>list_pods(app)</code> (alias: <code>list_replicas</code>), <code>get_probe_history(app, N)</code></li>
 <li><code>list_revisions(app)</code>, <code>get_revision_manifest(app, rev)</code></li>
 <li><code>list_events(app, limit)</code></li>
 </ul>
-<h2>Runtime: Container Engine (Podman/Docker)</h2>
-<p>The controller talks to local Podman/Docker when no nodes are eligible; in multi-node runs it proxies through RemoteRuntime to each node agent endpoint. Agents enforce auth via <code>AE_AGENT_API_TOKEN</code> and optionally mTLS.</p>
+<h2>Runtime: Container Engine (Podman/Docker/CRI)</h2>
+<p>The controller talks to local Podman/Docker when no nodes are eligible; in multi-node runs it proxies through RemoteRuntime to each node agent endpoint. Agents enforce auth via <code>AE_AGENT_API_TOKEN</code> and optionally mTLS. CRI/containerd nodes are supported via <code>AE_RUNTIME_BACKEND=cri</code> and use the CRI gRPC API; exec/attach/port-forward use <code>crictl</code> on the node.</p>
 <p>Labels</p>
 <ul>
 <li><code>ae.app=&lt;name&gt;</code></li>
-<li><code>ae.replica_id=&lt;name&gt;-rev&lt;rev&gt;-&lt;index&gt;</code></li>
+<li><code>ae.pod_name=&lt;name&gt;-rev&lt;rev&gt;-&lt;index&gt;</code> (alias: <code>ae.replica_id</code>)</li>
 <li><code>ae.revision=&lt;rev&gt;</code></li>
 </ul>
 <p>Ensure flow (Docker/Podman runtimes)</p>
@@ -871,9 +903,9 @@ spec:
 <li>List existing containers by <code>ae.app</code> label.</li>
 <li>Partition by current revision vs old; keep old during surge.</li>
 <li>Pull image only when needed; prefer local <code>localhost/&lt;image&gt;</code> on Podman when present.</li>
-<li>Create missing replicas with labels, env, ports, security, volumes/storage, restart policy.</li>
+<li>Create missing pods with labels, env, ports, security, volumes/storage, restart policy.</li>
 <li>Remove old revision containers after readiness thresholds.</li>
-<li>Build <code>ReplicaState</code> from inspection (status, startedAt) and endpoints.</li>
+<li>Build <code>PodState</code> from inspection (status, startedAt) and endpoints.</li>
 </ul>
 <p>Resources/Volumes</p>
 <ul>
@@ -883,7 +915,7 @@ spec:
 </ul>
 <p>Logs</p>
 <ul>
-<li><code>read_logs(replica_id, follow, tail, since)</code> adapts to Docker SDK parameters.</li>
+<li><code>read_logs(pod_name, follow, tail, since)</code> adapts to Docker SDK parameters (replica_id alias supported).</li>
 </ul>
 <p>Auth</p>
 <ul>
@@ -899,12 +931,12 @@ spec:
 </ul>
 <h2>Health</h2>
 <ul>
-<li>HTTP probe: GET <code>http://&lt;replica.endpoint&gt;&lt;path&gt;</code>; success is 2xx.</li>
+<li>HTTP probe: GET <code>http://&lt;pod.endpoint&gt;&lt;path&gt;</code>; success is 2xx.</li>
 <li>TCP probe: attempts a TCP connection to the declared port.</li>
 <li>Exec probe: runs a command inside the container and checks exit code 0.</li>
 <li>Initial delay honored using container <code>StartedAt</code>.</li>
 <li>Liveness defaults to true when unspecified; readiness defaults to container state when unspecified.</li>
-<li><code>HealthReport</code> aggregates per‑replica <code>ready/live</code> and messages.</li>
+<li><code>HealthReport</code> aggregates per‑pod <code>ready/live</code> and messages.</li>
 </ul>
 <p>Revision status</p>
 <ul>
@@ -962,35 +994,43 @@ spec:
 </ul>
 <h2>Environment Variables</h2>
 <ul>
-<li>AE_STATE_DB, AE_SPECS_DIR</li>
-<li>AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER</li>
-<li>AE_REGISTRY_CONFIG</li>
+<li>AE_STATE_DB (default: <code>state/controller.db</code>), AE_STATE_DSN (Postgres DSN), AE_SPECS_DIR (default: <code>specs</code>)</li>
+<li>AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER, AE_CONTAINER_CLI, AE_CADDY_RELOAD_TIMEOUT</li>
+<li>AE_TLS_DIR (default: <code>state/tls</code>)</li>
+<li>AE_REGISTRY_CONFIG (default: <code>~/.config/ae/registries.yaml</code>)</li>
 <li>AE_SOPS_BIN, AE_ALLOW_PLAINTEXT_SECRETS</li>
-<li>AE_RUNTIME_BACKEND (&quot;podman&quot; [default], &quot;docker&quot;, &quot;stub&quot;)</li>
-<li>AE_PODMAN_BIN (default: podman)</li>
-<li>AE_PODMAN_NETWORK (name of shared network for multi-replica + ingress)</li>
-<li>AE_DOCKER_NETWORK (name of shared network when using Docker)</li>
-<li>AE_CONTAINER_CLI (&quot;docker&quot;|&quot;podman&quot;) for ingress reloads inside the Caddy container</li>
+<li>AE_RUNTIME_BACKEND (&quot;podman&quot; [default], &quot;oci&quot; alias, &quot;docker&quot;, &quot;cri|containerd&quot;, &quot;stub&quot;)</li>
+<li>AE_PODMAN_BIN (default: podman), AE_PODMAN_NETWORK (shared network for multi-replica ingress)</li>
+<li>AE_DOCKER_NETWORK (shared network when using Docker), AE_DOCKER_BIN</li>
+<li>AE_ENABLE_SERVICE_PROXY, AE_SERVICE_PROVIDER, AE_OVERLAY_NET, AE_SERVICE_IP_POOL</li>
+<li>AE_APISHIM_ENABLE, AE_APISHIM_TOKEN, AE_APISHIM_READ_TOKEN, AE_APISHIM_EXEC_TOKEN, AE_APISHIM_PORTFORWARD_TOKEN</li>
+<li>AE_APISHIM_DSN / AE_APISHIM_DB, AE_APISHIM_ALLOW_ANON</li>
+<li>AE_APISHIM_CRI_PORTFORWARD / AE_APISHIM_CRI_PORTFORWARD_FORCE (enable/force CRI port-forward proxy)</li>
+<li>AE_API_READ_TOKEN / AE_API_SCALER_TOKEN / AE_API_ADMIN_TOKEN / AE_API_MUTATIONS</li>
+<li>AE_CRI_ENDPOINT (default: <code>unix:///run/containerd/containerd.sock</code>)</li>
+<li>AE_CRI_SANDBOX_IMAGE (default: <code>registry.k8s.io/pause:3.9</code>)</li>
+<li>CRICTL_BIN (path override for crictl; used for exec/attach/port-forward on CRI)</li>
 <li>AE_LOG_LEVEL</li>
 </ul>
 <h2>Testing Strategy</h2>
 <ul>
-<li>Unit tests for CLI surface, state store, Docker runtime (via fakes), reconciler health decisions.</li>
-<li>Integration tests can run against a local Docker daemon for end‑to‑end validation.</li>
+<li>Unit tests cover CLI commands, scheduler/health logic, apishim RBAC/patch paths, ingress/runtime adapters, and state store behavior.</li>
+<li>Integration tests run against local Podman/Docker for end‑to‑end and multi‑node agent validation (<code>pytest tests/integration/ --docker</code>).</li>
+<li>CRI integration tests run via <code>scripts/cri_ci_setup.sh</code> and <code>tests/integration/test_cri_*</code> (see <code>docs/ops/runbook.md</code>).</li>
 </ul>
 <h2>Performance &amp; Footprint</h2>
 <ul>
-<li>Controller + API + metrics: ~40–80 MiB resident in Python.</li>
-<li>Caddy: ~20–40 MiB.</li>
-<li>Docker daemon: ~100–150 MiB.</li>
+<li>Controller + API + metrics: ~85–90 MiB PSS in recent Podman+crun rootless idle snapshots (Jan 2026).</li>
+<li>Caddy: ~40–50 MiB PSS in k1nd (Docker + Caddy) idle runs; runtime daemon footprint varies by engine.</li>
+<li>See <code>docs/benchmarks/memory.md</code> for updated measurements and charts.</li>
 <li>Suitable for 1–3 small services with sane limits on a 2 GB VPS.</li>
 </ul>
 <h2>Future Work</h2>
 <ul>
-<li>TCP/exec probes; richer rollout strategies (pause/canary).</li>
-<li>Resource requests and automatic cgroups beyond Docker flags.</li>
-<li>More ingress features (headers, multiple paths, TLS config surface).</li>
-<li>Multi‑node scheduling (out of scope for now).</li>
+<li>Full Job/CronJob/DaemonSet/StatefulSet semantics in apishim (completion, one‑per‑node, PVC templates).</li>
+<li>Resource requests/QoS enforcement beyond container limits (cgroup tuning, priorities).</li>
+<li>Advanced ingress routing (header manipulation, rewrites/regex, richer traffic shaping).</li>
+<li>Multi‑controller HA/leader election and broader K8s parity (metrics.k8s.io, admission/policy, CSI/CNI plugins).</li>
 </ul>
 <h3>Configs and Secrets → Environment</h3>
 <p>Apps can project values from config files and sealed secrets into environment variables. The merge order is: configRefs &lt; secretRefs &lt; spec.env (manifest wins last).</p>
@@ -1016,7 +1056,7 @@ spec:
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-22 14:47:44</span>
+        <span>Built 2026-01-31 16:07:03</span>
       </div>
     </footer>
     <script>
@@ -1044,6 +1084,64 @@ spec:
           if (location.pathname.endsWith('playground.html')) location.reload();
         });
         label();
+      })();
+    </script>
+    <script>
+      (function() {
+        function hideLinks(match) {
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (match(href)) { a.style.display = 'none'; }
+          });
+        }
+        function rewriteDashboardLinks(target) {
+          if (!target) return;
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (href.indexOf('/dashboard') === 0) {
+              a.setAttribute('href', target);
+              if (!a.getAttribute('target')) {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener');
+              }
+            }
+          });
+        }
+        function disablePlaygroundPage() {
+          var path = (location && location.pathname) ? location.pathname : '';
+          if (!/playground/i.test(path)) return;
+          var container = document.querySelector('.container');
+          if (container) container.style.display = 'none';
+          var msg = document.createElement('div');
+          msg.style.maxWidth = '960px';
+          msg.style.margin = '32px auto';
+          msg.style.padding = '16px 20px';
+          msg.style.border = '1px solid var(--border)';
+          msg.style.borderRadius = '12px';
+          msg.style.background = 'var(--k1s-panel)';
+          msg.style.color = 'var(--k1s-text)';
+          msg.innerHTML = '<h2 style="margin:0 0 8px">Playground disabled</h2>' +
+            '<p style="margin:0;color:var(--k1s-text-muted)">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';
+          document.body.insertBefore(msg, document.body.firstChild);
+        }
+        fetch('/ui/features', { credentials: 'same-origin' })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(f) {
+            if (!f) return;
+            if (f.dashboard === false) {
+              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });
+            } else {
+              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();
+              rewriteDashboardLinks(dashUrl);
+            }
+            if (f.playground === false) {
+              hideLinks(function(h) { return h.indexOf('playground') !== -1; });
+              disablePlaygroundPage();
+            }
+          })
+          .catch(function() {});
       })();
     </script>
   </body>

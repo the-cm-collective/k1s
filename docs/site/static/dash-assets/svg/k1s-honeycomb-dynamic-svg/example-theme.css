@@ -1,0 +1,17 @@
+:root{
+  --k1s-gray:  rgba(154,160,166,0.80);
+  --k1s-blue:  rgba(77,163,255,0.95);
+  --k1s-gold:  rgba(255,204,50,0.95);
+  --k1s-white: rgba(245,245,245,0.80);
+}
+
+.k1s-hex{ width:160px; height:160px; }
+
+.k1s-ns-system{ --accent: var(--k1s-white); --shellFill: rgba(245,245,245,0.96); --faceTop:#f5f5f5; --faceBot:#dfe3e7;
+  --patternStroke: rgba(60,60,60,0.20); --label:#0f1113; }
+
+.k1s-ns-default{ --accent: var(--k1s-blue); --faceTop:#16324a; --faceBot:#0c1f30; --patternStroke: rgba(77,163,255,0.30); --label:#e8eaed; }
+
+.k1s-ns-demo{ --accent: var(--k1s-gold); --faceTop:#3d2d00; --faceBot:#221800; --patternStroke: rgba(255,204,50,0.35); --label:#0f1113; }
+
+.k1s-ns-custom{ /* set --accent to any namespace color */ }

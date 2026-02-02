@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k1s-tools
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cri-toolbox
+  namespace: k1s-tools
+spec:
+  # Advanced/debug pod; mounts containerd socket and bundles extra tooling.
+  automountServiceAccountToken: false
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: toolbox
+      image: registry.k1s.home.arpa:32000/k1s-cri-toolbox:latest
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: CONTAINERD_ADDRESS
+          value: /run/containerd/containerd.sock
+        - name: CONTAINERD_NAMESPACE
+          value: k8s.io
+        - name: BUILDKIT_HOST
+          value: unix:///run/buildkit/buildkitd.sock
+      command:
+        - /bin/sh
+        - -c
+        - sleep infinity
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: false
+        seccompProfile:
+          type: RuntimeDefault
+      volumeMounts:
+        - name: containerd-sock
+          mountPath: /run/containerd/containerd.sock
+        - name: workspace
+          mountPath: /workspace
+        - name: buildkit
+          mountPath: /run/buildkit
+  volumes:
+    - name: containerd-sock
+      hostPath:
+        # Access to the containerd socket is highly privileged; scope usage tightly.
+        path: /run/containerd/containerd.sock
+        type: Socket
+    - name: workspace
+      emptyDir: {}
+    - name: buildkit
+      emptyDir: {}

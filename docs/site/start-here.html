@@ -2,6 +2,7 @@
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
+    
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>Start Here</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
@@ -41,6 +42,8 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
+        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
@@ -61,6 +64,7 @@
         --k1s-card-bg: #ffffff;
         --k1s-header-bg: rgba(255,255,255,0.82);
         --code-bg: #f5f6f8;
+        --k1s-page-overlay: linear-gradient(rgba(244,245,247,0.9), rgba(244,245,247,0.9));
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
         --muted: var(--k1s-panel);
@@ -82,7 +86,11 @@
         min-height: 100vh;
         display: flex;
         flex-direction: column;
-        background: var(--bg);
+        background-color: var(--bg);
+        background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
+        background-size: 100% 100%, auto 100%;
+        background-position: center top, center top;
+        background-repeat: repeat-y, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -382,7 +390,7 @@
         padding: 10px 12px;
         display: flex;
         flex-wrap: wrap;
-        align-items: center;
+        align-items: flex-start;
         gap: 6px 10px;
         border: 1px solid var(--k1s-border);
         border-radius: 12px;
@@ -392,6 +400,24 @@
       .hero-repo-label {
         font-size: 0.7rem;
         letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         color: var(--k1s-text-muted);
       }
@@ -605,6 +631,7 @@
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
     <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -670,16 +697,18 @@
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
+      <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
       <a href="apishim-compatibility-matrix.html">API Shim</a>
+      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -692,13 +721,15 @@
       </svg>
     </button>
     <div class="container">
-    <div class="hero">   <div class="hero-brand">     <div class="hero-logo-row">       <img src="static/k1s-logo-horizontal.svg" alt="k1s logo" class="hero-logo" />       <span class="hero-pill">Onboarding</span>     </div>     <h1>Start Here: k1s Onboarding</h1>     <p class="hero-tagline">From fresh clone to running demo in minutes. k1s keeps the control plane light, the UI live, and the YAML close to Kubernetes.</p>     <div class="hero-links hero-links--local">       <a class="hero-link" href="https://docs.home.arpa:8443/">Docs (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9109/">Docs (local)</a>       <a class="hero-link" href="https://api.home.arpa:8443/dashboard">Dashboard (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9108/dashboard">Dashboard (local)</a>     </div>   </div>   <div class="hero-actions">     <div class="hero-card">       <h2>Zero-to-Labs</h2>       <p>Provision docs, API, dashboard, and sample apps in one shot.</p>       <pre><code>make demo</code></pre>     </div>     <div class="hero-card">       <h2>Manual Quickstart</h2>       <p>Install editable, start the controller, then apply echo.</p>       <pre><code>make install</code></pre>       <pre><code>make loop</code></pre>     </div>     <div class="hero-card">       <h2>Key CLI Checks</h2>       <ul>         <li><code>make apply-sample</code></li>         <li><code>make status-sample</code></li>         <li><code>make logs-sample</code></li>       </ul>     </div>   </div> </div>
+    <div class="hero">   <div class="hero-brand">     <div class="hero-logo-row">       <img src="static/k1s-logo-horizontal.svg" alt="k1s logo" class="hero-logo" />       <span class="hero-pill">Onboarding</span>     </div>     <h1>Start Here: k1s Onboarding</h1>     <p class="hero-tagline">From fresh clone to running demo in minutes. k1s keeps the control plane light, the UI live, and the YAML close to Kubernetes.</p>     <div class="hero-links hero-links--local">       <a class="hero-link" href="https://docs.home.arpa:8443/">Docs (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9109/">Docs (local)</a>       <a class="hero-link" href="https://dash.home.arpa:8443/dashboard">Dashboard (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9108/dashboard">Dashboard (local)</a>     </div>   </div>   <div class="hero-actions">     <div class="hero-card">       <h2>Zero-to-Labs</h2>       <p>Provision docs, API, dashboard, and sample apps in one shot.</p>       <pre><code>make demo</code></pre>     </div>     <div class="hero-card">       <h2>Manual Quickstart</h2>       <p>Install editable, start the controller, then apply echo.</p>       <pre><code>make install</code></pre>       <pre><code>make loop</code></pre>     </div>     <div class="hero-card">       <h2>Key CLI Checks</h2>       <ul>         <li><code>make apply-sample</code></li>         <li><code>make status-sample</code></li>         <li><code>make logs-sample</code></li>       </ul>     </div>   </div> </div>
 <p>This single page gets a new contributor or user from a fresh clone to a running demo, with pointers to the most useful docs and commands.</p>
+<p>Note: k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.</p>
 <p>Terminology: k1s "Apps" are Deployment-like workloads; replicas map to Pods; Service VIPs map to Services/ClusterIP.</p>
 <h2>Prerequisites</h2>
 <ul>
 <li>Python 3.11+</li>
 <li>Podman (preferred) or Docker installed and running</li>
+<li>Optional (CRI/containerd): containerd + CNI + <code>crictl</code> (see <code>docs/ops/runbook.md</code>)</li>
 <li>Optional (for ingress/docs via Caddy and Prometheus): <code>docker compose</code> or <code>podman compose</code></li>
 <li>Optional (for multi-node lab): two Linux hosts/VMs with WireGuard tools and rootful networking</li>
 </ul>
@@ -715,7 +746,8 @@ make demo ARGS=&quot;--demo-standard -y -d&quot;</code></pre>
 <p>2) Open endpoints:</p>
 <ul>
 <li>Docs: https://docs.home.arpa:8443/ and http://127.0.0.1:9109/</li>
-<li>API dashboard: https://api.home.arpa:8443/dashboard or http://127.0.0.1:9108/dashboard</li>
+<li>Dashboard: https://dash.home.arpa:8443/dashboard or http://127.0.0.1:9108/dashboard</li>
+<li>API (Swagger/ReDoc): https://api.home.arpa:8443/swagger and https://api.home.arpa:8443/redoc</li>
 <li>Sample apps: https://blue.home.arpa:8443/ and https://green.home.arpa:8443/</li>
 </ul>
 <p>3) Inspect via CLI while the demo runs:</p>
@@ -756,6 +788,9 @@ python -m pip install -e .[watch]</code></pre>
 </ul>
 <p>3) Run the controller with API + file watch:</p>
 <pre><code>python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch</code></pre>
+<ul>
+<li>For CRI/containerd: <code>AE_RUNTIME_BACKEND=cri</code> and follow the CRI section in <code>docs/ops/runbook.md</code> for CNI init + smoke checks.</li>
+</ul>
 <p>4) Apply and inspect a sample workload (App):</p>
 <pre><code>python -m ae.cli apply -f specs/examples/echo.yaml
 python -m ae.cli status echo --wide --events
@@ -763,16 +798,18 @@ python -m ae.cli logs echo --tail 50</code></pre>
 <ul>
 <li>Samples live under: <code>specs/examples/</code></li>
 </ul>
-<p>5) Kubectl‑like wrapper (optional):</p>
+<p>5) Kubectl‑like wrapper (optional; subset of <code>ae</code>):</p>
 <pre><code>k1s get apps
 k1s get pods
 k1s get services
 k1s describe app/echo
 k1s logs app/echo --follow --tail 100</code></pre>
+<p>Note: <code>k1s</code> is a thin wrapper over <code>ae</code> for common get/describe/logs/rollout/scale/delete flows. For the full surface (plan/export/registry/tls/nodes/volumes/backup), use <code>ae</code> directly.</p>
 <p>Optional: start the Kubernetes API shim for kubectl/helm parity</p>
-<pre><code>AE_APISHIM_TOKEN=devtoken python -m ae.apishim serve --host 127.0.0.1 --port 8445
-kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code></pre>
-<p>Shim capabilities and gaps live in <code>docs/reference/apishim-compatibility-matrix.md</code>.</p>
+<pre><code>AE_APISHIM_ENABLE=1 AE_APISHIM_TOKEN=devtoken \
+  python -m ae.apishim serve --host 127.0.0.1 --port 8445
+kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code></pre>
+<p>Shim capabilities and gaps live in <code>docs/reference/apishim-compatibility-matrix.md</code>. Note: for TLS, add <code>--tls</code>, set <code>AE_APISHIM_TLS_CERT/KEY</code>, and use <code>https://</code> with <code>--insecure-skip-tls-verify</code> or a trusted CA. Note: dev-only bypass is <code>AE_APISHIM_ALLOW_ANON=1</code> (avoid for shared hosts).</p>
 <h2>Makefile Helper Commands</h2>
 <p>Run with <code>make &lt;target&gt;</code>. You can override defaults via <code>VAR=value make &lt;target&gt;</code>.</p>
 <p>Setup and quality</p>
@@ -786,6 +823,7 @@ kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code
 <p>Local dev and samples</p>
 <ul>
 <li><code>make dev-up</code> / <code>make dev-down</code>: start/stop dev Docker Compose stack.</li>
+<li><code>make down</code>: stop all dev/demo stacks (best-effort).</li>
 <li><code>make loop</code>: controller reconcile loop (watch mode).</li>
 <li><code>make run</code>: single reconcile pass.</li>
 <li><code>make apply-sample</code>: apply <code>specs/examples/echo.yaml</code>.</li>
@@ -802,18 +840,23 @@ kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code
 <p>Docs, labs, and playground</p>
 <ul>
 <li><code>make docs</code>: combine snapshots (if present), regenerate charts, build docs.</li>
+<li><code>make docs-export</code>: build non-interactive HTML into <code>docs/export</code> (override with <code>DOCS_OUT_DIR=</code>).</li>
+<li><code>make docs-wiki-export</code>: export wiki-friendly HTML into <code>docs/wiki</code> (override with <code>WIKI_OUT=</code>).</li>
 <li><code>make docs-watch</code>: rebuild docs when <code>combined/combined.csv</code> changes.</li>
-<li><code>make labs-up</code> / <code>make labs-down</code>: dev labs stack (docs + controller via compose).</li>
-<li><code>make labs-aio-up</code> / <code>make labs-aio-down</code>: all-in-one labs stack.</li>
+<li><code>make labs-up</code> / <code>make labs-down</code>: docs + playground via compose (controller runs on host).</li>
+<li><code>make labs-aio-up</code> / <code>make labs-aio-down</code>: all-in-one labs stack (controller + apishim + docs).</li>
 <li><code>make labs-k3d-up</code> / <code>make labs-k3d-down</code>: bring up/down local k3d cluster for labs.</li>
+<li><code>make labs-apishim-env</code>: print apishim tokens from <code>state/labs/apishim.env</code>.</li>
 <li><code>make apishim-smoke</code>: quick API shim health check on port 8445.</li>
 <li><code>make shim-helm-demo</code>: run the helm shim demo helper.</li>
 </ul>
 <p>Demo workflows</p>
 <ul>
 <li><code>make demo</code>: run the playground labs demo (<code>--labs --labs-token</code>; podman backend, plaintext secrets allowed).</li>
+<li>Demo note: <code>AE_REGISTER_LOCAL_NODE=1</code> is set by default in demos/labs so the controller registers a local node for scheduling; unset to require explicit node registration.</li>
 <li><code>make demo-help</code>: show demo script help.</li>
 <li><code>make demo-down</code>: tear down demo stacks.</li>
+<li><code>make reg-cache-reset</code>: clear local registry cache used by demos.</li>
 <li><code>make demo-hardened</code>: run hardened demo flow.</li>
 <li><code>make demo-reset</code>: reset demo/labs state and prune volumes.</li>
 <li><code>make dashboard-reload</code>: reload controller under the dashboard supervisor.</li>
@@ -828,6 +871,7 @@ kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code
 <ul>
 <li><code>make bench-mem-k1s</code>: snapshot k1s memory.</li>
 <li><code>make bench-mem-k3s</code>: snapshot k3s memory.</li>
+<li><code>make bench-mem-debug</code>: quick sanity-check run with debug artifacts.</li>
 <li><code>make bench-mem-agg</code>: aggregate latest snapshot under a label.</li>
 <li><code>make bench-mem-matrix-k1s</code>: run k1s replica matrix snapshots.</li>
 <li><code>make bench-mem-combine</code>: combine snapshots into <code>combined/*</code>.</li>
@@ -854,6 +898,8 @@ kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code
 <li><code>make bench-fix-perms</code>: normalize artifact permissions.</li>
 <li><code>make bench-mem-backfill</code>: backfill missing summary.json + rebuild docs.</li>
 <li><code>make bench-engines-clear</code>: stop/remove all containers (dangerous).</li>
+<li><code>make bench-state-clean</code>: remove benchmark-only state (<code>state/bench-*</code>).</li>
+<li><code>make dev-state-clean</code>: wipe full <code>state/</code> (requires <code>CONFIRM=1</code>).</li>
 <li><code>make bench-mem-backfill-oci</code>: add OCI runtime metadata and recompute charts.</li>
 <li><code>make bench-mem-backfill-oci-latest</code>: backfill OCI metadata for latest label only.</li>
 <li><code>make bench-mem-finalize-sudo</code>: finalize benchmarks and normalize perms (sudo).</li>
@@ -872,7 +918,8 @@ kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code
 <h2>Option C — Multi-node Lab (controller + worker)</h2>
 <p>Use this when you want to validate the overlay Service VIP path and scheduler on two hosts.</p>
 <p>1) Controller (host A):</p>
-<pre><code>AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay AE_AGENT_API_TOKEN=changeme \
+<pre><code>AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay \
+AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=changeme \
 python -m ae.controller --loop --specs specs/ --metrics-port 9108</code></pre>
 <p>2) Worker agent (host B):</p>
 <pre><code>AE_CONTROLLER_URL=http://&lt;controller-host&gt;:9110 AE_AGENT_TOKEN=changeme \
@@ -888,10 +935,30 @@ ae status echo-mn --watch</code></pre>
 </ul>
 <pre><code>ae apply -f &lt;manifest.yaml&gt;
 ae status [&lt;app&gt;] --wide --events --json
+ae events &lt;app&gt; --limit 20
 ae logs &lt;app&gt; --follow --tail 100
 ae revisions &lt;app&gt;
 ae rollback &lt;app&gt; [--to N]
 ae delete &lt;app&gt; [--purge]</code></pre>
+<ul>
+<li>Exec/shell and probe history:</li>
+</ul>
+<pre><code>ae exec &lt;app&gt; -- sh -c &#x27;id&#x27;
+ae shell &lt;app&gt;
+ae history &lt;app&gt; --limit 20</code></pre>
+<p>Note: <code>ae shell</code> (and <code>ae exec --tty/--stdin</code>) requires the API shim; set <code>AE_APISHIM_SERVER</code> or pass <code>--apishim</code>.</p>
+<ul>
+<li>Inventory and services:</li>
+</ul>
+<pre><code>ae nodes
+ae services --json
+ae volumes list</code></pre>
+<ul>
+<li>Namespace targeting (optional):</li>
+</ul>
+<pre><code>ae apply -n demo -f &lt;manifest.yaml&gt;
+ae apply -n demo --force-namespace -f &lt;manifest.yaml&gt;
+AE_NAMESPACE=demo ae status &lt;app&gt;</code></pre>
 <ul>
 <li>Planning and K8s helpers:</li>
 </ul>
@@ -903,14 +970,16 @@ ae k8s-check -f specs/examples/echo.yaml --policy strict</code></pre>
 </ul>
 <pre><code>ae registry login ghcr --username &lt;u&gt; --token &lt;pat&gt;
 ae registry list
+ae registry refresh
 ae tls sync --name mycert --input path/to/k8s-secret.yaml
-ae tls verify --name mycert --json</code></pre>
+ae tls verify --name mycert --json
+ae tls kubesecret --name mycert --namespace demo -o mycert-secret.yaml</code></pre>
 <h2>Remote CLI & Tokens (optional)</h2>
 <p>Generate API tokens and point the CLI at a remote controller.</p>
 <pre><code>python -m ae.cli api tokens --generate --ttl-hours 24 -o .env.api
 source .env.api
 ae --server http://&lt;controller-ip&gt;:9108 --token $AE_API_READ_TOKEN status</code></pre>
-<p>Details: <code>README.md:67</code> and token management in <code>docs/ops/runbook.md:1</code>.</p>
+<p>Tip: <code>ae auth remote -o .env.api</code> also emits shim tokens + <code>AE_API_MUTATIONS=1</code>, and <code>ae auth local -o .env.local</code> reuses tokens from <code>state/*.env</code> when running demos/labs. Details: <code>README.md:67</code> and token management in <code>docs/ops/runbook.md:1</code>.</p>
 <h2>Documentation Map (most useful first)</h2>
 <ul>
 <li>High‑level overview: <code>docs/getting-started/overview.md:1</code></li>
@@ -934,6 +1003,7 @@ ae --server http://&lt;controller-ip&gt;:9108 --token $AE_API_READ_TOKEN status<
 <h2>Troubleshooting</h2>
 <ul>
 <li>If Caddy HTTPS ports 8443/8888 are busy, the demo auto‑picks free ports and prints them.</li>
+<li>Dashboard via Caddy is <code>https://dash.home.arpa:8443/dashboard</code>; use <code>http://127.0.0.1:9108/dashboard</code> if you’re skipping Caddy.</li>
 <li>To rebuild docs locally: <code>make docs</code> (builder at <code>docs/build_docs.py:1</code>).</li>
 <li>Teardown demo: <code>./scripts/init_demo.sh --down -y</code> or <code>make demo-down</code>.</li>
 <li>Reset demo state: <code>./scripts/init_demo.sh --reset</code> or <code>make demo-reset</code>.</li>
@@ -949,7 +1019,7 @@ make demo-hardened</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-22 14:47:44</span>
+        <span>Built 2026-01-31 17:21:37</span>
       </div>
     </footer>
     <script>
@@ -977,6 +1047,64 @@ make demo-hardened</code></pre>
           if (location.pathname.endsWith('playground.html')) location.reload();
         });
         label();
+      })();
+    </script>
+    <script>
+      (function() {
+        function hideLinks(match) {
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (match(href)) { a.style.display = 'none'; }
+          });
+        }
+        function rewriteDashboardLinks(target) {
+          if (!target) return;
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (href.indexOf('/dashboard') === 0) {
+              a.setAttribute('href', target);
+              if (!a.getAttribute('target')) {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener');
+              }
+            }
+          });
+        }
+        function disablePlaygroundPage() {
+          var path = (location && location.pathname) ? location.pathname : '';
+          if (!/playground/i.test(path)) return;
+          var container = document.querySelector('.container');
+          if (container) container.style.display = 'none';
+          var msg = document.createElement('div');
+          msg.style.maxWidth = '960px';
+          msg.style.margin = '32px auto';
+          msg.style.padding = '16px 20px';
+          msg.style.border = '1px solid var(--border)';
+          msg.style.borderRadius = '12px';
+          msg.style.background = 'var(--k1s-panel)';
+          msg.style.color = 'var(--k1s-text)';
+          msg.innerHTML = '<h2 style="margin:0 0 8px">Playground disabled</h2>' +
+            '<p style="margin:0;color:var(--k1s-text-muted)">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';
+          document.body.insertBefore(msg, document.body.firstChild);
+        }
+        fetch('/ui/features', { credentials: 'same-origin' })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(f) {
+            if (!f) return;
+            if (f.dashboard === false) {
+              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });
+            } else {
+              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();
+              rewriteDashboardLinks(dashUrl);
+            }
+            if (f.playground === false) {
+              hideLinks(function(h) { return h.indexOf('playground') !== -1; });
+              disablePlaygroundPage();
+            }
+          })
+          .catch(function() {});
       })();
     </script>
   </body>

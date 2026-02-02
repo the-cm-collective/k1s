@@ -2,8 +2,9 @@
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
+    
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>03 Scheduling Placement</title>
+    <title>05 Observability</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
     <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
     <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
@@ -41,6 +42,8 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
+        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
@@ -61,6 +64,7 @@
         --k1s-card-bg: #ffffff;
         --k1s-header-bg: rgba(255,255,255,0.82);
         --code-bg: #f5f6f8;
+        --k1s-page-overlay: linear-gradient(rgba(244,245,247,0.9), rgba(244,245,247,0.9));
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
         --muted: var(--k1s-panel);
@@ -82,7 +86,11 @@
         min-height: 100vh;
         display: flex;
         flex-direction: column;
-        background: var(--bg);
+        background-color: var(--bg);
+        background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
+        background-size: 100% 100%, auto 100%;
+        background-position: center top, center top;
+        background-repeat: repeat-y, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -382,7 +390,7 @@
         padding: 10px 12px;
         display: flex;
         flex-wrap: wrap;
-        align-items: center;
+        align-items: flex-start;
         gap: 6px 10px;
         border: 1px solid var(--k1s-border);
         border-radius: 12px;
@@ -392,6 +400,24 @@
       .hero-repo-label {
         font-size: 0.7rem;
         letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         color: var(--k1s-text-muted);
       }
@@ -605,6 +631,7 @@
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
     <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -670,16 +697,18 @@
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
+      <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
       <a href="apishim-compatibility-matrix.html">API Shim</a>
+      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -692,130 +721,102 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Chapter 03 - Scheduling and Placement (Where Work Runs)</h1>
+    <h1>Chapter 05 - Observability: Logs, Metrics, Events</h1>
 <h2>Concept</h2>
-<p>Scheduling is the process of deciding where workloads run. It is not just &quot;pick a node,&quot; but &quot;pick a node that satisfies constraints.&quot; Placement becomes part of correctness when storage, network policy, or affinity rules are involved.</p>
+<p>Observability is the ability to understand system behavior from the outside. Metrics quantify state, events explain transitions, and logs provide raw evidence. Together, they enable fast diagnosis and safe operations.</p>
 <pre class="mermaid">flowchart TB
-  Workload[Workload spec] --&gt; Filters[Eligibility filters]
-  Filters --&gt;|ready + not cordoned| Eligible[Eligible nodes]
-  Eligible --&gt;|spread| Placement[Replica placement plan]
-  Placement --&gt; Runtime[Runtime execution]</pre>
+  Metrics[Metrics] --&gt; Q1[&quot;How healthy?&quot;]
+  Events[Events] --&gt; Q2[&quot;What changed?&quot;]
+  Logs[Logs] --&gt; Q3[&quot;What happened?&quot;]
+  Q1 --&gt; Triage[Triage]
+  Q2 --&gt; Triage
+  Q3 --&gt; Triage</pre>
 <h3>Theory</h3>
-<p>Schedulers perform a filter-and-score pipeline. First, they filter out nodes that cannot run the workload (not ready, cordoned, selector mismatch, taints not tolerated). Then they score remaining nodes to balance load or satisfy topology constraints. This separates hard constraints from soft preferences.</p>
+<p>The three pillars serve different purposes: metrics answer &quot;how much&quot; and &quot;how many,&quot; events answer &quot;what changed,&quot; and logs answer &quot;what happened at a point in time.&quot; Effective systems emit all three, and operators should move between them methodically.</p>
 <pre class="mermaid">flowchart LR
-  Node[Node] --&gt; Check1{Ready?}
-  Check1 -- no --&gt; Reject[Reject]
-  Check1 -- yes --&gt; Check2{Cordon?}
-  Check2 -- yes --&gt; Reject
-  Check2 -- no --&gt; Check3{nodeSelector match?}
-  Check3 -- no --&gt; Reject
-  Check3 -- yes --&gt; Check4{Tolerations ok?}
-  Check4 -- no --&gt; Reject
-  Check4 -- yes --&gt; Eligible[Eligible]</pre>
+  State[SQLite state] --&gt; MetricsSvc[MetricsService]
+  MetricsSvc --&gt; CLI[ae cli metrics]
+  MetricsSvc --&gt; HTTP[&quot;/metrics HTTP&quot;]
+  State --&gt; Events[Events table]
+  Events --&gt; CLI2[ae cli events]</pre>
 <h3>Design</h3>
-<p>k1s implements a lightweight scheduler that filters nodes by readiness, cordon status, nodeSelector, taints/tolerations, and then spreads replicas round-robin. If storage is declared, it pins placement to one node to avoid cross-node volume assumptions. When no nodes qualify, it falls back to the local runtime so single-node setups remain usable.</p>
-<pre class="mermaid">flowchart TB
-  Spec[AppSpec] --&gt;|storage declared| Pin[Pin to single node]
-  Spec --&gt;|topology spread| Spread[Distribute by key]
-  Spec --&gt;|default| RoundRobin[Round-robin]
-  Pin --&gt; Plan[Placement plan]
-  Spread --&gt; Plan
-  RoundRobin --&gt; Plan</pre>
+<p>k1s stores reconciliation state in SQLite, derives aggregate metrics from that store, and emits structured events during every reconcile. A lightweight HTTP API exposes Prometheus metrics and event data. This design keeps observability local and reproducible while still compatible with external tooling.</p>
+<pre class="mermaid">sequenceDiagram
+  participant O as Operator
+  participant C as Controller
+  participant S as State Store
+  O-&gt;&gt;C: Apply spec
+  C-&gt;&gt;S: Record events + status
+  O-&gt;&gt;C: Query metrics/events
+  C-&gt;&gt;S: Read snapshots
+  C--&gt;&gt;O: Metrics + events</pre>
 <h3>Application</h3>
-<p>When a workload does not schedule, inspect selectors, taints, and node readiness first. For multi-node development, consider adding labels that enable explicit node selection and validating placement decisions with <code>ae nodes</code> and events. This aligns with how kube-scheduler behaves in production clusters.</p>
+<p>When troubleshooting, start with metrics to see if the system is degraded, then use events to find the trigger. If you need detail, inspect logs for the specific runtime or controller. This approach scales to production k8s workflows with Prometheus and Events API.</p>
 <pre class="mermaid">flowchart TB
-  Pending[Workload pending] --&gt; Nodes[ae nodes]
-  Nodes --&gt; Ready{Any Ready nodes?}
-  Ready -- no --&gt; FixNode[Fix node/agent]
-  Ready -- yes --&gt; Cordon{Cordoned?}
-  Cordon -- yes --&gt; Uncordon[Uncordon node]
-  Cordon -- no --&gt; Labels{Selector/taints match?}
-  Labels -- no --&gt; UpdateSpec[Fix selector/tolerations]
-  Labels -- yes --&gt; Reapply[Re-apply spec]</pre>
+  Symptom[Issue observed] --&gt; Metrics[Check metrics]
+  Metrics --&gt; Events[Check events]
+  Events --&gt; Logs[Check logs]
+  Logs --&gt; Fix[Apply fix]
+  Fix --&gt; Verify[Verify metrics]</pre>
 <h2>Key Terms and Acronyms</h2>
 <ul>
-<li>Scheduler - Component that decides placement for replicas.</li>
-<li>Node - Execution target for workloads.</li>
-<li>Cordon - Mark a node unschedulable.</li>
-<li>Taint - Node attribute that repels workloads unless tolerated.</li>
-<li>Toleration - Workload exception allowing tainted nodes.</li>
-<li>nodeSelector - Label-based placement constraint.</li>
-<li>Topology spread - Rule to distribute replicas across domains.</li>
-<li>Placement - The chosen nodes for replicas.</li>
-<li>Replica - A single instance of a workload.</li>
+<li>Observability - Ability to understand system state from signals.</li>
+<li>Metrics - Numeric aggregates over time.</li>
+<li>Events - Discrete records of state transitions.</li>
+<li>Logs - Text output from components.</li>
+<li>Prometheus - Metrics format and scraping ecosystem.</li>
+<li>Snapshot - Point-in-time aggregate metrics view.</li>
+<li>HTTP API - Controller interface for metrics/events/status.</li>
+<li>Triage - Structured troubleshooting flow.</li>
 </ul>
 <h2>Commands (copy/paste)</h2>
 <pre><code>python -m ae.controller --loop --specs specs/ --metrics-port 9108
-python -m ae.cli nodes
-python -m ae.cli nodes &lt;node-id&gt; --cordon
-python -m ae.cli nodes &lt;node-id&gt; --uncordon
 python -m ae.cli apply -f specs/examples/echo.yaml
-python -m ae.cli events echo --limit 20</code></pre>
+python -m ae.cli metrics --json
+python -m ae.cli events echo --limit 20
+curl http://127.0.0.1:9108/metrics</code></pre>
 <h2>Docs references (source + site)</h2>
 <ul>
-<li>Source: <code>docs/reference/scheduling.md</code></li>
-<li>Source: <code>docs/getting-started/concepts.md</code> (nodes + scheduling)</li>
-<li>Site: <code>docs/site/scheduling.html</code></li>
-<li>Site: <code>docs/site/concepts.html</code></li>
+<li>Source: <code>docs/reference/observability.md</code></li>
+<li>Source: <code>docs/ops/grafana.md</code></li>
+<li>Source: <code>docs/ops/runbook.md</code></li>
+<li>Site: <code>docs/site/observability.html</code></li>
 </ul>
 <h2>Code references (walkthrough anchors)</h2>
 <ul>
-<li>Scheduler placement logic: <code>src/ae/controller/scheduler.py:37</code></li>
+<li>Metrics snapshot aggregation: <code>src/ae/observability/metrics.py:25</code></li>
 </ul>
-<pre><code>    def plan(self, manifest: AppManifest, revision: int) -&gt; tuple[list[Placement], list[str]]:
-        desired = int(manifest.spec.replicas)
-        app_name = app_key_for_manifest(manifest)
-        replica_ids = [f&quot;{app_name}-rev{revision}-{i}&quot; for i in range(desired)]
-        ...
-        for node, status in nodes:
-            if bool(getattr(node, &quot;cordoned&quot;, False)):
-                continue
-            if not self._is_ready(status, now, grace):
-                ...
-            if not self._matches_node_selector(node, manifest):
-                continue
-            if not self._tolerates_taints(node, manifest):
-                continue
-            eligible.append(node)
+<pre><code>class MetricsService:
+    &quot;&quot;&quot;Aggregates metrics from application status records.&quot;&quot;&quot;
 
-        if not eligible:
-            warnings.append(&quot;no eligible nodes; falling back to local runtime&quot;)
-            return [Placement(node=None, agent_url=None, replica_ids=replica_ids)], warnings
+    def snapshot(self) -&gt; MetricsSnapshot:
+        statuses = self._store.list_status()
+        total_apps = len(statuses)
+        ready_apps = sum(1 for status in statuses if status.revision_status == &quot;ready&quot;)
+        progressing_apps = sum(1 for status in statuses if status.revision_status == &quot;progressing&quot;)
         ...
-        # Round-robin placement across eligible nodes.</code></pre>
+        return MetricsSnapshot(...)</code></pre>
 <ul>
-<li>Local node registration (single-node default): <code>src/ae/controller/__main__.py:78</code></li>
+<li>CLI metrics/events output: <code>src/ae/cli/__main__.py:2854</code></li>
 </ul>
-<pre><code>    def _register_local_node(store: SQLiteStateStore, runtime_backend: str) -&gt; None:
-        &quot;&quot;&quot;Best-effort local node registration for single-controller setups.&quot;&quot;&quot;
-        try:
-            node_id = os.getenv(&quot;AE_NODE_ID&quot;, socket.gethostname())
-            name = os.getenv(&quot;AE_NODE_NAME&quot;, node_id)
-            store.upsert_node(
-                node_id,
-                name=name,
-                labels={&quot;role&quot;: &quot;controller&quot;},
-                taints=[],
-                backend=runtime_backend,
-                endpoint=None,
-                pod_cidr=None,
-                wg_pubkey=None,
-            )
-            store.record_heartbeat(node_id, &quot;Ready&quot;)
-        except Exception:
-            pass</code></pre>
-<ul>
-<li>Spec fields that affect placement: <code>src/ae/controller/spec.py:489</code></li>
-</ul>
-<pre><code>    node_selector: dict[str, str] = Field(default_factory=dict, alias=&quot;nodeSelector&quot;)
-    tolerations: List[dict] = Field(default_factory=list)
-    topology_spread_constraints: List[dict] = Field(
-        default_factory=list, alias=&quot;topologySpreadConstraints&quot;
-    )</code></pre>
+<pre><code>def handle_metrics(args: argparse.Namespace, store: SQLiteStateStore) -&gt; int:
+    service = MetricsService(store)
+    snapshot = service.snapshot()
+    if args.json:
+        print(json.dumps({...}, indent=2))
+        return 0
+    print(f&quot;apps total={snapshot.total_apps} ...&quot;)
+
+
+def handle_events(...):
+    events = store.list_events(app_name, limit=args.limit)
+    for event in events:
+        timestamp = event.created_at.strftime(&quot;%Y-%m-%d %H:%M:%S&quot;)
+        print(f&quot;{timestamp} rev={event.revision} {event.event_type}: {event.message}&quot;)</code></pre>
 <h2>Chapter navigation</h2>
 <ul>
-<li>Prev: <a href="concepts-in-practice-02-declarative-apply.html">Chapter 02 - Declarative Specs and Apply Semantics</a></li>
-<li>Next: <a href="concepts-in-practice-04-runtime-adapters.html">Chapter 04 - Runtime Adapters and Container Execution</a></li>
+<li>Prev: <a href="concepts-in-practice-04-scheduling-placement.html">Chapter 04 - Scheduling &amp; Placement</a></li>
+<li>Next: <a href="concepts-in-practice-06-ingress-service-exposure.html">Chapter 06 - Ingress &amp; Service Exposure</a></li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -824,7 +825,7 @@ python -m ae.cli events echo --limit 20</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-22 14:47:44</span>
+        <span>Built 2026-01-31 16:07:03</span>
       </div>
     </footer>
     <script>
@@ -852,6 +853,64 @@ python -m ae.cli events echo --limit 20</code></pre>
           if (location.pathname.endsWith('playground.html')) location.reload();
         });
         label();
+      })();
+    </script>
+    <script>
+      (function() {
+        function hideLinks(match) {
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (match(href)) { a.style.display = 'none'; }
+          });
+        }
+        function rewriteDashboardLinks(target) {
+          if (!target) return;
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (href.indexOf('/dashboard') === 0) {
+              a.setAttribute('href', target);
+              if (!a.getAttribute('target')) {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener');
+              }
+            }
+          });
+        }
+        function disablePlaygroundPage() {
+          var path = (location && location.pathname) ? location.pathname : '';
+          if (!/playground/i.test(path)) return;
+          var container = document.querySelector('.container');
+          if (container) container.style.display = 'none';
+          var msg = document.createElement('div');
+          msg.style.maxWidth = '960px';
+          msg.style.margin = '32px auto';
+          msg.style.padding = '16px 20px';
+          msg.style.border = '1px solid var(--border)';
+          msg.style.borderRadius = '12px';
+          msg.style.background = 'var(--k1s-panel)';
+          msg.style.color = 'var(--k1s-text)';
+          msg.innerHTML = '<h2 style="margin:0 0 8px">Playground disabled</h2>' +
+            '<p style="margin:0;color:var(--k1s-text-muted)">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';
+          document.body.insertBefore(msg, document.body.firstChild);
+        }
+        fetch('/ui/features', { credentials: 'same-origin' })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(f) {
+            if (!f) return;
+            if (f.dashboard === false) {
+              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });
+            } else {
+              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();
+              rewriteDashboardLinks(dashUrl);
+            }
+            if (f.playground === false) {
+              hideLinks(function(h) { return h.indexOf('playground') !== -1; });
+              disablePlaygroundPage();
+            }
+          })
+          .catch(function() {});
       })();
     </script>
   </body>

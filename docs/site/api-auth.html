@@ -2,6 +2,7 @@
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
+    
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>Api Auth</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
@@ -41,6 +42,8 @@
         --k1s-brand-gold: #fbc02d;
         --k1s-brand-graphite: #404040;
         --k1s-brand-mist: #f1f1f1;
+        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
         /* Legacy aliases used by docs/labs styles */
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
@@ -61,6 +64,7 @@
         --k1s-card-bg: #ffffff;
         --k1s-header-bg: rgba(255,255,255,0.82);
         --code-bg: #f5f6f8;
+        --k1s-page-overlay: linear-gradient(rgba(244,245,247,0.9), rgba(244,245,247,0.9));
         --bg: var(--k1s-bg);
         --fg: var(--k1s-text);
         --muted: var(--k1s-panel);
@@ -82,7 +86,11 @@
         min-height: 100vh;
         display: flex;
         flex-direction: column;
-        background: var(--bg);
+        background-color: var(--bg);
+        background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
+        background-size: 100% 100%, auto 100%;
+        background-position: center top, center top;
+        background-repeat: repeat-y, repeat-y;
         color: var(--fg);
       }
       img { max-width: 100%; height: auto; }
@@ -382,7 +390,7 @@
         padding: 10px 12px;
         display: flex;
         flex-wrap: wrap;
-        align-items: center;
+        align-items: flex-start;
         gap: 6px 10px;
         border: 1px solid var(--k1s-border);
         border-radius: 12px;
@@ -392,6 +400,24 @@
       .hero-repo-label {
         font-size: 0.7rem;
         letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         color: var(--k1s-text-muted);
       }
@@ -605,6 +631,7 @@
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
     <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -670,16 +697,18 @@
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
+      <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
       <a href="apishim-compatibility-matrix.html">API Shim</a>
+      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -692,11 +721,12 @@
       </svg>
     </button>
     <div class="container">
-    <p>API Auth and Mutations</p>
-<p>Overview</p>
+    <h1>API Auth and Mutations</h1>
+<h2>Overview</h2>
 <ul>
 <li>Read-only endpoints (/status, /events, /metrics, /logs, /health, /openapi.json) are available by default.</li>
-<li>Mutating endpoints (/scale/&lt;app&gt;, /delete/&lt;app&gt;) are disabled unless AE_API_MUTATIONS=1.</li>
+<li>If any token is configured, all GETs require at least the READ token.</li>
+<li>Mutating endpoints (/scale/&lt;app&gt;, /delete/&lt;app&gt;, /rollout/*, /apply) are disabled unless AE_API_MUTATIONS=1.</li>
 <li>Optional Bearer tokens gate access per role:
 <ul>
 <li>AE_API_READ_TOKEN   (read)</li>
@@ -704,43 +734,47 @@
 <li>AE_API_ADMIN_TOKEN  (admin)</li>
 </ul>
 </li>
+<li>Optional scoping/expiry: AE_API_ADMIN_SCOPE / AE_API_SCALER_SCOPE / AE_API_READ_SCOPE (glob patterns) and AE_API_*_TOKEN_EXPIRES (UTC ISO8601).</li>
 </ul>
-<p>Enabling mutations (dev) 1) Export tokens and enable mutations for the controller process:</p>
-<ul>
-<li>AE_API_MUTATIONS=1</li>
-<li>AE_API_ADMIN_TOKEN=changeme</li>
-</ul>
-<p>2) Start controller with --metrics-port and Caddy fronting the API.</p>
-<p>Remote CLI usage</p>
+<h2>Enabling mutations (dev)</h2>
+<p>1) Generate tokens and enable mutations for the controller process:</p>
+<pre><code>ae api tokens --generate --ttl-hours 24 -o .env.api
+source .env.api
+export AE_API_MUTATIONS=1</code></pre>
+<p>2) Start controller with --metrics-port and (optional) Caddy fronting the API.</p>
+<p>Tip: <code>ae auth remote -o .env.api</code> also emits apishim tokens and <code>AE_API_MUTATIONS=1</code>.</p>
+<h2>Remote CLI usage</h2>
 <ul>
 <li>Scale:
 <ul>
-<li>ae --server https://api.home.arpa:8443 --token $SCALER scale echo --replicas 2</li>
+<li><code>ae --server https://api.home.arpa:8443 --token $AE_API_SCALER_TOKEN scale echo --replicas 2</code></li>
 </ul>
 </li>
 <li>Delete:
 <ul>
-<li>ae --server https://api.home.arpa:8443 --token $ADMIN delete echo --purge</li>
+<li><code>ae --server https://api.home.arpa:8443 --token $AE_API_ADMIN_TOKEN delete echo --purge</code></li>
 </ul>
 </li>
 <li>Logs (requires READ token when any token is configured):
 <ul>
-<li>ae --server https://api.home.arpa:8443 --token $READ logs echo --tail 100</li>
+<li><code>ae --server https://api.home.arpa:8443 --token $AE_API_READ_TOKEN logs echo --tail 100</code></li>
 </ul>
 </li>
 </ul>
-<p>Security notes</p>
+<h2>Security notes</h2>
 <ul>
 <li>For production, place the API behind TLS (Caddy) and use client auth or network ACLs.</li>
 <li>Prefer short-lived tokens and minimal roles for automation.</li>
-<li>Kubernetes API shim tokens: <code>AE_APISHIM_TOKEN</code> is required by default for <code>python -m ae.apishim serve</code>; set <code>AE_APISHIM_ALLOW_ANON=1</code> only for local labs. Shim RBAC evaluates Role/ClusterRole bindings and exposes a <code>SubjectAccessReview</code>-compatible endpoint.</li>
+<li>Kubernetes API shim: set <code>AE_APISHIM_ENABLE=1</code> and <code>AE_APISHIM_TOKEN</code> for <code>python -m ae.apishim serve</code>; use <code>AE_APISHIM_ALLOW_ANON=1</code> only for local labs. Shim RBAC evaluates Role/ClusterRole bindings and exposes a SubjectAccessReview-compatible endpoint.</li>
 </ul>
-<p>Registry Auth (private images)</p>
+<h2>Registry Auth (private images)</h2>
 <ul>
 <li>Credentials are stored at <code>~/.config/ae/registries.yaml</code> and used by the runtime before pulls.</li>
 <li>List configured hosts:
 <ul>
 <li><code>ae registry list</code></li>
+</ul>
+</li>
 <li>Docker Hub:
 <ul>
 <li>Short image names (e.g., <code>caddy:2.8</code>, <code>python:3.12-slim</code>) are treated as <code>docker.io</code>.</li>
@@ -748,8 +782,6 @@
 <ul>
 <li><code>ae registry login custom --registry docker.io --username &lt;you&gt; --password &lt;token&gt;</code></li>
 <li>Or run <code>docker login</code> once; the runtime will reuse your local Docker credentials.</li>
-</ul>
-</li>
 </ul>
 </li>
 </ul>
@@ -779,7 +811,7 @@
 </ul>
 </li>
 </ul>
-<p>Refreshing short‑lived tokens</p>
+<h2>Refreshing short‑lived tokens</h2>
 <ul>
 <li>Some providers issue short‑lived credentials (GCR/ECR). Refresh any saved hosts with:
 <ul>
@@ -796,7 +828,7 @@
 </ul>
 </li>
 </ul>
-<p>Planner hint</p>
+<h2>Planner hint</h2>
 <ul>
 <li>If the image host looks private (e.g., <code>ghcr.io</code>, <code>gcr.io</code>, <code>*.ecr.*.amazonaws.com</code>) and no entry exists in <code>registries.yaml</code>, <code>ae plan</code> emits a warning with the matching <code>ae registry login</code> command suggestion.</li>
 </ul>
@@ -807,7 +839,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-22 14:47:44</span>
+        <span>Built 2026-01-31 16:07:03</span>
       </div>
     </footer>
     <script>
@@ -835,6 +867,64 @@
           if (location.pathname.endsWith('playground.html')) location.reload();
         });
         label();
+      })();
+    </script>
+    <script>
+      (function() {
+        function hideLinks(match) {
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (match(href)) { a.style.display = 'none'; }
+          });
+        }
+        function rewriteDashboardLinks(target) {
+          if (!target) return;
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (href.indexOf('/dashboard') === 0) {
+              a.setAttribute('href', target);
+              if (!a.getAttribute('target')) {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener');
+              }
+            }
+          });
+        }
+        function disablePlaygroundPage() {
+          var path = (location && location.pathname) ? location.pathname : '';
+          if (!/playground/i.test(path)) return;
+          var container = document.querySelector('.container');
+          if (container) container.style.display = 'none';
+          var msg = document.createElement('div');
+          msg.style.maxWidth = '960px';
+          msg.style.margin = '32px auto';
+          msg.style.padding = '16px 20px';
+          msg.style.border = '1px solid var(--border)';
+          msg.style.borderRadius = '12px';
+          msg.style.background = 'var(--k1s-panel)';
+          msg.style.color = 'var(--k1s-text)';
+          msg.innerHTML = '<h2 style="margin:0 0 8px">Playground disabled</h2>' +
+            '<p style="margin:0;color:var(--k1s-text-muted)">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';
+          document.body.insertBefore(msg, document.body.firstChild);
+        }
+        fetch('/ui/features', { credentials: 'same-origin' })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(f) {
+            if (!f) return;
+            if (f.dashboard === false) {
+              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });
+            } else {
+              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();
+              rewriteDashboardLinks(dashUrl);
+            }
+            if (f.playground === false) {
+              hideLinks(function(h) { return h.indexOf('playground') !== -1; });
+              disablePlaygroundPage();
+            }
+          })
+          .catch(function() {});
       })();
     </script>
   </body>
