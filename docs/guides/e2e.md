@@ -23,6 +23,18 @@ Podman Quickstart (recommended)
   - `python -m ae.cli apply -f specs/examples/echo.yaml`
   - `http://127.0.0.1:9108/dashboard`
 
+CRI Quickstart (containerd)
+- Ensure containerd + CNI + `crictl` are installed (see `docs/ops/runbook.md`).
+- Initialize CNI configs if missing:
+  - `./scripts/cni_init.sh` (or `AE_CNI_FORCE=1 AE_CNI_VERSION=1.0.0 ./scripts/cni_init.sh`)
+- Export runtime env:
+  - `export AE_RUNTIME_BACKEND=cri`
+  - `export AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock`
+  - `export AE_CRI_SANDBOX_IMAGE=registry.k8s.io/pause:3.9`
+- Run CRI preflight/smoke (optional):
+  - `./scripts/cri_preflight.sh`
+  - `./scripts/cri_smoke.sh`
+
 Start Controller
 - Polling loop with metrics and watch (if watchdog installed):
   - `python -m ae.controller --loop --watch --specs specs/ --metrics-port 9108`

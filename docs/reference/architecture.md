@@ -4,7 +4,7 @@ This document describes k1s in depth: components, data model, reconcile algorith
 
 ## Scope and Principles
 
-- Multi-node first. Controller manages one or more nodes via agents; Podman (OCI) is preferred, Docker is the fallback when Podman is unavailable.
+- Multi-node first. Controller manages one or more nodes via agents; Podman (OCI) is preferred, Docker is the fallback when Podman is unavailable, and CRI/containerd is supported where needed.
 - Declarative spec → idempotent reconcile. The controller continuously applies desired state and converges.
 - Small surface. Prefer composition over features; leave seams to extend later.
 - Fail well. A crash restarts cleanly; reconcile rebuilds reality from Docker + SQLite.
@@ -14,7 +14,7 @@ This document describes k1s in depth: components, data model, reconcile algorith
 - Controller (src/ae/controller): orchestrates reconcile, scheduling, service VIPs, state, and events.
 - Scheduler (src/ae/controller/scheduler.py): chooses Ready nodes honoring `nodeSelector`, taints/tolerations, topology spread, and storage pinning.
 - Node agent (src/ae/node): exposes runtime ensure/logs/exec/probes for the controller over HTTP/mTLS; reports heartbeats.
-- Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback; RemoteRuntime client proxies to agents.
+- Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback, CRI/containerd supported; RemoteRuntime client proxies to agents.
 - Service/overlay (src/ae/network): allocates Service CIDR VIPs and wires overlay providers (HAProxy overlay or bridge).
 - Ingress (src/ae/ingress): writes Caddy site fragments and triggers reloads (prefers Service VIP upstreams).
 - Health (src/ae/controller/health.py): readiness/liveness/exec/tcp evaluation (startup probe aware).
@@ -44,11 +44,11 @@ Ordering
 - Runtime ensure: create/update/remove containers on each placement (respect rollout policy) via node agent RemoteRuntime.
 - Health gate: evaluate readiness/liveness/exec/tcp; decide revision status ready/progressing/degraded/paused.
 - Ingress: prefer Service VIP upstreams; optional canary weight/auto progression; remove ingress when omitted.
-- Persist: write app status, replicas, probe history, canary state, and revision record; emit events.
+- Persist: write app status, pods, probe history, canary state, and revision record; emit events.
 
 Idempotency & Diff
 - Spec hash drives revisions; reconciler tracks created/updated/removed per pass.
-- Docker containers are labeled with app/replica/revision; runtime lists by labels.
+- Docker containers are labeled with app/pod/revision; runtime lists by labels.
 - Old revision containers are removed when the new revision becomes live.
 
 Pseudocode (as implemented in src/ae/controller/reconciler.py)
@@ -62,7 +62,7 @@ for manifest in manifests:
   for placement in placements:
     res = runtime.ensure_app(
       manifest, rev, keep_old=True,
-      limit_create=..., replica_ids=placement.replica_ids,
+      limit_create=..., pod_names=placement.pod_names,
       node_id=placement.node.node_id if placement.node else None
     )
     aggregate.append(res)
@@ -91,8 +91,8 @@ sequenceDiagram
   SCH-->>C: placements (+warnings)
   C->>A: ensure_app(manifest, rev, placements)
   A->>R: ensure/exec/logs
-  R-->>A: RuntimeResult(replica states)
-  A-->>C: Replica states
+  R-->>A: RuntimeResult(pod states)
+  A-->>C: Pod states
   C->>H: evaluate(manifest, result)
   H-->>C: HealthReport(ready/live)
   alt ingress configured
@@ -154,39 +154,42 @@ spec:
 
 Tables (created in src/ae/controller/state.py)
 - app_status(app_name PK, desired_replicas, ready_replicas, live_replicas, revision, revision_status, image, created, updated, removed, ingress_host, ingress_path)
-- replica_status(app_name, replica_id, ready, live, status, readiness_message, liveness_message)
-- probe_history(id, app_name, replica_id, check_time, ready, live, readiness_message, liveness_message) [kept to 50 per replica]
-- app_revisions(app_name, revision, spec_hash, spec_json, image, created_at, status)
-- app_events(id, app_name, revision, event_type, message, created_at)
+- app_registry(app_name PK, spec_hash, spec_json, source, labels, updated_at)
+- app_revisions(app_name, revision, spec_hash, spec_json, image, created_at, status) [PK (app_name, revision)]
+- app_events(id PK, app_name, revision, event_type, message, created_at)
+- pod_status(app_name, pod_name, ready, live, status, readiness_message, liveness_message, exit_code, finished_at) [PK (app_name, pod_name)]
+- pod_nodes(app_name, pod_name, node_id, updated_at) [PK (app_name, pod_name)]
+- probe_history(id PK, app_name, pod_name, check_time, ready, live, readiness_message, liveness_message) [kept to 50 per pod]
 - rollout_canary(app_name PK, weight, next_step_at, step, max, updated_at)
-- nodes(node_id PK, name, labels json, taints json, endpoint, backend, pod_cidr, wg_pubkey, cordoned)
-- node_status(node_id FK, status, seen_at)
-- services(service_name PK, app_name, cluster_ip, provider, ports json, annotations json)
-- service_endpoints(service_name FK, replica_id, ip, port, ready, node_id)
-- storage_bindings(app_name, volume_name, node_id, created_at)
+- nodes(node_id PK, name, labels json, taints json, backend, endpoint, pod_cidr, wg_pubkey, cordoned, created_at, updated_at)
+- node_heartbeats(node_id PK, status, seen_at)
+- services(app_name PK, cluster_ip, ports json, created_at)
+- service_endpoints(app_name, port, ip, target_port, ready) [PK (app_name, port, ip)]
+- storage_bindings(app_name, volume_name, node_id, retention, created_at) [PK (app_name, volume_name)]
+- volume_attachments(app_name, volume_name, node_id, retention, created_at) [PK (app_name, volume_name)]
 
 Query surfaces
 - `list_status()`, `get_status(app)`
-- `list_replicas(app)`, `get_probe_history(app, N)`
+- `list_pods(app)` (alias: `list_replicas`), `get_probe_history(app, N)`
 - `list_revisions(app)`, `get_revision_manifest(app, rev)`
 - `list_events(app, limit)`
 
-## Runtime: Container Engine (Podman/Docker)
+## Runtime: Container Engine (Podman/Docker/CRI)
 
-The controller talks to local Podman/Docker when no nodes are eligible; in multi-node runs it proxies through RemoteRuntime to each node agent endpoint. Agents enforce auth via `AE_AGENT_API_TOKEN` and optionally mTLS.
+The controller talks to local Podman/Docker when no nodes are eligible; in multi-node runs it proxies through RemoteRuntime to each node agent endpoint. Agents enforce auth via `AE_AGENT_API_TOKEN` and optionally mTLS. CRI/containerd nodes are supported via `AE_RUNTIME_BACKEND=cri` and use the CRI gRPC API; exec/attach/port-forward use `crictl` on the node.
 
 Labels
 - `ae.app=<name>`
-- `ae.replica_id=<name>-rev<rev>-<index>`
+- `ae.pod_name=<name>-rev<rev>-<index>` (alias: `ae.replica_id`)
 - `ae.revision=<rev>`
 
 Ensure flow (Docker/Podman runtimes)
 - List existing containers by `ae.app` label.
 - Partition by current revision vs old; keep old during surge.
 - Pull image only when needed; prefer local `localhost/<image>` on Podman when present.
-- Create missing replicas with labels, env, ports, security, volumes/storage, restart policy.
+- Create missing pods with labels, env, ports, security, volumes/storage, restart policy.
 - Remove old revision containers after readiness thresholds.
-- Build `ReplicaState` from inspection (status, startedAt) and endpoints.
+- Build `PodState` from inspection (status, startedAt) and endpoints.
 
 Resources/Volumes
 - `limits.cpu` → container CLI flag (`--cpus` on Podman/Docker); Docker uses `nano_cpus=int(cpu*1e9)` internally.
@@ -194,7 +197,7 @@ Resources/Volumes
 - Volumes: hostPath bind mounts ro/rw; `spec.storage` becomes named engine volumes per app.
 
 Logs
-- `read_logs(replica_id, follow, tail, since)` adapts to Docker SDK parameters.
+- `read_logs(pod_name, follow, tail, since)` adapts to Docker SDK parameters (replica_id alias supported).
 
 Auth
 - `RegistryAuthProvider` reads `~/.config/ae/registries.yaml` and calls `client.login(...)` before pulls.
@@ -209,12 +212,12 @@ Auth
 
 ## Health
 
-- HTTP probe: GET `http://<replica.endpoint><path>`; success is 2xx.
+- HTTP probe: GET `http://<pod.endpoint><path>`; success is 2xx.
 - TCP probe: attempts a TCP connection to the declared port.
 - Exec probe: runs a command inside the container and checks exit code 0.
 - Initial delay honored using container `StartedAt`.
 - Liveness defaults to true when unspecified; readiness defaults to container state when unspecified.
-- `HealthReport` aggregates per‑replica `ready/live` and messages.
+- `HealthReport` aggregates per‑pod `ready/live` and messages.
 
 Revision status
 - ready: `ready_replicas >= desired`
@@ -271,35 +274,43 @@ Revision status
 
 ## Environment Variables
 
-- AE_STATE_DB, AE_SPECS_DIR
-- AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER
-- AE_REGISTRY_CONFIG
+- AE_STATE_DB (default: `state/controller.db`), AE_STATE_DSN (Postgres DSN), AE_SPECS_DIR (default: `specs`)
+- AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER, AE_CONTAINER_CLI, AE_CADDY_RELOAD_TIMEOUT
+- AE_TLS_DIR (default: `state/tls`)
+- AE_REGISTRY_CONFIG (default: `~/.config/ae/registries.yaml`)
 - AE_SOPS_BIN, AE_ALLOW_PLAINTEXT_SECRETS
-- AE_RUNTIME_BACKEND ("podman" [default], "docker", "stub")
-- AE_PODMAN_BIN (default: podman)
-- AE_PODMAN_NETWORK (name of shared network for multi-replica + ingress)
-- AE_DOCKER_NETWORK (name of shared network when using Docker)
-- AE_CONTAINER_CLI ("docker"|"podman") for ingress reloads inside the Caddy container
+- AE_RUNTIME_BACKEND ("podman" [default], "oci" alias, "docker", "cri|containerd", "stub")
+- AE_PODMAN_BIN (default: podman), AE_PODMAN_NETWORK (shared network for multi-replica ingress)
+- AE_DOCKER_NETWORK (shared network when using Docker), AE_DOCKER_BIN
+- AE_ENABLE_SERVICE_PROXY, AE_SERVICE_PROVIDER, AE_OVERLAY_NET, AE_SERVICE_IP_POOL
+- AE_APISHIM_ENABLE, AE_APISHIM_TOKEN, AE_APISHIM_READ_TOKEN, AE_APISHIM_EXEC_TOKEN, AE_APISHIM_PORTFORWARD_TOKEN
+- AE_APISHIM_DSN / AE_APISHIM_DB, AE_APISHIM_ALLOW_ANON
+- AE_APISHIM_CRI_PORTFORWARD / AE_APISHIM_CRI_PORTFORWARD_FORCE (enable/force CRI port-forward proxy)
+- AE_API_READ_TOKEN / AE_API_SCALER_TOKEN / AE_API_ADMIN_TOKEN / AE_API_MUTATIONS
+- AE_CRI_ENDPOINT (default: `unix:///run/containerd/containerd.sock`)
+- AE_CRI_SANDBOX_IMAGE (default: `registry.k8s.io/pause:3.9`)
+- CRICTL_BIN (path override for crictl; used for exec/attach/port-forward on CRI)
 - AE_LOG_LEVEL
 
 ## Testing Strategy
 
-- Unit tests for CLI surface, state store, Docker runtime (via fakes), reconciler health decisions.
-- Integration tests can run against a local Docker daemon for end‑to‑end validation.
+- Unit tests cover CLI commands, scheduler/health logic, apishim RBAC/patch paths, ingress/runtime adapters, and state store behavior.
+- Integration tests run against local Podman/Docker for end‑to‑end and multi‑node agent validation (`pytest tests/integration/ --docker`).
+- CRI integration tests run via `scripts/cri_ci_setup.sh` and `tests/integration/test_cri_*` (see `docs/ops/runbook.md`).
 
 ## Performance & Footprint
 
-- Controller + API + metrics: ~40–80 MiB resident in Python.
-- Caddy: ~20–40 MiB.
-- Docker daemon: ~100–150 MiB.
+- Controller + API + metrics: ~85–90 MiB PSS in recent Podman+crun rootless idle snapshots (Jan 2026).
+- Caddy: ~40–50 MiB PSS in k1nd (Docker + Caddy) idle runs; runtime daemon footprint varies by engine.
+- See `docs/benchmarks/memory.md` for updated measurements and charts.
 - Suitable for 1–3 small services with sane limits on a 2 GB VPS.
 
 ## Future Work
 
-- TCP/exec probes; richer rollout strategies (pause/canary).
-- Resource requests and automatic cgroups beyond Docker flags.
-- More ingress features (headers, multiple paths, TLS config surface).
-- Multi‑node scheduling (out of scope for now).
+- Full Job/CronJob/DaemonSet/StatefulSet semantics in apishim (completion, one‑per‑node, PVC templates).
+- Resource requests/QoS enforcement beyond container limits (cgroup tuning, priorities).
+- Advanced ingress routing (header manipulation, rewrites/regex, richer traffic shaping).
+- Multi‑controller HA/leader election and broader K8s parity (metrics.k8s.io, admission/policy, CSI/CNI plugins).
 
 
 ### Configs and Secrets → Environment

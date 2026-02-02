@@ -10,7 +10,7 @@ Legend: ✅ supported; ⚠️ partial/limited; 🚧 planned.
 
 ## Workloads
 - Deployments, ReplicaSets (virtual), Pods (projected): ✅ status/conditions, logs/exec/port-forward.
-- StatefulSet, DaemonSet, Job, CronJob: ⚠️ stored + best-effort status; treated as Deployment-like apps (no PVC templates, no job completion, no CronJob scheduling, no one-per-node scheduling).
+- StatefulSet, DaemonSet, Job, CronJob: ⚠️ stored + best-effort status; treated as Deployment-like apps (no PVC templates, no strict one-per-node scheduling; Job completion and CronJob scheduling are best-effort).
 - HorizontalPodAutoscaler v2: ✅ currentMetrics/status; backs k1s autoscaling.
 
 ## AuthN/AuthZ
@@ -25,8 +25,12 @@ Legend: ✅ supported; ⚠️ partial/limited; 🚧 planned.
 
 ## Discovery & tooling
 - Discovery endpoints (/api, /apis, preferred versions): ✅
-- OpenAPI: ✅ enriched `/openapi/v2` covering core workloads/services/HPA/ingress; `/openapi/v3` mirrors v2. Helm/kubectl dry-run validated in CI; drift guard compares committed specs.
+- OpenAPI: ✅ `/openapi/v3` is the primary endpoint; `/openapi/v2` mirrors it for compatibility. Helm/kubectl dry-run validated in CI; drift guard compares committed specs.
 - Port-forward: ✅ pods and services (SPDY/WebSocket) selecting ready endpoints first.
+
+Runtime caveats
+- CRI/containerd nodes: exec/attach/logs use `crictl` on the node; install it and set `CRICTL_BIN` if needed.
+- CRI port-forward proxy is optional: set `AE_APISHIM_CRI_PORTFORWARD=1` (or `..._FORCE=1`) to enable the CRI-native proxy path.
 
 ## Not covered
 - Aggregated API servers, metrics.k8s.io, PodSecurity admission, CSI/CNI plugins, cloud LoadBalancers.

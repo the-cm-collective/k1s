@@ -9,7 +9,7 @@
     <div class="hero-links hero-links--local">
       <a class="hero-link" href="https://docs.home.arpa:8443/">Docs (TLS)</a>
       <a class="hero-link" href="http://127.0.0.1:9109/">Docs (local)</a>
-      <a class="hero-link" href="https://api.home.arpa:8443/dashboard">Dashboard (TLS)</a>
+      <a class="hero-link" href="https://dash.home.arpa:8443/dashboard">Dashboard (TLS)</a>
       <a class="hero-link" href="http://127.0.0.1:9108/dashboard">Dashboard (local)</a>
     </div>
   </div>
@@ -38,11 +38,14 @@
 
 This single page gets a new contributor or user from a fresh clone to a running demo, with pointers to the most useful docs and commands.
 
+Note: k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.
+
 Terminology: k1s "Apps" are Deployment-like workloads; replicas map to Pods; Service VIPs map to Services/ClusterIP.
 
 ## Prerequisites
 - Python 3.11+
 - Podman (preferred) or Docker installed and running
+- Optional (CRI/containerd): containerd + CNI + `crictl` (see `docs/ops/runbook.md`)
 - Optional (for ingress/docs via Caddy and Prometheus): `docker compose` or `podman compose`
 - Optional (for multi-node lab): two Linux hosts/VMs with WireGuard tools and rootful networking
 
@@ -60,7 +63,8 @@ make demo ARGS="--demo-standard -y -d"
 
 2) Open endpoints:
 - Docs: https://docs.home.arpa:8443/ and http://127.0.0.1:9109/
-- API dashboard: https://api.home.arpa:8443/dashboard or http://127.0.0.1:9108/dashboard
+- Dashboard: https://dash.home.arpa:8443/dashboard or http://127.0.0.1:9108/dashboard
+- API (Swagger/ReDoc): https://api.home.arpa:8443/swagger and https://api.home.arpa:8443/redoc
 - Sample apps: https://blue.home.arpa:8443/ and https://green.home.arpa:8443/
 
 3) Inspect via CLI while the demo runs:
@@ -115,6 +119,7 @@ docker compose -f ops/dev/docker-compose.yaml up -d
 ```
 python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch
 ```
+   - For CRI/containerd: `AE_RUNTIME_BACKEND=cri` and follow the CRI section in `docs/ops/runbook.md` for CNI init + smoke checks.
 
 4) Apply and inspect a sample workload (App):
 ```
@@ -124,7 +129,7 @@ python -m ae.cli logs echo --tail 50
 ```
    - Samples live under: `specs/examples/`
 
-5) Kubectl‑like wrapper (optional):
+5) Kubectl‑like wrapper (optional; subset of `ae`):
 ```
 k1s get apps
 k1s get pods
@@ -132,13 +137,17 @@ k1s get services
 k1s describe app/echo
 k1s logs app/echo --follow --tail 100
 ```
+Note: `k1s` is a thin wrapper over `ae` for common get/describe/logs/rollout/scale/delete flows. For the full surface (plan/export/registry/tls/nodes/volumes/backup), use `ae` directly.
 
 Optional: start the Kubernetes API shim for kubectl/helm parity
 ```
-AE_APISHIM_TOKEN=devtoken python -m ae.apishim serve --host 127.0.0.1 --port 8445
-kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods
+AE_APISHIM_ENABLE=1 AE_APISHIM_TOKEN=devtoken \
+  python -m ae.apishim serve --host 127.0.0.1 --port 8445
+kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods
 ```
 Shim capabilities and gaps live in `docs/reference/apishim-compatibility-matrix.md`.
+Note: for TLS, add `--tls`, set `AE_APISHIM_TLS_CERT/KEY`, and use `https://` with `--insecure-skip-tls-verify` or a trusted CA.
+Note: dev-only bypass is `AE_APISHIM_ALLOW_ANON=1` (avoid for shared hosts).
 
 ## Makefile Helper Commands
 
@@ -153,6 +162,7 @@ Setup and quality
 
 Local dev and samples
 - `make dev-up` / `make dev-down`: start/stop dev Docker Compose stack.
+- `make down`: stop all dev/demo stacks (best-effort).
 - `make loop`: controller reconcile loop (watch mode).
 - `make run`: single reconcile pass.
 - `make apply-sample`: apply `specs/examples/echo.yaml`.
@@ -168,17 +178,22 @@ Local dev and samples
 
 Docs, labs, and playground
 - `make docs`: combine snapshots (if present), regenerate charts, build docs.
+- `make docs-export`: build non-interactive HTML into `docs/export` (override with `DOCS_OUT_DIR=`).
+- `make docs-wiki-export`: export wiki-friendly HTML into `docs/wiki` (override with `WIKI_OUT=`).
 - `make docs-watch`: rebuild docs when `combined/combined.csv` changes.
-- `make labs-up` / `make labs-down`: dev labs stack (docs + controller via compose).
-- `make labs-aio-up` / `make labs-aio-down`: all-in-one labs stack.
+- `make labs-up` / `make labs-down`: docs + playground via compose (controller runs on host).
+- `make labs-aio-up` / `make labs-aio-down`: all-in-one labs stack (controller + apishim + docs).
 - `make labs-k3d-up` / `make labs-k3d-down`: bring up/down local k3d cluster for labs.
+- `make labs-apishim-env`: print apishim tokens from `state/labs/apishim.env`.
 - `make apishim-smoke`: quick API shim health check on port 8445.
 - `make shim-helm-demo`: run the helm shim demo helper.
 
 Demo workflows
 - `make demo`: run the playground labs demo (`--labs --labs-token`; podman backend, plaintext secrets allowed).
+- Demo note: `AE_REGISTER_LOCAL_NODE=1` is set by default in demos/labs so the controller registers a local node for scheduling; unset to require explicit node registration.
 - `make demo-help`: show demo script help.
 - `make demo-down`: tear down demo stacks.
+- `make reg-cache-reset`: clear local registry cache used by demos.
 - `make demo-hardened`: run hardened demo flow.
 - `make demo-reset`: reset demo/labs state and prune volumes.
 - `make dashboard-reload`: reload controller under the dashboard supervisor.
@@ -191,6 +206,7 @@ Integration and e2e
 Benchmarks (memory + runtime tooling)
 - `make bench-mem-k1s`: snapshot k1s memory.
 - `make bench-mem-k3s`: snapshot k3s memory.
+- `make bench-mem-debug`: quick sanity-check run with debug artifacts.
 - `make bench-mem-agg`: aggregate latest snapshot under a label.
 - `make bench-mem-matrix-k1s`: run k1s replica matrix snapshots.
 - `make bench-mem-combine`: combine snapshots into `combined/*`.
@@ -217,6 +233,8 @@ Benchmarks (memory + runtime tooling)
 - `make bench-fix-perms`: normalize artifact permissions.
 - `make bench-mem-backfill`: backfill missing summary.json + rebuild docs.
 - `make bench-engines-clear`: stop/remove all containers (dangerous).
+- `make bench-state-clean`: remove benchmark-only state (`state/bench-*`).
+- `make dev-state-clean`: wipe full `state/` (requires `CONFIRM=1`).
 - `make bench-mem-backfill-oci`: add OCI runtime metadata and recompute charts.
 - `make bench-mem-backfill-oci-latest`: backfill OCI metadata for latest label only.
 - `make bench-mem-finalize-sudo`: finalize benchmarks and normalize perms (sudo).
@@ -236,7 +254,8 @@ Use this when you want to validate the overlay Service VIP path and scheduler on
 
 1) Controller (host A):
 ```
-AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay AE_AGENT_API_TOKEN=changeme \
+AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay \
+AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=changeme \
 python -m ae.controller --loop --specs specs/ --metrics-port 9108
 ```
 
@@ -260,10 +279,30 @@ Full walkthrough and WireGuard tips: `docs/guides/multinode-lab.md` or `ops/dev/
 ```
 ae apply -f <manifest.yaml>
 ae status [<app>] --wide --events --json
+ae events <app> --limit 20
 ae logs <app> --follow --tail 100
 ae revisions <app>
 ae rollback <app> [--to N]
 ae delete <app> [--purge]
+```
+- Exec/shell and probe history:
+```
+ae exec <app> -- sh -c 'id'
+ae shell <app>
+ae history <app> --limit 20
+```
+Note: `ae shell` (and `ae exec --tty/--stdin`) requires the API shim; set `AE_APISHIM_SERVER` or pass `--apishim`.
+- Inventory and services:
+```
+ae nodes
+ae services --json
+ae volumes list
+```
+- Namespace targeting (optional):
+```
+ae apply -n demo -f <manifest.yaml>
+ae apply -n demo --force-namespace -f <manifest.yaml>
+AE_NAMESPACE=demo ae status <app>
 ```
 - Planning and K8s helpers:
 ```
@@ -275,8 +314,10 @@ ae k8s-check -f specs/examples/echo.yaml --policy strict
 ```
 ae registry login ghcr --username <u> --token <pat>
 ae registry list
+ae registry refresh
 ae tls sync --name mycert --input path/to/k8s-secret.yaml
 ae tls verify --name mycert --json
+ae tls kubesecret --name mycert --namespace demo -o mycert-secret.yaml
 ```
 
 ## Remote CLI & Tokens (optional)
@@ -286,6 +327,7 @@ python -m ae.cli api tokens --generate --ttl-hours 24 -o .env.api
 source .env.api
 ae --server http://<controller-ip>:9108 --token $AE_API_READ_TOKEN status
 ```
+Tip: `ae auth remote -o .env.api` also emits shim tokens + `AE_API_MUTATIONS=1`, and `ae auth local -o .env.local` reuses tokens from `state/*.env` when running demos/labs.
 Details: `README.md:67` and token management in `docs/ops/runbook.md:1`.
 
 ## Documentation Map (most useful first)
@@ -308,6 +350,7 @@ Details: `README.md:67` and token management in `docs/ops/runbook.md:1`.
 
 ## Troubleshooting
 - If Caddy HTTPS ports 8443/8888 are busy, the demo auto‑picks free ports and prints them.
+- Dashboard via Caddy is `https://dash.home.arpa:8443/dashboard`; use `http://127.0.0.1:9108/dashboard` if you’re skipping Caddy.
 - To rebuild docs locally: `make docs` (builder at `docs/build_docs.py:1`).
 - Teardown demo: `./scripts/init_demo.sh --down -y` or `make demo-down`.
 - Reset demo state: `./scripts/init_demo.sh --reset` or `make demo-reset`.

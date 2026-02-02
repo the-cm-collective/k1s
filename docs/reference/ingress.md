@@ -1,4 +1,4 @@
-Ingress Guide (Caddy)
+# Ingress Guide (Caddy)
 
 Overview
 - The controller writes one Caddy site per App manifest with spec.ingress.
@@ -12,6 +12,8 @@ Environment knobs
 - AE_CADDY_CONTAINER: name of the Caddy container (enables docker/podman exec reload).
 - AE_CONTAINER_CLI: podman or docker (default: docker).
 - AE_CADDY_RELOAD_TIMEOUT: seconds to wait on reload (default: 10).
+- AE_DISABLE_INGRESS=1: disable ingress rendering/reload entirely.
+- AE_TLS_DIR: TLS material root (default: state/tls).
 
 BYO TLS options
 1) Direct file paths in your manifest

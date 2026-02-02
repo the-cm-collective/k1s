@@ -17,7 +17,7 @@ SUDO=$(require_root_or_sudo)
 
 # Static demo hosts we can safely add to /etc/hosts when requested.
 # Note: echo-storage and echo-stateful do not expose ingress by default.
-HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa api.home.arpa echo.home.arpa echo-mr.home.arpa echo-multi.home.arpa echo-resources.home.arpa echo-sec.home.arpa echo-tcp.home.arpa echo-exec.home.arpa echo-hardened.home.arpa)
+HOSTS=(blue.home.arpa green.home.arpa docs.home.arpa api.home.arpa dash.home.arpa echo.home.arpa echo-mr.home.arpa echo-multi.home.arpa echo-resources.home.arpa echo-sec.home.arpa echo-tcp.home.arpa echo-exec.home.arpa echo-hardened.home.arpa)
 AUTO_HOSTS=""  # set by -y/--yes or -n/--no to auto answer host prompts
 
 # Summarized stop helper: log PIDs before killing by pattern
@@ -34,12 +34,141 @@ stop_by_pattern() {
   fi
 }
 
+apishim_health_code() {
+  # Emit "code|body" for an apishim /healthz probe using the provided token.
+  local port="$1"
+  local token="$2"
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "000|"
+    return 0
+  fi
+  local url="https://127.0.0.1:${port}/healthz"
+  local out
+  out="$(curl -sk -H "Authorization: Bearer ${token}" "${url}" -w "\n%{http_code}" 2>/dev/null || true)"
+  local code="${out##*$'\n'}"
+  local body="${out%$'\n'*}"
+  if [[ -z "${code}" ]]; then
+    code="000"
+  fi
+  echo "${code}|${body}"
+}
+
+start_apishim() {
+  if [[ ${LABS_ENABLE:-0} -ne 1 ]]; then
+    return 0
+  fi
+  if [[ "${AE_APISHIM_AUTOSTART:-1}" != "1" ]]; then
+    log "Skipping apishim autostart (AE_APISHIM_AUTOSTART=${AE_APISHIM_AUTOSTART})"
+    return 0
+  fi
+  APISHIM_PORT=${APISHIM_PORT:-8445}
+  APISHIM_HOST=${APISHIM_HOST:-0.0.0.0}
+  local env_file="state/labs/apishim.env"
+  if [[ ! -f "${env_file}" ]]; then
+    ./scripts/ensure_apishim_env.sh
+  fi
+  if [[ -f "${env_file}" ]]; then
+    export AE_APISHIM_TOKEN="${AE_APISHIM_TOKEN:-$(read_env_file_var "AE_APISHIM_TOKEN" "${env_file}" || true)}"
+    export AE_APISHIM_READ_TOKEN="${AE_APISHIM_READ_TOKEN:-$(read_env_file_var "AE_APISHIM_READ_TOKEN" "${env_file}" || true)}"
+    export AE_APISHIM_SESSION_SECRET="${AE_APISHIM_SESSION_SECRET:-$(read_env_file_var "AE_APISHIM_SESSION_SECRET" "${env_file}" || true)}"
+  fi
+  if port_open "127.0.0.1" "${APISHIM_PORT}"; then
+    local pid=""
+    local restart_reason=""
+    local probe=""
+    local code=""
+    local body=""
+    if [[ -f state/apishim.pid ]]; then
+      pid=$(cat state/apishim.pid || true)
+    fi
+    if [[ -n "$pid" && -r "/proc/${pid}/environ" ]]; then
+      local expected=""
+      local running=""
+      local key=""
+      for key in AE_APISHIM_SESSION_SECRET AE_APISHIM_TOKEN AE_APISHIM_READ_TOKEN AE_APISHIM_RUNTIME; do
+        expected="${!key:-}"
+        if [[ -z "$expected" && -f "${env_file}" ]]; then
+          expected="$(read_env_file_var "$key" "${env_file}" || true)"
+        fi
+        running="$(read_proc_env_var "$pid" "$key" || true)"
+        if [[ -n "$expected" && -n "$running" && "$expected" != "$running" ]]; then
+          restart_reason="${key} mismatch"
+          break
+        fi
+      done
+    elif [[ -n "$pid" ]]; then
+      log "Apishim already running on 127.0.0.1:${APISHIM_PORT} (env not readable)."
+      return 0
+    else
+      # No pid file: probe healthz with current token to avoid mismatched apishim instances.
+      if [[ -n "${AE_APISHIM_TOKEN:-}" ]]; then
+        probe="$(apishim_health_code "${APISHIM_PORT}" "${AE_APISHIM_TOKEN}")"
+        code="${probe%%|*}"
+        body="${probe#*|}"
+        if [[ "${code}" == "200" ]]; then
+          log "Apishim already running on 127.0.0.1:${APISHIM_PORT} (token ok)."
+          return 0
+        fi
+        if [[ "${code}" == "401" || "${code}" == "403" ]]; then
+          if echo "${body}" | grep -q "missing/invalid bearer token"; then
+            restart_reason="token mismatch"
+          else
+            log "Apishim already running on 127.0.0.1:${APISHIM_PORT} (auth ${code}); reusing."
+            return 0
+          fi
+        else
+          log "Apishim already running on 127.0.0.1:${APISHIM_PORT} (status ${code}); reusing."
+          return 0
+        fi
+      else
+        log "Apishim already running on 127.0.0.1:${APISHIM_PORT} (no pid file)."
+        return 0
+      fi
+    fi
+    if [[ -n "$restart_reason" ]]; then
+      log "Apishim already running but ${restart_reason}; restarting."
+      stop_apishim
+      if port_open "127.0.0.1" "${APISHIM_PORT}"; then
+        log "Apishim port ${APISHIM_PORT} still in use. Stop other stacks (e.g., labs-aio) or set AE_APISHIM_AUTOSTART=0."
+        return 1
+      fi
+    else
+      log "Apishim already running on 127.0.0.1:${APISHIM_PORT}"
+      return 0
+    fi
+  fi
+  export AE_APISHIM_ENABLE=1
+  export AE_APISHIM_ALLOW_ANON=0
+  export AE_APISHIM_RBAC=1
+  export AE_APISHIM_RBAC_EVAL=0
+  export AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-state/labs/apishim.crt}"
+  export AE_APISHIM_TLS_KEY="${AE_APISHIM_TLS_KEY:-state/labs/apishim.key}"
+  log "Starting apishim (runtime=${AE_APISHIM_RUNTIME}) on https://${APISHIM_HOST}:${APISHIM_PORT}"
+  mkdir -p state
+  nohup "$PY_BIN" -m ae.apishim serve --host "${APISHIM_HOST}" --port "${APISHIM_PORT}" --tls \
+    > state/apishim.log 2>&1 &
+  echo $! > state/apishim.pid
+}
+
+stop_apishim() {
+  if [[ -f state/apishim.pid ]]; then
+    local pid
+    pid=$(cat state/apishim.pid || true)
+    if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+      log "Stopping apishim (pid ${pid})"
+      kill "${pid}" || true
+    fi
+    rm -f state/apishim.pid
+  fi
+  stop_by_pattern '[p]ython.* -m ae\\.apishim' 'apishim(s)'
+}
+
 cleanup_demo_containers() {
   local bin="$1"
   if [[ -z "${bin}" ]] || ! command -v "$bin" >/dev/null 2>&1; then
     return 0
   fi
-  local apps_regex="blue|green|echo|echo-mr|echo-multi|echo-sec|echo-tcp|echo-exec|echo-hardened|echo-resources|echo-storage"
+  local apps_regex="blue|green|shell-demo|echo|echo-mr|echo-multi|echo-sec|echo-tcp|echo-exec|echo-hardened|echo-resources|echo-storage"
   local names to_remove=()
   names=$("$bin" ps -a --format '{{.Names}}' 2>/dev/null || true)
   if [[ -z "$names" ]]; then
@@ -53,6 +182,36 @@ cleanup_demo_containers() {
   if [[ ${#to_remove[@]} -gt 0 ]]; then
     log "Removing stale demo containers (${bin}): ${to_remove[*]}"
     "$bin" rm -f "${to_remove[@]}" >/dev/null 2>&1 || true
+  fi
+}
+
+cleanup_demo_state() {
+  local dbs=()
+  dbs+=("state/controller.db")
+  if [[ -n "${AE_STATE_DB:-}" ]]; then
+    dbs+=("${AE_STATE_DB}")
+  fi
+  if [[ -f state/env.sh ]]; then
+    # shellcheck disable=SC1090
+    source state/env.sh >/dev/null 2>&1 || true
+    if [[ -n "${AE_STATE_DB:-}" ]]; then
+      dbs+=("${AE_STATE_DB}")
+    fi
+  fi
+  if [[ -d state/bench-env ]]; then
+    dbs+=("state/bench-env/controller.db")
+  fi
+  declare -A seen=()
+  for db in "${dbs[@]}"; do
+    if [[ -n "${db}" && -f "${db}" && -z "${seen[$db]:-}" ]]; then
+      log "Removing controller state DB (${db})"
+      rm -f "${db}" 2>/dev/null || true
+      seen["$db"]=1
+    fi
+  done
+  if [[ -d state/projections ]]; then
+    log "Removing projected config/state under state/projections/"
+    rm -rf state/projections 2>/dev/null || true
   fi
 }
 
@@ -135,6 +294,8 @@ NO_CONTROLLER=0
 API_PORT=${API_PORT:-9108}
 # Runtime backend (default to podman/OCI if not set)
 AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-podman}
+# Convenience: register a local node for demo/labs unless explicitly disabled
+AE_REGISTER_LOCAL_NODE=${AE_REGISTER_LOCAL_NODE:-1}
 AE_USE_REGISTRY_CACHE=${AE_USE_REGISTRY_CACHE:-1}
 NO_SUPERVISOR=0
 DEBUG_ATTACH=0
@@ -275,6 +436,41 @@ read_env_file_var() {
       exit
     }
   ' "$file"
+}
+
+read_proc_env_var() {
+  # Read key=value from a process environ (best-effort).
+  local pid="$1"
+  local key="$2"
+  local env_file="/proc/${pid}/environ"
+  if [[ -z "$pid" || ! -r "$env_file" ]]; then
+    return 1
+  fi
+  tr '\0' '\n' < "$env_file" | awk -v k="$key" '
+    index($0, k"=") == 1 {
+      sub(/^[^=]*=/, "", $0)
+      print $0
+      exit
+    }
+  '
+}
+
+gen_token() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    python - <<'PY'
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+    return 0
+  fi
+  head -c 32 /dev/urandom | base64 | tr -d '=\n'
 }
 
 port_open() {
@@ -418,6 +614,8 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
   # Best-effort: stop stray supervisors/controllers (bench-launched or different venvs) with a visible summary
   stop_by_pattern '[p]ython.* -m ae\.controller' 'controller(s)'
   stop_by_pattern '[s]cripts/supervise_controller\.sh' 'supervisor(s)'
+  # Stop apishim if running
+  stop_apishim
   # Stop docs server if running
   if [[ -f state/docs_server.pid ]]; then
     DOCS_PID=$(cat state/docs_server.pid || true)
@@ -457,17 +655,8 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
     log "Clearing Labs shim artifacts under state/labs/"
     rm -f state/labs/helm-demo.log state/labs/apishim.env 2>/dev/null || true
   fi
-  # Optional full reset of controller state/caches on --down --reset
-  if [[ $RESET_FLAG -eq 1 ]]; then
-    if [[ -f state/controller.db ]]; then
-      log "Removing controller state DB (state/controller.db)"
-      rm -f state/controller.db 2>/dev/null || true
-    fi
-    if [[ -d state/projections ]]; then
-      log "Removing projected config/state under state/projections/"
-      rm -rf state/projections 2>/dev/null || true
-    fi
-  fi
+  # Clear controller state to drop any non-default demo apps.
+  cleanup_demo_state
   if [[ $RESET_REGISTRY_CACHE -eq 1 ]]; then
     log "Removing local registry cache under state/registry"
     rm -rf state/registry 2>/dev/null || true
@@ -520,15 +709,9 @@ if [[ $RESET_FLAG -eq 1 ]]; then
   # Broad best-effort stop of any strays with summary
   stop_by_pattern '[s]cripts/supervise_controller\.sh' 'supervisor(s)'
   stop_by_pattern '[p]ython.* -m ae\.controller' 'controller(s)'
+  stop_apishim
   # Clear state
-  if [[ -f state/controller.db ]]; then
-    log "Removing controller state DB (state/controller.db)"
-    rm -f state/controller.db 2>/dev/null || true
-  fi
-  if [[ -d state/projections ]]; then
-    log "Removing projected config/state under state/projections/"
-    rm -rf state/projections 2>/dev/null || true
-  fi
+  cleanup_demo_state
   if [[ -d state/caddy ]]; then
     log "Clearing dynamic Caddy sites under state/caddy/*.caddy"
     rm -f state/caddy/*.caddy 2>/dev/null || true
@@ -651,6 +834,9 @@ fi
 export AE_DOCKER_NETWORK=${AE_DOCKER_NETWORK:-dev_default}
 export AE_PODMAN_NETWORK=${AE_PODMAN_NETWORK:-dev_default}
 
+# Ensure dev env defaults exist for compose-based stacks.
+./scripts/ensure_dev_env.sh
+
 VENV_DIR=${VENV_DIR:-.venv-demo}
 
 if [[ ! -d "$VENV_DIR" ]]; then
@@ -673,16 +859,19 @@ fi
 if command -v docker >/dev/null 2>&1; then
   docker pull mendhak/http-https-echo:37 >/dev/null 2>&1 || true
 fi
-# Build only the local green image; blue samples now use the pre-pulled multi-arch echo image
+# Build local demo images (green + shell-demo); blue samples use the pre-pulled echo image
 if [[ "$AE_RUNTIME_BACKEND" == "podman" || "$AE_RUNTIME_BACKEND" == "oci" ]]; then
   if command -v podman >/dev/null 2>&1; then
     podman build -t localhost/demo-green:latest samples/servers/green || true
+    podman build -t localhost/demo-shell:latest samples/servers/shell-demo || true
   else
     log "Podman not available; building images with Docker as a fallback"
     docker build -t demo-green:latest samples/servers/green || true
+    docker build -t demo-shell:latest samples/servers/shell-demo || true
   fi
 else
   docker build -t demo-green:latest samples/servers/green || true
+  docker build -t demo-shell:latest samples/servers/shell-demo || true
 fi
 
 log "Starting local dev stack"
@@ -718,6 +907,9 @@ fi
 if [[ "$CADDY_HTTP_PORT" != "8888" || "$CADDY_HTTPS_PORT" != "8443" ]]; then
   log "Caddy ports mapped to HTTP=${CADDY_HTTP_PORT}, HTTPS=${CADDY_HTTPS_PORT}"
 fi
+export AE_APISHIM_SERVER=${AE_APISHIM_SERVER:-https://api.home.arpa:${CADDY_HTTPS_PORT}}
+export DOCS_API_BASE=${DOCS_API_BASE:-https://api.home.arpa:${CADDY_HTTPS_PORT}}
+export DOCS_DASHBOARD_URL=${DOCS_DASHBOARD_URL:-https://dash.home.arpa:${CADDY_HTTPS_PORT}/dashboard}
 if [[ "${AE_USE_REGISTRY_CACHE}" == "1" && -f ops/dev/docker-compose.cache.override.yml ]]; then
   export AE_REGISTRY_PORT=${AE_REGISTRY_PORT:-$(pick_port 5001)}
   export AE_REGISTRY_HOST=${AE_REGISTRY_HOST:-localhost:${AE_REGISTRY_PORT}}
@@ -930,6 +1122,11 @@ if command -v docker >/dev/null 2>&1 || command -v podman >/dev/null 2>&1; then
   fi
 fi
 export AE_STATE_DB=${AE_STATE_DB:-state/controller.db}
+# Guard against bench env leakage into demo runs.
+if [[ "${AE_STATE_DB}" == *"bench-env"* ]]; then
+  log "AE_STATE_DB points to bench env (${AE_STATE_DB}); using state/controller.db for demo"
+  export AE_STATE_DB="state/controller.db"
+fi
 # Guard: ensure controller DB is writable (bench runs with sudo can leave it root-owned)
 DB_DIR="$(dirname -- "${AE_STATE_DB}")"
 mkdir -p "${DB_DIR}" || true
@@ -959,6 +1156,15 @@ fi
 # Force AE_DEMO_MODE=1 for demos regardless of a pre-set env
 export AE_DEMO_MODE=1
 export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
+export AE_REGISTER_LOCAL_NODE=${AE_REGISTER_LOCAL_NODE}
+# Align apishim runtime with demo runtime unless explicitly overridden.
+if [[ -n "${AE_APISHIM_RUNTIME:-}" && "${AE_APISHIM_RUNTIME}" != "${AE_RUNTIME_BACKEND}" ]]; then
+  if [[ "${AE_APISHIM_RUNTIME_OVERRIDE:-0}" != "1" ]]; then
+    log "AE_APISHIM_RUNTIME=${AE_APISHIM_RUNTIME} differs from AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}; forcing ${AE_RUNTIME_BACKEND} for demo (set AE_APISHIM_RUNTIME_OVERRIDE=1 to keep)"
+    AE_APISHIM_RUNTIME="${AE_RUNTIME_BACKEND}"
+  fi
+fi
+export AE_APISHIM_RUNTIME="${AE_APISHIM_RUNTIME:-${AE_RUNTIME_BACKEND}}"
 # Prefer crun for Podman/OCI demos when available, unless user overrode
 if [[ "${AE_RUNTIME_BACKEND}" == "podman" || "${AE_RUNTIME_BACKEND}" == "oci" ]]; then
   if [[ -z "${AE_OCI_RUNTIME:-}" ]]; then
@@ -1012,18 +1218,18 @@ if [[ ${LABS_ENABLE:-0} -eq 1 ]]; then
         if [[ -z "$LABS_HELM_TOKEN" ]]; then
           LABS_HELM_TOKEN="$(read_env_file_var "AE_APISHIM_TOKEN" "$LABS_APISHIM_ENV" || true)"
         fi
-        APISHIM_PORT=${APISHIM_PORT:-8455}
-        if [[ -n "$LABS_HELM_TOKEN" ]] && port_open "127.0.0.1" "$APISHIM_PORT"; then
-          if token_valid "https" "127.0.0.1" "$APISHIM_PORT" "$LABS_HELM_TOKEN"; then
-            export AE_LABS_HELM_SERVER="https://127.0.0.1:${APISHIM_PORT}"
+        APISHIM_PROBE_PORT=${APISHIM_PROBE_PORT:-8455}
+        if [[ -n "$LABS_HELM_TOKEN" ]] && port_open "127.0.0.1" "$APISHIM_PROBE_PORT"; then
+          if token_valid "https" "127.0.0.1" "$APISHIM_PROBE_PORT" "$LABS_HELM_TOKEN"; then
+            export AE_LABS_HELM_SERVER="https://127.0.0.1:${APISHIM_PROBE_PORT}"
             export AE_LABS_HELM_TOKEN="$LABS_HELM_TOKEN"
             log "Detected apishim on ${AE_LABS_HELM_SERVER}; helm demo will reuse it."
-          elif token_valid "http" "127.0.0.1" "$APISHIM_PORT" "$LABS_HELM_TOKEN"; then
-            export AE_LABS_HELM_SERVER="http://127.0.0.1:${APISHIM_PORT}"
+          elif token_valid "http" "127.0.0.1" "$APISHIM_PROBE_PORT" "$LABS_HELM_TOKEN"; then
+            export AE_LABS_HELM_SERVER="http://127.0.0.1:${APISHIM_PROBE_PORT}"
             export AE_LABS_HELM_TOKEN="$LABS_HELM_TOKEN"
             log "Detected apishim on ${AE_LABS_HELM_SERVER}; helm demo will reuse it."
           else
-            log "Found apishim.env but token rejected by ${APISHIM_PORT}; helm demo will start a local shim."
+            log "Found apishim.env but token rejected by ${APISHIM_PROBE_PORT}; helm demo will start a local shim."
           fi
         fi
       fi
@@ -1049,6 +1255,22 @@ fi
 export AE_LABS=${LABS_ENABLE}
 export AE_LABS_TOKEN=${LABS_TOKEN}
 if [[ ${LABS_ENABLE:-0} -eq 1 ]]; then
+  ./scripts/ensure_apishim_env.sh
+  LABS_APISHIM_ENV="state/labs/apishim.env"
+  if [[ -z "${AE_APISHIM_SESSION_SECRET:-}" ]]; then
+    LABS_SESSION_SECRET="$(read_env_file_var "AE_APISHIM_SESSION_SECRET" "$LABS_APISHIM_ENV" || true)"
+    if [[ -z "$LABS_SESSION_SECRET" ]]; then
+      LABS_SESSION_SECRET="$(gen_token)"
+    fi
+    export AE_APISHIM_SESSION_SECRET="$LABS_SESSION_SECRET"
+  fi
+  if [[ -z "${AE_API_ADMIN_TOKEN:-}" ]]; then
+    LABS_ADMIN_TOKEN="$(read_env_file_var "AE_API_ADMIN_TOKEN" "$LABS_APISHIM_ENV" || true)"
+    if [[ -z "$LABS_ADMIN_TOKEN" ]]; then
+      LABS_ADMIN_TOKEN="$(gen_token)"
+    fi
+    export AE_API_ADMIN_TOKEN="$LABS_ADMIN_TOKEN"
+  fi
   export AE_LABS_SESSION_HOSTS=${AE_LABS_SESSION_HOSTS:-1}
   if [[ -z "${AE_APISHIM_MIRROR:-}" ]]; then
     export AE_APISHIM_MIRROR=1
@@ -1076,12 +1298,20 @@ export SOPS_AGE_KEY_FILE=${SOPS_AGE_KEY_FILE:-}
 # Demo marker for local tooling.
 export AE_DEMO_MODE=1
 export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
+export AE_REGISTER_LOCAL_NODE=${AE_REGISTER_LOCAL_NODE}
 export AE_OCI_RUNTIME=${AE_OCI_RUNTIME:-}
 export API_PORT=${API_PORT}
 export AE_SPECS_DIR=${DEMO_SPECS_DIR}
+export AE_STATE_DB=${AE_STATE_DB}
 export AE_APISHIM_DB=${AE_APISHIM_DB:-}
+export AE_APISHIM_RUNTIME=${AE_APISHIM_RUNTIME:-}
 export AE_APISHIM_MIRROR=${AE_APISHIM_MIRROR:-}
 export AE_APISHIM_SOT=${AE_APISHIM_SOT:-}
+export AE_APISHIM_SESSION_SECRET=${AE_APISHIM_SESSION_SECRET:-}
+export AE_API_ADMIN_TOKEN=${AE_API_ADMIN_TOKEN:-}
+export AE_APISHIM_SERVER=${AE_APISHIM_SERVER:-}
+export DOCS_API_BASE=${DOCS_API_BASE:-}
+export DOCS_DASHBOARD_URL=${DOCS_DASHBOARD_URL:-}
 # Labs + docs wiring for controller
 export AE_LABS=${LABS_ENABLE}
 export AE_LABS_TOKEN=${LABS_TOKEN}
@@ -1104,6 +1334,7 @@ ENV
 
 # Seed dynsites for docs and API so they are always available
 DOCS_PORT=${DOCS_PORT:-9109}
+APISHIM_PORT=${APISHIM_PORT:-8445}
 # Bind docs server to all interfaces by default so Caddy (in a container)
 # can reach it via host.docker.internal. Override with --bind-all or env.
 DOCS_BIND=${DOCS_BIND:-0.0.0.0}
@@ -1121,7 +1352,17 @@ https://docs.home.arpa {
     handle @apibase {
         reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT}
     }
-    @apipaths path /api* /labs* /status* /events* /logs* /swagger* /redoc* /dashboard*
+    # Proxy shim API paths to the apishim on the host
+    @apishim path /api/v1 /api/v1/* /apis /apis/*
+    handle @apishim {
+        reverse_proxy https://${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${APISHIM_PORT} {
+            transport http {
+                tls_insecure_skip_verify
+            }
+        }
+    }
+    # Keep /api/ scoped to the controller to avoid shadowing docs pages like /api-auth.html or /apishim-compatibility-matrix.html
+    @apipaths path /api/* /labs* /status* /events* /logs* /swagger* /redoc* /system* /ui/features
     handle @apipaths {
         reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT}
     }
@@ -1140,9 +1381,54 @@ https://api.home.arpa {
     }
     header -Strict-Transport-Security
     tls internal
-    reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT}
+
+    @ui path /dashboard* /playground*
+    handle @ui {
+        redir https://dash.home.arpa:${CADDY_HTTPS_PORT}{uri} 302
+    }
+
+    @apishim path /api/v1 /api/v1/* /apis /apis/*
+    handle @apishim {
+        reverse_proxy https://${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${APISHIM_PORT} {
+            transport http {
+                tls_insecure_skip_verify
+            }
+        }
+    }
+
+    @controller path /api/apishim/* /ui/features /health* /status* /events* /logs* /metrics* /system* /nodes* /history* /manifest* /plan* /k8s/preview
+    handle @controller {
+        reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT}
+    }
+
+    handle {
+        reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT}
+    }
 }
 API
+
+cat > "${AE_CADDY_SITES}/dash.caddy" <<DASH
+https://dash.home.arpa {
+    log {
+        output stdout
+        format console
+    }
+    header -Strict-Transport-Security
+    tls internal
+    reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT}
+}
+DASH
+
+# Ensure Caddy picks up the freshly written base sites (docs/api/dash).
+if [[ -n "${AE_CADDY_CONTAINER:-}" && -n "${AE_CONTAINER_CLI:-}" ]]; then
+  if "$AE_CONTAINER_CLI" ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "${AE_CADDY_CONTAINER}"; then
+    log "Reloading Caddy to apply base sites (docs/api/dash)"
+    "$AE_CONTAINER_CLI" exec "${AE_CADDY_CONTAINER}" caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true
+  fi
+fi
+
+# Start apishim for labs/demo sessions (exec/port-forward)
+start_apishim
 
 # Auto-start the controller daemon unless disabled
 # Build a temporary specs set for the selected demo so the controller only watches required apps
@@ -1418,13 +1704,14 @@ if [[ ${LABS_ENABLE:-0} -eq 1 ]]; then
     log "Labs token exported via state/env.sh (AE_LABS_TOKEN). Paste it in the playground or click 'Use Token'."
   fi
   log "Playground: https://docs.home.arpa:${CADDY_HTTPS_PORT}/playground.html"
-  log "Dashboard:  https://docs.home.arpa:${CADDY_HTTPS_PORT}/dashboard"
+  log "Dashboard:  https://dash.home.arpa:${CADDY_HTTPS_PORT}/dashboard"
+  log "API base:   https://api.home.arpa:${CADDY_HTTPS_PORT}"
 fi
 
 # If backend is podman, ensure demo images are available to Podman by importing from Docker when needed
 if [[ "$AE_RUNTIME_BACKEND" == "podman" || "$AE_RUNTIME_BACKEND" == "oci" ]]; then
   if command -v podman >/dev/null 2>&1; then
-    for img in demo-green:latest; do
+    for img in demo-green:latest demo-shell:latest; do
       if ! podman images --format '{{.Repository}}:{{.Tag}}' | grep -qE "(^|/)${img}$"; then
         if command -v docker >/dev/null 2>&1; then
           if docker image inspect "$img" >/dev/null 2>&1; then
@@ -1666,7 +1953,8 @@ Demo setup complete.
 - Blue app:   https://blue.home.arpa:${CADDY_HTTPS_PORT}/
 - Green app:  https://green.home.arpa:${CADDY_HTTPS_PORT}/
 - Docs site:  https://docs.home.arpa:${CADDY_HTTPS_PORT}/ (via Caddy) and http://${DOCS_BIND}:${DOCS_PORT}/ (direct)
-  API UIs:    https://api.home.arpa:${CADDY_HTTPS_PORT}/swagger, https://api.home.arpa:${CADDY_HTTPS_PORT}/redoc, https://api.home.arpa:${CADDY_HTTPS_PORT}/dashboard
+  API UIs:    https://api.home.arpa:${CADDY_HTTPS_PORT}/swagger, https://api.home.arpa:${CADDY_HTTPS_PORT}/redoc
+  Dashboard:  https://dash.home.arpa:${CADDY_HTTPS_PORT}/dashboard
   API direct: http://127.0.0.1:9108/swagger, http://127.0.0.1:9108/redoc, http://127.0.0.1:9108/dashboard
 
 If hosts mapping was added, you can also visit:

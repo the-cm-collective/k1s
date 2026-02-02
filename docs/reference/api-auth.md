@@ -1,41 +1,48 @@
-API Auth and Mutations
+# API Auth and Mutations
 
-Overview
+## Overview
 - Read-only endpoints (/status, /events, /metrics, /logs, /health, /openapi.json) are available by default.
-- Mutating endpoints (/scale/<app>, /delete/<app>) are disabled unless AE_API_MUTATIONS=1.
+- If any token is configured, all GETs require at least the READ token.
+- Mutating endpoints (/scale/<app>, /delete/<app>, /rollout/*, /apply) are disabled unless AE_API_MUTATIONS=1.
 - Optional Bearer tokens gate access per role:
   - AE_API_READ_TOKEN   (read)
   - AE_API_SCALER_TOKEN (scale)
   - AE_API_ADMIN_TOKEN  (admin)
+- Optional scoping/expiry: AE_API_ADMIN_SCOPE / AE_API_SCALER_SCOPE / AE_API_READ_SCOPE (glob patterns) and AE_API_*_TOKEN_EXPIRES (UTC ISO8601).
 
-Enabling mutations (dev)
-1) Export tokens and enable mutations for the controller process:
-   - AE_API_MUTATIONS=1
-   - AE_API_ADMIN_TOKEN=changeme
-2) Start controller with --metrics-port and Caddy fronting the API.
+## Enabling mutations (dev)
+1) Generate tokens and enable mutations for the controller process:
+```
+ae api tokens --generate --ttl-hours 24 -o .env.api
+source .env.api
+export AE_API_MUTATIONS=1
+```
+2) Start controller with --metrics-port and (optional) Caddy fronting the API.
 
-Remote CLI usage
+Tip: `ae auth remote -o .env.api` also emits apishim tokens and `AE_API_MUTATIONS=1`.
+
+## Remote CLI usage
 - Scale:
-  - ae --server https://api.home.arpa:8443 --token $SCALER scale echo --replicas 2
+  - `ae --server https://api.home.arpa:8443 --token $AE_API_SCALER_TOKEN scale echo --replicas 2`
 - Delete:
-  - ae --server https://api.home.arpa:8443 --token $ADMIN delete echo --purge
+  - `ae --server https://api.home.arpa:8443 --token $AE_API_ADMIN_TOKEN delete echo --purge`
 - Logs (requires READ token when any token is configured):
-  - ae --server https://api.home.arpa:8443 --token $READ logs echo --tail 100
+  - `ae --server https://api.home.arpa:8443 --token $AE_API_READ_TOKEN logs echo --tail 100`
 
-Security notes
+## Security notes
 - For production, place the API behind TLS (Caddy) and use client auth or network ACLs.
 - Prefer short-lived tokens and minimal roles for automation.
-- Kubernetes API shim tokens: `AE_APISHIM_TOKEN` is required by default for `python -m ae.apishim serve`; set `AE_APISHIM_ALLOW_ANON=1` only for local labs. Shim RBAC evaluates Role/ClusterRole bindings and exposes a `SubjectAccessReview`-compatible endpoint.
+- Kubernetes API shim: set `AE_APISHIM_ENABLE=1` and `AE_APISHIM_TOKEN` for `python -m ae.apishim serve`; use `AE_APISHIM_ALLOW_ANON=1` only for local labs. Shim RBAC evaluates Role/ClusterRole bindings and exposes a SubjectAccessReview-compatible endpoint.
 
-Registry Auth (private images)
+## Registry Auth (private images)
 - Credentials are stored at `~/.config/ae/registries.yaml` and used by the runtime before pulls.
 - List configured hosts:
   - `ae registry list`
- - Docker Hub:
-   - Short image names (e.g., `caddy:2.8`, `python:3.12-slim`) are treated as `docker.io`.
-   - Add Docker Hub creds by host key `docker.io` (also accepts `index.docker.io`):
-     - `ae registry login custom --registry docker.io --username <you> --password <token>`
-     - Or run `docker login` once; the runtime will reuse your local Docker credentials.
+- Docker Hub:
+  - Short image names (e.g., `caddy:2.8`, `python:3.12-slim`) are treated as `docker.io`.
+  - Add Docker Hub creds by host key `docker.io` (also accepts `index.docker.io`):
+    - `ae registry login custom --registry docker.io --username <you> --password <token>`
+    - Or run `docker login` once; the runtime will reuse your local Docker credentials.
 - GHCR (GitHub Container Registry):
   - `ae registry login ghcr --username <you> --token <PAT>`
   - Or rely on `gh` CLI: `ae registry login ghcr --username <you>` (uses `gh auth token`)
@@ -49,7 +56,7 @@ Registry Auth (private images)
 - Custom registry:
   - `ae registry login custom --registry registry.example.com --username user --password secret`
 
-Refreshing short‑lived tokens
+## Refreshing short‑lived tokens
 - Some providers issue short‑lived credentials (GCR/ECR). Refresh any saved hosts with:
   - `ae registry refresh` (all supported providers)
   - `ae registry refresh --provider gcr`
@@ -59,5 +66,5 @@ Refreshing short‑lived tokens
   - gcr: `gcloud auth print-access-token`.
   - ecr: `aws ecr get-login-password` (region derived from the registry hostname).
 
-Planner hint
+## Planner hint
 - If the image host looks private (e.g., `ghcr.io`, `gcr.io`, `*.ecr.*.amazonaws.com`) and no entry exists in `registries.yaml`, `ae plan` emits a warning with the matching `ae registry login` command suggestion.

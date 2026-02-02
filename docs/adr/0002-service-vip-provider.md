@@ -6,7 +6,7 @@ Owners: controller/network/ingress
 
 ## Context
 - k1s needs a stable Service identity for ingress and app-to-app routing, especially for multi-replica and multi-node runs.
-- HostPorts alone are insufficient: they are per-replica and change during rollouts.
+- HostPorts alone are insufficient: they are per-pod and change during rollouts.
 - We want a minimal, portable dataplane that works on single-node labs and can grow into multi-node overlay routing.
 
 ## Decision
@@ -21,7 +21,7 @@ Owners: controller/network/ingress
 
 ## Consequences
 - Controller owns Service IP allocation and persists it for stability.
-- Ingress configuration prefers Service VIPs to avoid per-replica endpoint churn.
+- Ingress configuration prefers Service VIPs to avoid per-pod endpoint churn.
 - Single-node uses a lightweight proxy; multi-node uses an overlay provider, both behind the same interface.
 
 ## Action Plan

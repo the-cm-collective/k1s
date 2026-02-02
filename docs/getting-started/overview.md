@@ -2,6 +2,8 @@
 
 k1s is a small, multi‑node application engine that now supports a controller + worker agents, Service VIPs over an overlay network, and a Kubernetes‑compatible API shim. You can declare apps in YAML, run them on one or more hosts (Podman preferred; Docker supported), and expose them through Caddy or your own proxy while keeping resource usage low.
 
+Status: k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.
+
 - Goal: predictable rollouts and Kubernetes‑style ergonomics on 1–4 nodes without a heavyweight control plane.
 - Non‑goal: full upstream conformance or cloud‑provider controllers; we target a curated “compatibility” subset instead.
 
@@ -10,9 +12,10 @@ k1s is a small, multi‑node application engine that now supports a controller +
 - Multi‑node: controller manages registered nodes with heartbeats, cordon/drain, and a minimal scheduler that respects `nodeSelector`, taints/tolerations, topology spread, and storage pinning. Agents expose runtime exec/logs/probes over mTLS; Service VIPs ride a WireGuard/VXLAN overlay with HAProxy provider. HostPorts are still supported for single‑node edge cases.
 - Networking/Ingress: Service CIDR + overlay provider (`AE_SERVICE_PROVIDER=overlay`) with ClusterIP allocation, EndpointSlice projection, and Caddy templates that prefer Service VIPs. Bridge provider remains for single‑node or no‑overlay labs.
 - State: SQLite by default; Postgres supported for shim HA and multi‑node durability (`AE_STATE_DSN` / `AE_APISHIM_DSN`).
-- API surface: native HTTP API plus the Kubernetes API shim (`ae.apishim serve`) covering Deployments/Services/Ingress/HPA/RBAC with SSA/patch support; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated as Deployment-like apps (see `docs/reference/apishim-compatibility-matrix.md`).
-- Tooling: `k1s` kubectl‑style wrapper, `ae nodes` for inventory/cordon, `ae plan` for placement hints, `export-k8s` and `k8s-report` for parity/compliance, dashboard at `/dashboard`, and `/nodes` + enriched `/metrics` for node/service visibility.
-- Footprint: stays well below k3s while adding overlay + shim; recent lab runs keep controller+agent PSS under ~450 MB on Podman+crun.
+- Runtime backends: Podman (default), Docker fallback, and CRI/containerd (`AE_RUNTIME_BACKEND=cri`) for CRI‑native nodes.
+- API surface: native HTTP API plus the Kubernetes API shim (`AE_APISHIM_ENABLE=1 python -m ae.apishim serve`) covering Deployments/Services/Ingress/HPA/RBAC with SSA/patch support; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated as Deployment-like apps (see `docs/reference/apishim-compatibility-matrix.md`).
+- Tooling: `k1s` kubectl‑style wrapper, `ae nodes` for inventory/cordon, `ae plan` for placement hints, `export-k8s` and `k8s-report` for parity/compliance, dashboard at `/dashboard` (direct on `:9108`, or `https://dash.home.arpa:8443/dashboard` in demos), and `/nodes` + enriched `/metrics` for node/service visibility.
+- Footprint: recent Jan 2026 idle benchmarks show ~85–90 MiB PSS for controller+API on Podman+crun rootless, and ~170–180 MiB PSS for k1nd (Docker + Caddy). See `docs/benchmarks/memory.md` for the latest numbers.
 
 ## Features (High‑Level)
 
@@ -52,7 +55,7 @@ flowchart LR
 ## Requirements
 
 - Python 3.11+
-- Podman (preferred) or Docker
+- Podman (preferred), Docker, or containerd (for CRI)
 - Optional: WireGuard tools for overlay, Postgres for HA shim/multi-node durability
 - Optional: Caddy (for ingress), SOPS/age (for secrets), watchdog (for live file watch)
 
@@ -92,24 +95,30 @@ Multi-node lab (two hosts): follow `docs/guides/multinode-lab.md` or run `ops/de
 - JSON and metrics: `curl :9108/status`, `curl :9108/metrics`
 - OpenAPI and docs: `curl :9108/openapi.json`, open `http://localhost:9108/docs`
 - Nodes: `curl :9108/nodes` (with tokens if configured) for inventory/heartbeat state
-- Dashboard: `http://localhost:9108/dashboard`
+- Dashboard: `http://localhost:9108/dashboard` (or `https://dash.home.arpa:8443/dashboard` when Caddy demo stack is running)
 
 ## Configuration (Quick Reference)
 
 - AE_STATE_DB: path to SQLite DB (default `state/controller.db`)
+- AE_STATE_DSN: Postgres DSN for controller state (overrides SQLite)
 - AE_SPECS_DIR: specs directory (default `specs`)
 - AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER: ingress tuning
+- AE_TLS_DIR: TLS material root (default `state/tls`)
 - AE_REGISTRY_CONFIG: registry credentials file (default `~/.config/ae/registries.yaml`)
 - AE_ALLOW_PLAINTEXT_SECRETS=1: allow bypassing SOPS (dev only)
 - AE_LOG_LEVEL: logging level (DEBUG/INFO/…)
 - AE_AGENT_API_TOKEN / AE_AGENT_API_PORT: controller → agent auth/port
-- AE_SERVICE_PROVIDER / AE_OVERLAY_NET / AE_SERVICE_IP_POOL: Service VIP provider + overlay settings
-- AE_APISHIM_TOKEN / AE_APISHIM_DSN: Kubernetes API shim auth + backing store
+- AE_ENABLE_SERVICE_PROXY / AE_SERVICE_PROVIDER / AE_OVERLAY_NET / AE_SERVICE_IP_POOL: Service VIP provider + overlay settings
+- AE_RUNTIME_BACKEND / AE_PODMAN_NETWORK / AE_DOCKER_NETWORK: runtime selection + shared networks for multi-replica ingress
+- AE_APISHIM_ENABLE / AE_APISHIM_TOKEN / AE_APISHIM_DSN: Kubernetes API shim auth + backing store
+- AE_API_READ_TOKEN / AE_API_SCALER_TOKEN / AE_API_ADMIN_TOKEN / AE_API_MUTATIONS: HTTP API auth + mutation gate
+- AE_CRI_ENDPOINT / AE_CRI_SANDBOX_IMAGE: CRI runtime endpoint + pause image
+- CRICTL_BIN: path override for crictl (exec/attach/port-forward on CRI)
 
 ## Project Layout
 
 - src/ae/controller: reconcile loop, scheduler, state, health, spec models
-- src/ae/runtime: Podman (default) and Docker adapters, RemoteRuntime client for agents
+- src/ae/runtime: Podman (default), Docker, and CRI adapters, RemoteRuntime client for agents
 - src/ae/node: node agent entrypoint wrapping runtime and probes/logs/exec
 - src/ae/ingress: Caddy templating + reload
 - src/ae/network: Service/VIP providers (overlay/bridge)

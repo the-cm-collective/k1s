@@ -1,9 +1,58 @@
 # Changelog
 
-## Unreleased (2026-01-22)
+## Unreleased (2026-02-02)
 
 ### Added
-- TBD
+- Benchmark tooling: CRI (`crictl`) container snapshot/inspect capture plus make targets and env pass-through for CRI matrix/rollout runs.
+- Project metadata now includes a version codename in `pyproject.toml` (Snow Moon).
+
+### Changed
+- Docs refresh: Start Here, Overview, Examples, and Concepts updated for dashboard URLs, API shim enablement, and CLI guidance.
+- Reference docs updated for HTTP API, API auth, ingress, architecture env vars, CRI containerd, multi-node lab, and benchmarks.
+- Benchmark docs and charts refreshed with the new CRI scenario column and coverage annotations.
+
+### Fixed
+- Benchmark snapshots now honor the selected container engine when running CRI captures to avoid cross-engine contamination.
+- Demo Caddy config now redirects API-host `/dashboard` and `/playground` hits to the dedicated dashboard host to avoid 404s.
+- Demo now reloads Caddy after writing base sites so `dash.home.arpa` is available without a manual reload.
+- Demo reset now stops CRI pods/containers to prevent stale workloads after cleanup.
+- Playground log tail now prefers the current revision and ready pods to avoid attaching to terminating containers.
+- Playground log streaming now reselects a live pod after scale/rollout and skips replica shutdown noise so logs keep flowing across changes.
+- Playground ingress checks now retry after transient failures, show auth-required states, and render the curl hint as a multiline command.
+- Playground ingress checks now surface ingress-disabled states when `AE_DISABLE_INGRESS=1`.
+- Playground now disables ingress checks for apps without ingress mappings instead of surfacing 502 errors.
+- Playground log streaming now falls back to polling when SSE fails.
+- Playground events stream now rearms after apply, and the apply banner stays in sync with the selected example.
+- Labs apply now returns the applied app name to keep clients in sync.
+- Demo down/reset now clears controller state even when a bench DB path leaked into the demo environment, preventing stale session apps.
+- Playground remote shell defaults to `sh` for minimal images.
+- Dashboard exec/port-forward token minting now prefers the labs token to avoid read-only auth failures.
+- Service proxy ingestion now commits services and endpoints together, preventing transient empty endpoint reads.
+- Demo apishim autostart now restarts on runtime mismatches to keep exec/port-forward working with Podman or Docker.
+- Local auth now exports `AE_STATE_DB`, and demo env exports the state DB path, so CLI status matches controller state.
+- Labs ingress reachability checks no longer fail on missing `os` imports, restoring consistent "Last check" status.
+- Bench automation now clears rootful Podman before k1nd, hardens CRI waits, and isolates bench specs/guards to reduce flakiness.
+- Corrected demo host/endpoints (dashboard + multiport), CRI list formatting, and k1nd benchmark notes.
+
+## 0.1.2 - 2026-01-30
+
+### Added
+- CSI storage API support: snapshots, PVC restore/clone flows, volume expansion, RWOP/multi-attach guardrails, topology constraints, capacity reporting, and volume health metrics/events.
+- NetFS/NFS storage plumbing: dynamic NFS provisioning, NetFS mounts with SELinux relabeling/options, fsGroup support, storage quotas, block device mappings, and capacity overrides.
+- CRI runtime support with ingress reload fallback and containerd CRI integration workflow coverage.
+- Apishim exec/port-forward foundations plus CRI port-forward proxy, richer OpenAPI examples/metadata, and static Swagger export pages.
+- CLI namespace targeting, dashboard port-forward preview, and a shell-demo sample.
+
+### Changed
+- Dashboard visuals and system graph styling with refreshed background assets.
+- Docs and examples refreshed for storage, NetFS, and CRI (ADRs, runbook notes, updated README screenshots, and regenerated site artifacts).
+
+### Fixed
+- Local node registration/heartbeat gating and reconciler registration in tests.
+- Apishim proxy/routing/TLS hardening and pod-IP preference for port-forward.
+- Demo/lab auth bootstrap hardening plus CRI setup/test reliability in CI.
+- Benchmarks now enforce container capture with stricter engine isolation and snapshot cleanup to avoid cross-engine contamination.
+- Labs AIO now honors `AE_RUNTIME_BACKEND` for runtime selection during dev runs.
 
 ## 0.1.1 - 2026-01-22
 

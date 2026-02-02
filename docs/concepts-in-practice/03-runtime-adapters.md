@@ -1,7 +1,7 @@
-# Chapter 04 - Runtime Adapters and Container Execution
+# Chapter 03 - Runtime Adapters & Container Execution
 
 ## Concept
-The controller defines desired state, but runtime adapters execute it. The adapter layer abstracts the container engine so the orchestration logic can remain stable while runtimes vary (Podman, Docker, or remote agents).
+The controller defines desired state, but runtime adapters execute it. The adapter layer abstracts the container engine so the orchestration logic can remain stable while runtimes vary (Podman, Docker, CRI/containerd, or remote agents).
 
 ```mermaid
 flowchart LR
@@ -29,16 +29,18 @@ sequenceDiagram
 ```
 
 ### Design
-k1s defines a RuntimeAdapter protocol and provides concrete implementations for Podman and Docker. The controller calls `ensure_app`, which creates or updates containers to match the desired replica set. Backend selection is environment-driven, and fallback logic ensures the system remains functional even if the preferred runtime is unavailable.
+k1s defines a RuntimeAdapter protocol and provides concrete implementations for Podman, Docker, and CRI/containerd. The controller calls `ensure_app`, which creates or updates containers to match the desired pod set. Backend selection is environment-driven, and fallback logic ensures the system remains functional even if the preferred runtime is unavailable.
 
 ```mermaid
 flowchart TB
   Env[AE_RUNTIME_BACKEND] --> Select[Runtime factory]
   Select --> Podman[PodmanRuntime]
   Select --> Docker[DockerRuntime]
+  Select --> CRI[CRIRuntime]
   Select --> Stub[StubRuntime]
   Podman --> Adapter[RuntimeAdapter]
   Docker --> Adapter
+  CRI --> Adapter
   Stub --> Adapter
 ```
 
@@ -62,11 +64,12 @@ sequenceDiagram
 
 ## Key Terms and Acronyms
 - Runtime adapter - Abstraction translating reconcile actions to runtime ops.
-- Container runtime - Engine that runs containers (Docker/Podman).
+- Container runtime - Engine that runs containers (Podman, Docker, containerd).
 - CRI - Kubernetes Container Runtime Interface.
 - OCI - Open Container Initiative spec for images/runtimes.
-- ensure_app - Adapter method that enforces desired replicas.
-- Replica state - Runtime-reported status for a replica.
+- containerd - Common CRI implementation used by k3s/k8s.
+- ensure_app - Adapter method that enforces desired pods.
+- Pod state - Runtime-reported status for a pod.
 - Image pull - Fetching a container image from a registry.
 
 ## Commands (copy/paste)
@@ -84,7 +87,7 @@ python -m ae.cli events echo --limit 20
 - Site: `docs/site/architecture.html`
 
 ## Code references (walkthrough anchors)
-- Runtime adapter interface: `src/ae/runtime/base.py:12`
+- Runtime adapter interface: `src/ae/runtime/base.py:73`
 ```py
 class RuntimeAdapter(Protocol):
     """Adapter that drives container runtime operations."""
@@ -96,26 +99,26 @@ class RuntimeAdapter(Protocol):
         *,
         keep_old: bool = False,
         limit_create: int | None = None,
-        replica_ids: list[str] | None = None,
+        pod_names: list[str] | None = None,
         node_id: str | None = None,
     ) -> RuntimeResult:
         """Ensure the runtime matches the manifest."""
 ```
-- Docker adapter ensures replicas: `src/ae/runtime/docker_runtime.py:56`
+- Docker adapter ensures pods: `src/ae/runtime/docker_runtime.py:70`
 ```py
     def ensure_app(self, manifest: AppManifest, revision: int, *, ... ) -> RuntimeResult:
         app_name = app_key_for_manifest(manifest)
-        desired_replica_ids = (
-            list(replica_ids)
-            if replica_ids is not None
-            else self._desired_replica_ids(manifest, revision)
+        desired_pod_names = (
+            list(pod_names)
+            if pod_names is not None
+            else self._desired_pod_names(manifest, revision)
         )
         ...
-        for replica_id in desired_replica_ids:
-            container = containers_by_replica.get(replica_id)
+        for pod_name in desired_pod_names:
+            container = containers_by_pod.get(pod_name)
             if container is None:
                 container = self._create_container(
-                    manifest, replica_id, revision, node_id=node_id, attempt=0
+                    manifest, pod_name, revision, node_id=node_id, attempt=0
                 )
                 created += 1
             else:
@@ -130,6 +133,8 @@ def runtime_factory(registry_auth: RegistryAuthProvider | None = None) -> Runtim
     backend = os.getenv("AE_RUNTIME_BACKEND", "podman").lower()
     if backend == "stub":
         return StubRuntime()
+    if backend in {"cri", "containerd"}:
+        return CRIRuntime()
     if backend in {"podman", "oci"}:
         try:
             if shutil.which(os.getenv("AE_PODMAN_BIN", "podman")) is None:
@@ -140,6 +145,5 @@ def runtime_factory(registry_auth: RegistryAuthProvider | None = None) -> Runtim
     return DockerRuntime(registry_auth=registry_auth)
 ```
 ## Chapter navigation
-- Prev: [Chapter 03 - Scheduling and Placement (Where Work Runs)](concepts-in-practice-03-scheduling-placement.html)
-- Next: [Chapter 05 - Ingress and Service Exposure](concepts-in-practice-05-ingress-service-exposure.html)
-
+- Prev: [Chapter 02 - Declarative Specs & Apply](concepts-in-practice-02-declarative-apply.html)
+- Next: [Chapter 04 - Scheduling & Placement](concepts-in-practice-04-scheduling-placement.html)

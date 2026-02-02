@@ -1,4 +1,4 @@
-# Chapter 01 - Desired State and Reconciliation Loops
+# Chapter 01 - Desired State & Reconciliation
 
 ## Concept
 A modern orchestration engine is a continuous control system. You declare a target (the desired state), and the controller repeatedly compares that target to reality, then applies corrective actions until the two match. This is reconciliation. The key property is idempotence: running the loop repeatedly should converge to the same result without causing unintended changes.
@@ -158,5 +158,4 @@ python -m ae.cli metrics
             )
 ```
 ## Chapter navigation
-- Next: [Chapter 02 - Declarative Specs and Apply Semantics](concepts-in-practice-02-declarative-apply.html)
-
+- Next: [Chapter 02 - Declarative Specs & Apply](concepts-in-practice-02-declarative-apply.html)

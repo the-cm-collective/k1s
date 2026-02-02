@@ -4,7 +4,7 @@ This installs the controller as a simple service on a Linux host (Debian/Ubuntu/
 
 Prereqs
 - Python 3.11+
-- Podman (recommended) or Docker
+- Podman (recommended), Docker, or containerd (for CRI)
 
 Steps
 1) Create user and directories:
@@ -36,6 +36,7 @@ sudo systemctl enable --now ae-controller
 Notes
 - Customize AE_STATE_DB and AE_SPECS_DIR via `Environment=` in the unit.
 - To use Docker, set `AE_RUNTIME_BACKEND=docker` in the unit `Environment=`.
+- To use CRI/containerd, set `AE_RUNTIME_BACKEND=cri` plus `AE_CRI_ENDPOINT` and `AE_CRI_SANDBOX_IMAGE` in the unit `Environment=`.
 - Logs are visible via `journalctl -u ae-controller`.
 
 
@@ -44,5 +45,17 @@ Switching to Docker backend (drop-in)
 sudo mkdir -p /etc/systemd/system/ae-controller.service.d
 sudo install -m 0644 ops/systemd/ae-controller.d/override-docker.conf \
   /etc/systemd/system/ae-controller.service.d/override.conf
+sudo systemctl daemon-reload && sudo systemctl restart ae-controller
+```
+
+Switching to CRI backend (drop-in)
+```
+sudo mkdir -p /etc/systemd/system/ae-controller.service.d
+cat <<'EOF' | sudo tee /etc/systemd/system/ae-controller.service.d/override.conf
+[Service]
+Environment=AE_RUNTIME_BACKEND=cri
+Environment=AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock
+Environment=AE_CRI_SANDBOX_IMAGE=registry.k8s.io/pause:3.9
+EOF
 sudo systemctl daemon-reload && sudo systemctl restart ae-controller
 ```
