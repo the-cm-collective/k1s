@@ -16,6 +16,8 @@
 - Demo now reloads Caddy after writing base sites so `dash.home.arpa` is available without a manual reload.
 - Playground log tail now prefers the current revision and ready pods to avoid attaching to terminating containers.
 - Playground log streaming now reselects a live pod after scale/rollout and skips replica shutdown noise so logs keep flowing across changes.
+- Demo apishim autostart now restarts on runtime mismatches to keep exec/port-forward working with Podman or Docker.
+- Local auth now exports `AE_STATE_DB`, and demo env exports the state DB path, so CLI status matches controller state.
 - Labs ingress reachability checks no longer fail on missing `os` imports, restoring consistent "Last check" status.
 - Corrected demo host/endpoints (dashboard + multiport), CRI list formatting, and k1nd benchmark notes.
 

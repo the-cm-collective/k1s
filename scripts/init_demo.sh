@@ -85,7 +85,7 @@ start_apishim() {
       local expected=""
       local running=""
       local key=""
-      for key in AE_APISHIM_SESSION_SECRET AE_APISHIM_TOKEN AE_APISHIM_READ_TOKEN; do
+      for key in AE_APISHIM_SESSION_SECRET AE_APISHIM_TOKEN AE_APISHIM_READ_TOKEN AE_APISHIM_RUNTIME; do
         expected="${!key:-}"
         if [[ -z "$expected" && -f "${env_file}" ]]; then
           expected="$(read_env_file_var "$key" "${env_file}" || true)"
@@ -137,7 +137,6 @@ start_apishim() {
       return 0
     fi
   fi
-  export AE_APISHIM_RUNTIME="${AE_APISHIM_RUNTIME:-${AE_RUNTIME_BACKEND}}"
   export AE_APISHIM_ENABLE=1
   export AE_APISHIM_ALLOW_ANON=0
   export AE_APISHIM_RBAC=1
@@ -1139,6 +1138,14 @@ fi
 export AE_DEMO_MODE=1
 export AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}
 export AE_REGISTER_LOCAL_NODE=${AE_REGISTER_LOCAL_NODE}
+# Align apishim runtime with demo runtime unless explicitly overridden.
+if [[ -n "${AE_APISHIM_RUNTIME:-}" && "${AE_APISHIM_RUNTIME}" != "${AE_RUNTIME_BACKEND}" ]]; then
+  if [[ "${AE_APISHIM_RUNTIME_OVERRIDE:-0}" != "1" ]]; then
+    log "AE_APISHIM_RUNTIME=${AE_APISHIM_RUNTIME} differs from AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND}; forcing ${AE_RUNTIME_BACKEND} for demo (set AE_APISHIM_RUNTIME_OVERRIDE=1 to keep)"
+    AE_APISHIM_RUNTIME="${AE_RUNTIME_BACKEND}"
+  fi
+fi
+export AE_APISHIM_RUNTIME="${AE_APISHIM_RUNTIME:-${AE_RUNTIME_BACKEND}}"
 # Prefer crun for Podman/OCI demos when available, unless user overrode
 if [[ "${AE_RUNTIME_BACKEND}" == "podman" || "${AE_RUNTIME_BACKEND}" == "oci" ]]; then
   if [[ -z "${AE_OCI_RUNTIME:-}" ]]; then
@@ -1276,7 +1283,9 @@ export AE_REGISTER_LOCAL_NODE=${AE_REGISTER_LOCAL_NODE}
 export AE_OCI_RUNTIME=${AE_OCI_RUNTIME:-}
 export API_PORT=${API_PORT}
 export AE_SPECS_DIR=${DEMO_SPECS_DIR}
+export AE_STATE_DB=${AE_STATE_DB}
 export AE_APISHIM_DB=${AE_APISHIM_DB:-}
+export AE_APISHIM_RUNTIME=${AE_APISHIM_RUNTIME:-}
 export AE_APISHIM_MIRROR=${AE_APISHIM_MIRROR:-}
 export AE_APISHIM_SOT=${AE_APISHIM_SOT:-}
 export AE_APISHIM_SESSION_SECRET=${AE_APISHIM_SESSION_SECRET:-}

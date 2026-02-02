@@ -2795,6 +2795,10 @@ def handle_auth(args: argparse.Namespace) -> int:
             _read_env_file_var(controller_env, "AE_API_READ_TOKEN"),
             os.getenv("AE_API_READ_TOKEN"),
         )
+        state_db = pick(
+            _read_env_file_var(controller_env, "AE_STATE_DB"),
+            os.getenv("AE_STATE_DB"),
+        )
 
         server = args.server or os.getenv("AE_APISHIM_SERVER")
         if not server:
@@ -2836,6 +2840,8 @@ def handle_auth(args: argparse.Namespace) -> int:
             lines.append(f"export AE_API_READ_TOKEN={read_token}")
         if server:
             lines.append(f"export AE_APISHIM_SERVER={server}")
+        if state_db:
+            lines.append(f"export AE_STATE_DB={state_db}")
         _write_export_lines(lines, getattr(args, "output", None))
         return 0
 
