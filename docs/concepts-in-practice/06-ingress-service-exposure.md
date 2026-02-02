@@ -1,4 +1,4 @@
-# Chapter 05 - Ingress and Service Exposure
+# Chapter 06 - Ingress & Service Exposure
 
 ## Concept
 Service exposure is the boundary between internal workloads and external clients. L4 services provide stable networking, while L7 ingress handles routing, TLS, and hostname-based access. Both must be deterministic, declarative, and safe to update.
@@ -7,7 +7,7 @@ Service exposure is the boundary between internal workloads and external clients
 flowchart LR
   Client[Client] --> Ingress[Caddy ingress]
   Ingress --> ServiceVIP[Service VIP]
-  ServiceVIP --> Pod[Replica endpoint]
+  ServiceVIP --> Pod[Pod endpoint]
 ```
 
 ### Theory
@@ -26,7 +26,7 @@ flowchart TB
 ```
 
 ### Design
-k1s implements a Service VIP controller for L4 and Caddy-based ingress for L7. The controller computes upstreams from healthy replicas and writes ingress config snippets, then reloads Caddy. It also supports canary weighting during rollouts. This mirrors the Kubernetes pattern of Services + Ingress controllers.
+k1s implements a Service VIP controller for L4 and Caddy-based ingress for L7. The controller computes upstreams from healthy pods and writes ingress config snippets, then reloads Caddy. It also supports canary weighting during rollouts. This mirrors the Kubernetes pattern of Services + Ingress controllers.
 
 ```mermaid
 flowchart LR
@@ -141,6 +141,5 @@ SITE_TEMPLATE = Template(
         self._provider.update_service_endpoints(app, backends["by_port"])
 ```
 ## Chapter navigation
-- Prev: [Chapter 04 - Runtime Adapters and Container Execution](concepts-in-practice-04-runtime-adapters.html)
-- Next: [Chapter 06 - Observability: Logs, Metrics, Events](concepts-in-practice-06-observability.html)
-
+- Prev: [Chapter 05 - Observability: Logs, Metrics, Events](concepts-in-practice-05-observability.html)
+- Next: [Chapter 07 - Health Probes](concepts-in-practice-07-health-probes.html)

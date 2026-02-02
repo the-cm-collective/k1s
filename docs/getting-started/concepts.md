@@ -7,7 +7,7 @@ This guide explains core concepts used throughout k1s.
 | k1s term | Kubernetes term | Notes |
 | --- | --- | --- |
 | App | Deployment (workload) | k1s native workload manifest (`kind: App`). |
-| Replica | Pod | One container instance for an App revision. |
+| Pod | Pod | One container instance for a Deployment/App revision. |
 | Revision | ReplicaSet / Deployment revision | Immutable snapshot of desired state. |
 | Service VIP | Service / ClusterIP | Stable virtual IP for service routing. |
 | Spec / manifest | Manifest | YAML resource definition. |
@@ -16,13 +16,13 @@ This guide explains core concepts used throughout k1s.
 
 The primary unit of deployment. Defined by an `App` manifest with a desired image, replicas, ports, health checks, and optional ingress/secrets/resources.
 
-## Replica (Pod)
+## Pod
 
-An individual container instance belonging to an app revision. Replica IDs follow the pattern `<app>-rev<revision>-<index>` (e.g., `echo-rev3-0`).
+An individual container instance belonging to an app revision. Pod names follow the pattern `<app>-rev<revision>-<index>` (e.g., `echo-rev3-0`).
 
 ## Node
 
-A registered worker (or the controller host) that can run replicas. Nodes send heartbeats, advertise labels/taints, and expose a runtime endpoint that the controller uses for ensure/logs/exec/probes. Nodes can be cordoned or drained via `ae nodes`.
+A registered worker (or the controller host) that can run pods. Nodes send heartbeats, advertise labels/taints, and expose a runtime endpoint that the controller uses for ensure/logs/exec/probes. Nodes can be cordoned or drained via `ae nodes`.
 
 ## Service VIP (Service/ClusterIP)
 
@@ -46,10 +46,10 @@ The controller compares the desired state from specs to the observed state (SQLi
 
 ## Health
 
-- Readiness: Determines whether a replica should receive traffic (2xx HTTP implies success).
-- Liveness: Indicates the replica is still alive (defaults to true if not specified).
+- Readiness: Determines whether a pod should receive traffic (2xx HTTP implies success).
+- Liveness: Indicates the pod is still alive (defaults to true if not specified).
 - Initial delay: Allows the app to boot before probes start.
-- Startup probes gate readiness/liveness until they succeed; lifecycle hooks (postStart/preStop) run around replica start/stop.
+- Startup probes gate readiness/liveness until they succeed; lifecycle hooks (postStart/preStop) run around pod start/stop.
 
 ## Status
 
@@ -57,7 +57,7 @@ Per‑app aggregate status is one of:
 
 - ready: all desired replicas are ready
 - progressing: desired count is live but not yet all ready
-- degraded: no replicas present for the current revision
+- degraded: otherwise (e.g., live replicas below desired or readiness fails)
 
 CLI examples:
 
@@ -85,10 +85,14 @@ ae events myapp --limit 20
 
 Rolling replace with `maxUnavailable=0, maxSurge=1` semantics across one or more nodes:
 
-1. Start a new replica for the next revision.
+1. Start a new pod for the next revision.
 2. Wait for readiness.
 3. Switch ingress to the new Service VIP endpoints (or hostPort when VIP disabled).
 4. Stop and remove old revision containers.
+
+Pause/resume and canary:
+- Pause/resume: `ae rollout pause|resume <app>` halts or resumes rollout progression.
+- Canary: set `spec.rollout.strategy: canary` and `spec.rollout.weight` (optional `auto` ramp) to bias routing.
 
 Rollback uses the recorded manifest for the target revision:
 
@@ -112,12 +116,15 @@ In multi-node runs, ingress prefers Service VIPs supplied by the overlay provide
 
 Read‑only status/metrics/events published at:
 
-- `/metrics`, `/status`, `/status/<app>`, `/events/<app>`
+- `/metrics`, `/health`, `/status`, `/status/<app>`, `/events/<app>`
+- `/history/<app>` for probe history, `/manifest/<app>` for latest stored manifest
 - `/nodes` for node inventory + heartbeat staleness
 - `/system` + `/dashboard` for a quick UI snapshot
 - `/openapi.json` and a tiny docs page at `/docs`
 
+Note: when any token is configured, reads require the READ token.
+
 Kubernetes API shim (optional):
 
-- `python -m ae.apishim serve --token <bearer>` exposes `/api`, `/apis`, `/openapi/v2|v3` with SSA/patch and port-forward.
+- `AE_APISHIM_ENABLE=1 python -m ae.apishim serve --token <bearer>` exposes `/api`, `/apis`, `/openapi/v2|v3` with SSA/patch and port-forward (HTTP by default; add `--tls` for HTTPS).
 - Works with kubectl/helm for Deployments/Services/Ingress/HPA/RBAC; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated (see `docs/reference/apishim-compatibility-matrix.md`).

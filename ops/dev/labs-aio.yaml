@@ -11,6 +11,7 @@ services:
     environment:
       - AE_LABS=1
       - AE_API_MUTATIONS=1
+      - AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-docker}
       - AE_LABS_HELM_SERVER=https://apishim:${APISHIM_PORT:-8445}
       - AE_APISHIM_MIRROR=1
       - AE_APISHIM_SOT=1
@@ -19,7 +20,10 @@ services:
       # Ensure new app containers join the compose network for fast, in-container probes
       - AE_DOCKER_NETWORK=dev_default
       - AE_DEMO_MODE=1
+      - AE_REGISTER_LOCAL_NODE=1
+      - AE_NODE_NOTREADY_AFTER=${AE_NODE_NOTREADY_AFTER:-40}
       - AE_SPECS_DIR=${AE_SPECS_DIR:-state/demo-specs}
+      - AE_STATE_DB=${AE_STATE_DB:-state/controller.db}
       - AE_PROBE_LOOPBACK_FALLBACK=host.docker.internal
       - AE_APISHIM_DSN=${AE_APISHIM_DSN:-}
       - AE_STATE_DSN=${AE_STATE_DSN:-}
@@ -38,7 +42,7 @@ services:
       - ../../state/labs/apishim.env
     environment:
       - AE_APISHIM_ENABLE=1
-      - AE_APISHIM_RUNTIME=${AE_APISHIM_RUNTIME:-stub}
+      - AE_APISHIM_RUNTIME=${AE_APISHIM_RUNTIME:-docker}
       - AE_APISHIM_ALLOW_ANON=0
       - AE_APISHIM_RBAC=1
       - AE_APISHIM_RBAC_EVAL=0
@@ -57,6 +61,8 @@ services:
     ports:
       - "${CADDY_HTTP_PORT:-8888}:80"
       - "${CADDY_HTTPS_PORT:-8443}:443"
+    environment:
+      - APISHIM_UPSTREAM=apishim:8445
     volumes:
       - ./caddy:/etc/caddy:ro
       - ../../state/caddy-data:/data

@@ -4,13 +4,47 @@
       <h2>Interactive Lab Playground</h2>
     </div>
 
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" onerror="this.onerror=null; this.href='/static/vendor/xterm.css';" />
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js" onerror="window.__xterm_cdn_failed=true;"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js" onerror="window.__xterm_fit_cdn_failed=true;"></script>
+<script>
+(function(){
+  function loadScript(src){
+    var s = document.createElement('script');
+    s.src = src;
+    s.defer = true;
+    document.head.appendChild(s);
+  }
+  function loadCss(href){
+    var l = document.createElement('link');
+    l.rel = 'stylesheet';
+    l.href = href;
+    document.head.appendChild(l);
+  }
+  function ensureLocal(){
+    if (window.__xterm_cdn_failed || !window.Terminal) {
+      loadCss('/static/vendor/xterm.css');
+      loadScript('/static/vendor/xterm.js');
+    }
+    if (window.__xterm_fit_cdn_failed || !(window.FitAddon && window.FitAddon.FitAddon)) {
+      loadScript('/static/vendor/xterm-addon-fit.js');
+    }
+  }
+  if (document.readyState === 'complete') {
+    ensureLocal();
+  } else {
+    window.addEventListener('load', ensureLocal);
+  }
+})();
+</script>
+
 Use this page to try k1s in minutes — no Kubernetes experience required. The playground can run fully read‑only or, when enabled, perform safe actions like "apply example" and "scale".
 
 Quick start:
 
 - Step 1: Scroll to "A. Environment & Backend", enable <strong>Controlled Actions</strong>, click <strong>Use Token</strong> to load `AE_LABS_TOKEN`, then click `Start Session`.
 - Step 2: In "B. Apply Example", choose `echo` and click `Apply Selected Example`.
-- Step 3: In "E. Ingress Test", click `Open App` to view the service, and in "C. Logs & Events" watch activity live.
+- Step 3: In "F. Ingress Test", click `Open App` to view the service, and in "C. Logs & Events" watch activity live.
 
 <div class="callout" role="note">Tip: If the page says “Labs: unavailable”, you’re in read‑only mode — verifiers still run and CLI commands are shown to try locally.</div>
 
@@ -123,11 +157,12 @@ Back in the playground:
 
 ## B. Apply Example
 
-Pick a sample and apply it. In read-only mode the UI shows the exact CLI you can run locally. Each example is an `App` spec YAML: `apiVersion` and `kind` identify the schema, `metadata.name` becomes the app's ID, and `spec` is where you describe what to run and how it should behave. Typical `spec` fields include `image` (container), `replicas` (how many), `ports`/`service` (how traffic reaches it), `health` checks, plus optional sections like `ingress`, `resources`, `security`, `storage`, and `configRefs`/`secretRefs` for configuration.
+Pick a sample and apply it. In read-only mode the UI shows the exact CLI you can run locally. Each example is a `Deployment` spec YAML (k1s native; `kind: App` still works but is deprecated): `apiVersion` and `kind` identify the schema, `metadata.name` becomes the app's ID, and `spec` is where you describe what to run and how it should behave. Typical `spec` fields include `image` (container), `replicas` (how many), `ports`/`service` (how traffic reaches it), `health` checks, plus optional sections like `ingress`, `resources`, `security`, `storage`, and `configRefs`/`secretRefs` for configuration.
 
 - Example:
   - <select id="example-select">
       <option value="echo" selected>echo</option>
+      <option value="shell-demo">shell-demo</option>
       <option value="multi-replica-echo">multi-replica-echo</option>
       <option value="echo-multiport">echo-multiport</option>
       <option value="echo-hpa">echo-hpa</option>
@@ -167,12 +202,82 @@ Live feed of events and logs for your sample app. When sessions are enabled, thi
   <div id="events-sse" class="panel hidden scrollbar-hide" hx-ext="sse" sse-connect="" sse-swap="message" style="height:220px;max-height:220px;overflow:auto;"></div>
 </div>
 
-## D. Scale & Rollout
+## D. Debug Tools (Shell + Port-Forward)
+
+Open an interactive shell or run a lightweight port-forward check. These are Labs‑only features: they require an active session and Controlled Actions enabled.
+
+<div class="panel" id="labs-debug">
+  <div class="row" style="flex-wrap:wrap; gap:10px;">
+    <button id="btn-labs-shell" disabled>Open Remote Shell</button>
+    <button id="btn-labs-pf" disabled>Open Port-Forward</button>
+    <span class="muted">Uses apishim WebSocket exec + port-forward.</span>
+  </div>
+  <div class="muted" style="margin-top:6px;">If disabled, run locally: <code>ae shell &lt;app&gt;</code> (defaults to sh; use <code>-- bash</code> when available), add <code>-n &lt;ns&gt;</code> if needed, or use <code>kubectl exec</code> / <code>kubectl port-forward</code>.</div>
+</div>
+
+<div id="labs-shell-modal" class="labs-modal hidden" role="dialog" aria-modal="true" aria-labelledby="labs-shell-title">
+  <div class="modal">
+    <div class="modal-header">
+      <strong id="labs-shell-title">Remote Shell</strong>
+      <button id="labs-shell-close" type="button">Close</button>
+    </div>
+    <div class="modal-body">
+      <div class="row" style="flex-wrap:wrap; gap:10px; margin-bottom:10px;">
+        <label>Pod <select id="labs-shell-pod"></select></label>
+        <label>Container <input id="labs-shell-container" type="text" placeholder="optional" /></label>
+        <label>Command <input id="labs-shell-cmd" type="text" value="sh" /></label>
+        <label>Shim API <input id="labs-shell-base" type="text" placeholder="http://127.0.0.1:8443" /></label>
+        <label>Token <input id="labs-shell-token" type="password" placeholder="apishim token" /></label>
+      </div>
+      <div id="labs-shell-terminal" class="terminal-wrap"></div>
+      <div class="row" style="margin-top:10px; gap:8px; align-items:center;">
+        <button id="labs-shell-connect" type="button">Connect</button>
+        <button id="labs-shell-disconnect" type="button">Disconnect</button>
+        <span id="labs-shell-status" class="pill"></span>
+        <span class="hint">WebSocket exec (v5.channel.k8s.io).</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="labs-pf-modal" class="labs-modal hidden" role="dialog" aria-modal="true" aria-labelledby="labs-pf-title">
+  <div class="modal">
+    <div class="modal-header">
+      <strong id="labs-pf-title">Port-Forward (WS)</strong>
+      <button id="labs-pf-close" type="button">Close</button>
+    </div>
+    <div class="modal-body">
+      <div class="row" style="flex-wrap:wrap; gap:10px; margin-bottom:10px;">
+        <label>Pod <select id="labs-pf-pod"></select></label>
+        <label>Port <input id="labs-pf-port" type="text" placeholder="8080" /></label>
+        <label>Shim API <input id="labs-pf-base" type="text" placeholder="http://127.0.0.1:8443" /></label>
+        <label>Token <input id="labs-pf-token" type="password" placeholder="apishim token" /></label>
+      </div>
+      <div class="row" style="gap:10px; flex-wrap:wrap;">
+        <label style="flex:1 1 320px;">Request
+          <textarea id="labs-pf-request" rows="4" style="width:100%;">GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n</textarea>
+        </label>
+        <label style="flex:1 1 320px;">Response
+          <textarea id="labs-pf-response" rows="4" style="width:100%;" readonly></textarea>
+        </label>
+      </div>
+      <div class="row" style="margin-top:10px; gap:8px; align-items:center;">
+        <button id="labs-pf-connect" type="button">Connect</button>
+        <button id="labs-pf-send" type="button">Send Request</button>
+        <button id="labs-pf-disconnect" type="button">Disconnect</button>
+        <span id="labs-pf-status" class="pill"></span>
+        <span class="hint">WebSocket port-forward (portforward.k8s.io).</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+## E. Scale & Rollout
 
 Try increasing replicas or enabling a tiny canary rollout. These buttons become active after a session starts and actions are enabled.
 
 - Scale to 2/3: updates the app's desired replica count. The controller reconciles containers until readyReplicas matches the new spec. Watch the status badge and events to see the change propagate.
-- Canary 10%: enables a canary rollout policy and shifts a small portion of traffic to a new revision. This is a safe way to test changes with limited impact. You can later fine‑tune weight in "F. Rollout Controls" or revert to 0%.
+- Canary 10%: enables a canary rollout policy and shifts a small portion of traffic to a new revision. This is a safe way to test changes with limited impact. You can later fine‑tune weight in "G. Rollout Controls" or revert to 0%.
 - Requirements: an active session, "Enable Controlled Actions" toggled on, and an example applied (e.g., echo).
 
 How to read canary results: a canary is not a separate app. It is a new revision of the same app created when the manifest changes. The base revision is the previous spec, the canary revision is the latest. If you only toggle canary, both revisions may run the same image and look identical — make a small change (like `spec.image` or an env value) to see a visible difference. The dashboard shows the base vs canary revision IDs in “Canary routes to revision” below.
@@ -207,7 +312,7 @@ spec:
 - Scaling edits only `spec.replicas`; the current image revision stays the same.
 - Canary weights bias routing between the old and new revision; readiness gates still apply before traffic shifts.
 - Canary actions bump replicas to at least 2 so the dashboard shows a distinct canary revision.
-- To fully roll forward, increase weight gradually (see section "F. Rollout Controls"). To roll back, set weight to 0 or re‑apply the previous image.
+- To fully roll forward, increase weight gradually (see section "G. Rollout Controls"). To roll back, set weight to 0 or re‑apply the previous image.
 
 ### Verifiers
 
@@ -215,14 +320,14 @@ spec:
 - Metrics present for app: <span id="v-scale-metrics" data-v="pending">pending</span>
 - Canary routes to revision: <span id="canary-revision">n/a</span> (base: <span id="canary-base">n/a</span>)
 
-## E. Ingress Test
+## F. Ingress Test
 
 - Open App: <a id="ingress-link" href="#" target="_blank" rel="noopener">(disabled)</a>
 - Last check: <span id="ingress-check">n/a</span>
 - DNS hint: <code id="ingress-hosts-hint"></code> <button id="ingress-hosts-copy" disabled>Copy</button>
 - Direct curl (no hosts):<br/><code id="ingress-curl"></code> <button id="ingress-curl-copy" disabled>Copy</button>
 
-## F. Rollout Controls
+## G. Rollout Controls
 
 Advanced controls you can ignore on your first run. Use the slider to choose a small weight, then "Apply" to shift a portion of traffic to the canary image.
 
@@ -231,7 +336,7 @@ Advanced controls you can ignore on your first run. Use the slider to choose a s
 - Canary weight: <input type="range" id="canary-weight" min="0" max="10" step="1" value="3"/> <span id="canary-weight-val">3</span>
 - <button id="btn-canary-apply" disabled>Apply Canary Weight</button>
 
-## G. Reset
+## H. Reset
 
 - <button id="btn-reset" type="button">Reset Session</button>
 
@@ -240,8 +345,11 @@ Advanced controls you can ignore on your first run. Use the slider to choose a s
 <details>
 <summary><strong>Final Notes</strong></summary>
 
-- Controlled actions require the dev-only orchestrator to be enabled (`AE_LABS=1`) and proxied by Caddy.
-- Backends: Auto detection prefers k1s-in-Docker when the compose stack is up, otherwise k1s-Host; k3s engages if a k3d cluster is detected or allowed to auto-provision.
+- If you see “Labs: unavailable”, you are in read‑only mode. To unlock Apply/Scale/Shell, start the controller with `AE_LABS=1`, set `AE_LABS_TOKEN`, then toggle “Enable Controlled Actions” and click “Use Token” + “Start Session”.
+- “Open App” only appears when the example defines `spec.ingress`. If it is blank, pick an ingress example (echo) or use the shell/port‑forward tools instead.
+- If the app host does not resolve, copy the DNS hint into your hosts file or use the Direct curl line in section F.
+- If logs/events look empty, switch Status to “App” after applying an example; cluster mode only shows totals.
+- Auto backend prefers k1s‑in‑Docker when compose is running, otherwise k1s‑host. Override the backend if the banner does not match what you started.
 
 </details>
 

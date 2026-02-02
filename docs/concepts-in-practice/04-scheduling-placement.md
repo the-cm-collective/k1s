@@ -1,4 +1,4 @@
-# Chapter 03 - Scheduling and Placement (Where Work Runs)
+# Chapter 04 - Scheduling & Placement
 
 ## Concept
 Scheduling is the process of deciding where workloads run. It is not just "pick a node," but "pick a node that satisfies constraints." Placement becomes part of correctness when storage, network policy, or affinity rules are involved.
@@ -7,7 +7,7 @@ Scheduling is the process of deciding where workloads run. It is not just "pick 
 flowchart TB
   Workload[Workload spec] --> Filters[Eligibility filters]
   Filters -->|ready + not cordoned| Eligible[Eligible nodes]
-  Eligible -->|spread| Placement[Replica placement plan]
+  Eligible -->|spread| Placement[Pod placement plan]
   Placement --> Runtime[Runtime execution]
 ```
 
@@ -28,7 +28,7 @@ flowchart LR
 ```
 
 ### Design
-k1s implements a lightweight scheduler that filters nodes by readiness, cordon status, nodeSelector, taints/tolerations, and then spreads replicas round-robin. If storage is declared, it pins placement to one node to avoid cross-node volume assumptions. When no nodes qualify, it falls back to the local runtime so single-node setups remain usable.
+k1s implements a lightweight scheduler that filters nodes by readiness, cordon status, nodeSelector, taints/tolerations, and then spreads pods round-robin. If storage is declared, it pins placement to one node to avoid cross-node volume assumptions. When no nodes qualify, it falls back to the local runtime so single-node setups remain usable.
 
 ```mermaid
 flowchart TB
@@ -56,15 +56,15 @@ flowchart TB
 ```
 
 ## Key Terms and Acronyms
-- Scheduler - Component that decides placement for replicas.
+- Scheduler - Component that decides placement for pods.
 - Node - Execution target for workloads.
 - Cordon - Mark a node unschedulable.
 - Taint - Node attribute that repels workloads unless tolerated.
 - Toleration - Workload exception allowing tainted nodes.
 - nodeSelector - Label-based placement constraint.
-- Topology spread - Rule to distribute replicas across domains.
-- Placement - The chosen nodes for replicas.
-- Replica - A single instance of a workload.
+- Topology spread - Rule to distribute pods across domains.
+- Placement - The chosen nodes for pods.
+- Pod - A single instance of a workload.
 
 ## Commands (copy/paste)
 ```bash
@@ -83,12 +83,12 @@ python -m ae.cli events echo --limit 20
 - Site: `docs/site/concepts.html`
 
 ## Code references (walkthrough anchors)
-- Scheduler placement logic: `src/ae/controller/scheduler.py:37`
+- Scheduler placement logic: `src/ae/controller/scheduler.py:61`
 ```py
     def plan(self, manifest: AppManifest, revision: int) -> tuple[list[Placement], list[str]]:
         desired = int(manifest.spec.replicas)
         app_name = app_key_for_manifest(manifest)
-        replica_ids = [f"{app_name}-rev{revision}-{i}" for i in range(desired)]
+        pod_names = [f"{app_name}-rev{revision}-{i}" for i in range(desired)]
         ...
         for node, status in nodes:
             if bool(getattr(node, "cordoned", False)):
@@ -103,7 +103,7 @@ python -m ae.cli events echo --limit 20
 
         if not eligible:
             warnings.append("no eligible nodes; falling back to local runtime")
-            return [Placement(node=None, agent_url=None, replica_ids=replica_ids)], warnings
+            return [Placement(node=None, agent_url=None, pod_names=pod_names)], warnings
         ...
         # Round-robin placement across eligible nodes.
 ```
@@ -137,6 +137,5 @@ python -m ae.cli events echo --limit 20
     )
 ```
 ## Chapter navigation
-- Prev: [Chapter 02 - Declarative Specs and Apply Semantics](concepts-in-practice-02-declarative-apply.html)
-- Next: [Chapter 04 - Runtime Adapters and Container Execution](concepts-in-practice-04-runtime-adapters.html)
-
+- Prev: [Chapter 03 - Runtime Adapters & Container Execution](concepts-in-practice-03-runtime-adapters.html)
+- Next: [Chapter 05 - Observability: Logs, Metrics, Events](concepts-in-practice-05-observability.html)

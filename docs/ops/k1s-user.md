@@ -22,6 +22,8 @@ This document standardizes how we create and manage the `k1s` service user for b
   - `adm` (Debian/Ubuntu): read some files under `/var/log`. Not needed if journald is sufficient.
 - Optional (Docker runtime)
   - `docker`: grants access to `/var/run/docker.sock` so Docker can be used without sudo.
+- Optional (CRI/containerd runtime)
+  - Access to `/run/containerd/containerd.sock` (typically root‑owned); run as root or grant socket access via group/ACL if you want CRI without sudo.
 - Not required
   - No special `podman` group is needed; Podman rootless works per‑user.
   - `netdev` is not required for rootless networking (handled by `slirp4netns`).
@@ -134,4 +136,3 @@ Pair the rule with a small root‑owned helper that performs only the trust upda
 - We avoid blanket sudo by default; Docker access is gated by membership in `docker`.
 - For Podman, the `fuse` group is a safe compatibility addition across hosts that restrict `/dev/fuse`.
 - Certificate trust is user‑scoped unless there is a clear operational need for system‑wide updates.
-

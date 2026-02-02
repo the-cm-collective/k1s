@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ae"
-version = "0.1.1"
+version = "0.1.2"
 description = "Minimal application engine controller prototype"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -34,8 +34,14 @@ ae-rotate-certs = "ae.cli.rotate_certs:main"
 k1s = "ae.kctl.__main__:main"
 ae-node = "ae.node.server:main"
 
+[tool.ae]
+version_codename = "Snow Moon"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+"ae.resources" = ["**/*.html", "**/*.md", "**/*.txt", "**/*.sql"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.in"]}

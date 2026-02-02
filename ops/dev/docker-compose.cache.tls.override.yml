@@ -1,0 +1,7 @@
+services:
+  registry:
+    environment:
+      REGISTRY_HTTP_TLS_CERTIFICATE: /certs/registry.crt
+      REGISTRY_HTTP_TLS_KEY: /certs/registry.key
+    volumes:
+      - ../../state/registry-certs:/certs:ro

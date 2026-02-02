@@ -1,17 +1,17 @@
-# Chapter 02 - Declarative Specs and Apply Semantics
+# Chapter 02 - Declarative Specs & Apply
 
 ## Concept
 Declarative specs describe the desired outcome, not the step-by-step procedure. Applying a spec should be safe, repeatable, and converge the system to the same state regardless of prior actions. That is why apply is the primary interface: it merges intent into the system's source of truth.
 
 ```mermaid
 flowchart LR
-  YAML[YAML spec] --> Validate[Schema validation]
-  Validate --> Manifest[AppManifest]
-  Manifest --> Hash[Spec hash]
-  Hash --> Changed{Spec changed?}
-  Changed -- yes --> Revision[Create revision]
-  Revision --> Reconcile[Reconcile to runtime]
-  Changed -- no --> Noop[No-op apply]
+  YAML["YAML spec"] --> Validate["Schema validation"]
+  Validate --> Manifest["AppManifest"]
+  Manifest --> Hash["Spec hash"]
+  Hash --> Changed{"Spec changed"}
+  Changed -- yes --> Revision["Create revision"]
+  Revision --> Reconcile["Reconcile to runtime"]
+  Changed -- no --> Noop["No-op apply"]
 ```
 
 ### Theory
@@ -19,13 +19,14 @@ Declarative systems treat configuration as data. The "apply" operation is a reco
 
 ```mermaid
 flowchart TB
-  Apply[ae apply] --> Load[Load YAML documents]
-  Load --> Detect{k8s kinds?}
-  Detect -- yes --> Convert[k8s -> AppManifest]
-  Detect -- no --> Native[Native App manifest]
-  Convert --> Store[Store revision]
+  Apply["ae apply"] --> Load["Load YAML documents"]
+  Load --> Namespace["Apply namespace override"]
+  Namespace --> Detect{"k8s kinds"}
+  Detect -- yes --> Convert["k8s to AppManifest"]
+  Detect -- no --> Native["Native App manifest"]
+  Convert --> Store["Store revision"]
   Native --> Store
-  Store --> Reconcile[Reconcile]
+  Store --> Reconcile["Reconcile"]
 ```
 
 ### Design
@@ -33,12 +34,12 @@ k1s validates YAML into a strict schema, normalizes it, and computes a hash to d
 
 ```mermaid
 flowchart LR
-  SpecV1[Spec v1] --> Hash1[Hash A]
-  SpecV1 --> Apply1[Apply]
-  Apply1 --> Rev1[Revision 1]
-  SpecV1 --> Apply2[Apply again]
+  SpecV1["Spec v1"] --> Hash1["Hash A"]
+  SpecV1 --> Apply1["Apply"]
+  Apply1 --> Rev1["Revision 1"]
+  SpecV1 --> Apply2["Apply again"]
   Apply2 --> Hash1
-  Hash1 --> NoNewRev[No new revision]
+  Hash1 --> NoNewRev["No new revision"]
 ```
 
 ### Application
@@ -46,12 +47,12 @@ For developers, the spec is the API. Keep specs in version control, edit them fo
 
 ```mermaid
 flowchart LR
-  Edit[Edit spec] --> Apply[ae apply]
-  Apply --> Hash[Spec hash]
-  Hash --> Changed{Changed?}
-  Changed -- yes --> NewRev[New revision]
-  NewRev --> Reconcile[Reconcile]
-  Changed -- no --> Noop[No-op apply]
+  Edit["Edit spec"] --> Apply["ae apply"]
+  Apply --> Hash["Spec hash"]
+  Hash --> Changed{"Changed"}
+  Changed -- yes --> NewRev["New revision"]
+  NewRev --> Reconcile["Reconcile"]
+  Changed -- no --> Noop["No-op apply"]
 ```
 
 ## Key Terms and Acronyms
@@ -69,7 +70,8 @@ flowchart LR
 ## Commands (copy/paste)
 ```bash
 python -m ae.cli apply -f specs/examples/echo.yaml
-python -m ae.cli status echo --wide
+python -m ae.cli apply -n demo --force-namespace -f specs/examples/echo.yaml
+python -m ae.cli status -n demo echo --wide
 python -m ae.cli events echo --limit 20
 ```
 
@@ -143,6 +145,5 @@ spec:
       containerPort: 8080
 ```
 ## Chapter navigation
-- Prev: [Chapter 01 - Desired State and Reconciliation Loops](concepts-in-practice-01-desired-state-reconciliation.html)
-- Next: [Chapter 03 - Scheduling and Placement (Where Work Runs)](concepts-in-practice-03-scheduling-placement.html)
-
+- Prev: [Chapter 01 - Desired State & Reconciliation](concepts-in-practice-01-desired-state-reconciliation.html)
+- Next: [Chapter 03 - Runtime Adapters & Container Execution](concepts-in-practice-03-runtime-adapters.html)

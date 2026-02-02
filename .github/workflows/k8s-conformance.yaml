@@ -10,8 +10,39 @@ jobs:
   conformance:
     runs-on: ubuntu-latest
     steps:
+      - name: Trust Gitea cert (or disable verify)
+        run: |
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+          fi
       - uses: actions/checkout@v4
+      - name: Create venv (local act)
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          . .venv/bin/activate
+          python -m pip install -U pip
+      - name: Configure Docker client (insecure TLS fallback)
+        run: |
+          if [ -S /var/run/docker.sock ]; then
+            echo "DOCKER_HOST=unix:///var/run/docker.sock" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_VERIFY=0" >> "$GITHUB_ENV"
+            echo "DOCKER_CERT_PATH=" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_CERTDIR=" >> "$GITHUB_ENV"
+          elif [ -d /certs/client ]; then
+            echo "DOCKER_HOST=tcp://docker:2376" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_VERIFY=0" >> "$GITHUB_ENV"
+            echo "DOCKER_CERT_PATH=/certs/client" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_CERTDIR=" >> "$GITHUB_ENV"
+          fi
       - uses: actions/setup-python@v5
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
         with:
           python-version: '3.12'
       - name: Install deps
@@ -38,8 +69,8 @@ jobs:
   k3s:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
         with:
           python-version: '3.12'
       - name: Install deps
