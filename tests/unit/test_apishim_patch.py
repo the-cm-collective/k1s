@@ -376,6 +376,50 @@ def test_app_crd_validation_accepts_valid(tmp_path, monkeypatch):
     shim_server.ShimHandler._unregister_crd("apps.ae.dev")
 
 
+def test_app_crd_validation_warns_allows_invalid(tmp_path, monkeypatch):
+    store = ObjectStore(tmp_path / "apishim.db")
+    monkeypatch.setenv("AE_APISHIM_TOKEN", "a")
+    shim_server.ShimHandler.admin_token = "a"
+    shim_server.ShimHandler.read_token = None
+    shim_server.ShimHandler.rbac_enabled = False
+    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda _self: None)
+    _register_app_crd(store)
+    doc = {
+        "apiVersion": "ae.dev/v1alpha1",
+        "kind": "App",
+        "metadata": {"name": "warn-bad"},
+        "spec": {},  # missing required image
+    }
+    body = json.dumps(doc).encode()
+    req = make_handler(
+        "/apis/ae.dev/v1alpha1/namespaces/default/apps",
+        method="POST",
+        headers={"Authorization": "Bearer a", "Content-Type": "application/json"},
+        body=body,
+    )
+    handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
+    handler.path = req.path
+    handler.command = req.command
+    handler.headers = req.headers
+    handler.server = SimpleNamespace(store=store, state=store, runtime=None)
+    handler.store = store
+    handler.state = None
+    handler.request_version = "HTTP/1.1"
+    handler.requestline = f"{handler.command} {handler.path} HTTP/1.1"
+    handler.rfile = BytesIO(body)
+    handler.wfile = BytesIO()
+    orig_mode = shim_server.ShimHandler.app_admission_mode
+    shim_server.ShimHandler.app_admission_mode = "warn"
+    try:
+        handler.do_POST()
+    finally:
+        shim_server.ShimHandler.app_admission_mode = orig_mode
+    assert 201 in handler.responses
+    stored = store.get("ae.dev", "v1alpha1", "apps", "default", "warn-bad")
+    assert stored is not None
+    shim_server.ShimHandler._unregister_crd("apps.ae.dev")
+
+
 def test_deployment_injects_sa_projection(tmp_path, monkeypatch):
     store = ObjectStore(tmp_path / "apishim.db")
     monkeypatch.setenv("AE_APISHIM_TOKEN", "a")

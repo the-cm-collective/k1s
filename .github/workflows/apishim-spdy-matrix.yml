@@ -1,0 +1,97 @@
+name: apishim-spdy-matrix
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+jobs:
+  spdy-matrix:
+    if: ${{ env.GITEA_ACTIONS != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [docker, podman]
+        include:
+          - runtime: docker
+            allow_failure: false
+          - runtime: podman
+            allow_failure: true
+    continue-on-error: ${{ matrix.allow_failure }}
+    steps:
+      - name: Trust Gitea cert (or disable verify)
+        run: |
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v4
+      - name: Create venv (local act)
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          . .venv/bin/activate
+          python -m pip install -U pip
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e .[dev]
+      - name: Install kubectl
+        run: |
+          curl -L https://dl.k8s.io/release/v1.30.3/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl
+          chmod +x /usr/local/bin/kubectl
+      - name: Install k9s
+        if: ${{ env.ACT != 'true' }}
+        run: |
+          curl -L https://github.com/derailed/k9s/releases/latest/download/k9s_Linux_amd64.tar.gz -o /tmp/k9s.tgz
+          tar -xzf /tmp/k9s.tgz -C /usr/local/bin k9s
+          chmod +x /usr/local/bin/k9s
+      - name: Install podman
+        if: ${{ matrix.runtime == 'podman' && env.ACT != 'true' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+      - name: Configure Docker client
+        if: matrix.runtime == 'docker'
+        run: |
+          if [ -S /var/run/docker.sock ]; then
+            echo "DOCKER_HOST=unix:///var/run/docker.sock" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_VERIFY=" >> "$GITHUB_ENV"
+            echo "DOCKER_CERT_PATH=" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_CERTDIR=" >> "$GITHUB_ENV"
+          elif [ -d /certs/client ]; then
+            echo "DOCKER_HOST=tcp://docker:2376" >> "$GITHUB_ENV"
+            # Trust the runner CA for TLS.
+            echo "DOCKER_TLS_VERIFY=1" >> "$GITHUB_ENV"
+            echo "DOCKER_CERT_PATH=/certs/client" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_CERTDIR=/certs" >> "$GITHUB_ENV"
+          fi
+      - name: Run SPDY matrix
+        if: ${{ env.ACT != 'true' || matrix.runtime != 'podman' }}
+        env:
+          AE_APISHIM_RUNTIME: ${{ matrix.runtime }}
+          K9S_SMOKE: "1"
+          K9S_SMOKE_ALLOW_FAIL: ${{ matrix.allow_failure && '1' || '0' }}
+        run: |
+          scripts/dev/apishim_spdy_matrix_run.sh
+      - name: Docker TLS diagnostics
+        if: failure() && matrix.runtime == 'docker'
+        run: |
+          echo "=== docker env ==="
+          env | sort | grep -E '^DOCKER_|^AE_DOCKER_TLS_INSECURE' || true
+          echo "=== /certs/client ==="
+          ls -la /certs/client || true
+          echo "=== docker info ==="
+          docker info || true

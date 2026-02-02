@@ -24,12 +24,19 @@ jobs:
           if [ -n "${GITEA_CA_B64:-}" ]; then
             echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
             git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
           else
             git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
           fi
-      - uses: actions/checkout@v3
-        env:
-          GIT_SSL_NO_VERIFY: "true"
+      - uses: actions/checkout@v4
+      - name: Create venv (local act)
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          . .venv/bin/activate
+          python -m pip install -U pip
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -54,12 +61,39 @@ jobs:
         env:
           AE_APISHIM_ENABLE: "1"
           AE_APISHIM_ALLOW_ANON: "1"
+          AE_APISHIM_ADAPTER: "1"
+          AE_APISHIM_SPDY_DEBUG: "1"
+          AE_APISHIM_PF_DEBUG: "1"
           AE_RUNTIME_BACKEND: "stub"
+          AE_STUB_BACKEND_HOST: "127.0.0.1"
+          AE_STUB_BACKEND_PORT: "8081"
+          AE_REGISTER_LOCAL_NODE: "1"
           PYTHONPATH: "src"
         run: |
+          rm -f /tmp/pf-debug.txt
           python -m ae.apishim serve --host 127.0.0.1 --port 8445 --allow-anonymous >/tmp/apishim-ci.log 2>&1 &
           echo $! >/tmp/apishim.pid
-          sleep 3
+          sleep 1
+      - name: Wait for apishim ready
+        run: |
+          ready=0
+          for _i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8445/version >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            if [ -f /tmp/apishim.pid ] && ! kill -0 "$(cat /tmp/apishim.pid)" >/dev/null 2>&1; then
+              echo "apishim exited before becoming ready"
+              tail -n 200 /tmp/apishim-ci.log || true
+              exit 1
+            fi
+            sleep 0.5
+          done
+          if [ "${ready}" != "1" ]; then
+            echo "apishim did not become ready"
+            tail -n 200 /tmp/apishim-ci.log || true
+            exit 1
+          fi
       - name: Apply manifest (skip validation)
         run: |
           cat <<'YAML' > /tmp/pf-deploy.yaml
@@ -95,18 +129,50 @@ jobs:
               targetPort: 80
           YAML
           kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify --validate=false apply -f /tmp/pf-deploy.yaml
+      - name: Wait for pod
+        run: |
+          pod=""
+          for _i in $(seq 1 60); do
+            pod="$(kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify get pods -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+            if [ -n "${pod}" ]; then
+              echo "pod: ${pod}"
+              echo "POD_NAME=${pod}" >> "$GITHUB_ENV"
+              break
+            fi
+            sleep 0.5
+          done
+          if [ -z "${pod}" ]; then
+            echo "no pod found"
+            kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify get pods -o wide || true
+            exit 1
+          fi
       - name: Port-forward and curl
         run: |
-          kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify port-forward deploy/pf-echo 18080:80 >/tmp/pf.log 2>&1 &
+          kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify port-forward "pod/${POD_NAME}" 18080:80 >/tmp/pf.log 2>&1 &
           PF_PID=$!
-          sleep 3
-          curl -fsS http://127.0.0.1:18080 >/dev/null
-          kill $PF_PID || true
+          ok=0
+          for _i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080 >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
+            if ! kill -0 "${PF_PID}" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 0.5
+          done
+          if [ "${ok}" != "1" ]; then
+            echo "port-forward failed to become ready"
+            tail -n 200 /tmp/pf.log || true
+            exit 1
+          fi
+          kill "${PF_PID}" || true
       - name: Show logs on failure
         if: failure()
         run: |
           echo \"=== apishim ===\" && cat /tmp/apishim-ci.log || true
           echo \"=== port-forward ===\" && cat /tmp/pf.log || true
+          echo \"=== pf-debug ===\" && cat /tmp/pf-debug.txt || true
           echo \"=== echo-server ===\" && cat /tmp/echo-server.log || true
       - name: Stop shim/server
         if: always()

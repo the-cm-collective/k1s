@@ -2,32 +2,34 @@ name: apishim-live-openapi
 
 on:
   push:
-    paths:
-      - "src/**"
-      - "scripts/**"
-      - "docs/openapi/**"
-      - "API-COMPAT.md"
-      - ".github/workflows/apishim-live-openapi.yml"
+    branches: ["main"]
   pull_request:
-    paths:
-      - "src/**"
-      - "scripts/**"
-      - "docs/openapi/**"
-      - "API-COMPAT.md"
-      - ".github/workflows/apishim-live-openapi.yml"
+    branches: ["main"]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * *"
 
 jobs:
   live-openapi:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    env:
-      NO_PROXY: "127.0.0.1,localhost"
-      HTTP_PROXY: ""
-      HTTPS_PROXY: ""
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: local
+            runtime: stub
+            pg_port: 5432
+          - target: local
+            runtime: docker
+            pg_port: 5433
+          - target: external
+            runtime: stub
+            pg_port: 5434
     services:
       postgres:
         image: postgres:15
-        ports: ["5432:5432"]
+        ports: ["${{ matrix.pg_port }}:5432"]
         env:
           POSTGRES_PASSWORD: shim
           POSTGRES_USER: shim
@@ -35,27 +37,64 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U shim -d shim" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      AE_APISHIM_DSN: postgresql://shim:shim@localhost:5432/shim
-      AE_STATE_DSN: postgresql://shim:shim@localhost:5432/shim
+      NO_PROXY: "127.0.0.1,localhost"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      AE_APISHIM_DSN: postgresql://shim:shim@localhost:${{ matrix.pg_port }}/shim
+      AE_STATE_DSN: postgresql://shim:shim@localhost:${{ matrix.pg_port }}/shim
       APISHIM_LIVE_ARTIFACT_DIR: /tmp/apishim-live
-      APISHIM_LIVE_RUNTIME: stub
+      APISHIM_LIVE_RUNTIME: ${{ matrix.runtime }}
       APISHIM_LIVE_TOKEN: live-ci
       APISHIM_LIVE_NAMESPACE: apishim-live
-      APISHIM_KIND_CLUSTER: ${{ vars.APISHIM_KIND_CLUSTER }}
-      APISHIM_LIVE_KUBECONFIG_B64: ${{ secrets.APISHIM_LIVE_KUBECONFIG_B64 }}
-      KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+      APISHIM_KIND_CLUSTER: ${{ matrix.target == 'external' && vars.APISHIM_KIND_CLUSTER || '' }}
+      APISHIM_LIVE_KUBECONFIG_B64: ${{ matrix.target == 'external' && secrets.APISHIM_LIVE_KUBECONFIG_B64 || '' }}
+      KUBECONFIG_B64: ${{ matrix.target == 'external' && secrets.KUBECONFIG_B64 || '' }}
     steps:
+      - name: Gate external target when config missing
+        run: |
+          if [ "${{ matrix.target }}" = "external" ] \
+            && [ -z "${APISHIM_LIVE_KUBECONFIG_B64:-}" ] \
+            && [ -z "${APISHIM_KIND_CLUSTER:-}" ]; then
+            echo "SKIP_LIVE_OPENAPI=1" >> "$GITHUB_ENV"
+            echo "Skipping external live OpenAPI: no kubeconfig or kind cluster provided."
+          fi
+          if [ "${{ matrix.runtime }}" = "docker" ] && [ "${ACT:-}" = "true" ]; then
+            echo "SKIP_LIVE_OPENAPI=1" >> "$GITHUB_ENV"
+            echo "Skipping docker runtime on act: docker daemon unavailable in act containers."
+          fi
+      - name: Configure DSN for Gitea services
+        run: |
+          if [ "${GITEA_ACTIONS:-}" = "true" ]; then
+            echo "AE_APISHIM_DSN=postgresql://shim:shim@postgres:5432/shim" >> "$GITHUB_ENV"
+            echo "AE_STATE_DSN=postgresql://shim:shim@postgres:5432/shim" >> "$GITHUB_ENV"
+            echo "Using postgres service hostname for DSN on Gitea Actions."
+          fi
       - name: Trust Gitea cert (or disable verify)
+        id: trust-gitea
         run: |
           if [ -n "${GITEA_CA_B64:-}" ]; then
             echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
             git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "git_ssl_cainfo=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_OUTPUT"
+            echo "git_ssl_no_verify=" >> "$GITHUB_OUTPUT"
           else
             git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "git_ssl_cainfo=" >> "$GITHUB_OUTPUT"
+            echo "git_ssl_no_verify=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         env:
-          GIT_SSL_NO_VERIFY: "true"
+          GIT_SSL_NO_VERIFY: ${{ steps.trust-gitea.outputs.git_ssl_no_verify }}
+          GIT_SSL_CAINFO: ${{ steps.trust-gitea.outputs.git_ssl_cainfo }}
+      - name: Create venv (local act)
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          . .venv/bin/activate
+          python -m pip install -U pip
       - uses: actions/setup-python@v4
         with:
           python-version: "3.12"
@@ -94,6 +133,19 @@ jobs:
           curl -Lo "$HOME/.local/bin/kind" https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
           chmod +x "$HOME/.local/bin/kind"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Configure Docker client (insecure TLS fallback)
+        run: |
+          if [ -S /var/run/docker.sock ]; then
+            echo "DOCKER_HOST=unix:///var/run/docker.sock" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_VERIFY=0" >> "$GITHUB_ENV"
+            echo "DOCKER_CERT_PATH=" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_CERTDIR=" >> "$GITHUB_ENV"
+          elif [ -d /certs/client ]; then
+            echo "DOCKER_HOST=tcp://docker:2376" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_VERIFY=0" >> "$GITHUB_ENV"
+            echo "DOCKER_CERT_PATH=/certs/client" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_CERTDIR=" >> "$GITHUB_ENV"
+          fi
       - name: Materialize provided kubeconfig (optional)
         if: env.APISHIM_LIVE_KUBECONFIG_B64 != '' || env.KUBECONFIG_B64 != ''
         run: |
@@ -104,13 +156,15 @@ jobs:
           echo "$src" | base64 -d > /tmp/live-kubeconfig
           echo "APISHIM_LIVE_KUBECONFIG=/tmp/live-kubeconfig" >> $GITHUB_ENV
       - name: Run live OpenAPI gate
+        if: env.SKIP_LIVE_OPENAPI != '1'
         env:
           APISHIM_LIVE_KUBECONFIG: ${{ env.APISHIM_LIVE_KUBECONFIG }}
         run: bash scripts/ci/apishim-live-openapi.sh
       - name: Upload live OpenAPI artifacts
+        if: env.SKIP_LIVE_OPENAPI != '1' && env.ACT != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: apishim-live-openapi
+          name: apishim-live-openapi-${{ matrix.target }}-${{ matrix.runtime }}
           path: /tmp/apishim-live
       - name: Show logs on failure
         if: failure()

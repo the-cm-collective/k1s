@@ -1,16 +1,34 @@
+"""CLI entry point for the Kubernetes API shim (serve, kubeconfig, migrate)."""
+
 from __future__ import annotations
 
 import argparse
 import os
 import sys
 
-from .server import run_server
+from ae.observability.logging import configure_logging
+
+
+def _touch_stream_log() -> None:
+    path = os.getenv("AE_APISHIM_SPDY_LOG", "").strip()
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("APISHIM stream log init\n")
+    except Exception:
+        # Best-effort logging; don't block startup.
+        return
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
     token = args.token or os.getenv("AE_APISHIM_TOKEN")
     if os.getenv("AE_APISHIM_ENABLE") != "1":
         raise SystemExit("AE_APISHIM_ENABLE=1 required to run the API shim")
+    configure_logging(None)
+    _touch_stream_log()
+    from .server import run_server
+
     run_server(
         host=args.host,
         port=args.port,

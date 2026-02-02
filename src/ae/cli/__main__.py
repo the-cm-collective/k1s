@@ -22,6 +22,7 @@ from ae.controller.spec import (
     app_key,
     app_key_for_manifest,
     format_app_ref,
+    normalize_namespace,
     parse_app_ref,
     split_app_key,
 )
@@ -34,6 +35,7 @@ from ae.k8s.validate import validate_documents
 from ae.observability import MetricsService
 from ae.observability.logging import configure_logging
 from ae.runtime import (
+    CRIRuntime,
     DockerRuntime,
     PodmanRuntime,
     RegistryAuthProvider,
@@ -56,16 +58,37 @@ def build_parser() -> argparse.ArgumentParser:
         "--server", default=None, help="Remote API base URL (e.g. http://127.0.0.1:9108)"
     )
     parser.add_argument("--token", default=None, help="Bearer token for remote API auth")
+    parser.add_argument(
+        "-n",
+        "--namespace",
+        default=os.getenv("AE_NAMESPACE"),
+        help="Default namespace for app commands when the name is unqualified (also AE_NAMESPACE)",
+    )
+
+    def _add_namespace_arg(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "-n",
+            "--namespace",
+            default=argparse.SUPPRESS,
+            help="Namespace to operate in when the app name is unqualified (overrides global --namespace)",
+        )
 
     apply_parser = subparsers.add_parser("apply", help="Apply a workload manifest (App)")
+    _add_namespace_arg(apply_parser)
     apply_parser.add_argument("-f", "--file", type=Path, required=True, help="Path to manifest")
     apply_parser.add_argument(
         "--k8s",
         action="store_true",
         help="Treat input as Kubernetes manifests (Deployment/Service/Ingress)",
     )
+    apply_parser.add_argument(
+        "--force-namespace",
+        action="store_true",
+        help="Override metadata.namespace in the manifest(s) with --namespace",
+    )
 
     status_parser = subparsers.add_parser("status", help="Show workload (App) status")
+    _add_namespace_arg(status_parser)
     status_parser.add_argument("name", nargs="?", help="Workload (App) name (omit to list all)")
     status_parser.add_argument(
         "--history", type=int, default=0, help="Show the most recent N probe evaluations"
@@ -91,10 +114,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     logs_parser = subparsers.add_parser("logs", help="Tail workload logs")
+    _add_namespace_arg(logs_parser)
     logs_parser.add_argument("name", help="Workload (App) name")
     logs_parser.add_argument("--follow", action="store_true", help="Stream logs continuously")
     logs_parser.add_argument(
-        "--container", help="Replica selector: index (e.g. 0) or replica id", default=None
+        "--container", help="Pod selector: index (e.g. 0) or pod name", default=None
     )
     logs_parser.add_argument("--revision", type=int, default=None, help="Filter by revision number")
     logs_parser.add_argument(
@@ -114,12 +138,48 @@ def build_parser() -> argparse.ArgumentParser:
 
     # exec: run a command inside a container
     exec_parser = subparsers.add_parser("exec", help="Run a command in a container")
+    _add_namespace_arg(exec_parser)
     exec_parser.add_argument("name", help="Workload (App) name")
     exec_parser.add_argument(
-        "--container", required=False, help="Target container name or replica id"
+        "--container", required=False, help="Target container name or pod name"
     )
+    exec_parser.add_argument(
+        "-i", "--stdin", action="store_true", help="Pass stdin to the container"
+    )
+    exec_parser.add_argument("-t", "--tty", action="store_true", help="Allocate a TTY")
     exec_parser.add_argument("--timeout", type=int, default=None, help="Timeout seconds")
-    exec_parser.add_argument("cmd", nargs=argparse.REMAINDER, help="Command to execute after --")
+    exec_parser.add_argument(
+        "--apishim",
+        default=None,
+        help="API shim base URL for SPDY exec (defaults to AE_APISHIM_SERVER when set)",
+    )
+    exec_parser.add_argument(
+        "--ws-fallback",
+        action="store_true",
+        help="Allow WebSocket exec if SPDY upgrade fails",
+    )
+    exec_parser.add_argument("cmd", nargs="*", help="Command to execute after --")
+
+    shell_parser = subparsers.add_parser("shell", help="Open an interactive shell in a container")
+    _add_namespace_arg(shell_parser)
+    shell_parser.add_argument("name", help="Workload (App) name")
+    shell_parser.add_argument(
+        "--container", required=False, help="Target container name or pod name"
+    )
+    shell_parser.add_argument(
+        "--apishim",
+        default=None,
+        help="API shim base URL for SPDY exec (defaults to AE_APISHIM_SERVER when set)",
+    )
+    shell_parser.add_argument(
+        "--ws-fallback",
+        action="store_true",
+        help="Allow WebSocket exec if SPDY upgrade fails",
+    )
+    tty_group = shell_parser.add_mutually_exclusive_group()
+    tty_group.add_argument("--tty", action="store_true", help="Force TTY on")
+    tty_group.add_argument("--no-tty", action="store_true", help="Disable TTY")
+    shell_parser.add_argument("cmd", nargs="*", help="Shell command after --")
 
     nodes_parser = subparsers.add_parser("nodes", help="List or describe nodes")
     nodes_parser.add_argument("name", nargs="?", help="Node id to describe (omit to list)")
@@ -138,6 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
     certs_parser.add_argument("--json", action="store_true", help="Emit JSON")
 
     rollback_parser = subparsers.add_parser("rollback", help="Rollback a workload revision")
+    _add_namespace_arg(rollback_parser)
     rollback_parser.add_argument("name", help="Workload (App) name")
     rollback_parser.add_argument(
         "--to",
@@ -147,6 +208,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     revisions_parser = subparsers.add_parser("revisions", help="List stored revisions")
+    _add_namespace_arg(revisions_parser)
     revisions_parser.add_argument("name", help="Workload (App) name")
     revisions_parser.add_argument("--limit", type=int, default=10)
 
@@ -206,18 +268,27 @@ def build_parser() -> argparse.ArgumentParser:
     metrics_parser.add_argument("--json", action="store_true", help="Emit JSON output")
 
     events_parser = subparsers.add_parser("events", help="Show recent events")
+    _add_namespace_arg(events_parser)
     events_parser.add_argument("name", help="Workload (App) name")
     events_parser.add_argument("--limit", type=int, default=20)
 
     services_parser = subparsers.add_parser(
         "services", help="List Services (cluster IPs/endpoints)"
     )
+    _add_namespace_arg(services_parser)
     services_parser.add_argument("--json", action="store_true", help="Emit JSON output")
 
     history_parser = subparsers.add_parser("history", help="Show recent probe evaluations")
+    _add_namespace_arg(history_parser)
     history_parser.add_argument("name", help="Workload (App) name")
     history_parser.add_argument("--limit", type=int, default=20)
-    history_parser.add_argument("--replica", default=None, help="Filter by replica id")
+    history_parser.add_argument("--pod", dest="pod", default=None, help="Filter by pod name")
+    history_parser.add_argument(
+        "--replica",
+        dest="pod",
+        default=None,
+        help="Deprecated alias for --pod (filter by pod name)",
+    )
     history_parser.add_argument("--json", action="store_true", help="Emit JSON output")
     history_parser.add_argument(
         "--since", default=None, help="Show entries since a relative duration (e.g., 10m, 2h)"
@@ -255,6 +326,7 @@ def build_parser() -> argparse.ArgumentParser:
     delete_parser = subparsers.add_parser(
         "delete", help="Delete a workload/app (containers + status)"
     )
+    _add_namespace_arg(delete_parser)
     delete_parser.add_argument("name", help="Workload (App) name")
     delete_parser.add_argument(
         "--purge", action="store_true", help="Also purge events and revisions history"
@@ -264,6 +336,7 @@ def build_parser() -> argparse.ArgumentParser:
     scale_parser = subparsers.add_parser(
         "scale", help="Scale a workload/app by reconciling replicas"
     )
+    _add_namespace_arg(scale_parser)
     scale_parser.add_argument("name", help="Workload (App) name")
     scale_parser.add_argument("--replicas", type=int, required=True)
 
@@ -296,7 +369,7 @@ def build_parser() -> argparse.ArgumentParser:
     # plan (dry-run scheduling/placement)
     plan = subparsers.add_parser("plan", help="Dry-run planner for manifest apply")
     plan.add_argument("-f", "--file", type=Path, required=True)
-    plan.add_argument("--verbose", action="store_true", help="Show replica placement details")
+    plan.add_argument("--verbose", action="store_true", help="Show pod placement details")
     plan.add_argument("--strict", action="store_true", help="Treat warnings as errors")
     plan.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
@@ -607,8 +680,10 @@ def build_parser() -> argparse.ArgumentParser:
     rollout_cmd = subparsers.add_parser("rollout", help="Control rollout behavior (pause/resume)")
     rollout_sub = rollout_cmd.add_subparsers(dest="rollout_cmd", required=True)
     r_pause = rollout_sub.add_parser("pause", help="Pause rollout for a workload/app")
+    _add_namespace_arg(r_pause)
     r_pause.add_argument("name", help="Workload (App) name")
     r_resume = rollout_sub.add_parser("resume", help="Resume rollout for a workload/app")
+    _add_namespace_arg(r_resume)
     r_resume.add_argument("name", help="Workload (App) name")
 
     # api tokens helper
@@ -646,6 +721,62 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Optional path to write JSON state with tokens and expiries",
+    )
+
+    # auth helpers
+    auth_cmd = subparsers.add_parser("auth", help="Auth helpers for local/remote setup")
+    auth_sub = auth_cmd.add_subparsers(dest="auth_cmd", required=True)
+    auth_local = auth_sub.add_parser(
+        "local", help="Emit export lines from local env files for CLI use"
+    )
+    auth_local.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        default=None,
+        help="Write exports to this file instead of stdout",
+    )
+    auth_local.add_argument(
+        "--apishim-env",
+        type=Path,
+        default=None,
+        help="Path to apishim env file (default: state/labs/apishim.env)",
+    )
+    auth_local.add_argument(
+        "--controller-env",
+        type=Path,
+        default=None,
+        help="Path to controller env file (default: state/env.sh)",
+    )
+    auth_local.add_argument(
+        "--dev-env",
+        type=Path,
+        default=None,
+        help="Path to dev env file (default: state/dev.env)",
+    )
+    auth_local.add_argument(
+        "--server",
+        default=None,
+        help="Override AE_APISHIM_SERVER value in the output",
+    )
+    auth_local.add_argument(
+        "--apishim-pid",
+        type=Path,
+        default=None,
+        help="Path to apishim pid file (default: state/apishim.pid)",
+    )
+    auth_remote = auth_sub.add_parser("remote", help="Generate fresh tokens for remote setup")
+    auth_remote.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        default=None,
+        help="Write exports to this file instead of stdout",
+    )
+    auth_remote.add_argument(
+        "--no-mutations",
+        action="store_true",
+        help="Do not include AE_API_MUTATIONS=1",
     )
 
     # tls helpers
@@ -701,6 +832,7 @@ def build_parser() -> argparse.ArgumentParser:
     vols = subparsers.add_parser("volumes", help="Inspect storage volumes")
     vols_sub = vols.add_subparsers(dest="vol_cmd", required=True)
     vols_list = vols_sub.add_parser("list", help="List storage volumes (PV-lite)")
+    _add_namespace_arg(vols_list)
     vols_list.add_argument("--app", default=None, help="Filter by app name")
     vols_list.add_argument("--json", action="store_true", help="Emit JSON output")
 
@@ -759,6 +891,8 @@ def runtime_factory(registry_auth: RegistryAuthProvider | None = None) -> Runtim
     backend = os.getenv("AE_RUNTIME_BACKEND", "podman").lower()
     if backend == "stub":
         return StubRuntime()
+    if backend in {"cri", "containerd"}:
+        return CRIRuntime(registry_auth=registry_auth)
     if backend in {"podman", "oci"}:
         try:
             # quick availability check
@@ -1184,15 +1318,24 @@ def main(argv: list[str] | None = None) -> int:
         config_manager=config_manager,
     )
 
+    auth_handler = globals().get("handle_auth")
+    if auth_handler is None:
+
+        def auth_handler(_ns: argparse.Namespace) -> int:
+            print("auth command unavailable in this build")
+            return 2
+
     command_handlers: dict[str, Callable[[argparse.Namespace], int]] = {
         "apply": lambda ns: handle_apply(ns, reconciler, args),
         "status": lambda ns: handle_status(ns, store, args, runtime),
         "logs": lambda ns: handle_logs(ns, store, runtime),
         "exec": lambda ns: handle_exec(ns, store, runtime),
+        "shell": lambda ns: handle_shell(ns, store, runtime),
         "rollback": lambda ns: handle_rollback(ns, store, reconciler),
         "revisions": lambda ns: handle_revisions(ns, store),
         "rollout": lambda ns: handle_rollout(ns, store, reconciler),
         "api": handle_api,
+        "auth": auth_handler,
         "tls": handle_tls,
         "registry": handle_registry,
         "metrics": lambda ns: handle_metrics(ns, store),
@@ -1376,12 +1519,39 @@ def handle_apply(
                 "warning: kind 'App' is deprecated; use kind 'Deployment' (apiVersion: ae.dev/v1alpha1)"
             )
 
+    def _doc_has_namespace(doc: dict) -> bool:
+        meta = doc.get("metadata")
+        if not isinstance(meta, dict):
+            return False
+        ns = meta.get("namespace")
+        return bool(str(ns).strip()) if ns is not None else False
+
+    def _apply_namespace_override(
+        docs: list[dict], namespace: str | None, *, force: bool = False
+    ) -> None:
+        if not namespace:
+            return
+        for doc in docs:
+            if not isinstance(doc, dict):
+                continue
+            meta = doc.get("metadata")
+            if not isinstance(meta, dict):
+                meta = {}
+                doc["metadata"] = meta
+            ns_val = meta.get("namespace")
+            if force or ns_val is None or not str(ns_val).strip():
+                meta["namespace"] = namespace
+
+    ns_override = normalize_namespace(getattr(args, "namespace", None))
+    force_namespace = bool(getattr(args, "force_namespace", False))
+
     # Remote apply via API when --server is set
     if global_args and getattr(global_args, "server", None):
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
         try:
             docs = _load_yaml_documents(args.file)
+            _apply_namespace_override(docs, ns_override, force=force_namespace)
         except Exception as exc:  # noqa: BLE001
             print(f"failed to read manifest: {exc}")
             return 1
@@ -1410,6 +1580,10 @@ def handle_apply(
 
     try:
         docs = _load_yaml_documents(args.file)
+        raw_has_namespace = (
+            _doc_has_namespace(docs[0]) if docs and isinstance(docs[0], dict) else False
+        )
+        _apply_namespace_override(docs, ns_override, force=force_namespace)
         if _should_convert_k8s(docs, bool(getattr(args, "k8s", False))):
             manifest, warnings = _convert_k8s_documents(docs)
             for w in warnings:
@@ -1419,6 +1593,12 @@ def handle_apply(
                 raise ManifestError("expected a single Deployment/App manifest document")
             manifest = load_manifest(args.file)
             _warn_deprecated_kind(getattr(manifest, "kind", None))
+            if ns_override and (force_namespace or not raw_has_namespace):
+                manifest = manifest.model_copy(
+                    update={
+                        "metadata": manifest.metadata.model_copy(update={"namespace": ns_override})
+                    }
+                )
     except (ManifestError, ValueError) as exc:
         print(f"failed to read manifest: {exc}")
         return 1
@@ -1649,7 +1829,7 @@ def handle_delete(
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
         try:
-            app_name = _resolve_app_name(args.name) or args.name
+            app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
             resp = _http_post_json(
                 base, f"/delete/{app_name}?purge={'1' if args.purge else '0'}", {}, tok
             )
@@ -1660,7 +1840,7 @@ def handle_delete(
         except Exception as exc:  # noqa: BLE001
             print(f"remote delete failed: {exc}")
             return 1
-    name = _resolve_app_name(args.name) or args.name
+    name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     removed = runtime.remove_app(name)
     if ingress_service:
         try:
@@ -1707,7 +1887,7 @@ def handle_scale(
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
         try:
-            app_name = _resolve_app_name(args.name) or args.name
+            app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
             resp = _http_post_json(
                 base, f"/scale/{app_name}", {"replicas": int(args.replicas)}, tok
             )
@@ -1718,7 +1898,7 @@ def handle_scale(
         except Exception as exc:  # noqa: BLE001
             print(f"remote scale failed: {exc}")
             return 1
-    name = _resolve_app_name(args.name) or args.name
+    name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     latest = store.list_revisions(name, limit=1)
     if not latest:
         print(f"No revisions recorded for {_display_app_name(name)}. Try 'ae apply -f <manifest>'.")
@@ -2156,10 +2336,12 @@ def _http_post_json(base: str, path: str, body: dict, token: str | None = None):
     return r.json()
 
 
-def _resolve_app_name(name: str | None) -> str | None:
+def _resolve_app_name(name: str | None, namespace: str | None = None) -> str | None:
     if not name:
         return None
     ns, base = parse_app_ref(name)
+    if ns is None:
+        ns = normalize_namespace(namespace)
     return app_key(base, ns)
 
 
@@ -2173,12 +2355,13 @@ def handle_status(
     global_args: argparse.Namespace,
     runtime: RuntimeAdapter | None = None,
 ) -> int:
+    ns_filter = normalize_namespace(getattr(args, "namespace", None))
     if getattr(global_args, "server", None):
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
         try:
             if args.name:
-                app_name = _resolve_app_name(args.name) or args.name
+                app_name = _resolve_app_name(args.name, ns_filter) or args.name
                 path = f"/status/{app_name}"
                 if args.wide:
                     path += "?details=1"
@@ -2199,12 +2382,13 @@ def handle_status(
                         )
                     )
                 )
-                # When --wide, include replicas and containers details if available
+                # When --wide, include pod and container details if available
                 if args.wide:
                     try:
-                        for r in data.get("replicas", []) or []:
+                        for r in (data.get("pods") or data.get("replicas") or []):
+                            pod_name = r.get("pod_name") or r.get("replica_id")
                             print(
-                                f"  - {r.get('replica_id')}: ready={bool(r.get('ready'))} "
+                                f"  - {pod_name}: ready={bool(r.get('ready'))} "
                                 f"live={bool(r.get('live'))} status={r.get('status')} | "
                                 f"readiness={r.get('readiness_message')}; liveness={r.get('liveness_message')}"
                             )
@@ -2223,7 +2407,14 @@ def handle_status(
                         pass
                 return 0
             page = _http_get_json(base, "/status?limit=100", tok)
-            for s0 in page.get("items", []):
+            items = page.get("items", []) if isinstance(page, dict) else []
+            if ns_filter:
+                items = [
+                    s0
+                    for s0 in items
+                    if split_app_key(str((s0 or {}).get("app_name", "")))[0] == ns_filter
+                ]
+            for s0 in items:
                 line = ", ".join(
                     [
                         f"{_display_app_name(s0['app_name'])}: desired={s0['desired_replicas']}",
@@ -2247,7 +2438,7 @@ def handle_status(
             return 1
     # local path
     if args.name:
-        app_name = _resolve_app_name(args.name) or args.name
+        app_name = _resolve_app_name(args.name, ns_filter) or args.name
         status = store.get_status(app_name)
         if status is None:
             print(f"No status recorded for {_display_app_name(app_name)}")
@@ -2283,20 +2474,20 @@ def handle_status(
                         print(f"    storage: {st_str}")
                 except Exception:
                     pass
-            replicas = store.list_replicas(app_name)
-            for replica in replicas:
+            pods = store.list_pods(app_name)
+            for pod in pods:
                 print(
-                    f"  - {replica.replica_id}: ready={replica.ready} "
-                    f"live={replica.live} status={replica.status} | "
-                    f"readiness={replica.readiness_message}; "
-                    f"liveness={replica.liveness_message}"
+                    f"  - {pod.pod_name}: ready={pod.ready} "
+                    f"live={pod.live} status={pod.status} | "
+                    f"readiness={pod.readiness_message}; "
+                    f"liveness={pod.liveness_message}"
                 )
             if args.history and args.history > 0:
                 history = store.get_probe_history(app_name, args.history)
                 for entry in history:
                     timestamp = entry.check_time.strftime("%Y-%m-%d %H:%M:%S")
                     print(
-                        f"    history {timestamp} {entry.replica_id}: ready={entry.ready} "
+                        f"    history {timestamp} {entry.pod_name}: ready={entry.ready} "
                         f"live={entry.live} | readiness={entry.readiness_message}; "
                         f"liveness={entry.liveness_message}"
                     )
@@ -2351,6 +2542,8 @@ def handle_status(
             _print_status_block(status)
         return 0
     statuses = store.list_status()
+    if ns_filter:
+        statuses = [s for s in statuses if split_app_key(s.app_name)[0] == ns_filter]
     if not statuses:
         print("No workloads recorded.")
         return 0
@@ -2388,7 +2581,7 @@ def handle_rollout(
     if args.rollout_cmd not in {"pause", "resume"}:
         print("unsupported rollout command")
         return 2
-    app = _resolve_app_name(args.name) or args.name
+    app = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     revs = store.list_revisions(app, limit=1)
     if not revs:
         print(f"no revisions recorded for {_display_app_name(app)}")
@@ -2470,6 +2663,212 @@ def handle_api(args: argparse.Namespace) -> int:
             Path(state_path).write_text(_json.dumps(payload, indent=2))
         return 0
     print("unsupported api command")
+    return 2
+
+
+def _read_env_file_var(path: Path, key: str) -> str | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        if k.strip() != key:
+            continue
+        val = v.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in {'"', "'"}:
+            val = val[1:-1]
+        return val
+    return None
+
+
+def _write_export_lines(lines: list[str], dest: Path | None) -> None:
+    payload = "\n".join(lines) + ("\n" if lines else "")
+    if dest:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(payload)
+    else:
+        print(payload, end="")
+
+
+def _read_proc_env(pid: int) -> dict[str, str]:
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for entry in raw.split(b"\x00"):
+        if not entry:
+            continue
+        try:
+            k, v = entry.split(b"=", 1)
+        except ValueError:
+            continue
+        try:
+            out[k.decode("utf-8")] = v.decode("utf-8")
+        except Exception:
+            continue
+    return out
+
+
+def handle_auth(args: argparse.Namespace) -> int:
+    if args.auth_cmd == "local":
+        apishim_env = Path(
+            args.apishim_env
+            if args.apishim_env
+            else os.getenv("APISHIM_ENV_FILE", "state/labs/apishim.env")
+        )
+        controller_env = Path(
+            args.controller_env
+            if args.controller_env
+            else os.getenv("CONTROLLER_ENV_FILE", "state/env.sh")
+        )
+        dev_env = Path(args.dev_env if args.dev_env else os.getenv("DEV_ENV_FILE", "state/dev.env"))
+        apishim_pid = Path(
+            args.apishim_pid
+            if args.apishim_pid
+            else os.getenv("APISHIM_PID_FILE", "state/apishim.pid")
+        )
+
+        def pick(*vals: str | None) -> str:
+            for val in vals:
+                if val:
+                    return val
+            return ""
+
+        proc_env: dict[str, str] = {}
+        if apishim_pid.exists():
+            try:
+                pid_val = int(apishim_pid.read_text().strip() or "0")
+            except Exception:
+                pid_val = 0
+            if pid_val > 0:
+                proc_env = _read_proc_env(pid_val)
+
+        apishim_token = pick(
+            proc_env.get("AE_APISHIM_TOKEN"),
+            _read_env_file_var(apishim_env, "AE_APISHIM_TOKEN"),
+            os.getenv("AE_APISHIM_TOKEN"),
+        )
+        apishim_read = pick(
+            proc_env.get("AE_APISHIM_READ_TOKEN"),
+            _read_env_file_var(apishim_env, "AE_APISHIM_READ_TOKEN"),
+            os.getenv("AE_APISHIM_READ_TOKEN"),
+        )
+        apishim_exec = pick(
+            proc_env.get("AE_APISHIM_EXEC_TOKEN"),
+            _read_env_file_var(apishim_env, "AE_APISHIM_EXEC_TOKEN"),
+            os.getenv("AE_APISHIM_EXEC_TOKEN"),
+        )
+        apishim_pf = pick(
+            proc_env.get("AE_APISHIM_PORTFORWARD_TOKEN"),
+            _read_env_file_var(apishim_env, "AE_APISHIM_PORTFORWARD_TOKEN"),
+            os.getenv("AE_APISHIM_PORTFORWARD_TOKEN"),
+        )
+        apishim_secret = pick(
+            proc_env.get("AE_APISHIM_SESSION_SECRET"),
+            _read_env_file_var(apishim_env, "AE_APISHIM_SESSION_SECRET"),
+            os.getenv("AE_APISHIM_SESSION_SECRET"),
+        )
+        admin_token = pick(
+            _read_env_file_var(apishim_env, "AE_API_ADMIN_TOKEN"),
+            _read_env_file_var(controller_env, "AE_API_ADMIN_TOKEN"),
+            os.getenv("AE_API_ADMIN_TOKEN"),
+        )
+        labs_token = pick(
+            _read_env_file_var(apishim_env, "AE_LABS_TOKEN"),
+            _read_env_file_var(controller_env, "AE_LABS_TOKEN"),
+            os.getenv("AE_LABS_TOKEN"),
+        )
+        scaler_token = pick(
+            _read_env_file_var(controller_env, "AE_API_SCALER_TOKEN"),
+            os.getenv("AE_API_SCALER_TOKEN"),
+        )
+        read_token = pick(
+            _read_env_file_var(controller_env, "AE_API_READ_TOKEN"),
+            os.getenv("AE_API_READ_TOKEN"),
+        )
+        state_db = pick(
+            _read_env_file_var(controller_env, "AE_STATE_DB"),
+            os.getenv("AE_STATE_DB"),
+        )
+
+        server = args.server or os.getenv("AE_APISHIM_SERVER")
+        if not server:
+            server = _read_env_file_var(controller_env, "AE_APISHIM_SERVER")
+        if not server:
+            upstream = pick(
+                os.getenv("APISHIM_UPSTREAM"),
+                _read_env_file_var(dev_env, "APISHIM_UPSTREAM"),
+            )
+            port = pick(
+                os.getenv("APISHIM_PORT"),
+                _read_env_file_var(dev_env, "APISHIM_PORT"),
+            )
+            if upstream:
+                server = upstream if "://" in upstream else f"https://{upstream}"
+            elif port:
+                server = f"https://127.0.0.1:{port}"
+            else:
+                server = "https://127.0.0.1:8445"
+
+        lines: list[str] = []
+        if apishim_token:
+            lines.append(f"export AE_APISHIM_TOKEN={apishim_token}")
+        if apishim_read:
+            lines.append(f"export AE_APISHIM_READ_TOKEN={apishim_read}")
+        if apishim_exec:
+            lines.append(f"export AE_APISHIM_EXEC_TOKEN={apishim_exec}")
+        if apishim_pf:
+            lines.append(f"export AE_APISHIM_PORTFORWARD_TOKEN={apishim_pf}")
+        if apishim_secret:
+            lines.append(f"export AE_APISHIM_SESSION_SECRET={apishim_secret}")
+        if admin_token:
+            lines.append(f"export AE_API_ADMIN_TOKEN={admin_token}")
+        if labs_token:
+            lines.append(f"export AE_LABS_TOKEN={labs_token}")
+        if scaler_token:
+            lines.append(f"export AE_API_SCALER_TOKEN={scaler_token}")
+        if read_token:
+            lines.append(f"export AE_API_READ_TOKEN={read_token}")
+        if server:
+            lines.append(f"export AE_APISHIM_SERVER={server}")
+        if state_db:
+            lines.append(f"export AE_STATE_DB={state_db}")
+        _write_export_lines(lines, getattr(args, "output", None))
+        return 0
+
+    if args.auth_cmd == "remote":
+        import secrets
+
+        apishim_token = secrets.token_urlsafe(32)
+        apishim_read = secrets.token_urlsafe(32)
+        apishim_secret = secrets.token_urlsafe(32)
+        admin_token = secrets.token_hex(16)
+        scaler_token = secrets.token_hex(16)
+        read_token = secrets.token_hex(16)
+
+        lines = [
+            f"export AE_APISHIM_TOKEN={apishim_token}",
+            f"export AE_APISHIM_READ_TOKEN={apishim_read}",
+            f"export AE_APISHIM_SESSION_SECRET={apishim_secret}",
+            f"export AE_API_ADMIN_TOKEN={admin_token}",
+            f"export AE_API_SCALER_TOKEN={scaler_token}",
+            f"export AE_API_READ_TOKEN={read_token}",
+        ]
+        if not getattr(args, "no_mutations", False):
+            lines.append("export AE_API_MUTATIONS=1")
+        _write_export_lines(lines, getattr(args, "output", None))
+        return 0
+
+    print("unsupported auth command")
     return 2
 
 
@@ -2584,21 +2983,21 @@ def handle_logs(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
         gargs = outer_locals.get("global_args") or outer_locals.get("args")
         if gargs is not None and getattr(gargs, "server", None):
             return handle_logs_remote(args, gargs)
-    app_name = _resolve_app_name(args.name) or args.name
+    app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     status = store.get_status(app_name)
     if status is None:
         print(f"No status recorded for {_display_app_name(app_name)}")
         return 1
-    replicas = store.list_replicas(app_name)
-    if not replicas:
-        print(f"No replicas available for {_display_app_name(app_name)}")
+    pods = store.list_pods(app_name)
+    if not pods:
+        print(f"No pods available for {_display_app_name(app_name)}")
         return 1
     # optional revision filter
     if args.revision is not None:
         rev_tag = f"-rev{args.revision}-"
-        replicas = [r for r in replicas if rev_tag in r.replica_id]
-        if not replicas:
-            print(f"No replicas for {_display_app_name(app_name)} at revision {args.revision}")
+        pods = [r for r in pods if rev_tag in r.pod_name]
+        if not pods:
+            print(f"No pods for {_display_app_name(app_name)} at revision {args.revision}")
             return 1
 
     # select by container flag
@@ -2608,35 +3007,612 @@ def handle_logs(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
         if sel.isdigit():
             # match by replica index suffix
             suffix = f"-{sel}"
-            for r in replicas:
-                if r.replica_id.endswith(suffix):
+            for r in pods:
+                if r.pod_name.endswith(suffix):
                     target = r
                     break
         else:
             # exact match or contains
-            for r in replicas:
-                if r.replica_id == sel or sel in r.replica_id:
+            for r in pods:
+                if r.pod_name == sel or sel in r.pod_name:
                     target = r
                     break
         if target is None:
-            print(f"No matching replica for --container={sel}")
+            print(f"No matching pod for --container={sel}")
             return 1
     else:
-        # prefer a ready replica, otherwise first
-        target = next((r for r in replicas if r.ready), replicas[0])
+        # prefer a ready pod, otherwise first
+        target = next((r for r in pods if r.ready), pods[0])
 
     since_seconds = _parse_since_secs(args.since) if args.since else None
     if since_seconds is None and args.since_time:
         since_seconds = _parse_rfc3339_to_epoch(args.since_time)
 
     for line in runtime.read_logs(
-        target.replica_id,
+        target.pod_name,
         follow=args.follow,
         tail=args.tail,
         since=since_seconds,
     ):
         print(line)
     return 0
+
+
+def _resolve_exec_target(
+    store: SQLiteStateStore, app_name: str, container_sel: str | None
+) -> tuple[str | None, str | None]:
+    status = store.get_status(app_name)
+    pods = store.list_pods(app_name) if status is not None else []
+    pod_name: str | None = None
+    container_name = container_sel
+    if pods:
+        if container_sel:
+            sel = str(container_sel)
+            if sel.isdigit():
+                suffix = f"-{sel}"
+                for r in pods:
+                    if r.pod_name.endswith(suffix):
+                        pod_name = r.pod_name
+                        container_name = None
+                        break
+            if pod_name is None:
+                for r in pods:
+                    if r.pod_name == sel or sel in r.pod_name:
+                        pod_name = r.pod_name
+                        container_name = None
+                        break
+        if pod_name is None:
+            target = next((r for r in pods if r.ready), pods[0])
+            pod_name = target.pod_name
+    return pod_name, container_name
+
+
+def _exec_over_spdy(
+    base: str,
+    *,
+    namespace: str,
+    pod_name: str,
+    command: list[str],
+    container: str | None,
+    stdin: bool,
+    stdout: bool,
+    stderr: bool,
+    tty: bool,
+    token: str | None,
+    timeout: int | None,
+) -> int:
+    import base64
+    import json
+    import os
+    import shutil
+    import signal
+    import socket
+    import ssl
+    import sys
+    import threading
+    import urllib.parse
+    import zlib
+    from contextlib import contextmanager
+
+    if "://" not in base:
+        base = "http://" + base
+    parsed = urllib.parse.urlparse(base)
+    scheme = parsed.scheme or "http"
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if scheme == "https" else 80)
+    if not host:
+        raise RuntimeError(f"invalid apishim base: {base}")
+    base_path = parsed.path.rstrip("/")
+    path = f"{base_path}/api/v1/namespaces/{namespace}/pods/{pod_name}/exec"
+    params: dict[str, list[str]] = {
+        "command": [str(c) for c in command],
+        "stdin": ["1" if stdin else "0"],
+        "stdout": ["1" if stdout else "0"],
+        "stderr": ["1" if stderr else "0"],
+        "tty": ["1" if tty else "0"],
+    }
+    if container:
+        params["container"] = [container]
+    query = urllib.parse.urlencode(params, doseq=True)
+    full_path = path + ("?" + query if query else "")
+
+    sock = socket.create_connection((host, port), timeout=timeout or 10)
+    if scheme == "https":
+        ctx = ssl.create_default_context()
+        if os.getenv("AE_APISHIM_INSECURE") == "1":
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        sock = ctx.wrap_socket(sock, server_hostname=host)
+
+    req_lines = [
+        f"POST {full_path} HTTP/1.1",
+        f"Host: {host}:{port}",
+        "Connection: Upgrade",
+        "Upgrade: SPDY/3.1",
+        "X-Stream-Protocol-Version: v5.channel.k8s.io, v4.channel.k8s.io, v3.channel.k8s.io, v2.channel.k8s.io, channel.k8s.io",
+        "Content-Length: 0",
+    ]
+    if token:
+        req_lines.append(f"Authorization: Bearer {token}")
+    req_lines.append("\r\n")
+    sock.sendall(("\r\n".join(req_lines)).encode("utf-8"))
+
+    def _recv_until(marker: bytes, limit: int = 65536) -> bytes:
+        buf = b""
+        while marker not in buf and len(buf) < limit:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        return buf
+
+    header = _recv_until(b"\r\n\r\n")
+    if b"\r\n" not in header:
+        raise RuntimeError("spdy: invalid response from server")
+    status_line, rest = header.split(b"\r\n", 1)
+    try:
+        status_code = int(status_line.split()[1])
+    except Exception:
+        status_code = 0
+    if status_code != 101:
+        try:
+            body = rest.split(b"\r\n\r\n", 1)[1]
+            msg = body.decode("utf-8", "ignore").strip()
+        except Exception:
+            msg = ""
+        raise RuntimeError(f"spdy upgrade failed: {status_code} {msg}".strip())
+
+    SPDY_DICT = base64.b64decode(
+        "AAAAB29wdGlvbnMAAAAEaGVhZAAAAARwb3N0AAAAA3B1dAAAAAZkZWxldGUAAAAFdHJhY2UAAAAGYWNjZXB0AAAADmFjY2VwdC1jaGFyc2V0AAAAD2FjY2VwdC1lbmNvZGluZwAAAA9hY2NlcHQtbGFuZ3VhZ2UAAAANYWNjZXB0LXJhbmdlcwAAAANhZ2UAAAAFYWxsb3cAAAANYXV0aG9yaXphdGlvbgAAAA1jYWNoZS1jb250cm9sAAAACmNvbm5lY3Rpb24AAAAMY29udGVudC1iYXNlAAAAEGNvbnRlbnQtZW5jb2RpbmcAAAAQY29udGVudC1sYW5ndWFnZQAAAA5jb250ZW50LWxlbmd0aAAAABBjb250ZW50LWxvY2F0aW9uAAAAC2NvbnRlbnQtbWQ1AAAADWNvbnRlbnQtcmFuZ2UAAAAMY29udGVudC10eXBlAAAABGRhdGUAAAAEZXRhZwAAAAZleHBlY3QAAAAHZXhwaXJlcwAAAARmcm9tAAAABGhvc3QAAAAIaWYtbWF0Y2gAAAARaWYtbW9kaWZpZWQtc2luY2UAAAANaWYtbm9uZS1tYXRjaAAAAAhpZi1yYW5nZQAAABNpZi11bm1vZGlmaWVkLXNpbmNlAAAADWxhc3QtbW9kaWZpZWQAAAAIbG9jYXRpb24AAAAMbWF4LWZvcndhcmRzAAAABnByYWdtYQAAABJwcm94eS1hdXRoZW50aWNhdGUAAAATcHJveHktYXV0aG9yaXphdGlvbgAAAAVyYW5nZQAAAAdyZWZlcmVyAAAAC3JldHJ5LWFmdGVyAAAABnNlcnZlcgAAAAJ0ZQAAAAd0cmFpbGVyAAAAEXRyYW5zZmVyLWVuY29kaW5nAAAAB3VwZ3JhZGUAAAAKdXNlci1hZ2VudAAAAAR2YXJ5AAAAA3ZpYQAAAAd3YXJuaW5nAAAAEHd3dy1hdXRoZW50aWNhdGUAAAAGbWV0aG9kAAAAA2dldAAAAAZzdGF0dXMAAAAGMjAwIE9LAAAAB3ZlcnNpb24AAAAISFRUUC8xLjEAAAADdXJsAAAABnB1YmxpYwAAAApzZXQtY29va2llAAAACmtlZXAtYWxpdmUAAAAGb3JpZ2luMTAwMTAxMjAxMjAyMjA1MjA2MzAwMzAyMzAzMzA0MzA1MzA2MzA3NDAyNDA1NDA2NDA3NDA4NDA5NDEwNDExNDEyNDEzNDE0NDE1NDE2NDE3NTAyNTA0NTA1MjAzIE5vbi1BdXRob3JpdGF0aXZlIEluZm9ybWF0aW9uMjA0IE5vIENvbnRlbnQzMDEgTW92ZWQgUGVybWFuZW50bHk0MDAgQmFkIFJlcXVlc3Q0MDEgVW5hdXRob3JpemVkNDAzIEZvcmJpZGRlbjQwNCBOb3QgRm91bmQ1MDAgSW50ZXJuYWwgU2VydmVyIEVycm9yNTAxIE5vdCBJbXBsZW1lbnRlZDUwMyBTZXJ2aWNlIFVuYXZhaWxhYmxlSmFuIEZlYiBNYXIgQXByIE1heSBKdW4gSnVsIEF1ZyBTZXB0IE9jdCBOb3YgRGVjIDAwOjAwOjAwIE1vbiwgVHVlLCBXZWQsIFRodSwgRnJpLCBTYXQsIFN1biwgR01UY2h1bmtlZCx0ZXh0L2h0bWwsaW1hZ2UvcG5nLGltYWdlL2pwZyxpbWFnZS9naWYsYXBwbGljYXRpb24veG1sLGFwcGxpY2F0aW9uL3hodG1sK3htbCx0ZXh0L3BsYWluLHRleHQvamF2YXNjcmlwdCxwdWJsaWNwcml2YXRlbWF4LWFnZT1nemlwLGRlZmxhdGUsc2RjaGNoYXJzZXQ9dXRmLThjaGFyc2V0PWlzby04ODU5LTEsdXRmLSwqLGVucT0wLg=="
+    )
+    cctx = zlib.compressobj(wbits=15, zdict=SPDY_DICT)
+
+    send_lock = threading.Lock()
+
+    def _send_bytes(data: bytes) -> None:
+        with send_lock:
+            sock.sendall(data)
+
+    def _encode_headers(headers: dict[str, str]) -> bytes:
+        buf = bytearray()
+        buf += len(headers).to_bytes(4, "big")
+        for name, value in headers.items():
+            n = name.encode("utf-8")
+            v = value.encode("utf-8")
+            buf += len(n).to_bytes(4, "big")
+            buf += n
+            buf += len(v).to_bytes(4, "big")
+            buf += v
+        return cctx.compress(bytes(buf)) + cctx.flush(zlib.Z_SYNC_FLUSH)
+
+    def _send_ctrl(frame_type: int, flags: int, payload: bytes) -> None:
+        header = bytearray()
+        header += b"\x80\x03"
+        header += frame_type.to_bytes(2, "big")
+        header.append(flags & 0xFF)
+        header += len(payload).to_bytes(3, "big")
+        _send_bytes(bytes(header) + payload)
+
+    def _send_syn_stream(stream_id: int, headers: dict[str, str]) -> None:
+        hdrs = _encode_headers(headers)
+        payload = (
+            (stream_id & 0x7FFFFFFF).to_bytes(4, "big") + b"\x00\x00\x00\x00" + b"\x00\x00" + hdrs
+        )
+        _send_ctrl(1, 0, payload)
+
+    def _send_data(stream_id: int, data: bytes, fin: bool = False) -> None:
+        header = bytearray()
+        header += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
+        header.append(0x02 if fin else 0x00)
+        header += len(data).to_bytes(3, "big")
+        _send_bytes(bytes(header) + data)
+
+    stream_ids: dict[str, int] = {}
+    next_sid = 1
+
+    def _alloc(name: str) -> int:
+        nonlocal next_sid
+        sid = next_sid
+        next_sid += 2
+        stream_ids[name] = sid
+        return sid
+
+    _alloc("error")
+    if stdin:
+        _alloc("stdin")
+    if stdout:
+        _alloc("stdout")
+    if stderr and not tty:
+        _alloc("stderr")
+    if tty:
+        _alloc("resize")
+
+    for stype, sid in stream_ids.items():
+        _send_syn_stream(
+            sid,
+            {
+                ":method": "POST",
+                ":path": full_path,
+                ":version": "HTTP/1.1",
+                ":host": host,
+                "streamtype": stype,
+            },
+        )
+
+    stop_event = threading.Event()
+    exit_code = 0
+    err_buf = b""
+
+    @contextmanager
+    def _maybe_raw() -> None:
+        if not tty or not sys.stdin.isatty():
+            yield
+            return
+        import termios
+        import tty as _tty
+
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            _tty.setraw(fd)
+            yield
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+    def _pump_stdin() -> None:
+        if "stdin" not in stream_ids:
+            return
+        fd = sys.stdin.fileno()
+        while not stop_event.is_set():
+            try:
+                data = os.read(fd, 1024)
+            except Exception:
+                break
+            if not data:
+                try:
+                    _send_data(stream_ids["stdin"], b"", fin=True)
+                except Exception:
+                    pass
+                break
+            try:
+                _send_data(stream_ids["stdin"], data, fin=False)
+            except Exception:
+                break
+
+    def _send_resize() -> None:
+        if "resize" not in stream_ids:
+            return
+        try:
+            cols, rows = shutil.get_terminal_size(fallback=(80, 24))
+            payload = json.dumps({"Width": cols, "Height": rows}).encode("utf-8")
+            _send_data(stream_ids["resize"], payload, fin=False)
+        except Exception:
+            pass
+
+    stdin_thread = None
+    old_handler = None
+    if tty and "resize" in stream_ids and sys.stdin.isatty():
+        old_handler = signal.getsignal(signal.SIGWINCH)
+        signal.signal(signal.SIGWINCH, lambda *_args: _send_resize())
+        _send_resize()
+
+    with _maybe_raw():
+        if stdin and "stdin" in stream_ids:
+            stdin_thread = threading.Thread(target=_pump_stdin, daemon=True)
+            stdin_thread.start()
+
+        buf = b""
+        stream_by_id = {sid: name for name, sid in stream_ids.items()}
+        while not stop_event.is_set():
+            try:
+                chunk = sock.recv(4096)
+            except Exception:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            while True:
+                if len(buf) < 8:
+                    break
+                hdr = buf[:8]
+                is_control = (hdr[0] & 0x80) != 0
+                length = int.from_bytes(hdr[5:8], "big")
+                frame_len = 8 + length
+                if len(buf) < frame_len:
+                    break
+                payload = buf[8:frame_len]
+                buf = buf[frame_len:]
+                if is_control:
+                    frame_type = int.from_bytes(hdr[2:4], "big")
+                    if frame_type == 6:  # PING
+                        try:
+                            _send_bytes(hdr + payload)
+                        except Exception:
+                            pass
+                    if frame_type == 7:  # GOAWAY
+                        stop_event.set()
+                        break
+                else:
+                    sid = int.from_bytes(hdr[0:4], "big") & 0x7FFFFFFF
+                    flags = hdr[4]
+                    stype = stream_by_id.get(sid)
+                    if stype == "stdout" and stdout:
+                        sys.stdout.buffer.write(payload)
+                        sys.stdout.buffer.flush()
+                    elif stype == "stderr" and stderr and not tty:
+                        sys.stderr.buffer.write(payload)
+                        sys.stderr.buffer.flush()
+                    elif stype == "error":
+                        err_buf += payload
+                        if flags & 0x02:
+                            try:
+                                status = json.loads(err_buf.decode("utf-8", "ignore") or "{}")
+                                exit_code = int(
+                                    status.get("details", {}).get("exitCode")
+                                    or status.get("code")
+                                    or 0
+                                )
+                            except Exception:
+                                exit_code = 0
+                            stop_event.set()
+                            break
+            if stop_event.is_set():
+                break
+
+    stop_event.set()
+    if stdin_thread:
+        stdin_thread.join(timeout=1)
+    if old_handler is not None:
+        try:
+            signal.signal(signal.SIGWINCH, old_handler)
+        except Exception:
+            pass
+    try:
+        sock.close()
+    except Exception:
+        pass
+    return exit_code
+
+
+def _exec_over_ws(
+    base: str,
+    *,
+    namespace: str,
+    pod_name: str,
+    command: list[str],
+    container: str | None,
+    stdin: bool,
+    stdout: bool,
+    stderr: bool,
+    tty: bool,
+    token: str | None,
+    timeout: int | None,
+) -> int:
+    import base64
+    import json
+    import os
+    import shutil
+    import signal
+    import socket
+    import ssl
+    import sys
+    import threading
+    import urllib.parse
+    from contextlib import contextmanager
+
+    if "://" not in base:
+        base = "http://" + base
+    parsed = urllib.parse.urlparse(base)
+    scheme = parsed.scheme or "http"
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if scheme == "https" else 80)
+    if not host:
+        raise RuntimeError(f"invalid apishim base: {base}")
+    base_path = parsed.path.rstrip("/")
+    path = f"{base_path}/api/v1/namespaces/{namespace}/pods/{pod_name}/exec"
+    params: dict[str, list[str]] = {
+        "command": [str(c) for c in command],
+        "stdin": ["1" if stdin else "0"],
+        "stdout": ["1" if stdout else "0"],
+        "stderr": ["1" if stderr else "0"],
+        "tty": ["1" if tty else "0"],
+    }
+    if container:
+        params["container"] = [container]
+    query = urllib.parse.urlencode(params, doseq=True)
+    full_path = path + ("?" + query if query else "")
+
+    sock = socket.create_connection((host, port), timeout=timeout or 10)
+    if scheme == "https":
+        ctx = ssl.create_default_context()
+        if os.getenv("AE_APISHIM_INSECURE") == "1":
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        sock = ctx.wrap_socket(sock, server_hostname=host)
+
+    ws_key = base64.b64encode(os.urandom(16)).decode("ascii")
+    req_lines = [
+        f"GET {full_path} HTTP/1.1",
+        f"Host: {host}:{port}",
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        "Sec-WebSocket-Version: 13",
+        f"Sec-WebSocket-Key: {ws_key}",
+        "Sec-WebSocket-Protocol: v5.channel.k8s.io",
+    ]
+    if token:
+        req_lines.append(f"Authorization: Bearer {token}")
+    req_lines.append("\r\n")
+    sock.sendall(("\r\n".join(req_lines)).encode("utf-8"))
+
+    def _recv_until(marker: bytes, limit: int = 65536) -> bytes:
+        buf = b""
+        while marker not in buf and len(buf) < limit:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        return buf
+
+    header = _recv_until(b"\r\n\r\n")
+    if b"\r\n" not in header:
+        raise RuntimeError("websocket: invalid response from server")
+    status_line = header.split(b"\r\n", 1)[0]
+    try:
+        status_code = int(status_line.split()[1])
+    except Exception:
+        status_code = 0
+    if status_code != 101:
+        raise RuntimeError(f"websocket upgrade failed: {status_code}")
+
+    send_lock = threading.Lock()
+
+    def _send_ws(payload: bytes, opcode: int = 0x2) -> None:
+        mask_key = os.urandom(4)
+        header = bytearray()
+        header.append(0x80 | (opcode & 0x0F))
+        length = len(payload)
+        if length < 126:
+            header.append(0x80 | length)
+        elif length < (1 << 16):
+            header.append(0x80 | 126)
+            header.extend(length.to_bytes(2, "big"))
+        else:
+            header.append(0x80 | 127)
+            header.extend(length.to_bytes(8, "big"))
+        masked = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+        with send_lock:
+            sock.sendall(bytes(header) + mask_key + masked)
+
+    def _recv_exact(n: int) -> bytes | None:
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                return None
+            buf += chunk
+        return buf
+
+    def _recv_ws() -> tuple[int, bytes] | None:
+        hdr = _recv_exact(2)
+        if not hdr:
+            return None
+        opcode = hdr[0] & 0x0F
+        length = hdr[1] & 0x7F
+        if length == 126:
+            ext = _recv_exact(2)
+            if ext is None:
+                return None
+            length = int.from_bytes(ext, "big")
+        elif length == 127:
+            ext = _recv_exact(8)
+            if ext is None:
+                return None
+            length = int.from_bytes(ext, "big")
+        payload = _recv_exact(length) if length else b""
+        if payload is None:
+            return None
+        return opcode, payload
+
+    stop_event = threading.Event()
+    exit_code = 0
+    err_buf = b""
+
+    @contextmanager
+    def _maybe_raw() -> None:
+        if not tty or not sys.stdin.isatty():
+            yield
+            return
+        import termios
+        import tty as _tty
+
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            _tty.setraw(fd)
+            yield
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+    def _send_channel(ch: int, data: bytes) -> None:
+        _send_ws(bytes([ch]) + data, opcode=0x2)
+
+    def _pump_stdin() -> None:
+        if not stdin:
+            return
+        fd = sys.stdin.fileno()
+        while not stop_event.is_set():
+            try:
+                data = os.read(fd, 1024)
+            except Exception:
+                break
+            if not data:
+                break
+            _send_channel(0, data)
+
+    def _send_resize() -> None:
+        if not tty:
+            return
+        try:
+            cols, rows = shutil.get_terminal_size(fallback=(80, 24))
+            payload = json.dumps({"Width": cols, "Height": rows}).encode("utf-8")
+            _send_channel(4, payload)
+        except Exception:
+            pass
+
+    stdin_thread = None
+    old_handler = None
+    if tty and sys.stdin.isatty():
+        old_handler = signal.getsignal(signal.SIGWINCH)
+        signal.signal(signal.SIGWINCH, lambda *_args: _send_resize())
+        _send_resize()
+
+    with _maybe_raw():
+        if stdin:
+            stdin_thread = threading.Thread(target=_pump_stdin, daemon=True)
+            stdin_thread.start()
+        while not stop_event.is_set():
+            msg = _recv_ws()
+            if msg is None:
+                break
+            opcode, payload = msg
+            if opcode == 0x8:
+                break
+            if not payload:
+                continue
+            ch = payload[0]
+            data = payload[1:]
+            if ch == 1 and stdout:
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+            elif ch == 2 and stderr and not tty:
+                sys.stderr.buffer.write(data)
+                sys.stderr.buffer.flush()
+            elif ch == 3:
+                err_buf += data
+                try:
+                    status = json.loads(err_buf.decode("utf-8", "ignore") or "{}")
+                    exit_code = int(
+                        status.get("details", {}).get("exitCode") or status.get("code") or 0
+                    )
+                except Exception:
+                    exit_code = 0
+                stop_event.set()
+                break
+
+    stop_event.set()
+    if stdin_thread:
+        stdin_thread.join(timeout=1)
+    if old_handler is not None:
+        try:
+            signal.signal(signal.SIGWINCH, old_handler)
+        except Exception:
+            pass
+    try:
+        sock.close()
+    except Exception:
+        pass
+    return exit_code
 
 
 def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: RuntimeAdapter) -> int:
@@ -2647,18 +3623,87 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
     if frame is not None:
         outer_locals = frame.f_back.f_locals if frame.f_back else {}
         gargs = outer_locals.get("global_args") or outer_locals.get("args")
+        import os as _os
+
+        apishim_base = getattr(args, "apishim", None) or _os.getenv("AE_APISHIM_SERVER")
+        ws_fallback = bool(
+            getattr(args, "ws_fallback", False) or _os.getenv("AE_EXEC_WS_FALLBACK") == "1"
+        )
+        token = None
+        if gargs is not None:
+            token = getattr(gargs, "token", None)
+        if token is None:
+            token = _os.getenv("AE_APISHIM_TOKEN")
+        if token is None:
+            token = _os.getenv("AE_APISHIM_EXEC_TOKEN")
+        if apishim_base:
+            app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
+            cmd = list(args.cmd or [])
+            if cmd and cmd[0] == "--":
+                cmd = cmd[1:]
+            if not cmd:
+                print("exec requires a command after -- (e.g., ae exec app -- sh -c 'echo hi')")
+                return 2
+            pod_name, container_name = _resolve_exec_target(
+                store, app_name, getattr(args, "container", None)
+            )
+            if pod_name is None:
+                pod_name = app_name
+                print("warning: no local status; using app name as pod reference")
+            ns, _name = split_app_key(app_name)
+            want_stdin = bool(getattr(args, "stdin", False))
+            want_tty = bool(getattr(args, "tty", False))
+            want_stderr = not want_tty
+            try:
+                return _exec_over_spdy(
+                    apishim_base,
+                    namespace=ns,
+                    pod_name=pod_name,
+                    command=cmd,
+                    container=container_name,
+                    stdin=want_stdin,
+                    stdout=True,
+                    stderr=want_stderr,
+                    tty=want_tty,
+                    token=token,
+                    timeout=getattr(args, "timeout", None),
+                )
+            except Exception as exc:
+                if ws_fallback:
+                    print(f"spdy exec failed ({exc}); trying websocket fallback...")
+                    try:
+                        return _exec_over_ws(
+                            apishim_base,
+                            namespace=ns,
+                            pod_name=pod_name,
+                            command=cmd,
+                            container=container_name,
+                            stdin=want_stdin,
+                            stdout=True,
+                            stderr=want_stderr,
+                            tty=want_tty,
+                            token=token,
+                            timeout=getattr(args, "timeout", None),
+                        )
+                    except Exception as exc2:
+                        print(f"websocket exec failed: {exc2}")
+                        return 1
+                print(f"spdy exec failed: {exc}")
+                return 1
         if gargs is not None and getattr(gargs, "server", None):
             return handle_exec_remote(args, gargs)
 
     # Local-only path
-    app_name = _resolve_app_name(args.name) or args.name
+    if getattr(args, "stdin", False) or getattr(args, "tty", False):
+        print("warning: --stdin/--tty are only supported against the API shim (SPDY/WebSocket)")
+    app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     status = store.get_status(app_name)
     if status is None:
         print(f"No status recorded for {_display_app_name(app_name)}")
         return 1
-    replicas = store.list_replicas(app_name)
-    if not replicas:
-        print(f"No replicas available for {_display_app_name(app_name)}")
+    pods = store.list_pods(app_name)
+    if not pods:
+        print(f"No pods available for {_display_app_name(app_name)}")
         return 1
     timeout = getattr(args, "timeout", None)
     cmd = list(args.cmd or [])
@@ -2679,22 +3724,24 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
             except Exception as exc:  # noqa: BLE001
                 print(f"exec failed: {exc}")
                 return 1
-        # Fallback: select a replica by id substring
+        # Fallback: select a pod by name substring
         target = next(
-            (r for r in replicas if (r.replica_id == cname or cname in r.replica_id)), None
+            (r for r in pods if (r.pod_name == cname or cname in r.pod_name)), None
         )
         if not target:
-            print(f"No matching replica for --container={cname}")
+            print(f"No matching pod for --container={cname}")
             return 1
-        return int(runtime.exec(target.replica_id, cmd, timeout=timeout))
-    # Default: exec in a ready replica (main container context)
-    target = next((r for r in replicas if r.ready), replicas[0])
-    return int(runtime.exec(target.replica_id, cmd, timeout=timeout))
+        return int(runtime.exec(target.pod_name, cmd, timeout=timeout))
+    # Default: exec in a ready pod (main container context)
+    target = next((r for r in pods if r.ready), pods[0])
+    return int(runtime.exec(target.pod_name, cmd, timeout=timeout))
 
 
 def handle_exec_remote(args: argparse.Namespace, global_args: argparse.Namespace) -> int:
     base = str(global_args.server)
     tok = getattr(global_args, "token", None)
+    if getattr(args, "stdin", False) or getattr(args, "tty", False):
+        print("warning: --stdin/--tty are not supported via controller exec; use --apishim")
     payload = {
         "container": getattr(args, "container", None),
         "cmd": [str(x) for x in (getattr(args, "cmd", []) or []) if x != "--"],
@@ -2703,7 +3750,7 @@ def handle_exec_remote(args: argparse.Namespace, global_args: argparse.Namespace
         payload["timeoutSeconds"] = int(args.timeout)
     import requests
 
-    app_name = _resolve_app_name(args.name) or args.name
+    app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     url = base.rstrip("/") + "/exec/" + app_name
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     if tok:
@@ -2718,6 +3765,43 @@ def handle_exec_remote(args: argparse.Namespace, global_args: argparse.Namespace
     except Exception as exc:  # noqa: BLE001
         print(f"remote exec failed: {exc}")
         return 1
+
+
+def handle_shell(args: argparse.Namespace, store: SQLiteStateStore, runtime: RuntimeAdapter) -> int:
+    import inspect as _inspect
+    import os as _os
+    import sys as _sys
+
+    frame = _inspect.currentframe()
+    gargs = None
+    if frame is not None:
+        outer_locals = frame.f_back.f_locals if frame.f_back else {}
+        gargs = outer_locals.get("global_args") or outer_locals.get("args")
+
+    apishim_base = getattr(args, "apishim", None) or _os.getenv("AE_APISHIM_SERVER")
+    if not apishim_base and gargs and getattr(gargs, "server", None):
+        apishim_base = gargs.server
+    if not apishim_base:
+        print("shell requires the API shim; set --apishim or AE_APISHIM_SERVER")
+        return 2
+
+    cmd = list(getattr(args, "cmd", []) or [])
+    if cmd and cmd[0] == "--":
+        cmd = cmd[1:]
+    if not cmd:
+        cmd = ["sh"]
+
+    exec_args = argparse.Namespace(**vars(args))
+    exec_args.cmd = cmd
+    exec_args.stdin = True
+    if getattr(args, "no_tty", False):
+        exec_args.tty = False
+    elif getattr(args, "tty", False):
+        exec_args.tty = True
+    else:
+        exec_args.tty = bool(_sys.stdin.isatty() and _sys.stdout.isatty())
+    exec_args.apishim = apishim_base
+    return handle_exec(exec_args, store, runtime)
 
 
 def _status_to_json(status: AppStatus, store: SQLiteStateStore, *, include_details: bool) -> str:
@@ -2813,7 +3897,7 @@ def handle_rollback(
     reconciler: Reconciler,
 ) -> int:
     target_rev: int | None = args.to
-    app_name = _resolve_app_name(args.name) or args.name
+    app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     if target_rev is None:
         revisions = store.list_revisions(app_name, limit=2)
         if len(revisions) < 2:
@@ -2835,7 +3919,7 @@ def handle_rollback(
 
 
 def handle_revisions(args: argparse.Namespace, store: SQLiteStateStore) -> int:
-    app_name = _resolve_app_name(args.name) or args.name
+    app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     revisions = store.list_revisions(app_name, limit=args.limit)
     if not revisions:
         print(f"No revisions recorded for {_display_app_name(app_name)}.")
@@ -2867,6 +3951,11 @@ def handle_metrics(args: argparse.Namespace, store: SQLiteStateStore) -> int:
                     "total_replicas": snapshot.total_replicas,
                     "ready_replicas": snapshot.ready_replicas,
                     "live_replicas": snapshot.live_replicas,
+                    "total_pvs": snapshot.total_pvs,
+                    "healthy_pvs": snapshot.healthy_pvs,
+                    "unhealthy_pvs": snapshot.unhealthy_pvs,
+                    "storage_used_bytes": snapshot.storage_used_bytes,
+                    "storage_quota_bytes": snapshot.storage_quota_bytes,
                 },
                 indent=2,
             )
@@ -2879,13 +3968,25 @@ def handle_metrics(args: argparse.Namespace, store: SQLiteStateStore) -> int:
     print(
         f"replicas total={snapshot.total_replicas} ready={snapshot.ready_replicas} live={snapshot.live_replicas}"
     )
+    if snapshot.total_pvs:
+        print(
+            f"volumes total={snapshot.total_pvs} healthy={snapshot.healthy_pvs} unhealthy={snapshot.unhealthy_pvs}"
+        )
+    if snapshot.storage_used_bytes or snapshot.storage_quota_bytes:
+        for ns in sorted(set(snapshot.storage_used_bytes) | set(snapshot.storage_quota_bytes)):
+            used = snapshot.storage_used_bytes.get(ns, 0)
+            quota = snapshot.storage_quota_bytes.get(ns)
+            if quota is not None:
+                print(f"storage namespace={ns} used_bytes={used} quota_bytes={quota}")
+            else:
+                print(f"storage namespace={ns} used_bytes={used}")
     return 0
 
 
 def handle_events(
     args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace
 ) -> int:
-    app_name = _resolve_app_name(args.name) or args.name
+    app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     if getattr(global_args, "server", None):
         base = str(global_args.server)
         tok = getattr(global_args, "token", None)
@@ -2916,7 +4017,10 @@ def handle_events(
 
 
 def handle_services(args: argparse.Namespace, store: SQLiteStateStore) -> int:
+    ns_filter = normalize_namespace(getattr(args, "namespace", None))
     rows = store.list_services()
+    if ns_filter:
+        rows = [r for r in rows if split_app_key(r.app_name)[0] == ns_filter]
     if args.json:
         import json as _json
 
@@ -2953,7 +4057,7 @@ def handle_services(args: argparse.Namespace, store: SQLiteStateStore) -> int:
 def handle_history(
     args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace
 ) -> int:
-    app_name = _resolve_app_name(args.name) or args.name
+    app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     # Server mode
     if getattr(global_args, "server", None):
         base = str(global_args.server)
@@ -2997,7 +4101,7 @@ def handle_history(
             if not items:
                 print(f"No probe history for {_display_app_name(app_name)}.")
                 return 0
-            rep = getattr(args, "replica", None)
+            rep = getattr(args, "pod", None)
             import time
 
             cutoff = None
@@ -3007,7 +4111,8 @@ def handle_history(
                 cutoff = float(since_ts)
             shown = 0
             for h in items:
-                if rep and str(h.get("replica_id")) != str(rep):
+                hid = h.get("pod_name") or h.get("replica_id")
+                if rep and str(hid) != str(rep):
                     continue
                 if cutoff is not None:
                     try:
@@ -3022,7 +4127,7 @@ def handle_history(
                         pass
                 ts = h.get("check_time", "")
                 print(
-                    f"{ts} {h.get('replica_id')}: ready={bool(h.get('ready'))} live={bool(h.get('live'))} "
+                    f"{ts} {hid}: ready={bool(h.get('ready'))} live={bool(h.get('live'))} "
                     f"R='{h.get('readiness_message') or ''}' L='{h.get('liveness_message') or ''}'"
                 )
                 shown += 1
@@ -3059,7 +4164,8 @@ def handle_history(
 
         j = [
             {
-                "replica_id": h.replica_id,
+                "pod_name": h.pod_name,
+                "replica_id": h.pod_name,
                 "check_time": h.check_time.isoformat(),
                 "ready": bool(h.ready),
                 "live": bool(h.live),
@@ -3071,12 +4177,12 @@ def handle_history(
         ][:limit]
         print(_json.dumps(j, indent=2))
         return 0
-    rep = getattr(args, "replica", None)
+    rep = getattr(args, "pod", None)
     import time
 
     shown = 0
     for h in items:
-        if rep and str(h.replica_id) != str(rep):
+        if rep and str(h.pod_name) != str(rep):
             continue
         if since_secs or since_ts:
             try:
@@ -3087,7 +4193,7 @@ def handle_history(
                 pass
         ts = h.check_time.strftime("%Y-%m-%d %H:%M:%S")
         print(
-            f"{ts} {h.replica_id}: ready={h.ready} live={h.live} R='{h.readiness_message}' L='{h.liveness_message}'"
+            f"{ts} {h.pod_name}: ready={h.ready} live={h.live} R='{h.readiness_message}' L='{h.liveness_message}'"
         )
         shown += 1
         if shown >= limit:
@@ -3100,7 +4206,9 @@ def handle_volumes(args: argparse.Namespace, runtime: RuntimeAdapter) -> int:
         try:
             app_filter = getattr(args, "app", None)
             if app_filter:
-                app_filter = _resolve_app_name(app_filter) or app_filter
+                app_filter = (
+                    _resolve_app_name(app_filter, getattr(args, "namespace", None)) or app_filter
+                )
             vols = runtime.list_storage_volumes(app_filter)  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001
             print(f"volume listing not available: {exc}")
@@ -3147,7 +4255,7 @@ def handle_logs_remote(args: argparse.Namespace, global_args: argparse.Namespace
         params.append(("follow", "1"))
     from urllib.parse import urlencode
 
-    app_name = _resolve_app_name(args.name) or args.name
+    app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     path = f"/logs/{app_name}"
     if params:
         path += "?" + urlencode(params)
