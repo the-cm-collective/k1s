@@ -374,6 +374,13 @@ def aggregate(snapshot_dir: Path) -> Dict:
                     inspect[c.get("Id", "")[:12]] = c
         except Exception:
             pass
+        try:
+            insp_c = raw / "cri_inspect.json"
+            if insp_c.exists():
+                for c in json.loads(insp_c.read_text()):
+                    inspect[c.get("Id", "")[:12]] = c
+        except Exception:
+            pass
         for row in containers:
             cid = row.get("container_id") or ""
             mem = int(row.get("mem_current_bytes") or "-1")

@@ -17,6 +17,8 @@ controller_mode="user"
 
 # Bench runs do not need ingress writes by default (avoids permission noise).
 BENCH_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS:-1}"
+# Keep specs empty by default so file-based reconcile won't override scale/apply during benches.
+: "${BENCH_SPECS_EMPTY:=1}"
 # Keep nodes eligible during long bench runs (override via BENCH_NODE_NOTREADY_AFTER or AE_NODE_NOTREADY_AFTER).
 bench_node_notready_after="${BENCH_NODE_NOTREADY_AFTER:-${AE_NODE_NOTREADY_AFTER:-600}}"
 
