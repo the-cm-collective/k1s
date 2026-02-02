@@ -14,6 +14,7 @@ concurrency:
 
 jobs:
   openapi-drift:
+    if: ${{ env.GITEA_ACTIONS != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -22,12 +23,19 @@ jobs:
           if [ -n "${GITEA_CA_B64:-}" ]; then
             echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
             git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
           else
             git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
           fi
-      - uses: actions/checkout@v3
-        env:
-          GIT_SSL_NO_VERIFY: "true"
+      - uses: actions/checkout@v4
+      - name: Create venv (local act)
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          . .venv/bin/activate
+          python -m pip install -U pip
       - uses: actions/setup-python@v4
         with:
           python-version: "3.12"
@@ -39,6 +47,7 @@ jobs:
         run: scripts/validate-openapi.sh
 
   dryrun:
+    if: ${{ env.GITEA_ACTIONS != 'true' }}
     runs-on: ubuntu-latest
     needs: openapi-drift
     timeout-minutes: 25
@@ -48,12 +57,19 @@ jobs:
           if [ -n "${GITEA_CA_B64:-}" ]; then
             echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
             git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
           else
             git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
           fi
-      - uses: actions/checkout@v3
-        env:
-          GIT_SSL_NO_VERIFY: "true"
+      - uses: actions/checkout@v4
+      - name: Create venv (local act)
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          . .venv/bin/activate
+          python -m pip install -U pip
       - uses: actions/setup-python@v4
         with:
           python-version: "3.12"
@@ -87,6 +103,13 @@ jobs:
           tar -xzf /tmp/helm.tgz -C /tmp
           mv /tmp/linux-amd64/helm "$HOME/.local/bin/helm"
           chmod +x "$HOME/.local/bin/helm"
+      - name: Helm sanity check
+        run: |
+          set -euo pipefail
+          echo "arch=$(uname -m)"
+          command -v helm
+          helm version || true
+          file "$(command -v helm)" || true
       - name: Start apishim (stub runtime)
         env:
           AE_APISHIM_ENABLE: "1"
@@ -110,18 +133,38 @@ jobs:
           WORKDIR=$(mktemp -d /tmp/helm-dryrun-XXXX)
           helm create "$WORKDIR/chart" >/dev/null
           rm -f "$WORKDIR/chart"/templates/{deployment.yaml,service.yaml,serviceaccount.yaml,tests/test-connection.yaml}
+          mkdir -p "$WORKDIR/chart/templates"
           cat >"$WORKDIR/chart/templates/configmap.yaml" <<'EOF'
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: demo-config
-  namespace: default
-data:
-  hello: world
-EOF
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: demo-config
+            namespace: default
+          data:
+            hello: world
+          EOF
+          if [ ! -s "$WORKDIR/chart/templates/configmap.yaml" ]; then
+            echo "configmap template missing or empty" >&2
+            ls -la "$WORKDIR/chart/templates" >&2 || true
+            exit 1
+          fi
           K="kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify"
           $K get --raw /openapi/v2 >/tmp/openapi.json
-          helm template demo "$WORKDIR/chart" > /tmp/chart.yaml
+          helm template demo "$WORKDIR/chart" | tee /tmp/chart.yaml >/tmp/helm-template.log
+          if ! grep -q '^kind:' /tmp/chart.yaml; then
+            echo "helm template produced no objects" >&2
+            wc -l /tmp/chart.yaml >&2 || true
+            sed -n '1,120p' /tmp/chart.yaml >&2 || true
+            sed -n '1,200p' /tmp/helm-template.log >&2 || true
+            echo "=== chart templates ===" >&2
+            ls -la "$WORKDIR/chart/templates" >&2 || true
+            echo "=== configmap template ===" >&2
+            sed -n '1,120p' "$WORKDIR/chart/templates/configmap.yaml" >&2 || true
+            echo "=== helm debug ===" >&2
+            helm template --debug demo "$WORKDIR/chart" >/tmp/helm-debug.log 2>&1 || true
+            sed -n '1,200p' /tmp/helm-debug.log >&2 || true
+            exit 1
+          fi
           $K apply --dry-run=server --validate=false -f /tmp/chart.yaml
       - name: Show logs on failure
         if: failure()

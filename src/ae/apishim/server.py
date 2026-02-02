@@ -1,29 +1,44 @@
 # ruff: noqa: E501,S105,S110,S112,SIM102,SIM105,SIM108,SIM114,SIM118,SIM300
+"""HTTP server implementing a Kubernetes-compatible API for the shim."""
+
 from __future__ import annotations
 
 import base64
+import fnmatch
 import hashlib
+import hmac
 import ipaddress
 import json
 import json as _jsonlib
+import logging
 import os
 import re
 import secrets
+import shutil
 import socket
 import ssl
+import subprocess
+import sys
 import threading
 import time
 import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ae.controller.state import AppEvent, ServiceEndpoint, SQLiteStateStore
-from ae.runtime import DockerRuntime, PodmanRuntime, RemoteRuntime, RuntimeAdapter, StubRuntime
+from ae.runtime import (
+    CRIRuntime,
+    DockerRuntime,
+    PodmanRuntime,
+    RemoteRuntime,
+    RuntimeAdapter,
+    StubRuntime,
+)
 
 from .adapter import build_adapter
 from .store import K8sObject, ObjectStore
@@ -47,16 +62,77 @@ RESERVED_GROUPS = {
     "apiextensions.k8s.io",
 }
 
+LOGGER = logging.getLogger(__name__)
+SPDY_DEBUG = str(os.getenv("AE_APISHIM_SPDY_DEBUG", "")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+PF_DEBUG = str(os.getenv("AE_APISHIM_PF_DEBUG", "")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
 
 def _json(d: dict[str, Any]) -> bytes:
     return json.dumps(d, separators=(",", ":")).encode("utf-8")
 
 
-def _read_json(body: bytes) -> dict[str, Any]:
+def _spdy_debug_line(message: str) -> None:
+    path = os.getenv("AE_APISHIM_SPDY_LOG", "").strip()
+    if not path:
+        return
     try:
-        return json.loads(body.decode("utf-8")) if body else {}
-    except json.JSONDecodeError:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(message + "\n")
+    except Exception:
+        # Best-effort logging; never break request handling.
+        return
+
+
+def _exec_status_obj(exit_code: int) -> dict[str, Any]:
+    details: dict[str, Any] = {"exitCode": exit_code}
+    status = "Success"
+    reason = ""
+    message = ""
+    code = 0
+    if exit_code != 0:
+        status = "Failure"
+        reason = "NonZeroExitCode"
+        message = f"command terminated with non-zero exit code: {exit_code}"
+        details["causes"] = [{"reason": "ExitCode", "message": str(exit_code)}]
+        code = 1
+    return {
+        "metadata": {},
+        "status": status,
+        "message": message,
+        "reason": reason,
+        "code": code,
+        "details": details,
+    }
+
+
+def _read_json(body: bytes) -> dict[str, Any]:
+    if not body:
         return {}
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError:
+        return {}
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            import yaml
+        except Exception:
+            return {}
+        try:
+            return yaml.safe_load(text) or {}
+        except Exception:
+            return {}
 
 
 def _ns_name(path: str) -> tuple[str, str | None, str | None]:
@@ -476,6 +552,32 @@ def _update_managed_fields(
     return md
 
 
+def _ensure_managed_fields_entry(
+    md: dict[str, Any],
+    api_version: str,
+    manager: str,
+    operation: str,
+    paths: set[str] | None = None,
+) -> dict[str, Any]:
+    managed = list(md.get("managedFields") or [])
+    if any(m.get("manager") == manager for m in managed):
+        return md
+    now = datetime.now(timezone.utc).isoformat()  # noqa: UP017 - timezone-aware stamp
+    paths = set(paths or {"*"})
+    entry: dict[str, Any] = {
+        "manager": manager,
+        "operation": operation,
+        "apiVersion": api_version,
+        "time": now,
+        "fieldsType": "FieldsV1",
+        "paths": sorted(paths),
+        "fieldsV1": _paths_to_fieldsV1(paths),
+    }
+    managed.append(entry)
+    md["managedFields"] = managed
+    return md
+
+
 def _inject_sa_projection(spec: dict[str, Any]) -> dict[str, Any]:
     tpl = spec.get("template") or {}
     pod_spec = tpl.get("spec") if tpl else spec.get("podSpec") or spec.get("spec")
@@ -531,6 +633,7 @@ def _inject_sa_projection(spec: dict[str, Any]) -> dict[str, Any]:
 
 def _swagger_doc() -> dict[str, Any]:
     # Minimal swagger doc for kubectl/helm discovery and --dry-run=server
+    # Note: this doc also powers the Swagger UI; keep descriptions concise but helpful.
     schemas = {
         "io.k8s.api.meta.v1.ObjectMeta": {
             "type": "object",
@@ -1019,145 +1122,1082 @@ def _swagger_doc() -> dict[str, Any]:
             "additionalProperties": True,
         },
     }
-    doc = {
-        "swagger": "2.0",
-        "info": {"title": "k1s apishim", "version": "0.1.1"},
-        "produces": ["application/json"],
-        "schemes": ["http"],
-        "paths": {
-            "/api/v1/namespaces": {"get": {}, "post": {}},
-            "/api/v1/namespaces/{name}": {"get": {}, "delete": {}, "patch": {}, "put": {}},
-            "/api/v1/namespaces/{namespace}/configmaps": {"get": {}, "post": {}},
-            "/api/v1/namespaces/{namespace}/configmaps/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
+    schemas.update(
+        {
+            "io.k8s.api.core.v1.Namespace": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                    "spec": {"type": "object", "additionalProperties": True},
+                    "status": {"type": "object", "additionalProperties": True},
+                },
+                "additionalProperties": True,
             },
-            "/api/v1/namespaces/{namespace}/secrets": {"get": {}, "post": {}},
-            "/api/v1/namespaces/{namespace}/secrets/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
+            "io.k8s.api.core.v1.Node": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                    "spec": {"type": "object", "additionalProperties": True},
+                    "status": {"type": "object", "additionalProperties": True},
+                },
+                "additionalProperties": True,
             },
-            "/api/v1/namespaces/{namespace}/serviceaccounts": {"get": {}, "post": {}},
-            "/api/v1/namespaces/{namespace}/serviceaccounts/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
+            "io.k8s.api.core.v1.Pod": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                    "spec": {"type": "object", "additionalProperties": True},
+                    "status": {"type": "object", "additionalProperties": True},
+                },
+                "additionalProperties": True,
             },
-            "/api/v1/namespaces/{namespace}/services": {"get": {}, "post": {}},
-            "/api/v1/namespaces/{namespace}/services/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
+            "io.k8s.api.core.v1.Endpoints": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                    "subsets": {"type": "array", "items": {"type": "object"}},
+                },
+                "additionalProperties": True,
             },
-            "/apis/apps/v1/namespaces/{namespace}/deployments": {"get": {}, "post": {}},
-            "/apis/apps/v1/namespaces/{namespace}/deployments/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
+            "io.k8s.api.core.v1.Event": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                    "involvedObject": {"type": "object", "additionalProperties": True},
+                    "reason": {"type": "string"},
+                    "message": {"type": "string"},
+                    "type": {"type": "string"},
+                },
+                "additionalProperties": True,
             },
-            "/apis/apps/v1/namespaces/{namespace}/statefulsets": {"get": {}, "post": {}},
-            "/apis/apps/v1/namespaces/{namespace}/statefulsets/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
+            "io.k8s.api.apps.v1.ReplicaSet": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                    "spec": {"type": "object", "additionalProperties": True},
+                    "status": {"type": "object", "additionalProperties": True},
+                },
+                "additionalProperties": True,
             },
-            "/apis/apps/v1/namespaces/{namespace}/daemonsets": {"get": {}, "post": {}},
-            "/apis/apps/v1/namespaces/{namespace}/daemonsets/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
+            "io.k8s.api.discovery.k8s.io.v1.EndpointSlice": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                    "addressType": {"type": "string"},
+                    "endpoints": {"type": "array", "items": {"type": "object"}},
+                    "ports": {"type": "array", "items": {"type": "object"}},
+                },
+                "additionalProperties": True,
             },
-            "/apis/batch/v1/namespaces/{namespace}/jobs": {"get": {}, "post": {}},
-            "/apis/batch/v1/namespaces/{namespace}/jobs/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
+            "io.k8s.api.apiextensions.k8s.io.v1.CustomResourceDefinition": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
+                    "spec": {"type": "object", "additionalProperties": True},
+                    "status": {"type": "object", "additionalProperties": True},
+                },
+                "additionalProperties": True,
             },
-            "/apis/batch/v1/namespaces/{namespace}/cronjobs": {"get": {}, "post": {}},
-            "/apis/batch/v1/namespaces/{namespace}/cronjobs/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
+            "io.k8s.api.authorization.k8s.io.v1.SelfSubjectAccessReview": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "spec": {"type": "object", "additionalProperties": True},
+                },
+                "additionalProperties": True,
             },
-            "/apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers": {
-                "get": {},
-                "post": {},
+            "io.k8s.api.authorization.k8s.io.v1.SelfSubjectRulesReview": {
+                "type": "object",
+                "properties": {
+                    "apiVersion": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "spec": {"type": "object", "additionalProperties": True},
+                },
+                "additionalProperties": True,
             },
-            "/apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/policy/v1/namespaces/{namespace}/poddisruptionbudgets": {"get": {}, "post": {}},
-            "/apis/policy/v1/namespaces/{namespace}/poddisruptionbudgets/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/rbac.authorization.k8s.io/v1/clusterroles": {"get": {}, "post": {}},
-            "/apis/rbac.authorization.k8s.io/v1/clusterroles/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings": {"get": {}, "post": {}},
-            "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/roles": {
-                "get": {},
-                "post": {},
-            },
-            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/roles/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/rolebindings": {
-                "get": {},
-                "post": {},
-            },
-            "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/rolebindings/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/networking.k8s.io/v1/namespaces/{namespace}/ingresses": {"get": {}, "post": {}},
-            "/apis/networking.k8s.io/v1/namespaces/{namespace}/ingresses/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
-            },
-            "/apis/authorization.k8s.io/v1/subjectaccessreviews": {"post": {}},
-            "/apis/ae.dev/v1alpha1/namespaces/{namespace}/apps": {"get": {}, "post": {}},
-            "/apis/ae.dev/v1alpha1/namespaces/{namespace}/apps/{name}": {
-                "get": {},
-                "delete": {},
-                "patch": {},
-                "put": {},
+        }
+    )
+    paths: dict[str, dict[str, Any]] = {}
+
+    resource_hints: dict[str, dict[str, Any]] = {
+        "namespaces": {
+            "definition": "io.k8s.api.core.v1.Namespace",
+            "example": {
+                "apiVersion": "v1",
+                "kind": "Namespace",
+                "metadata": {"name": "demo"},
             },
         },
+        "configmaps": {
+            "definition": "io.k8s.api.core.v1.ConfigMap",
+            "example": {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {"name": "demo-config", "namespace": "default"},
+                "data": {"APP_MODE": "demo", "LOG_LEVEL": "info"},
+            },
+        },
+        "secrets": {
+            "definition": "io.k8s.api.core.v1.Secret",
+            "example": {
+                "apiVersion": "v1",
+                "kind": "Secret",
+                "metadata": {"name": "demo-secret", "namespace": "default"},
+                "type": "Opaque",
+                "data": {"TOKEN": "ZGVtby10b2tlbg=="},
+            },
+        },
+        "serviceaccounts": {
+            "definition": "io.k8s.api.core.v1.ServiceAccount",
+            "example": {
+                "apiVersion": "v1",
+                "kind": "ServiceAccount",
+                "metadata": {"name": "demo-sa", "namespace": "default"},
+            },
+        },
+        "services": {
+            "definition": "io.k8s.api.core.v1.Service",
+            "example": {
+                "apiVersion": "v1",
+                "kind": "Service",
+                "metadata": {"name": "demo-svc", "namespace": "default"},
+                "spec": {
+                    "selector": {"app": "demo"},
+                    "ports": [{"port": 80, "targetPort": 8080}],
+                },
+            },
+        },
+        "endpoints": {
+            "definition": "io.k8s.api.core.v1.Endpoints",
+            "example": {
+                "apiVersion": "v1",
+                "kind": "Endpoints",
+                "metadata": {"name": "demo-svc", "namespace": "default"},
+            },
+        },
+        "pods": {
+            "definition": "io.k8s.api.core.v1.Pod",
+            "example": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {"name": "demo-pod", "namespace": "default"},
+                "spec": {"containers": [{"name": "demo", "image": "nginx:latest"}]},
+            },
+        },
+        "events": {
+            "definition": "io.k8s.api.core.v1.Event",
+            "example": {
+                "apiVersion": "v1",
+                "kind": "Event",
+                "metadata": {"name": "demo.1", "namespace": "default"},
+                "message": "Demo event",
+                "type": "Normal",
+            },
+        },
+        "deployments": {
+            "definition": "io.k8s.api.apps.v1.Deployment",
+            "example": {
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "metadata": {"name": "demo", "namespace": "default"},
+                "spec": {
+                    "replicas": 1,
+                    "selector": {"matchLabels": {"app": "demo"}},
+                    "template": {
+                        "metadata": {"labels": {"app": "demo"}},
+                        "spec": {"containers": [{"name": "demo", "image": "nginx:latest"}]},
+                    },
+                },
+            },
+            "patch_example": {"spec": {"replicas": 2}},
+        },
+        "statefulsets": {
+            "definition": "io.k8s.api.apps.v1.StatefulSet",
+            "example": {
+                "apiVersion": "apps/v1",
+                "kind": "StatefulSet",
+                "metadata": {"name": "demo", "namespace": "default"},
+                "spec": {
+                    "serviceName": "demo",
+                    "replicas": 1,
+                    "selector": {"matchLabels": {"app": "demo"}},
+                    "template": {
+                        "metadata": {"labels": {"app": "demo"}},
+                        "spec": {"containers": [{"name": "demo", "image": "nginx:latest"}]},
+                    },
+                },
+            },
+            "patch_example": {"spec": {"replicas": 2}},
+        },
+        "daemonsets": {
+            "definition": "io.k8s.api.apps.v1.DaemonSet",
+            "example": {
+                "apiVersion": "apps/v1",
+                "kind": "DaemonSet",
+                "metadata": {"name": "demo", "namespace": "default"},
+                "spec": {
+                    "selector": {"matchLabels": {"app": "demo"}},
+                    "template": {
+                        "metadata": {"labels": {"app": "demo"}},
+                        "spec": {"containers": [{"name": "demo", "image": "nginx:latest"}]},
+                    },
+                },
+            },
+        },
+        "replicasets": {
+            "definition": "io.k8s.api.apps.v1.ReplicaSet",
+            "example": {
+                "apiVersion": "apps/v1",
+                "kind": "ReplicaSet",
+                "metadata": {"name": "demo", "namespace": "default"},
+                "spec": {
+                    "replicas": 1,
+                    "selector": {"matchLabels": {"app": "demo"}},
+                    "template": {
+                        "metadata": {"labels": {"app": "demo"}},
+                        "spec": {"containers": [{"name": "demo", "image": "nginx:latest"}]},
+                    },
+                },
+            },
+        },
+        "jobs": {
+            "definition": "io.k8s.api.batch.v1.Job",
+            "example": {
+                "apiVersion": "batch/v1",
+                "kind": "Job",
+                "metadata": {"name": "demo-job", "namespace": "default"},
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "restartPolicy": "Never",
+                            "containers": [{"name": "demo", "image": "busybox"}],
+                        }
+                    }
+                },
+            },
+        },
+        "cronjobs": {
+            "definition": "io.k8s.api.batch.v1.CronJob",
+            "example": {
+                "apiVersion": "batch/v1",
+                "kind": "CronJob",
+                "metadata": {"name": "demo-cron", "namespace": "default"},
+                "spec": {
+                    "schedule": "*/5 * * * *",
+                    "jobTemplate": {
+                        "spec": {
+                            "template": {
+                                "spec": {
+                                    "restartPolicy": "Never",
+                                    "containers": [
+                                        {"name": "demo", "image": "busybox", "args": ["echo", "hi"]}
+                                    ],
+                                }
+                            }
+                        }
+                    },
+                },
+            },
+        },
+        "ingresses": {
+            "definition": "io.k8s.api.networking.v1.Ingress",
+            "example": {
+                "apiVersion": "networking.k8s.io/v1",
+                "kind": "Ingress",
+                "metadata": {"name": "demo-ingress", "namespace": "default"},
+                "spec": {
+                    "rules": [
+                        {
+                            "host": "demo.local",
+                            "http": {
+                                "paths": [
+                                    {
+                                        "path": "/",
+                                        "pathType": "Prefix",
+                                        "backend": {
+                                            "service": {
+                                                "name": "demo-svc",
+                                                "port": {"number": 80},
+                                            }
+                                        },
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                },
+            },
+        },
+        "roles": {
+            "definition": "io.k8s.api.rbac.v1.Role",
+            "example": {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "Role",
+                "metadata": {"name": "demo-role", "namespace": "default"},
+            },
+        },
+        "rolebindings": {
+            "definition": "io.k8s.api.rbac.v1.RoleBinding",
+            "example": {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "RoleBinding",
+                "metadata": {"name": "demo-rb", "namespace": "default"},
+            },
+        },
+        "clusterroles": {
+            "definition": "io.k8s.api.rbac.v1.ClusterRole",
+            "example": {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "ClusterRole",
+                "metadata": {"name": "demo-cr"},
+            },
+        },
+        "clusterrolebindings": {
+            "definition": "io.k8s.api.rbac.v1.ClusterRoleBinding",
+            "example": {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "ClusterRoleBinding",
+                "metadata": {"name": "demo-crb"},
+            },
+        },
+        "poddisruptionbudgets": {
+            "definition": "io.k8s.api.policy.v1.PodDisruptionBudget",
+            "example": {
+                "apiVersion": "policy/v1",
+                "kind": "PodDisruptionBudget",
+                "metadata": {"name": "demo-pdb", "namespace": "default"},
+                "spec": {"minAvailable": 1, "selector": {"matchLabels": {"app": "demo"}}},
+            },
+        },
+        "horizontalpodautoscalers": {
+            "definition": "io.k8s.api.autoscaling.v2.HorizontalPodAutoscaler",
+            "example": {
+                "apiVersion": "autoscaling/v2",
+                "kind": "HorizontalPodAutoscaler",
+                "metadata": {"name": "demo-hpa", "namespace": "default"},
+                "spec": {"minReplicas": 1, "maxReplicas": 3},
+            },
+        },
+        "customresourcedefinitions": {
+            "definition": "io.k8s.api.apiextensions.k8s.io.v1.CustomResourceDefinition",
+            "example": {
+                "apiVersion": "apiextensions.k8s.io/v1",
+                "kind": "CustomResourceDefinition",
+                "metadata": {"name": "apps.ae.dev"},
+            },
+        },
+        "endpointslices": {
+            "definition": "io.k8s.api.discovery.k8s.io.v1.EndpointSlice",
+            "example": {
+                "apiVersion": "discovery.k8s.io/v1",
+                "kind": "EndpointSlice",
+                "metadata": {"name": "demo-slice", "namespace": "default"},
+            },
+        },
+        "apps": {
+            "definition": "io.k8s.api.ae.dev.v1alpha1.App",
+            "example": {
+                "apiVersion": "ae.dev/v1alpha1",
+                "kind": "App",
+                "metadata": {"name": "demo", "namespace": "default"},
+                "spec": {"image": "nginx:latest", "ports": [{"containerPort": 8080}]},
+            },
+        },
+    }
+
+    def _op(
+        *,
+        tag: str,
+        summary: str,
+        description: str,
+        parameters: list[dict[str, Any]] | None = None,
+        responses: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        op: dict[str, Any] = {
+            "tags": [tag],
+            "summary": summary,
+            "description": description,
+            "responses": responses or {"200": {"description": "OK"}},
+        }
+        if parameters:
+            op["parameters"] = parameters
+        return op
+
+    def _add_path(path: str, ops: dict[str, dict[str, Any]]) -> None:
+        if not ops:
+            return
+        entry = paths.setdefault(path, {})
+        for method, op in ops.items():
+            entry.setdefault(method, op)
+
+    def _path_param(name: str, description: str) -> dict[str, Any]:
+        return {"name": name, "in": "path", "required": True, "type": "string", "description": description}
+
+    def _query_param(name: str, description: str, param_type: str, default: Any | None = None) -> dict[str, Any]:
+        param: dict[str, Any] = {
+            "name": name,
+            "in": "query",
+            "type": param_type,
+            "description": description,
+        }
+        if default is not None:
+            param["default"] = default
+        return param
+
+    def _body_param(description: str) -> dict[str, Any]:
+        return {
+            "name": "body",
+            "in": "body",
+            "required": True,
+            "description": description,
+            "schema": {"type": "object"},
+        }
+
+    def _tag_for_base(base: str) -> str:
+        return {
+            "/api/v1": "core/v1",
+            "/apis/apps/v1": "apps/v1",
+            "/apis/batch/v1": "batch/v1",
+            "/apis/networking.k8s.io/v1": "networking.k8s.io/v1",
+            "/apis/rbac.authorization.k8s.io/v1": "rbac.authorization.k8s.io/v1",
+            "/apis/authorization.k8s.io/v1": "authorization.k8s.io/v1",
+            "/apis/policy/v1": "policy/v1",
+            "/apis/autoscaling/v2": "autoscaling/v2",
+            "/apis/apiextensions.k8s.io/v1": "apiextensions.k8s.io/v1",
+            "/apis/discovery.k8s.io/v1": "discovery.k8s.io/v1",
+            "/apis/storage.k8s.io/v1": "storage.k8s.io/v1",
+            "/apis/snapshot.storage.k8s.io/v1": "snapshot.storage.k8s.io/v1",
+            "/apis/ae.dev/v1alpha1": "ae.dev/v1alpha1",
+        }.get(base, "discovery")
+
+    def _list_params(namespaced: bool) -> list[dict[str, Any]]:
+        params: list[dict[str, Any]] = []
+        if namespaced:
+            params.append(_path_param("namespace", "Namespace name"))
+        params.extend(
+            [
+                _query_param("limit", "Maximum number of items to return", "integer", 100),
+                _query_param("continue", "Continue token for pagination", "string"),
+                _query_param("labelSelector", "Label selector to filter results", "string"),
+                _query_param("fieldSelector", "Field selector to filter results", "string"),
+                _query_param(
+                    "watch",
+                    "Set to true to stream watch events instead of a list",
+                    "boolean",
+                ),
+                _query_param("timeoutSeconds", "Watch timeout in seconds", "integer"),
+            ]
+        )
+        return params
+
+    def _item_params(namespaced: bool) -> list[dict[str, Any]]:
+        params = []
+        if namespaced:
+            params.append(_path_param("namespace", "Namespace name"))
+        params.append(_path_param("name", "Resource name"))
+        return params
+
+    def _schema_for(plural: str) -> dict[str, Any] | None:
+        hint = resource_hints.get(plural)
+        if not hint:
+            return None
+        definition = hint.get("definition")
+        if not definition:
+            return None
+        return {"$ref": f"#/definitions/{definition}"}
+
+    def _example_for(plural: str) -> dict[str, Any] | None:
+        hint = resource_hints.get(plural)
+        if not hint:
+            return None
+        return hint.get("example")
+
+    def _patch_example_for(plural: str) -> dict[str, Any] | None:
+        hint = resource_hints.get(plural)
+        if not hint:
+            return None
+        return hint.get("patch_example")
+
+    def _list_schema(item_schema: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not item_schema:
+            return None
+        return {
+            "type": "object",
+            "properties": {"items": {"type": "array", "items": item_schema}},
+            "additionalProperties": True,
+        }
+
+    def _list_example(example: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not example:
+            return None
+        kind = str(example.get("kind") or "List")
+        api_version = example.get("apiVersion")
+        payload: dict[str, Any] = {"kind": f"{kind}List", "items": [example]}
+        if api_version:
+            payload["apiVersion"] = api_version
+        return payload
+
+    def _response_ok(
+        schema: dict[str, Any] | None = None, example: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        resp: dict[str, Any] = {"description": "OK"}
+        if schema:
+            resp["schema"] = schema
+        if example is not None:
+            resp["examples"] = {"application/json": example}
+        return resp
+
+    def _describe_list(plural: str, namespaced: bool) -> str:
+        scope = "namespace" if namespaced else "cluster"
+        example = (
+            f"kubectl get {plural} -n <namespace>"
+            if namespaced
+            else f"kubectl get {plural}"
+        )
+        return (
+            f"List {plural} in the {scope} scope. Use `watch=1` to stream changes."
+            f"\n\nExample:\n\n`{example}`"
+        )
+
+    def _describe_get(plural: str, namespaced: bool) -> str:
+        example = (
+            f"kubectl get {plural} <name> -n <namespace> -o yaml"
+            if namespaced
+            else f"kubectl get {plural} <name> -o yaml"
+        )
+        return f"Get a single {plural.rstrip('s')} by name.\n\nExample:\n\n`{example}`"
+
+    def _describe_create(plural: str) -> str:
+        return (
+            f"Create a new {plural.rstrip('s')} from a manifest."
+            "\n\nExample:\n\n`kubectl apply -f <manifest.yaml>`"
+        )
+
+    def _describe_update(plural: str) -> str:
+        return (
+            f"Replace a {plural.rstrip('s')} by name."
+            "\n\nExample:\n\n`kubectl apply -f <manifest.yaml>`"
+        )
+
+    def _describe_patch(plural: str) -> str:
+        return (
+            f"Patch a {plural.rstrip('s')} by name."
+            "\n\nExample:\n\n`kubectl patch "
+            f"{plural.rstrip('s')} <name> -p '{{\"spec\":{{}}}}'`"
+        )
+
+    def _describe_delete(plural: str) -> str:
+        return (
+            f"Delete a {plural.rstrip('s')} by name."
+            "\n\nExample:\n\n`kubectl delete "
+            f"{plural.rstrip('s')} <name>`"
+        )
+
+    def _add_resource(base: str, plural: str, namespaced: bool, verbs: set[str]) -> None:
+        tag = _tag_for_base(base)
+        item_schema = _schema_for(plural)
+        list_schema = _list_schema(item_schema)
+        example = _example_for(plural)
+        list_example = _list_example(example)
+        patch_example = _patch_example_for(plural)
+
+        def _body_for(
+            description: str,
+            *,
+            example_override: dict[str, Any] | None = None,
+            schema_override: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            param = _body_param(description)
+            schema = schema_override or item_schema
+            if schema:
+                param["schema"] = schema
+            ex = example_override if example_override is not None else example
+            if ex is not None:
+                param["x-example"] = ex
+            return param
+
+        list_methods: list[str] = []
+        if "list" in verbs or "watch" in verbs:
+            list_methods.append("get")
+        if "create" in verbs:
+            list_methods.append("post")
+        if namespaced:
+            ns_path = f"{base}/namespaces/{{namespace}}/{plural}"
+            list_ops: dict[str, dict[str, Any]] = {}
+            if "get" in list_methods:
+                list_ops["get"] = _op(
+                    tag=tag,
+                    summary=f"List {plural}",
+                    description=_describe_list(plural, namespaced=True),
+                    parameters=_list_params(namespaced=True),
+                    responses={"200": _response_ok(list_schema, list_example)},
+                )
+            if "post" in list_methods:
+                list_ops["post"] = _op(
+                    tag=tag,
+                    summary=f"Create {plural.rstrip('s')}",
+                    description=_describe_create(plural),
+                    parameters=[
+                        _path_param("namespace", "Namespace name"),
+                        _body_for("Resource body"),
+                    ],
+                    responses={"200": _response_ok(item_schema, example)},
+                )
+            _add_path(ns_path, list_ops)
+            if "list" in verbs or "watch" in verbs:
+                _add_path(
+                    f"{base}/{plural}",
+                    {
+                        "get": _op(
+                            tag=tag,
+                            summary=f"List {plural} across all namespaces",
+                            description=_describe_list(plural, namespaced=False),
+                            parameters=_list_params(namespaced=False),
+                            responses={"200": _response_ok(list_schema, list_example)},
+                        )
+                    },
+                )
+            item_path = f"{base}/namespaces/{{namespace}}/{plural}/{{name}}"
+        else:
+            list_ops = {}
+            if "get" in list_methods:
+                list_ops["get"] = _op(
+                    tag=tag,
+                    summary=f"List {plural}",
+                    description=_describe_list(plural, namespaced=False),
+                    parameters=_list_params(namespaced=False),
+                    responses={"200": _response_ok(list_schema, list_example)},
+                )
+            if "post" in list_methods:
+                list_ops["post"] = _op(
+                    tag=tag,
+                    summary=f"Create {plural.rstrip('s')}",
+                    description=_describe_create(plural),
+                    parameters=[_body_for("Resource body")],
+                    responses={"200": _response_ok(item_schema, example)},
+                )
+            _add_path(f"{base}/{plural}", list_ops)
+            item_path = f"{base}/{plural}/{{name}}"
+        item_methods: list[str] = []
+        if "get" in verbs:
+            item_methods.append("get")
+        if "update" in verbs:
+            item_methods.append("put")
+        if "patch" in verbs:
+            item_methods.append("patch")
+        if "delete" in verbs:
+            item_methods.append("delete")
+        item_ops: dict[str, dict[str, Any]] = {}
+        if "get" in item_methods:
+            item_ops["get"] = _op(
+                tag=tag,
+                summary=f"Get {plural.rstrip('s')}",
+                description=_describe_get(plural, namespaced),
+                parameters=_item_params(namespaced),
+                responses={"200": _response_ok(item_schema, example)},
+            )
+        if "put" in item_methods:
+            item_ops["put"] = _op(
+                tag=tag,
+                summary=f"Replace {plural.rstrip('s')}",
+                description=_describe_update(plural),
+                parameters=_item_params(namespaced) + [_body_for("Resource body")],
+                responses={"200": _response_ok(item_schema, example)},
+            )
+        if "patch" in item_methods:
+            item_ops["patch"] = _op(
+                tag=tag,
+                summary=f"Patch {plural.rstrip('s')}",
+                description=_describe_patch(plural),
+                parameters=_item_params(namespaced)
+                + [_body_for("Patch body", example_override=patch_example or {"spec": {}})],
+                responses={"200": _response_ok(item_schema, example)},
+            )
+        if "delete" in item_methods:
+            item_ops["delete"] = _op(
+                tag=tag,
+                summary=f"Delete {plural.rstrip('s')}",
+                description=_describe_delete(plural),
+                parameters=_item_params(namespaced),
+            )
+        _add_path(item_path, item_ops)
+
+    def _add_subresource(
+        base: str, plural: str, subresource: str, namespaced: bool, verbs: set[str]
+    ) -> None:
+        tag = _tag_for_base(base)
+        if namespaced:
+            path = f"{base}/namespaces/{{namespace}}/{plural}/{{name}}/{subresource}"
+        else:
+            path = f"{base}/{plural}/{{name}}/{subresource}"
+        methods: list[str] = []
+        if "get" in verbs:
+            methods.append("get")
+        if "create" in verbs:
+            methods.append("post")
+        if "update" in verbs:
+            methods.append("put")
+        if "patch" in verbs:
+            methods.append("patch")
+        if "delete" in verbs:
+            methods.append("delete")
+        params = _item_params(namespaced)
+        desc = f"{plural.rstrip('s')} {subresource} subresource."
+        ops: dict[str, dict[str, Any]] = {}
+        if "get" in methods:
+            ops["get"] = _op(
+                tag=tag,
+                summary=f"Get {plural.rstrip('s')} {subresource}",
+                description=desc,
+                parameters=params,
+            )
+        if "post" in methods:
+            ops["post"] = _op(
+                tag=tag,
+                summary=f"Create {plural.rstrip('s')} {subresource}",
+                description=desc,
+                parameters=params + [_body_param("Subresource body")],
+            )
+        if "put" in methods:
+            ops["put"] = _op(
+                tag=tag,
+                summary=f"Update {plural.rstrip('s')} {subresource}",
+                description=desc,
+                parameters=params + [_body_param("Subresource body")],
+            )
+        if "patch" in methods:
+            ops["patch"] = _op(
+                tag=tag,
+                summary=f"Patch {plural.rstrip('s')} {subresource}",
+                description=desc,
+                parameters=params + [_body_param("Subresource body")],
+            )
+        if "delete" in methods:
+            ops["delete"] = _op(
+                tag=tag,
+                summary=f"Delete {plural.rstrip('s')} {subresource}",
+                description=desc,
+                parameters=params,
+            )
+        _add_path(path, ops)
+
+    # Non-resource endpoints and discovery
+    discovery_tag = "discovery"
+    for p in (
+        "/api",
+        "/apis",
+        "/version",
+        "/healthz",
+        "/readyz",
+        "/metrics",
+        "/openapi/v2",
+        "/openapi/v3",
+        "/swagger.json",
+        "/api/v1",
+        "/apis/apps/v1",
+        "/apis/batch/v1",
+        "/apis/networking.k8s.io/v1",
+        "/apis/rbac.authorization.k8s.io/v1",
+        "/apis/authorization.k8s.io/v1",
+        "/apis/policy/v1",
+        "/apis/autoscaling/v2",
+        "/apis/apiextensions.k8s.io/v1",
+        "/apis/discovery.k8s.io/v1",
+        "/apis/storage.k8s.io/v1",
+        "/apis/snapshot.storage.k8s.io/v1",
+        "/apis/ae.dev/v1alpha1",
+    ):
+        _add_path(
+            p,
+            {
+                "get": _op(
+                    tag=discovery_tag,
+                    summary=f"GET {p}",
+                    description="Kubernetes discovery or health endpoint.",
+                    parameters=[],
+                )
+            },
+        )
+
+    # Core API resources
+    for plural, namespaced, verbs in (
+        (
+            "namespaces",
+            False,
+            {"get", "list", "watch", "create", "delete", "patch", "update"},
+        ),
+        (
+            "configmaps",
+            True,
+            {"get", "list", "watch", "create", "delete", "patch", "update"},
+        ),
+        ("secrets", True, {"get", "list", "watch", "create", "delete", "patch", "update"}),
+        (
+            "persistentvolumeclaims",
+            True,
+            {"get", "list", "watch", "create", "delete", "patch", "update"},
+        ),
+        (
+            "persistentvolumes",
+            False,
+            {"get", "list", "watch", "create", "delete", "patch", "update"},
+        ),
+        (
+            "serviceaccounts",
+            True,
+            {"get", "list", "watch", "create", "delete", "patch", "update"},
+        ),
+        ("services", True, {"get", "list", "watch", "create", "delete", "patch", "update"}),
+        ("endpoints", True, {"get", "list"}),
+        ("nodes", False, {"get", "list"}),
+        ("pods", True, {"get", "list", "watch"}),
+        ("events", True, {"get", "list", "watch"}),
+    ):
+        _add_resource("/api/v1", plural, namespaced, verbs)
+
+    # Core subresources and special endpoints
+    _add_path(
+        "/api/v1/namespaces/{namespace}/pods/{name}/log",
+        {
+            "get": _op(
+                tag="core/v1",
+                summary="Stream pod logs",
+                description="Tail logs for a specific pod (similar to `kubectl logs`).",
+                parameters=_item_params(True)
+                + [
+                    _query_param("container", "Container name", "string"),
+                    _query_param("tailLines", "Number of lines from the end", "integer"),
+                    _query_param("follow", "Follow the stream", "boolean"),
+                    _query_param("timestamps", "Include timestamps", "boolean"),
+                ],
+            )
+        },
+    )
+    _add_path(
+        "/api/v1/namespaces/{namespace}/pods/{name}/exec",
+        {
+            "get": _op(
+                tag="core/v1",
+                summary="Exec into a pod (GET)",
+                description="Exec streaming endpoint (SPDY/WebSocket). Used by `kubectl exec`.",
+                parameters=_item_params(True),
+            ),
+            "post": _op(
+                tag="core/v1",
+                summary="Exec into a pod (POST)",
+                description="Exec streaming endpoint (SPDY/WebSocket). Used by `kubectl exec`.",
+                parameters=_item_params(True),
+            ),
+        },
+    )
+    _add_path(
+        "/api/v1/namespaces/{namespace}/pods/{name}/portforward",
+        {
+            "get": _op(
+                tag="core/v1",
+                summary="Port-forward to a pod (GET)",
+                description="Port-forward streaming endpoint (SPDY/WebSocket).",
+                parameters=_item_params(True),
+            ),
+            "post": _op(
+                tag="core/v1",
+                summary="Port-forward to a pod (POST)",
+                description="Port-forward streaming endpoint (SPDY/WebSocket).",
+                parameters=_item_params(True),
+            ),
+        },
+    )
+    _add_path(
+        "/api/v1/namespaces/{namespace}/services/{name}/portforward",
+        {
+            "get": _op(
+                tag="core/v1",
+                summary="Port-forward to a service (GET)",
+                description="Port-forward streaming endpoint (SPDY/WebSocket).",
+                parameters=_item_params(True),
+            ),
+            "post": _op(
+                tag="core/v1",
+                summary="Port-forward to a service (POST)",
+                description="Port-forward streaming endpoint (SPDY/WebSocket).",
+                parameters=_item_params(True),
+            ),
+        },
+    )
+    _add_path(
+        "/api/v1/events/{name}",
+        {
+            "get": _op(
+                tag="core/v1",
+                summary="Get event by name",
+                description="Fetch a single event by name.",
+                parameters=_item_params(False),
+            )
+        },
+    )
+
+    # apps/v1 resources
+    for plural, verbs in (
+        (
+            "deployments",
+            {"get", "list", "watch", "create", "delete", "patch", "update"},
+        ),
+        (
+            "statefulsets",
+            {"get", "list", "watch", "create", "delete", "patch", "update"},
+        ),
+        (
+            "daemonsets",
+            {"get", "list", "watch", "create", "delete", "patch", "update"},
+        ),
+        ("replicasets", {"get", "list", "watch"}),
+    ):
+        _add_resource("/apis/apps/v1", plural, True, verbs)
+
+    for plural, subresource, verbs in (
+        ("deployments", "status", {"get"}),
+        ("deployments", "scale", {"get", "update"}),
+        ("statefulsets", "status", {"get"}),
+        ("daemonsets", "status", {"get"}),
+    ):
+        _add_subresource("/apis/apps/v1", plural, subresource, True, verbs)
+
+    # batch/v1 resources
+    for plural, verbs in (
+        ("jobs", {"get", "list", "watch", "create", "delete", "patch", "update"}),
+        ("cronjobs", {"get", "list", "watch", "create", "delete", "patch", "update"}),
+    ):
+        _add_resource("/apis/batch/v1", plural, True, verbs)
+    for plural, verbs in (("jobs", {"get"}), ("cronjobs", {"get"})):
+        _add_subresource("/apis/batch/v1", plural, "status", True, verbs)
+
+    # networking.k8s.io/v1 resources
+    _add_resource(
+        "/apis/networking.k8s.io/v1",
+        "ingresses",
+        True,
+        {"get", "list", "watch", "create", "delete", "update"},
+    )
+
+    # rbac.authorization.k8s.io/v1 resources
+    for plural, namespaced in (
+        ("roles", True),
+        ("rolebindings", True),
+        ("clusterroles", False),
+        ("clusterrolebindings", False),
+    ):
+        _add_resource(
+            "/apis/rbac.authorization.k8s.io/v1",
+            plural,
+            namespaced,
+            {"get", "list", "watch", "create", "delete", "patch", "update"},
+        )
+
+    # authorization.k8s.io/v1 resources (create-only)
+    for plural in (
+        "subjectaccessreviews",
+        "selfsubjectaccessreviews",
+        "selfsubjectrulesreviews",
+    ):
+        _add_resource("/apis/authorization.k8s.io/v1", plural, False, {"create"})
+
+    # policy/v1 resources
+    _add_resource(
+        "/apis/policy/v1",
+        "poddisruptionbudgets",
+        True,
+        {"get", "list", "watch", "create", "delete", "patch", "update"},
+    )
+
+    # autoscaling/v2 resources
+    _add_resource(
+        "/apis/autoscaling/v2",
+        "horizontalpodautoscalers",
+        True,
+        {"get", "list", "watch", "create", "delete", "patch", "update"},
+    )
+
+    # apiextensions.k8s.io/v1 resources
+    _add_resource(
+        "/apis/apiextensions.k8s.io/v1",
+        "customresourcedefinitions",
+        False,
+        {"get", "list", "watch", "create", "delete", "update"},
+    )
+
+    # discovery.k8s.io/v1 resources
+    _add_resource(
+        "/apis/discovery.k8s.io/v1",
+        "endpointslices",
+        True,
+        {"get", "list", "watch"},
+    )
+
+    # ae.dev/v1alpha1 resources
+    _add_resource(
+        "/apis/ae.dev/v1alpha1",
+        "apps",
+        True,
+        {"get", "list", "watch", "create", "delete", "patch", "update"},
+    )
+    doc = {
+        "swagger": "2.0",
+        "info": {
+            "title": "k1s apishim",
+            "version": "0.1.2.dev0",
+            "description": (
+                "Kubernetes-compatible API shim for local k1s development. "
+                "Supports discovery, basic CRUD for core workloads, and a minimal OpenAPI schema "
+                "for kubectl/helm compatibility.\n\n"
+                "Usage tips:\n"
+                "- Use `/openapi/v3` for schema validation.\n"
+                "- Use `watch=1` on list endpoints to stream changes.\n"
+                "- Exec/port-forward endpoints use SPDY/WebSocket streaming."
+            ),
+        },
+        "produces": ["application/json"],
+        "schemes": ["http"],
+        "paths": paths,
         "definitions": schemas,
+        "tags": [
+            {"name": "discovery", "description": "Discovery and non-resource endpoints"},
+            {"name": "core/v1", "description": "Core API resources"},
+            {"name": "apps/v1", "description": "Workload resources (apps)"},
+            {"name": "batch/v1", "description": "Batch resources (jobs/cronjobs)"},
+            {"name": "networking.k8s.io/v1", "description": "Networking resources"},
+            {"name": "rbac.authorization.k8s.io/v1", "description": "RBAC resources"},
+            {"name": "authorization.k8s.io/v1", "description": "Authorization reviews"},
+            {"name": "policy/v1", "description": "Policy resources"},
+            {"name": "autoscaling/v2", "description": "Autoscaling resources"},
+            {
+                "name": "apiextensions.k8s.io/v1",
+                "description": "CustomResourceDefinitions",
+            },
+            {"name": "discovery.k8s.io/v1", "description": "EndpointSlices"},
+            {"name": "storage.k8s.io/v1", "description": "Storage resources"},
+            {
+                "name": "snapshot.storage.k8s.io/v1",
+                "description": "Volume snapshot resources",
+            },
+            {"name": "ae.dev/v1alpha1", "description": "k1s custom resources"},
+        ],
     }
     return doc
 
@@ -1169,6 +2209,7 @@ def _openapi_v3_stub() -> dict[str, Any]:
         "info": doc.get("info", {}),
         "paths": doc.get("paths", {}),
         "components": {"schemas": doc.get("definitions", {})},
+        "tags": doc.get("tags", []),
         "x-k1s-note": "OpenAPI v3 mirrors /openapi/v2 and is kept authoritative alongside it",
     }
 
@@ -1179,15 +2220,25 @@ class Principal:
     groups: set[str]
     token_role: str | None
     token: str | None
+    scopes: list[str] | None = None
 
 
 class ShimHandler(BaseHTTPRequestHandler):
     server_version = "k1s-apishim"
     admin_token: str | None = os.getenv("AE_APISHIM_TOKEN")
     read_token: str | None = os.getenv("AE_APISHIM_READ_TOKEN")
+    exec_token: str | None = os.getenv("AE_APISHIM_EXEC_TOKEN")
+    portforward_token: str | None = os.getenv("AE_APISHIM_PORTFORWARD_TOKEN")
+    session_secret: str | None = os.getenv("AE_APISHIM_SESSION_SECRET")
+    pod_state_check: bool = os.getenv("AE_APISHIM_POD_STATE_CHECK", "0") == "1"
+    pod_watch_check: bool = False
+    pod_watch_ttl: float = 30.0
+    pod_watch_cache: dict[tuple[str, str], tuple[str | None, int, float]] = {}
+    pod_watch_lock = threading.RLock()
     allow_anonymous: bool = os.getenv("AE_APISHIM_ALLOW_ANON", "0") == "1"
     rbac_enabled: bool = os.getenv("AE_APISHIM_RBAC", "0") == "1"
     rbac_eval_roles: bool = os.getenv("AE_APISHIM_RBAC_EVAL", "0") == "1"
+    app_admission_mode: str = os.getenv("AE_APISHIM_APP_ADMISSION", "enforce")
     sa_tokens: dict[str, tuple[str, str, float]] = {}
     sa_tokens_lock = threading.RLock()
     sa_token_ttl: int = int(os.getenv("AE_APISHIM_SA_TOKEN_TTL", "3600") or "3600")
@@ -1197,9 +2248,10 @@ class ShimHandler(BaseHTTPRequestHandler):
         ("list", "*"): {"admin", "read"},
         ("watch", "*"): {"admin", "read"},
         ("create", "*"): {"admin"},
-        ("create", "pods/exec"): {"admin"},
-        ("create", "pods/portforward"): {"admin"},
-        ("create", "services/portforward"): {"admin"},
+        ("create", "pods/exec"): {"admin", "exec"},
+        ("create", "pods/attach"): {"admin", "exec"},
+        ("create", "pods/portforward"): {"admin", "portforward"},
+        ("create", "services/portforward"): {"admin", "portforward"},
         ("update", "*"): {"admin"},
         ("patch", "*"): {"admin"},
         ("delete", "*"): {"admin"},
@@ -1211,9 +2263,142 @@ class ShimHandler(BaseHTTPRequestHandler):
     crd_index: dict[str, list[tuple[str, str, str]]] = {}
     crd_lock = threading.RLock()
 
+    def _app_admission_mode(self) -> str:
+        mode = (self.app_admission_mode or "enforce").strip().lower()
+        if mode in {"warn", "warning"}:
+            return "warn"
+        if mode in {"off", "disabled", "ignore"}:
+            return "off"
+        return "enforce"
+
+    def _add_warning(self, message: str) -> None:
+        if not message:
+            return
+        warnings = getattr(self, "_warnings", None)
+        if warnings is None:
+            warnings = []
+            self._warnings = warnings
+        warnings.append(message)
+
+    def _emit_warnings(self) -> None:
+        warnings = getattr(self, "_warnings", None)
+        if not warnings:
+            return
+        for msg in warnings:
+            safe = str(msg).replace('"', "'")
+            self.send_header("Warning", f'299 - "{safe}"')
+
+    @classmethod
+    def rehydrate_sa_tokens(cls, store: ObjectStore) -> None:
+        try:
+            accounts = store.list_all("", "v1", "serviceaccounts")
+        except Exception:
+            return
+        now = time.time()
+        tokens: dict[str, tuple[str, str, float]] = {}
+        for obj in accounts:
+            md = obj.metadata or {}
+            anns = md.get("annotations") or {}
+            tok = anns.get("ae.apishim/token")
+            if not tok:
+                continue
+            try:
+                exp = float(anns.get("ae.apishim/token-exp", "0") or 0)
+            except Exception:
+                exp = 0
+            if exp <= now:
+                continue
+            tokens[tok] = (obj.namespace or "default", obj.name, exp)
+        if tokens:
+            with cls.sa_tokens_lock:
+                cls.sa_tokens.update(tokens)
+
+    def _lookup_sa_token(self, token: str) -> tuple[str, str, float] | None:
+        if not token:
+            return None
+        try:
+            accounts = self.server.store.list_all("", "v1", "serviceaccounts")  # type: ignore[attr-defined]
+        except Exception:
+            return None
+        now = time.time()
+        for obj in accounts:
+            md = obj.metadata or {}
+            anns = md.get("annotations") or {}
+            if anns.get("ae.apishim/token") != token:
+                continue
+            try:
+                exp = float(anns.get("ae.apishim/token-exp", "0") or 0)
+            except Exception:
+                exp = 0
+            if exp <= now:
+                return None
+            return (obj.namespace or "default", obj.name, exp)
+        return None
+
+    def _parse_session_token(self, token: str) -> tuple[str, list[str]] | None:
+        if not token:
+            return None
+        secret = self.session_secret or os.getenv("AE_APISHIM_SESSION_SECRET")
+        if not secret:
+            return None
+        if not token.startswith("sess1."):
+            return None
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        payload_b64 = parts[1]
+        sig_b64 = parts[2]
+
+        def _b64url_decode(val: str) -> bytes:
+            pad = "=" * (-len(val) % 4)
+            return base64.urlsafe_b64decode((val + pad).encode("utf-8"))
+
+        try:
+            payload_raw = _b64url_decode(payload_b64)
+            sig_raw = _b64url_decode(sig_b64)
+        except Exception:
+            return None
+        try:
+            expected = hmac.new(
+                secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256
+            ).digest()
+            if not hmac.compare_digest(sig_raw, expected):
+                return None
+        except Exception:
+            return None
+        try:
+            payload = json.loads(payload_raw.decode("utf-8"))
+        except Exception:
+            return None
+        try:
+            exp = float(payload.get("exp") or 0)
+        except Exception:
+            exp = 0
+        if exp <= time.time():
+            return None
+        role = str(payload.get("role") or "").strip().lower()
+        if role not in {"exec", "portforward", "read"}:
+            return None
+        scopes_val = payload.get("scopes") or payload.get("scope") or []
+        scopes: list[str] = []
+        if isinstance(scopes_val, str):
+            scopes = [scopes_val]
+        elif isinstance(scopes_val, list | tuple):
+            scopes = [str(s) for s in scopes_val if s]
+        return role, scopes
+
     def _parse_principal(self) -> Principal:
+        cached = getattr(self, "_principal_cache", None)
+        if cached is not None:
+            return cached
         hdr = self.headers.get("Authorization", "")
         tok = hdr[7:] if hdr.startswith("Bearer ") else ""
+        if not tok:
+            try:
+                if (self.headers.get("Upgrade") or "").lower() == "websocket":
+                    tok = (parse_qs(urlparse(self.path).query).get("token") or [""])[0]
+            except Exception:
+                tok = tok or ""
         username = "system:unauthenticated"
         groups: set[str] = {"system:unauthenticated"}
         token_role: str | None = None
@@ -1225,21 +2410,51 @@ class ShimHandler(BaseHTTPRequestHandler):
             username = "reader"
             groups = {"system:authenticated", "read"}
             token_role = "read"  # noqa: S105 - role label, not a secret
+        elif tok and tok == self.exec_token:
+            username = "exec"
+            groups = {"system:authenticated", "exec"}
+            token_role = "exec"  # noqa: S105 - role label, not a secret
+        elif tok and tok == self.portforward_token:
+            username = "portforward"
+            groups = {"system:authenticated", "portforward"}
+            token_role = "portforward"  # noqa: S105 - role label, not a secret
         else:
+            session = self._parse_session_token(tok)
+            if session:
+                role, scopes = session
+                username = f"session:{role}"
+                groups = {"system:authenticated", role}
+                token_role = role
+                principal = Principal(
+                    username=username,
+                    groups=groups,
+                    token_role=token_role,
+                    token=tok,
+                    scopes=scopes,
+                )
+                self._principal_cache = principal
+                return principal
             with self.sa_tokens_lock:
                 sa = self.sa_tokens.get(tok)
+            if sa is None and tok:
+                sa = self._lookup_sa_token(tok)
+                if sa:
+                    with self.sa_tokens_lock:
+                        self.sa_tokens[tok] = sa
             if sa:
                 ns, name, exp_ts = sa
                 if exp_ts < time.time():
                     # expired; drop it
                     with self.sa_tokens_lock:
                         self.sa_tokens.pop(tok, None)
-                    return Principal(
+                    principal = Principal(
                         username="system:unauthenticated",
                         groups={"system:unauthenticated"},
                         token_role=None,
                         token=None,
                     )
+                    self._principal_cache = principal
+                    return principal
                 username = f"system:serviceaccount:{ns}:{name}"
                 groups = {
                     "system:authenticated",
@@ -1247,7 +2462,378 @@ class ShimHandler(BaseHTTPRequestHandler):
                     f"system:serviceaccounts:{ns}",
                 }
                 token_role = None
-        return Principal(username=username, groups=groups, token_role=token_role, token=tok)
+        principal = Principal(username=username, groups=groups, token_role=token_role, token=tok)
+        self._principal_cache = principal
+        return principal
+
+    def _stream_limits(self) -> tuple[float | None, float | None]:
+        try:
+            max_seconds = float(os.getenv("AE_APISHIM_STREAM_MAX_SECONDS", "0") or 0)
+        except Exception:
+            max_seconds = 0
+        try:
+            idle_seconds = float(os.getenv("AE_APISHIM_STREAM_IDLE_SECONDS", "0") or 0)
+        except Exception:
+            idle_seconds = 0
+        max_v = max_seconds if max_seconds > 0 else None
+        idle_v = idle_seconds if idle_seconds > 0 else None
+        return max_v, idle_v
+
+    def _stream_byte_limit(self) -> int | None:
+        try:
+            max_bytes = int(os.getenv("AE_APISHIM_STREAM_MAX_BYTES", "0") or 0)
+        except Exception:
+            max_bytes = 0
+        return max_bytes if max_bytes > 0 else None
+
+    def _cri_pf_enabled(self) -> bool:
+        raw = str(os.getenv("AE_APISHIM_CRI_PORTFORWARD", "")).strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    def _cri_pf_force(self) -> bool:
+        raw = str(os.getenv("AE_APISHIM_CRI_PORTFORWARD_FORCE", "")).strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _alloc_local_port() -> int:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+    def _wait_local_port(self, port: int, proc: subprocess.Popen, timeout: float = 3.0) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                return False
+            try:
+                with socket.create_connection(("127.0.0.1", int(port)), timeout=0.2):
+                    return True
+            except Exception:
+                time.sleep(0.05)
+        return False
+
+    def _start_cri_port_forward(
+        self, pod_id: str, ports: list[int]
+    ) -> tuple[dict[int, int], list[subprocess.Popen]]:
+        crictl = os.getenv("CRICTL_BIN", "crictl")
+        if shutil.which(crictl) is None:
+            LOGGER.warning("cri port-forward requested but crictl not found")
+            return {}, []
+        endpoint = os.getenv("AE_CRI_ENDPOINT", "unix:///run/containerd/containerd.sock")
+        port_map: dict[int, int] = {}
+        procs: list[subprocess.Popen] = []
+        entries: list[tuple[int, int, subprocess.Popen]] = []
+        for port in ports:
+            local_port = self._alloc_local_port()
+            args = [
+                crictl,
+                "--runtime-endpoint",
+                endpoint,
+                "port-forward",
+                str(pod_id),
+                f"{local_port}:{int(port)}",
+            ]
+            proc = subprocess.Popen(
+                args,  # noqa: S603 - fixed args, no user input
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            port_map[int(port)] = int(local_port)
+            procs.append(proc)
+            entries.append((int(port), int(local_port), proc))
+        for rport, lport, proc in entries:
+            if not self._wait_local_port(lport, proc):
+                LOGGER.warning("cri port-forward failed to bind local port for %s", rport)
+                self._stop_cri_port_forward(procs)
+                return {}, []
+        return port_map, procs
+
+    @staticmethod
+    def _stop_cri_port_forward(procs: list[subprocess.Popen]) -> None:
+        for proc in procs:
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+            except Exception:
+                pass
+        for proc in procs:
+            try:
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _app_from_labels(labels: dict[str, Any]) -> str | None:
+        for key in ("ae.app", "app.kubernetes.io/name", "app"):
+            val = labels.get(key)
+            if val:
+                return str(val)
+        return None
+
+    def _resolve_pod_container(self, namespace: str | None, pod_name: str) -> dict | None:
+        try:
+            containers = self.server.runtime.list_containers_info()  # type: ignore[attr-defined]
+        except Exception:
+            return None
+        for c in containers:
+            labels = c.get("labels", {}) or {}
+            rid = labels.get("ae.pod_name") or labels.get("ae.replica_id") or c.get("name")
+            if rid != pod_name and c.get("name") != pod_name:
+                continue
+            c_ns = labels.get("ae.namespace") or "default"
+            if namespace and c_ns != namespace:
+                continue
+            return c
+        return None
+
+    @staticmethod
+    def _extract_pod_uid(qs: dict[str, list[str]] | None) -> str | None:
+        if not qs:
+            return None
+        for key in qs:
+            if key.lower() in {"uid", "poduid"}:
+                vals = qs.get(key) or []
+                if vals:
+                    return str(vals[0])
+        return None
+
+    @staticmethod
+    def _extract_pod_rv(qs: dict[str, list[str]] | None) -> int | None:
+        if not qs:
+            return None
+        for key in qs:
+            if key.lower() in {"resourceversion", "podrv", "rv"}:
+                vals = qs.get(key) or []
+                if not vals:
+                    continue
+                try:
+                    return int(vals[0])
+                except Exception:
+                    return None
+        return None
+
+    @classmethod
+    def _pod_watch_cache_key(cls, namespace: str | None, pod_name: str) -> tuple[str, str]:
+        return (namespace or "default", pod_name)
+
+    @classmethod
+    def _update_pod_watch_cache(cls, pods: list[dict[str, Any]], default_rv: int) -> None:
+        if not pods:
+            return
+        now = time.time()
+        ttl = cls.pod_watch_ttl
+        with cls.pod_watch_lock:
+            for pod in pods:
+                meta = pod.get("metadata", {}) or {}
+                name = meta.get("name")
+                if not name:
+                    continue
+                ns = meta.get("namespace") or "default"
+                uid = meta.get("uid")
+                rv_val = meta.get("resourceVersion", default_rv)
+                try:
+                    rv = int(rv_val) if rv_val is not None else int(default_rv)
+                except Exception:
+                    rv = int(default_rv)
+                cls.pod_watch_cache[(ns, name)] = (uid, rv, now)
+            if ttl and ttl > 0:
+                cutoff = now - ttl
+                for key, (_uid, _rv, seen) in list(cls.pod_watch_cache.items()):
+                    if seen < cutoff:
+                        cls.pod_watch_cache.pop(key, None)
+
+    def _pod_watch_entry(
+        self,
+        namespace: str | None,
+        pod_name: str,
+    ) -> tuple[str | None, int, float] | None:
+        key = self._pod_watch_cache_key(namespace, pod_name)
+        now = time.time()
+        with self.pod_watch_lock:
+            entry = self.pod_watch_cache.get(key)
+        if not entry:
+            return None
+        uid, _rv, seen = entry
+        ttl = self.pod_watch_ttl
+        if ttl and ttl > 0 and (now - seen) > ttl:
+            return None
+        return entry
+
+    def _pod_watch_allows(
+        self,
+        namespace: str | None,
+        pod_name: str,
+        expected_uid: str | None = None,
+        expected_rv: int | None = None,
+    ) -> bool:
+        entry = self._pod_watch_entry(namespace, pod_name)
+        if not entry:
+            return False
+        uid, rv, _seen = entry
+        if expected_uid:
+            if not uid:
+                return False
+            if str(uid) != str(expected_uid):
+                return False
+        if expected_rv is not None and int(rv) != int(expected_rv):
+            return False
+        return True
+
+    def _scope_allows(
+        self,
+        env_name: str,
+        namespace: str | None,
+        app: str | None,
+        name: str,
+        *,
+        token_scopes: list[str] | None = None,
+    ) -> bool:
+        raw = os.getenv(env_name, "").strip()
+        env_scopes = [p.strip() for p in raw.split(",") if p.strip()] if raw else []
+        principal_scopes = (
+            token_scopes if token_scopes is not None else self._parse_principal().scopes
+        )
+        scopes: list[list[str]] = []
+        if env_scopes:
+            scopes.append(env_scopes)
+        if principal_scopes:
+            scopes.append([str(s) for s in principal_scopes if s])
+        if not scopes:
+            return True
+
+        candidates: list[str] = []
+        if namespace:
+            if app:
+                candidates.append(f"{namespace}/{app}")
+            candidates.append(f"{namespace}/{name}")
+        if app:
+            candidates.append(app)
+        candidates.append(name)
+
+        for scope_list in scopes:
+            matched = False
+            for pat in scope_list:
+                for cand in candidates:
+                    if fnmatch.fnmatch(cand, pat):
+                        matched = True
+                        break
+                if matched:
+                    break
+            if not matched:
+                return False
+        return True
+
+    def _validate_pod_scope(
+        self,
+        *,
+        namespace: str | None,
+        pod_name: str,
+        scope_env: str,
+        action: str,
+        expected_uid: str | None = None,
+        expected_rv: int | None = None,
+    ) -> dict | None:
+        container = self._resolve_pod_container(namespace, pod_name)
+        if not container:
+            self._not_found()
+            return None
+        if expected_uid:
+            actual_uid = container.get("uid") or container.get("id")
+            if not actual_uid or str(actual_uid) != str(expected_uid):
+                self._json_status(
+                    HTTPStatus.CONFLICT,
+                    reason="Conflict",
+                    message="pod UID mismatch",
+                )
+                return None
+        if not container.get("running", False):
+            self._json_status(
+                HTTPStatus.CONFLICT,
+                reason="Conflict",
+                message="pod is not running",
+            )
+            return None
+        labels = container.get("labels", {}) or {}
+        app = self._app_from_labels(labels) or pod_name
+        if self.pod_state_check and hasattr(self.server, "state"):
+            try:
+                fn = getattr(self.server.state, "list_pod_nodes", None)  # type: ignore[attr-defined]
+                if fn is None:
+                    fn = getattr(self.server.state, "list_replica_nodes", None)  # type: ignore[attr-defined]
+                if callable(fn):
+                    found = False
+                    for rid, _node, _ready, _live, _status, _rmsg, _lmsg in fn(app):
+                        if str(rid) == str(pod_name):
+                            found = True
+                            break
+                if not found:
+                    self._json_status(
+                        HTTPStatus.CONFLICT,
+                        reason="Conflict",
+                        message="pod not present in controller state",
+                    )
+                    return None
+            except Exception:
+                pass
+        if expected_rv is not None:
+            if not self._pod_watch_allows(namespace, pod_name, expected_uid, expected_rv):
+                self._json_status(
+                    HTTPStatus.CONFLICT,
+                    reason="Conflict",
+                    message="pod resourceVersion mismatch",
+                )
+                return None
+        elif self.pod_watch_check and not self._pod_watch_allows(namespace, pod_name, expected_uid):
+            self._json_status(
+                HTTPStatus.CONFLICT,
+                reason="Conflict",
+                message="pod not present in watch cache",
+            )
+            return None
+        if not self._scope_allows(
+            scope_env,
+            namespace,
+            app,
+            pod_name,
+            token_scopes=self._parse_principal().scopes,
+        ):
+            self._deny(403, message=f"{action} scope denies target pod")
+            return None
+        return container
+
+    def _service_app_name(self, svc: K8sObject) -> str:
+        labels = svc.metadata.get("labels") or {}
+        app = self._app_from_labels(labels)
+        if app:
+            return app
+        selector = svc.spec.get("selector") or {}
+        if isinstance(selector, dict):
+            app = self._app_from_labels(selector)  # type: ignore[arg-type]
+            if app:
+                return app
+        return svc.name
+
+    def _validate_service_pf_scope(self, namespace: str | None, svc: K8sObject, name: str) -> bool:
+        app = self._service_app_name(svc)
+        if not self._scope_allows(
+            "AE_API_PF_SCOPE",
+            namespace,
+            app,
+            name,
+            token_scopes=self._parse_principal().scopes,
+        ):
+            self._deny(403, message="port-forward scope denies target service")
+            return False
+        return True
 
     def _authz(self, role: str = "read") -> bool:
         admin = self.admin_token
@@ -1259,14 +2845,23 @@ class ShimHandler(BaseHTTPRequestHandler):
             return True
         principal = self._parse_principal()
         role_name = principal.token_role
+        authed = principal.username != "system:unauthenticated"
+        rbac_relaxed = self.rbac_enabled and self.rbac_eval_roles and authed
         ok = False
         if role == "write":
             ok = role_name == "admin"
         elif role == "read":
             ok = role_name in {"admin", "read"}
+        elif role == "exec":
+            ok = role_name in {"admin", "exec"}
+        elif role == "portforward":
+            ok = role_name in {"admin", "portforward"}
         elif role in {"rbac-read", "rbac-write"}:
             ok = role_name in {"admin", "read"}
-        if ok:
+        if ok or (
+            rbac_relaxed
+            and role in {"read", "write", "exec", "portforward", "rbac-read", "rbac-write"}
+        ):
             return True
         if self.allow_anonymous:
             return True
@@ -1278,6 +2873,25 @@ class ShimHandler(BaseHTTPRequestHandler):
         )
         return False
 
+    def _audit(self, action: str, **fields: Any) -> None:
+        try:
+            principal = self._parse_principal()
+            parts = []
+            for key, val in fields.items():
+                if val is None or val == "":
+                    continue
+                parts.append(f"{key}={val}")
+            suffix = " ".join(parts)
+            LOGGER.info(
+                "audit %s user=%s role=%s %s",
+                action,
+                principal.username,
+                principal.token_role or "-",
+                suffix,
+            )
+        except Exception:
+            return
+
     def _eval_subject_access_review(self, spec: dict[str, Any]) -> dict[str, Any]:
         res_attr = (spec or {}).get("resourceAttributes") or {}
         verb = (res_attr.get("verb") or "").lower()
@@ -1287,7 +2901,21 @@ class ShimHandler(BaseHTTPRequestHandler):
         if subres:
             resource = f"{resource}/{subres}"
         if not verb or not resource:
-            return {"allowed": False, "denied": True, "reason": "missing verb/resource"}
+            non_attr = (spec or {}).get("nonResourceAttributes") or {}
+            nverb = (non_attr.get("verb") or "").lower()
+            path = non_attr.get("path") or ""
+            if not nverb or not path:
+                return {"allowed": False, "denied": True, "reason": "missing verb/resource"}
+            principal = self._parse_principal()
+            if self.rbac_enabled and self.rbac_eval_roles:
+                allowed = principal.token_role in {"admin", "read"}
+            else:
+                allowed = principal.username != "system:unauthenticated"
+            return {
+                "allowed": allowed,
+                "denied": not allowed,
+                "reason": "rbac: allowed" if allowed else "rbac: forbidden",
+            }
         allowed = self._rbac_allows(verb, resource, namespace)
         return {
             "allowed": allowed,
@@ -1307,7 +2935,13 @@ class ShimHandler(BaseHTTPRequestHandler):
             return True
         principal = self._parse_principal()
         role = principal.token_role
-        if role is None:
+        if role == "admin":
+            return True
+        if role == "read" and verb in {"get", "list", "watch"}:
+            return True
+        if not self.rbac_eval_roles and role is None:
+            return False
+        if self.rbac_eval_roles and principal.username == "system:unauthenticated":
             return False
         # Static policy fallback
         if not self.rbac_eval_roles:
@@ -1318,6 +2952,13 @@ class ShimHandler(BaseHTTPRequestHandler):
         # Role/RoleBinding evaluation
         user = principal.username
         groups = principal.groups
+        sa_ns = None
+        sa_name = None
+        if user.startswith("system:serviceaccount:"):
+            parts = user.split(":")
+            if len(parts) >= 4:
+                sa_ns = parts[2]
+                sa_name = parts[3]
         # Collect role rules from bindings
         allowed_verbs: set[str] = set()
         try:
@@ -1329,6 +2970,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if not any(
                     (s.get("kind") == "User" and s.get("name") == user)
                     or (s.get("kind") == "Group" and s.get("name") in groups)
+                    or (
+                        s.get("kind") == "ServiceAccount"
+                        and sa_name
+                        and s.get("name") == sa_name
+                        and (s.get("namespace") or rb.namespace) == sa_ns
+                    )
                     for s in subjects
                 ):
                     continue
@@ -1351,6 +2998,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if not any(
                     (s.get("kind") == "User" and s.get("name") == user)
                     or (s.get("kind") == "Group" and s.get("name") in groups)
+                    or (
+                        s.get("kind") == "ServiceAccount"
+                        and sa_name
+                        and s.get("name") == sa_name
+                        and (s.get("namespace") or "") == (sa_ns or "")
+                    )
                     for s in subjects
                 ):
                     continue
@@ -1379,6 +3032,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         data = _json(payload)
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/json")
+        self._emit_warnings()
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -1408,6 +3062,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         if headers:
             for key, value in headers.items():
                 self.send_header(str(key), str(value))
+        self._emit_warnings()
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -1421,13 +3076,19 @@ class ShimHandler(BaseHTTPRequestHandler):
                 line = self.rfile.readline()
                 if not line:
                     break
+                line = line.strip()
+                if b";" in line:
+                    line = line.split(b";", 1)[0]
                 try:
-                    chunk_len = int(line.strip(), 16)
+                    chunk_len = int(line, 16)
                 except Exception:
                     break
                 if chunk_len == 0:
-                    # consume trailing CRLF after last chunk
-                    self.rfile.readline()
+                    # consume trailers until blank line
+                    while True:
+                        trailer = self.rfile.readline()
+                        if not trailer or trailer in (b"\r\n", b"\n"):
+                            break
                     break
                 body.extend(self.rfile.read(chunk_len))
                 # consume chunk trailer CRLF
@@ -1466,13 +3127,13 @@ class ShimHandler(BaseHTTPRequestHandler):
         chosen_proto = None
         if subproto_hdr:
             chosen_proto = subproto_hdr.split(",")[0].strip()
-        try:
-            with open("/tmp/pf-headers.log", "w") as hdr:  # noqa: S108
-                for k, v in self.headers.items():
-                    hdr.write(f"{k}: {v}\n")
-                hdr.write(f"chosen: {chosen_proto}\n")
-        except Exception:
-            pass
+        if PF_DEBUG:
+            LOGGER.warning(
+                "portforward ws handshake proto=%s target=%s:%s",
+                chosen_proto,
+                target_host,
+                target_port,
+            )
 
         def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
             buf = b""
@@ -1525,7 +3186,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     header.append(127)
                     header.extend(length.to_bytes(8, "big"))
                 sock.sendall(header + payload)
-            except Exception:
+            except Exception as exc:
+                if PF_DEBUG:
+                    LOGGER.warning("portforward ws send failed: %s", exc)
                 pass
 
         # Handshake
@@ -1536,6 +3199,28 @@ class ShimHandler(BaseHTTPRequestHandler):
         if chosen_proto:
             self.send_header("Sec-WebSocket-Protocol", chosen_proto)
         self.end_headers()
+        max_seconds, idle_seconds = self._stream_limits()
+        max_bytes = self._stream_byte_limit()
+        bytes_in = 0
+        bytes_out = 0
+        start_ts = time.time()
+        last_activity = start_ts
+        use_timeouts = bool(max_seconds or idle_seconds)
+        if use_timeouts:
+            try:
+                self.connection.settimeout(0.1)
+            except Exception:
+                pass
+
+        def _expired(now: float | None = None) -> bool:
+            if not max_seconds and not idle_seconds:
+                return False
+            check = now or time.time()
+            if max_seconds and (check - start_ts) > max_seconds:
+                return True
+            if idle_seconds and (check - last_activity) > idle_seconds:
+                return True
+            return False
 
         # Native WebSocket port-forward protocol (portforward.k8s.io)
         if chosen_proto and "portforward.k8s.io" in chosen_proto:
@@ -1546,21 +3231,46 @@ class ShimHandler(BaseHTTPRequestHandler):
                 upstream = socket.create_connection((target_host, target_port), timeout=5.0)
                 upstream.settimeout(0.1)
             except Exception:
+                if PF_DEBUG:
+                    LOGGER.warning(
+                        "portforward ws upstream connect failed target=%s:%s",
+                        target_host,
+                        target_port,
+                    )
                 upstream = None
 
             stop = False
+            recv_from_up = 0
+            send_to_up = 0
 
             def _pump_upstream() -> None:
                 nonlocal stop
+                nonlocal recv_from_up
+                nonlocal last_activity
+                nonlocal bytes_out
                 if not upstream:
                     return
                 while not stop:
+                    if _expired():
+                        stop = True
+                        break
                     try:
                         chunk = upstream.recv(4096)
                         if not chunk:
                             break
+                        last_activity = time.time()
+                        bytes_out += len(chunk)
+                        if max_bytes and (bytes_in + bytes_out) > max_bytes:
+                            stop = True
+                            break
+                        recv_from_up += len(chunk)
                         frame = bytes([channel_data]) + chunk
                         _send_ws(self.connection, frame, opcode=0x2)
+                        if PF_DEBUG and (recv_from_up < 8192 or recv_from_up % 65536 == 0):
+                            LOGGER.warning(
+                                "portforward ws upstream->client bytes=%s",
+                                recv_from_up,
+                            )
                     except TimeoutError:
                         continue
                     except Exception:
@@ -1571,14 +3281,21 @@ class ShimHandler(BaseHTTPRequestHandler):
             t_up.start()
 
             while not stop:
+                if _expired():
+                    break
                 msg = _recv_ws(self.connection)
                 if msg is None:
+                    if use_timeouts and not _expired():
+                        continue
                     break
                 opcode, payload = msg
                 if opcode == 0x8:
                     break
                 if opcode not in (0x1, 0x2) or not payload:
                     continue
+                bytes_in += len(payload)
+                if max_bytes and (bytes_in + bytes_out) > max_bytes:
+                    break
                 ch = payload[0]
                 data = payload[1:]
                 if ch == channel_error:
@@ -1586,7 +3303,14 @@ class ShimHandler(BaseHTTPRequestHandler):
                     continue
                 if upstream and data:
                     try:
+                        last_activity = time.time()
                         upstream.sendall(data)
+                        send_to_up += len(data)
+                        if PF_DEBUG and (send_to_up < 8192 or send_to_up % 65536 == 0):
+                            LOGGER.warning(
+                                "portforward ws client->upstream bytes=%s",
+                                send_to_up,
+                            )
                     except Exception:
                         break
             stop = True
@@ -1663,9 +3387,16 @@ class ShimHandler(BaseHTTPRequestHandler):
 
         def _pump_from_client() -> None:
             nonlocal stop
+            nonlocal last_activity
+            nonlocal bytes_in
             while not stop:
+                if _expired():
+                    stop = True
+                    break
                 msg = _recv_ws(self.connection)
                 if msg is None:
+                    if use_timeouts and not _expired():
+                        continue
                     break
                 opcode, payload = msg
                 if opcode == 0x8:  # close
@@ -1673,6 +3404,10 @@ class ShimHandler(BaseHTTPRequestHandler):
                     break
                 if opcode not in (0x1, 0x2) or len(payload) < 2:
                     continue
+                bytes_in += len(payload)
+                if max_bytes and (bytes_in + bytes_out) > max_bytes:
+                    stop = True
+                    break
                 try:
                     with open("/tmp/pf-debug.log", "ab") as dbg:  # noqa: S108
                         dbg.write(payload + b"\n")
@@ -1683,6 +3418,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 sock = _get_upstream(port or target_port)
                 if sock and data:
                     try:
+                        last_activity = time.time()
                         sock.sendall(data)
                     except Exception:
                         stop = True
@@ -1690,10 +3426,20 @@ class ShimHandler(BaseHTTPRequestHandler):
 
         def _pump_to_client(port: int, sock: socket.socket) -> None:
             nonlocal stop
+            nonlocal last_activity
+            nonlocal bytes_out
             while not stop:
+                if _expired():
+                    stop = True
+                    break
                 try:
                     chunk = sock.recv(4096)
                     if not chunk:
+                        break
+                    last_activity = time.time()
+                    bytes_out += len(chunk)
+                    if max_bytes and (bytes_in + bytes_out) > max_bytes:
+                        stop = True
                         break
                     frame = port.to_bytes(2, "big") + chunk
                     _send_ws(self.connection, frame, opcode=0x2)
@@ -1737,6 +3483,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         target_host: str,
         target_ports: list[int],
         target_hosts_by_port: dict[int, str] | None = None,
+        port_map: dict[int, int] | None = None,
         *,
         conn_override=None,
         suppress_handshake: bool = False,
@@ -1778,6 +3525,22 @@ class ShimHandler(BaseHTTPRequestHandler):
                 pass
 
         _pf_debug("spdy-start")
+        max_seconds, idle_seconds = self._stream_limits()
+        max_bytes = self._stream_byte_limit()
+        bytes_in = 0
+        bytes_out = 0
+        start_ts = time.time()
+        last_activity = start_ts
+
+        def _expired(now: float | None = None) -> bool:
+            if not max_seconds and not idle_seconds:
+                return False
+            check = now or time.time()
+            if max_seconds and (check - start_ts) > max_seconds:
+                return True
+            if idle_seconds and (check - last_activity) > idle_seconds:
+                return True
+            return False
 
         SPDY_DICT = base64.b64decode(
             "AAAAB29wdGlvbnMAAAAEaGVhZAAAAARwb3N0AAAAA3B1dAAAAAZkZWxldGUAAAAFdHJhY2UAAAAGYWNjZXB0AAAADmFjY2VwdC1jaGFyc2V0AAAAD2FjY2VwdC1lbmNvZGluZwAAAA9hY2NlcHQtbGFuZ3VhZ2UAAAANYWNjZXB0LXJhbmdlcwAAAANhZ2UAAAAFYWxsb3cAAAANYXV0aG9yaXphdGlvbgAAAA1jYWNoZS1jb250cm9sAAAACmNvbm5lY3Rpb24AAAAMY29udGVudC1iYXNlAAAAEGNvbnRlbnQtZW5jb2RpbmcAAAAQY29udGVudC1sYW5ndWFnZQAAAA5jb250ZW50LWxlbmd0aAAAABBjb250ZW50LWxvY2F0aW9uAAAAC2NvbnRlbnQtbWQ1AAAADWNvbnRlbnQtcmFuZ2UAAAAMY29udGVudC10eXBlAAAABGRhdGUAAAAEZXRhZwAAAAZleHBlY3QAAAAHZXhwaXJlcwAAAARmcm9tAAAABGhvc3QAAAAIaWYtbWF0Y2gAAAARaWYtbW9kaWZpZWQtc2luY2UAAAANaWYtbm9uZS1tYXRjaAAAAAhpZi1yYW5nZQAAABNpZi11bm1vZGlmaWVkLXNpbmNlAAAADWxhc3QtbW9kaWZpZWQAAAAIbG9jYXRpb24AAAAMbWF4LWZvcndhcmRzAAAABnByYWdtYQAAABJwcm94eS1hdXRoZW50aWNhdGUAAAATcHJveHktYXV0aG9yaXphdGlvbgAAAAVyYW5nZQAAAAdyZWZlcmVyAAAAC3JldHJ5LWFmdGVyAAAABnNlcnZlcgAAAAJ0ZQAAAAd0cmFpbGVyAAAAEXRyYW5zZmVyLWVuY29kaW5nAAAAB3VwZ3JhZGUAAAAKdXNlci1hZ2VudAAAAAR2YXJ5AAAAA3ZpYQAAAAd3YXJuaW5nAAAAEHd3dy1hdXRoZW50aWNhdGUAAAAGbWV0aG9kAAAAA2dldAAAAAZzdGF0dXMAAAAGMjAwIE9LAAAAB3ZlcnNpb24AAAAISFRUUC8xLjEAAAADdXJsAAAABnB1YmxpYwAAAApzZXQtY29va2llAAAACmtlZXAtYWxpdmUAAAAGb3JpZ2luMTAwMTAxMjAxMjAyMjA1MjA2MzAwMzAyMzAzMzA0MzA1MzA2MzA3NDAyNDA1NDA2NDA3NDA4NDA5NDEwNDExNDEyNDEzNDE0NDE1NDE2NDE3NTAyNTA0NTA1MjAzIE5vbi1BdXRob3JpdGF0aXZlIEluZm9ybWF0aW9uMjA0IE5vIENvbnRlbnQzMDEgTW92ZWQgUGVybWFuZW50bHk0MDAgQmFkIFJlcXVlc3Q0MDEgVW5hdXRob3JpemVkNDAzIEZvcmJpZGRlbjQwNCBOb3QgRm91bmQ1MDAgSW50ZXJuYWwgU2VydmVyIEVycm9yNTAxIE5vdCBJbXBsZW1lbnRlZDUwMyBTZXJ2aWNlIFVuYXZhaWxhYmxlSmFuIEZlYiBNYXIgQXByIE1heSBKdW4gSnVsIEF1ZyBTZXB0IE9jdCBOb3YgRGVjIDAwOjAwOjAwIE1vbiwgVHVlLCBXZWQsIFRodSwgRnJpLCBTYXQsIFN1biwgR01UY2h1bmtlZCx0ZXh0L2h0bWwsaW1hZ2UvcG5nLGltYWdlL2pwZyxpbWFnZS9naWYsYXBwbGljYXRpb24veG1sLGFwcGxpY2F0aW9uL3hodG1sK3htbCx0ZXh0L3BsYWluLHRleHQvamF2YXNjcmlwdCxwdWJsaWNwcml2YXRlbWF4LWFnZT1nemlwLGRlZmxhdGUsc2RjaGNoYXJzZXQ9dXRmLThjaGFyc2V0PWlzby04ODU5LTEsdXRmLSwqLGVucT0wLg=="
@@ -1791,6 +3554,16 @@ class ShimHandler(BaseHTTPRequestHandler):
         error_streams: dict[int, int] = {}  # stream_id -> data_stream sid
         upstream_cache: dict[int, socket.socket] = {}
         host_by_port = target_hosts_by_port or {}
+        pf_port_map = port_map or {}
+        _pf_debug(
+            "handshake upgrade="
+            + str(self.headers.get("Upgrade"))
+            + " stream-proto="
+            + str(self.headers.get("X-Stream-Protocol-Version"))
+        )
+        _pf_debug(
+            f"targets host={target_host} ports={target_ports} host_by_port={host_by_port} port_map={pf_port_map}"
+        )
         # Build round-robin host cycles per port when multiple endpoints exist
         host_cycle: dict[int, list[str]] = {}
         for p, h in host_by_port.items():
@@ -1923,6 +3696,10 @@ class ShimHandler(BaseHTTPRequestHandler):
             last_ping = time.time()
             while True:
                 now = time.time()
+                if _expired(now):
+                    break
+                if max_bytes and (bytes_in + bytes_out) > max_bytes:
+                    break
                 if now - last_ping > 10:
                     try:
                         send_ping()
@@ -1935,6 +3712,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 except TimeoutError:
                     hdr = None
                 if hdr:
+                    last_activity = time.time()
                     if len(hdr) < 8:
                         _pf_debug("recv-short")
                         break
@@ -1968,6 +3746,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                             )
                             if (
                                 port not in target_ports
+                                and port not in pf_port_map
                                 and target_ports[0] != 0
                                 and not isinstance(self.server.runtime, StubRuntime)
                             ):  # type: ignore[attr-defined]
@@ -2037,6 +3816,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                             send_rst(stream_id, code=2)
                             break
                         payload = read_exact(conn, length) or b""
+                        if payload:
+                            last_activity = time.time()
+                            bytes_in += len(payload)
                         if stream_id in data_streams and payload:
                             port = data_streams[stream_id]
                             wnd = stream_windows.get(stream_id, window_size)
@@ -2046,7 +3828,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                             if stream_id not in upstream_cache:
                                 try:
                                     dest_host = host_by_port.get(port, target_host)
-                                    dest_port = port
+                                    dest_port = pf_port_map.get(port, port)
                                     if isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                                         try:
                                             dest_port = int(
@@ -2067,6 +3849,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                                     upstream_cache.pop(stream_id, None)
                                     continue
                             try:
+                                last_activity = time.time()
                                 upstream_cache[stream_id].sendall(payload)
                                 stream_windows[stream_id] = max(0, wnd - len(payload))
                             except Exception:
@@ -2090,6 +3873,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                     try:
                         resp = sock_up.recv(4096)
                         if resp:
+                            last_activity = time.time()
+                            bytes_out += len(resp)
                             send_data_frame(sid, resp, flags=0)
                             try:
                                 send_window_update(sid, len(resp))
@@ -2133,10 +3918,11 @@ class ShimHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-    # ---------------- SPDY/3.1 exec/attach (kubectl exec) ----------------
-    def _handle_exec_spdy(
+    # ---------------- WebSocket exec/attach (browser + WS clients) ----------------
+    def _handle_exec_ws(
         self,
         *,
+        namespace: str | None,
         pod_name: str,
         command: list[str],
         container: str | None,
@@ -2145,6 +3931,33 @@ class ShimHandler(BaseHTTPRequestHandler):
         want_stdout: bool,
         want_stderr: bool,
     ) -> None:
+        stream_debug = SPDY_DEBUG or str(
+            os.getenv("AE_APISHIM_SPDY_DEBUG", "")
+        ).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if stream_debug:
+            msg = (
+                f"WS exec start pod={pod_name} container={container} tty={tty} "
+                f"cmd={' '.join(command)}"
+            )
+            LOGGER.warning(msg)
+            print(msg, file=sys.stderr, flush=True)
+            _spdy_debug_line(msg)
+        self._audit(
+            "exec.start",
+            namespace=namespace,
+            pod=pod_name,
+            container=container or "",
+            tty=tty,
+            stdin=want_stdin,
+            stdout=want_stdout,
+            stderr=want_stderr,
+            cmd=" ".join(command),
+        )
         # Try to open an attached exec session on the runtime (docker/podman only for now)
         exec_sock = None
         exec_id = None
@@ -2154,7 +3967,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     pod_name, command, container=container, tty=tty
                 )
                 exec_sock.settimeout(0.05)
-            except Exception:
+            except Exception as exc:
+                if SPDY_DEBUG:
+                    LOGGER.warning("WS exec_attach failed: %s", exc)
                 exec_sock = None
         if exec_sock is None:
             self._json_status(
@@ -2164,30 +3979,392 @@ class ShimHandler(BaseHTTPRequestHandler):
             )
             return
 
+        key = self.headers.get("Sec-WebSocket-Key")
+        if not key:
+            self.send_response(HTTPStatus.BAD_REQUEST)
+            self.end_headers()
+            return
+        accept_seed = (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("utf-8")
+        accept = base64.b64encode(hashlib.sha1(accept_seed).digest()).decode("utf-8")  # noqa: S324 - RFC 6455 requires SHA-1
+        subproto_hdr = self.headers.get("Sec-WebSocket-Protocol")
+        supported = [
+            "v5.channel.k8s.io",
+            "v4.channel.k8s.io",
+            "v3.channel.k8s.io",
+            "v2.channel.k8s.io",
+            "channel.k8s.io",
+        ]
+        chosen_proto = None
+        if subproto_hdr:
+            requested = [p.strip() for p in subproto_hdr.split(",") if p.strip()]
+            for proto in requested:
+                if proto in supported:
+                    chosen_proto = proto
+                    break
+        if chosen_proto is None:
+            chosen_proto = supported[0]
+
+        def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
+            buf = b""
+            while len(buf) < n:
+                chunk = sock.recv(n - len(buf))
+                if not chunk:
+                    return None
+                buf += chunk
+            return buf
+
+        def _recv_ws(sock: socket.socket) -> tuple[int, bytes] | None:
+            try:
+                hdr = _recv_exact(sock, 2)
+                if not hdr:
+                    return None
+                opcode = hdr[0] & 0x0F
+                masked = bool(hdr[1] & 0x80)
+                length = hdr[1] & 0x7F
+                if length == 126:
+                    ext = _recv_exact(sock, 2)
+                    if ext is None:
+                        return None
+                    length = int.from_bytes(ext, "big")
+                elif length == 127:
+                    ext = _recv_exact(sock, 8)
+                    if ext is None:
+                        return None
+                    length = int.from_bytes(ext, "big")
+                mask = _recv_exact(sock, 4) if masked else b""
+                payload = _recv_exact(sock, length) if length else b""
+                if payload is None:
+                    return None
+                if masked and mask:
+                    payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+                return opcode, payload
+            except Exception:
+                return None
+
+        def _send_ws(sock: socket.socket, payload: bytes, opcode: int = 0x2) -> None:
+            try:
+                header = bytearray()
+                header.append(0x80 | (opcode & 0x0F))
+                length = len(payload)
+                if length < 126:
+                    header.append(length)
+                elif length < (1 << 16):
+                    header.append(126)
+                    header.extend(length.to_bytes(2, "big"))
+                else:
+                    header.append(127)
+                    header.extend(length.to_bytes(8, "big"))
+                sock.sendall(header + payload)
+            except Exception:
+                pass
+
+        # Handshake
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        if chosen_proto:
+            self.send_header("Sec-WebSocket-Protocol", chosen_proto)
+        self.end_headers()
+        if stream_debug:
+            msg = f"WS exec stream-proto={chosen_proto}"
+            LOGGER.warning(msg)
+            print(msg, file=sys.stderr, flush=True)
+            _spdy_debug_line(msg)
+
+        conn = self.connection
+        conn.settimeout(0.05)
+
+        def _send_channel(ch: int, data: bytes) -> None:
+            if not data:
+                return
+            _send_ws(conn, bytes([ch]) + data, opcode=0x2)
+
+        def demux_exec_frame(frame: bytes) -> tuple[int, bytes] | None:
+            # Docker multiplexed attach header: 1 byte stream, 3 bytes zero, 4 bytes length
+            if len(frame) < 8:
+                return None
+            stream_type = frame[0]
+            size = int.from_bytes(frame[4:8], "big")
+            if size == 0:
+                return None
+            data = frame[8 : 8 + size]
+            if len(data) < size:
+                return None
+            return stream_type, data
+
+        exec_done = False
+        exec_done_at = 0.0
+        exec_grace_seconds = 2.0
+        exec_buf = b""
+        stop_reason = "unknown"
+        max_seconds, idle_seconds = self._stream_limits()
+        max_bytes = self._stream_byte_limit()
+        bytes_in = 0
+        bytes_out = 0
+        start_ts = time.time()
+        last_activity = start_ts
+        try:
+            while True:
+                now = time.time()
+                if max_seconds and (now - start_ts) > max_seconds:
+                    stop_reason = "max_seconds"
+                    break
+                if idle_seconds and (now - last_activity) > idle_seconds:
+                    stop_reason = "idle_timeout"
+                    break
+                if max_bytes and (bytes_in + bytes_out) > max_bytes:
+                    stop_reason = "byte_limit"
+                    break
+                # Read from WebSocket client
+                try:
+                    msg = _recv_ws(conn)
+                except TimeoutError:
+                    msg = None
+                except Exception:
+                    msg = None
+                if msg:
+                    last_activity = time.time()
+                    opcode, payload = msg
+                    if opcode == 0x8:  # close
+                        stop_reason = "client_close"
+                        break
+                    if opcode in (0x1, 0x2) and payload:
+                        bytes_in += len(payload)
+                        ch = payload[0]
+                        data = payload[1:]
+                        if ch == 0 and want_stdin and data:
+                            try:
+                                exec_sock.sendall(data)
+                            except Exception:
+                                pass
+                        elif ch == 4 and tty and data:
+                            try:
+                                doc = json.loads(data.decode("utf-8", "ignore"))
+                                h = (
+                                    int(doc.get("Height"))
+                                    if doc.get("Height") is not None
+                                    else None
+                                )
+                                w = int(doc.get("Width")) if doc.get("Width") is not None else None
+                                if hasattr(self.server.runtime, "exec_resize"):  # type: ignore[attr-defined]
+                                    try:
+                                        self.server.runtime.exec_resize(
+                                            exec_id or "", height=h, width=w
+                                        )  # type: ignore[attr-defined]
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+
+                # Read from exec socket
+                if exec_sock:
+                    try:
+                        chunk = exec_sock.recv(4096)
+                    except TimeoutError:
+                        chunk = None
+                    except Exception:
+                        chunk = b""
+                    if chunk:
+                        last_activity = time.time()
+                        bytes_out += len(chunk)
+                        if tty:
+                            if want_stdout:
+                                _send_channel(1, chunk)
+                        else:
+                            exec_buf += chunk
+                            while True:
+                                if len(exec_buf) < 8:
+                                    break
+                                size = int.from_bytes(exec_buf[4:8], "big")
+                                frame_len = 8 + size
+                                if len(exec_buf) < frame_len:
+                                    break
+                                frame = exec_buf[:frame_len]
+                                exec_buf = exec_buf[frame_len:]
+                                dm = demux_exec_frame(frame)
+                                if dm:
+                                    stype, data = dm
+                                    if stype == 1 and want_stdout:
+                                        _send_channel(1, data)
+                                    elif stype == 2 and want_stderr:
+                                        _send_channel(2, data)
+                    elif chunk == b"":
+                        exec_done = True
+                        exec_done_at = time.time()
+                        try:
+                            exec_sock.close()
+                        except Exception:
+                            pass
+                        exec_sock = None
+
+                if exec_done and (time.time() - exec_done_at) > exec_grace_seconds:
+                    stop_reason = "exec_done"
+                    break
+        finally:
+            exit_code = 0
+            try:
+                if exec_id and hasattr(self.server.runtime, "exec_exit_code"):  # type: ignore[attr-defined]
+                    exit_code = int(self.server.runtime.exec_exit_code(exec_id))  # type: ignore[attr-defined]
+            except Exception:
+                exit_code = 0
+            if stream_debug:
+                msg = (
+                    "WS exec end "
+                    f"pod={pod_name} container={container} exit_code={exit_code} "
+                    f"bytes_in={bytes_in} bytes_out={bytes_out} reason={stop_reason}"
+                )
+                LOGGER.warning(msg)
+                print(msg, file=sys.stderr, flush=True)
+                _spdy_debug_line(msg)
+            status_obj = _exec_status_obj(exit_code)
+            try:
+                _send_channel(3, json.dumps(status_obj, separators=(",", ":")).encode("utf-8"))
+            except Exception:
+                pass
+            try:
+                _send_ws(conn, b"\x03\xe8", opcode=0x8)
+            except Exception:
+                pass
+            self._audit(
+                "exec.end",
+                namespace=namespace,
+                pod=pod_name,
+                exit_code=exit_code,
+            )
+            if exec_sock:
+                try:
+                    exec_sock.close()
+                except Exception:
+                    pass
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    # ---------------- SPDY/3.1 exec/attach (kubectl exec) ----------------
+    def _handle_exec_spdy(
+        self,
+        *,
+        namespace: str | None,
+        pod_name: str,
+        command: list[str],
+        container: str | None,
+        tty: bool,
+        want_stdin: bool,
+        want_stdout: bool,
+        want_stderr: bool,
+    ) -> None:
+        spdy_debug = SPDY_DEBUG or str(os.getenv("AE_APISHIM_SPDY_DEBUG", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if spdy_debug:
+            msg = (
+                f"SPDY exec start pod={pod_name} container={container} tty={tty} "
+                f"cmd={' '.join(command)}"
+            )
+            LOGGER.warning(msg)
+            print(msg, file=sys.stderr, flush=True)
+            _spdy_debug_line(msg)
+        self._audit(
+            "exec.start",
+            namespace=namespace,
+            pod=pod_name,
+            container=container or "",
+            tty=tty,
+            stdin=want_stdin,
+            stdout=want_stdout,
+            stderr=want_stderr,
+            cmd=" ".join(command),
+        )
+        # Try to open an attached exec session on the runtime (docker/podman only for now)
+        exec_sock = None
+        exec_id = None
+        if hasattr(self.server.runtime, "exec_attach"):  # type: ignore[attr-defined]
+            try:
+                exec_sock, exec_id = self.server.runtime.exec_attach(  # type: ignore[attr-defined]
+                    pod_name, command, container=container, tty=tty
+                )
+                exec_sock.settimeout(0.05)
+            except Exception as exc:
+                if SPDY_DEBUG:
+                    LOGGER.warning("SPDY exec_attach failed: %s", exc)
+                exec_sock = None
+        if exec_sock is None:
+            self._json_status(
+                HTTPStatus.NOT_IMPLEMENTED,
+                reason="NotImplemented",
+                message="Streaming exec not available for this runtime",
+            )
+            return
+
+        def _parse_header_values(name: str) -> list[str]:
+            values = self.headers.get_all(name) if hasattr(self.headers, "get_all") else None
+            if not values:
+                val = self.headers.get(name)
+                values = [val] if val else []
+            parsed: list[str] = []
+            for value in values:
+                if not value:
+                    continue
+                for part in value.split(","):
+                    proto = part.strip()
+                    if proto:
+                        parsed.append(proto)
+            return parsed
+
+        server_protocols = [
+            "v5.channel.k8s.io",
+            "v4.channel.k8s.io",
+            "v3.channel.k8s.io",
+            "v2.channel.k8s.io",
+            "channel.k8s.io",
+        ]
+        client_protocols = _parse_header_values("X-Stream-Protocol-Version")
+        stream_proto = ""
+        for proto in client_protocols:
+            if proto in server_protocols:
+                stream_proto = proto
+                break
+        if not stream_proto:
+            self.send_response(403, "Forbidden")
+            for proto in server_protocols:
+                self.send_header("X-Accepted-Stream-Protocol-Versions", proto)
+            self.end_headers()
+            if SPDY_DEBUG:
+                LOGGER.warning(
+                    "SPDY exec handshake failed client_protocols=%s",
+                    client_protocols,
+                )
+            return
+
         # Accept upgrade after we know we can serve it
         self.send_response(101, "Switching Protocols")
         self.send_header("Connection", "Upgrade")
         self.send_header("Upgrade", self.headers.get("Upgrade", "SPDY/3.1"))
+        self.send_header("X-Stream-Protocol-Version", stream_proto)
+        if spdy_debug:
+            msg = f"SPDY exec stream-proto={stream_proto}"
+            LOGGER.warning(msg)
+            print(msg, file=sys.stderr, flush=True)
+            _spdy_debug_line(msg)
         self.end_headers()
 
         conn = self.connection
         conn.settimeout(0.05)
 
-        SPDY_DICT = (
-            b"optionsgetheadpostputdeletetraceacceptaccept-charsetaccept-encodingaccept-language"
-            b"authorizationexpectfromhostif-modified-sinceif-matchif-none-matchif-rangeif-unmodified-"
-            b"sincemax-forwardsproxy-authorizationrange refererteuser-agent100101200201202203204205206"
-            b"300301302303304305306307400401402403404405406407408409410411412413414415416417500501502"
-            b"503504505accept-rangesageetaglocationproxy-authenticatepublicretry-afterservervarywarning"
-            b"www-authenticateallowcontent-basecontent-encodingcache-controlconnectiondatetrailertransfer"
-            b"-encodingupgradeviawarningcontent-languagecontent-lengthcontent-locationcontent-md5content-"
-            b"rangecontent-typeetagexpireslast-modifiedset-cookieMondayTuesdayWednesdayThursdayFridaySaturday"
-            b"SundayJanFebMarAprMayJunJulAugSepOctNovDecchunkedtext/htmlimage/pngimage/jpgimage/gifapplication"
-            b"/xmlapplication/xhtmltext/plainpublicprivatemax-agegztcomparallel bytesruning"
+        SPDY_DICT = base64.b64decode(
+            "AAAAB29wdGlvbnMAAAAEaGVhZAAAAARwb3N0AAAAA3B1dAAAAAZkZWxldGUAAAAFdHJhY2UAAAAGYWNjZXB0AAAADmFjY2VwdC1jaGFyc2V0AAAAD2FjY2VwdC1lbmNvZGluZwAAAA9hY2NlcHQtbGFuZ3VhZ2UAAAANYWNjZXB0LXJhbmdlcwAAAANhZ2UAAAAFYWxsb3cAAAANYXV0aG9yaXphdGlvbgAAAA1jYWNoZS1jb250cm9sAAAACmNvbm5lY3Rpb24AAAAMY29udGVudC1iYXNlAAAAEGNvbnRlbnQtZW5jb2RpbmcAAAAQY29udGVudC1sYW5ndWFnZQAAAA5jb250ZW50LWxlbmd0aAAAABBjb250ZW50LWxvY2F0aW9uAAAAC2NvbnRlbnQtbWQ1AAAADWNvbnRlbnQtcmFuZ2UAAAAMY29udGVudC10eXBlAAAABGRhdGUAAAAEZXRhZwAAAAZleHBlY3QAAAAHZXhwaXJlcwAAAARmcm9tAAAABGhvc3QAAAAIaWYtbWF0Y2gAAAARaWYtbW9kaWZpZWQtc2luY2UAAAANaWYtbm9uZS1tYXRjaAAAAAhpZi1yYW5nZQAAABNpZi11bm1vZGlmaWVkLXNpbmNlAAAADWxhc3QtbW9kaWZpZWQAAAAIbG9jYXRpb24AAAAMbWF4LWZvcndhcmRzAAAABnByYWdtYQAAABJwcm94eS1hdXRoZW50aWNhdGUAAAATcHJveHktYXV0aG9yaXphdGlvbgAAAAVyYW5nZQAAAAdyZWZlcmVyAAAAC3JldHJ5LWFmdGVyAAAABnNlcnZlcgAAAAJ0ZQAAAAd0cmFpbGVyAAAAEXRyYW5zZmVyLWVuY29kaW5nAAAAB3VwZ3JhZGUAAAAKdXNlci1hZ2VudAAAAAR2YXJ5AAAAA3ZpYQAAAAd3YXJuaW5nAAAAEHd3dy1hdXRoZW50aWNhdGUAAAAGbWV0aG9kAAAAA2dldAAAAAZzdGF0dXMAAAAGMjAwIE9LAAAAB3ZlcnNpb24AAAAISFRUUC8xLjEAAAADdXJsAAAABnB1YmxpYwAAAApzZXQtY29va2llAAAACmtlZXAtYWxpdmUAAAAGb3JpZ2luMTAwMTAxMjAxMjAyMjA1MjA2MzAwMzAyMzAzMzA0MzA1MzA2MzA3NDAyNDA1NDA2NDA3NDA4NDA5NDEwNDExNDEyNDEzNDE0NDE1NDE2NDE3NTAyNTA0NTA1MjAzIE5vbi1BdXRob3JpdGF0aXZlIEluZm9ybWF0aW9uMjA0IE5vIENvbnRlbnQzMDEgTW92ZWQgUGVybWFuZW50bHk0MDAgQmFkIFJlcXVlc3Q0MDEgVW5hdXRob3JpemVkNDAzIEZvcmJpZGRlbjQwNCBOb3QgRm91bmQ1MDAgSW50ZXJuYWwgU2VydmVyIEVycm9yNTAxIE5vdCBJbXBsZW1lbnRlZDUwMyBTZXJ2aWNlIFVuYXZhaWxhYmxlSmFuIEZlYiBNYXIgQXByIE1heSBKdW4gSnVsIEF1ZyBTZXB0IE9jdCBOb3YgRGVjIDAwOjAwOjAwIE1vbiwgVHVlLCBXZWQsIFRodSwgRnJpLCBTYXQsIFN1biwgR01UY2h1bmtlZCx0ZXh0L2h0bWwsaW1hZ2UvcG5nLGltYWdlL2pwZyxpbWFnZS9naWYsYXBwbGljYXRpb24veG1sLGFwcGxpY2F0aW9uL3hodG1sK3htbCx0ZXh0L3BsYWluLHRleHQvamF2YXNjcmlwdCxwdWJsaWNwcml2YXRlbWF4LWFnZT1nemlwLGRlZmxhdGUsc2RjaGNoYXJzZXQ9dXRmLThjaGFyc2V0PWlzby04ODU5LTEsdXRmLSwqLGVucT0wLg=="
         )
-        dctx = zlib.decompressobj(zdict=SPDY_DICT)
+        dctx = zlib.decompressobj(wbits=15, zdict=SPDY_DICT)
+        cctx = zlib.compressobj(wbits=15, zdict=SPDY_DICT)
 
         stream_ids: dict[str, int] = {}  # streamtype -> sid
+        fallback_streams = ["stdin", "stdout", "stderr", "error", "resize"]
+        fallback_idx = 0
         window_size = 1 << 20
         stream_windows: dict[int, int] = {}
         resize_sid: int | None = None
@@ -2228,6 +4405,52 @@ class ShimHandler(BaseHTTPRequestHandler):
             header += opaque[:4]
             conn.sendall(bytes(header))
 
+        def send_settings(initial_window: int | None = None) -> None:
+            entries = bytearray()
+            num_entries = 0
+            if initial_window is not None:
+                num_entries = 1
+                entries.append(0x00)  # flags
+                entries += (0x04).to_bytes(3, "big")  # SETTINGS_INITIAL_WINDOW_SIZE
+                entries += int(initial_window).to_bytes(4, "big")
+            payload = num_entries.to_bytes(4, "big") + entries
+            header = bytearray()
+            header += b"\x80\x03"
+            header += (0x04).to_bytes(2, "big")
+            header += b"\x00"
+            header += len(payload).to_bytes(3, "big")
+            conn.sendall(bytes(header) + payload)
+
+        try:
+            send_settings(initial_window=window_size)
+            if SPDY_DEBUG:
+                LOGGER.warning("SPDY sent SETTINGS initial_window=%s", window_size)
+        except Exception as exc:
+            if SPDY_DEBUG:
+                LOGGER.warning("SPDY failed to send SETTINGS: %s", exc)
+
+        def _encode_headers(headers: dict[str, str]) -> bytes:
+            buf = bytearray()
+            buf += len(headers).to_bytes(4, "big")
+            for name, value in headers.items():
+                n = name.encode("utf-8")
+                v = value.encode("utf-8")
+                buf += len(n).to_bytes(4, "big")
+                buf += n
+                buf += len(v).to_bytes(4, "big")
+                buf += v
+            return cctx.compress(bytes(buf)) + cctx.flush(zlib.Z_SYNC_FLUSH)
+
+        def send_syn_reply(stream_id: int) -> None:
+            hdrs = _encode_headers({":status": "200", ":version": "HTTP/1.1"})
+            header = bytearray()
+            header += b"\x80\x03"
+            header += (0x02).to_bytes(2, "big")  # SYN_REPLY
+            header += b"\x00"
+            header += (len(hdrs) + 4).to_bytes(3, "big")
+            header += (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
+            conn.sendall(bytes(header) + hdrs)
+
         def send_rst(stream_id: int, code: int = 2) -> None:
             header = bytearray()
             header += b"\x80\x03"
@@ -2266,6 +4489,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                     value = f.read(vlen).decode("utf-8", "ignore")
                     headers[name] = value
             except Exception:
+                if SPDY_DEBUG:
+                    LOGGER.warning("SPDY exec syn-parse failed len=%s", len(payload))
                 return headers
             return headers
 
@@ -2282,43 +4507,121 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return None
             return stream_type, data
 
+        spdy_buf = b""
         last_ping = time.time()
+        exec_done = False
+        exec_done_at = 0.0
+        exec_grace_seconds = 3.0
+        max_seconds, idle_seconds = self._stream_limits()
+        max_bytes = self._stream_byte_limit()
+        bytes_in = 0
+        bytes_out = 0
+        start_ts = time.time()
+        last_activity = start_ts
+        required_streams: set[str] = {"error"}
+        if want_stdout:
+            required_streams.add("stdout")
+        if want_stderr and not tty:
+            required_streams.add("stderr")
+        if want_stdin:
+            required_streams.add("stdin")
+        if tty:
+            required_streams.add("resize")
+        warned_missing_streams = False
+        break_reason = ""
         try:
             exec_buf = b""
             while True:
                 now = time.time()
+                if max_seconds and (now - start_ts) > max_seconds:
+                    break_reason = "max_seconds"
+                    break
+                if idle_seconds and (now - last_activity) > idle_seconds:
+                    break_reason = "idle_timeout"
+                    break
+                if max_bytes and (bytes_in + bytes_out) > max_bytes:
+                    break_reason = "max_bytes"
+                    break
                 if now - last_ping > 10:
                     try:
                         send_ping()
                     except Exception:
+                        break_reason = "ping_failed"
                         break
                     last_ping = now
 
-                # Read SPDY control/data frames from client
+                # Read SPDY control/data frames from client (buffered)
                 try:
-                    hdr = conn.recv(8)
+                    chunk = conn.recv(4096)
                 except TimeoutError:
-                    hdr = None
-                if hdr:
-                    if len(hdr) < 8:
+                    chunk = None
+                except Exception as exc:
+                    if not break_reason:
+                        break_reason = f"client_recv_error:{type(exc).__name__}"
+                    chunk = b""
+                if chunk == b"":
+                    if not break_reason:
+                        break_reason = "client_eof"
+                    break
+                if chunk:
+                    last_activity = time.time()
+                    spdy_buf += chunk
+
+                while True:
+                    if len(spdy_buf) < 8:
                         break
+                    hdr = spdy_buf[:8]
                     is_control = (hdr[0] & 0x80) != 0
+                    length = int.from_bytes(hdr[5:8], "big")
+                    frame_len = 8 + length
+                    if len(spdy_buf) < frame_len:
+                        break
+                    payload = spdy_buf[8:frame_len]
+                    spdy_buf = spdy_buf[frame_len:]
                     if is_control:
                         frame_type = int.from_bytes(hdr[2:4], "big")
                         flags = hdr[4]
-                        length = int.from_bytes(hdr[5:8], "big")
+                        if SPDY_DEBUG:
+                            LOGGER.warning(
+                                "SPDY ctrl frame type=%s flags=0x%02x length=%s",
+                                frame_type,
+                                flags,
+                                length,
+                            )
                         if length > (1 << 20):
                             send_goaway(status=2)
                             break
-                        payload = read_exact(conn, length) or b""
                         if frame_type == 1:  # SYN_STREAM registers channels
                             sid = int.from_bytes(payload[0:4], "big") & 0x7FFFFFFF
+                            if SPDY_DEBUG:
+                                LOGGER.warning(
+                                    "SPDY exec syn-raw len=%s data=%s",
+                                    len(payload),
+                                    payload[:40].hex(),
+                                )
                             headers = parse_syn_stream(payload)
-                            stype = headers.get("streamtype", "").lower()
-                            stream_ids[stype] = sid
+                            stype = headers.get("streamtype", "").strip().lower()
+                            if SPDY_DEBUG:
+                                LOGGER.warning("SPDY SYN_STREAM sid=%s headers=%s", sid, headers)
+                            if stype not in {"stdin", "stdout", "stderr", "error", "resize"}:
+                                if fallback_idx < len(fallback_streams):
+                                    stype = fallback_streams[fallback_idx]
+                                    fallback_idx += 1
+                                    if SPDY_DEBUG:
+                                        LOGGER.warning(
+                                            "SPDY streamtype fallback sid=%s assigned=%s",
+                                            sid,
+                                            stype,
+                                        )
+                            if stype:
+                                stream_ids[stype] = sid
                             stream_windows[sid] = window_size
                             if stype == "resize":
                                 resize_sid = sid
+                            try:
+                                send_syn_reply(sid)
+                            except Exception:
+                                pass
                         elif frame_type == 4:  # SETTINGS
                             try:
                                 num = int.from_bytes(payload[0:4], "big")
@@ -2354,8 +4657,14 @@ class ShimHandler(BaseHTTPRequestHandler):
                     else:
                         stream_id = int.from_bytes(hdr[0:4], "big") & 0x7FFFFFFF
                         flags = hdr[4]
-                        length = int.from_bytes(hdr[5:8], "big")
-                        payload = read_exact(conn, length) or b""
+                        if SPDY_DEBUG:
+                            LOGGER.warning(
+                                "SPDY data frame sid=%s flags=0x%02x length=%s",
+                                stream_id,
+                                flags,
+                                length,
+                            )
+                        bytes_in += length
                         # STDIN frames
                         if stream_id == stream_ids.get("stdin") and want_stdin and payload:
                             try:
@@ -2389,52 +4698,114 @@ class ShimHandler(BaseHTTPRequestHandler):
                                     pass
 
                 # Read from exec socket and forward to stdout/stderr
-                try:
-                    chunk = exec_sock.recv(4096)
-                except TimeoutError:
-                    chunk = None
-                except Exception:
-                    chunk = b""
-                if chunk:
-                    exec_buf += chunk
-                    if tty:
-                        if want_stdout:
-                            sid = stream_ids.get("stdout")
-                            if sid:
-                                send_data_frame(sid, chunk, flags=0)
-                                try:
-                                    send_window_update(sid, len(chunk))
-                                except Exception:
-                                    pass
-                    else:
-                        while True:
-                            if len(exec_buf) < 8:
-                                break
-                            size = int.from_bytes(exec_buf[4:8], "big")
-                            frame_len = 8 + size
-                            if len(exec_buf) < frame_len:
-                                break
-                            frame = exec_buf[:frame_len]
-                            exec_buf = exec_buf[frame_len:]
-                            dm = demux_exec_frame(frame)
-                            if dm:
-                                stype, data = dm
-                                if stype == 1 and want_stdout:
-                                    sid = stream_ids.get("stdout")
-                                elif stype == 2 and want_stderr:
-                                    sid = stream_ids.get("stderr")
-                                else:
-                                    sid = None
-                                if sid and data:
-                                    send_data_frame(sid, data, flags=0)
+                if exec_sock:
+                    try:
+                        chunk = exec_sock.recv(4096)
+                    except TimeoutError:
+                        chunk = None
+                    except Exception:
+                        chunk = b""
+                    if chunk:
+                        last_activity = time.time()
+                        bytes_out += len(chunk)
+                        exec_buf += chunk
+                        if tty:
+                            if want_stdout:
+                                sid = stream_ids.get("stdout")
+                                if sid:
+                                    send_data_frame(sid, chunk, flags=0)
                                     try:
-                                        send_window_update(sid, len(data))
+                                        send_window_update(sid, len(chunk))
                                     except Exception:
                                         pass
-                elif chunk == b"":
-                    break
+                        else:
+                            while True:
+                                if len(exec_buf) < 8:
+                                    break
+                                size = int.from_bytes(exec_buf[4:8], "big")
+                                frame_len = 8 + size
+                                if len(exec_buf) < frame_len:
+                                    break
+                                frame = exec_buf[:frame_len]
+                                exec_buf = exec_buf[frame_len:]
+                                dm = demux_exec_frame(frame)
+                                if dm:
+                                    stype, data = dm
+                                    if stype == 1 and want_stdout:
+                                        sid = stream_ids.get("stdout")
+                                    elif stype == 2 and want_stderr:
+                                        sid = stream_ids.get("stderr")
+                                    else:
+                                        sid = None
+                                    if sid and data:
+                                        send_data_frame(sid, data, flags=0)
+                                        try:
+                                            send_window_update(sid, len(data))
+                                        except Exception:
+                                            pass
+                    elif chunk == b"":
+                        exec_done = True
+                        exec_done_at = time.time()
+                        try:
+                            exec_sock.close()
+                        except Exception:
+                            pass
+                        exec_sock = None
+
+                if exec_done:
+                    missing = required_streams.difference(stream_ids.keys())
+                    if missing and SPDY_DEBUG and not warned_missing_streams:
+                        warned_missing_streams = True
+                        LOGGER.warning("SPDY exec missing streams after exit: %s", sorted(missing))
+                    if not missing or (time.time() - exec_done_at) > exec_grace_seconds:
+                        break_reason = "exec_done"
+                        break
 
         finally:
+            missing = required_streams.difference(stream_ids.keys())
+            if spdy_debug:
+                msg = (
+                    "SPDY exec end reason="
+                    f"{break_reason or 'unknown'} pod={pod_name} container={container or ''} "
+                    f"bytes_in={bytes_in} bytes_out={bytes_out} streams={sorted(stream_ids.keys())} "
+                    f"missing={sorted(missing)}"
+                )
+                LOGGER.warning(msg)
+                print(msg, file=sys.stderr, flush=True)
+                _spdy_debug_line(msg)
+            elif missing:
+                LOGGER.warning(
+                    "SPDY exec end missing streams reason=%s pod=%s container=%s bytes_in=%s bytes_out=%s streams=%s missing=%s",
+                    break_reason or "unknown",
+                    pod_name,
+                    container or "",
+                    bytes_in,
+                    bytes_out,
+                    sorted(stream_ids.keys()),
+                    sorted(missing),
+                )
+            elif break_reason and break_reason != "exec_done":
+                LOGGER.warning(
+                    "SPDY exec end reason=%s pod=%s container=%s bytes_in=%s bytes_out=%s streams=%s missing=%s",
+                    break_reason,
+                    pod_name,
+                    container or "",
+                    bytes_in,
+                    bytes_out,
+                    sorted(stream_ids.keys()),
+                    sorted(missing),
+                )
+            elif SPDY_DEBUG:
+                LOGGER.warning(
+                    "SPDY exec end reason=%s pod=%s container=%s bytes_in=%s bytes_out=%s streams=%s missing=%s",
+                    break_reason or "unknown",
+                    pod_name,
+                    container or "",
+                    bytes_in,
+                    bytes_out,
+                    sorted(stream_ids.keys()),
+                    sorted(missing),
+                )
             # Send exit status over error stream if present
             exit_code = 0
             try:
@@ -2444,14 +4815,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 exit_code = 0
             err_sid = stream_ids.get("error")
             if err_sid:
-                status_obj = {
-                    "metadata": {},
-                    "status": "Success",
-                    "message": "",
-                    "reason": "",
-                    "code": exit_code,
-                    "details": {"exitCode": exit_code},
-                }
+                status_obj = _exec_status_obj(exit_code)
                 try:
                     send_data_frame(
                         err_sid,
@@ -2460,6 +4824,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                     )
                 except Exception:
                     pass
+            self._audit(
+                "exec.end",
+                namespace=namespace,
+                pod=pod_name,
+                exit_code=exit_code,
+            )
             try:
                 send_goaway(last_stream=max(stream_ids.values()) if stream_ids else 0, status=0)
             except Exception:
@@ -2572,6 +4942,41 @@ class ShimHandler(BaseHTTPRequestHandler):
                         }
                     )
                     return True
+                if group == "storage.k8s.io":
+                    self._ok(
+                        {
+                            "kind": "APIGroup",
+                            "apiVersion": "v1",
+                            "name": "storage.k8s.io",
+                            "versions": [{"groupVersion": "storage.k8s.io/v1", "version": "v1"}],
+                            "preferredVersion": {
+                                "groupVersion": "storage.k8s.io/v1",
+                                "version": "v1",
+                            },
+                            "serverAddressByClientCIDRs": [],
+                        }
+                    )
+                    return True
+                if group == "snapshot.storage.k8s.io":
+                    self._ok(
+                        {
+                            "kind": "APIGroup",
+                            "apiVersion": "v1",
+                            "name": "snapshot.storage.k8s.io",
+                            "versions": [
+                                {
+                                    "groupVersion": "snapshot.storage.k8s.io/v1",
+                                    "version": "v1",
+                                }
+                            ],
+                            "preferredVersion": {
+                                "groupVersion": "snapshot.storage.k8s.io/v1",
+                                "version": "v1",
+                            },
+                            "serverAddressByClientCIDRs": [],
+                        }
+                    )
+                    return True
                 return False
             payload = {
                 "kind": "APIGroup",
@@ -2605,6 +5010,152 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 "kind": "EndpointSlice",
                                 "verbs": ["get", "list"],
                             }
+                        ],
+                    }
+                )
+                return True
+            if group == "storage.k8s.io" and version == "v1":
+                self._ok(
+                    {
+                        "kind": "APIResourceList",
+                        "apiVersion": "storage.k8s.io/v1",
+                        "groupVersion": "storage.k8s.io/v1",
+                        "resources": [
+                            {
+                                "name": "storageclasses",
+                                "singularName": "storageclass",
+                                "namespaced": False,
+                                "kind": "StorageClass",
+                                "verbs": [
+                                    "get",
+                                    "list",
+                                    "create",
+                                    "delete",
+                                    "patch",
+                                    "update",
+                                    "watch",
+                                ],
+                                "shortNames": ["sc"],
+                            },
+                            {
+                                "name": "volumeattachments",
+                                "singularName": "volumeattachment",
+                                "namespaced": False,
+                                "kind": "VolumeAttachment",
+                                "verbs": [
+                                    "get",
+                                    "list",
+                                    "create",
+                                    "delete",
+                                    "patch",
+                                    "update",
+                                    "watch",
+                                ],
+                            },
+                            {
+                                "name": "csidrivers",
+                                "singularName": "csidriver",
+                                "namespaced": False,
+                                "kind": "CSIDriver",
+                                "verbs": [
+                                    "get",
+                                    "list",
+                                    "create",
+                                    "delete",
+                                    "patch",
+                                    "update",
+                                    "watch",
+                                ],
+                            },
+                            {
+                                "name": "csinodes",
+                                "singularName": "csinode",
+                                "namespaced": False,
+                                "kind": "CSINode",
+                                "verbs": [
+                                    "get",
+                                    "list",
+                                    "create",
+                                    "delete",
+                                    "patch",
+                                    "update",
+                                    "watch",
+                                ],
+                            },
+                            {
+                                "name": "csistoragecapacities",
+                                "singularName": "csistoragecapacity",
+                                "namespaced": True,
+                                "kind": "CSIStorageCapacity",
+                                "verbs": [
+                                    "get",
+                                    "list",
+                                    "create",
+                                    "delete",
+                                    "patch",
+                                    "update",
+                                    "watch",
+                                ],
+                            },
+                        ],
+                    }
+                )
+                return True
+            if group == "snapshot.storage.k8s.io" and version == "v1":
+                self._ok(
+                    {
+                        "kind": "APIResourceList",
+                        "apiVersion": "snapshot.storage.k8s.io/v1",
+                        "groupVersion": "snapshot.storage.k8s.io/v1",
+                        "resources": [
+                            {
+                                "name": "volumesnapshots",
+                                "singularName": "volumesnapshot",
+                                "namespaced": True,
+                                "kind": "VolumeSnapshot",
+                                "verbs": [
+                                    "get",
+                                    "list",
+                                    "create",
+                                    "delete",
+                                    "patch",
+                                    "update",
+                                    "watch",
+                                ],
+                                "shortNames": ["vs"],
+                            },
+                            {
+                                "name": "volumesnapshotclasses",
+                                "singularName": "volumesnapshotclass",
+                                "namespaced": False,
+                                "kind": "VolumeSnapshotClass",
+                                "verbs": [
+                                    "get",
+                                    "list",
+                                    "create",
+                                    "delete",
+                                    "patch",
+                                    "update",
+                                    "watch",
+                                ],
+                                "shortNames": ["vsc"],
+                            },
+                            {
+                                "name": "volumesnapshotcontents",
+                                "singularName": "volumesnapshotcontent",
+                                "namespaced": False,
+                                "kind": "VolumeSnapshotContent",
+                                "verbs": [
+                                    "get",
+                                    "list",
+                                    "create",
+                                    "delete",
+                                    "patch",
+                                    "update",
+                                    "watch",
+                                ],
+                                "shortNames": ["vscnt"],
+                            },
                         ],
                     }
                 )
@@ -2713,10 +5264,20 @@ class ShimHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         q = parse_qs(parsed.query)
+        upgrade = (self.headers.get("Upgrade") or "").lower()
+        is_exec_path = re.match(r"^/api/v1/namespaces/[^/]+/pods/[^/]+/exec$", path)
+        is_pf_path = re.match(r"^/api/v1/namespaces/[^/]+/(pods|services)/[^/]+/portforward$", path)
         # Allow unauthenticated discovery/OpenAPI for kubectl validation
-        if path not in {"/openapi/v2", "/swagger.json", "/api", "/apis", "/version"}:
-            if not self._authz(role="read"):
-                return
+        if path not in {"/openapi/v2", "/openapi/v3", "/swagger.json", "/api", "/apis", "/version"}:
+            if is_exec_path and upgrade:
+                if not self._authz(role="exec"):
+                    return
+            elif is_pf_path and upgrade:
+                if not self._authz(role="portforward"):
+                    return
+            else:
+                if not self._authz(role="read"):
+                    return
 
         if path == "/healthz" or path == "/readyz":
             self._ok({"status": "ok"})
@@ -2762,6 +5323,27 @@ class ShimHandler(BaseHTTPRequestHandler):
                     "name": "discovery.k8s.io",
                     "versions": [{"groupVersion": "discovery.k8s.io/v1", "version": "v1"}],
                     "preferredVersion": {"groupVersion": "discovery.k8s.io/v1", "version": "v1"},
+                },
+                {
+                    "name": "storage.k8s.io",
+                    "versions": [{"groupVersion": "storage.k8s.io/v1", "version": "v1"}],
+                    "preferredVersion": {
+                        "groupVersion": "storage.k8s.io/v1",
+                        "version": "v1",
+                    },
+                },
+                {
+                    "name": "snapshot.storage.k8s.io",
+                    "versions": [
+                        {
+                            "groupVersion": "snapshot.storage.k8s.io/v1",
+                            "version": "v1",
+                        }
+                    ],
+                    "preferredVersion": {
+                        "groupVersion": "snapshot.storage.k8s.io/v1",
+                        "version": "v1",
+                    },
                 },
                 {
                     "name": "rbac.authorization.k8s.io",
@@ -2879,6 +5461,38 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 "update",
                                 "watch",
                             ],
+                        },
+                        {
+                            "name": "persistentvolumeclaims",
+                            "singularName": "",
+                            "namespaced": True,
+                            "kind": "PersistentVolumeClaim",
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
+                            "shortNames": ["pvc"],
+                        },
+                        {
+                            "name": "persistentvolumes",
+                            "singularName": "",
+                            "namespaced": False,
+                            "kind": "PersistentVolume",
+                            "verbs": [
+                                "get",
+                                "list",
+                                "create",
+                                "delete",
+                                "patch",
+                                "update",
+                                "watch",
+                            ],
+                            "shortNames": ["pv"],
                         },
                         {
                             "name": "serviceaccounts",
@@ -3202,7 +5816,21 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "namespaced": False,
                             "kind": "SubjectAccessReview",
                             "verbs": ["create"],
-                        }
+                        },
+                        {
+                            "name": "selfsubjectaccessreviews",
+                            "singularName": "",
+                            "namespaced": False,
+                            "kind": "SelfSubjectAccessReview",
+                            "verbs": ["create"],
+                        },
+                        {
+                            "name": "selfsubjectrulesreviews",
+                            "singularName": "",
+                            "namespaced": False,
+                            "kind": "SelfSubjectRulesReview",
+                            "verbs": ["create"],
+                        },
                     ],
                 }
             )
@@ -3291,7 +5919,15 @@ class ShimHandler(BaseHTTPRequestHandler):
 
         # Lists and gets for core resources
         plural, ns, name = _ns_name(path)
-        if plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}:
+        if plural in {
+            "namespaces",
+            "configmaps",
+            "secrets",
+            "persistentvolumeclaims",
+            "persistentvolumes",
+            "serviceaccounts",
+            "services",
+        }:
             if name is None:
                 label_sel, field_sel = _selector_values_from_query(q)
                 # watch support on LIST endpoints
@@ -3422,7 +6058,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if not self._rbac_allows(verb, plural):
                     self._deny(403)
                     return
-        if plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}:
+        if plural in {
+            "namespaces",
+            "configmaps",
+            "secrets",
+            "persistentvolumeclaims",
+            "persistentvolumes",
+            "serviceaccounts",
+            "services",
+        }:
             # Mutations
             pass
         # Endpoints (projected from controller state)
@@ -3490,22 +6134,19 @@ class ShimHandler(BaseHTTPRequestHandler):
             except Exception:
                 containers = []
             label_sel, field_sel = _selector_values_from_query(q)
-            # enrich with controller replica/node info when available
+            # enrich with controller pod/node info when available
             replica_info: dict[str, tuple[str | None, bool, bool, str, str, str]] = {}
             try:
                 # Build once for all apps to avoid N+1 queries
                 for app in {(c.get("labels", {}) or {}).get("ae.app") for c in containers}:
                     if not app:
                         continue
-                    for (
-                        rid,
-                        node_id,
-                        ready,
-                        live,
-                        status,
-                        rmsg,
-                        lmsg,
-                    ) in self.server.state.list_replica_nodes(app):  # type: ignore[attr-defined]
+                    rows = []
+                    try:
+                        rows = self.server.state.list_pod_nodes(app)  # type: ignore[attr-defined]
+                    except Exception:
+                        rows = self.server.state.list_replica_nodes(app)  # type: ignore[attr-defined]
+                    for rid, node_id, ready, live, status, rmsg, lmsg in rows:
                         replica_info[rid] = (node_id, ready, live, status, rmsg, lmsg)
             except Exception:
                 replica_info = {}
@@ -3516,7 +6157,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 c_ns = labels.get("ae.namespace") or "default"
                 if ns and c_ns != ns:
                     continue
-                rid = labels.get("ae.replica_id") or c.get("name")
+                rid = labels.get("ae.pod_name") or labels.get("ae.replica_id") or c.get("name")
                 rep_info = replica_info.get(str(rid))
                 node_name = labels.get("ae.node") or (rep_info[0] if rep_info else None)
                 pod_obj = _pod_obj(c, now_rv, node_name)
@@ -3537,6 +6178,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                             "waiting": {"reason": rep_info[3] or "Pending", "message": rep_info[4]}
                         }
                 pod_objs.append(pod_obj)
+            self._update_pod_watch_cache(pod_objs, now_rv)
             if q.get("watch", ["0"])[0] in ("1", "true", "True"):
                 if not self._rbac_allows("watch", "pods"):
                     self._deny(403)
@@ -3673,6 +6315,20 @@ class ShimHandler(BaseHTTPRequestHandler):
                     message="command query param is required",
                 )
                 return
+            expected_uid = self._extract_pod_uid(qs)
+            expected_rv = self._extract_pod_rv(qs)
+            if (
+                self._validate_pod_scope(
+                    namespace=m_exec.group(1),
+                    pod_name=m_exec.group(2),
+                    scope_env="AE_API_EXEC_SCOPE",
+                    action="exec",
+                    expected_uid=expected_uid,
+                    expected_rv=expected_rv,
+                )
+                is None
+            ):
+                return
             upgrade = (self.headers.get("Upgrade") or "").lower()
             if upgrade.startswith("spdy"):
                 container = (qs.get("container") or [None])[0]
@@ -3681,6 +6337,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 want_stdout = (qs.get("stdout") or ["true"])[0].lower() in ("1", "true", "yes")
                 want_stderr = (qs.get("stderr") or ["true"])[0].lower() in ("1", "true", "yes")
                 self._handle_exec_spdy(
+                    namespace=m_exec.group(1),
                     pod_name=m_exec.group(2),
                     command=list(cmd),
                     container=container,
@@ -3691,10 +6348,20 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )
                 return
             elif upgrade == "websocket":
-                self._json_status(
-                    HTTPStatus.UPGRADE_REQUIRED,
-                    reason="UpgradeRequired",
-                    message="kubectl exec requires SPDY/3.1; websocket exec not implemented",
+                container = (qs.get("container") or [None])[0]
+                tty = (qs.get("tty") or ["false"])[0].lower() in ("1", "true", "yes")
+                want_stdin = (qs.get("stdin") or ["false"])[0].lower() in ("1", "true", "yes")
+                want_stdout = (qs.get("stdout") or ["true"])[0].lower() in ("1", "true", "yes")
+                want_stderr = (qs.get("stderr") or ["true"])[0].lower() in ("1", "true", "yes")
+                self._handle_exec_ws(
+                    namespace=m_exec.group(1),
+                    pod_name=m_exec.group(2),
+                    command=list(cmd),
+                    container=container,
+                    tty=tty,
+                    want_stdin=want_stdin,
+                    want_stdout=want_stdout,
+                    want_stderr=want_stderr,
                 )
                 return
             else:
@@ -3715,6 +6382,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             svc = self.server.store.get("", "v1", "services", ns, svc_name)  # type: ignore[attr-defined]
             if not svc:
                 self._not_found()
+                return
+            if not self._validate_service_pf_scope(ns, svc, svc_name):
                 return
             qs = parse_qs(parsed.query)
             ports_q = qs.get("ports") or []
@@ -3779,6 +6448,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )
                 return
             upgrade = (self.headers.get("Upgrade") or "").lower()
+            port_label = ",".join(str(p) for p in target_ports)
             if upgrade.startswith("spdy"):
                 # choose endpoint per target port to spread load
                 ep_map: dict[int, list[str]] = {}
@@ -3788,9 +6458,41 @@ class ShimHandler(BaseHTTPRequestHandler):
                     if port_ips:
                         ep_map[tp] = port_ips
                 # fallback: single target_ip if map empty
-                self._handle_port_forward_spdy(target_ip, target_ports, ep_map if ep_map else None)
+                self._audit(
+                    "portforward.start",
+                    namespace=ns,
+                    service=svc_name,
+                    ports=port_label,
+                    protocol="spdy",
+                )
+                try:
+                    self._handle_port_forward_spdy(
+                        target_ip, target_ports, ep_map if ep_map else None
+                    )
+                finally:
+                    self._audit(
+                        "portforward.end",
+                        namespace=ns,
+                        service=svc_name,
+                        ports=port_label,
+                    )
             elif upgrade == "websocket":
-                self._handle_port_forward_ws(target_ip, target_ports[0])
+                self._audit(
+                    "portforward.start",
+                    namespace=ns,
+                    service=svc_name,
+                    ports=port_label,
+                    protocol="websocket",
+                )
+                try:
+                    self._handle_port_forward_ws(target_ip, target_ports[0])
+                finally:
+                    self._audit(
+                        "portforward.end",
+                        namespace=ns,
+                        service=svc_name,
+                        ports=port_label,
+                    )
             else:
                 self._json_status(
                     HTTPStatus.UPGRADE_REQUIRED,
@@ -3806,38 +6508,90 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return
             qs = parse_qs(parsed.query)
             ports_q = qs.get("ports") or []
+            ns = m_pf.group(1)
             pod_name = m_pf.group(2)
-            target_host = "127.0.0.1"
-            container_info = None
-            try:
-                for c in self.server.runtime.list_containers_info():  # type: ignore[attr-defined]
-                    labels = c.get("labels", {}) or {}
-                    if labels.get("ae.replica_id") == pod_name or c.get("name") == pod_name:
-                        container_info = c
-                        break
-            except Exception:
-                container_info = None
-            if container_info:
-                target_host = (
-                    container_info.get("pod_ip")
-                    or container_info.get("host_ip")
-                    or container_info.get("hostIP")
-                    or target_host
-                )
+            container_info = self._validate_pod_scope(
+                namespace=ns,
+                pod_name=pod_name,
+                scope_env="AE_API_PF_SCOPE",
+                action="port-forward",
+                expected_uid=self._extract_pod_uid(qs),
+                expected_rv=self._extract_pod_rv(qs),
+            )
+            if container_info is None:
+                return
             upgrade = (self.headers.get("Upgrade") or "").lower()
-            target_ports: list[int] = []
+            requested_ports: list[int] = []
             for p in ports_q:
                 try:
-                    target_ports.append(int(p))
+                    requested_ports.append(int(p))
                 except Exception:
                     pass
+            target_ports = list(requested_ports)
+            pod_id = None
+            pod_ip = None
+            host_ports: list[int] = []
+            port_map: dict[int, int] = {}
             if container_info:
-                try:
-                    hp = container_info.get("host_ports") or container_info.get("hostPorts") or []
-                    if hp:
-                        target_ports = [int(hp[0])]
-                except Exception:
-                    pass
+                default_host = "127.0.0.1"
+                pod_ip = container_info.get("pod_ip")
+                pod_id = container_info.get("uid") or container_info.get("id")
+                host_ip = (
+                    container_info.get("host_ip") or container_info.get("hostIP") or default_host
+                )
+                raw_host_ports = (
+                    container_info.get("host_ports") or container_info.get("hostPorts") or []
+                )
+                for hp in raw_host_ports:
+                    try:
+                        host_ports.append(int(hp))
+                    except Exception:
+                        continue
+                raw_port_map = container_info.get("port_map") or container_info.get("portMap") or {}
+                if isinstance(raw_port_map, dict):
+                    for cport, hport in raw_port_map.items():
+                        try:
+                            port_map[int(cport)] = int(hport)
+                        except Exception:
+                            continue
+
+                # Prefer pod IP + container port; fall back to host ports when needed.
+                if pod_ip:
+                    target_host = pod_ip
+                    if not target_ports:
+                        if port_map:
+                            target_ports = [sorted(port_map.keys())[0]]
+                        elif host_ports:
+                            target_host = host_ip
+                            target_ports = [host_ports[0]]
+                else:
+                    target_host = host_ip
+                    if target_ports and port_map:
+                        target_ports = [port_map.get(p, p) for p in target_ports]
+                    elif not target_ports:
+                        if host_ports:
+                            target_ports = [host_ports[0]]
+                        elif port_map:
+                            target_ports = [sorted(port_map.values())[0]]
+            else:
+                target_host = "127.0.0.1"
+            pf_port_map: dict[int, int] | None = None
+            cri_pf_procs: list[subprocess.Popen] = []
+            use_cri_pf = (
+                isinstance(self.server.runtime, CRIRuntime)  # type: ignore[attr-defined]
+                and pod_id
+                and (
+                    self._cri_pf_force()
+                    or (self._cri_pf_enabled() and not pod_ip and not host_ports)
+                )
+            )
+            if use_cri_pf and requested_ports:
+                pf_port_map, cri_pf_procs = self._start_cri_port_forward(
+                    str(pod_id), requested_ports
+                )
+                if pf_port_map:
+                    target_host = "127.0.0.1"
+                    target_ports = list(requested_ports)
             if isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                 target_host = os.getenv("AE_STUB_BACKEND_HOST", target_host)
                 try:
@@ -3851,11 +6605,51 @@ class ShimHandler(BaseHTTPRequestHandler):
                     message="ports query param required",
                 )
                 return
+            port_label = ",".join(str(p) for p in (requested_ports or target_ports))
             if upgrade == "websocket":
-                self._handle_port_forward_ws(target_host, target_ports[0])
+                self._audit(
+                    "portforward.start",
+                    namespace=ns,
+                    pod=pod_name,
+                    ports=port_label,
+                    protocol="websocket",
+                )
+                try:
+                    ws_port = target_ports[0]
+                    if pf_port_map:
+                        ws_port = pf_port_map.get(target_ports[0], ws_port)
+                    self._handle_port_forward_ws(target_host, ws_port)
+                finally:
+                    if cri_pf_procs:
+                        self._stop_cri_port_forward(cri_pf_procs)
+                    self._audit(
+                        "portforward.end",
+                        namespace=ns,
+                        pod=pod_name,
+                        ports=port_label,
+                    )
             elif upgrade.startswith("spdy"):
-                self._handle_port_forward_spdy(target_host, target_ports)
+                self._audit(
+                    "portforward.start",
+                    namespace=ns,
+                    pod=pod_name,
+                    ports=port_label,
+                    protocol="spdy",
+                )
+                try:
+                    self._handle_port_forward_spdy(target_host, target_ports, port_map=pf_port_map)
+                finally:
+                    if cri_pf_procs:
+                        self._stop_cri_port_forward(cri_pf_procs)
+                    self._audit(
+                        "portforward.end",
+                        namespace=ns,
+                        pod=pod_name,
+                        ports=port_label,
+                    )
             else:
+                if cri_pf_procs:
+                    self._stop_cri_port_forward(cri_pf_procs)
                 self._json_status(
                     HTTPStatus.UPGRADE_REQUIRED,
                     reason="UpgradeRequired",
@@ -3894,8 +6688,20 @@ class ShimHandler(BaseHTTPRequestHandler):
                 except BrokenPipeError:
                     pass
                 return
-            # best-effort pull from controller events by namespace
+            # best-effort pull from stored events + controller events by namespace
             items = []
+            try:
+                stored = (
+                    self.server.store.list_all("", "v1", "events")  # type: ignore[attr-defined]
+                    if ns is None
+                    else self.server.store.list("", "v1", "events", ns)  # type: ignore[attr-defined]
+                )
+                for ev in stored:
+                    if name and ev.name != name:
+                        continue
+                    items.append(_to_stored_event(ev))
+            except Exception:
+                pass
             try:
                 deps = (
                     self.server.store.list_all("apps", "v1", "deployments")  # type: ignore[attr-defined]
@@ -3915,7 +6721,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                             continue
                         items.append(_to_event(dep.namespace or "default", dep.name, ev))
             except Exception:
-                items = []
+                if not items:
+                    items = []
             rv = int(time.time() * 1000)
             self._ok(
                 {
@@ -4516,6 +7323,189 @@ class ShimHandler(BaseHTTPRequestHandler):
         if self._handle_custom_resource_get(path, q):
             return
 
+        # snapshot.storage.k8s.io: volumesnapshots (namespaced) and snapshot classes/contents
+        if path.startswith("/apis/snapshot.storage.k8s.io/v1"):
+            resources = (
+                ("volumesnapshots", "VolumeSnapshot", "VolumeSnapshotList", True),
+                (
+                    "volumesnapshotclasses",
+                    "VolumeSnapshotClass",
+                    "VolumeSnapshotClassList",
+                    False,
+                ),
+                (
+                    "volumesnapshotcontents",
+                    "VolumeSnapshotContent",
+                    "VolumeSnapshotContentList",
+                    False,
+                ),
+            )
+            for plural, kind, list_kind, namespaced in resources:
+                if namespaced:
+                    s_plural, s_ns, s_name = _gv_ns_name(
+                        path, "snapshot.storage.k8s.io", "v1", plural
+                    )
+                    if s_plural != plural:
+                        continue
+                    if s_name is None:
+                        if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                            self._stream_watch(
+                                "snapshot.storage.k8s.io",
+                                "v1",
+                                plural,
+                                s_ns,
+                                q,
+                                transform=_to_generic("snapshot.storage.k8s.io", "v1", kind, plural),
+                            )
+                            return
+                        items = (
+                            self.server.store.list_all("snapshot.storage.k8s.io", "v1", plural)
+                            if s_ns is None
+                            else self.server.store.list("snapshot.storage.k8s.io", "v1", plural, s_ns)
+                        )  # type: ignore[attr-defined]
+                        self._ok(
+                            {
+                                "kind": list_kind,
+                                "apiVersion": "snapshot.storage.k8s.io/v1",
+                                "items": [
+                                    _to_generic("snapshot.storage.k8s.io", "v1", kind, plural)(i)
+                                    for i in items
+                                ],
+                            }
+                        )
+                        return
+                    obj = self.server.store.get(  # type: ignore[attr-defined]
+                        "snapshot.storage.k8s.io", "v1", plural, s_ns, s_name
+                    )
+                    if not obj:
+                        self._not_found()
+                        return
+                    self._ok(_to_generic("snapshot.storage.k8s.io", "v1", kind, plural)(obj))
+                    return
+
+                s_plural, s_name = _gv_cluster_name(path, "snapshot.storage.k8s.io", "v1", plural)
+                if s_plural != plural:
+                    continue
+                if s_name is None:
+                    if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                        self._stream_watch(
+                            "snapshot.storage.k8s.io",
+                            "v1",
+                            plural,
+                            None,
+                            q,
+                            transform=_to_generic("snapshot.storage.k8s.io", "v1", kind, plural),
+                        )
+                        return
+                    items = self.server.store.list_all(  # type: ignore[attr-defined]
+                        "snapshot.storage.k8s.io", "v1", plural
+                    )
+                    self._ok(
+                        {
+                            "kind": list_kind,
+                            "apiVersion": "snapshot.storage.k8s.io/v1",
+                            "items": [
+                                _to_generic("snapshot.storage.k8s.io", "v1", kind, plural)(i)
+                                for i in items
+                            ],
+                        }
+                    )
+                    return
+                obj = self.server.store.get(  # type: ignore[attr-defined]
+                    "snapshot.storage.k8s.io", "v1", plural, None, s_name
+                )
+                if not obj:
+                    self._not_found()
+                    return
+                self._ok(_to_generic("snapshot.storage.k8s.io", "v1", kind, plural)(obj))
+                return
+
+        # storage.k8s.io: storageclasses, volumeattachments, and CSI resources
+        if path.startswith("/apis/storage.k8s.io/v1"):
+            resources = (
+                ("storageclasses", "StorageClass", "StorageClassList", False),
+                ("volumeattachments", "VolumeAttachment", "VolumeAttachmentList", False),
+                ("csidrivers", "CSIDriver", "CSIDriverList", False),
+                ("csinodes", "CSINode", "CSINodeList", False),
+                ("csistoragecapacities", "CSIStorageCapacity", "CSIStorageCapacityList", True),
+            )
+            for plural, kind, list_kind, namespaced in resources:
+                if namespaced:
+                    s_plural, s_ns, s_name = _gv_ns_name(path, "storage.k8s.io", "v1", plural)
+                    if s_plural != plural:
+                        continue
+                    if s_name is None:
+                        if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                            self._stream_watch(
+                                "storage.k8s.io",
+                                "v1",
+                                plural,
+                                s_ns,
+                                q,
+                                transform=_to_generic("storage.k8s.io", "v1", kind, plural),
+                            )
+                            return
+                        items = (
+                            self.server.store.list_all("storage.k8s.io", "v1", plural)  # type: ignore[attr-defined]
+                            if s_ns is None
+                            else self.server.store.list("storage.k8s.io", "v1", plural, s_ns)  # type: ignore[attr-defined]
+                        )
+                        self._ok(
+                            {
+                                "kind": list_kind,
+                                "apiVersion": "storage.k8s.io/v1",
+                                "items": [
+                                    _to_generic("storage.k8s.io", "v1", kind, plural)(i)
+                                    for i in items
+                                ],
+                            }
+                        )
+                        return
+                    obj = self.server.store.get(  # type: ignore[attr-defined]
+                        "storage.k8s.io", "v1", plural, s_ns, s_name
+                    )
+                    if not obj:
+                        self._not_found()
+                        return
+                    self._ok(_to_generic("storage.k8s.io", "v1", kind, plural)(obj))
+                    return
+
+                s_plural, s_name = _gv_cluster_name(path, "storage.k8s.io", "v1", plural)
+                if s_plural != plural:
+                    continue
+                if s_name is None:
+                    if q.get("watch", ["0"])[0] in ("1", "true", "True"):
+                        self._stream_watch(
+                            "storage.k8s.io",
+                            "v1",
+                            plural,
+                            None,
+                            q,
+                            transform=_to_generic("storage.k8s.io", "v1", kind, plural),
+                        )
+                        return
+                    items = self.server.store.list_all(  # type: ignore[attr-defined]
+                        "storage.k8s.io", "v1", plural
+                    )
+                    self._ok(
+                        {
+                            "kind": list_kind,
+                            "apiVersion": "storage.k8s.io/v1",
+                            "items": [
+                                _to_generic("storage.k8s.io", "v1", kind, plural)(i) for i in items
+                            ],
+                        }
+                    )
+                    return
+                obj = self.server.store.get(  # type: ignore[attr-defined]
+                    "storage.k8s.io", "v1", plural, None, s_name
+                )
+                if not obj:
+                    self._not_found()
+                    return
+                self._ok(_to_generic("storage.k8s.io", "v1", kind, plural)(obj))
+                return
+
         # rbac: roles/rolebindings (namespaced) and clusterroles/clusterrolebindings (cluster-scoped)
         if path.startswith("/apis/rbac.authorization.k8s.io/v1"):
             # namespaced
@@ -4801,15 +7791,176 @@ class ShimHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
+        self.path = path
+        upgrade = (self.headers.get("Upgrade") or "").lower()
+        is_exec_path = re.match(r"^/api/v1/namespaces/[^/]+/pods/[^/]+/exec$", path)
+        is_pf_path = re.match(r"^/api/v1/namespaces/[^/]+/(pods|services)/[^/]+/portforward$", path)
         # SubjectAccessReview should be callable by read tokens; other POSTs require write/admin.
         if path.startswith("/apis/authorization.k8s.io/"):
             if not self._authz(role="read"):
                 return
         else:
-            if not self._authz(role="write"):
+            if is_exec_path and upgrade:
+                if not self._authz(role="exec"):
+                    return
+            elif is_pf_path and upgrade:
+                if not self._authz(role="portforward"):
+                    return
+            else:
+                if not self._authz(role="write"):
+                    return
+
+        # Pod exec (kubectl uses POST + SPDY upgrade)
+        m_exec_spdy = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/exec$", path)
+        if m_exec_spdy:
+            if not self._rbac_allows("create", "pods/exec"):
+                self._deny(403)
+                return
+            upgrade = (self.headers.get("Upgrade") or "").lower()
+            if upgrade:
+                qs = parse_qs(parsed.query)
+                cmd = qs.get("command") or []
+                if not cmd:
+                    self._json_status(
+                        HTTPStatus.BAD_REQUEST,
+                        reason="BadRequest",
+                        message="command query param is required",
+                    )
+                    return
+                expected_uid = self._extract_pod_uid(qs)
+                expected_rv = self._extract_pod_rv(qs)
+                if (
+                    self._validate_pod_scope(
+                        namespace=m_exec_spdy.group(1),
+                        pod_name=m_exec_spdy.group(2),
+                        scope_env="AE_API_EXEC_SCOPE",
+                        action="exec",
+                        expected_uid=expected_uid,
+                        expected_rv=expected_rv,
+                    )
+                    is None
+                ):
+                    return
+                if upgrade.startswith("spdy"):
+                    container = (qs.get("container") or [None])[0]
+                    tty = (qs.get("tty") or ["false"])[0].lower() in ("1", "true", "yes")
+                    want_stdin = (qs.get("stdin") or ["false"])[0].lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                    )
+                    want_stdout = (qs.get("stdout") or ["true"])[0].lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                    )
+                    want_stderr = (qs.get("stderr") or ["true"])[0].lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                    )
+                    self._handle_exec_spdy(
+                        namespace=m_exec_spdy.group(1),
+                        pod_name=m_exec_spdy.group(2),
+                        command=list(cmd),
+                        container=container,
+                        tty=tty,
+                        want_stdin=want_stdin,
+                        want_stdout=want_stdout,
+                        want_stderr=want_stderr,
+                    )
+                elif upgrade == "websocket":
+                    container = (qs.get("container") or [None])[0]
+                    tty = (qs.get("tty") or ["false"])[0].lower() in ("1", "true", "yes")
+                    want_stdin = (qs.get("stdin") or ["false"])[0].lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                    )
+                    want_stdout = (qs.get("stdout") or ["true"])[0].lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                    )
+                    want_stderr = (qs.get("stderr") or ["true"])[0].lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                    )
+                    self._handle_exec_ws(
+                        namespace=m_exec_spdy.group(1),
+                        pod_name=m_exec_spdy.group(2),
+                        command=list(cmd),
+                        container=container,
+                        tty=tty,
+                        want_stdin=want_stdin,
+                        want_stdout=want_stdout,
+                        want_stderr=want_stderr,
+                    )
+                else:
+                    self._json_status(
+                        HTTPStatus.UPGRADE_REQUIRED,
+                        reason="UpgradeRequired",
+                        message="exec requires SPDY/3.1 upgrade used by kubectl",
+                    )
                 return
         body = self._read_body()
         doc = _read_json(body)
+
+        if path.startswith("/apis/authorization.k8s.io/v1/selfsubjectaccessreviews"):
+            status = self._eval_subject_access_review(doc.get("spec") or {})
+            resp = {
+                "apiVersion": "authorization.k8s.io/v1",
+                "kind": "SelfSubjectAccessReview",
+                "spec": doc.get("spec") or {},
+                "status": status,
+            }
+            out = _json(resp)
+            self.send_response(HTTPStatus.CREATED)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+            return
+
+        if path.startswith("/apis/authorization.k8s.io/v1/selfsubjectrulesreviews"):
+            principal = self._parse_principal()
+            token_role = principal.token_role or ""
+            if not self.rbac_enabled or token_role == "admin":
+                resource_rules = [{"verbs": ["*"], "apiGroups": ["*"], "resources": ["*"]}]
+                non_resource_rules = [{"verbs": ["*"], "nonResourceURLs": ["*"]}]
+                incomplete = False
+            elif token_role == "read":
+                resource_rules = [
+                    {
+                        "verbs": ["get", "list", "watch"],
+                        "apiGroups": ["*"],
+                        "resources": ["*"],
+                    }
+                ]
+                non_resource_rules = [{"verbs": ["get", "list", "watch"], "nonResourceURLs": ["*"]}]
+                incomplete = False
+            else:
+                resource_rules = []
+                non_resource_rules = []
+                incomplete = True
+            resp = {
+                "apiVersion": "authorization.k8s.io/v1",
+                "kind": "SelfSubjectRulesReview",
+                "spec": doc.get("spec") or {},
+                "status": {
+                    "resourceRules": resource_rules,
+                    "nonResourceRules": non_resource_rules,
+                    "incomplete": incomplete,
+                },
+            }
+            out = _json(resp)
+            self.send_response(HTTPStatus.CREATED)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+            return
 
         if path.startswith("/apis/authorization.k8s.io/v1/subjectaccessreviews"):
             status = self._eval_subject_access_review(doc.get("spec") or {})
@@ -4838,6 +7989,21 @@ class ShimHandler(BaseHTTPRequestHandler):
                     reason="BadRequest",
                     message="command must be a non-empty list",
                 )
+                return
+            qs = parse_qs(parsed.query)
+            expected_uid = self._extract_pod_uid(qs)
+            expected_rv = self._extract_pod_rv(qs)
+            if (
+                self._validate_pod_scope(
+                    namespace=m_exec.group(1),
+                    pod_name=m_exec.group(2),
+                    scope_env="AE_API_EXEC_SCOPE",
+                    action="exec",
+                    expected_uid=expected_uid,
+                    expected_rv=expected_rv,
+                )
+                is None
+            ):
                 return
             try:
                 rc = int(
@@ -4869,29 +8035,28 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return
             qs = parse_qs(parsed.query)
             ports_q = qs.get("ports") or []
+            ns = m_pf.group(1)
             pod_name = m_pf.group(2)
-            container_info = None
-            try:
-                for c in self.server.runtime.list_containers_info():  # type: ignore[attr-defined]
-                    labels = c.get("labels", {}) or {}
-                    if labels.get("ae.replica_id") == pod_name or c.get("name") == pod_name:
-                        container_info = c
-                        break
-            except Exception:
-                container_info = None
-            target_ports: list[int] = []
+            container_info = self._validate_pod_scope(
+                namespace=ns,
+                pod_name=pod_name,
+                scope_env="AE_API_PF_SCOPE",
+                action="port-forward",
+                expected_uid=self._extract_pod_uid(qs),
+                expected_rv=self._extract_pod_rv(qs),
+            )
+            if container_info is None:
+                return
+            requested_ports: list[int] = []
             for p in ports_q:
                 try:
-                    target_ports.append(int(p))
+                    requested_ports.append(int(p))
                 except Exception:
                     pass
-            if container_info:
-                try:
-                    hp = container_info.get("host_ports") or container_info.get("hostPorts") or []
-                    if hp:
-                        target_ports = [int(hp[0])]
-                except Exception:
-                    pass
+            target_ports = list(requested_ports)
+            if not target_ports:
+                # Allow stream headers to select the port for pod port-forward
+                target_ports = [0]
             if isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                 try:
                     target_ports = [int(os.getenv("AE_STUB_BACKEND_PORT", "8081"))]
@@ -4905,20 +8070,90 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )
                 return
             target_host = "127.0.0.1"
+            port_map: dict[int, int] = {}
+            pod_id = None
+            pod_ip = None
+            use_host_ports = False
             if container_info:
-                target_host = (
-                    container_info.get("pod_ip")
-                    or container_info.get("host_ip")
-                    or container_info.get("hostIP")
-                    or target_host
-                )
+                host_ip = container_info.get("host_ip") or container_info.get("hostIP")
+                pod_ip = container_info.get("pod_ip")
+                pod_id = container_info.get("uid") or container_info.get("id")
+                target_host = pod_ip or host_ip or target_host
+                if not pod_ip:
+                    port_map = container_info.get("port_map") or {}
+                    use_host_ports = bool(port_map)
+                if target_host in ("0.0.0.0", "::", ""):  # noqa: S104
+                    target_host = "127.0.0.1"
             elif isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                 target_host = os.getenv("AE_STUB_BACKEND_HOST", target_host)
+            pf_port_map: dict[int, int] | None = None
+            cri_pf_procs: list[subprocess.Popen] = []
+            use_cri_pf = (
+                isinstance(self.server.runtime, CRIRuntime)  # type: ignore[attr-defined]
+                and pod_id
+                and (self._cri_pf_force() or (self._cri_pf_enabled() and not pod_ip))
+            )
+            if use_cri_pf and requested_ports:
+                pf_port_map, cri_pf_procs = self._start_cri_port_forward(
+                    str(pod_id), requested_ports
+                )
+                if pf_port_map:
+                    target_host = "127.0.0.1"
+                    target_ports = list(requested_ports)
+                    use_host_ports = False
             upgrade = (self.headers.get("Upgrade") or "").lower()
             if upgrade.startswith("spdy"):
-                self._handle_port_forward_spdy(target_host, target_ports)
+                pf_ports = (
+                    target_ports if not use_host_ports else list(port_map.keys()) or target_ports
+                )
+                if pf_port_map:
+                    pf_ports = list(requested_ports or target_ports)
+                port_label = ",".join(str(p) for p in pf_ports)
+                self._audit(
+                    "portforward.start",
+                    namespace=ns,
+                    pod=pod_name,
+                    ports=port_label,
+                    protocol="spdy",
+                )
+                try:
+                    self._handle_port_forward_spdy(
+                        target_host,
+                        pf_ports,
+                        port_map=pf_port_map or (port_map if use_host_ports else None),
+                    )
+                finally:
+                    if cri_pf_procs:
+                        self._stop_cri_port_forward(cri_pf_procs)
+                    self._audit(
+                        "portforward.end",
+                        namespace=ns,
+                        pod=pod_name,
+                        ports=port_label,
+                    )
             elif upgrade == "websocket":
-                self._handle_port_forward_ws(target_host, target_ports[0])
+                port_label = ",".join(str(p) for p in (requested_ports or target_ports))
+                self._audit(
+                    "portforward.start",
+                    namespace=ns,
+                    pod=pod_name,
+                    ports=port_label,
+                    protocol="websocket",
+                )
+                try:
+                    ws_port = target_ports[0]
+                    if pf_port_map:
+                        ws_port = pf_port_map.get(target_ports[0], ws_port)
+                    self._handle_port_forward_ws(target_host, ws_port)
+                finally:
+                    if cri_pf_procs:
+                        self._stop_cri_port_forward(cri_pf_procs)
+                    self._audit(
+                        "portforward.end",
+                        namespace=ns,
+                        pod=pod_name,
+                        ports=port_label,
+                    )
             else:
                 self._json_status(
                     HTTPStatus.UPGRADE_REQUIRED,
@@ -4937,6 +8172,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             svc = self.server.store.get("", "v1", "services", ns, svc_name)  # type: ignore[attr-defined]
             if not svc:
                 self._not_found()
+                return
+            if not self._validate_service_pf_scope(ns, svc, svc_name):
                 return
             ep = _endpoints_for_service(self.server.state, self.server.store, svc)  # type: ignore[attr-defined]
             subsets = (ep or {}).get("subsets") or []
@@ -5004,9 +8241,41 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return
             upgrade = (self.headers.get("Upgrade") or "").lower()
             if upgrade.startswith("spdy"):
-                self._handle_port_forward_spdy(target_ip, target_ports)
+                port_label = ",".join(str(p) for p in target_ports)
+                self._audit(
+                    "portforward.start",
+                    namespace=ns,
+                    service=svc_name,
+                    ports=port_label,
+                    protocol="spdy",
+                )
+                try:
+                    self._handle_port_forward_spdy(target_ip, target_ports)
+                finally:
+                    self._audit(
+                        "portforward.end",
+                        namespace=ns,
+                        service=svc_name,
+                        ports=port_label,
+                    )
             elif upgrade == "websocket":
-                self._handle_port_forward_ws(target_ip, target_ports[0])
+                port_label = ",".join(str(p) for p in target_ports)
+                self._audit(
+                    "portforward.start",
+                    namespace=ns,
+                    service=svc_name,
+                    ports=port_label,
+                    protocol="websocket",
+                )
+                try:
+                    self._handle_port_forward_ws(target_ip, target_ports[0])
+                finally:
+                    self._audit(
+                        "portforward.end",
+                        namespace=ns,
+                        service=svc_name,
+                        ports=port_label,
+                    )
             else:
                 self._json_status(
                     HTTPStatus.UPGRADE_REQUIRED,
@@ -5016,7 +8285,15 @@ class ShimHandler(BaseHTTPRequestHandler):
             return
 
         plural, ns, name = _ns_name(path)
-        if plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}:
+        if plural in {
+            "namespaces",
+            "configmaps",
+            "secrets",
+            "persistentvolumeclaims",
+            "persistentvolumes",
+            "serviceaccounts",
+            "services",
+        }:
             md = doc.get("metadata") or {}
             name_in = md.get("name") or name
             if not isinstance(name_in, str) or not name_in:
@@ -5027,7 +8304,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )
                 return
             ns_in = md.get("namespace") or ns
-            if plural == "namespaces":
+            if plural in {"namespaces", "persistentvolumes"}:
                 ns_in = None
             if plural == "secrets":
                 _set_secret_type(md, doc.get("type"))
@@ -5379,6 +8656,159 @@ class ShimHandler(BaseHTTPRequestHandler):
         if self._handle_custom_resource_post(doc):
             return
 
+        # snapshot.storage.k8s.io resources
+        if self.path.startswith("/apis/snapshot.storage.k8s.io/v1"):
+            resources = (
+                ("volumesnapshots", "VolumeSnapshot", True),
+                ("volumesnapshotclasses", "VolumeSnapshotClass", False),
+                ("volumesnapshotcontents", "VolumeSnapshotContent", False),
+            )
+            for plural, kind, namespaced in resources:
+                if namespaced:
+                    s_plural, s_ns, s_name = _gv_ns_name(
+                        self.path, "snapshot.storage.k8s.io", "v1", plural
+                    )
+                    if s_plural != plural or s_name:
+                        continue
+                    md = doc.get("metadata") or {}
+                    name_in = md.get("name")
+                    ns_in = md.get("namespace") or s_ns
+                    if not name_in or not _valid_name(name_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.name (DNS-1123 label)",
+                        )
+                        return
+                    if not ns_in or not _valid_name(ns_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.namespace (DNS-1123 label)",
+                        )
+                        return
+                    created = self.server.store.upsert(  # type: ignore[attr-defined]
+                        "snapshot.storage.k8s.io",
+                        "v1",
+                        plural,
+                        ns_in,
+                        name_in,
+                        metadata=_normalize_metadata(md, name_in, ns_in, plural),
+                        spec=doc.get("spec") or {},
+                        status=doc.get("status") or {},
+                    )
+                    self.send_response(HTTPStatus.CREATED)
+                    out = _json(_to_generic("snapshot.storage.k8s.io", "v1", kind, plural)(created))
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(out)))
+                    self.end_headers()
+                    self.wfile.write(out)
+                    return
+
+                s_plural, s_name = _gv_cluster_name(
+                    self.path, "snapshot.storage.k8s.io", "v1", plural
+                )
+                if s_plural != plural or s_name:
+                    continue
+                md = doc.get("metadata") or {}
+                name_in = md.get("name")
+                if not name_in or not _valid_name(name_in):
+                    self._json_status(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        reason="Invalid",
+                        message="invalid metadata.name (DNS-1123 label)",
+                    )
+                    return
+                created = self.server.store.upsert(  # type: ignore[attr-defined]
+                    "snapshot.storage.k8s.io",
+                    "v1",
+                    plural,
+                    None,
+                    name_in,
+                    metadata=_normalize_metadata(md, name_in, None, plural),
+                    spec=_spec_payload(plural, doc),
+                    status=doc.get("status") or {},
+                )
+                self.send_response(HTTPStatus.CREATED)
+                out = _json(_to_generic("snapshot.storage.k8s.io", "v1", kind, plural)(created))
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+                return
+
+        # storage.k8s.io resources
+        if self.path.startswith("/apis/storage.k8s.io/v1"):
+            resources = (
+                ("storageclasses", "StorageClass", False),
+                ("volumeattachments", "VolumeAttachment", False),
+                ("csidrivers", "CSIDriver", False),
+                ("csinodes", "CSINode", False),
+                ("csistoragecapacities", "CSIStorageCapacity", True),
+            )
+            for plural, kind, namespaced in resources:
+                if namespaced:
+                    s_plural, s_ns, s_name = _gv_ns_name(self.path, "storage.k8s.io", "v1", plural)
+                    if s_plural != plural:
+                        continue
+                    md = doc.get("metadata") or {}
+                    name_in = md.get("name") or s_name
+                    ns_in = md.get("namespace") or s_ns
+                    if not name_in or not _valid_name(name_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.name (DNS-1123 label)",
+                        )
+                        return
+                    if not ns_in or not _valid_name(ns_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.namespace (DNS-1123 label)",
+                        )
+                        return
+                    created = self.server.store.upsert(  # type: ignore[attr-defined]
+                        "storage.k8s.io",
+                        "v1",
+                        plural,
+                        ns_in,
+                        name_in,
+                        metadata=_normalize_metadata(md, name_in, ns_in, plural),
+                        spec=_spec_payload(plural, doc),
+                        status=doc.get("status") or {},
+                    )
+                else:
+                    s_plural, s_name = _gv_cluster_name(self.path, "storage.k8s.io", "v1", plural)
+                    if s_plural != plural:
+                        continue
+                    md = doc.get("metadata") or {}
+                    name_in = md.get("name") or s_name
+                    if not name_in or not _valid_name(name_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.name (DNS-1123 label)",
+                        )
+                        return
+                    created = self.server.store.upsert(  # type: ignore[attr-defined]
+                        "storage.k8s.io",
+                        "v1",
+                        plural,
+                        None,
+                        name_in,
+                        metadata=_normalize_metadata(md, name_in, None, plural),
+                        spec=_spec_payload(plural, doc),
+                        status=doc.get("status") or {},
+                    )
+                self.send_response(HTTPStatus.CREATED)
+                out = _json(_to_generic("storage.k8s.io", "v1", kind, plural)(created))
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+                return
+
         # rbac (namespaced and cluster resources)
         if self.path.startswith("/apis/rbac.authorization.k8s.io/v1"):
             # namespaced roles/rolebindings
@@ -5540,17 +8970,29 @@ class ShimHandler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:  # noqa: N802
         if not self._authz():
             return
+        parsed = urlparse(self.path)
+        path = parsed.path
+        self.path = path
         body = self._read_body()
         doc = _read_json(body)
         plural, ns, name = _ns_name(self.path)
         if (
-            plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}
+            plural
+            in {
+                "namespaces",
+                "configmaps",
+                "secrets",
+                "persistentvolumeclaims",
+                "persistentvolumes",
+                "serviceaccounts",
+                "services",
+            }
             and name
         ):
             md = doc.get("metadata") or {}
             name_in = md.get("name") or name
             ns_in = md.get("namespace") or ns
-            if plural == "namespaces":
+            if plural in {"namespaces", "persistentvolumes"}:
                 ns_in = None
             if plural == "secrets":
                 _set_secret_type(md, doc.get("type"))
@@ -5736,6 +9178,140 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )
                 self._ok(_to_job(updated) if b_plural == "jobs" else _to_cronjob(updated))
                 return
+        if self.path.startswith("/apis/storage.k8s.io/v1"):
+            resources = (
+                ("storageclasses", "StorageClass", False),
+                ("volumeattachments", "VolumeAttachment", False),
+                ("csidrivers", "CSIDriver", False),
+                ("csinodes", "CSINode", False),
+                ("csistoragecapacities", "CSIStorageCapacity", True),
+            )
+            for plural, kind, namespaced in resources:
+                if namespaced:
+                    s_plural, s_ns, s_name = _gv_ns_name(self.path, "storage.k8s.io", "v1", plural)
+                    if s_plural != plural or not s_name:
+                        continue
+                    md = doc.get("metadata") or {}
+                    name_in = md.get("name") or s_name
+                    ns_in = md.get("namespace") or s_ns
+                    if not name_in or not _valid_name(name_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.name (DNS-1123 label)",
+                        )
+                        return
+                    if not ns_in or not _valid_name(ns_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.namespace (DNS-1123 label)",
+                        )
+                        return
+                    updated = self.server.store.upsert(  # type: ignore[attr-defined]
+                        "storage.k8s.io",
+                        "v1",
+                        plural,
+                        ns_in,
+                        name_in,
+                        metadata=_normalize_metadata(md, name_in, ns_in, plural),
+                        spec=_spec_payload(plural, doc),
+                        status=doc.get("status") or {},
+                    )
+                else:
+                    s_plural, s_name = _gv_cluster_name(self.path, "storage.k8s.io", "v1", plural)
+                    if s_plural != plural or not s_name:
+                        continue
+                    md = doc.get("metadata") or {}
+                    name_in = md.get("name") or s_name
+                    if not name_in or not _valid_name(name_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.name (DNS-1123 label)",
+                        )
+                        return
+                    updated = self.server.store.upsert(  # type: ignore[attr-defined]
+                        "storage.k8s.io",
+                        "v1",
+                        plural,
+                        None,
+                        name_in,
+                        metadata=_normalize_metadata(md, name_in, None, plural),
+                        spec=_spec_payload(plural, doc),
+                        status=doc.get("status") or {},
+                    )
+                self._ok(_to_generic("storage.k8s.io", "v1", kind, plural)(updated))
+                return
+        if self.path.startswith("/apis/snapshot.storage.k8s.io/v1"):
+            resources = (
+                ("volumesnapshots", "VolumeSnapshot", True),
+                ("volumesnapshotclasses", "VolumeSnapshotClass", False),
+                ("volumesnapshotcontents", "VolumeSnapshotContent", False),
+            )
+            for plural, kind, namespaced in resources:
+                if namespaced:
+                    s_plural, s_ns, s_name = _gv_ns_name(
+                        self.path, "snapshot.storage.k8s.io", "v1", plural
+                    )
+                    if s_plural != plural or not s_name:
+                        continue
+                    md = doc.get("metadata") or {}
+                    name_in = md.get("name") or s_name
+                    ns_in = md.get("namespace") or s_ns
+                    if not name_in or not _valid_name(name_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.name (DNS-1123 label)",
+                        )
+                        return
+                    if not ns_in or not _valid_name(ns_in):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.namespace (DNS-1123 label)",
+                        )
+                        return
+                    updated = self.server.store.upsert(  # type: ignore[attr-defined]
+                        "snapshot.storage.k8s.io",
+                        "v1",
+                        plural,
+                        ns_in,
+                        name_in,
+                        metadata=_normalize_metadata(md, name_in, ns_in, plural),
+                        spec=doc.get("spec") or {},
+                        status=doc.get("status") or {},
+                    )
+                    self._ok(_to_generic("snapshot.storage.k8s.io", "v1", kind, plural)(updated))
+                    return
+
+                s_plural, s_name = _gv_cluster_name(
+                    self.path, "snapshot.storage.k8s.io", "v1", plural
+                )
+                if s_plural != plural or not s_name:
+                    continue
+                md = doc.get("metadata") or {}
+                name_in = md.get("name") or s_name
+                if not name_in or not _valid_name(name_in):
+                    self._json_status(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        reason="Invalid",
+                        message="invalid metadata.name (DNS-1123 label)",
+                    )
+                    return
+                updated = self.server.store.upsert(  # type: ignore[attr-defined]
+                    "snapshot.storage.k8s.io",
+                    "v1",
+                    plural,
+                    None,
+                    name_in,
+                    metadata=_normalize_metadata(md, name_in, None, plural),
+                    spec=_spec_payload(plural, doc),
+                    status=doc.get("status") or {},
+                )
+                self._ok(_to_generic("snapshot.storage.k8s.io", "v1", kind, plural)(updated))
+                return
         if self.path.startswith("/apis/rbac.authorization.k8s.io/v1"):
             for plural, kind in (("roles", "Role"), ("rolebindings", "RoleBinding")):
                 r_plural, r_ns, r_name = _gv_ns_name(
@@ -5836,9 +9412,19 @@ class ShimHandler(BaseHTTPRequestHandler):
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
         body = self._read_body()
         patch = _read_json(body)
+        patch_debug = os.getenv("AE_APISHIM_PATCH_DEBUG", "0") == "1"
         plural, ns, name = _ns_name(path)
         if (
-            plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}
+            plural
+            in {
+                "namespaces",
+                "configmaps",
+                "secrets",
+                "persistentvolumeclaims",
+                "persistentvolumes",
+                "serviceaccounts",
+                "services",
+            }
             and name
         ):
             obj = self.server.store.get(
@@ -5855,6 +9441,15 @@ class ShimHandler(BaseHTTPRequestHandler):
             if plural == "secrets":
                 _set_secret_type(md, merged.get("type"))
             patch_paths = _extract_field_paths(patch) if isinstance(patch, dict) else set()
+            if patch_debug:
+                LOGGER.info(
+                    "patch %s/%s ctype=%s manager=%s paths=%s",
+                    plural,
+                    name,
+                    ctype or "<empty>",
+                    field_manager,
+                    sorted(patch_paths),
+                )
             if ctype.startswith("application/apply-patch") and _managed_conflict(
                 obj.metadata, field_manager, patch_paths, force_flag
             ):
@@ -5865,19 +9460,25 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )
                 return
             if ctype.startswith("application/apply-patch"):
+                if not patch_paths:
+                    patch_paths = {"*"}
+                md = _merge_dict(dict(obj.metadata), md)
                 md = _update_managed_fields(
                     md, "v1", field_manager, "Apply", fields=patch_paths, force=force_flag
                 )
+                md = _ensure_managed_fields_entry(md, "v1", field_manager, "Apply", patch_paths)
             elif ctype in (
                 "application/merge-patch+json",
                 "application/strategic-merge-patch+json",
+                "application/json",
+                "",
             ):
                 md = _update_managed_fields(md, "v1", field_manager, "Update", fields=patch_paths)
             spec_or_data = (
                 merged.get("data") if plural in {"configmaps", "secrets"} else merged.get("spec")
             )
             name_eff = md.get("name") or name
-            ns_eff = None if plural == "namespaces" else (md.get("namespace") or ns)
+            ns_eff = None if plural in {"namespaces", "persistentvolumes"} else (md.get("namespace") or ns)
             if not _valid_name(name_eff):
                 self._json_status(
                     HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -5902,6 +9503,13 @@ class ShimHandler(BaseHTTPRequestHandler):
                 spec=spec_or_data or {},
                 status=merged.get("status") or {},
             )
+            if patch_debug and plural not in {"configmaps", "secrets"}:
+                LOGGER.info(
+                    "patched %s/%s spec.replicas=%s",
+                    plural,
+                    name_eff,
+                    (spec_or_data or {}).get("replicas"),
+                )
             self._ok(_to_obj(updated))
             return
         orig_path = self.path
@@ -5909,13 +9517,15 @@ class ShimHandler(BaseHTTPRequestHandler):
         try:
             if self._handle_custom_resource_patch(ctype, patch):
                 return
-            if self._patch_extended_resources(ctype, patch, field_manager):
+            if self._patch_extended_resources(ctype, patch, field_manager, force_flag):
                 return
         finally:
             self.path = orig_path
         self._not_found()
 
-    def _patch_extended_resources(self, ctype: str, patch: Any, field_manager: str) -> bool:
+    def _patch_extended_resources(
+        self, ctype: str, patch: Any, field_manager: str, force_flag: bool
+    ) -> bool:
         specs = [
             ("apps", "v1", "deployments", "Deployment"),
             ("apps", "v1", "statefulsets", "StatefulSet"),
@@ -5928,6 +9538,24 @@ class ShimHandler(BaseHTTPRequestHandler):
             ("rbac.authorization.k8s.io", "v1", "clusterrolebindings", "ClusterRoleBinding"),
             ("policy", "v1", "poddisruptionbudgets", "PodDisruptionBudget"),
             ("autoscaling", "v2", "horizontalpodautoscalers", "HorizontalPodAutoscaler"),
+            ("storage.k8s.io", "v1", "storageclasses", "StorageClass"),
+            ("storage.k8s.io", "v1", "volumeattachments", "VolumeAttachment"),
+            ("storage.k8s.io", "v1", "csidrivers", "CSIDriver"),
+            ("storage.k8s.io", "v1", "csinodes", "CSINode"),
+            ("storage.k8s.io", "v1", "csistoragecapacities", "CSIStorageCapacity"),
+            ("snapshot.storage.k8s.io", "v1", "volumesnapshots", "VolumeSnapshot"),
+            (
+                "snapshot.storage.k8s.io",
+                "v1",
+                "volumesnapshotclasses",
+                "VolumeSnapshotClass",
+            ),
+            (
+                "snapshot.storage.k8s.io",
+                "v1",
+                "volumesnapshotcontents",
+                "VolumeSnapshotContent",
+            ),
         ]
         transform_map = {
             ("apps", "v1", "deployments"): _to_deployment,
@@ -5948,6 +9576,61 @@ class ShimHandler(BaseHTTPRequestHandler):
                     continue
                 obj = self.server.store.get(group, version, res, None, name)  # type: ignore[attr-defined]
                 if not obj:
+                    if ctype.startswith("application/apply-patch"):
+                        merged = self._apply_patch_merge({}, patch, ctype)
+                        if merged is None:
+                            return True
+                        md = merged.get("metadata") or {}
+                        patch_paths = (
+                            _extract_field_paths(patch) if isinstance(patch, dict) else set()
+                        )
+                        if not patch_paths:
+                            patch_paths = {"*"}
+                        md = _update_managed_fields(
+                            md,
+                            f"{group}/{version}",
+                            field_manager,
+                            "Apply",
+                            fields=patch_paths,
+                            force=force_flag,
+                        )
+                        md = _ensure_managed_fields_entry(
+                            md, f"{group}/{version}", field_manager, "Apply", patch_paths
+                        )
+                        if res in {"deployments", "statefulsets", "daemonsets", "jobs"}:
+                            spec_body = merged.get("spec") or {}
+                            merged["spec"] = _inject_sa_projection(spec_body)
+                        if res == "cronjobs":
+                            cj_spec = merged.get("spec") or {}
+                            jt = cj_spec.get("jobTemplate") or {}
+                            jspec = _inject_sa_projection(jt.get("spec") or {})
+                            jt["spec"] = jspec
+                            cj_spec["jobTemplate"] = jt
+                            merged["spec"] = cj_spec
+                        name_eff = md.get("name") or name
+                        if not _valid_name(name_eff):
+                            self._json_status(
+                                HTTPStatus.UNPROCESSABLE_ENTITY,
+                                reason="Invalid",
+                                message="invalid metadata.name (DNS-1123 label)",
+                            )
+                            return True
+                        created = self.server.store.upsert(
+                            group,
+                            version,
+                            res,
+                            None,
+                            name_eff,
+                            metadata=_normalize_metadata(md, name_eff, None, res),
+                            spec=_spec_payload(res, merged),
+                            status=merged.get("status") or {},
+                        )  # type: ignore[attr-defined]
+                        self._ok(
+                            transform_map.get(
+                                (group, version, res), _to_generic(group, version, kind, res)
+                            )(created)
+                        )  # type: ignore[arg-type]
+                        return True
                     self._not_found()
                     return True
                 base = transform_map.get(
@@ -5958,9 +9641,16 @@ class ShimHandler(BaseHTTPRequestHandler):
                     return True
                 md = merged.get("metadata") or {}
                 patch_paths = _extract_field_paths(patch) if isinstance(patch, dict) else set()
-                force_flag = (
-                    parse_qs(urlparse(self.path).query).get("force", ["false"])[0] or ""
-                ).lower() in {"1", "true", "yes"}
+                patch_debug = os.getenv("AE_APISHIM_PATCH_DEBUG", "0") == "1"
+                if patch_debug:
+                    LOGGER.info(
+                        "patch %s/%s ctype=%s manager=%s paths=%s",
+                        res,
+                        name,
+                        ctype or "<empty>",
+                        field_manager,
+                        sorted(patch_paths),
+                    )
                 if ctype.startswith("application/apply-patch"):
                     if _managed_conflict(obj.metadata, field_manager, patch_paths, force_flag):
                         self._json_status(
@@ -5969,6 +9659,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                             message="managedFields conflict on apply",
                         )
                         return True
+                    if not patch_paths:
+                        patch_paths = {"*"}
+                    md = _merge_dict(dict(obj.metadata), md)
                     md = _update_managed_fields(
                         md,
                         f"{group}/{version}",
@@ -5977,9 +9670,14 @@ class ShimHandler(BaseHTTPRequestHandler):
                         fields=patch_paths,
                         force=force_flag,
                     )
+                    md = _ensure_managed_fields_entry(
+                        md, f"{group}/{version}", field_manager, "Apply", patch_paths
+                    )
                 elif ctype in (
                     "application/merge-patch+json",
                     "application/strategic-merge-patch+json",
+                    "application/json",
+                    "",
                 ):
                     md = _update_managed_fields(
                         md, f"{group}/{version}", field_manager, "Update", fields=patch_paths
@@ -6006,6 +9704,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                     spec=_spec_payload(res, merged),
                     status=merged.get("status") or {},
                 )  # type: ignore[attr-defined]
+                if patch_debug and res in {"deployments", "statefulsets", "daemonsets"}:
+                    spec_out = _spec_payload(res, merged)
+                    LOGGER.info(
+                        "patched %s/%s spec.replicas=%s", res, name_eff, spec_out.get("replicas")
+                    )
                 self._ok(
                     transform_map.get(
                         (group, version, res), _to_generic(group, version, kind, res)
@@ -6017,6 +9720,67 @@ class ShimHandler(BaseHTTPRequestHandler):
                 continue
             obj = self.server.store.get(group, version, res, ns, name)  # type: ignore[attr-defined]
             if not obj:
+                if ctype.startswith("application/apply-patch"):
+                    merged = self._apply_patch_merge({}, patch, ctype)
+                    if merged is None:
+                        return True
+                    md = merged.get("metadata") or {}
+                    patch_paths = _extract_field_paths(patch) if isinstance(patch, dict) else set()
+                    if not patch_paths:
+                        patch_paths = {"*"}
+                    md = _update_managed_fields(
+                        md,
+                        f"{group}/{version}",
+                        field_manager,
+                        "Apply",
+                        fields=patch_paths,
+                        force=force_flag,
+                    )
+                    md = _ensure_managed_fields_entry(
+                        md, f"{group}/{version}", field_manager, "Apply", patch_paths
+                    )
+                    if res in {"deployments", "statefulsets", "daemonsets", "jobs"}:
+                        spec_body = merged.get("spec") or {}
+                        merged["spec"] = _inject_sa_projection(spec_body)
+                    if res == "cronjobs":
+                        cj_spec = merged.get("spec") or {}
+                        jt = cj_spec.get("jobTemplate") or {}
+                        jspec = _inject_sa_projection(jt.get("spec") or {})
+                        jt["spec"] = jspec
+                        cj_spec["jobTemplate"] = jt
+                        merged["spec"] = cj_spec
+                    name_eff = md.get("name") or name
+                    ns_eff = md.get("namespace") or ns
+                    if not _valid_name(name_eff):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.name (DNS-1123 label)",
+                        )
+                        return True
+                    if ns_eff is not None and not _valid_name(ns_eff):
+                        self._json_status(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            reason="Invalid",
+                            message="invalid metadata.namespace (DNS-1123 label)",
+                        )
+                        return True
+                    created = self.server.store.upsert(
+                        group,
+                        version,
+                        res,
+                        ns_eff,
+                        name_eff,
+                        metadata=_normalize_metadata(md, name_eff, ns_eff, res),
+                        spec=_spec_payload(res, merged),
+                        status=merged.get("status") or {},
+                    )  # type: ignore[attr-defined]
+                    self._ok(
+                        transform_map.get(
+                            (group, version, res), _to_generic(group, version, kind, res)
+                        )(created)
+                    )  # type: ignore[arg-type]
+                    return True
                 self._not_found()
                 return True
             base = transform_map.get((group, version, res), _to_generic(group, version, kind, res))(
@@ -6027,10 +9791,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return True
             md = merged.get("metadata") or {}
             patch_paths = _extract_field_paths(patch) if isinstance(patch, dict) else set()
+            patch_debug = os.getenv("AE_APISHIM_PATCH_DEBUG", "0") == "1"
+            if patch_debug:
+                LOGGER.info(
+                    "patch %s/%s ctype=%s manager=%s paths=%s",
+                    res,
+                    name,
+                    ctype or "<empty>",
+                    field_manager,
+                    sorted(patch_paths),
+                )
             if ctype.startswith("application/apply-patch"):
-                force_flag = (
-                    parse_qs(urlparse(self.path).query).get("force", ["false"])[0] or ""
-                ).lower() in {"1", "true", "yes"}
                 if _managed_conflict(obj.metadata, field_manager, patch_paths, force_flag):
                     self._json_status(
                         HTTPStatus.CONFLICT,
@@ -6038,6 +9809,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                         message="managedFields conflict on apply",
                     )
                     return True
+                if not patch_paths:
+                    patch_paths = {"*"}
+                md = _merge_dict(dict(obj.metadata), md)
                 md = _update_managed_fields(
                     md,
                     f"{group}/{version}",
@@ -6046,9 +9820,14 @@ class ShimHandler(BaseHTTPRequestHandler):
                     fields=patch_paths,
                     force=force_flag,
                 )
+                md = _ensure_managed_fields_entry(
+                    md, f"{group}/{version}", field_manager, "Apply", patch_paths
+                )
             elif ctype in (
                 "application/merge-patch+json",
                 "application/strategic-merge-patch+json",
+                "application/json",
+                "",
             ):
                 md = _update_managed_fields(
                     md, f"{group}/{version}", field_manager, "Update", fields=patch_paths
@@ -6075,6 +9854,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                 spec=_spec_payload(res, merged),
                 status=merged.get("status") or {},
             )  # type: ignore[attr-defined]
+            if patch_debug and res in {"deployments", "statefulsets", "daemonsets"}:
+                spec_out = _spec_payload(res, merged)
+                LOGGER.info(
+                    "patched %s/%s spec.replicas=%s", res, name_eff, spec_out.get("replicas")
+                )
             self._ok(
                 transform_map.get((group, version, res), _to_generic(group, version, kind, res))(
                     updated
@@ -6088,6 +9872,13 @@ class ShimHandler(BaseHTTPRequestHandler):
     ) -> dict[str, Any] | None:
         if ctype == "application/json-patch+json":
             merged = _apply_json_patch(base, patch if isinstance(patch, list) else [])
+            if merged is None:
+                self._json_status(
+                    HTTPStatus.BAD_REQUEST, reason="Invalid", message="invalid json patch"
+                )
+            return merged
+        if isinstance(patch, list) and ctype in ("application/json", ""):
+            merged = _apply_json_patch(base, patch)
             if merged is None:
                 self._json_status(
                     HTTPStatus.BAD_REQUEST, reason="Invalid", message="invalid json patch"
@@ -6179,6 +9970,19 @@ class ShimHandler(BaseHTTPRequestHandler):
             return f"App validation failed: {exc}"
         return None
 
+    def _apply_app_admission(self, doc: dict[str, Any]) -> bool:
+        err = self._validate_app_custom_resource(doc)
+        if not err:
+            return True
+        mode = self._app_admission_mode()
+        if mode == "warn":
+            self._add_warning(err)
+            return True
+        if mode == "off":
+            return True
+        self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message=err)
+        return False
+
     def _handle_custom_resource_post(self, doc: dict[str, Any]) -> bool:
         parsed = _parse_custom_resource_path(self.path)
         if not parsed:
@@ -6209,9 +10013,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         else:
             ns_in = None
         if group == "ae.dev" and plural == "apps":
-            err = self._validate_app_custom_resource(doc)
-            if err:
-                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message=err)
+            if not self._apply_app_admission(doc):
                 return True
         created = self.server.store.upsert(  # type: ignore[attr-defined]
             group,
@@ -6226,6 +10028,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.CREATED)
         out = _json(_render_custom_resource(created, group, version, meta.get("kind", plural)))
         self.send_header("Content-Type", "application/json")
+        self._emit_warnings()
         self.send_header("Content-Length", str(len(out)))
         self.end_headers()
         self.wfile.write(out)
@@ -6261,9 +10064,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         else:
             ns_in = None
         if group == "ae.dev" and plural == "apps":
-            err = self._validate_app_custom_resource(doc)
-            if err:
-                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message=err)
+            if not self._apply_app_admission(doc):
                 return True
         updated = self.server.store.upsert(  # type: ignore[attr-defined]
             group,
@@ -6307,9 +10108,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         if not namespaced:
             ns_eff = None
         if group == "ae.dev" and plural == "apps":
-            err = self._validate_app_custom_resource(merged)
-            if err:
-                self._json_status(HTTPStatus.UNPROCESSABLE_ENTITY, reason="Invalid", message=err)
+            if not self._apply_app_admission(merged):
                 return True
         updated = self.server.store.upsert(  # type: ignore[attr-defined]
             group,
@@ -6354,11 +10153,23 @@ class ShimHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         plural, ns, name = _ns_name(path)
         if (
-            plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}
+            plural
+            in {
+                "namespaces",
+                "configmaps",
+                "secrets",
+                "persistentvolumeclaims",
+                "persistentvolumes",
+                "serviceaccounts",
+                "services",
+            }
             and name
         ):
+            if not self._rbac_allows("delete", plural):
+                self._deny(403)
+                return
             ok = self.server.store.delete(
-                "", "v1", plural, None if plural == "namespaces" else ns, name
+                "", "v1", plural, None if plural in {"namespaces", "persistentvolumes"} else ns, name
             )  # type: ignore[attr-defined]
             if not ok:
                 self._not_found()
@@ -6368,6 +10179,9 @@ class ShimHandler(BaseHTTPRequestHandler):
         if path.startswith("/apis/batch/v1"):
             b_plural, b_ns, b_name = _batch_ns_name(path)
             if b_plural in {"jobs", "cronjobs"}:
+                if not self._rbac_allows("delete", b_plural):
+                    self._deny(403)
+                    return
                 if b_name:
                     ok = self.server.store.delete("batch", "v1", b_plural, b_ns, b_name)  # type: ignore[attr-defined]
                     if not ok:
@@ -6385,9 +10199,128 @@ class ShimHandler(BaseHTTPRequestHandler):
                         )  # type: ignore[attr-defined]
                 self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
                 return
+        if path.startswith("/apis/storage.k8s.io/v1"):
+            resources = (
+                ("storageclasses", False),
+                ("volumeattachments", False),
+                ("csidrivers", False),
+                ("csinodes", False),
+                ("csistoragecapacities", True),
+            )
+            for plural, namespaced in resources:
+                if namespaced:
+                    s_plural, s_ns, s_name = _gv_ns_name(path, "storage.k8s.io", "v1", plural)
+                    if s_plural != plural:
+                        continue
+                    if not self._rbac_allows("delete", plural):
+                        self._deny(403)
+                        return
+                    if s_name:
+                        ok = self.server.store.delete(  # type: ignore[attr-defined]
+                            "storage.k8s.io", "v1", plural, s_ns, s_name
+                        )
+                        if not ok:
+                            self._not_found()
+                            return
+                    else:
+                        items = (
+                            self.server.store.list_all("storage.k8s.io", "v1", plural)  # type: ignore[attr-defined]
+                            if s_ns is None
+                            else self.server.store.list("storage.k8s.io", "v1", plural, s_ns)  # type: ignore[attr-defined]
+                        )
+                        for obj in items:
+                            self.server.store.delete(  # type: ignore[attr-defined]
+                                "storage.k8s.io", "v1", plural, obj.namespace or None, obj.name
+                            )
+                    self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
+                    return
+
+                s_plural, s_name = _gv_cluster_name(path, "storage.k8s.io", "v1", plural)
+                if s_plural != plural:
+                    continue
+                if not self._rbac_allows("delete", plural):
+                    self._deny(403)
+                    return
+                if s_name:
+                    ok = self.server.store.delete(  # type: ignore[attr-defined]
+                        "storage.k8s.io", "v1", plural, None, s_name
+                    )
+                    if not ok:
+                        self._not_found()
+                        return
+                else:
+                    items = self.server.store.list_all("storage.k8s.io", "v1", plural)  # type: ignore[attr-defined]
+                    for obj in items:
+                        self.server.store.delete(  # type: ignore[attr-defined]
+                            "storage.k8s.io", "v1", plural, None, obj.name
+                        )
+                self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
+                return
+        if path.startswith("/apis/snapshot.storage.k8s.io/v1"):
+            resources = (
+                ("volumesnapshots", True),
+                ("volumesnapshotclasses", False),
+                ("volumesnapshotcontents", False),
+            )
+            for plural, namespaced in resources:
+                if namespaced:
+                    s_plural, s_ns, s_name = _gv_ns_name(
+                        path, "snapshot.storage.k8s.io", "v1", plural
+                    )
+                    if s_plural != plural:
+                        continue
+                    if not self._rbac_allows("delete", plural):
+                        self._deny(403)
+                        return
+                    if s_name:
+                        ok = self.server.store.delete(  # type: ignore[attr-defined]
+                            "snapshot.storage.k8s.io", "v1", plural, s_ns, s_name
+                        )
+                        if not ok:
+                            self._not_found()
+                            return
+                    else:
+                        items = (
+                            self.server.store.list_all("snapshot.storage.k8s.io", "v1", plural)
+                            if s_ns is None
+                            else self.server.store.list("snapshot.storage.k8s.io", "v1", plural, s_ns)
+                        )  # type: ignore[attr-defined]
+                        for obj in items:
+                            self.server.store.delete(  # type: ignore[attr-defined]
+                                "snapshot.storage.k8s.io", "v1", plural, obj.namespace or None, obj.name
+                            )
+                    self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
+                    return
+
+                s_plural, s_name = _gv_cluster_name(path, "snapshot.storage.k8s.io", "v1", plural)
+                if s_plural != plural:
+                    continue
+                if not self._rbac_allows("delete", plural):
+                    self._deny(403)
+                    return
+                if s_name:
+                    ok = self.server.store.delete(  # type: ignore[attr-defined]
+                        "snapshot.storage.k8s.io", "v1", plural, None, s_name
+                    )
+                    if not ok:
+                        self._not_found()
+                        return
+                else:
+                    items = self.server.store.list_all(  # type: ignore[attr-defined]
+                        "snapshot.storage.k8s.io", "v1", plural
+                    )
+                    for obj in items:
+                        self.server.store.delete(  # type: ignore[attr-defined]
+                            "snapshot.storage.k8s.io", "v1", plural, None, obj.name
+                        )
+                self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
+                return
         if path.startswith("/apis/apps/v1"):
             d_plural, d_ns, d_name = _apps_ns_name(path)
             if d_plural in {"deployments", "statefulsets", "daemonsets"}:
+                if not self._rbac_allows("delete", d_plural):
+                    self._deny(403)
+                    return
                 if d_name:
                     ok = self.server.store.delete("apps", "v1", d_plural, d_ns, d_name)  # type: ignore[attr-defined]
                     if not ok:
@@ -6408,6 +10341,9 @@ class ShimHandler(BaseHTTPRequestHandler):
         if path.startswith("/apis/networking.k8s.io/v1"):
             n_plural, n_ns, n_name = _net_ns_name(path)
             if n_plural == "ingresses":
+                if not self._rbac_allows("delete", n_plural):
+                    self._deny(403)
+                    return
                 if n_name:
                     ok = self.server.store.delete("networking.k8s.io", "v1", n_plural, n_ns, n_name)  # type: ignore[attr-defined]
                     if not ok:
@@ -6471,6 +10407,8 @@ def _kind(plural: str) -> str:
         "namespaces": "Namespace",
         "configmaps": "ConfigMap",
         "secrets": "Secret",
+        "persistentvolumeclaims": "PersistentVolumeClaim",
+        "persistentvolumes": "PersistentVolume",
         "serviceaccounts": "ServiceAccount",
         "services": "Service",
     }[plural]
@@ -6860,6 +10798,34 @@ def _to_event(namespace: str, obj_name: str, ev: AppEvent) -> dict[str, Any]:  #
         "firstTimestamp": ts,
         "lastTimestamp": ts,
     }
+
+
+def _to_stored_event(o: K8sObject) -> dict[str, Any]:
+    meta = dict(o.metadata)
+    meta.setdefault("name", o.name)
+    if o.namespace:
+        meta.setdefault("namespace", o.namespace)
+    meta.setdefault("resourceVersion", str(o.resource_version))
+    spec = dict(o.spec or {})
+    out = {"apiVersion": "v1", "kind": "Event", "metadata": meta}
+    for key in (
+        "involvedObject",
+        "reason",
+        "message",
+        "type",
+        "source",
+        "firstTimestamp",
+        "lastTimestamp",
+        "eventTime",
+        "count",
+        "action",
+        "related",
+        "reportingController",
+        "reportingInstance",
+    ):
+        if key in spec:
+            out[key] = spec[key]
+    return out
 
 
 def _ingress_vip(state: SQLiteStateStore, store: ObjectStore | None, ing: K8sObject) -> str | None:
@@ -7652,30 +11618,44 @@ def _node_obj(record, status, rv: int) -> dict[str, Any]:
     return {"apiVersion": "v1", "kind": "Node", "metadata": meta, "status": node_status}
 
 
-def _runtime_from_env() -> RuntimeAdapter:
-    backend = (os.getenv("AE_APISHIM_RUNTIME") or os.getenv("AE_RUNTIME_BACKEND") or "stub").lower()
+def _runtime_from_env_base(backend: str) -> RuntimeAdapter:
     if backend in {"stub", "test"}:
         return StubRuntime()
+    if backend in {"cri", "containerd"}:
+        return CRIRuntime()
     if backend in {"podman", "oci"}:
         try:
             return PodmanRuntime()
         except Exception:
             return DockerRuntime()
-    if backend == "remote":
-        return RemoteRuntime()
     return DockerRuntime()
+
+
+def _runtime_from_env() -> RuntimeAdapter:
+    backend = (os.getenv("AE_APISHIM_RUNTIME") or os.getenv("AE_RUNTIME_BACKEND") or "stub").lower()
+    agent_url = os.getenv("AE_APISHIM_AGENT_URL") or os.getenv("AE_AGENT_URL")
+    if backend == "remote" or agent_url:
+        base_backend = (os.getenv("AE_RUNTIME_BACKEND") or "podman").lower()
+        base = _runtime_from_env_base(base_backend)
+        return RemoteRuntime(agent_url, base)  # type: ignore[arg-type]
+    return _runtime_from_env_base(backend)
 
 
 def _pod_obj(container: dict, rv: int, node_name: str | None) -> dict[str, Any]:
     labels = container.get("labels", {}) or {}
-    replica_id = labels.get("ae.replica_id") or container.get("name") or "replica"
+    pod_name = (
+        labels.get("ae.pod_name") or labels.get("ae.replica_id") or container.get("name") or "pod"
+    )
     ns = labels.get("ae.namespace") or "default"
     meta = {
-        "name": replica_id,
+        "name": pod_name,
         "namespace": ns,
         "labels": labels,
         "resourceVersion": str(rv),
     }
+    uid = container.get("uid") or container.get("id")
+    if uid:
+        meta["uid"] = str(uid)
     running = bool(container.get("running", False))
     restart_count = int(container.get("restart_count", 0) or 0)
     started_at = container.get("started_at") or None
@@ -7741,7 +11721,9 @@ def _pod_obj(container: dict, rv: int, node_name: str | None) -> dict[str, Any]:
     }
 
 
-class ShimServer(HTTPServer):
+class ShimServer(ThreadingHTTPServer):
+    daemon_threads = True
+
     def __init__(
         self, server_address: tuple[str, int], token: str | None, allow_anonymous: bool = False
     ) -> None:
@@ -7749,8 +11731,33 @@ class ShimServer(HTTPServer):
         dsn = os.getenv("AE_APISHIM_DSN")
         db_path = Path(os.getenv("AE_APISHIM_DB", "state/apishim.db"))
         self.store = ObjectStore(db_path=db_path, dsn=dsn)
+        self._storage_controller = None
+        try:
+            from ae.storage.controller import StorageController
+
+            self._storage_controller = StorageController(self.store)
+            seeded = self._storage_controller.sync()
+            self._storage_controller.start()
+            if seeded:
+                LOGGER.info("seeded %s StorageClass objects from config", seeded)
+        except Exception as exc:  # noqa: BLE001
+            self._storage_controller = None
+            LOGGER.warning("storage controller init failed: %s", exc)
+        ShimHandler.rehydrate_sa_tokens(self.store)
         ShimHandler.admin_token = token or os.getenv("AE_APISHIM_TOKEN")
         ShimHandler.read_token = os.getenv("AE_APISHIM_READ_TOKEN")
+        ShimHandler.exec_token = os.getenv("AE_APISHIM_EXEC_TOKEN")
+        ShimHandler.portforward_token = os.getenv("AE_APISHIM_PORTFORWARD_TOKEN")
+        ShimHandler.session_secret = os.getenv("AE_APISHIM_SESSION_SECRET")
+        ShimHandler.pod_state_check = os.getenv("AE_APISHIM_POD_STATE_CHECK", "0") == "1"
+        ShimHandler.pod_watch_check = os.getenv("AE_APISHIM_POD_WATCH_CHECK", "0") == "1"
+        try:
+            ShimHandler.pod_watch_ttl = float(
+                os.getenv("AE_APISHIM_POD_WATCH_TTL_SECONDS", "30") or 30
+            )
+        except Exception:
+            ShimHandler.pod_watch_ttl = 30.0
+        ShimHandler.pod_watch_cache = {}
         ShimHandler.allow_anonymous = allow_anonymous
         state_dsn = os.getenv("AE_STATE_DSN")
         db_path = Path(os.getenv("AE_STATE_DB", "state/controller.db"))

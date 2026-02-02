@@ -208,8 +208,8 @@ def test_overlay_events_emitted_on_status_change(tmp_path):
     manifest = types.SimpleNamespace()
     manifest.metadata = types.SimpleNamespace(name="demo-app")
     manifest.spec = types.SimpleNamespace(service=svc_spec)
-    runtime_result = RuntimeResult(revision=1, created=0, updated=0, removed=0, replica_states=[])
-    health_report = HealthReport(ready_replicas=0, live_replicas=0, replicas=[])
+    runtime_result = RuntimeResult(revision=1, created=0, updated=0, removed=0, pod_states=[])
+    health_report = HealthReport(ready_replicas=0, live_replicas=0, pods=[])
 
     svc_controller.reconcile(manifest, runtime_result, health_report)
     events = store.list_events("demo-app")

@@ -46,7 +46,7 @@ def test_get_describe_rollout_and_logs(tmp_path, monkeypatch, capsys):
     assert main(["describe", "app/echo"]) == 0
     out = capsys.readouterr().out
     assert "event" in out
-    assert "replica" in out or "- echo-rev" in out
+    assert "pod" in out or "- echo-rev" in out
 
     # rollout history
     assert main(["rollout", "history", "echo", "--limit", "5"]) == 0

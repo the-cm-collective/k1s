@@ -5,13 +5,16 @@ Endpoints:
 - GET /status             -> JSON list of app statuses
 - GET /status/<app>       -> JSON object for app status (404 if missing)
 - GET /events/<app>?limit -> JSON list of recent events for app
- - GET /history/<app>?limit -> JSON list of recent probe evaluations (replica histories)
- - POST /k8s/preview      -> Render K8s YAML for a manifest (dev only; gated by AE_API_DEV_EXPORT=1)
+- GET /history/<app>?limit -> JSON list of recent probe evaluations (pod histories)
+- POST /k8s/preview      -> Render K8s YAML for a manifest (dev only; gated by AE_API_DEV_EXPORT=1)
 """
 
 from __future__ import annotations
 
+import base64
 import errno
+import hashlib
+import hmac
 import http.server
 import json
 import logging
@@ -24,11 +27,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ae.controller.state import SQLiteStateStore
+from ae.observability.metrics import MetricsService
+from ae.resources import loader as resource_loader
 
 logger = logging.getLogger(__name__)
-
-
-from ae.observability.metrics import MetricsService
 
 # Simple in-memory reconcile metrics updated by the controller loop.
 _LAST_RECONCILE_TS: float | None = None
@@ -46,7 +48,7 @@ _LABS_RESET_BLOCK_SECONDS = int(os.getenv("AE_LABS_RESET_BLOCK_SECONDS", "30") o
 _APP_CRASHLOOP_UNTIL: dict[str, float] = {}
 # Hook observations: (app, hook, type) -> (duration_seconds: float, success: bool)
 _HOOK_LAST: dict[tuple[str, str, str], tuple[float, bool]] = {}
-# Probe backoff: (app, replica, type) -> seconds
+# Probe backoff: (app, pod, type) -> seconds
 _PROBE_BACKOFF: dict[tuple[str, str, str], int] = {}
 _APP_ROLLOUT_OPS: dict[str, dict[str, int]] = {}
 # Canary tracking: latest weight and step counter per app
@@ -358,9 +360,9 @@ def increment_canary_step(app: str) -> None:
         pass
 
 
-def record_probe_backoff(app: str, replica: str, probe_type: str, seconds: int) -> None:
+def record_probe_backoff(app: str, pod_name: str, probe_type: str, seconds: int) -> None:
     try:
-        _PROBE_BACKOFF[(str(app), str(replica), str(probe_type))] = max(0, int(seconds))
+        _PROBE_BACKOFF[(str(app), str(pod_name), str(probe_type))] = max(0, int(seconds))
     except Exception:
         pass
 
@@ -395,6 +397,21 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         except Exception:
             return False
 
+    def _flag_enabled(self, name: str, default: bool = True) -> bool:
+        try:
+            raw = os.getenv(name)
+        except Exception:
+            raw = None
+        if raw is None or str(raw).strip() == "":
+            return bool(default)
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _dashboard_enabled(self) -> bool:
+        return self._flag_enabled("AE_DASHBOARD", True)
+
+    def _playground_enabled(self) -> bool:
+        return self._flag_enabled("AE_PLAYGROUND", True)
+
     def _labs_token_valid(self) -> bool:
         if not self._labs_enabled():
             return False
@@ -406,6 +423,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         hdr = self.headers.get("Authorization", "")
         if hdr == f"Bearer {tok}":
             return True
+        _p, _, q = self.path.partition("?")
+        if q:
+            import urllib.parse as _up
+
+            params = _up.parse_qs(q)
+            if (params.get("token") or [""])[0] == tok:
+                return True
         return False
 
     def _labs_request_authorized(self) -> bool:
@@ -714,7 +738,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
         # Labs SSE (dev-only): stream events/status to the playground
         if path_only.startswith("/labs/sse/"):
-            if not self._labs_enabled():
+            if not self._labs_enabled() or not self._playground_enabled():
                 self.send_response(404)
                 self.end_headers()
                 return
@@ -737,33 +761,83 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
         if path_only == "/labs/helm-demo" and self._labs_enabled():
+            if not self._playground_enabled():
+                self.send_response(404)
+                self.end_headers()
+                return
             if not self._labs_request_authorized():
                 self._deny(401)
                 return
             self._json_ok(_helm_demo_status())
             return
+        # Public UI feature flags (non-sensitive)
+        if path_only == "/ui/features":
+            self._handle_ui_features()
+            return
         # Metrics allowed without auth
         if path_only.startswith("/metrics"):
             self._handle_metrics()
             return
+        if path_only.startswith("/static/"):
+            if self._handle_static_asset(path_only):
+                return
+            self.send_response(404)
+            self.end_headers()
+            return
         # Public pages (always allowed): OpenAPI + lightweight docs UIs
         if path_only in {
             "/openapi.json",
+            "/openapi/v2",
+            "/openapi/v3",
+            "/swagger.json",
             "/swagger",
             "/swagger/",
+            "/swagger/apishim",
+            "/swagger/apishim/",
             "/redoc",
             "/redoc/",
+            "/redoc/apishim",
+            "/redoc/apishim/",
+            "/dashboard",
+            "/dashboard/",
+            "/dashboard.js",
             "/",
             "/docs",
         }:
             if path_only == "/openapi.json":
                 self._handle_openapi()
+            elif path_only in ("/openapi/v2", "/swagger.json"):
+                self._handle_apishim_openapi("v2")
+            elif path_only == "/openapi/v3":
+                self._handle_apishim_openapi("v3")
             elif path_only in ("/", "/docs"):
                 self._handle_docs()
             elif path_only in ("/swagger", "/swagger/"):
                 self._handle_swagger()
-            else:
+            elif path_only in ("/swagger/apishim", "/swagger/apishim/"):
+                self._handle_swagger(
+                    spec_url="/openapi/v3",
+                    title="k1s Swagger UI (API Shim)",
+                )
+            elif path_only in ("/dashboard", "/dashboard/"):
+                if not self._dashboard_enabled():
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self._handle_dashboard()
+            elif path_only == "/dashboard.js":
+                if not self._dashboard_enabled():
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self._handle_dashboard_js()
+            elif path_only in ("/redoc", "/redoc/"):
                 self._handle_redoc()
+            else:
+                self._handle_redoc(
+                    spec_url="/openapi/v3",
+                    title="k1s ReDoc (API Shim)",
+                )
             return
         # Enforce read auth if configured
         try:
@@ -788,9 +862,17 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             self._handle_system()
             return
         if path_only in ("/dashboard", "/dashboard/"):
+            if not self._dashboard_enabled():
+                self.send_response(404)
+                self.end_headers()
+                return
             self._handle_dashboard()
             return
         if path_only.startswith("/dashboard/partials/"):
+            if not self._dashboard_enabled():
+                self.send_response(404)
+                self.end_headers()
+                return
             # server-rendered fragments for HTMX-enhanced dashboard
             subpath = path_only[len("/dashboard/partials/") :]
             if subpath == "logs":
@@ -801,9 +883,17 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 return
         # Dashboard SSE alias for events (no labs gating)
         if path_only == "/dashboard/sse/events":
+            if not self._dashboard_enabled():
+                self.send_response(404)
+                self.end_headers()
+                return
             self._handle_labs_sse_events()
             return
         if path_only == "/dashboard.js":
+            if not self._dashboard_enabled():
+                self.send_response(404)
+                self.end_headers()
+                return
             self._handle_dashboard_js()
             return
         if path_only.startswith("/manifest/"):
@@ -860,7 +950,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 hist = self.store.get_probe_history(app, limit)
                 out = [
                     {
-                        "replica_id": h.replica_id,
+                        "pod_name": h.pod_name,
+                        "replica_id": h.pod_name,
                         "check_time": h.check_time.isoformat(),
                         "ready": bool(h.ready),
                         "live": bool(h.live),
@@ -950,13 +1041,96 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             except Exception as exc:  # pragma: no cover
                 self._json_error(500, str(exc))
             return
+        if self.path == "/api/apishim/session":
+            try:
+                secret = os.getenv("AE_APISHIM_SESSION_SECRET", "").strip()
+                if not secret:
+                    self._json_error(404, "apishim session tokens disabled")
+                    return
+                labs_token = (os.getenv("AE_LABS_TOKEN") or "").strip()
+                tokens_configured = bool(
+                    os.getenv("AE_API_ADMIN_TOKEN")
+                    or os.getenv("AE_API_SCALER_TOKEN")
+                    or os.getenv("AE_API_READ_TOKEN")
+                )
+                if labs_token:
+                    if not (self._labs_token_valid() or self._require_role("admin")):
+                        self._deny(401 if not self.headers.get("Authorization") else 403)
+                        return
+                elif tokens_configured:
+                    if not self._require_role("admin"):
+                        self._deny(401 if not self.headers.get("Authorization") else 403)
+                        return
+                else:
+                    # Secure-by-default: require auth even if no API tokens were configured.
+                    self._deny(401 if not self.headers.get("Authorization") else 403)
+                    return
+                length = int(self.headers.get("Content-Length", "0") or "0")
+                raw = self.rfile.read(length) if length > 0 else b"{}"
+                try:
+                    payload = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception:
+                    self._json_error(400, "invalid JSON body for session token")
+                    return
+                role = str(payload.get("role") or "exec").strip().lower()
+                if role not in {"exec", "portforward", "read"}:
+                    self._json_error(400, "invalid role for session token")
+                    return
+                scopes_val = payload.get("scopes") or payload.get("scope") or []
+                scopes: list[str] = []
+                if isinstance(scopes_val, str):
+                    scopes = [scopes_val]
+                elif isinstance(scopes_val, list):
+                    scopes = [str(s) for s in scopes_val if s]
+                else:
+                    scopes = []
+                try:
+                    ttl_req = int(payload.get("ttlSeconds") or payload.get("ttl") or 0)
+                except Exception:
+                    ttl_req = 0
+                try:
+                    default_ttl = int(os.getenv("AE_APISHIM_SESSION_TTL", "600") or "600")
+                except Exception:
+                    default_ttl = 600
+                try:
+                    max_ttl = int(os.getenv("AE_APISHIM_SESSION_TTL_MAX", str(default_ttl)) or default_ttl)
+                except Exception:
+                    max_ttl = default_ttl
+                ttl = ttl_req if ttl_req > 0 else default_ttl
+                ttl = max(60, min(ttl, max_ttl))
+                exp = int(time.time()) + ttl
+                token_payload = {"role": role, "exp": exp}
+                if scopes:
+                    token_payload["scopes"] = scopes
+                payload_raw = json.dumps(token_payload, separators=(",", ":")).encode("utf-8")
+
+                def _b64url(data: bytes) -> str:
+                    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("utf-8")
+
+                payload_b64 = _b64url(payload_raw)
+                sig = hmac.new(secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
+                sig_b64 = _b64url(sig)
+                token = f"sess1.{payload_b64}.{sig_b64}"
+                self._json_ok(
+                    {
+                        "token": token,
+                        "expires_in": ttl,
+                        "expires_at": exp,
+                        "role": role,
+                        "scopes": scopes,
+                    }
+                )
+            except Exception as exc:  # pragma: no cover
+                self._json_error(500, str(exc))
+            return
         # Labs playground micro-API (dev only)
         if self.path.startswith("/labs/") or self.path == "/labs/info":
+            if not self._playground_enabled():
+                self._json_error(404, "playground disabled")
+                return
             self._handle_labs_post()
             return
         # Mutations are optional and gated by env
-        import os
-
         if os.getenv("AE_API_MUTATIONS") != "1":
             self.send_response(404)
             self.end_headers()
@@ -1284,6 +1458,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 ex = str(payload.get("example") or "echo")
                 # Map example id to file path
                 ex_map = {
+                    "shell-demo": _Path("specs/examples/shell-demo.yaml"),
                     "echo": _Path("specs/examples/echo.yaml"),
                     "echo-multiport": _Path("specs/examples/echo-multiport.yaml"),
                     "echo-rollout": _Path("specs/examples/echo-rollout.yaml"),
@@ -1495,7 +1670,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     _LABS_APPS.add(new_name)
                 except Exception:
                     pass
-                self._json_ok(report)
+                try:
+                    if isinstance(report, dict):
+                        payload_out = dict(report)
+                    else:
+                        payload_out = {"result": report}
+                    payload_out.setdefault("app", new_name)
+                    self._json_ok(payload_out)
+                except Exception:
+                    self._json_ok({"app": new_name, "result": report})
             except Exception as exc:  # pragma: no cover
                 self._json_error(500, str(exc))
             return
@@ -1766,6 +1949,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         # Ingress reachability check (server-side to avoid browser TLS issues in dev)
         if path == "/labs/ingress_check":
             try:
+                import os as _os
+
+                if _os.getenv("AE_DISABLE_INGRESS") == "1":
+                    self._json_ok(
+                        {
+                            "ok": False,
+                            "code": 0,
+                            "disabled": True,
+                            "reason": "ingress disabled via AE_DISABLE_INGRESS=1",
+                        }
+                    )
+                    return
                 url = str(payload.get("url") or "").strip()
                 if not url:
                     # Support host+path form
@@ -1794,7 +1989,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 import requests as _req
 
                 verify_path = "state/certs/combined-dev-ca.pem"
-                # Use the already-imported _os rather than os to avoid NameError
                 verify = verify_path if _os.path.exists(verify_path) else False
                 t0 = _t.time()
                 # For dev *.home.arpa, try known host gateways since this process
@@ -2230,10 +2424,34 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "# HELP ae_services_total Services with allocated cluster IPs",
             "# TYPE ae_services_total gauge",
             f"ae_services_total {getattr(snap, 'total_services', 0)}",
+            "# HELP ae_pvs_total HostPath-backed PVs tracked for health",
+            "# TYPE ae_pvs_total gauge",
+            f"ae_pvs_total {getattr(snap, 'total_pvs', 0)}",
+            "# HELP ae_pvs_healthy HostPath-backed PVs with healthy backing paths",
+            "# TYPE ae_pvs_healthy gauge",
+            f"ae_pvs_healthy {getattr(snap, 'healthy_pvs', 0)}",
+            "# HELP ae_pvs_unhealthy HostPath-backed PVs with missing backing paths",
+            "# TYPE ae_pvs_unhealthy gauge",
+            f"ae_pvs_unhealthy {getattr(snap, 'unhealthy_pvs', 0)}",
             "# HELP ae_overlay_configured Overlay/VIP dataplane enabled (1=yes)",
             "# TYPE ae_overlay_configured gauge",
             f"ae_overlay_configured {1 if os.getenv('AE_SERVICE_PROVIDER', '').lower() == 'overlay' and os.getenv('AE_ENABLE_SERVICE_PROXY', '0') == '1' else 0}",
         ]
+        storage_used = getattr(snap, "storage_used_bytes", {}) or {}
+        storage_quota = getattr(snap, "storage_quota_bytes", {}) or {}
+        if storage_used or storage_quota:
+            lines += [
+                "# HELP ae_storage_used_bytes Requested storage per namespace",
+                "# TYPE ae_storage_used_bytes gauge",
+            ]
+            for ns, val in sorted(storage_used.items()):
+                lines.append(f'ae_storage_used_bytes{{namespace="{ns}"}} {val}')
+            lines += [
+                "# HELP ae_storage_quota_bytes Storage quota per namespace",
+                "# TYPE ae_storage_quota_bytes gauge",
+            ]
+            for ns, val in sorted(storage_quota.items()):
+                lines.append(f'ae_storage_quota_bytes{{namespace="{ns}"}} {val}')
         # Per-app series metadata (declared once before samples)
         lines += [
             "# HELP ae_app_desired_replicas Desired replicas per app",
@@ -2365,18 +2583,21 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     f"kube_deployment_status_replicas_unavailable{{{dep_labels}}} {unavailable}"
                 )
             for s0 in statuses:
-                reps = self.store.list_replicas(s0.app_name)
+                reps = self.store.list_pods(s0.app_name)
                 ns, _dep = split_app_key(s0.app_name)
                 for r in reps:
                     val = 1 if r.ready else 0
                     lines.append(
-                        f'ae_replica_ready{{app="{s0.app_name}",replica="{r.replica_id}"}} {val}'
+                        f'ae_pod_ready{{app="{s0.app_name}",pod="{r.pod_name}"}} {val}'
                     )
                     lines.append(
-                        f'kube_pod_status_ready{{namespace="{ns}",pod="{r.replica_id}",condition="true"}} {val}'
+                        f'ae_replica_ready{{app="{s0.app_name}",replica="{r.pod_name}"}} {val}'
                     )
                     lines.append(
-                        f'kube_pod_status_ready{{namespace="{ns}",pod="{r.replica_id}",condition="false"}} {1 - val}'
+                        f'kube_pod_status_ready{{namespace="{ns}",pod="{r.pod_name}",condition="true"}} {val}'
+                    )
+                    lines.append(
+                        f'kube_pod_status_ready{{namespace="{ns}",pod="{r.pod_name}",condition="false"}} {1 - val}'
                     )
         except Exception:
             pass
@@ -2523,9 +2744,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             pass
         # Probe backoff seconds
         try:
-            for (app, replica, ptype), secs in list(_PROBE_BACKOFF.items()):
+            for (app, pod_name, ptype), secs in list(_PROBE_BACKOFF.items()):
                 lines.append(
-                    f'ae_probe_backoff_seconds{{app="{app}",replica="{replica}",type="{ptype}"}} {int(secs)}'
+                    f'ae_pod_probe_backoff_seconds{{app="{app}",pod="{pod_name}",type="{ptype}"}} {int(secs)}'
+                )
+                lines.append(
+                    f'ae_probe_backoff_seconds{{app="{app}",replica="{pod_name}",type="{ptype}"}} {int(secs)}'
                 )
         except Exception:
             pass
@@ -2629,25 +2853,30 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         payload = {"controller": ctrl, "rbac": rbac, "crashloop": crash, **(extra or {})}
         self._json_ok(payload)
 
-    def _handle_swagger(self) -> None:
-        html = """
-<!doctype html>
-<html>
-  <head>
-    <meta charset=\"utf-8\" />
-    <title>k1s Swagger UI</title>
-    <link rel=\"stylesheet\" href=\"https://unpkg.com/swagger-ui-dist@5/swagger-ui.css\" />
-    <style>body { margin: 0; } .swagger-ui { max-width: 1100px; margin: 20px auto; }</style>
-  </head>
-  <body>
-    <div id=\"swagger-ui\"></div>
-    <script src=\"https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js\"></script>
-    <script type=\"text/javascript\">
-      window.ui = SwaggerUIBundle({ url: '/openapi.json', dom_id: '#swagger-ui' });
-    </script>
-  </body>
-</html>
-"""
+    def _handle_ui_features(self) -> None:
+        payload = {
+            "dashboard": bool(self._dashboard_enabled()),
+            "playground": bool(self._playground_enabled()),
+        }
+        self._json_ok(payload)
+
+    def _handle_swagger(self, *, spec_url: str = "/openapi.json", title: str = "k1s Swagger UI") -> None:
+        spec_literal = json.dumps(spec_url)
+        labs_token = ""
+        try:
+            import os as _os
+
+            if _os.getenv("AE_DEMO_MODE") == "1":
+                labs_token = (_os.getenv("AE_LABS_TOKEN") or "").strip()
+        except Exception:
+            labs_token = ""
+        html = resource_loader.render_text(
+            "observability",
+            "swagger.html",
+            TITLE=title,
+            SPEC_URL=spec_literal,
+            LABS_TOKEN=json.dumps(labs_token),
+        )
         payload = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -2655,29 +2884,35 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def _handle_redoc(self) -> None:
-        html = """
-<!doctype html>
-<html>
-  <head>
-    <meta charset=\"utf-8\" />
-    <title>k1s ReDoc</title>
-    <style>body { margin: 0; } #redoc { width: 100vw; height: 100vh; }</style>
-    <script src=\"https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js\"></script>
-  </head>
-  <body>
-    <div id=\"redoc\"></div>
-    <script>
-      document.addEventListener('DOMContentLoaded', function () {
-        Redoc.init('/openapi.json', {}, document.getElementById('redoc'));
-      });
-    </script>
-  </body>
-</html>
-"""
+    def _handle_redoc(self, *, spec_url: str = "/openapi.json", title: str = "k1s ReDoc") -> None:
+        spec_literal = json.dumps(spec_url)
+        html = resource_loader.render_text(
+            "observability", "redoc.html", TITLE=title, SPEC_URL=spec_literal
+        )
         payload = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _handle_apishim_openapi(self, version: str) -> None:
+        try:
+            from ae.apishim import server as _apishim_server
+        except Exception as exc:
+            self._json_error(500, f"unable to load apishim OpenAPI: {exc}")
+            return
+        try:
+            if version == "v2":
+                doc = _apishim_server._swagger_doc()
+            else:
+                doc = _apishim_server._openapi_v3_stub()
+        except Exception as exc:
+            self._json_error(500, f"unable to render apishim OpenAPI: {exc}")
+            return
+        payload = json.dumps(doc).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -2693,7 +2928,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         )
         doc = {
             "openapi": "3.0.0",
-            "info": {"title": "k1s Controller API", "version": "0.1.1"},
+            "info": {"title": "k1s Controller API", "version": "0.1.2.dev0"},
             "components": {
                 "securitySchemes": {
                     "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}
@@ -3137,11 +3372,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if want_details:
             try:
                 manifest = self.store.get_revision_manifest(s.app_name, s.revision)
-                reps = self.store.list_replicas(s.app_name)
+                reps = self.store.list_pods(s.app_name)
                 data["manifest"] = manifest.model_dump()
-                data["replicas"] = [
+                pods = [
                     {
-                        "replica_id": r.replica_id,
+                        "pod_name": r.pod_name,
+                        "replica_id": r.pod_name,
                         "ready": bool(r.ready),
                         "live": bool(r.live),
                         "status": r.status,
@@ -3150,6 +3386,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     }
                     for r in reps
                 ]
+                data["pods"] = pods
+                data["replicas"] = pods
                 # Include per-container runtime info when system_info_fn is available
                 try:
                     sys = self.system_info_fn() if getattr(self, "system_info_fn", None) else None  # type: ignore[misc]
@@ -3220,39 +3458,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         return
 
     def _handle_docs(self) -> None:
-        html = """
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>k1s API Docs</title>
-    <style>
-      body { font-family: sans-serif; margin: 2rem; }
-      code { background:#f3f3f3; padding: 2px 4px; }
-      .path { font-weight: bold; }
-    </style>
-  </head>
-  <body>
-    <h1>k1s Controller API</h1>
-    <p>Minimal, read-only endpoints. OpenAPI at <code>/openapi.json</code>.</p>
-    <div id="endpoints">Loading...</div>
-    <script>
-      fetch('/openapi.json').then(r => r.json()).then(doc => {
-        const container = document.getElementById('endpoints');
-        container.innerHTML = '';
-        const paths = doc.paths || {};
-        Object.keys(paths).sort().forEach(p => {
-          const div = document.createElement('div');
-          div.innerHTML = `<div class="path">GET <code>${p}</code></div>`;
-          container.appendChild(div);
-        });
-      }).catch(() => {
-        document.getElementById('endpoints').textContent = 'Failed to load OpenAPI';
-      });
-    </script>
-  </body>
-</html>
-"""
+        html = resource_loader.load_text("observability", "docs.html")
         payload = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -3274,1526 +3480,69 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _handle_static_asset(self, path_only: str) -> bool:
+        from pathlib import Path
+
+        rel = path_only.lstrip("/")
+        if not rel.startswith("static/"):
+            return False
+        rel_path = rel[len("static/") :]
+        if not rel_path:
+            return False
+        if ".." in Path(rel_path).parts:
+            return False
+        base_file = Path(__file__).resolve()
+        repo_root = base_file.parents[3]
+        candidates = [
+            repo_root / "docs" / "static" / rel_path,
+            repo_root / "docs" / "site" / "static" / rel_path,
+            base_file.parent / "static" / rel_path,
+        ]
+        target = next((p for p in candidates if p.is_file()), None)
+        if target is None:
+            return False
+        try:
+            data = target.read_bytes()
+        except Exception:
+            return False
+        ext = target.suffix.lower()
+        content_type = {
+            ".js": "application/javascript; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".svg": "image/svg+xml",
+            ".png": "image/png",
+            ".ico": "image/x-icon",
+        }.get(ext, "application/octet-stream")
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        return True
+
     def _handle_dashboard(self) -> None:
         # Simple static dashboard that polls status, events, and logs.
-        html = """
-<!doctype html>
-<html>
-  <head>
-    <meta charset=\"utf-8\" />
-    <title>k1s Hive Dashboard</title>
-    <link rel=\"icon\" type=\"image/png\" sizes=\"32x32\" href=\"data:image/png;base64,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\" />
-    <script src=\"https://unpkg.com/htmx.org@1.9.12\" integrity=\"sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2\" crossorigin=\"anonymous\"></script>
-    <style>
-      :root { color-scheme: light dark; --header-h: 60px; --k1s-brand-gold: #fbc02d; --k1s-brand-graphite: #404040; }
-      body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; overflow-x:hidden; }
-      header { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; background:#0a0a0a10; position:sticky; top:0; backdrop-filter: blur(4px); z-index: 40; border-bottom:1px solid #8884; }
-      header::after { content:""; position:absolute; left:14px; right:14px; bottom:0; height:2px; border-radius:999px; background: linear-gradient(90deg, transparent, var(--k1s-brand-gold), transparent); opacity:.5; pointer-events:none; }
-      .brand-title { display:flex; align-items:center; gap:10px; font-size:18px; letter-spacing:.01em; }
-      .brand-logo { width:28px; height:28px; border-radius:999px; box-shadow:0 6px 14px rgba(0,0,0,.2); }
-      .brand-accent { color: var(--k1s-brand-gold); }
-      h1 { margin:0; font-size: 18px; }
-      main { display:grid; grid-template-columns: 1fr; gap:12px; padding:12px 12px 48px; overflow-x:hidden; align-items:start; margin-left:222px; transition: margin-left .15s ease; }
-      #detail { min-width:0; overflow:hidden; }
-      #apps { width:210px; }
-      /* Collapsible left apps pane */
-      body.apps-collapsed main { margin-left: 22px; }
-      /* Apps rail fixed under the header; independent scroll */
-      #apps { position:fixed; left:0; top: calc(var(--header-h, 60px)); border-right:1px solid #8884; padding:0 8px 0 0; min-height:0; height: calc(100vh - var(--header-h, 60px)); background: transparent; box-sizing: border-box; }
-      body.apps-collapsed #apps { border-right:0; padding-right:0; }
-      .scrollbar-hide { scrollbar-width: none; -ms-overflow-style: none; }
-      .scrollbar-hide::-webkit-scrollbar { width:0; height:0; }
-      #apps-list { display:block; overflow-y:auto; height: calc(100vh - (var(--header-h, 60px)) - 12px); padding:6px 6px 12px; }
-      body.apps-collapsed #apps-list { display:none; }
-      .ns-header { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:#94a3b8; display:flex; align-items:center; gap:6px; margin:8px 6px 4px; }
-      .ns-header .ns-dot { width:8px; height:8px; border-radius:999px; background:var(--ns-color, #64748b); box-shadow:0 0 0 2px rgba(0,0,0,.25); }
-      .ns-header .ns-count { margin-left:auto; font-size:11px; opacity:.7; }
-      .app { padding:6px 8px; border-radius:6px; cursor:pointer; border-left:3px solid var(--ns-color, #334155); background:linear-gradient(90deg, var(--ns-tint, transparent), transparent 70%); margin:2px 0; }
-      .app.active { background:linear-gradient(90deg, var(--ns-tint, rgba(31,41,55,.65)), #1f2937 70%); color:#e5e7eb; }
-      .app-title { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
-      .app-sub { font-size:12px; color:#94a3b8; }
-      .pill { display:inline-block; padding:1px 6px; border-radius:999px; font-size:12px; margin-left:6px; }
-      .ns-pill { display:inline-block; padding:1px 6px; border-radius:999px; font-size:12px; border:1px solid var(--ns-color, #64748b); background:var(--ns-tint, #33415533); color:#e2e8f0; }
-      .ok { background:#16a34a33; color:#16a34a; }
-      .warn { background:#f59e0b33; color:#b45309; }
-      .bad { background:#ef444433; color:#b91c1c; }
-      .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
-      .row.stretch { align-items: stretch; flex-wrap: nowrap; overflow-x: hidden; }
-      .row.stretch::-webkit-scrollbar { height:0; }
-      .card { border:1px solid #8884; border-radius:8px; padding:8px 10px; min-width:0; max-width:100%; overflow:hidden; }
-      .card table { display:block; overflow:auto; white-space: nowrap; scrollbar-width: none; -ms-overflow-style: none; }
-      .card table::-webkit-scrollbar { width:0; height:0; }
-      .card pre { overflow:auto; }
-      /* Ensure flex children can shrink and let inner boxes scroll */
-      .row.stretch > .card { min-width: 0; }
-      .detail-card { flex: 0 0 320px; }
-      /* Reduce default Logs panel height by ~20% (294px → ~235px) */
-      .logbox { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; width:100%; box-sizing:border-box; height:235px; overflow:auto; overflow-x:auto; white-space: pre; background:#0001; padding:8px; border-radius:6px; }
-      .scrollcap { max-height:180px; overflow:auto; overflow-x:auto; white-space: normal; max-width:100%; width:100%; }
-      /* Ensure detail text uses compact line spacing */
-      #desc { line-height: 1.3; min-height: 12em; max-height: none; overflow-y: hidden; }
-      /* Match events panel baseline height to keep row stable */
-      #events { min-height: 12em; }
-      .log-entry { white-space: pre; }
-      /* Ensure events panel never widens the layout; scroll inside */
-      #events { max-width:100%; width:100%; overflow-x:auto; }
-      .log-entry code { opacity:0.8; margin-right:6px; }
-      #controls { gap:8px; }
-      /* Unified rounded controls */
-      input[type=text], input[type=password], select, textarea { padding:6px; border:1px solid #8884; border-radius:6px; background:#0001; color:inherit; }
-      /* All selects — dark UI: light text on dark background */
-      select { background:#0f172a; color:#e5e7eb; border-color:#334155; color-scheme: dark; }
-      select option { background:#0f172a; color:#e5e7eb; }
-      button { padding:6px 10px; border:1px solid #8884; border-radius:6px; background:#0001; color:inherit; cursor:pointer; }
-      /* Hide legacy header toggle and add pane handle */
-      header #apps-toggle { display:none !important; }
-      /* Small round chevron handle; positioned by JS for exact edge alignment */
-      #apps-pane-toggle { position:fixed; left: 0; top: 50vh; transform: translateY(-50%); width:28px; height:28px; border-radius:9999px; padding:0; border:1px solid #334155; background:#0f172a; color:#e5e7eb; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 6px rgba(0,0,0,.2); cursor:pointer; z-index: 10; transition: left .12s ease, top .12s ease; }
-      /* When collapsed, keep the handle fully within the thin bar */
-      /* Collapsed state handled in JS so the button centers on the 16px rail */
-      #apps-pane-toggle:hover { background:#111827; }
-      #apps-pane-toggle svg { width:18px; height:18px; transition: transform .15s ease; }
-      /* Chevron points left (collapse) when expanded; rotate to point right when collapsed */
-      body.apps-collapsed #apps-pane-toggle svg { transform: rotate(180deg); }
-      table { border-collapse:collapse; width:100%; }
-      th, td { border-bottom:1px solid #8884; padding:6px; text-align:left; font-size:13px; }
-      code { background:#0001; padding:2px 4px; border-radius:4px; }
-      h2 { font-size:14px; margin: 14px 4px 6px; opacity:0.9; }
-      .divider { border-top:1px solid #8884; margin:16px 0; }
-      footer.site-footer { margin: 0 12px 12px; border-top:1px solid #8884; padding-top:10px; opacity:.85; }
-      .hover-card { position:absolute; display:none; max-width:280px; font-size:12px; line-height:1.35; background:rgba(255,255,255,0.95); color:inherit; border:1px solid #888; border-radius:6px; padding:8px 10px; box-shadow:0 2px 8px rgba(0,0,0,0.1); pointer-events:none; z-index: 1000; }
-      @media (prefers-color-scheme: dark) { .hover-card { background:rgba(17,17,17,0.9); border-color:#555; } }
-      h2 { font-size:14px; margin: 14px 4px 6px; opacity:0.9; }
-      .divider { border-top:1px solid #8884; margin:16px 0; }
-    </style>
-  </head>
-  <body>
-    <header>
-      <div class=\"row\" style=\"gap:10px; align-items:center;\">
-        <button id=\"apps-toggle\" class=\"icon-btn\" title=\"Collapse apps pane\" aria-pressed=\"false\" aria-label=\"Toggle apps panel\">
-          <svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z\"/></svg>
-        </button>
-        <h1 class="brand-title">
-          <img class="brand-logo" alt="k1s logo" src="data:image/png;base64,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" />
-          <span><span class="brand-accent">k1s</span> Hive Dashboard</span>
-        </h1>
-      </div>
-      <div class=\"row\" id=\"controls\"> 
-        <label>Poll <select id=\"poll-interval\">
-          <option value=\"0\">off</option>
-          <option value=\"2000\">2s</option>
-          <option value=\"5000\" selected>5s</option>
-          <option value=\"10000\">10s</option>
-        </select></label>
-        <label>Log filter <input id=\"log-filter\" name=\"filter\" type=\"text\" size=\"24\" placeholder=\"substring\" /></label>
-        <button id=\"pause-btn\">Pause Logs</button>
-        <label>Bearer <input id=\"auth-token\" type=\"password\" size=\"22\" placeholder=\"read/scaler/admin token\" title=\"Optional bearer token. Roles: read (GET), scaler (POST /scale), admin (mutations & rollout).\" /></label>
-        <button id=\"save-token\">Save</button>
-        <button id=\"clear-token\">Clear</button>
-        <label title=\"Hide healthy counters (show warn/bad only)\"><input type=\"checkbox\" id=\"hide-healthy\" /> Hide Healthy</label>
-        <label title=\"Hide less critical counters (services, volumes, containers, restarts)\"><input type=\"checkbox\" id=\"compact-counters\" /> Compact Counters</label>
-      </div>
-    </header>
-    <main>
-  <section id=\"apps\"><div id=\"apps-list\" class=\"scrollbar-hide\"></div><button id=\"apps-pane-toggle\" title=\"Collapse apps pane\" aria-pressed=\"false\" aria-label=\"Toggle apps panel\"><svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"0\" fill=\"none\"/><path d=\"M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z\"/></svg></button></section>
-      <section id=\"detail\">
-        <h2>Application</h2>
-        <div class=\"row stretch\">
-          <div class=\"card detail-card\" style=\"display:flex; flex-direction:column;\">
-            <div id=\"desc\" class=\"scrollcap scrollbar-hide\">
-            <div><strong>App:</strong> <span id=\"d-app\">-</span></div>
-            <div><strong>Namespace:</strong> <span id=\"d-namespace\">-</span></div>
-            <div><strong>Image:</strong> <span id=\"d-image\">-</span></div>
-            <div><strong>Ingress:</strong> <span id=\"d-ingress\">-</span></div>
-            <div><strong>Replicas:</strong> <span id=\"d-replicas\">-</span></div>
-            <div><strong>Revision:</strong> <span id=\"d-rev\">-</span> (<span id=\"d-rev-status\">-</span>)</div>
-            <div><strong>Service:</strong> <span id=\"d-service\">-</span></div>
-            <div><strong>Rollout:</strong> <span id=\"d-rollout\">-</span></div>
-            <div><strong>Secrets:</strong> <span id=\"d-secrets\">-</span></div>
-            <div><strong>Storage:</strong> <span id=\"d-storage\">-</span></div>
-            </div>
-          </div>
-          <div class=\"card\" style=\"flex:1; display:flex; flex-direction:column;\">
-            <strong>Events</strong>
-            <div class=\"scrollcap scrollbar-hide\" id=\"events\"></div>
-          </div>
-        </div>
-        <!-- Logs directly below Application/Events -->
-        <div class=\"card\" style=\"margin-top:12px;\">
-          <strong>Logs</strong>
-          <div id=\"logs\" class=\"logbox scrollbar-hide\" style=\"height:235px;\" hx-get=\"/dashboard/partials/logs\" hx-trigger=\"load, every 5s, refresh\" hx-include=\"#log-filter\" hx-swap=\"innerHTML\" hx-on::after-settle=\"this.scrollTop=this.scrollHeight\"></div>
-        </div>
-        <div class=\"card\" style=\"margin-top:12px;\"> 
-          <strong>System</strong>
-          <div class=\"row\" id=\"sys-counters\" style=\"gap:10px; margin-top:6px; flex-wrap:wrap; justify-content:center;\"></div>
-        </div>
-        <div class=\"card\" style=\"margin-top:12px;\">
-          <strong>Probe History</strong>
-          <div id=\"probe-history\" class=\"scrollcap scrollbar-hide\" style=\"max-height:220px;\"
-               hx-get=\"/dashboard/partials/probe-history\"
-               hx-trigger=\"load, every 10s, refresh\"
-               hx-include=\"#app-select\"
-               hx-swap=\"innerHTML\"></div>
-        </div>
-        <div class=\"card\" style=\"margin-top:12px;\">
-          <div class=\"row\" style=\"align-items:center; justify-content:space-between;\">
-            <strong>Replicas</strong>
-            <label title=\"Rows history count\">Show last
-              <select id=\"hist-count\" style=\"margin:0 4px;\">
-                <option value=\"5\" selected>5</option>
-                <option value=\"10\">10</option>
-                <option value=\"20\">20</option>
-              </select>
-              checks
-            </label>
-          </div>
-          <table id=\"tbl-replicas\"><thead><tr><th>Replica</th><th>Ready</th><th>Live</th><th>Status</th><th>Backoff</th></tr></thead><tbody></tbody></table>
-        </div>
-        <div class=\"card\" style=\"margin-top:12px;\">
-          <strong>System Graph</strong>
-          <div id=\"graph-wrap\" style=\"position:relative; width:100%; height:420px; margin-top:8px; background:#0001; border-radius:6px;\">
-            <svg id=\"sys-graph\" viewBox=\"0 0 1000 420\" preserveAspectRatio=\"xMidYMid meet\" style=\"width:100%; height:100%;\">
-              <defs>
-                <marker id=\"arrow\" markerWidth=\"10\" markerHeight=\"10\" refX=\"10\" refY=\"3\" orient=\"auto\">
-                  <path d=\"M0,0 L10,3 L0,6 Z\" fill=\"#9ca3af\" />
-                </marker>
-                <style>
-                  .node text { font-size:12px; pointer-events:none; fill:#f8fafc; paint-order: stroke; stroke:rgba(0,0,0,0.65); stroke-width:2; }
-                  .node .node-shape { stroke-width:1.2; }
-                  .node.system .node-shape { fill:#e5e7eb; stroke:#6b7280; }
-                  .node.worker .node-shape { fill:#e0f2fe; stroke:#0284c7; }
-                  .node.worker.stale .node-shape { fill:#fee2e2; stroke:#ef4444; }
-                  .node.worker.cordoned .node-shape { fill:#fef3c7; stroke:#f59e0b; }
-                  .node.app .node-shape { fill:var(--ns-color, #3b82f6); stroke:var(--ns-color, #3b82f6); }
-                  .node.app .ns-stripe { fill:var(--ns-color, #3b82f6); opacity:.35; }
-                  .node.pod circle { fill:#e5e7eb; stroke:#6b7280; }
-                  .label-chip { fill:rgba(8,12,18,0.85); stroke:rgba(255,255,255,0.18); stroke-width:0.8; }
-                  .node.pod.ready circle { fill:#dcfce7; stroke:#16a34a; }
-                  .node.pod.pending circle { fill:#fef3c7; stroke:#f59e0b; }
-                  .link { stroke:#9ca3af; stroke-width:1.5; fill:none; marker-end:url(#arrow); }
-                  .flow { stroke-dasharray:6 6; }
-                  .flow-fwd { animation: flow 1.6s linear infinite; }
-                  .flow-rev { animation: flow 1.6s linear infinite reverse; }
-                  .selected .node-shape, .selected circle { stroke-width:2.4 !important; filter: drop-shadow(0 0 2px #60a5fa); }
-                  .selected.link { stroke:#2563eb; }
-                  .ns-peer { opacity:0.7; }
-                  .ns-peer .node-shape, .ns-peer circle { stroke-width:1.6; }
-                  .faded { opacity:0.35; }
-                  @keyframes flow { to { stroke-dashoffset: -24; } }
-                </style>
-              </defs>
-              <g id=\"links\"></g>
-              <g id=\"nodes\"></g>
-            </svg>
-            <div id=\"graph-legend\" style=\"position:absolute; right:8px; top:8px; background:rgba(17,24,39,0.82); color:#e5e7eb; padding:6px 8px; border-radius:6px; border:1px solid #334155; backdrop-filter: blur(2px); font-size:12px;\">
-              <div style=\"display:flex; gap:10px; align-items:center; flex-wrap:wrap;\">
-                <span><svg width=\"14\" height=\"14\"><rect x=\"1\" y=\"1\" width=\"12\" height=\"12\" rx=\"3\" fill=\"#e5e7eb\" stroke=\"#6b7280\"/></svg> System</span>
-                <span><svg width=\"14\" height=\"14\"><rect x=\"1\" y=\"1\" width=\"12\" height=\"12\" rx=\"3\" fill=\"#dbeafe\" stroke=\"#3b82f6\"/></svg> App</span>
-                <span><svg width=\"14\" height=\"14\"><circle cx=\"7\" cy=\"7\" r=\"5\" fill=\"#dcfce7\" stroke=\"#16a34a\"/></svg> Pod ready</span>
-                <span><svg width=\"14\" height=\"14\"><circle cx=\"7\" cy=\"7\" r=\"5\" fill=\"#fef3c7\" stroke=\"#f59e0b\"/></svg> Pod pending</span>
-                <span><svg width=\"30\" height=\"8\"><path d=\"M1 4 L22 4\" stroke=\"#9ca3af\" stroke-width=\"1.5\" stroke-dasharray=\"6 6\"/><polygon points=\"22,1 29,4 22,7\" fill=\"#9ca3af\"/></svg> Flow</span>
-                <span><button id=\"graph-path-toggle\" style=\"font-size:12px; padding:4px 8px; border:1px solid #4b5563; border-radius:6px; background:#111827; color:#e5e7eb; cursor:pointer;\">Paths: Orth</button></span>
-              </div>
-            </div>
-            <div id=\"graph-hover\" class=\"hover-card\"></div>
-          </div>
-        </div>
-        <div class=\"row stretch\" style=\"margin-top:12px; gap:12px;\"> 
-          <div class=\"card detail-card\" style=\"flex:0 0 360px;\">
-            <strong>Plan Diagnostics</strong>
-            <div style=\"font-size:12px; opacity:.9; margin:6px 0;\">Paste a Deployment/App manifest (YAML or JSON) to preview warnings and diagnostics before applying. Or use the button to load the selected app's last applied manifest.</div>
-            <form id=\"plan-form\" onsubmit=\"return false;\">
-              <div><textarea id=\"plan-json\" rows=\"12\" cols=\"40\" placeholder=\"Paste Deployment/App manifest YAML or JSON here...\"></textarea></div>
-              <div class=\"row\" style=\"margin-top:6px\">
-                <button type=\"button\" id=\"plan-run\">Run Plan</button>
-                <button type=\"button\" id=\"plan-load\">Load from App</button>
-                <span id=\"plan-status\" class=\"pill\" style=\"margin-left:8px\"></span>
-              </div>
-            </form>
-          </div>
-          <div class=\"card\" style=\"flex:1;\"> 
-            <div class=\"row\" style=\"justify-content:space-between; align-items:center;\">
-              <strong>Plan Result</strong>
-              <button type=\"button\" id=\"plan-copy\" title=\"Copy JSON to clipboard\">Copy</button>
-            </div>
-            <pre id=\"plan-output\" class=\"logbox scrollbar-hide\" style=\"height:280px\"></pre>
-          </div>
-        </div>
-        
-        <div class=\"divider\"></div>
-        <h2>Ingress, Services & Storage</h2>
-        <div class=\"row stretch\" style=\"margin-top:12px;\">
-          <div class=\"card\" style=\"flex:1;\">
-            <strong>Services</strong>
-            <table id=\"tbl-services\"><thead><tr><th>App</th><th>Port</th><th>Target</th><th>Replicas</th></tr></thead><tbody></tbody></table>
-          </div>
-          <div class=\"card\" style=\"flex:1;\">
-            <strong>Nodes</strong>
-            <table id=\"tbl-nodes\"><thead><tr><th>Name</th><th>Status</th><th>Cordoned</th><th>Last Seen (s)</th></tr></thead><tbody></tbody></table>
-          </div>
-          <div class=\"card\" style=\"flex:1;\">
-            <strong>Ingress</strong>
-            <table id=\"tbl-ingress\"><thead><tr><th>App</th><th>Host</th><th>Config Path</th><th>Exists</th></tr></thead><tbody></tbody></table>
-          </div>
-        </div>
-        <div class=\"card\" style=\"margin-top:12px;\">
-          <strong>Storage Volumes</strong>
-          <table id=\"tbl-vols\"><thead><tr><th>Name</th><th>App</th><th>Driver</th><th>Mountpoint</th></tr></thead><tbody></tbody></table>
-        </div>
-        <div class=\"card\" style=\"margin-top:12px;\">
-          <strong>Runtime Containers</strong>
-          <table id=\"tbl-containers\"><thead><tr><th>Name</th><th>App</th><th>Host Ports</th><th>Restarts</th><th>Restarts (1m)</th></tr></thead><tbody></tbody></table>
-        </div>
-      </section>
-    </main>
-    <footer class=\"site-footer\"> 
-      <div class=\"row\" style=\"justify-content:space-between;\">
-        <span>k1s Hive Dashboard</span>
-        <span id=\"build-ts\"></span>
-      </div>
-    </footer>
-    <script>
-      (function(){
-        try { document.getElementById('build-ts').textContent = new Date().toLocaleString(); } catch (e) {}
-      })();
-    </script>
-    <script>
-      var elApps = document.getElementById('apps');
-      var elAppsList = document.getElementById('apps-list');
-      var elEvents = document.getElementById('events');
-      var pollSel = document.getElementById('poll-interval');
-      var logFilter = document.getElementById('log-filter');
-      var pauseBtn = document.getElementById('pause-btn');
-      var appsToggle = document.getElementById('apps-pane-toggle');
-      var current = null;
-      var pollTimer = null;
-      var pauseLogs = false;
-      var logSource = null;
-      var eventsSource = null;
-      var lastSystem = null;
-      var lastStatuses = [];
-      var graphHover = null;
-      var graphPathMode = (localStorage.getItem('graph_path_mode') || 'orth'); // 'orth' or 'straight'
-      // Keep apps rail aligned under the header
-      function syncHeaderHeight(){
-        try {
-          var hdr = document.querySelector('header');
-          if (!hdr) return;
-          var apps = document.getElementById('apps');
-          var list = document.getElementById('apps-list');
-          var h = hdr.getBoundingClientRect().height || hdr.offsetHeight || 60;
-          document.documentElement.style.setProperty('--header-h', (h) + 'px');
-          // Fixed rail already uses CSS calc with var(--header-h); no per-element top needed
-          if (list) {
-            var listHeight = Math.max(120, Math.floor(window.innerHeight - h - 12));
-            list.style.height = listHeight + 'px';
-          }
-        } catch(e){}
-      }
-      try { syncHeaderHeight(); window.addEventListener('resize', syncHeaderHeight); } catch(e){}
+        labs_token = ""
+        try:
+            import os as _os
 
-      // Token helpers
-      var tokInput = document.getElementById('auth-token');
-      var saveBtn = document.getElementById('save-token');
-      var clearBtn = document.getElementById('clear-token');
-      try { tokInput.value = localStorage.getItem('ae_token') || ''; } catch(e) {}
-      saveBtn.addEventListener('click', function(){ try { localStorage.setItem('ae_token', tokInput.value||''); } catch(e){}; window.location.reload(); });
-      clearBtn.addEventListener('click', function(){ try { localStorage.removeItem('ae_token'); } catch(e){}; window.location.reload(); });
-
-      // UI prefs: hide healthy pills / compact counters
-      var hideHealthy = false, compactCounters = false;
-      var hhStored = '', ccStored = '';
-      try { hhStored = (localStorage.getItem('ae_hide_healthy')||''); } catch(e){}
-      try { ccStored = (localStorage.getItem('ae_compact_counters')||''); } catch(e){}
-      try { hideHealthy = (hhStored==='1'); } catch(e){}
-      try { compactCounters = (ccStored==='1'); } catch(e){}
-      // Mobile default: if no stored pref, default hideHealthy/compactCounters on small screens
-      try {
-        var isMobile = (window.matchMedia && window.matchMedia('(max-width: 640px)').matches) || (Math.min(screen.width, screen.height) <= 640);
-        if (!hhStored && isMobile) hideHealthy = true;
-        if (!ccStored && isMobile) compactCounters = true;
-      } catch(e){}
-      try { var hh = document.getElementById('hide-healthy'); if (hh) { hh.checked = hideHealthy; hh.addEventListener('change', function(){ try{ localStorage.setItem('ae_hide_healthy', hh.checked?'1':''); }catch(e){}; renderCounters(lastSystem||{}); }); } } catch(e){}
-      try { var cc = document.getElementById('compact-counters'); if (cc) { cc.checked = compactCounters; cc.addEventListener('change', function(){ try{ localStorage.setItem('ae_compact_counters', cc.checked?'1':''); }catch(e){}; renderCounters(lastSystem||{}); }); } } catch(e){}
-
-      // Apps pane collapse/expand (expanded by default)
-      try {
-        var initCollapsed = (localStorage.getItem('dash_apps_collapsed')||'') === '1';
-        if (initCollapsed) {
-          document.body.classList.add('apps-collapsed');
-          appsToggle.setAttribute('aria-pressed','true');
-          appsToggle.title='Expand apps pane';
-          try { requestAnimationFrame(positionAppsToggle); } catch(e){}
-        }
-        appsToggle.addEventListener('click', function(){
-          var collapsed = document.body.classList.toggle('apps-collapsed');
-          try { localStorage.setItem('dash_apps_collapsed', collapsed ? '1' : ''); } catch(e){}
-          appsToggle.setAttribute('aria-pressed', collapsed ? 'true' : 'false');
-          appsToggle.title = collapsed ? 'Expand apps pane' : 'Collapse apps pane';
-          try { requestAnimationFrame(function(){ requestAnimationFrame(positionAppsToggle); }); } catch(e){}
-        });
-      } catch(e){}
-
-      // Precisely position the chevron relative to the apps pane (account for collapse/expand)
-      function positionAppsToggle(){
-        try {
-          var pane = document.getElementById('apps');
-          var btn = document.getElementById('apps-pane-toggle');
-          if (!pane || !btn) return;
-          var rect = pane.getBoundingClientRect();
-          var isCollapsed = document.body.classList.contains('apps-collapsed');
-          // Horizontal target (center the 28px button explicitly since we removed translateX):
-          //  - Expanded: hug the pane's right edge (inset 12px)
-          //  - Collapsed: center on the 16px rail, then nudge left by ~50px per feedback
-          var btnW = (btn.getBoundingClientRect().width || 28);
-          // Collapsed: place handle at a fixed gutter (visual spec: ~8px from viewport left).
-          // Expanded: hug apps pane right edge minus 12px (minus half button width to center).
-          var targetX = isCollapsed
-            ? (8 - btnW / 2)  // center the button at an 8px gutter
-            : (rect.right - 12 - btnW / 2);
-          btn.style.left = Math.round(targetX) + 'px';
-          // Let CSS keep the vertical centering via top:50vh; avoid JS scroll offset bugs.
-        } catch(_){}
-      }
-      // Initial placement and on interactions
-      try { positionAppsToggle(); } catch(_){}
-      window.addEventListener('scroll', positionAppsToggle, { passive: true });
-      window.addEventListener('resize', positionAppsToggle);
-
-      // Removed dynamic apps pane sizer; rely on CSS max-height.
-
-      pauseBtn.addEventListener('click', function () {
-        pauseLogs = !pauseLogs;
-        pauseBtn.textContent = pauseLogs ? 'Resume Logs' : 'Pause Logs';
-        updateLogsHTMX();
-        updateLogStreaming();
-      });
-      pollSel.addEventListener('change', function () { schedulePoll(); updateLogsHTMX(); });
-
-      function badge(cls, text){ return '<span class="pill ' + cls + '">' + text + '</span>'; }
-
-      function splitAppName(full){
-        var s = String(full || '');
-        var idx = s.indexOf('--');
-        if (idx > 0) {
-          return { namespace: s.slice(0, idx), name: s.slice(idx + 2) };
-        }
-        return { namespace: 'default', name: s };
-      }
-
-      function hashHue(str){
-        var h = 0;
-        for (var i = 0; i < str.length; i++) {
-          h = (h * 31 + str.charCodeAt(i)) % 360;
-        }
-        return h;
-      }
-
-      function namespaceColors(ns){
-        var n = (ns && String(ns)) ? String(ns) : 'default';
-        if (n === 'default') {
-          return { color: '#64748b', tint: 'rgba(100,116,139,0.18)' };
-        }
-        var hue = hashHue(n);
-        return { color: 'hsl(' + hue + ', 70%, 55%)', tint: 'hsla(' + hue + ', 70%, 20%, 0.18)' };
-      }
-
-      function clamp(n, lo, hi){ return Math.min(hi, Math.max(lo, n)); }
-
-      function parseHslColor(str){
-        var m = String(str || '').match(/hsla?\\(\\s*([0-9.]+)\\s*,\\s*([0-9.]+)%\\s*,\\s*([0-9.]+)%/i);
-        if (!m) return null;
-        return { h: parseFloat(m[1]), s: parseFloat(m[2]), l: parseFloat(m[3]) };
-      }
-
-      function hexToRgb(str){
-        var hex = String(str || '').trim().replace(/^#/, '');
-        if (hex.length === 3){
-          hex = hex[0]+hex[0] + hex[1]+hex[1] + hex[2]+hex[2];
-        }
-        if (hex.length !== 6) return null;
-        var num = parseInt(hex, 16);
-        if (Number.isNaN(num)) return null;
-        return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
-      }
-
-      function rgbToHsl(r, g, b){
-        r /= 255; g /= 255; b /= 255;
-        var max = Math.max(r, g, b), min = Math.min(r, g, b);
-        var h = 0, s = 0, l = (max + min) / 2;
-        if (max !== min){
-          var d = max - min;
-          s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-          switch (max) {
-            case r: h = (g - b) / d + (g < b ? 6 : 0); break;
-            case g: h = (b - r) / d + 2; break;
-            case b: h = (r - g) / d + 4; break;
-          }
-          h *= 60;
-        }
-        return { h: h, s: s * 100, l: l * 100 };
-      }
-
-      function shadeHsl(color, deltaL){
-        var hsl = parseHslColor(color);
-        if (!hsl){
-          var rgb = String(color || '').trim().startsWith('#') ? hexToRgb(color) : null;
-          if (rgb) hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
-        }
-        if (!hsl) return String(color || '');
-        var l = clamp(hsl.l + deltaL, 0, 100);
-        return 'hsl(' + Math.round(hsl.h) + ', ' + Math.round(hsl.s) + '%, ' + Math.round(l) + '%)';
-      }
-
-      function namespaceGradient(ns){
-        var c = namespaceColors(ns);
-        return {
-          top: shadeHsl(c.color, 8),
-          bottom: shadeHsl(c.color, -8)
-        };
-      }
-
-      function renderNamespacePill(ns){
-        var c = namespaceColors(ns);
-        return '<span class="ns-pill" style="--ns-color:' + c.color + '; --ns-tint:' + c.tint + ';">' + escapeHtml(ns) + '</span>';
-      }
-
-      function fetchJSON(path){
-        return fetch(path, {headers: authHeaders()}).then(function(r){
-          if(!r.ok) return r.text().then(function(t){ throw new Error(t); });
-          return r.json();
-        });
-      }
-
-      function authHeaders(){
-        var tok = localStorage.getItem('ae_token') || '';
-        return tok ? { 'Authorization': 'Bearer ' + tok } : {};
-      }
-
-      // Clear detail panels/logs when the selected app disappears
-      function clearDetailPanels(){
-        try { document.getElementById('d-app').textContent = '-'; } catch(e){}
-        try { document.getElementById('d-namespace').textContent = '-'; } catch(e){}
-        try { document.getElementById('d-image').textContent = '-'; } catch(e){}
-        try { document.getElementById('d-ingress').textContent = '-'; } catch(e){}
-        try { document.getElementById('d-replicas').textContent = '-'; } catch(e){}
-        try { document.getElementById('d-rev').textContent = '-'; } catch(e){}
-        try { document.getElementById('d-rev-status').textContent = '-'; } catch(e){}
-        try { document.getElementById('d-service').textContent = '-'; } catch(e){}
-        try { document.getElementById('d-rollout').textContent = '-'; } catch(e){}
-        try { document.getElementById('d-secrets').textContent = '-'; } catch(e){}
-        try { document.getElementById('d-storage').textContent = '-'; } catch(e){}
-        try {
-          var rbody = document.querySelector('#tbl-replicas tbody');
-          if (rbody) rbody.innerHTML = '';
-        } catch(e){}
-        try { if (elEvents) elEvents.innerHTML = '<div class="log-entry">No recent events</div>'; } catch(e){}
-        clearLogs();
-      }
-
-      function refreshApps(){
-        return fetchJSON('/status?limit=200').then(function(data){
-          if (elAppsList) elAppsList.innerHTML = '';
-          var items = data.items || [];
-          lastStatuses = items;
-          var names = items.map(function(s){ return s.app_name; });
-          var groups = {};
-          items.forEach(function(s){
-            var info = splitAppName(s.app_name);
-            s._ns = info.namespace;
-            s._short = info.name;
-            if (!groups[info.namespace]) groups[info.namespace] = [];
-            groups[info.namespace].push(s);
-          });
-          var namespaces = Object.keys(groups);
-          namespaces.sort(function(a, b){
-            if (a === 'default') return -1;
-            if (b === 'default') return 1;
-            return String(a).localeCompare(String(b));
-          });
-          namespaces.forEach(function(ns){
-            var colors = namespaceColors(ns);
-            if (elAppsList) {
-              var header = document.createElement('div');
-              header.className = 'ns-header';
-              header.style.setProperty('--ns-color', colors.color);
-              header.style.setProperty('--ns-tint', colors.tint);
-              header.innerHTML = '<span class="ns-dot"></span><span class="ns-name">' + escapeHtml(ns) + '</span><span class="ns-count">' + String(groups[ns].length) + '</span>';
-              elAppsList.appendChild(header);
-            }
-            groups[ns].sort(function(a, b){
-              return String(a._short || a.app_name).localeCompare(String(b._short || b.app_name));
-            });
-            groups[ns].forEach(function(s){
-              // Use server-derived revision_status for the primary badge to avoid
-              // drift with controller semantics (ready/progressing/degraded).
-              var statusBadge = '';
-              var rs = String(s.revision_status||'').toLowerCase();
-              if (rs === 'ready') statusBadge = badge('ok','ready');
-              else if (rs === 'progressing') statusBadge = badge('warn','progressing');
-              else statusBadge = badge('bad','degraded');
-              var div = document.createElement('div');
-              div.className = 'app' + (current===s.app_name ? ' active' : '');
-              div.style.setProperty('--ns-color', colors.color);
-              div.style.setProperty('--ns-tint', colors.tint);
-              try { div.dataset.app = s.app_name; div.dataset.ns = ns; } catch(e){}
-              // Canary pill if rollout strategy is canary with weight>0
-              var canary = '';
-              var pausedPill = '';
-              try {
-                var ro = s.rollout || null;
-                var w = (ro && ro.weight!=null) ? Number(ro.weight) : 0;
-                if (ro && String((ro.strategy||'')).toLowerCase()==='canary' && w>0) {
-                  canary = badge('warn', 'canary ' + String(w) + '%');
-                }
-                if (ro && ro.pause === true) {
-                  pausedPill = badge('warn', 'paused');
-                }
-              } catch(e){}
-              var crash = (lastSystem && lastSystem.crashloop && lastSystem.crashloop[s.app_name]) ? badge('bad','crashloop') : '';
-              var cdsec = (lastSystem && lastSystem.cooldown && lastSystem.cooldown[s.app_name]) ? Number(lastSystem.cooldown[s.app_name]||0) : 0;
-              var cd = cdsec>0 ? badge('warn','cooldown '+String(cdsec)+'s') : '';
-              var displayName = s._short || s.app_name;
-              var line1 = '<div class="app-title"><strong class="app-name">' + escapeHtml(displayName) + '</strong> ' + statusBadge + ' ' + canary + ' ' + pausedPill + ' ' + crash + ' ' + cd + '</div>';
-              var revStatus = String(s.revision_status || '-');
-              var line2 = '<div class="app-sub">' + String(s.ready_replicas) + '/' + String(s.desired_replicas) + ' ready - rev ' + escapeHtml(revStatus) + '</div>';
-              div.innerHTML = line1 + line2;
-              try {
-                var nameEl = div.querySelector('.app-name');
-                if (nameEl) nameEl.title = s.app_name;
-              } catch(e){}
-              div.onclick = function(){ selectApp(s.app_name); };
-              if (elAppsList) elAppsList.appendChild(div);
-            });
-          });
-          // If the currently viewed app was removed, fall back to the first available.
-          if (current && names.indexOf(current) === -1) {
-            current = null;
-            historyCache = null;
-            clearDetailPanels();
-            updateLogStreaming();
-            updateEventsStreaming();
-          }
-          if(!current && items.length){ selectApp(items[0].app_name); }
-          else if(!current && !items.length){ clearDetailPanels(); }
-          renderGraphIfReady();
-        });
-      }
-
-      function refreshDetail(){
-        if(!current) return Promise.resolve();
-        return fetchJSON('/status/' + encodeURIComponent(current) + '?details=1').then(function(s){
-          document.getElementById('d-app').textContent = s.app_name;
-          try {
-            var nsInfo = splitAppName(s.app_name);
-            var nsEl = document.getElementById('d-namespace');
-            if (nsEl) { nsEl.innerHTML = renderNamespacePill(nsInfo.namespace); }
-          } catch(e){}
-          document.getElementById('d-image').textContent = s.image || '-';
-          var inh = (s.ingress_host || '-') + (s.ingress_path || '');
-          document.getElementById('d-ingress').textContent = inh;
-          var repText = s.ready_replicas + '/' + s.desired_replicas + ' (live ' + s.live_replicas + ')';
-          if (lastSystem && lastSystem.crashloop && lastSystem.crashloop[s.app_name]) { repText += '  crashloop'; }
-          try {
-            var cdsec = (lastSystem && lastSystem.cooldown && lastSystem.cooldown[s.app_name]) ? Number(lastSystem.cooldown[s.app_name]||0) : 0;
-            if (cdsec>0) { repText += '  cooldown ' + String(cdsec) + 's'; }
-          } catch(e){}
-          document.getElementById('d-replicas').textContent = repText;
-          document.getElementById('d-rev').textContent = s.revision;
-          document.getElementById('d-rev-status').textContent = s.revision_status;
-          try {
-            var man = (s.manifest || {});
-            var svc = (man.spec || {}).service || null;
-            var svcText = svc ? (String(svc.port) + (svc.target_port ? (' -> ' + String(svc.target_port)) : '')) : '-';
-            document.getElementById('d-service').textContent = svcText;
-            // Rollout config (show strategy/weight/pause when present)
-            var ro = (man.spec || {}).rollout || null;
-            var roText = '-';
-            if (ro) {
-              var strat = String(ro.strategy||'parallel');
-              var weight = (ro.weight!=null) ? Number(ro.weight) : null;
-              var paused = (ro.pause===true);
-              if (strat==='canary') {
-                roText = 'canary' + (weight!=null? (' weight '+String(weight)+'%'):'');
-              } else {
-                roText = strat;
-              }
-              if (paused) roText += ' (paused)';
-            }
-            document.getElementById('d-rollout').textContent = roText;
-            var secRefs = ((man.spec || {}).secret_refs || []).length;
-            document.getElementById('d-secrets').textContent = secRefs ? (secRefs + ' ref' + (secRefs>1?'s':'')) : '-';
-            var storage = ((man.spec || {}).storage || []).map(function(v){ return v.name || ''; }).filter(Boolean);
-            document.getElementById('d-storage').textContent = storage.length ? storage.join(', ') : '-';
-          } catch(e) { }
-          // Render replicas table with backoff countdown
-          try {
-            var rbody = document.querySelector('#tbl-replicas tbody');
-            if (rbody) {
-              var rows = (s.replicas||[]).map(function(r){
-                // Extract backoff seconds from readiness/liveness messages
-                function parseBackoff(msg){
-                  var m = String(msg||'').match(/backoff \\((\\d+)s\\)/);
-                  return m ? Number(m[1]) : 0;
-                }
-                var bo = Math.max(parseBackoff(r.readiness_message), parseBackoff(r.liveness_message));
-                var now = Date.now();
-                var deadline = bo > 0 ? (now + bo*1000) : 0;
-                var boText = bo>0 ? (String(bo)+'s') : '';
-                return {
-                  html: '<tr data-rid="'+escapeHtml(r.replica_id)+'" data-deadline="'+String(deadline)+'">'
-                        + '<td>'+escapeHtml(r.replica_id)+'</td>'
-                        + '<td>'+(r.ready?'yes':'no')+'</td>'
-                        + '<td>'+(r.live?'yes':'no')+'</td>'
-                        + '<td>'+escapeHtml(r.status||'')+'</td>'
-                        + '<td class="bo">'+boText+'</td>'
-                        + '</tr>'
-                };
-              });
-              rbody.innerHTML = rows.map(function(x){ return x.html; }).join('');
-              scheduleBackoffTick();
-              attachReplicaHistoryHandlers();
-            }
-          } catch(e) { console.error('replica table', e); }
-          // Events are now streamed via SSE; keep logs HTMX config fresh
-          updateLogsHTMX();
-        });
-      }
-
-      function schedulePoll(){
-        if(pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-        var ms = parseInt(pollSel.value, 10) || 0;
-        if(ms > 0){ pollTimer = setInterval(function(){ Promise.all([refreshApps(), refreshDetail(), refreshSystem()]).catch(console.error); }, ms); }
-      }
-
-      var backoffTimer = null;
-      function scheduleBackoffTick(){
-        if (backoffTimer) return;
-        backoffTimer = setInterval(function(){
-          try {
-            var rows = Array.from(document.querySelectorAll('#tbl-replicas tbody tr'));
-            var now = Date.now();
-            rows.forEach(function(tr){
-              var td = tr.querySelector('td.bo');
-              var deadline = Number(tr.getAttribute('data-deadline')||'0');
-              if (!td || !deadline) { if(td) td.textContent=''; return; }
-              var rem = Math.max(0, Math.floor((deadline - now)/1000));
-              td.textContent = rem>0 ? (String(rem)+'s') : '';
-              if (rem <= 0) tr.setAttribute('data-deadline','0');
-            });
-          } catch(e){}
-        }, 1000);
-      }
-
-      var historyCache = null; // cache last fetched /history for current app
-      function attachReplicaHistoryHandlers(){
-        try {
-          var tbody = document.querySelector('#tbl-replicas tbody');
-          if (!tbody) return;
-          Array.from(tbody.querySelectorAll('tr')).forEach(function(tr){
-            tr.addEventListener('click', function(){ toggleReplicaHistory(tr); });
-          });
-        } catch(e){}
-      }
-      function toggleReplicaHistory(tr){
-        try {
-          var rid = tr.getAttribute('data-rid');
-          // If next row is a history row, remove it
-          var next = tr.nextElementSibling;
-          if (next && next.classList.contains('hist')) { next.parentNode.removeChild(next); return; }
-          // else insert one and populate
-          var row = document.createElement('tr');
-          row.className = 'hist';
-          var td = document.createElement('td');
-          td.colSpan = 5;
-          td.textContent = 'loading…';
-          row.appendChild(td);
-          tr.parentNode.insertBefore(row, tr.nextSibling);
-          var nSel = document.getElementById('hist-count');
-          var n = 5;
-          try { n = parseInt(nSel && nSel.value || '5', 10) || 5; } catch(e) { n = 5; }
-          (historyCache ? Promise.resolve(historyCache) : fetchJSON('/history/' + encodeURIComponent(current) + '?limit=50'))
-            .then(function(list){ historyCache = list; return list; })
-            .then(function(list){
-              var items = (list||[]).filter(function(h){ return String(h.replica_id||'') === String(rid||''); }).slice(0, n);
-              if (!items.length) { td.innerHTML = '<div class="muted">No recent probe checks for '+escapeHtml(rid)+'</div>'; return; }
-              var html = '<table class="mini"><thead><tr><th>Time</th><th>Ready</th><th>Live</th><th>R msg</th><th>L msg</th></tr></thead><tbody>'
-                + items.map(function(h){ return '<tr><td>'+escapeHtml(h.check_time)+'</td><td>'+(h.ready?'yes':'no')+'</td><td>'+(h.live?'yes':'no')+'</td><td>'+escapeHtml(h.readiness_message||'')+'</td><td>'+escapeHtml(h.liveness_message||'')+'</td></tr>'; }).join('')
-                + '</tbody></table>';
-              td.innerHTML = html;
-            })
-            .catch(function(err){ td.innerHTML = '<div class="bad">history error: '+escapeHtml(String(err))+'</div>'; });
-        } catch(e){}
-      }
-
-      function selectApp(name){
-        current = name;
-        clearLogs();
-        updateLogsHTMX();
-        updateLogStreaming();
-        updateEventsStreaming();
-        refreshDetail().then(function(){ refreshApps(); focusAppListItem(name); renderGraphIfReady(); });
-      }
-
-      function escapeHtml(s){
-        s = (s === null || s === undefined) ? '' : String(s);
-        return s.replace(/[&<>]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]); });
-      }
-
-      function updateLogsHTMX(){
-        var el = document.getElementById('logs');
-        if(!el) return;
-        // Disable HTMX polling; we will stream via SSE. We still allow one-shot refresh events.
-        var trig = 'none';
-        el.setAttribute('hx-trigger', trig);
-        var app = current ? encodeURIComponent(current) : '';
-        var url = '/dashboard/partials/logs' + (app ? ('?app=' + app + '&tail=200') : '');
-        el.setAttribute('hx-get', url);
-        if (window.htmx) { window.htmx.process(el); }
-      }
-
-      function clearLogs(){ var el = document.getElementById('logs'); if (el) el.innerHTML = ''; }
-
-      function updateLogStreaming(){
-        // Close existing source
-        if (logSource) { try { logSource.close(); } catch(e){} logSource = null; }
-        if (pauseLogs || !current) return;
-        var el = document.getElementById('logs');
-        if (window.htmx && el && el.getAttribute('hx-get')) {
-          // One-shot initial fill for context
-          window.htmx.trigger(el, 'refresh');
-        }
-        var url = '/logs/' + encodeURIComponent(current) + '/stream?' + new URLSearchParams({ tail: '200' }).toString();
-        try {
-          var es = new EventSource(url);
-          logSource = es;
-          es.onmessage = function(ev){
-            var line = ev.data || '';
-            var filt = (logFilter.value || '').toLowerCase();
-            if (filt && String(line).toLowerCase().indexOf(filt) === -1) return;
-            var ts='-', msg=line; var i=line.indexOf(' ');
-            if (i>18 && line.indexOf('T')>0 && line.indexOf('T')<25){ ts=line.slice(0,i); msg=line.slice(i+1); }
-            var row = document.createElement('div');
-            row.className='log-entry';
-            row.innerHTML='<code>'+escapeHtml(ts)+'</code> '+escapeHtml(msg);
-            var box = document.getElementById('logs');
-            if(!box) return;
-            box.appendChild(row);
-            // Always follow newest line to bottom edge
-            box.scrollTop = box.scrollHeight;
-          };
-          es.onerror = function(){ /* default retry */ };
-        } catch (e) { console.error('EventSource failed', e); }
-      }
-      function updateEventsStreaming(){
-        if (eventsSource) { try { eventsSource.close(); } catch(e){} eventsSource = null; }
-        if (!current) return;
-        var url = '/dashboard/sse/events?' + new URLSearchParams({ app: current, limit: '50' }).toString();
-        try {
-          var es = new EventSource(url);
-          eventsSource = es;
-          es.onmessage = function(ev){
-            var list = [];
-            try { list = JSON.parse(ev.data || '[]') || []; } catch(_) { list = []; }
-            list = list.slice().reverse();
-            elEvents.innerHTML = list.map(function(e){ return '<div class="log-entry"><code>' + e.created_at + '</code> ' + e.event_type + ' - ' + escapeHtml(e.message) + '</div>'; }).join('') || '<div class="log-entry">No recent events</div>';
-            try { elEvents.scrollTop = elEvents.scrollHeight; } catch(_){}
-          };
-          es.onerror = function(){ /* default retry */ };
-        } catch (e) { console.error('EventSource events failed', e); }
-      }
-
-      // Plan diagnostics UI
-      function runPlan(){
-        var txt = document.getElementById('plan-json').value || '';
-        var out = document.getElementById('plan-output');
-        var status = document.getElementById('plan-status');
-        status.textContent = '…'; status.className='pill';
-        out.textContent = '';
-        var payload = null;
-        try {
-          if (txt.trim().startsWith('{')) {
-            payload = JSON.parse(txt);
-          } else if (window.jsyaml) {
-            payload = window.jsyaml.load(txt);
-          } else {
-            payload = JSON.parse(txt);
-          }
-        } catch(e) { status.textContent='Invalid YAML/JSON'; status.className='pill bad'; return; }
-        function postJSON(url, data){
-          return fetch(url, { method: 'POST', headers: Object.assign({'Content-Type':'application/json'}, authHeaders()), body: JSON.stringify(data) })
-            .then(function(r){ return r.text().then(function(t){ if(!r.ok){ throw new Error(t || ('HTTP '+r.status)); } try { return t ? JSON.parse(t) : {}; } catch(e){ throw new Error('Bad JSON'); } }); });
-        }
-        postJSON('/plan', payload)
-          .catch(function(){ return postJSON('/dashboard/plan', payload); })
-          .catch(function(){ return postJSON('/labs/plan', payload); })
-          .then(function(data){ out.textContent = JSON.stringify(data, null, 2); var ok=!!data.ok; status.textContent = ok? 'ok' : 'warnings'; status.className='pill '+(ok?'ok':'warn'); })
-          .catch(function(err){ status.textContent='error'; status.className='pill bad'; out.textContent=String(err); });
-      }
-      function loadPlanFromApp(){
-        if (!current) { return; }
-        // Prefer /status?details=1 (proxied by docs) to avoid /manifest proxy gaps
-        fetchJSON('/status/' + encodeURIComponent(current) + '?details=1')
-          .then(function(s){
-            var man = (s && s.manifest) ? s.manifest : null;
-            if (!man) throw new Error('no manifest on status');
-            document.getElementById('plan-json').value = JSON.stringify(man, null, 2);
-          })
-          .catch(function(){
-            // Fallback to /manifest/<app>
-            return fetch('/manifest/' + encodeURIComponent(current), { headers: authHeaders() })
-              .then(function(r){ if(!r.ok) throw new Error('manifest not found'); return r.json(); })
-              .then(function(data){ document.getElementById('plan-json').value = JSON.stringify(data, null, 2); })
-              .catch(function(err){ console.error('load manifest failed', err); });
-          });
-      }
-
-      function focusAppListItem(name){
-        try {
-          var el = Array.from(document.querySelectorAll('#apps .app')).find(function(e){ return (e.dataset && e.dataset.app)===name; });
-          if (el) { el.scrollIntoView({block:'nearest'}); }
-        } catch(e){}
-      }
-      try { document.getElementById('plan-run').addEventListener('click', runPlan); } catch(e) {}
-      try { document.getElementById('plan-load').addEventListener('click', loadPlanFromApp); } catch(e) {}
-      try { document.getElementById('plan-copy').addEventListener('click', function(){
-        try { navigator.clipboard.writeText(document.getElementById('plan-output').textContent || ''); } catch(e){}
-      }); } catch(e) {}
-
-      function renderCounters(sys){
-        var el = document.getElementById('sys-counters');
-        if(!el) return;
-        var lastTs = sys.controller && sys.controller.last_reconcile_timestamp ? new Date(sys.controller.last_reconcile_timestamp*1000).toISOString() : '-';
-        var lastDur = sys.controller && sys.controller.last_reconcile_duration != null ? (Number(sys.controller.last_reconcile_duration).toFixed(3) + 's') : '-';
-        var ingressSites = (sys.ingress && sys.ingress.sites) ? sys.ingress.sites.length : 0;
-        var services = (sys.services || []).length;
-        var serviceReady = 0;
-        try {
-          var se = sys.service_endpoints || {};
-          Object.keys(se).forEach(function(k){ serviceReady += Number(se[k].ready||0); });
-        } catch(e){}
-        var volumes = (sys.volumes || []).length;
-        var containers = (sys.containers || []);
-        var containerCount = containers.length;
-        var restartSum = containers.reduce(function(acc, c){ return acc + (Number(c.restart_count||0)||0); }, 0);
-        var nodes = sys.nodes || [];
-        var readyNodes = nodes.filter(function(n){ return String(n.status||'').toLowerCase()==='ready' && !n.stale; }).length;
-        var staleNodes = nodes.filter(function(n){ return n.stale; }).length;
-        var ov = sys.overlay || {};
-        var pills = [
-          {k:'Last Reconcile', v:lastTs},
-          {k:'Duration', v:lastDur},
-          {k:'Ingress Sites', v:String(ingressSites)},
-          {k:'Services', v:String(services)},
-          {k:'Service Endpoints Ready', v:String(serviceReady)},
-          {k:'Volumes', v:String(volumes)},
-          {k:'Containers', v:String(containerCount)},
-          {k:'Restarts', v:String(restartSum)},
-          {k:'Nodes', v: readyNodes + ' / ' + nodes.length},
-          {k:'Stale Nodes', v: String(staleNodes)},
-          {k:'Overlay Peers', v: ov.peers!=null ? String(ov.peers) : '-'},
-          {k:'Overlay OK', v: ov.ok ? 'yes' : 'no'},
-          {k:'Mutations', v: (sys.rbac && sys.rbac.mutations_enabled) ? 'enabled' : 'disabled'},
-        ];
-        try {
-          var docs = sys.docs || null;
-          if (docs) {
-            pills.push({k:'Docs', v: (docs.ok ? ('up :'+String(docs.port)) : 'down')});
-          }
-          var api = sys.api || null;
-          if (api) { pills.push({k:'API', v: (api.ok ? ('up :'+String(api.port)) : 'down')}); }
-        } catch(e){}
-        el.innerHTML = pills.map(function(p){ return '<div class="pill" style="background:#0001">'+escapeHtml(p.k)+': <strong>'+escapeHtml(p.v)+'</strong></div>'; }).join('');
-      }
-
-      // Restart sparkline state (per-container ring buffers)
-      var restartSeries = {}; // name -> [{t, rc}]
-      function _seriesCap(){
-        try {
-          var ms = parseInt(pollSel.value, 10) || 0;
-          if (ms <= 0) return 60; // default when manual refresh
-          return Math.max(10, Math.min(120, Math.floor(60000 / ms)));
-        } catch(e){ return 60; }
-      }
-      function _updateRestartSeries(containers){
-        var now = Date.now();
-        var cap = _seriesCap(); // ~last minute worth of samples
-        (containers||[]).forEach(function(c){
-          var name = String(c.name||'');
-          if (!name) return;
-          var rc = Number(c.restart_count||0)||0;
-          var arr = restartSeries[name] || [];
-          arr.push({t: now, rc: rc});
-          if (arr.length > cap) arr = arr.slice(arr.length - cap);
-          restartSeries[name] = arr;
-        });
-      }
-      function _sparklineSVG(name){
-        var arr = restartSeries[name] || [];
-        var W = 60, H = 12;
-        if (arr.length < 2) return '<svg width="'+W+'" height="'+H+'"></svg>';
-        // Build deltas across samples
-        var deltas = [];
-        for (var i=1;i<arr.length;i++){ var d = Math.max(0, (arr[i].rc - arr[i-1].rc)); deltas.push(d); }
-        var maxd = 0; for (var j=0;j<deltas.length;j++){ if (deltas[j]>maxd) maxd=deltas[j]; }
-        // Choose color by severity
-        var color = '#9ca3af'; // gray baseline
-        if (maxd <= 0) color = '#9ca3af';
-        else if (maxd === 1) color = '#16a34a';       // green for occasional single restarts
-        else if (maxd <= 3) color = '#f59e0b';        // orange for moderate
-        else color = '#ef4444';                       // red for high
-        // Avoid division by zero; flat line near bottom when no restarts
-        var points = [];
-        for (var k=0;k<deltas.length;k++){
-          var x = Math.floor(k * (W-1) / Math.max(1, deltas.length-1));
-          var y;
-          if (maxd <= 0){ y = H-2; }
-          else { var v = deltas[k] / maxd; y = Math.max(1, H - 1 - Math.floor(v * (H-2))); }
-          points.push(x+','+y);
-        }
-        var tip = '';
-        try {
-          var tail = deltas.slice(-5);
-          tip = ' last deltas: ' + tail.join(', ');
-        } catch(e){}
-        var poly = '<polyline fill="none" stroke="'+color+'" stroke-width="1" points="'+points.join(' ')+'" />';
-        return '<svg width="'+W+'" height="'+H+'"><title>'+('Restarts per sample,'+tip)+'</title>'+poly+'</svg>';
-      }
-
-      function refreshSystem(){
-        return fetchJSON('/system').then(function(sys){
-          lastSystem = sys;
-          renderCounters(sys);
-          var sbody = document.querySelector('#tbl-services tbody');
-          if(sbody){ sbody.innerHTML = (sys.services||[]).map(function(s){
-            return '<tr><td>'+escapeHtml(s.app||'')+'</td><td>'+(s.port!=null?escapeHtml(String(s.port)):'-')+'</td><td>'+(s.target_port!=null?escapeHtml(String(s.target_port)):'-')+'</td><td>'+(s.replicas!=null?escapeHtml(String(s.replicas)):'-')+'</td></tr>';
-          }).join(''); }
-          var ibody = document.querySelector('#tbl-ingress tbody');
-          if(ibody){ ibody.innerHTML = ((sys.ingress&&sys.ingress.sites)||[]).map(function(r){
-            return '<tr><td>'+escapeHtml(r.app||'')+'</td><td>'+escapeHtml((r.host||'')||'-')+'</td><td>'+escapeHtml(String(r.path||''))+'</td><td>'+(r.exists?'yes':'no')+'</td></tr>';
-          }).join(''); }
-          var nbody = document.querySelector('#tbl-nodes tbody');
-          if(nbody){ nbody.innerHTML = (sys.nodes||[]).map(function(n){
-            var st = String(n.status||'').toLowerCase();
-            var stale = n.stale ? ' (stale)' : '';
-            var age = n.last_seen_seconds!=null ? Math.round(n.last_seen_seconds) : '-';
-            return '<tr><td>'+escapeHtml(n.name||n.id||'')+'</td><td>'+escapeHtml(st)+stale+'</td><td>'+(n.cordoned?'yes':'no')+'</td><td>'+age+'</td></tr>';
-          }).join(''); }
-          var vbody = document.querySelector('#tbl-vols tbody');
-          if(vbody){ vbody.innerHTML = (sys.volumes||[]).map(function(v){
-            var app = (v.labels&&v.labels['ae.app'])||'';
-            return '<tr><td>'+escapeHtml(v.name||'')+'</td><td>'+escapeHtml(app)+'</td><td>'+escapeHtml(v.driver||'')+'</td><td>'+escapeHtml(v.mountpoint||'')+'</td></tr>';
-          }).join(''); }
-          // Update restart series, then render containers
-          _updateRestartSeries(sys.containers||[]);
-          var cbody = document.querySelector('#tbl-containers tbody');
-          if(cbody){ cbody.innerHTML = (sys.containers||[]).map(function(c){
-            var app = (c.labels&&c.labels['ae.app'])||'';
-            var ports = (c.host_ports||[]).join(', ');
-            var restarts = Number(c.restart_count||0)||0;
-            var spark = _sparklineSVG(String(c.name||''));
-            return '<tr><td>'+escapeHtml(c.name||'')+'</td><td>'+escapeHtml(app)+'</td><td>'+escapeHtml(ports)+'</td><td>'+String(restarts)+'</td><td>'+spark+'</td></tr>';
-          }).join(''); }
-          renderGraphIfReady();
-        });
-      }
-
-      function renderGraphIfReady(){
-        if (!lastSystem || !lastStatuses) return;
-        try { drawSystemGraph(lastSystem, lastStatuses); } catch(e){ console.error('graph', e); }
-      }
-
-      // Legend toggle for path mode
-      (function(){
-        function setLabel(){
-          var b = document.getElementById('graph-path-toggle');
-          if (!b) return;
-          b.textContent = 'Paths: ' + (graphPathMode==='orth' ? 'Orth' : 'Straight');
-        }
-        var btn = document.getElementById('graph-path-toggle');
-        if (btn){
-          setLabel();
-          btn.addEventListener('click', function(){
-            graphPathMode = (graphPathMode==='orth' ? 'straight' : 'orth');
-            try { localStorage.setItem('graph_path_mode', graphPathMode); } catch(e){}
-            setLabel();
-            renderGraphIfReady();
-          });
-        }
-      })();
-
-      function fitTextToWidth(textEl, label, maxWidth){
-        var full = String(label || '');
-        if (!textEl) return { text: full, truncated: false, full: full };
-        try {
-          textEl.textContent = full;
-          if (textEl.getComputedTextLength() <= maxWidth) {
-            return { text: full, truncated: false, full: full };
-          }
-          var lo = 0, hi = full.length, best = '…';
-          while (lo <= hi) {
-            var mid = Math.floor((lo + hi) / 2);
-            var cand = full.slice(0, Math.max(0, mid)) + '…';
-            textEl.textContent = cand;
-            var w = textEl.getComputedTextLength();
-            if (w <= maxWidth) { best = cand; lo = mid + 1; }
-            else { hi = mid - 1; }
-          }
-          textEl.textContent = best;
-          return { text: best, truncated: true, full: full };
-        } catch(e){
-          textEl.textContent = full;
-          return { text: full, truncated: false, full: full };
-        }
-      }
-
-      function drawSystemGraph(sys, statuses){
-        var svg = document.getElementById('sys-graph');
-        if(!svg) return;
-        graphHover = graphHover || document.getElementById('graph-hover');
-        if (graphHover) { graphHover.style.display='none'; }
-        var wrapEl = document.getElementById('graph-wrap');
-        var W = svg.clientWidth || (wrapEl ? wrapEl.clientWidth : 1000) || 1000;
-        var H = svg.clientHeight || 420;
-        var padX = 40, padY = 30;
-        var topY = 40, midY = 150;
-        // Node metrics
-        var nodeW = 80, nodeH = 32;
-        var minXGap = 40; // horizontal spacing between app cards
-        var rowGap = 48;  // vertical spacing between app rows
-        var podOffsetY = 60; // pods rendered below their app card
-
-        var nodes = [];
-        var nodeById = {};
-        function addNode(id, label, type, x, y, meta){ var n={id:id,label:label,type:type,x:x,y:y,meta:meta||{}}; nodes.push(n); nodeById[id]=n; return n; }
-
-        var hasIngress = !!(sys.ingress && (sys.ingress.sites||[]).length);
-        // Worker nodes row
-        var workerY = topY;
-        var workerGap = 140;
-        var workerCount = (sys.nodes||[]).length;
-        var workerRowWidth = (workerCount > 1) ? ((workerCount - 1) * workerGap) : 0;
-        var workerStartX = (W - workerRowWidth) / 2;
-        if (workerStartX < (padX + nodeW/2)) workerStartX = padX + nodeW/2;
-        (sys.nodes||[]).forEach(function(n, idx){
-          var st = String(n.status||'').toLowerCase();
-          var cls = 'worker';
-          if (n.stale) cls += ' stale';
-          if (n.cordoned) cls += ' cordoned';
-          var x = workerStartX + idx * workerGap;
-          addNode('node:'+n.id, n.name||n.id, cls, x, workerY, {status:st, stale:n.stale, cordoned:n.cordoned});
-        });
-
-        // Shift system nodes down if workers present
-        if ((sys.nodes||[]).length > 0){ topY += 50; midY += 50; }
-        var apps = (statuses||[]).slice();
-        var appCount = apps.length;
-        // Grid layout: system column + app columns, centered within the graph bounds
-        var minCenterGap = nodeW + minXGap; // minimum center-to-center gap
-        var maxCenterGap = 200; // prevent over-stretching on wide viewports
-        var availableSpan = Math.max(1, W - padX*2 - nodeW);
-        var colsCap = Math.max(1, Math.floor(availableSpan / Math.max(1, minCenterGap)) - 1);
-        var cols = Math.max(1, Math.min(appCount || 1, colsCap));
-        var rows = Math.max(1, Math.ceil(appCount / cols));
-        var gap = availableSpan / Math.max(1, cols + 1);
-        if (gap > maxCenterGap) gap = maxCenterGap;
-        var baseX = (W - (cols + 1) * gap) / 2;
-
-        addNode('dns', 'DNS', 'system', baseX, topY);
-        addNode('ingress', 'Ingress', 'system', baseX + gap, topY);
-        addNode('controller', 'Controller', 'system', baseX, midY);
-        addNode('runtime', 'Runtime', 'system', baseX + gap, midY);
-        var byApp = {};
-        apps.forEach(function(s){ byApp[s.app_name]=s; });
-        var placements = sys.placements || {};
-        apps.forEach(function(s, i){
-          var info = splitAppName(s.app_name);
-          var col = i % cols;
-          var row = Math.floor(i / cols);
-          var x = baseX + gap * (2 + col);
-          var appY = (midY + 90) + row * (nodeH + podOffsetY + rowGap);
-          addNode('app:'+s.app_name, info.name, 'app', x, appY, {app:s.app_name, app_short: info.name, ns: info.namespace, ready:s.ready_replicas, desired:s.desired_replicas, rev:s.revision, status:s.revision_status, row:row, col:col, idx:i});
-          var reps = placements[s.app_name] || [];
-          reps.slice(0,12).forEach(function(p, idx){
-            var podY = appY + podOffsetY;
-            var nid = p.node_id ? ('node:'+p.node_id) : null;
-            var nodePos = nid && nodeById[nid] ? nodeById[nid] : null;
-            var px = nodePos ? nodePos.x : (x - (reps.length-1)*10/2 + idx*10);
-            var state = p.ready ? 'ready' : 'pending';
-            addNode('pod:'+s.app_name+':'+idx, state, 'pod', px, podY, {app:s.app_name, ns: info.namespace, podIndex:idx, state:state, node:p.node_id});
-          });
-        });
-
-        var links = [];
-        function link(a,b, cls){ links.push({a:a,b:b,cls:cls||''}); }
-        if (hasIngress) link('dns','ingress','flow');
-        link('controller','runtime','flow');
-        if (hasIngress) link('controller','ingress','flow');
-        (sys.nodes||[]).forEach(function(n){
-          link('controller','node:'+n.id,'');
-          link('runtime','node:'+n.id,'');
-        });
-        var sites = (sys.ingress && sys.ingress.sites) || [];
-        var appsWithIngress = new Set(sites.map(function(s){ return s.app; }));
-        appsWithIngress.forEach(function(name){ link('ingress','app:'+name,'flow'); });
-        (statuses||[]).forEach(function(s){
-          link('runtime','app:'+s.app_name,'');
-          var desired = Math.max(0, Number(s.desired_replicas||0));
-          var pods = Math.min(desired, 12);
-          for (var k=0;k<pods;k++){ link('app:'+s.app_name, 'pod:'+s.app_name+':'+k, ''); }
-        });
-
-        var gNodes = svg.querySelector('#nodes');
-        var gLinks = svg.querySelector('#links');
-        if(!gNodes||!gLinks) return;
-        gNodes.innerHTML = '';
-        gLinks.innerHTML = '';
-        var defs = svg.querySelector('defs');
-        if (defs) {
-          Array.from(defs.querySelectorAll('linearGradient[data-app-grad="1"]')).forEach(function(el){
-            if (el && el.parentNode) el.parentNode.removeChild(el);
-          });
-        }
-
-        function ensureAppGradient(ns){
-          if (!defs) return null;
-          var key = String(ns || 'default').toLowerCase().replace(/[^a-z0-9_-]+/g, '_');
-          var gradId = 'app-grad-' + key;
-          var existing = defs.querySelector('#' + gradId);
-          if (existing) return gradId;
-          var colors = namespaceGradient(ns);
-          var grad = document.createElementNS('http://www.w3.org/2000/svg','linearGradient');
-          grad.setAttribute('id', gradId);
-          grad.setAttribute('data-app-grad', '1');
-          grad.setAttribute('x1','0'); grad.setAttribute('y1','0');
-          grad.setAttribute('x2','0'); grad.setAttribute('y2','1');
-          var stop1 = document.createElementNS('http://www.w3.org/2000/svg','stop');
-          stop1.setAttribute('offset','0%');
-          stop1.setAttribute('stop-color', colors.top);
-          var stop2 = document.createElementNS('http://www.w3.org/2000/svg','stop');
-          stop2.setAttribute('offset','100%');
-          stop2.setAttribute('stop-color', colors.bottom);
-          grad.appendChild(stop1);
-          grad.appendChild(stop2);
-          defs.appendChild(grad);
-          return gradId;
-        }
-
-        // Resize the canvas height dynamically to fit all rows
-        var totalHeight = (midY + 90) + (rows-1) * (nodeH + podOffsetY + rowGap) + podOffsetY + padY;
-        if (wrapEl) {
-          wrapEl.style.height = Math.max(420, Math.ceil(totalHeight)) + 'px';
-        }
-        svg.setAttribute('viewBox', '0 0 ' + Math.max(1000, W) + ' ' + Math.max(420, Math.ceil(totalHeight)));
-
-        // Orthogonal routing helpers
-        var gutterLeftX = padX + 8;
-        var gutterRightX = W - padX - 8;
-        var lanePad = 12; // horizontal lane above an app row
-
-        // Track counts per destination to slightly offset and reduce overlap
-        var dstCounts = {};
-
-        function topEdgeY(n){ return (n.type==='pod') ? (n.y-5) : (n.y - (n.type==='app' || n.type==='system' ? nodeH/2 : 0)); }
-        function bottomEdgeY(n){ return (n.type==='pod') ? (n.y+5) : (n.y + (n.type==='app' || n.type==='system' ? nodeH/2 : 0)); }
-
-        function drawLink(id, src, dst, cls){
-          var a = nodeById[src], b = nodeById[dst]; if(!a||!b) return;
-          // Small per-destination jitter to reduce perfect overlap
-          dstCounts[dst] = (dstCounts[dst]||0) + 1;
-          var jitter = ((dstCounts[dst] % 5) - 2) * 2; // -4..+4 px
-
-          var points = [];
-          if (graphPathMode === 'straight'){
-            points = [[a.x, a.y], [b.x, b.y]];
-          } else {
-          // Select routing strategy by pair types
-          if (a.id==='ingress' && b.type==='app'){
-            var laneBase = (b.y - nodeH/2 - lanePad);
-            // Stagger lanes by index to minimize overlay, and separate source types
-            var idx = (b.meta && b.meta.idx!=null) ? b.meta.idx : 0;
-            var yBand = ((idx % 7) - 3) * 5; // -15..+15
-            var srcSep = -6; // ingress a bit higher than runtime
-            var laneY = laneBase + yBand + srcSep + jitter;
-            // Direct turn into center of app to avoid U-turns
-            points.push([a.x, a.y]);
-            points.push([a.x, laneY]);
-            points.push([b.x, laneY]);
-            points.push([b.x, topEdgeY(b)]);
-          } else if (a.id==='runtime' && b.type==='app'){
-            var laneBase2 = (b.y - nodeH/2 - lanePad);
-            var idx2 = (b.meta && b.meta.idx!=null) ? b.meta.idx : 0;
-            var yBand2 = ((idx2 % 7) - 3) * 5; // -15..+15
-            var srcSep2 = +6; // runtime a bit lower than ingress
-            var laneY2 = laneBase2 + yBand2 + srcSep2 + jitter;
-            // Direct into center: down, across, down
-            points.push([a.x, a.y]);
-            points.push([a.x, laneY2]);
-            points.push([b.x, laneY2]);
-            points.push([b.x, topEdgeY(b)]);
-          } else if (a.type==='app' && b.type==='pod'){
-            // Drop from bottom of app, then short horizontal, then into pod
-            var sy = bottomEdgeY(a);
-            var ey = topEdgeY(b);
-            points.push([a.x, sy]);
-            points.push([a.x, ey]);
-            points.push([b.x, ey]);
-            points.push([b.x, b.y-5]);
-          } else {
-            // Default orthogonal: vertical then horizontal then vertical
-            var sy2 = (b.y > a.y) ? bottomEdgeY(a) : a.y;
-            var ty2 = (b.y > a.y) ? topEdgeY(b) : b.y;
-            points.push([a.x, sy2]);
-            var midY = a.y + (b.y - a.y)/2;
-            points.push([a.x, midY]);
-            points.push([b.x, midY]);
-            points.push([b.x, ty2]);
-          }
-          }
-          // Build path (rounded corners for orth mode)
-          var d = '';
-          if (graphPathMode === 'straight'){
-            for (var i=0;i<points.length;i++){
-              d += (i===0 ? 'M ' : ' L ') + points[i][0] + ' ' + points[i][1];
-            }
-          } else {
-            var r = 8; // corner radius
-            if (points.length > 0){ d = 'M ' + points[0][0] + ' ' + points[0][1]; }
-            for (var i=1;i<points.length;i++){
-              var prev = points[i-1];
-              var curr = points[i];
-              var next = (i+1<points.length) ? points[i+1] : null;
-              if (!next){
-                d += ' L ' + curr[0] + ' ' + curr[1];
-                break;
-              }
-              var v1x = curr[0]-prev[0], v1y = curr[1]-prev[1];
-              var v2x = next[0]-curr[0], v2y = next[1]-curr[1];
-              var len1 = Math.max(1, Math.abs(v1x)+Math.abs(v1y));
-              var len2 = Math.max(1, Math.abs(v2x)+Math.abs(v2y));
-              // If colinear, keep straight
-              var colinear = (v1x===0 && v2x===0) || (v1y===0 && v2y===0);
-              if (colinear){ d += ' L ' + curr[0] + ' ' + curr[1]; continue; }
-              var r1 = Math.min(r, Math.floor((Math.abs(v1x)+Math.abs(v1y))/2));
-              var r2 = Math.min(r, Math.floor((Math.abs(v2x)+Math.abs(v2y))/2));
-              var rin = Math.min(r1, r2);
-              // Offset along v1 to approach corner
-              var u1x = v1x===0 ? 0 : (v1x>0?1:-1);
-              var u1y = v1y===0 ? 0 : (v1y>0?1:-1);
-              var pInX = curr[0] - u1x * rin;
-              var pInY = curr[1] - u1y * rin;
-              // Offset along v2 to exit corner
-              var u2x = v2x===0 ? 0 : (v2x>0?1:-1);
-              var u2y = v2y===0 ? 0 : (v2y>0?1:-1);
-              var pOutX = curr[0] + u2x * rin;
-              var pOutY = curr[1] + u2y * rin;
-              d += ' L ' + pInX + ' ' + pInY + ' Q ' + curr[0] + ' ' + curr[1] + ' ' + pOutX + ' ' + pOutY;
-            }
-          }
-          var p = document.createElementNS('http://www.w3.org/2000/svg','path');
-          p.setAttribute('d', d);
-          var klass = 'link ' + (cls||'');
-          if ((cls||'').indexOf('flow') !== -1){
-            // Decide animation direction based on net displacement from src->dst
-            var dx = b.x - a.x, dy = b.y - a.y;
-            var horiz = Math.abs(dx) >= Math.abs(dy);
-            var forward = horiz ? (dx >= 0) : (dy >= 0);
-            klass += forward ? ' flow-fwd' : ' flow-rev';
-          }
-          p.setAttribute('class', klass);
-          p.setAttribute('stroke-linecap','round');
-          p.setAttribute('fill','none');
-          gLinks.appendChild(p);
-        }
-
-        var sysHelp = {
-          ingress: {
-            title:'Ingress (Caddy)',
-            body:[
-              'Front door for HTTP/HTTPS traffic.',
-              'Routes host/path to healthy app endpoints after readiness.',
-              'Controller writes site snippets and reloads the proxy on rollouts.',
-              'When proxy runs in a container, upstream 127.0.0.1 is rewritten to host.docker.internal.'
-            ].join('<br>')
-          },
-          controller: {
-            title:'Controller',
-            body:[
-              'Reconciliation loop for registered apps (imported from specs/).',
-              'Computes desired state and converges containers and ingress.',
-              'Single-node rollout: maxUnavailable=0, maxSurge=1 (zero-downtime).',
-              'Records events, exposes /status, /events, /metrics, and serves the dashboard.',
-              'Cleans up old revisions after switching traffic.'
-            ].join('<br>')
-          },
-          runtime: {
-            title:'Runtime (Docker)',
-            body:[
-              'Container adapter that manages replicas for each app.',
-              'Reads logs, reports readiness/liveness, and lists ports.',
-              'Ensures named storage volumes exist; prunes when retention=Delete.',
-              'Provides container info for conflict checks and observability.'
-            ].join('<br>')
-          }
-        };
-
-        function showHoverCard(kind, evt){
-          if (!graphHover) return;
-          var wrap = document.getElementById('graph-wrap');
-          var rect = wrap.getBoundingClientRect();
-          var x = (evt.clientX - rect.left) + 10;
-          var y = (evt.clientY - rect.top) + 10;
-          var info = sysHelp[kind];
-          if (!info) return;
-          graphHover.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">'+info.title+'</div><div>'+info.body+'</div>';
-          graphHover.style.left = x + 'px';
-          graphHover.style.top = y + 'px';
-          graphHover.style.display = 'block';
-        }
-        function hideHoverCard(){ if (graphHover) graphHover.style.display='none'; }
-
-        function drawNode(n){
-          var g = document.createElementNS('http://www.w3.org/2000/svg','g');
-          g.setAttribute('class','node '+n.type);
-          g.setAttribute('transform','translate('+(n.x-40)+','+(n.y-16)+')');
-          // map to app for interactions
-          var appName = null;
-          if(n.id.startsWith('app:')) appName = n.id.slice(4);
-          if(n.id.startsWith('pod:')) appName = n.id.split(':')[1] || null;
-          if(appName){ g.setAttribute('data-app', appName); g.style.cursor='pointer';
-            g.addEventListener('click', function(ev){ ev.preventDefault(); ev.stopPropagation(); try { selectApp(appName); focusAppListItem(appName); } catch(e){} });
-          }
-          if(n.type==='app' && n.meta && n.meta.ns){
-            var nsc = namespaceColors(n.meta.ns);
-            g.style.setProperty('--ns-color', nsc.color);
-            g.style.setProperty('--ns-tint', nsc.tint);
-          }
-          if(n.type==='pod'){
-            g.setAttribute('transform','translate('+(n.x-5)+','+(n.y-5)+')');
-            var c = document.createElementNS('http://www.w3.org/2000/svg','circle');
-            c.setAttribute('r','5'); c.setAttribute('cx','5'); c.setAttribute('cy','5');
-            c.setAttribute('stroke-width','1.2');
-            // class for ready/pending
-            if(n.meta && n.meta.state){ g.setAttribute('class', g.getAttribute('class') + ' ' + n.meta.state); }
-            g.appendChild(c);
-            var title = document.createElementNS('http://www.w3.org/2000/svg','title');
-            var parts = [];
-            if(n.meta && n.meta.app) parts.push('App: '+n.meta.app);
-            if(n.meta && n.meta.ns) parts.push('Namespace: '+n.meta.ns);
-            if(n.meta && (n.meta.podIndex!=null)) parts.push('Replica: '+String(n.meta.podIndex));
-            parts.push('State: ' + (n.meta && n.meta.state ? n.meta.state : n.label));
-            title.textContent = parts.join(String.fromCharCode(10));
-            g.appendChild(title);
-            gNodes.appendChild(g);
-          } else {
-            var rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
-            rect.setAttribute('width','80'); rect.setAttribute('height','32'); rect.setAttribute('rx','6'); rect.setAttribute('ry','6');
-            rect.setAttribute('class','node-shape');
-            if(n.type==='app' && n.meta && n.meta.ns){
-              var gradId = ensureAppGradient(n.meta.ns);
-              if (gradId) rect.setAttribute('fill', 'url(#' + gradId + ')');
-              else rect.setAttribute('fill', nsc && nsc.color ? nsc.color : '#3b82f6');
-            }
-            g.appendChild(rect);
-            if(n.type==='app' && n.meta && n.meta.ns){
-              var stripe = document.createElementNS('http://www.w3.org/2000/svg','rect');
-              stripe.setAttribute('class','ns-stripe');
-              stripe.setAttribute('x','1'); stripe.setAttribute('y','1'); stripe.setAttribute('width','6'); stripe.setAttribute('height','30');
-              stripe.setAttribute('rx','4'); stripe.setAttribute('ry','4');
-              g.appendChild(stripe);
-            }
-            var t = document.createElementNS('http://www.w3.org/2000/svg','text');
-            t.setAttribute('x','40'); t.setAttribute('y','20'); t.setAttribute('text-anchor','middle'); t.textContent = String(n.label || '');
-            g.appendChild(t);
-            gNodes.appendChild(g);
-            var labelInfo = fitTextToWidth(t, n.label, (nodeW * 1.4) - 8);
-            try {
-              var bbox = t.getBBox();
-              var chip = document.createElementNS('http://www.w3.org/2000/svg','rect');
-              chip.setAttribute('class','label-chip');
-              chip.setAttribute('x', String(bbox.x - 4));
-              chip.setAttribute('y', String(bbox.y - 2));
-              chip.setAttribute('width', String(bbox.width + 8));
-              chip.setAttribute('height', String(bbox.height + 4));
-              chip.setAttribute('rx','4'); chip.setAttribute('ry','4');
-              g.insertBefore(chip, t);
-            } catch(e){}
-            var title = document.createElementNS('http://www.w3.org/2000/svg','title');
-            if(n.id.startsWith('app:')){
-              var a = n.meta || {};
-              var info = [];
-              info.push('App: ' + (a.app||n.label));
-              if (a.ns) info.push('Namespace: ' + a.ns);
-              info.push('Replicas: ' + (a.ready||0) + '/' + (a.desired||0));
-              if(a.rev!=null) info.push('Revision: ' + a.rev + ' (' + (a.status||'-') + ')');
-              title.textContent = info.join(String.fromCharCode(10));
-            } else {
-              title.textContent = labelInfo.full;
-            }
-            g.appendChild(title);
-          }
-          // System node hover help
-          if(n.type==='system' && (n.id==='ingress' || n.id==='controller' || n.id==='runtime')){
-            g.addEventListener('mouseenter', function(ev){ showHoverCard(n.id, ev); });
-            g.addEventListener('mousemove', function(ev){ showHoverCard(n.id, ev); });
-            g.addEventListener('mouseleave', function(){ hideHoverCard(); });
-          }
-        }
-
-        links.forEach(function(L,i){ drawLink('e'+i, L.a, L.b, L.cls); });
-        nodes.forEach(drawNode);
-
-        // Highlight selection
-        try {
-          var sel = (typeof current==='string' && current) ? String(current) : null;
-          if (sel){
-            var selNs = null;
-            try {
-              var selNode = nodeById['app:' + sel];
-              if (selNode && selNode.meta && selNode.meta.ns) selNs = selNode.meta.ns;
-            } catch(e){}
-            if (!selNs) {
-              try { selNs = splitAppName(sel).namespace; } catch(e){}
-            }
-            // nodes
-            Array.from(gNodes.children).forEach(function(n){
-              var a = n.getAttribute('data-app');
-              var isSel = (a===sel);
-              if (isSel){
-                n.classList.add('selected');
-                return;
-              }
-              if (n.className.baseVal.indexOf('system') !== -1) return;
-              if (selNs && a){
-                var nsInfo = splitAppName(a);
-                if (nsInfo && nsInfo.namespace === selNs){
-                  n.classList.add('ns-peer');
-                  return;
-                }
-              }
-              n.classList.add('faded');
-            });
-            // links
-            Array.from(gLinks.children).forEach(function(p){
-              var d = p.getAttribute('d')||''; // fallback: we can't easily parse ends; recompute using id map instead
-            });
-            // More precise: mark links whose endpoints include the selected app
-            links.forEach(function(L, i){
-              var p = gLinks.children[i];
-              if(!p) return;
-              var involved = (L.a.indexOf('app:'+sel)===0) || (L.b.indexOf('app:'+sel)===0) || (L.b.indexOf('pod:'+sel+':')===0) || (L.a.indexOf('pod:'+sel+':')===0);
-              if(involved) p.classList.add('selected'); else p.classList.add('faded');
-            });
-          }
-        } catch(e){}
-      }
-
-      refreshApps().then(function(){ updateLogsHTMX(); updateLogStreaming(); return Promise.all([refreshDetail(), refreshSystem()]); }).catch(console.error);
-      schedulePoll();
-    </script>
-  </body>
-</html>
-"""
+            if _os.getenv("AE_LABS") == "1":
+                labs_token = (_os.getenv("AE_LABS_TOKEN") or "").strip()
+        except Exception:
+            labs_token = ""
+        apishim_base = ""
+        try:
+            apishim_base = (
+                os.getenv("AE_APISHIM_SERVER") or os.getenv("AE_APISHIM_BASE") or ""
+            ).strip()
+        except Exception:
+            apishim_base = ""
+        html = resource_loader.render_text(
+            "observability",
+            "dashboard.html",
+            LABS_TOKEN=json.dumps(labs_token),
+            APISHIM_BASE=json.dumps(apishim_base),
+        )
         payload = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -4944,7 +3693,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     rd = "yes" if r.ready else "no"
                     lv = "yes" if r.live else "no"
                     out.append(
-                        f"<tr><td>{esc(r.check_time.isoformat())}</td><td>{esc(r.replica_id)}</td><td>{rd}</td><td>{lv}</td>"
+                        f"<tr><td>{esc(r.check_time.isoformat())}</td><td>{esc(r.pod_name)}</td><td>{rd}</td><td>{lv}</td>"
                         f"<td>{esc(r.readiness_message or '')}</td><td>{esc(r.liveness_message or '')}</td></tr>"
                     )
                 out.append("</tbody></table>")
