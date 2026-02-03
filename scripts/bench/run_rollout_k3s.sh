@@ -7,7 +7,7 @@ set -euo pipefail
 label_suite="baseline-roll"
 deploy="echo"
 namespace="default"
-replicas=5
+replicas_csv="2,5"
 duration=30
 use_sudo=0
 old_tag="0.7.0"
@@ -18,7 +18,7 @@ while [[ $# -gt 0 ]]; do
     --label-suite) label_suite="$2"; shift 2;;
     --deploy) deploy="$2"; shift 2;;
     --namespace) namespace="$2"; shift 2;;
-    --replicas) replicas="$2"; shift 2;;
+    --replicas) replicas_csv="$2"; shift 2;;
     --duration) duration="$2"; shift 2;;
     --sudo) use_sudo=1; shift;;
     --old-tag) old_tag="$2"; shift 2;;
@@ -79,44 +79,70 @@ wait_ready() {
   return 1
 }
 
-info "scale ${deploy} to ${replicas}"
-kubectl -n "$namespace" scale deploy "$deploy" --replicas "$replicas"
-wait_ready "$deploy" "$replicas" || true
-
-cur=$(kubectl -n "$namespace" get deploy "$deploy" -o jsonpath='{.spec.template.spec.containers[0].image}')
-target="$cur"
-if [[ "$cur" == *":"$old_tag ]]; then target=${cur/%:$old_tag/:$new_tag}; else target=${cur/%:$new_tag/:$old_tag}; fi
-
-info "set image to ${target} and snapshot DURING"
-kubectl -n "$namespace" set image deploy/"$deploy" "$deploy"="$target"
-if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-    sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
-  else
-    sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+rollout_replicas=()
+IFS=',' read -r -a rollout_replicas_raw <<< "$replicas_csv"
+for rep in "${rollout_replicas_raw[@]}"; do
+  rep="${rep// /}"
+  [[ -z "$rep" ]] && continue
+  if [[ ! "$rep" =~ ^[0-9]+$ ]]; then
+    echo "[k3s-rollout] invalid replicas '${rep}' (expected integer); skipping" >&2
+    continue
   fi
-else
-  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-    AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
-  else
-    AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
-  fi
+  rollout_replicas+=("$rep")
+done
+if (( ${#rollout_replicas[@]} == 0 )); then
+  echo "[k3s-rollout] no valid replicas provided (got: '${replicas_csv}')" >&2
+  exit 2
 fi
 
-info "wait ready and snapshot POST"
-wait_ready "$deploy" "$replicas" || true
-if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-    sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+run_rollout_once() {
+  local replicas="$1"
+
+  info "scale ${deploy} to ${replicas}"
+  kubectl -n "$namespace" scale deploy "$deploy" --replicas "$replicas"
+  wait_ready "$deploy" "$replicas" || true
+
+  local cur
+  local target
+  cur=$(kubectl -n "$namespace" get deploy "$deploy" -o jsonpath='{.spec.template.spec.containers[0].image}')
+  target="$cur"
+  if [[ "$cur" == *":"$old_tag ]]; then target=${cur/%:$old_tag/:$new_tag}; else target=${cur/%:$new_tag/:$old_tag}; fi
+
+  info "set image to ${target} and snapshot DURING"
+  kubectl -n "$namespace" set image deploy/"$deploy" "$deploy"="$target"
+  if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
+    else
+      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+    fi
   else
-    sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
+    else
+      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+    fi
   fi
-else
-  if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-    AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+
+  info "wait ready and snapshot POST"
+  wait_ready "$deploy" "$replicas" || true
+  if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+    else
+      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+    fi
   else
-    AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+    else
+      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+    fi
   fi
-fi
+}
+
+for replicas in "${rollout_replicas[@]}"; do
+  run_rollout_once "$replicas"
+done
 
 info "done"

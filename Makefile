@@ -294,7 +294,7 @@ bench-mem-e2e-k3s-sudo:
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--deploy $${DEPLOY:-echo} \
 		--namespace $${NS:-default} \
-		--replicas $${ROLL_REPLICAS:-5} \
+		--replicas $${ROLL_REPLICAS:-2,5} \
 		--duration $${DURATION:-30} \
 		--sudo
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
@@ -315,7 +315,7 @@ bench-mem-e2e-k1s:
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
-		--replicas $${ROLL_REPLICAS:-5} \
+		--replicas $${ROLL_REPLICAS:-2,5} \
 		--duration $${DURATION:-30}
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
@@ -341,7 +341,7 @@ bench-mem-e2e-k1s-sudo:
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
-		--replicas $${ROLL_REPLICAS:-5} \
+		--replicas $${ROLL_REPLICAS:-2,5} \
 		--duration $${DURATION:-30} \
 		--sudo
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
@@ -356,7 +356,7 @@ bench-mem-cri:
 bench-mem-cri-quick:
 	@DURATION=$${DURATION:-10} \
 	 REPLICAS=$${REPLICAS:-1,5,10} \
-	 ROLL_REPLICAS=$${ROLL_REPLICAS:-5} \
+	 ROLL_REPLICAS=$${ROLL_REPLICAS:-2,5} \
 	 ./scripts/bench/run_cri_refresh.sh
 
 .PHONY: bench-mem-e2e-k1nd
@@ -378,7 +378,7 @@ bench-mem-e2e-k1nd:
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
-		--replicas $${ROLL_REPLICAS:-5} \
+		--replicas $${ROLL_REPLICAS:-2,5} \
 		--duration $${DURATION:-30}
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
@@ -400,7 +400,7 @@ bench-mem-e2e-k1nd-sudo:
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
-		--replicas $${ROLL_REPLICAS:-5} \
+		--replicas $${ROLL_REPLICAS:-2,5} \
 		--duration $${DURATION:-30} \
 		--sudo
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
@@ -430,7 +430,7 @@ bench-mem-e2e-k1nd-quick:
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
-		--replicas $${ROLL_REPLICAS:-5} \
+		--replicas $${ROLL_REPLICAS:-2,5} \
 		--duration $${DURATION:-10} \
 		--sudo
 	@scripts/bench/k1nd_sanitize.sh post
@@ -446,12 +446,12 @@ bench-mem-e2e-k1nd-resume-rollout:
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
-		--replicas $${ROLL_REPLICAS:-5} \
+		--replicas $${ROLL_REPLICAS:-2,5} \
 		--duration $${DURATION:-30}
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
-		--replicas $${ROLL_REPLICAS:-5} \
+		--replicas $${ROLL_REPLICAS:-2,5} \
 		--duration $${DURATION:-10}
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
@@ -467,7 +467,7 @@ bench-mem-e2e-k1nd-down:
 bench-mem-e2e-all:
 	@DURATION=$${DURATION:-30} \
 	 REPLICAS=$${REPLICAS:-1,5,10} \
-	 ROLL_REPLICAS=$${ROLL_REPLICAS:-5} \
+	 ROLL_REPLICAS=$${ROLL_REPLICAS:-2,5} \
 	 LABEL_ROOTFUL=$${LABEL_ROOTFUL:-r$$(date +%Y%m%d)+podman+rootful+cg2} \
 	 LABEL_ROOTLESS=$${LABEL_ROOTLESS:-r$$(date +%Y%m%d)+podman+rootless+cg2} \
 	 LABEL_K1ND=$${LABEL_K1ND:-r$$(date +%Y%m%d)+docker+k1nd} \
@@ -635,7 +635,7 @@ bench-mem-e2e-k3s:
 		--label-suite $${LABEL_SUITE_ROLL:-baseline-roll} \
 		--deploy $${DEPLOY:-echo} \
 		--namespace $${NS:-default} \
-		--replicas $${ROLL_REPLICAS:-5} \
+		--replicas $${ROLL_REPLICAS:-2,5} \
 		--duration $${DURATION:-30}
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}

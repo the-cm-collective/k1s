@@ -252,7 +252,7 @@ fi
 DATE="r$(date +%Y%m%d)"
 DURATION=30
 REPLICAS=1,5,10
-ROLL_REPLICAS=5
+ROLL_REPLICAS="${ROLL_REPLICAS:-2,5}"
 APP=specs/examples/echo.yaml
 APP_NAME=echo
 bench_specs_minimal="${BENCH_SPECS_MINIMAL:-1}"
