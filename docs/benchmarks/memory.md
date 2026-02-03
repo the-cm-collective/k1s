@@ -219,3 +219,161 @@ sudo make bench-mem-e2e-all DURATION=30 REPLICAS=1,5,10 ROLL_REPLICAS=5
 ```
 
 Defaults: `OCI_RUNTIME=crun`, `AE_ENGINE_STRICT=1`, `AE_ALLOW_PLAINTEXT_SECRETS=1`, `PRUNE_OLD=1`.
+
+<details>
+<summary><strong>Troubleshooting: Rootful Podman readiness timeouts (host ports hang)</strong></summary>
+
+Symptoms
+- Bench runs stall at `wait_ready` with `ready=0` and probe messages like `startup http error ... 127.0.0.1:<port> timed out`.
+- `podman run -p 18080:8080 ...` succeeds but `curl http://127.0.0.1:18080/` times out or returns `No route to host`.
+- Inside-container HTTP works, but host->container or host->published port fails.
+
+Quick diagnosis flow (rootful Podman)
+1) Confirm the rootful API socket is alive:
+```
+sudo systemctl status podman.socket
+sudo curl --unix-socket /run/podman/podman.sock http://d/_ping
+```
+
+2) Run a minimal echo test (rootful, host port publish):
+```
+sudo podman rm -f echo-test >/dev/null 2>&1 || true
+sudo podman run -d --name echo-test -p 18080:8080 docker.io/mendhak/http-https-echo:37
+```
+
+3) Verify the app responds inside the container netns:
+```
+sudo podman run --rm --net container:echo-test docker.io/curlimages/curl:8.5.0 -fsS http://127.0.0.1:8080/
+```
+If this fails, the image or container itself is unhealthy (not a networking issue).
+
+4) Verify host reachability (this is what readiness uses):
+```
+sudo curl -v --max-time 2 http://127.0.0.1:18080/
+```
+
+5) If the netns curl succeeds but host curl fails, check the bridge and routes:
+```
+ip link show podman0
+ip addr show podman0
+ip route show | rg 10.88
+```
+Look for:
+- `podman0` up with `10.88.0.1/16`
+- Stale route like `10.88.0.0/16 dev cni0 ... linkdown`
+
+Fix: disable strict rp_filter + remove stale CNI route
+```
+sudo sysctl -w net.ipv4.conf.all.rp_filter=0
+sudo sysctl -w net.ipv4.conf.default.rp_filter=0
+sudo sysctl -w net.ipv4.conf.podman0.rp_filter=0
+sudo ip route del 10.88.0.0/16 dev cni0 || true
+```
+Then re-test:
+```
+IP=$(sudo podman inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' echo-test)
+sudo curl -v --max-time 2 http://$IP:8080/
+sudo curl -v --max-time 2 http://127.0.0.1:18080/
+```
+
+If host access still fails, check forwarding/firewall policy:
+```
+sudo nft list ruleset | rg -n 'hook forward|podman|netavark'
+sudo iptables -S FORWARD
+```
+Ensure `podman0` traffic is accepted. Example (iptables-nft):
+```
+sudo iptables -I FORWARD -i podman0 -j ACCEPT
+sudo iptables -I FORWARD -o podman0 -j ACCEPT
+```
+
+Clean up after the test:
+```
+sudo podman rm -f echo-test
+```
+Then re-run the benchmark.
+
+Persist the fix (optional)
+1) Keep rp_filter relaxed for Podman:
+```
+echo -e "net.ipv4.conf.all.rp_filter=0\nnet.ipv4.conf.default.rp_filter=0\nnet.ipv4.conf.podman0.rp_filter=0" | sudo tee /etc/sysctl.d/99-podman.conf
+sudo sysctl --system
+```
+Note: Some distros apply other sysctl profiles later. Verify with:
+```
+sudo sysctl net.ipv4.conf.all.rp_filter net.ipv4.conf.default.rp_filter net.ipv4.conf.podman0.rp_filter
+```
+
+2) Prevent subnet conflicts with CNI (if you use containerd/k3s):
+- Avoid sharing `10.88.0.0/16` between `podman0` and `cni0`.
+- Option A (Podman): recreate the default podman network on a different subnet:
+```
+sudo podman network rm podman
+sudo podman network create --driver bridge --subnet 10.89.0.0/16 --gateway 10.89.0.1 podman
+```
+- Option B (CNI): adjust the CNI bridge subnet in your CNI config so it does not overlap Podman.
+
+</details>
+
+<details>
+<summary><strong>Troubleshooting: CRI readiness timeouts (pod IP unreachable)</strong></summary>
+
+Symptoms
+- CRI bench stalls at `wait_ready` with `ready=0` even though pods exist.
+- `crictl pods` shows Ready pods, but readiness probes keep timing out.
+- `curl http://<pod-ip>:8080/` from the host times out.
+
+Why this happens
+- In the CRI backend, readiness probes target the pod IP (`pod_ip:container_port`).
+- If the host no longer routes `10.88.0.0/16` to `cni0`, probes go out the default gateway and time out.
+- Strict reverse-path filtering (`rp_filter=2`) on `cni0` can drop replies even if the route is present.
+
+Quick diagnosis
+1) Get a pod IP and confirm how the host routes to it:
+```
+POD_ID=$(crictl --runtime-endpoint unix:///run/containerd/containerd.sock pods -q --name echo | head -n1)
+POD_IP=$(crictl --runtime-endpoint unix:///run/containerd/containerd.sock inspectp "$POD_ID" -o json \
+  | python -c 'import json,sys; print(json.load(sys.stdin)["status"]["network"]["ip"])')
+ip route get "$POD_IP"
+```
+Expected: route should go via `cni0`, not `wlan0` or another uplink.
+
+2) Verify the pod responds from the host:
+```
+curl -v --max-time 2 "http://$POD_IP:8080/"
+```
+
+Fix: restore route + relax rp_filter
+```
+sudo ip route replace 10.88.0.0/16 dev cni0
+sudo sysctl -w net.ipv4.conf.cni0.rp_filter=0
+```
+Re-test:
+```
+ip route get "$POD_IP"
+curl -v --max-time 2 "http://$POD_IP:8080/"
+```
+
+If it still fails
+- Confirm `cni0` is up and has `10.88.0.1/16`:
+```
+ip link show cni0
+ip addr show cni0
+```
+- Check for overlapping subnets (Podman default is also `10.88.0.0/16`):
+```
+ip route show | rg 10.88
+```
+If both `cni0` and `podman0` claim `10.88.0.0/16`, pick one to move.
+
+Persist the fix (optional)
+1) Keep rp_filter relaxed for the CNI bridge:
+```
+echo "net.ipv4.conf.cni0.rp_filter=0" | sudo tee /etc/sysctl.d/99-cni.conf
+sudo sysctl --system
+```
+2) Avoid Podman/CNI subnet collisions:
+- Option A (Podman): recreate the Podman bridge on a different subnet (e.g. `10.89.0.0/16`).
+- Option B (CNI): edit the CNI config to use a non-overlapping subnet.
+
+</details>
