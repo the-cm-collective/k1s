@@ -1578,7 +1578,7 @@ def build_one(
     api_mode_widget: str,
     api_mode_script: str,
 ) -> None:
-    allow_raw = md_path.name in {"playground.md", "start-here.md"} or (
+    allow_raw = md_path.name in {"playground.md", "start-here.md", "memory.md"} or (
         md_path.name == "index.md" and md_path.parent.name == "concepts-in-practice"
     )
     html_body = md_to_html(
