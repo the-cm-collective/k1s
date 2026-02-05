@@ -170,6 +170,27 @@ class SiteIngressListItem:
 
 
 @dataclass(slots=True)
+class EdgeIngressRouteRecord:
+    name: str
+    namespace: str
+    site_id: str
+    policy_name: str | None
+    policy_namespace: str | None
+    spec: dict
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class EdgeIngressPolicyRecord:
+    name: str
+    namespace: str
+    spec: dict
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(slots=True)
 class WorkOutboxEntry:
     work_id: str
     attempt: int
@@ -524,6 +545,18 @@ class SQLiteStateStore:
                 conn,
                 resource_loader.load_text(
                     "sql", "controller", "create_site_ingress_endpoints.sql"
+                ),
+            )
+            self._execute_script(
+                conn,
+                resource_loader.load_text(
+                    "sql", "controller", "create_edge_ingress_routes.sql"
+                ),
+            )
+            self._execute_script(
+                conn,
+                resource_loader.load_text(
+                    "sql", "controller", "create_edge_ingress_policies.sql"
                 ),
             )
             self._migrate_storage_bindings(conn)
@@ -1461,6 +1494,135 @@ class SQLiteStateStore:
                 )
             )
         return items
+
+    # --- Edge ingress routes/policies (edge-local bundles) ---
+    def upsert_edge_ingress_route(
+        self,
+        *,
+        name: str,
+        namespace: str,
+        site_id: str,
+        policy_name: str | None,
+        policy_namespace: str | None,
+        document: dict,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        payload = json.dumps(document, sort_keys=True)
+        with self._connect() as conn:
+            conn.execute(
+                resource_loader.load_text(
+                    "sql", "controller", "insert_edge_ingress_routes_upsert.sql"
+                ),
+                (
+                    name,
+                    namespace,
+                    site_id,
+                    policy_name,
+                    policy_namespace,
+                    payload,
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+
+    def upsert_edge_ingress_policy(
+        self,
+        *,
+        name: str,
+        namespace: str,
+        document: dict,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        payload = json.dumps(document, sort_keys=True)
+        with self._connect() as conn:
+            conn.execute(
+                resource_loader.load_text(
+                    "sql", "controller", "insert_edge_ingress_policies_upsert.sql"
+                ),
+                (
+                    name,
+                    namespace,
+                    payload,
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+
+    def list_edge_ingress_routes_for_site(self, site_id: str) -> list[EdgeIngressRouteRecord]:
+        items: list[EdgeIngressRouteRecord] = []
+        with self._connect() as conn:
+            rows = conn.execute(
+                resource_loader.load_text(
+                    "sql", "controller", "select_edge_ingress_routes_by_site.sql"
+                ),
+                (site_id,),
+            ).fetchall()
+        for row in rows:
+            spec = {}
+            if row[5]:
+                try:
+                    spec = json.loads(row[5])
+                except Exception:
+                    spec = {}
+            created_at = datetime.now(timezone.utc)
+            updated_at = created_at
+            try:
+                created_at = datetime.fromisoformat(row[6])
+            except Exception:
+                created_at = datetime.now(timezone.utc)
+            try:
+                updated_at = datetime.fromisoformat(row[7])
+            except Exception:
+                updated_at = created_at
+            items.append(
+                EdgeIngressRouteRecord(
+                    name=str(row[0]),
+                    namespace=str(row[1]),
+                    site_id=str(row[2]),
+                    policy_name=str(row[3]) if row[3] is not None else None,
+                    policy_namespace=str(row[4]) if row[4] is not None else None,
+                    spec=spec if isinstance(spec, dict) else {},
+                    created_at=created_at,
+                    updated_at=updated_at,
+                )
+            )
+        return items
+
+    def get_edge_ingress_policy(
+        self, *, name: str, namespace: str
+    ) -> EdgeIngressPolicyRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                resource_loader.load_text(
+                    "sql", "controller", "select_edge_ingress_policy_by_key.sql"
+                ),
+                (name, namespace),
+            ).fetchone()
+        if not row:
+            return None
+        spec = {}
+        if row[2]:
+            try:
+                spec = json.loads(row[2])
+            except Exception:
+                spec = {}
+        try:
+            created_at = datetime.fromisoformat(row[3])
+        except Exception:
+            created_at = datetime.now(timezone.utc)
+        try:
+            updated_at = datetime.fromisoformat(row[4])
+        except Exception:
+            updated_at = created_at
+        return EdgeIngressPolicyRecord(
+            name=str(row[0]),
+            namespace=str(row[1]),
+            spec=spec if isinstance(spec, dict) else {},
+            created_at=created_at,
+            updated_at=updated_at,
+        )
 
     def list_site_ids(self) -> list[str]:
         with self._connect() as conn:
