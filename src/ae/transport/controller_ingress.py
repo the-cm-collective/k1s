@@ -66,6 +66,11 @@ class NatsControllerIngress:
         self._js_max_waiting = int(os.getenv("AE_GATEWAY_JS_MAX_WAITING", "512") or 512)
         self._js_sites: set[str] = set()
         self._js_stream_ready = False
+        self._core_proxy_enabled = str(
+            os.getenv("AE_EDGE_INGRESS_CORE_PROXY", "0") or "0"
+        ).lower() in {"1", "true", "yes", "on"}
+        self._core_proxy_port_min = int(os.getenv("AE_CORE_PROXY_PORT_MIN", "18080") or 18080)
+        self._core_proxy_port_max = int(os.getenv("AE_CORE_PROXY_PORT_MAX", "18999") or 18999)
         self._subs: list[str] = []
 
     def start(self) -> None:
@@ -175,6 +180,7 @@ class NatsControllerIngress:
             renew_after_ms=lease.renew_after_ms,
         )
         self._ensure_js_consumer(site_id)
+        self._ensure_core_proxy_port(site_id)
         self._reply(msg, resp.as_dict())
 
     def _on_lease_renew(self, msg: NatsMessage) -> None:
@@ -239,7 +245,50 @@ class NatsControllerIngress:
             try:
                 attempt = int(payload.get("attempt") or 0)
                 if attempt:
-                    self._store.mark_work_done(str(work_id), attempt)
+                    status_norm = str(status or "").lower()
+                    node_id = payload.get("node_id")
+                    observed_generation = payload.get("observed_generation")
+                    if status_norm in {"running"}:
+                        self._store.update_work_state(
+                            work_id=str(work_id),
+                            attempt=attempt,
+                            state="Running",
+                            assigned_node_id=str(node_id) if node_id else None,
+                            observed_generation=(
+                                int(observed_generation)
+                                if observed_generation is not None
+                                else None
+                            ),
+                            result=payload,
+                        )
+                    elif status_norm in {"succeeded", "success", "completed"}:
+                        self._store.update_work_state(
+                            work_id=str(work_id),
+                            attempt=attempt,
+                            state="Succeeded",
+                            assigned_node_id=str(node_id) if node_id else None,
+                            observed_generation=(
+                                int(observed_generation)
+                                if observed_generation is not None
+                                else None
+                            ),
+                            result=payload,
+                        )
+                        self._store.mark_work_done(str(work_id), attempt)
+                    elif status_norm in {"failed", "error"}:
+                        self._store.update_work_state(
+                            work_id=str(work_id),
+                            attempt=attempt,
+                            state="Failed",
+                            assigned_node_id=str(node_id) if node_id else None,
+                            observed_generation=(
+                                int(observed_generation)
+                                if observed_generation is not None
+                                else None
+                            ),
+                            result=payload,
+                        )
+                        self._store.mark_work_done(str(work_id), attempt)
             except Exception:
                 pass
         else:
@@ -331,6 +380,19 @@ class NatsControllerIngress:
             self._js_sites.add(site_id)
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("js consumer ensure failed site=%s: %s", site_id, exc)
+
+    def _ensure_core_proxy_port(self, site_id: str) -> None:
+        if not self._core_proxy_enabled:
+            return
+        try:
+            port = self._store.ensure_site_ingress_port(
+                site_id,
+                port_min=self._core_proxy_port_min,
+                port_max=self._core_proxy_port_max,
+            )
+            LOGGER.info("site core-proxy port assigned site=%s port=%s", site_id, port)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("core-proxy port allocation failed site=%s: %s", site_id, exc)
 
 
 def _parse_duration_seconds(value: str | None, default: float) -> float:

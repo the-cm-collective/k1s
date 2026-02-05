@@ -55,6 +55,9 @@ class JetStreamMessage:
     subject: str
     reply: str | None
     data: bytes
+    stream: str | None
+    consumer: str | None
+    seq: int | None
     _ack: Callable[[], None]
     _ack_sync: Callable[[], None]
     _in_progress: Callable[[], None]
@@ -415,10 +418,26 @@ class NatsClient:
             except Exception:
                 pass
 
+        stream = None
+        consumer = None
+        seq = None
+        meta = getattr(msg, "metadata", None)
+        if meta is not None:
+            stream = getattr(meta, "stream", None) or getattr(meta, "stream_name", None)
+            consumer = getattr(meta, "consumer", None) or getattr(meta, "consumer_name", None)
+            seq_meta = getattr(meta, "sequence", None)
+            if isinstance(seq_meta, int):
+                seq = seq_meta
+            elif seq_meta is not None:
+                seq = getattr(seq_meta, "stream", None) or getattr(seq_meta, "consumer", None)
+
         return JetStreamMessage(
             subject=msg.subject,
             reply=msg.reply,
             data=msg.data,
+            stream=stream,
+            consumer=consumer,
+            seq=int(seq) if seq is not None else None,
             _ack=_ack,
             _ack_sync=_ack_sync,
             _in_progress=_in_progress,

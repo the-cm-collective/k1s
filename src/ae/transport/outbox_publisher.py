@@ -73,6 +73,11 @@ class OutboxPublisher:
             try:
                 self._client.publish_js_json(subject, entry.payload, headers=headers)
                 self._store.mark_outbox_published(entry.work_id, entry.attempt)
+                self._store.update_work_state(
+                    work_id=entry.work_id,
+                    attempt=entry.attempt,
+                    state="Dispatched",
+                )
                 record_outbox_publish(True)
                 LOGGER.debug("published outbox work_id=%s attempt=%s", entry.work_id, entry.attempt)
             except Exception as exc:  # noqa: BLE001

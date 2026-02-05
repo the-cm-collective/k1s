@@ -2367,6 +2367,18 @@ def handle_work(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
             print(f"invalid --target json: {exc}")
             return 2
     payload.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+    desired_generation = payload.get("desired_generation")
+    try:
+        desired_generation = int(desired_generation) if desired_generation is not None else None
+    except Exception:
+        desired_generation = None
+    store.upsert_work_ledger(
+        work_id=work_id,
+        attempt=attempt,
+        site_id=site_id,
+        state="Pending",
+        desired_generation=desired_generation,
+    )
     if ns.mode == "queue":
         store.enqueue_work(work_id, attempt, site_id, payload)
         print(f"enqueued work_id={work_id} attempt={attempt} site={site_id} mode=queue")
