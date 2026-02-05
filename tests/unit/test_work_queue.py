@@ -1,19 +1,9 @@
 from pathlib import Path
 
-import importlib.util
-import pytest
-
-_grpc_missing = importlib.util.find_spec("grpc") is None
-
-if _grpc_missing:
-    SQLiteStateStore = None
-else:
-    from ae.controller.state import SQLiteStateStore
+from ae.controller.state import SQLiteStateStore
 
 
 def test_work_queue_pull_ack_done(tmp_path: Path) -> None:
-    if SQLiteStateStore is None:
-        pytest.skip("grpc dependency missing")
     db_path = tmp_path / "controller.db"
     store = SQLiteStateStore(db_path=db_path)
 
