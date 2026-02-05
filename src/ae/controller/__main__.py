@@ -168,11 +168,9 @@ def _bootstrap_jetstream(transport: TransportConfig) -> None:
     if not transport.nats_url:
         return
     site_ids = _parse_site_ids()
-    if not site_ids:
-        import logging as _log
+    import logging as _log
 
-        _log.getLogger(__name__).warning("AE_SITE_IDS not set; skipping JS consumer setup")
-        return
+    logger = _log.getLogger(__name__)
     stream_name = os.getenv("AE_JS_STREAM_NAME", "K1S_WORK")
     work_subject = os.getenv("AE_JS_WORK_SUBJECT", "k1s.v1.work.site.>")
     storage = os.getenv("AE_JS_STORAGE", "file")
@@ -182,6 +180,7 @@ def _bootstrap_jetstream(transport: TransportConfig) -> None:
     max_ack_pending = int(os.getenv("AE_GATEWAY_JS_MAX_ACK_PENDING", "32") or 32)
     max_deliver = int(os.getenv("AE_GATEWAY_JS_MAX_DELIVER", "20") or 20)
     max_waiting = int(os.getenv("AE_GATEWAY_JS_MAX_WAITING", "512") or 512)
+    client = None
     try:
         client = NatsClient(
             url=transport.nats_url,
@@ -195,25 +194,29 @@ def _bootstrap_jetstream(transport: TransportConfig) -> None:
             storage=storage,
             retention="workqueue",
         )
-        for site_id in site_ids:
-            client.ensure_consumer(
-                stream=stream_name,
-                durable=f"WORK_SITE_{site_id}",
-                filter_subject=f"k1s.v1.work.site.{site_id}",
-                ack_wait_s=ack_wait_s,
-                max_ack_pending=max_ack_pending,
-                max_deliver=max_deliver,
-                max_waiting=max_waiting,
+        if not site_ids:
+            logger.info(
+                "AE_SITE_IDS not set; JS stream ready, consumers will be created on site register"
             )
+        else:
+            for site_id in site_ids:
+                client.ensure_consumer(
+                    stream=stream_name,
+                    durable=f"WORK_SITE_{site_id}",
+                    filter_subject=f"k1s.v1.work.site.{site_id}",
+                    ack_wait_s=ack_wait_s,
+                    max_ack_pending=max_ack_pending,
+                    max_deliver=max_deliver,
+                    max_waiting=max_waiting,
+                )
     except Exception as exc:  # noqa: BLE001
-        import logging as _log
-
-        _log.getLogger(__name__).warning("jetstream bootstrap failed: %s", exc)
+        logger.warning("jetstream bootstrap failed: %s", exc)
     finally:
-        try:
-            client.close()
-        except Exception:
-            pass
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1045,6 +1048,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 store,
                 url=transport.nats_url,
                 creds=transport.nats_creds,
+                js_provision=transport.backend == "nats-js",
             )
             _nats_ingress.start()
         except Exception as exc:  # noqa: BLE001

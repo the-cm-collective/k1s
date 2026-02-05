@@ -69,6 +69,7 @@ class SiteGateway:
         self._inflight_progress: dict[str, float] = {}
         self._inflight_heartbeat: dict[str, float] = {}
         self._completed: dict[str, float] = {}
+        self._running_sent: dict[str, float] = {}
         self._js_enabled = False
         self._last_pull_at = 0.0
         self._pull_interval_s = 1.0
@@ -240,6 +241,7 @@ class SiteGateway:
             msg_js = self._inflight.pop(work_key)
             self._inflight_progress.pop(work_key, None)
             self._inflight_heartbeat.pop(work_key, None)
+            self._running_sent.pop(work_key, None)
             self._completed[work_key] = time.monotonic()
             try:
                 msg_js.ack_sync()
@@ -281,15 +283,18 @@ class SiteGateway:
             return
         work_items = resp.get("work") or []
         lease_ids = resp.get("lease_ids") or []
-        for item in work_items:
+        accepted_leases: list[str] = []
+        for idx, item in enumerate(work_items):
             if not isinstance(item, dict):
                 continue
-            self._dispatch_work(item)
-        if lease_ids:
+            if self._dispatch_work(item):
+                if idx < len(lease_ids) and lease_ids[idx]:
+                    accepted_leases.append(str(lease_ids[idx]))
+        if accepted_leases:
             ack_req = {
                 "site_id": self._site_id,
                 "gateway_id": self._node_id,
-                "lease_ids": lease_ids,
+                "lease_ids": accepted_leases,
                 "accepted_at": time.time(),
                 "timestamp": time.time(),
             }
@@ -333,6 +338,7 @@ class SiteGateway:
                     self._inflight.pop(work_key, None)
                     self._inflight_progress.pop(work_key, None)
                     self._inflight_heartbeat.pop(work_key, None)
+                    self._running_sent.pop(work_key, None)
                     self._stats.inflight = len(self._inflight)
                 else:
                     try:
@@ -346,7 +352,13 @@ class SiteGateway:
                 except Exception:
                     pass
                 continue
-            self._dispatch_work(payload)
+            if not self._dispatch_work(payload):
+                try:
+                    js_msg.nak(self._nak_delay_s)
+                    self._stats.nacked += 1
+                except Exception:
+                    pass
+                continue
             if work_key:
                 self._inflight[work_key] = js_msg
                 self._inflight_progress[work_key] = now
@@ -354,14 +366,38 @@ class SiteGateway:
                 self._stats.inflight = len(self._inflight)
                 self._stats.accepted += 1
 
-    def _dispatch_work(self, payload: dict) -> None:
+    def _dispatch_work(self, payload: dict) -> bool:
         if self._nats_client is None:
-            return
+            return False
         node_id = payload.get("preferred_node") or payload.get("node_id") or self._node_id
         try:
             self._nats_client.publish_json(local_work_subject(str(node_id)), payload)
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("local work dispatch failed: %s", exc)
+            return False
+        self._emit_running(payload, str(node_id))
+        return True
+
+    def _emit_running(self, payload: dict, node_id: str) -> None:
+        if self._nats_client is None:
+            return
+        work_key = _work_key(payload)
+        if not work_key or work_key in self._running_sent:
+            return
+        running = {
+            "work_id": payload.get("work_id"),
+            "attempt": payload.get("attempt"),
+            "site_id": self._site_id,
+            "node_id": node_id,
+            "status": "running",
+            "observed_generation": payload.get("desired_generation"),
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        try:
+            self._nats_client.publish_json(hub_result_subject(self._site_id), running)
+            self._running_sent[work_key] = time.monotonic()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _run_progress(self, now: float) -> None:
         if not self._inflight:
@@ -379,6 +415,7 @@ class SiteGateway:
                 self._inflight.pop(work_key, None)
                 self._inflight_progress.pop(work_key, None)
                 self._inflight_heartbeat.pop(work_key, None)
+                self._running_sent.pop(work_key, None)
                 self._stats.inflight = len(self._inflight)
                 continue
             if now - last >= self._progress_interval_s:
@@ -392,6 +429,9 @@ class SiteGateway:
         for work_key, ts in list(self._completed.items()):
             if now - ts > ttl:
                 self._completed.pop(work_key, None)
+        for work_key, ts in list(self._running_sent.items()):
+            if now - ts > ttl:
+                self._running_sent.pop(work_key, None)
 
     def _acquire_lease(self) -> None:
         if self._nats_client is None:
