@@ -7,7 +7,7 @@ import json
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable
 
 try:  # Optional dependency until full transport is wired.
     from nats.aio.client import Client as NATS
@@ -34,6 +34,25 @@ class NatsMessage:
         return json.loads(self.data.decode("utf-8"))
 
 
+@dataclass(slots=True)
+class JetStreamMessage:
+    subject: str
+    reply: str | None
+    data: bytes
+    _ack: Callable[[], None]
+    _ack_sync: Callable[[], None]
+    _in_progress: Callable[[], None]
+
+    def ack(self) -> None:
+        self._ack()
+
+    def ack_sync(self) -> None:
+        self._ack_sync()
+
+    def in_progress(self) -> None:
+        self._in_progress()
+
+
 class NatsClient:
     def __init__(
         self,
@@ -54,6 +73,7 @@ class NatsClient:
         self._nc = NATS()
         self._connected = False
         self._started = False
+        self._js_subs: dict[tuple[str, str], object] = {}
 
     def _run_loop(self) -> None:
         asyncio.set_event_loop(self._loop)
@@ -161,6 +181,71 @@ class NatsClient:
         except Exception as exc:  # noqa: BLE001
             raise NatsClientError(f"unsubscribe failed: {exc}") from exc
 
+    def fetch_js_messages(
+        self,
+        *,
+        subject: str,
+        durable: str,
+        batch: int,
+        timeout_s: float,
+    ) -> list[JetStreamMessage]:
+        self._ensure_connected()
+
+        async def _get_pull_sub():  # type: ignore[no-untyped-def]
+            key = (subject, durable)
+            sub = self._js_subs.get(key)
+            if sub is None:
+                js = self._nc.jetstream()
+                sub = await js.pull_subscribe(subject, durable=durable)
+                self._js_subs[key] = sub
+            return sub
+
+        async def _fetch():  # type: ignore[no-untyped-def]
+            sub = await _get_pull_sub()
+            return await sub.fetch(batch, timeout=timeout_s)
+
+        try:
+            msgs = self._run(_fetch(), timeout_s + 1.0)
+        except Exception:
+            return []
+        return [self._wrap_js_msg(msg) for msg in msgs]
+
+    def _wrap_js_msg(self, msg: Msg) -> JetStreamMessage:  # type: ignore[misc]
+        def _ack() -> None:
+            try:
+                self._run(msg.ack(), 2.0)
+            except Exception:
+                pass
+
+        def _ack_sync() -> None:
+            try:
+                if hasattr(msg, "ack_sync"):
+                    self._run(msg.ack_sync(), 2.0)  # type: ignore[attr-defined]
+                else:
+                    self._run(msg.ack(), 2.0)
+            except Exception:
+                pass
+
+        def _in_progress() -> None:
+            try:
+                if hasattr(msg, "in_progress"):
+                    self._run(msg.in_progress(), 2.0)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+        return JetStreamMessage(
+            subject=msg.subject,
+            reply=msg.reply,
+            data=msg.data,
+            _ack=_ack,
+            _ack_sync=_ack_sync,
+            _in_progress=_in_progress,
+        )
+
+    def _run(self, coro, timeout_s: float):
+        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return fut.result(timeout=timeout_s)
+
     def _ensure_connected(self) -> None:
         if not self._connected:
             raise NatsClientError("client not connected")
@@ -178,4 +263,10 @@ def connect_once(
     client.close(timeout_s=timeout_s)
 
 
-__all__ = ["NatsClient", "NatsClientError", "NatsMessage", "connect_once"]
+__all__ = [
+    "JetStreamMessage",
+    "NatsClient",
+    "NatsClientError",
+    "NatsMessage",
+    "connect_once",
+]

@@ -443,11 +443,21 @@ class SQLiteStateStore:
                     "sql", "controller", "create_volume_attachments.sql"
                 )
             )
-            conn.execute(
-                resource_loader.load_text("sql", "controller", "create_work_queue.sql")
+            self._execute_script(
+                conn,
+                resource_loader.load_text("sql", "controller", "create_work_queue.sql"),
             )
             self._migrate_storage_bindings(conn)
             conn.commit()
+
+    def _execute_script(self, conn, sql: str) -> None:
+        if self.backend == "sqlite":
+            conn.executescript(sql)
+            return
+        for stmt in sql.split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                conn.execute(stmt)
 
     def _connect(self):
         if self.backend == "sqlite":
