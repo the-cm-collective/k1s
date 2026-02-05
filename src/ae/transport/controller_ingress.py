@@ -45,6 +45,7 @@ class NatsControllerIngress:
         controller_epoch: int | None = None,
         lease_ttl_ms: int | None = None,
         renew_after_ms: int | None = None,
+        js_provision: bool = False,
     ) -> None:
         self._store = store
         self._client = NatsClient(url=url, creds=creds, name="k1s-controller-ingress")
@@ -53,6 +54,18 @@ class NatsControllerIngress:
         self._renew_after_ms = renew_after_ms or int(
             os.getenv("AE_LEASE_RENEW_AFTER_MS", "20000") or 20000
         )
+        self._js_provision = js_provision
+        self._js_stream_name = os.getenv("AE_JS_STREAM_NAME", "K1S_WORK")
+        self._js_work_subject = os.getenv("AE_JS_WORK_SUBJECT", "k1s.v1.work.site.>")
+        self._js_storage = os.getenv("AE_JS_STORAGE", "file")
+        self._js_ack_wait_s = _parse_duration_seconds(
+            os.getenv("AE_GATEWAY_JS_ACK_WAIT"), default=30.0
+        )
+        self._js_max_ack_pending = int(os.getenv("AE_GATEWAY_JS_MAX_ACK_PENDING", "32") or 32)
+        self._js_max_deliver = int(os.getenv("AE_GATEWAY_JS_MAX_DELIVER", "20") or 20)
+        self._js_max_waiting = int(os.getenv("AE_GATEWAY_JS_MAX_WAITING", "512") or 512)
+        self._js_sites: set[str] = set()
+        self._js_stream_ready = False
         self._subs: list[str] = []
 
     def start(self) -> None:
@@ -161,6 +174,7 @@ class NatsControllerIngress:
             lease_ttl_ms=lease.lease_ttl_ms,
             renew_after_ms=lease.renew_after_ms,
         )
+        self._ensure_js_consumer(site_id)
         self._reply(msg, resp.as_dict())
 
     def _on_lease_renew(self, msg: NatsMessage) -> None:
@@ -290,6 +304,47 @@ class NatsControllerIngress:
             return json.loads(msg.data.decode("utf-8"))
         except Exception:
             return {}
+
+    def _ensure_js_consumer(self, site_id: str) -> None:
+        if not self._js_provision:
+            return
+        if not site_id or site_id in self._js_sites:
+            return
+        try:
+            if not self._js_stream_ready:
+                self._client.ensure_stream(
+                    name=self._js_stream_name,
+                    subjects=[self._js_work_subject],
+                    storage=self._js_storage,
+                    retention="workqueue",
+                )
+                self._js_stream_ready = True
+            self._client.ensure_consumer(
+                stream=self._js_stream_name,
+                durable=f"WORK_SITE_{site_id}",
+                filter_subject=f"k1s.v1.work.site.{site_id}",
+                ack_wait_s=self._js_ack_wait_s,
+                max_ack_pending=self._js_max_ack_pending,
+                max_deliver=self._js_max_deliver,
+                max_waiting=self._js_max_waiting,
+            )
+            self._js_sites.add(site_id)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("js consumer ensure failed site=%s: %s", site_id, exc)
+
+
+def _parse_duration_seconds(value: str | None, default: float) -> float:
+    if not value:
+        return default
+    raw = str(value).strip().lower()
+    try:
+        if raw.endswith("ms"):
+            return float(raw[:-2]) / 1000.0
+        if raw.endswith("s"):
+            return float(raw[:-1])
+        return float(raw)
+    except Exception:
+        return default
 
 
 def _site_id_from_subject(subject: str) -> str | None:
