@@ -47,5 +47,13 @@ def hub_caps_subject(site_id: str) -> str:
     return f"k1s.v1.site.{site_id}.caps"
 
 
+def hub_work_pull_subject(site_id: str) -> str:
+    return f"k1s.v1.site.{site_id}.work.pull"
+
+
+def hub_work_ack_subject(site_id: str) -> str:
+    return f"k1s.v1.site.{site_id}.work.ack"
+
+
 def work_stream_subject(site_id: str) -> str:
     return f"k1s.v1.work.site.{site_id}"

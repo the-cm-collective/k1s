@@ -32,6 +32,7 @@ from ae.controller.agent_api import start_agent_api
 from ae.observability.logging import configure_logging
 from ae.config.transport import TransportConfig, check_nats_connectivity
 from ae.transport.nats_client import NatsClient, NatsClientError
+from ae.transport.controller_ingress import NatsControllerIngress
 from ae.cli.__main__ import (
     state_store_from_env,
     runtime_factory,
@@ -913,6 +914,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     except Exception:
         pass
 
+    transport = None
     try:
         import logging as _log
 
@@ -952,6 +954,19 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     # Build reconciler (runtime, ingress, secrets, store)
     reconciler = _make_reconciler()
     store = state_store_from_env()
+    _nats_ingress = None
+    if transport and transport.backend in {"nats-core", "nats-js"} and transport.nats_url:
+        try:
+            _nats_ingress = NatsControllerIngress(
+                store,
+                url=transport.nats_url,
+                creds=transport.nats_creds,
+            )
+            _nats_ingress.start()
+        except Exception as exc:  # noqa: BLE001
+            import logging as _log
+
+            _log.getLogger(__name__).warning("failed to start nats ingress: %s", exc)
     _agent_api_server = None
     try:
         agent_port = int(os.getenv("AE_AGENT_API_PORT", os.getenv("AE_AGENT_PORT", "0") or 0))

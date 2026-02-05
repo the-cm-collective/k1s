@@ -176,6 +176,8 @@ We separate subjects by trust boundary:
 **B) Hub-facing (Site Gateway ↔ Controller)**
 - `k1s.v1.site.<site_id>.lease.acquire` — req/reply (registration)
 - `k1s.v1.site.<site_id>.lease.renew` — req/reply (keepalive)
+- `k1s.v1.site.<site_id>.work.pull` — req/reply (JetStream-less dispatch, lab-edge)
+- `k1s.v1.site.<site_id>.work.ack` — req/reply (JetStream-less dispatch, lab-edge)
 - `k1s.v1.site.<site_id>.result` — pub (work_result)
 - `k1s.v1.site.<site_id>.status` — pub (optional aggregated status)
 - `k1s.v1.site.<site_id>.logs` — pub (optional aggregated logs)
@@ -199,6 +201,62 @@ We separate subjects by trust boundary:
 Core NATS is best-effort; if subscriber is offline, messages can be lost. ([NATS Docs][5]) JetStream adds persistence, replay, ack/redelivery, and queue semantics. ([NATS Docs][3])
 
 ---
+
+### 6.3 JetStream-less `work.pull` contract (lab-edge)
+
+Use this in `lab-edge` to avoid JetStream while keeping deterministic dispatch semantics.
+
+Subjects:
+- `k1s.v1.site.<site_id>.work.pull` — gateway → controller (req/reply)
+- `k1s.v1.site.<site_id>.work.ack` — gateway → controller (req/reply)
+
+`work.pull` request:
+```json
+{
+  "site_id": "sfo-edge-01",
+  "gateway_id": "gw-01",
+  "limit": 10,
+  "visibility_timeout_ms": 60000,
+  "request_id": "uuid",
+  "timestamp": "ts"
+}
+```
+
+`work.pull` response:
+```json
+{
+  "accepted": true,
+  "work": [ { /* work dispatch payload */ } ],
+  "lease_ids": [ "lease-1", "lease-2" ],
+  "visibility_timeout_ms": 60000,
+  "reason": null
+}
+```
+
+`work.ack` request:
+```json
+{
+  "site_id": "sfo-edge-01",
+  "gateway_id": "gw-01",
+  "lease_ids": [ "lease-1" ],
+  "accepted_at": "ts",
+  "timestamp": "ts"
+}
+```
+
+`work.ack` response:
+```json
+{
+  "accepted": true,
+  "reason": null
+}
+```
+
+Semantics:
+- Controller sources work from SoT and marks it **leased** with a visibility timeout.
+- If the gateway **does not ack** before timeout, the lease expires and work returns to the queue.
+- `work_result` remains the terminal record and drives ledger transitions.
+- Prefer this over best-effort publish to avoid lost work confusion.
 
 ## 7. Heartbeat + lease semantics (worker-driven via Site Gateway)
 
