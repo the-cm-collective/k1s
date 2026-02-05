@@ -138,6 +138,81 @@ def _truthy_env(name: str, default: str = "0") -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _parse_duration_seconds(value: str | None, default: float) -> float:
+    if not value:
+        return default
+    raw = str(value).strip().lower()
+    try:
+        if raw.endswith("ms"):
+            return float(raw[:-2]) / 1000.0
+        if raw.endswith("s"):
+            return float(raw[:-1])
+        return float(raw)
+    except Exception:
+        return default
+
+
+def _parse_site_ids() -> list[str]:
+    raw = (os.getenv("AE_SITE_IDS") or os.getenv("AE_SITE_ID") or "").strip()
+    if not raw:
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _bootstrap_jetstream(transport: TransportConfig) -> None:
+    if transport.backend != "nats-js":
+        return
+    if not transport.nats_url:
+        return
+    site_ids = _parse_site_ids()
+    if not site_ids:
+        import logging as _log
+
+        _log.getLogger(__name__).warning("AE_SITE_IDS not set; skipping JS consumer setup")
+        return
+    stream_name = os.getenv("AE_JS_STREAM_NAME", "K1S_WORK")
+    work_subject = os.getenv("AE_JS_WORK_SUBJECT", "k1s.v1.work.site.>")
+    storage = os.getenv("AE_JS_STORAGE", "file")
+    ack_wait_s = _parse_duration_seconds(
+        os.getenv("AE_GATEWAY_JS_ACK_WAIT"), default=30.0
+    )
+    max_ack_pending = int(os.getenv("AE_GATEWAY_JS_MAX_ACK_PENDING", "32") or 32)
+    max_deliver = int(os.getenv("AE_GATEWAY_JS_MAX_DELIVER", "20") or 20)
+    max_waiting = int(os.getenv("AE_GATEWAY_JS_MAX_WAITING", "512") or 512)
+    try:
+        client = NatsClient(
+            url=transport.nats_url,
+            creds=transport.nats_creds,
+            name="k1s-js-bootstrap",
+        )
+        client.connect()
+        client.ensure_stream(
+            name=stream_name,
+            subjects=[work_subject],
+            storage=storage,
+            retention="workqueue",
+        )
+        for site_id in site_ids:
+            client.ensure_consumer(
+                stream=stream_name,
+                durable=f"WORK_SITE_{site_id}",
+                filter_subject=f"k1s.v1.work.site.{site_id}",
+                ack_wait_s=ack_wait_s,
+                max_ack_pending=max_ack_pending,
+                max_deliver=max_deliver,
+                max_waiting=max_waiting,
+            )
+    except Exception as exc:  # noqa: BLE001
+        import logging as _log
+
+        _log.getLogger(__name__).warning("jetstream bootstrap failed: %s", exc)
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ae.controller", description="k1s controller daemon")
     group = p.add_mutually_exclusive_group(required=True)
@@ -913,6 +988,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         )
     except Exception:
         pass
+
+    if transport:
+        _bootstrap_jetstream(transport)
 
     transport = None
     try:

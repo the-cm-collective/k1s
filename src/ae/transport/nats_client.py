@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from datetime import timedelta
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -12,9 +13,23 @@ from typing import Callable
 try:  # Optional dependency until full transport is wired.
     from nats.aio.client import Client as NATS
     from nats.aio.msg import Msg
+    from nats.js.api import (
+        AckPolicy,
+        ConsumerConfig,
+        DeliverPolicy,
+        RetentionPolicy,
+        StorageType,
+        StreamConfig,
+    )
 except Exception as exc:  # pragma: no cover - exercised when dependency missing
     NATS = None  # type: ignore[assignment]
     Msg = None  # type: ignore[assignment]
+    AckPolicy = None  # type: ignore[assignment]
+    ConsumerConfig = None  # type: ignore[assignment]
+    DeliverPolicy = None  # type: ignore[assignment]
+    RetentionPolicy = None  # type: ignore[assignment]
+    StorageType = None  # type: ignore[assignment]
+    StreamConfig = None  # type: ignore[assignment]
     _IMPORT_ERROR = exc
 else:  # pragma: no cover - import success
     _IMPORT_ERROR = None
@@ -210,6 +225,79 @@ class NatsClient:
             return []
         return [self._wrap_js_msg(msg) for msg in msgs]
 
+    def ensure_stream(
+        self,
+        *,
+        name: str,
+        subjects: list[str],
+        storage: str = "file",
+        retention: str = "workqueue",
+    ) -> None:
+        self._ensure_connected()
+        if StreamConfig is None:
+            raise NatsClientError("jetstream api unavailable")
+
+        async def _ensure():  # type: ignore[no-untyped-def]
+            js = self._nc.jetstream()
+            cfg = StreamConfig(
+                name=name,
+                subjects=subjects,
+                retention=_retention_policy(retention),
+                storage=_storage_type(storage),
+            )
+            try:
+                await js.stream_info(name)
+                try:
+                    await js.update_stream(cfg)
+                    return
+                except Exception:
+                    return
+            except Exception:
+                pass
+            await js.add_stream(cfg)
+
+        self._run(_ensure(), 5.0)
+
+    def ensure_consumer(
+        self,
+        *,
+        stream: str,
+        durable: str,
+        filter_subject: str,
+        ack_wait_s: float,
+        max_ack_pending: int,
+        max_deliver: int,
+        max_waiting: int,
+    ) -> None:
+        self._ensure_connected()
+        if ConsumerConfig is None:
+            raise NatsClientError("jetstream api unavailable")
+
+        async def _ensure():  # type: ignore[no-untyped-def]
+            js = self._nc.jetstream()
+            cfg = ConsumerConfig(
+                durable_name=durable,
+                ack_policy=AckPolicy.Explicit,
+                ack_wait=_ack_wait_value(ack_wait_s),
+                max_ack_pending=max_ack_pending,
+                max_deliver=max_deliver,
+                max_waiting=max_waiting,
+                filter_subject=filter_subject,
+                deliver_policy=DeliverPolicy.All,
+            )
+            try:
+                await js.consumer_info(stream, durable)
+                try:
+                    await js.update_consumer(stream, cfg)
+                    return
+                except Exception:
+                    return
+            except Exception:
+                pass
+            await js.add_consumer(stream, cfg)
+
+        self._run(_ensure(), 5.0)
+
     def _wrap_js_msg(self, msg: Msg) -> JetStreamMessage:  # type: ignore[misc]
         def _ack() -> None:
             try:
@@ -261,6 +349,35 @@ def connect_once(
     client = NatsClient(url=url, creds=creds, name=name, connect_timeout_s=timeout_s)
     client.connect()
     client.close(timeout_s=timeout_s)
+
+
+def _storage_type(value: str):
+    if StorageType is None:
+        return None
+    raw = str(value or "").lower()
+    if raw in {"mem", "memory"}:
+        return StorageType.Memory
+    return StorageType.File
+
+
+def _retention_policy(value: str):
+    if RetentionPolicy is None:
+        return None
+    raw = str(value or "").lower()
+    if raw in {"workqueue", "work_queue", "queue"}:
+        return RetentionPolicy.WorkQueue
+    if raw in {"interest"}:
+        return RetentionPolicy.Interest
+    return RetentionPolicy.Limits
+
+
+def _ack_wait_value(seconds: float):
+    ann = getattr(ConsumerConfig, "__annotations__", {}) if ConsumerConfig else {}
+    raw = ann.get("ack_wait")
+    if raw is not None and "timedelta" in str(raw).lower():
+        return timedelta(seconds=seconds)
+    # NATS API uses nanoseconds.
+    return int(seconds * 1_000_000_000)
 
 
 __all__ = [

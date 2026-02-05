@@ -34,6 +34,7 @@ ae-rotate-certs = "ae.cli.rotate_certs:main"
 k1s = "ae.kctl.__main__:main"
 ae-node = "ae.node.server:main"
 ae-gateway = "ae.gateway.__main__:main"
+ae-worker-stub = "ae.worker_stub.__main__:main"
 
 [tool.ae]
 version_codename = "Snow Moon"
