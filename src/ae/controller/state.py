@@ -148,6 +148,15 @@ class NodeLease:
 
 
 @dataclass(slots=True)
+class WorkOutboxEntry:
+    work_id: str
+    attempt: int
+    site_id: str
+    payload: dict
+    publish_attempts: int
+
+
+@dataclass(slots=True)
 class ServiceRecord:
     """Service-level metadata such as ClusterIP and exposed ports."""
 
@@ -465,6 +474,10 @@ class SQLiteStateStore:
             self._execute_script(
                 conn,
                 resource_loader.load_text("sql", "controller", "create_work_queue.sql"),
+            )
+            self._execute_script(
+                conn,
+                resource_loader.load_text("sql", "controller", "create_work_outbox.sql"),
             )
             self._migrate_storage_bindings(conn)
             conn.commit()
@@ -1288,6 +1301,95 @@ class SQLiteStateStore:
                 WHERE work_id = ? AND attempt = ?
                 """,
                 ("Done", now, work_id, attempt),
+            )
+            conn.commit()
+
+    # --- Outbox (jetstream) ---
+    def enqueue_work_outbox(
+        self,
+        work_id: str,
+        attempt: int,
+        site_id: str,
+        payload: dict,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        payload_json = json.dumps(payload)
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM work_outbox WHERE work_id = ? AND attempt = ?",
+                (work_id, attempt),
+            )
+            conn.execute(
+                """
+                INSERT INTO work_outbox
+                  (work_id, attempt, site_id, payload_json, state, publish_attempts,
+                   last_publish_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    work_id,
+                    int(attempt),
+                    site_id,
+                    payload_json,
+                    "Unpublished",
+                    0,
+                    None,
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+
+    def list_outbox_unpublished(self, limit: int = 100) -> list[WorkOutboxEntry]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT work_id, attempt, site_id, payload_json, publish_attempts
+                FROM work_outbox
+                WHERE state = 'Unpublished'
+                ORDER BY created_at
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+        entries: list[WorkOutboxEntry] = []
+        for row in rows:
+            payload = json.loads(row[3]) if row[3] else {}
+            entries.append(
+                WorkOutboxEntry(
+                    work_id=str(row[0]),
+                    attempt=int(row[1]),
+                    site_id=str(row[2]),
+                    payload=payload,
+                    publish_attempts=int(row[4] or 0),
+                )
+            )
+        return entries
+
+    def mark_outbox_published(self, work_id: str, attempt: int) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE work_outbox
+                SET state = ?, publish_attempts = publish_attempts + 1,
+                    last_publish_at = ?, updated_at = ?
+                WHERE work_id = ? AND attempt = ?
+                """,
+                ("Published", now, now, work_id, int(attempt)),
+            )
+            conn.commit()
+
+    def record_outbox_publish_attempt(self, work_id: str, attempt: int) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE work_outbox
+                SET publish_attempts = publish_attempts + 1, last_publish_at = ?, updated_at = ?
+                WHERE work_id = ? AND attempt = ?
+                """,
+                (now, now, work_id, int(attempt)),
             )
             conn.commit()
 
