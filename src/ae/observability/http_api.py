@@ -56,6 +56,9 @@ _APP_CANARY_WEIGHT: dict[str, float] = {}
 _APP_CANARY_STEPS: dict[str, int] = {}
 _OUTBOX_PUBLISH_OK: int = 0
 _OUTBOX_PUBLISH_FAIL: int = 0
+_SITE_LAST_SEEN: dict[str, float] = {}
+_JS_STREAM_STATS: dict[str, dict[str, float]] = {}
+_JS_CONSUMER_STATS: dict[tuple[str, str], dict[str, object]] = {}
 
 
 def record_outbox_publish(success: bool) -> None:
@@ -65,6 +68,48 @@ def record_outbox_publish(success: bool) -> None:
     else:
         _OUTBOX_PUBLISH_FAIL += 1
 
+
+def record_site_seen(site_id: str) -> None:
+    if not site_id:
+        return
+    _SITE_LAST_SEEN[site_id] = time.time()
+
+
+def record_js_stream_stats(
+    *,
+    stream: str,
+    bytes_used: int,
+    messages: int,
+    max_bytes: int,
+) -> None:
+    if not stream:
+        return
+    _JS_STREAM_STATS[stream] = {
+        "bytes_used": float(bytes_used),
+        "messages": float(messages),
+        "max_bytes": float(max_bytes),
+    }
+
+
+def record_js_consumer_stats(
+    *,
+    stream: str,
+    consumer: str,
+    site_id: str,
+    pending: int,
+    ack_pending: int,
+    redelivered: int,
+    waiting: int,
+) -> None:
+    if not stream or not consumer:
+        return
+    _JS_CONSUMER_STATS[(stream, consumer)] = {
+        "site_id": site_id,
+        "pending": float(pending),
+        "ack_pending": float(ack_pending),
+        "redelivered": float(redelivered),
+        "waiting": float(waiting),
+    }
 _HELM_DEMO_LOCK = threading.RLock()
 _HELM_DEMO_STATE: dict[str, object] = {
     "proc": None,
@@ -2641,6 +2686,25 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     lines.append(f"ae_node_last_seen_seconds{{{labels}}} {last_age}")
         except Exception:
             pass
+        # Site telemetry metrics (status/logs/caps last seen)
+        try:
+            import os as _os
+            from datetime import datetime as _dt
+            from datetime import timezone as _tz
+
+            grace = int(_os.getenv("AE_SITE_NOTREADY_AFTER", "90") or 90)
+            now = _dt.now(_tz.utc)
+            for site_id, last_ts in list(_SITE_LAST_SEEN.items()):
+                try:
+                    last_age = now.timestamp() - float(last_ts)
+                except Exception:
+                    continue
+                stale = 1 if last_age > grace else 0
+                labels = f'site="{site_id}"'
+                lines.append(f"ae_site_last_seen_seconds{{{labels}}} {last_age}")
+                lines.append(f"ae_site_stale{{{labels}}} {stale}")
+        except Exception:
+            pass
         # Service/VIP metrics
         try:
             from collections import defaultdict
@@ -2809,6 +2873,48 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         lines.append("# HELP ae_outbox_publish_fail_total Outbox publishes that failed")
         lines.append("# TYPE ae_outbox_publish_fail_total counter")
         lines.append(f"ae_outbox_publish_fail_total {_OUTBOX_PUBLISH_FAIL}")
+        if _JS_STREAM_STATS:
+            lines.append("# HELP ae_js_stream_bytes JetStream stream bytes in use")
+            lines.append("# TYPE ae_js_stream_bytes gauge")
+            lines.append("# HELP ae_js_stream_messages JetStream stream message count")
+            lines.append("# TYPE ae_js_stream_messages gauge")
+            lines.append("# HELP ae_js_stream_max_bytes JetStream stream max bytes")
+            lines.append("# TYPE ae_js_stream_max_bytes gauge")
+            lines.append(
+                "# HELP ae_js_stream_bytes_utilization JetStream stream bytes used / max bytes"
+            )
+            lines.append("# TYPE ae_js_stream_bytes_utilization gauge")
+            for stream, stats in _JS_STREAM_STATS.items():
+                labels = f'stream="{stream}"'
+                bytes_used = float(stats.get("bytes_used", 0.0) or 0.0)
+                messages = float(stats.get("messages", 0.0) or 0.0)
+                max_bytes = float(stats.get("max_bytes", 0.0) or 0.0)
+                lines.append(f"ae_js_stream_bytes{{{labels}}} {bytes_used}")
+                lines.append(f"ae_js_stream_messages{{{labels}}} {messages}")
+                lines.append(f"ae_js_stream_max_bytes{{{labels}}} {max_bytes}")
+                if max_bytes > 0:
+                    util = bytes_used / max_bytes
+                    lines.append(f"ae_js_stream_bytes_utilization{{{labels}}} {util}")
+        if _JS_CONSUMER_STATS:
+            lines.append("# HELP ae_js_consumer_pending JetStream consumer pending messages")
+            lines.append("# TYPE ae_js_consumer_pending gauge")
+            lines.append("# HELP ae_js_consumer_ack_pending JetStream consumer ack pending")
+            lines.append("# TYPE ae_js_consumer_ack_pending gauge")
+            lines.append("# HELP ae_js_consumer_redelivered JetStream consumer redelivered")
+            lines.append("# TYPE ae_js_consumer_redelivered gauge")
+            lines.append("# HELP ae_js_consumer_waiting JetStream consumer waiting pulls")
+            lines.append("# TYPE ae_js_consumer_waiting gauge")
+            for (stream, consumer), stats in _JS_CONSUMER_STATS.items():
+                site_id = str(stats.get("site_id", "") or "")
+                labels = f'stream="{stream}",consumer="{consumer}",site="{site_id}"'
+                pending = float(stats.get("pending", 0.0) or 0.0)
+                ack_pending = float(stats.get("ack_pending", 0.0) or 0.0)
+                redelivered = float(stats.get("redelivered", 0.0) or 0.0)
+                waiting = float(stats.get("waiting", 0.0) or 0.0)
+                lines.append(f"ae_js_consumer_pending{{{labels}}} {pending}")
+                lines.append(f"ae_js_consumer_ack_pending{{{labels}}} {ack_pending}")
+                lines.append(f"ae_js_consumer_redelivered{{{labels}}} {redelivered}")
+                lines.append(f"ae_js_consumer_waiting{{{labels}}} {waiting}")
         lines.append("")
         payload = "\n".join(lines).encode("utf-8")
         self.send_response(200)

@@ -342,6 +342,30 @@ class NatsClient:
 
         self._run(_ensure(), 5.0)
 
+    def stream_info(self, name: str):
+        self._ensure_connected()
+
+        async def _info():  # type: ignore[no-untyped-def]
+            js = self._nc.jetstream()
+            return await js.stream_info(name)
+
+        try:
+            return self._run(_info(), 2.5)
+        except Exception as exc:  # noqa: BLE001
+            raise NatsClientError(f"js stream info failed: {exc}") from exc
+
+    def consumer_info(self, stream: str, durable: str):
+        self._ensure_connected()
+
+        async def _info():  # type: ignore[no-untyped-def]
+            js = self._nc.jetstream()
+            return await js.consumer_info(stream, durable)
+
+        try:
+            return self._run(_info(), 2.5)
+        except Exception as exc:  # noqa: BLE001
+            raise NatsClientError(f"js consumer info failed: {exc}") from exc
+
     def _wrap_js_msg(self, msg: Msg) -> JetStreamMessage:  # type: ignore[misc]
         def _ack() -> None:
             try:

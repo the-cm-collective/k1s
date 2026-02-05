@@ -6,6 +6,7 @@ import json
 import logging
 
 from ae.transport.nats_client import NatsClient, NatsClientError, NatsMessage
+from ae.observability.http_api import record_site_seen
 
 LOGGER = logging.getLogger(__name__)
 
@@ -42,18 +43,21 @@ class TelemetryIngress:
         payload = _safe_json(msg.data)
         site_id = _site_id_from_subject(msg.subject)
         if site_id:
+            record_site_seen(site_id)
             LOGGER.debug("site status %s: %s", site_id, payload)
 
     def _on_logs(self, msg: NatsMessage) -> None:
         payload = _safe_json(msg.data)
         site_id = _site_id_from_subject(msg.subject)
         if site_id:
+            record_site_seen(site_id)
             LOGGER.debug("site log %s: %s", site_id, payload)
 
     def _on_caps(self, msg: NatsMessage) -> None:
         payload = _safe_json(msg.data)
         site_id = _site_id_from_subject(msg.subject)
         if site_id:
+            record_site_seen(site_id)
             LOGGER.debug("site caps %s: %s", site_id, payload)
 
 

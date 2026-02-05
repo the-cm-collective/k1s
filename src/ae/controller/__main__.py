@@ -35,6 +35,7 @@ from ae.transport.nats_client import NatsClient, NatsClientError
 from ae.transport.controller_ingress import NatsControllerIngress
 from ae.transport.telemetry_ingress import TelemetryIngress
 from ae.transport.outbox_publisher import OutboxPublisher, OutboxPublisherConfig
+from ae.transport.jetstream_monitor import JetStreamMonitor, JetStreamMonitorConfig
 from ae.cli.__main__ import (
     state_store_from_env,
     runtime_factory,
@@ -1037,6 +1038,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     _nats_ingress = None
     _telemetry_ingress = None
     _outbox_publisher = None
+    _js_monitor = None
     if transport and transport.backend in {"nats-core", "nats-js"} and transport.nats_url:
         try:
             _nats_ingress = NatsControllerIngress(
@@ -1076,6 +1078,30 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 import logging as _log
 
                 _log.getLogger(__name__).warning("failed to start outbox publisher: %s", exc)
+            try:
+                monitor_interval = float(
+                    os.getenv("AE_JS_MONITOR_INTERVAL_S", "10") or 10
+                )
+            except Exception:
+                monitor_interval = 10.0
+            if monitor_interval > 0:
+                try:
+                    stream_name = os.getenv("AE_JS_STREAM_NAME", "K1S_WORK")
+                    site_ids = _parse_site_ids()
+                    _js_monitor = JetStreamMonitor(
+                        nats_url=transport.nats_url,
+                        nats_creds=transport.nats_creds,
+                        config=JetStreamMonitorConfig(
+                            interval_s=monitor_interval,
+                            stream_name=stream_name,
+                            site_ids=site_ids,
+                        ),
+                    )
+                    _js_monitor.start()
+                except Exception as exc:  # noqa: BLE001
+                    import logging as _log
+
+                    _log.getLogger(__name__).warning("failed to start js monitor: %s", exc)
     _agent_api_server = None
     try:
         agent_port = int(os.getenv("AE_AGENT_API_PORT", os.getenv("AE_AGENT_PORT", "0") or 0))
