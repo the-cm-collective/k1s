@@ -1,0 +1,31 @@
+"""Transport helpers for NATS/JetStream integration (Mode A)."""
+
+from ae.transport.subjects import (
+    hub_caps_subject,
+    hub_lease_acquire_subject,
+    hub_lease_renew_subject,
+    hub_logs_subject,
+    hub_result_subject,
+    hub_status_subject,
+    local_caps_subject,
+    local_logs_subject,
+    local_result_subject,
+    local_status_subject,
+    local_work_subject,
+    work_stream_subject,
+)
+
+__all__ = [
+    "hub_caps_subject",
+    "hub_lease_acquire_subject",
+    "hub_lease_renew_subject",
+    "hub_logs_subject",
+    "hub_result_subject",
+    "hub_status_subject",
+    "local_caps_subject",
+    "local_logs_subject",
+    "local_result_subject",
+    "local_status_subject",
+    "local_work_subject",
+    "work_stream_subject",
+]
