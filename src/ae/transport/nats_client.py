@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 from datetime import timedelta
 from dataclasses import dataclass
@@ -75,6 +76,7 @@ class NatsClient:
         url: str,
         creds: Path | None = None,
         name: str | None = None,
+        js_domain: str | None = None,
         connect_timeout_s: float = 2.5,
     ) -> None:
         if NATS is None:  # pragma: no cover - handled via runtime logs
@@ -83,6 +85,7 @@ class NatsClient:
         self._creds = creds
         self._name = name
         self._connect_timeout_s = connect_timeout_s
+        self._js_domain = (js_domain or os.getenv("AE_JS_DOMAIN") or "").strip() or None
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._nc = NATS()
@@ -176,7 +179,7 @@ class NatsClient:
         self._ensure_connected()
 
         async def _pub():  # type: ignore[no-untyped-def]
-            js = self._nc.jetstream()
+            js = self._js()
             await js.publish(subject, payload, headers=headers)
 
         try:
@@ -260,7 +263,7 @@ class NatsClient:
             key = (stream or subject, durable)
             sub = self._js_subs.get(key)
             if sub is None:
-                js = self._nc.jetstream()
+                js = self._js()
                 if stream:
                     sub = await js.pull_subscribe_bind(stream=stream, durable=durable)
                 else:
@@ -291,7 +294,7 @@ class NatsClient:
             raise NatsClientError("jetstream api unavailable")
 
         async def _ensure():  # type: ignore[no-untyped-def]
-            js = self._nc.jetstream()
+            js = self._js()
             cfg = StreamConfig(
                 name=name,
                 subjects=subjects,
@@ -327,7 +330,7 @@ class NatsClient:
             raise NatsClientError("jetstream api unavailable")
 
         async def _ensure():  # type: ignore[no-untyped-def]
-            js = self._nc.jetstream()
+            js = self._js()
             cfg = ConsumerConfig(
                 durable_name=durable,
                 ack_policy=AckPolicy.EXPLICIT,
@@ -355,7 +358,7 @@ class NatsClient:
         self._ensure_connected()
 
         async def _info():  # type: ignore[no-untyped-def]
-            js = self._nc.jetstream()
+            js = self._js()
             return await js.stream_info(name)
 
         try:
@@ -367,7 +370,7 @@ class NatsClient:
         self._ensure_connected()
 
         async def _info():  # type: ignore[no-untyped-def]
-            js = self._nc.jetstream()
+            js = self._js()
             return await js.consumer_info(stream, durable)
 
         try:
@@ -410,6 +413,11 @@ class NatsClient:
     def _run(self, coro, timeout_s: float):
         fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return fut.result(timeout=timeout_s)
+
+    def _js(self):  # type: ignore[no-untyped-def]
+        if self._js_domain:
+            return self._nc.jetstream(domain=self._js_domain)
+        return self._nc.jetstream()
 
     def _ensure_connected(self) -> None:
         if not self._connected:
