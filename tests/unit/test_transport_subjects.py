@@ -5,6 +5,8 @@ from ae.transport import (
     hub_logs_subject,
     hub_result_subject,
     hub_status_subject,
+    hub_work_ack_subject,
+    hub_work_pull_subject,
     local_caps_subject,
     local_logs_subject,
     local_result_subject,
@@ -27,5 +29,7 @@ def test_subject_helpers() -> None:
     assert hub_status_subject("site-1") == "k1s.v1.site.site-1.status"
     assert hub_logs_subject("site-1") == "k1s.v1.site.site-1.logs"
     assert hub_caps_subject("site-1") == "k1s.v1.site.site-1.caps"
+    assert hub_work_pull_subject("site-1") == "k1s.v1.site.site-1.work.pull"
+    assert hub_work_ack_subject("site-1") == "k1s.v1.site.site-1.work.ack"
 
     assert work_stream_subject("site-1") == "k1s.v1.work.site.site-1"

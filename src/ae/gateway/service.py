@@ -16,6 +16,8 @@ from ae.transport import (
     hub_logs_subject,
     hub_result_subject,
     hub_status_subject,
+    hub_work_ack_subject,
+    hub_work_pull_subject,
     local_caps_subject,
     local_logs_subject,
     local_result_subject,
@@ -71,6 +73,8 @@ class SiteGateway:
             hub_status_subject(self._site_id),
             hub_logs_subject(self._site_id),
             hub_caps_subject(self._site_id),
+            hub_work_pull_subject(self._site_id),
+            hub_work_ack_subject(self._site_id),
             work_stream_subject(self._site_id),
         ]
 
