@@ -723,6 +723,21 @@ Phase 1 templates must include:
 
 **Exit:** successful canary + documented rollout
 
+Rollout checklist (Mode A)
+- Feature flag: `AE_TRANSPORT_BACKEND = http|nats-core|nats-js` (default `http`).
+- Hub requires `AE_SITE_IDS` for per-site JS consumers when `nats-js` is enabled.
+
+Canary steps
+1. Pick a single site id (e.g., `sfo-edge-01`) and set `AE_SITE_IDS` on the hub controller.
+2. Start hub NATS + etcd + controller with `AE_TRANSPORT_BACKEND=nats-js`.
+3. Start a single gateway with `AE_TRANSPORT_BACKEND=nats-js` and the site creds.
+4. Enqueue work and validate metrics: `ae_outbox_publish_success_total`, `ae_js_consumer_pending`, `ae_site_last_seen_seconds`.
+
+Rollback steps
+1. Stop the gateway or set it back to `AE_TRANSPORT_BACKEND=http`.
+2. Disable JS on the hub (unset `AE_SITE_IDS` or set `AE_TRANSPORT_BACKEND=http`).
+3. Confirm work dispatch returns to HTTP path and pending JS work drains.
+
 ---
 
 ## 13. Appendix A — etcd key layout (examples)
