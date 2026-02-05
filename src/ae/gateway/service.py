@@ -75,6 +75,20 @@ class SiteGateway:
         self._lease_ttl_ms = 0
         self._renew_after_ms = 0
         self._next_renew_at = 0.0
+        self._status_every_s = max(
+            5.0, float(os.getenv("AE_GATEWAY_STATUS_PUBLISH_INTERVAL", "10") or 10)
+        )
+        self._logs_every_s = max(
+            5.0, float(os.getenv("AE_GATEWAY_LOGS_PUBLISH_INTERVAL", "15") or 15)
+        )
+        self._last_status_publish = 0.0
+        self._last_logs_publish = 0.0
+        self._status_sample_rate = _parse_float(
+            os.getenv("AE_GATEWAY_STATUS_SAMPLE_RATE"), 1.0
+        )
+        self._logs_sample_rate = _parse_float(
+            os.getenv("AE_GATEWAY_LOGS_SAMPLE_RATE"), 1.0
+        )
 
     def _subjects(self) -> list[str]:
         return [
@@ -162,6 +176,7 @@ class SiteGateway:
                     self._poll_js(now)
                 else:
                     self._poll_work_pull(now)
+                self._publish_telemetry(now)
             if now - self._stats.last_report_at >= self._status_interval_s:
                 self._stats.last_report_at = now
                 LOGGER.info(
@@ -363,6 +378,42 @@ class SiteGateway:
         self._renew_after_ms = int(resp.get("renew_after_ms") or self._renew_after_ms)
         self._next_renew_at = now + max(1.0, self._renew_after_ms / 1000.0)
 
+    def _publish_telemetry(self, now: float) -> None:
+        if self._nats_client is None:
+            return
+        if now - self._last_status_publish >= self._status_every_s:
+            self._last_status_publish = now
+            if _should_sample(self._status_sample_rate):
+                status = {
+                    "site_id": self._site_id,
+                    "node_id": self._node_id,
+                    "inflight": self._stats.inflight,
+                    "accepted": self._stats.accepted,
+                    "completed": self._stats.completed,
+                    "failed": self._stats.failed,
+                    "timestamp": time.time(),
+                }
+                try:
+                    self._nats_client.publish_json(
+                        hub_status_subject(self._site_id), status
+                    )
+                except Exception:
+                    pass
+        if now - self._last_logs_publish >= self._logs_every_s:
+            self._last_logs_publish = now
+            if _should_sample(self._logs_sample_rate):
+                log = {
+                    "site_id": self._site_id,
+                    "node_id": self._node_id,
+                    "level": "info",
+                    "message": "gateway heartbeat",
+                    "timestamp": time.time(),
+                }
+                try:
+                    self._nats_client.publish_json(hub_logs_subject(self._site_id), log)
+                except Exception:
+                    pass
+
 
 def render_subjects(site_id: str, node_id: str) -> list[str]:
     gateway = SiteGateway(
@@ -404,6 +455,25 @@ def _parse_duration_seconds(value: str, default: float) -> float:
         return float(raw)
     except Exception:
         return default
+
+
+def _parse_float(value: str | None, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _should_sample(rate: float) -> bool:
+    if rate >= 1.0:
+        return True
+    if rate <= 0.0:
+        return False
+    import random
+
+    return random.random() <= rate
 
 
 __all__ = ["SiteGateway", "GatewayStats", "render_subjects"]
