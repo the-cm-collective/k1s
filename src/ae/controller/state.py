@@ -7,8 +7,9 @@ import json
 import os
 import sqlite3
 import hashlib
+import uuid
 from dataclasses import InitVar, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -117,6 +118,18 @@ class AppEvent:
     event_type: str
     message: str
     created_at: datetime
+
+
+@dataclass(slots=True)
+class WorkQueueLease:
+    """Leased work item for lab-edge work.pull."""
+
+    work_id: str
+    attempt: int
+    site_id: str
+    payload: dict
+    lease_id: str
+    lease_expires_at: datetime | None
 
 
 @dataclass(slots=True)
@@ -429,6 +442,9 @@ class SQLiteStateStore:
                 resource_loader.load_text(
                     "sql", "controller", "create_volume_attachments.sql"
                 )
+            )
+            conn.execute(
+                resource_loader.load_text("sql", "controller", "create_work_queue.sql")
             )
             self._migrate_storage_bindings(conn)
             conn.commit()
@@ -1016,6 +1032,127 @@ class SQLiteStateStore:
                 )
             )
         return events, total
+
+    # --- Work queue (lab-edge) ---
+    def enqueue_work(
+        self,
+        work_id: str,
+        attempt: int,
+        site_id: str,
+        payload: dict,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        payload_json = json.dumps(payload)
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM work_queue WHERE work_id = ? AND attempt = ?",
+                (work_id, attempt),
+            )
+            conn.execute(
+                """
+                INSERT INTO work_queue
+                  (work_id, attempt, site_id, payload_json, state, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (work_id, attempt, site_id, payload_json, "Pending", now, now),
+            )
+            conn.commit()
+
+    def pull_work(
+        self,
+        site_id: str,
+        limit: int,
+        visibility_timeout_ms: int,
+    ) -> list[WorkQueueLease]:
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        timeout_ms = max(0, int(visibility_timeout_ms))
+        lease_expires_at = now + timedelta(milliseconds=timeout_ms)
+        exp_iso = lease_expires_at.isoformat()
+        leases: list[WorkQueueLease] = []
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE work_queue
+                SET state = ?, lease_id = NULL, leased_at = NULL,
+                    lease_expires_at = NULL, acked_at = NULL, updated_at = ?
+                WHERE state IN ('Leased', 'Acked')
+                  AND lease_expires_at IS NOT NULL
+                  AND lease_expires_at < ?
+                """,
+                ("Pending", now_iso, now_iso),
+            )
+            rows = conn.execute(
+                """
+                SELECT work_id, attempt, payload_json
+                FROM work_queue
+                WHERE site_id = ? AND state = 'Pending'
+                ORDER BY created_at
+                LIMIT ?
+                """,
+                (site_id, int(limit)),
+            ).fetchall()
+            for row in rows:
+                work_id, attempt, payload_json = row[0], int(row[1]), row[2]
+                lease_id = str(uuid.uuid4())
+                cursor = conn.execute(
+                    """
+                    UPDATE work_queue
+                    SET state = ?, lease_id = ?, leased_at = ?, lease_expires_at = ?, updated_at = ?
+                    WHERE work_id = ? AND attempt = ? AND state = 'Pending'
+                    """,
+                    ("Leased", lease_id, now_iso, exp_iso, now_iso, work_id, attempt),
+                )
+                if getattr(cursor, "rowcount", 1) == 0:
+                    continue
+                payload = json.loads(payload_json) if payload_json else {}
+                leases.append(
+                    WorkQueueLease(
+                        work_id=work_id,
+                        attempt=attempt,
+                        site_id=site_id,
+                        payload=payload,
+                        lease_id=lease_id,
+                        lease_expires_at=lease_expires_at,
+                    )
+                )
+            conn.commit()
+        return leases
+
+    def ack_work(self, lease_ids: list[str]) -> int:
+        if not lease_ids:
+            return 0
+        now = datetime.now(timezone.utc).isoformat()
+        updated = 0
+        with self._connect() as conn:
+            for lease_id in lease_ids:
+                cursor = conn.execute(
+                    """
+                    UPDATE work_queue
+                    SET state = ?, acked_at = ?, updated_at = ?
+                    WHERE lease_id = ?
+                    """,
+                    ("Acked", now, now, lease_id),
+                )
+                try:
+                    updated += int(getattr(cursor, "rowcount", 0) or 0)
+                except Exception:
+                    pass
+            conn.commit()
+        return updated
+
+    def mark_work_done(self, work_id: str, attempt: int) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE work_queue
+                SET state = ?, updated_at = ?, lease_id = NULL, lease_expires_at = NULL
+                WHERE work_id = ? AND attempt = ?
+                """,
+                ("Done", now, work_id, attempt),
+            )
+            conn.commit()
 
     # --- Canary rollout state ----------------------------------------------
 
