@@ -644,6 +644,7 @@ Phase 1 templates must include:
 - Gateway durability: **SQLite spool (WAL)** with `synchronous=NORMAL` and `busy_timeout` set.
 - Ack semantics: **AckProgress** while inflight; **AckSync** after terminal result is durably committed locally.
 - `ack_wait=30s`, `progress=10s`, `max_ack_pending=32`, `max_deliver=20`, `progress_jitter=±15%`, `max_waiting=512`.
+- JetStream domain (when enabled on hub): set `AE_JS_DOMAIN=K1S` on controller + gateway.
 - Work publish: `Nats-Msg-Id = work_id:attempt`.
 - Outbox: `outbox/work/<work_id>/<attempt>`, ledger → `Dispatched` on PubAck.
 - Lease API: req/reply schemas in §7.4.
