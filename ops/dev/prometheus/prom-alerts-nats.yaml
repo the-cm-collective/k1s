@@ -1,0 +1,43 @@
+groups:
+  - name: nats-jetstream
+    rules:
+      - alert: SiteStale
+        expr: ae_site_stale == 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Site telemetry stale"
+          description: "Site {{$labels.site}} has stopped reporting telemetry."
+      - alert: OutboxPublishFailures
+        expr: increase(ae_outbox_publish_fail_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbox publish failures"
+          description: "Outbox publish failures detected in the last 5 minutes."
+      - alert: JSConsumerBacklog
+        expr: ae_js_consumer_pending > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JetStream consumer backlog"
+          description: "Consumer {{$labels.consumer}} has {{$value}} pending messages."
+      - alert: JSConsumerAckPending
+        expr: ae_js_consumer_ack_pending > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JetStream consumer ack pending"
+          description: "Consumer {{$labels.consumer}} has {{$value}} ack pending."
+      - alert: JSStreamStorageHigh
+        expr: ae_js_stream_bytes_utilization > 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JetStream stream nearing capacity"
+          description: "Stream {{$labels.stream}} utilization is {{$value}}."

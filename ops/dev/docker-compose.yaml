@@ -22,6 +22,8 @@ services:
       - "${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/prom-alerts-nats.yaml:/etc/prometheus/prom-alerts-nats.yaml:ro
+      - ./prom-alerts-multinode.yaml:/etc/prometheus/prom-alerts-multinode.yaml:ro
     # Configure scrape targets after observability endpoints exist.
 
   haproxy:
