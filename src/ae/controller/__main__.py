@@ -30,7 +30,7 @@ from ae.controller.spec import AppManifest, ManifestError, app_key_for_manifest,
 from ae.observability.http_api import start_http_api, set_reconcile_metrics
 from ae.controller.agent_api import start_agent_api
 from ae.observability.logging import configure_logging
-from ae.config.transport import TransportConfig
+from ae.config.transport import TransportConfig, check_nats_connectivity
 from ae.cli.__main__ import (
     state_store_from_env,
     runtime_factory,
@@ -916,13 +916,22 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         import logging as _log
 
         transport = TransportConfig.from_env()
+        logger = _log.getLogger(__name__)
         if transport.backend != "http":
-            _log.getLogger(__name__).warning(
+            logger.warning(
                 "AE_TRANSPORT_BACKEND=%s configured; NATS transport not wired yet, using HTTP.",
                 transport.backend,
             )
+            if transport.nats_url:
+                ok, detail = check_nats_connectivity(transport.nats_url)
+                if ok:
+                    logger.info("nats connectivity ok (%s)", detail)
+                else:
+                    logger.warning("nats connectivity failed (%s)", detail)
+            else:
+                logger.warning("AE_NATS_URL not set; skipping nats connectivity check")
         else:
-            _log.getLogger(__name__).info("transport backend=%s", transport.backend)
+            logger.info("transport backend=%s", transport.backend)
     except Exception:
         pass
 

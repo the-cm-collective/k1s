@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+import socket
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 DEFAULT_TRANSPORT_BACKEND = "http"
 DEFAULT_GATEWAY_ACK_WAIT = "30s"
@@ -15,6 +17,7 @@ DEFAULT_GATEWAY_MAX_ACK_PENDING = 32
 DEFAULT_GATEWAY_MAX_DELIVER = 20
 DEFAULT_GATEWAY_MAX_WAITING = 512
 DEFAULT_GATEWAY_SPOOL_PATH = Path("/var/lib/ae/gateway/spool.db")
+DEFAULT_NATS_PORT = 4222
 
 
 def _env_int(env: Mapping[str, str], key: str, default: int) -> int:
@@ -25,6 +28,34 @@ def _env_int(env: Mapping[str, str], key: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _normalize_nats_url(raw: str) -> str:
+    if "://" in raw:
+        return raw
+    return f"nats://{raw}"
+
+
+def _parse_nats_endpoint(raw: str) -> tuple[str, int]:
+    url = _normalize_nats_url(raw.strip())
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if not host:
+        raise ValueError("missing host")
+    port = parsed.port or DEFAULT_NATS_PORT
+    return host, port
+
+
+def check_nats_connectivity(url: str, timeout_s: float = 1.5) -> tuple[bool, str]:
+    try:
+        host, port = _parse_nats_endpoint(url)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"invalid nats url: {exc}"
+    try:
+        with socket.create_connection((host, port), timeout=timeout_s):
+            return True, f"{host}:{port}"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{host}:{port} ({exc})"
 
 
 @dataclass(slots=True)
