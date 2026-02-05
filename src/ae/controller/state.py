@@ -133,6 +133,21 @@ class WorkQueueLease:
 
 
 @dataclass(slots=True)
+class NodeLease:
+    """Lease record for a node (lab-edge semantics)."""
+
+    node_id: str
+    site_id: str
+    session_id: str
+    lease_id: str
+    controller_epoch: int
+    lease_ttl_ms: int
+    renew_after_ms: int
+    last_renew_at: datetime
+    expires_at: datetime
+
+
+@dataclass(slots=True)
 class ServiceRecord:
     """Service-level metadata such as ClusterIP and exposed ports."""
 
@@ -432,6 +447,10 @@ class SQLiteStateStore:
                 resource_loader.load_text(
                     "sql", "controller", "create_node_heartbeats.sql"
                 )
+            )
+            self._execute_script(
+                conn,
+                resource_loader.load_text("sql", "controller", "create_node_leases.sql"),
             )
             conn.execute(
                 resource_loader.load_text(
@@ -1042,6 +1061,114 @@ class SQLiteStateStore:
                 )
             )
         return events, total
+
+    # --- Node leases (lab-edge) ---
+    def acquire_lease(
+        self,
+        site_id: str,
+        node_id: str,
+        session_id: str,
+        lease_ttl_ms: int,
+        renew_after_ms: int,
+        controller_epoch: int,
+    ) -> NodeLease:
+        now = datetime.now(timezone.utc)
+        lease_id = str(uuid.uuid4())
+        expires_at = now + timedelta(milliseconds=int(lease_ttl_ms))
+        now_iso = now.isoformat()
+        with self._connect() as conn:
+            conn.execute("DELETE FROM node_leases WHERE node_id = ?", (node_id,))
+            conn.execute(
+                """
+                INSERT INTO node_leases
+                  (node_id, site_id, session_id, lease_id, controller_epoch,
+                   lease_ttl_ms, renew_after_ms, last_renew_at, expires_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    node_id,
+                    site_id,
+                    session_id,
+                    lease_id,
+                    int(controller_epoch),
+                    int(lease_ttl_ms),
+                    int(renew_after_ms),
+                    now_iso,
+                    expires_at.isoformat(),
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            conn.commit()
+        return NodeLease(
+            node_id=node_id,
+            site_id=site_id,
+            session_id=session_id,
+            lease_id=lease_id,
+            controller_epoch=int(controller_epoch),
+            lease_ttl_ms=int(lease_ttl_ms),
+            renew_after_ms=int(renew_after_ms),
+            last_renew_at=now,
+            expires_at=expires_at,
+        )
+
+    def renew_lease(
+        self,
+        node_id: str,
+        session_id: str,
+        lease_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> tuple[NodeLease | None, str | None]:
+        now_dt = now or datetime.now(timezone.utc)
+        now_iso = now_dt.isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT node_id, site_id, session_id, lease_id, controller_epoch,
+                       lease_ttl_ms, renew_after_ms, last_renew_at, expires_at
+                FROM node_leases WHERE node_id = ?
+                """,
+                (node_id,),
+            ).fetchone()
+            if row is None:
+                return None, "unknown_lease"
+            if str(row[2]) != str(session_id):
+                return None, "invalid_session"
+            if str(row[3]) != str(lease_id):
+                return None, "unknown_lease"
+            try:
+                expires_at = datetime.fromisoformat(row[8])
+            except Exception:
+                expires_at = now_dt - timedelta(seconds=1)
+            if expires_at <= now_dt:
+                conn.execute("DELETE FROM node_leases WHERE node_id = ?", (node_id,))
+                conn.commit()
+                return None, "expired"
+            lease_ttl_ms = int(row[5])
+            renew_after_ms = int(row[6])
+            new_expires = now_dt + timedelta(milliseconds=lease_ttl_ms)
+            conn.execute(
+                """
+                UPDATE node_leases
+                SET last_renew_at = ?, expires_at = ?, updated_at = ?
+                WHERE node_id = ?
+                """,
+                (now_iso, new_expires.isoformat(), now_iso, node_id),
+            )
+            conn.commit()
+            lease = NodeLease(
+                node_id=str(row[0]),
+                site_id=str(row[1]),
+                session_id=str(row[2]),
+                lease_id=str(row[3]),
+                controller_epoch=int(row[4]),
+                lease_ttl_ms=lease_ttl_ms,
+                renew_after_ms=renew_after_ms,
+                last_renew_at=now_dt,
+                expires_at=new_expires,
+            )
+            return lease, None
 
     # --- Work queue (lab-edge) ---
     def enqueue_work(

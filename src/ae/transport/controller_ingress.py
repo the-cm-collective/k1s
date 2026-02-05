@@ -123,6 +123,14 @@ class NatsControllerIngress:
         labels.setdefault("site", site_id)
         backend = str(payload.get("backend") or "nats")
         try:
+            lease = self._store.acquire_lease(
+                site_id=site_id,
+                node_id=node_id,
+                session_id=session_id or str(int(time.time())),
+                lease_ttl_ms=self._lease_ttl_ms,
+                renew_after_ms=self._renew_after_ms,
+                controller_epoch=self._epoch,
+            )
             self._store.upsert_node(
                 node_id,
                 name=node_id,
@@ -136,13 +144,22 @@ class NatsControllerIngress:
             self._store.record_heartbeat(node_id, "Ready")
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("lease acquire store update failed: %s", exc)
-        lease_id = f"local:{site_id}:{node_id}:{session_id or int(time.time())}"
+            resp = LeaseResponse(
+                accepted=False,
+                controller_epoch=self._epoch,
+                lease_id=None,
+                lease_ttl_ms=self._lease_ttl_ms,
+                renew_after_ms=self._renew_after_ms,
+                reason=str(exc),
+            )
+            self._reply(msg, resp.as_dict())
+            return
         resp = LeaseResponse(
             accepted=True,
             controller_epoch=self._epoch,
-            lease_id=lease_id,
-            lease_ttl_ms=self._lease_ttl_ms,
-            renew_after_ms=self._renew_after_ms,
+            lease_id=lease.lease_id,
+            lease_ttl_ms=lease.lease_ttl_ms,
+            renew_after_ms=lease.renew_after_ms,
         )
         self._reply(msg, resp.as_dict())
 
@@ -161,6 +178,30 @@ class NatsControllerIngress:
             )
             self._reply(msg, resp.as_dict())
             return
+        lease_id = str(payload.get("lease_id") or "").strip()
+        if not lease_id:
+            resp = LeaseResponse(
+                accepted=False,
+                controller_epoch=self._epoch,
+                lease_id=None,
+                lease_ttl_ms=self._lease_ttl_ms,
+                renew_after_ms=self._renew_after_ms,
+                reason="lease_id required",
+            )
+            self._reply(msg, resp.as_dict())
+            return
+        lease, reason = self._store.renew_lease(node_id, session_id=str(payload.get("session_id") or ""), lease_id=lease_id)
+        if lease is None:
+            resp = LeaseResponse(
+                accepted=False,
+                controller_epoch=self._epoch,
+                lease_id=lease_id,
+                lease_ttl_ms=self._lease_ttl_ms,
+                renew_after_ms=self._renew_after_ms,
+                reason=reason,
+            )
+            self._reply(msg, resp.as_dict())
+            return
         try:
             self._store.record_heartbeat(node_id, "Ready")
         except Exception as exc:  # noqa: BLE001
@@ -168,9 +209,9 @@ class NatsControllerIngress:
         resp = LeaseResponse(
             accepted=True,
             controller_epoch=self._epoch,
-            lease_id=str(payload.get("lease_id") or ""),
-            lease_ttl_ms=self._lease_ttl_ms,
-            renew_after_ms=self._renew_after_ms,
+            lease_id=lease.lease_id,
+            lease_ttl_ms=lease.lease_ttl_ms,
+            renew_after_ms=lease.renew_after_ms,
         )
         self._reply(msg, resp.as_dict())
 
