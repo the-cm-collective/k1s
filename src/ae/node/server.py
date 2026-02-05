@@ -11,7 +11,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from ae.config.transport import TransportConfig
+from ae.config.transport import TransportConfig, check_nats_connectivity
 from ae.controller.spec import AppManifest
 from ae.runtime import PodState, RuntimeAdapter, RuntimeResult
 import requests
@@ -747,6 +747,14 @@ def main(argv: list[str] | None = None) -> int:
                 "AE_TRANSPORT_BACKEND=%s configured; node agent still uses HTTP.",
                 transport.backend,
             )
+            if transport.nats_url:
+                ok, detail = check_nats_connectivity(transport.nats_url)
+                if ok:
+                    LOGGER.info("nats connectivity ok (%s)", detail)
+                else:
+                    LOGGER.warning("nats connectivity failed (%s)", detail)
+            else:
+                LOGGER.warning("AE_NATS_URL not set; skipping nats connectivity check")
         else:
             LOGGER.info("transport backend=%s", transport.backend)
     except Exception:
