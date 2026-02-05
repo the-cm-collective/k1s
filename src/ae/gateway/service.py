@@ -23,6 +23,7 @@ from ae.transport import (
     local_logs_subject,
     local_result_subject,
     local_status_subject,
+    local_work_progress_subject,
     local_work_subject,
     work_stream_subject,
 )
@@ -39,6 +40,8 @@ class GatewayStats:
     accepted: int = 0
     completed: int = 0
     failed: int = 0
+    stale: int = 0
+    nacked: int = 0
     last_report_at: float = 0.0
 
 
@@ -60,9 +63,11 @@ class SiteGateway:
         self._status_interval_s = max(5, status_interval_s)
         self._stats = GatewayStats()
         self._nats_client = nats_client
+        self._backend = os.getenv("AE_TRANSPORT_BACKEND", "http").lower()
         self._js_stream = os.getenv("AE_JS_STREAM_NAME", "K1S_WORK")
         self._inflight: dict[str, JetStreamMessage] = {}
         self._inflight_progress: dict[str, float] = {}
+        self._inflight_heartbeat: dict[str, float] = {}
         self._completed: dict[str, float] = {}
         self._js_enabled = False
         self._last_pull_at = 0.0
@@ -71,6 +76,8 @@ class SiteGateway:
             js_config.progress_interval, default=10.0
         )
         self._ack_wait_s = _parse_duration_seconds(js_config.ack_wait, default=30.0)
+        self._heartbeat_timeout_s = self._resolve_heartbeat_timeout()
+        self._nak_delay_s = self._resolve_nak_delay()
         self._session_id = str(uuid.uuid4())
         self._lease_id: str | None = None
         self._lease_ttl_ms = 0
@@ -95,6 +102,7 @@ class SiteGateway:
         return [
             local_work_subject(self._node_id),
             local_result_subject(),
+            local_work_progress_subject(),
             local_status_subject(self._node_id),
             local_logs_subject(self._node_id),
             local_caps_subject(self._node_id),
@@ -128,6 +136,11 @@ class SiteGateway:
             self._js_config.max_waiting,
         )
         LOGGER.info("spool_path=%s", self._js_config.spool_path)
+        LOGGER.info(
+            "work heartbeat timeout=%.1fs nak_delay=%.1fs",
+            self._heartbeat_timeout_s,
+            self._nak_delay_s,
+        )
 
     def _log_connectivity(self) -> None:
         if not self._nats_url:
@@ -139,6 +152,20 @@ class SiteGateway:
         else:
             LOGGER.warning("nats connectivity failed (%s)", detail)
 
+    def _resolve_heartbeat_timeout(self) -> float:
+        raw = os.getenv("AE_GATEWAY_WORK_HEARTBEAT_TIMEOUT")
+        default = max(self._progress_interval_s * 2.0, self._ack_wait_s * 0.8)
+        if raw:
+            return _parse_duration_seconds(raw, default=default)
+        return default
+
+    def _resolve_nak_delay(self) -> float:
+        raw = os.getenv("AE_GATEWAY_WORK_NAK_DELAY")
+        default = min(5.0, max(1.0, self._progress_interval_s))
+        if raw:
+            return _parse_duration_seconds(raw, default=default)
+        return default
+
     def start(self, *, once: bool = False) -> None:
         self._log_config()
         self._log_connectivity()
@@ -149,11 +176,10 @@ class SiteGateway:
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("nats client connect failed: %s", exc)
             else:
-                self._js_enabled = (
-                    os.getenv("AE_TRANSPORT_BACKEND", "http").lower() == "nats-js"
-                )
+                self._js_enabled = self._backend == "nats-js"
                 try:
                     self._subscribe_local_results()
+                    self._subscribe_local_progress()
                     self._acquire_lease()
                 except Exception as exc:  # noqa: BLE001
                     LOGGER.warning("failed to subscribe local results: %s", exc)
@@ -165,7 +191,7 @@ class SiteGateway:
                 except Exception:
                     pass
             return
-        LOGGER.info("gateway skeleton running; no transport backend wired yet")
+        LOGGER.info("gateway running (backend=%s)", self._backend)
         self._stats.last_report_at = time.monotonic()
         while True:
             time.sleep(1)
@@ -193,6 +219,11 @@ class SiteGateway:
             return
         self._nats_client.subscribe(local_result_subject(), self._on_local_result)
 
+    def _subscribe_local_progress(self) -> None:
+        if self._nats_client is None:
+            return
+        self._nats_client.subscribe(local_work_progress_subject(), self._on_local_progress)
+
     def _on_local_result(self, msg) -> None:  # type: ignore[override]
         payload = _safe_json(msg.data)
         if not isinstance(payload, dict):
@@ -208,6 +239,7 @@ class SiteGateway:
         if work_key and work_key in self._inflight:
             msg_js = self._inflight.pop(work_key)
             self._inflight_progress.pop(work_key, None)
+            self._inflight_heartbeat.pop(work_key, None)
             self._completed[work_key] = time.monotonic()
             try:
                 msg_js.ack_sync()
@@ -217,6 +249,15 @@ class SiteGateway:
             self._stats.failed += 1
         else:
             self._stats.completed += 1
+
+    def _on_local_progress(self, msg) -> None:  # type: ignore[override]
+        payload = _safe_json(msg.data)
+        if not isinstance(payload, dict):
+            return
+        work_key = _work_key(payload)
+        if not work_key:
+            return
+        self._inflight_heartbeat[work_key] = time.monotonic()
 
     def _poll_work_pull(self, now: float) -> None:
         if now - self._last_pull_at < self._pull_interval_s:
@@ -279,10 +320,25 @@ class SiteGateway:
                 continue
             work_key = _work_key(payload)
             if work_key and work_key in self._inflight:
-                try:
-                    js_msg.in_progress()
-                except Exception:
-                    pass
+                heartbeat_at = self._inflight_heartbeat.get(
+                    work_key, self._inflight_progress.get(work_key, now)
+                )
+                if now - heartbeat_at > self._heartbeat_timeout_s:
+                    self._stats.stale += 1
+                    try:
+                        js_msg.nak(self._nak_delay_s)
+                        self._stats.nacked += 1
+                    except Exception:
+                        pass
+                    self._inflight.pop(work_key, None)
+                    self._inflight_progress.pop(work_key, None)
+                    self._inflight_heartbeat.pop(work_key, None)
+                    self._stats.inflight = len(self._inflight)
+                else:
+                    try:
+                        js_msg.in_progress()
+                    except Exception:
+                        pass
                 continue
             if work_key and work_key in self._completed:
                 try:
@@ -294,6 +350,7 @@ class SiteGateway:
             if work_key:
                 self._inflight[work_key] = js_msg
                 self._inflight_progress[work_key] = now
+                self._inflight_heartbeat[work_key] = now
                 self._stats.inflight = len(self._inflight)
                 self._stats.accepted += 1
 
@@ -311,6 +368,19 @@ class SiteGateway:
             return
         for work_key, js_msg in list(self._inflight.items()):
             last = self._inflight_progress.get(work_key, 0.0)
+            heartbeat_at = self._inflight_heartbeat.get(work_key, last or now)
+            if now - heartbeat_at > self._heartbeat_timeout_s:
+                self._stats.stale += 1
+                try:
+                    js_msg.nak(self._nak_delay_s)
+                    self._stats.nacked += 1
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.warning("js nak failed for %s: %s", work_key, exc)
+                self._inflight.pop(work_key, None)
+                self._inflight_progress.pop(work_key, None)
+                self._inflight_heartbeat.pop(work_key, None)
+                self._stats.inflight = len(self._inflight)
+                continue
             if now - last >= self._progress_interval_s:
                 try:
                     js_msg.in_progress()
@@ -393,6 +463,10 @@ class SiteGateway:
                     "accepted": self._stats.accepted,
                     "completed": self._stats.completed,
                     "failed": self._stats.failed,
+                    "metrics": {
+                        "work_stale_total": self._stats.stale,
+                        "work_nak_total": self._stats.nacked,
+                    },
                     "timestamp": time.time(),
                 }
                 try:

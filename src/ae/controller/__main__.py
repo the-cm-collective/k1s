@@ -999,8 +999,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         transport = TransportConfig.from_env()
         logger = _log.getLogger(__name__)
         if transport.backend != "http":
-            logger.warning(
-                "AE_TRANSPORT_BACKEND=%s configured; NATS transport not wired yet, using HTTP.",
+            logger.info(
+                "AE_TRANSPORT_BACKEND=%s configured; NATS ingress/outbox enabled",
                 transport.backend,
             )
             if transport.nats_url:

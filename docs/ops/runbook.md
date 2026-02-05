@@ -31,6 +31,11 @@ NATS + etcd dev stack (Mode A)
   - Start gateway: `AE_TRANSPORT_BACKEND=nats-core AE_SITE_ID=sfo-edge-01 AE_NATS_URL=nats://127.0.0.1:4223 ae-gateway`
   - Start stub worker: `ae-worker-stub --node-id node-01 --nats-url nats://127.0.0.1:4223`
   - Enqueue a work item: `ae work enqueue --site-id sfo-edge-01 --mode queue --op ensure_pod --preferred-node node-01`
+- Mode A canary (JetStream path):
+  - Hub controller: `AE_TRANSPORT_BACKEND=nats-js AE_SITE_IDS=sfo-edge-01 AE_NATS_URL=nats://127.0.0.1:4222 python -m ae.controller --loop --interval 2 --metrics-port 9108`
+  - Gateway: `AE_TRANSPORT_BACKEND=nats-js AE_SITE_ID=sfo-edge-01 AE_NATS_URL=nats://127.0.0.1:4223 ae-gateway`
+  - Enqueue: `ae work enqueue --site-id sfo-edge-01 --mode outbox --op ensure_pod --preferred-node node-01`
+  - Rollback: stop the gateway and restart the controller with `AE_TRANSPORT_BACKEND=http` (or unset) to return to HTTP dispatch.
 
 CRI nodes (containerd)
 - Required env:
@@ -149,7 +154,7 @@ NATS edge drills (Mode A)
 - JS consumer lag: enqueue a batch of work and watch `ae_outbox_publish_success_total` advance; use NATS tooling to inspect consumer pending/ack if needed.
 - Hub NATS restart: restart the hub NATS process and ensure outbox publishing resumes without manual intervention.
 - Site disconnect/reconnect: stop the edge leader + gateway, confirm stale metrics, then restart and confirm the site recovers.
-- Worker crash mid-work: kill the worker stub during execution and verify redelivery/ack-pending behavior.
+- Worker crash mid-work: kill the worker stub during execution and confirm the gateway stops progress acks; message should be NAKed and redelivered once the gateway sees stale heartbeats.
 - etcd leader change: force a leader move and ensure controller reconciliation continues without errors.
 
 

@@ -11,6 +11,7 @@ from ae.transport import (
     local_logs_subject,
     local_result_subject,
     local_status_subject,
+    local_work_progress_subject,
     local_work_subject,
     work_stream_subject,
 )
@@ -19,6 +20,7 @@ from ae.transport import (
 def test_subject_helpers() -> None:
     assert local_work_subject("node-1") == "k1s.v1.local.work.node-1"
     assert local_result_subject() == "k1s.v1.local.result"
+    assert local_work_progress_subject() == "k1s.v1.local.work.progress"
     assert local_status_subject("node-1") == "k1s.v1.local.status.node-1"
     assert local_logs_subject("node-1") == "k1s.v1.local.logs.node-1"
     assert local_caps_subject("node-1") == "k1s.v1.local.node.announce.node-1"

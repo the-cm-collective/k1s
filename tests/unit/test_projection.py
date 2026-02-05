@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 from ae.controller.health import HealthManager
 from ae.controller.reconciler import Reconciler
@@ -56,7 +57,8 @@ def test_projection_writes_files(tmp_path: Path):
 
     m = make_manifest(tmp_path)
     report = reconciler.reconcile(m)
-    proj = Path("state/projections") / f"{m.metadata.name}-rev{report.revision}"
+    base = Path(os.getenv("AE_PROJECTION_ROOT", "state/projections"))
+    proj = base / f"{m.metadata.name}-rev{report.revision}"
     cfg_file = proj / "config" / "mode"
     sec_file = proj / "secret" / "token"
     assert cfg_file.exists()

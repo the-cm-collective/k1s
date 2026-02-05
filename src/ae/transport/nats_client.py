@@ -58,6 +58,7 @@ class JetStreamMessage:
     _ack: Callable[[], None]
     _ack_sync: Callable[[], None]
     _in_progress: Callable[[], None]
+    _nak: Callable[[float | None], None]
 
     def ack(self) -> None:
         self._ack()
@@ -67,6 +68,9 @@ class JetStreamMessage:
 
     def in_progress(self) -> None:
         self._in_progress()
+
+    def nak(self, delay_s: float | None = None) -> None:
+        self._nak(delay_s)
 
 
 class NatsClient:
@@ -401,6 +405,16 @@ class NatsClient:
             except Exception:
                 pass
 
+        def _nak(delay_s: float | None) -> None:
+            try:
+                if hasattr(msg, "nak"):
+                    if delay_s is None:
+                        self._run(msg.nak(), 2.0)  # type: ignore[attr-defined]
+                    else:
+                        self._run(msg.nak(delay=delay_s), 2.0)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
         return JetStreamMessage(
             subject=msg.subject,
             reply=msg.reply,
@@ -408,6 +422,7 @@ class NatsClient:
             _ack=_ack,
             _ack_sync=_ack_sync,
             _in_progress=_in_progress,
+            _nak=_nak,
         )
 
     def _run(self, coro, timeout_s: float):

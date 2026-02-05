@@ -59,6 +59,7 @@ _OUTBOX_PUBLISH_FAIL: int = 0
 _SITE_LAST_SEEN: dict[str, float] = {}
 _JS_STREAM_STATS: dict[str, dict[str, float]] = {}
 _JS_CONSUMER_STATS: dict[tuple[str, str], dict[str, object]] = {}
+_GATEWAY_WORK_METRICS: dict[str, dict[str, float]] = {}
 
 
 def record_outbox_publish(success: bool) -> None:
@@ -73,6 +74,19 @@ def record_site_seen(site_id: str) -> None:
     if not site_id:
         return
     _SITE_LAST_SEEN[site_id] = time.time()
+
+
+def record_gateway_metrics(
+    site_id: str, *, work_stale_total: float | int | None, work_nak_total: float | int | None
+) -> None:
+    if not site_id:
+        return
+    stale_val = float(work_stale_total or 0.0)
+    nak_val = float(work_nak_total or 0.0)
+    _GATEWAY_WORK_METRICS[site_id] = {
+        "work_stale_total": stale_val,
+        "work_nak_total": nak_val,
+    }
 
 
 def record_js_stream_stats(
@@ -2873,6 +2887,17 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         lines.append("# HELP ae_outbox_publish_fail_total Outbox publishes that failed")
         lines.append("# TYPE ae_outbox_publish_fail_total counter")
         lines.append(f"ae_outbox_publish_fail_total {_OUTBOX_PUBLISH_FAIL}")
+        if _GATEWAY_WORK_METRICS:
+            lines.append("# HELP ae_gateway_work_stale_total Gateway work items marked stale")
+            lines.append("# TYPE ae_gateway_work_stale_total counter")
+            lines.append("# HELP ae_gateway_work_nak_total Gateway work items NAKed for redelivery")
+            lines.append("# TYPE ae_gateway_work_nak_total counter")
+            for site_id, stats in _GATEWAY_WORK_METRICS.items():
+                labels = f'site="{site_id}"'
+                stale = float(stats.get("work_stale_total", 0.0) or 0.0)
+                nacked = float(stats.get("work_nak_total", 0.0) or 0.0)
+                lines.append(f"ae_gateway_work_stale_total{{{labels}}} {stale}")
+                lines.append(f"ae_gateway_work_nak_total{{{labels}}} {nacked}")
         if _JS_STREAM_STATS:
             lines.append("# HELP ae_js_stream_bytes JetStream stream bytes in use")
             lines.append("# TYPE ae_js_stream_bytes gauge")
