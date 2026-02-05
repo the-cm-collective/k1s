@@ -35,6 +35,7 @@ from ae.transport.nats_client import NatsClient, NatsClientError
 from ae.transport.controller_ingress import NatsControllerIngress
 from ae.transport.telemetry_ingress import TelemetryIngress
 from ae.transport.outbox_publisher import OutboxPublisher, OutboxPublisherConfig
+from ae.controller.work_watchdog import WorkWatchdog, WorkWatchdogConfig
 from ae.transport.jetstream_monitor import JetStreamMonitor, JetStreamMonitorConfig
 from ae.cli.__main__ import (
     state_store_from_env,
@@ -1042,6 +1043,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     _telemetry_ingress = None
     _outbox_publisher = None
     _js_monitor = None
+    _work_watchdog = None
     if transport and transport.backend in {"nats-core", "nats-js"} and transport.nats_url:
         try:
             _nats_ingress = NatsControllerIngress(
@@ -1082,6 +1084,33 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 import logging as _log
 
                 _log.getLogger(__name__).warning("failed to start outbox publisher: %s", exc)
+            try:
+                watchdog_enabled = str(
+                    os.getenv("AE_WORK_WATCHDOG", "1") or "1"
+                ).lower() in {"1", "true", "yes", "on"}
+                if watchdog_enabled:
+                    dispatched_max = _parse_duration_seconds(
+                        os.getenv("AE_WORK_DISPATCHED_MAX"), default=300.0
+                    )
+                    running_max = _parse_duration_seconds(
+                        os.getenv("AE_WORK_RUNNING_MAX"), default=1800.0
+                    )
+                    watchdog_interval = _parse_duration_seconds(
+                        os.getenv("AE_WORK_WATCHDOG_INTERVAL"), default=5.0
+                    )
+                    _work_watchdog = WorkWatchdog(
+                        store,
+                        config=WorkWatchdogConfig(
+                            interval_s=watchdog_interval,
+                            dispatched_max_s=dispatched_max,
+                            running_max_s=running_max,
+                        ),
+                    )
+                    _work_watchdog.start()
+            except Exception as exc:  # noqa: BLE001
+                import logging as _log
+
+                _log.getLogger(__name__).warning("failed to start work watchdog: %s", exc)
             try:
                 monitor_interval = float(
                     os.getenv("AE_JS_MONITOR_INTERVAL_S", "10") or 10

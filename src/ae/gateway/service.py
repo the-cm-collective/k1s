@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from ae.config.transport import GatewayJetStreamConfig, check_nats_connectivity
+from ae.gateway.spool import GatewaySpool
 from ae.transport import (
     hub_caps_subject,
     hub_lease_acquire_subject,
@@ -65,6 +66,8 @@ class SiteGateway:
         self._nats_client = nats_client
         self._backend = os.getenv("AE_TRANSPORT_BACKEND", "http").lower()
         self._js_stream = os.getenv("AE_JS_STREAM_NAME", "K1S_WORK")
+        self._spool = GatewaySpool(self._js_config.spool_path)
+        self._spool_enabled = True
         self._inflight: dict[str, JetStreamMessage] = {}
         self._inflight_progress: dict[str, float] = {}
         self._inflight_heartbeat: dict[str, float] = {}
@@ -97,6 +100,11 @@ class SiteGateway:
         )
         self._logs_sample_rate = _parse_float(
             os.getenv("AE_GATEWAY_LOGS_SAMPLE_RATE"), 1.0
+        )
+        self._last_result_retry = 0.0
+        self._result_retry_interval_s = max(
+            2.0,
+            float(os.getenv("AE_GATEWAY_RESULT_RETRY_INTERVAL", "5") or 5),
         )
 
     def _subjects(self) -> list[str]:
@@ -170,6 +178,11 @@ class SiteGateway:
     def start(self, *, once: bool = False) -> None:
         self._log_config()
         self._log_connectivity()
+        try:
+            self._spool.init()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("spool init failed: %s", exc)
+            self._spool_enabled = False
         if self._nats_client is not None:
             try:
                 self._nats_client.connect()
@@ -204,6 +217,7 @@ class SiteGateway:
                     self._poll_js(now)
                 else:
                     self._poll_work_pull(now)
+                self._replay_spool_results(now)
                 self._publish_telemetry(now)
             if now - self._stats.last_report_at >= self._status_interval_s:
                 self._stats.last_report_at = now
@@ -231,12 +245,36 @@ class SiteGateway:
             return
         payload.setdefault("site_id", self._site_id)
         payload.setdefault("node_id", self._node_id)
+        work_key = _work_key(payload)
+        if self._spool_enabled and work_key:
+            try:
+                self._spool.record_result(
+                    work_id=str(payload.get("work_id")),
+                    attempt=int(payload.get("attempt") or 0),
+                    status=str(payload.get("status") or ""),
+                    payload=payload,
+                )
+                self._spool.update_inflight_state(
+                    str(payload.get("work_id")),
+                    int(payload.get("attempt") or 0),
+                    "terminal",
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("spool record_result failed: %s", exc)
+                return
         try:
             if self._nats_client is not None:
                 self._nats_client.publish_json(hub_result_subject(self._site_id), payload)
+                if self._spool_enabled and work_key:
+                    try:
+                        self._spool.mark_result_delivered(
+                            work_id=str(payload.get("work_id")),
+                            attempt=int(payload.get("attempt") or 0),
+                        )
+                    except Exception:
+                        pass
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("publish work_result failed: %s", exc)
-        work_key = _work_key(payload)
         if work_key and work_key in self._inflight:
             msg_js = self._inflight.pop(work_key)
             self._inflight_progress.pop(work_key, None)
@@ -260,6 +298,21 @@ class SiteGateway:
         if not work_key:
             return
         self._inflight_heartbeat[work_key] = time.monotonic()
+
+    def _replay_spool_results(self, now: float) -> None:
+        if not self._spool_enabled or self._nats_client is None:
+            return
+        if now - self._last_result_retry < self._result_retry_interval_s:
+            return
+        self._last_result_retry = now
+        for record in self._spool.list_undelivered_results(limit=100):
+            try:
+                self._nats_client.publish_json(
+                    hub_result_subject(self._site_id), record.payload
+                )
+                self._spool.mark_result_delivered(record.work_id, record.attempt)
+            except Exception:
+                continue
 
     def _poll_work_pull(self, now: float) -> None:
         if now - self._last_pull_at < self._pull_interval_s:
@@ -324,6 +377,39 @@ class SiteGateway:
             if not isinstance(payload, dict):
                 continue
             work_key = _work_key(payload)
+            work_id = payload.get("work_id")
+            attempt = payload.get("attempt")
+            if (
+                self._spool_enabled
+                and self._js_enabled
+                and work_id is not None
+                and attempt is not None
+            ):
+                try:
+                    result = self._spool.get_result(str(work_id), int(attempt))
+                except Exception:
+                    result = None
+                if result is not None:
+                    try:
+                        js_msg.ack_sync()
+                    except Exception:
+                        pass
+                    if work_key:
+                        self._completed[work_key] = now
+                    continue
+                try:
+                    inflight_state = self._spool.get_inflight_state(
+                        str(work_id), int(attempt)
+                    )
+                except Exception:
+                    inflight_state = None
+                if inflight_state and inflight_state != "abandoned":
+                    if work_key:
+                        self._inflight[work_key] = js_msg
+                        self._inflight_progress.setdefault(work_key, now)
+                        self._inflight_heartbeat.setdefault(work_key, now)
+                        self._stats.inflight = len(self._inflight)
+                    continue
             if work_key and work_key in self._inflight:
                 heartbeat_at = self._inflight_heartbeat.get(
                     work_key, self._inflight_progress.get(work_key, now)
@@ -335,6 +421,13 @@ class SiteGateway:
                         self._stats.nacked += 1
                     except Exception:
                         pass
+                    if self._spool_enabled and work_id is not None and attempt is not None:
+                        try:
+                            self._spool.update_inflight_state(
+                                str(work_id), int(attempt), "abandoned"
+                            )
+                        except Exception:
+                            pass
                     self._inflight.pop(work_key, None)
                     self._inflight_progress.pop(work_key, None)
                     self._inflight_heartbeat.pop(work_key, None)
@@ -352,6 +445,19 @@ class SiteGateway:
                 except Exception:
                     pass
                 continue
+            if self._spool_enabled and self._js_enabled and work_id is not None and attempt is not None:
+                try:
+                    self._spool.record_inflight(
+                        work_id=str(work_id),
+                        attempt=int(attempt),
+                        js_stream=str(js_msg.stream or self._js_stream),
+                        js_consumer=str(js_msg.consumer or f"WORK_SITE_{self._site_id}"),
+                        js_seq=int(js_msg.seq or 0),
+                        node_id=None,
+                        state="accepted",
+                    )
+                except Exception:
+                    pass
             if not self._dispatch_work(payload):
                 try:
                     js_msg.nak(self._nak_delay_s)
@@ -384,6 +490,16 @@ class SiteGateway:
         work_key = _work_key(payload)
         if not work_key or work_key in self._running_sent:
             return
+        if self._spool_enabled and self._js_enabled:
+            try:
+                self._spool.update_inflight_state(
+                    str(payload.get("work_id")),
+                    int(payload.get("attempt") or 0),
+                    "running",
+                    node_id=node_id,
+                )
+            except Exception:
+                pass
         running = {
             "work_id": payload.get("work_id"),
             "attempt": payload.get("attempt"),
@@ -412,6 +528,12 @@ class SiteGateway:
                     self._stats.nacked += 1
                 except Exception as exc:  # noqa: BLE001
                     LOGGER.warning("js nak failed for %s: %s", work_key, exc)
+                if self._spool_enabled:
+                    try:
+                        work_id, attempt = work_key.split(":", 1)
+                        self._spool.update_inflight_state(work_id, int(attempt), "abandoned")
+                    except Exception:
+                        pass
                 self._inflight.pop(work_key, None)
                 self._inflight_progress.pop(work_key, None)
                 self._inflight_heartbeat.pop(work_key, None)

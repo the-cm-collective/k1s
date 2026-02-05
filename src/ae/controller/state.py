@@ -148,12 +148,40 @@ class NodeLease:
 
 
 @dataclass(slots=True)
+class SiteIngressEndpoint:
+    """Ingress endpoint metadata for a site (core-proxy/core-to-edge-public)."""
+
+    site_id: str
+    mode: str
+    core_proxy_port: int | None
+    public_urls: list[str]
+    quarantine_until: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(slots=True)
 class WorkOutboxEntry:
     work_id: str
     attempt: int
     site_id: str
     payload: dict
     publish_attempts: int
+
+
+@dataclass(slots=True)
+class WorkLedgerEntry:
+    work_id: str
+    attempt: int
+    site_id: str
+    state: str
+    desired_generation: int | None
+    assigned_node_id: str | None
+    observed_generation: int | None
+    result: dict | None
+    created_at: datetime
+    updated_at: datetime
+    state_updated_at: datetime
 
 
 @dataclass(slots=True)
@@ -478,6 +506,16 @@ class SQLiteStateStore:
             self._execute_script(
                 conn,
                 resource_loader.load_text("sql", "controller", "create_work_outbox.sql"),
+            )
+            self._execute_script(
+                conn,
+                resource_loader.load_text("sql", "controller", "create_work_ledger.sql"),
+            )
+            self._execute_script(
+                conn,
+                resource_loader.load_text(
+                    "sql", "controller", "create_site_ingress_endpoints.sql"
+                ),
             )
             self._migrate_storage_bindings(conn)
             conn.commit()
@@ -1256,6 +1294,12 @@ class SQLiteStateStore:
                 if getattr(cursor, "rowcount", 1) == 0:
                     continue
                 payload = json.loads(payload_json) if payload_json else {}
+                try:
+                    self.update_work_state(
+                        work_id=work_id, attempt=attempt, state="Dispatched"
+                    )
+                except Exception:
+                    pass
                 leases.append(
                     WorkQueueLease(
                         work_id=work_id,
@@ -1290,6 +1334,95 @@ class SQLiteStateStore:
                     pass
             conn.commit()
         return updated
+
+    # --- Site ingress endpoints (edge ingress scaffolding) ---
+    def get_site_ingress_endpoint(self, site_id: str) -> SiteIngressEndpoint | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT site_id, mode, core_proxy_port, public_urls_json,
+                       quarantine_until, created_at, updated_at
+                FROM site_ingress_endpoints
+                WHERE site_id = ?
+                """,
+                (site_id,),
+            ).fetchone()
+            if not row:
+                return None
+            public_urls = json.loads(row[3]) if row[3] else []
+            quarantine_until = None
+            if row[4]:
+                try:
+                    quarantine_until = datetime.fromisoformat(row[4])
+                except Exception:
+                    quarantine_until = None
+            return SiteIngressEndpoint(
+                site_id=str(row[0]),
+                mode=str(row[1]),
+                core_proxy_port=int(row[2]) if row[2] is not None else None,
+                public_urls=list(public_urls) if isinstance(public_urls, list) else [],
+                quarantine_until=quarantine_until,
+                created_at=datetime.fromisoformat(row[5]),
+                updated_at=datetime.fromisoformat(row[6]),
+            )
+
+    def ensure_site_ingress_port(
+        self,
+        site_id: str,
+        *,
+        port_min: int = 18080,
+        port_max: int = 18999,
+        mode: str = "core-proxy",
+    ) -> int:
+        if port_min > port_max:
+            raise ValueError("port_min must be <= port_max")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT core_proxy_port FROM site_ingress_endpoints WHERE site_id = ?",
+                (site_id,),
+            ).fetchone()
+            if row and row[0] is not None:
+                return int(row[0])
+            used = {
+                int(r[0])
+                for r in conn.execute(
+                    """
+                    SELECT core_proxy_port
+                    FROM site_ingress_endpoints
+                    WHERE core_proxy_port IS NOT NULL
+                    """
+                ).fetchall()
+            }
+            for port in range(int(port_min), int(port_max) + 1):
+                if port in used:
+                    continue
+                try:
+                    if row:
+                        conn.execute(
+                            """
+                            UPDATE site_ingress_endpoints
+                            SET mode = ?, core_proxy_port = ?, updated_at = ?
+                            WHERE site_id = ?
+                            """,
+                            (mode, port, now_iso, site_id),
+                        )
+                    else:
+                        conn.execute(
+                            """
+                            INSERT INTO site_ingress_endpoints
+                              (site_id, mode, core_proxy_port, public_urls_json,
+                               quarantine_until, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (site_id, mode, port, json.dumps([]), None, now_iso, now_iso),
+                        )
+                    conn.commit()
+                    return port
+                except Exception:
+                    # retry on constraint conflicts
+                    continue
+        raise RuntimeError("no core-proxy ports available")
 
     def mark_work_done(self, work_id: str, attempt: int) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -1366,6 +1499,23 @@ class SQLiteStateStore:
             )
         return entries
 
+    def get_outbox_payload(self, work_id: str, attempt: int) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT payload_json
+                FROM work_outbox
+                WHERE work_id = ? AND attempt = ?
+                """,
+                (work_id, int(attempt)),
+            ).fetchone()
+            if not row:
+                return None
+            try:
+                return json.loads(row[0]) if row[0] else {}
+            except Exception:
+                return {}
+
     def mark_outbox_published(self, work_id: str, attempt: int) -> None:
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
@@ -1392,6 +1542,252 @@ class SQLiteStateStore:
                 (now, now, work_id, int(attempt)),
             )
             conn.commit()
+
+    # --- Work ledger (jetstream watchdog) ---
+    def upsert_work_ledger(
+        self,
+        *,
+        work_id: str,
+        attempt: int,
+        site_id: str,
+        state: str,
+        desired_generation: int | None = None,
+    ) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT work_id FROM work_ledger WHERE work_id = ?",
+                (work_id,),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    """
+                    UPDATE work_ledger
+                    SET attempt = ?, site_id = ?, state = ?, desired_generation = ?,
+                        updated_at = ?, state_updated_at = ?
+                    WHERE work_id = ?
+                    """,
+                    (
+                        int(attempt),
+                        site_id,
+                        state,
+                        desired_generation,
+                        now_iso,
+                        now_iso,
+                        work_id,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO work_ledger
+                      (work_id, attempt, site_id, state, desired_generation,
+                       assigned_node_id, observed_generation, result_json,
+                       created_at, updated_at, state_updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        work_id,
+                        int(attempt),
+                        site_id,
+                        state,
+                        desired_generation,
+                        None,
+                        None,
+                        None,
+                        now_iso,
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+            conn.commit()
+
+    def get_work_ledger(self, work_id: str) -> WorkLedgerEntry | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT work_id, attempt, site_id, state, desired_generation,
+                       assigned_node_id, observed_generation, result_json,
+                       created_at, updated_at, state_updated_at
+                FROM work_ledger
+                WHERE work_id = ?
+                """,
+                (work_id,),
+            ).fetchone()
+            if not row:
+                return None
+            result = None
+            if row[7]:
+                try:
+                    result = json.loads(row[7])
+                except Exception:
+                    result = None
+            return WorkLedgerEntry(
+                work_id=str(row[0]),
+                attempt=int(row[1]),
+                site_id=str(row[2]),
+                state=str(row[3]),
+                desired_generation=int(row[4]) if row[4] is not None else None,
+                assigned_node_id=str(row[5]) if row[5] else None,
+                observed_generation=int(row[6]) if row[6] is not None else None,
+                result=result,
+                created_at=datetime.fromisoformat(row[8]),
+                updated_at=datetime.fromisoformat(row[9]),
+                state_updated_at=datetime.fromisoformat(row[10]),
+            )
+
+    def update_work_state(
+        self,
+        *,
+        work_id: str,
+        attempt: int,
+        state: str,
+        assigned_node_id: str | None = None,
+        observed_generation: int | None = None,
+        result: dict | None = None,
+    ) -> bool:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        result_json = json.dumps(result) if result is not None else None
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE work_ledger
+                SET state = ?, assigned_node_id = COALESCE(?, assigned_node_id),
+                    observed_generation = COALESCE(?, observed_generation),
+                    result_json = COALESCE(?, result_json),
+                    updated_at = ?, state_updated_at = ?
+                WHERE work_id = ? AND attempt = ?
+                """,
+                (
+                    state,
+                    assigned_node_id,
+                    observed_generation,
+                    result_json,
+                    now_iso,
+                    now_iso,
+                    work_id,
+                    int(attempt),
+                ),
+            )
+            try:
+                updated = int(getattr(cursor, "rowcount", 0) or 0)
+            except Exception:
+                updated = 0
+            conn.commit()
+            return updated > 0
+
+    def list_work_state_before(
+        self, state: str, cutoff: datetime
+    ) -> list[WorkLedgerEntry]:
+        cutoff_iso = cutoff.isoformat()
+        rows: list[WorkLedgerEntry] = []
+        with self._connect() as conn:
+            results = conn.execute(
+                """
+                SELECT work_id, attempt, site_id, state, desired_generation,
+                       assigned_node_id, observed_generation, result_json,
+                       created_at, updated_at, state_updated_at
+                FROM work_ledger
+                WHERE state = ? AND state_updated_at <= ?
+                ORDER BY state_updated_at
+                """,
+                (state, cutoff_iso),
+            ).fetchall()
+            for row in results:
+                result = None
+                if row[7]:
+                    try:
+                        result = json.loads(row[7])
+                    except Exception:
+                        result = None
+                rows.append(
+                    WorkLedgerEntry(
+                        work_id=str(row[0]),
+                        attempt=int(row[1]),
+                        site_id=str(row[2]),
+                        state=str(row[3]),
+                        desired_generation=int(row[4]) if row[4] is not None else None,
+                        assigned_node_id=str(row[5]) if row[5] else None,
+                        observed_generation=int(row[6]) if row[6] is not None else None,
+                        result=result,
+                        created_at=datetime.fromisoformat(row[8]),
+                        updated_at=datetime.fromisoformat(row[9]),
+                        state_updated_at=datetime.fromisoformat(row[10]),
+                    )
+                )
+        return rows
+
+    def reschedule_work(
+        self,
+        *,
+        work_id: str,
+        attempt: int,
+    ) -> int | None:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT site_id, payload_json
+                FROM work_outbox
+                WHERE work_id = ? AND attempt = ?
+                """,
+                (work_id, int(attempt)),
+            ).fetchone()
+            if not row:
+                return None
+            site_id = str(row[0])
+            try:
+                payload = json.loads(row[1]) if row[1] else {}
+            except Exception:
+                payload = {}
+            new_attempt = int(attempt) + 1
+            payload["attempt"] = new_attempt
+            payload.setdefault("work_id", work_id)
+            payload.setdefault("site_id", site_id)
+            payload["created_at"] = now_iso
+            cursor = conn.execute(
+                """
+                UPDATE work_ledger
+                SET attempt = ?, state = ?, updated_at = ?, state_updated_at = ?
+                WHERE work_id = ? AND attempt = ?
+                """,
+                (
+                    new_attempt,
+                    "Pending",
+                    now_iso,
+                    now_iso,
+                    work_id,
+                    int(attempt),
+                ),
+            )
+            try:
+                updated = int(getattr(cursor, "rowcount", 0) or 0)
+            except Exception:
+                updated = 0
+            if updated <= 0:
+                conn.commit()
+                return None
+            conn.execute(
+                """
+                INSERT INTO work_outbox
+                  (work_id, attempt, site_id, payload_json, state, publish_attempts,
+                   last_publish_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    work_id,
+                    new_attempt,
+                    site_id,
+                    json.dumps(payload),
+                    "Unpublished",
+                    0,
+                    None,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            conn.commit()
+            return new_attempt
 
     # --- Canary rollout state ----------------------------------------------
 
