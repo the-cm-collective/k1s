@@ -30,6 +30,7 @@ from ae.controller.spec import AppManifest, ManifestError, app_key_for_manifest,
 from ae.observability.http_api import start_http_api, set_reconcile_metrics
 from ae.controller.agent_api import start_agent_api
 from ae.observability.logging import configure_logging
+from ae.config.transport import TransportConfig
 from ae.cli.__main__ import (
     state_store_from_env,
     runtime_factory,
@@ -908,6 +909,20 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             "SOPS_AGE_KEY_FILE=%s",
             os.getenv("SOPS_AGE_KEY_FILE", "<unset>"),
         )
+    except Exception:
+        pass
+
+    try:
+        import logging as _log
+
+        transport = TransportConfig.from_env()
+        if transport.backend != "http":
+            _log.getLogger(__name__).warning(
+                "AE_TRANSPORT_BACKEND=%s configured; NATS transport not wired yet, using HTTP.",
+                transport.backend,
+            )
+        else:
+            _log.getLogger(__name__).info("transport backend=%s", transport.backend)
     except Exception:
         pass
 

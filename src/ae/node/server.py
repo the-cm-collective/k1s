@@ -11,6 +11,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+from ae.config.transport import TransportConfig
 from ae.controller.spec import AppManifest
 from ae.runtime import PodState, RuntimeAdapter, RuntimeResult
 import requests
@@ -738,6 +739,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--controller-client-cert", default=os.getenv("AE_CONTROLLER_TLS_CERT"))
     parser.add_argument("--controller-client-key", default=os.getenv("AE_CONTROLLER_TLS_KEY"))
     args = parser.parse_args(argv)
+
+    try:
+        transport = TransportConfig.from_env()
+        if transport.backend != "http":
+            LOGGER.warning(
+                "AE_TRANSPORT_BACKEND=%s configured; node agent still uses HTTP.",
+                transport.backend,
+            )
+        else:
+            LOGGER.info("transport backend=%s", transport.backend)
+    except Exception:
+        pass
 
     from ae.runtime import CRIRuntime, DockerRuntime, PodmanRuntime
 

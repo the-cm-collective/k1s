@@ -21,6 +21,13 @@ Setup
   - Seal sample secret: `make secrets-seal-demo` (uses `AE_AGE_RECIPIENT` or your keys.txt)
   - Convenience for demos: run `./scripts/init_demo.sh --with-secrets-env` to export both `AE_ALLOW_PLAINTEXT_SECRETS=1` and `SOPS_AGE_KEY_FILE` automatically.
 
+NATS + etcd dev stack (Mode A)
+- Start hub + etcd + edge NATS: `docker compose -f ops/dev/docker-compose.nats-etcd.yaml up -d`
+- Stop stack: `docker compose -f ops/dev/docker-compose.nats-etcd.yaml down`
+- Configs: `ops/dev/nats-hub.conf`, `ops/dev/nats-edge.conf` (dev-only credentials).
+- Gateway env defaults: `ops/dev/site-gateway.env.sample` (Option A ack settings).
+- Default dev creds: hub controller `hub-controller/dev`, site uplink `site-sfo-edge-01-uplink/dev`, local `gateway/dev` and `worker/dev` (do not use in prod).
+
 CRI nodes (containerd)
 - Required env:
   - `AE_RUNTIME_BACKEND=cri`
