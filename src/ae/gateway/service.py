@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from ae.config.transport import GatewayJetStreamConfig, check_nats_connectivity
@@ -69,6 +70,11 @@ class SiteGateway:
             js_config.progress_interval, default=10.0
         )
         self._ack_wait_s = _parse_duration_seconds(js_config.ack_wait, default=30.0)
+        self._session_id = str(uuid.uuid4())
+        self._lease_id: str | None = None
+        self._lease_ttl_ms = 0
+        self._renew_after_ms = 0
+        self._next_renew_at = 0.0
 
     def _subjects(self) -> list[str]:
         return [
@@ -133,6 +139,7 @@ class SiteGateway:
                 )
                 try:
                     self._subscribe_local_results()
+                    self._acquire_lease()
                 except Exception as exc:  # noqa: BLE001
                     LOGGER.warning("failed to subscribe local results: %s", exc)
         self._log_subjects()
@@ -149,6 +156,7 @@ class SiteGateway:
             time.sleep(1)
             now = time.monotonic()
             self._run_progress(now)
+            self._maybe_renew(now)
             if self._nats_client is not None:
                 if self._js_enabled:
                     self._poll_js(now)
@@ -297,6 +305,63 @@ class SiteGateway:
         for work_key, ts in list(self._completed.items()):
             if now - ts > ttl:
                 self._completed.pop(work_key, None)
+
+    def _acquire_lease(self) -> None:
+        if self._nats_client is None:
+            return
+        req = {
+            "site_id": self._site_id,
+            "node_id": self._node_id,
+            "session_id": self._session_id,
+            "timestamp": time.time(),
+        }
+        try:
+            resp = self._nats_client.request_json(
+                hub_lease_acquire_subject(self._site_id), req
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("lease acquire failed: %s", exc)
+            return
+        if not resp or not resp.get("accepted"):
+            LOGGER.warning("lease acquire rejected: %s", resp.get("reason"))
+            return
+        self._lease_id = str(resp.get("lease_id") or "")
+        self._lease_ttl_ms = int(resp.get("lease_ttl_ms") or 0)
+        self._renew_after_ms = int(resp.get("renew_after_ms") or 0)
+        self._next_renew_at = time.monotonic() + max(1.0, self._renew_after_ms / 1000.0)
+        LOGGER.info("lease acquired id=%s ttl_ms=%s", self._lease_id, self._lease_ttl_ms)
+
+    def _maybe_renew(self, now: float) -> None:
+        if self._nats_client is None:
+            return
+        if not self._lease_id:
+            return
+        if now < self._next_renew_at:
+            return
+        req = {
+            "site_id": self._site_id,
+            "node_id": self._node_id,
+            "session_id": self._session_id,
+            "lease_id": self._lease_id,
+            "timestamp": time.time(),
+        }
+        try:
+            resp = self._nats_client.request_json(
+                hub_lease_renew_subject(self._site_id), req
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("lease renew failed: %s", exc)
+            self._next_renew_at = now + 2.0
+            return
+        if not resp or not resp.get("accepted"):
+            LOGGER.warning("lease renew rejected: %s", resp.get("reason"))
+            self._lease_id = None
+            self._next_renew_at = now + 1.0
+            self._acquire_lease()
+            return
+        self._lease_ttl_ms = int(resp.get("lease_ttl_ms") or self._lease_ttl_ms)
+        self._renew_after_ms = int(resp.get("renew_after_ms") or self._renew_after_ms)
+        self._next_renew_at = now + max(1.0, self._renew_after_ms / 1000.0)
 
 
 def render_subjects(site_id: str, node_id: str) -> list[str]:
