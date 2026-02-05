@@ -23,10 +23,17 @@ from collections.abc import Iterable
 from pathlib import Path
 from datetime import datetime
 import json, hashlib
+import yaml
 
 from ae.controller.state import SQLiteStateStore
 from ae.controller.reconciler import Reconciler
-from ae.controller.spec import AppManifest, ManifestError, app_key_for_manifest, load_manifest
+from ae.controller.spec import (
+    AppManifest,
+    ManifestError,
+    app_key_for_manifest,
+    load_manifest,
+    DEFAULT_NAMESPACE,
+)
 from ae.observability.http_api import start_http_api, set_reconcile_metrics
 from ae.controller.agent_api import start_agent_api
 from ae.observability.logging import configure_logging
@@ -301,6 +308,108 @@ def _import_specs(specs_dir: Path, store: SQLiteStateStore, source: str = "specs
             store.register_app(manifest, source=source, labels=labels)
         except Exception:
             continue
+
+
+def _iter_yaml_docs(paths: Iterable[Path]) -> Iterable[dict]:
+    for path in paths:
+        try:
+            text = path.read_text()
+        except Exception:
+            continue
+        try:
+            docs = yaml.safe_load_all(text)
+        except yaml.YAMLError:
+            continue
+        for doc in docs:
+            if isinstance(doc, dict):
+                yield doc
+
+
+def _normalize_metadata(doc: dict) -> tuple[dict, str, str] | None:
+    meta = doc.get("metadata")
+    if not isinstance(meta, dict):
+        return None
+    name = str(meta.get("name") or "").strip()
+    if not name:
+        return None
+    namespace = str(meta.get("namespace") or DEFAULT_NAMESPACE).strip() or DEFAULT_NAMESPACE
+    normalized = dict(meta)
+    normalized["name"] = name
+    normalized["namespace"] = namespace
+    return normalized, name, namespace
+
+
+def _import_edge_ingress_specs(
+    specs_dir: Path, store: SQLiteStateStore, source: str = "specs"
+) -> None:
+    try:
+        paths = _find_manifests(specs_dir)
+    except Exception:
+        return
+    for doc in _iter_yaml_docs(paths):
+        api = str(doc.get("apiVersion") or "").strip()
+        kind = str(doc.get("kind") or "").strip()
+        if api != "k1s.io/v1":
+            continue
+        if kind == "EdgeIngressRoute":
+            _store_edge_ingress_route(doc, store)
+        elif kind == "EdgeIngressPolicy":
+            _store_edge_ingress_policy(doc, store)
+
+
+def _store_edge_ingress_route(doc: dict, store: SQLiteStateStore) -> None:
+    meta_info = _normalize_metadata(doc)
+    if not meta_info:
+        return
+    meta, name, namespace = meta_info
+    spec = doc.get("spec") if isinstance(doc.get("spec"), dict) else {}
+    exposure = spec.get("exposure") if isinstance(spec.get("exposure"), dict) else {}
+    placement = (
+        exposure.get("placement") if isinstance(exposure.get("placement"), dict) else {}
+    )
+    site_id = str(placement.get("site") or "").strip()
+    if not site_id:
+        return
+    policy_ref = spec.get("policyRef") if isinstance(spec.get("policyRef"), dict) else {}
+    policy_name = str(policy_ref.get("name") or "").strip() or None
+    policy_namespace = None
+    if policy_name:
+        policy_namespace = (
+            str(policy_ref.get("namespace") or namespace).strip() or namespace
+        )
+    payload = {
+        "apiVersion": "k1s.io/v1",
+        "kind": "EdgeIngressRoute",
+        "metadata": meta,
+        "spec": spec,
+    }
+    store.upsert_edge_ingress_route(
+        name=name,
+        namespace=namespace,
+        site_id=site_id,
+        policy_name=policy_name,
+        policy_namespace=policy_namespace,
+        document=payload,
+    )
+
+
+def _store_edge_ingress_policy(doc: dict, store: SQLiteStateStore) -> None:
+    meta_info = _normalize_metadata(doc)
+    if not meta_info:
+        return
+    meta, name, namespace = meta_info
+    spec = doc.get("spec") if isinstance(doc.get("spec"), dict) else {}
+    payload = {
+        "apiVersion": "k1s.io/v1",
+        "kind": "EdgeIngressPolicy",
+        "metadata": meta,
+        "spec": spec,
+    }
+    store.upsert_edge_ingress_policy(
+        name=name,
+        namespace=namespace,
+        document=payload,
+    )
 
 
 def _env_true(name: str, default: str = "0") -> bool:
@@ -1884,6 +1993,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     if args.once:
         try:
             _import_specs(specs_dir, store, source="specs")
+            _import_edge_ingress_specs(specs_dir, store, source="specs")
         except Exception:
             pass
         try:
@@ -1968,6 +2078,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 t0 = time.time()
                 try:
                     _import_specs(specs_dir, store, source="specs")
+                    _import_edge_ingress_specs(specs_dir, store, source="specs")
                 except Exception:
                     pass
                 try:

@@ -15,7 +15,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import grpc
+try:
+    import grpc
+except Exception:  # pragma: no cover - optional dependency
+    grpc = None
 
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
@@ -551,6 +554,8 @@ class CRIRuntime(RuntimeAdapter):
     def _ensure_clients(self) -> None:
         if self._runtime and self._images:
             return
+        if grpc is None:  # pragma: no cover - optional dependency
+            raise RuntimeError("grpc is required for CRI runtime (install grpcio)")
         try:
             from ae.runtime.cri.api.runtime.v1 import api_pb2_grpc
         except Exception as exc:  # pragma: no cover - depends on generated stubs

@@ -80,16 +80,18 @@ class RouteBundlePublisher:
         now = time.monotonic()
         for site_id in site_ids:
             state = self._state.setdefault(site_id, _BundleState())
-            bundle = _build_bundle(site_id, state.rev, state.hash)
-            if bundle["hash"] != state.hash:
+            routes, policies = _collect_bundle_payload(self._store, site_id)
+            bundle_hash = _bundle_hash(site_id, routes, policies)
+            if bundle_hash != state.hash:
                 state.rev += 1
-                state.hash = bundle["hash"]
+                state.hash = bundle_hash
                 state.backoff_s = 1.0
                 state.next_send_at = 0.0
             if state.acked_rev >= state.rev:
                 continue
             if now < state.next_send_at:
                 continue
+            bundle = _build_bundle(site_id, state.rev, state.hash, routes, policies)
             self._publish(site_id, bundle)
             state.backoff_s = _next_backoff(state.backoff_s)
             state.next_send_at = now + state.backoff_s
@@ -119,20 +121,69 @@ class RouteBundlePublisher:
             state.next_send_at = 0.0
 
 
-def _build_bundle(site_id: str, rev: int, prev_hash: str) -> dict:
+def _build_bundle(
+    site_id: str, rev: int, bundle_hash: str, routes: list[dict], policies: list[dict]
+) -> dict:
     bundle = {
         "site_id": site_id,
         "bundle_rev": rev,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "routes": [],
-        "policies": [],
+        "routes": routes,
+        "policies": policies,
     }
-    payload = json.dumps(bundle, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    digest = hashlib.sha256(payload).hexdigest()
-    bundle["hash"] = f"sha256:{digest}"
-    if prev_hash and bundle["hash"] == prev_hash:
-        bundle["bundle_rev"] = rev
+    bundle["hash"] = bundle_hash
     return bundle
+
+
+def _collect_bundle_payload(
+    store: SQLiteStateStore, site_id: str
+) -> tuple[list[dict], list[dict]]:
+    routes: list[dict] = []
+    policies: list[dict] = []
+    policy_keys: set[tuple[str, str]] = set()
+    for record in store.list_edge_ingress_routes_for_site(site_id):
+        doc = record.spec if isinstance(record.spec, dict) else {}
+        if not _route_is_edge_local(doc):
+            continue
+        routes.append(doc)
+        if record.policy_name:
+            policy_ns = record.policy_namespace or record.namespace
+            policy_keys.add((record.policy_name, policy_ns))
+    for name, namespace in sorted(policy_keys):
+        policy = store.get_edge_ingress_policy(name=name, namespace=namespace)
+        if policy and isinstance(policy.spec, dict):
+            policies.append(policy.spec)
+        else:
+            LOGGER.debug(
+                "route bundle missing policy name=%s namespace=%s", name, namespace
+            )
+    routes = _sorted_docs(routes)
+    policies = _sorted_docs(policies)
+    return routes, policies
+
+
+def _route_is_edge_local(doc: dict) -> bool:
+    spec = doc.get("spec") or {}
+    exposure = spec.get("exposure") or {}
+    mode = str(exposure.get("mode") or "").strip().lower()
+    return mode == "edge-local"
+
+
+def _sorted_docs(docs: list[dict]) -> list[dict]:
+    return sorted(
+        docs,
+        key=lambda d: json.dumps(d, sort_keys=True, separators=(",", ":")),
+    )
+
+
+def _bundle_hash(site_id: str, routes: list[dict], policies: list[dict]) -> str:
+    payload = json.dumps(
+        {"site_id": site_id, "routes": routes, "policies": policies},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(payload).hexdigest()
+    return f"sha256:{digest}"
 
 
 def _next_backoff(value: float) -> float:
