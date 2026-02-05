@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS edge_ingress_routes (
   policy_name TEXT,
   policy_namespace TEXT,
   spec_json TEXT NOT NULL,
+  status_json TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (name, namespace)

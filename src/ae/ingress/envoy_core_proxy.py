@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
 @dataclass(frozen=True)
 class CoreProxyRoute:
-    site_id: str
-    upstream_host: str
-    upstream_port: int
+    host: str
+    path_prefix: str
+    cluster: str
+
+
+@dataclass(frozen=True)
+class CoreProxyCluster:
+    name: str
+    endpoints: list[tuple[str, int]] = field(default_factory=list)
+    use_tls: bool = False
+    sni: str | None = None
+    ca_cert_path: str | None = None
+    expected_sans: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -22,57 +32,32 @@ class EnvoyRenderConfig:
     domain_suffix: str = "edge.local"
 
 
-def render_envoy_config(routes: list[CoreProxyRoute], config: EnvoyRenderConfig) -> str:
+def render_envoy_config(
+    routes: list[CoreProxyRoute],
+    clusters: list[CoreProxyCluster],
+    config: EnvoyRenderConfig,
+) -> str:
     listener_addr = config.listen_address
     listener_port = config.listen_port
     admin_addr = config.admin_address
     admin_port = config.admin_port
-    domain_suffix = config.domain_suffix.strip(".") or "edge.local"
-
-    clusters = []
     vhosts = []
-    for route in routes:
-        cluster_name = f"site_{route.site_id}"
-        host = f"{route.site_id}.{domain_suffix}"
-        vhosts.append(
+    vhost_map: dict[str, dict] = {}
+    for route in sorted(routes, key=lambda r: len(r.path_prefix or ""), reverse=True):
+        host = route.host
+        if not host:
+            continue
+        vhost = vhost_map.get(host)
+        if vhost is None:
+            vhost = {"name": f"vhost_{host}", "domains": [host], "routes": []}
+            vhost_map[host] = vhost
+        vhost["routes"].append(
             {
-                "name": cluster_name,
-                "domains": [host],
-                "routes": [
-                    {
-                        "match": {"prefix": "/"},
-                        "route": {"cluster": cluster_name},
-                    }
-                ],
+                "match": {"prefix": route.path_prefix or "/"},
+                "route": {"cluster": route.cluster},
             }
         )
-        clusters.append(
-            {
-                "name": cluster_name,
-                "connect_timeout": "1s",
-                "type": "STATIC",
-                "lb_policy": "ROUND_ROBIN",
-                "load_assignment": {
-                    "cluster_name": cluster_name,
-                    "endpoints": [
-                        {
-                            "lb_endpoints": [
-                                {
-                                    "endpoint": {
-                                        "address": {
-                                            "socket_address": {
-                                                "address": route.upstream_host,
-                                                "port_value": int(route.upstream_port),
-                                            }
-                                        }
-                                    }
-                                }
-                            ]
-                        }
-                    ],
-                },
-            }
-        )
+    vhosts.extend(vhost_map.values())
 
     if not vhosts:
         vhosts.append(
@@ -110,6 +95,51 @@ def render_envoy_config(routes: list[CoreProxyRoute], config: EnvoyRenderConfig)
             return "\n".join(lines)
         return f"{pad}{obj}"
 
+    cluster_defs = []
+    for cluster in clusters:
+        if not cluster.endpoints:
+            continue
+        endpoints = [
+            {
+                "endpoint": {
+                    "address": {
+                        "socket_address": {"address": host, "port_value": int(port)}
+                    }
+                }
+            }
+            for host, port in cluster.endpoints
+        ]
+        entry = {
+            "name": cluster.name,
+            "connect_timeout": "1s",
+            "type": "STATIC",
+            "lb_policy": "ROUND_ROBIN",
+            "load_assignment": {
+                "cluster_name": cluster.name,
+                "endpoints": [{"lb_endpoints": endpoints}],
+            },
+        }
+        if cluster.use_tls:
+            tls_ctx: dict = {
+                "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext",
+            }
+            if cluster.sni:
+                tls_ctx["sni"] = cluster.sni
+            validation: dict = {}
+            if cluster.ca_cert_path:
+                validation["trusted_ca"] = {"filename": cluster.ca_cert_path}
+            if cluster.expected_sans:
+                validation["match_subject_alt_names"] = [
+                    {"exact": name} for name in cluster.expected_sans
+                ]
+            if validation:
+                tls_ctx["common_tls_context"] = {"validation_context": validation}
+            entry["transport_socket"] = {
+                "name": "envoy.transport_sockets.tls",
+                "typed_config": tls_ctx,
+            }
+        cluster_defs.append(entry)
+
     config_obj = {
         "static_resources": {
             "listeners": [
@@ -143,7 +173,7 @@ def render_envoy_config(routes: list[CoreProxyRoute], config: EnvoyRenderConfig)
                     ],
                 }
             ],
-            "clusters": clusters,
+            "clusters": cluster_defs,
         },
         "admin": {
             "access_log_path": "/tmp/envoy_admin_access.log",
@@ -158,11 +188,22 @@ def render_envoy_config(routes: list[CoreProxyRoute], config: EnvoyRenderConfig)
     return _yaml(config_obj) + "\n"
 
 
-def write_envoy_config(path: Path, routes: list[CoreProxyRoute], config: EnvoyRenderConfig) -> str:
-    content = render_envoy_config(routes, config)
+def write_envoy_config(
+    path: Path,
+    routes: list[CoreProxyRoute],
+    clusters: list[CoreProxyCluster],
+    config: EnvoyRenderConfig,
+) -> str:
+    content = render_envoy_config(routes, clusters, config)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return content
 
 
-__all__ = ["CoreProxyRoute", "EnvoyRenderConfig", "render_envoy_config", "write_envoy_config"]
+__all__ = [
+    "CoreProxyRoute",
+    "CoreProxyCluster",
+    "EnvoyRenderConfig",
+    "render_envoy_config",
+    "write_envoy_config",
+]

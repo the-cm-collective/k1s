@@ -21,7 +21,7 @@ import socket
 import re
 from collections.abc import Iterable
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import json, hashlib
 import yaml
 
@@ -355,6 +355,8 @@ def _import_edge_ingress_specs(
             _store_edge_ingress_route(doc, store)
         elif kind == "EdgeIngressPolicy":
             _store_edge_ingress_policy(doc, store)
+        elif kind == "SiteIngressEndpoint":
+            _store_site_ingress_endpoint(doc, store)
 
 
 def _store_edge_ingress_route(doc: dict, store: SQLiteStateStore) -> None:
@@ -368,8 +370,6 @@ def _store_edge_ingress_route(doc: dict, store: SQLiteStateStore) -> None:
         exposure.get("placement") if isinstance(exposure.get("placement"), dict) else {}
     )
     site_id = str(placement.get("site") or "").strip()
-    if not site_id:
-        return
     policy_ref = spec.get("policyRef") if isinstance(spec.get("policyRef"), dict) else {}
     policy_name = str(policy_ref.get("name") or "").strip() or None
     policy_namespace = None
@@ -399,6 +399,9 @@ def _store_edge_ingress_policy(doc: dict, store: SQLiteStateStore) -> None:
         return
     meta, name, namespace = meta_info
     spec = doc.get("spec") if isinstance(doc.get("spec"), dict) else {}
+    status = {"valid": isinstance(spec, dict), "errors": []}
+    if not isinstance(spec, dict):
+        status["errors"] = ["spec_missing_or_invalid"]
     payload = {
         "apiVersion": "k1s.io/v1",
         "kind": "EdgeIngressPolicy",
@@ -409,7 +412,164 @@ def _store_edge_ingress_policy(doc: dict, store: SQLiteStateStore) -> None:
         name=name,
         namespace=namespace,
         document=payload,
+        status=status,
     )
+
+
+def _store_site_ingress_endpoint(doc: dict, store: SQLiteStateStore) -> None:
+    meta_info = _normalize_metadata(doc)
+    if not meta_info:
+        return
+    meta, name, _namespace = meta_info
+    spec = doc.get("spec") if isinstance(doc.get("spec"), dict) else {}
+    status = doc.get("status") if isinstance(doc.get("status"), dict) else {}
+    mode = str(spec.get("mode") or status.get("mode") or "").strip() or None
+    public = spec.get("public") if isinstance(spec.get("public"), dict) else {}
+    if not public:
+        public = status.get("public") if isinstance(status.get("public"), dict) else {}
+    urls = public.get("urls") if isinstance(public.get("urls"), list) else []
+    core_proxy = spec.get("coreProxy") if isinstance(spec.get("coreProxy"), dict) else {}
+    if not core_proxy:
+        core_proxy = status.get("coreProxy") if isinstance(status.get("coreProxy"), dict) else {}
+    core_proxy_port = core_proxy.get("upstreamPort")
+    try:
+        core_proxy_port = int(core_proxy_port) if core_proxy_port is not None else None
+    except Exception:
+        core_proxy_port = None
+    if not mode:
+        mode = "core-to-edge-public" if urls else "core-proxy"
+    store.upsert_site_ingress_endpoint(
+        site_id=name,
+        mode=mode,
+        core_proxy_port=core_proxy_port,
+        public_urls=urls,
+    )
+
+
+def _reconcile_edge_ingress(store: SQLiteStateStore, edge_renderer=None) -> None:
+    try:
+        port_min = int(os.getenv("AE_CORE_PROXY_PORT_MIN", "18080") or 18080)
+    except Exception:
+        port_min = 18080
+    try:
+        port_max = int(os.getenv("AE_CORE_PROXY_PORT_MAX", "18999") or 18999)
+    except Exception:
+        port_max = 18999
+
+    endpoints = {ep.site_id: ep for ep in store.list_site_ingress_endpoints()}
+    policy_cache: dict[tuple[str, str], dict] = {}
+
+    for route in store.list_edge_ingress_routes():
+        spec = route.spec if isinstance(route.spec, dict) else {}
+        exposure = spec.get("exposure") if isinstance(spec.get("exposure"), dict) else {}
+        mode = str(exposure.get("mode") or "").strip().lower()
+        placement = (
+            exposure.get("placement") if isinstance(exposure.get("placement"), dict) else {}
+        )
+        site_id = str(placement.get("site") or route.site_id or "").strip()
+        errors: list[str] = []
+        policy_unsupported: list[str] = []
+
+        host = str(spec.get("host") or "").strip()
+        if not host:
+            errors.append("missing_host")
+        if mode not in {"core-proxy", "core-to-edge-public", "edge-local"}:
+            errors.append("invalid_exposure_mode")
+        if not site_id:
+            errors.append("missing_site")
+
+        if mode == "core-proxy" and site_id:
+            ep = endpoints.get(site_id)
+            if ep is None or ep.core_proxy_port is None:
+                try:
+                    store.ensure_site_ingress_port(
+                        site_id,
+                        port_min=port_min,
+                        port_max=port_max,
+                        mode="core-proxy",
+                    )
+                    ep = store.get_site_ingress_endpoint(site_id)
+                    if ep:
+                        endpoints[site_id] = ep
+                except Exception:
+                    ep = None
+            if ep is None or ep.core_proxy_port is None:
+                errors.append("missing_core_proxy_port")
+
+        if mode == "core-to-edge-public" and site_id:
+            ep = endpoints.get(site_id)
+            if ep is None or not ep.public_urls:
+                errors.append("missing_public_endpoint")
+
+        policy_ref = spec.get("policyRef") if isinstance(spec.get("policyRef"), dict) else {}
+        policy_name = str(policy_ref.get("name") or "").strip()
+        policy_namespace = str(policy_ref.get("namespace") or route.namespace or "").strip()
+        if mode == "edge-local" and policy_name:
+            key = (policy_name, policy_namespace)
+            policy = policy_cache.get(key)
+            if policy is None:
+                record = store.get_edge_ingress_policy(
+                    name=policy_name, namespace=policy_namespace
+                )
+                policy = record.spec if record else None
+                if policy is not None:
+                    policy_cache[key] = policy
+            if policy is None:
+                errors.append("policy_ref_not_found")
+            elif isinstance(policy, dict):
+                policy_unsupported = _edge_local_policy_unsupported(policy)
+
+        status = {
+            "valid": len(errors) == 0,
+            "errors": errors,
+            "policyUnsupported": policy_unsupported,
+            "observedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        store.update_edge_ingress_route_status(
+            name=route.name,
+            namespace=route.namespace,
+            status=status,
+        )
+
+    if edge_renderer is not None:
+        try:
+            edge_renderer.render()
+        except Exception:
+            pass
+
+
+def _edge_local_policy_unsupported(spec: dict) -> list[str]:
+    unsupported: list[str] = []
+    allowed_top = {"timeouts", "websockets", "headers", "stickiness", "waf", "auth"}
+    for key in spec.keys():
+        if key not in allowed_top:
+            unsupported.append(str(key))
+
+    auth = spec.get("auth") if isinstance(spec.get("auth"), dict) else {}
+    if auth:
+        mode = str(auth.get("mode") or "").strip().lower()
+        if mode and mode not in {"none"}:
+            unsupported.append("auth")
+
+    waf = spec.get("waf") if isinstance(spec.get("waf"), dict) else {}
+    if waf:
+        mode = str(waf.get("mode") or "none").strip().lower()
+        if mode not in {"none", "basic"}:
+            unsupported.append("waf.mode")
+        basic = waf.get("basic") if isinstance(waf.get("basic"), dict) else None
+        if mode == "basic":
+            if basic is None:
+                unsupported.append("waf.basic")
+            else:
+                allowed_basic = {"maxBodyBytes", "rateLimit", "ipAllowlist", "ipDenylist"}
+                for key in basic.keys():
+                    if key not in allowed_basic:
+                        unsupported.append(f"waf.basic.{key}")
+        elif "basic" in waf:
+            unsupported.append("waf.basic")
+
+    # websockets, timeouts, headers, stickiness are allowed as-is
+    return sorted(set(unsupported))
 
 
 def _env_true(name: str, default: str = "0") -> bool:
@@ -1994,6 +2154,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         try:
             _import_specs(specs_dir, store, source="specs")
             _import_edge_ingress_specs(specs_dir, store, source="specs")
+            _reconcile_edge_ingress(store, _edge_renderer)
         except Exception:
             pass
         try:
@@ -2079,6 +2240,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 try:
                     _import_specs(specs_dir, store, source="specs")
                     _import_edge_ingress_specs(specs_dir, store, source="specs")
+                    _reconcile_edge_ingress(store, _edge_renderer)
                 except Exception:
                     pass
                 try:

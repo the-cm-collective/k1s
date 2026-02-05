@@ -5,11 +5,19 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
+import threading
+import logging
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from ae.controller.state import SiteIngressListItem, SQLiteStateStore
-from ae.ingress.envoy_core_proxy import CoreProxyRoute, EnvoyRenderConfig, write_envoy_config
+from ae.ingress.envoy_core_proxy import (
+    CoreProxyCluster,
+    CoreProxyRoute,
+    EnvoyRenderConfig,
+    write_envoy_config,
+)
 from ae.ingress.rathole import (
     RatholeClientConfig,
     RatholeClientService,
@@ -19,6 +27,7 @@ from ae.ingress.rathole import (
     write_rathole_server,
 )
 
+LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class EdgeCoreProxyConfig:
@@ -39,12 +48,21 @@ class EdgeCoreProxyRenderer:
         self._store = store
         self._config = config
         self._last_hash: str | None = None
+        self._lock = threading.Lock()
 
     def render(self) -> None:
+        with self._lock:
+            self._render_locked()
+
+    def _render_locked(self) -> None:
         endpoints = self._store.list_site_ingress_endpoints()
-        routes = _routes_from_endpoints(endpoints)
+        routes, clusters = _build_routes_and_clusters(
+            self._store, endpoints, self._config
+        )
         envoy_cfg = EnvoyRenderConfig(domain_suffix=self._config.site_domain_suffix)
-        envoy_text = write_envoy_config(self._config.envoy_config_path, routes, envoy_cfg)
+        envoy_text = write_envoy_config(
+            self._config.envoy_config_path, routes, clusters, envoy_cfg
+        )
         rathole_text = write_rathole_server(
             self._config.rathole_server_path,
             RatholeServerConfig(
@@ -53,14 +71,14 @@ class EdgeCoreProxyRenderer:
                 services=[
                     RatholeServerService(
                         name=route.site_id,
-                        bind_addr=f"0.0.0.0:{route.upstream_port}",
+                        bind_addr=f"0.0.0.0:{route.core_proxy_port}",
                     )
-                    for route in routes
+                    for route in _core_proxy_services(endpoints)
                 ],
             ),
         )
         if self._config.rathole_client_dir:
-            for route in routes:
+            for route in _core_proxy_services(endpoints):
                 client_cfg = RatholeClientConfig(
                     remote_addr=self._config.rathole_server_addr,
                     default_token=self._config.rathole_default_token,
@@ -112,19 +130,152 @@ def build_core_proxy_config() -> EdgeCoreProxyConfig | None:
     )
 
 
-def _routes_from_endpoints(endpoints: list[SiteIngressListItem]) -> list[CoreProxyRoute]:
+def _core_proxy_services(
+    endpoints: list[SiteIngressListItem],
+) -> list[SiteIngressListItem]:
+    return [ep for ep in endpoints if ep.core_proxy_port is not None]
+
+
+def _build_routes_and_clusters(
+    store: SQLiteStateStore,
+    endpoints: list[SiteIngressListItem],
+    config: EdgeCoreProxyConfig,
+) -> tuple[list[CoreProxyRoute], list[CoreProxyCluster]]:
     routes: list[CoreProxyRoute] = []
+    clusters: dict[str, CoreProxyCluster] = {}
+    endpoint_map = {ep.site_id: ep for ep in endpoints}
+    domain_suffix = config.site_domain_suffix.strip(".") or "edge.local"
+
+    # Base per-site host for core-proxy mode.
     for ep in endpoints:
         if ep.core_proxy_port is None:
             continue
+        cluster_name = f"site_{ep.site_id}"
+        clusters.setdefault(
+            cluster_name,
+            CoreProxyCluster(
+                name=cluster_name,
+                endpoints=[("127.0.0.1", int(ep.core_proxy_port))],
+            ),
+        )
         routes.append(
             CoreProxyRoute(
-                site_id=ep.site_id,
-                upstream_host="127.0.0.1",
-                upstream_port=int(ep.core_proxy_port),
+                host=f"{ep.site_id}.{domain_suffix}",
+                path_prefix="/",
+                cluster=cluster_name,
             )
         )
-    return routes
+
+    # Explicit EdgeIngressRoute resources.
+    for record in store.list_edge_ingress_routes():
+        spec = record.spec if isinstance(record.spec, dict) else {}
+        host = str(spec.get("host") or "").strip()
+        if not host:
+            continue
+        exposure = spec.get("exposure") if isinstance(spec.get("exposure"), dict) else {}
+        mode = str(exposure.get("mode") or "").strip().lower()
+        placement = (
+            exposure.get("placement") if isinstance(exposure.get("placement"), dict) else {}
+        )
+        site_id = str(placement.get("site") or record.site_id or "").strip()
+        if not site_id:
+            continue
+        if mode == "core-proxy":
+            ep = endpoint_map.get(site_id)
+            if ep is None or ep.core_proxy_port is None:
+                continue
+            cluster_name = f"site_{site_id}"
+            clusters.setdefault(
+                cluster_name,
+                CoreProxyCluster(
+                    name=cluster_name,
+                    endpoints=[("127.0.0.1", int(ep.core_proxy_port))],
+                ),
+            )
+            for path in _route_paths(spec):
+                routes.append(
+                    CoreProxyRoute(
+                        host=host,
+                        path_prefix=path,
+                        cluster=cluster_name,
+                    )
+                )
+        elif mode == "core-to-edge-public":
+            ep = endpoint_map.get(site_id)
+            public = _public_endpoint(ep.public_urls if ep else [])
+            if public is None:
+                continue
+            cluster_name = f"public_{site_id}"
+            clusters.setdefault(
+                cluster_name,
+                CoreProxyCluster(
+                    name=cluster_name,
+                    endpoints=[(public["host"], public["port"])],
+                    use_tls=public["use_tls"],
+                    sni=public["sni"],
+                    ca_cert_path=public.get("ca_bundle_path"),
+                    expected_sans=public.get("expected_sans") or [],
+                ),
+            )
+            for path in _route_paths(spec):
+                routes.append(
+                    CoreProxyRoute(
+                        host=host,
+                        path_prefix=path,
+                        cluster=cluster_name,
+                    )
+                )
+
+    return routes, list(clusters.values())
+
+
+def _route_paths(spec: dict) -> list[str]:
+    paths: list[str] = []
+    raw_paths = spec.get("paths") if isinstance(spec.get("paths"), list) else []
+    for entry in raw_paths:
+        if not isinstance(entry, dict):
+            continue
+        raw_path = str(entry.get("path") or "").strip() or "/"
+        if not raw_path.startswith("/"):
+            raw_path = f"/{raw_path}"
+        paths.append(raw_path)
+    if not paths:
+        paths.append("/")
+    return paths
+
+
+def _public_endpoint(public_urls: list[str | dict]) -> dict | None:
+    if not public_urls:
+        return None
+    entry = public_urls[0]
+    if isinstance(entry, dict):
+        url = str(entry.get("url") or entry.get("address") or "").strip()
+        ca_bundle_path = entry.get("caBundlePath") or entry.get("ca_bundle_path")
+        expected_sans = entry.get("expectedSANs") or entry.get("expected_sans") or []
+    else:
+        url = str(entry or "").strip()
+        ca_bundle_path = None
+        expected_sans = []
+    if not url:
+        return None
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if not host:
+        return None
+    scheme = (parsed.scheme or "https").lower()
+    use_tls = scheme == "https"
+    port = parsed.port or (443 if use_tls else 80)
+    sni = host if use_tls else None
+    if not isinstance(expected_sans, list):
+        expected_sans = []
+    return {
+        "host": host,
+        "port": port,
+        "use_tls": use_tls,
+        "sni": sni,
+        "ca_bundle_path": ca_bundle_path,
+        "expected_sans": expected_sans,
+    }
 
 
 def _run_reload(cmd: str) -> None:

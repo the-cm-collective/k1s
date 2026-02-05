@@ -154,7 +154,7 @@ class SiteIngressEndpoint:
     site_id: str
     mode: str
     core_proxy_port: int | None
-    public_urls: list[str]
+    public_urls: list[str | dict]
     quarantine_until: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -165,7 +165,7 @@ class SiteIngressListItem:
     site_id: str
     mode: str
     core_proxy_port: int | None
-    public_urls: list[str]
+    public_urls: list[str | dict]
     quarantine_until: datetime | None
 
 
@@ -177,6 +177,7 @@ class EdgeIngressRouteRecord:
     policy_name: str | None
     policy_namespace: str | None
     spec: dict
+    status: dict | None
     created_at: datetime
     updated_at: datetime
 
@@ -186,6 +187,7 @@ class EdgeIngressPolicyRecord:
     name: str
     namespace: str
     spec: dict
+    status: dict | None
     created_at: datetime
     updated_at: datetime
 
@@ -559,6 +561,8 @@ class SQLiteStateStore:
                     "sql", "controller", "create_edge_ingress_policies.sql"
                 ),
             )
+            self._ensure_column(conn, "edge_ingress_routes", "status_json", "TEXT")
+            self._ensure_column(conn, "edge_ingress_policies", "status_json", "TEXT")
             self._migrate_storage_bindings(conn)
             conn.commit()
 
@@ -570,6 +574,20 @@ class SQLiteStateStore:
             stmt = stmt.strip()
             if stmt:
                 conn.execute(stmt)
+
+    def _ensure_column(self, conn, table: str, column: str, col_type: str) -> None:
+        if self.backend == "sqlite":
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+            except Exception:
+                return
+            return
+        try:
+            conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}"
+            )
+        except Exception:
+            return
 
     def _connect(self):
         if self.backend == "sqlite":
@@ -1495,6 +1513,47 @@ class SQLiteStateStore:
             )
         return items
 
+    def upsert_site_ingress_endpoint(
+        self,
+        *,
+        site_id: str,
+        mode: str,
+        core_proxy_port: int | None = None,
+        public_urls: list[str | dict] | None = None,
+        quarantine_until: datetime | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        public_json = json.dumps(public_urls or [])
+        quarantine_val = quarantine_until.isoformat() if quarantine_until else None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT site_id, core_proxy_port FROM site_ingress_endpoints WHERE site_id = ?",
+                (site_id,),
+            ).fetchone()
+            if row:
+                existing_port = row[1]
+                port_val = core_proxy_port if core_proxy_port is not None else existing_port
+                conn.execute(
+                    """
+                    UPDATE site_ingress_endpoints
+                    SET mode = ?, core_proxy_port = ?, public_urls_json = ?,
+                        quarantine_until = ?, updated_at = ?
+                    WHERE site_id = ?
+                    """,
+                    (mode, port_val, public_json, quarantine_val, now, site_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO site_ingress_endpoints
+                      (site_id, mode, core_proxy_port, public_urls_json,
+                       quarantine_until, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (site_id, mode, core_proxy_port, public_json, quarantine_val, now, now),
+                )
+            conn.commit()
+
     # --- Edge ingress routes/policies (edge-local bundles) ---
     def upsert_edge_ingress_route(
         self,
@@ -1505,9 +1564,11 @@ class SQLiteStateStore:
         policy_name: str | None,
         policy_namespace: str | None,
         document: dict,
+        status: dict | None = None,
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         payload = json.dumps(document, sort_keys=True)
+        status_json = json.dumps(status, sort_keys=True) if status is not None else None
         with self._connect() as conn:
             conn.execute(
                 resource_loader.load_text(
@@ -1520,6 +1581,7 @@ class SQLiteStateStore:
                     policy_name,
                     policy_namespace,
                     payload,
+                    status_json,
                     now,
                     now,
                 ),
@@ -1532,9 +1594,11 @@ class SQLiteStateStore:
         name: str,
         namespace: str,
         document: dict,
+        status: dict | None = None,
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         payload = json.dumps(document, sort_keys=True)
+        status_json = json.dumps(status, sort_keys=True) if status is not None else None
         with self._connect() as conn:
             conn.execute(
                 resource_loader.load_text(
@@ -1544,11 +1608,98 @@ class SQLiteStateStore:
                     name,
                     namespace,
                     payload,
+                    status_json,
                     now,
                     now,
                 ),
             )
             conn.commit()
+
+    def update_edge_ingress_route_status(
+        self,
+        *,
+        name: str,
+        namespace: str,
+        status: dict,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        status_json = json.dumps(status, sort_keys=True)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE edge_ingress_routes
+                SET status_json = ?, updated_at = ?
+                WHERE name = ? AND namespace = ?
+                """,
+                (status_json, now, name, namespace),
+            )
+            conn.commit()
+
+    def update_edge_ingress_policy_status(
+        self,
+        *,
+        name: str,
+        namespace: str,
+        status: dict,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        status_json = json.dumps(status, sort_keys=True)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE edge_ingress_policies
+                SET status_json = ?, updated_at = ?
+                WHERE name = ? AND namespace = ?
+                """,
+                (status_json, now, name, namespace),
+            )
+            conn.commit()
+
+    def list_edge_ingress_routes(self) -> list[EdgeIngressRouteRecord]:
+        items: list[EdgeIngressRouteRecord] = []
+        with self._connect() as conn:
+            rows = conn.execute(
+                resource_loader.load_text(
+                    "sql", "controller", "select_edge_ingress_routes_all.sql"
+                )
+            ).fetchall()
+        for row in rows:
+            spec = {}
+            status = None
+            if row[5]:
+                try:
+                    spec = json.loads(row[5])
+                except Exception:
+                    spec = {}
+            if row[6]:
+                try:
+                    status = json.loads(row[6])
+                except Exception:
+                    status = None
+            created_at = datetime.now(timezone.utc)
+            updated_at = created_at
+            try:
+                created_at = datetime.fromisoformat(row[7])
+            except Exception:
+                created_at = datetime.now(timezone.utc)
+            try:
+                updated_at = datetime.fromisoformat(row[8])
+            except Exception:
+                updated_at = created_at
+            items.append(
+                EdgeIngressRouteRecord(
+                    name=str(row[0]),
+                    namespace=str(row[1]),
+                    site_id=str(row[2]),
+                    policy_name=str(row[3]) if row[3] is not None else None,
+                    policy_namespace=str(row[4]) if row[4] is not None else None,
+                    spec=spec if isinstance(spec, dict) else {},
+                    status=status if isinstance(status, dict) else None,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                )
+            )
+        return items
 
     def list_edge_ingress_routes_for_site(self, site_id: str) -> list[EdgeIngressRouteRecord]:
         items: list[EdgeIngressRouteRecord] = []
@@ -1561,19 +1712,25 @@ class SQLiteStateStore:
             ).fetchall()
         for row in rows:
             spec = {}
+            status = None
             if row[5]:
                 try:
                     spec = json.loads(row[5])
                 except Exception:
                     spec = {}
+            if row[6]:
+                try:
+                    status = json.loads(row[6])
+                except Exception:
+                    status = None
             created_at = datetime.now(timezone.utc)
             updated_at = created_at
             try:
-                created_at = datetime.fromisoformat(row[6])
+                created_at = datetime.fromisoformat(row[7])
             except Exception:
                 created_at = datetime.now(timezone.utc)
             try:
-                updated_at = datetime.fromisoformat(row[7])
+                updated_at = datetime.fromisoformat(row[8])
             except Exception:
                 updated_at = created_at
             items.append(
@@ -1584,6 +1741,7 @@ class SQLiteStateStore:
                     policy_name=str(row[3]) if row[3] is not None else None,
                     policy_namespace=str(row[4]) if row[4] is not None else None,
                     spec=spec if isinstance(spec, dict) else {},
+                    status=status if isinstance(status, dict) else None,
                     created_at=created_at,
                     updated_at=updated_at,
                 )
@@ -1603,23 +1761,30 @@ class SQLiteStateStore:
         if not row:
             return None
         spec = {}
+        status = None
         if row[2]:
             try:
                 spec = json.loads(row[2])
             except Exception:
                 spec = {}
+        if row[3]:
+            try:
+                status = json.loads(row[3])
+            except Exception:
+                status = None
         try:
-            created_at = datetime.fromisoformat(row[3])
+            created_at = datetime.fromisoformat(row[4])
         except Exception:
             created_at = datetime.now(timezone.utc)
         try:
-            updated_at = datetime.fromisoformat(row[4])
+            updated_at = datetime.fromisoformat(row[5])
         except Exception:
             updated_at = created_at
         return EdgeIngressPolicyRecord(
             name=str(row[0]),
             namespace=str(row[1]),
             spec=spec if isinstance(spec, dict) else {},
+            status=status if isinstance(status, dict) else None,
             created_at=created_at,
             updated_at=updated_at,
         )
