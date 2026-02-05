@@ -181,6 +181,12 @@ class NatsControllerIngress:
         site_id = _site_id_from_subject(msg.subject) or payload.get("site_id")
         if work_id:
             LOGGER.info("work_result site=%s work_id=%s status=%s", site_id, work_id, status)
+            try:
+                attempt = int(payload.get("attempt") or 0)
+                if attempt:
+                    self._store.mark_work_done(str(work_id), attempt)
+            except Exception:
+                pass
         else:
             LOGGER.info("site_result site=%s payload=%s", site_id, payload)
 
@@ -189,23 +195,43 @@ class NatsControllerIngress:
         site_id = _site_id_from_subject(msg.subject) or payload.get("site_id")
         if not msg.reply:
             return
-        # TODO: wire to SoT-backed outbox for lab-edge work.pull.
-        resp = {
-            "accepted": True,
-            "work": [],
-            "lease_ids": [],
-            "visibility_timeout_ms": int(payload.get("visibility_timeout_ms") or 0),
-            "reason": None,
-        }
-        LOGGER.debug("work.pull site=%s returning empty batch", site_id)
-        self._reply(msg, resp)
+        if not site_id:
+            self._reply(msg, {"accepted": False, "reason": "site_id required"})
+            return
+        try:
+            limit = int(payload.get("limit") or 1)
+        except Exception:
+            limit = 1
+        try:
+            visibility_timeout_ms = int(
+                payload.get("visibility_timeout_ms") or self._lease_ttl_ms
+            )
+        except Exception:
+            visibility_timeout_ms = self._lease_ttl_ms
+        try:
+            leases = self._store.pull_work(site_id, limit, visibility_timeout_ms)
+            resp = {
+                "accepted": True,
+                "work": [lease.payload for lease in leases],
+                "lease_ids": [lease.lease_id for lease in leases],
+                "visibility_timeout_ms": visibility_timeout_ms,
+                "reason": None,
+            }
+            self._reply(msg, resp)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("work.pull failed: %s", exc)
+            self._reply(msg, {"accepted": False, "reason": str(exc)})
 
     def _on_work_ack(self, msg: NatsMessage) -> None:
         payload = self._safe_json(msg)
         site_id = _site_id_from_subject(msg.subject) or payload.get("site_id")
         lease_ids = payload.get("lease_ids") or []
         LOGGER.debug("work.ack site=%s leases=%s", site_id, lease_ids)
-        self._reply(msg, {"accepted": True, "reason": None})
+        try:
+            updated = self._store.ack_work([str(x) for x in lease_ids if x])
+        except Exception:
+            updated = 0
+        self._reply(msg, {"accepted": True, "reason": None, "acked": updated})
 
     def _reply(self, msg: NatsMessage, payload: dict) -> None:
         if not msg.reply:
