@@ -11,6 +11,10 @@ def local_result_subject() -> str:
     return "k1s.v1.local.result"
 
 
+def local_work_progress_subject() -> str:
+    return "k1s.v1.local.work.progress"
+
+
 def local_status_subject(node_id: str) -> str:
     return f"k1s.v1.local.status.{node_id}"
 

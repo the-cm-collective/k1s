@@ -1180,7 +1180,8 @@ class Reconciler:
         were written, else None.
         """
         app = app_key_for_manifest(manifest)
-        root = Path("state/projections") / f"{app}-rev{revision}"
+        base = Path(os.getenv("AE_PROJECTION_ROOT", "state/projections"))
+        root = base / f"{app}-rev{revision}"
         wrote = False
 
         # Config files

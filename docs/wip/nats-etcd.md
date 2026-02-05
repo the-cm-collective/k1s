@@ -169,6 +169,7 @@ We separate subjects by trust boundary:
 **A) Site-local (Worker ↔ Site Gateway)**
 - `k1s.v1.local.work.<node_id>` — gateway → worker (command/work)
 - `k1s.v1.local.result` — worker → gateway (application completion)
+- `k1s.v1.local.work.progress` — worker → gateway (work heartbeat/progress)
 - `k1s.v1.local.status.<node_id>` — worker → gateway (best-effort)
 - `k1s.v1.local.logs.<node_id>` — worker → gateway (best-effort)
 - `k1s.v1.local.node.announce.<node_id>` — worker → gateway (capabilities snapshot)
@@ -407,6 +408,7 @@ Two different retry classes:
 - **Policy**:
   - Gateway uses progress acks while work is inflight (extends the `ack_wait` deadline).
   - Progress acks are sent per in-flight message on an interval of ~`ack_wait / 3` with ±15% jitter.
+  - Progress acks are **gated by worker heartbeats**. If a heartbeat is stale, the gateway stops progress-acking and NAKs with a short delay to trigger redelivery.
   - Gateway sends a final ack (AckSync) only after it has a terminal `work_result` **and** has durably recorded it locally (Option A).
   - If local dispatch fails immediately, gateway NAKs (or does not ack) to trigger redelivery.
   - Redeliveries of the same `work_id:attempt` must not be re-dispatched; continue tracking and progress-acking until terminal.
@@ -424,7 +426,7 @@ Two different retry classes:
 **Flow (summary):**
 1. Pull message → persist “accepted/inflight”
 2. Dispatch to worker
-3. Send AckProgress periodically while inflight
+3. Send AckProgress periodically while inflight **only while heartbeats are fresh**
 4. On terminal result: persist result locally
 5. Send AckSync (final)
 6. Asynchronously forward result to controller; retry until accepted
@@ -594,8 +596,8 @@ Reserved for future: `k1s.v1.ctrl.site.<site_id>` is **not** part of the Mode A 
 
 | Local User  | Publish                                                                                                                       | Subscribe                                                                      | Notes                                                                              |
 | ----------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| **worker**  | `k1s.v1.local.result` `k1s.v1.local.status.<node_id>` `k1s.v1.local.logs.<node_id>` `k1s.v1.local.node.announce.<node_id>`    | `k1s.v1.local.work.<node_id>`                                                  | Workers cannot publish to `k1s.v1.site.*` or any `$JS.*` subjects                  |
-| **gateway** | `k1s.v1.local.work.>` `k1s.v1.site.<site_id>.>` `$JS.API.CONSUMER.MSG.NEXT.K1S_WORK.WORK_SITE_<site_id>` `$JS.ACK.K1S_WORK.>` | `k1s.v1.local.result` `k1s.v1.local.status.>` `k1s.v1.local.logs.>` `_INBOX.>` | Gateway is the only site component that can interact with hub-facing + JS subjects |
+| **worker**  | `k1s.v1.local.result` `k1s.v1.local.work.progress` `k1s.v1.local.status.<node_id>` `k1s.v1.local.logs.<node_id>` `k1s.v1.local.node.announce.<node_id>`    | `k1s.v1.local.work.<node_id>`                                                  | Workers cannot publish to `k1s.v1.site.*` or any `$JS.*` subjects                  |
+| **gateway** | `k1s.v1.local.work.>` `k1s.v1.site.<site_id>.>` `$JS.API.CONSUMER.MSG.NEXT.K1S_WORK.WORK_SITE_<site_id>` `$JS.ACK.K1S_WORK.>` | `k1s.v1.local.result` `k1s.v1.local.work.progress` `k1s.v1.local.status.>` `k1s.v1.local.logs.>` `_INBOX.>` | Gateway is the only site component that can interact with hub-facing + JS subjects |
 
 ### 11.4 Mode A security caveat (explicit)
 
@@ -643,6 +645,7 @@ Phase 1 templates must include:
 
 - Gateway durability: **SQLite spool (WAL)** with `synchronous=NORMAL` and `busy_timeout` set.
 - Ack semantics: **AckProgress** while inflight; **AckSync** after terminal result is durably committed locally.
+- Heartbeat gating: progress acks only while worker heartbeats are fresh; stale heartbeats trigger NAK with a short delay (default timeout `max(2*progress, 0.8*ack_wait)`).
 - `ack_wait=30s`, `progress=10s`, `max_ack_pending=32`, `max_deliver=20`, `progress_jitter=±15%`, `max_waiting=512`.
 - JetStream domain (when enabled on hub): set `AE_JS_DOMAIN=K1S` on controller + gateway.
 - Work publish: `Nats-Msg-Id = work_id:attempt`.

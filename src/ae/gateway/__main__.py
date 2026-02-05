@@ -46,6 +46,13 @@ def main(argv: list[str] | None = None) -> int:
             "AE_TRANSPORT_BACKEND=%s; gateway is intended for NATS transport",
             transport.backend,
         )
+    else:
+        import logging
+
+        logging.getLogger(__name__).info(
+            "AE_TRANSPORT_BACKEND=%s; starting NATS gateway",
+            transport.backend,
+        )
 
     if not args.site_id:
         raise SystemExit("AE_SITE_ID or --site-id is required")

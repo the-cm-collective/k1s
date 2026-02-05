@@ -13,6 +13,7 @@ from ae.transport.subjects import (
     local_logs_subject,
     local_result_subject,
     local_status_subject,
+    local_work_progress_subject,
     local_work_subject,
     work_stream_subject,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "local_logs_subject",
     "local_result_subject",
     "local_status_subject",
+    "local_work_progress_subject",
     "local_work_subject",
     "work_stream_subject",
 ]
