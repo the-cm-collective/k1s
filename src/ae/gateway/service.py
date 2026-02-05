@@ -60,6 +60,7 @@ class SiteGateway:
         self._status_interval_s = max(5, status_interval_s)
         self._stats = GatewayStats()
         self._nats_client = nats_client
+        self._js_stream = os.getenv("AE_JS_STREAM_NAME", "K1S_WORK")
         self._inflight: dict[str, JetStreamMessage] = {}
         self._inflight_progress: dict[str, float] = {}
         self._completed: dict[str, float] = {}
@@ -267,6 +268,7 @@ class SiteGateway:
                 durable=f"WORK_SITE_{self._site_id}",
                 batch=max(1, int(self._js_config.max_ack_pending or 1)),
                 timeout_s=1.0,
+                stream=self._js_stream,
             )
         except Exception as exc:  # noqa: BLE001
             LOGGER.debug("js fetch failed: %s", exc)

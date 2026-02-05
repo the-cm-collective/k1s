@@ -992,9 +992,6 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     except Exception:
         pass
 
-    if transport:
-        _bootstrap_jetstream(transport)
-
     transport = None
     try:
         import logging as _log
@@ -1031,6 +1028,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             logger.info("transport backend=%s", transport.backend)
     except Exception:
         pass
+
+    if transport:
+        _bootstrap_jetstream(transport)
 
     # Build reconciler (runtime, ingress, secrets, store)
     reconciler = _make_reconciler()

@@ -141,9 +141,14 @@ class NatsClient:
         timeout_s: float = 2.0,
     ) -> None:
         self._ensure_connected()
-        fut = asyncio.run_coroutine_threadsafe(
-            self._nc.publish(subject, payload, headers=headers), self._loop
-        )
+        coro = self._nc.publish(subject, payload, headers=headers)
+        if threading.current_thread() is self._thread:
+            try:
+                self._loop.create_task(coro)
+                return
+            except Exception as exc:  # noqa: BLE001
+                raise NatsClientError(f"publish failed: {exc}") from exc
+        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
         try:
             fut.result(timeout=timeout_s)
         except Exception as exc:  # noqa: BLE001
@@ -247,15 +252,19 @@ class NatsClient:
         durable: str,
         batch: int,
         timeout_s: float,
+        stream: str | None = None,
     ) -> list[JetStreamMessage]:
         self._ensure_connected()
 
         async def _get_pull_sub():  # type: ignore[no-untyped-def]
-            key = (subject, durable)
+            key = (stream or subject, durable)
             sub = self._js_subs.get(key)
             if sub is None:
                 js = self._nc.jetstream()
-                sub = await js.pull_subscribe(subject, durable=durable)
+                if stream:
+                    sub = await js.pull_subscribe_bind(stream=stream, durable=durable)
+                else:
+                    sub = await js.pull_subscribe(subject, durable=durable)
                 self._js_subs[key] = sub
             return sub
 
@@ -321,13 +330,13 @@ class NatsClient:
             js = self._nc.jetstream()
             cfg = ConsumerConfig(
                 durable_name=durable,
-                ack_policy=AckPolicy.Explicit,
+                ack_policy=AckPolicy.EXPLICIT,
                 ack_wait=_ack_wait_value(ack_wait_s),
                 max_ack_pending=max_ack_pending,
                 max_deliver=max_deliver,
                 max_waiting=max_waiting,
                 filter_subject=filter_subject,
-                deliver_policy=DeliverPolicy.All,
+                deliver_policy=DeliverPolicy.ALL,
             )
             try:
                 await js.consumer_info(stream, durable)
@@ -424,8 +433,8 @@ def _storage_type(value: str):
         return None
     raw = str(value or "").lower()
     if raw in {"mem", "memory"}:
-        return StorageType.Memory
-    return StorageType.File
+        return StorageType.MEMORY
+    return StorageType.FILE
 
 
 def _retention_policy(value: str):
@@ -433,10 +442,10 @@ def _retention_policy(value: str):
         return None
     raw = str(value or "").lower()
     if raw in {"workqueue", "work_queue", "queue"}:
-        return RetentionPolicy.WorkQueue
+        return RetentionPolicy.WORK_QUEUE
     if raw in {"interest"}:
-        return RetentionPolicy.Interest
-    return RetentionPolicy.Limits
+        return RetentionPolicy.INTEREST
+    return RetentionPolicy.LIMITS
 
 
 def _ack_wait_value(seconds: float):
@@ -444,8 +453,7 @@ def _ack_wait_value(seconds: float):
     raw = ann.get("ack_wait")
     if raw is not None and "timedelta" in str(raw).lower():
         return timedelta(seconds=seconds)
-    # NATS API uses nanoseconds.
-    return int(seconds * 1_000_000_000)
+    return float(seconds)
 
 
 __all__ = [
