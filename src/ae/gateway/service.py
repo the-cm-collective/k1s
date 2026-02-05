@@ -6,6 +6,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ae.config.transport import GatewayJetStreamConfig, check_nats_connectivity
 from ae.transport import (
@@ -22,6 +23,9 @@ from ae.transport import (
     local_work_subject,
     work_stream_subject,
 )
+
+if TYPE_CHECKING:
+    from ae.transport.nats_client import NatsClient
 
 LOGGER = logging.getLogger(__name__)
 
@@ -44,6 +48,7 @@ class SiteGateway:
         nats_url: str | None,
         js_config: GatewayJetStreamConfig,
         status_interval_s: int,
+        nats_client: "NatsClient | None" = None,
     ) -> None:
         self._site_id = site_id
         self._node_id = node_id or os.getenv("AE_NODE_ID") or "unknown-node"
@@ -51,6 +56,7 @@ class SiteGateway:
         self._js_config = js_config
         self._status_interval_s = max(5, status_interval_s)
         self._stats = GatewayStats()
+        self._nats_client = nats_client
 
     def _subjects(self) -> list[str]:
         return [
@@ -101,8 +107,19 @@ class SiteGateway:
     def start(self, *, once: bool = False) -> None:
         self._log_config()
         self._log_connectivity()
+        if self._nats_client is not None:
+            try:
+                self._nats_client.connect()
+                LOGGER.info("nats client connected")
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("nats client connect failed: %s", exc)
         self._log_subjects()
         if once:
+            if self._nats_client is not None:
+                try:
+                    self._nats_client.close()
+                except Exception:
+                    pass
             return
         LOGGER.info("gateway skeleton running; no transport backend wired yet")
         self._stats.last_report_at = time.monotonic()

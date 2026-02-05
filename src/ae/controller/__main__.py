@@ -31,6 +31,7 @@ from ae.observability.http_api import start_http_api, set_reconcile_metrics
 from ae.controller.agent_api import start_agent_api
 from ae.observability.logging import configure_logging
 from ae.config.transport import TransportConfig, check_nats_connectivity
+from ae.transport.nats_client import NatsClient, NatsClientError
 from ae.cli.__main__ import (
     state_store_from_env,
     runtime_factory,
@@ -928,6 +929,19 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     logger.info("nats connectivity ok (%s)", detail)
                 else:
                     logger.warning("nats connectivity failed (%s)", detail)
+                if transport.backend in {"nats-core", "nats-js"}:
+                    try:
+                        nats_client = NatsClient(
+                            url=transport.nats_url,
+                            creds=transport.nats_creds,
+                            name="k1s-controller",
+                        )
+                        nats_client.connect()
+                        logger.info("nats client connected")
+                    except NatsClientError as exc:
+                        logger.warning("nats client unavailable: %s", exc)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("nats client connect failed: %s", exc)
             else:
                 logger.warning("AE_NATS_URL not set; skipping nats connectivity check")
         else:
