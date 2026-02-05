@@ -8,6 +8,7 @@ import os
 from ae.config.transport import GatewayJetStreamConfig, TransportConfig
 from ae.gateway.service import SiteGateway
 from ae.observability.logging import configure_logging
+from ae.transport.nats_client import NatsClient, NatsClientError
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -49,6 +50,19 @@ def main(argv: list[str] | None = None) -> int:
     if not args.site_id:
         raise SystemExit("AE_SITE_ID or --site-id is required")
 
+    nats_client = None
+    if transport.backend in {"nats-core", "nats-js"}:
+        if not args.nats_url:
+            raise SystemExit("AE_NATS_URL or --nats-url required for NATS transport")
+        try:
+            nats_client = NatsClient(
+                url=args.nats_url,
+                creds=transport.nats_creds,
+                name="k1s-gateway",
+            )
+        except NatsClientError as exc:
+            raise SystemExit(str(exc)) from exc
+
     js_config = GatewayJetStreamConfig.from_env()
     gateway = SiteGateway(
         site_id=args.site_id,
@@ -56,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
         nats_url=args.nats_url,
         js_config=js_config,
         status_interval_s=args.status_interval,
+        nats_client=nats_client,
     )
     gateway.start(once=args.once)
     return 0

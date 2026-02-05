@@ -61,6 +61,23 @@ We assume the current node↔controller path is HTTP-based (per the README examp
 
 > Mode B is recommended if you need “compromised site cannot spoof another site under any config mistake.”
 
+## 2.1 Runtime profiles (locked)
+
+We separate the **state backend (SoT)** from the **transport/dispatch backend** so dev and lab loops can stay lightweight while production uses the full fabric.
+
+**Profiles**
+
+| Profile | State (SoT) | Transport | Work dispatch | Notes |
+| --- | --- | --- | --- | --- |
+| `dev-min` | SQLite | HTTP | direct/local | Fast local loop; no NATS. |
+| `dev-fidelity` | etcd | HTTP | direct/local | k8s-shaped SoT without edge protocol. |
+| `lab-edge` | etcd (or SQLite/Postgres) | NATS Core | `work.pull` (req/reply) | Exercises leaf/gateway without JetStream durability. |
+| `prod-edge` | etcd | NATS + JetStream | JetStream work queue | Mode A Option A semantics. |
+
+Notes:
+- Postgres remains viable for non-edge or hybrid deployments; etcd is the preferred SoT for the edge fabric.
+- If JetStream is omitted, use a `work.pull` API rather than best-effort publish to avoid “lost work” confusion.
+
 ---
 
 ## 3. Target architecture (Mode A)
