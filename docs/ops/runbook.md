@@ -143,6 +143,15 @@ Tips
 - For utilization HPAs, set CPU/Memory requests to avoid HPA errors.
 - Use `--policy strict` in CI to keep manifests honest.
 
+NATS edge drills (Mode A)
+- Leaf disconnect: stop the edge leader NATS process and confirm `ae_site_stale{site=...}` flips to 1.
+- Gateway reconnect: restart gateway and ensure `ae_site_last_seen_seconds` drops back near 0.
+- JS consumer lag: enqueue a batch of work and watch `ae_outbox_publish_success_total` advance; use NATS tooling to inspect consumer pending/ack if needed.
+- Hub NATS restart: restart the hub NATS process and ensure outbox publishing resumes without manual intervention.
+- Site disconnect/reconnect: stop the edge leader + gateway, confirm stale metrics, then restart and confirm the site recovers.
+- Worker crash mid-work: kill the worker stub during execution and verify redelivery/ack-pending behavior.
+- etcd leader change: force a leader move and ensure controller reconciliation continues without errors.
+
 
 Token rotation and cleanup
 - Rotate tokens proactively before expiry; consider 24h pre‑expiry for rotation.
