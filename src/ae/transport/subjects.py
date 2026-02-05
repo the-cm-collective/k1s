@@ -59,5 +59,13 @@ def hub_work_ack_subject(site_id: str) -> str:
     return f"k1s.v1.site.{site_id}.work.ack"
 
 
+def hub_route_bundle_subject(site_id: str) -> str:
+    return f"k1s.v1.site.{site_id}.routes.bundle"
+
+
+def hub_route_ack_subject(site_id: str) -> str:
+    return f"k1s.v1.site.{site_id}.routes.ack"
+
+
 def work_stream_subject(site_id: str) -> str:
     return f"k1s.v1.work.site.{site_id}"

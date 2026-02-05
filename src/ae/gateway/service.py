@@ -16,6 +16,8 @@ from ae.transport import (
     hub_lease_acquire_subject,
     hub_lease_renew_subject,
     hub_logs_subject,
+    hub_route_ack_subject,
+    hub_route_bundle_subject,
     hub_result_subject,
     hub_status_subject,
     hub_work_ack_subject,
@@ -106,6 +108,8 @@ class SiteGateway:
             2.0,
             float(os.getenv("AE_GATEWAY_RESULT_RETRY_INTERVAL", "5") or 5),
         )
+        self._route_bundle_rev = 0
+        self._route_bundle_hash: str | None = None
 
     def _subjects(self) -> list[str]:
         return [
@@ -123,6 +127,8 @@ class SiteGateway:
             hub_caps_subject(self._site_id),
             hub_work_pull_subject(self._site_id),
             hub_work_ack_subject(self._site_id),
+            hub_route_bundle_subject(self._site_id),
+            hub_route_ack_subject(self._site_id),
             work_stream_subject(self._site_id),
         ]
 
@@ -194,6 +200,7 @@ class SiteGateway:
                 try:
                     self._subscribe_local_results()
                     self._subscribe_local_progress()
+                    self._subscribe_route_bundles()
                     self._acquire_lease()
                 except Exception as exc:  # noqa: BLE001
                     LOGGER.warning("failed to subscribe local results: %s", exc)
@@ -238,6 +245,13 @@ class SiteGateway:
         if self._nats_client is None:
             return
         self._nats_client.subscribe(local_work_progress_subject(), self._on_local_progress)
+
+    def _subscribe_route_bundles(self) -> None:
+        if self._nats_client is None:
+            return
+        self._nats_client.subscribe(
+            hub_route_bundle_subject(self._site_id), self._on_route_bundle
+        )
 
     def _on_local_result(self, msg) -> None:  # type: ignore[override]
         payload = _safe_json(msg.data)
@@ -298,6 +312,40 @@ class SiteGateway:
         if not work_key:
             return
         self._inflight_heartbeat[work_key] = time.monotonic()
+
+    def _on_route_bundle(self, msg) -> None:  # type: ignore[override]
+        payload = _safe_json(msg.data)
+        if not isinstance(payload, dict):
+            return
+        site_id = payload.get("site_id") or self._site_id
+        if str(site_id) != str(self._site_id):
+            return
+        bundle_rev = int(payload.get("bundle_rev") or 0)
+        bundle_hash = payload.get("hash")
+        ok = True
+        error = None
+        if bundle_rev < self._route_bundle_rev:
+            ok = True
+        elif bundle_rev == self._route_bundle_rev:
+            if self._route_bundle_hash and bundle_hash != self._route_bundle_hash:
+                ok = False
+                error = "hash_mismatch"
+        else:
+            self._route_bundle_rev = bundle_rev
+            self._route_bundle_hash = bundle_hash
+        ack = {
+            "site_id": self._site_id,
+            "bundle_rev": bundle_rev,
+            "hash": bundle_hash,
+            "applied_at": time.time(),
+            "ok": ok,
+            "error": error,
+        }
+        try:
+            if self._nats_client is not None:
+                self._nats_client.publish_json(hub_route_ack_subject(self._site_id), ack)
+        except Exception:
+            pass
 
     def _replay_spool_results(self, now: float) -> None:
         if not self._spool_enabled or self._nats_client is None:
