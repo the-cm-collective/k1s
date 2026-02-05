@@ -409,9 +409,10 @@ Two different retry classes:
   - Gateway uses progress acks while work is inflight (extends the `ack_wait` deadline).
   - Progress acks are sent per in-flight message on an interval of ~`ack_wait / 3` with ±15% jitter.
   - Progress acks are **gated by worker heartbeats**. If a heartbeat is stale, the gateway stops progress-acking and NAKs with a short delay to trigger redelivery.
+  - After sending a NAK for stale heartbeats, the gateway marks the inflight row as `abandoned` so a redelivery can be re-dispatched.
   - Gateway sends a final ack (AckSync) only after it has a terminal `work_result` **and** has durably recorded it locally (Option A).
   - If local dispatch fails immediately, gateway NAKs (or does not ack) to trigger redelivery.
-  - Redeliveries of the same `work_id:attempt` must not be re-dispatched; continue tracking and progress-acking until terminal.
+  - Redeliveries of the same `work_id:attempt` must not be re-dispatched **unless** the inflight row is `abandoned`.
 
 ### 8.7 AckSync semantics (Option A: gateway durable commit, locked)
 **Meaning:** a JetStream message is “done” once the site has durably recorded the terminal outcome.
@@ -449,8 +450,9 @@ Duplicate handling:
 - If ledger is terminal and incoming status matches terminal status, treat as idempotent OK (no-op).
 - If ledger is terminal and incoming status conflicts, ignore and log anomaly.
 
-Node id handling:
-- If `assigned_node_id` is set and differs from incoming `node_id`, reject unless `assigned_node_id` is empty.
+Node id handling (Mode A, locked):
+- `assigned_node_id` is **advisory** and may change within the same attempt.
+- If `assigned_node_id` is set and differs from incoming `node_id`, accept but log a warning.
 
 Stale/future attempts:
 - `attempt < ledger.attempt` → ignore (stale)
@@ -474,6 +476,27 @@ Selection algorithm (MVP):
 5. If none available, leave the message unacked (or NAK with delay) and publish a site status of “no capacity”.
 
 This keeps scheduling deterministic, observable, and cheap, while respecting basic constraints.
+If a node becomes unhealthy before terminal result, the gateway may re-dispatch the same attempt to a different node (see §8.6).
+
+### 8.10 Controller watchdogs and reschedule timeouts (locked)
+
+Because the gateway AckSyncs **before** controller acceptance, the controller must reschedule on missing results.
+
+**Watchdogs (MVP defaults)**
+- `T_dispatched_max`: max time allowed in `Dispatched` without seeing `Running` or terminal result. Default **2–5 minutes**.
+- `T_running_max`: max time allowed in `Running` without terminal result. Default **30 minutes** (op-specific override allowed).
+
+**On expiry**
+- Controller increments attempt.
+- Creates a new outbox entry.
+- Publishes `work_id:attempt+1`.
+
+### 8.11 When ledger becomes `Running` (locked)
+
+- Gateway emits a `work_result(status=running)` once it has:
+  - persisted inflight + chosen node
+  - successfully handed off work to the worker
+- This feeds controller watchdogs and avoids premature reschedules.
 
 ---
 
@@ -614,7 +637,7 @@ Rotation approach:
 - Issue new creds alongside old, reload Edge Leader + gateway, then revoke old after a grace period.
 - Mode A still benefits from operator/jwt tooling for targeted revocation.
 
-Phase 1 templates must include:
+Transport Phase 1 templates must include:
 - Hub account/jwt config.
 - Per-site uplink creds.
 - Site-local gateway/worker creds.
@@ -624,7 +647,7 @@ Phase 1 templates must include:
 
 ## 12. Implementation plan (phased)
 
-### Phase 0 — Architecture lock-in + contracts
+### Transport Phase 0 — Architecture lock-in + contracts
 
 * Lock Mode A decisions:
 
@@ -641,20 +664,20 @@ Phase 1 templates must include:
 
 **Exit:** controller/runtime owners sign off
 
-### Locked operational defaults (Mode A Option A)
+### Locked operational defaults (Mode A / Gateway durability option A)
 
 - Gateway durability: **SQLite spool (WAL)** with `synchronous=NORMAL` and `busy_timeout` set.
 - Ack semantics: **AckProgress** while inflight; **AckSync** after terminal result is durably committed locally.
-- Heartbeat gating: progress acks only while worker heartbeats are fresh; stale heartbeats trigger NAK with a short delay (default timeout `max(2*progress, 0.8*ack_wait)`).
+- Heartbeat gating: progress acks only while worker heartbeats are fresh; stale heartbeats trigger NAK with a short delay and mark inflight `abandoned` (default timeout `max(2*progress, 0.8*ack_wait)`).
 - `ack_wait=30s`, `progress=10s`, `max_ack_pending=32`, `max_deliver=20`, `progress_jitter=±15%`, `max_waiting=512`.
-- JetStream domain (when enabled on hub): set `AE_JS_DOMAIN=K1S` on controller + gateway.
+- JetStream domain is **optional**. If a hub JS domain is configured, set `AE_JS_DOMAIN=K1S` on controller + gateway; otherwise leave unset.
 - Work publish: `Nats-Msg-Id = work_id:attempt`.
 - Outbox: `outbox/work/<work_id>/<attempt>`, ledger → `Dispatched` on PubAck.
 - Lease API: req/reply schemas in §7.4.
 - Edge scheduling: filter by selector/caps, pick lowest inflight, tie-break by stable hash.
 - Credentials: separate `leaf_uplink` / `gateway_local` / `worker_local`, rotate via replace+reload.
 
-### Phase 1 — Infra scaffolding (hub + site templates)
+### Transport Phase 1 — Infra scaffolding (hub + site templates)
 
 * Hub: NATS cluster w/ JetStream + etcd deployment configs (`ops/`)
 * Site: Edge Leader NATS config template + Site Gateway template (`ops/`)
@@ -662,7 +685,7 @@ Phase 1 templates must include:
 
 **Exit:** dev environment boots hub + site leader + gateway; verifies connectivity
 
-### Phase 2 — Transport abstraction + Site Gateway skeleton
+### Transport Phase 2 — Transport abstraction + Site Gateway skeleton
 
 * Implement NATS transport layer for controller and runtime
 * Implement Site Gateway:
@@ -673,7 +696,7 @@ Phase 1 templates must include:
 
 **Exit:** controller ↔ gateway ↔ worker messaging over Core NATS with metrics
 
-### Phase 3 — Identity + lease lifecycle (etcd lease-backed)
+### Transport Phase 3 — Identity + lease lifecycle (etcd lease-backed)
 
 * Implement node registration + lease acquire/renew via gateway
 * etcd lease attachment for node keys
@@ -682,9 +705,10 @@ Phase 1 templates must include:
 
 **Exit:** deterministic lease behavior under controller restart + site disconnect
 
-### Phase 4 — Durable work queue (JetStream + outbox/dedupe)
+### Transport Phase 4 — Durable work queue (JetStream + outbox/dedupe)
 
 * Create `K1S_WORK` stream and per-site consumers
+* Auto-create per-site consumers on site register (SoT-driven; `AE_SITE_IDS` only for canary)
 * Implement outbox publisher loop (msg-id includes attempt)
 * Implement gateway pull/ack + local forwarding
 * Implement result handling + CAS ledger transitions
@@ -696,7 +720,7 @@ Phase 1 templates must include:
 
 **Exit:** deterministic behavior under duplicates and crash tests
 
-### Phase 5 — Status + logs ingestion
+### Transport Phase 5 — Status + logs ingestion
 
 * Core NATS status/logs subjects
 * sampling/rate limiting
@@ -704,7 +728,17 @@ Phase 1 templates must include:
 
 **Exit:** stable throughput under load tests
 
-### Phase 6 — Operability + drills
+### Metrics contract (MVP, locked)
+
+- `ae_outbox_publish_success_total{site_id}`
+- `ae_outbox_publish_failure_total{site_id,reason}`
+- `ae_js_consumer_pending{site_id,consumer}`
+- `ae_js_ack_pending{site_id,consumer}`
+- `ae_site_last_seen_seconds{site_id}`
+- `ae_gateway_work_stale_total{site_id}`
+- `ae_gateway_work_nak_total{site_id}`
+
+### Transport Phase 6 — Operability + drills
 
 * monitoring/alerts:
 
@@ -720,7 +754,7 @@ Phase 1 templates must include:
 
 **Exit:** drills pass + runbooks updated
 
-### Phase 7 — Migration + rollout
+### Transport Phase 7 — Migration + rollout
 
 * ship feature-flagged selection (HTTP fallback)
 * canary one site, validate rollback
@@ -729,7 +763,8 @@ Phase 1 templates must include:
 
 Rollout checklist (Mode A)
 - Feature flag: `AE_TRANSPORT_BACKEND = http|nats-core|nats-js` (default `http`).
-- Hub requires `AE_SITE_IDS` for per-site JS consumers when `nats-js` is enabled.
+- Canary: `AE_SITE_IDS` can be set for explicit per-site consumer creation.
+- Production: controller discovers sites from SoT (`sites/<site_id>`) and creates consumers on demand.
 
 Canary steps
 1. Pick a single site id (e.g., `sfo-edge-01`) and set `AE_SITE_IDS` on the hub controller.
@@ -743,6 +778,309 @@ Rollback steps
 3. Confirm work dispatch returns to HTTP path and pending JS work drains.
 
 ---
+
+## 12.1 Edge ingress spec (Mode A MVP, locked)
+
+Status: Draft (Locked defaults for MVP).
+
+Primary scope: Mode A single-tenant fabric. This spec defines how ingress routing works across three deployment cases:
+
+- **core-proxy**: core ingress is public, edges are behind NAT
+- **core-to-edge-public**: core ingress proxies to a public edge ingress
+- **edge-local**: private edge-only ingress; core is not in the data path
+
+### 12.1.1 Goals and non-goals
+
+Goals:
+- Single declarative API for exposure across all three cases.
+- Core ingress enforces WAF/auth by default for core-proxy and core-to-edge-public.
+- NAT-friendly edge attachment without third-party tunnel providers.
+- Lightweight defaults with a clean path to stronger security/HA.
+
+Non-goals (MVP):
+- Global CDN/Anycast/WAF.
+- Default full L3 overlay routing to edge Pod/Service CIDRs.
+- Multi-tenant site isolation via per-site NATS accounts (Mode B future).
+
+### 12.1.2 Terminology
+
+- **Core Ingress**: public L7 proxy in the core cluster.
+- **Edge Site**: an on-prem/private cloud location running edge resources.
+- **Edge Ingress**: site-local ingress gateway that routes to local Services/Pods.
+- **Edge Tunnel**: NAT-traversing connection from edge to core (core-proxy mode).
+- **Rathole**: reference tunnel implementation for core-proxy mode.
+- **Route Bundle**: versioned snapshot of routes/policies delivered to sites for edge-local mode.
+
+### 12.1.3 Locked defaults (MVP)
+
+- **Core ingress implementation**: Envoy-based Core Ingress (dynamic routes + auth hooks).
+- **core-proxy tunnel**: Rathole reverse tunnel, controller-managed, one local upstream port per site.
+- **TLS model (core-proxy + core-to-edge-public)**: terminate at core by default; core enforces WAF/auth.
+- **Failover**: fail closed (503) unless explicitly allowed by policy.
+- **edge-local propagation**: core stores desired routes/policies in SoT; edges reconcile locally from a Route Bundle delivered over the control plane (NATS). Core does not proxy edge-local traffic.
+
+### 12.1.4 Data-plane exposure modes
+
+**core-proxy (edge behind NAT)**
+- Browser → Core Ingress → proxy over rathole tunnel → Edge Ingress → Service/Pod.
+- Edge initiates outbound tunnel connection.
+- Core ingress terminates TLS and enforces WAF/auth.
+- Edge ingress is not publicly reachable.
+
+**core-to-edge-public (edge ingress is public)**
+- Browser → Core Ingress → direct upstream to Edge Ingress → Service/Pod.
+- No tunnel required.
+- Core ingress terminates TLS and enforces WAF/auth.
+- Edge ingress is reachable from core (public IP/LB/DMZ).
+
+**edge-local (private)**
+- Client → Edge Ingress (LAN/private) → Service/Pod.
+- Core ingress is not in the request path.
+- Core still owns desired route configuration and distributes it via Route Bundles.
+
+### 12.1.5 API surface (proposed resources)
+
+**EdgeIngressRoute**
+```yaml
+apiVersion: k1s.io/v1
+kind: EdgeIngressRoute
+metadata:
+  name: app-web
+spec:
+  host: app.example.com
+  paths:
+    - path: /
+      serviceRef:
+        namespace: default
+        name: app-svc
+        port: 8080
+  exposure:
+    mode: core-proxy | core-to-edge-public | edge-local
+    placement:
+      site: sfo-edge-01
+    tls:
+      mode: terminate-core | passthrough | terminate-edge
+      terminateCore:
+        redirectHttpToHttps: true
+    failover:
+      allowed: false
+      targets: []
+    policyRef:
+      name: app-web-policy
+```
+
+**EdgeIngressPolicy**
+```yaml
+apiVersion: k1s.io/v1
+kind: EdgeIngressPolicy
+metadata:
+  name: app-web-policy
+spec:
+  auth:
+    mode: none | oidc | forward-auth | mtls | jwt
+  waf:
+    mode: none | basic | owasp-crs
+  headers:
+    request:
+      add:
+        X-K1S-Route: app-web
+    response:
+      add:
+        Strict-Transport-Security: "max-age=31536000; includeSubDomains"
+  timeouts:
+    requestHeadersMs: 10000
+    requestBodyMs: 30000
+    idleMs: 60000
+  websockets:
+    enabled: true
+  stickiness:
+    mode: none | cookie
+    cookie:
+      name: k1s_route
+      ttlSeconds: 3600
+```
+
+**SiteIngressEndpoint** (controller-managed status)
+```yaml
+apiVersion: k1s.io/v1
+kind: SiteIngressEndpoint
+metadata:
+  name: sfo-edge-01
+status:
+  mode: core-proxy | core-to-edge-public
+  coreProxy:
+    localUpstream:
+      host: 127.0.0.1
+      port: 18081
+    tunnel:
+      healthy: true
+      lastSeen: "..."
+  public:
+    urls:
+      - https://ingress.sfo-edge-01.example.net:443
+    healthy: true
+```
+
+### 12.1.6 Edge-local policy enforcement (LOCKED, MVP)
+
+Edge-local removes core from the request path, so policy enforcement is split by scope.
+
+**Edge-enforced subset (MVP)**
+- timeouts (request headers/body/idle)
+- websockets.enabled
+- headers (request/response add/remove)
+- basic rateLimit
+- maxBodyBytes
+- ipAllowlist/ipDenylist (relative to edge’s network view)
+- stickiness (cookie-based; edge-local only)
+
+**Core-only (MVP)**
+- auth modes: oidc, forward-auth, jwt (unless explicitly deployed at edge later)
+- waf.mode=owasp-crs (future module)
+- any policy that depends on core IDP integration
+
+**Status behavior (MVP)**
+- `EdgeIngressRoute.status.policyUnsupported` lists fields ignored at edge.
+- Controller sets this during bundle generation.
+
+### 12.1.7 Envoy config delivery model (LOCKED, MVP)
+
+- File-based render + reload/hot restart.
+- Controller renders Envoy config to disk (or ConfigMap volume) on core ingress nodes.
+- Envoy applies changes via hot restart (preferred) or SIGHUP/reload (acceptable).
+- xDS is deferred to a later phase.
+
+### 12.1.8 Route Bundle delivery and ack (edge-local, LOCKED, MVP)
+
+**Transport**
+- Core NATS + explicit ack/resend (not JetStream).
+
+**Subjects**
+- Deliver: `k1s.v1.site.<site_id>.routes.bundle`
+- Ack: `k1s.v1.site.<site_id>.routes.ack`
+
+**Bundle identity**
+- `bundle_rev` (monotonic per site)
+- `hash` (sha256 of canonical JSON payload)
+- `controller_epoch` (optional)
+
+**Idempotency**
+- Apply iff `bundle_rev > last_applied_rev`.
+- If `bundle_rev == last_applied_rev` and hash differs, treat as anomaly and report.
+
+**Retry/backoff**
+- Resend unacked bundles with exponential backoff (1s, 2s, 5s, 10s, 30s, 60s, then every 2–5 min).
+- Stop resending once ack received for current rev.
+
+**Storage**
+- Core retains the latest bundle per site in SoT and can resend on demand.
+
+**Size limit**
+- `max_bundle_bytes = 512 KiB` (MVP). Larger bundles must be split or rejected.
+
+### 12.1.9 Health model (LOCKED, MVP)
+
+Healthy means all of the following are true:
+- Tunnel connected and heartbeating.
+- Edge ingress reports ready.
+- Active probe through the tunnel succeeds.
+
+**Tunnel health**
+- Rathole client connected (edge → core).
+- Heartbeat stale threshold: `T_tunnel_stale = 15s`.
+
+**Edge ingress readiness**
+- Reported by site gateway.
+- Stale threshold: `T_ingress_stale = 15s`.
+
+**Active probe**
+- Core probes `http://127.0.0.1:<site_port>/.well-known/k1s/healthz` through the tunnel.
+- Probe interval: 5s.
+- Timeout: 2s.
+- Unhealthy after 3 consecutive failures (~15s).
+- Re-enable after 2 consecutive successes.
+
+### 12.1.10 Security and identity (LOCKED, MVP)
+
+**Tunnel mTLS**
+- Per-site client cert for rathole.
+- Core verifies client cert against core CA.
+- Cert CN/SAN encodes `site_id`.
+
+**Rotation**
+- Issue new site cert, deploy to edge.
+- Add new cert/CA trust at core.
+- Reload/restart rathole.
+- Revoke old cert after a grace window.
+
+**Client IP propagation**
+- Core ingress sets `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`.
+- Edge ingress trusts forwarded headers only from the tunnel source.
+- PROXY protocol is deferred (optional future).
+
+### 12.1.11 Core-to-edge-public TLS behavior (LOCKED, MVP)
+
+- TLS terminates at core for WAF/auth.
+- Core re-encrypts to edge ingress over HTTPS by default.
+- Upstream cert validation uses standard PKI + hostname match.
+- Optional pinning via `SiteIngressEndpoint` fields is allowed for enterprise use.
+- Optional upstream mTLS is future work.
+
+### 12.1.12 Port allocation lifecycle and rathole reload (LOCKED, MVP)
+
+**Port allocation**
+- Stable per-site upstream port stored in SoT.
+- Mapping key: `sites/<site_id>/ingress/coreProxy/upstream_port`.
+
+**Deletion**
+- On site deletion, mark port reserved until a quarantine timestamp.
+- Default quarantine: 24h (configurable).
+- After quarantine, port returns to pool.
+
+**Conflicts**
+- If a port is already allocated to another active site, controller allocates a new port and updates mapping.
+
+**Rathole reload**
+- Restart-based reload is assumed for MVP.
+- Controller updates config files then restarts rathole server.
+- Edge restarts rathole client on config change.
+
+### 12.1.13 Ingress implementation plan (tracks)
+
+**Ingress Track A — Core-proxy scaffolding**
+- Add CRDs: EdgeIngressRoute, EdgeIngressPolicy, SiteIngressEndpoint.
+- Controller reconciler allocates per-site upstream port.
+- Render Envoy static config + hot-reload.
+- Deploy rathole server in core and rathole client at edge.
+- Health model: tunnel + edge readiness + active probe.
+
+Exit:
+- Core ingress routes to edge over rathole.
+- Health transitions remove/restore routes within ~15s.
+
+**Ingress Track B — Core-to-edge-public**
+- Allow upstream endpoint registration in `SiteIngressEndpoint`.
+- Core ingress routes to public edge endpoint.
+- Enable upstream TLS validation and optional pinning fields.
+
+Exit:
+- Core ingress reaches public edge ingress with TLS validation.
+
+**Ingress Track C — Edge-local route bundles**
+- Bundle generator in controller (per site).
+- Bundle delivery over Core NATS + ack/resend.
+- Edge ingress reconciler renders local ingress config.
+- Enforce edge-local policy subset; surface unsupported fields in status.
+
+Exit:
+- Edge-local ingress configured solely via bundles and acks.
+
+**Ingress Track D — Policy enforcement + observability**
+- Core policy enforcement in Envoy (auth/WAF/basic rate limits).
+- Metrics for route health, bundle apply latency, and policy rejections.
+
+Exit:
+- Policy and health are visible in metrics and status.
 
 ## 13. Appendix A — etcd key layout (examples)
 
@@ -883,7 +1221,7 @@ CREATE TABLE inflight (
   js_seq INTEGER NOT NULL,
   received_at TEXT NOT NULL,
   node_id TEXT,
-  state TEXT NOT NULL, -- accepted|running|terminal
+  state TEXT NOT NULL, -- accepted|running|terminal|abandoned
   last_progress_at TEXT,
   PRIMARY KEY (work_id, attempt)
 );
@@ -915,7 +1253,7 @@ Notes:
 - SQLite settings: `journal_mode=WAL`, `synchronous=NORMAL` (or `FULL` for max durability), `busy_timeout` set.
 - Persist on pull (`accepted`), update on dispatch (`running`), and insert terminal result before AckSync.
 - Resend `work_result` to controller until accepted (track with `delivered_to_controller_at`).
-- Deduplicate redeliveries by `(work_id, attempt)`; do not re-dispatch if already inflight.
+- Deduplicate redeliveries by `(work_id, attempt)`; do not re-dispatch if already inflight unless the row is `abandoned`.
 
 ### C.2 Append-log alternative (future, not Mode A default)
 
