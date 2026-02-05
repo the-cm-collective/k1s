@@ -30,6 +30,7 @@ NATS + etcd dev stack (Mode A)
 - Local E2E stub (work.pull path):
   - Start gateway: `AE_TRANSPORT_BACKEND=nats-core AE_SITE_ID=sfo-edge-01 AE_NATS_URL=nats://127.0.0.1:4223 ae-gateway`
   - Start stub worker: `ae-worker-stub --node-id node-01 --nats-url nats://127.0.0.1:4223`
+  - Enqueue a work item: `ae work enqueue --site-id sfo-edge-01 --mode queue --op ensure_pod --preferred-node node-01`
 
 CRI nodes (containerd)
 - Required env:

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from ae.controller.state import SQLiteStateStore
 from ae.transport.nats_client import NatsClient, NatsClientError
+from ae.observability.http_api import record_outbox_publish
 
 LOGGER = logging.getLogger(__name__)
 
@@ -72,9 +73,11 @@ class OutboxPublisher:
             try:
                 self._client.publish_js_json(subject, entry.payload, headers=headers)
                 self._store.mark_outbox_published(entry.work_id, entry.attempt)
+                record_outbox_publish(True)
                 LOGGER.debug("published outbox work_id=%s attempt=%s", entry.work_id, entry.attempt)
             except Exception as exc:  # noqa: BLE001
                 self._store.record_outbox_publish_attempt(entry.work_id, entry.attempt)
+                record_outbox_publish(False)
                 LOGGER.debug("outbox publish failed work_id=%s: %s", entry.work_id, exc)
 
 
