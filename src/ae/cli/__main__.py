@@ -73,6 +73,27 @@ def build_parser() -> argparse.ArgumentParser:
             help="Namespace to operate in when the app name is unqualified (overrides global --namespace)",
         )
 
+    # work queue helpers (lab-edge / outbox)
+    work_parser = subparsers.add_parser("work", help="Work queue helpers")
+    work_sub = work_parser.add_subparsers(dest="work_cmd", required=True)
+    work_enqueue = work_sub.add_parser("enqueue", help="Enqueue work for a site")
+    work_enqueue.add_argument("--site-id", required=True, help="Target site id")
+    work_enqueue.add_argument("--work-id", default=None, help="Work id (defaults to uuid)")
+    work_enqueue.add_argument("--attempt", type=int, default=1, help="Attempt number")
+    work_enqueue.add_argument(
+        "--mode",
+        choices=["outbox", "queue"],
+        default="outbox",
+        help="outbox publishes via JetStream; queue is lab-edge work.pull",
+    )
+    work_enqueue.add_argument("--payload", default=None, help="JSON payload override")
+    work_enqueue.add_argument(
+        "--payload-file", type=Path, default=None, help="JSON payload file"
+    )
+    work_enqueue.add_argument("--op", default=None, help="Operation name (optional)")
+    work_enqueue.add_argument("--preferred-node", default=None, help="Preferred node id")
+    work_enqueue.add_argument("--target", default=None, help="Target JSON string")
+
     apply_parser = subparsers.add_parser("apply", help="Apply a workload manifest (App)")
     _add_namespace_arg(apply_parser)
     apply_parser.add_argument("-f", "--file", type=Path, required=True, help="Path to manifest")
@@ -1356,6 +1377,7 @@ def main(argv: list[str] | None = None) -> int:
         "verify-image": handle_verify_image,
         "nodes": lambda ns: handle_nodes(ns, store, runtime),
         "certs": handle_certs,
+        "work": lambda ns: handle_work(ns, store),
     }
 
     handler = command_handlers.get(args.command)
@@ -2309,6 +2331,48 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"wrote report → {out}")
     print(f"score={overall} grade={grade}")
+    return 0
+
+
+def handle_work(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
+    if ns.work_cmd != "enqueue":
+        print("unsupported work command")
+        return 2
+    import json as _json
+    import uuid as _uuid
+    from datetime import datetime, timezone
+
+    work_id = ns.work_id or str(_uuid.uuid4())
+    attempt = int(ns.attempt or 1)
+    site_id = ns.site_id
+    payload = {}
+    if ns.payload_file:
+        payload = _json.loads(Path(ns.payload_file).read_text(encoding="utf-8"))
+    elif ns.payload:
+        payload = _json.loads(ns.payload)
+    if not isinstance(payload, dict):
+        print("payload must be a JSON object")
+        return 2
+    payload.setdefault("work_id", work_id)
+    payload.setdefault("attempt", attempt)
+    payload.setdefault("site_id", site_id)
+    if ns.op:
+        payload.setdefault("op", ns.op)
+    if ns.preferred_node:
+        payload.setdefault("preferred_node", ns.preferred_node)
+    if ns.target:
+        try:
+            payload.setdefault("target", _json.loads(ns.target))
+        except Exception as exc:  # noqa: BLE001
+            print(f"invalid --target json: {exc}")
+            return 2
+    payload.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+    if ns.mode == "queue":
+        store.enqueue_work(work_id, attempt, site_id, payload)
+        print(f"enqueued work_id={work_id} attempt={attempt} site={site_id} mode=queue")
+    else:
+        store.enqueue_work_outbox(work_id, attempt, site_id, payload)
+        print(f"enqueued work_id={work_id} attempt={attempt} site={site_id} mode=outbox")
     return 0
 
 

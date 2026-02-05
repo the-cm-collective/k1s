@@ -33,6 +33,7 @@ from ae.observability.logging import configure_logging
 from ae.config.transport import TransportConfig, check_nats_connectivity
 from ae.transport.nats_client import NatsClient, NatsClientError
 from ae.transport.controller_ingress import NatsControllerIngress
+from ae.transport.outbox_publisher import OutboxPublisher, OutboxPublisherConfig
 from ae.cli.__main__ import (
     state_store_from_env,
     runtime_factory,
@@ -1033,6 +1034,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     reconciler = _make_reconciler()
     store = state_store_from_env()
     _nats_ingress = None
+    _outbox_publisher = None
     if transport and transport.backend in {"nats-core", "nats-js"} and transport.nats_url:
         try:
             _nats_ingress = NatsControllerIngress(
@@ -1045,6 +1047,23 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             import logging as _log
 
             _log.getLogger(__name__).warning("failed to start nats ingress: %s", exc)
+        if transport.backend == "nats-js":
+            try:
+                interval_s = float(
+                    os.getenv("AE_OUTBOX_PUBLISH_INTERVAL_S", "0.5") or 0.5
+                )
+                batch_size = int(os.getenv("AE_OUTBOX_PUBLISH_BATCH", "100") or 100)
+                _outbox_publisher = OutboxPublisher(
+                    store,
+                    nats_url=transport.nats_url,
+                    nats_creds=transport.nats_creds,
+                    config=OutboxPublisherConfig(interval_s=interval_s, batch_size=batch_size),
+                )
+                _outbox_publisher.start()
+            except Exception as exc:  # noqa: BLE001
+                import logging as _log
+
+                _log.getLogger(__name__).warning("failed to start outbox publisher: %s", exc)
     _agent_api_server = None
     try:
         agent_port = int(os.getenv("AE_AGENT_API_PORT", os.getenv("AE_AGENT_PORT", "0") or 0))

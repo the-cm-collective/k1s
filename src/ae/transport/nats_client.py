@@ -132,19 +132,63 @@ class NatsClient:
             pass
         self._connected = False
 
-    def publish(self, subject: str, payload: bytes, *, timeout_s: float = 2.0) -> None:
+    def publish(
+        self,
+        subject: str,
+        payload: bytes,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout_s: float = 2.0,
+    ) -> None:
         self._ensure_connected()
         fut = asyncio.run_coroutine_threadsafe(
-            self._nc.publish(subject, payload), self._loop
+            self._nc.publish(subject, payload, headers=headers), self._loop
         )
         try:
             fut.result(timeout=timeout_s)
         except Exception as exc:  # noqa: BLE001
             raise NatsClientError(f"publish failed: {exc}") from exc
 
-    def publish_json(self, subject: str, payload: dict, *, timeout_s: float = 2.0) -> None:
+    def publish_json(
+        self,
+        subject: str,
+        payload: dict,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout_s: float = 2.0,
+    ) -> None:
         body = json.dumps(payload).encode("utf-8")
-        self.publish(subject, body, timeout_s=timeout_s)
+        self.publish(subject, body, headers=headers, timeout_s=timeout_s)
+
+    def publish_js(
+        self,
+        subject: str,
+        payload: bytes,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout_s: float = 2.5,
+    ) -> None:
+        self._ensure_connected()
+
+        async def _pub():  # type: ignore[no-untyped-def]
+            js = self._nc.jetstream()
+            await js.publish(subject, payload, headers=headers)
+
+        try:
+            self._run(_pub(), timeout_s)
+        except Exception as exc:  # noqa: BLE001
+            raise NatsClientError(f"js publish failed: {exc}") from exc
+
+    def publish_js_json(
+        self,
+        subject: str,
+        payload: dict,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout_s: float = 2.5,
+    ) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.publish_js(subject, body, headers=headers, timeout_s=timeout_s)
 
     def request(
         self, subject: str, payload: bytes, *, timeout_s: float = 2.0
