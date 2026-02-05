@@ -27,6 +27,9 @@ NATS + etcd dev stack (Mode A)
 - Configs: `ops/dev/nats-hub.conf`, `ops/dev/nats-edge.conf` (dev-only credentials).
 - Gateway env defaults: `ops/dev/site-gateway.env.sample` (Option A ack settings).
 - Default dev creds: hub controller `hub-controller/dev`, site uplink `site-sfo-edge-01-uplink/dev`, local `gateway/dev` and `worker/dev` (do not use in prod).
+- Local E2E stub (work.pull path):
+  - Start gateway: `AE_TRANSPORT_BACKEND=nats-core AE_SITE_ID=sfo-edge-01 AE_NATS_URL=nats://127.0.0.1:4223 ae-gateway`
+  - Start stub worker: `ae-worker-stub --node-id node-01 --nats-url nats://127.0.0.1:4223`
 
 CRI nodes (containerd)
 - Required env:
