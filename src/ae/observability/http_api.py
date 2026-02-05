@@ -54,6 +54,16 @@ _APP_ROLLOUT_OPS: dict[str, dict[str, int]] = {}
 # Canary tracking: latest weight and step counter per app
 _APP_CANARY_WEIGHT: dict[str, float] = {}
 _APP_CANARY_STEPS: dict[str, int] = {}
+_OUTBOX_PUBLISH_OK: int = 0
+_OUTBOX_PUBLISH_FAIL: int = 0
+
+
+def record_outbox_publish(success: bool) -> None:
+    global _OUTBOX_PUBLISH_OK, _OUTBOX_PUBLISH_FAIL
+    if success:
+        _OUTBOX_PUBLISH_OK += 1
+    else:
+        _OUTBOX_PUBLISH_FAIL += 1
 
 _HELM_DEMO_LOCK = threading.RLock()
 _HELM_DEMO_STATE: dict[str, object] = {
@@ -2793,6 +2803,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             lines.append("# TYPE ae_canary_steps_total counter")
             for app, n in _APP_CANARY_STEPS.items():
                 lines.append(f'ae_canary_steps_total{{app="{app}"}} {int(n)}')
+        lines.append("# HELP ae_outbox_publish_success_total Outbox publishes that succeeded")
+        lines.append("# TYPE ae_outbox_publish_success_total counter")
+        lines.append(f"ae_outbox_publish_success_total {_OUTBOX_PUBLISH_OK}")
+        lines.append("# HELP ae_outbox_publish_fail_total Outbox publishes that failed")
+        lines.append("# TYPE ae_outbox_publish_fail_total counter")
+        lines.append(f"ae_outbox_publish_fail_total {_OUTBOX_PUBLISH_FAIL}")
         lines.append("")
         payload = "\n".join(lines).encode("utf-8")
         self.send_response(200)
