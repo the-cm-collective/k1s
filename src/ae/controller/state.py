@@ -161,6 +161,15 @@ class SiteIngressEndpoint:
 
 
 @dataclass(slots=True)
+class SiteIngressListItem:
+    site_id: str
+    mode: str
+    core_proxy_port: int | None
+    public_urls: list[str]
+    quarantine_until: datetime | None
+
+
+@dataclass(slots=True)
 class WorkOutboxEntry:
     work_id: str
     attempt: int
@@ -1423,6 +1432,42 @@ class SQLiteStateStore:
                     # retry on constraint conflicts
                     continue
         raise RuntimeError("no core-proxy ports available")
+
+    def list_site_ingress_endpoints(self) -> list[SiteIngressListItem]:
+        items: list[SiteIngressListItem] = []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT site_id, mode, core_proxy_port, public_urls_json, quarantine_until
+                FROM site_ingress_endpoints
+                ORDER BY site_id
+                """
+            ).fetchall()
+        for row in rows:
+            public_urls = json.loads(row[3]) if row[3] else []
+            quarantine_until = None
+            if row[4]:
+                try:
+                    quarantine_until = datetime.fromisoformat(row[4])
+                except Exception:
+                    quarantine_until = None
+            items.append(
+                SiteIngressListItem(
+                    site_id=str(row[0]),
+                    mode=str(row[1]),
+                    core_proxy_port=int(row[2]) if row[2] is not None else None,
+                    public_urls=list(public_urls) if isinstance(public_urls, list) else [],
+                    quarantine_until=quarantine_until,
+                )
+            )
+        return items
+
+    def list_site_ids(self) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT site_id FROM node_leases ORDER BY site_id"
+            ).fetchall()
+        return [str(row[0]) for row in rows if row and row[0]]
 
     def mark_work_done(self, work_id: str, attempt: int) -> None:
         now = datetime.now(timezone.utc).isoformat()

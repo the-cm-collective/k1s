@@ -46,6 +46,7 @@ class NatsControllerIngress:
         lease_ttl_ms: int | None = None,
         renew_after_ms: int | None = None,
         js_provision: bool = False,
+        edge_renderer=None,
     ) -> None:
         self._store = store
         self._client = NatsClient(url=url, creds=creds, name="k1s-controller-ingress")
@@ -71,6 +72,7 @@ class NatsControllerIngress:
         ).lower() in {"1", "true", "yes", "on"}
         self._core_proxy_port_min = int(os.getenv("AE_CORE_PROXY_PORT_MIN", "18080") or 18080)
         self._core_proxy_port_max = int(os.getenv("AE_CORE_PROXY_PORT_MAX", "18999") or 18999)
+        self._edge_renderer = edge_renderer
         self._subs: list[str] = []
 
     def start(self) -> None:
@@ -391,6 +393,11 @@ class NatsControllerIngress:
                 port_max=self._core_proxy_port_max,
             )
             LOGGER.info("site core-proxy port assigned site=%s port=%s", site_id, port)
+            if self._edge_renderer is not None:
+                try:
+                    self._edge_renderer.render()
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.warning("edge ingress render failed: %s", exc)
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("core-proxy port allocation failed site=%s: %s", site_id, exc)
 

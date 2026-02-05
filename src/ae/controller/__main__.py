@@ -36,6 +36,8 @@ from ae.transport.controller_ingress import NatsControllerIngress
 from ae.transport.telemetry_ingress import TelemetryIngress
 from ae.transport.outbox_publisher import OutboxPublisher, OutboxPublisherConfig
 from ae.controller.work_watchdog import WorkWatchdog, WorkWatchdogConfig
+from ae.ingress.edge_core_proxy import EdgeCoreProxyRenderer, build_core_proxy_config
+from ae.transport.route_bundle_publisher import RouteBundlePublisher, RouteBundlePublisherConfig
 from ae.transport.jetstream_monitor import JetStreamMonitor, JetStreamMonitorConfig
 from ae.cli.__main__ import (
     state_store_from_env,
@@ -1044,13 +1046,19 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     _outbox_publisher = None
     _js_monitor = None
     _work_watchdog = None
+    _route_bundle = None
+    _edge_renderer = None
     if transport and transport.backend in {"nats-core", "nats-js"} and transport.nats_url:
         try:
+            edge_cfg = build_core_proxy_config()
+            if edge_cfg is not None:
+                _edge_renderer = EdgeCoreProxyRenderer(store, edge_cfg)
             _nats_ingress = NatsControllerIngress(
                 store,
                 url=transport.nats_url,
                 creds=transport.nats_creds,
                 js_provision=transport.backend == "nats-js",
+                edge_renderer=_edge_renderer,
             )
             _nats_ingress.start()
         except Exception as exc:  # noqa: BLE001
@@ -1134,7 +1142,27 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 except Exception as exc:  # noqa: BLE001
                     import logging as _log
 
-                    _log.getLogger(__name__).warning("failed to start js monitor: %s", exc)
+                _log.getLogger(__name__).warning("failed to start js monitor: %s", exc)
+        if transport.backend in {"nats-core", "nats-js"}:
+            try:
+                bundle_enabled = str(
+                    os.getenv("AE_ROUTE_BUNDLE_ENABLED", "0") or "0"
+                ).lower() in {"1", "true", "yes", "on"}
+                if bundle_enabled:
+                    bundle_interval = float(
+                        os.getenv("AE_ROUTE_BUNDLE_INTERVAL_S", "5") or 5
+                    )
+                    _route_bundle = RouteBundlePublisher(
+                        store,
+                        nats_url=transport.nats_url,
+                        nats_creds=transport.nats_creds,
+                        config=RouteBundlePublisherConfig(interval_s=bundle_interval),
+                    )
+                    _route_bundle.start()
+            except Exception as exc:  # noqa: BLE001
+                import logging as _log
+
+                _log.getLogger(__name__).warning("failed to start route bundle: %s", exc)
     _agent_api_server = None
     try:
         agent_port = int(os.getenv("AE_AGENT_API_PORT", os.getenv("AE_AGENT_PORT", "0") or 0))
