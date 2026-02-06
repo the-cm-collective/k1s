@@ -145,7 +145,7 @@ def record_js_consumer_stats(
 _HELM_DEMO_LOCK = threading.RLock()
 _HELM_DEMO_STATE: dict[str, object] = {
     "proc": None,
-    "log": Path(os.getenv("AE_LABS_HELM_LOG", "state/labs/helm-demo.log")),
+    "log": Path(os.getenv("AE_LABS_HELM_LOG", "state/profiles/labs/helm-demo.log")),
     "log_handle": None,
     "port": int(os.getenv("AE_LABS_HELM_PORT", "8455") or 8455),
     "token": os.getenv("AE_LABS_HELM_TOKEN", "helm-demo"),

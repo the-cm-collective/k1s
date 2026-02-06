@@ -936,7 +936,7 @@ def _apishim_api_verify() -> bool | str:
                 return str(path)
         except Exception:
             pass
-    for path in ("state/certs/combined-dev-ca.pem", "state/labs/apishim.crt"):
+    for path in ("state/certs/combined-dev-ca.pem", "state/profiles/labs/apishim.crt"):
         try:
             if Path(path).exists():
                 return path

@@ -186,7 +186,7 @@ Docs, labs, and playground
 - `make labs-up` / `make labs-down`: docs + playground via compose (controller runs on host).
 - `make labs-aio-up` / `make labs-aio-down`: all-in-one labs stack (controller + apishim + docs).
 - `make labs-k3d-up` / `make labs-k3d-down`: bring up/down local k3d cluster for labs.
-- `make labs-apishim-env`: print apishim tokens from `state/labs/apishim.env`.
+- `make labs-apishim-env`: print apishim tokens from `state/profiles/labs/apishim.env`.
 - `make apishim-smoke`: quick API shim health check on port 8445.
 - `make shim-helm-demo`: run the helm shim demo helper.
 

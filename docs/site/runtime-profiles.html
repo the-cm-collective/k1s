@@ -4,7 +4,7 @@
     <meta charset="utf-8"/>
     
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Playground</title>
+    <title>Runtime Profiles</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
     <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
     <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
@@ -688,12 +688,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="static/labs.css?v=5dd7e3d65b"/>
-<script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-<script>window.DOCS_LABS_TOKEN='';</script>
-<script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>
-<script defer src="static/labs.js?v=5dd7e3d65b"></script>
+    
   </head>
   <body>
     <nav>
@@ -726,177 +721,96 @@
       </svg>
     </button>
     <div class="container">
-    <div class="playground-shell">   <div class="playground-main">     <div class="playground-hero">       <h2>Interactive Lab Playground</h2>     </div>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" onerror="this.onerror=null; this.href='/static/vendor/xterm.css';" /> <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js" onerror="window.__xterm_cdn_failed=true;"></script> <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js" onerror="window.__xterm_fit_cdn_failed=true;"></script> <script> (function(){   function loadScript(src){     var s = document.createElement('script');     s.src = src;     s.defer = true;     document.head.appendChild(s);   }   function loadCss(href){     var l = document.createElement('link');     l.rel = 'stylesheet';     l.href = href;     document.head.appendChild(l);   }   function ensureLocal(){     if (window.__xterm_cdn_failed || !window.Terminal) {       loadCss('/static/vendor/xterm.css');       loadScript('/static/vendor/xterm.js');     }     if (window.__xterm_fit_cdn_failed || !(window.FitAddon && window.FitAddon.FitAddon)) {       loadScript('/static/vendor/xterm-addon-fit.js');     }   }   if (document.readyState === 'complete') {     ensureLocal();   } else {     window.addEventListener('load', ensureLocal);   } })(); </script>
-<p>Use this page to try k1s in minutes — no Kubernetes experience required. The playground can run fully read‑only or, when enabled, perform safe actions like "apply example" and "scale".</p>
-<p>Quick start:</p>
+    <h1>Runtime Profiles</h1>
+<p>k1s ships lightweight runtime profiles so you can run the control plane without the demo apps. Each profile uses an empty specs directory under <code>state/profiles/&lt;profile&gt;/specs</code>, so nothing is reconciled until you apply a manifest.</p>
+<h2>Quickstart</h2>
+<p><code>dev-min</code> (SQLite + HTTP, local loop)</p>
+<pre><code>make dev-min</code></pre>
+<p><code>dev-etcd</code> (etcd + HTTP; auto-starts etcd)</p>
+<pre><code>make dev-etcd</code></pre>
+<p><code>k1s-core</code> (etcd + NATS + JetStream; auto-starts etcd + hub NATS)</p>
+<pre><code>make k1s-core</code></pre>
+<p><code>k1s-edge</code> (edge gateway + stub worker; NATS core by default)</p>
+<pre><code>make k1s-edge</code></pre>
+<h2>Ingress modes (k1s-core / k1s-edge)</h2>
+<p>Set the ingress mode with <code>EDGE_INGRESS_MODE</code>:</p>
 <ul>
-<li>Step 1: Scroll to "A. Environment & Backend", enable <strong>Controlled Actions</strong>, click <strong>Use Token</strong> to load <code>AE_LABS_TOKEN</code>, then click <code>Start Session</code>.</li>
-<li>Step 2: In "B. Apply Example", choose <code>echo</code> and click <code>Apply Selected Example</code>.</li>
-<li>Step 3: In "F. Ingress Test", click <code>Open App</code> to view the service, and in "C. Logs & Events" watch activity live.</li>
+<li><code>core-proxy</code> (default): core ingress proxies to edge over rathole.</li>
+<li><code>core-to-edge-public</code>: core ingress routes directly to edge public endpoints.</li>
+<li><code>edge-local</code>: edge ingress only; core ingress is not in the request path.</li>
 </ul>
-<div class="callout" role="note">Tip: If the page says “Labs: unavailable”, you’re in read‑only mode — verifiers still run and CLI commands are shown to try locally.</div>
-<p>This page prefers HTMX + SSE for live updates and uses a small <code>labs.js</code> helper for sessions. If the dev‑only lab orchestrator is not running, the page falls back to read‑only checks with copyable CLI commands.</p>
-<h2>A. Environment & Backend</h2>
-<p>To start a session: enable <strong>Controlled Actions</strong>, click <strong>Use Token</strong> to load <code>AE_LABS_TOKEN</code>, then click <code>Start Session</code>.</p>
+<p>Examples:</p>
+<pre><code>EDGE_INGRESS_MODE=core-to-edge-public make k1s-core
+EDGE_INGRESS_MODE=edge-local make k1s-edge</code></pre>
+<p>By default, <code>make k1s-core</code> starts Envoy (core ingress) and rathole server, and <code>make k1s-edge</code> starts a rathole client when <code>EDGE_INGRESS_MODE=core-proxy</code>. Override images with <code>AE_ENVOY_IMAGE</code> / <code>AE_RATHOLE_IMAGE</code>, or disable auto-start with <code>EDGE_INGRESS_START=0</code>.</p>
+<p>Mode behavior:</p>
 <ul>
-<li>API Base: <span id="env-api-base">(detecting)</span></li>
-<li>Orchestrator: <span id="env-orch">(checking)</span></li>
-<li>Backend:
-<ul>
-<li><select id="backend-select"> <option value="auto" selected>Auto</option> <option value="k1s-host">k1s-Host (local)</option> <option value="k1s-docker">k1s-in-Docker (compose)</option> <option value="k3s">k3s via k3d</option> </select></li>
-<li><label><input type="checkbox" id="toggle-actions"/> Enable Controlled Actions</label></li>
-<li>Token: <input id="labs-token" type="password" placeholder="paste AE_LABS_TOKEN"/> <button id="btn-use-token" onclick="window.k1sUseToken && window.k1sUseToken()">Use Token</button> <span id="labs-token-nudge" class="nudge hidden" role="status" aria-live="polite">Paste AE_LABS_TOKEN, then click <em>Use Token</em>.</span></li>
-<li><button id="btn-start-session" class="btn-primary">Start Session</button></li>
-<li>Session: <span id="session-id">(none)</span></li>
+<li><code>core-proxy</code>: Envoy + rathole server/client.</li>
+<li><code>core-to-edge-public</code>: Envoy only (no rathole).</li>
+<li><code>edge-local</code>: no core ingress; the gateway renders an edge-local Caddyfile if enabled.</li>
 </ul>
-</li>
-</ul>
-<div id="env-notes"></div> <div id="backend-status" class="ribbon muted"></div> <div class="status-bar">   <span class="status-label">Direct API curl:</span>   <div class="api-curl">     <code id="api-curl"></code>     <button id="api-curl-copy" disabled>Copy</button>   </div>   <span class="status-label">Status:</span>   <div class="status-stack">     <span id="status-summary" class="pending" hx-ext="sse" sse-connect="" sse-swap="message">n/a</span>     <div class="status-toggle" role="group" aria-label="Status scope">       <button id="status-mode-app" type="button" aria-pressed="false" title="Focus on the app from this session">App</button>       <button id="status-mode-cluster" type="button" class="is-active" aria-pressed="true" title="Show totals across all apps">Cluster</button>     </div>   </div>   <span id="status-mode-note" class="status-note nudge">Cluster shows totals across all apps. Switch to App after applying an example.</span> </div>
-<!-- Global banner for errors and important notices --> <div id="banner" class="ribbon hidden"></div>
-<!-- Labs token controls are now part of the Backend row, above Start Session -->
-<h3>k3d Controls (k3s backend)</h3>
-<ul>
-<li><button id="btn-k3d-ensure" class="hidden">Create k3d Cluster</button></li>
-<li><a id="k3d-open-ingress" href="#" target="_blank" rel="noopener" class="hidden">Open k3s Ingress (LB)</a></li>
-</ul>
-<h3>Quick Links</h3>
-<ul>
-<li><a id="open-dashboard" href="#" target="_blank" rel="noopener" class="hidden">Open Dashboard</a></li>
-</ul>
-<h3>Helm Shim Demo (Watch Mode)</h3>
-<div class="helm-demo-box">   <div class="helm-demo-controls">     <button id="btn-helm-demo" class="btn-secondary" disabled>Run Helm Shim Demo</button>     <button id="btn-helm-demo-stop" class="btn-secondary" disabled>Stop</button>   </div>   <div id="helm-demo-status" class="helm-demo-status">Labs backend unavailable.</div>   <pre id="helm-demo-log" class="helm-demo-log hidden scrollbar-hide" aria-live="polite"></pre> </div>
-<p>Want to watch a Helm deployment materialize inside the dashboard? Click “Run Helm Shim Demo” above (requires Labs token). Behind the scenes, the server runs the commands below; you can still run them manually if you prefer. The demo creates a few core Kubernetes objects so you can see how they show up in the UI:</p>
-<ul>
-<li><code>Namespace</code> (<code>demo-helm</code>) - isolates the demo resources so they are easy to find and clean up.</li>
-<li><code>Deployment</code> (<code>demochart</code>) - declares the desired number of Pods and handles rolling updates.</li>
-<li><code>Service</code> (<code>demochart</code>) - provides a stable virtual IP/DNS name and load-balances traffic to the Pods.</li>
-<li><code>ServiceAccount</code> (<code>demochart</code>) - gives Pods an identity for Kubernetes API access and permissions.</li>
-</ul>
-<p>The chart also includes optional Ingress and HPA templates, but they are disabled by default in this demo.</p>
-<pre><code># 1) Create a self-signed cert (dev-only)
-openssl req -x509 -newkey rsa:2048 -sha256 -days 3 -nodes \
-  -keyout /tmp/helm-shim.key -out /tmp/helm-shim.crt -subj &quot;/CN=127.0.0.1&quot;
+<h2>Core + Edge pairings</h2>
+<p>JetStream path (k1s-core + edge running JetStream work queue):</p>
+<pre><code># Terminal 1
+make k1s-core
 
-# 2) Start the API shim (stub runtime) with TLS
-AE_APISHIM_ENABLE=1 AE_APISHIM_RUNTIME=stub AE_APISHIM_TOKEN=helm-demo \
-  AE_APISHIM_TLS_CERT=/tmp/helm-shim.crt AE_APISHIM_TLS_KEY=/tmp/helm-shim.key \
-  PYTHONPATH=src python -m ae.apishim serve --host 127.0.0.1 --port 8445 --tls
+# Terminal 2
+make k1s-edge-core</code></pre>
+<p>Core-NATS path (k1s-edge work.pull without JetStream):</p>
+<pre><code># Terminal 1
+make k1s-core-edge
 
-# 3) Generate a kubeconfig pointing at the shim
-PYTHONPATH=src python -m ae.apishim kubeconfig \
-  --server https://127.0.0.1:8445 --token helm-demo \
-  --context k1s-shim --insecure-skip-tls-verify &gt; ~/.kube/helm-shim
-export KUBECONFIG=~/.kube/helm-shim
-
-# 4) Create namespace + sample chart and install it
-kubectl create namespace demo-helm
-helm create demochart
-helm install demochart ./demochart -n demo-helm --wait
-
-# (Optional) Inspect via k1s CLI while Helm is running
-PYTHONPATH=src python -m ae.cli status demo-helm--demochart --wide --events
-
-# 4) When finished, uninstall and clean up
-helm uninstall demochart -n demo-helm &amp;&amp; kubectl delete namespace demo-helm</code></pre>
-<p>Back in the playground:</p>
-<p>1. Set Backend to <code>k1s-Host</code>, click <code>Start Session</code>, and use **Quick Links → Open Dashboard**. 2. The release appears as <code>demo-helm--demochart</code> (namespace <code>demo-helm</code>); sections **B–E** stream logs, events, ingress health, and nodePort hints while Helm reconciles. 3. When you run <code>helm uninstall</code>, the dashboard reflects the teardown in real time.</p>
-<h2>B. Apply Example</h2>
-<p>Pick a sample and apply it. In read-only mode the UI shows the exact CLI you can run locally. Each example is a <code>Deployment</code> spec YAML (k1s native; <code>kind: App</code> still works but is deprecated): <code>apiVersion</code> and <code>kind</code> identify the schema, <code>metadata.name</code> becomes the app's ID, and <code>spec</code> is where you describe what to run and how it should behave. Typical <code>spec</code> fields include <code>image</code> (container), <code>replicas</code> (how many), <code>ports</code>/<code>service</code> (how traffic reaches it), <code>health</code> checks, plus optional sections like <code>ingress</code>, <code>resources</code>, <code>security</code>, <code>storage</code>, and <code>configRefs</code>/<code>secretRefs</code> for configuration.</p>
+# Terminal 2
+make k1s-edge</code></pre>
+<h2>Multiple edges</h2>
+<p>Run additional edges in new terminals with unique node IDs:</p>
+<pre><code>AE_NODE_ID=edge-node-2 make k1s-edge</code></pre>
+<p>For multi-site tests, also override site IDs:</p>
+<pre><code>AE_SITE_ID=sea-edge-02 AE_NODE_ID=edge-node-2 make k1s-edge</code></pre>
+<h2>Optional overrides</h2>
+<p>Disable the stub worker (gateway only):</p>
+<pre><code>EDGE_START_WORKER=0 make k1s-edge</code></pre>
+<p>Bring up the docs server alongside k1s-core:</p>
+<pre><code>CORE_DOCS=1 make k1s-core</code></pre>
+<p>Docs will serve on <code>http://127.0.0.1:9109</code> (override with <code>AE_DOCS_PORT</code> / <code>DOCS_BIND</code>), and the dashboard remains on <code>http://127.0.0.1:9108/dashboard</code>.</p>
+<p>Start Caddy for TLS hostnames (docs/api/dashboard) on any core profile:</p>
+<pre><code>CORE_CADDY=1 make k1s-core
+CORE_CADDY=1 make dev-min
+CORE_CADDY=1 make dev-etcd</code></pre>
+<p>This uses the dev Caddy config with <code>docs.home.arpa</code>, <code>api.home.arpa</code>, and <code>dash.home.arpa</code> on port <code>8443</code> (override with <code>CADDY_HTTPS_PORT</code>).</p>
+<p>Aliases:</p>
 <ul>
-<li>Example:
+<li><code>make k1s-core-caddy</code></li>
+<li><code>make dev-min-caddy</code></li>
+<li><code>make dev-etcd-caddy</code></li>
+</ul>
+<p>Force the container engine:</p>
+<pre><code>AE_CONTAINER_CLI=podman make k1s-core</code></pre>
+<p>Profiles default to Podman; override with:</p>
+<pre><code>AE_RUNTIME_BACKEND=docker make k1s-core</code></pre>
+<h2>Apply a sample (any profile)</h2>
+<pre><code>python -m ae.cli apply -f specs/examples/echo.yaml</code></pre>
+<h2>Manual smoke test (profiles)</h2>
+<p>**dev-min** 1. <code>CORE_DOCS=1 make dev-min</code> (optional TLS: <code>CORE_CADDY=1 make dev-min</code>) 2. <code>python -m ae.cli apply -f specs/examples/echo.yaml</code> 3. <code>python -m ae.cli status --verbose</code> (expect 1 ready app) 4. Open <code>http://127.0.0.1:9108/dashboard</code> and <code>http://127.0.0.1:9109/playground/</code> 5. <code>make down</code></p>
+<p>**dev-etcd** 1. <code>CORE_DOCS=1 make dev-etcd</code> (optional TLS: <code>CORE_CADDY=1 make dev-etcd</code>) 2. <code>python -m ae.cli apply -f specs/examples/echo.yaml</code> 3. <code>python -m ae.cli status --verbose</code> and <code>python -m ae.cli metrics</code> 4. Open <code>http://127.0.0.1:9108/dashboard</code> and <code>http://127.0.0.1:9109/playground/</code> 5. <code>make down</code></p>
+<p>**k1s-core + k1s-edge** 1. Terminal A: <code>CORE_DOCS=1 make k1s-core</code> (optional TLS: <code>CORE_CADDY=1 make k1s-core</code>) 2. Terminal B: <code>EDGE_PROFILE=k1s-core make k1s-edge</code> (or <code>make k1s-edge-core</code>) 3. <code>python -m ae.cli apply -f specs/examples/echo.yaml</code> 4. <code>python -m ae.cli status --verbose</code> and <code>python -m ae.cli events echo</code> 5. Open <code>http://127.0.0.1:9108/dashboard</code> and <code>http://127.0.0.1:9109/playground/</code> 6. <code>make down</code></p>
+<h2>Stop everything</h2>
+<pre><code>make down</code></pre>
+<p>&lt;details&gt; &lt;summary&gt;&lt;strong&gt;Ingress Envoy Test Coverage&lt;/strong&gt;&lt;/summary&gt;</p>
+<p>Unit test (config render only):</p>
 <ul>
-<li><select id="example-select"> <option value="echo" selected>echo</option> <option value="shell-demo">shell-demo</option> <option value="multi-replica-echo">multi-replica-echo</option> <option value="echo-multiport">echo-multiport</option> <option value="echo-hpa">echo-hpa</option> <option value="echo-resources">echo-resources</option> <option value="echo-stateful">echo-stateful</option> <option value="echo-sec">echo-sec</option> <option value="echo-sec-adv">echo-sec-adv</option> <option value="echo-tcp">echo-tcp</option> <option value="echo-exec">echo-exec</option> <option value="echo-storage">echo-storage</option> <option value="echo-storage-delete">echo-storage-delete</option> </select></li>
+<li><code>tests/unit/test_envoy_core_local_ingress.py</code></li>
+<li><code>PYTHONPATH=src pytest -q tests/unit/test_envoy_core_local_ingress.py</code></li>
 </ul>
-</li>
-<li>Action: <button id="btn-apply-echo" class="btn-primary" disabled>Apply Selected Example</button></li>
-<li>YAML (read-only):</li>
-</ul>
-<pre><code id="example-yaml" class="lang-yaml">(select an example to preview its YAML)</code></pre>
-<!-- CLI fallback removed to avoid hardcoding echo.yaml -->
-<h3>Verifiers</h3>
+<p>Opt‑in integration test (TLS handshake):</p>
 <ul>
-<li>Events include “ApplyCompleted” for a revision: <span id="v-apply-events" data-v="pending">pending</span></li>
-<li>Status readyReplicas == spec.replicas: <span id="v-apply-ready" data-v="pending">pending</span></li>
+<li><code>tests/integration/test_envoy_core_local_ingress_tls.py</code></li>
+<li><code>AE_E2E_ENVOY_TLS=1 PYTHONPATH=src pytest -q tests/integration/test_envoy_core_local_ingress_tls.py</code></li>
+<li>Requires <code>docker</code>/<code>podman</code> and <code>openssl</code></li>
+<li>Uses the local Caddy CA if present (<code>state/caddy-data/.../root.crt</code>); otherwise generates a temporary CA.</li>
+<li>Envoy image can be overridden with <code>AE_ENVOY_IMAGE</code>.</li>
 </ul>
-<h2>C. Logs & Events</h2>
-<p>Live feed of events and logs for your sample app. When sessions are enabled, this switches to streaming mode automatically.</p>
-<div id="observe">   <button id="btn-observe-toggle" disabled>Start Tail</button>   <label style="margin-left:10px"><input type="checkbox" id="follow-tail" checked/> Follow tail</label>   <div id="observe-events" class="panel scrollbar-hide" aria-live="polite" aria-busy="true" data-source="events" style="height:220px;max-height:220px;overflow:auto;"></div>   <div id="observe-logs" class="panel scrollbar-hide" aria-live="polite" aria-busy="true" data-source="logs" style="height:220px;max-height:220px;overflow:auto;"></div>   <!-- HTMX SSE variant for logs; labs.js will arm sse-connect once a session exists -->   <div id="logs-sse" class="panel hidden scrollbar-hide" hx-ext="sse" sse-connect="" sse-swap="message" hx-swap="beforeend" style="height:220px;max-height:220px;overflow:auto;"></div>   <!-- HTMX SSE variant for events; labs.js will arm sse-connect once a session exists -->   <div id="events-sse" class="panel hidden scrollbar-hide" hx-ext="sse" sse-connect="" sse-swap="message" style="height:220px;max-height:220px;overflow:auto;"></div> </div>
-<h2>D. Debug Tools (Shell + Port-Forward)</h2>
-<p>Open an interactive shell or run a lightweight port-forward check. These are Labs‑only features: they require an active session and Controlled Actions enabled.</p>
-<div class="panel" id="labs-debug">   <div class="row" style="flex-wrap:wrap; gap:10px;">     <button id="btn-labs-shell" disabled>Open Remote Shell</button>     <button id="btn-labs-pf" disabled>Open Port-Forward</button>     <span class="muted">Uses apishim WebSocket exec + port-forward.</span>   </div>   <div class="muted" style="margin-top:6px;">If disabled, run locally: <code>ae shell &lt;app&gt;</code> (defaults to sh; use <code>-- bash</code> when available), add <code>-n &lt;ns&gt;</code> if needed, or use <code>kubectl exec</code> / <code>kubectl port-forward</code>.</div> </div>
-<div id="labs-shell-modal" class="labs-modal hidden" role="dialog" aria-modal="true" aria-labelledby="labs-shell-title">   <div class="modal">     <div class="modal-header">       <strong id="labs-shell-title">Remote Shell</strong>       <button id="labs-shell-close" type="button">Close</button>     </div>     <div class="modal-body">       <div class="row" style="flex-wrap:wrap; gap:10px; margin-bottom:10px;">         <label>Pod <select id="labs-shell-pod"></select></label>         <label>Container <input id="labs-shell-container" type="text" placeholder="optional" /></label>         <label>Command <input id="labs-shell-cmd" type="text" value="sh" /></label>         <label>Shim API <input id="labs-shell-base" type="text" placeholder="http://127.0.0.1:8443" /></label>         <label>Token <input id="labs-shell-token" type="password" placeholder="apishim token" /></label>       </div>       <div id="labs-shell-terminal" class="terminal-wrap"></div>       <div class="row" style="margin-top:10px; gap:8px; align-items:center;">         <button id="labs-shell-connect" type="button">Connect</button>         <button id="labs-shell-disconnect" type="button">Disconnect</button>         <span id="labs-shell-status" class="pill"></span>         <span class="hint">WebSocket exec (v5.channel.k8s.io).</span>       </div>     </div>   </div> </div>
-<div id="labs-pf-modal" class="labs-modal hidden" role="dialog" aria-modal="true" aria-labelledby="labs-pf-title">   <div class="modal">     <div class="modal-header">       <strong id="labs-pf-title">Port-Forward (WS)</strong>       <button id="labs-pf-close" type="button">Close</button>     </div>     <div class="modal-body">       <div class="row" style="flex-wrap:wrap; gap:10px; margin-bottom:10px;">         <label>Pod <select id="labs-pf-pod"></select></label>         <label>Port <input id="labs-pf-port" type="text" placeholder="8080" /></label>         <label>Shim API <input id="labs-pf-base" type="text" placeholder="http://127.0.0.1:8443" /></label>         <label>Token <input id="labs-pf-token" type="password" placeholder="apishim token" /></label>       </div>       <div class="row" style="gap:10px; flex-wrap:wrap;">         <label style="flex:1 1 320px;">Request           <textarea id="labs-pf-request" rows="4" style="width:100%;">GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n</textarea>         </label>         <label style="flex:1 1 320px;">Response           <textarea id="labs-pf-response" rows="4" style="width:100%;" readonly></textarea>         </label>       </div>       <div class="row" style="margin-top:10px; gap:8px; align-items:center;">         <button id="labs-pf-connect" type="button">Connect</button>         <button id="labs-pf-send" type="button">Send Request</button>         <button id="labs-pf-disconnect" type="button">Disconnect</button>         <span id="labs-pf-status" class="pill"></span>         <span class="hint">WebSocket port-forward (portforward.k8s.io).</span>       </div>     </div>   </div> </div>
-<h2>E. Scale & Rollout</h2>
-<p>Try increasing replicas or enabling a tiny canary rollout. These buttons become active after a session starts and actions are enabled.</p>
-<ul>
-<li>Scale to 2/3: updates the app's desired replica count. The controller reconciles containers until readyReplicas matches the new spec. Watch the status badge and events to see the change propagate.</li>
-<li>Canary 10%: enables a canary rollout policy and shifts a small portion of traffic to a new revision. This is a safe way to test changes with limited impact. You can later fine‑tune weight in "G. Rollout Controls" or revert to 0%.</li>
-<li>Requirements: an active session, "Enable Controlled Actions" toggled on, and an example applied (e.g., echo).</li>
-</ul>
-<p>How to read canary results: a canary is not a separate app. It is a new revision of the same app created when the manifest changes. The base revision is the previous spec, the canary revision is the latest. If you only toggle canary, both revisions may run the same image and look identical — make a small change (like <code>spec.image</code> or an env value) to see a visible difference. The dashboard shows the base vs canary revision IDs in “Canary routes to revision” below.</p>
-<ul>
-<li><button id="btn-scale-2" disabled>Scale to 2</button></li>
-<li><button id="btn-scale-3" disabled>Scale to 3</button></li>
-<li><button id="btn-canary-10" disabled>Canary 10%</button></li>
-</ul>
-<p>CLI (fallback):</p>
-<pre><code># Scale using the CLI
-python -m ae.cli scale &lt;app&gt; --replicas 2
-python -m ae.cli scale &lt;app&gt; --replicas 3
-
-# Pause/resume an in‑progress rollout
-python -m ae.cli rollout pause &lt;app&gt;
-python -m ae.cli rollout resume &lt;app&gt;</code></pre>
-<p>Canary via YAML (conceptual):</p>
-<pre><code>spec:
-  image: mendhak/http-https-echo:38 # any spec change creates a new revision
-  rollout:
-    strategy: canary
-    weight: 10   # send ~10% of traffic to the canary</code></pre>
-<h4>Notes</h4>
-<ul>
-<li>Scaling edits only <code>spec.replicas</code>; the current image revision stays the same.</li>
-<li>Canary weights bias routing between the old and new revision; readiness gates still apply before traffic shifts.</li>
-<li>Canary actions bump replicas to at least 2 so the dashboard shows a distinct canary revision.</li>
-<li>To fully roll forward, increase weight gradually (see section "G. Rollout Controls"). To roll back, set weight to 0 or re‑apply the previous image.</li>
-</ul>
-<h3>Verifiers</h3>
-<ul>
-<li>Events show scaling: <span id="v-scale-events" data-v="pending">pending</span></li>
-<li>Metrics present for app: <span id="v-scale-metrics" data-v="pending">pending</span></li>
-<li>Canary routes to revision: <span id="canary-revision">n/a</span> (base: <span id="canary-base">n/a</span>)</li>
-</ul>
-<h2>F. Ingress Test</h2>
-<ul>
-<li>Open App: <a id="ingress-link" href="#" target="_blank" rel="noopener">(disabled)</a></li>
-<li>Last check: <span id="ingress-check">n/a</span></li>
-<li>DNS hint: <code id="ingress-hosts-hint"></code> <button id="ingress-hosts-copy" disabled>Copy</button></li>
-<li>Direct curl (no hosts):<br/><code id="ingress-curl"></code> <button id="ingress-curl-copy" disabled>Copy</button></li>
-</ul>
-<h2>G. Rollout Controls</h2>
-<p>Advanced controls you can ignore on your first run. Use the slider to choose a small weight, then "Apply" to shift a portion of traffic to the canary image.</p>
-<ul>
-<li><button id="btn-rollout-pause" disabled>Pause Rollout</button></li>
-<li><button id="btn-rollout-resume" disabled>Resume Rollout</button></li>
-<li>Canary weight: <input type="range" id="canary-weight" min="0" max="10" step="1" value="3"/> <span id="canary-weight-val">3</span></li>
-<li><button id="btn-canary-apply" disabled>Apply Canary Weight</button></li>
-</ul>
-<h2>H. Reset</h2>
-<ul>
-<li><button id="btn-reset" type="button">Reset Session</button></li>
-</ul>
-<hr/>
-<details> <summary><strong>Final Notes</strong></summary>
-<ul>
-<li>If you see “Labs: unavailable”, you are in read‑only mode. To unlock Apply/Scale/Shell, start the controller with <code>AE_LABS=1</code>, set <code>AE_LABS_TOKEN</code>, then toggle “Enable Controlled Actions” and click “Use Token” + “Start Session”.</li>
-<li>“Open App” only appears when the example defines <code>spec.ingress</code>. If it is blank, pick an ingress example (echo) or use the shell/port‑forward tools instead.</li>
-<li>If the app host does not resolve, copy the DNS hint into your hosts file or use the Direct curl line in section F.</li>
-<li>If logs/events look empty, switch Status to “App” after applying an example; cluster mode only shows totals.</li>
-<li>Auto backend prefers k1s‑in‑Docker when compose is running, otherwise k1s‑host. Override the backend if the banner does not match what you started.</li>
-</ul>
-</details>
-  </div>   <div class="playground-rail">     <button id="btn-reset-fab" class="lab-reset-fab" type="button" aria-label="Reset labs and playground" title="Reset lab environment and playground">       <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">         <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4V1L7 6l5 5V7c1.66 0 3.14.69 4.22 1.78S18 11.34 18 13c0 3.31-2.69 6-6 6s-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8c0-2.21-.9-4.21-2.35-5.65z"/>       </svg>     </button>   </div> </div>
+<p>&lt;/details&gt;</p>
     </div>
     <footer class="site-footer">
       <div class="container inner">

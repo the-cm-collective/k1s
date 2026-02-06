@@ -761,7 +761,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--apishim-env",
         type=Path,
         default=None,
-        help="Path to apishim env file (default: state/labs/apishim.env)",
+        help="Path to apishim env file (default: state/profiles/labs/apishim.env)",
     )
     auth_local.add_argument(
         "--controller-env",
@@ -2822,7 +2822,7 @@ def handle_auth(args: argparse.Namespace) -> int:
         apishim_env = Path(
             args.apishim_env
             if args.apishim_env
-            else os.getenv("APISHIM_ENV_FILE", "state/labs/apishim.env")
+            else os.getenv("APISHIM_ENV_FILE", "state/profiles/labs/apishim.env")
         )
         controller_env = Path(
             args.controller_env

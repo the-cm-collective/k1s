@@ -826,6 +826,8 @@ kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code>
 <li><code>make down</code>: stop all dev/demo stacks (best-effort).</li>
 <li><code>make loop</code>: controller reconcile loop (watch mode).</li>
 <li><code>make run</code>: single reconcile pass.</li>
+<li><code>make dev-min</code> / <code>make dev-etcd</code> / <code>make k1s-core</code> / <code>make k1s-edge</code>: runtime profiles with empty specs (no default apps).</li>
+<li><code>make dev-min-caddy</code> / <code>make dev-etcd-caddy</code> / <code>make k1s-core-caddy</code>: same profiles with TLS hostnames for docs/api/dashboard.</li>
 <li><code>make apply-sample</code>: apply <code>specs/examples/echo.yaml</code>.</li>
 <li><code>make status-sample</code>: status for <code>echo</code>.</li>
 <li><code>make logs-sample</code>: logs for <code>echo</code>.</li>
@@ -846,7 +848,7 @@ kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code>
 <li><code>make labs-up</code> / <code>make labs-down</code>: docs + playground via compose (controller runs on host).</li>
 <li><code>make labs-aio-up</code> / <code>make labs-aio-down</code>: all-in-one labs stack (controller + apishim + docs).</li>
 <li><code>make labs-k3d-up</code> / <code>make labs-k3d-down</code>: bring up/down local k3d cluster for labs.</li>
-<li><code>make labs-apishim-env</code>: print apishim tokens from <code>state/labs/apishim.env</code>.</li>
+<li><code>make labs-apishim-env</code>: print apishim tokens from <code>state/profiles/labs/apishim.env</code>.</li>
 <li><code>make apishim-smoke</code>: quick API shim health check on port 8445.</li>
 <li><code>make shim-helm-demo</code>: run the helm shim demo helper.</li>
 </ul>
@@ -1019,7 +1021,7 @@ make demo-hardened</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-31 17:21:37</span>
+        <span>Built 2026-02-06 11:38:20</span>
       </div>
     </footer>
     <script>
