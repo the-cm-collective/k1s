@@ -60,6 +60,7 @@ _SITE_LAST_SEEN: dict[str, float] = {}
 _JS_STREAM_STATS: dict[str, dict[str, float]] = {}
 _JS_CONSUMER_STATS: dict[tuple[str, str], dict[str, object]] = {}
 _GATEWAY_WORK_METRICS: dict[str, dict[str, float]] = {}
+_ROUTE_BUNDLE_METRICS: dict[str, dict[str, float]] = {}
 
 
 def record_outbox_publish(success: bool) -> None:
@@ -87,6 +88,23 @@ def record_gateway_metrics(
         "work_stale_total": stale_val,
         "work_nak_total": nak_val,
     }
+
+
+def record_route_bundle_apply(
+    site_id: str, *, ok: bool, latency_seconds: float | None
+) -> None:
+    if not site_id:
+        return
+    metrics = _ROUTE_BUNDLE_METRICS.setdefault(
+        site_id,
+        {"apply_ok_total": 0.0, "apply_fail_total": 0.0, "last_latency_s": 0.0},
+    )
+    if ok:
+        metrics["apply_ok_total"] = metrics.get("apply_ok_total", 0.0) + 1.0
+    else:
+        metrics["apply_fail_total"] = metrics.get("apply_fail_total", 0.0) + 1.0
+    if latency_seconds is not None:
+        metrics["last_latency_s"] = float(latency_seconds)
 
 
 def record_js_stream_stats(
@@ -2493,6 +2511,21 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "# HELP ae_services_total Services with allocated cluster IPs",
             "# TYPE ae_services_total gauge",
             f"ae_services_total {getattr(snap, 'total_services', 0)}",
+            "# HELP ae_edge_ingress_routes_total Edge ingress routes",
+            "# TYPE ae_edge_ingress_routes_total gauge",
+            f"ae_edge_ingress_routes_total {getattr(snap, 'edge_routes_total', 0)}",
+            "# HELP ae_edge_ingress_routes_valid Edge ingress routes with valid status",
+            "# TYPE ae_edge_ingress_routes_valid gauge",
+            f"ae_edge_ingress_routes_valid {getattr(snap, 'edge_routes_valid', 0)}",
+            "# HELP ae_edge_ingress_routes_invalid Edge ingress routes with invalid status",
+            "# TYPE ae_edge_ingress_routes_invalid gauge",
+            f"ae_edge_ingress_routes_invalid {getattr(snap, 'edge_routes_invalid', 0)}",
+            "# HELP ae_edge_ingress_routes_policy_unsupported Edge ingress routes with unsupported policy fields",
+            "# TYPE ae_edge_ingress_routes_policy_unsupported gauge",
+            f"ae_edge_ingress_routes_policy_unsupported {getattr(snap, 'edge_routes_policy_unsupported', 0)}",
+            "# HELP ae_edge_ingress_policies_total Edge ingress policies",
+            "# TYPE ae_edge_ingress_policies_total gauge",
+            f"ae_edge_ingress_policies_total {getattr(snap, 'edge_policies_total', 0)}",
             "# HELP ae_pvs_total HostPath-backed PVs tracked for health",
             "# TYPE ae_pvs_total gauge",
             f"ae_pvs_total {getattr(snap, 'total_pvs', 0)}",
@@ -2717,6 +2750,30 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 labels = f'site="{site_id}"'
                 lines.append(f"ae_site_last_seen_seconds{{{labels}}} {last_age}")
                 lines.append(f"ae_site_stale{{{labels}}} {stale}")
+        except Exception:
+            pass
+        # Route bundle apply metrics
+        try:
+            if _ROUTE_BUNDLE_METRICS:
+                lines += [
+                    "# HELP ae_route_bundle_apply_ok_total Route bundle apply successes",
+                    "# TYPE ae_route_bundle_apply_ok_total counter",
+                    "# HELP ae_route_bundle_apply_fail_total Route bundle apply failures",
+                    "# TYPE ae_route_bundle_apply_fail_total counter",
+                    "# HELP ae_route_bundle_apply_latency_seconds Last route bundle apply latency",
+                    "# TYPE ae_route_bundle_apply_latency_seconds gauge",
+                ]
+                for site_id, metrics in sorted(_ROUTE_BUNDLE_METRICS.items()):
+                    labels = f'site="{site_id}"'
+                    lines.append(
+                        f"ae_route_bundle_apply_ok_total{{{labels}}} {metrics.get('apply_ok_total', 0.0)}"
+                    )
+                    lines.append(
+                        f"ae_route_bundle_apply_fail_total{{{labels}}} {metrics.get('apply_fail_total', 0.0)}"
+                    )
+                    lines.append(
+                        f"ae_route_bundle_apply_latency_seconds{{{labels}}} {metrics.get('last_latency_s', 0.0)}"
+                    )
         except Exception:
             pass
         # Service/VIP metrics

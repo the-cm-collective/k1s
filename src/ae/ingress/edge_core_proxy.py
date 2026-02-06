@@ -145,6 +145,7 @@ def _build_routes_and_clusters(
     clusters: dict[str, CoreProxyCluster] = {}
     endpoint_map = {ep.site_id: ep for ep in endpoints}
     domain_suffix = config.site_domain_suffix.strip(".") or "edge.local"
+    policy_cache: dict[tuple[str, str], dict] = {}
 
     # Base per-site host for core-proxy mode.
     for ep in endpoints:
@@ -180,6 +181,8 @@ def _build_routes_and_clusters(
         site_id = str(placement.get("site") or record.site_id or "").strip()
         if not site_id:
             continue
+        policy_spec = _policy_for_route(record, store, policy_cache)
+        route_opts = _policy_route_options(policy_spec) if policy_spec else {}
         if mode == "core-proxy":
             ep = endpoint_map.get(site_id)
             if ep is None or ep.core_proxy_port is None:
@@ -198,6 +201,12 @@ def _build_routes_and_clusters(
                         host=host,
                         path_prefix=path,
                         cluster=cluster_name,
+                        request_headers_add=route_opts.get("request_headers_add", []),
+                        request_headers_remove=route_opts.get("request_headers_remove", []),
+                        response_headers_add=route_opts.get("response_headers_add", []),
+                        response_headers_remove=route_opts.get("response_headers_remove", []),
+                        timeout_ms=route_opts.get("timeout_ms"),
+                        idle_timeout_ms=route_opts.get("idle_timeout_ms"),
                     )
                 )
         elif mode == "core-to-edge-public":
@@ -223,6 +232,12 @@ def _build_routes_and_clusters(
                         host=host,
                         path_prefix=path,
                         cluster=cluster_name,
+                        request_headers_add=route_opts.get("request_headers_add", []),
+                        request_headers_remove=route_opts.get("request_headers_remove", []),
+                        response_headers_add=route_opts.get("response_headers_add", []),
+                        response_headers_remove=route_opts.get("response_headers_remove", []),
+                        timeout_ms=route_opts.get("timeout_ms"),
+                        idle_timeout_ms=route_opts.get("idle_timeout_ms"),
                     )
                 )
 
@@ -276,6 +291,70 @@ def _public_endpoint(public_urls: list[str | dict]) -> dict | None:
         "ca_bundle_path": ca_bundle_path,
         "expected_sans": expected_sans,
     }
+
+
+def _policy_for_route(
+    record, store: SQLiteStateStore, cache: dict[tuple[str, str], dict]
+) -> dict | None:
+    if not record.policy_name:
+        return None
+    ns = record.policy_namespace or record.namespace
+    key = (record.policy_name, ns)
+    if key in cache:
+        return cache[key]
+    policy = store.get_edge_ingress_policy(name=record.policy_name, namespace=ns)
+    if policy and isinstance(policy.spec, dict):
+        cache[key] = policy.spec
+        return policy.spec
+    return None
+
+
+def _policy_route_options(policy: dict) -> dict:
+    opts: dict[str, object] = {}
+    headers = policy.get("headers") if isinstance(policy.get("headers"), dict) else {}
+    req = headers.get("request") if isinstance(headers.get("request"), dict) else {}
+    resp = headers.get("response") if isinstance(headers.get("response"), dict) else {}
+    opts["request_headers_add"] = _header_add(req)
+    opts["request_headers_remove"] = _header_remove(req)
+    opts["response_headers_add"] = _header_add(resp)
+    opts["response_headers_remove"] = _header_remove(resp)
+    timeouts = policy.get("timeouts") if isinstance(policy.get("timeouts"), dict) else {}
+    timeout_ms = _coerce_int(timeouts.get("requestBodyMs")) or _coerce_int(
+        timeouts.get("requestHeadersMs")
+    )
+    idle_timeout_ms = _coerce_int(timeouts.get("idleMs"))
+    if timeout_ms:
+        opts["timeout_ms"] = timeout_ms
+    if idle_timeout_ms:
+        opts["idle_timeout_ms"] = idle_timeout_ms
+    return opts
+
+
+def _header_add(section: dict) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    add = section.get("add") if isinstance(section.get("add"), dict) else {}
+    for key, value in add.items():
+        if key:
+            out.append((str(key), str(value)))
+    return out
+
+
+def _header_remove(section: dict) -> list[str]:
+    out: list[str] = []
+    remove = section.get("remove") if isinstance(section.get("remove"), list) else []
+    for key in remove:
+        if key:
+            out.append(str(key))
+    return out
+
+
+def _coerce_int(value) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except Exception:
+        return None
 
 
 def _run_reload(cmd: str) -> None:
