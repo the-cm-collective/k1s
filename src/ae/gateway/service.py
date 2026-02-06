@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from ae.config.transport import GatewayJetStreamConfig, check_nats_connectivity
 from ae.gateway.spool import GatewaySpool
+from ae.ingress.edge_local import build_edge_local_renderer
 from ae.transport import (
     hub_caps_subject,
     hub_lease_acquire_subject,
@@ -110,6 +111,7 @@ class SiteGateway:
         )
         self._route_bundle_rev = 0
         self._route_bundle_hash: str | None = None
+        self._edge_local_renderer = build_edge_local_renderer()
 
     def _subjects(self) -> list[str]:
         return [
@@ -331,8 +333,11 @@ class SiteGateway:
                 ok = False
                 error = "hash_mismatch"
         else:
-            self._route_bundle_rev = bundle_rev
-            self._route_bundle_hash = bundle_hash
+            if self._edge_local_renderer is not None:
+                ok, error = self._edge_local_renderer.apply_bundle(payload)
+            if ok:
+                self._route_bundle_rev = bundle_rev
+                self._route_bundle_hash = bundle_hash
         ack = {
             "site_id": self._site_id,
             "bundle_rev": bundle_rev,

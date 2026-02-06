@@ -540,7 +540,7 @@ def _reconcile_edge_ingress(store: SQLiteStateStore, edge_renderer=None) -> None
 
 def _edge_local_policy_unsupported(spec: dict) -> list[str]:
     unsupported: list[str] = []
-    allowed_top = {"timeouts", "websockets", "headers", "stickiness", "waf", "auth"}
+    allowed_top = {"timeouts", "websockets", "headers", "waf", "auth"}
     for key in spec.keys():
         if key not in allowed_top:
             unsupported.append(str(key))
@@ -561,14 +561,20 @@ def _edge_local_policy_unsupported(spec: dict) -> list[str]:
             if basic is None:
                 unsupported.append("waf.basic")
             else:
-                allowed_basic = {"maxBodyBytes", "rateLimit", "ipAllowlist", "ipDenylist"}
+                allowed_basic = {"maxBodyBytes", "ipAllowlist", "ipDenylist"}
                 for key in basic.keys():
                     if key not in allowed_basic:
                         unsupported.append(f"waf.basic.{key}")
+                if "rateLimit" in basic:
+                    unsupported.append("waf.basic.rateLimit")
         elif "basic" in waf:
             unsupported.append("waf.basic")
 
-    # websockets, timeouts, headers, stickiness are allowed as-is
+    stickiness = spec.get("stickiness") if isinstance(spec.get("stickiness"), dict) else {}
+    if stickiness and stickiness.get("mode") not in {None, "none", "None"}:
+        unsupported.append("stickiness")
+
+    # websockets, timeouts, headers are allowed as-is
     return sorted(set(unsupported))
 
 
