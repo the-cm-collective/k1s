@@ -8,6 +8,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
+import threading
 
 from ae.controller.state import SQLiteStateStore
 from ae.transport.nats_client import NatsClient, NatsClientError, NatsMessage
@@ -66,6 +67,8 @@ class NatsControllerIngress:
         self._js_max_deliver = int(os.getenv("AE_GATEWAY_JS_MAX_DELIVER", "20") or 20)
         self._js_max_waiting = int(os.getenv("AE_GATEWAY_JS_MAX_WAITING", "512") or 512)
         self._js_sites: set[str] = set()
+        self._js_provisioning: set[str] = set()
+        self._js_lock = threading.Lock()
         self._js_stream_ready = False
         self._core_proxy_enabled = str(
             os.getenv("AE_EDGE_INGRESS_CORE_PROXY", "0") or "0"
@@ -235,6 +238,8 @@ class NatsControllerIngress:
             lease_ttl_ms=lease.lease_ttl_ms,
             renew_after_ms=lease.renew_after_ms,
         )
+        # Retry JS consumer provisioning on renew in case initial attempt failed.
+        self._ensure_js_consumer(site_id)
         self._reply(msg, resp.as_dict())
 
     def _on_result(self, msg: NatsMessage) -> None:
@@ -361,27 +366,43 @@ class NatsControllerIngress:
             return
         if not site_id or site_id in self._js_sites:
             return
-        try:
-            if not self._js_stream_ready:
-                self._client.ensure_stream(
-                    name=self._js_stream_name,
-                    subjects=[self._js_work_subject],
-                    storage=self._js_storage,
-                    retention="workqueue",
+        with self._js_lock:
+            if site_id in self._js_provisioning or site_id in self._js_sites:
+                return
+            self._js_provisioning.add(site_id)
+
+        def _provision() -> None:
+            try:
+                if not self._js_stream_ready:
+                    self._client.ensure_stream(
+                        name=self._js_stream_name,
+                        subjects=[self._js_work_subject],
+                        storage=self._js_storage,
+                        retention="workqueue",
+                    )
+                    self._js_stream_ready = True
+                self._client.ensure_consumer(
+                    stream=self._js_stream_name,
+                    durable=f"WORK_SITE_{site_id}",
+                    filter_subject=f"k1s.v1.work.site.{site_id}",
+                    ack_wait_s=self._js_ack_wait_s,
+                    max_ack_pending=self._js_max_ack_pending,
+                    max_deliver=self._js_max_deliver,
+                    max_waiting=self._js_max_waiting,
                 )
-                self._js_stream_ready = True
-            self._client.ensure_consumer(
-                stream=self._js_stream_name,
-                durable=f"WORK_SITE_{site_id}",
-                filter_subject=f"k1s.v1.work.site.{site_id}",
-                ack_wait_s=self._js_ack_wait_s,
-                max_ack_pending=self._js_max_ack_pending,
-                max_deliver=self._js_max_deliver,
-                max_waiting=self._js_max_waiting,
-            )
-            self._js_sites.add(site_id)
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning("js consumer ensure failed site=%s: %s", site_id, exc)
+                self._js_sites.add(site_id)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning(
+                    "js consumer ensure failed site=%s (%s): %r",
+                    site_id,
+                    type(exc).__name__,
+                    exc,
+                )
+            finally:
+                with self._js_lock:
+                    self._js_provisioning.discard(site_id)
+
+        threading.Thread(target=_provision, daemon=True).start()
 
     def _ensure_core_proxy_port(self, site_id: str) -> None:
         if not self._core_proxy_enabled:

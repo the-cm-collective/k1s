@@ -108,7 +108,8 @@ def build_manifest(image: str) -> AppManifest:
     )
 
 
-def test_reconcile_emits_events_and_metrics(tmp_path: Path) -> None:
+def test_reconcile_emits_events_and_metrics(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AE_PROJECTION_ROOT", str(tmp_path / "projections"))
     state = SQLiteStateStore(tmp_path / "state.db")
     runtime = StubRuntime()
     ingress = IngressService(StubIngressManager())

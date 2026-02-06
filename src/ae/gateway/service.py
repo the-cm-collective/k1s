@@ -106,6 +106,9 @@ class SiteGateway:
         self._logs_sample_rate = _parse_float(
             os.getenv("AE_GATEWAY_LOGS_SAMPLE_RATE"), 1.0
         )
+        self._lease_timeout_s = _parse_duration_seconds(
+            os.getenv("AE_GATEWAY_LEASE_TIMEOUT"), default=5.0
+        )
         self._last_result_retry = 0.0
         self._result_retry_interval_s = max(
             2.0,
@@ -626,7 +629,9 @@ class SiteGateway:
         }
         try:
             resp = self._nats_client.request_json(
-                hub_lease_acquire_subject(self._site_id), req
+                hub_lease_acquire_subject(self._site_id),
+                req,
+                timeout_s=self._lease_timeout_s,
             )
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("lease acquire failed: %s", exc)
@@ -656,7 +661,9 @@ class SiteGateway:
         }
         try:
             resp = self._nats_client.request_json(
-                hub_lease_renew_subject(self._site_id), req
+                hub_lease_renew_subject(self._site_id),
+                req,
+                timeout_s=self._lease_timeout_s,
             )
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("lease renew failed: %s", exc)

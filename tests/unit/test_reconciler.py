@@ -295,7 +295,8 @@ def test_select_upstreams_prefers_service_vip(tmp_path: Path) -> None:
     assert upstreams == ["10.241.0.10:8080"]
 
 
-def test_reconciler_applies_secrets(tmp_path: Path) -> None:
+def test_reconciler_applies_secrets(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AE_PROJECTION_ROOT", str(tmp_path / "projections"))
     runtime = StubRuntime()
     state = SQLiteStateStore(tmp_path / "state.db")
 
