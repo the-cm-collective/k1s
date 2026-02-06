@@ -70,13 +70,89 @@ We separate the **state backend (SoT)** from the **transport/dispatch backend** 
 | Profile | State (SoT) | Transport | Work dispatch | Notes |
 | --- | --- | --- | --- | --- |
 | `dev-min` | SQLite | HTTP | direct/local | Fast local loop; no NATS. |
-| `dev-fidelity` | etcd | HTTP | direct/local | k8s-shaped SoT without edge protocol. |
-| `lab-edge` | etcd (or SQLite/Postgres) | NATS Core | `work.pull` (req/reply) | Exercises leaf/gateway without JetStream durability. |
-| `prod-edge` | etcd | NATS + JetStream | JetStream work queue | Mode A Option A semantics. |
+| `dev-etcd` | etcd | HTTP | direct/local | k8s-shaped SoT without edge protocol. |
+| `k1s-edge` | etcd (or SQLite/Postgres) | NATS Core | `work.pull` (req/reply) | Exercises leaf/gateway without JetStream durability. |
+| `k1s-core` | etcd | NATS + JetStream | JetStream work queue | Mode A Option A semantics. |
 
 Notes:
 - Postgres remains viable for non-edge or hybrid deployments; etcd is the preferred SoT for the edge fabric.
 - If JetStream is omitted, use a `work.pull` API rather than best-effort publish to avoid “lost work” confusion.
+
+---
+
+## 2.2 Etcd state adapter (dev-etcd plan)
+
+Goal: run the controller against **etcd as SoT** while keeping transport **HTTP** (no NATS, no JetStream) so we can exercise the k8s‑shaped state model early.
+
+**Scope (MVP)**
+- Implement an `EtcdStateStore` that matches the **public surface** of `SQLiteStateStore` (same methods, same return shapes).
+- Store values as **JSON blobs** under a stable key prefix (default `k1s/v1`).
+- Use etcd **transactions (compare‑and‑swap by mod_revision)** for all state transitions that currently rely on SQL row checks.
+- Use etcd **leases** for node records (matching the Mode A semantics).
+- No watchers or streaming caches in MVP; prefix scans + in‑memory filters are acceptable for dev‑etcd scale.
+
+**Non‑goals (MVP)**
+- Migration from SQLite/Postgres → etcd.
+- High‑scale secondary indexing (we’ll accept prefix scans for now).
+- Full multi‑writer safety beyond the controller process (same assumptions as current dev loop).
+- JetStream/outbox integration tests (transport stays HTTP in dev‑etcd).
+
+**Config (proposed)**
+- `AE_STATE_BACKEND=etcd`
+- `AE_ETCD_ENDPOINTS=http://127.0.0.1:2379` (comma‑separated)
+- `AE_ETCD_PREFIX=k1s/v1`
+- Optional TLS: `AE_ETCD_CA`, `AE_ETCD_CERT`, `AE_ETCD_KEY`
+- Optional auth: `AE_ETCD_USER`, `AE_ETCD_PASSWORD`
+- Timeouts: `AE_ETCD_DIAL_TIMEOUT=3s`, `AE_ETCD_OP_TIMEOUT=3s`
+- Lease TTL: `AE_ETCD_LEASE_TTL_SECONDS=60`
+
+**Key mapping (MVP alignment)**
+- Apps + revisions: `apps/<app>/manifest`, `apps/<app>/revisions/<rev>`
+- Status + pods: `status/<app>`, `pods/<app>/<pod>`
+- Events + probe history: `events/<app>/<ts>/<id>`, `probes/<app>/<ts>/<pod>`
+- Services: `services/<app>`, `services/<app>/endpoints/<id>`
+- Nodes + leases: `nodes/<site>/<node>` (attached to etcd lease)
+- Ingress records: `ingress/routes/<name>`, `ingress/policies/<name>`, `ingress/sites/<site>`
+- Work ledger/outbox (future‑ready): use Appendix A keys verbatim
+
+**Implementation steps**
+1. Introduce a `StateStore` protocol (or base class) and refactor controller typings to depend on it, not `SQLiteStateStore`.
+2. Add `EtcdStateStore` with JSON encode/decode helpers and prefix scan utilities.
+3. Implement CAS helpers:
+   - `get_with_rev(key)` → value + mod_revision
+   - `txn_compare_put(key, expected_rev, value)` → success/failed
+4. Implement leases for `nodes/` and `work.pull` visibility TTL (if used in k1s‑edge).
+5. Wire `AE_STATE_BACKEND=etcd` in controller startup and expose a clear startup error if etcd is unreachable.
+6. Add a minimal integration test (docker compose etcd) to validate:
+   - apply manifest → status list works
+   - events/logs still render
+   - node heartbeat updates & lease expiry
+
+**Acceptance (dev‑etcd)**
+- `AE_STATE_BACKEND=etcd AE_TRANSPORT_BACKEND=http` boots cleanly.
+- `ae.cli apply` + reconcile updates `/status` and `/dashboard`.
+- Node lease expiry removes node from `/nodes` after TTL.
+- No regression when `AE_STATE_BACKEND` is unset (SQLite remains default).
+
+**Phase 2 — watchers + streaming cache (optional)**
+
+Without watchers (MVP) we lose:
+- event‑driven reconciliation (we rely on periodic scans)
+- low‑latency change propagation for high‑churn keys (pods/events)
+- efficient large‑keyspace reads (scans get slower as state grows)
+- real‑time streaming hooks for external tooling (everything is poll‑based)
+
+Phase 2 scope:
+- Add watch primitives (`watch_prefix`, `watch_key`) with snapshot + watch handoff.
+- Build a cache keyed by prefix (apps/status/pods/nodes/ingress/work) updated by watch events.
+- Handle compaction (resync on `ErrCompacted`) and periodic full resyncs.
+- Add backpressure/queue bounds and event coalescing for hot keys.
+- Emit metrics: watch lag, resync count, cache hit ratio.
+
+Acceptance (Phase 2):
+- Snapshot + watch handoff prevents missed updates in tests.
+- Compaction recovery works under churn (no permanent watch failure).
+- Controller can run with reduced full scans (cache‑backed reads).
 
 ---
 
