@@ -79,6 +79,41 @@ start_docs_server() {
   echo $! > "$pid_file"
 }
 
+start_caddy() {
+  local https_port="${CADDY_HTTPS_PORT:-8443}"
+  local api_base="https://api.home.arpa:${https_port}"
+  local dash_url="https://dash.home.arpa:${https_port}/dashboard"
+  local docs_env="$ROOT_DIR/state/dev.env"
+  local caddy_sites="$ROOT_DIR/state/caddy"
+
+  mkdir -p "$caddy_sites"
+  if [[ -x "$ROOT_DIR/scripts/ensure_dev_env.sh" ]]; then
+    AE_CONTAINER_CLI="$ENGINE_BIN" "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
+  fi
+
+  DOCS_API_BASE="$api_base" DOCS_DASHBOARD_URL="$dash_url" "$PYTHON_BIN" docs/build_docs.py >/dev/null 2>&1 || true
+
+  local host_alias="host.docker.internal"
+  if [[ "$ENGINE_BIN" == "podman" ]]; then
+    host_alias="host.containers.internal"
+  fi
+  cat > "${caddy_sites}/dash.caddy" <<EOF
+https://dash.home.arpa {
+    log {
+        output stdout
+        format console
+    }
+    header -Strict-Transport-Security
+    tls internal
+    reverse_proxy ${host_alias}:${METRICS_PORT:-9108}
+}
+EOF
+
+  "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" up -d caddy >/dev/null 2>&1 || true
+  "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" exec -T caddy \
+    caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true
+}
+
 write_envoy_bootstrap() {
   local path="$1"
   PYTHONPATH=src "$PYTHON_BIN" - <<PY
@@ -173,6 +208,9 @@ case "$PROFILE" in
     export AE_STATE_BACKEND="${AE_STATE_BACKEND:-sqlite}"
     export AE_TRANSPORT_BACKEND="${AE_TRANSPORT_BACKEND:-http}"
     METRICS_PORT="${METRICS_PORT:-9108}"
+    if [[ "${CORE_CADDY:-0}" == "1" ]]; then
+      start_caddy
+    fi
     PYTHONPATH=src exec "$PYTHON_BIN" -m ae.controller --loop --metrics-port "$METRICS_PORT" --watch
     ;;
   dev-etcd)
@@ -187,6 +225,9 @@ case "$PROFILE" in
     export AE_ETCD_ENDPOINTS="${AE_ETCD_ENDPOINTS:-http://127.0.0.1:2379}"
     export AE_TRANSPORT_BACKEND="${AE_TRANSPORT_BACKEND:-http}"
     METRICS_PORT="${METRICS_PORT:-9108}"
+    if [[ "${CORE_CADDY:-0}" == "1" ]]; then
+      start_caddy
+    fi
     PYTHONPATH=src exec "$PYTHON_BIN" -m ae.controller --loop --metrics-port "$METRICS_PORT" --watch
     ;;
   k1s-core)
@@ -235,6 +276,9 @@ case "$PROFILE" in
       fi
     fi
     METRICS_PORT="${METRICS_PORT:-9108}"
+    if [[ "${CORE_CADDY:-0}" == "1" ]]; then
+      start_caddy
+    fi
     if [[ "${CORE_DOCS:-0}" == "1" ]]; then
       start_docs_server
     fi

@@ -117,6 +117,11 @@ Docs helper:
 - `CORE_DOCS=1 make k1s-core` starts the docs server on `http://127.0.0.1:9109`
   (dashboard remains on `http://127.0.0.1:9108/dashboard`).
 
+Caddy helper (TLS hostnames for docs/api/dashboard):
+- `CORE_CADDY=1 make k1s-core` (also works with `make dev-min` / `make dev-etcd`).
+- Provides `https://docs.home.arpa:8443`, `https://api.home.arpa:8443`, and
+  `https://dash.home.arpa:8443/dashboard`.
+
 **Container engine override**
 - Use `AE_CONTAINER_CLI=podman` (or `STACK_BIN=podman`) to force podman instead of docker.
 
@@ -1224,6 +1229,52 @@ Exit:
 
 Exit:
 - Policy and health are visible in metrics and status.
+
+**Ingress Track E — EdgeIngressRoute as primary ingress API (Option 3)**
+- Make `EdgeIngressRoute` / `EdgeIngressPolicy` the **authoritative ingress API** for core and edge.
+- Add **compat translator**: optionally materialize `EdgeIngressRoute` from `AppManifest.spec.ingress` (opt-in flag) to preserve existing manifests during migration.
+- Implement **Envoy downstream TLS termination** (certs from `AE_TLS_DIR` / secret resolver).
+- Add **core-local service routing** to Envoy (treat core as a site or add a core service cluster).
+- Deprecate Caddy ingress for app traffic (retain Caddy only for docs/dashboard).
+- Update docs and examples to prefer `EdgeIngressRoute` and `EdgeIngressPolicy`.
+- Expand test matrix: core-local ingress, core-proxy ingress, core-to-edge-public, edge-local bundle flow.
+- Existing manifests are supported via translation, but canonical docs use EdgeIngressRoute.
+
+**Implementation phases (Track E)**
+- **E1 — Core-local routing in Envoy**
+  - Treat `core` as a first-class “site” for routing.
+  - Add core-local clusters (service endpoints on core nodes) so EdgeIngressRoute can target core workloads.
+  - Extend `SiteIngressEndpoint` to represent core endpoints if needed (or add an internal core endpoint list).
+- **E2 — Downstream TLS termination**
+  - Add Envoy listener TLS support.
+  - Load certs from `AE_TLS_DIR` (same resolver used today for Caddy).
+  - Support SNI → cert mapping and fallback to internal/self-signed when unset.
+- **E3 — Compatibility translator (optional)**
+  - Flag: `AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS=1`.
+  - When enabled, controller materializes `EdgeIngressRoute` from `AppManifest.spec.ingress` (host/path/service).
+  - Route status includes `translated_from=AppManifest` and de-dupe by app name.
+- **E4 — Policy parity**
+  - Ensure `EdgeIngressPolicy` covers current Caddy ingress features:
+    - headers add/remove
+    - timeouts
+    - basic rate-limit
+  - Map supported policy subset into Envoy route config.
+  - Explicitly surface unsupported fields in status.
+- **E5 — Deprecate Caddy for app ingress**
+  - Caddy remains only for docs/dashboard.
+  - Core/edge app ingress uses Envoy exclusively.
+  - Update docs and examples to use EdgeIngressRoute/Policy.
+- **E6 — Tests + metrics**
+  - Add integration tests for:
+    - core-local route via Envoy
+    - core-proxy to edge
+    - core-to-edge-public
+    - edge-local bundle flow
+  - Metrics: Envoy route health, TLS termination errors, policy rejection counts.
+
+Exit:
+- Envoy serves **all** app ingress (core + edge) using EdgeIngressRoute/Policy.
+- TLS termination works for core and edge modes without Caddy.
 
 ## 13. Appendix A — etcd key layout (examples)
 

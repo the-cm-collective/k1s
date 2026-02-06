@@ -165,6 +165,8 @@ Local dev and samples
 - `make down`: stop all dev/demo stacks (best-effort).
 - `make loop`: controller reconcile loop (watch mode).
 - `make run`: single reconcile pass.
+- `make dev-min` / `make dev-etcd` / `make k1s-core` / `make k1s-edge`: runtime profiles with empty specs (no default apps).
+- `make dev-min-caddy` / `make dev-etcd-caddy` / `make k1s-core-caddy`: same profiles with TLS hostnames for docs/api/dashboard.
 - `make apply-sample`: apply `specs/examples/echo.yaml`.
 - `make status-sample`: status for `echo`.
 - `make logs-sample`: logs for `echo`.
