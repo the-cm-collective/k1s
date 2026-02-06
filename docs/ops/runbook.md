@@ -36,6 +36,7 @@ NATS + etcd dev stack (Mode A)
   - Gateway: `AE_TRANSPORT_BACKEND=nats-js AE_SITE_ID=sfo-edge-01 AE_NATS_URL=nats://127.0.0.1:4223 ae-gateway`
   - Enqueue: `ae work enqueue --site-id sfo-edge-01 --mode outbox --op ensure_pod --preferred-node node-01`
   - Rollback: stop the gateway and restart the controller with `AE_TRANSPORT_BACKEND=http` (or unset) to return to HTTP dispatch.
+  - Automated canary + rollback: `scripts/dev/nats_etcd_canary.sh` (uses `.venv` if present; override `METRICS_PORT` if 9108 is in use).
 
 CRI nodes (containerd)
 - Required env:
