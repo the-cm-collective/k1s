@@ -26,6 +26,7 @@ from ae.controller.spec import (
     parse_app_ref,
     split_app_key,
 )
+from ae.controller.etcd_state import EtcdStateStore
 from ae.controller.state import AppStatus, SQLiteStateStore
 from ae.ingress import CaddyIngressManager, IngressService
 from ae.k8s.check import k8s_portability_issues
@@ -902,6 +903,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def state_store_from_env() -> SQLiteStateStore:
+    backend = (os.getenv("AE_STATE_BACKEND") or "").strip().lower()
+    if backend == "etcd":
+        return EtcdStateStore()
     db_path = Path(os.getenv("AE_STATE_DB", "state/controller.db"))
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return SQLiteStateStore(db_path)
