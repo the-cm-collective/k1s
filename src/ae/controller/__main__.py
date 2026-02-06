@@ -1519,7 +1519,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 except Exception as exc:  # noqa: BLE001
                     import logging as _log
 
-                _log.getLogger(__name__).warning("failed to start js monitor: %s", exc)
+                    _log.getLogger(__name__).warning("failed to start js monitor: %s", exc)
         if transport.backend in {"nats-core", "nats-js"}:
             try:
                 bundle_enabled = str(
