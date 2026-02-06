@@ -86,6 +86,14 @@ Disable the stub worker (gateway only):
 EDGE_START_WORKER=0 make k1s-edge
 ```
 
+Bring up the docs server alongside k1s-core:
+```
+CORE_DOCS=1 make k1s-core
+```
+
+Docs will serve on `http://127.0.0.1:9109` (override with `AE_DOCS_PORT` / `DOCS_BIND`),
+and the dashboard remains on `http://127.0.0.1:9108/dashboard`.
+
 Force the container engine:
 ```
 AE_CONTAINER_CLI=podman make k1s-core

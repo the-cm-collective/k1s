@@ -113,6 +113,10 @@ Mode behavior:
 - `core-to-edge-public`: Envoy only (no rathole).
 - `edge-local`: no core ingress; the gateway renders an edge-local Caddyfile if enabled.
 
+Docs helper:
+- `CORE_DOCS=1 make k1s-core` starts the docs server on `http://127.0.0.1:9109`
+  (dashboard remains on `http://127.0.0.1:9108/dashboard`).
+
 **Container engine override**
 - Use `AE_CONTAINER_CLI=podman` (or `STACK_BIN=podman`) to force podman instead of docker.
 
