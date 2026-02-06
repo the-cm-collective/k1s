@@ -645,6 +645,9 @@ Tuning guidance:
 
 Example config (site gateway): `ops/dev/site-gateway.env.sample`
 
+Additional gateway tuning:
+- Lease request timeout: `AE_GATEWAY_LEASE_TIMEOUT` (default `5s`) controls acquire/renew request timeouts.
+
 > Note: Pull consumers require the gateway to use `$JS.API.*` and `$JS.ACK.*` subjects. Workers never do.
 
 ### 10.2 Optional `K1S_AUDIT` stream (future)
@@ -845,6 +848,10 @@ Helper:
   * site disconnect/reconnect
   * worker crash mid-work
   * etcd leader change
+  * core↔edge e2e harness:
+    - `K1S_E2E_DIR=$PWD/.local/e2e-core-edge-latest .venv/bin/python scripts/e2e_k1s_core_edge.py`
+    - logs live under `<workspace>/logs/` (controller/gateway/worker)
+    - uses dev NATS config (non-JWT); JWT flow is covered in `ops/dev/nats-jwt.README.md`
 
 **Exit:** drills pass + runbooks updated
 

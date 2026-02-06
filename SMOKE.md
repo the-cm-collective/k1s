@@ -91,6 +91,23 @@ Troubleshooting
   - Service VIP sanity: `pytest tests/integration/test_service_vip_routing.py` (requires docker-enabled env).
 - QEMU helper shortcut: `RUN_SMOKE=1 AE_TOKEN=dev-token ops/ci/multinode-qemu.sh start` runs apply → watch → VIP curl → kill worker1 agent → re-watch → VIP curl, then leaves the lab up for inspection.
 
+## Core/Edge E2E (Mode A)
+Exercise JetStream dispatch from core to edge via gateway/worker.
+
+```
+K1S_E2E_DIR=$PWD/.local/e2e-core-edge-latest .venv/bin/python scripts/e2e_k1s_core_edge.py
+```
+
+Logs live under:
+- `.local/e2e-core-edge-latest/logs/controller.log`
+- `.local/e2e-core-edge-latest/logs/gateway.log`
+- `.local/e2e-core-edge-latest/logs/worker.log`
+
+Optional pytest wrapper:
+```
+AE_E2E_CORE_EDGE=1 .venv/bin/python -m pytest tests/integration/test_core_edge_e2e.py -s
+```
+
 ## NetFS / CSI Smoke
 
 Validate PVC/PV binding plus NetFS mount hooks through apishim.
