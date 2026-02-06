@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 import json, hashlib
 import yaml
 
-from ae.controller.state import SQLiteStateStore
+from ae.controller.state import SQLiteStateStore, state_store_from_env
 from ae.controller.reconciler import Reconciler
 from ae.controller.spec import (
     AppManifest,
@@ -48,7 +48,6 @@ from ae.ingress.edge_core_proxy import EdgeCoreProxyRenderer, build_core_proxy_c
 from ae.transport.route_bundle_publisher import RouteBundlePublisher, RouteBundlePublisherConfig
 from ae.transport.jetstream_monitor import JetStreamMonitor, JetStreamMonitorConfig
 from ae.cli.__main__ import (
-    state_store_from_env,
     runtime_factory,
     health_manager_factory,
     ingress_service_factory,
