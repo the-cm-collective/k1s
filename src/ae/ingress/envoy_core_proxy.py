@@ -17,6 +17,8 @@ class CoreProxyRoute:
     response_headers_remove: list[str] = field(default_factory=list)
     timeout_ms: int | None = None
     idle_timeout_ms: int | None = None
+    ext_authz_enabled: bool = False
+    local_rate_limit: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,9 @@ def render_envoy_config(
     routes: list[CoreProxyRoute],
     clusters: list[CoreProxyCluster],
     config: EnvoyRenderConfig,
+    *,
+    ext_authz_config: dict | None = None,
+    enable_local_ratelimit: bool = False,
 ) -> str:
     listener_addr = config.listen_address
     listener_port = config.listen_port
@@ -65,6 +70,26 @@ def render_envoy_config(
             route_entry["route"]["timeout"] = f"{route.timeout_ms/1000:.3f}s"
         if route.idle_timeout_ms:
             route_entry["route"]["idle_timeout"] = f"{route.idle_timeout_ms/1000:.3f}s"
+        per_filter: dict[str, dict] = {}
+        if ext_authz_config is not None:
+            per_filter["envoy.filters.http.ext_authz"] = {
+                "@type": "type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute",
+                "disabled": not bool(route.ext_authz_enabled),
+            }
+        if route.local_rate_limit:
+            per_filter["envoy.filters.http.local_ratelimit"] = {
+                "@type": "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit",
+                "stat_prefix": "edge_local_ratelimit",
+                "token_bucket": route.local_rate_limit,
+                "filter_enabled": {
+                    "default_value": {"numerator": 100, "denominator": "HUNDRED"}
+                },
+                "filter_enforced": {
+                    "default_value": {"numerator": 100, "denominator": "HUNDRED"}
+                },
+            }
+        if per_filter:
+            route_entry["typed_per_filter_config"] = per_filter
         if route.request_headers_add:
             route_entry["request_headers_to_add"] = [
                 {"header": {"key": key, "value": value}} for key, value in route.request_headers_add
@@ -162,6 +187,37 @@ def render_envoy_config(
             }
         cluster_defs.append(entry)
 
+    http_filters = []
+    if ext_authz_config is not None:
+        http_filters.append(
+            {
+                "name": "envoy.filters.http.ext_authz",
+                "typed_config": ext_authz_config,
+            }
+        )
+    if enable_local_ratelimit:
+        http_filters.append(
+            {
+                "name": "envoy.filters.http.local_ratelimit",
+                "typed_config": {
+                    "@type": "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit",
+                    "stat_prefix": "edge_local_ratelimit",
+                    "token_bucket": {
+                        "max_tokens": 1000000,
+                        "tokens_per_fill": 1000000,
+                        "fill_interval": "1s",
+                    },
+                    "filter_enabled": {
+                        "default_value": {"numerator": 0, "denominator": "HUNDRED"}
+                    },
+                    "filter_enforced": {
+                        "default_value": {"numerator": 0, "denominator": "HUNDRED"}
+                    },
+                },
+            }
+        )
+    http_filters.append({"name": "envoy.filters.http.router"})
+
     config_obj = {
         "static_resources": {
             "listeners": [
@@ -185,9 +241,7 @@ def render_envoy_config(
                                             "name": "edge_routes",
                                             "virtual_hosts": vhosts,
                                         },
-                                        "http_filters": [
-                                            {"name": "envoy.filters.http.router"}
-                                        ],
+                                        "http_filters": http_filters,
                                     },
                                 }
                             ]
@@ -215,8 +269,17 @@ def write_envoy_config(
     routes: list[CoreProxyRoute],
     clusters: list[CoreProxyCluster],
     config: EnvoyRenderConfig,
+    *,
+    ext_authz_config: dict | None = None,
+    enable_local_ratelimit: bool = False,
 ) -> str:
-    content = render_envoy_config(routes, clusters, config)
+    content = render_envoy_config(
+        routes,
+        clusters,
+        config,
+        ext_authz_config=ext_authz_config,
+        enable_local_ratelimit=enable_local_ratelimit,
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return content
