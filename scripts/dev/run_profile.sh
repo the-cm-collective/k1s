@@ -56,6 +56,29 @@ ensure_specs_dir() {
   mkdir -p "$dir"
 }
 
+start_docs_server() {
+  local docs_port="${AE_DOCS_PORT:-9109}"
+  local docs_bind="${DOCS_BIND:-127.0.0.1}"
+  local pid_file="$ROOT_DIR/state/docs_server.pid"
+  local docs_dir="$ROOT_DIR/docs/site"
+  local api_base="${DOCS_API_BASE:-http://127.0.0.1:${METRICS_PORT:-9108}}"
+  local dash_url="${DOCS_DASHBOARD_URL:-http://127.0.0.1:${METRICS_PORT:-9108}/dashboard}"
+
+  mkdir -p "$ROOT_DIR/state"
+  if [[ -f "$pid_file" ]]; then
+    local pid
+    pid=$(cat "$pid_file" 2>/dev/null || true)
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+    rm -f "$pid_file" || true
+  fi
+
+  DOCS_API_BASE="$api_base" DOCS_DASHBOARD_URL="$dash_url" "$PYTHON_BIN" docs/build_docs.py >/dev/null 2>&1 || true
+  nohup "$PYTHON_BIN" -m http.server "$docs_port" --bind "$docs_bind" --directory "$docs_dir" >/dev/null 2>&1 &
+  echo $! > "$pid_file"
+}
+
 write_envoy_bootstrap() {
   local path="$1"
   PYTHONPATH=src "$PYTHON_BIN" - <<PY
@@ -212,6 +235,9 @@ case "$PROFILE" in
       fi
     fi
     METRICS_PORT="${METRICS_PORT:-9108}"
+    if [[ "${CORE_DOCS:-0}" == "1" ]]; then
+      start_docs_server
+    fi
     PYTHONPATH=src exec "$PYTHON_BIN" -m ae.controller --loop --metrics-port "$METRICS_PORT" --watch
     ;;
   k1s-edge)
