@@ -46,7 +46,8 @@ def make_manifest(tmp_path: Path) -> AppManifest:
     )
 
 
-def test_projection_writes_files(tmp_path: Path):
+def test_projection_writes_files(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AE_PROJECTION_ROOT", str(tmp_path / "projections"))
     store = SQLiteStateStore(tmp_path / "state.db")
     runtime = StubRuntime()
     health = HealthManager()
