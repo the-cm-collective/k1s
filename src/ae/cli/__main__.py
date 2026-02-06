@@ -1362,12 +1362,14 @@ def main(argv: list[str] | None = None) -> int:
     reconciler = _Lazy(lambda: _ensure_context()["reconciler"])
     ingress_service = _Lazy(lambda: _ensure_context()["ingress_service"])
 
-    auth_handler = globals().get("handle_auth")
-    if auth_handler is None:
+    _auth_impl = globals().get("handle_auth")
+    if _auth_impl is None:
 
         def auth_handler(_ns: argparse.Namespace) -> int:
             print("auth command unavailable in this build")
             return 2
+    else:
+        auth_handler = lambda ns: _auth_impl(ns, args)
 
     command_handlers: dict[str, Callable[[argparse.Namespace], int]] = {
         "apply": lambda ns: handle_apply(ns, reconciler, args),
@@ -2817,7 +2819,9 @@ def _read_proc_env(pid: int) -> dict[str, str]:
     return out
 
 
-def handle_auth(args: argparse.Namespace) -> int:
+def handle_auth(
+    args: argparse.Namespace, global_args: argparse.Namespace | None = None
+) -> int:
     if args.auth_cmd == "local":
         apishim_env = Path(
             args.apishim_env
@@ -2953,6 +2957,11 @@ def handle_auth(args: argparse.Namespace) -> int:
         admin_token = secrets.token_hex(16)
         scaler_token = secrets.token_hex(16)
         read_token = secrets.token_hex(16)
+        api_server = os.getenv("AE_API_SERVER") or (
+            str(getattr(global_args, "server", ""))
+            if global_args and getattr(global_args, "server", None)
+            else None
+        )
 
         lines = [
             f"export AE_APISHIM_TOKEN={apishim_token}",
@@ -2962,6 +2971,8 @@ def handle_auth(args: argparse.Namespace) -> int:
             f"export AE_API_SCALER_TOKEN={scaler_token}",
             f"export AE_API_READ_TOKEN={read_token}",
         ]
+        if api_server:
+            lines.append(f"export AE_API_SERVER={api_server}")
         if not getattr(args, "no_mutations", False):
             lines.append("export AE_API_MUTATIONS=1")
         _write_export_lines(lines, getattr(args, "output", None))
