@@ -19,6 +19,7 @@ import time
 import signal
 import socket
 import re
+from urllib.parse import urlparse
 from collections.abc import Iterable
 from pathlib import Path
 from datetime import datetime, timezone
@@ -458,6 +459,9 @@ def _reconcile_edge_ingress(store: SQLiteStateStore, edge_renderer=None) -> None
 
     endpoints = {ep.site_id: ep for ep in store.list_site_ingress_endpoints()}
     policy_cache: dict[tuple[str, str], dict] = {}
+    forward_auth_urls = _collect_core_forward_auth_urls(store, policy_cache)
+    primary_forward_auth_url = sorted(forward_auth_urls)[0] if forward_auth_urls else None
+    multiple_forward_auth = len(forward_auth_urls) > 1
 
     for route in store.list_edge_ingress_routes():
         spec = route.spec if isinstance(route.spec, dict) else {}
@@ -504,20 +508,22 @@ def _reconcile_edge_ingress(store: SQLiteStateStore, edge_renderer=None) -> None
         policy_ref = spec.get("policyRef") if isinstance(spec.get("policyRef"), dict) else {}
         policy_name = str(policy_ref.get("name") or "").strip()
         policy_namespace = str(policy_ref.get("namespace") or route.namespace or "").strip()
-        if mode == "edge-local" and policy_name:
-            key = (policy_name, policy_namespace)
-            policy = policy_cache.get(key)
-            if policy is None:
-                record = store.get_edge_ingress_policy(
-                    name=policy_name, namespace=policy_namespace
-                )
-                policy = record.spec if record else None
-                if policy is not None:
-                    policy_cache[key] = policy
+        policy = None
+        if policy_name:
+            policy = _lookup_edge_ingress_policy(
+                store, policy_name, policy_namespace, policy_cache
+            )
             if policy is None:
                 errors.append("policy_ref_not_found")
-            elif isinstance(policy, dict):
+        if isinstance(policy, dict):
+            if mode == "edge-local":
                 policy_unsupported = _edge_local_policy_unsupported(policy)
+            elif mode in {"core-proxy", "core-to-edge-public"}:
+                errors.extend(
+                    _core_policy_errors(
+                        policy, primary_forward_auth_url, multiple_forward_auth
+                    )
+                )
 
         status = {
             "valid": len(errors) == 0,
@@ -576,6 +582,102 @@ def _edge_local_policy_unsupported(spec: dict) -> list[str]:
 
     # websockets, timeouts, headers are allowed as-is
     return sorted(set(unsupported))
+
+
+def _lookup_edge_ingress_policy(
+    store: SQLiteStateStore,
+    policy_name: str,
+    policy_namespace: str,
+    cache: dict[tuple[str, str], dict],
+) -> dict | None:
+    key = (policy_name, policy_namespace)
+    policy = cache.get(key)
+    if policy is not None:
+        return policy
+    record = store.get_edge_ingress_policy(name=policy_name, namespace=policy_namespace)
+    policy = record.spec if record else None
+    if isinstance(policy, dict):
+        cache[key] = policy
+        return policy
+    return None
+
+
+def _collect_core_forward_auth_urls(
+    store: SQLiteStateStore, cache: dict[tuple[str, str], dict]
+) -> set[str]:
+    urls: set[str] = set()
+    for route in store.list_edge_ingress_routes():
+        spec = route.spec if isinstance(route.spec, dict) else {}
+        exposure = spec.get("exposure") if isinstance(spec.get("exposure"), dict) else {}
+        mode = str(exposure.get("mode") or "").strip().lower()
+        if mode not in {"core-proxy", "core-to-edge-public"}:
+            continue
+        policy_ref = spec.get("policyRef") if isinstance(spec.get("policyRef"), dict) else {}
+        policy_name = str(policy_ref.get("name") or "").strip()
+        policy_namespace = str(policy_ref.get("namespace") or route.namespace or "").strip()
+        if not policy_name:
+            continue
+        policy = _lookup_edge_ingress_policy(store, policy_name, policy_namespace, cache)
+        if not isinstance(policy, dict):
+            continue
+        if _policy_auth_mode(policy) != "forward-auth":
+            continue
+        raw_url = _policy_forward_auth_raw(policy)
+        normalized = _normalize_forward_auth_url(raw_url)
+        if normalized:
+            urls.add(normalized)
+    return urls
+
+
+def _core_policy_errors(
+    policy: dict, primary_forward_auth_url: str | None, multiple_forward_auth: bool
+) -> list[str]:
+    errors: list[str] = []
+    mode = _policy_auth_mode(policy)
+    if mode and mode not in {"none", "forward-auth"}:
+        errors.append(f"unsupported_auth_mode:{mode}")
+    if mode == "forward-auth":
+        raw_url = _policy_forward_auth_raw(policy)
+        if not raw_url:
+            errors.append("forward_auth_missing_url")
+            return errors
+        normalized = _normalize_forward_auth_url(raw_url)
+        if normalized is None:
+            errors.append("forward_auth_invalid_url")
+            return errors
+        if multiple_forward_auth and primary_forward_auth_url:
+            if normalized != primary_forward_auth_url:
+                errors.append("forward_auth_url_mismatch")
+    return errors
+
+
+def _policy_auth_mode(policy: dict) -> str:
+    auth = policy.get("auth") if isinstance(policy.get("auth"), dict) else {}
+    return str(auth.get("mode") or "").strip().lower()
+
+
+def _policy_forward_auth_raw(policy: dict) -> str:
+    auth = policy.get("auth") if isinstance(policy.get("auth"), dict) else {}
+    forward = auth.get("forwardAuth") if isinstance(auth.get("forwardAuth"), dict) else {}
+    return str(forward.get("url") or "").strip()
+
+
+def _normalize_forward_auth_url(raw_url: str) -> str | None:
+    if not raw_url:
+        return None
+    candidate = raw_url
+    if "://" not in candidate:
+        candidate = f"http://{candidate}"
+    parsed = urlparse(candidate)
+    scheme = (parsed.scheme or "http").lower()
+    if scheme not in {"http", "https"}:
+        return None
+    host = parsed.hostname or ""
+    if not host:
+        return None
+    port = parsed.port or (443 if scheme == "https" else 80)
+    path = parsed.path or ""
+    return f"{scheme}://{host}:{port}{path}"
 
 
 def _env_true(name: str, default: str = "0") -> bool:

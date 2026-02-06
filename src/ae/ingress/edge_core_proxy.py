@@ -56,12 +56,17 @@ class EdgeCoreProxyRenderer:
 
     def _render_locked(self) -> None:
         endpoints = self._store.list_site_ingress_endpoints()
-        routes, clusters = _build_routes_and_clusters(
+        routes, clusters, ext_authz_config, enable_local_ratelimit = _build_routes_and_clusters(
             self._store, endpoints, self._config
         )
         envoy_cfg = EnvoyRenderConfig(domain_suffix=self._config.site_domain_suffix)
         envoy_text = write_envoy_config(
-            self._config.envoy_config_path, routes, clusters, envoy_cfg
+            self._config.envoy_config_path,
+            routes,
+            clusters,
+            envoy_cfg,
+            ext_authz_config=ext_authz_config,
+            enable_local_ratelimit=enable_local_ratelimit,
         )
         rathole_text = write_rathole_server(
             self._config.rathole_server_path,
@@ -140,12 +145,14 @@ def _build_routes_and_clusters(
     store: SQLiteStateStore,
     endpoints: list[SiteIngressListItem],
     config: EdgeCoreProxyConfig,
-) -> tuple[list[CoreProxyRoute], list[CoreProxyCluster]]:
+) -> tuple[list[CoreProxyRoute], list[CoreProxyCluster], dict | None, bool]:
     routes: list[CoreProxyRoute] = []
     clusters: dict[str, CoreProxyCluster] = {}
     endpoint_map = {ep.site_id: ep for ep in endpoints}
     domain_suffix = config.site_domain_suffix.strip(".") or "edge.local"
     policy_cache: dict[tuple[str, str], dict] = {}
+    forward_auth_url = _select_forward_auth_url(store, policy_cache)
+    enable_local_ratelimit = False
 
     # Base per-site host for core-proxy mode.
     for ep in endpoints:
@@ -164,6 +171,8 @@ def _build_routes_and_clusters(
                 host=f"{ep.site_id}.{domain_suffix}",
                 path_prefix="/",
                 cluster=cluster_name,
+                ext_authz_enabled=False,
+                local_rate_limit=None,
             )
         )
 
@@ -183,6 +192,15 @@ def _build_routes_and_clusters(
             continue
         policy_spec = _policy_for_route(record, store, policy_cache)
         route_opts = _policy_route_options(policy_spec) if policy_spec else {}
+        local_rate_limit = route_opts.get("local_rate_limit")
+        if local_rate_limit:
+            enable_local_ratelimit = True
+        ext_authz_enabled = False
+        if forward_auth_url and policy_spec:
+            route_forward_auth = _policy_forward_auth_url(policy_spec)
+            ext_authz_enabled = bool(
+                route_forward_auth and route_forward_auth == forward_auth_url
+            )
         if mode == "core-proxy":
             ep = endpoint_map.get(site_id)
             if ep is None or ep.core_proxy_port is None:
@@ -207,6 +225,8 @@ def _build_routes_and_clusters(
                         response_headers_remove=route_opts.get("response_headers_remove", []),
                         timeout_ms=route_opts.get("timeout_ms"),
                         idle_timeout_ms=route_opts.get("idle_timeout_ms"),
+                        ext_authz_enabled=ext_authz_enabled,
+                        local_rate_limit=local_rate_limit,
                     )
                 )
         elif mode == "core-to-edge-public":
@@ -238,10 +258,19 @@ def _build_routes_and_clusters(
                         response_headers_remove=route_opts.get("response_headers_remove", []),
                         timeout_ms=route_opts.get("timeout_ms"),
                         idle_timeout_ms=route_opts.get("idle_timeout_ms"),
+                        ext_authz_enabled=ext_authz_enabled,
+                        local_rate_limit=local_rate_limit,
                     )
                 )
 
-    return routes, list(clusters.values())
+    ext_authz_config = None
+    if forward_auth_url:
+        auth_cluster = _forward_auth_cluster(forward_auth_url)
+        if auth_cluster is not None:
+            clusters.setdefault(auth_cluster.name, auth_cluster)
+            ext_authz_config = _forward_auth_ext_authz_config(forward_auth_url)
+
+    return routes, list(clusters.values()), ext_authz_config, enable_local_ratelimit
 
 
 def _route_paths(spec: dict) -> list[str]:
@@ -327,7 +356,137 @@ def _policy_route_options(policy: dict) -> dict:
         opts["timeout_ms"] = timeout_ms
     if idle_timeout_ms:
         opts["idle_timeout_ms"] = idle_timeout_ms
+    local_rate_limit = _policy_rate_limit(policy)
+    if local_rate_limit:
+        opts["local_rate_limit"] = local_rate_limit
     return opts
+
+
+def _select_forward_auth_url(
+    store: SQLiteStateStore, cache: dict[tuple[str, str], dict]
+) -> str | None:
+    urls: set[str] = set()
+    for record in store.list_edge_ingress_routes():
+        spec = record.spec if isinstance(record.spec, dict) else {}
+        exposure = spec.get("exposure") if isinstance(spec.get("exposure"), dict) else {}
+        mode = str(exposure.get("mode") or "").strip().lower()
+        if mode not in {"core-proxy", "core-to-edge-public"}:
+            continue
+        policy_spec = _policy_for_route(record, store, cache)
+        if not policy_spec:
+            continue
+        url = _policy_forward_auth_url(policy_spec)
+        if url:
+            urls.add(url)
+    if not urls:
+        return None
+    return sorted(urls)[0]
+
+
+def _policy_forward_auth_url(policy: dict) -> str | None:
+    auth = policy.get("auth") if isinstance(policy.get("auth"), dict) else {}
+    mode = str(auth.get("mode") or "").strip().lower()
+    if not mode or mode == "none":
+        return None
+    if mode != "forward-auth":
+        return None
+    forward = auth.get("forwardAuth") if isinstance(auth.get("forwardAuth"), dict) else {}
+    raw_url = str(forward.get("url") or "").strip()
+    return _normalize_forward_auth_url(raw_url)
+
+
+def _policy_rate_limit(policy: dict) -> dict | None:
+    waf = policy.get("waf") if isinstance(policy.get("waf"), dict) else {}
+    mode = str(waf.get("mode") or "").strip().lower()
+    if mode and mode != "basic":
+        return None
+    basic = waf.get("basic") if isinstance(waf.get("basic"), dict) else {}
+    rate = basic.get("rateLimit") if isinstance(basic.get("rateLimit"), dict) else {}
+    rps = _coerce_int(rate.get("rps"))
+    burst = _coerce_int(rate.get("burst"))
+    if rps is None and burst is None:
+        return None
+    if rps is None:
+        rps = burst
+    if burst is None:
+        burst = rps
+    if rps is None or burst is None:
+        return None
+    if rps <= 0 or burst <= 0:
+        return None
+    return {
+        "max_tokens": burst,
+        "tokens_per_fill": rps,
+        "fill_interval": "1s",
+    }
+
+
+def _normalize_forward_auth_url(raw_url: str) -> str | None:
+    if not raw_url:
+        return None
+    candidate = raw_url
+    if "://" not in candidate:
+        candidate = f"http://{candidate}"
+    parsed = urlparse(candidate)
+    scheme = (parsed.scheme or "http").lower()
+    if scheme not in {"http", "https"}:
+        return None
+    host = parsed.hostname or ""
+    if not host:
+        return None
+    port = parsed.port or (443 if scheme == "https" else 80)
+    path = parsed.path or ""
+    return f"{scheme}://{host}:{port}{path}"
+
+
+def _forward_auth_cluster(url: str) -> CoreProxyCluster | None:
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "http").lower()
+    host = parsed.hostname or ""
+    if not host:
+        return None
+    port = parsed.port or (443 if scheme == "https" else 80)
+    use_tls = scheme == "https"
+    return CoreProxyCluster(
+        name="auth_forward",
+        endpoints=[(host, port)],
+        use_tls=use_tls,
+        sni=host if use_tls else None,
+    )
+
+
+def _forward_auth_ext_authz_config(url: str) -> dict | None:
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "http").lower()
+    host = parsed.hostname or ""
+    if not host:
+        return None
+    port = parsed.port or (443 if scheme == "https" else 80)
+    path_prefix = parsed.path or ""
+    if path_prefix == "/":
+        path_prefix = ""
+    config: dict = {
+        "@type": "type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz",
+        "transport_api_version": "V3",
+        "failure_mode_allow": False,
+        "http_service": {
+            "server_uri": {
+                "uri": f"{scheme}://{host}:{port}",
+                "cluster": "auth_forward",
+                "timeout": "2s",
+            },
+            "authorization_request": {
+                "allowed_headers": {"patterns": [{"regex": ".*"}]}
+            },
+            "authorization_response": {
+                "allowed_upstream_headers": {"patterns": [{"regex": ".*"}]},
+                "allowed_client_headers": {"patterns": [{"regex": ".*"}]},
+            },
+        },
+    }
+    if path_prefix:
+        config["http_service"]["path_prefix"] = path_prefix
+    return config
 
 
 def _header_add(section: dict) -> list[tuple[str, str]]:
