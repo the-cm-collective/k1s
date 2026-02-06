@@ -120,8 +120,47 @@ AE_CONTAINER_CLI=podman make k1s-core
 python -m ae.cli apply -f specs/examples/echo.yaml
 ```
 
+## Manual smoke test (profiles)
+
+**dev-min**
+1. `CORE_DOCS=1 make dev-min` (optional TLS: `CORE_CADDY=1 make dev-min`)
+2. `python -m ae.cli apply -f specs/examples/echo.yaml`
+3. `python -m ae.cli status --verbose` (expect 1 ready app)
+4. Open `http://127.0.0.1:9108/dashboard` and `http://127.0.0.1:9109/playground/`
+5. `make down`
+
+**dev-etcd**
+1. `CORE_DOCS=1 make dev-etcd` (optional TLS: `CORE_CADDY=1 make dev-etcd`)
+2. `python -m ae.cli apply -f specs/examples/echo.yaml`
+3. `python -m ae.cli status --verbose` and `python -m ae.cli metrics`
+4. Open `http://127.0.0.1:9108/dashboard` and `http://127.0.0.1:9109/playground/`
+5. `make down`
+
+**k1s-core + k1s-edge**
+1. Terminal A: `CORE_DOCS=1 make k1s-core` (optional TLS: `CORE_CADDY=1 make k1s-core`)
+2. Terminal B: `EDGE_PROFILE=k1s-core make k1s-edge` (or `make k1s-edge-core`)
+3. `python -m ae.cli apply -f specs/examples/echo.yaml`
+4. `python -m ae.cli status --verbose` and `python -m ae.cli events echo`
+5. Open `http://127.0.0.1:9108/dashboard` and `http://127.0.0.1:9109/playground/`
+6. `make down`
+
 ## Stop everything
 
 ```
 make down
 ```
+
+<details>
+<summary><strong>Ingress Envoy Test Coverage</strong></summary>
+
+Unit test (config render only):
+- `tests/unit/test_envoy_core_local_ingress.py`
+- `PYTHONPATH=src pytest -q tests/unit/test_envoy_core_local_ingress.py`
+
+Opt‑in integration test (TLS handshake):
+- `tests/integration/test_envoy_core_local_ingress_tls.py`
+- `AE_E2E_ENVOY_TLS=1 PYTHONPATH=src pytest -q tests/integration/test_envoy_core_local_ingress_tls.py`
+- Requires `docker`/`podman` and `openssl`
+- Uses the local Caddy CA if present (`state/caddy-data/.../root.crt`); otherwise generates a temporary CA.
+- Envoy image can be overridden with `AE_ENVOY_IMAGE`.
+</details>

@@ -150,11 +150,14 @@ def render_envoy_config(
         if isinstance(obj, dict):
             lines = []
             for key, value in obj.items():
+                key_text = str(key)
+                if any(ch in key_text for ch in ["@", ":", "{", "}", "[", "]", ",", "&", "*", "#", "?", "|", "-", "<", ">", "=", "!", "%", "\\", "\"", "'"]) or key_text.strip() != key_text:
+                    key_text = f'"{key_text}"'
                 if isinstance(value, (dict, list)):
-                    lines.append(f"{pad}{key}:")
+                    lines.append(f"{pad}{key_text}:")
                     lines.append(_yaml(value, indent + 2))
                 else:
-                    lines.append(f"{pad}{key}: {value}")
+                    lines.append(f"{pad}{key_text}: {value}")
             return "\n".join(lines)
         if isinstance(obj, list):
             lines = []
@@ -241,7 +244,14 @@ def render_envoy_config(
                 },
             }
         )
-    http_filters.append({"name": "envoy.filters.http.router"})
+    http_filters.append(
+        {
+            "name": "envoy.filters.http.router",
+            "typed_config": {
+                "@type": "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"
+            },
+        }
+    )
 
     listeners = [
         {
