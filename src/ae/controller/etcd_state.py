@@ -386,6 +386,7 @@ class EtcdStateStore(SQLiteStateStore):
                 "ready": bool(pod.ready),
                 "live": bool(pod.live),
                 "status": getattr(state, "status", "unknown"),
+                "endpoint": getattr(state, "endpoint", None),
                 "readiness_message": pod.readiness_message,
                 "liveness_message": pod.liveness_message,
                 "exit_code": getattr(state, "exit_code", None),
@@ -486,6 +487,7 @@ class EtcdStateStore(SQLiteStateStore):
                     ready=bool(rec.get("ready", False)),
                     live=bool(rec.get("live", False)),
                     status=str(rec.get("status", "unknown")),
+                    endpoint=rec.get("endpoint"),
                     readiness_message=str(rec.get("readiness_message", "")),
                     liveness_message=str(rec.get("liveness_message", "")),
                     exit_code=rec.get("exit_code"),
@@ -1067,6 +1069,27 @@ class EtcdStateStore(SQLiteStateStore):
                 )
             )
         return items
+
+    def get_edge_ingress_route(
+        self, *, name: str, namespace: str | None = None
+    ) -> EdgeIngressRouteRecord | None:
+        key = self._k("ingress", "routes", namespace or "default", name)
+        rec, _ = self._get_json(key)
+        if not rec:
+            return None
+        created = _dt_from_iso(rec.get("created_at"), default=_now()) or _now()
+        updated = _dt_from_iso(rec.get("updated_at"), default=_now()) or _now()
+        return EdgeIngressRouteRecord(
+            name=str(rec.get("name", name)),
+            namespace=str(rec.get("namespace", namespace or "default")),
+            site_id=str(rec.get("site_id", "")),
+            policy_name=rec.get("policy_name"),
+            policy_namespace=rec.get("policy_namespace"),
+            spec=rec.get("spec") or {},
+            status=rec.get("status"),
+            created_at=created,
+            updated_at=updated,
+        )
 
     def list_edge_ingress_routes_for_site(self, site_id: str) -> list[EdgeIngressRouteRecord]:
         return [r for r in self.list_edge_ingress_routes() if r.site_id == site_id]

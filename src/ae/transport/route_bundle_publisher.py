@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from ae.controller.state import SQLiteStateStore
+from ae.ingress.edge_docs import normalize_policy_doc, normalize_route_doc
 from ae.transport.nats_client import NatsClient, NatsClientError, NatsMessage
 from ae.transport.subjects import hub_route_ack_subject, hub_route_bundle_subject
 
@@ -142,7 +143,7 @@ def _collect_bundle_payload(
     policies: list[dict] = []
     policy_keys: set[tuple[str, str]] = set()
     for record in store.list_edge_ingress_routes_for_site(site_id):
-        doc = record.spec if isinstance(record.spec, dict) else {}
+        doc = normalize_route_doc(record)
         if not _route_is_edge_local(doc):
             continue
         routes.append(doc)
@@ -151,8 +152,8 @@ def _collect_bundle_payload(
             policy_keys.add((record.policy_name, policy_ns))
     for name, namespace in sorted(policy_keys):
         policy = store.get_edge_ingress_policy(name=name, namespace=namespace)
-        if policy and isinstance(policy.spec, dict):
-            policies.append(policy.spec)
+        if policy:
+            policies.append(normalize_policy_doc(policy))
         else:
             LOGGER.debug(
                 "route bundle missing policy name=%s namespace=%s", name, namespace

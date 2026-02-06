@@ -4,6 +4,7 @@
                     pod_name TEXT NOT NULL,
                     ready INTEGER NOT NULL,
                     live INTEGER NOT NULL,
+                    endpoint TEXT,
                     status TEXT NOT NULL,
                     readiness_message TEXT NOT NULL,
                     liveness_message TEXT NOT NULL,

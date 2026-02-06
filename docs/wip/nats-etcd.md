@@ -981,6 +981,11 @@ Non-goals (MVP):
 - Core ingress terminates TLS and enforces WAF/auth.
 - Edge ingress is reachable from core (public IP/LB/DMZ).
 
+**core-local (core-only)**
+- Browser → Core Ingress → Service/Pod (core).
+- No tunnel or edge placement required.
+- Core ingress routes directly to core-local service endpoints.
+
 **edge-local (private)**
 - Client → Edge Ingress (LAN/private) → Service/Pod.
 - Core ingress is not in the request path.
@@ -1003,9 +1008,10 @@ spec:
         name: app-svc
         port: 8080
   exposure:
-    mode: core-proxy | core-to-edge-public | edge-local
+    mode: core-proxy | core-to-edge-public | edge-local | core-local
     placement:
       site: sfo-edge-01
+    # placement is optional for core-local
     tls:
       mode: terminate-core | passthrough | terminate-edge
       terminateCore:
