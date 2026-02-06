@@ -1,0 +1,23 @@
+apiVersion: k1s.io/v1
+kind: EdgeIngressRoute
+metadata:
+  name: app-web
+  namespace: default
+spec:
+  host: app.example.com
+  paths:
+    - path: /
+      serviceRef:
+        namespace: default
+        name: app-svc
+        port: 8080
+  exposure:
+    mode: edge-local
+    placement:
+      site: sfo-edge-01
+    tls:
+      mode: terminate-core
+      terminateCore:
+        redirectHttpToHttps: true
+  policyRef:
+    name: app-web-policy

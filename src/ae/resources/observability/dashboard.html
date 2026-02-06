@@ -2066,6 +2066,50 @@ Connection: close
           var api = sys.api || null;
           if (api) { pills.push({k:'API', v: (api.ok ? ('up :'+String(api.port)) : 'down')}); }
         } catch(e){}
+        try {
+          var t = sys.transport || {};
+          if (t && t.backend) {
+            var label = String(t.backend || '-');
+            if (t.js_domain) { label += ' (' + String(t.js_domain) + ')'; }
+            pills.push({k:'Transport', v: label});
+          }
+          var sites = (t && t.sites) ? t.sites : null;
+          if (sites) {
+            var seen = Number(sites.seen || 0);
+            var stale = Number(sites.stale || 0);
+            var fresh = (sites.fresh != null) ? Number(sites.fresh || 0) : Math.max(0, seen - stale);
+            if (seen || stale) {
+              pills.push({k:'Sites', v: String(fresh) + ' / ' + String(seen)});
+              if (stale > 0) { pills.push({k:'Sites Stale', v: String(stale)}); }
+            }
+            if (sites.last_seen_age_s != null) {
+              pills.push({k:'Last Site Seen', v: Number(sites.last_seen_age_s).toFixed(1) + 's'});
+            }
+          }
+          var outbox = (t && t.outbox) ? t.outbox : null;
+          if (outbox) {
+            if (outbox.ok_total != null) { pills.push({k:'Outbox OK', v: String(outbox.ok_total)}); }
+            if (outbox.fail_total != null) { pills.push({k:'Outbox Fail', v: String(outbox.fail_total)}); }
+          }
+          var js = (t && t.js) ? t.js : null;
+          if (js) {
+            if (js.streams != null) { pills.push({k:'JS Streams', v: String(js.streams)}); }
+            if (js.consumers != null) { pills.push({k:'JS Consumers', v: String(js.consumers)}); }
+            if (js.pending != null) { pills.push({k:'JS Pending', v: String(js.pending)}); }
+            if (js.ack_pending != null) { pills.push({k:'JS Ack Pending', v: String(js.ack_pending)}); }
+          }
+          var gw = (t && t.gateway) ? t.gateway : null;
+          if (gw) {
+            if (gw.work_nak_total != null) { pills.push({k:'GW NAK', v: String(gw.work_nak_total)}); }
+            if (gw.work_stale_total != null) { pills.push({k:'GW Stale', v: String(gw.work_stale_total)}); }
+          }
+          var routes = (t && t.routes) ? t.routes : null;
+          if (routes) {
+            if (routes.bundle_ok_total != null) { pills.push({k:'Route OK', v: String(routes.bundle_ok_total)}); }
+            if (routes.bundle_fail_total != null) { pills.push({k:'Route Fail', v: String(routes.bundle_fail_total)}); }
+            if (routes.last_latency_s != null) { pills.push({k:'Route Latency', v: Number(routes.last_latency_s).toFixed(2) + 's'}); }
+          }
+        } catch(e){}
         el.innerHTML = pills.map(function(p){ return '<div class="pill" style="background:#0001">'+escapeHtml(p.k)+': <strong>'+escapeHtml(p.v)+'</strong></div>'; }).join('');
       }
 

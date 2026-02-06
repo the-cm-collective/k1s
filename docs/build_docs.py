@@ -2482,6 +2482,7 @@ def main() -> None:
             "title": "Platform Guides",
             "desc": "Storage, rollouts, and runtime configuration guides.",
             "links": [
+                ("Runtime Profiles", "runtime-profiles.html", False, False),
                 ("Configs & Secrets", "configs-secrets.html", False, False),
                 ("Rollouts", "rollouts.html", False, False),
                 ("Storage", "storage.html", False, False),

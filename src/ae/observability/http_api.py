@@ -3054,7 +3054,102 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             crash = {app: (float(until) > now) for app, until in list(_APP_CRASHLOOP_UNTIL.items())}
         except Exception:
             crash = {}
+        # Transport snapshot (best-effort, derived from in-process counters)
+        transport: dict = {}
+        try:
+            backend = (os.getenv("AE_TRANSPORT_BACKEND") or "http").strip() or "http"
+            transport["backend"] = backend
+            js_domain = (os.getenv("AE_JS_DOMAIN") or "").strip()
+            if js_domain:
+                transport["js_domain"] = js_domain
+            transport["outbox"] = {
+                "ok_total": int(_OUTBOX_PUBLISH_OK),
+                "fail_total": int(_OUTBOX_PUBLISH_FAIL),
+            }
+            # Site telemetry summary
+            try:
+                grace = int(os.getenv("AE_SITE_NOTREADY_AFTER", "90") or 90)
+            except Exception:
+                grace = 90
+            now_ts = time.time()
+            seen = len(_SITE_LAST_SEEN)
+            stale = 0
+            last_seen_age = None
+            for last_ts in list(_SITE_LAST_SEEN.values()):
+                try:
+                    age = float(now_ts) - float(last_ts)
+                except Exception:
+                    continue
+                if last_seen_age is None or age < last_seen_age:
+                    last_seen_age = age
+                if age > grace:
+                    stale += 1
+            transport["sites"] = {
+                "seen": int(seen),
+                "stale": int(stale),
+                "fresh": int(max(0, seen - stale)),
+                "last_seen_age_s": last_seen_age,
+            }
+            # JetStream summary (if any stats are present)
+            if _JS_STREAM_STATS or _JS_CONSUMER_STATS:
+                js_pending = 0.0
+                js_ack_pending = 0.0
+                js_redelivered = 0.0
+                js_waiting = 0.0
+                for stats in _JS_CONSUMER_STATS.values():
+                    js_pending += float(stats.get("pending", 0.0) or 0.0)
+                    js_ack_pending += float(stats.get("ack_pending", 0.0) or 0.0)
+                    js_redelivered += float(stats.get("redelivered", 0.0) or 0.0)
+                    js_waiting += float(stats.get("waiting", 0.0) or 0.0)
+                transport["js"] = {
+                    "streams": int(len(_JS_STREAM_STATS)),
+                    "consumers": int(len(_JS_CONSUMER_STATS)),
+                    "pending": js_pending,
+                    "ack_pending": js_ack_pending,
+                    "redelivered": js_redelivered,
+                    "waiting": js_waiting,
+                }
+            # Gateway work summary (NAKs, stale work)
+            if _GATEWAY_WORK_METRICS:
+                gw_nak = 0.0
+                gw_stale = 0.0
+                for stats in _GATEWAY_WORK_METRICS.values():
+                    gw_nak += float(stats.get("work_nak_total", 0.0) or 0.0)
+                    gw_stale += float(stats.get("work_stale_total", 0.0) or 0.0)
+                transport["gateway"] = {
+                    "work_nak_total": gw_nak,
+                    "work_stale_total": gw_stale,
+                    "sites": int(len(_GATEWAY_WORK_METRICS)),
+                }
+            # Route bundle apply summary
+            if _ROUTE_BUNDLE_METRICS:
+                ok_total = 0.0
+                fail_total = 0.0
+                last_latency = None
+                for stats in _ROUTE_BUNDLE_METRICS.values():
+                    ok_total += float(stats.get("apply_ok_total", 0.0) or 0.0)
+                    fail_total += float(stats.get("apply_fail_total", 0.0) or 0.0)
+                    latency = stats.get("last_latency_s")
+                    if latency is None:
+                        continue
+                    try:
+                        lat_val = float(latency)
+                    except Exception:
+                        continue
+                    if last_latency is None or lat_val > last_latency:
+                        last_latency = lat_val
+                transport["routes"] = {
+                    "bundle_ok_total": ok_total,
+                    "bundle_fail_total": fail_total,
+                    "last_latency_s": last_latency,
+                    "sites": int(len(_ROUTE_BUNDLE_METRICS)),
+                }
+        except Exception:
+            transport = {}
+
         payload = {"controller": ctrl, "rbac": rbac, "crashloop": crash, **(extra or {})}
+        if transport:
+            payload["transport"] = transport
         self._json_ok(payload)
 
     def _handle_ui_features(self) -> None:
