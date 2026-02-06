@@ -55,7 +55,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--log-level", default=None, help="Override log level (DEBUG/INFO/WARNING/ERROR)"
     )
     parser.add_argument(
-        "--server", default=None, help="Remote API base URL (e.g. http://127.0.0.1:9108)"
+        "--server",
+        default=os.getenv("AE_API_SERVER") or None,
+        help="Remote API base URL (e.g. http://127.0.0.1:9108)",
     )
     parser.add_argument("--token", default=None, help="Bearer token for remote API auth")
     parser.add_argument(
@@ -2819,15 +2821,107 @@ def _read_proc_env(pid: int) -> dict[str, str]:
     return out
 
 
+def _profile_env_from_state_db(state_db: str | None) -> Path | None:
+    if not state_db:
+        return None
+    try:
+        db_path = Path(state_db).expanduser()
+        if not db_path.is_absolute():
+            db_path = Path.cwd() / db_path
+        profile_dir = db_path.parent
+        if profile_dir.parent.name != "profiles":
+            return None
+        candidate = profile_dir / "apishim.env"
+        return candidate if candidate.exists() else None
+    except Exception:
+        return None
+
+
+def _profile_state_db_from_env(apishim_env: Path | None) -> Path | None:
+    if not apishim_env:
+        return None
+    try:
+        profile_dir = apishim_env.expanduser().parent
+        if profile_dir.parent.name != "profiles":
+            return None
+        return profile_dir / "controller.db"
+    except Exception:
+        return None
+
+
+def _profile_name_from_env(apishim_env: Path | None) -> str | None:
+    if not apishim_env:
+        return None
+    try:
+        profile_dir = apishim_env.expanduser().parent
+        if profile_dir.parent.name != "profiles":
+            return None
+        return profile_dir.name
+    except Exception:
+        return None
+
+
+def _profile_etcd_defaults(profile_name: str | None) -> dict[str, str]:
+    if not profile_name:
+        return {}
+    if profile_name in {"dev-etcd", "k1s-core"}:
+        return {
+            "AE_STATE_BACKEND": "etcd",
+            "AE_ETCD_ENDPOINTS": "http://127.0.0.1:2379",
+            "AE_ETCD_PREFIX": f"k1s/profiles/{profile_name}",
+        }
+    return {}
+
+
+def _latest_profile_apishim_env(root: Path) -> Path | None:
+    try:
+        envs = [p for p in root.glob("*/apishim.env") if p.is_file()]
+    except Exception:
+        return None
+    if not envs:
+        return None
+    try:
+        envs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    except Exception:
+        return envs[0]
+    return envs[0]
+
+
+def _detect_apishim_env(
+    explicit: Path | None, controller_env: Path, proc_env: dict[str, str] | None = None
+) -> Path:
+    if explicit:
+        return explicit
+    env_override = os.getenv("APISHIM_ENV_FILE")
+    if env_override:
+        return Path(env_override)
+
+    state_db = os.getenv("AE_STATE_DB")
+    candidate = _profile_env_from_state_db(state_db)
+    if candidate:
+        return candidate
+
+    controller_state_db = _read_env_file_var(controller_env, "AE_STATE_DB")
+    candidate = _profile_env_from_state_db(controller_state_db)
+    if candidate:
+        return candidate
+
+    if proc_env:
+        candidate = _profile_env_from_state_db(proc_env.get("AE_APISHIM_DB"))
+        if candidate:
+            return candidate
+
+    root = Path("state/profiles")
+    latest = _latest_profile_apishim_env(root)
+    if latest:
+        return latest
+    return Path("state/profiles/labs/apishim.env")
+
+
 def handle_auth(
     args: argparse.Namespace, global_args: argparse.Namespace | None = None
 ) -> int:
     if args.auth_cmd == "local":
-        apishim_env = Path(
-            args.apishim_env
-            if args.apishim_env
-            else os.getenv("APISHIM_ENV_FILE", "state/profiles/labs/apishim.env")
-        )
         controller_env = Path(
             args.controller_env
             if args.controller_env
@@ -2855,6 +2949,20 @@ def handle_auth(
             if pid_val > 0:
                 proc_env = _read_proc_env(pid_val)
 
+        apishim_env = _detect_apishim_env(
+            args.apishim_env if args.apishim_env else None, controller_env, proc_env
+        )
+        profile_state_db_path = _profile_state_db_from_env(apishim_env)
+        profile_state_db = None
+        if profile_state_db_path:
+            try:
+                if profile_state_db_path.exists():
+                    profile_state_db = str(profile_state_db_path)
+            except Exception:
+                profile_state_db = None
+        profile_name = _profile_name_from_env(apishim_env)
+        profile_etcd = _profile_etcd_defaults(profile_name)
+
         apishim_token = pick(
             proc_env.get("AE_APISHIM_TOKEN"),
             _read_env_file_var(apishim_env, "AE_APISHIM_TOKEN"),
@@ -2881,11 +2989,13 @@ def handle_auth(
             os.getenv("AE_APISHIM_SESSION_SECRET"),
         )
         admin_token = pick(
+            proc_env.get("AE_API_ADMIN_TOKEN"),
             _read_env_file_var(apishim_env, "AE_API_ADMIN_TOKEN"),
             _read_env_file_var(controller_env, "AE_API_ADMIN_TOKEN"),
             os.getenv("AE_API_ADMIN_TOKEN"),
         )
         labs_token = pick(
+            proc_env.get("AE_LABS_TOKEN"),
             _read_env_file_var(apishim_env, "AE_LABS_TOKEN"),
             _read_env_file_var(controller_env, "AE_LABS_TOKEN"),
             os.getenv("AE_LABS_TOKEN"),
@@ -2899,11 +3009,27 @@ def handle_auth(
             os.getenv("AE_API_READ_TOKEN"),
         )
         state_db = pick(
+            profile_state_db,
             _read_env_file_var(controller_env, "AE_STATE_DB"),
             os.getenv("AE_STATE_DB"),
         )
+        state_backend = pick(
+            profile_etcd.get("AE_STATE_BACKEND"),
+            _read_env_file_var(controller_env, "AE_STATE_BACKEND"),
+            os.getenv("AE_STATE_BACKEND"),
+        )
+        etcd_endpoints = pick(
+            profile_etcd.get("AE_ETCD_ENDPOINTS"),
+            _read_env_file_var(controller_env, "AE_ETCD_ENDPOINTS"),
+            os.getenv("AE_ETCD_ENDPOINTS"),
+        )
+        etcd_prefix = pick(
+            profile_etcd.get("AE_ETCD_PREFIX"),
+            _read_env_file_var(controller_env, "AE_ETCD_PREFIX"),
+            os.getenv("AE_ETCD_PREFIX"),
+        )
 
-        server = args.server or os.getenv("AE_APISHIM_SERVER")
+        server = args.server or os.getenv("AE_APISHIM_SERVER") or proc_env.get("AE_APISHIM_SERVER")
         if not server:
             server = _read_env_file_var(controller_env, "AE_APISHIM_SERVER")
         if not server:
@@ -2943,6 +3069,12 @@ def handle_auth(
             lines.append(f"export AE_API_READ_TOKEN={read_token}")
         if server:
             lines.append(f"export AE_APISHIM_SERVER={server}")
+        if state_backend:
+            lines.append(f"export AE_STATE_BACKEND={state_backend}")
+        if etcd_endpoints:
+            lines.append(f"export AE_ETCD_ENDPOINTS={etcd_endpoints}")
+        if etcd_prefix:
+            lines.append(f"export AE_ETCD_PREFIX={etcd_prefix}")
         if state_db:
             lines.append(f"export AE_STATE_DB={state_db}")
         _write_export_lines(lines, getattr(args, "output", None))

@@ -643,6 +643,8 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
     STACK_COMPOSE_DOWN=("$STACK_BIN_DOWN" compose)
     log "Stopping dev ${STACK_BIN_DOWN} compose stack (caddy, prometheus)"
     "${STACK_COMPOSE_DOWN[@]}" "${DEV_COMPOSE_FILES_WITH_CACHE[@]}" down || true
+    log "Stopping ${STACK_BIN_DOWN} NATS/etcd stack (nats-hub, nats-edge, etcd)"
+    "${STACK_COMPOSE_DOWN[@]}" -f ops/dev/docker-compose.nats-etcd.yaml down || true
     log "Stopping ${STACK_BIN_DOWN} labs stacks (labs-aio, labs-compose)"
     "${STACK_COMPOSE_DOWN[@]}" -f ops/dev/labs-aio.yaml down || true
     "${STACK_COMPOSE_DOWN[@]}" -f ops/dev/labs-compose.yaml down || true

@@ -118,6 +118,89 @@ EOF
     caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true
 }
 
+is_truthy() {
+  case "${1:-}" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+port_open() {
+  local host="$1"
+  local port="$2"
+  "$PYTHON_BIN" - <<'PY' "$host" "$port"
+import socket, sys
+host = sys.argv[1]
+port = int(sys.argv[2])
+sock = socket.socket()
+sock.settimeout(0.4)
+try:
+    sock.connect((host, port))
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+finally:
+    try:
+        sock.close()
+    except Exception:
+        pass
+PY
+}
+
+start_apishim() {
+  local profile_dir="$1"
+  local host="${APISHIM_HOST:-127.0.0.1}"
+  local port="${APISHIM_PORT:-8445}"
+  local pid_file="${APISHIM_PID_FILE:-$ROOT_DIR/state/apishim.pid}"
+  local env_file="${APISHIM_ENV_FILE:-$profile_dir/apishim.env}"
+  local cert_file="${APISHIM_CERT_FILE:-$profile_dir/apishim.crt}"
+  local key_file="${APISHIM_KEY_FILE:-$profile_dir/apishim.key}"
+
+  if ! is_truthy "${AE_APISHIM_AUTOSTART:-1}"; then
+    return 0
+  fi
+  if port_open "$host" "$port"; then
+    return 0
+  fi
+
+  mkdir -p "$profile_dir"
+  APISHIM_ENV_FILE="$env_file" APISHIM_CERT_FILE="$cert_file" APISHIM_KEY_FILE="$key_file" \
+    "$ROOT_DIR/scripts/ensure_apishim_env.sh" >/dev/null 2>&1 || true
+  if [[ -f "$env_file" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$env_file"
+    set +a
+  fi
+
+  export AE_APISHIM_ENABLE=1
+  export AE_APISHIM_ALLOW_ANON="${AE_APISHIM_ALLOW_ANON:-0}"
+  export AE_APISHIM_RBAC="${AE_APISHIM_RBAC:-1}"
+  export AE_APISHIM_RBAC_EVAL="${AE_APISHIM_RBAC_EVAL:-0}"
+  export AE_APISHIM_DB="${AE_APISHIM_DB:-$profile_dir/apishim.db}"
+  export AE_APISHIM_RUNTIME="${AE_APISHIM_RUNTIME:-$AE_RUNTIME_BACKEND}"
+  export AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-$cert_file}"
+  export AE_APISHIM_TLS_KEY="${AE_APISHIM_TLS_KEY:-$key_file}"
+  export AE_APISHIM_SERVER="${AE_APISHIM_SERVER:-https://127.0.0.1:${port}}"
+
+  nohup "$PYTHON_BIN" -m ae.apishim serve --host "$host" --port "$port" --tls \
+    >"$profile_dir/apishim.log" 2>&1 &
+  echo $! > "$pid_file"
+}
+
+ensure_dev_local() {
+  if [[ "${AE_DEV_LOCAL:-0}" == "1" ]]; then
+    DEV_PROFILE_DIR="${DEV_PROFILE_DIR:-${1:-}}" \
+      AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-}" \
+      AE_CONTAINER_CLI="${AE_CONTAINER_CLI:-}" \
+      STACK_BIN="${STACK_BIN:-}" \
+      CADDY_HTTPS_PORT="${CADDY_HTTPS_PORT:-}" \
+      AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-}" \
+      AE_TLS_DIR="${AE_TLS_DIR:-}" \
+      "$ROOT_DIR/scripts/dev/ensure_dev_local.sh" || true
+  fi
+}
+
 write_envoy_bootstrap() {
   local path="$1"
   PYTHONPATH=src "$PYTHON_BIN" - <<PY
@@ -206,15 +289,21 @@ case "$PROFILE" in
     PROFILE_DIR="${PROFILE_DIR:-$ROOT_DIR/state/profiles/dev-min}"
     SPECS_DIR="${SPECS_DIR:-$PROFILE_DIR/specs}"
     ensure_specs_dir "$SPECS_DIR"
+    export DEV_PROFILE_DIR="$PROFILE_DIR"
     export AE_SPECS_DIR="$SPECS_DIR"
     export AE_PROJECTION_ROOT="${AE_PROJECTION_ROOT:-$PROFILE_DIR/projections}"
     export AE_STATE_DB="${AE_STATE_DB:-$PROFILE_DIR/controller.db}"
     export AE_STATE_BACKEND="${AE_STATE_BACKEND:-sqlite}"
     export AE_TRANSPORT_BACKEND="${AE_TRANSPORT_BACKEND:-http}"
+    export AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-1}"
+    export AE_LABS="${AE_LABS:-1}"
+    export APISHIM_PORT="${APISHIM_PORT:-8445}"
     METRICS_PORT="${METRICS_PORT:-9108}"
+    start_apishim "$PROFILE_DIR"
     if [[ "${CORE_CADDY:-0}" == "1" ]]; then
       start_caddy
     fi
+    ensure_dev_local "$PROFILE_DIR"
     PYTHONPATH=src exec "$PYTHON_BIN" -m ae.controller --loop --metrics-port "$METRICS_PORT" --watch
     ;;
   dev-etcd)
@@ -223,16 +312,22 @@ case "$PROFILE" in
     PROFILE_DIR="${PROFILE_DIR:-$ROOT_DIR/state/profiles/dev-etcd}"
     SPECS_DIR="${SPECS_DIR:-$PROFILE_DIR/specs}"
     ensure_specs_dir "$SPECS_DIR"
+    export DEV_PROFILE_DIR="$PROFILE_DIR"
     export AE_SPECS_DIR="$SPECS_DIR"
     export AE_PROJECTION_ROOT="${AE_PROJECTION_ROOT:-$PROFILE_DIR/projections}"
     export AE_STATE_BACKEND="${AE_STATE_BACKEND:-etcd}"
     export AE_ETCD_ENDPOINTS="${AE_ETCD_ENDPOINTS:-http://127.0.0.1:2379}"
     export AE_ETCD_PREFIX="${AE_ETCD_PREFIX:-k1s/profiles/dev-etcd}"
     export AE_TRANSPORT_BACKEND="${AE_TRANSPORT_BACKEND:-http}"
+    export AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-1}"
+    export AE_LABS="${AE_LABS:-1}"
+    export APISHIM_PORT="${APISHIM_PORT:-8445}"
     METRICS_PORT="${METRICS_PORT:-9108}"
+    start_apishim "$PROFILE_DIR"
     if [[ "${CORE_CADDY:-0}" == "1" ]]; then
       start_caddy
     fi
+    ensure_dev_local "$PROFILE_DIR"
     PYTHONPATH=src exec "$PYTHON_BIN" -m ae.controller --loop --metrics-port "$METRICS_PORT" --watch
     ;;
   k1s-core)
@@ -241,6 +336,7 @@ case "$PROFILE" in
     PROFILE_DIR="${PROFILE_DIR:-$ROOT_DIR/state/profiles/k1s-core}"
     SPECS_DIR="${SPECS_DIR:-$PROFILE_DIR/specs}"
     ensure_specs_dir "$SPECS_DIR"
+    export DEV_PROFILE_DIR="$PROFILE_DIR"
     export AE_SPECS_DIR="$SPECS_DIR"
     export AE_PROJECTION_ROOT="${AE_PROJECTION_ROOT:-$PROFILE_DIR/projections}"
     export AE_STATE_BACKEND="${AE_STATE_BACKEND:-etcd}"
@@ -290,6 +386,7 @@ case "$PROFILE" in
     if [[ "${CORE_DOCS:-0}" == "1" ]]; then
       start_docs_server
     fi
+    ensure_dev_local "$PROFILE_DIR"
     PYTHONPATH=src exec "$PYTHON_BIN" -m ae.controller --loop --metrics-port "$METRICS_PORT" --watch
     ;;
   k1s-edge)

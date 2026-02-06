@@ -1,6 +1,6 @@
 .PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke
 .PHONY: dev-min dev-etcd k1s-core k1s-edge k1s-core-edge k1s-edge-core
-.PHONY: k1s-core-caddy dev-min-caddy dev-etcd-caddy
+.PHONY: k1s-core-caddy dev-min-caddy dev-etcd-caddy dev-local
 .PHONY: shim-helm-demo
 
 install:
@@ -57,6 +57,9 @@ dev-min-caddy:
 
 dev-etcd-caddy:
 	@CORE_CADDY=1 ./scripts/dev/run_profile.sh dev-etcd
+
+dev-local:
+	@AE_DEV_LOCAL=1 ./scripts/dev/ensure_dev_local.sh
 
 apply-sample:
 	python -m ae.cli apply -f specs/examples/echo.yaml
@@ -582,6 +585,7 @@ bench-state-clean:
 
 # Wipe full state/ directory (requires CONFIRM=1)
 dev-state-clean:
+	@bash scripts/stop_all.sh
 	@CONFIRM=$${CONFIRM:-0} ./scripts/bench/clean_state.sh --dev $${CONFIRM:+--confirm}
 
 .PHONY: bench-mem-backfill

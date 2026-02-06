@@ -104,6 +104,17 @@ CORE_CADDY=1 make dev-etcd
 This uses the dev Caddy config with `docs.home.arpa`, `api.home.arpa`, and
 `dash.home.arpa` on port `8443` (override with `CADDY_HTTPS_PORT`).
 
+Dev-min/dev-etcd defaults (can be disabled explicitly):
+- `AE_REGISTER_LOCAL_NODE=1` (single-node scheduling)
+- `AE_LABS=1` + apishim autostart
+- Disable with `AE_REGISTER_LOCAL_NODE=0 AE_LABS=0 AE_APISHIM_AUTOSTART=0`
+
+Local DNS + TLS trust helper (optional):
+- `AE_DEV_LOCAL=1 make dev-min` (or `dev-etcd` / `k1s-core`) will:
+  - add `docs.home.arpa`, `api.home.arpa`, `dash.home.arpa`, `echo.home.arpa` to `/etc/hosts`
+  - install local Caddy/Apishim/Envoy certs into system trust (requires `update-ca-certificates`)
+- `make dev-local` runs the helper on demand (useful after Caddy/Envoy have minted certs)
+
 Aliases:
 - `make k1s-core-caddy`
 - `make dev-min-caddy`

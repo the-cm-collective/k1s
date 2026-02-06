@@ -1520,6 +1520,11 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     try:
         import logging as _log
 
+        from ae.secrets.manager import resolve_sops_age_key_file
+
+        resolved_key = resolve_sops_age_key_file()
+        if resolved_key and not os.getenv("SOPS_AGE_KEY_FILE"):
+            os.environ["SOPS_AGE_KEY_FILE"] = resolved_key
         _log.getLogger(__name__).info(
             "SOPS_AGE_KEY_FILE=%s",
             os.getenv("SOPS_AGE_KEY_FILE", "<unset>"),
