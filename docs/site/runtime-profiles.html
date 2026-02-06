@@ -778,6 +778,22 @@ make k1s-edge</code></pre>
 CORE_CADDY=1 make dev-min
 CORE_CADDY=1 make dev-etcd</code></pre>
 <p>This uses the dev Caddy config with <code>docs.home.arpa</code>, <code>api.home.arpa</code>, and <code>dash.home.arpa</code> on port <code>8443</code> (override with <code>CADDY_HTTPS_PORT</code>).</p>
+<p>Dev-min/dev-etcd defaults (can be disabled explicitly):</p>
+<ul>
+<li><code>AE_REGISTER_LOCAL_NODE=1</code> (single-node scheduling)</li>
+<li><code>AE_LABS=1</code> + apishim autostart</li>
+<li>Disable with <code>AE_REGISTER_LOCAL_NODE=0 AE_LABS=0 AE_APISHIM_AUTOSTART=0</code></li>
+</ul>
+<p>Local DNS + TLS trust helper (optional):</p>
+<ul>
+<li><code>AE_DEV_LOCAL=1 make dev-min</code> (or <code>dev-etcd</code> / <code>k1s-core</code>) will:
+<ul>
+<li>add <code>docs.home.arpa</code>, <code>api.home.arpa</code>, <code>dash.home.arpa</code>, <code>echo.home.arpa</code> to <code>/etc/hosts</code></li>
+<li>install local Caddy/Apishim/Envoy certs into system trust (requires <code>update-ca-certificates</code>)</li>
+</ul>
+</li>
+<li><code>make dev-local</code> runs the helper on demand (useful after Caddy/Envoy have minted certs)</li>
+</ul>
 <p>Aliases:</p>
 <ul>
 <li><code>make k1s-core-caddy</code></li>
@@ -818,7 +834,7 @@ CORE_CADDY=1 make dev-etcd</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-06 11:38:20</span>
+        <span>Built 2026-02-06 13:46:18</span>
       </div>
     </footer>
     <script>

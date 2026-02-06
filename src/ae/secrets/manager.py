@@ -14,6 +14,23 @@ import yaml
 from ae.controller.spec import SecretRef
 
 
+def resolve_sops_age_key_file() -> str | None:
+    env = os.getenv("SOPS_AGE_KEY_FILE")
+    if env:
+        return env
+    candidates = [
+        os.path.expanduser("~/.config/ae/keys.txt"),
+        os.path.expanduser("~/.config/sops/age/keys.txt"),
+    ]
+    for candidate in candidates:
+        try:
+            if Path(candidate).is_file():
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
 class SecretManager:
     """Decrypts sealed secrets and projects them into environment variables."""
 
@@ -62,6 +79,10 @@ class SecretManager:
         # fall back to direct read on failure to avoid noisy crashes during demos.
         attempts = 3
         delay = 0.3
+        env = os.environ.copy()
+        resolved_key = resolve_sops_age_key_file()
+        if resolved_key and not env.get("SOPS_AGE_KEY_FILE"):
+            env["SOPS_AGE_KEY_FILE"] = resolved_key
         for i in range(attempts):
             try:
                 # Safe: sops binary path is operator-controlled, not user input.
@@ -70,6 +91,7 @@ class SecretManager:
                     check=True,
                     capture_output=True,
                     text=True,
+                    env=env,
                 )
                 content = completed.stdout
                 break

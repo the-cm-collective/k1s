@@ -74,6 +74,11 @@ for bin in "${ENGINES[@]}"; do
   fi
 done
 
+log "Stopping dev NATS/etcd stack (nats-hub, nats-edge, etcd)"
+for bin in "${ENGINES[@]}"; do
+  "$bin" compose -f ops/dev/docker-compose.nats-etcd.yaml down >/dev/null 2>&1 || true
+done
+
 log "Stopping labs compose stacks (labs-aio, labs-compose)"
 for bin in "${ENGINES[@]}"; do
   "$bin" compose -f ops/dev/labs-aio.yaml down >/dev/null 2>&1 || true
