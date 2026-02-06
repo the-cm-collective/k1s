@@ -2602,6 +2602,19 @@ class SQLiteStateStore:
             conn.commit()
 
 
+def state_store_from_env() -> SQLiteStateStore:
+    backend = (os.getenv("AE_STATE_BACKEND") or "").strip().lower()
+    if backend == "etcd":
+        from ae.controller.etcd_state import EtcdStateStore
+
+        return EtcdStateStore()
+    dsn = os.getenv("AE_STATE_DSN")
+    db_path = Path(os.getenv("AE_STATE_DB", "state/controller.db"))
+    if not dsn:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+    return SQLiteStateStore(db_path, dsn=dsn)
+
+
 class _PgCompatConnection:
     """Light wrapper to allow sqlite-style '?' placeholders on psycopg connections."""
 

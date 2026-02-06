@@ -26,8 +26,7 @@ from ae.controller.spec import (
     parse_app_ref,
     split_app_key,
 )
-from ae.controller.etcd_state import EtcdStateStore
-from ae.controller.state import AppStatus, SQLiteStateStore
+from ae.controller.state import AppStatus, SQLiteStateStore, state_store_from_env
 from ae.ingress import CaddyIngressManager, IngressService
 from ae.k8s.check import k8s_portability_issues
 from ae.k8s.exporter import ExportOptions, export_k8s_yaml
@@ -902,15 +901,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def state_store_from_env() -> SQLiteStateStore:
-    backend = (os.getenv("AE_STATE_BACKEND") or "").strip().lower()
-    if backend == "etcd":
-        return EtcdStateStore()
-    db_path = Path(os.getenv("AE_STATE_DB", "state/controller.db"))
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    return SQLiteStateStore(db_path)
-
-
 def runtime_factory(registry_auth: RegistryAuthProvider | None = None) -> RuntimeAdapter:
     # Default to OCI/Podman; fall back to Docker when unavailable
     backend = os.getenv("AE_RUNTIME_BACKEND", "podman").lower()
@@ -1321,27 +1311,56 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "k8s-report":
         return handle_k8s_report(args)
 
-    store = state_store_from_env()
-    registry_auth = registry_auth_factory()
-    runtime = runtime_factory(registry_auth=registry_auth)
-    health_manager = health_manager_factory()
-    ingress_service = ingress_service_factory()
-    # Inject store into ingress service if supported (for canary state persistence)
-    try:
-        if ingress_service is not None:
-            ingress_service._store = store  # type: ignore[attr-defined]
-    except Exception:
-        pass
-    secret_manager = secret_manager_factory()
-    config_manager = config_manager_factory()
-    reconciler = Reconciler(
-        runtime=runtime,
-        state_store=store,
-        health_manager=health_manager,
-        ingress_service=ingress_service,
-        secret_manager=secret_manager,
-        config_manager=config_manager,
-    )
+    ctx: dict[str, object] = {}
+
+    def _ensure_context() -> dict[str, object]:
+        if ctx:
+            return ctx
+        store = state_store_from_env()
+        registry_auth = registry_auth_factory()
+        runtime = runtime_factory(registry_auth=registry_auth)
+        health_manager = health_manager_factory()
+        ingress_service = ingress_service_factory()
+        # Inject store into ingress service if supported (for canary state persistence)
+        try:
+            if ingress_service is not None:
+                ingress_service._store = store  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        secret_manager = secret_manager_factory()
+        config_manager = config_manager_factory()
+        reconciler = Reconciler(
+            runtime=runtime,
+            state_store=store,
+            health_manager=health_manager,
+            ingress_service=ingress_service,
+            secret_manager=secret_manager,
+            config_manager=config_manager,
+        )
+        ctx.update(
+            {
+                "store": store,
+                "runtime": runtime,
+                "reconciler": reconciler,
+                "ingress_service": ingress_service,
+            }
+        )
+        return ctx
+
+    class _Lazy:
+        def __init__(self, getter):
+            self._getter = getter
+
+        def _value(self):
+            return self._getter()
+
+        def __getattr__(self, name: str):
+            return getattr(self._value(), name)
+
+    store = _Lazy(lambda: _ensure_context()["store"])
+    runtime = _Lazy(lambda: _ensure_context()["runtime"])
+    reconciler = _Lazy(lambda: _ensure_context()["reconciler"])
+    ingress_service = _Lazy(lambda: _ensure_context()["ingress_service"])
 
     auth_handler = globals().get("handle_auth")
     if auth_handler is None:
