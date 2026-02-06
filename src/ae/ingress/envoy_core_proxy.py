@@ -11,6 +11,12 @@ class CoreProxyRoute:
     host: str
     path_prefix: str
     cluster: str
+    request_headers_add: list[tuple[str, str]] = field(default_factory=list)
+    request_headers_remove: list[str] = field(default_factory=list)
+    response_headers_add: list[tuple[str, str]] = field(default_factory=list)
+    response_headers_remove: list[str] = field(default_factory=list)
+    timeout_ms: int | None = None
+    idle_timeout_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -51,12 +57,28 @@ def render_envoy_config(
         if vhost is None:
             vhost = {"name": f"vhost_{host}", "domains": [host], "routes": []}
             vhost_map[host] = vhost
-        vhost["routes"].append(
-            {
-                "match": {"prefix": route.path_prefix or "/"},
-                "route": {"cluster": route.cluster},
-            }
-        )
+        route_entry = {
+            "match": {"prefix": route.path_prefix or "/"},
+            "route": {"cluster": route.cluster},
+        }
+        if route.timeout_ms:
+            route_entry["route"]["timeout"] = f"{route.timeout_ms/1000:.3f}s"
+        if route.idle_timeout_ms:
+            route_entry["route"]["idle_timeout"] = f"{route.idle_timeout_ms/1000:.3f}s"
+        if route.request_headers_add:
+            route_entry["request_headers_to_add"] = [
+                {"header": {"key": key, "value": value}} for key, value in route.request_headers_add
+            ]
+        if route.request_headers_remove:
+            route_entry["request_headers_to_remove"] = route.request_headers_remove
+        if route.response_headers_add:
+            route_entry["response_headers_to_add"] = [
+                {"header": {"key": key, "value": value}}
+                for key, value in route.response_headers_add
+            ]
+        if route.response_headers_remove:
+            route_entry["response_headers_to_remove"] = route.response_headers_remove
+        vhost["routes"].append(route_entry)
     vhosts.extend(vhost_map.values())
 
     if not vhosts:

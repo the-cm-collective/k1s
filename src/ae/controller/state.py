@@ -1789,6 +1789,47 @@ class SQLiteStateStore:
             updated_at=updated_at,
         )
 
+    def list_edge_ingress_policies(self) -> list[EdgeIngressPolicyRecord]:
+        items: list[EdgeIngressPolicyRecord] = []
+        with self._connect() as conn:
+            rows = conn.execute(
+                resource_loader.load_text(
+                    "sql", "controller", "select_edge_ingress_policies_all.sql"
+                )
+            ).fetchall()
+        for row in rows:
+            spec = {}
+            status = None
+            if row[2]:
+                try:
+                    spec = json.loads(row[2])
+                except Exception:
+                    spec = {}
+            if row[3]:
+                try:
+                    status = json.loads(row[3])
+                except Exception:
+                    status = None
+            try:
+                created_at = datetime.fromisoformat(row[4])
+            except Exception:
+                created_at = datetime.now(timezone.utc)
+            try:
+                updated_at = datetime.fromisoformat(row[5])
+            except Exception:
+                updated_at = created_at
+            items.append(
+                EdgeIngressPolicyRecord(
+                    name=str(row[0]),
+                    namespace=str(row[1]),
+                    spec=spec if isinstance(spec, dict) else {},
+                    status=status if isinstance(status, dict) else None,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                )
+            )
+        return items
+
     def list_site_ids(self) -> list[str]:
         with self._connect() as conn:
             rows = conn.execute(

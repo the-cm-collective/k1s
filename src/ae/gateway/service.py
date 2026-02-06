@@ -7,11 +7,13 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from ae.config.transport import GatewayJetStreamConfig, check_nats_connectivity
 from ae.gateway.spool import GatewaySpool
 from ae.ingress.edge_local import build_edge_local_renderer
+from ae.observability.http_api import record_route_bundle_apply
 from ae.transport import (
     hub_caps_subject,
     hub_lease_acquire_subject,
@@ -338,6 +340,11 @@ class SiteGateway:
             if ok:
                 self._route_bundle_rev = bundle_rev
                 self._route_bundle_hash = bundle_hash
+        latency_s = _bundle_latency_seconds(payload)
+        try:
+            record_route_bundle_apply(self._site_id, ok=ok, latency_seconds=latency_s)
+        except Exception:
+            pass
         ack = {
             "site_id": self._site_id,
             "bundle_rev": bundle_rev,
@@ -724,6 +731,23 @@ def _safe_json(payload: bytes) -> dict:
         return json.loads(payload.decode("utf-8"))
     except Exception:
         return {}
+
+
+def _bundle_latency_seconds(payload: dict) -> float | None:
+    raw = payload.get("generated_at")
+    if not raw:
+        return None
+    try:
+        text = str(raw).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        ts = datetime.fromisoformat(text)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        return max(0.0, (now - ts).total_seconds())
+    except Exception:
+        return None
 
 
 def _work_key(payload: dict) -> str | None:
