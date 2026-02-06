@@ -80,16 +80,18 @@ Notes:
 
 ---
 
-## 2.2 Etcd state adapter (dev-etcd plan)
+## 2.2 Etcd state adapter (dev-etcd)
+
+Status: **implemented** (2026-02-06).
 
 Goal: run the controller against **etcd as SoT** while keeping transport **HTTP** (no NATS, no JetStream) so we can exercise the k8s‑shaped state model early.
 
-**Scope (MVP)**
-- Implement an `EtcdStateStore` that matches the **public surface** of `SQLiteStateStore` (same methods, same return shapes).
-- Store values as **JSON blobs** under a stable key prefix (default `k1s/v1`).
-- Use etcd **transactions (compare‑and‑swap by mod_revision)** for all state transitions that currently rely on SQL row checks.
-- Use etcd **leases** for node records (matching the Mode A semantics).
-- No watchers or streaming caches in MVP; prefix scans + in‑memory filters are acceptable for dev‑etcd scale.
+**Implemented behavior (MVP)**
+- `EtcdStateStore` matches the **public surface** of `SQLiteStateStore` (same methods, same return shapes).
+- Values stored as **JSON blobs** under a stable key prefix (default `k1s/v1`).
+- State transitions use etcd **transactions (CAS by mod_revision)**.
+- Node records attach to etcd **leases** (Mode A semantics).
+- No watchers/streaming cache in MVP; prefix scans + in‑memory filters are acceptable for dev‑etcd scale.
 
 **Non‑goals (MVP)**
 - Migration from SQLite/Postgres → etcd.
@@ -97,7 +99,7 @@ Goal: run the controller against **etcd as SoT** while keeping transport **HTTP*
 - Full multi‑writer safety beyond the controller process (same assumptions as current dev loop).
 - JetStream/outbox integration tests (transport stays HTTP in dev‑etcd).
 
-**Config (proposed)**
+**Config (current)**
 - `AE_STATE_BACKEND=etcd`
 - `AE_ETCD_ENDPOINTS=http://127.0.0.1:2379` (comma‑separated)
 - `AE_ETCD_PREFIX=k1s/v1`
@@ -115,20 +117,8 @@ Goal: run the controller against **etcd as SoT** while keeping transport **HTTP*
 - Ingress records: `ingress/routes/<name>`, `ingress/policies/<name>`, `ingress/sites/<site>`
 - Work ledger/outbox (future‑ready): use Appendix A keys verbatim
 
-**Implementation steps**
-1. Introduce a `StateStore` protocol (or base class) and refactor controller typings to depend on it, not `SQLiteStateStore`.
-2. Add `EtcdStateStore` with JSON encode/decode helpers and prefix scan utilities.
-3. Implement CAS helpers:
-   - `get_with_rev(key)` → value + mod_revision
-   - `txn_compare_put(key, expected_rev, value)` → success/failed
-4. Implement leases for `nodes/` and `work.pull` visibility TTL (if used in k1s‑edge).
-5. Wire `AE_STATE_BACKEND=etcd` in controller startup and expose a clear startup error if etcd is unreachable.
-6. Add a minimal integration test (docker compose etcd) to validate:
-   - apply manifest → status list works
-   - events/logs still render
-   - node heartbeat updates & lease expiry
-
-**Acceptance (dev‑etcd)**
+**Validation (dev‑etcd)**
+- Integration test: `tests/integration/test_etcd_state_adapter.py`.
 - `AE_STATE_BACKEND=etcd AE_TRANSPORT_BACKEND=http` boots cleanly.
 - `ae.cli apply` + reconcile updates `/status` and `/dashboard`.
 - Node lease expiry removes node from `/nodes` after TTL.
@@ -253,8 +243,8 @@ We separate subjects by trust boundary:
 **B) Hub-facing (Site Gateway ↔ Controller)**
 - `k1s.v1.site.<site_id>.lease.acquire` — req/reply (registration)
 - `k1s.v1.site.<site_id>.lease.renew` — req/reply (keepalive)
-- `k1s.v1.site.<site_id>.work.pull` — req/reply (JetStream-less dispatch, lab-edge)
-- `k1s.v1.site.<site_id>.work.ack` — req/reply (JetStream-less dispatch, lab-edge)
+- `k1s.v1.site.<site_id>.work.pull` — req/reply (JetStream-less dispatch, k1s-edge)
+- `k1s.v1.site.<site_id>.work.ack` — req/reply (JetStream-less dispatch, k1s-edge)
 - `k1s.v1.site.<site_id>.result` — pub (work_result)
 - `k1s.v1.site.<site_id>.status` — pub (optional aggregated status)
 - `k1s.v1.site.<site_id>.logs` — pub (optional aggregated logs)
@@ -279,9 +269,9 @@ Core NATS is best-effort; if subscriber is offline, messages can be lost. ([NATS
 
 ---
 
-### 6.3 JetStream-less `work.pull` contract (lab-edge)
+### 6.3 JetStream-less `work.pull` contract (k1s-edge)
 
-Use this in `lab-edge` to avoid JetStream while keeping deterministic dispatch semantics.
+Use this in `k1s-edge` to avoid JetStream while keeping deterministic dispatch semantics.
 
 Subjects:
 - `k1s.v1.site.<site_id>.work.pull` — gateway → controller (req/reply)
@@ -718,6 +708,34 @@ Transport Phase 1 templates must include:
 - Per-site uplink creds.
 - Site-local gateway/worker creds.
 - Documented reload procedure.
+
+### 11.6 JWT/operator credentials (Option 3, dev/lab)
+
+Bootstrap artifacts for JWT/operator auth are now provided.
+
+- Install helper: `ops/dev/install-nsc.sh` (uses official `install.py` to place `nsc` under `ops/dev/bin/`).
+- Script: `ops/dev/nsc-bootstrap.sh` (uses `NSC_BIN` or repo-local `ops/dev/bin/nsc`).
+- Output (gitignored): `.local/nats-jwt/` with `operator.jwt`, `accounts/`, `creds/`, plus generated `nats-hub.conf` and `nats-edge.conf`.
+- Compose: `ops/dev/docker-compose.nats-etcd.jwt.yaml`.
+- Client usage: set `AE_NATS_CREDS` to the relevant creds file (e.g., `hub-controller.creds`, `gateway.creds`, `worker.creds`).
+
+### 11.7 JWT/operator production ops flow (resolver dir + nsc push)
+
+This is the production-ready flow; it builds on the same directory resolver setup.
+
+Requirements:
+- NATS server configured with `operator` + `resolver { type: full, dir: ... }`.
+- `SYS` account configured on the server (`system_account` set to its public key).
+- `nsc` access to operator/account keys and a `SYS` user creds file.
+
+Operations:
+- Create/update users and permissions via `nsc add/edit user`.
+- Generate new `.creds` and distribute to controllers/gateways/workers.
+- Push updates live with `nsc push` (no server restart).
+
+Helper:
+- `ops/dev/nsc-push.sh` wraps `nsc push` for the dev/lab layout.
+- See `ops/dev/nats-jwt.README.md` for exact commands and examples.
 
 ---
 
