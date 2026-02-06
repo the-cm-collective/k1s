@@ -1,0 +1,9 @@
+.local/
+.venv/
+__pycache__/
+*.pyc
+state/
+docs/site/
+dist/
+build/
+*.egg-info/

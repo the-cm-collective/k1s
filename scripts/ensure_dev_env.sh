@@ -32,9 +32,12 @@ fi
 
 apishim_port="${APISHIM_PORT:-8445}"
 apishim_upstream="${APISHIM_UPSTREAM:-${host_alias}:${apishim_port}}"
+apishim_container="${APISHIM_CONTAINER:-0}"
 
 mkdir -p "$(dirname "$ENV_FILE")"
-cat > "$ENV_FILE" <<EOF
-APISHIM_PORT=${apishim_port}
-APISHIM_UPSTREAM=${apishim_upstream}
-EOF
+{
+  printf 'APISHIM_PORT=%s\n' "${apishim_port}"
+  if [[ "${apishim_container}" != "1" ]]; then
+    printf 'APISHIM_UPSTREAM=%s\n' "${apishim_upstream}"
+  fi
+} > "$ENV_FILE"

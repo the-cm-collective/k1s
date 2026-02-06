@@ -103,6 +103,17 @@ trust_caddy_ca() {
       log "Caddy local CA not found; Caddy may not be running"
     fi
     log "rerun: make dev-local"
+    return 0
+  fi
+  # Best-effort user trust for Chrome/Chromium (NSS) and Firefox profiles
+  if command -v certutil >/dev/null 2>&1; then
+    mkdir -p "$HOME/.pki/nssdb"
+    certutil -d sql:"$HOME/.pki/nssdb" -A -t "C,," -n "Caddy Local Root" -i "$root_ca" 2>/dev/null || true
+    for prof in "$HOME"/.mozilla/firefox/*.default* "$HOME"/.mozilla/firefox/*.dev*; do
+      [ -d "$prof" ] || continue
+      certutil -d sql:"$prof" -A -t "C,," -n "Caddy Local Root" -i "$root_ca" 2>/dev/null || true
+    done
+    log "installed Caddy CA into NSS/Firefox profiles"
   fi
 }
 
