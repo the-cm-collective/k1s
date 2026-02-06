@@ -868,6 +868,26 @@ def _set_apishim_mirror_mode(mode: str, detail: str) -> None:
         pass
 
 
+def _prune_orphan_status(store, registered: list) -> None:  # noqa: ANN001
+    if not _env_true("AE_PRUNE_ORPHAN_STATUS", "1"):
+        return
+    try:
+        keep = {entry.app_name for entry in registered}
+    except Exception:
+        keep = set()
+    try:
+        statuses = store.list_status()
+    except Exception:
+        return
+    for st in statuses:
+        if st.app_name in keep:
+            continue
+        try:
+            store.delete_app_state(st.app_name)
+        except Exception:
+            pass
+
+
 def _log_apishim_mirror_stats(
     *,
     reachable: bool,
@@ -2431,6 +2451,10 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         except Exception:
             entries = []
         _reconcile_all(reconciler, [entry.manifest for entry in entries])
+        try:
+            _prune_orphan_status(store, entries)
+        except Exception:
+            pass
         return 0
 
     # loop mode
@@ -2517,6 +2541,10 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 except Exception:
                     entries = []
                 _reconcile_all(reconciler, [entry.manifest for entry in entries])
+                try:
+                    _prune_orphan_status(store, entries)
+                except Exception:
+                    pass
                 t1 = time.time()
                 set_reconcile_metrics(ts_seconds=t1, duration_seconds=(t1 - t0))
                 last_full = now
