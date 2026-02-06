@@ -8,6 +8,7 @@ dist/
 *.egg-info/
 state/
 .venv-demo/
+.local/
 # Benchmark/test artifacts
 snapshots/
 combined/
@@ -18,6 +19,8 @@ charts-user/
 /docs.home.arpa_*.png
 # Ignore future dev Caddy site snippets broadly
 ops/dev/caddy/sites/*.caddy
+# Local dev tool binaries
+ops/dev/bin/
 # Generated dev Caddy site snippets (ports are ephemeral)
 ops/dev/caddy/sites/blue.caddy
 ops/dev/caddy/sites/green.caddy

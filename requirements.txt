@@ -7,3 +7,4 @@ croniter>=2.0
 grpcio>=1.60
 protobuf>=4.25
 nats-py>=2.7
+nkeys>=0.1.0

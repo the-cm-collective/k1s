@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from ae.observability.logging import configure_logging
 from ae.transport import local_result_subject, local_work_progress_subject, local_work_subject
 from ae.transport.nats_client import NatsClient, NatsClientError, NatsMessage
+from pathlib import Path
 
 
 class WorkerStub:
@@ -23,13 +24,18 @@ class WorkerStub:
         delay_ms: int,
         status: str,
         progress_interval_s: float,
+        nats_creds: Path | None = None,
     ) -> None:
         self._node_id = node_id
         self._nats_url = nats_url
         self._delay_ms = max(0, int(delay_ms))
         self._status = status
         self._progress_interval_s = max(0.0, float(progress_interval_s))
-        self._client = NatsClient(url=nats_url, name=f"k1s-worker-{node_id}")
+        self._client = NatsClient(
+            url=nats_url,
+            name=f"k1s-worker-{node_id}",
+            creds=nats_creds,
+        )
 
     def start(self) -> None:
         self._client.connect()
@@ -114,6 +120,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--node-id", default="worker-1")
     parser.add_argument("--nats-url", default="nats://127.0.0.1:4223")
+    parser.add_argument(
+        "--nats-creds",
+        default=os.getenv("AE_NATS_CREDS"),
+        help="Path to NATS creds file (or set AE_NATS_CREDS)",
+    )
     parser.add_argument("--delay-ms", type=int, default=50)
     parser.add_argument(
         "--progress-interval",
@@ -139,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
             delay_ms=args.delay_ms,
             status=args.status,
             progress_interval_s=args.progress_interval,
+            nats_creds=Path(args.nats_creds) if args.nats_creds else None,
         )
         worker.start()
     except NatsClientError as exc:
