@@ -9,12 +9,15 @@ Setup
 - Controller loop (dev):
   - Default specs dir: `python -m ae.controller --loop --interval 5 --specs specs/ --metrics-port 9108`
   - Curated demo/specs: set `AE_SPECS_DIR` and use Make targets that respect it:
-    - `AE_SPECS_DIR=state/demo-specs make loop` (watches only the curated set)
-    - `AE_SPECS_DIR=state/demo-specs make run` (single reconcile pass)
-- Tip: `scripts/init_demo.sh` seeds `state/demo-specs` and exports `AE_SPECS_DIR` + `AE_DEMO_MODE=1` for demo runs.
+    - `AE_SPECS_DIR=state/profiles/demo/specs make loop` (watches only the curated set)
+    - `AE_SPECS_DIR=state/profiles/demo/specs make run` (single reconcile pass)
+- Tip: `scripts/init_demo.sh` seeds `state/profiles/demo/specs` and exports `AE_SPECS_DIR` + `AE_DEMO_MODE=1` for demo runs.
   - Demo convenience: `AE_REGISTER_LOCAL_NODE=1` registers a local node when no nodes are present (keeps demo/labs single-node runs working while preserving Kubernetes scheduling semantics by default).
-  - Reset state quickly when switching contexts: `./scripts/init_demo.sh --reset` (deletes `state/controller.db` and `state/projections/`).
+  - Reset state quickly when switching contexts: `./scripts/init_demo.sh --reset` (deletes `state/profiles/demo/controller.db` and `state/profiles/demo/projections/`).
   - Registry cache: `./scripts/init_demo.sh --reset-registry-cache` (clears `state/registry` to force re-pull into the local cache).
+- Etcd-backed demo/labs:
+  - `AE_STATE_BACKEND=etcd make demo` (auto-starts etcd for the demo controller)
+  - `AE_STATE_BACKEND=etcd make labs-aio-up` (labs stack uses an embedded etcd service)
 - SOPS/age (secrets):
   - Generate an age identity: `mkdir -p ~/.config/ae && age-keygen -o ~/.config/ae/keys.txt && chmod 600 ~/.config/ae/keys.txt`
   - Point SOPS to it: `export SOPS_AGE_KEY_FILE=~/.config/ae/keys.txt`
@@ -137,7 +140,7 @@ Dashboard reload vs. restart
 - Env or port/token changes (anything in `state/env.sh`, `AE_API_*`, `AE_*` flags): `make dashboard-restart`
   - Stops the supervisor, clears any stale lock, then starts fresh so env is re‑sourced.
 - Scope of apps shown and reconciled
-  - The controller respects `AE_SPECS_DIR` for the active specs root. To avoid reconciling every sample under `specs/`, set `AE_SPECS_DIR` to a curated folder (e.g., `state/demo-specs`).
+  - The controller respects `AE_SPECS_DIR` for the active specs root. To avoid reconciling every sample under `specs/`, set `AE_SPECS_DIR` to a curated folder (e.g., `state/profiles/demo/specs`).
   - Updated Make targets and bench scripts auto‑honor `AE_SPECS_DIR`. If unset, they fall back to `specs/`.
   - Dashboard output is unfiltered; scope by curating `AE_SPECS_DIR` and using token scopes if needed.
 - Viewing via docs host proxy? If you changed Caddy site files, restart the docs stack:
@@ -321,7 +324,7 @@ Two easy ways to run it:
   - Or: `./scripts/ensure_apishim_env.sh && docker compose -f ops/dev/labs-aio.yaml up -d`
   - Open https://localhost:8443/playground.html
   - Dashboard (separate host): https://dash.home.arpa:8443/dashboard
-  - API shim starts by default on `127.0.0.1:8445` with per-run tokens stored in `state/labs/apishim.env`
+  - API shim starts by default on `127.0.0.1:8445` with per-run tokens stored in `state/profiles/labs/apishim.env`
   - To override tokens, set `AE_APISHIM_TOKEN` / `AE_APISHIM_READ_TOKEN` in `.env` (long values; weak tokens are rejected)
   - To run with a local Postgres backend for controller + shim, set `AE_LABS_USE_POSTGRES=1` before bringing the stack up
   - To print the shim tokens: `make labs-apishim-env`

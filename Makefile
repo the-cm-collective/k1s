@@ -139,7 +139,7 @@ labs-k3d-down:
 labs-up:
 	@./scripts/ensure_dev_env.sh
 	@./scripts/ensure_apishim_env.sh >/dev/null
-	@LABS_TOKEN=$$(awk -F= '/^AE_LABS_TOKEN=/{print $$2}' state/labs/apishim.env); \
+	@LABS_TOKEN=$$(awk -F= '/^AE_LABS_TOKEN=/{print $$2}' state/profiles/labs/apishim.env); \
 	  if [ -n "$$LABS_TOKEN" ]; then DOCS_LABS_TOKEN="$$LABS_TOKEN" python docs/build_docs.py || true; fi
 	docker compose -f ops/dev/labs-compose.yaml up -d
 
@@ -163,35 +163,37 @@ apishim-smoke:
 labs-aio-up:
 	@./scripts/ensure_apishim_env.sh
 	@./scripts/ensure_dev_env.sh
-	@LABS_TOKEN=$$(awk -F= '/^AE_LABS_TOKEN=/{print $$2}' state/labs/apishim.env); \
+	@LABS_TOKEN=$$(awk -F= '/^AE_LABS_TOKEN=/{print $$2}' state/profiles/labs/apishim.env); \
 	  if [ -n "$$LABS_TOKEN" ]; then DOCS_LABS_TOKEN="$$LABS_TOKEN" python docs/build_docs.py || true; fi
-	@if [ "$${AE_LABS_USE_POSTGRES:-0}" = "1" ]; then \
+	@LABS_PROFILE_ARGS=""; \
+	  if [ "$${AE_STATE_BACKEND:-sqlite}" = "etcd" ]; then LABS_PROFILE_ARGS="--profile etcd"; fi; \
+	  if [ "$${AE_LABS_USE_POSTGRES:-0}" = "1" ]; then \
 	  if [ -z "$${AE_APISHIM_DSN:-}" ] && [ -z "$${AE_STATE_DSN:-}" ]; then \
 	    export AE_APISHIM_DSN="postgresql://shim:shim@postgres:5432/shim"; \
 	    export AE_STATE_DSN="postgresql://shim:shim@postgres:5432/shim"; \
 	  fi; \
-	  docker compose --profile postgres -f ops/dev/labs-aio.yaml up -d postgres; \
+	  docker compose $$LABS_PROFILE_ARGS --profile postgres -f ops/dev/labs-aio.yaml up -d postgres; \
 	  for i in $$(seq 1 30); do \
 	    if docker compose --profile postgres -f ops/dev/labs-aio.yaml exec -T postgres pg_isready -U shim -d shim >/dev/null 2>&1; then \
 	      break; \
 	    fi; \
 	    sleep 1; \
 	  done; \
-	  docker compose --profile postgres -f ops/dev/labs-aio.yaml up -d; \
+	  docker compose $$LABS_PROFILE_ARGS --profile postgres -f ops/dev/labs-aio.yaml up -d; \
 	else \
-	  docker compose -f ops/dev/labs-aio.yaml up -d; \
+	  docker compose $$LABS_PROFILE_ARGS -f ops/dev/labs-aio.yaml up -d; \
 	fi
 
 labs-aio-down:
 	docker compose -f ops/dev/labs-aio.yaml down
 
 labs-apishim-env:
-	@if [ ! -f state/labs/apishim.env ]; then \
-	  echo "[labs] state/labs/apishim.env not found; run make labs-aio-up first."; \
+	@if [ ! -f state/profiles/labs/apishim.env ]; then \
+	  echo "[labs] state/profiles/labs/apishim.env not found; run make labs-aio-up first."; \
 	  exit 1; \
 	fi
 	@echo "[labs] apishim tokens (dev only):"
-	@cat state/labs/apishim.env
+	@cat state/profiles/labs/apishim.env
 
 .PHONY: demo demo-down integ-test
 demo:
@@ -227,11 +229,12 @@ demo-reset:
 	@{ command -v podman >/dev/null 2>&1 && podman compose -f ops/dev/labs-compose.yaml down >/dev/null 2>&1 || true; }
 	@echo "[demo-reset] clearing dynamic Caddy sites"
 	@rm -f state/caddy/*.caddy 2>/dev/null || true
-	@echo "[demo-reset] removing controller DB (state/controller.db)"
+	@echo "[demo-reset] removing controller DB (state/profiles/demo/controller.db)"
+	@rm -f state/profiles/demo/controller.db 2>/dev/null || true
 	@rm -f state/controller.db 2>/dev/null || true
 	@{ if [ -f state/env.sh ]; then \
 	  . state/env.sh >/dev/null 2>&1 || true; \
-	  if [ -n "$$AE_STATE_DB" ] && [ "$$AE_STATE_DB" != "state/controller.db" ]; then \
+	  if [ -n "$$AE_STATE_DB" ] && [ "$$AE_STATE_DB" != "state/profiles/demo/controller.db" ]; then \
 	    echo "[demo-reset] removing controller DB ($$AE_STATE_DB)"; \
 	    rm -f "$$AE_STATE_DB" 2>/dev/null || true; \
 	  fi; \
@@ -241,7 +244,8 @@ demo-reset:
 	@echo "[demo-reset] pruning ae.app volumes (docker/podman)"
 	@{ command -v docker >/dev/null 2>&1 && docker volume ls -q --filter label=ae.app | xargs -r docker volume rm >/dev/null 2>&1; } || true
 	@{ command -v podman >/dev/null 2>&1 && podman volume ls -q --filter label=ae.app | xargs -r podman volume rm >/dev/null 2>&1; } || true
-	@echo "[demo-reset] removing curated specs directory (state/demo-specs)"
+	@echo "[demo-reset] removing curated specs directory (state/profiles/demo/specs)"
+	@rm -rf state/profiles/demo/specs 2>/dev/null || true
 	@rm -rf state/demo-specs 2>/dev/null || true
 	@echo "[demo-reset] done"
 

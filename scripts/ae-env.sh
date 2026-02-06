@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APISHIM_ENV_FILE="${APISHIM_ENV_FILE:-$ROOT_DIR/state/labs/apishim.env}"
+APISHIM_ENV_FILE="${APISHIM_ENV_FILE:-$ROOT_DIR/state/profiles/labs/apishim.env}"
 DEV_ENV_FILE="${DEV_ENV_FILE:-$ROOT_DIR/state/dev.env}"
 CONTROLLER_ENV_FILE="${CONTROLLER_ENV_FILE:-$ROOT_DIR/state/env.sh}"
 

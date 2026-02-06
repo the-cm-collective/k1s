@@ -113,7 +113,7 @@ for bin in "${ENGINES[@]}"; do
   fi
 done
 
-log "Clearing Labs shim artifacts (state/labs)"
-rm -f state/labs/helm-demo.log state/labs/apishim.env >/dev/null 2>&1 || true
+log "Clearing Labs shim artifacts (state/profiles/labs)"
+rm -f state/profiles/labs/helm-demo.log state/profiles/labs/apishim.env >/dev/null 2>&1 || true
 
 log "Cleanup complete"

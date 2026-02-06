@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_FILE="${APISHIM_ENV_FILE:-$ROOT_DIR/state/labs/apishim.env}"
+ENV_FILE="${APISHIM_ENV_FILE:-$ROOT_DIR/state/profiles/labs/apishim.env}"
 ENV_OVERRIDE_FILE="${APISHIM_ENV_OVERRIDE_FILE:-$ROOT_DIR/.env}"
 
 log() {
@@ -128,8 +128,8 @@ EOF
 chmod 600 "$ENV_FILE"
 log "Wrote $ENV_FILE (tokens generated or sourced securely)."
 
-CERT_FILE="${APISHIM_CERT_FILE:-$ROOT_DIR/state/labs/apishim.crt}"
-KEY_FILE="${APISHIM_KEY_FILE:-$ROOT_DIR/state/labs/apishim.key}"
+CERT_FILE="${APISHIM_CERT_FILE:-$ROOT_DIR/state/profiles/labs/apishim.crt}"
+KEY_FILE="${APISHIM_KEY_FILE:-$ROOT_DIR/state/profiles/labs/apishim.key}"
 if [[ ! -s "$CERT_FILE" || ! -s "$KEY_FILE" ]]; then
   if command -v openssl >/dev/null 2>&1; then
     mkdir -p "$(dirname "$CERT_FILE")"

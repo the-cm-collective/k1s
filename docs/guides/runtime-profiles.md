@@ -114,6 +114,11 @@ Force the container engine:
 AE_CONTAINER_CLI=podman make k1s-core
 ```
 
+Profiles default to Podman; override with:
+```
+AE_RUNTIME_BACKEND=docker make k1s-core
+```
+
 ## Apply a sample (any profile)
 
 ```

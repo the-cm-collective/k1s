@@ -9,6 +9,10 @@ if [[ -z "$PROFILE" ]]; then
   exit 1
 fi
 
+if [[ -z "${AE_RUNTIME_BACKEND:-}" ]]; then
+  export AE_RUNTIME_BACKEND=podman
+fi
+
 detect_python() {
   if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
     printf '%s' "$ROOT_DIR/.venv/bin/python"
@@ -223,6 +227,7 @@ case "$PROFILE" in
     export AE_PROJECTION_ROOT="${AE_PROJECTION_ROOT:-$PROFILE_DIR/projections}"
     export AE_STATE_BACKEND="${AE_STATE_BACKEND:-etcd}"
     export AE_ETCD_ENDPOINTS="${AE_ETCD_ENDPOINTS:-http://127.0.0.1:2379}"
+    export AE_ETCD_PREFIX="${AE_ETCD_PREFIX:-k1s/profiles/dev-etcd}"
     export AE_TRANSPORT_BACKEND="${AE_TRANSPORT_BACKEND:-http}"
     METRICS_PORT="${METRICS_PORT:-9108}"
     if [[ "${CORE_CADDY:-0}" == "1" ]]; then
@@ -240,6 +245,7 @@ case "$PROFILE" in
     export AE_PROJECTION_ROOT="${AE_PROJECTION_ROOT:-$PROFILE_DIR/projections}"
     export AE_STATE_BACKEND="${AE_STATE_BACKEND:-etcd}"
     export AE_ETCD_ENDPOINTS="${AE_ETCD_ENDPOINTS:-http://127.0.0.1:2379}"
+    export AE_ETCD_PREFIX="${AE_ETCD_PREFIX:-k1s/profiles/k1s-core}"
     export AE_TRANSPORT_BACKEND="${AE_TRANSPORT_BACKEND:-nats-js}"
     export AE_NATS_URL="${AE_NATS_URL:-nats://hub-controller:dev@127.0.0.1:4222}"
     export AE_JS_DOMAIN="${AE_JS_DOMAIN:-K1S}"
