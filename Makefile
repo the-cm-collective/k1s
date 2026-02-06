@@ -1,5 +1,6 @@
 .PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke
 .PHONY: dev-min dev-etcd k1s-core k1s-edge k1s-core-edge k1s-edge-core
+.PHONY: k1s-core-caddy dev-min-caddy dev-etcd-caddy
 .PHONY: shim-helm-demo
 
 install:
@@ -47,6 +48,15 @@ k1s-core-edge:
 
 k1s-edge-core:
 	@EDGE_PROFILE=k1s-core ./scripts/dev/run_profile.sh k1s-edge
+
+k1s-core-caddy:
+	@CORE_CADDY=1 ./scripts/dev/run_profile.sh k1s-core
+
+dev-min-caddy:
+	@CORE_CADDY=1 ./scripts/dev/run_profile.sh dev-min
+
+dev-etcd-caddy:
+	@CORE_CADDY=1 ./scripts/dev/run_profile.sh dev-etcd
 
 apply-sample:
 	python -m ae.cli apply -f specs/examples/echo.yaml

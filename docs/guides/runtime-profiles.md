@@ -94,6 +94,21 @@ CORE_DOCS=1 make k1s-core
 Docs will serve on `http://127.0.0.1:9109` (override with `AE_DOCS_PORT` / `DOCS_BIND`),
 and the dashboard remains on `http://127.0.0.1:9108/dashboard`.
 
+Start Caddy for TLS hostnames (docs/api/dashboard) on any core profile:
+```
+CORE_CADDY=1 make k1s-core
+CORE_CADDY=1 make dev-min
+CORE_CADDY=1 make dev-etcd
+```
+
+This uses the dev Caddy config with `docs.home.arpa`, `api.home.arpa`, and
+`dash.home.arpa` on port `8443` (override with `CADDY_HTTPS_PORT`).
+
+Aliases:
+- `make k1s-core-caddy`
+- `make dev-min-caddy`
+- `make dev-etcd-caddy`
+
 Force the container engine:
 ```
 AE_CONTAINER_CLI=podman make k1s-core
