@@ -64,6 +64,7 @@ class PodStatus:
     readiness_message: str
     liveness_message: str
     pod_name: str = ""
+    endpoint: str | None = None
     exit_code: int | None = None
     finished_at: datetime | None = None
     replica_id: InitVar[str | None] = None
@@ -323,6 +324,11 @@ class SQLiteStateStore:
             # Drop legacy replica tables now that pod naming is canonical.
             conn.execute("DROP TABLE IF EXISTS replica_nodes")
             conn.execute("DROP TABLE IF EXISTS replica_status")
+            # Best-effort schema upgrades before strict checks.
+            try:
+                self._ensure_column(conn, "pod_status", "endpoint", "TEXT")
+            except Exception:
+                pass
             needs_reset = not self._schema_matches(
                 conn,
                 "app_status",
@@ -348,6 +354,7 @@ class SQLiteStateStore:
                     "pod_name",
                     "ready",
                     "live",
+                    "endpoint",
                     "status",
                     "readiness_message",
                     "liveness_message",
@@ -563,6 +570,7 @@ class SQLiteStateStore:
             )
             self._ensure_column(conn, "edge_ingress_routes", "status_json", "TEXT")
             self._ensure_column(conn, "edge_ingress_policies", "status_json", "TEXT")
+            self._ensure_column(conn, "pod_status", "endpoint", "TEXT")
             self._migrate_storage_bindings(conn)
             conn.commit()
 
@@ -688,6 +696,7 @@ class SQLiteStateStore:
                         pod.pod_name,
                         int(pod.ready),
                         int(pod.live),
+                        state.endpoint if state else None,
                         state.status if state else "unknown",
                         pod.readiness_message,
                         pod.liveness_message,
@@ -818,9 +827,9 @@ class SQLiteStateStore:
         items: list[PodStatus] = []
         for row in rows:
             finished_at = None
-            if row[7]:
+            if row[8]:
                 try:
-                    finished_at = datetime.fromisoformat(row[7])
+                    finished_at = datetime.fromisoformat(row[8])
                 except Exception:
                     finished_at = None
             items.append(
@@ -828,10 +837,11 @@ class SQLiteStateStore:
                     pod_name=row[0],
                     ready=bool(row[1]),
                     live=bool(row[2]),
-                    status=row[3],
-                    readiness_message=row[4],
-                    liveness_message=row[5],
-                    exit_code=row[6] if row[6] is not None else None,
+                    status=row[4],
+                    endpoint=row[3],
+                    readiness_message=row[5],
+                    liveness_message=row[6],
+                    exit_code=row[7] if row[7] is not None else None,
                     finished_at=finished_at,
                 )
             )
@@ -1700,6 +1710,15 @@ class SQLiteStateStore:
                 )
             )
         return items
+
+    def get_edge_ingress_route(
+        self, *, name: str, namespace: str | None = None
+    ) -> EdgeIngressRouteRecord | None:
+        ns = namespace or "default"
+        for record in self.list_edge_ingress_routes():
+            if record.name == name and record.namespace == ns:
+                return record
+        return None
 
     def list_edge_ingress_routes_for_site(self, site_id: str) -> list[EdgeIngressRouteRecord]:
         items: list[EdgeIngressRouteRecord] = []

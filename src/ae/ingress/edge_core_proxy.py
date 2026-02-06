@@ -7,17 +7,22 @@ import os
 import subprocess
 import threading
 import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
 from ae.controller.state import SiteIngressListItem, SQLiteStateStore
+from ae.controller.spec import app_key
+from ae.ingress.edge_docs import normalize_route_doc
 from ae.ingress.envoy_core_proxy import (
     CoreProxyCluster,
     CoreProxyRoute,
+    DownstreamTlsCert,
     EnvoyRenderConfig,
     write_envoy_config,
 )
+from ae.ingress.tls_sync import TlsSecretResolver
 from ae.ingress.rathole import (
     RatholeClientConfig,
     RatholeClientService,
@@ -36,6 +41,13 @@ class EdgeCoreProxyConfig:
     rathole_server_path: Path
     rathole_client_dir: Path | None
     site_domain_suffix: str
+    http_listen_port: int
+    tls_listen_port: int | None
+    tls_root: Path
+    tls_default_secret: str | None
+    tls_fallback: bool
+    tls_fallback_cn: str
+    tls_fallback_days: int
     rathole_bind_addr: str
     rathole_default_token: str
     rathole_server_addr: str
@@ -56,10 +68,22 @@ class EdgeCoreProxyRenderer:
 
     def _render_locked(self) -> None:
         endpoints = self._store.list_site_ingress_endpoints()
-        routes, clusters, ext_authz_config, enable_local_ratelimit = _build_routes_and_clusters(
-            self._store, endpoints, self._config
+        (
+            routes,
+            clusters,
+            ext_authz_config,
+            enable_local_ratelimit,
+            downstream_tls,
+            fallback_tls,
+        ) = _build_routes_and_clusters(self._store, endpoints, self._config)
+        tls_port = self._config.tls_listen_port if (downstream_tls or fallback_tls) else None
+        envoy_cfg = EnvoyRenderConfig(
+            domain_suffix=self._config.site_domain_suffix,
+            listen_port=self._config.http_listen_port,
+            tls_listen_port=tls_port,
+            downstream_tls=downstream_tls,
+            tls_fallback_cert=fallback_tls,
         )
-        envoy_cfg = EnvoyRenderConfig(domain_suffix=self._config.site_domain_suffix)
         envoy_text = write_envoy_config(
             self._config.envoy_config_path,
             routes,
@@ -121,12 +145,41 @@ def build_core_proxy_config() -> EdgeCoreProxyConfig | None:
     rathole_server_addr = os.getenv("AE_RATHOLE_SERVER_ADDR", "127.0.0.1:2333")
     edge_local_addr = os.getenv("AE_EDGE_INGRESS_LOCAL_ADDR", "127.0.0.1:18081")
     reload_cmd = os.getenv("AE_EDGE_INGRESS_RELOAD_CMD")
+    tls_root = Path(os.getenv("AE_TLS_DIR", "state/tls"))
+    tls_default_secret = os.getenv("AE_EDGE_INGRESS_TLS_DEFAULT_SECRET") or None
+    tls_fallback = str(os.getenv("AE_EDGE_INGRESS_TLS_FALLBACK", "1") or "1").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    tls_fallback_cn = os.getenv("AE_EDGE_INGRESS_TLS_FALLBACK_CN", "edge.local")
+    try:
+        tls_fallback_days = int(os.getenv("AE_EDGE_INGRESS_TLS_FALLBACK_DAYS", "7") or 7)
+    except Exception:
+        tls_fallback_days = 7
+    try:
+        http_listen = int(os.getenv("AE_EDGE_INGRESS_HTTP_PORT", "10080") or 10080)
+    except Exception:
+        http_listen = 10080
+    tls_port_raw = os.getenv("AE_EDGE_INGRESS_TLS_PORT", "").strip()
+    try:
+        tls_listen = int(tls_port_raw) if tls_port_raw else None
+    except Exception:
+        tls_listen = None
     return EdgeCoreProxyConfig(
         config_dir=config_dir,
         envoy_config_path=envoy_path if isinstance(envoy_path, Path) else Path(envoy_path),
         rathole_server_path=rathole_server,
         rathole_client_dir=client_dir,
         site_domain_suffix=site_suffix,
+        http_listen_port=http_listen,
+        tls_listen_port=tls_listen,
+        tls_root=tls_root,
+        tls_default_secret=tls_default_secret,
+        tls_fallback=tls_fallback,
+        tls_fallback_cn=tls_fallback_cn,
+        tls_fallback_days=tls_fallback_days,
         rathole_bind_addr=rathole_bind,
         rathole_default_token=rathole_token,
         rathole_server_addr=rathole_server_addr,
@@ -145,7 +198,14 @@ def _build_routes_and_clusters(
     store: SQLiteStateStore,
     endpoints: list[SiteIngressListItem],
     config: EdgeCoreProxyConfig,
-) -> tuple[list[CoreProxyRoute], list[CoreProxyCluster], dict | None, bool]:
+) -> tuple[
+    list[CoreProxyRoute],
+    list[CoreProxyCluster],
+    dict | None,
+    bool,
+    list[DownstreamTlsCert],
+    DownstreamTlsCert | None,
+]:
     routes: list[CoreProxyRoute] = []
     clusters: dict[str, CoreProxyCluster] = {}
     endpoint_map = {ep.site_id: ep for ep in endpoints}
@@ -153,6 +213,9 @@ def _build_routes_and_clusters(
     policy_cache: dict[tuple[str, str], dict] = {}
     forward_auth_url = _select_forward_auth_url(store, policy_cache)
     enable_local_ratelimit = False
+    route_records = store.list_edge_ingress_routes()
+    downstream_tls, fallback_tls = _collect_downstream_tls(route_records, config)
+    tls_enabled = bool(downstream_tls or fallback_tls)
 
     # Base per-site host for core-proxy mode.
     for ep in endpoints:
@@ -177,8 +240,8 @@ def _build_routes_and_clusters(
         )
 
     # Explicit EdgeIngressRoute resources.
-    for record in store.list_edge_ingress_routes():
-        spec = record.spec if isinstance(record.spec, dict) else {}
+    for record in route_records:
+        spec = _edge_route_spec(record)
         host = str(spec.get("host") or "").strip()
         if not host:
             continue
@@ -188,8 +251,6 @@ def _build_routes_and_clusters(
             exposure.get("placement") if isinstance(exposure.get("placement"), dict) else {}
         )
         site_id = str(placement.get("site") or record.site_id or "").strip()
-        if not site_id:
-            continue
         policy_spec = _policy_for_route(record, store, policy_cache)
         route_opts = _policy_route_options(policy_spec) if policy_spec else {}
         local_rate_limit = route_opts.get("local_rate_limit")
@@ -201,24 +262,30 @@ def _build_routes_and_clusters(
             ext_authz_enabled = bool(
                 route_forward_auth and route_forward_auth == forward_auth_url
             )
+        redirect_https = False
+        if tls_enabled:
+            redirect_https = _route_redirect_https(exposure)
         if mode == "core-proxy":
+            if not site_id:
+                continue
             ep = endpoint_map.get(site_id)
             if ep is None or ep.core_proxy_port is None:
                 continue
             cluster_name = f"site_{site_id}"
             clusters.setdefault(
                 cluster_name,
-                CoreProxyCluster(
-                    name=cluster_name,
-                    endpoints=[("127.0.0.1", int(ep.core_proxy_port))],
-                ),
+                    CoreProxyCluster(
+                        name=cluster_name,
+                        endpoints=[("127.0.0.1", int(ep.core_proxy_port))],
+                    ),
             )
-            for path in _route_paths(spec):
+            for entry in _route_path_entries(spec):
                 routes.append(
                     CoreProxyRoute(
                         host=host,
-                        path_prefix=path,
+                        path_prefix=entry["path"],
                         cluster=cluster_name,
+                        redirect_to_https=redirect_https,
                         request_headers_add=route_opts.get("request_headers_add", []),
                         request_headers_remove=route_opts.get("request_headers_remove", []),
                         response_headers_add=route_opts.get("response_headers_add", []),
@@ -230,6 +297,8 @@ def _build_routes_and_clusters(
                     )
                 )
         elif mode == "core-to-edge-public":
+            if not site_id:
+                continue
             ep = endpoint_map.get(site_id)
             public = _public_endpoint(ep.public_urls if ep else [])
             if public is None:
@@ -240,18 +309,52 @@ def _build_routes_and_clusters(
                 CoreProxyCluster(
                     name=cluster_name,
                     endpoints=[(public["host"], public["port"])],
+                    cluster_type="STRICT_DNS",
                     use_tls=public["use_tls"],
                     sni=public["sni"],
                     ca_cert_path=public.get("ca_bundle_path"),
                     expected_sans=public.get("expected_sans") or [],
                 ),
             )
-            for path in _route_paths(spec):
+            for entry in _route_path_entries(spec):
                 routes.append(
                     CoreProxyRoute(
                         host=host,
-                        path_prefix=path,
+                        path_prefix=entry["path"],
                         cluster=cluster_name,
+                        redirect_to_https=redirect_https,
+                        request_headers_add=route_opts.get("request_headers_add", []),
+                        request_headers_remove=route_opts.get("request_headers_remove", []),
+                        response_headers_add=route_opts.get("response_headers_add", []),
+                        response_headers_remove=route_opts.get("response_headers_remove", []),
+                        timeout_ms=route_opts.get("timeout_ms"),
+                        idle_timeout_ms=route_opts.get("idle_timeout_ms"),
+                        ext_authz_enabled=ext_authz_enabled,
+                        local_rate_limit=local_rate_limit,
+                    )
+                )
+        elif mode in {"core-local", "core"}:
+            for entry in _route_path_entries(spec):
+                svc_ref = entry.get("service_ref") or {}
+                endpoints = _resolve_core_local_endpoints(
+                    store, svc_ref, record.namespace, entry.get("port")
+                )
+                if not endpoints:
+                    continue
+                cluster_name = _core_local_cluster_name(svc_ref, record.namespace, entry.get("port"))
+                clusters.setdefault(
+                    cluster_name,
+                    CoreProxyCluster(
+                        name=cluster_name,
+                        endpoints=endpoints,
+                    ),
+                )
+                routes.append(
+                    CoreProxyRoute(
+                        host=host,
+                        path_prefix=entry["path"],
+                        cluster=cluster_name,
+                        redirect_to_https=redirect_https,
                         request_headers_add=route_opts.get("request_headers_add", []),
                         request_headers_remove=route_opts.get("request_headers_remove", []),
                         response_headers_add=route_opts.get("response_headers_add", []),
@@ -270,11 +373,18 @@ def _build_routes_and_clusters(
             clusters.setdefault(auth_cluster.name, auth_cluster)
             ext_authz_config = _forward_auth_ext_authz_config(forward_auth_url)
 
-    return routes, list(clusters.values()), ext_authz_config, enable_local_ratelimit
+    return (
+        routes,
+        list(clusters.values()),
+        ext_authz_config,
+        enable_local_ratelimit,
+        downstream_tls,
+        fallback_tls,
+    )
 
 
-def _route_paths(spec: dict) -> list[str]:
-    paths: list[str] = []
+def _route_path_entries(spec: dict) -> list[dict]:
+    entries: list[dict] = []
     raw_paths = spec.get("paths") if isinstance(spec.get("paths"), list) else []
     for entry in raw_paths:
         if not isinstance(entry, dict):
@@ -282,10 +392,260 @@ def _route_paths(spec: dict) -> list[str]:
         raw_path = str(entry.get("path") or "").strip() or "/"
         if not raw_path.startswith("/"):
             raw_path = f"/{raw_path}"
-        paths.append(raw_path)
-    if not paths:
-        paths.append("/")
-    return paths
+        service_ref = (
+            entry.get("serviceRef") if isinstance(entry.get("serviceRef"), dict) else {}
+        )
+        port = _coerce_int(entry.get("port")) or _coerce_int(service_ref.get("port"))
+        entries.append({"path": raw_path, "service_ref": service_ref, "port": port})
+    if not entries:
+        service_ref = (
+            spec.get("serviceRef") if isinstance(spec.get("serviceRef"), dict) else {}
+        )
+        port = _coerce_int(service_ref.get("port"))
+        entries.append({"path": "/", "service_ref": service_ref, "port": port})
+    return entries
+
+
+def _edge_route_spec(record) -> dict:
+    doc = normalize_route_doc(record)
+    spec = doc.get("spec") if isinstance(doc.get("spec"), dict) else {}
+    return spec if isinstance(spec, dict) else {}
+
+
+def _edge_policy_spec(record) -> dict | None:
+    if record is None:
+        return None
+    doc = record.spec if isinstance(record.spec, dict) else {}
+    if "spec" in doc and isinstance(doc.get("spec"), dict):
+        return doc.get("spec")
+    return doc if isinstance(doc, dict) else None
+
+
+def _route_redirect_https(exposure: dict) -> bool:
+    tls = exposure.get("tls") if isinstance(exposure.get("tls"), dict) else {}
+    term = tls.get("terminateCore") if isinstance(tls.get("terminateCore"), dict) else {}
+    if not term:
+        term = tls.get("terminate_core") if isinstance(tls.get("terminate_core"), dict) else {}
+    raw = term.get("redirectHttpToHttps")
+    if raw is None:
+        raw = term.get("redirect_http_to_https")
+    if raw is None:
+        raw = tls.get("redirectHttpToHttps")
+    if raw is None:
+        return False
+    return str(raw).lower() in {"1", "true", "yes", "on"}
+
+
+def _core_local_cluster_name(service_ref: dict, namespace: str, port: int | None) -> str:
+    name = str(service_ref.get("name") or "").strip()
+    ns = str(service_ref.get("namespace") or namespace or "default").strip() or "default"
+    port_label = str(port) if port is not None else "any"
+    safe = f"{ns}_{name}_{port_label}".replace("/", "-")
+    return f"core_{safe}"
+
+
+def _resolve_core_local_endpoints(
+    store: SQLiteStateStore,
+    service_ref: dict,
+    namespace: str,
+    port_hint: int | None,
+) -> list[tuple[str, int]]:
+    name = str(service_ref.get("name") or "").strip()
+    if not name:
+        return []
+    svc_ns = str(service_ref.get("namespace") or namespace or "default").strip() or "default"
+    app_name = app_key(name, svc_ns)
+    svc_port = port_hint or _service_port_from_store(store, app_name)
+    endpoints: list[tuple[str, int]] = []
+    try:
+        eps = store.list_service_endpoints(app_name)
+    except Exception:
+        eps = []
+    for ep in eps:
+        if svc_port is not None and int(ep.port) != int(svc_port):
+            continue
+        endpoints.append((str(ep.ip), int(ep.target_port)))
+    if endpoints:
+        return endpoints
+    try:
+        pods = store.list_pods(app_name)
+    except Exception:
+        pods = []
+    for pod in pods:
+        if not pod.ready:
+            continue
+        endpoint = getattr(pod, "endpoint", None)
+        if not endpoint:
+            continue
+        host, port = _split_host_port(str(endpoint))
+        if host is None or port is None:
+            continue
+        if svc_port is not None and int(port) != int(svc_port):
+            continue
+        endpoints.append((host, int(port)))
+    return endpoints
+
+
+def _service_port_from_store(store: SQLiteStateStore, app_name: str) -> int | None:
+    try:
+        svc = store.get_service(app_name)
+    except Exception:
+        svc = None
+    if not svc or not isinstance(svc.ports, dict):
+        return None
+    ports = svc.ports.get("ports") if isinstance(svc.ports.get("ports"), list) else []
+    if ports:
+        try:
+            return int(ports[0].get("port"))
+        except Exception:
+            return None
+    raw = svc.ports.get("port")
+    try:
+        return int(raw) if raw is not None else None
+    except Exception:
+        return None
+
+
+def _split_host_port(endpoint: str) -> tuple[str | None, int | None]:
+    try:
+        if endpoint.startswith("["):
+            host, port = endpoint.rsplit("]:", 1)
+            return host.lstrip("["), int(port)
+        host, port = endpoint.rsplit(":", 1)
+        return host, int(port)
+    except Exception:
+        return None, None
+
+
+def _collect_downstream_tls(
+    routes: list,
+    config: EdgeCoreProxyConfig,
+) -> tuple[list[DownstreamTlsCert], DownstreamTlsCert | None]:
+    if config.tls_listen_port is None:
+        return [], None
+    resolver = TlsSecretResolver(config.tls_root)
+    cert_map: dict[tuple[str, str], set[str]] = {}
+    want_tls = False
+    for record in routes:
+        spec = _edge_route_spec(record)
+        exposure = spec.get("exposure") if isinstance(spec.get("exposure"), dict) else {}
+        tls = exposure.get("tls") if isinstance(exposure.get("tls"), dict) else {}
+        if _tls_mode(tls) != "terminate-core":
+            continue
+        want_tls = True
+        host = str(spec.get("host") or "").strip()
+        if not host:
+            continue
+        secret = _tls_secret_name(tls)
+        if not secret:
+            continue
+        resolved = resolver.resolve(secret)
+        if not resolved:
+            continue
+        crt_path, key_path = resolved
+        cert_map.setdefault((str(crt_path), str(key_path)), set()).add(host)
+
+    fallback_cert: DownstreamTlsCert | None = None
+    if config.tls_default_secret:
+        want_tls = True
+        resolved = resolver.resolve(config.tls_default_secret)
+        if resolved:
+            crt_path, key_path = resolved
+            fallback_cert = DownstreamTlsCert(
+                cert_chain=str(crt_path), private_key=str(key_path)
+            )
+
+    if want_tls and fallback_cert is None and config.tls_fallback:
+        fallback = _ensure_fallback_tls(
+            config.tls_root, config.tls_fallback_cn, config.tls_fallback_days
+        )
+        if fallback:
+            crt_path, key_path = fallback
+            fallback_cert = DownstreamTlsCert(
+                cert_chain=str(crt_path), private_key=str(key_path)
+            )
+
+    if not want_tls:
+        return [], None
+
+    certs = [
+        DownstreamTlsCert(
+            cert_chain=crt,
+            private_key=key,
+            server_names=sorted(hosts),
+        )
+        for (crt, key), hosts in sorted(cert_map.items())
+    ]
+    return certs, fallback_cert
+
+
+def _tls_secret_name(tls: dict) -> str | None:
+    if not isinstance(tls, dict):
+        return None
+    secret = tls.get("secretName") or tls.get("tlsSecretName") or tls.get("secret_name")
+    term = tls.get("terminateCore") if isinstance(tls.get("terminateCore"), dict) else {}
+    if not term:
+        term = tls.get("terminate_core") if isinstance(tls.get("terminate_core"), dict) else {}
+    if not secret:
+        secret = (
+            term.get("secretName")
+            or term.get("tlsSecretName")
+            or term.get("secret_name")
+        )
+    return str(secret).strip() if secret else None
+
+
+def _tls_mode(tls: dict) -> str:
+    if not isinstance(tls, dict):
+        return ""
+    return str(tls.get("mode") or "").strip().lower()
+
+
+def _ensure_fallback_tls(root: Path, cn: str, days: int) -> tuple[Path, Path] | None:
+    root.mkdir(parents=True, exist_ok=True)
+    crt = root / "envoy-fallback.crt"
+    key = root / "envoy-fallback.key"
+    if crt.exists() and key.exists():
+        return crt, key
+    if shutil.which("openssl") is None:
+        return None
+    subj = f"/CN={cn}"
+    cmd = [
+        "openssl",
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-sha256",
+        "-days",
+        str(max(1, int(days))),
+        "-nodes",
+        "-subj",
+        subj,
+        "-keyout",
+        str(key),
+        "-out",
+        str(crt),
+    ]
+    addext = f"subjectAltName=DNS:{cn}"
+    cmd_with_san = cmd + ["-addext", addext]
+    try:
+        subprocess.run(cmd_with_san, check=False, capture_output=True)  # noqa: S603
+    except Exception:
+        return None
+    if not (crt.exists() and key.exists()):
+        try:
+            subprocess.run(cmd, check=False, capture_output=True)  # noqa: S603
+        except Exception:
+            return None
+    if crt.exists() and key.exists():
+        try:
+            crt.chmod(0o600)
+            key.chmod(0o600)
+        except Exception:
+            pass
+        return crt, key
+    return None
 
 
 def _public_endpoint(public_urls: list[str | dict]) -> dict | None:
@@ -332,9 +692,10 @@ def _policy_for_route(
     if key in cache:
         return cache[key]
     policy = store.get_edge_ingress_policy(name=record.policy_name, namespace=ns)
-    if policy and isinstance(policy.spec, dict):
-        cache[key] = policy.spec
-        return policy.spec
+    spec = _edge_policy_spec(policy) if policy else None
+    if spec:
+        cache[key] = spec
+        return spec
     return None
 
 
@@ -367,7 +728,7 @@ def _select_forward_auth_url(
 ) -> str | None:
     urls: set[str] = set()
     for record in store.list_edge_ingress_routes():
-        spec = record.spec if isinstance(record.spec, dict) else {}
+        spec = _edge_route_spec(record)
         exposure = spec.get("exposure") if isinstance(spec.get("exposure"), dict) else {}
         mode = str(exposure.get("mode") or "").strip().lower()
         if mode not in {"core-proxy", "core-to-edge-public"}:
