@@ -16,6 +16,32 @@ services:
       - "host.docker.internal:host-gateway"
       - "host.containers.internal:host-gateway"
     # Placeholder until controller writes per-app config.
+  apishim:
+    build:
+      context: ../..
+      dockerfile: ops/dev/apishim.Dockerfile
+    working_dir: /workspace
+    command: bash -lc "python -m pip install -e . && AE_APISHIM_ENABLE=1 python -m ae.apishim serve --host 0.0.0.0 --port ${APISHIM_PORT:-8445} --tls"
+    volumes:
+      - ../..:/workspace
+      - ${APISHIM_CONTAINER_SOCKET:-/run/user/1000/podman/podman.sock}:/run/podman/podman.sock
+    env_file:
+      - ${APISHIM_ENV_FILE}
+    environment:
+      - AE_APISHIM_ENABLE=1
+      - AE_APISHIM_RUNTIME=${AE_APISHIM_RUNTIME:-podman}
+      - AE_APISHIM_ALLOW_ANON=0
+      - AE_APISHIM_RBAC=1
+      - AE_APISHIM_RBAC_EVAL=0
+      - AE_APISHIM_TLS_CERT=/workspace/${APISHIM_PROFILE_DIR}/apishim.crt
+      - AE_APISHIM_TLS_KEY=/workspace/${APISHIM_PROFILE_DIR}/apishim.key
+      - AE_APISHIM_DB=/workspace/${APISHIM_PROFILE_DIR}/apishim.db
+      - CONTAINER_HOST=${APISHIM_CONTAINER_HOST:-unix:///run/podman/podman.sock}
+    ports:
+      - "127.0.0.1:${APISHIM_PORT:-8445}:8445"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "host.containers.internal:host-gateway"
   prometheus:
     image: prom/prometheus:v2.53.0
     ports:

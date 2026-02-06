@@ -155,6 +155,7 @@ start_apishim() {
   local env_file="${APISHIM_ENV_FILE:-$profile_dir/apishim.env}"
   local cert_file="${APISHIM_CERT_FILE:-$profile_dir/apishim.crt}"
   local key_file="${APISHIM_KEY_FILE:-$profile_dir/apishim.key}"
+  local mode="${AE_APISHIM_MODE:-container}"
 
   if ! is_truthy "${AE_APISHIM_AUTOSTART:-1}"; then
     return 0
@@ -173,19 +174,43 @@ start_apishim() {
     set +a
   fi
 
+  export AE_APISHIM_RUNTIME="${AE_APISHIM_RUNTIME:-${AE_RUNTIME_BACKEND:-docker}}"
   export AE_APISHIM_ENABLE=1
   export AE_APISHIM_ALLOW_ANON="${AE_APISHIM_ALLOW_ANON:-0}"
   export AE_APISHIM_RBAC="${AE_APISHIM_RBAC:-1}"
   export AE_APISHIM_RBAC_EVAL="${AE_APISHIM_RBAC_EVAL:-0}"
   export AE_APISHIM_DB="${AE_APISHIM_DB:-$profile_dir/apishim.db}"
-  export AE_APISHIM_RUNTIME="${AE_APISHIM_RUNTIME:-$AE_RUNTIME_BACKEND}"
   export AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-$cert_file}"
   export AE_APISHIM_TLS_KEY="${AE_APISHIM_TLS_KEY:-$key_file}"
   export AE_APISHIM_SERVER="${AE_APISHIM_SERVER:-https://127.0.0.1:${port}}"
+  # Ensure controller can mint shim session tokens (dashboard exec/port-forward).
+  if [[ -n "${AE_APISHIM_SESSION_SECRET:-}" ]]; then
+    export AE_APISHIM_SESSION_SECRET
+  fi
+  if [[ -n "${AE_LABS_TOKEN:-}" ]]; then
+    export AE_LABS_TOKEN
+  fi
+  if [[ -n "${AE_API_ADMIN_TOKEN:-}" ]]; then
+    export AE_API_ADMIN_TOKEN
+  fi
 
-  nohup "$PYTHON_BIN" -m ae.apishim serve --host "$host" --port "$port" --tls \
-    >"$profile_dir/apishim.log" 2>&1 &
-  echo $! > "$pid_file"
+  if [[ "$mode" == "host" ]]; then
+    nohup "$PYTHON_BIN" -m ae.apishim serve --host "$host" --port "$port" --tls \
+      >"$profile_dir/apishim.log" 2>&1 &
+    echo $! > "$pid_file"
+    return 0
+  fi
+
+  local profile_rel="$profile_dir"
+  if [[ "$profile_dir" == "$ROOT_DIR/"* ]]; then
+    profile_rel="${profile_dir#"$ROOT_DIR/"}"
+  fi
+  export APISHIM_ENV_FILE="$env_file"
+  export APISHIM_PROFILE_DIR="${APISHIM_PROFILE_DIR:-$profile_rel}"
+  export APISHIM_PORT="$port"
+  export APISHIM_CONTAINER=1
+  AE_CONTAINER_CLI="$ENGINE_BIN" APISHIM_CONTAINER=1 "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
+  "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" up -d apishim >/dev/null 2>&1 || true
 }
 
 ensure_dev_local() {
@@ -283,6 +308,26 @@ start_rathole_client_container() {
 
 PYTHON_BIN="$(detect_python)"
 ENGINE_BIN="$(detect_engine)"
+
+if [[ -z "${AE_APISHIM_MODE:-}" ]]; then
+  if [[ "$ENGINE_BIN" == "podman" ]]; then
+    AE_APISHIM_MODE="container"
+  else
+    AE_APISHIM_MODE="host"
+  fi
+  export AE_APISHIM_MODE
+fi
+
+if [[ "$ENGINE_BIN" == "podman" ]]; then
+  if [[ -z "${APISHIM_CONTAINER_SOCKET:-}" ]]; then
+    APISHIM_CONTAINER_SOCKET="/run/user/$(id -u)/podman/podman.sock"
+  fi
+  if [[ -z "${APISHIM_CONTAINER_HOST:-}" ]]; then
+    APISHIM_CONTAINER_HOST="unix:///run/podman/podman.sock"
+  fi
+  export APISHIM_CONTAINER_SOCKET
+  export APISHIM_CONTAINER_HOST
+fi
 
 case "$PROFILE" in
   dev-min)
