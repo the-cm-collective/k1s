@@ -78,6 +78,44 @@ Notes:
 - Postgres remains viable for non-edge or hybrid deployments; etcd is the preferred SoT for the edge fabric.
 - If JetStream is omitted, use a `work.pull` API rather than best-effort publish to avoid “lost work” confusion.
 
+### 2.1.1 Runtime profile helpers (make)
+
+Each helper starts the profile **without default apps** by pointing the controller at an empty specs dir under `state/profiles/<profile>/specs`.
+
+**Controller profiles**
+- `make dev-min` — SQLite + HTTP, local loop, no NATS.
+- `make dev-etcd` — etcd + HTTP; auto-starts etcd via `ops/dev/docker-compose.nats-etcd.yaml`.
+- `make k1s-core` — etcd + NATS + JetStream; auto-starts etcd + hub NATS.
+
+**Edge profile**
+- `make k1s-edge` — starts edge NATS + gateway (and a stub worker by default).
+  - For **k1s-core (JetStream)** pairing: `EDGE_PROFILE=k1s-core make k1s-edge` (or set `EDGE_TRANSPORT_BACKEND=nats-js`).
+  - Run multiple edges by varying `AE_NODE_ID` (and optionally `AE_SITE_ID`) per terminal.
+  - Disable the stub worker with `EDGE_START_WORKER=0` if you only want the gateway.
+  - Alias: `make k1s-edge-core` (same as `EDGE_PROFILE=k1s-core make k1s-edge`).
+
+**Core + edge pairing aliases**
+- `make k1s-core-edge` — starts core with `AE_TRANSPORT_BACKEND=nats-core` (for k1s-edge).
+- `make k1s-edge-core` — starts edge in JetStream mode to pair with `make k1s-core`.
+
+**Ingress mode selection (k1s-core / k1s-edge)**
+- `EDGE_INGRESS_MODE=core-proxy` (default): core ingress proxies to edge over rathole.
+- `EDGE_INGRESS_MODE=core-to-edge-public`: core ingress routes directly to edge public endpoints.
+- `EDGE_INGRESS_MODE=edge-local`: edge ingress only; core is not in the request path.
+
+By default, `make k1s-core` starts Envoy (core ingress) and rathole server, and
+`make k1s-edge` starts a rathole client when `EDGE_INGRESS_MODE=core-proxy`.
+Override images with `AE_ENVOY_IMAGE` / `AE_RATHOLE_IMAGE`, or disable auto-start
+with `EDGE_INGRESS_START=0`.
+
+Mode behavior:
+- `core-proxy`: Envoy + rathole server/client.
+- `core-to-edge-public`: Envoy only (no rathole).
+- `edge-local`: no core ingress; the gateway renders an edge-local Caddyfile if enabled.
+
+**Container engine override**
+- Use `AE_CONTAINER_CLI=podman` (or `STACK_BIN=podman`) to force podman instead of docker.
+
 ---
 
 ## 2.2 Etcd state adapter (dev-etcd)

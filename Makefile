@@ -1,4 +1,5 @@
 .PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke
+.PHONY: dev-min dev-etcd k1s-core k1s-edge k1s-core-edge k1s-edge-core
 .PHONY: shim-helm-demo
 
 install:
@@ -28,6 +29,24 @@ loop:
 
 run:
 	python -m ae.controller --once --specs $${AE_SPECS_DIR:-specs}
+
+dev-min:
+	@./scripts/dev/run_profile.sh dev-min
+
+dev-etcd:
+	@./scripts/dev/run_profile.sh dev-etcd
+
+k1s-core:
+	@./scripts/dev/run_profile.sh k1s-core
+
+k1s-edge:
+	@./scripts/dev/run_profile.sh k1s-edge
+
+k1s-core-edge:
+	@AE_TRANSPORT_BACKEND=nats-core ./scripts/dev/run_profile.sh k1s-core
+
+k1s-edge-core:
+	@EDGE_PROFILE=k1s-core ./scripts/dev/run_profile.sh k1s-edge
 
 apply-sample:
 	python -m ae.cli apply -f specs/examples/echo.yaml

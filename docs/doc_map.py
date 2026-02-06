@@ -14,6 +14,7 @@ DOCS_MAPPING = {
     "benchmarks/memory.md": "benchmarks.html",
     "reference/configs-secrets.md": "configs-secrets.html",
     "guides/demos-examples.md": "examples.html",
+    "guides/runtime-profiles.md": "runtime-profiles.html",
     "reference/rollouts.md": "rollouts.html",
     "reference/storage.md": "storage.html",
     "reference/observability.md": "observability.html",
