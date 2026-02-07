@@ -1218,6 +1218,10 @@ class PodmanRuntime(RuntimeAdapter):
                         restarts = 0
             except Exception:
                 pass
+            if host_ip is not None:
+                host_ip = self._normalize_host_ip(host_ip)
+            elif host_ports or port_map:
+                host_ip = self._normalize_host_ip(host_ip)
             out.append(
                 {
                     "name": it.get("Names", [it.get("Id", "")])[0],
