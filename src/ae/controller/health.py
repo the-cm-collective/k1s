@@ -427,11 +427,12 @@ class HealthManager:
                 "true",
                 "yes",
             }
-            if trust_env:
+            import requests as _requests
+
+            # If tests monkeypatch the module-level get, honor it regardless of trust_env.
+            if trust_env or get is not _requests.get:
                 response = get(url, timeout=timeout)
             else:
-                import requests as _requests
-
                 sess = _requests.Session()
                 sess.trust_env = False
                 try:
