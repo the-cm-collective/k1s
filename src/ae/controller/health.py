@@ -349,8 +349,10 @@ class HealthManager:
             jittered = max(1, int(backoff * (1.0 + jitter_pct)))
             st["cooldown_until"] = now + timedelta(seconds=jittered)
         else:
-            # Keep previous effective decision but annotate
+            # Keep previous effective decision but annotate. Optionally include detail.
             msg = f"{probe_type} transient fail ({st['fail']}/{need_fail})"
+            if os.getenv("AE_PROBE_VERBOSE", "").strip().lower() in {"1", "true", "yes"}:
+                msg = f"{msg}: {outcome.message}"
         self._state[key] = st
         if st.get("effective", False) != prev_effective:
             self._emit_probe_event(

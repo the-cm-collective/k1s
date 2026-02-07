@@ -24,6 +24,7 @@ bench_node_notready_after="${BENCH_NODE_NOTREADY_AFTER:-${AE_NODE_NOTREADY_AFTER
 bench_register_local_node="${BENCH_REGISTER_LOCAL_NODE:-${AE_REGISTER_LOCAL_NODE:-1}}"
 bench_probe_loopback="${BENCH_PROBE_LOOPBACK:-${AE_PROBE_LOOPBACK_FALLBACK:-127.0.0.1}}"
 bench_no_proxy="${BENCH_NO_PROXY:-${NO_PROXY:-127.0.0.1,localhost}}"
+bench_probe_verbose="${BENCH_PROBE_VERBOSE:-${AE_PROBE_VERBOSE:-1}}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -348,6 +349,7 @@ if [[ "$controller_mode" == "sudo" ]]; then
     NO_PROXY="$bench_no_proxy" \
     no_proxy="$bench_no_proxy" \
     AE_PROBE_LOOPBACK_FALLBACK="$bench_probe_loopback" \
+    AE_PROBE_VERBOSE="$bench_probe_verbose" \
     BENCH_REPO_ROOT="$repo_root" \
     AE_SPECS_DIR="$spec_dir" \
     AE_STATE_DB="$state_db" \
@@ -419,6 +421,7 @@ export AE_PODMAN_BIN="$podman_bin"
 export AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}"
 export AE_REGISTER_LOCAL_NODE="${bench_register_local_node}"
 export AE_PROBE_LOOPBACK_FALLBACK="${bench_probe_loopback}"
+export AE_PROBE_VERBOSE="${bench_probe_verbose}"
 export NO_PROXY="${bench_no_proxy}"
 export no_proxy="${bench_no_proxy}"
 export AE_NODE_NOTREADY_AFTER="${bench_node_notready_after}"
