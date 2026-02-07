@@ -615,6 +615,7 @@ if (( k1nd_ok )); then
   app_base="$(basename "$app_src")"
   k1nd_manifest_in_container="/apply/${app_base}"
   if ! AE_RUNTIME_BACKEND=docker AE_ENGINE_STRICT=1 AE_SERIAL_SERVICE_ROLLOUT=1 \
+    BENCH_WAIT_RUNTIME=1 \
     AE_CLI_IN_CONTAINER=1 AE_CLI_CONTAINER="${AE_CLI_CONTAINER:-k1nd-server}" \
     AE_K1ND_CONTROLLER_CONTAINER="${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server}" \
     AE_K1ND_APISHIM_CONTAINER="${AE_K1ND_APISHIM_CONTAINER:-k1nd-server}" \
