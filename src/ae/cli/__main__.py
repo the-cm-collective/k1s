@@ -204,6 +204,33 @@ def build_parser() -> argparse.ArgumentParser:
     tty_group.add_argument("--no-tty", action="store_true", help="Disable TTY")
     shell_parser.add_argument("cmd", nargs="*", help="Shell command after --")
 
+    pf_parser = subparsers.add_parser(
+        "port-forward",
+        help="Forward a local TCP port to a pod via the API shim (WebSocket)",
+    )
+    _add_namespace_arg(pf_parser)
+    pf_parser.add_argument("name", help="Workload (App) name")
+    pf_parser.add_argument(
+        "mapping",
+        help="Port mapping in the form local:remote (e.g., 18080:8080).",
+    )
+    pf_parser.add_argument(
+        "--pod",
+        dest="pod",
+        default=None,
+        help="Pod name override (defaults to a ready pod for the app).",
+    )
+    pf_parser.add_argument(
+        "--bind",
+        default="127.0.0.1",
+        help="Local bind address (default: 127.0.0.1).",
+    )
+    pf_parser.add_argument(
+        "--apishim",
+        default=None,
+        help="API shim base URL for WebSocket port-forward (defaults to AE_APISHIM_SERVER when set)",
+    )
+
     nodes_parser = subparsers.add_parser("nodes", help="List or describe nodes")
     nodes_parser.add_argument("name", nargs="?", help="Node id to describe (omit to list)")
     nodes_parser.add_argument("--cordon", action="store_true", help="Mark node unschedulable")
@@ -1379,6 +1406,7 @@ def main(argv: list[str] | None = None) -> int:
         "logs": lambda ns: handle_logs(ns, store, runtime),
         "exec": lambda ns: handle_exec(ns, store, runtime),
         "shell": lambda ns: handle_shell(ns, store, runtime),
+        "port-forward": lambda ns: handle_port_forward(ns, store, runtime),
         "rollback": lambda ns: handle_rollback(ns, store, reconciler),
         "revisions": lambda ns: handle_revisions(ns, store),
         "rollout": lambda ns: handle_rollout(ns, store, reconciler),
@@ -3857,6 +3885,255 @@ def _exec_over_ws(
     return exit_code
 
 
+def _parse_pf_mapping(mapping: str) -> tuple[int, int]:
+    raw = str(mapping or "").strip()
+    if not raw:
+        raise ValueError("port mapping is required (local:remote)")
+    if ":" in raw:
+        left, right = raw.split(":", 1)
+    else:
+        left, right = raw, raw
+    left = left.strip()
+    right = right.strip()
+    if not left or not right:
+        raise ValueError("port mapping must be in local:remote form")
+    return int(left), int(right)
+
+
+def _portforward_over_ws(
+    base: str,
+    *,
+    namespace: str,
+    pod_name: str,
+    local_host: str,
+    local_port: int,
+    remote_port: int,
+    token: str | None,
+    timeout: int | None,
+) -> int:
+    import base64
+    import os
+    import signal
+    import socket
+    import ssl
+    import sys
+    import threading
+    import urllib.parse
+
+    if "://" not in base:
+        base = "http://" + base
+    parsed = urllib.parse.urlparse(base)
+    scheme = parsed.scheme or "http"
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if scheme == "https" else 80)
+    if not host:
+        raise RuntimeError(f"invalid apishim base: {base}")
+    base_path = parsed.path.rstrip("/")
+    path = f"{base_path}/api/v1/namespaces/{namespace}/pods/{pod_name}/portforward"
+    query = urllib.parse.urlencode({"ports": str(remote_port), "token": token or ""})
+    full_path = path + ("?" + query if query else "")
+
+    stop_event = threading.Event()
+
+    def _open_ws() -> socket.socket:
+        sock = socket.create_connection((host, port), timeout=timeout or 10)
+        if scheme == "https":
+            ctx = ssl.create_default_context()
+            if os.getenv("AE_APISHIM_INSECURE") == "1":
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            sock = ctx.wrap_socket(sock, server_hostname=host)
+        ws_key = base64.b64encode(os.urandom(16)).decode("ascii")
+        req_lines = [
+            f"GET {full_path} HTTP/1.1",
+            f"Host: {host}:{port}",
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            "Sec-WebSocket-Version: 13",
+            f"Sec-WebSocket-Key: {ws_key}",
+            "Sec-WebSocket-Protocol: portforward.k8s.io",
+        ]
+        if token:
+            req_lines.append(f"Authorization: Bearer {token}")
+        req_lines.append("\r\n")
+        sock.sendall(("\r\n".join(req_lines)).encode("utf-8"))
+
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        if b"\r\n" not in buf:
+            raise RuntimeError("websocket: invalid response from server")
+        status_line = buf.split(b"\r\n", 1)[0]
+        try:
+            status_code = int(status_line.split()[1])
+        except Exception:
+            status_code = 0
+        if status_code != 101:
+            raise RuntimeError(f"websocket upgrade failed: {status_code}")
+        try:
+            sock.settimeout(0.2)
+        except Exception:
+            pass
+        return sock
+
+    def _send_ws(sock: socket.socket, payload: bytes) -> None:
+        mask_key = os.urandom(4)
+        header = bytearray()
+        header.append(0x82)
+        length = len(payload)
+        if length < 126:
+            header.append(0x80 | length)
+        elif length < (1 << 16):
+            header.append(0x80 | 126)
+            header.extend(length.to_bytes(2, "big"))
+        else:
+            header.append(0x80 | 127)
+            header.extend(length.to_bytes(8, "big"))
+        masked = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+        sock.sendall(bytes(header) + mask_key + masked)
+
+    def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
+        buf = b""
+        while len(buf) < n:
+            try:
+                chunk = sock.recv(n - len(buf))
+            except TimeoutError:
+                return None
+            if not chunk:
+                return None
+            buf += chunk
+        return buf
+
+    def _recv_ws(sock: socket.socket) -> tuple[int, bytes] | None:
+        hdr = _recv_exact(sock, 2)
+        if not hdr:
+            return None
+        opcode = hdr[0] & 0x0F
+        length = hdr[1] & 0x7F
+        if length == 126:
+            ext = _recv_exact(sock, 2)
+            if ext is None:
+                return None
+            length = int.from_bytes(ext, "big")
+        elif length == 127:
+            ext = _recv_exact(sock, 8)
+            if ext is None:
+                return None
+            length = int.from_bytes(ext, "big")
+        payload = _recv_exact(sock, length) if length else b""
+        if payload is None:
+            return None
+        return opcode, payload
+
+    def _handle_conn(conn: socket.socket) -> None:
+        try:
+            ws = _open_ws()
+        except Exception as exc:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            print(f"port-forward connect failed: {exc}")
+            return
+
+        def _pump_local() -> None:
+            while not stop_event.is_set():
+                try:
+                    data = conn.recv(4096)
+                except Exception:
+                    break
+                if not data:
+                    break
+                try:
+                    _send_ws(ws, bytes([0]) + data)
+                except Exception:
+                    break
+            stop_event.set()
+
+        def _pump_ws() -> None:
+            while not stop_event.is_set():
+                msg = _recv_ws(ws)
+                if msg is None:
+                    continue
+                opcode, payload = msg
+                if opcode == 0x8:
+                    break
+                if not payload:
+                    continue
+                ch = payload[0]
+                data = payload[1:]
+                if ch == 0 and data:
+                    try:
+                        conn.sendall(data)
+                    except Exception:
+                        break
+                elif ch == 1 and data:
+                    try:
+                        sys.stderr.buffer.write(data)
+                        sys.stderr.buffer.flush()
+                    except Exception:
+                        pass
+            stop_event.set()
+
+        t1 = threading.Thread(target=_pump_local, daemon=True)
+        t2 = threading.Thread(target=_pump_ws, daemon=True)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        try:
+            ws.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind((local_host, local_port))
+    listener.listen(5)
+    listener.settimeout(0.5)
+
+    print(f"Forwarding from {local_host}:{local_port} -> {pod_name}:{remote_port}")
+    print("Press Ctrl+C to stop.")
+
+    def _stop(_sig=None, _frame=None) -> None:  # noqa: ANN001 - signal handler
+        stop_event.set()
+        try:
+            listener.close()
+        except Exception:
+            pass
+
+    old_int = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGINT, _stop)
+
+    try:
+        while not stop_event.is_set():
+            try:
+                conn, _addr = listener.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+            t = threading.Thread(target=_handle_conn, args=(conn,), daemon=True)
+            t.start()
+    finally:
+        try:
+            listener.close()
+        except Exception:
+            pass
+        try:
+            signal.signal(signal.SIGINT, old_int)
+        except Exception:
+            pass
+    return 0
+
+
 def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: RuntimeAdapter) -> int:
     # Remote mode
     import inspect as _inspect
@@ -4044,6 +4321,65 @@ def handle_shell(args: argparse.Namespace, store: SQLiteStateStore, runtime: Run
         exec_args.tty = bool(_sys.stdin.isatty() and _sys.stdout.isatty())
     exec_args.apishim = apishim_base
     return handle_exec(exec_args, store, runtime)
+
+
+def handle_port_forward(
+    args: argparse.Namespace, store: SQLiteStateStore, runtime: RuntimeAdapter
+) -> int:
+    import inspect as _inspect
+    import os as _os
+
+    frame = _inspect.currentframe()
+    gargs = None
+    if frame is not None:
+        outer_locals = frame.f_back.f_locals if frame.f_back else {}
+        gargs = outer_locals.get("global_args") or outer_locals.get("args")
+
+    apishim_base = getattr(args, "apishim", None) or _os.getenv("AE_APISHIM_SERVER")
+    if not apishim_base and gargs and getattr(gargs, "server", None):
+        apishim_base = gargs.server
+    if not apishim_base:
+        print("port-forward requires the API shim; set --apishim or AE_APISHIM_SERVER")
+        return 2
+
+    token = None
+    if gargs is not None:
+        token = getattr(gargs, "token", None)
+    if token is None:
+        token = _os.getenv("AE_APISHIM_PORTFORWARD_TOKEN")
+    if token is None:
+        token = _os.getenv("AE_APISHIM_TOKEN")
+
+    try:
+        local_port, remote_port = _parse_pf_mapping(getattr(args, "mapping", ""))
+    except Exception as exc:  # noqa: BLE001
+        print(f"invalid port mapping: {exc}")
+        return 2
+
+    app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
+    pod_name = getattr(args, "pod", None)
+    if not pod_name:
+        pod_name, _container = _resolve_exec_target(store, app_name, None)
+    if not pod_name:
+        pod_name = app_name
+        print("warning: no local status; using app name as pod reference")
+
+    ns, _name = split_app_key(app_name)
+    bind_host = getattr(args, "bind", None) or "127.0.0.1"
+    try:
+        return _portforward_over_ws(
+            apishim_base,
+            namespace=ns,
+            pod_name=pod_name,
+            local_host=bind_host,
+            local_port=local_port,
+            remote_port=remote_port,
+            token=token,
+            timeout=None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"port-forward failed: {exc}")
+        return 1
 
 
 def _status_to_json(status: AppStatus, store: SQLiteStateStore, *, include_details: bool) -> str:
