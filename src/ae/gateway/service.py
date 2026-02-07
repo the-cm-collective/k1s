@@ -221,27 +221,36 @@ class SiteGateway:
             return
         LOGGER.info("gateway running (backend=%s)", self._backend)
         self._stats.last_report_at = time.monotonic()
-        while True:
-            time.sleep(1)
-            now = time.monotonic()
-            self._run_progress(now)
-            self._maybe_renew(now)
+        try:
+            while True:
+                time.sleep(1)
+                now = time.monotonic()
+                self._run_progress(now)
+                self._maybe_renew(now)
+                if self._nats_client is not None:
+                    if self._js_enabled:
+                        self._poll_js(now)
+                    else:
+                        self._poll_work_pull(now)
+                    self._replay_spool_results(now)
+                    self._publish_telemetry(now)
+                if now - self._stats.last_report_at >= self._status_interval_s:
+                    self._stats.last_report_at = now
+                    LOGGER.info(
+                        "gateway stats inflight=%s accepted=%s completed=%s failed=%s",
+                        self._stats.inflight,
+                        self._stats.accepted,
+                        self._stats.completed,
+                        self._stats.failed,
+                    )
+        except KeyboardInterrupt:
+            LOGGER.info("gateway shutdown requested")
+        finally:
             if self._nats_client is not None:
-                if self._js_enabled:
-                    self._poll_js(now)
-                else:
-                    self._poll_work_pull(now)
-                self._replay_spool_results(now)
-                self._publish_telemetry(now)
-            if now - self._stats.last_report_at >= self._status_interval_s:
-                self._stats.last_report_at = now
-                LOGGER.info(
-                    "gateway stats inflight=%s accepted=%s completed=%s failed=%s",
-                    self._stats.inflight,
-                    self._stats.accepted,
-                    self._stats.completed,
-                    self._stats.failed,
-                )
+                try:
+                    self._nats_client.close()
+                except Exception:
+                    pass
 
     def _subscribe_local_results(self) -> None:
         if self._nats_client is None:
