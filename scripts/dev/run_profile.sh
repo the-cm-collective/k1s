@@ -79,6 +79,30 @@ seed_demo_specs() {
   fi
 }
 
+ensure_demo_green_image() {
+  local engine="$1"
+  local image="demo-green:latest"
+  local sample_dir="$ROOT_DIR/samples/servers/green"
+  if [[ ! -d "$sample_dir" ]]; then
+    return 0
+  fi
+  if "$engine" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -qE "(^|/)${image}$"; then
+    return 0
+  fi
+  if [[ "$engine" == "podman" ]]; then
+    if "$engine" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -q "localhost/${image}$"; then
+      "$engine" tag "localhost/${image}" "${image}" >/dev/null 2>&1 || true
+      return 0
+    fi
+    echo "[demo-seed] building localhost/${image} (podman)"
+    "$engine" build -t "localhost/${image}" "$sample_dir" >/dev/null 2>&1 || true
+    "$engine" tag "localhost/${image}" "${image}" >/dev/null 2>&1 || true
+  else
+    echo "[demo-seed] building ${image} (${engine})"
+    "$engine" build -t "${image}" "$sample_dir" >/dev/null 2>&1 || true
+  fi
+}
+
 resolve_docs_labs_token() {
   if [[ "${AE_LABS:-0}" != "1" ]]; then
     return 0
@@ -432,6 +456,7 @@ case "$PROFILE" in
     export AE_TRANSPORT_BACKEND="${AE_TRANSPORT_BACKEND:-http}"
     if [[ "${AE_DEMO_SEED:-0}" == "1" ]]; then
       seed_demo_specs "$SPECS_DIR"
+      ensure_demo_green_image "$ENGINE_BIN"
     fi
     export AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-1}"
     export AE_LABS="${AE_LABS:-1}"
