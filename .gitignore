@@ -24,6 +24,8 @@ ops/dev/bin/
 # Generated dev Caddy site snippets (ports are ephemeral)
 ops/dev/caddy/sites/blue.caddy
 ops/dev/caddy/sites/green.caddy
+# Generated edge NATS configs (created by add_edge_site.sh)
+ops/dev/nats-edge-*.conf
 .pytest_cache/
 .mypy_cache/
 coverage.xml
