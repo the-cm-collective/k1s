@@ -67,6 +67,40 @@ if [[ -z "$podman_bin" ]]; then
   podman_bin="podman"
 fi
 
+port_is_free() {
+  local port="$1"
+  "$python_bin" - "$port" <<'PY'
+import socket, sys
+port = int(sys.argv[1])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    s.bind(("127.0.0.1", port))
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()
+sys.exit(0)
+PY
+  return $?
+}
+
+pick_metrics_port() {
+  local start_port="$1"
+  local max_tries="${BENCH_METRICS_PORT_SPAN:-50}"
+  local port="$start_port"
+  local i=0
+  while (( i < max_tries )); do
+    if port_is_free "$port"; then
+      echo "$port"
+      return 0
+    fi
+    port=$((port + 1))
+    i=$((i + 1))
+  done
+  return 1
+}
+
 check_netavark_isolation() {
   if [[ "$controller_mode" != "sudo" ]]; then
     return 0
@@ -114,6 +148,20 @@ if [[ -z "$env_dir" || "$env_dir" == "/" || "$env_dir" == "/tmp" || "$env_dir" =
   echo "[bench-env] unsafe env dir '$env_dir' derived from --env-file ($env_file)." >&2
   echo "[bench-env] use a dedicated subdir, e.g. --env-file /tmp/bench-env/env.sh" >&2
   exit 4
+fi
+
+if ! port_is_free "$metrics_port"; then
+  if [[ "${BENCH_METRICS_PORT_STRICT:-0}" == "1" ]]; then
+    echo "[bench-env] metrics port $metrics_port already in use" >&2
+    exit 4
+  fi
+  alt_port="$(pick_metrics_port "$metrics_port" || true)"
+  if [[ -z "$alt_port" ]]; then
+    echo "[bench-env] no free metrics port found starting at $metrics_port" >&2
+    exit 4
+  fi
+  echo "[bench-env] metrics port $metrics_port in use; switching to $alt_port" >&2
+  metrics_port="$alt_port"
 fi
 
 # Fresh sandbox each run unless BENCH_REUSE_ENV=1
