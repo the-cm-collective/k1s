@@ -72,6 +72,9 @@ for bin in "${ENGINES[@]}"; do
   if "$bin" ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^dev-registry-1$'; then
     "$bin" rm -f dev-registry-1 >/dev/null 2>&1 || true
   fi
+  if "$bin" ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^dev-caddy-1$'; then
+    "$bin" rm -f dev-caddy-1 >/dev/null 2>&1 || true
+  fi
 done
 
 log "Stopping dev NATS/etcd stack (nats-hub, nats-edge, etcd)"
