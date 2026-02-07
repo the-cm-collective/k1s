@@ -17,7 +17,7 @@ services:
       - ../../state/etcd:/etcd-data
 
   nats-hub:
-    image: nats:2.10
+    image: docker.io/library/nats:2.10
     command: ["-c", "/etc/nats/nats-hub.conf"]
     ports:
       - "4222:4222"
@@ -32,7 +32,7 @@ services:
       - etcd
 
   nats-edge:
-    image: nats:2.10
+    image: docker.io/library/nats:2.10
     command: ["-c", "/etc/nats/nats-edge.conf"]
     ports:
       - "4223:4223"
