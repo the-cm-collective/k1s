@@ -92,19 +92,19 @@ make bench-mem-e2e-k1s LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICA
 ```
 This runs matrix + rollout, combines all summaries, and writes charts/.
 
-End-to-end (k1nd one-liner; labs-aio compose is started if needed)
+End-to-end (k1nd one-liner; single-container stack started on demand)
 ```
 make bench-mem-e2e-k1nd LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5
 ```
-- Brings up the k1s-in-Docker dev stack (`labs-aio` compose) and then runs the same matrix + rollout sequence against that environment.
+- Brings up the k1s-in-Docker single-container stack (`ops/bench/k1nd-compose.yaml`) with controller + apishim + Caddy and then runs the same matrix + rollout sequence against that environment.
 - Uses Docker for host-side preflights and container cgroup metrics; ensure the current user can run `docker ps`.
-- Leave it running for repeated runs, or tear down with `make labs-aio-down` when done.
+- Leave it running for repeated runs by setting `K1ND_SKIP_POST_DOWN=1`, or tear down with `scripts/bench/k1nd_single.sh down` when done.
 
 End-to-end (k1nd with teardown)
 ```
 make bench-mem-e2e-k1nd-down LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5
 ```
-- Runs the same k1nd sequence and then executes `make labs-aio-down` to stop the compose stack.
+- Runs the same k1nd sequence and then stops the k1nd compose stack.
 
 End-to-end (all suites, automated prep)
 ```

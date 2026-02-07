@@ -1,0 +1,28 @@
+services:
+  k1nd:
+    build:
+      context: ../..
+      dockerfile: ops/bench/k1nd.Dockerfile
+    container_name: k1nd-server
+    environment:
+      AE_RUNTIME_BACKEND: docker
+      AE_ALLOW_PLAINTEXT_SECRETS: "1"
+      AE_STATE_DB: /state/controller.db
+      AE_SPECS_DIR: /specs
+      AE_APISHIM_DB: /state/apishim.db
+      APISHIM_ENV_FILE: /state/apishim.env
+      APISHIM_CERT_FILE: /state/apishim.crt
+      APISHIM_KEY_FILE: /state/apishim.key
+      APISHIM_PORT: ${K1ND_APISHIM_PORT:-8445}
+      CADDY_HOST_ALIAS: 127.0.0.1
+      APISHIM_UPSTREAM: 127.0.0.1:8445
+    volumes:
+      - ${K1ND_STATE_DIR:-./state/bench-k1nd-state}:/state
+      - ${K1ND_SPECS_DIR:-./state/bench-k1nd-specs}:/specs
+      - ${K1ND_APPLY_DIR:-./state/bench-k1nd-apply}:/apply
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "127.0.0.1:${K1ND_API_PORT:-9108}:9108"
+      - "127.0.0.1:${K1ND_APISHIM_PORT:-8445}:8445"
+      - "127.0.0.1:${K1ND_CADDY_HTTP_PORT:-8888}:80"
+      - "127.0.0.1:${K1ND_CADDY_HTTPS_PORT:-8443}:443"
