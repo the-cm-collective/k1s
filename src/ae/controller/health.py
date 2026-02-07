@@ -419,7 +419,22 @@ class HealthManager:
         url = f"http://{endpoint}{path}"
         try:
             timeout = max(probe.timeout_seconds, 1)
-            response = get(url, timeout=timeout)
+            trust_env = os.getenv("AE_PROBE_TRUST_ENV", "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+            }
+            if trust_env:
+                response = get(url, timeout=timeout)
+            else:
+                import requests as _requests
+
+                sess = _requests.Session()
+                sess.trust_env = False
+                try:
+                    response = sess.get(url, timeout=timeout)
+                finally:
+                    sess.close()
         except RequestException as exc:  # pragma: no cover - network path depends on runtime
             return ProbeOutcome(False, f"{probe_type} http error: {exc}")
 
