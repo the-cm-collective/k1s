@@ -1,19 +1,22 @@
-name: e2e-plan-legacy
+name: e2e-core-edge
 
 on:
   workflow_dispatch: {}
 
 concurrency:
-  group: e2e-plan-legacy-${{ github.ref }}
+  group: e2e-core-edge-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  plan:
+  e2e:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
-      AE_RUNTIME_BACKEND: docker
       DOCKER_BUILDKIT: 1
-      API_PORT: 9108
+      K1S_E2E_DIR: /tmp/e2e-core-edge
+      NO_PROXY: "127.0.0.1,localhost"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
     steps:
       - name: Trust Gitea cert (or disable verify)
         run: |
@@ -26,13 +29,6 @@ jobs:
             echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
           fi
       - uses: actions/checkout@v4
-      - name: Create venv (local act)
-        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
-        run: |
-          python -m venv .venv
-          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
-          . .venv/bin/activate
-          python -m pip install -U pip
       - name: Configure Docker client (insecure TLS fallback)
         run: |
           if [ -S /var/run/docker.sock ]; then
@@ -46,38 +42,25 @@ jobs:
             echo "DOCKER_CERT_PATH=/certs/client" >> "$GITHUB_ENV"
             echo "DOCKER_TLS_CERTDIR=" >> "$GITHUB_ENV"
           fi
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: >-
-            ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml', 'setup.cfg', 'setup.py', 'requirements*.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install system deps (age, sops)
+          python-version: "3.12"
+      - name: Install deps
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y age sops
-
-      - name: Install project deps
-        run: |
-          python -m pip install --upgrade pip
+          python -m pip install -U pip
           python -m pip install -e .[dev]
-
-      - name: Run E2E /plan validations
-        run: bash ./scripts/e2e/plan_validate.sh
-
-      - name: Upload artifacts on failure
+      - name: Run core/edge E2E (JetStream + etcd)
+        run: |
+          python scripts/e2e_k1s_core_edge.py
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "== docker compose ps ==" > /tmp/e2e-core-edge/compose-ps.txt || true
+          docker compose -f /tmp/e2e-core-edge/compose.yaml ps >> /tmp/e2e-core-edge/compose-ps.txt || true
+          docker compose -f /tmp/e2e-core-edge/compose.yaml logs --no-color > /tmp/e2e-core-edge/compose-logs.txt || true
+      - name: Upload artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-plan-artifacts
-          path: |
-            artifacts
+          name: e2e-core-edge-artifacts
+          path: /tmp/e2e-core-edge

@@ -1,13 +1,10 @@
-name: e2e-multiport
+name: e2e-multiport-legacy
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch: {}
 
 concurrency:
-  group: e2e-${{ github.ref }}
+  group: e2e-legacy-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
