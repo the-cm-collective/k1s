@@ -18,7 +18,7 @@ docs.home.arpa:443, docs.home.arpa
     }
     handle @api {
         reverse_proxy {
-            to host.docker.internal:9108
+            to {$CADDY_HOST_ALIAS:host.docker.internal}:9108
             header_up Host {http.reverse_proxy.upstream.hostport}
         }
     }

@@ -37,6 +37,7 @@ apishim_container="${APISHIM_CONTAINER:-0}"
 mkdir -p "$(dirname "$ENV_FILE")"
 {
   printf 'APISHIM_PORT=%s\n' "${apishim_port}"
+  printf 'CADDY_HOST_ALIAS=%s\n' "${host_alias}"
   if [[ "${apishim_container}" != "1" ]]; then
     printf 'APISHIM_UPSTREAM=%s\n' "${apishim_upstream}"
   fi
