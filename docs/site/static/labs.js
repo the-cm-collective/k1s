@@ -1085,35 +1085,35 @@
     if (baseInput) baseInput.value = base;
     try { localStorage.setItem('ae_apishim_base', base); } catch {}
     if (tokenInput && !tokenInput.value) {
-      try { tokenInput.value = localStorage.getItem('ae_apishim_pf_token') || localStorage.getItem('ae_apishim_token') || ''; } catch {}
+      try { tokenInput.value = localStorage.getItem('ae_apishim_exec_token') || localStorage.getItem('ae_apishim_token') || ''; } catch {}
     }
     const scope = `${ns}/${splitAppName(state.appName || '').name || pod}`;
-    let pfStoredToken = '';
-    let pfStoredScope = '';
-    try { pfStoredToken = localStorage.getItem('ae_apishim_pf_token') || localStorage.getItem('ae_apishim_token') || ''; } catch {}
-    try { pfStoredScope = localStorage.getItem('ae_apishim_pf_scope') || ''; } catch {}
-    if (pfStoredToken && pfStoredToken.indexOf('sess1.') === 0) {
-      if (sessionTokenExpired(pfStoredToken, 15)) {
-        clearStoredSession('pf');
-        pfStoredToken = '';
-        pfStoredScope = '';
-      } else if (pfStoredScope && pfStoredScope !== scope) {
-        clearStoredSession('pf');
-        pfStoredToken = '';
-        pfStoredScope = '';
+    let execStoredToken = '';
+    let execStoredScope = '';
+    try { execStoredToken = localStorage.getItem('ae_apishim_exec_token') || localStorage.getItem('ae_apishim_token') || ''; } catch {}
+    try { execStoredScope = localStorage.getItem('ae_apishim_exec_scope') || ''; } catch {}
+    if (execStoredToken && execStoredToken.indexOf('sess1.') === 0) {
+      if (sessionTokenExpired(execStoredToken, 15)) {
+        clearStoredSession('exec');
+        execStoredToken = '';
+        execStoredScope = '';
+      } else if (execStoredScope && execStoredScope !== scope) {
+        clearStoredSession('exec');
+        execStoredToken = '';
+        execStoredScope = '';
       }
     }
-    if (tokenInput && !tokenInput.value && pfStoredToken) {
-      tokenInput.value = pfStoredToken;
+    if (tokenInput && !tokenInput.value && execStoredToken) {
+      tokenInput.value = execStoredToken;
     }
     if (tokenInput && tokenInput.value && tokenInput.value.indexOf('sess1.') === 0) {
       if (sessionTokenExpired(tokenInput.value, 15) || !sessionTokenAllowsScope(tokenInput.value, scope)) {
-        clearStoredSession('pf');
+        clearStoredSession('exec');
         tokenInput.value = '';
       }
     }
-    if (tokenInput && tokenInput.value && pfStoredScope && pfStoredScope !== scope && tokenInput.value.indexOf('sess1.') === 0) {
-      try { clearStoredSession('pf'); } catch {}
+    if (tokenInput && tokenInput.value && execStoredScope && execStoredScope !== scope && tokenInput.value.indexOf('sess1.') === 0) {
+      try { clearStoredSession('exec'); } catch {}
       tokenInput.value = '';
     }
     const doConnect = () => {
@@ -1155,6 +1155,14 @@
       labsShellStatus('minting token', 'muted');
       mintShimToken('exec', scope).then((tok) => {
         if (tok && tokenInput) tokenInput.value = tok;
+        try {
+          if (tok) {
+            localStorage.setItem('ae_apishim_exec_token', tok);
+            localStorage.setItem('ae_apishim_exec_scope', scope);
+            const exp = sessionTokenExp(tok);
+            if (exp) localStorage.setItem('ae_apishim_exec_exp', String(exp));
+          }
+        } catch {}
         doConnect();
       }).catch(() => { doConnect(); });
       return;
@@ -1327,6 +1335,13 @@
     if (modal) modal.classList.remove('hidden');
     const resp = document.getElementById('labs-pf-response');
     if (resp) resp.value = '';
+    const req = document.getElementById('labs-pf-request');
+    if (req) {
+      const current = String(req.value || '');
+      if (!current.trim() || current.indexOf('\n') === -1) {
+        req.value = 'GET / HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n';
+      }
+    }
     labsPfStatus('idle', 'muted');
     labsSetPfView('source');
   }
