@@ -60,6 +60,19 @@ ensure_specs_dir() {
   mkdir -p "$dir"
 }
 
+abs_path() {
+  local path="$1"
+  if [[ -z "$path" ]]; then
+    printf '%s' "$path"
+    return 0
+  fi
+  if [[ "$path" == /* ]]; then
+    printf '%s' "$path"
+    return 0
+  fi
+  printf '%s/%s' "$ROOT_DIR" "$path"
+}
+
 seed_demo_specs() {
   local dir="$1"
   local wipe="${2:-1}"
@@ -460,8 +473,8 @@ fi
 
 case "$PROFILE" in
   dev-min)
-    PROFILE_DIR="${PROFILE_DIR:-$ROOT_DIR/state/profiles/dev-min}"
-    SPECS_DIR="${SPECS_DIR:-$PROFILE_DIR/specs}"
+    PROFILE_DIR="$(abs_path "${PROFILE_DIR:-state/profiles/dev-min}")"
+    SPECS_DIR="$(abs_path "${SPECS_DIR:-$PROFILE_DIR/specs}")"
     ensure_specs_dir "$SPECS_DIR"
     export DEV_PROFILE_DIR="$PROFILE_DIR"
     export AE_SPECS_DIR="$SPECS_DIR"
@@ -493,8 +506,8 @@ case "$PROFILE" in
   dev-etcd)
     COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/ops/dev/docker-compose.nats-etcd.yaml}"
     compose "$ENGINE_BIN" -f "$COMPOSE_FILE" up -d etcd
-    PROFILE_DIR="${PROFILE_DIR:-$ROOT_DIR/state/profiles/dev-etcd}"
-    SPECS_DIR="${SPECS_DIR:-$PROFILE_DIR/specs}"
+    PROFILE_DIR="$(abs_path "${PROFILE_DIR:-state/profiles/dev-etcd}")"
+    SPECS_DIR="$(abs_path "${SPECS_DIR:-$PROFILE_DIR/specs}")"
     ensure_specs_dir "$SPECS_DIR"
     export DEV_PROFILE_DIR="$PROFILE_DIR"
     export AE_SPECS_DIR="$SPECS_DIR"
@@ -522,8 +535,8 @@ case "$PROFILE" in
   k1s-core)
     COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/ops/dev/docker-compose.nats-etcd.yaml}"
     compose "$ENGINE_BIN" -f "$COMPOSE_FILE" up -d etcd nats-hub
-    PROFILE_DIR="${PROFILE_DIR:-$ROOT_DIR/state/profiles/k1s-core}"
-    SPECS_DIR="${SPECS_DIR:-$PROFILE_DIR/specs}"
+    PROFILE_DIR="$(abs_path "${PROFILE_DIR:-state/profiles/k1s-core}")"
+    SPECS_DIR="$(abs_path "${SPECS_DIR:-$PROFILE_DIR/specs}")"
     ensure_specs_dir "$SPECS_DIR"
     export DEV_PROFILE_DIR="$PROFILE_DIR"
     export AE_SPECS_DIR="$SPECS_DIR"
@@ -587,7 +600,7 @@ case "$PROFILE" in
     COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/ops/dev/docker-compose.nats-etcd.yaml}"
     compose "$ENGINE_BIN" -f "$COMPOSE_FILE" up -d nats-edge
     EDGE_PROFILE="${EDGE_PROFILE:-k1s-edge}"
-    PROFILE_DIR="${PROFILE_DIR:-$ROOT_DIR/state/profiles/$EDGE_PROFILE}"
+    PROFILE_DIR="$(abs_path "${PROFILE_DIR:-state/profiles/$EDGE_PROFILE}")"
     mkdir -p "$PROFILE_DIR"
     INGRESS_MODE="$(normalize_ingress_mode "${EDGE_INGRESS_MODE:-${AE_EDGE_INGRESS_MODE:-core-proxy}}")"
     EDGE_INGRESS_START="${EDGE_INGRESS_START:-1}"
