@@ -630,8 +630,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
-    <script>window.DOCS_DASHBOARD_URL='http://127.0.0.1:9108/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -708,7 +708,7 @@
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="http://127.0.0.1:9108/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -809,7 +809,13 @@ CORE_CADDY=1 make dev-etcd</code></pre>
 <h2>Manual smoke test (profiles)</h2>
 <p>**dev-min** 1. <code>CORE_DOCS=1 make dev-min</code> (optional TLS: <code>CORE_CADDY=1 make dev-min</code>) 2. <code>python -m ae.cli apply -f specs/examples/echo.yaml</code> 3. <code>python -m ae.cli status --verbose</code> (expect 1 ready app) 4. Open <code>http://127.0.0.1:9108/dashboard</code> and <code>http://127.0.0.1:9109/playground/</code> 5. <code>make down</code></p>
 <p>**dev-etcd** 1. <code>CORE_DOCS=1 make dev-etcd</code> (optional TLS: <code>CORE_CADDY=1 make dev-etcd</code>) 2. <code>python -m ae.cli apply -f specs/examples/echo.yaml</code> 3. <code>python -m ae.cli status --verbose</code> and <code>python -m ae.cli metrics</code> 4. Open <code>http://127.0.0.1:9108/dashboard</code> and <code>http://127.0.0.1:9109/playground/</code> 5. <code>make down</code></p>
-<p>**k1s-core + multiple edges (same host)** 1. Terminal A: <code>AE_DEV_LOCAL=1 make k1s-core</code> (optional TLS only: <code>CORE_CADDY=1 make k1s-core</code>) 2. Terminal B: <code>make k1s-edge</code> (site <code>sfo-edge-01</code>, node <code>edge-node-1</code>) 3. Terminal C: <code>AE_SITE_ID=sfo-edge-01 AE_NODE_ID=edge-node-2 make k1s-edge</code> 4. Terminal D (second site on same host): <code>make edge-site SITE_ID=sfo-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code> then <code>AE_SITE_ID=sfo-edge-02 AE_NODE_ID=edge-node-1 AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 make k1s-edge</code> 5. In the core terminal: <code>source &lt;(ae auth local)</code> then <code>ae nodes</code> (expect 3 nodes across 2 sites) 6. <code>python -m ae.cli apply -f specs/examples/echo.yaml</code> 7. <code>python -m ae.cli status --verbose</code> and <code>python -m ae.cli events echo</code> 8. Open <code>http://127.0.0.1:9108/dashboard</code> and <code>http://127.0.0.1:9109/playground/</code> 9. <code>make down</code></p>
+<p>**k1s-core + multiple edges (same host)** 1. Terminal A: <code>AE_DEV_LOCAL=1 make k1s-core</code> (optional TLS only: <code>CORE_CADDY=1 make k1s-core</code>) 2. Terminal B: <code>make k1s-edge</code> (site <code>sfo-edge-01</code>, node <code>edge-node-1</code>) 3. Terminal C: <code>AE_SITE_ID=sfo-edge-01 AE_NODE_ID=edge-node-2 make k1s-edge</code> (second node, same site) 4. Terminal D (second site on same host):</p>
+<ul>
+<li><code>make edge-site SITE_ID=sfo-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code></li>
+<li><code>AE_SITE_ID=sfo-edge-02 AE_NODE_ID=edge-node-1 AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 make k1s-edge</code></li>
+<li>Note: <code>AE_NODE_ID</code> must be globally unique across sites. Prefer <code>AE_NODE_ID=&lt;site_id&gt;--&lt;node_id&gt;</code> for multi-site tests.</li>
+</ul>
+<p>5. In the core terminal: <code>source &lt;(ae auth local)</code> then <code>ae nodes</code> (expect 3 nodes across 2 sites) 6. <code>python -m ae.cli apply -f specs/examples/echo.yaml</code> 7. <code>python -m ae.cli status --verbose</code> and <code>python -m ae.cli events echo</code> 8. Open <code>http://127.0.0.1:9108/dashboard</code> and <code>http://127.0.0.1:9109/playground/</code> 9. <code>make down</code></p>
 <h2>Stop everything</h2>
 <pre><code>make down</code></pre>
 <p>&lt;details&gt; &lt;summary&gt;&lt;strong&gt;Ingress Envoy Test Coverage&lt;/strong&gt;&lt;/summary&gt;</p>
@@ -834,7 +840,7 @@ CORE_CADDY=1 make dev-etcd</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-07 02:26:05</span>
+        <span>Built 2026-02-07 02:53:26</span>
       </div>
     </footer>
     <script>
