@@ -76,6 +76,34 @@ sudo_env_cli=(
   "PYTHONPATH=${py_path}"
 )
 
+# Auto-detect k1nd single-container runs (k1nd-server) and set sane defaults.
+detect_k1nd_container() {
+  local name="${AE_CLI_CONTAINER:-k1nd-server}"
+  if [[ "${AE_RUNTIME_BACKEND:-}" != "docker" && "${mode:-}" != "k1nd" ]]; then
+    return 1
+  fi
+  command -v docker >/dev/null 2>&1 || return 1
+  if docker ps -q --filter "name=^${name}$" 2>/dev/null | head -n1 | grep -q '.'; then
+    echo "$name"
+    return 0
+  fi
+  return 1
+}
+
+k1nd_container=""
+if [[ "${AE_K1ND_AUTO:-1}" != "0" ]]; then
+  k1nd_container="$(detect_k1nd_container || true)"
+fi
+if [[ -n "$k1nd_container" ]]; then
+  : "${AE_CLI_IN_CONTAINER:=1}"
+  : "${AE_CLI_CONTAINER:=$k1nd_container}"
+  : "${AE_K1ND_CONTROLLER_CONTAINER:=$k1nd_container}"
+  : "${AE_K1ND_APISHIM_CONTAINER:=$k1nd_container}"
+  : "${AE_K1ND_INGRESS_CONTAINER:=$k1nd_container}"
+  : "${AE_COLLECT_ENGINE:=docker}"
+  : "${AE_RUNTIME_BACKEND:=docker}"
+fi
+
 # Support running ae CLI inside the controller container for k1nd
 AE_CLI_CONTAINER=${AE_CLI_CONTAINER:-dev-controller-1}
 if [[ "${AE_CLI_IN_CONTAINER:-0}" == "1" ]] && command -v docker >/dev/null 2>&1; then
