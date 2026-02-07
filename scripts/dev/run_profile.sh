@@ -469,7 +469,7 @@ PY
 start_envoy_container() {
   local name="$1"
   local config_path="$2"
-  local image="${AE_ENVOY_IMAGE:-envoyproxy/envoy:v1.29-latest}"
+  local image="${AE_ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}"
   "$ENGINE_BIN" rm -f "$name" >/dev/null 2>&1 || true
   "$ENGINE_BIN" run -d --name "$name" --network host \
     -v "${config_path}:/etc/envoy/envoy.yaml:ro" \
