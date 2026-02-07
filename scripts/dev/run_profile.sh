@@ -175,22 +175,42 @@ start_docs_server() {
 
 start_caddy() {
   local https_port="${CADDY_HTTPS_PORT:-8443}"
+  local http_port="${CADDY_HTTP_PORT:-8888}"
   local api_base="https://api.home.arpa:${https_port}"
   local dash_url="https://dash.home.arpa:${https_port}/dashboard"
   local docs_env="$ROOT_DIR/state/dev.env"
   local caddy_sites="$ROOT_DIR/state/caddy"
+  local caddy_data="$ROOT_DIR/state/caddy-data"
+  local caddy_config="$ROOT_DIR/ops/dev/caddy"
+  local docs_dir="$ROOT_DIR/docs/site"
+  local caddy_container="${AE_CADDY_CONTAINER:-dev-caddy-1}"
+  local apishim_upstream=""
+  local caddy_network=""
 
   mkdir -p "$caddy_sites"
-  if [[ -x "$ROOT_DIR/scripts/ensure_dev_env.sh" ]]; then
-    AE_CONTAINER_CLI="$ENGINE_BIN" "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
-  fi
-
   resolve_docs_labs_token
   DOCS_API_BASE="$api_base" DOCS_DASHBOARD_URL="$dash_url" "$PYTHON_BIN" docs/build_docs.py >/dev/null 2>&1 || true
 
   local host_alias="host.docker.internal"
   if [[ "$ENGINE_BIN" == "podman" ]]; then
     host_alias="host.containers.internal"
+  fi
+  if [[ -x "$ROOT_DIR/scripts/ensure_dev_env.sh" ]]; then
+    AE_CONTAINER_CLI="$ENGINE_BIN" "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
+  fi
+  if [[ "${AE_APISHIM_MODE:-}" == "container" && "$ENGINE_BIN" == "podman" ]]; then
+    if "$ENGINE_BIN" network inspect dev_default >/dev/null 2>&1; then
+      apishim_upstream="apishim:${APISHIM_PORT:-8445}"
+      caddy_network="dev_default"
+    fi
+  fi
+  if [[ -z "$apishim_upstream" ]]; then
+    apishim_upstream="${host_alias}:${APISHIM_PORT:-8445}"
+  fi
+  export APISHIM_ENV_FILE="${APISHIM_ENV_FILE:-$docs_env}"
+  if [[ -f "$docs_env" ]]; then
+    sed -i '/^APISHIM_UPSTREAM=/d' "$docs_env" >/dev/null 2>&1 || true
+    printf 'APISHIM_UPSTREAM=%s\n' "$apishim_upstream" >>"$docs_env"
   fi
   cat > "${caddy_sites}/dash.caddy" <<EOF
 https://dash.home.arpa {
@@ -204,9 +224,41 @@ https://dash.home.arpa {
 }
 EOF
 
-  "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" up -d caddy >/dev/null 2>&1 || true
-  "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" exec -T caddy \
-    caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true
+  if [[ "$ENGINE_BIN" == "podman" ]]; then
+    mkdir -p "$caddy_data"
+    "$ENGINE_BIN" rm -f "$caddy_container" >/dev/null 2>&1 || true
+    local caddy_started=0
+    "$ENGINE_BIN" run -d --name "$caddy_container" \
+      -p "${http_port}:80" \
+      -p "${https_port}:443" \
+      --env-file "$docs_env" \
+      -v "${caddy_config}:/etc/caddy:ro" \
+      -v "${caddy_data}:/data" \
+      -v "${caddy_sites}:/etc/caddy/dynsites:ro" \
+      -v "${docs_dir}:/srv/docs:ro" \
+      ${caddy_network:+--network "$caddy_network"} \
+      --add-host "host.docker.internal:host-gateway" \
+      --add-host "host.containers.internal:host-gateway" \
+      docker.io/library/caddy:2.8 >/dev/null 2>&1 && caddy_started=1 || true
+    if [[ "$caddy_started" -ne 1 ]]; then
+      "$ENGINE_BIN" rm -f "$caddy_container" >/dev/null 2>&1 || true
+      "$ENGINE_BIN" run -d --name "$caddy_container" \
+        -p "${http_port}:80" \
+        -p "${https_port}:443" \
+        --env-file "$docs_env" \
+        -v "${caddy_config}:/etc/caddy:ro" \
+        -v "${caddy_data}:/data" \
+        -v "${caddy_sites}:/etc/caddy/dynsites:ro" \
+        -v "${docs_dir}:/srv/docs:ro" \
+        ${caddy_network:+--network "$caddy_network"} \
+        docker.io/library/caddy:2.8 >/dev/null 2>&1 || true
+    fi
+    "$ENGINE_BIN" exec -T "$caddy_container" caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true
+  else
+    "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" up -d caddy >/dev/null 2>&1 || true
+    "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" exec -T caddy \
+      caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true
+  fi
 }
 
 is_truthy() {
