@@ -6,6 +6,7 @@ import argparse
 import os
 
 from ae.config.transport import GatewayJetStreamConfig, TransportConfig
+from ae.controller.node_identity import scoped_node_id
 from ae.gateway.service import SiteGateway
 from ae.observability.logging import configure_logging
 from ae.transport.nats_client import NatsClient, NatsClientError
@@ -57,6 +58,10 @@ def main(argv: list[str] | None = None) -> int:
     if not args.site_id:
         raise SystemExit("AE_SITE_ID or --site-id is required")
 
+    node_id = args.node_id
+    if node_id:
+        node_id = scoped_node_id(args.site_id, str(node_id))
+
     nats_client = None
     if transport.backend in {"nats-core", "nats-js"}:
         if not args.nats_url:
@@ -73,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     js_config = GatewayJetStreamConfig.from_env()
     gateway = SiteGateway(
         site_id=args.site_id,
-        node_id=args.node_id,
+        node_id=node_id,
         nats_url=args.nats_url,
         js_config=js_config,
         status_interval_s=args.status_interval,

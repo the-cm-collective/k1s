@@ -630,8 +630,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
+    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
+    <script>window.DOCS_DASHBOARD_URL='http://127.0.0.1:9108/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -708,7 +708,7 @@
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="http://127.0.0.1:9108/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -721,76 +721,135 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Multi-node Lab Walkthrough</h1>
-<p>Use this quickstart to exercise the multi-node path on two Linux hosts (one controller + one worker). It mirrors the multi-node smoke the CI job will run.</p>
+    <h1>Multi-node Edge Gateway Manual Test</h1>
+<p>This walkthrough is a manual test pattern for the core hub plus edge gateways. It focuses on a JetStream hub with lightweight edge sites and multiple gateways per site. For the ops-focused runbook, see <code>docs/ops/core-edge-manual-test.md</code>.</p>
+<h2>Topology</h2>
+<ul>
+<li>Site A (LAN): <code>k1s-core</code> + one gateway on <code>sfo-edge-01</code>.</li>
+<li>Site B (remote): one edge NATS leader with outbound leaf to the hub, two gateways on <code>sea-edge-02</code>.</li>
+<li>Transport: JetStream on hub only; gateways use a local SQLite spool for durability.</li>
+</ul>
 <h2>Prereqs</h2>
 <ul>
-<li>Two hosts (or VMs) with Python 3.11+, Podman or Docker, WireGuard tools (<code>wg</code>, <code>wg-quick</code>), and passwordless SSH between them for convenience.</li>
-<li>Optional (CRI/containerd): containerd + CNI + <code>crictl</code> installed on nodes using <code>--runtime-backend cri</code>.</li>
-<li>Rootful networking on both nodes (rootless overlay is not supported); a small privileged helper is required to attach WireGuard.</li>
-<li>Controller host exposes TCP 9110 (agent API) and UDP 51820 (or your chosen WireGuard port).</li>
-<li>Clone this repo on the controller; worker only needs <code>ae</code> installed plus the <code>ae-node</code> entrypoint.</li>
+<li>Hub host reachable on TCP <code>4222</code> (NATS) and TCP <code>7422</code> (leaf node port).</li>
+<li>Remote edge NATS can open outbound TCP to <code>HUB_PUBLIC:7422</code>.</li>
+<li>Unique node ids (recommended format: <code>&lt;site_id&gt;--&lt;node_id&gt;</code>).</li>
 </ul>
-<h2>Bring up the controller</h2>
-<pre><code>AE_ENABLE_SERVICE_PROXY=1 \
-AE_SERVICE_PROVIDER=overlay \
-AE_OVERLAY_NET=${AE_OVERLAY_NET:-ae-overlay} \
-AE_SERVICE_IP_POOL=${AE_SERVICE_IP_POOL:-10.241.0.0/16} \
-AE_POD_CIDR_POOL=${AE_POD_CIDR_POOL:-10.42.0.0/16} \
-AE_POD_CIDR_MASK=${AE_POD_CIDR_MASK:-24} \
-AE_AGENT_API_PORT=${AE_AGENT_API_PORT:-9110} \
-AE_AGENT_API_TOKEN=${AE_AGENT_API_TOKEN:-changeme} \
-AE_AGENT_API_TLS_CERT=${AE_AGENT_API_TLS_CERT:-} \
-AE_AGENT_API_TLS_KEY=${AE_AGENT_API_TLS_KEY:-} \
-AE_AGENT_API_CLIENT_CA=${AE_AGENT_API_CLIENT_CA:-} \
-AE_AGENT_API_REQUIRE_CLIENT_CERT=${AE_AGENT_API_REQUIRE_CLIENT_CERT:-0} \
-python -m ae.controller --loop --specs specs/ --metrics-port 9108</code></pre>
-<p>Optional: point the controller at Postgres for state (<code>AE_STATE_DSN=postgresql://...</code>) to mirror production.</p>
-<h2>Start agents on workers</h2>
-<p>Generate per-node WireGuard config (or reuse your own) and start the agent:</p>
-<pre><code>AE_CONTROLLER_URL=http://&lt;controller-host&gt;:9110 \
-AE_AGENT_TOKEN=$AE_AGENT_API_TOKEN \
-AE_NODE_ID=&lt;node-name&gt; \
-AE_NODE_LABELS=role=worker \
-AE_AGENT_ENDPOINT=http://&lt;node-host&gt;:9109 \
-AE_AGENT_HEARTBEAT_SECONDS=10 \
-AE_CONTROLLER_TLS_CA=${AE_CONTROLLER_TLS_CA:-} \
-AE_CONTROLLER_TLS_CERT=${AE_CONTROLLER_TLS_CERT:-} \
-AE_CONTROLLER_TLS_KEY=${AE_CONTROLLER_TLS_KEY:-} \
-AE_WG_CONFIG=&quot;$(cat /etc/wireguard/wg0.conf)&quot; \
-python -m ae.node --runtime-backend podman --port 9109 --ensure-pod-net</code></pre>
+<h2>Start with clear state (recommended)</h2>
+<pre><code>make dev-state-clean CONFIRM=1</code></pre>
+<p>This wipes <code>state/</code> (keeps TLS artifacts) and clears any work queues so you can reuse work ids. Gateway spools are cleared on exit by default; set <code>AE_GATEWAY_KEEP_SPOOL=1</code> to preserve spools for diagnostics.</p>
+<h2>Step 1: Start the hub (LAN)</h2>
+<pre><code>AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy make k1s-core</code></pre>
+<h2>Step 2: Start the local site gateway (same LAN)</h2>
+<pre><code>AE_SITE_ID=sfo-edge-01 \
+AE_NODE_ID=edge-1 \
+AE_GATEWAY_SPOOL_PATH=state/gw-sfo-edge-01--edge-1.db \
+make k1s-edge-core</code></pre>
+<p>Note: <code>AE_NODE_ID</code> is auto-scoped to <code>sfo-edge-01--edge-1</code> by the gateway.</p>
+<h2>Step 3: Register the remote site in hub NATS config</h2>
+<p>Dev helper (auto-updates hub config and starts a local edge NATS):</p>
+<pre><code>make edge-site SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code></pre>
+<p>Production equivalent:</p>
 <ul>
-<li>For CRI/containerd nodes, use:
+<li>Add a <code>site-&lt;site_id&gt;-uplink</code> user in <code>ops/dev/nats-hub.conf</code>.</li>
+<li>Reload the hub NATS (<code>nats-server --signal reload</code>).</li>
+</ul>
+<h2>Step 4: Edge NATS leader (same-host vs remote)</h2>
+<p>Same host (dev helper):</p>
 <ul>
-<li><code>AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock python -m ae.node --runtime-backend cri --port 9109 --ensure-pod-net</code></li>
+<li><code>make edge-site</code> already starts an edge NATS leader bound to <code>127.0.0.1:&lt;EDGE_PORT&gt;</code>.</li>
+<li>Use <code>AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224</code> for the gateways.</li>
+</ul>
+<p>Remote host (behind NAT):</p>
+<ul>
+<li>Run an edge NATS server with a leaf connection back to the hub.</li>
+<li>Key settings (from <code>ops/dev/nats-edge.conf</code>):
+<ul>
+<li>Replace <code>sfo-edge-01</code> with <code>sea-edge-02</code>.</li>
+<li>Set leaf url to <code>nats://site-sea-edge-02-uplink:dev@HUB_PUBLIC:7422</code>.</li>
 </ul>
 </li>
-<li>Leave <code>AE_POD_CIDR</code> empty to let the controller assign one on first heartbeat.</li>
-<li>If WireGuard is disabled, drop <code>--ensure-pod-net</code> and set <code>AE_SERVICE_PROVIDER=bridge</code> on the controller (no cross-node routing).</li>
+<li>Ensure <code>HUB_PUBLIC</code> resolves and is reachable on TCP <code>7422</code>.</li>
 </ul>
-<h2>Deploy the demo app</h2>
-<p>Use the multi-node friendly sample (<code>specs/examples/echo-multinode.yaml</code>):</p>
-<pre><code>python -m ae.cli apply -f specs/examples/echo-multinode.yaml
-ae nodes list
-ae status echo-mn --watch</code></pre>
-<p>Expected: one replica on each node, Service VIP allocated from <code>AE_SERVICE_IP_POOL</code>, Caddy (or your ingress) targets the Service VIP instead of hostPorts.</p>
-<h2>Validate routing and failover</h2>
+<h2>Step 5: Start two gateways on the remote site</h2>
+<p>Gateway 1:</p>
+<pre><code>AE_SITE_ID=sea-edge-02 \
+AE_NODE_ID=edge-1 \
+AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4223 \
+AE_TRANSPORT_BACKEND=nats-js \
+AE_JS_DOMAIN=K1S \
+AE_GATEWAY_SPOOL_PATH=$HOME/.local/share/ae/gateway-sea-edge-02--edge-1.db \
+python -m ae.gateway</code></pre>
+<p>Gateway 2:</p>
+<pre><code>AE_SITE_ID=sea-edge-02 \
+AE_NODE_ID=edge-2 \
+AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4223 \
+AE_TRANSPORT_BACKEND=nats-js \
+AE_JS_DOMAIN=K1S \
+AE_GATEWAY_SPOOL_PATH=$HOME/.local/share/ae/gateway-sea-edge-02--edge-2.db \
+python -m ae.gateway</code></pre>
+<p>Notes:</p>
 <ul>
-<li>Verify Service VIP reachability from the controller host: <code>ae services</code> to find the ClusterIP, then <code>curl http://&lt;cluster-ip&gt;/healthz</code>.</li>
-<li>Simulate node loss: <code>ae nodes &lt;node&gt; --cordon</code> then stop the agent; reconcile should reschedule replicas to the surviving node (storage-bound apps will remain pending by design).</li>
-<li>Exec/logs proxied via agent: <code>ae exec echo-mn -- id</code> and <code>ae logs echo-mn --tail 5</code> (add <code>-n &lt;ns&gt;</code> if the app is not in <code>default</code>).</li>
+<li>Same-host dev: replace <code>REMOTE_EDGE_NATS:4223</code> with <code>127.0.0.1:4224</code>.</li>
+<li>Remote host: set <code>REMOTE_EDGE_NATS</code> to the edge NATS LAN IP/hostname.</li>
+<li>Gateways clear their spool DB on exit unless <code>AE_GATEWAY_KEEP_SPOOL=1</code> is set.</li>
 </ul>
-<h2>Fast smoke commands</h2>
+<p>Optional stub workers (one per gateway node id):</p>
+<pre><code>python -m ae.worker_stub --log-level debug --node-id edge-1 --nats-url nats://worker:dev@REMOTE_EDGE_NATS:4223
+python -m ae.worker_stub --log-level debug --node-id edge-2 --nats-url nats://worker:dev@REMOTE_EDGE_NATS:4223</code></pre>
+<p>One-shell helper (gateway + stub worker together):</p>
+<pre><code>AE_SITE_ID=sea-edge-02 \
+AE_NODE_ID=edge-1 \
+AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4223 \
+EDGE_START_NATS=0 \
+EDGE_WORKER_LOG_LEVEL=debug \
+make k1s-edge-core</code></pre>
+<p>Notes:</p>
 <ul>
-<li>Unit + integration (includes remote agent stub test): <code>pytest tests/unit/test_scheduler.py tests/integration/test_multinode_agent_flow.py</code></li>
-<li>Planner checks: <code>ae plan -f specs/examples/echo-multinode.yaml --strict</code></li>
-<li>End-to-end lab helper: <code>./ops/dev/multinode-lab.sh -h</code> for environment hints.</li>
+<li>Set <code>EDGE_START_NATS=0</code> when the edge NATS is already running elsewhere.</li>
+<li>Omit <code>EDGE_WORKER_LOG_LEVEL</code> to run the worker at default log level.</li>
+</ul>
+<p>Expected debug output (worker):</p>
+<pre><code>INFO ae.worker_stub: stub worker connected node_id=sea-edge-02--edge-1 nats=nats://worker:dev@127.0.0.1:4224
+DEBUG ae.worker_stub: work received node_id=sea-edge-02--edge-1 work_id=test-edge-1 attempt=1 op=noop site_id=sea-edge-02
+DEBUG ae.worker_stub: work completed node_id=sea-edge-02--edge-1 work_id=test-edge-1 attempt=1 status=succeeded</code></pre>
+<h2>Validation</h2>
+<pre><code>ae nodes
+python -m ae.cli work enqueue --site-id sfo-edge-01 --mode outbox --preferred-node sfo-edge-01--edge-1 --op noop
+python -m ae.cli work enqueue --site-id sea-edge-02 --mode outbox --op noop
+python -m ae.cli work enqueue --site-id sea-edge-02 --mode outbox --preferred-node sea-edge-02--edge-1 --op noop
+curl http://HUB_HOST:8222/leafz</code></pre>
+<p>Expected:</p>
+<ul>
+<li>Nodes show <code>sfo-edge-01--edge-1</code>, <code>sea-edge-02--edge-1</code>, <code>sea-edge-02--edge-2</code>.</li>
+<li><code>leafz</code> shows one or more active leaf connections.</li>
+<li>Work ledger transitions to <code>Succeeded</code> for the test work items.</li>
 </ul>
 <h2>Cleanup</h2>
 <ul>
-<li><code>ae delete echo-mn</code></li>
-<li>Stop agents and controller; remove the overlay network <code>docker network rm $AE_OVERLAY_NET</code> (or Podman equivalent) if created.</li>
+<li>Stop gateways and edge NATS.</li>
+<li>Stop hub services: <code>make down</code></li>
 </ul>
+<p>&lt;details&gt; &lt;summary&gt;&lt;strong&gt;k1s-* make helpers&lt;/strong&gt;&lt;/summary&gt;</p>
+<p>Quick guidance on the <code>k1s-*</code> make helpers and when to use them.</p>
+<table><thead><tr><th>Target</th><th>Transport</th><th>Starts</th><th>Use case</th><th>Pair with</th></tr></thead><tbody><tr><td><code>k1s-core</code></td><td>NATS + JetStream</td><td>etcd + hub NATS + controller (plus ingress)</td><td>Durable hub for edge sites</td><td><code>k1s-edge-core</code></td></tr><tr><td><code>k1s-core-edge</code></td><td>NATS Core</td><td>etcd + hub NATS + controller</td><td>Lightweight hub using work.pull</td><td><code>k1s-edge</code></td></tr><tr><td><code>k1s-edge</code></td><td>NATS Core</td><td>edge NATS + gateway + stub worker</td><td>Site gateway using work.pull</td><td><code>k1s-core-edge</code></td></tr><tr><td><code>k1s-edge-core</code></td><td>NATS + JetStream</td><td>edge NATS + gateway + stub worker</td><td>Site gateway for JetStream hub</td><td><code>k1s-core</code></td></tr><tr><td><code>k1s-core-caddy</code></td><td>NATS + JetStream</td><td>same as <code>k1s-core</code> with Caddy enabled</td><td>TLS hostnames for docs/api/dashboard</td><td><code>k1s-edge-core</code></td></tr></tbody></table>
+<p>Common options:</p>
+<ul>
+<li><code>AE_SITE_ID</code>, <code>AE_NODE_ID</code> set site/node identity. Gateways auto-scope node id with site id.</li>
+<li><code>EDGE_INGRESS_MODE</code> selects <code>core-proxy</code>, <code>core-to-edge-public</code>, or <code>edge-local</code>.</li>
+<li><code>EDGE_START_NATS=0</code> skips starting the local edge NATS container when pointing to a remote edge NATS.</li>
+<li><code>EDGE_START_WORKER=0</code> disables the stub worker.</li>
+<li><code>EDGE_WORKER_LOG_LEVEL=debug</code> enables verbose stub worker logs.</li>
+<li><code>AE_GATEWAY_SPOOL_PATH</code> sets the gateway SQLite spool path (one per gateway).</li>
+<li><code>AE_GATEWAY_KEEP_SPOOL=1</code> preserves the gateway spool DB on exit for diagnostics.</li>
+<li><code>AE_NATS_URL</code> overrides the edge NATS endpoint for gateways.</li>
+<li><code>AE_TRANSPORT_BACKEND</code> is global per controller (<code>nats-js</code> or <code>nats-core</code>).</li>
+</ul>
+<p>Related helper:</p>
+<ul>
+<li><code>make edge-site SITE_ID=&lt;site&gt; EDGE_PORT=&lt;port&gt; EDGE_HTTP_PORT=&lt;port&gt;</code> adds a new edge NATS site in dev.</li>
+</ul>
+<p>&lt;/details&gt;</p>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -798,7 +857,7 @@ ae status echo-mn --watch</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-31 16:07:03</span>
+        <span>Built 2026-02-07 14:21:15</span>
       </div>
     </footer>
     <script>
