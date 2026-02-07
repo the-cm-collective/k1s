@@ -108,12 +108,14 @@ trust_caddy_ca() {
   # Best-effort user trust for Chrome/Chromium (NSS) and Firefox profiles
   if command -v certutil >/dev/null 2>&1; then
     mkdir -p "$HOME/.pki/nssdb"
+    certutil -d sql:"$HOME/.pki/nssdb" -D -n "Caddy Local Root" 2>/dev/null || true
     certutil -d sql:"$HOME/.pki/nssdb" -A -t "C,," -n "Caddy Local Root" -i "$root_ca" 2>/dev/null || true
     for prof in "$HOME"/.mozilla/firefox/*.default* "$HOME"/.mozilla/firefox/*.dev*; do
       [ -d "$prof" ] || continue
+      certutil -d sql:"$prof" -D -n "Caddy Local Root" 2>/dev/null || true
       certutil -d sql:"$prof" -A -t "C,," -n "Caddy Local Root" -i "$root_ca" 2>/dev/null || true
     done
-    log "installed Caddy CA into NSS/Firefox profiles"
+    log "installed Caddy CA into NSS/Firefox profiles (restart browser if already open)"
   fi
 }
 
