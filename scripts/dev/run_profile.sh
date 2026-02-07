@@ -479,7 +479,7 @@ start_envoy_container() {
 start_rathole_server_container() {
   local name="$1"
   local config_path="$2"
-  local image="${AE_RATHOLE_IMAGE:-ghcr.io/rapiz1/rathole:v0.5.0}"
+  local image="${AE_RATHOLE_IMAGE:-docker.io/rapiz1/rathole:v0.5.0}"
   "$ENGINE_BIN" rm -f "$name" >/dev/null 2>&1 || true
   "$ENGINE_BIN" run -d --name "$name" --network host \
     -v "${config_path}:/etc/rathole/server.toml:ro" \
@@ -489,7 +489,7 @@ start_rathole_server_container() {
 start_rathole_client_container() {
   local name="$1"
   local config_path="$2"
-  local image="${AE_RATHOLE_IMAGE:-ghcr.io/rapiz1/rathole:v0.5.0}"
+  local image="${AE_RATHOLE_IMAGE:-docker.io/rapiz1/rathole:v0.5.0}"
   "$ENGINE_BIN" rm -f "$name" >/dev/null 2>&1 || true
   "$ENGINE_BIN" run -d --name "$name" --network host \
     -v "${config_path}:/etc/rathole/client.toml:ro" \
