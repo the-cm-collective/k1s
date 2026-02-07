@@ -198,8 +198,15 @@ labs-apishim-env:
 	@echo "[labs] apishim tokens (dev only):"
 	@cat state/profiles/labs/apishim.env
 
-.PHONY: demo demo-down integ-test
+.PHONY: demo demo-legacy demo-down integ-test labs
 demo:
+	@PROFILE_DIR=$${PROFILE_DIR:-state/profiles/demo} \
+	  SPECS_DIR=$${SPECS_DIR:-state/profiles/demo/specs} \
+	  AE_ALLOW_PLAINTEXT_SECRETS=$${AE_ALLOW_PLAINTEXT_SECRETS:-1} \
+	  CORE_CADDY=$${CORE_CADDY:-1} \
+	  ./scripts/dev/run_profile.sh dev-min
+
+demo-legacy:
 	@TOKEN=$${AE_LABS_TOKEN:-D34DB33F}; \
 	  SOPS_AGE_KEY_FILE=$${SOPS_AGE_KEY_FILE:-$$HOME/.config/ae/keys.txt} \
 	  AE_ALLOW_PLAINTEXT_SECRETS=$${AE_ALLOW_PLAINTEXT_SECRETS:-1} \
@@ -211,7 +218,7 @@ demo-help:
 	./scripts/init_demo.sh --help
 
 demo-down:
-	./scripts/init_demo.sh --down -y
+	@bash scripts/stop_all.sh
 
 .PHONY: reg-cache-reset
 reg-cache-reset:
@@ -251,6 +258,13 @@ demo-reset:
 	@rm -rf state/profiles/demo/specs 2>/dev/null || true
 	@rm -rf state/demo-specs 2>/dev/null || true
 	@echo "[demo-reset] done"
+
+labs:
+	@PROFILE_DIR=$${PROFILE_DIR:-state/profiles/labs} \
+	  SPECS_DIR=$${SPECS_DIR:-state/profiles/labs/specs} \
+	  AE_ETCD_PREFIX=$${AE_ETCD_PREFIX:-k1s/profiles/labs} \
+	  CORE_CADDY=$${CORE_CADDY:-1} \
+	  ./scripts/dev/run_profile.sh dev-etcd
 
 integ-test:
 	AE_INTEG_RUNTIME=$${AE_INTEG_RUNTIME:-podman} pytest -q tests/integration/

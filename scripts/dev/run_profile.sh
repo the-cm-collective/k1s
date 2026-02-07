@@ -60,6 +60,24 @@ ensure_specs_dir() {
   mkdir -p "$dir"
 }
 
+resolve_docs_labs_token() {
+  if [[ "${AE_LABS:-0}" != "1" ]]; then
+    return 0
+  fi
+  if [[ -n "${DOCS_LABS_TOKEN:-}" ]]; then
+    return 0
+  fi
+  local env_file="${AE_APISHIM_ENV_FILE:-}"
+  if [[ -z "$env_file" || ! -f "$env_file" ]]; then
+    return 0
+  fi
+  local token=""
+  token="$(awk -F= '/^AE_LABS_TOKEN=/{print $2}' "$env_file" 2>/dev/null || true)"
+  if [[ -n "$token" ]]; then
+    export DOCS_LABS_TOKEN="$token"
+  fi
+}
+
 start_docs_server() {
   local docs_port="${AE_DOCS_PORT:-9109}"
   local docs_bind="${DOCS_BIND:-127.0.0.1}"
@@ -78,6 +96,7 @@ start_docs_server() {
     rm -f "$pid_file" || true
   fi
 
+  resolve_docs_labs_token
   DOCS_API_BASE="$api_base" DOCS_DASHBOARD_URL="$dash_url" "$PYTHON_BIN" docs/build_docs.py >/dev/null 2>&1 || true
   nohup "$PYTHON_BIN" -m http.server "$docs_port" --bind "$docs_bind" --directory "$docs_dir" >/dev/null 2>&1 &
   echo $! > "$pid_file"
@@ -95,6 +114,7 @@ start_caddy() {
     AE_CONTAINER_CLI="$ENGINE_BIN" "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
   fi
 
+  resolve_docs_labs_token
   DOCS_API_BASE="$api_base" DOCS_DASHBOARD_URL="$dash_url" "$PYTHON_BIN" docs/build_docs.py >/dev/null 2>&1 || true
 
   local host_alias="host.docker.internal"
@@ -156,12 +176,14 @@ start_apishim() {
   local cert_file="${APISHIM_CERT_FILE:-$profile_dir/apishim.crt}"
   local key_file="${APISHIM_KEY_FILE:-$profile_dir/apishim.key}"
   local mode="${AE_APISHIM_MODE:-container}"
+  local already_running=0
+  export AE_APISHIM_ENV_FILE="${AE_APISHIM_ENV_FILE:-$env_file}"
 
   if ! is_truthy "${AE_APISHIM_AUTOSTART:-1}"; then
     return 0
   fi
   if port_open "$host" "$port"; then
-    return 0
+    already_running=1
   fi
 
   mkdir -p "$profile_dir"
@@ -194,6 +216,10 @@ start_apishim() {
     export AE_API_ADMIN_TOKEN
   fi
 
+  if [[ "$already_running" -eq 1 ]]; then
+    return 0
+  fi
+
   if [[ "$mode" == "host" ]]; then
     nohup "$PYTHON_BIN" -m ae.apishim serve --host "$host" --port "$port" --tls \
       >"$profile_dir/apishim.log" 2>&1 &
@@ -223,6 +249,51 @@ ensure_dev_local() {
       AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-}" \
       AE_TLS_DIR="${AE_TLS_DIR:-}" \
       "$ROOT_DIR/scripts/dev/ensure_dev_local.sh" || true
+  fi
+}
+
+build_docs_with_labs_token() {
+  if [[ "${AE_LABS:-0}" != "1" ]]; then
+    return 0
+  fi
+  if [[ "${CORE_CADDY:-0}" != "1" && "${CORE_DOCS:-0}" != "1" ]]; then
+    return 0
+  fi
+  if [[ -n "${DOCS_LABS_TOKEN:-}" ]]; then
+    return 0
+  fi
+  local env_file="${AE_APISHIM_ENV_FILE:-}"
+  if [[ -z "$env_file" || ! -f "$env_file" ]]; then
+    return 0
+  fi
+  local token=""
+  token="$(awk -F= '/^AE_LABS_TOKEN=/{print $2}' "$env_file" 2>/dev/null || true)"
+  if [[ -z "$token" ]]; then
+    return 0
+  fi
+  DOCS_LABS_TOKEN="$token" python docs/build_docs.py || true
+  if [[ -f "docs/site/playground.html" ]]; then
+    python - <<'PY' "$token" || true
+from pathlib import Path
+import sys
+
+token = sys.argv[1]
+path = Path("docs/site/playground.html")
+text = path.read_text(encoding="utf-8")
+needle = "window.DOCS_LABS_TOKEN='"
+idx = text.find(needle)
+if idx == -1:
+    raise SystemExit(0)
+start = idx + len(needle)
+end = text.find("'", start)
+if end == -1:
+    raise SystemExit(0)
+current = text[start:end]
+if current == token:
+    raise SystemExit(0)
+patched = text[:start] + token + text[end:]
+path.write_text(patched, encoding="utf-8")
+PY
   fi
 }
 
@@ -345,6 +416,7 @@ case "$PROFILE" in
     export APISHIM_PORT="${APISHIM_PORT:-8445}"
     METRICS_PORT="${METRICS_PORT:-9108}"
     start_apishim "$PROFILE_DIR"
+    build_docs_with_labs_token
     if [[ "${CORE_CADDY:-0}" == "1" ]]; then
       export AE_CADDY_CONTAINER="${AE_CADDY_CONTAINER:-dev-caddy-1}"
       export AE_CONTAINER_CLI="${AE_CONTAINER_CLI:-$ENGINE_BIN}"
@@ -373,6 +445,7 @@ case "$PROFILE" in
     export APISHIM_PORT="${APISHIM_PORT:-8445}"
     METRICS_PORT="${METRICS_PORT:-9108}"
     start_apishim "$PROFILE_DIR"
+    build_docs_with_labs_token
     if [[ "${CORE_CADDY:-0}" == "1" ]]; then
       export AE_CADDY_CONTAINER="${AE_CADDY_CONTAINER:-dev-caddy-1}"
       export AE_CONTAINER_CLI="${AE_CONTAINER_CLI:-$ENGINE_BIN}"
@@ -434,6 +507,7 @@ case "$PROFILE" in
     fi
     METRICS_PORT="${METRICS_PORT:-9108}"
     if [[ "${CORE_CADDY:-0}" == "1" ]]; then
+      build_docs_with_labs_token
       export AE_CADDY_CONTAINER="${AE_CADDY_CONTAINER:-dev-caddy-1}"
       export AE_CONTAINER_CLI="${AE_CONTAINER_CLI:-$ENGINE_BIN}"
       export AE_CADDY_FILE="${AE_CADDY_FILE:-/etc/caddy/Caddyfile}"
