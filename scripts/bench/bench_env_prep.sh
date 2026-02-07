@@ -21,6 +21,7 @@ BENCH_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS:-1}"
 : "${BENCH_SPECS_EMPTY:=1}"
 # Keep nodes eligible during long bench runs (override via BENCH_NODE_NOTREADY_AFTER or AE_NODE_NOTREADY_AFTER).
 bench_node_notready_after="${BENCH_NODE_NOTREADY_AFTER:-${AE_NODE_NOTREADY_AFTER:-600}}"
+bench_register_local_node="${BENCH_REGISTER_LOCAL_NODE:-${AE_REGISTER_LOCAL_NODE:-1}}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -107,6 +108,13 @@ caddy_dir="$env_dir/caddy"
 state_db="$env_dir/controller.db"
 pid_file="$env_dir/controller.pid"
 log_file="$env_dir/controller.log"
+
+# Guard against accidental destructive deletes when env_file points to /tmp or /
+if [[ -z "$env_dir" || "$env_dir" == "/" || "$env_dir" == "/tmp" || "$env_dir" == "/var/tmp" ]]; then
+  echo "[bench-env] unsafe env dir '$env_dir' derived from --env-file ($env_file)." >&2
+  echo "[bench-env] use a dedicated subdir, e.g. --env-file /tmp/bench-env/env.sh" >&2
+  exit 4
+fi
 
 # Fresh sandbox each run unless BENCH_REUSE_ENV=1
 if [[ -d "$env_dir" && "${BENCH_REUSE_ENV:-0}" != "1" ]]; then
@@ -291,7 +299,7 @@ if [[ "$controller_mode" == "sudo" ]]; then
     AE_OCI_RUNTIME="${AE_OCI_RUNTIME:-}" \
     AE_CRI_ENDPOINT="${AE_CRI_ENDPOINT:-}" \
     AE_CRI_SANDBOX_IMAGE="${AE_CRI_SANDBOX_IMAGE:-}" \
-    AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-}" \
+    AE_REGISTER_LOCAL_NODE="${bench_register_local_node}" \
     AE_NODE_NOTREADY_AFTER="${bench_node_notready_after}" \
     AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}" \
     BENCH_METRICS_PORT="$metrics_port" \
@@ -304,7 +312,7 @@ else
   AE_ALLOW_PLAINTEXT_SECRETS="${AE_ALLOW_PLAINTEXT_SECRETS:-1}" \
   AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-podman}" \
   AE_OCI_RUNTIME="${AE_OCI_RUNTIME:-}" \
-  AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-}" \
+  AE_REGISTER_LOCAL_NODE="${bench_register_local_node}" \
   AE_NODE_NOTREADY_AFTER="${bench_node_notready_after}" \
   AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}" \
   nohup "$python_bin" -m ae.controller --loop --specs "$spec_dir" --watch --metrics-port "$metrics_port" \
@@ -351,6 +359,7 @@ export AE_CRI_ENDPOINT="${AE_CRI_ENDPOINT:-}"
 export AE_CRI_SANDBOX_IMAGE="${AE_CRI_SANDBOX_IMAGE:-}"
 export AE_PODMAN_BIN="$podman_bin"
 export AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}"
+export AE_REGISTER_LOCAL_NODE="${bench_register_local_node}"
 export AE_NODE_NOTREADY_AFTER="${bench_node_notready_after}"
 export BENCH_ENV_DIR="$env_dir"
 export BENCH_CONTROLLER_PID_FILE="$pid_file"
