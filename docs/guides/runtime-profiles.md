@@ -159,6 +159,7 @@ python -m ae.cli apply -f specs/examples/echo.yaml
 4. Terminal D (second site on same host):
    - `make edge-site SITE_ID=sfo-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224`
    - `AE_SITE_ID=sfo-edge-02 AE_NODE_ID=edge-node-1 AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 make k1s-edge`
+   - Note: `AE_NODE_ID` must be globally unique across sites. Prefer `AE_NODE_ID=<site_id>--<node_id>` for multi-site tests.
 5. In the core terminal: `source <(ae auth local)` then `ae nodes` (expect 3 nodes across 2 sites)
 6. `python -m ae.cli apply -f specs/examples/echo.yaml`
 7. `python -m ae.cli status --verbose` and `python -m ae.cli events echo`
