@@ -351,7 +351,8 @@ class HealthManager:
         else:
             # Keep previous effective decision but annotate. Optionally include detail.
             msg = f"{probe_type} transient fail ({st['fail']}/{need_fail})"
-            if os.getenv("AE_PROBE_VERBOSE", "").strip().lower() in {"1", "true", "yes"}:
+            verbose = os.getenv("AE_PROBE_VERBOSE", "").strip().lower() in {"1", "true", "yes"}
+            if verbose or probe_type == "startup":
                 msg = f"{msg}: {outcome.message}"
         self._state[key] = st
         if st.get("effective", False) != prev_effective:
@@ -438,11 +439,11 @@ class HealthManager:
                 finally:
                     sess.close()
         except RequestException as exc:  # pragma: no cover - network path depends on runtime
-            return ProbeOutcome(False, f"{probe_type} http error: {exc}")
+            return ProbeOutcome(False, f"{probe_type} http error: {exc} (url={url})")
 
         if 200 <= response.status_code < 300:
-            return ProbeOutcome(True, f"{probe_type} http {response.status_code}")
-        return ProbeOutcome(False, f"{probe_type} http {response.status_code}")
+            return ProbeOutcome(True, f"{probe_type} http {response.status_code} (url={url})")
+        return ProbeOutcome(False, f"{probe_type} http {response.status_code} (url={url})")
 
     def _evaluate_tcp_probe(
         self,
@@ -461,9 +462,9 @@ class HealthManager:
         try:
             timeout = max(probe.timeout_seconds, 1)
             with _sock.create_connection((host, int(target_port)), timeout=timeout):
-                return ProbeOutcome(True, f"{probe_type} tcp ok")
+                return ProbeOutcome(True, f"{probe_type} tcp ok ({host}:{target_port})")
         except OSError as exc:
-            return ProbeOutcome(False, f"{probe_type} tcp error: {exc}")
+            return ProbeOutcome(False, f"{probe_type} tcp error: {exc} ({host}:{target_port})")
 
     def _evaluate_exec_probe(
         self,
@@ -481,8 +482,8 @@ class HealthManager:
         try:
             code = self._exec_cb(pod.pod_name, list(command), timeout)  # type: ignore[misc]
         except Exception as exc:  # pragma: no cover
-            return ProbeOutcome(False, f"{probe_type} exec error: {exc}")
-        return ProbeOutcome(code == 0, f"{probe_type} exec rc={code}")
+            return ProbeOutcome(False, f"{probe_type} exec error: {exc} (cmd={command})")
+        return ProbeOutcome(code == 0, f"{probe_type} exec rc={code} (cmd={command})")
 
 
 # ruff: noqa: E501,I001,S110,S112,SIM105,SIM102,SIM210,UP017,UP007,S104
