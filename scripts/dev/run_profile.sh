@@ -346,6 +346,10 @@ case "$PROFILE" in
     METRICS_PORT="${METRICS_PORT:-9108}"
     start_apishim "$PROFILE_DIR"
     if [[ "${CORE_CADDY:-0}" == "1" ]]; then
+      export AE_CADDY_CONTAINER="${AE_CADDY_CONTAINER:-dev-caddy-1}"
+      export AE_CONTAINER_CLI="${AE_CONTAINER_CLI:-$ENGINE_BIN}"
+      export AE_CADDY_FILE="${AE_CADDY_FILE:-/etc/caddy/Caddyfile}"
+      export AE_CADDY_SITES="${AE_CADDY_SITES:-$ROOT_DIR/state/caddy}"
       start_caddy
     fi
     ensure_dev_local "$PROFILE_DIR"
@@ -370,6 +374,10 @@ case "$PROFILE" in
     METRICS_PORT="${METRICS_PORT:-9108}"
     start_apishim "$PROFILE_DIR"
     if [[ "${CORE_CADDY:-0}" == "1" ]]; then
+      export AE_CADDY_CONTAINER="${AE_CADDY_CONTAINER:-dev-caddy-1}"
+      export AE_CONTAINER_CLI="${AE_CONTAINER_CLI:-$ENGINE_BIN}"
+      export AE_CADDY_FILE="${AE_CADDY_FILE:-/etc/caddy/Caddyfile}"
+      export AE_CADDY_SITES="${AE_CADDY_SITES:-$ROOT_DIR/state/caddy}"
       start_caddy
     fi
     ensure_dev_local "$PROFILE_DIR"
@@ -426,6 +434,10 @@ case "$PROFILE" in
     fi
     METRICS_PORT="${METRICS_PORT:-9108}"
     if [[ "${CORE_CADDY:-0}" == "1" ]]; then
+      export AE_CADDY_CONTAINER="${AE_CADDY_CONTAINER:-dev-caddy-1}"
+      export AE_CONTAINER_CLI="${AE_CONTAINER_CLI:-$ENGINE_BIN}"
+      export AE_CADDY_FILE="${AE_CADDY_FILE:-/etc/caddy/Caddyfile}"
+      export AE_CADDY_SITES="${AE_CADDY_SITES:-$ROOT_DIR/state/caddy}"
       start_caddy
     fi
     if [[ "${CORE_DOCS:-0}" == "1" ]]; then
