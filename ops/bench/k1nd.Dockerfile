@@ -11,6 +11,10 @@ RUN apt-get update \
         openssl \
     && rm -rf /var/lib/apt/lists/*
 
+ARG DOCKER_CLI_VERSION=26.1.5
+RUN curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_CLI_VERSION}.tgz" \
+    | tar -xz -C /usr/local/bin --strip-components=1 docker/docker
+
 WORKDIR /workspace
 
 COPY requirements.txt ./requirements.txt
