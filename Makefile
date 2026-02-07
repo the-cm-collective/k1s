@@ -1,5 +1,6 @@
 .PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke
 .PHONY: dev-min dev-etcd k1s-core k1s-edge k1s-core-edge k1s-edge-core
+.PHONY: edge-site
 .PHONY: k1s-core-caddy dev-min-caddy dev-etcd-caddy dev-local
 .PHONY: shim-helm-demo
 
@@ -42,6 +43,10 @@ k1s-core:
 
 k1s-edge:
 	@./scripts/dev/run_profile.sh k1s-edge
+
+edge-site:
+	@SITE_ID=$${SITE_ID:?set SITE_ID} EDGE_PORT=$${EDGE_PORT:-4224} EDGE_HTTP_PORT=$${EDGE_HTTP_PORT:-8224} \
+	  ./scripts/dev/add_edge_site.sh
 
 k1s-core-edge:
 	@AE_TRANSPORT_BACKEND=nats-core ./scripts/dev/run_profile.sh k1s-core

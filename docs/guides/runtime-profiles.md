@@ -152,13 +152,18 @@ python -m ae.cli apply -f specs/examples/echo.yaml
 4. Open `http://127.0.0.1:9108/dashboard` and `http://127.0.0.1:9109/playground/`
 5. `make down`
 
-**k1s-core + k1s-edge**
-1. Terminal A: `CORE_DOCS=1 make k1s-core` (optional TLS: `CORE_CADDY=1 make k1s-core`)
-2. Terminal B: `EDGE_PROFILE=k1s-core make k1s-edge` (or `make k1s-edge-core`)
-3. `python -m ae.cli apply -f specs/examples/echo.yaml`
-4. `python -m ae.cli status --verbose` and `python -m ae.cli events echo`
-5. Open `http://127.0.0.1:9108/dashboard` and `http://127.0.0.1:9109/playground/`
-6. `make down`
+**k1s-core + multiple edges (same host)**
+1. Terminal A: `AE_DEV_LOCAL=1 make k1s-core` (optional TLS only: `CORE_CADDY=1 make k1s-core`)
+2. Terminal B: `make k1s-edge` (site `sfo-edge-01`, node `edge-node-1`)
+3. Terminal C: `AE_SITE_ID=sfo-edge-01 AE_NODE_ID=edge-node-2 make k1s-edge` (second node, same site)
+4. Terminal D (second site on same host):
+   - `make edge-site SITE_ID=sfo-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224`
+   - `AE_SITE_ID=sfo-edge-02 AE_NODE_ID=edge-node-1 AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 make k1s-edge`
+5. In the core terminal: `source <(ae auth local)` then `ae nodes` (expect 3 nodes across 2 sites)
+6. `python -m ae.cli apply -f specs/examples/echo.yaml`
+7. `python -m ae.cli status --verbose` and `python -m ae.cli events echo`
+8. Open `http://127.0.0.1:9108/dashboard` and `http://127.0.0.1:9109/playground/`
+9. `make down`
 
 ## Stop everything
 

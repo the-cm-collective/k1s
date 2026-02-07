@@ -80,6 +80,10 @@ done
 log "Stopping dev NATS/etcd stack (nats-hub, nats-edge, etcd)"
 for bin in "${ENGINES[@]}"; do
   "$bin" compose -f ops/dev/docker-compose.nats-etcd.yaml down >/dev/null 2>&1 || true
+  extra_edges=$("$bin" ps -aq --filter 'name=dev-nats-edge-' 2>/dev/null || true)
+  if [[ -n "$extra_edges" ]]; then
+    "$bin" rm -f $extra_edges >/dev/null 2>&1 || true
+  fi
 done
 
 log "Stopping k1s ingress containers (k1s-*)"
