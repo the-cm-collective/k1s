@@ -276,10 +276,16 @@ if [[ "$controller_mode" == "sudo" ]]; then
     AE_PODMAN_BIN="$podman_bin" \
     PYTHONPATH="${PYTHONPATH:-$repo_root/src}" \
     HOME="/root" \
+    XDG_CONFIG_HOME="/root/.config" \
+    XDG_DATA_HOME="/root/.local/share" \
+    XDG_CACHE_HOME="/root/.cache" \
     XDG_RUNTIME_DIR="/run/user/0" \
     DBUS_SESSION_BUS_ADDRESS="" \
     CONTAINER_HOST="" \
     PODMAN_HOST="" \
+    CONTAINERS_STORAGE_CONF="" \
+    REGISTRY_AUTH_FILE="" \
+    DOCKER_CONFIG="" \
     AE_SPECS_DIR="$spec_dir" \
     AE_STATE_DB="$state_db" \
     AE_CADDY_DIR="$caddy_dir" \

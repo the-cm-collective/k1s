@@ -43,6 +43,9 @@ detect_controllers() {
   declare -A seen=()
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
+    if [[ "$line" == *"pgrep -af python -m ae.controller"* ]]; then
+      continue
+    fi
     pid="${line%% *}"
     if [[ -n "$pid" && -z "${seen[$pid]:-}" ]]; then
       found+=("$pid")
@@ -53,6 +56,9 @@ detect_controllers() {
   if command -v sudo >/dev/null 2>&1; then
     while IFS= read -r line; do
       [[ -z "$line" ]] && continue
+      if [[ "$line" == *"pgrep -af python -m ae.controller"* ]]; then
+        continue
+      fi
       pid="${line%% *}"
       if [[ -n "$pid" && -z "${seen[$pid]:-}" ]]; then
         found+=("$pid")
