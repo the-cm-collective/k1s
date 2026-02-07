@@ -69,9 +69,6 @@ sudo_env_cli=(
 # Auto-detect k1nd single-container runs (k1nd-server) and set sane defaults.
 detect_k1nd_container() {
   local name="${AE_CLI_CONTAINER:-k1nd-server}"
-  if [[ "${AE_RUNTIME_BACKEND:-}" != "docker" ]]; then
-    return 1
-  fi
   command -v docker >/dev/null 2>&1 || return 1
   if docker ps -q --filter "name=^${name}$" 2>/dev/null | head -n1 | grep -q '.'; then
     echo "$name"
