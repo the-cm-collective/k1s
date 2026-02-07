@@ -103,6 +103,45 @@ def _resolve_apishim_env_file() -> str:
     return ""
 
 
+def _resolve_apishim_verify() -> bool | str:
+    override = (
+        os.getenv("AE_APISHIM_CA_BUNDLE")
+        or os.getenv("AE_APISHIM_CA")
+        or os.getenv("AE_APISHIM_TLS_CA")
+        or ""
+    ).strip()
+    if override:
+        try:
+            path = Path(override)
+            if path.exists():
+                return str(path)
+        except Exception:
+            pass
+    cert_hint = (os.getenv("AE_APISHIM_TLS_CERT") or "").strip()
+    if cert_hint:
+        try:
+            path = Path(cert_hint)
+            if path.exists():
+                return str(path)
+        except Exception:
+            pass
+    try:
+        env_file = _resolve_apishim_env_file()
+        if env_file:
+            candidate = Path(env_file).parent / "apishim.crt"
+            if candidate.exists():
+                return str(candidate)
+    except Exception:
+        pass
+    for path in ("state/profiles/labs/apishim.crt", "state/certs/combined-dev-ca.pem"):
+        try:
+            if Path(path).exists():
+                return path
+        except Exception:
+            continue
+    return False
+
+
 def record_outbox_publish(success: bool) -> None:
     global _OUTBOX_PUBLISH_OK, _OUTBOX_PUBLISH_FAIL
     if success:
@@ -287,6 +326,7 @@ def _helm_demo_status() -> dict[str, object]:
 
 def _helm_demo_start() -> dict[str, object]:
     with _HELM_DEMO_LOCK:
+        port_note = ""
         proc = _HELM_DEMO_STATE.get("proc")
         if proc and getattr(proc, "poll", lambda: None)() is None:
             return _helm_demo_status() | {"message": "demo already running"}
@@ -338,11 +378,13 @@ def _helm_demo_start() -> dict[str, object]:
             headers = {}
             if token_val:
                 headers["Authorization"] = f"Bearer {token_val}"
-            verify_path = "state/certs/combined-dev-ca.pem"
+            verify = _resolve_apishim_verify()
             ctx = None
             if helm_server.startswith("https://"):
-                if os.path.exists(verify_path):
-                    ctx = _ssl.create_default_context(cafile=verify_path)
+                if isinstance(verify, str):
+                    ctx = _ssl.create_default_context(cafile=verify)
+                elif verify:
+                    ctx = _ssl.create_default_context()
                 else:
                     ctx = _ssl._create_unverified_context()  # noqa: S323
             req = _urlreq.Request(probe_url, headers=headers)  # noqa: S310
@@ -1984,8 +2026,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                                     or _read_env_file_var(env_file, "AE_APISHIM_TOKEN")
                                 )
                             headers = {"Authorization": f"Bearer {token}"} if token else {}
-                            verify_path = "state/certs/combined-dev-ca.pem"
-                            verify = verify_path if _os.path.exists(verify_path) else False
+                            verify = _resolve_apishim_verify()
                             if token:
                                 try:
                                     probe = _req.get(

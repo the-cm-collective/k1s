@@ -376,18 +376,6 @@
     const pref = (localStorage.getItem('docsApiMode')||'proxy');
     const bs = document.getElementById('backend-status');
     if (bs) { bs.textContent = 'Detecting environment…'; }
-    if (pref === 'direct') {
-      API = window.DOCS_API_BASE || 'http://127.0.0.1:9108';
-    } else {
-      try {
-        const r = await fetch('/health', { headers: labsHeaders({ 'Accept': 'application/json' }) });
-        if (r.ok) { API = ''; }
-        else { throw new Error('no proxy'); }
-      } catch {
-        API = window.DOCS_API_BASE || 'http://127.0.0.1:9108';
-      }
-    }
-    setText('#env-api-base', API || '(same origin)');
     // Prefill labs token from docs build (if provided) or session storage
     try {
       const envTok = (window.DOCS_LABS_TOKEN || '').trim();
@@ -400,6 +388,18 @@
         if (inp) inp.value = tok;
       }
     } catch(_){}
+    if (pref === 'direct') {
+      API = window.DOCS_API_BASE || 'http://127.0.0.1:9108';
+    } else {
+      try {
+        const r = await fetch('/health', { headers: labsHeaders({ 'Accept': 'application/json' }) });
+        if (r.ok) { API = ''; }
+        else { throw new Error('no proxy'); }
+      } catch {
+        API = window.DOCS_API_BASE || 'http://127.0.0.1:9108';
+      }
+    }
+    setText('#env-api-base', API || '(same origin)');
     try {
       const dash = document.getElementById('open-dashboard');
       if (dash) {
