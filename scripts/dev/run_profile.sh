@@ -62,10 +62,15 @@ ensure_specs_dir() {
 
 seed_demo_specs() {
   local dir="$1"
+  local wipe="${2:-1}"
   local blue_src="$ROOT_DIR/specs/examples/blue.yaml"
   local green_src="$ROOT_DIR/specs/examples/green.yaml"
   if [[ ! -f "$blue_src" || ! -f "$green_src" ]]; then
     return 0
+  fi
+  if [[ "$wipe" == "1" ]]; then
+    rm -rf "$dir" 2>/dev/null || true
+    mkdir -p "$dir"
   fi
   local wrote=0
   if [[ ! -f "$dir/blue.yaml" ]]; then
@@ -465,7 +470,7 @@ case "$PROFILE" in
     export AE_STATE_BACKEND="${AE_STATE_BACKEND:-sqlite}"
     export AE_TRANSPORT_BACKEND="${AE_TRANSPORT_BACKEND:-http}"
     if [[ "${AE_DEMO_SEED:-0}" == "1" ]]; then
-      seed_demo_specs "$SPECS_DIR"
+      seed_demo_specs "$SPECS_DIR" "${AE_DEMO_SEED_WIPE:-1}"
       ensure_demo_green_image "$ENGINE_BIN"
       ensure_demo_echo_image "$ENGINE_BIN"
     fi
