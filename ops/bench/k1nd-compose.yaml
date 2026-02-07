@@ -7,6 +7,9 @@ services:
     environment:
       AE_RUNTIME_BACKEND: docker
       AE_ALLOW_PLAINTEXT_SECRETS: "1"
+      AE_REGISTER_LOCAL_NODE: "1"
+      AE_NODE_NOTREADY_AFTER: "600"
+      AE_DISABLE_INGRESS: "1"
       AE_STATE_DB: /state/controller.db
       AE_SPECS_DIR: /specs
       AE_APISHIM_DB: /state/apishim.db
