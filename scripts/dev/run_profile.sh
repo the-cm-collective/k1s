@@ -298,6 +298,42 @@ start_apishim() {
     return 0
   fi
 
+  local host_alias="host.docker.internal"
+  if [[ "$ENGINE_BIN" == "podman" ]]; then
+    host_alias="host.containers.internal"
+  fi
+  if [[ -z "${APISHIM_NODE_ADVERTISE_IP:-}" ]]; then
+    export APISHIM_NODE_ADVERTISE_IP="$host_alias"
+  fi
+
+  connect_apishim_network() {
+    local engine="$ENGINE_BIN"
+    local net_name=""
+    local container="${AE_APISHIM_CONTAINER_NAME:-}"
+    if [[ -n "${AE_PODMAN_NETWORK:-}" ]]; then
+      net_name="${AE_PODMAN_NETWORK}"
+    elif [[ -n "${AE_NETWORK_NAME:-}" ]]; then
+      net_name="${AE_NETWORK_NAME}"
+    elif [[ "$engine" == "podman" ]]; then
+      net_name="podman"
+    elif [[ "$engine" == "docker" ]]; then
+      net_name="bridge"
+    fi
+    if [[ -z "$net_name" ]]; then
+      return 0
+    fi
+    if [[ -z "$container" ]]; then
+      container="$($engine ps --format '{{.Names}}' 2>/dev/null | awk '/apishim/ {print $1; exit}' || true)"
+    fi
+    if [[ -z "$container" ]]; then
+      return 0
+    fi
+    if ! "$engine" network inspect "$net_name" >/dev/null 2>&1; then
+      return 0
+    fi
+    "$engine" network connect "$net_name" "$container" >/dev/null 2>&1 || true
+  }
+
   local profile_rel="$profile_dir"
   if [[ "$profile_dir" == "$ROOT_DIR/"* ]]; then
     profile_rel="${profile_dir#"$ROOT_DIR/"}"
@@ -308,6 +344,7 @@ start_apishim() {
   export APISHIM_CONTAINER=1
   AE_CONTAINER_CLI="$ENGINE_BIN" APISHIM_CONTAINER=1 "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
   "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" up -d apishim >/dev/null 2>&1 || true
+  connect_apishim_network
 }
 
 ensure_dev_local() {

@@ -33,6 +33,7 @@ services:
       - AE_APISHIM_ALLOW_ANON=0
       - AE_APISHIM_RBAC=1
       - AE_APISHIM_RBAC_EVAL=0
+      - AE_NODE_ADVERTISE_IP=${APISHIM_NODE_ADVERTISE_IP:-}
       - AE_APISHIM_TLS_CERT=/workspace/${APISHIM_PROFILE_DIR}/apishim.crt
       - AE_APISHIM_TLS_KEY=/workspace/${APISHIM_PROFILE_DIR}/apishim.key
       - AE_APISHIM_DB=/workspace/${APISHIM_PROFILE_DIR}/apishim.db
