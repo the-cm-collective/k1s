@@ -99,6 +99,25 @@ class NatsClient:
         self._connected = False
         self._started = False
         self._js_subs: dict[tuple[str, str], object] = {}
+        self._closing = False
+
+    async def _on_error(self, _exc) -> None:  # noqa: ANN001
+        if self._closing:
+            return
+        return
+
+    async def _on_disconnect(self) -> None:
+        if self._closing:
+            return
+        return
+
+    async def _on_reconnect(self) -> None:
+        if self._closing:
+            return
+        return
+
+    async def _on_closed(self) -> None:
+        return
 
     def _run_loop(self) -> None:
         asyncio.set_event_loop(self._loop)
@@ -114,6 +133,10 @@ class NatsClient:
             "servers": [self._url],
             "name": self._name,
             "connect_timeout": self._connect_timeout_s,
+            "error_cb": self._on_error,
+            "disconnected_cb": self._on_disconnect,
+            "reconnected_cb": self._on_reconnect,
+            "closed_cb": self._on_closed,
         }
         if self._creds:
             options["user_credentials"] = str(self._creds)
@@ -125,10 +148,25 @@ class NatsClient:
         self._connected = True
 
     def close(self, timeout_s: float = 2.5) -> None:
+        self._closing = True
         if not self._connected:
+            try:
+                self._loop.call_soon_threadsafe(self._loop.stop)
+            except Exception:
+                pass
             return
         try:
-            fut = asyncio.run_coroutine_threadsafe(self._nc.drain(), self._loop)
+            async def _shutdown():  # type: ignore[no-untyped-def]
+                try:
+                    await self._nc.drain()
+                except Exception:
+                    pass
+                try:
+                    await self._nc.close()
+                except Exception:
+                    pass
+
+            fut = asyncio.run_coroutine_threadsafe(_shutdown(), self._loop)
             fut.result(timeout=timeout_s)
         except Exception:
             pass
