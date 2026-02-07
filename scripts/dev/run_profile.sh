@@ -288,6 +288,17 @@ start_apishim() {
   fi
 
   if [[ "$already_running" -eq 1 ]]; then
+    if [[ "$mode" == "container" ]]; then
+      local profile_rel="$profile_dir"
+      if [[ "$profile_dir" == "$ROOT_DIR/"* ]]; then
+        profile_rel="${profile_dir#"$ROOT_DIR/"}"
+      fi
+      export APISHIM_ENV_FILE="$env_file"
+      export APISHIM_PROFILE_DIR="${APISHIM_PROFILE_DIR:-$profile_rel}"
+      export APISHIM_PORT="$port"
+      export APISHIM_CONTAINER=1
+      AE_CONTAINER_CLI="$ENGINE_BIN" APISHIM_CONTAINER=1 "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
+    fi
     return 0
   fi
 
