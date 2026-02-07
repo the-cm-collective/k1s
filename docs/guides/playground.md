@@ -255,11 +255,7 @@ Open an interactive shell or run a lightweight port-forward check. These are Lab
       </div>
       <div class="pf-io">
         <label>Request
-          <textarea id="labs-pf-request" rows="4" class="scrollbar-hide" style="width:100%;">GET / HTTP/1.1
-Host: localhost
-Connection: close
-
-</textarea>
+          <textarea id="labs-pf-request" rows="4" class="scrollbar-hide" style="width:100%;">GET / HTTP/1.1&#10;Host: localhost&#10;Connection: close&#10;&#10;</textarea>
         </label>
         <div class="pf-response">
           <div class="pf-response-head">
