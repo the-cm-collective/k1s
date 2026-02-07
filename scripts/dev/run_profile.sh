@@ -60,6 +60,25 @@ ensure_specs_dir() {
   mkdir -p "$dir"
 }
 
+seed_demo_specs() {
+  local dir="$1"
+  local blue_src="$ROOT_DIR/specs/examples/blue.yaml"
+  local green_src="$ROOT_DIR/specs/examples/green.yaml"
+  if [[ ! -f "$blue_src" || ! -f "$green_src" ]]; then
+    return 0
+  fi
+  local wrote=0
+  if [[ ! -f "$dir/blue.yaml" ]]; then
+    cp "$blue_src" "$dir/blue.yaml" && wrote=1
+  fi
+  if [[ ! -f "$dir/green.yaml" ]]; then
+    cp "$green_src" "$dir/green.yaml" && wrote=1
+  fi
+  if [[ "$wrote" -eq 1 ]]; then
+    echo "[demo-seed] added blue/green specs to $dir"
+  fi
+}
+
 resolve_docs_labs_token() {
   if [[ "${AE_LABS:-0}" != "1" ]]; then
     return 0
@@ -411,6 +430,9 @@ case "$PROFILE" in
     export AE_STATE_DB="${AE_STATE_DB:-$PROFILE_DIR/controller.db}"
     export AE_STATE_BACKEND="${AE_STATE_BACKEND:-sqlite}"
     export AE_TRANSPORT_BACKEND="${AE_TRANSPORT_BACKEND:-http}"
+    if [[ "${AE_DEMO_SEED:-0}" == "1" ]]; then
+      seed_demo_specs "$SPECS_DIR"
+    fi
     export AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-1}"
     export AE_LABS="${AE_LABS:-1}"
     export APISHIM_PORT="${APISHIM_PORT:-8445}"
