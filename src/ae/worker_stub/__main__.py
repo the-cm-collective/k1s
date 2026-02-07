@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import signal
 import threading
 import time
 from datetime import datetime, timezone
 
+from ae.controller.node_identity import scoped_node_id
 from ae.observability.logging import configure_logging
 from ae.transport import local_result_subject, local_work_progress_subject, local_work_subject
 from ae.transport.nats_client import NatsClient, NatsClientError, NatsMessage
 from pathlib import Path
+
+LOGGER = logging.getLogger(__name__)
 
 
 class WorkerStub:
@@ -42,6 +46,7 @@ class WorkerStub:
     def start(self) -> None:
         self._client.connect()
         self._client.subscribe(local_work_subject(self._node_id), self._on_work)
+        LOGGER.info("stub worker connected node_id=%s nats=%s", self._node_id, self._nats_url)
         try:
             while not self._stop_event.wait(1.0):
                 pass
@@ -56,6 +61,15 @@ class WorkerStub:
 
     def _on_work(self, msg: NatsMessage) -> None:
         payload = _safe_json(msg.data)
+        if isinstance(payload, dict):
+            LOGGER.debug(
+                "work received node_id=%s work_id=%s attempt=%s op=%s site_id=%s",
+                self._node_id,
+                payload.get("work_id"),
+                payload.get("attempt"),
+                payload.get("op"),
+                payload.get("site_id"),
+            )
         thread = threading.Thread(target=self._run_work, args=(payload,), daemon=True)
         thread.start()
 
@@ -81,6 +95,13 @@ class WorkerStub:
             "outputs": {"echo": payload},
         }
         self._client.publish_json(local_result_subject(), result)
+        LOGGER.debug(
+            "work completed node_id=%s work_id=%s attempt=%s status=%s",
+            self._node_id,
+            work_id,
+            attempt,
+            self._status,
+        )
 
     def _run_with_progress(self, payload: dict) -> None:
         end_at = time.monotonic() + (self._delay_ms / 1000.0)
@@ -155,8 +176,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         configure_logging(None)
     try:
+        node_id = args.node_id
+        site_id = os.getenv("AE_SITE_ID")
+        if site_id and node_id:
+            node_id = scoped_node_id(site_id, str(node_id))
         worker = WorkerStub(
-            node_id=args.node_id,
+            node_id=node_id,
             nats_url=args.nats_url,
             delay_ms=args.delay_ms,
             status=args.status,

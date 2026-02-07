@@ -716,7 +716,10 @@ case "$PROFILE" in
     ;;
   k1s-edge)
     COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/ops/dev/docker-compose.nats-etcd.yaml}"
-    compose "$ENGINE_BIN" -f "$COMPOSE_FILE" up -d nats-edge
+    EDGE_START_NATS="${EDGE_START_NATS:-1}"
+    if [[ "$EDGE_START_NATS" == "1" ]]; then
+      compose "$ENGINE_BIN" -f "$COMPOSE_FILE" up -d nats-edge
+    fi
     EDGE_PROFILE="${EDGE_PROFILE:-k1s-edge}"
     PROFILE_DIR="$(abs_path "${PROFILE_DIR:-state/profiles/$EDGE_PROFILE}")"
     mkdir -p "$PROFILE_DIR"
@@ -753,11 +756,17 @@ case "$PROFILE" in
       WORKER_NATS_URL="${EDGE_WORKER_NATS_URL:-nats://worker:dev@127.0.0.1:4223}"
       WORKER_DELAY_MS="${EDGE_WORKER_DELAY_MS:-50}"
       WORKER_PROGRESS="${EDGE_WORKER_PROGRESS:-5}"
+      WORKER_LOG_LEVEL="${EDGE_WORKER_LOG_LEVEL:-}"
+      WORKER_LOG_FLAGS=()
+      if [[ -n "$WORKER_LOG_LEVEL" ]]; then
+        WORKER_LOG_FLAGS=(--log-level "$WORKER_LOG_LEVEL")
+      fi
       PYTHONPATH=src "$PYTHON_BIN" -m ae.worker_stub \
         --node-id "$WORKER_NODE_ID" \
         --nats-url "$WORKER_NATS_URL" \
         --delay-ms "$WORKER_DELAY_MS" \
-        --progress-interval "$WORKER_PROGRESS" &
+        --progress-interval "$WORKER_PROGRESS" \
+        "${WORKER_LOG_FLAGS[@]}" &
       worker_pid=$!
       trap 'kill "$worker_pid" >/dev/null 2>&1 || true' EXIT
     fi

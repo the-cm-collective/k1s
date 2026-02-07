@@ -73,6 +73,7 @@ class SiteGateway:
         self._js_stream = os.getenv("AE_JS_STREAM_NAME", "K1S_WORK")
         self._spool = GatewaySpool(self._js_config.spool_path)
         self._spool_enabled = True
+        self._keep_spool = _truthy_env("AE_GATEWAY_KEEP_SPOOL")
         self._inflight: dict[str, JetStreamMessage] = {}
         self._inflight_progress: dict[str, float] = {}
         self._inflight_heartbeat: dict[str, float] = {}
@@ -158,6 +159,7 @@ class SiteGateway:
             self._js_config.max_waiting,
         )
         LOGGER.info("spool_path=%s", self._js_config.spool_path)
+        LOGGER.info("spool_keep=%s", self._keep_spool)
         LOGGER.info(
             "work heartbeat timeout=%.1fs nak_delay=%.1fs",
             self._heartbeat_timeout_s,
@@ -213,11 +215,7 @@ class SiteGateway:
                     LOGGER.warning("failed to subscribe local results: %s", exc)
         self._log_subjects()
         if once:
-            if self._nats_client is not None:
-                try:
-                    self._nats_client.close()
-                except Exception:
-                    pass
+            self._shutdown()
             return
         LOGGER.info("gateway running (backend=%s)", self._backend)
         self._stats.last_report_at = time.monotonic()
@@ -246,11 +244,17 @@ class SiteGateway:
         except KeyboardInterrupt:
             LOGGER.info("gateway shutdown requested")
         finally:
-            if self._nats_client is not None:
-                try:
-                    self._nats_client.close()
-                except Exception:
-                    pass
+            self._shutdown()
+
+    def _shutdown(self) -> None:
+        if self._nats_client is not None:
+            try:
+                self._nats_client.close()
+            except Exception:
+                pass
+        if not self._keep_spool:
+            LOGGER.info("clearing gateway spool path=%s", self._js_config.spool_path)
+            self._spool.cleanup()
 
     def _subscribe_local_results(self) -> None:
         if self._nats_client is None:
@@ -772,6 +776,11 @@ def _work_key(payload: dict) -> str | None:
     if work_id is None or attempt is None:
         return None
     return f"{work_id}:{attempt}"
+
+
+def _truthy_env(name: str, default: str = "0") -> bool:
+    raw = os.getenv(name, default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _parse_duration_seconds(value: str, default: float) -> float:

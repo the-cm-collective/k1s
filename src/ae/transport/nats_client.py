@@ -147,35 +147,50 @@ class NatsClient:
             raise NatsClientError(f"connect failed: {exc}") from exc
         self._connected = True
 
-    def close(self, timeout_s: float = 2.5) -> None:
+    def close(self, timeout_s: float = 5.0) -> None:
         self._closing = True
-        if not self._connected:
-            try:
-                self._loop.call_soon_threadsafe(self._loop.stop)
-            except Exception:
-                pass
+        if not self._started:
             return
-        try:
-            async def _shutdown():  # type: ignore[no-untyped-def]
-                try:
-                    await self._nc.drain()
-                except Exception:
-                    pass
-                try:
-                    await self._nc.close()
-                except Exception:
-                    pass
+        if self._loop.is_running():
+            try:
+                async def _shutdown():  # type: ignore[no-untyped-def]
+                    if self._connected:
+                        try:
+                            await self._nc.close()
+                        except Exception:
+                            pass
+                    await asyncio.sleep(0)
+                    try:
+                        tasks = [
+                            task
+                            for task in asyncio.all_tasks()
+                            if task is not asyncio.current_task()
+                        ]
+                    except Exception:
+                        tasks = []
+                    for task in tasks:
+                        task.cancel()
+                    if tasks:
+                        await asyncio.gather(*tasks, return_exceptions=True)
+                    try:
+                        asyncio.get_running_loop().stop()
+                    except Exception:
+                        pass
 
-            fut = asyncio.run_coroutine_threadsafe(_shutdown(), self._loop)
-            fut.result(timeout=timeout_s)
-        except Exception:
-            pass
-        try:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-        except Exception:
-            pass
+                fut = asyncio.run_coroutine_threadsafe(_shutdown(), self._loop)
+                fut.result(timeout=timeout_s)
+            except Exception:
+                try:
+                    self._loop.call_soon_threadsafe(self._loop.stop)
+                except Exception:
+                    pass
         try:
             self._thread.join(timeout=timeout_s)
+        except Exception:
+            pass
+        try:
+            if not self._loop.is_running():
+                self._loop.close()
         except Exception:
             pass
         self._connected = False

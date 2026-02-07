@@ -28,6 +28,7 @@ NATS + etcd dev stack (Mode A)
 - Start hub + etcd + edge NATS: `docker compose -f ops/dev/docker-compose.nats-etcd.yaml up -d`
 - Stop stack: `docker compose -f ops/dev/docker-compose.nats-etcd.yaml down`
 - Configs: `ops/dev/nats-hub.conf`, `ops/dev/nats-edge.conf` (dev-only credentials).
+- Manual core+edge test pattern: `docs/ops/core-edge-manual-test.md`
 - Gateway env defaults: `ops/dev/site-gateway.env.sample` (Option A ack settings).
 - Default dev creds: hub controller `hub-controller/dev`, site uplink `site-sfo-edge-01-uplink/dev`, local `gateway/dev` and `worker/dev` (do not use in prod).
 - Local E2E stub (work.pull path):

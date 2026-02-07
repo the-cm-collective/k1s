@@ -239,5 +239,13 @@ class GatewaySpool:
         conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
+    def cleanup(self) -> None:
+        for suffix in ("", "-wal", "-shm"):
+            path = self._path if not suffix else Path(f"{self._path}{suffix}")
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
 
 __all__ = ["GatewaySpool", "InflightRecord", "ResultRecord"]
