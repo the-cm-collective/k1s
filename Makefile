@@ -204,7 +204,9 @@ demo:
 	  SPECS_DIR=$${SPECS_DIR:-state/profiles/demo/specs} \
 	  AE_ALLOW_PLAINTEXT_SECRETS=$${AE_ALLOW_PLAINTEXT_SECRETS:-1} \
 	  AE_DEMO_SEED=1 \
+	  AE_DEMO_SEED_WIPE=1 \
 	  AE_DEMO_MODE=1 \
+	  AE_DEV_LOCAL=$${AE_DEV_LOCAL:-1} \
 	  CORE_CADDY=$${CORE_CADDY:-1} \
 	  ./scripts/dev/run_profile.sh dev-min
 
