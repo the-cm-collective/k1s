@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Short benchmark sanity check for rootless, rootful, and k1nd.
+# Short benchmark sanity check for rootless, rootful, and dev-min.
 # Designed to detect zero metrics or leaked containers without full runtimes.
 
 if [[ "$(id -u)" -eq 0 ]]; then
@@ -206,6 +206,25 @@ wait_k1nd_controller_ready() {
   return 1
 }
 
+wait_bench_controller_ready() {
+  local log_file="$1"
+  local pid="${2:-}"
+  local tries=${BENCH_WAIT_TRIES:-30}
+  local delay=${BENCH_WAIT_DELAY:-2}
+  for _ in $(seq 1 "$tries"); do
+    if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+      echo "[bench-debug] dev-min controller exited early" >&2
+      return 1
+    fi
+    if grep -q "http api listening" "$log_file" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$delay"
+  done
+  echo "[bench-debug] dev-min controller not ready after $((tries * delay))s" >&2
+  return 1
+}
+
 dump_system() {
   {
     echo "run_id=$RUN_ID"
@@ -405,9 +424,8 @@ dump_system
 dump_containers "$DEBUG_ROOT/pre"
 
 if [[ "${BENCH_DEBUG_PRE_CLEAN:-1}" == "1" ]]; then
-  log "pre-clean: sanitize engines and labs stack"
+  log "pre-clean: sanitize engines and dev stacks"
   stop_docker_dev_stack || true
-  ./scripts/bench/k1nd_sanitize.sh pre >/dev/null 2>&1 || true
   clean_rootless || true
   clean_rootful || true
 fi
@@ -513,9 +531,9 @@ rootful_count=$( {
 clean_rootful
 dump_containers "$ROOTFUL_DIR/post"
 
-log "k1nd quick run"
-sanitize_env_docker
-K1ND_DIR="$DEBUG_ROOT/k1nd"
+log "dev-min quick run"
+sanitize_env_podman
+K1ND_DIR="$DEBUG_ROOT/dev-min"
 mkdir -p "$K1ND_DIR"
 k1nd_ok=1
 if ! clean_foreign_for_docker; then
@@ -523,11 +541,6 @@ if ! clean_foreign_for_docker; then
   log "k1nd foreign-engine cleanup failed; continuing"
 fi
 stop_docker_dev_stack || true
-if ! ./scripts/bench/k1nd_sanitize.sh pre; then
-  k1nd_ok=0
-  failures=$((failures + 1))
-  log "k1nd pre-sanitize failed; continuing"
-fi
 k1nd_specs_rel="${BENCH_K1ND_SPECS_DIR:-state/bench-debug/${RUN_ID}/k1nd-specs}"
 k1nd_apply_rel="${BENCH_K1ND_APPLY_DIR:-state/bench-debug/${RUN_ID}/k1nd-apply}"
 k1nd_specs_empty="${BENCH_K1ND_SPECS_EMPTY:-$bench_specs_empty}"
@@ -559,67 +572,68 @@ k1nd_port_end="${BENCH_K1ND_PORT_END:-18180}"
 if [[ -f "$k1nd_manifest" ]]; then
   if [[ "${BENCH_K1ND_EPHEMERAL_PORTS:-0}" == "1" ]]; then
     remove_service_port "$k1nd_manifest"
-    log "k1nd service port removed (ephemeral ports enabled)"
+    log "dev-min service port removed (ephemeral ports enabled)"
   else
     if port_is_free "$k1nd_port_start"; then
       patch_service_port "$k1nd_manifest" "$k1nd_port_start"
-      log "k1nd service port set to ${k1nd_port_start}"
+      log "dev-min service port set to ${k1nd_port_start}"
     else
       free_port="$(find_free_port "$k1nd_port_start" "$k1nd_port_end" || true)"
       if [[ -n "$free_port" ]]; then
         patch_service_port "$k1nd_manifest" "$free_port"
-        log "k1nd service port set to ${free_port}"
+        log "dev-min service port set to ${free_port}"
       else
         k1nd_ok=0
         failures=$((failures + 1))
-        log "no free port found in ${k1nd_port_start}-${k1nd_port_end} for k1nd service"
+        log "no free port found in ${k1nd_port_start}-${k1nd_port_end} for dev-min service"
       fi
     fi
   fi
 fi
 
 if ! AE_SPECS_DIR="$k1nd_specs_rel" \
-  AE_APISHIM_DSN="${k1nd_state_rel}/apishim.db" \
+  BENCH_MODE=1 AE_DEV_LOCAL=0 CORE_CADDY=0 CORE_DOCS=0 \
+  PROFILE_DIR="$k1nd_state_abs" SPECS_DIR="$k1nd_specs_abs" \
   AE_STATE_DB="${k1nd_state_db}" \
-  make labs-aio-up; then
+  nohup ./scripts/dev/run_profile.sh dev-min >"$k1nd_state_abs/controller.log" 2>&1 & \
+  k1nd_pid=$!; \
+  export K1ND_BENCH_PID="$k1nd_pid"; \
+  sleep 1; \
+  true; then
+  if ! wait_bench_controller_ready "$k1nd_state_abs/controller.log" "$K1ND_BENCH_PID"; then
+    k1nd_ok=0
+    failures=$((failures + 1))
+    log "dev-min bench controller readiness check failed; continuing"
+  fi
+else
   k1nd_ok=0
   failures=$((failures + 1))
-  log "k1nd labs-aio-up failed; continuing"
+  log "dev-min bench controller failed to start; continuing"
 fi
-label_k1nd="${RUN_ID}+docker+runc+k1nd"
+label_k1nd="${RUN_ID}+podman+dev-min"
 if (( k1nd_ok )); then
-  if ! wait_k1nd_controller_ready; then
-    k1nd_ok=0
-    failures=$((failures + 1))
-    log "k1nd controller readiness check failed; continuing"
-  fi
-fi
-if (( k1nd_ok )); then
-  if ! AE_RUNTIME_BACKEND=docker AE_APISHIM_RUNTIME=docker AE_CLI_IN_CONTAINER=1 \
-    AE_COLLECT_ENGINE=docker AE_ENGINE_STRICT=1 AE_SERIAL_SERVICE_ROLLOUT=1 \
-    AE_STATE_DB="/tmp/k1s-bench-${USER}-debug.db" SKIP_GUARDS=1 \
-    AE_APISHIM_DSN="${k1nd_state_rel}/apishim.db" AE_STATE_DB="${k1nd_state_db}" \
+  if ! AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-podman}" AE_ENGINE_STRICT=1 AE_SERIAL_SERVICE_ROLLOUT=1 \
+    AE_STATE_DB="${k1nd_state_db}" AE_SPECS_DIR="$k1nd_specs_rel" \
     WARM_ENABLED=0 WAIT_READY_TRIES="$WAIT_READY_TRIES" WAIT_READY_DELAY="$WAIT_READY_DELAY" \
-    ./scripts/bench/run_matrix.sh --label-suite "$label_k1nd" --app "$k1nd_manifest_rel" --app-name "$APP_NAME" --replicas "$REPLICAS" --duration "$DURATION" --sudo; then
+    ./scripts/bench/run_matrix.sh --label-suite "$label_k1nd" --app "$k1nd_manifest_rel" --app-name "$APP_NAME" --replicas "$REPLICAS" --duration "$DURATION"; then
     k1nd_ok=0
     failures=$((failures + 1))
-    log "k1nd run_matrix failed; continuing"
+    log "dev-min run_matrix failed; continuing"
   fi
 fi
-docker_count=$( {
-  docker ps -aq --filter label=ae.app 2>/dev/null || true
-  docker ps -aq --filter name=ae- 2>/dev/null || true
-} | sed '/^$/d' | sort -u | wc -l | tr -d ' \t' || echo 0)
-if [[ "$K1ND_DEBUG_KEEP" != "1" ]]; then
-  ./scripts/bench/k1nd_sanitize.sh post || true
-else
-  log "skipping k1nd teardown (K1ND_DEBUG_KEEP=1)"
+if [[ -n "${K1ND_BENCH_PID:-}" ]]; then
+  kill "$K1ND_BENCH_PID" >/dev/null 2>&1 || true
+  wait "$K1ND_BENCH_PID" >/dev/null 2>&1 || true
 fi
-dump_containers "$K1ND_DIR/post"
-docker inspect dev-controller-1 --format '{{range .Config.Env}}{{println .}}{{end}}' >"$K1ND_DIR/controller_env.txt" 2>&1 || true
-docker logs dev-controller-1 --tail 200 >"$K1ND_DIR/controller.log" 2>&1 || true
-docker logs dev-apishim-1 --tail 200 >"$K1ND_DIR/apishim.log" 2>&1 || true
-docker logs dev-caddy-1 --tail 200 >"$K1ND_DIR/caddy.log" 2>&1 || true
+if [[ "$K1ND_DEBUG_KEEP" != "1" ]]; then
+  rm -rf "$k1nd_state_abs" >/dev/null 2>&1 || true
+else
+  log "skipping dev-min bench teardown (K1ND_DEBUG_KEEP=1)"
+fi
+devmin_count=$( {
+  podman ps -aq --filter label=ae.app 2>/dev/null || true
+  podman ps -aq --filter name=ae- 2>/dev/null || true
+} | sed '/^$/d' | sort -u | wc -l | tr -d ' \t' || echo 0)
 
 REPORT="$DEBUG_ROOT/report.txt"
 : > "$REPORT"
@@ -632,10 +646,10 @@ echo "rootful: $label_rootful" | tee -a "$REPORT"
 summarize_label "${label_rootful}-idle" "rootful-idle" "$REPORT"
 summarize_label "${label_rootful}-pods-1" "rootful-pods-1" "$REPORT"
 report_app_count "rootful" "${rootful_count:-0}" "$REPORT"
-echo "k1nd: $label_k1nd" | tee -a "$REPORT"
-summarize_label "${label_k1nd}-idle" "k1nd-idle" "$REPORT"
-summarize_label "${label_k1nd}-pods-1" "k1nd-pods-1" "$REPORT"
-report_app_count "k1nd" "${docker_count:-0}" "$REPORT"
+echo "dev-min: $label_k1nd" | tee -a "$REPORT"
+summarize_label "${label_k1nd}-idle" "dev-min-idle" "$REPORT"
+summarize_label "${label_k1nd}-pods-1" "dev-min-pods-1" "$REPORT"
+report_app_count "dev-min" "${devmin_count:-0}" "$REPORT"
 
 log "debug artifacts: $DEBUG_ROOT"
 

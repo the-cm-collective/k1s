@@ -499,6 +499,14 @@ start_rathole_client_container() {
 PYTHON_BIN="$(detect_python)"
 ENGINE_BIN="$(detect_engine)"
 
+if [[ "${BENCH_MODE:-0}" == "1" ]]; then
+  export AE_APISHIM_AUTOSTART="${AE_APISHIM_AUTOSTART:-0}"
+  export AE_LABS="${AE_LABS:-0}"
+  export CORE_CADDY="${CORE_CADDY:-0}"
+  export CORE_DOCS="${CORE_DOCS:-0}"
+  export AE_DEV_LOCAL="${AE_DEV_LOCAL:-0}"
+fi
+
 if [[ -z "${AE_APISHIM_MODE:-}" ]]; then
   if [[ "$ENGINE_BIN" == "podman" ]]; then
     AE_APISHIM_MODE="container"
