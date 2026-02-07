@@ -810,17 +810,17 @@ make bench-mem-agg LABEL=pods-5</code></pre>
 <p>End-to-end (k1s one-liner)</p>
 <pre><code>make bench-mem-e2e-k1s LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5</code></pre>
 <p>This runs matrix + rollout, combines all summaries, and writes charts/.</p>
-<p>End-to-end (k1nd one-liner; labs-aio compose is started if needed)</p>
+<p>End-to-end (k1nd one-liner; single-container stack started on demand)</p>
 <pre><code>make bench-mem-e2e-k1nd LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5</code></pre>
 <ul>
-<li>Brings up the k1s-in-Docker dev stack (<code>labs-aio</code> compose) and then runs the same matrix + rollout sequence against that environment.</li>
+<li>Brings up the k1s-in-Docker single-container stack (<code>ops/bench/k1nd-compose.yaml</code>) with controller + apishim + Caddy and then runs the same matrix + rollout sequence against that environment.</li>
 <li>Uses Docker for host-side preflights and container cgroup metrics; ensure the current user can run <code>docker ps</code>.</li>
-<li>Leave it running for repeated runs, or tear down with <code>make labs-aio-down</code> when done.</li>
+<li>Leave it running for repeated runs by setting <code>K1ND_SKIP_POST_DOWN=1</code>, or tear down with <code>scripts/bench/k1nd_single.sh down</code> when done.</li>
 </ul>
 <p>End-to-end (k1nd with teardown)</p>
 <pre><code>make bench-mem-e2e-k1nd-down LABEL_SUITE=baseline APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5</code></pre>
 <ul>
-<li>Runs the same k1nd sequence and then executes <code>make labs-aio-down</code> to stop the compose stack.</li>
+<li>Runs the same k1nd sequence and then stops the k1nd compose stack.</li>
 </ul>
 <p>End-to-end (all suites, automated prep)</p>
 <pre><code>make bench-mem-e2e-all DURATION=30 REPLICAS=1,5,10 ROLL_REPLICAS=5</code></pre>
@@ -1095,7 +1095,7 @@ sudo sysctl --system</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-03 15:21:47</span>
+        <span>Built 2026-02-07 00:57:43</span>
       </div>
     </footer>
     <script>
