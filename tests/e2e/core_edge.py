@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ae.controller.etcd_state import EtcdStateStore
+from ae.controller.node_identity import scoped_node_id
 
 
 @dataclass
@@ -331,14 +332,15 @@ def run_core_edge_e2e() -> int:
             env=gateway_env,
             log_path=logs_dir / "gateway.log",
         )
-        if not _wait_node_ready(store, "edge-node-1", timeout_s=20):
+        edge_node_key = scoped_node_id("sfo-edge-01", "edge-node-1")
+        if not _wait_node_ready(store, edge_node_key, timeout_s=20):
             _terminate(gateway)
             gateway = _start_proc(
                 [sys.executable, "-m", "ae.gateway"],
                 env=gateway_env,
                 log_path=logs_dir / "gateway.log",
             )
-            if not _wait_node_ready(store, "edge-node-1", timeout_s=20):
+            if not _wait_node_ready(store, edge_node_key, timeout_s=20):
                 raise RuntimeError("gateway lease not acquired (node not registered)")
         _wait_work_state(store, work1, "Succeeded", timeout_s=90)
         print("[e2e] work1 succeeded")

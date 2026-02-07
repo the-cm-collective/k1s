@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import threading
 
+from ae.controller.node_identity import scoped_node_id
 from ae.controller.state import SQLiteStateStore
 from ae.transport.nats_client import NatsClient, NatsClientError, NatsMessage
 
@@ -146,16 +147,17 @@ class NatsControllerIngress:
         labels.setdefault("site", site_id)
         backend = str(payload.get("backend") or "nats")
         try:
+            node_key = scoped_node_id(site_id, node_id)
             lease = self._store.acquire_lease(
                 site_id=site_id,
-                node_id=node_id,
+                node_id=node_key,
                 session_id=session_id or str(int(time.time())),
                 lease_ttl_ms=self._lease_ttl_ms,
                 renew_after_ms=self._renew_after_ms,
                 controller_epoch=self._epoch,
             )
             self._store.upsert_node(
-                node_id,
+                node_key,
                 name=node_id,
                 labels=labels,
                 taints=[],
@@ -164,7 +166,7 @@ class NatsControllerIngress:
                 pod_cidr=None,
                 wg_pubkey=None,
             )
-            self._store.record_heartbeat(node_id, "Ready")
+            self._store.record_heartbeat(node_key, "Ready")
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("lease acquire store update failed: %s", exc)
             resp = LeaseResponse(
@@ -215,7 +217,12 @@ class NatsControllerIngress:
             )
             self._reply(msg, resp.as_dict())
             return
-        lease, reason = self._store.renew_lease(node_id, session_id=str(payload.get("session_id") or ""), lease_id=lease_id)
+        node_key = scoped_node_id(site_id, node_id)
+        lease, reason = self._store.renew_lease(
+            node_key,
+            session_id=str(payload.get("session_id") or ""),
+            lease_id=lease_id,
+        )
         if lease is None:
             resp = LeaseResponse(
                 accepted=False,
@@ -228,7 +235,7 @@ class NatsControllerIngress:
             self._reply(msg, resp.as_dict())
             return
         try:
-            self._store.record_heartbeat(node_id, "Ready")
+            self._store.record_heartbeat(node_key, "Ready")
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("lease renew heartbeat failed: %s", exc)
         resp = LeaseResponse(
@@ -255,12 +262,17 @@ class NatsControllerIngress:
                     status_norm = str(status or "").lower()
                     node_id = payload.get("node_id")
                     observed_generation = payload.get("observed_generation")
+                    node_key = (
+                        scoped_node_id(str(site_id), str(node_id))
+                        if site_id and node_id
+                        else (str(node_id) if node_id else None)
+                    )
                     if status_norm in {"running"}:
                         self._store.update_work_state(
                             work_id=str(work_id),
                             attempt=attempt,
                             state="Running",
-                            assigned_node_id=str(node_id) if node_id else None,
+                            assigned_node_id=node_key,
                             observed_generation=(
                                 int(observed_generation)
                                 if observed_generation is not None
@@ -273,7 +285,7 @@ class NatsControllerIngress:
                             work_id=str(work_id),
                             attempt=attempt,
                             state="Succeeded",
-                            assigned_node_id=str(node_id) if node_id else None,
+                            assigned_node_id=node_key,
                             observed_generation=(
                                 int(observed_generation)
                                 if observed_generation is not None
@@ -287,7 +299,7 @@ class NatsControllerIngress:
                             work_id=str(work_id),
                             attempt=attempt,
                             state="Failed",
-                            assigned_node_id=str(node_id) if node_id else None,
+                            assigned_node_id=node_key,
                             observed_generation=(
                                 int(observed_generation)
                                 if observed_generation is not None
