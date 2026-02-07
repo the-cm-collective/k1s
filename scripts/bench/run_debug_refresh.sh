@@ -39,12 +39,27 @@ kill_controllers() {
 
 detect_controllers() {
   local found=()
+  local line pid
+  declare -A seen=()
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
-    local pid
     pid="${line%% *}"
-    found+=("$pid")
+    if [[ -n "$pid" && -z "${seen[$pid]:-}" ]]; then
+      found+=("$pid")
+      seen["$pid"]=1
+    fi
   done < <(pgrep -af "python -m ae.controller" 2>/dev/null || true)
+
+  if command -v sudo >/dev/null 2>&1; then
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      pid="${line%% *}"
+      if [[ -n "$pid" && -z "${seen[$pid]:-}" ]]; then
+        found+=("$pid")
+        seen["$pid"]=1
+      fi
+    done < <(sudo pgrep -af "python -m ae.controller" 2>/dev/null || true)
+  fi
 
   if (( ${#found[@]} == 0 )); then
     return 0
@@ -52,6 +67,9 @@ detect_controllers() {
 
   log "detected running controller(s):"
   pgrep -af "python -m ae.controller" >&2 || true
+  if command -v sudo >/dev/null 2>&1; then
+    sudo pgrep -af "python -m ae.controller" >&2 || true
+  fi
 
   if [[ "$auto_kill_controllers" == "1" ]]; then
     kill_controllers "${found[@]}"
@@ -119,6 +137,22 @@ find_free_port() {
     fi
   done
   return 1
+}
+
+pick_metrics_port() {
+  local base="$1"
+  if port_is_free "$base"; then
+    echo "$base"
+    return 0
+  fi
+  local p
+  for p in $(seq $((base+1)) $((base+20))); do
+    if port_is_free "$p"; then
+      echo "$p"
+      return 0
+    fi
+  done
+  echo "$base"
 }
 
 patch_service_port() {
@@ -449,7 +483,8 @@ ROOTLESS_DIR="$DEBUG_ROOT/rootless"
 ROOTLESS_ENV_FILE="$ROOTLESS_DIR/env.sh"
 mkdir -p "$ROOTLESS_DIR"
 rootless_ok=1
-if ! ROOTLESS_ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" BENCH_SPECS_EMPTY="$bench_specs_empty" BENCH_KEEP_ENV=1 ./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9210 --env-file "$ROOTLESS_ENV_FILE")"; then
+rootless_metrics_port="$(pick_metrics_port 9210)"
+if ! ROOTLESS_ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" BENCH_SPECS_EMPTY="$bench_specs_empty" BENCH_KEEP_ENV=1 ./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port "$rootless_metrics_port" --env-file "$ROOTLESS_ENV_FILE")"; then
   rootless_ok=0
   failures=$((failures + 1))
   log "rootless bench_env_prep failed; continuing"
@@ -501,7 +536,8 @@ ROOTFUL_DIR="$DEBUG_ROOT/rootful"
 ROOTFUL_ENV_FILE="$ROOTFUL_DIR/env.sh"
 mkdir -p "$ROOTFUL_DIR"
 rootful_ok=1
-if ! ROOTFUL_ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" BENCH_SPECS_EMPTY="$bench_specs_empty" BENCH_KEEP_ENV=1 ./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9211 --env-file "$ROOTFUL_ENV_FILE" --sudo-controller)"; then
+rootful_metrics_port="$(pick_metrics_port 9211)"
+if ! ROOTFUL_ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" BENCH_SPECS_EMPTY="$bench_specs_empty" BENCH_KEEP_ENV=1 ./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port "$rootful_metrics_port" --env-file "$ROOTFUL_ENV_FILE" --sudo-controller)"; then
   rootful_ok=0
   failures=$((failures + 1))
   log "rootful bench_env_prep failed; continuing"

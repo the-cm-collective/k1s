@@ -32,12 +32,32 @@ esac
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$repo_root"
 
+abs_path() {
+  local p="$1"
+  if command -v python >/dev/null 2>&1; then
+    python - "$p" <<'PY'
+import os, sys
+print(os.path.abspath(sys.argv[1]))
+PY
+  else
+    if [[ "$p" = /* ]]; then
+      echo "$p"
+    else
+      echo "$repo_root/$p"
+    fi
+  fi
+}
+
 compose_file="${K1ND_COMPOSE_FILE:-ops/bench/k1nd-compose.yaml}"
 state_dir="${K1ND_STATE_DIR:-state/bench-k1nd-state}"
 specs_dir="${K1ND_SPECS_DIR:-state/bench-k1nd-specs}"
 apply_dir="${K1ND_APPLY_DIR:-state/bench-k1nd-apply}"
 api_port="${K1ND_API_PORT:-9108}"
 apishim_port="${K1ND_APISHIM_PORT:-8445}"
+
+state_dir="$(abs_path "$state_dir")"
+specs_dir="$(abs_path "$specs_dir")"
+apply_dir="$(abs_path "$apply_dir")"
 
 mkdir -p "$state_dir" "$specs_dir" "$apply_dir"
 
