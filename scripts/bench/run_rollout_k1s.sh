@@ -40,9 +40,6 @@ sudo_env_base=(
   "DBUS_SESSION_BUS_ADDRESS="
   "CONTAINER_HOST="
   "PODMAN_HOST="
-  "CONTAINERS_STORAGE_CONF="
-  "REGISTRY_AUTH_FILE="
-  "DOCKER_CONFIG="
 )
 sudo_env_snapshot=(
   "${sudo_env_base[@]}"

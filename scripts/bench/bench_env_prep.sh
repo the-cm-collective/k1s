@@ -283,9 +283,6 @@ if [[ "$controller_mode" == "sudo" ]]; then
     DBUS_SESSION_BUS_ADDRESS="" \
     CONTAINER_HOST="" \
     PODMAN_HOST="" \
-    CONTAINERS_STORAGE_CONF="" \
-    REGISTRY_AUTH_FILE="" \
-    DOCKER_CONFIG="" \
     AE_SPECS_DIR="$spec_dir" \
     AE_STATE_DB="$state_db" \
     AE_CADDY_DIR="$caddy_dir" \
