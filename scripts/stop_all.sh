@@ -79,6 +79,18 @@ for bin in "${ENGINES[@]}"; do
   "$bin" compose -f ops/dev/docker-compose.nats-etcd.yaml down >/dev/null 2>&1 || true
 done
 
+log "Stopping k1s ingress containers (k1s-*)"
+for bin in "${ENGINES[@]}"; do
+  ids=""
+  ids=$("$bin" ps -aq 2>/dev/null | awk 'NF' || true)
+  if [[ -n "$ids" ]]; then
+    named=$("$bin" ps -a --format '{{.ID}} {{.Names}}' 2>/dev/null | awk '$2 ~ /^k1s-/' | awk '{print $1}' || true)
+    if [[ -n "$named" ]]; then
+      "$bin" rm -f $named >/dev/null 2>&1 || true
+    fi
+  fi
+done
+
 log "Stopping labs compose stacks (labs-aio, labs-compose)"
 for bin in "${ENGINES[@]}"; do
   "$bin" compose -f ops/dev/labs-aio.yaml down >/dev/null 2>&1 || true
