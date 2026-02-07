@@ -33,10 +33,16 @@ repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 py_path="${PYTHONPATH:-$repo_root/src}"
 sudo_env_base=(
   "HOME=/root"
+  "XDG_CONFIG_HOME=/root/.config"
+  "XDG_DATA_HOME=/root/.local/share"
+  "XDG_CACHE_HOME=/root/.cache"
   "XDG_RUNTIME_DIR=/run/user/0"
   "DBUS_SESSION_BUS_ADDRESS="
   "CONTAINER_HOST="
   "PODMAN_HOST="
+  "CONTAINERS_STORAGE_CONF="
+  "REGISTRY_AUTH_FILE="
+  "DOCKER_CONFIG="
 )
 sudo_env_snapshot=(
   "${sudo_env_base[@]}"
