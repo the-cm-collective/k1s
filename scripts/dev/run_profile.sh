@@ -103,6 +103,16 @@ ensure_demo_green_image() {
   fi
 }
 
+ensure_demo_echo_image() {
+  local engine="$1"
+  local image="mendhak/http-https-echo:37"
+  if "$engine" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -q '^mendhak/http-https-echo:37$'; then
+    return 0
+  fi
+  echo "[demo-seed] pulling ${image} (${engine})"
+  "$engine" pull "$image" >/dev/null 2>&1 || true
+}
+
 resolve_docs_labs_token() {
   if [[ "${AE_LABS:-0}" != "1" ]]; then
     return 0
@@ -457,6 +467,7 @@ case "$PROFILE" in
     if [[ "${AE_DEMO_SEED:-0}" == "1" ]]; then
       seed_demo_specs "$SPECS_DIR"
       ensure_demo_green_image "$ENGINE_BIN"
+      ensure_demo_echo_image "$ENGINE_BIN"
     fi
     export AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-1}"
     export AE_LABS="${AE_LABS:-1}"
