@@ -19,6 +19,7 @@ import http.server
 import json
 import logging
 import os
+import signal
 import socketserver
 import subprocess
 import threading
@@ -61,6 +62,45 @@ _JS_STREAM_STATS: dict[str, dict[str, float]] = {}
 _JS_CONSUMER_STATS: dict[tuple[str, str], dict[str, object]] = {}
 _GATEWAY_WORK_METRICS: dict[str, dict[str, float]] = {}
 _ROUTE_BUNDLE_METRICS: dict[str, dict[str, float]] = {}
+
+
+def _read_env_file_var(path: str, key: str) -> str:
+    if not path:
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                raw = line.strip()
+                if not raw or raw.startswith("#") or "=" not in raw:
+                    continue
+                k, v = raw.split("=", 1)
+                if k.strip() == key:
+                    return v.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        return ""
+    except Exception:
+        return ""
+    return ""
+
+
+def _resolve_apishim_env_file() -> str:
+    env_file = os.getenv("AE_APISHIM_ENV_FILE", "").strip()
+    if env_file and Path(env_file).exists():
+        return env_file
+    prof = os.getenv("DEV_PROFILE_DIR", "").strip()
+    if prof:
+        candidate = Path(prof) / "apishim.env"
+        if candidate.exists():
+            return str(candidate)
+    state_db = os.getenv("AE_STATE_DB", "").strip()
+    if state_db:
+        candidate = Path(state_db).parent / "apishim.env"
+        if candidate.exists():
+            return str(candidate)
+    fallback = Path("state/profiles/labs/apishim.env")
+    if fallback.exists():
+        return str(fallback)
+    return ""
 
 
 def record_outbox_publish(success: bool) -> None:
@@ -271,15 +311,16 @@ def _helm_demo_start() -> dict[str, object]:
         env.setdefault("PYTHONPATH", str(root / "src"))
         explicit_server = bool(_HELM_DEMO_STATE.get("server_override"))
         helm_server = os.getenv("AE_LABS_HELM_SERVER", "").strip() if explicit_server else ""
-        port_note = ""
-        port = int(_HELM_DEMO_STATE.get("port") or 8455)
-        if not helm_server and not _port_available("127.0.0.1", port):
-            fallback = _pick_free_port("127.0.0.1")
-            _HELM_DEMO_STATE["port"] = fallback
-            port_note = f"port {port} busy; using {fallback}"
-            port = fallback
-        env.setdefault("PORT", str(port))
-        env.setdefault("TOKEN", str(_HELM_DEMO_STATE.get("token")))
+        if not helm_server:
+            helm_server = os.getenv("AE_APISHIM_SERVER", "").strip()
+        if not helm_server:
+            raise RuntimeError("AE_APISHIM_SERVER is required to run the helm demo")
+        token_val = (
+            os.getenv("AE_LABS_HELM_TOKEN")
+            or os.getenv("AE_APISHIM_TOKEN")
+            or str(_HELM_DEMO_STATE.get("token") or "")
+        ).strip()
+        env.setdefault("TOKEN", token_val)
         env.setdefault("RUNTIME", str(_HELM_DEMO_STATE.get("runtime")))
         env.setdefault("NAMESPACE", str(_HELM_DEMO_STATE.get("namespace")))
         env.setdefault("CHART_NAME", str(_HELM_DEMO_STATE.get("chart")))
@@ -288,57 +329,45 @@ def _helm_demo_start() -> dict[str, object]:
             env.setdefault("HELM_SHIM_KEEP", keep if keep else "1")
         except Exception:
             env.setdefault("HELM_SHIM_KEEP", "1")
-        if helm_server:
-            # If an explicit server is set but unreachable, fall back to local shim.
-            try:
-                import ssl as _ssl
-                import urllib.request as _urlreq
+        # Verify the shim endpoint is reachable; do not start a local shim.
+        try:
+            import ssl as _ssl
+            import urllib.request as _urlreq
 
-                probe_url = helm_server.rstrip("/") + "/version"
-                headers = {}
-                token_val = str(_HELM_DEMO_STATE.get("token") or "")
-                if token_val:
-                    headers["Authorization"] = f"Bearer {token_val}"
-                verify_path = "state/certs/combined-dev-ca.pem"
-                ctx = None
-                if helm_server.startswith("https://"):
-                    if os.path.exists(verify_path):
-                        ctx = _ssl.create_default_context(cafile=verify_path)
-                    else:
-                        ctx = _ssl._create_unverified_context()  # noqa: S323
-                req = _urlreq.Request(probe_url, headers=headers)  # noqa: S310
-                with _urlreq.urlopen(req, timeout=2, context=ctx) as resp:  # noqa: S310
-                    if getattr(resp, "status", 200) >= 400:
-                        raise RuntimeError("probe failed")
-                    body = resp.read().decode("utf-8", "ignore")
-                    if "k1s-shim" not in body:
-                        raise RuntimeError("probe failed")
-            except Exception:
-                logger.info(
-                    "labs helm demo shim unreachable at %s; starting local shim", helm_server
-                )
-                helm_server = ""
-        if helm_server:
-            env.setdefault("APISHIM_SERVER", helm_server)
-            try:
-                import urllib.parse as _up
+            probe_url = helm_server.rstrip("/") + "/version"
+            headers = {}
+            if token_val:
+                headers["Authorization"] = f"Bearer {token_val}"
+            verify_path = "state/certs/combined-dev-ca.pem"
+            ctx = None
+            if helm_server.startswith("https://"):
+                if os.path.exists(verify_path):
+                    ctx = _ssl.create_default_context(cafile=verify_path)
+                else:
+                    ctx = _ssl._create_unverified_context()  # noqa: S323
+            req = _urlreq.Request(probe_url, headers=headers)  # noqa: S310
+            with _urlreq.urlopen(req, timeout=2, context=ctx) as resp:  # noqa: S310
+                if getattr(resp, "status", 200) >= 400:
+                    raise RuntimeError("probe failed")
+                body = resp.read().decode("utf-8", "ignore")
+                if "k1s-shim" not in body:
+                    raise RuntimeError("probe failed")
+        except Exception as exc:
+            raise RuntimeError(f"helm demo shim unreachable at {helm_server}: {exc}") from exc
+        env.setdefault("APISHIM_SERVER", helm_server)
+        try:
+            import urllib.parse as _up
 
-                parsed = _up.urlparse(helm_server)
-                if parsed.port:
-                    _HELM_DEMO_STATE["port"] = parsed.port
-            except Exception:
-                pass
-        else:
-            # Align controller mirror with the local shim demo server.
-            tls_mode = str(os.getenv("HELM_SHIM_TLS", "1") or "1").strip()
-            scheme = "https" if tls_mode != "0" else "http"
-            helm_server = f"{scheme}://127.0.0.1:{port}"
+            parsed = _up.urlparse(helm_server)
+            if parsed.port:
+                _HELM_DEMO_STATE["port"] = parsed.port
+        except Exception:
+            pass
         env.setdefault("TMPDIR", str(log_path.parent))
         # Persist resolved shim endpoint + token for the controller mirror loop.
         try:
             if helm_server:
                 os.environ["AE_LABS_HELM_SERVER"] = helm_server
-            token_val = str(_HELM_DEMO_STATE.get("token") or "")
             if token_val:
                 os.environ["AE_LABS_HELM_TOKEN"] = token_val
         except Exception:
@@ -367,6 +396,7 @@ def _helm_demo_start() -> dict[str, object]:
             stdout=log_handle,
             stderr=subprocess.STDOUT,
             env=env,
+            start_new_session=True,
         )
         _HELM_DEMO_STATE["proc"] = proc
         _HELM_DEMO_STATE["log_handle"] = log_handle
@@ -382,7 +412,24 @@ def _helm_demo_stop() -> dict[str, object]:
         proc = _HELM_DEMO_STATE.get("proc")
         if proc and getattr(proc, "poll", lambda: None)() is None:
             try:
-                proc.terminate()
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except Exception:
+                    proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except Exception:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                    try:
+                        proc.wait(timeout=2)
+                    except Exception:
+                        pass
             except Exception:
                 pass
         _HELM_DEMO_STATE["proc"] = None
@@ -1792,6 +1839,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 return
             try:
                 logger.info("labs reset requested")
+                # Stop helm demo runner first so it cannot reapply while we clean up.
+                try:
+                    _helm_demo_stop()
+                except Exception:
+                    pass
                 sess = str(payload.get("session_id") or "")
                 # Prefer tracked labs apps that match the session suffix; fallback to echo-<sess>
                 try:
@@ -1907,12 +1959,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         removed_shim = 0
                         shim_reachable = False
                         shim_base = ""
+                        env_file = _resolve_apishim_env_file()
                         try:
                             import os as _os
 
                             import requests as _req
 
                             base = str(_os.getenv("AE_LABS_HELM_SERVER", "") or "").strip()
+                            if not base and env_file:
+                                base = _read_env_file_var(env_file, "AE_LABS_HELM_SERVER")
                             if not base:
                                 port = int(_HELM_DEMO_STATE.get("port") or 8455)
                                 base = f"https://127.0.0.1:{port}"
@@ -1923,17 +1978,25 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                                 or str(_os.getenv("AE_APISHIM_TOKEN") or "").strip()
                                 or str(_HELM_DEMO_STATE.get("token") or "").strip()
                             )
+                            if not token and env_file:
+                                token = (
+                                    _read_env_file_var(env_file, "AE_LABS_HELM_TOKEN")
+                                    or _read_env_file_var(env_file, "AE_APISHIM_TOKEN")
+                                )
                             headers = {"Authorization": f"Bearer {token}"} if token else {}
                             verify_path = "state/certs/combined-dev-ca.pem"
                             verify = verify_path if _os.path.exists(verify_path) else False
-                            try:
-                                probe = _req.get(
-                                    f"{base}/version", headers=headers, timeout=2, verify=verify
-                                )
-                                shim_reachable = probe.status_code < 500
-                            except Exception:
+                            if token:
+                                try:
+                                    probe = _req.get(
+                                        f"{base}/version", headers=headers, timeout=2, verify=verify
+                                    )
+                                    shim_reachable = probe.status_code < 500
+                                except Exception:
+                                    shim_reachable = False
+                            else:
                                 shim_reachable = False
-                            if shim_reachable:
+                            if shim_reachable and token:
                                 logger.info(
                                     "labs reset using shim API at %s for namespace %s",
                                     shim_base or "<unknown>",
@@ -2002,7 +2065,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             from ae.apishim.store import ObjectStore as _ObjectStore
 
                             dsn = _os.getenv("AE_APISHIM_DSN")
-                            db_path = _os.getenv("AE_APISHIM_DB", "state/apishim.db")
+                            db_path = _os.getenv("AE_APISHIM_DB", "").strip()
+                            if not db_path and env_file:
+                                db_path = _read_env_file_var(env_file, "AE_APISHIM_DB")
+                            if not db_path and env_file:
+                                try:
+                                    db_path = str(_Path(env_file).with_suffix(".db"))
+                                except Exception:
+                                    db_path = ""
+                            if not db_path:
+                                db_path = "state/apishim.db"
                             store = (
                                 _ObjectStore(dsn=dsn)
                                 if dsn
@@ -2022,11 +2094,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                                     removed_shim,
                                     ns,
                                 )
-                except Exception:
-                    pass
-                # Ensure the shim demo process is stopped so it doesn't reapply.
-                try:
-                    _helm_demo_stop()
                 except Exception:
                     pass
                 self._json_ok({"removed": removed_apps})
