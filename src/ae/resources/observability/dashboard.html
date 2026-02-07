@@ -2401,6 +2401,18 @@ Connection: close
         }
 
         var hostName = 'h4cktop';
+        var coreNodeLabel = null;
+        try {
+          if (sys && sys.nodes && sys.nodes.length){
+            sys.nodes.forEach(function(n){
+              var labels = n.labels || {};
+              var role = n.role || labels.role || '';
+              if (String(role || '').toLowerCase() === 'controller' && !coreNodeLabel){
+                coreNodeLabel = String(n.id || n.node_id || n.name || '');
+              }
+            });
+          }
+        } catch(e){}
         try {
           if (sys && sys.nodes && sys.nodes.length){
             var h = sys.nodes[0];
@@ -2432,7 +2444,7 @@ Connection: close
         var sysOffsets = clusterOffsets(4);
         sysLabels.forEach(function(label, idx){
           var off = sysOffsets[idx] || {x:0,y:0};
-          addNode(sysIds[idx], label, 'system', systemCenter.x + off.x, systemCenter.y + off.y, {system:sysIds[idx]});
+          addNode(sysIds[idx], label, 'system', systemCenter.x + off.x, systemCenter.y + off.y, {system:sysIds[idx], coreHub:false});
         });
         var sysLabelX = systemCenter.x;
         var sysLabelY = systemCenter.y - hexH * 0.5 - labelGap - labelLift;
@@ -2440,7 +2452,6 @@ Connection: close
           sysLabelX = (nodeById.dns.x + nodeById.ingress.x) / 2;
           sysLabelY = nodeById.dns.y - hexH * 0.5 - labelGap - labelLift;
         }
-        addLabel('label:system', 'system', sysLabelX, sysLabelY, '#e5e7eb', '#e2e8f0', 'middle');
 
         var appNodes = [];
         var useSiteLayout = false;
@@ -2449,14 +2460,10 @@ Connection: close
 
         if (sys && sys.nodes && sys.nodes.length) {
           sys.nodes.forEach(function(n){
+            var labels = n.labels || {};
+            var role = n.role || labels.role || '';
+            if (String(role || '').toLowerCase() === 'controller') return;
             var siteId = siteIdFromNode(n);
-            if (!siteId) {
-              var labels = n.labels || {};
-              var role = n.role || labels.role || '';
-              if (String(role || '').toLowerCase() === 'controller') {
-                siteId = 'core';
-              }
-            }
             if (!siteId) return;
             useSiteLayout = true;
             if (!siteMap[siteId]) siteMap[siteId] = [];
@@ -2483,6 +2490,17 @@ Connection: close
             });
           });
         }
+
+        if (useSiteLayout) {
+          sysIds.forEach(function(id){
+            var n = nodeById[id];
+            if (n && n.meta) n.meta.coreHub = true;
+          });
+          if (nodeById.controller && coreNodeLabel) {
+            nodeById.controller.label = coreNodeLabel;
+          }
+        }
+        addLabel('label:system', useSiteLayout ? 'core hub' : 'system', sysLabelX, sysLabelY, '#e5e7eb', '#e2e8f0', 'middle');
 
         if (useSiteLayout) {
           var siteOrder = Object.keys(siteMap).sort();
@@ -2723,6 +2741,19 @@ Connection: close
             systemBounds.maxY = Math.max(systemBounds.maxY, r.y2);
           }
         });
+        if (useSiteLayout && systemBounds) {
+          var corePadX = hexW * 0.7;
+          var corePadY = hexH * 0.7;
+          sitePanels.push({
+            x: systemBounds.minX - corePadX,
+            y: systemBounds.minY - corePadY,
+            w: (systemBounds.maxX - systemBounds.minX) + corePadX * 2,
+            h: (systemBounds.maxY - systemBounds.minY) + corePadY * 2,
+            color: rolePalette('controller').color,
+            site_id: 'core-hub',
+            nodes: sysIds.length
+          });
+        }
 
         var labelBounds = null;
         labelNodes.forEach(function(l){
@@ -3565,6 +3596,20 @@ Connection: close
             };
           }
           if (n.type === 'system') {
+            if (n.meta && n.meta.coreHub && n.meta.system !== 'dns') {
+              var core = rolePalette('controller');
+              return {
+                accent: core.color,
+                shellFill:'rgba(12,16,22,0.9)',
+                innerStroke:'rgba(255,255,255,0.16)',
+                faceTop:shadeHsl(core.color, 18),
+                faceBot:shadeHsl(core.color, -12),
+                patternStroke:'rgba(255,255,255,0.14)',
+                patternOpacity:0.22,
+                label:'#f8fafc',
+                shadowAlpha:0.28
+              };
+            }
             return {
               accent:'rgba(229,231,235,0.25)',
               shellFill:'rgba(248,250,252,0.20)',
