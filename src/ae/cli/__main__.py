@@ -4029,6 +4029,7 @@ def _portforward_over_ws(
         return opcode, payload
 
     def _handle_conn(conn: socket.socket) -> None:
+        conn_stop = threading.Event()
         try:
             ws = _open_ws()
         except Exception as exc:
@@ -4040,7 +4041,7 @@ def _portforward_over_ws(
             return
 
         def _pump_local() -> None:
-            while not stop_event.is_set():
+            while not stop_event.is_set() and not conn_stop.is_set():
                 try:
                     data = conn.recv(4096)
                 except Exception:
@@ -4051,10 +4052,10 @@ def _portforward_over_ws(
                     _send_ws(ws, bytes([0]) + data)
                 except Exception:
                     break
-            stop_event.set()
+            conn_stop.set()
 
         def _pump_ws() -> None:
-            while not stop_event.is_set():
+            while not stop_event.is_set() and not conn_stop.is_set():
                 msg = _recv_ws(ws)
                 if msg is None:
                     continue
@@ -4076,7 +4077,7 @@ def _portforward_over_ws(
                         sys.stderr.buffer.flush()
                     except Exception:
                         pass
-            stop_event.set()
+            conn_stop.set()
 
         t1 = threading.Thread(target=_pump_local, daemon=True)
         t2 = threading.Thread(target=_pump_ws, daemon=True)
