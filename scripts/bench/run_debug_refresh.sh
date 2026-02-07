@@ -531,9 +531,8 @@ rootful_count=$( {
 clean_rootful
 dump_containers "$ROOTFUL_DIR/post"
 
-log "dev-min quick run"
-sanitize_env_podman
-K1ND_DIR="$DEBUG_ROOT/dev-min"
+log "k1nd quick run"
+K1ND_DIR="$DEBUG_ROOT/k1nd"
 mkdir -p "$K1ND_DIR"
 k1nd_ok=1
 if ! clean_foreign_for_docker; then
@@ -541,98 +540,59 @@ if ! clean_foreign_for_docker; then
   log "k1nd foreign-engine cleanup failed; continuing"
 fi
 stop_docker_dev_stack || true
-k1nd_specs_rel="${BENCH_K1ND_SPECS_DIR:-state/bench-debug/${RUN_ID}/k1nd-specs}"
-k1nd_apply_rel="${BENCH_K1ND_APPLY_DIR:-state/bench-debug/${RUN_ID}/k1nd-apply}"
-k1nd_specs_empty="${BENCH_K1ND_SPECS_EMPTY:-$bench_specs_empty}"
-k1nd_specs_abs="${repo_root}/${k1nd_specs_rel}"
-rm -rf "$k1nd_specs_abs"
-mkdir -p "$k1nd_specs_abs"
-k1nd_apply_abs="${repo_root}/${k1nd_apply_rel}"
-rm -rf "$k1nd_apply_abs"
-mkdir -p "$k1nd_apply_abs"
+
 app_src="$APP"
 if [[ "$app_src" != /* ]]; then
   app_src="${repo_root}/${app_src}"
 fi
 if [[ -f "$app_src" ]]; then
-  cp -f "$app_src" "$k1nd_apply_abs/$(basename "$app_src")"
-  if [[ "$k1nd_specs_empty" != "1" ]]; then
-    cp -f "$app_src" "$k1nd_specs_abs/$(basename "$app_src")"
-  fi
-fi
-k1nd_state_rel="${BENCH_K1ND_STATE_DIR:-state/bench-debug/${RUN_ID}/k1nd-state}"
-k1nd_state_abs="${repo_root}/${k1nd_state_rel}"
-rm -rf "$k1nd_state_abs"
-mkdir -p "$k1nd_state_abs"
-k1nd_state_db="${k1nd_state_rel}/controller.db"
-k1nd_manifest_rel="${k1nd_apply_rel}/$(basename "$app_src")"
-k1nd_manifest="${k1nd_apply_abs}/$(basename "$app_src")"
-k1nd_port_start="${BENCH_K1ND_PORT_START:-18080}"
-k1nd_port_end="${BENCH_K1ND_PORT_END:-18180}"
-if [[ -f "$k1nd_manifest" ]]; then
-  if [[ "${BENCH_K1ND_EPHEMERAL_PORTS:-0}" == "1" ]]; then
-    remove_service_port "$k1nd_manifest"
-    log "dev-min service port removed (ephemeral ports enabled)"
-  else
-    if port_is_free "$k1nd_port_start"; then
-      patch_service_port "$k1nd_manifest" "$k1nd_port_start"
-      log "dev-min service port set to ${k1nd_port_start}"
-    else
-      free_port="$(find_free_port "$k1nd_port_start" "$k1nd_port_end" || true)"
-      if [[ -n "$free_port" ]]; then
-        patch_service_port "$k1nd_manifest" "$free_port"
-        log "dev-min service port set to ${free_port}"
-      else
-        k1nd_ok=0
-        failures=$((failures + 1))
-        log "no free port found in ${k1nd_port_start}-${k1nd_port_end} for dev-min service"
-      fi
-    fi
-  fi
-fi
-
-if ! AE_SPECS_DIR="$k1nd_specs_rel" \
-  BENCH_MODE=1 AE_DEV_LOCAL=0 CORE_CADDY=0 CORE_DOCS=0 \
-  PROFILE_DIR="$k1nd_state_abs" SPECS_DIR="$k1nd_specs_abs" \
-  AE_STATE_DB="${k1nd_state_db}" \
-  nohup ./scripts/dev/run_profile.sh dev-min >"$k1nd_state_abs/controller.log" 2>&1 & \
-  k1nd_pid=$!; \
-  export K1ND_BENCH_PID="$k1nd_pid"; \
-  sleep 1; \
-  true; then
-  if ! wait_bench_controller_ready "$k1nd_state_abs/controller.log" "$K1ND_BENCH_PID"; then
-    k1nd_ok=0
-    failures=$((failures + 1))
-    log "dev-min bench controller readiness check failed; continuing"
-  fi
+  export K1ND_MANIFEST="$app_src"
 else
   k1nd_ok=0
   failures=$((failures + 1))
-  log "dev-min bench controller failed to start; continuing"
+  log "k1nd manifest missing: $app_src"
 fi
-label_k1nd="${RUN_ID}+podman+dev-min"
+
+label_k1nd="${RUN_ID}+docker+k1nd"
 if (( k1nd_ok )); then
-  if ! AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-podman}" AE_ENGINE_STRICT=1 AE_SERIAL_SERVICE_ROLLOUT=1 \
-    AE_STATE_DB="${k1nd_state_db}" AE_SPECS_DIR="$k1nd_specs_rel" \
-    WARM_ENABLED=0 WAIT_READY_TRIES="$WAIT_READY_TRIES" WAIT_READY_DELAY="$WAIT_READY_DELAY" \
-    ./scripts/bench/run_matrix.sh --label-suite "$label_k1nd" --app "$k1nd_manifest_rel" --app-name "$APP_NAME" --replicas "$REPLICAS" --duration "$DURATION"; then
+  if ! scripts/bench/k1nd_single.sh up; then
     k1nd_ok=0
     failures=$((failures + 1))
-    log "dev-min run_matrix failed; continuing"
+    log "k1nd container failed to start"
   fi
 fi
-if [[ -n "${K1ND_BENCH_PID:-}" ]]; then
-  kill "$K1ND_BENCH_PID" >/dev/null 2>&1 || true
-  wait "$K1ND_BENCH_PID" >/dev/null 2>&1 || true
+if (( k1nd_ok )); then
+  if ! scripts/bench/k1nd_single.sh wait; then
+    k1nd_ok=0
+    failures=$((failures + 1))
+    log "k1nd controller readiness check failed; continuing"
+  fi
 fi
-if [[ "$K1ND_DEBUG_KEEP" != "1" ]]; then
-  rm -rf "$k1nd_state_abs" >/dev/null 2>&1 || true
+
+if (( k1nd_ok )); then
+  app_base="$(basename "$app_src")"
+  k1nd_manifest_in_container="/apply/${app_base}"
+  if ! AE_RUNTIME_BACKEND=docker AE_ENGINE_STRICT=1 AE_SERIAL_SERVICE_ROLLOUT=1 \
+    AE_CLI_IN_CONTAINER=1 AE_CLI_CONTAINER="${AE_CLI_CONTAINER:-k1nd-server}" \
+    AE_K1ND_CONTROLLER_CONTAINER="${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server}" \
+    AE_K1ND_APISHIM_CONTAINER="${AE_K1ND_APISHIM_CONTAINER:-k1nd-server}" \
+    AE_K1ND_INGRESS_CONTAINER="${AE_K1ND_INGRESS_CONTAINER:-k1nd-server}" \
+    AE_COLLECT_ENGINE=docker \
+    WARM_ENABLED=0 WAIT_READY_TRIES="$WAIT_READY_TRIES" WAIT_READY_DELAY="$WAIT_READY_DELAY" \
+    ./scripts/bench/run_matrix.sh --label-suite "$label_k1nd" --app "$k1nd_manifest_in_container" --app-name "$APP_NAME" --replicas "$REPLICAS" --duration "$DURATION"; then
+    k1nd_ok=0
+    failures=$((failures + 1))
+    log "k1nd run_matrix failed; continuing"
+  fi
+fi
+if [[ "${K1ND_DEBUG_KEEP:-0}" != "1" ]]; then
+  scripts/bench/k1nd_single.sh down >/dev/null 2>&1 || true
 else
-  log "skipping dev-min bench teardown (K1ND_DEBUG_KEEP=1)"
+  log "skipping k1nd teardown (K1ND_DEBUG_KEEP=1)"
 fi
-devmin_count=$( {
-  podman ps -aq --filter label=ae.app 2>/dev/null || true
-  podman ps -aq --filter name=ae- 2>/dev/null || true
+k1nd_count=$( {
+  docker ps -aq --filter label=ae.app 2>/dev/null || true
+  docker ps -aq --filter name=ae- 2>/dev/null || true
 } | sed '/^$/d' | sort -u | wc -l | tr -d ' \t' || echo 0)
 
 REPORT="$DEBUG_ROOT/report.txt"
@@ -646,10 +606,10 @@ echo "rootful: $label_rootful" | tee -a "$REPORT"
 summarize_label "${label_rootful}-idle" "rootful-idle" "$REPORT"
 summarize_label "${label_rootful}-pods-1" "rootful-pods-1" "$REPORT"
 report_app_count "rootful" "${rootful_count:-0}" "$REPORT"
-echo "dev-min: $label_k1nd" | tee -a "$REPORT"
-summarize_label "${label_k1nd}-idle" "dev-min-idle" "$REPORT"
-summarize_label "${label_k1nd}-pods-1" "dev-min-pods-1" "$REPORT"
-report_app_count "dev-min" "${devmin_count:-0}" "$REPORT"
+echo "k1nd: $label_k1nd" | tee -a "$REPORT"
+summarize_label "${label_k1nd}-idle" "k1nd-idle" "$REPORT"
+summarize_label "${label_k1nd}-pods-1" "k1nd-pods-1" "$REPORT"
+report_app_count "k1nd" "${k1nd_count:-0}" "$REPORT"
 
 log "debug artifacts: $DEBUG_ROOT"
 

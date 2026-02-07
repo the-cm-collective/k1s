@@ -9,6 +9,7 @@ ROLL_REPLICAS="${ROLL_REPLICAS:-2,5}"
 LABEL_ROOTFUL="${LABEL_ROOTFUL:-r$(date +%Y%m%d)+podman+rootful+cg2}"
 LABEL_ROOTLESS="${LABEL_ROOTLESS:-r$(date +%Y%m%d)+podman+rootless+cg2}"
 LABEL_DEV_MIN="${LABEL_DEV_MIN:-r$(date +%Y%m%d)+podman+dev-min}"
+LABEL_K1ND="${LABEL_K1ND:-r$(date +%Y%m%d)+docker+k1nd}"
 METRICS_PORT="${BENCH_METRICS_PORT:-9210}"
 
 while [[ $# -gt 0 ]]; do
@@ -94,5 +95,10 @@ run_make bench-mem-e2e-k1s-sudo "$LABEL_ROOTFUL"
 run_make bench-mem-e2e-k1s "$LABEL_ROOTLESS"
 # dev-min uses the same rootless path; keep labels aligned for reporting.
 run_make bench-mem-e2e-k1s "$LABEL_DEV_MIN"
+if command -v docker >/dev/null 2>&1; then
+  run_make bench-mem-e2e-k1nd "$LABEL_K1ND"
+else
+  echo "[bench-suite] docker missing; skipping k1nd stage" >&2
+fi
 
 sudo make bench-mem-finalize-sudo

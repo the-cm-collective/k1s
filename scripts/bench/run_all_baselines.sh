@@ -290,6 +290,17 @@ else
   log "sudo not enabled; skipping k1s rootful"
 fi
 
+# -------- Suite: k1nd (single-container) --------
+if [[ "$DISABLE_K1ND" == "1" ]]; then
+  log "skipping suite: k1nd (DISABLE_K1ND=1)"
+else
+  log "suite: k1nd (single-container)"
+  engines_clear_all
+  AE_ENGINE_STRICT=1 AE_COLLECT_ENGINE=docker WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k1nd \
+    LABEL_SUITE="$LBL_K1ND" APP="$APP" APP_NAME="$APP_NAME" REPLICAS="$REPLICAS" DURATION="$DURATION"
+  fix_perms
+fi
+
 # -------- Suite: dev-min (legacy k1nd compose deprecated) --------
 if [[ "$DISABLE_DEV_MIN" == "1" ]]; then
   log "skipping suite: dev-min (DISABLE_DEV_MIN=1)"
