@@ -735,6 +735,9 @@ case "$PROFILE" in
     export AE_TRANSPORT_BACKEND="${AE_TRANSPORT_BACKEND:-$EDGE_TRANSPORT_BACKEND}"
     export AE_SITE_ID="${AE_SITE_ID:-sfo-edge-01}"
     export AE_NODE_ID="${AE_NODE_ID:-edge-node-1}"
+    if [[ -z "${AE_NODE_LABELS:-}" ]]; then
+      export AE_NODE_LABELS="role=gateway,profile=${EDGE_PROFILE}"
+    fi
     EDGE_RATHOLE_CLIENT="${EDGE_RATHOLE_CLIENT:-$EDGE_INGRESS_DIR/rathole-client-${AE_SITE_ID}.toml}"
     export AE_NATS_URL="${AE_NATS_URL:-nats://gateway:dev@127.0.0.1:4223}"
     export AE_JS_DOMAIN="${AE_JS_DOMAIN:-K1S}"

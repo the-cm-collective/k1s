@@ -2043,6 +2043,46 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             except Exception:
                 _nodes = []
 
+            # Site summary (derived from node labels + node ids)
+            sites_summary: list[dict] = []
+            try:
+                def _site_from_node_id(node_id: str | None) -> str | None:
+                    if not node_id:
+                        return None
+                    text = str(node_id)
+                    if "--" not in text:
+                        return None
+                    return text.split("--", 1)[0] or None
+
+                sites_map: dict[str, dict] = {}
+                for node in _nodes:
+                    labels = node.get("labels") or {}
+                    site_id = labels.get("site") or _site_from_node_id(node.get("id"))
+                    if site_id:
+                        node["site_id"] = site_id
+                    role = labels.get("role")
+                    profile = labels.get("profile")
+                    if role:
+                        node["role"] = role
+                    if profile:
+                        node["profile"] = profile
+                    if not site_id:
+                        continue
+                    entry = sites_map.setdefault(
+                        site_id,
+                        {"site_id": site_id, "nodes": [], "ready": 0, "notready": 0, "stale": 0},
+                    )
+                    entry["nodes"].append(node.get("id") or node.get("name") or "")
+                    if node.get("stale"):
+                        entry["stale"] += 1
+                    if str(node.get("status") or "").lower() == "ready":
+                        entry["ready"] += 1
+                    else:
+                        entry["notready"] += 1
+                sites_summary = sorted(sites_map.values(), key=lambda item: item["site_id"])
+            except Exception:
+                sites_summary = []
+
             # Placements: map pod_name -> node for dashboard
             placements: dict[str, list[dict]] = {}
             for s in statuses:
@@ -2209,6 +2249,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     for s in store.list_services()
                 },
                 "nodes": _nodes,
+                "sites": sites_summary,
                 "placements": placements,
                 "containers": containers,
                 "volumes": volumes,
