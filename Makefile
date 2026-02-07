@@ -597,10 +597,10 @@ bench-snapshots-clean-sudo:
 bench-state-clean:
 	@./scripts/bench/clean_state.sh --bench
 
-# Wipe full state/ directory (requires CONFIRM=1)
+# Wipe full state/ directory (requires CONFIRM=1), preserving TLS artifacts
 dev-state-clean:
 	@bash scripts/stop_all.sh
-	@CONFIRM=$${CONFIRM:-0} ./scripts/bench/clean_state.sh --dev $${CONFIRM:+--confirm}
+	@CONFIRM=$${CONFIRM:-0} KEEP_TLS=1 ./scripts/bench/clean_state.sh --dev --keep-tls $${CONFIRM:+--confirm}
 
 .PHONY: bench-mem-backfill
 # Aggregate any snapshots missing summary.json, then rebuild combined, charts, and docs
