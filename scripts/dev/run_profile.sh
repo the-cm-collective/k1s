@@ -603,6 +603,12 @@ case "$PROFILE" in
     export AE_TRANSPORT_BACKEND="${AE_TRANSPORT_BACKEND:-nats-js}"
     export AE_NATS_URL="${AE_NATS_URL:-nats://hub-controller:dev@127.0.0.1:4222}"
     export AE_JS_DOMAIN="${AE_JS_DOMAIN:-K1S}"
+    if [[ "${AE_DEV_LOCAL:-0}" == "1" ]]; then
+      export AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-1}"
+      export AE_LABS="${AE_LABS:-1}"
+      export CORE_CADDY="${CORE_CADDY:-1}"
+      export CORE_DOCS="${CORE_DOCS:-1}"
+    fi
     INGRESS_MODE="$(normalize_ingress_mode "${EDGE_INGRESS_MODE:-${AE_EDGE_INGRESS_MODE:-core-proxy}}")"
     EDGE_INGRESS_START="${EDGE_INGRESS_START:-1}"
     EDGE_INGRESS_DIR="${EDGE_INGRESS_DIR:-$PROFILE_DIR/edge-ingress}"
@@ -638,8 +644,12 @@ case "$PROFILE" in
       fi
     fi
     METRICS_PORT="${METRICS_PORT:-9108}"
-    if [[ "${CORE_CADDY:-0}" == "1" ]]; then
+    export APISHIM_PORT="${APISHIM_PORT:-8445}"
+    if [[ "${AE_LABS:-0}" == "1" ]]; then
+      start_apishim "$PROFILE_DIR"
       build_docs_with_labs_token
+    fi
+    if [[ "${CORE_CADDY:-0}" == "1" ]]; then
       export AE_CADDY_CONTAINER="${AE_CADDY_CONTAINER:-dev-caddy-1}"
       export AE_CONTAINER_CLI="${AE_CONTAINER_CLI:-$ENGINE_BIN}"
       export AE_CADDY_FILE="${AE_CADDY_FILE:-/etc/caddy/Caddyfile}"
