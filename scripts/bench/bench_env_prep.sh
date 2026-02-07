@@ -25,6 +25,7 @@ bench_register_local_node="${BENCH_REGISTER_LOCAL_NODE:-${AE_REGISTER_LOCAL_NODE
 bench_probe_loopback="${BENCH_PROBE_LOOPBACK:-${AE_PROBE_LOOPBACK_FALLBACK:-127.0.0.1}}"
 bench_no_proxy="${BENCH_NO_PROXY:-${NO_PROXY:-127.0.0.1,localhost}}"
 bench_probe_verbose="${BENCH_PROBE_VERBOSE:-${AE_PROBE_VERBOSE:-1}}"
+bench_wait_runtime="${BENCH_WAIT_RUNTIME:-${BENCH_SPECS_EMPTY:-1}}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -330,7 +331,8 @@ if [[ "$controller_mode" == "sudo" ]]; then
     echo "[bench-env] rootful podman socket not available; aborting" >&2
     exit 5
   fi
-  sudo env \
+  sudo env -i \
+    PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" \
     PYTHON_BIN="$python_bin" \
     AE_PODMAN_BIN="$podman_bin" \
     PYTHONPATH="${PYTHONPATH:-$repo_root/src}" \
@@ -422,6 +424,7 @@ export AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}"
 export AE_REGISTER_LOCAL_NODE="${bench_register_local_node}"
 export AE_PROBE_LOOPBACK_FALLBACK="${bench_probe_loopback}"
 export AE_PROBE_VERBOSE="${bench_probe_verbose}"
+export BENCH_WAIT_RUNTIME="${bench_wait_runtime}"
 export NO_PROXY="${bench_no_proxy}"
 export no_proxy="${bench_no_proxy}"
 export AE_NODE_NOTREADY_AFTER="${bench_node_notready_after}"

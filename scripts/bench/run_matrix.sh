@@ -51,6 +51,10 @@ sudo_env_base=(
   "CONTAINER_HOST="
   "PODMAN_HOST="
 )
+sudo_env_clean=(
+  "-i"
+  "PATH=${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+)
 sudo_env_snapshot=(
   "${sudo_env_base[@]}"
   "AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-podman}"
@@ -110,7 +114,7 @@ if [[ "${AE_CLI_IN_CONTAINER:-0}" == "1" ]] && command -v docker >/dev/null 2>&1
   ae() { docker exec "$AE_CLI_CONTAINER" python -m ae.cli "$@"; }
 elif [[ "${BENCH_CONTROLLER_SUDO:-0}" == "1" ]] && command -v sudo >/dev/null 2>&1; then
   ae() {
-    sudo env "${sudo_env_cli[@]}" "$python_bin" -m ae.cli "$@";
+    sudo env "${sudo_env_clean[@]}" "${sudo_env_cli[@]}" "$python_bin" -m ae.cli "$@";
   }
 else
   ae() { "$python_bin" -m ae.cli "$@"; }
@@ -315,7 +319,32 @@ wait_ready() {
   local tries=${WAIT_READY_TRIES:-$default_tries}
   local delay=${WAIT_READY_DELAY:-2}
   info "[matrix] wait_ready name=$name target=$want tries=$tries delay=${delay}s"
+  local use_runtime_wait="${BENCH_WAIT_RUNTIME:-0}"
+  local backend="${AE_RUNTIME_BACKEND:-podman}"
   while (( tries-- > 0 )); do
+    if [[ "$use_runtime_wait" == "1" ]]; then
+      local count=0
+      if [[ "$backend" == "podman" ]]; then
+        if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+          count=$(sudo env "${sudo_env_base[@]}" "${AE_PODMAN_BIN:-podman}" ps --filter "label=ae.app=${name}" --format "{{.ID}}" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t') || count=0
+        else
+          count=$("${AE_PODMAN_BIN:-podman}" ps --filter "label=ae.app=${name}" --format "{{.ID}}" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t') || count=0
+        fi
+      elif [[ "$backend" == "docker" ]]; then
+        if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+          count=$(sudo env "${sudo_env_base[@]}" docker ps --filter "label=ae.app=${name}" --format "{{.ID}}" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t') || count=0
+        else
+          count=$(docker ps --filter "label=ae.app=${name}" --format "{{.ID}}" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t') || count=0
+        fi
+      else
+        use_runtime_wait="0"
+      fi
+      if [[ "$use_runtime_wait" == "1" && "$count" -ge "$want" ]]; then
+        return 0
+      fi
+      sleep "$delay"
+      continue
+    fi
     local js
     if ! js=$(ae status "$name" --json 2>/dev/null); then sleep 2; continue; fi
     local ready desired
@@ -333,9 +362,9 @@ if [[ "${SKIP_IDLE:-0}" != "1" ]]; then
   info "idle snapshot"
   if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      sudo env "${sudo_env_snapshot[@]}" scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration"
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration"
     else
-      sudo env "${sudo_env_snapshot[@]}" scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true
     fi
   else
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
@@ -375,9 +404,9 @@ for n in "${reps[@]}"; do
   info "snapshot label=${label_suite}-pods-${n}"
   if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-pods-${n}" --duration "$duration"
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-pods-${n}" --duration "$duration"
     else
-      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-pods-${n}" --duration "$duration" || true
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-pods-${n}" --duration "$duration" || true
     fi
   else
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
