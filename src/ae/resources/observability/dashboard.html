@@ -1411,7 +1411,10 @@ Connection: close
         var containerInput = document.getElementById('shell-container');
         var base = normalizeBase(baseInput && baseInput.value);
         if (baseInput) baseInput.value = base;
-        var scope = (nsInfo && nsInfo.name) ? (ns + '/' + nsInfo.name) : (ns + '/' + pod);
+        var podScope = pod ? (ns + '/' + pod) : '';
+        var scope = podScope || ((current && String(current).trim())
+          ? String(current).trim()
+          : ((nsInfo && nsInfo.name) ? (ns + '/' + nsInfo.name) : (ns + '/' + pod)));
         var storedToken = '';
         var storedScope = '';
         try {
@@ -1729,7 +1732,10 @@ Connection: close
         if (!portVal) { pfSetStatus('port required', 'warn'); return; }
         var base = normalizeBase(baseInput && baseInput.value);
         if (baseInput) baseInput.value = base;
-        var pfScope = (nsInfo && nsInfo.name) ? (ns + '/' + nsInfo.name) : (ns + '/' + pod);
+        var pfPodScope = pod ? (ns + '/' + pod) : '';
+        var pfScope = pfPodScope || ((current && String(current).trim())
+          ? String(current).trim()
+          : ((nsInfo && nsInfo.name) ? (ns + '/' + nsInfo.name) : (ns + '/' + pod)));
         var pfStoredToken = '';
         var pfStoredScope = '';
         try {
