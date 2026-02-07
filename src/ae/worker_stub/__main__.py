@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import threading
 import time
 from datetime import datetime, timezone
@@ -36,12 +37,22 @@ class WorkerStub:
             name=f"k1s-worker-{node_id}",
             creds=nats_creds,
         )
+        self._stop_event = threading.Event()
 
     def start(self) -> None:
         self._client.connect()
         self._client.subscribe(local_work_subject(self._node_id), self._on_work)
-        while True:
-            time.sleep(1)
+        try:
+            while not self._stop_event.wait(1.0):
+                pass
+        finally:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+
+    def stop(self) -> None:
+        self._stop_event.set()
 
     def _on_work(self, msg: NatsMessage) -> None:
         payload = _safe_json(msg.data)
@@ -152,6 +163,11 @@ def main(argv: list[str] | None = None) -> int:
             progress_interval_s=args.progress_interval,
             nats_creds=Path(args.nats_creds) if args.nats_creds else None,
         )
+        def _handle_signal(_sig, _frame):  # noqa: ANN001
+            worker.stop()
+
+        signal.signal(signal.SIGINT, _handle_signal)
+        signal.signal(signal.SIGTERM, _handle_signal)
         worker.start()
     except NatsClientError as exc:
         raise SystemExit(str(exc)) from exc
