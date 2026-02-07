@@ -1,6 +1,6 @@
 services:
   caddy:
-    image: caddy:2.8
+    image: docker.io/library/caddy:2.8
     ports:
       - "${CADDY_HTTP_PORT:-8888}:80"
       - "${CADDY_HTTPS_PORT:-8443}:443"
@@ -44,7 +44,7 @@ services:
       - "host.docker.internal:host-gateway"
       - "host.containers.internal:host-gateway"
   prometheus:
-    image: prom/prometheus:v2.53.0
+    image: docker.io/prom/prometheus:v2.53.0
     ports:
       - "${PROMETHEUS_PORT:-9090}:9090"
     volumes:
@@ -54,7 +54,7 @@ services:
     # Configure scrape targets after observability endpoints exist.
 
   haproxy:
-    image: haproxy:lts
+    image: docker.io/library/haproxy:lts
     container_name: dev-haproxy
     ports:
       - "${HAPROXY_TCP_PORT:-9000}:9000"
