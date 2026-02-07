@@ -139,15 +139,14 @@ labs-k3d-down:
 	@./scripts/lab_k3d.sh down --name $${K3D_NAME:-k1s-labs}
 
 .PHONY: labs-up labs-down labs-aio-up labs-aio-down labs-apishim-env
+# labs-* wrappers now run the dev-etcd profile (controller on host, etcd via compose).
+# - labs-up: CLI-only (no docs/dashboard/Caddy).
+# - labs-aio-up: docs + dashboard via Caddy (mirrors dev-etcd-caddy + AE_DEV_LOCAL).
 labs-up:
-	@./scripts/ensure_dev_env.sh
-	@./scripts/ensure_apishim_env.sh >/dev/null
-	@LABS_TOKEN=$$(awk -F= '/^AE_LABS_TOKEN=/{print $$2}' state/profiles/labs/apishim.env); \
-	  if [ -n "$$LABS_TOKEN" ]; then DOCS_LABS_TOKEN="$$LABS_TOKEN" python docs/build_docs.py || true; fi
-	docker compose -f ops/dev/labs-compose.yaml up -d
+	@CORE_CADDY=0 CORE_DOCS=0 AE_DEV_LOCAL=0 ./scripts/dev/run_profile.sh dev-etcd
 
 labs-down:
-	docker compose -f ops/dev/labs-compose.yaml down
+	@$(MAKE) down
 
 .PHONY: apishim-smoke
 apishim-smoke:
@@ -164,39 +163,18 @@ apishim-smoke:
 	  exit $$rc
 
 labs-aio-up:
-	@./scripts/ensure_apishim_env.sh
-	@./scripts/ensure_dev_env.sh
-	@LABS_TOKEN=$$(awk -F= '/^AE_LABS_TOKEN=/{print $$2}' state/profiles/labs/apishim.env); \
-	  if [ -n "$$LABS_TOKEN" ]; then DOCS_LABS_TOKEN="$$LABS_TOKEN" python docs/build_docs.py || true; fi
-	@LABS_PROFILE_ARGS=""; \
-	  if [ "$${AE_STATE_BACKEND:-sqlite}" = "etcd" ]; then LABS_PROFILE_ARGS="--profile etcd"; fi; \
-	  if [ "$${AE_LABS_USE_POSTGRES:-0}" = "1" ]; then \
-	  if [ -z "$${AE_APISHIM_DSN:-}" ] && [ -z "$${AE_STATE_DSN:-}" ]; then \
-	    export AE_APISHIM_DSN="postgresql://shim:shim@postgres:5432/shim"; \
-	    export AE_STATE_DSN="postgresql://shim:shim@postgres:5432/shim"; \
-	  fi; \
-	  docker compose $$LABS_PROFILE_ARGS --profile postgres -f ops/dev/labs-aio.yaml up -d postgres; \
-	  for i in $$(seq 1 30); do \
-	    if docker compose --profile postgres -f ops/dev/labs-aio.yaml exec -T postgres pg_isready -U shim -d shim >/dev/null 2>&1; then \
-	      break; \
-	    fi; \
-	    sleep 1; \
-	  done; \
-	  docker compose $$LABS_PROFILE_ARGS --profile postgres -f ops/dev/labs-aio.yaml up -d; \
-	else \
-	  docker compose $$LABS_PROFILE_ARGS -f ops/dev/labs-aio.yaml up -d; \
-	fi
+	@CORE_CADDY=1 AE_DEV_LOCAL=1 ./scripts/dev/run_profile.sh dev-etcd
 
 labs-aio-down:
-	docker compose -f ops/dev/labs-aio.yaml down
+	@$(MAKE) down
 
 labs-apishim-env:
-	@if [ ! -f state/profiles/labs/apishim.env ]; then \
-	  echo "[labs] state/profiles/labs/apishim.env not found; run make labs-aio-up first."; \
+	@if [ ! -f state/profiles/dev-etcd/apishim.env ]; then \
+	  echo "[labs] state/profiles/dev-etcd/apishim.env not found; run make labs-up or labs-aio-up first."; \
 	  exit 1; \
 	fi
 	@echo "[labs] apishim tokens (dev only):"
-	@cat state/profiles/labs/apishim.env
+	@cat state/profiles/dev-etcd/apishim.env
 
 .PHONY: demo demo-legacy demo-down integ-test labs
 demo:
