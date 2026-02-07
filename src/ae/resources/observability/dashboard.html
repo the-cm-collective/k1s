@@ -427,6 +427,7 @@
                   @keyframes flow { to { stroke-dashoffset: -24; } }
                 </style>
               </defs>
+              <g id="panels"></g>
               <g id="links"></g>
               <g id="nodes"></g>
               <g id="labels"></g>
@@ -435,6 +436,8 @@
               <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
                 <span><svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z" fill="#1f2937" stroke="#94a3b8" stroke-width="1.6"/></svg> Host</span>
                 <span><svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z" fill="#f8fafc" fill-opacity="0.2" stroke="#e5e7eb" stroke-opacity="0.25" stroke-width="1.6"/></svg> System</span>
+                <span><svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z" fill="#0b1220" stroke="#60a5fa" stroke-width="1.6"/></svg> Site</span>
+                <span><svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z" fill="#0b1220" stroke="#fbbf24" stroke-width="1.6"/></svg> Node (gateway)</span>
                 <span id="legend-namespace" title="Namespace: default" style="--ns-color:#3b82f6;"><svg width="16" height="16" viewBox="0 0 24 24"><path id="legend-namespace-hex" d="M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z" fill="#0f172a" stroke="var(--ns-color)" stroke-width="1.6"/></svg> Namespace (current)</span>
                 <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#dcfce7" stroke="#16a34a"/></svg> Pod ready</span>
                 <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#fef3c7" stroke="#f59e0b"/></svg> Pod pending</span>
@@ -2281,6 +2284,7 @@ Connection: close
         var nodeById = {};
         var labelNodes = [];
         var links = [];
+        var sitePanels = [];
         var hexCounter = 0;
         var labelMeasureCtx = null;
 
@@ -2364,6 +2368,38 @@ Connection: close
           return offsets;
         }
 
+        function siteIdFromNode(node){
+          if (!node) return null;
+          var labels = node.labels || {};
+          var site = node.site_id || labels.site || labels["site"];
+          if (site) return String(site);
+          var raw = node.id || node.node_id || node.name || '';
+          var text = String(raw || '');
+          var idx = text.indexOf('--');
+          if (idx > 0) return text.slice(0, idx);
+          return null;
+        }
+
+        function shortNodeName(node, siteId){
+          var raw = node.name || node.id || node.node_id || '';
+          var text = String(raw || '');
+          if (siteId) {
+            var prefix = String(siteId) + '--';
+            if (text.indexOf(prefix) === 0) return text.slice(prefix.length);
+          }
+          return text;
+        }
+
+        function rolePalette(role){
+          var r = String(role || '').toLowerCase();
+          if (r === 'controller') return { color: '#38bdf8', tint: 'rgba(56,189,248,0.2)' };
+          if (r === 'gateway') return { color: '#fbbf24', tint: 'rgba(251,191,36,0.2)' };
+          if (r === 'worker') return { color: '#22c55e', tint: 'rgba(34,197,94,0.2)' };
+          if (!r) return { color: '#94a3b8', tint: 'rgba(148,163,184,0.2)' };
+          var hue = hashHue(r);
+          return { color: 'hsl(' + hue + ', 70%, 55%)', tint: 'hsla(' + hue + ', 70%, 20%, 0.18)' };
+        }
+
         var hostName = 'h4cktop';
         try {
           if (sys && sys.nodes && sys.nodes.length){
@@ -2406,123 +2442,266 @@ Connection: close
         }
         addLabel('label:system', 'system', sysLabelX, sysLabelY, '#e5e7eb', '#e2e8f0', 'middle');
 
-        var apps = (statuses||[]).slice();
-        var byNs = {};
-        apps.forEach(function(s){
-          var info = splitAppName(s.app_name);
-          if (!byNs[info.namespace]) byNs[info.namespace] = [];
-          byNs[info.namespace].push({status:s, info:info});
-        });
-        Object.keys(byNs).forEach(function(ns){
-          byNs[ns].sort(function(a,b){ return String(a.info.name||'').localeCompare(String(b.info.name||'')); });
-        });
-        var nsOrder = [];
-        if (byNs['default']) nsOrder.push('default');
-        if (byNs['demo-helm']) nsOrder.push('demo-helm');
-        Object.keys(byNs).filter(function(ns){ return nsOrder.indexOf(ns)===-1; }).sort().forEach(function(ns){ nsOrder.push(ns); });
+        var appNodes = [];
+        var useSiteLayout = false;
+        var siteMap = {};
+        var podsByNode = {};
 
-        var nsCenters = {};
-        if (narrow){
-          var startY = nsRowY;
-          nsOrder.forEach(function(ns, idx){
-            nsCenters[ns] = {x: W*0.5, y: startY + idx * hexH * 2.0};
-          });
-        } else {
-          if (nsOrder.length > 0) {
-            var nsClusterGapX = Math.max(hexW * 3.2, 260);
-            var nsClusterGapY = hexH * 1.05;
-            var defaultX = clamp(hostCenter.x - nsClusterGapX * 0.38, padX + hexW, W - padX - hexW);
-            var defaultY = nsRowY + nsClusterGapY * 0.85;
-            nsCenters[nsOrder[0]] = {x: defaultX, y: defaultY};
-          }
-          if (nsOrder.length > 1) {
-            var demoX = clamp(hostCenter.x + Math.max(hexW * 3.0, 260), padX + hexW, rightX);
-            var demoY = nsRowY - hexH * 0.1;
-            nsCenters[nsOrder[1]] = {x: demoX, y: demoY};
-            if (nsOrder[0] === 'default' && nsOrder[1] === 'demo-helm') {
-              var systemRight = null;
-              sysIds.forEach(function(id){
-                var n = nodeById[id];
-                if (!n) return;
-                var right = n.x + hexW * 0.58;
-                systemRight = (systemRight == null) ? right : Math.max(systemRight, right);
-              });
-              var demoLeft = demoX - hexW * 0.58;
-              if (systemRight != null) {
-                var midpoint = (systemRight + demoLeft) * 0.5;
-                var baseDefaultX = nsCenters[nsOrder[0]].x;
-                var newDefaultX = clamp(midpoint, padX + hexW, W - padX - hexW);
-                var delta = newDefaultX - baseDefaultX;
-                nsCenters[nsOrder[0]].x = newDefaultX;
-                nsCenters[nsOrder[1]].x = clamp(demoX + delta, padX + hexW, W - padX - hexW);
+        if (sys && sys.nodes && sys.nodes.length) {
+          sys.nodes.forEach(function(n){
+            var siteId = siteIdFromNode(n);
+            if (!siteId) {
+              var labels = n.labels || {};
+              var role = n.role || labels.role || '';
+              if (String(role || '').toLowerCase() === 'controller') {
+                siteId = 'core';
               }
             }
-          }
-          if (nsOrder.length > 2) {
-            var extraNs = nsOrder.slice(2);
-            var extraCols = Math.min(3, extraNs.length);
-            var extraGap = (W - padX*2) / (extraCols + 1);
-            var extraStartY = nsRowY + hexH * 2.0;
-            extraNs.forEach(function(ns, idx){
-              var col = idx % extraCols;
-              var row = Math.floor(idx / extraCols);
-              nsCenters[ns] = {x: padX + extraGap * (col + 1), y: extraStartY + row * hexH * 1.5};
+            if (!siteId) return;
+            useSiteLayout = true;
+            if (!siteMap[siteId]) siteMap[siteId] = [];
+            siteMap[siteId].push(n);
+          });
+        }
+        if (sys && sys.placements) {
+          Object.keys(sys.placements || {}).forEach(function(appName){
+            var list = sys.placements[appName] || [];
+            var info = splitAppName(appName);
+            list.forEach(function(pod){
+              var nodeId = pod.node_id;
+              if (!nodeId) return;
+              var entry = {
+                app: appName,
+                ns: info.namespace,
+                pod_name: pod.pod_name || pod.replica_id || '',
+                ready: !!pod.ready,
+                live: !!pod.live,
+                status: pod.status
+              };
+              if (!podsByNode[nodeId]) podsByNode[nodeId] = [];
+              podsByNode[nodeId].push(entry);
             });
-          }
+          });
         }
 
-        var appNodes = [];
-        nsOrder.forEach(function(ns){
-          var list = byNs[ns] || [];
-          if (!list.length) return;
-          var center = nsCenters[ns] || {x:leftX, y:nsRowY};
-          var offsets = clusterOffsets(list.length);
-          var rowCount = 1;
-          offsets.forEach(function(off){
-            if (typeof off.row === 'number') rowCount = Math.max(rowCount, off.row + 1);
-          });
-          var minX = null, maxX = null, minY = null;
-          list.forEach(function(entry, idx){
-            var s = entry.status;
-            var info = entry.info;
-            var off = offsets[idx] || {x:0,y:0};
-            var row = (off.row != null) ? off.row : (off.y < 0 ? 0 : 1);
-            var col = (off.col != null) ? off.col : (off.x < 0 ? 0 : 1);
-            var faceShift = 0;
-            if (rowCount === 1 && col === 0) {
-              faceShift = 1;
-            }
-            if (list.length === 4) {
-              if (row === 0 && col === 0) faceShift = 2;
-              else if ((row === 0 && col === 1) || (row === 1 && col === 0)) faceShift = 1;
-            }
-            var node = addNode('app:'+s.app_name, info.name, 'app', center.x + off.x, center.y + off.y, {
-              app:s.app_name,
-              app_short: info.name,
-              ns: info.namespace,
-              ready:s.ready_replicas,
-              desired:s.desired_replicas,
-              rev:s.revision,
-              status:s.revision_status,
-              clusterCenter: center,
-              row: row,
-              col: col,
-              faceShift: faceShift,
-              clusterRows: rowCount
+        if (useSiteLayout) {
+          var siteOrder = Object.keys(siteMap).sort();
+          var siteCols = narrow ? 1 : Math.min(3, Math.max(1, siteOrder.length));
+          var siteGapX = (W - padX * 2) / Math.max(1, siteCols);
+          var siteGapY = hexH * 2.9;
+          var siteStartY = systemCenter.y + hexH * 2.4;
+          if (narrow) siteStartY = systemCenter.y + hexH * 2.2;
+          siteOrder.forEach(function(siteId, idx){
+            var col = idx % siteCols;
+            var row = Math.floor(idx / siteCols);
+            var cx = padX + siteGapX * (col + 0.5);
+            if (narrow) cx = W * 0.5;
+            var cy = siteStartY + row * siteGapY;
+            var nodesForSite = siteMap[siteId] || [];
+            var siteNode = addNode('site:' + siteId, siteId, 'site', cx, cy, {site_id: siteId, nodes: nodesForSite});
+            var count = nodesForSite.length;
+            var radius = Math.max(hexW * 1.15, hexH * 0.8);
+            var minX = siteNode.x;
+            var maxX = siteNode.x;
+            var minY = siteNode.y;
+            var maxY = siteNode.y;
+            nodesForSite.forEach(function(node, nidx){
+              var angle = (Math.PI * 2 * nidx) / Math.max(1, count) - Math.PI / 2;
+              var nx = cx + Math.cos(angle) * radius;
+              var ny = cy + Math.sin(angle) * radius;
+              if (count === 1) { nx = cx + radius; ny = cy; }
+              var labels = node.labels || {};
+              var role = node.role || labels.role || '';
+              var profile = node.profile || labels.profile || '';
+              if (!role) {
+                var backend = String(node.backend || '');
+                if (backend.indexOf('nats') === 0) role = 'gateway';
+              }
+              var nodeId = node.id || node.node_id || shortNodeName(node, siteId);
+              var label = shortNodeName(node, siteId) || nodeId || 'node';
+              addNode('node:' + nodeId, label, 'node', nx, ny, {
+                node_id: nodeId,
+                site_id: siteId,
+                role: role,
+                profile: profile,
+                status: node.status,
+                backend: node.backend,
+                labels: labels
+              });
+              minX = Math.min(minX, nx);
+              maxX = Math.max(maxX, nx);
+              minY = Math.min(minY, ny);
+              maxY = Math.max(maxY, ny);
+              var podList = podsByNode[nodeId] || [];
+              var baseR = hexH * 0.85;
+              var perRing = 8;
+              podList.forEach(function(pod, pi){
+                var ring = Math.floor(pi / perRing);
+                var ringIndex = pi % perRing;
+                var ringCount = Math.min(perRing, podList.length - ring * perRing);
+                var pAngle = (Math.PI * 2 * ringIndex) / Math.max(1, ringCount) - Math.PI / 2;
+                var pr = baseR + ring * 14;
+                var px = nx + Math.cos(pAngle) * pr;
+                var py = ny + Math.sin(pAngle) * pr;
+                var state = pod.ready ? 'ready' : 'pending';
+                var podId = 'pod:' + nodeId + ':' + pi;
+                addNode(podId, state, 'pod', px, py, {
+                  app: pod.app,
+                  ns: pod.ns,
+                  state: state,
+                  node_id: nodeId,
+                  pod_name: pod.pod_name,
+                  status: pod.status
+                });
+                var vx = px - nx;
+                var vy = py - ny;
+                var vlen = Math.sqrt(vx * vx + vy * vy) || 1;
+                var startX = nx + (vx / vlen) * (hexH * 0.55);
+                var startY = ny + (vy / vlen) * (hexH * 0.55);
+                link('node:' + nodeId, podId, 'trace', {kind:'trace', start:{x:startX,y:startY}, end:{x:px,y:py}});
+                minX = Math.min(minX, px);
+                maxX = Math.max(maxX, px);
+                minY = Math.min(minY, py);
+                maxY = Math.max(maxY, py);
+              });
             });
-            minX = (minX==null) ? node.x : Math.min(minX, node.x);
-            maxX = (maxX==null) ? node.x : Math.max(maxX, node.x);
-            minY = (minY==null) ? node.y : Math.min(minY, node.y);
-            appNodes.push(node);
+            var siteColor = (siteId === 'core') ? rolePalette('controller').color : namespaceColors(siteId).color;
+            var padPX = hexW * 1.0;
+            var padPY = hexH * 0.95;
+            sitePanels.push({
+              x: minX - padPX,
+              y: minY - padPY,
+              w: (maxX - minX) + padPX * 2,
+              h: (maxY - minY) + padPY * 2,
+              color: siteColor,
+              site_id: siteId,
+              nodes: nodesForSite.length
+            });
+            var siteLabel = (siteId === 'core') ? 'core hub' : siteId;
+            siteLabel += ' (' + String(nodesForSite.length) + ')';
+            addLabel('label:site:' + siteId, siteLabel, (minX - padPX) + 18, (minY - padPY) + 26, siteColor, '#e2e8f0', 'start');
+            if (nodeById.controller) {
+              link('controller', 'site:' + siteId, 'flow', {route:'site'});
+            }
           });
-          var c = namespaceColors(ns);
-          var labelShift = hexW * 0.25;
-          var labelX = (minX != null) ? (minX - labelShift) : center.x;
-          var labelY = (minY != null)
-            ? (minY - hexH * 0.5 - labelGap - labelLift)
-            : (center.y - hexH*0.78 - labelGap - labelLift);
-          addLabel('label:'+ns, ns, labelX, labelY, c.color, '#e2e8f0', 'end');
-        });
+        } else {
+          var apps = (statuses||[]).slice();
+          var byNs = {};
+          apps.forEach(function(s){
+            var info = splitAppName(s.app_name);
+            if (!byNs[info.namespace]) byNs[info.namespace] = [];
+            byNs[info.namespace].push({status:s, info:info});
+          });
+          Object.keys(byNs).forEach(function(ns){
+            byNs[ns].sort(function(a,b){ return String(a.info.name||'').localeCompare(String(b.info.name||'')); });
+          });
+          var nsOrder = [];
+          if (byNs['default']) nsOrder.push('default');
+          if (byNs['demo-helm']) nsOrder.push('demo-helm');
+          Object.keys(byNs).filter(function(ns){ return nsOrder.indexOf(ns)===-1; }).sort().forEach(function(ns){ nsOrder.push(ns); });
+
+          var nsCenters = {};
+          if (narrow){
+            var startY = nsRowY;
+            nsOrder.forEach(function(ns, idx){
+              nsCenters[ns] = {x: W*0.5, y: startY + idx * hexH * 2.0};
+            });
+          } else {
+            if (nsOrder.length > 0) {
+              var nsClusterGapX = Math.max(hexW * 3.2, 260);
+              var nsClusterGapY = hexH * 1.05;
+              var defaultX = clamp(hostCenter.x - nsClusterGapX * 0.38, padX + hexW, W - padX - hexW);
+              var defaultY = nsRowY + nsClusterGapY * 0.85;
+              nsCenters[nsOrder[0]] = {x: defaultX, y: defaultY};
+            }
+            if (nsOrder.length > 1) {
+              var demoX = clamp(hostCenter.x + Math.max(hexW * 3.0, 260), padX + hexW, rightX);
+              var demoY = nsRowY - hexH * 0.1;
+              nsCenters[nsOrder[1]] = {x: demoX, y: demoY};
+              if (nsOrder[0] === 'default' && nsOrder[1] === 'demo-helm') {
+                var systemRight = null;
+                sysIds.forEach(function(id){
+                  var n = nodeById[id];
+                  if (!n) return;
+                  var right = n.x + hexW * 0.58;
+                  systemRight = (systemRight == null) ? right : Math.max(systemRight, right);
+                });
+                var demoLeft = demoX - hexW * 0.58;
+                if (systemRight != null) {
+                  var midpoint = (systemRight + demoLeft) * 0.5;
+                  var baseDefaultX = nsCenters[nsOrder[0]].x;
+                  var newDefaultX = clamp(midpoint, padX + hexW, W - padX - hexW);
+                  var delta = newDefaultX - baseDefaultX;
+                  nsCenters[nsOrder[0]].x = newDefaultX;
+                  nsCenters[nsOrder[1]].x = clamp(demoX + delta, padX + hexW, W - padX - hexW);
+                }
+              }
+            }
+            if (nsOrder.length > 2) {
+              var extraNs = nsOrder.slice(2);
+              var extraCols = Math.min(3, extraNs.length);
+              var extraGap = (W - padX*2) / (extraCols + 1);
+              var extraStartY = nsRowY + hexH * 2.0;
+              extraNs.forEach(function(ns, idx){
+                var col = idx % extraCols;
+                var row = Math.floor(idx / extraCols);
+                nsCenters[ns] = {x: padX + extraGap * (col + 1), y: extraStartY + row * hexH * 1.5};
+              });
+            }
+          }
+
+          nsOrder.forEach(function(ns){
+            var list = byNs[ns] || [];
+            if (!list.length) return;
+            var center = nsCenters[ns] || {x:leftX, y:nsRowY};
+            var offsets = clusterOffsets(list.length);
+            var rowCount = 1;
+            offsets.forEach(function(off){
+              if (typeof off.row === 'number') rowCount = Math.max(rowCount, off.row + 1);
+            });
+            var minX = null, maxX = null, minY = null;
+            list.forEach(function(entry, idx){
+              var s = entry.status;
+              var info = entry.info;
+              var off = offsets[idx] || {x:0,y:0};
+              var row = (off.row != null) ? off.row : (off.y < 0 ? 0 : 1);
+              var col = (off.col != null) ? off.col : (off.x < 0 ? 0 : 1);
+              var faceShift = 0;
+              if (rowCount === 1 && col === 0) {
+                faceShift = 1;
+              }
+              if (list.length === 4) {
+                if (row === 0 && col === 0) faceShift = 2;
+                else if ((row === 0 && col === 1) || (row === 1 && col === 0)) faceShift = 1;
+              }
+              var node = addNode('app:'+s.app_name, info.name, 'app', center.x + off.x, center.y + off.y, {
+                app:s.app_name,
+                app_short: info.name,
+                ns: info.namespace,
+                ready:s.ready_replicas,
+                desired:s.desired_replicas,
+                rev:s.revision,
+                status:s.revision_status,
+                clusterCenter: center,
+                row: row,
+                col: col,
+                faceShift: faceShift,
+                clusterRows: rowCount
+              });
+              minX = (minX==null) ? node.x : Math.min(minX, node.x);
+              maxX = (maxX==null) ? node.x : Math.max(maxX, node.x);
+              minY = (minY==null) ? node.y : Math.min(minY, node.y);
+              appNodes.push(node);
+            });
+            var c = namespaceColors(ns);
+            var labelShift = hexW * 0.25;
+            var labelX = (minX != null) ? (minX - labelShift) : center.x;
+            var labelY = (minY != null)
+              ? (minY - hexH * 0.5 - labelGap - labelLift)
+              : (center.y - hexH*0.78 - labelGap - labelLift);
+            addLabel('label:'+ns, ns, labelX, labelY, c.color, '#e2e8f0', 'end');
+          });
+        }
 
         function appRowKind(n){
           var rows = (n.meta && n.meta.clusterRows) ? n.meta.clusterRows : 1;
@@ -2742,10 +2921,12 @@ Connection: close
           if (nodeById.runtime) link('runtime', n.id, 'flow', {route:'runtime'});
         });
 
+        var gPanels = svg.querySelector('#panels');
         var gNodes = svg.querySelector('#nodes');
         var gLinks = svg.querySelector('#links');
         var gLabels = svg.querySelector('#labels');
-        if(!gNodes||!gLinks||!gLabels) return;
+        if(!gPanels||!gNodes||!gLinks||!gLabels) return;
+        gPanels.innerHTML = '';
         gNodes.innerHTML = '';
         gLinks.innerHTML = '';
         gLabels.innerHTML = '';
@@ -3396,6 +3577,34 @@ Connection: close
               shadowAlpha:0.12
             };
           }
+          if (n.type === 'site') {
+            var sc = namespaceColors(n.meta && n.meta.site_id ? n.meta.site_id : n.label);
+            return {
+              accent: sc.color,
+              shellFill:'rgba(12,16,22,0.88)',
+              innerStroke:'rgba(255,255,255,0.18)',
+              faceTop:shadeHsl(sc.color, 20),
+              faceBot:shadeHsl(sc.color, -12),
+              patternStroke:'rgba(255,255,255,0.18)',
+              patternOpacity:0.32,
+              label:'#f8fafc',
+              shadowAlpha:0.4
+            };
+          }
+          if (n.type === 'node') {
+            var rc = rolePalette(n.meta && n.meta.role ? n.meta.role : '');
+            return {
+              accent: rc.color,
+              shellFill:'rgba(10,14,18,0.92)',
+              innerStroke:'rgba(255,255,255,0.18)',
+              faceTop:shadeHsl(rc.color, 16),
+              faceBot:shadeHsl(rc.color, -16),
+              patternStroke:'rgba(255,255,255,0.16)',
+              patternOpacity:0.38,
+              label:'#f8fafc',
+              shadowAlpha:0.4
+            };
+          }
           var c = namespaceColors(n.meta && n.meta.ns ? n.meta.ns : 'default');
           return {
             accent:c.color,
@@ -3520,6 +3729,28 @@ Connection: close
           text.setAttribute('fill', t.label);
           text.textContent = String(n.label || '');
           gInner.appendChild(text);
+          if (n.type === 'node') {
+            var roleText = '';
+            try {
+              var roleVal = n.meta && n.meta.role ? String(n.meta.role) : '';
+              var profileVal = n.meta && n.meta.profile ? String(n.meta.profile) : '';
+              if (roleVal && profileVal && roleVal !== profileVal) roleText = roleVal + ' · ' + profileVal;
+              else if (roleVal) roleText = roleVal;
+              else if (profileVal) roleText = profileVal;
+            } catch(e){ roleText = ''; }
+            if (roleText) {
+              var sub = document.createElementNS('http://www.w3.org/2000/svg','text');
+              sub.setAttribute('x','0');
+              sub.setAttribute('y','26');
+              sub.setAttribute('text-anchor','middle');
+              sub.setAttribute('font-family','ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial');
+              sub.setAttribute('font-size','11');
+              sub.setAttribute('font-weight','600');
+              sub.setAttribute('fill','rgba(226,232,240,0.78)');
+              sub.textContent = roleText;
+              gInner.appendChild(sub);
+            }
+          }
           gNodes.appendChild(g);
 
           var labelMax = hexW * 1.2;
@@ -3546,6 +3777,24 @@ Connection: close
             info.push('Pods: ' + (ainfo.ready||0) + '/' + (ainfo.desired||0));
             if(ainfo.rev!=null) info.push('Revision: ' + ainfo.rev + ' (' + (ainfo.status||'-') + ')');
             title.textContent = info.join(String.fromCharCode(10));
+          } else if (n.type === 'node') {
+            var ninfo = n.meta || {};
+            var lines = [];
+            lines.push('Node: ' + (ninfo.node_id || n.label || 'node'));
+            if (ninfo.site_id) lines.push('Site: ' + ninfo.site_id);
+            if (ninfo.role) lines.push('Role: ' + ninfo.role);
+            if (ninfo.profile) lines.push('Profile: ' + ninfo.profile);
+            if (ninfo.status) lines.push('Status: ' + ninfo.status);
+            if (ninfo.backend) lines.push('Backend: ' + ninfo.backend);
+            title.textContent = lines.join(String.fromCharCode(10));
+          } else if (n.type === 'site') {
+            var sinfo = n.meta || {};
+            var sLines = [];
+            sLines.push('Site: ' + (sinfo.site_id || n.label || 'site'));
+            if (sinfo.nodes && sinfo.nodes.length != null) {
+              sLines.push('Nodes: ' + String(sinfo.nodes.length));
+            }
+            title.textContent = sLines.join(String.fromCharCode(10));
           } else {
             title.textContent = labelInfo.full || String(n.label||'');
           }
@@ -3570,10 +3819,28 @@ Connection: close
           var parts = [];
           if(n.meta && n.meta.app) parts.push('App: '+n.meta.app);
           if(n.meta && n.meta.ns) parts.push('Namespace: '+n.meta.ns);
+          if(n.meta && n.meta.node_id) parts.push('Node: '+n.meta.node_id);
+          if(n.meta && n.meta.pod_name) parts.push('Pod: '+n.meta.pod_name);
           parts.push('State: ' + (n.meta && n.meta.state ? n.meta.state : n.label));
+          if(n.meta && n.meta.status) parts.push('Status: '+n.meta.status);
           title.textContent = parts.join(String.fromCharCode(10));
           g.appendChild(title);
           gNodes.appendChild(g);
+        }
+
+        function drawPanel(p){
+          var rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+          rect.setAttribute('x', String(p.x));
+          rect.setAttribute('y', String(p.y));
+          rect.setAttribute('width', String(p.w));
+          rect.setAttribute('height', String(p.h));
+          rect.setAttribute('rx','16');
+          rect.setAttribute('ry','16');
+          rect.setAttribute('fill','rgba(12,17,26,0.35)');
+          rect.setAttribute('stroke', p.color || '#475569');
+          rect.setAttribute('stroke-width','1.2');
+          rect.setAttribute('stroke-dasharray','6 6');
+          gPanels.appendChild(rect);
         }
 
         function drawLabel(l){
@@ -3628,12 +3895,14 @@ Connection: close
           maxY = Math.max(maxY, n.y + r);
         });
         labelNodes.forEach(function(l){ maxY = Math.max(maxY, l.y + 20); });
+        sitePanels.forEach(function(p){ maxY = Math.max(maxY, p.y + p.h); });
         var totalHeight = Math.max(420, Math.ceil(maxY + padY));
         if (wrapEl) {
           wrapEl.style.height = totalHeight + 'px';
         }
         svg.setAttribute('viewBox', '0 0 ' + Math.max(1000, W) + ' ' + totalHeight);
 
+        sitePanels.forEach(function(p){ drawPanel(p); });
         links.forEach(function(L){ drawLink(L); });
         nodes.forEach(function(n){ if (n.type === 'pod') drawPodNode(n); else drawHexNode(n); });
         labelNodes.forEach(drawLabel);
