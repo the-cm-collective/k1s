@@ -339,6 +339,7 @@ if [[ "$controller_mode" == "sudo" ]]; then
     DBUS_SESSION_BUS_ADDRESS="" \
     CONTAINER_HOST="" \
     PODMAN_HOST="" \
+    BENCH_REPO_ROOT="$repo_root" \
     AE_SPECS_DIR="$spec_dir" \
     AE_STATE_DB="$state_db" \
     AE_CADDY_DIR="$caddy_dir" \
@@ -353,7 +354,7 @@ if [[ "$controller_mode" == "sudo" ]]; then
     BENCH_METRICS_PORT="$metrics_port" \
     BENCH_LOG_FILE="$log_file" \
     BENCH_PID_FILE="$pid_file" \
-    bash -lc 'install -d -m 0700 /run/user/0 || true; nohup "$PYTHON_BIN" -m ae.controller --loop --specs "$AE_SPECS_DIR" --watch --metrics-port "$BENCH_METRICS_PORT" >>"$BENCH_LOG_FILE" 2>&1 & echo $! > "$BENCH_PID_FILE"' </dev/null
+    bash -lc 'cd "$BENCH_REPO_ROOT" || exit 1; install -d -m 0700 /run/user/0 || true; nohup "$PYTHON_BIN" -m ae.controller --loop --specs "$AE_SPECS_DIR" --watch --metrics-port "$BENCH_METRICS_PORT" >>"$BENCH_LOG_FILE" 2>&1 & echo $! > "$BENCH_PID_FILE"' </dev/null
   controller_pid=$(cat "$pid_file" 2>/dev/null || true)
 else
   AE_SPECS_DIR="$spec_dir" AE_STATE_DB="$state_db" AE_CADDY_DIR="$caddy_dir" \
