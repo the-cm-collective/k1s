@@ -247,21 +247,37 @@ Open an interactive shell or run a lightweight port-forward check. These are Lab
       <button id="labs-pf-close" type="button">Close</button>
     </div>
     <div class="modal-body">
-      <div class="row" style="flex-wrap:wrap; gap:10px; margin-bottom:10px;">
+      <div class="pf-fields">
         <label>Pod <select id="labs-pf-pod"></select></label>
         <label>Port <input id="labs-pf-port" type="text" placeholder="8080" /></label>
-        <label>Shim API <input id="labs-pf-base" type="text" placeholder="http://127.0.0.1:8443" /></label>
-        <label>Token <input id="labs-pf-token" type="password" placeholder="apishim token" /></label>
+        <label class="pf-span-2">Shim API <input id="labs-pf-base" type="text" placeholder="http://127.0.0.1:8443" /></label>
+        <label class="pf-span-4">Token <input id="labs-pf-token" type="password" placeholder="apishim token" /></label>
       </div>
-      <div class="row" style="gap:10px; flex-wrap:wrap;">
-        <label style="flex:1 1 320px;">Request
-          <textarea id="labs-pf-request" rows="4" style="width:100%;">GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n</textarea>
+      <div class="pf-io">
+        <label>Request
+          <textarea id="labs-pf-request" rows="4" class="scrollbar-hide" style="width:100%;">GET / HTTP/1.1
+Host: localhost
+Connection: close
+
+</textarea>
         </label>
-        <label style="flex:1 1 320px;">Response
-          <textarea id="labs-pf-response" rows="4" style="width:100%;" readonly></textarea>
-        </label>
+        <div class="pf-response">
+          <div class="pf-response-head">
+            <label for="labs-pf-response">Response</label>
+            <div class="pf-response-toggle" role="group" aria-label="Response view">
+              <button id="labs-pf-view-source" type="button" class="pf-view-btn active" data-pf-view="source" aria-pressed="true">Source</button>
+              <button id="labs-pf-view-preview" type="button" class="pf-view-btn" data-pf-view="preview" aria-pressed="false">Preview</button>
+            </div>
+          </div>
+          <div id="labs-pf-response-source" class="pf-response-view pf-source">
+            <textarea id="labs-pf-response" rows="4" class="scrollbar-hide" style="width:100%;" readonly></textarea>
+          </div>
+          <div id="labs-pf-preview" class="pf-response-view pf-preview hidden">
+            <iframe id="labs-pf-preview-frame" title="Port-forward response preview" sandbox></iframe>
+          </div>
+        </div>
       </div>
-      <div class="row" style="margin-top:10px; gap:8px; align-items:center;">
+      <div class="pf-controls">
         <button id="labs-pf-connect" type="button">Connect</button>
         <button id="labs-pf-send" type="button">Send Request</button>
         <button id="labs-pf-disconnect" type="button">Disconnect</button>

@@ -68,6 +68,72 @@
     if (cls) { el.className = cls; }
   }
 
+  function parseSessionToken(tok) {
+    if (!tok || tok.indexOf('sess1.') !== 0) return null;
+    const parts = tok.split('.');
+    if (parts.length !== 3) return null;
+    let payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const pad = payload.length % 4;
+    if (pad) payload += '===='.slice(pad);
+    try {
+      const raw = atob(payload);
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  function sessionTokenExp(tok) {
+    const info = parseSessionToken(tok);
+    if (!info) return 0;
+    return parseInt(info.exp || '0', 10) || 0;
+  }
+
+  function sessionTokenExpired(tok, skewSec) {
+    if (!tok || tok.indexOf('sess1.') !== 0) return false;
+    const exp = sessionTokenExp(tok);
+    if (!exp) return true;
+    const now = Math.floor(Date.now() / 1000);
+    return exp <= (now + (skewSec || 0));
+  }
+
+  function scopePatternMatch(pat, value) {
+    if (!pat) return false;
+    if (pat === value) return true;
+    const raw = String(pat || '');
+    let esc = '';
+    const specials = '\\^$+?.()|{}[]';
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw[i];
+      if (ch === '*') { esc += '.*'; continue; }
+      if (ch === '?') { esc += '.'; continue; }
+      if (specials.indexOf(ch) !== -1) { esc += '\\' + ch; continue; }
+      esc += ch;
+    }
+    const re = '^' + esc + '$';
+    try { return new RegExp(re).test(String(value || '')); } catch { return false; }
+  }
+
+  function sessionTokenAllowsScope(tok, scope) {
+    const info = parseSessionToken(tok);
+    if (!info) return false;
+    const scopesVal = info.scopes || info.scope || [];
+    let scopes = [];
+    if (typeof scopesVal === 'string') scopes = [scopesVal];
+    else if (Array.isArray(scopesVal)) scopes = scopesVal.map((s) => String(s || '')).filter(Boolean);
+    if (!scopes.length) return true;
+    for (let i = 0; i < scopes.length; i++) {
+      if (scopePatternMatch(scopes[i], scope)) return true;
+    }
+    return false;
+  }
+
+  function clearStoredSession(kind) {
+    try { localStorage.removeItem('ae_apishim_' + kind + '_token'); } catch {}
+    try { localStorage.removeItem('ae_apishim_' + kind + '_scope'); } catch {}
+    try { localStorage.removeItem('ae_apishim_' + kind + '_exp'); } catch {}
+  }
+
   function extractExampleBaseName(yamlText) {
     if (!yamlText) return null;
     const lines = String(yamlText).split(/\r?\n/);
@@ -1019,9 +1085,37 @@
     if (baseInput) baseInput.value = base;
     try { localStorage.setItem('ae_apishim_base', base); } catch {}
     if (tokenInput && !tokenInput.value) {
-      try { tokenInput.value = localStorage.getItem('ae_apishim_token') || ''; } catch {}
+      try { tokenInput.value = localStorage.getItem('ae_apishim_pf_token') || localStorage.getItem('ae_apishim_token') || ''; } catch {}
     }
     const scope = `${ns}/${splitAppName(state.appName || '').name || pod}`;
+    let pfStoredToken = '';
+    let pfStoredScope = '';
+    try { pfStoredToken = localStorage.getItem('ae_apishim_pf_token') || localStorage.getItem('ae_apishim_token') || ''; } catch {}
+    try { pfStoredScope = localStorage.getItem('ae_apishim_pf_scope') || ''; } catch {}
+    if (pfStoredToken && pfStoredToken.indexOf('sess1.') === 0) {
+      if (sessionTokenExpired(pfStoredToken, 15)) {
+        clearStoredSession('pf');
+        pfStoredToken = '';
+        pfStoredScope = '';
+      } else if (pfStoredScope && pfStoredScope !== scope) {
+        clearStoredSession('pf');
+        pfStoredToken = '';
+        pfStoredScope = '';
+      }
+    }
+    if (tokenInput && !tokenInput.value && pfStoredToken) {
+      tokenInput.value = pfStoredToken;
+    }
+    if (tokenInput && tokenInput.value && tokenInput.value.indexOf('sess1.') === 0) {
+      if (sessionTokenExpired(tokenInput.value, 15) || !sessionTokenAllowsScope(tokenInput.value, scope)) {
+        clearStoredSession('pf');
+        tokenInput.value = '';
+      }
+    }
+    if (tokenInput && tokenInput.value && pfStoredScope && pfStoredScope !== scope && tokenInput.value.indexOf('sess1.') === 0) {
+      try { clearStoredSession('pf'); } catch {}
+      tokenInput.value = '';
+    }
     const doConnect = () => {
       const params = new URLSearchParams();
       splitArgs(cmdInput?.value || 'sh').forEach(c => params.append('command', c));
@@ -1077,6 +1171,8 @@
     socket: null,
     encoder: (window.TextEncoder ? new TextEncoder() : null),
     decoder: (window.TextDecoder ? new TextDecoder() : null),
+    view: 'source',
+    previewTimer: null,
   };
 
   function labsPfStatus(txt, cls) {
@@ -1084,6 +1180,116 @@
     if (!el) return;
     el.textContent = txt || '';
     if (cls) el.className = `pill ${cls}`;
+  }
+
+  function labsPfEscapeHtml(value) {
+    return String(value || '').replace(/[&<>"']/g, (ch) => {
+      if (ch === '&') return '&amp;';
+      if (ch === '<') return '&lt;';
+      if (ch === '>') return '&gt;';
+      if (ch === '"') return '&quot;';
+      if (ch === "'") return '&#39;';
+      return ch;
+    });
+  }
+
+  function labsParsePfResponse(raw) {
+    let text = raw || '';
+    let sep = '\r\n\r\n';
+    let idx = text.indexOf(sep);
+    if (idx === -1) {
+      sep = '\n\n';
+      idx = text.indexOf(sep);
+    }
+    if (idx === -1) return { headers: '', body: text, status: '' };
+    const headers = text.slice(0, idx);
+    const body = text.slice(idx + sep.length);
+    const status = headers.split(/\r?\n/)[0] || '';
+    return { headers, body, status };
+  }
+
+  function labsUpdatePfPreview() {
+    const frame = document.getElementById('labs-pf-preview-frame');
+    const resp = document.getElementById('labs-pf-response');
+    if (!frame || !resp) return;
+    const raw = resp.value || '';
+    const previewStyle = 'html,body{height:100%;}body{margin:0;padding:12px;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;color:#e2e8f0;background:#0b0f14;scrollbar-width:none;-ms-overflow-style:none;}body::-webkit-scrollbar{width:0;height:0;}';
+    const injectStyles = (html) => {
+      if (!html) return '';
+      const styleTag = '<style>' + previewStyle + '</style>';
+      if (/<head[\\s>]/i.test(html)) {
+        return html.replace(/<head[^>]*>/i, (match) => match + styleTag);
+      }
+      if (/<html[\\s>]/i.test(html)) {
+        return html.replace(/<html[^>]*>/i, (match) => match + '<head>' + styleTag + '</head>');
+      }
+      return '<!doctype html><html><head>' + styleTag + '</head><body>' + html + '</body></html>';
+    };
+    if (!raw) {
+      frame.srcdoc = '<!doctype html><html><head><meta charset="utf-8"><style>' + previewStyle.replace('#e2e8f0', '#94a3b8') + '</style></head><body>No response yet.</body></html>';
+      return;
+    }
+    const parsed = labsParsePfResponse(raw);
+    const headers = parsed.headers || '';
+    const body = parsed.body || '';
+    let contentType = '';
+    if (headers) {
+      const lines = headers.split(/\r?\n/);
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line) continue;
+        const idx = line.indexOf(':');
+        if (idx < 0) continue;
+        const key = line.slice(0, idx).trim().toLowerCase();
+        if (key === 'content-type') {
+          contentType = line.slice(idx + 1).trim().toLowerCase();
+          break;
+        }
+      }
+    }
+    const trimmed = body.trim();
+    let isHtml = false;
+    if (contentType) {
+      if (contentType.indexOf('text/html') !== -1 || contentType.indexOf('application/xhtml+xml') !== -1) {
+        isHtml = true;
+      }
+    } else if (trimmed.indexOf('<!doctype') === 0 || trimmed.indexOf('<html') === 0 || trimmed.indexOf('<body') === 0 || trimmed.indexOf('<svg') === 0) {
+      isHtml = true;
+    }
+    let doc = '';
+    if (isHtml) {
+      doc = injectStyles(body);
+    } else {
+      doc = '<!doctype html><html><head><meta charset="utf-8"><style>' + previewStyle + 'pre{margin:0;white-space:pre-wrap;}</style></head><body><pre>' + labsPfEscapeHtml(body) + '</pre></body></html>';
+    }
+    frame.srcdoc = doc;
+  }
+
+  function labsSchedulePfPreviewUpdate() {
+    if (labsPf.previewTimer) return;
+    labsPf.previewTimer = setTimeout(() => {
+      labsPf.previewTimer = null;
+      labsUpdatePfPreview();
+    }, 80);
+  }
+
+  function labsSetPfView(view) {
+    labsPf.view = view || 'source';
+    const sourceWrap = document.getElementById('labs-pf-response-source');
+    const previewWrap = document.getElementById('labs-pf-preview');
+    const sourceBtn = document.getElementById('labs-pf-view-source');
+    const previewBtn = document.getElementById('labs-pf-view-preview');
+    if (sourceWrap) sourceWrap.classList.toggle('hidden', labsPf.view !== 'source');
+    if (previewWrap) previewWrap.classList.toggle('hidden', labsPf.view !== 'preview');
+    if (sourceBtn) {
+      sourceBtn.classList.toggle('active', labsPf.view === 'source');
+      sourceBtn.setAttribute('aria-pressed', labsPf.view === 'source' ? 'true' : 'false');
+    }
+    if (previewBtn) {
+      previewBtn.classList.toggle('active', labsPf.view === 'preview');
+      previewBtn.setAttribute('aria-pressed', labsPf.view === 'preview' ? 'true' : 'false');
+    }
+    if (labsPf.view === 'preview') labsSchedulePfPreviewUpdate();
   }
 
   function labsPfSend(ch, data) {
@@ -1105,6 +1311,7 @@
       if (ch === 0 || ch === 1) {
         const out = document.getElementById('labs-pf-response');
         if (out) out.value = (out.value || '') + txt;
+        if (labsPf.view === 'preview') labsSchedulePfPreviewUpdate();
       }
     } catch {}
   }
@@ -1121,6 +1328,7 @@
     const resp = document.getElementById('labs-pf-response');
     if (resp) resp.value = '';
     labsPfStatus('idle', 'muted');
+    labsSetPfView('source');
   }
 
   function labsClosePf() {
@@ -1175,6 +1383,14 @@
       labsPfStatus('minting token', 'muted');
       mintShimToken('portforward', scope).then((tok) => {
         if (tok && tokenInput) tokenInput.value = tok;
+        try {
+          if (tok) {
+            localStorage.setItem('ae_apishim_pf_token', tok);
+            localStorage.setItem('ae_apishim_pf_scope', scope);
+            const exp = sessionTokenExp(tok);
+            if (exp) localStorage.setItem('ae_apishim_pf_exp', String(exp));
+          }
+        } catch {}
         doConnect();
       }).catch(() => { doConnect(); });
       return;
@@ -1182,11 +1398,24 @@
     doConnect();
   }
 
+  function normalizePfPayload(payload) {
+    if (payload == null) return '';
+    let text = String(payload);
+    if (text.indexOf('\\r') !== -1 || text.indexOf('\\n') !== -1) {
+      text = text.replace(/\\r\\n/g, '\r\n').replace(/\\n/g, '\n').replace(/\\r/g, '\r');
+    }
+    if (text.indexOf('\n') !== -1) {
+      text = text.replace(/\r?\n/g, '\r\n');
+    }
+    return text;
+  }
+
   function labsPfSendRequest() {
     const req = document.getElementById('labs-pf-request');
     const payload = req?.value || '';
     if (!payload) return;
-    labsPfSend(0, payload);
+    if (!labsPf.socket || labsPf.socket.readyState !== 1) { labsPfStatus('not connected', 'warn'); return; }
+    labsPfSend(0, normalizePfPayload(payload));
   }
 
   function labsPfDisconnect() {
@@ -1989,6 +2218,8 @@
     try { document.getElementById('labs-pf-connect')?.addEventListener('click', labsPfConnect); } catch(_){}
     try { document.getElementById('labs-pf-send')?.addEventListener('click', labsPfSendRequest); } catch(_){}
     try { document.getElementById('labs-pf-disconnect')?.addEventListener('click', labsPfDisconnect); } catch(_){}
+    try { document.getElementById('labs-pf-view-source')?.addEventListener('click', () => labsSetPfView('source')); } catch(_){}
+    try { document.getElementById('labs-pf-view-preview')?.addEventListener('click', () => labsSetPfView('preview')); } catch(_){}
     try {
       window.addEventListener('resize', () => {
         const modal = document.getElementById('labs-shell-modal');
