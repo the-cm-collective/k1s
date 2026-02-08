@@ -158,6 +158,15 @@ Helper manifests:
 - `specs/examples/echo-node-sea-edge-02-edge-1.yaml` pins to `sea-edge-02--edge-1`.
 - `specs/examples/echo-node-sea-edge-02-edge-2.yaml` pins to `sea-edge-02--edge-2`.
 - `specs/examples/echo-node-k1s-core.yaml` targets the core controller node (`role=controller`, `profile=k1s-core`).
+Blue/green per-node demo manifests:
+- `specs/examples/echo-node-k1s-core-blue.yaml`
+- `specs/examples/echo-node-k1s-core-green.yaml`
+- `specs/examples/echo-node-sfo-edge-01-edge-1-blue.yaml`
+- `specs/examples/echo-node-sfo-edge-01-edge-1-green.yaml`
+- `specs/examples/echo-node-sea-edge-02-edge-1-blue.yaml`
+- `specs/examples/echo-node-sea-edge-02-edge-1-green.yaml`
+- `specs/examples/echo-node-sea-edge-02-edge-2-blue.yaml`
+- `specs/examples/echo-node-sea-edge-02-edge-2-green.yaml`
 
 Gateway-targeted workload (spread across gateways):
 ```
@@ -188,6 +197,28 @@ python -m ae.cli apply -f specs/examples/echo-node-k1s-core.yaml
 python -m ae.cli status echo-node-k1s-core --wide --events
 ```
 
+Blue/green per-node demo apps:
+```
+python -m ae.cli apply -f specs/examples/echo-node-k1s-core-blue.yaml
+python -m ae.cli apply -f specs/examples/echo-node-k1s-core-green.yaml
+python -m ae.cli apply -f specs/examples/echo-node-sfo-edge-01-edge-1-blue.yaml
+python -m ae.cli apply -f specs/examples/echo-node-sfo-edge-01-edge-1-green.yaml
+python -m ae.cli apply -f specs/examples/echo-node-sea-edge-02-edge-1-blue.yaml
+python -m ae.cli apply -f specs/examples/echo-node-sea-edge-02-edge-1-green.yaml
+python -m ae.cli apply -f specs/examples/echo-node-sea-edge-02-edge-2-blue.yaml
+python -m ae.cli apply -f specs/examples/echo-node-sea-edge-02-edge-2-green.yaml
+```
+```
+python -m ae.cli status echo-node-k1s-core-blue --wide --events
+python -m ae.cli status echo-node-k1s-core-green --wide --events
+python -m ae.cli status echo-node-sfo-edge-01-edge-1-blue --wide --events
+python -m ae.cli status echo-node-sfo-edge-01-edge-1-green --wide --events
+python -m ae.cli status echo-node-sea-edge-02-edge-1-blue --wide --events
+python -m ae.cli status echo-node-sea-edge-02-edge-1-green --wide --events
+python -m ae.cli status echo-node-sea-edge-02-edge-2-blue --wide --events
+python -m ae.cli status echo-node-sea-edge-02-edge-2-green --wide --events
+```
+
 Expected:
 - Each app reports a `node_id` matching the selector.
 - Dashboard workloads appear under the targeted nodes.
@@ -200,6 +231,14 @@ python -m ae.cli delete echo-node-sfo-edge-01-edge-1
 python -m ae.cli delete echo-node-sea-edge-02-edge-1
 python -m ae.cli delete echo-node-sea-edge-02-edge-2
 python -m ae.cli delete echo-node-k1s-core
+python -m ae.cli delete echo-node-k1s-core-blue
+python -m ae.cli delete echo-node-k1s-core-green
+python -m ae.cli delete echo-node-sfo-edge-01-edge-1-blue
+python -m ae.cli delete echo-node-sfo-edge-01-edge-1-green
+python -m ae.cli delete echo-node-sea-edge-02-edge-1-blue
+python -m ae.cli delete echo-node-sea-edge-02-edge-1-green
+python -m ae.cli delete echo-node-sea-edge-02-edge-2-blue
+python -m ae.cli delete echo-node-sea-edge-02-edge-2-green
 ```
 - Stop gateways and edge NATS.
 - Stop hub services: `make down`
