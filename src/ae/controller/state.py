@@ -362,10 +362,11 @@ class SQLiteStateStore:
                     "status",
                     "readiness_message",
                     "liveness_message",
-                    "exit_code",
-                    "finished_at",
-                ],
-            )
+                "exit_code",
+                "finished_at",
+                "updated_at",
+            ],
+        )
             if needs_reset:
                 conn.execute("DROP TABLE IF EXISTS probe_history")
                 conn.execute("DROP TABLE IF EXISTS pod_status")
