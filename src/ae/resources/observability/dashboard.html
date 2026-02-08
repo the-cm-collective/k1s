@@ -2756,6 +2756,7 @@ Connection: close
             if (String(role || '').toLowerCase() === 'controller' && !labels.site) {
               nodeLabel = 'core';
             }
+            var traceAnchorId = suppressNode ? 'runtime' : ('node:' + nodeId);
             var entries = [];
             var links = [];
             var appLinks = [];
@@ -3019,6 +3020,7 @@ Connection: close
               height: height,
               appLinks: appLinks,
               hasNode: !suppressNode,
+              traceAnchorId: traceAnchorId,
               padX: padGX,
               padY: padGY
             };
@@ -3200,9 +3202,9 @@ Connection: close
                 var end = {x: L.end.x + shiftX, y: L.end.y + shiftY};
                 link(L.a, L.b, L.cls, {kind:L.kind, start:start, end:end, app:L.app});
               });
-              if (group.hasNode && group.appLinks && group.appLinks.length) {
+              if (group.traceAnchorId && group.appLinks && group.appLinks.length) {
                 group.appLinks.forEach(function(appLink){
-                  link('node:' + group.nodeId, appLink.id, 'trace', {kind:'trace', app: appLink.app});
+                  link(group.traceAnchorId, appLink.id, 'trace', {kind:'trace', app: appLink.app});
                 });
               }
             });
@@ -3231,9 +3233,9 @@ Connection: close
                 var end = {x: L.end.x + shiftX, y: L.end.y + shiftY};
                 link(L.a, L.b, L.cls, {kind:L.kind, start:start, end:end, app:L.app});
               });
-              if (group.hasNode && group.appLinks && group.appLinks.length) {
+              if (group.traceAnchorId && group.appLinks && group.appLinks.length) {
                 group.appLinks.forEach(function(appLink){
-                  link('node:' + group.nodeId, appLink.id, 'trace', {kind:'trace', app: appLink.app});
+                  link(group.traceAnchorId, appLink.id, 'trace', {kind:'trace', app: appLink.app});
                 });
               }
             });
@@ -4009,6 +4011,7 @@ Connection: close
           var points = [];
           var isTrace = (L.cls||'').indexOf('trace') !== -1;
           var isFlow = (L.cls||'').indexOf('flow') !== -1;
+          var forceStraight = isTrace && L.meta && L.meta.start && L.meta.end;
           if (isTrace && L.meta && L.meta.start && L.meta.end) {
             start = L.meta.start;
             end = L.meta.end;
@@ -4055,7 +4058,7 @@ Connection: close
           if (isFlow && endDir && b.type !== 'app') {
             endDir = {x:-endDir.x, y:-endDir.y};
           }
-          if (graphPathMode === 'straight' || isTrace){
+          if (graphPathMode === 'straight' || forceStraight){
             points = [[start.x, start.y], [end.x, end.y]];
           } else if (isFlow) {
             var flowPoints = null;
@@ -4121,7 +4124,7 @@ Connection: close
             reserveFlowPath(points);
           }
           var d = '';
-          if (graphPathMode === 'straight' || isTrace){
+          if (graphPathMode === 'straight' || forceStraight){
             for (var i=0;i<points.length;i++){
               d += (i===0 ? 'M ' : ' L ') + points[i][0] + ' ' + points[i][1];
             }
