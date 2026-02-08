@@ -2657,6 +2657,7 @@ Connection: close
         });
 
         var corePanelRect = null;
+        var hostBounds = null;
         if (useSiteLayout && systemBounds) {
           var corePadX = hexW * 0.7;
           var corePadY = hexH * 0.7;
@@ -2677,9 +2678,10 @@ Connection: close
           });
           if (nodeById.host) {
             var hostX = corePanelRect.x + corePanelRect.w * 0.5;
-            var hostY = Math.max(padY + hexH * 0.55, corePanelRect.y - hexH * 0.7);
+            var hostY = Math.max(padY + hexH * 0.55, corePanelRect.y - hexH * 0.95);
             nodeById.host.x = hostX;
             nodeById.host.y = hostY;
+            hostBounds = rectFromNode(nodeById.host, hexH * 0.1);
           }
         }
 
@@ -3001,6 +3003,9 @@ Connection: close
           else if (systemBounds) leftBoundary = systemBounds.maxX + hexW * 1.1;
           var siteStartX = W - padX;
           var siteStartY = corePanelRect ? (corePanelRect.y + hexH * 0.25) : (systemBounds ? (systemBounds.minY + hexH * 0.05) : (systemCenter.y + hexH * 1.4));
+          if (hostBounds) {
+            siteStartY = Math.max(siteStartY, hostBounds.y2 + hexH * 0.35);
+          }
           siteStartY = Math.max(padY, siteStartY);
           var siteGapX = Math.max(hexW * 0.8, 80);
           var siteGapY = Math.max(hexH * 0.95, 100);
