@@ -51,6 +51,9 @@ dependencies = {file = ["requirements.in"]}
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+filterwarnings = [
+    "ignore:Unverified HTTPS request is being made.*:urllib3.exceptions.InsecureRequestWarning",
+]
 markers = [
     "integration: marks tests that require external dependencies or longer setup",
 ]
