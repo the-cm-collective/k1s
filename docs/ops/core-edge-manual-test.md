@@ -175,6 +175,13 @@ python -m ae.cli status echo-node-sea-edge-02-edge-1 --wide --events
 python -m ae.cli status echo-node-sea-edge-02-edge-2 --wide --events
 ```
 
+Scale replicas (optional):
+```
+python -m ae.cli -n default scale echo-node-sea-edge-02-edge-1 --replicas 3
+python -m ae.cli -n default scale echo-node-sea-edge-02-edge-2 --replicas 3
+python -m ae.cli -n default scale echo-node-sfo-edge-01-edge-1 --replicas 4
+```
+
 Core-targeted workload:
 ```
 python -m ae.cli apply -f specs/examples/echo-node-k1s-core.yaml
