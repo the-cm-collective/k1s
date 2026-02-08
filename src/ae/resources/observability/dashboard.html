@@ -2604,6 +2604,33 @@ Connection: close
         if (!useSiteLayout && hasCoreProfile) {
           useSiteLayout = true;
         }
+        if (useSiteLayout && nodeById.host) {
+          var hostRect = rectFromNode(nodeById.host, hexH * 0.1);
+          var sysRect = null;
+          sysIds.forEach(function(id){
+            var n = nodeById[id];
+            if (!n) return;
+            var r = rectFromNode(n, hexH * 0.1);
+            if (!sysRect) sysRect = {minX:r.x1, maxX:r.x2, minY:r.y1, maxY:r.y2};
+            else {
+              sysRect.minX = Math.min(sysRect.minX, r.x1);
+              sysRect.maxX = Math.max(sysRect.maxX, r.x2);
+              sysRect.minY = Math.min(sysRect.minY, r.y1);
+              sysRect.maxY = Math.max(sysRect.maxY, r.y2);
+            }
+          });
+          if (sysRect) {
+            var desiredTop = hostRect.y2 + hexH * 0.35;
+            if (sysRect.minY < desiredTop) {
+              var delta = desiredTop - sysRect.minY;
+              sysIds.forEach(function(id){
+                var n = nodeById[id];
+                if (n) n.y += delta;
+              });
+              sysLabelY += delta;
+            }
+          }
+        }
         if (sys && sys.placements) {
           Object.keys(sys.placements || {}).forEach(function(appName){
             var list = sys.placements[appName] || [];
@@ -2677,10 +2704,7 @@ Connection: close
             nodes: sysIds.length
           });
           if (nodeById.host) {
-            var hostX = corePanelRect.x + corePanelRect.w * 0.5;
-            var hostY = Math.max(padY + hexH * 0.55, corePanelRect.y - hexH * 0.95);
-            nodeById.host.x = hostX;
-            nodeById.host.y = hostY;
+            nodeById.host.x = corePanelRect.x + corePanelRect.w * 0.5;
             hostBounds = rectFromNode(nodeById.host, hexH * 0.1);
           }
         }
