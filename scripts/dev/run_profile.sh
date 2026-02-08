@@ -655,6 +655,7 @@ case "$PROFILE" in
     export AE_TRANSPORT_BACKEND="${AE_TRANSPORT_BACKEND:-nats-js}"
     export AE_NATS_URL="${AE_NATS_URL:-nats://hub-controller:dev@127.0.0.1:4222}"
     export AE_JS_DOMAIN="${AE_JS_DOMAIN:-K1S}"
+    export AE_NODE_PROFILE="${AE_NODE_PROFILE:-k1s-core}"
     if [[ "${AE_DEV_LOCAL:-0}" == "1" ]]; then
       export AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-1}"
       export AE_LABS="${AE_LABS:-1}"
