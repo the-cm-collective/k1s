@@ -124,6 +124,23 @@ def _local_node_id() -> str:
     return os.getenv("AE_NODE_ID", socket.gethostname())
 
 
+def _parse_labels(raw: str | None) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    if not raw:
+        return labels
+    for part in str(raw).split(","):
+        item = part.strip()
+        if not item or "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        labels[key] = value
+    return labels
+
+
 def _register_local_node(store: SQLiteStateStore, runtime_backend: str) -> None:
     """Best-effort local node registration for single-controller setups."""
     try:
@@ -131,10 +148,15 @@ def _register_local_node(store: SQLiteStateStore, runtime_backend: str) -> None:
             return
         node_id = _local_node_id()
         name = os.getenv("AE_NODE_NAME", node_id)
+        labels = _parse_labels(os.getenv("AE_NODE_LABELS"))
+        profile = (os.getenv("AE_NODE_PROFILE") or "").strip()
+        if profile:
+            labels.setdefault("profile", profile)
+        labels.setdefault("role", "controller")
         store.upsert_node(
             node_id,
             name=name,
-            labels={"role": "controller"},
+            labels=labels,
             taints=[],
             backend=runtime_backend,
             endpoint=None,
