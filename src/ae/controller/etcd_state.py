@@ -397,9 +397,17 @@ class EtcdStateStore(SQLiteStateStore):
             self._put_json(self._k("pods", app_name, pod.pod_name), payload)
 
         # Pod placement hints
+        # Preserve existing mappings when runtime results omit node_id to avoid dashboard flicker.
         pod_nodes_prefix = self._k("pod_nodes", app_name)
-        self._delete_prefix(pod_nodes_prefix)
         ts = _now_iso()
+        current_pods = {p.pod_name for p in health_report.pods if p.pod_name}
+        try:
+            for key, _rec, _rev in self._list_prefix(pod_nodes_prefix):
+                pod_name = key.split("/")[-1]
+                if pod_name and pod_name not in current_pods:
+                    self._delete(key)
+        except Exception:
+            pass
         for rs in runtime_result.pod_states:
             node_id = getattr(rs, "node_id", None)
             if not node_id:

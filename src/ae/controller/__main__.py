@@ -2107,6 +2107,15 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
             # Placements: map pod_name -> node for dashboard
             placements: dict[str, list[dict]] = {}
+            core_node_id = None
+            try:
+                for node in _nodes:
+                    labels = node.get("labels") or {}
+                    if str(labels.get("role") or "").lower() == "controller":
+                        core_node_id = node.get("id") or node.get("name")
+                        break
+            except Exception:
+                core_node_id = None
             for s in statuses:
                 try:
                     repl_nodes = {
@@ -2114,17 +2123,37 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     }
                 except Exception:
                     repl_nodes = {}
+                selector_role = None
+                selector_profile = None
+                try:
+                    manifest = store.get_revision_manifest(s.app_name, s.revision)
+                    selector = getattr(manifest.spec, "node_selector", {}) or {}
+                    selector_role = selector.get("role")
+                    selector_profile = selector.get("profile")
+                except Exception:
+                    selector_role = None
+                    selector_profile = None
                 try:
                     reps = store.list_pods(s.app_name)
                 except Exception:
                     reps = []
                 entries = []
                 for r in reps:
+                    node_id = repl_nodes.get(r.pod_name)
+                    if (
+                        not node_id
+                        and core_node_id
+                        and (
+                            str(selector_role or "").lower() == "controller"
+                            or str(selector_profile or "").lower() == "k1s-core"
+                        )
+                    ):
+                        node_id = core_node_id
                     entries.append(
                         {
                             "pod_name": r.pod_name,
                             "replica_id": r.pod_name,
-                            "node_id": repl_nodes.get(r.pod_name),
+                            "node_id": node_id,
                             "ready": bool(r.ready),
                             "live": bool(r.live),
                             "status": r.status,

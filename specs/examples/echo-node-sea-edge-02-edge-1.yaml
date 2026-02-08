@@ -11,7 +11,7 @@ spec:
   nodeSelector:
     role: gateway
     site: sea-edge-02
-    node_id: edge-1
+    node_id: sea-edge-02--edge-1
   health:
     readiness:
       httpGet:
