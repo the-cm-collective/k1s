@@ -130,11 +130,18 @@ DEBUG ae.worker_stub: work completed node_id=sea-edge-02--edge-1 work_id=test-ed
 ```
 
 Validation
+Controller CLI context (core host):
+```
+export AE_STATE_BACKEND=etcd
+export AE_ETCD_ENDPOINTS=http://127.0.0.1:2379
+export AE_ETCD_PREFIX=k1s/profiles/k1s-core
+```
 ```
 ae nodes
-curl hpython -m ae.cli work enqueue --site-id sfo-edge-01 --mode outbox --preferred-node sfo-edge-01--edge-1 --op noop
+python -m ae.cli work enqueue --site-id sfo-edge-01 --mode outbox --preferred-node sfo-edge-01--edge-1 --op noop
 python -m ae.cli work enqueue --site-id sea-edge-02 --mode outbox --preferred-node sea-edge-02--edge-2 --op noop
-python -m ae.cli work enqueue --site-id sea-edge-02 --mode outbox --preferred-node sea-edge-02--edge-1 --op noopttp://HUB_HOST:8222/leafz
+python -m ae.cli work enqueue --site-id sea-edge-02 --mode outbox --preferred-node sea-edge-02--edge-1 --op noop
+curl http://HUB_HOST:8222/leafz
 ```
 Expected:
 - Nodes show `sfo-edge-01--edge-1`, `sea-edge-02--edge-1`, `sea-edge-02--edge-2`.
@@ -142,6 +149,50 @@ Expected:
 - Gateway logs show a lease acquisition and completed work counts increasing.
 - Work ledger transitions to `Succeeded` for the test work items (visible in hub logs via `work_result` entries).
 
+Workload placement smoke tests (manifests)
+Use the controller CLI context above.
+Node selectors use scoped node ids (`<site_id>--<node_id>`).
+Helper manifests:
+- `specs/examples/echo-gateway.yaml` targets gateway nodes and spreads across sites.
+- `specs/examples/echo-node-sfo-edge-01-edge-1.yaml` pins to `sfo-edge-01--edge-1`.
+- `specs/examples/echo-node-sea-edge-02-edge-1.yaml` pins to `sea-edge-02--edge-1`.
+- `specs/examples/echo-node-sea-edge-02-edge-2.yaml` pins to `sea-edge-02--edge-2`.
+- `specs/examples/echo-node-k1s-core.yaml` targets the core controller node (`role=controller`, `profile=k1s-core`).
+
+Gateway-targeted workload (spread across gateways):
+```
+python -m ae.cli apply -f specs/examples/echo-gateway.yaml
+python -m ae.cli status echo-gateway --wide --events
+```
+
+Node-targeted workloads (one per gateway):
+```
+python -m ae.cli apply -f specs/examples/echo-node-sfo-edge-01-edge-1.yaml
+python -m ae.cli apply -f specs/examples/echo-node-sea-edge-02-edge-1.yaml
+python -m ae.cli apply -f specs/examples/echo-node-sea-edge-02-edge-2.yaml
+python -m ae.cli status echo-node-sfo-edge-01-edge-1 --wide --events
+python -m ae.cli status echo-node-sea-edge-02-edge-1 --wide --events
+python -m ae.cli status echo-node-sea-edge-02-edge-2 --wide --events
+```
+
+Core-targeted workload:
+```
+python -m ae.cli apply -f specs/examples/echo-node-k1s-core.yaml
+python -m ae.cli status echo-node-k1s-core --wide --events
+```
+
+Expected:
+- Each app reports a `node_id` matching the selector.
+- Dashboard workloads appear under the targeted nodes.
+
 Cleanup
+Delete test workloads (if applied):
+```
+python -m ae.cli delete echo-gateway
+python -m ae.cli delete echo-node-sfo-edge-01-edge-1
+python -m ae.cli delete echo-node-sea-edge-02-edge-1
+python -m ae.cli delete echo-node-sea-edge-02-edge-2
+python -m ae.cli delete echo-node-k1s-core
+```
 - Stop gateways and edge NATS.
 - Stop hub services: `make down`

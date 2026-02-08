@@ -2587,14 +2587,22 @@ Connection: close
         var appNodes = [];
         var useSiteLayout = false;
         var siteMap = {};
+        var coreNodes = [];
         var podsByNode = {};
 
         if (sys && sys.nodes && sys.nodes.length) {
           sys.nodes.forEach(function(n){
             var labels = n.labels || {};
             var role = n.role || labels.role || '';
-            if (String(role || '').toLowerCase() === 'controller') return;
+            var profile = n.profile || labels.profile || '';
             var siteId = siteIdFromNode(n);
+            var isController = String(role || '').toLowerCase() === 'controller';
+            var isCoreProfile = String(profile || '').toLowerCase() === 'k1s-core';
+            if (isController || (isCoreProfile && !siteId)) {
+              coreNodes.push(n);
+              useSiteLayout = true;
+              return;
+            }
             if (!siteId) return;
             useSiteLayout = true;
             if (!siteMap[siteId]) siteMap[siteId] = [];
@@ -2685,6 +2693,7 @@ Connection: close
 
         var corePanelRect = null;
         var hostBounds = null;
+        var corePanelIndex = null;
         if (useSiteLayout && systemBounds) {
           var corePadX = hexW * 0.7;
           var corePadY = hexH * 0.7;
@@ -2694,6 +2703,7 @@ Connection: close
             w: (systemBounds.maxX - systemBounds.minX) + corePadX * 2,
             h: (systemBounds.maxY - systemBounds.minY) + corePadY * 2
           };
+          corePanelIndex = sitePanels.length;
           sitePanels.push({
             x: corePanelRect.x,
             y: corePanelRect.y,
@@ -2720,42 +2730,53 @@ Connection: close
           var siteInnerMax = Math.max(hexW * 3.0, Math.min((W - padX * 2) * 0.48, 660));
           var siteHeader = Math.max(hexH * 0.8, 64);
 
-          function buildNodeGroup(nodeRec, siteId){
+          function buildNodeGroup(nodeRec, siteId, opts){
+            opts = opts || {};
             var labels = nodeRec.labels || {};
             var role = nodeRec.role || labels.role || '';
             var profile = nodeRec.profile || labels.profile || '';
+            var suppressNode = !!opts.suppressNode;
+            var hideEmpty = !!opts.hideEmpty;
             if (!role) {
               var backend = String(nodeRec.backend || '');
               if (backend.indexOf('nats') === 0) role = 'gateway';
             }
             var nodeId = nodeRec.id || nodeRec.node_id || shortNodeName(nodeRec, siteId);
             var nodeLabel = shortNodeName(nodeRec, siteId) || nodeId || 'node';
+            if (String(role || '').toLowerCase() === 'controller' && !labels.site) {
+              nodeLabel = 'core';
+            }
             var entries = [];
             var links = [];
-            var minX = -hexW * 0.58;
-            var maxX = hexW * 0.58;
-            var minY = -hexH * 0.58;
-            var maxY = hexH * 0.58;
+            var minX = suppressNode ? Infinity : -hexW * 0.58;
+            var maxX = suppressNode ? -Infinity : hexW * 0.58;
+            var minY = suppressNode ? Infinity : -hexH * 0.58;
+            var maxY = suppressNode ? -Infinity : hexH * 0.58;
 
-            entries.push({
-              kind:'node',
-              id:'node:' + nodeId,
-              type:'node',
-              label:nodeLabel,
-              x:0,
-              y:0,
-              meta:{
-                node_id: nodeId,
-                site_id: siteId,
-                role: role,
-                profile: profile,
-                status: nodeRec.status,
-                backend: nodeRec.backend,
-                labels: labels
-              }
-            });
+            if (!suppressNode) {
+              entries.push({
+                kind:'node',
+                id:'node:' + nodeId,
+                type:'node',
+                label:nodeLabel,
+                x:0,
+                y:0,
+                meta:{
+                  node_id: nodeId,
+                  site_id: siteId,
+                  role: role,
+                  profile: profile,
+                  status: nodeRec.status,
+                  backend: nodeRec.backend,
+                  labels: labels
+                }
+              });
+            }
 
             var podEntries = podsByNode[nodeId] || [];
+            if (hideEmpty && !podEntries.length) {
+              return null;
+            }
             var appMap = {};
             podEntries.forEach(function(pod){
               if (!appMap[pod.app]) {
@@ -2966,6 +2987,14 @@ Connection: close
             var padGY = hexH * 0.4;
             var width = (maxX - minX);
             var height = (maxY - minY);
+            if (!isFinite(width) || !isFinite(height)) {
+              minX = -appHexW * 0.4;
+              maxX = appHexW * 0.4;
+              minY = -appHexH * 0.4;
+              maxY = appHexH * 0.4;
+              width = (maxX - minX);
+              height = (maxY - minY);
+            }
             width = Math.max(width, hexW * 1.2);
             height = Math.max(height, hexH * 1.2);
             return {
@@ -2981,11 +3010,78 @@ Connection: close
             };
           }
 
+          var coreGroups = [];
+          if (coreNodes.length) {
+            coreNodes.forEach(function(nodeRec){
+              var group = buildNodeGroup(
+                nodeRec,
+                siteIdFromNode(nodeRec) || 'core-hub',
+                {suppressNode: true, hideEmpty: true}
+              );
+              if (group) coreGroups.push(group);
+            });
+          }
+          var coreLayout = null;
+          if (coreGroups.length && systemBounds) {
+            var coreCursorX = 0;
+            var coreCursorY = 0;
+            var coreRowHeight = 0;
+            var coreRowWidth = 0;
+            var coreMaxWidth = 0;
+            var coreMaxHeight = 0;
+            var coreGapX = Math.max(hexW * 0.8, 70);
+            var coreGapY = Math.max(hexH * 0.8, 80);
+            var coreInnerMax = Math.max(hexW * 2.6, Math.min((W - padX * 2) * 0.4, 520));
+            coreGroups.forEach(function(group){
+              var gWidth = group.width + group.padX * 2;
+              var gHeight = group.height + group.padY * 2;
+              if (coreCursorX > 0 && coreCursorX + gWidth > coreInnerMax) {
+                coreCursorY += coreRowHeight + coreGapY;
+                coreCursorX = 0;
+                coreRowHeight = 0;
+              }
+              group.offsetX = coreCursorX;
+              group.offsetY = coreCursorY;
+              coreCursorX += gWidth + coreGapX;
+              coreRowHeight = Math.max(coreRowHeight, gHeight);
+              coreRowWidth = Math.max(coreRowWidth, coreCursorX - coreGapX);
+              coreMaxWidth = Math.max(coreMaxWidth, coreRowWidth);
+            });
+            coreMaxHeight = coreCursorY + coreRowHeight;
+            coreLayout = {
+              groups: coreGroups,
+              width: coreMaxWidth,
+              height: coreMaxHeight,
+              padX: hexW * 0.6,
+              padY: hexH * 0.6
+            };
+            coreLayout.x = systemCenter.x - (coreLayout.width * 0.5);
+            coreLayout.y = systemBounds.maxY + hexH * 0.65;
+            if (corePanelRect) {
+              var coreLeft = coreLayout.x - coreLayout.padX;
+              var coreTop = coreLayout.y - coreLayout.padY;
+              var coreRight = coreLayout.x + coreLayout.width + coreLayout.padX;
+              var coreBottom = coreLayout.y + coreLayout.height + coreLayout.padY;
+              var minX = Math.min(corePanelRect.x, coreLeft);
+              var minY = Math.min(corePanelRect.y, coreTop);
+              var maxX = Math.max(corePanelRect.x + corePanelRect.w, coreRight);
+              var maxY = Math.max(corePanelRect.y + corePanelRect.h, coreBottom);
+              corePanelRect = {x:minX, y:minY, w:maxX - minX, h:maxY - minY};
+              if (corePanelIndex != null) {
+                sitePanels[corePanelIndex].x = corePanelRect.x;
+                sitePanels[corePanelIndex].y = corePanelRect.y;
+                sitePanels[corePanelIndex].w = corePanelRect.w;
+                sitePanels[corePanelIndex].h = corePanelRect.h;
+              }
+            }
+          }
+
           siteOrder.forEach(function(siteId){
             var nodesForSite = siteMap[siteId] || [];
             var groups = [];
             nodesForSite.forEach(function(nodeRec){
-              groups.push(buildNodeGroup(nodeRec, siteId));
+              var group = buildNodeGroup(nodeRec, siteId);
+              if (group) groups.push(group);
             });
             var cursorX = 0;
             var cursorY = 0;
@@ -3095,6 +3191,29 @@ Connection: close
               link('controller', siteNodeId, 'flow', {route:'site'});
             }
           });
+
+          if (coreLayout) {
+            var coreBaseX = coreLayout.x + coreLayout.padX;
+            var coreBaseY = coreLayout.y + coreLayout.padY;
+            coreLayout.groups.forEach(function(group){
+              var shiftX = coreBaseX + group.offsetX - group.minX + group.padX;
+              var shiftY = coreBaseY + group.offsetY - group.minY + group.padY;
+              group.entries.forEach(function(entry){
+                var nx = entry.x + shiftX;
+                var ny = entry.y + shiftY;
+                if (entry.kind === 'ns-label') {
+                  addLabel(entry.id, entry.label, nx, ny, entry.meta.color, '#e2e8f0', entry.meta.anchor, entry.meta.size);
+                } else {
+                  addNode(entry.id, entry.label, entry.type, nx, ny, entry.meta);
+                }
+              });
+              group.links.forEach(function(L){
+                var start = {x: L.start.x + shiftX, y: L.start.y + shiftY};
+                var end = {x: L.end.x + shiftX, y: L.end.y + shiftY};
+                link(L.a, L.b, L.cls, {kind:L.kind, start:start, end:end, app:L.app});
+              });
+            });
+          }
         } else {
           var apps = (statuses||[]).slice();
           var byNs = {};

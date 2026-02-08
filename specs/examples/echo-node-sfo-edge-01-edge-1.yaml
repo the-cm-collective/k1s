@@ -11,7 +11,7 @@ spec:
   nodeSelector:
     role: gateway
     site: sfo-edge-01
-    node_id: edge-1
+    node_id: sfo-edge-01--edge-1
   health:
     readiness:
       httpGet:
