@@ -373,10 +373,20 @@ class EtcdStateStore(SQLiteStateStore):
         }
         self._put_json(self._k("status", app_name), status)
 
-        # Pods
+        # Pods (preserve recent entries to avoid dashboard flicker)
         pods_prefix = self._k("pods", app_name)
-        self._delete_prefix(pods_prefix)
+        existing: dict[str, dict] = {}
+        try:
+            for key, rec, _rev in self._list_prefix(pods_prefix):
+                pod_name = key.split("/")[-1]
+                if pod_name:
+                    existing[pod_name] = rec or {}
+        except Exception:
+            existing = {}
+        ts = _now_iso()
+        current_pods: set[str] = set()
         for pod in health_report.pods:
+            current_pods.add(pod.pod_name)
             state = next(
                 (s for s in runtime_result.pod_states if s.pod_name == pod.pod_name),
                 None,
@@ -393,27 +403,70 @@ class EtcdStateStore(SQLiteStateStore):
                 "finished_at": getattr(state, "finished_at", None).isoformat()
                 if getattr(state, "finished_at", None)
                 else None,
+                "updated_at": ts,
             }
             self._put_json(self._k("pods", app_name, pod.pod_name), payload)
+
+        try:
+            ttl_seconds = int(
+                os.getenv("AE_POD_STATUS_TTL_SECONDS", "30") or "30"
+            )
+        except Exception:
+            ttl_seconds = 30
+        if ttl_seconds > 0 and existing:
+            cutoff = _now() - timedelta(seconds=ttl_seconds)
+            for pod_name, rec in existing.items():
+                if pod_name in current_pods:
+                    continue
+                updated_raw = rec.get("updated_at")
+                updated_at = _dt_from_iso(updated_raw)
+                if updated_at is None or updated_at < cutoff:
+                    self._delete(self._k("pods", app_name, pod_name))
 
         # Pod placement hints
         # Preserve existing mappings when runtime results omit node_id to avoid dashboard flicker.
         pod_nodes_prefix = self._k("pod_nodes", app_name)
         ts = _now_iso()
         current_pods = {p.pod_name for p in health_report.pods if p.pod_name}
+        existing_nodes: dict[str, dict] = {}
         try:
-            for key, _rec, _rev in self._list_prefix(pod_nodes_prefix):
+            for key, rec, _rev in self._list_prefix(pod_nodes_prefix):
                 pod_name = key.split("/")[-1]
-                if pod_name and pod_name not in current_pods:
-                    self._delete(key)
+                if pod_name:
+                    existing_nodes[pod_name] = rec or {}
         except Exception:
-            pass
+            existing_nodes = {}
         for rs in runtime_result.pod_states:
             node_id = getattr(rs, "node_id", None)
             if not node_id:
                 continue
             payload = {"pod_name": rs.pod_name, "node_id": node_id, "updated_at": ts}
             self._put_json(self._k("pod_nodes", app_name, rs.pod_name), payload)
+        # Refresh timestamps for known pods so their mappings stay warm.
+        for pod_name in current_pods:
+            rec = existing_nodes.get(pod_name)
+            if not rec:
+                continue
+            node_id = rec.get("node_id")
+            if not node_id:
+                continue
+            payload = {"pod_name": pod_name, "node_id": node_id, "updated_at": ts}
+            self._put_json(self._k("pod_nodes", app_name, pod_name), payload)
+        try:
+            node_ttl_seconds = int(
+                os.getenv("AE_POD_NODE_TTL_SECONDS", "300") or "300"
+            )
+        except Exception:
+            node_ttl_seconds = 300
+        if node_ttl_seconds > 0 and existing_nodes:
+            cutoff = _now() - timedelta(seconds=node_ttl_seconds)
+            for pod_name, rec in existing_nodes.items():
+                if pod_name in current_pods:
+                    continue
+                updated_raw = rec.get("updated_at")
+                updated_at = _dt_from_iso(updated_raw)
+                if updated_at is None or updated_at < cutoff:
+                    self._delete(self._k("pod_nodes", app_name, pod_name))
 
         # Probe history (keep last 50 per pod)
         for pod in health_report.pods:
@@ -515,16 +568,18 @@ class EtcdStateStore(SQLiteStateStore):
             for key, rec, _rev in self._list_prefix(self._k("pod_nodes", app_name))
         }
         rows: list[tuple[str, str | None, bool, bool, str, str, str]] = []
-        for pod_name, pod in sorted(pods.items()):
+        all_names = sorted(set(pods.keys()) | set(nodes.keys()))
+        for pod_name in all_names:
+            pod = pods.get(pod_name)
             rows.append(
                 (
                     pod_name,
                     nodes.get(pod_name),
-                    bool(pod.ready),
-                    bool(pod.live),
-                    str(pod.status),
-                    str(pod.readiness_message),
-                    str(pod.liveness_message),
+                    bool(getattr(pod, "ready", False)) if pod else False,
+                    bool(getattr(pod, "live", False)) if pod else False,
+                    str(getattr(pod, "status", "unknown")) if pod else "unknown",
+                    str(getattr(pod, "readiness_message", "")) if pod else "",
+                    str(getattr(pod, "liveness_message", "")) if pod else "",
                 )
             )
         return rows

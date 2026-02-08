@@ -2117,12 +2117,6 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             except Exception:
                 core_node_id = None
             for s in statuses:
-                try:
-                    repl_nodes = {
-                        row[0]: row[1] for row in store.list_pod_nodes(s.app_name)
-                    }
-                except Exception:
-                    repl_nodes = {}
                 selector_role = None
                 selector_profile = None
                 try:
@@ -2134,12 +2128,16 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     selector_role = None
                     selector_profile = None
                 try:
-                    reps = store.list_pods(s.app_name)
+                    rows = store.list_pod_nodes(s.app_name)
                 except Exception:
-                    reps = []
+                    rows = []
                 entries = []
-                for r in reps:
-                    node_id = repl_nodes.get(r.pod_name)
+                for row in rows:
+                    pod_name = row[0]
+                    node_id = row[1]
+                    ready = bool(row[2]) if len(row) > 2 else False
+                    live = bool(row[3]) if len(row) > 3 else False
+                    status = row[4] if len(row) > 4 else "unknown"
                     if (
                         not node_id
                         and core_node_id
@@ -2151,12 +2149,12 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                         node_id = core_node_id
                     entries.append(
                         {
-                            "pod_name": r.pod_name,
-                            "replica_id": r.pod_name,
+                            "pod_name": pod_name,
+                            "replica_id": pod_name,
                             "node_id": node_id,
-                            "ready": bool(r.ready),
-                            "live": bool(r.live),
-                            "status": r.status,
+                            "ready": ready,
+                            "live": live,
+                            "status": status,
                         }
                     )
                 placements[s.app_name] = entries
