@@ -2591,26 +2591,37 @@ Connection: close
         var podsByNode = {};
 
         if (sys && sys.nodes && sys.nodes.length) {
+          var hasSiteNodes = false;
+          var hasNonController = false;
+          var hasCoreProfile = false;
           sys.nodes.forEach(function(n){
             var labels = n.labels || {};
             var role = n.role || labels.role || '';
             var profile = n.profile || labels.profile || '';
             var siteId = siteIdFromNode(n);
             var isController = String(role || '').toLowerCase() === 'controller';
-            var isCoreProfile = String(profile || '').toLowerCase() === 'k1s-core';
-            if (isController || (isCoreProfile && !siteId)) {
-              coreNodes.push(n);
-              useSiteLayout = true;
-              return;
-            }
-            if (!siteId) return;
-            useSiteLayout = true;
-            if (!siteMap[siteId]) siteMap[siteId] = [];
-            siteMap[siteId].push(n);
+            if (siteId) hasSiteNodes = true;
+            if (!isController) hasNonController = true;
+            if (String(profile || '').toLowerCase() === 'k1s-core') hasCoreProfile = true;
           });
-        }
-        if (!useSiteLayout && hasCoreProfile) {
-          useSiteLayout = true;
+          useSiteLayout = hasSiteNodes || hasNonController || hasCoreProfile;
+          if (useSiteLayout) {
+            sys.nodes.forEach(function(n){
+              var labels = n.labels || {};
+              var role = n.role || labels.role || '';
+              var profile = n.profile || labels.profile || '';
+              var siteId = siteIdFromNode(n);
+              var isController = String(role || '').toLowerCase() === 'controller';
+              var isCoreProfile = String(profile || '').toLowerCase() === 'k1s-core';
+              if (isController || (isCoreProfile && !siteId)) {
+                coreNodes.push(n);
+                return;
+              }
+              if (!siteId) return;
+              if (!siteMap[siteId]) siteMap[siteId] = [];
+              siteMap[siteId].push(n);
+            });
+          }
         }
         if (useSiteLayout && nodeById.host) {
           var hostRect = rectFromNode(nodeById.host, hexH * 0.1);
