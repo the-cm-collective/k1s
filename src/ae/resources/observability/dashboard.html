@@ -443,6 +443,8 @@
                 <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#fef3c7" stroke="#f59e0b"/></svg> Pod pending</span>
                 <span><svg width="30" height="8"><path d="M1 4 L22 4" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="6 6"/><polygon points="22,1 29,4 22,7" fill="#9ca3af"/></svg> Flow</span>
                 <span><button id="graph-path-toggle" style="font-size:12px; padding:4px 8px; border:1px solid #4b5563; border-radius:6px; background:#111827; color:#e5e7eb; cursor:pointer;">Paths: Orth</button></span>
+                <span><button id="graph-namespace-toggle" style="font-size:12px; padding:4px 8px; border:1px solid #4b5563; border-radius:6px; background:#111827; color:#e5e7eb; cursor:pointer;">Namespaces: Expanded</button></span>
+                <span><button id="graph-scale-toggle" style="font-size:12px; padding:4px 8px; border:1px solid #4b5563; border-radius:6px; background:#111827; color:#e5e7eb; cursor:pointer;">Scale: Compact</button></span>
               </div>
             </div>
             <div id="graph-hover" class="hover-card"></div>
@@ -598,6 +600,9 @@ Connection: close
       var currentDetail = null;
       var graphHover = null;
       var graphPathMode = (localStorage.getItem('graph_path_mode') || 'orth'); // 'orth' or 'straight'
+      var graphNamespaceCollapse = (localStorage.getItem('graph_namespace_collapse') || '0') === '1';
+      var graphNodeScaleMode = (localStorage.getItem('graph_node_scale') || 'compact'); // 'compact' or 'comfortable'
+      var graphExpandedNodes = {};
       // Keep apps rail aligned under the header
       function syncHeaderHeight(){
         try {
@@ -2238,6 +2243,43 @@ Connection: close
         }
       })();
 
+      (function(){
+        function setNsLabel(){
+          var b = document.getElementById('graph-namespace-toggle');
+          if (!b) return;
+          b.textContent = 'Namespaces: ' + (graphNamespaceCollapse ? 'Collapsed' : 'Expanded');
+        }
+        var btn = document.getElementById('graph-namespace-toggle');
+        if (btn){
+          setNsLabel();
+          btn.addEventListener('click', function(){
+            graphNamespaceCollapse = !graphNamespaceCollapse;
+            try { localStorage.setItem('graph_namespace_collapse', graphNamespaceCollapse ? '1' : '0'); } catch(e){}
+            if (!graphNamespaceCollapse) { graphExpandedNodes = {}; }
+            setNsLabel();
+            renderGraphIfReady();
+          });
+        }
+      })();
+
+      (function(){
+        function setScaleLabel(){
+          var b = document.getElementById('graph-scale-toggle');
+          if (!b) return;
+          b.textContent = 'Scale: ' + (graphNodeScaleMode==='comfortable' ? 'Comfortable' : 'Compact');
+        }
+        var btn = document.getElementById('graph-scale-toggle');
+        if (btn){
+          setScaleLabel();
+          btn.addEventListener('click', function(){
+            graphNodeScaleMode = (graphNodeScaleMode==='comfortable' ? 'compact' : 'comfortable');
+            try { localStorage.setItem('graph_node_scale', graphNodeScaleMode); } catch(e){}
+            setScaleLabel();
+            renderGraphIfReady();
+          });
+        }
+      })();
+
       function fitTextToWidth(textEl, label, maxWidth){
         var full = String(label || '');
         if (!textEl) return { text: full, truncated: false, full: full };
@@ -2312,8 +2354,8 @@ Connection: close
           var n={id:id,label:label,type:type,x:x,y:y,meta:meta||{}};
           nodes.push(n); nodeById[id]=n; return n;
         }
-        function addLabel(id, text, x, y, color, textColor, anchor){
-          labelNodes.push({id:id, text:text, x:x, y:y, color:color, textColor:textColor, anchor:anchor});
+        function addLabel(id, text, x, y, color, textColor, anchor, size){
+          labelNodes.push({id:id, text:text, x:x, y:y, color:color, textColor:textColor, anchor:anchor, size:size});
         }
         function link(a,b, cls, meta){ links.push({a:a,b:b,cls:cls||'',meta:meta||{}}); }
 
@@ -2368,6 +2410,77 @@ Connection: close
           return offsets;
         }
 
+        function clusterOffsetsScaled(count, localHexW, localHexH){
+          var gap = 5;
+          var stepX = localHexW + gap;
+          var stepY = (localHexH * 0.75) + gap;
+          if (count <= 1) return [{x:0,y:0,row:0,col:0,band:0}];
+          if (count === 2) {
+            return [
+              {x:-stepX*0.5, y:0, row:0, col:0, band:0},
+              {x:stepX*0.5, y:0, row:0, col:1, band:0}
+            ];
+          }
+          if (count === 3) {
+            return [
+              {x:-stepX*0.5, y:-stepY*0.5, row:0, col:0, band:0},
+              {x:stepX*0.5, y:-stepY*0.5, row:0, col:1, band:0},
+              {x:0, y:stepY*0.5, row:1, col:0, band:0}
+            ];
+          }
+          if (count === 4) {
+            return [
+              {x:-stepX*0.75, y:-stepY*0.5, row:0, col:0, band:0},
+              {x:stepX*0.25, y:-stepY*0.5, row:0, col:1, band:0},
+              {x:-stepX*0.25, y:stepY*0.5, row:1, col:0, band:0},
+              {x:stepX*0.75, y:stepY*0.5, row:1, col:1, band:0}
+            ];
+          }
+          var maxCols = Math.max(2, Math.floor((W - padX * 2) / stepX));
+          maxCols = Math.min(maxCols, 6);
+          var colsPerBand = Math.max(2, Math.min(maxCols, Math.ceil(count / 2)));
+          var bandCapacity = colsPerBand * 2;
+          var bands = Math.ceil(count / bandCapacity);
+          var offsets = [];
+          for (var band=0; band<bands; band++){
+            var remaining = count - (band * bandCapacity);
+            var bandCount = Math.min(bandCapacity, remaining);
+            var cols = Math.min(colsPerBand, Math.ceil(bandCount / 2));
+            var rows = Math.min(2, Math.ceil(bandCount / cols));
+            for (var r=0;r<rows;r++){
+              for (var c=0;c<cols;c++){
+                var idx = band * bandCapacity + r * cols + c;
+                if (idx >= count) break;
+                var x = (c - (cols-1)/2) * stepX;
+                if (r % 2 === 1) x += stepX/2;
+                var y = (r - (rows-1)/2) * stepY + band * (stepY * 2.2);
+                offsets.push({x:x, y:y, row:(r + band * 2), col:c, band:band});
+              }
+            }
+          }
+          return offsets;
+        }
+
+        function rectFromNode(n, pad){
+          var scaleFactor = (n.meta && n.meta.scaleFactor) ? Number(n.meta.scaleFactor) : 1;
+          var px = (hexW * 0.58 * scaleFactor) + (pad || 0);
+          var py = (hexH * 0.58 * scaleFactor) + (pad || 0);
+          return {x1:n.x - px, y1:n.y - py, x2:n.x + px, y2:n.y + py, id:n.id, kind:'node'};
+        }
+
+        function rectFromLabel(l){
+          var m = measureLabelText(l.text);
+          var scale = (l.size && Number(l.size)) ? (Number(l.size) / 15) : 1;
+          var w = (m.w || 0) * scale + 16;
+          var h = (m.h || 18) * scale + 8;
+          var x = l.x;
+          if (l.anchor === 'end') x -= w;
+          else if (l.anchor === 'middle') x -= w * 0.5;
+          var y = l.y - h * 0.8;
+          var pad = 6;
+          return {x1:x - pad, y1:y - pad, x2:x + w + pad, y2:y + h + pad, kind:'label'};
+        }
+
         function siteIdFromNode(node){
           if (!node) return null;
           var labels = node.labels || {};
@@ -2398,6 +2511,19 @@ Connection: close
           if (!r) return { color: '#94a3b8', tint: 'rgba(148,163,184,0.2)' };
           var hue = hashHue(r);
           return { color: 'hsl(' + hue + ', 70%, 55%)', tint: 'hsla(' + hue + ', 70%, 20%, 0.18)' };
+        }
+
+        function runtimePalette(){
+          return { color: '#ec4899', tint: 'rgba(236,72,153,0.22)' };
+        }
+
+        function nodeAppScaleFactor(){
+          return (graphNodeScaleMode === 'comfortable') ? 0.7 : 0.55;
+        }
+
+        function isNodeExpanded(nodeId){
+          if (!graphNamespaceCollapse) return true;
+          return !!graphExpandedNodes[String(nodeId || '')];
         }
 
         var hostName = 'h4cktop';
@@ -2490,116 +2616,440 @@ Connection: close
             });
           });
         }
+        var appStatusByName = {};
+        (statuses||[]).forEach(function(s){
+          appStatusByName[s.app_name] = s;
+        });
 
         if (useSiteLayout) {
           sysIds.forEach(function(id){
             var n = nodeById[id];
             if (n && n.meta) n.meta.coreHub = true;
           });
-          if (nodeById.controller && coreNodeLabel) {
-            nodeById.controller.label = coreNodeLabel;
+          if (nodeById.controller && nodeById.controller.meta) {
+            nodeById.controller.label = 'core';
+            nodeById.controller.meta.subtitle = 'controller';
+            if (coreNodeLabel) nodeById.controller.meta.core_id = coreNodeLabel;
           }
         }
         addLabel('label:system', useSiteLayout ? 'core hub' : 'system', sysLabelX, sysLabelY, '#e5e7eb', '#e2e8f0', 'middle');
 
+        var systemBounds = null;
+        sysIds.forEach(function(id){
+          var n = nodeById[id];
+          if (!n) return;
+          var r = rectFromNode(n, hexH * 0.1);
+          if (!systemBounds) systemBounds = {minX:r.x1, maxX:r.x2, minY:r.y1, maxY:r.y2};
+          else {
+            systemBounds.minX = Math.min(systemBounds.minX, r.x1);
+            systemBounds.maxX = Math.max(systemBounds.maxX, r.x2);
+            systemBounds.minY = Math.min(systemBounds.minY, r.y1);
+            systemBounds.maxY = Math.max(systemBounds.maxY, r.y2);
+          }
+        });
+
+        var corePanelRect = null;
+        if (useSiteLayout && systemBounds) {
+          var corePadX = hexW * 0.7;
+          var corePadY = hexH * 0.7;
+          corePanelRect = {
+            x: systemBounds.minX - corePadX,
+            y: systemBounds.minY - corePadY,
+            w: (systemBounds.maxX - systemBounds.minX) + corePadX * 2,
+            h: (systemBounds.maxY - systemBounds.minY) + corePadY * 2
+          };
+          sitePanels.push({
+            x: corePanelRect.x,
+            y: corePanelRect.y,
+            w: corePanelRect.w,
+            h: corePanelRect.h,
+            color: rolePalette('controller').color,
+            site_id: 'core-hub',
+            nodes: sysIds.length
+          });
+        }
+
         if (useSiteLayout) {
           var siteOrder = Object.keys(siteMap).sort();
-          var siteCols = narrow ? 1 : Math.min(3, Math.max(1, siteOrder.length));
-          var siteGapX = (W - padX * 2) / Math.max(1, siteCols);
-          var siteGapY = hexH * 2.9;
-          var siteStartY = systemCenter.y + hexH * 2.4;
-          if (narrow) siteStartY = systemCenter.y + hexH * 2.2;
-          siteOrder.forEach(function(siteId, idx){
-            var col = idx % siteCols;
-            var row = Math.floor(idx / siteCols);
-            var cx = padX + siteGapX * (col + 0.5);
-            if (narrow) cx = W * 0.5;
-            var cy = siteStartY + row * siteGapY;
-            var nodesForSite = siteMap[siteId] || [];
-            var siteNode = addNode('site:' + siteId, siteId, 'site', cx, cy, {site_id: siteId, nodes: nodesForSite});
-            var count = nodesForSite.length;
-            var radius = Math.max(hexW * 1.15, hexH * 0.8);
-            var minX = siteNode.x;
-            var maxX = siteNode.x;
-            var minY = siteNode.y;
-            var maxY = siteNode.y;
-            nodesForSite.forEach(function(node, nidx){
-              var angle = (Math.PI * 2 * nidx) / Math.max(1, count) - Math.PI / 2;
-              var nx = cx + Math.cos(angle) * radius;
-              var ny = cy + Math.sin(angle) * radius;
-              if (count === 1) { nx = cx + radius; ny = cy; }
-              var labels = node.labels || {};
-              var role = node.role || labels.role || '';
-              var profile = node.profile || labels.profile || '';
-              if (!role) {
-                var backend = String(node.backend || '');
-                if (backend.indexOf('nats') === 0) role = 'gateway';
-              }
-              var nodeId = node.id || node.node_id || shortNodeName(node, siteId);
-              var label = shortNodeName(node, siteId) || nodeId || 'node';
-              addNode('node:' + nodeId, label, 'node', nx, ny, {
+          var siteLayouts = [];
+          var appScale = nodeAppScaleFactor();
+          var appHexW = hexW * appScale;
+          var appHexH = hexH * appScale;
+          var nodeGapX = Math.max(hexW * 0.9, 70);
+          var nodeGapY = Math.max(hexH * 0.9, 90);
+          var siteInnerMax = Math.max(hexW * 3.0, Math.min((W - padX * 2) * 0.48, 660));
+          var siteHeader = Math.max(hexH * 0.8, 64);
+
+          function buildNodeGroup(nodeRec, siteId){
+            var labels = nodeRec.labels || {};
+            var role = nodeRec.role || labels.role || '';
+            var profile = nodeRec.profile || labels.profile || '';
+            if (!role) {
+              var backend = String(nodeRec.backend || '');
+              if (backend.indexOf('nats') === 0) role = 'gateway';
+            }
+            var nodeId = nodeRec.id || nodeRec.node_id || shortNodeName(nodeRec, siteId);
+            var nodeLabel = shortNodeName(nodeRec, siteId) || nodeId || 'node';
+            var entries = [];
+            var links = [];
+            var minX = -hexW * 0.58;
+            var maxX = hexW * 0.58;
+            var minY = -hexH * 0.58;
+            var maxY = hexH * 0.58;
+
+            entries.push({
+              kind:'node',
+              id:'node:' + nodeId,
+              type:'node',
+              label:nodeLabel,
+              x:0,
+              y:0,
+              meta:{
                 node_id: nodeId,
                 site_id: siteId,
                 role: role,
                 profile: profile,
-                status: node.status,
-                backend: node.backend,
+                status: nodeRec.status,
+                backend: nodeRec.backend,
                 labels: labels
-              });
-              minX = Math.min(minX, nx);
-              maxX = Math.max(maxX, nx);
-              minY = Math.min(minY, ny);
-              maxY = Math.max(maxY, ny);
-              var podList = podsByNode[nodeId] || [];
-              var baseR = hexH * 0.85;
-              var perRing = 8;
-              podList.forEach(function(pod, pi){
-                var ring = Math.floor(pi / perRing);
-                var ringIndex = pi % perRing;
-                var ringCount = Math.min(perRing, podList.length - ring * perRing);
-                var pAngle = (Math.PI * 2 * ringIndex) / Math.max(1, ringCount) - Math.PI / 2;
-                var pr = baseR + ring * 14;
-                var px = nx + Math.cos(pAngle) * pr;
-                var py = ny + Math.sin(pAngle) * pr;
-                var state = pod.ready ? 'ready' : 'pending';
-                var podId = 'pod:' + nodeId + ':' + pi;
-                addNode(podId, state, 'pod', px, py, {
-                  app: pod.app,
-                  ns: pod.ns,
-                  state: state,
-                  node_id: nodeId,
-                  pod_name: pod.pod_name,
-                  status: pod.status
-                });
-                var vx = px - nx;
-                var vy = py - ny;
-                var vlen = Math.sqrt(vx * vx + vy * vy) || 1;
-                var startX = nx + (vx / vlen) * (hexH * 0.55);
-                var startY = ny + (vy / vlen) * (hexH * 0.55);
-                link('node:' + nodeId, podId, 'trace', {kind:'trace', start:{x:startX,y:startY}, end:{x:px,y:py}});
-                minX = Math.min(minX, px);
-                maxX = Math.max(maxX, px);
-                minY = Math.min(minY, py);
-                maxY = Math.max(maxY, py);
-              });
+              }
             });
-            var siteColor = (siteId === 'core') ? rolePalette('controller').color : namespaceColors(siteId).color;
-            var padPX = hexW * 1.0;
-            var padPY = hexH * 0.95;
+
+            var podEntries = podsByNode[nodeId] || [];
+            var appMap = {};
+            podEntries.forEach(function(pod){
+              if (!appMap[pod.app]) {
+                appMap[pod.app] = {app: pod.app, ns: pod.ns, pods: [], ready: 0};
+              }
+              appMap[pod.app].pods.push(pod);
+              if (pod.ready) appMap[pod.app].ready += 1;
+            });
+            var apps = Object.keys(appMap).map(function(app){
+              return appMap[app];
+            });
+            apps.sort(function(a, b){
+              if (a.ns === b.ns) return String(a.app).localeCompare(String(b.app));
+              return String(a.ns).localeCompare(String(b.ns));
+            });
+
+            var expanded = isNodeExpanded(nodeId);
+            var nsGroups = {};
+            apps.forEach(function(app){
+              if (!nsGroups[app.ns]) nsGroups[app.ns] = [];
+              nsGroups[app.ns].push(app);
+            });
+            var nsOrder = Object.keys(nsGroups).sort();
+
+            function buildNamespaceCluster(ns, list){
+              var clusterEntries = [];
+              var clusterLinks = [];
+              var minCX = null, maxCX = null, minCY = null, maxCY = null;
+              var offsets = clusterOffsetsScaled(list.length, appHexW, appHexH);
+              list.forEach(function(item, idx){
+                var off = offsets[idx] || {x:0,y:0};
+                var ax = off.x;
+                var ay = off.y;
+                var info = splitAppName(item.app);
+                var appId = 'app-mini:' + nodeId + ':' + item.app;
+                clusterEntries.push({
+                  kind:'app',
+                  id:appId,
+                  type:'app',
+                  label:info.name,
+                  x:ax,
+                  y:ay,
+                  meta:{
+                    app:item.app,
+                    ns:item.ns,
+                    ready:item.ready,
+                    desired:item.pods.length,
+                    scaleFactor: appScale,
+                    mini:true
+                  }
+                });
+                minCX = (minCX == null) ? (ax - appHexW * 0.6) : Math.min(minCX, ax - appHexW * 0.6);
+                maxCX = (maxCX == null) ? (ax + appHexW * 0.6) : Math.max(maxCX, ax + appHexW * 0.6);
+                minCY = (minCY == null) ? (ay - appHexH * 0.6) : Math.min(minCY, ay - appHexH * 0.6);
+                maxCY = (maxCY == null) ? (ay + appHexH * 0.6) : Math.max(maxCY, ay + appHexH * 0.6);
+
+                var pods = item.pods || [];
+                var perRing = 6;
+                var baseR = appHexH * 0.55;
+                var ringGap = Math.max(6, appHexW * 0.18);
+                pods.forEach(function(pod, pi){
+                  var ring = Math.floor(pi / perRing);
+                  var ringIndex = pi % perRing;
+                  var ringCount = Math.min(perRing, pods.length - ring * perRing);
+                  var angle = (Math.PI * 2 * ringIndex) / Math.max(1, ringCount) - Math.PI / 2;
+                  var pr = baseR + ring * ringGap;
+                  var px = ax + Math.cos(angle) * pr;
+                  var py = ay + Math.sin(angle) * pr;
+                  var state = pod.ready ? 'ready' : 'pending';
+                  var podId = 'pod:' + nodeId + ':' + item.app + ':' + pi;
+                  clusterEntries.push({
+                    kind:'pod',
+                    id:podId,
+                    type:'pod',
+                    label:state,
+                    x:px,
+                    y:py,
+                    meta:{
+                      app:item.app,
+                      ns:item.ns,
+                      state:state,
+                      node_id: nodeId,
+                      pod_name: pod.pod_name,
+                      status: pod.status
+                    }
+                  });
+                  var vx = px - ax;
+                  var vy = py - ay;
+                  var vlen = Math.sqrt(vx * vx + vy * vy) || 1;
+                  var startX = ax + (vx / vlen) * (appHexH * 0.45);
+                  var startY = ay + (vy / vlen) * (appHexH * 0.45);
+                  clusterLinks.push({
+                    a: appId,
+                    b: podId,
+                    cls: 'trace',
+                    kind: 'trace',
+                    start: {x:startX, y:startY},
+                    end: {x:px, y:py},
+                    app: item.app
+                  });
+                  minCX = Math.min(minCX, px - 6);
+                  maxCX = Math.max(maxCX, px + 6);
+                  minCY = Math.min(minCY, py - 6);
+                  maxCY = Math.max(maxCY, py + 6);
+                });
+              });
+
+              if (minCX == null) {
+                minCX = -appHexW * 0.4;
+                maxCX = appHexW * 0.4;
+                minCY = -appHexH * 0.4;
+                maxCY = appHexH * 0.4;
+              }
+
+              var labelSize = 12;
+              var labelGap = appHexH * 0.55;
+              var labelX = minCX;
+              var labelY = minCY - labelGap;
+              var labelColor = namespaceColors(ns).color;
+              var metrics = measureLabelText(ns);
+              var labelScale = labelSize / 15;
+              var labelW = (metrics.w || 0) * labelScale + 16;
+              var labelH = (metrics.h || 18) * labelScale + 8;
+              clusterEntries.push({
+                kind:'ns-label',
+                id:'label:' + nodeId + ':' + ns,
+                label:ns,
+                x:labelX,
+                y:labelY,
+                meta:{color:labelColor, anchor:'start', size:labelSize}
+              });
+              minCX = Math.min(minCX, labelX - 8);
+              maxCX = Math.max(maxCX, labelX + labelW + 8);
+              minCY = Math.min(minCY, labelY - labelH * 0.6);
+              maxCY = Math.max(maxCY, labelY + labelH * 0.4);
+
+              return {entries: clusterEntries, links: clusterLinks, minX:minCX, maxX:maxCX, minY:minCY, maxY:maxCY};
+            }
+
+            if (graphNamespaceCollapse && !expanded) {
+              var collapsedItems = [];
+              nsOrder.forEach(function(ns){
+                collapsedItems.push({kind:'namespace', ns: ns, label: ns + ' (' + String(nsGroups[ns].length) + ')'});
+              });
+              if (collapsedItems.length) {
+                var offsets = clusterOffsetsScaled(collapsedItems.length, appHexW, appHexH);
+                var clusterCenter = {x:0, y: hexH * 0.95};
+                collapsedItems.forEach(function(item, idx){
+                  var off = offsets[idx] || {x:0,y:0};
+                  var ax = clusterCenter.x + off.x;
+                  var ay = clusterCenter.y + off.y;
+                  entries.push({
+                    kind:'namespace',
+                    id:'ns:' + nodeId + ':' + item.ns,
+                    type:'namespace',
+                    label:item.label,
+                    x:ax,
+                    y:ay,
+                    meta:{ns:item.ns, scaleFactor: appScale}
+                  });
+                  minX = Math.min(minX, ax - appHexW * 0.6);
+                  maxX = Math.max(maxX, ax + appHexW * 0.6);
+                  minY = Math.min(minY, ay - appHexH * 0.6);
+                  maxY = Math.max(maxY, ay + appHexH * 0.6);
+                });
+              }
+            } else {
+              var nsGapY = Math.max(appHexH * 1.1, hexH * 0.35);
+              var cursorY = hexH * 0.95;
+              nsOrder.forEach(function(ns){
+                var cluster = buildNamespaceCluster(ns, nsGroups[ns]);
+                var shiftX = -((cluster.minX + cluster.maxX) * 0.5);
+                var shiftY = cursorY - cluster.minY;
+                minX = Math.min(minX, cluster.minX + shiftX);
+                maxX = Math.max(maxX, cluster.maxX + shiftX);
+                minY = Math.min(minY, cluster.minY + shiftY);
+                maxY = Math.max(maxY, cluster.maxY + shiftY);
+                cluster.entries.forEach(function(entry){
+                  var nx = entry.x + shiftX;
+                  var ny = entry.y + shiftY;
+                  entries.push({
+                    kind: entry.kind,
+                    id: entry.id,
+                    type: entry.type,
+                    label: entry.label,
+                    x: nx,
+                    y: ny,
+                    meta: entry.meta
+                  });
+                });
+                cluster.links.forEach(function(L){
+                  links.push({
+                    a: L.a,
+                    b: L.b,
+                    cls: L.cls,
+                    kind: L.kind,
+                    start: {x: L.start.x + shiftX, y: L.start.y + shiftY},
+                    end: {x: L.end.x + shiftX, y: L.end.y + shiftY},
+                    app: L.app
+                  });
+                });
+                var clusterHeight = (cluster.maxY - cluster.minY);
+                cursorY += clusterHeight + nsGapY;
+              });
+            }
+
+            var padGX = hexW * 0.4;
+            var padGY = hexH * 0.4;
+            var width = (maxX - minX);
+            var height = (maxY - minY);
+            width = Math.max(width, hexW * 1.2);
+            height = Math.max(height, hexH * 1.2);
+            return {
+              nodeId: nodeId,
+              entries: entries,
+              links: links,
+              minX: minX,
+              minY: minY,
+              width: width,
+              height: height,
+              padX: padGX,
+              padY: padGY
+            };
+          }
+
+          siteOrder.forEach(function(siteId){
+            var nodesForSite = siteMap[siteId] || [];
+            var groups = [];
+            nodesForSite.forEach(function(nodeRec){
+              groups.push(buildNodeGroup(nodeRec, siteId));
+            });
+            var cursorX = 0;
+            var cursorY = 0;
+            var rowHeight = 0;
+            var rowWidth = 0;
+            var maxWidth = 0;
+            var maxHeight = 0;
+            groups.forEach(function(group){
+              var gWidth = group.width + group.padX * 2;
+              var gHeight = group.height + group.padY * 2;
+              if (cursorX > 0 && cursorX + gWidth > siteInnerMax) {
+                cursorY += rowHeight + nodeGapY;
+                cursorX = 0;
+                rowHeight = 0;
+              }
+              group.offsetX = cursorX;
+              group.offsetY = cursorY;
+              cursorX += gWidth + nodeGapX;
+              rowHeight = Math.max(rowHeight, gHeight);
+              rowWidth = Math.max(rowWidth, cursorX - nodeGapX);
+              maxWidth = Math.max(maxWidth, rowWidth);
+            });
+            maxHeight = cursorY + rowHeight;
+            var sitePadX = hexW * 0.7;
+            var sitePadY = hexH * 0.7;
+            siteLayouts.push({
+              siteId: siteId,
+              nodes: nodesForSite,
+              groups: groups,
+              width: maxWidth,
+              height: maxHeight,
+              padX: sitePadX,
+              padY: sitePadY
+            });
+          });
+
+          var leftBoundary = padX;
+          if (corePanelRect) leftBoundary = corePanelRect.x + corePanelRect.w + hexW * 0.6;
+          else if (systemBounds) leftBoundary = systemBounds.maxX + hexW * 1.1;
+          var siteStartX = W - padX;
+          var siteStartY = corePanelRect ? (corePanelRect.y + hexH * 0.25) : (systemBounds ? (systemBounds.minY + hexH * 0.05) : (systemCenter.y + hexH * 1.4));
+          siteStartY = Math.max(padY, siteStartY);
+          var siteGapX = Math.max(hexW * 0.8, 80);
+          var siteGapY = Math.max(hexH * 0.95, 100);
+          var cursorX = siteStartX;
+          var cursorY = siteStartY;
+          var rowHeight = 0;
+          siteLayouts.forEach(function(siteLayout){
+            var w = siteLayout.width + siteLayout.padX * 2;
+            var h = siteLayout.height + siteLayout.padY * 2 + siteHeader;
+            if (cursorX - w < leftBoundary) {
+              cursorX = siteStartX;
+              cursorY += rowHeight + siteGapY;
+              rowHeight = 0;
+            }
+            siteLayout.x = cursorX - w;
+            siteLayout.y = cursorY;
+            cursorX = siteLayout.x - siteGapX;
+            rowHeight = Math.max(rowHeight, h);
+          });
+
+          siteLayouts.forEach(function(siteLayout){
+            var siteId = siteLayout.siteId;
+            var baseX = siteLayout.x + siteLayout.padX;
+            var baseY = siteLayout.y + siteLayout.padY + siteHeader;
+            var siteColor = namespaceColors(siteId).color;
+            var panelW = siteLayout.width + siteLayout.padX * 2;
+            var panelH = siteLayout.height + siteLayout.padY * 2 + siteHeader;
             sitePanels.push({
-              x: minX - padPX,
-              y: minY - padPY,
-              w: (maxX - minX) + padPX * 2,
-              h: (maxY - minY) + padPY * 2,
+              x: siteLayout.x,
+              y: siteLayout.y,
+              w: panelW,
+              h: panelH,
               color: siteColor,
               site_id: siteId,
-              nodes: nodesForSite.length
+              nodes: siteLayout.nodes.length
             });
-            var siteLabel = (siteId === 'core') ? 'core hub' : siteId;
-            siteLabel += ' (' + String(nodesForSite.length) + ')';
-            addLabel('label:site:' + siteId, siteLabel, (minX - padPX) + 18, (minY - padPY) + 26, siteColor, '#e2e8f0', 'start');
+            var siteLabel = siteId + ' (' + String(siteLayout.nodes.length) + ')';
+            addLabel('label:site:' + siteId, siteLabel, siteLayout.x + 18, siteLayout.y + 26, siteColor, '#e2e8f0', 'start');
+
+            var siteNodeId = 'site:' + siteId;
+            var siteHexX = siteLayout.x + siteLayout.padX + (siteLayout.width * 0.5);
+            var siteHexY = siteLayout.y + siteLayout.padY + siteHeader * 0.55;
+            addNode(siteNodeId, siteId, 'site', siteHexX, siteHexY, {site_id: siteId, nodes: siteLayout.nodes});
+            siteLayout.groups.forEach(function(group){
+              var shiftX = baseX + group.offsetX - group.minX + group.padX;
+              var shiftY = baseY + group.offsetY - group.minY + group.padY;
+              group.entries.forEach(function(entry){
+                var nx = entry.x + shiftX;
+                var ny = entry.y + shiftY;
+                if (entry.kind === 'ns-label') {
+                  addLabel(entry.id, entry.label, nx, ny, entry.meta.color, '#e2e8f0', entry.meta.anchor, entry.meta.size);
+                } else {
+                  addNode(entry.id, entry.label, entry.type, nx, ny, entry.meta);
+                }
+              });
+              group.links.forEach(function(L){
+                var start = {x: L.start.x + shiftX, y: L.start.y + shiftY};
+                var end = {x: L.end.x + shiftX, y: L.end.y + shiftY};
+                link(L.a, L.b, L.cls, {kind:L.kind, start:start, end:end, app:L.app});
+              });
+            });
             if (nodeById.controller) {
-              link('controller', 'site:' + siteId, 'flow', {route:'site'});
+              link('controller', siteNodeId, 'flow', {route:'site'});
             }
           });
         } else {
@@ -2728,33 +3178,6 @@ Connection: close
           return (rowIndex % 2 === 0) ? 'top' : 'bottom';
         }
 
-        var systemBounds = null;
-        sysIds.forEach(function(id){
-          var n = nodeById[id];
-          if (!n) return;
-          var r = rectFromNode(n, hexH * 0.1);
-          if (!systemBounds) systemBounds = {minX:r.x1, maxX:r.x2, minY:r.y1, maxY:r.y2};
-          else {
-            systemBounds.minX = Math.min(systemBounds.minX, r.x1);
-            systemBounds.maxX = Math.max(systemBounds.maxX, r.x2);
-            systemBounds.minY = Math.min(systemBounds.minY, r.y1);
-            systemBounds.maxY = Math.max(systemBounds.maxY, r.y2);
-          }
-        });
-        if (useSiteLayout && systemBounds) {
-          var corePadX = hexW * 0.7;
-          var corePadY = hexH * 0.7;
-          sitePanels.push({
-            x: systemBounds.minX - corePadX,
-            y: systemBounds.minY - corePadY,
-            w: (systemBounds.maxX - systemBounds.minX) + corePadX * 2,
-            h: (systemBounds.maxY - systemBounds.minY) + corePadY * 2,
-            color: rolePalette('controller').color,
-            site_id: 'core-hub',
-            nodes: sysIds.length
-          });
-        }
-
         var labelBounds = null;
         labelNodes.forEach(function(l){
           if (l.id === 'label:system') return;
@@ -2873,7 +3296,8 @@ Connection: close
           var rows = (n.meta && n.meta.clusterRows) ? n.meta.clusterRows : 1;
           var rowIndex = (n.meta && typeof n.meta.row === 'number') ? n.meta.row : 0;
           var bottom = (rows > 1 && (rowIndex % 2) === 1);
-          var dy = bottom ? (hexH * 0.5) : (-hexH * 0.5);
+          var scaleFactor = (n.meta && n.meta.scaleFactor) ? Number(n.meta.scaleFactor) : 1;
+          var dy = bottom ? (hexH * 0.5 * scaleFactor) : (-hexH * 0.5 * scaleFactor);
           var approach = {x:0, y: bottom ? -1 : 1};
           return {point:{x:n.x, y:n.y + dy}, dir:approach};
         }
@@ -2897,8 +3321,9 @@ Connection: close
             if (score > bestScore) { bestScore = score; baseIndex = i; }
           }
           var startIndex = (baseIndex + (shift || 0) + faceDirs.length) % faceDirs.length;
-          var faceDist = hexH * 0.52;
-          var stub = hexH * 0.24;
+          var scaleFactor = (n.meta && n.meta.scaleFactor) ? Number(n.meta.scaleFactor) : 1;
+          var faceDist = hexH * 0.52 * scaleFactor;
+          var stub = hexH * 0.24 * scaleFactor;
           var dir = faceDirs[startIndex];
           if (neighbors && neighbors.length){
             for (var step=0; step<faceDirs.length; step++){
@@ -2962,22 +3387,6 @@ Connection: close
         gLinks.innerHTML = '';
         gLabels.innerHTML = '';
 
-        function rectFromNode(n, pad){
-          var px = (hexW * 0.58) + (pad || 0);
-          var py = (hexH * 0.58) + (pad || 0);
-          return {x1:n.x - px, y1:n.y - py, x2:n.x + px, y2:n.y + py, id:n.id, kind:'node'};
-        }
-        function rectFromLabel(l){
-          var m = measureLabelText(l.text);
-          var w = (m.w || 0) + 16;
-          var h = (m.h || 18) + 8;
-          var x = l.x;
-          if (l.anchor === 'end') x -= w;
-          else if (l.anchor === 'middle') x -= w * 0.5;
-          var y = l.y - h * 0.8;
-          var pad = 6;
-          return {x1:x - pad, y1:y - pad, x2:x + w + pad, y2:y + h + pad, kind:'label'};
-        }
         function pointInRect(x, y, r){
           return x >= r.x1 && x <= r.x2 && y >= r.y1 && y <= r.y2;
         }
@@ -3596,19 +4005,35 @@ Connection: close
             };
           }
           if (n.type === 'system') {
-            if (n.meta && n.meta.coreHub && n.meta.system !== 'dns') {
-              var core = rolePalette('controller');
-              return {
-                accent: core.color,
-                shellFill:'rgba(12,16,22,0.9)',
-                innerStroke:'rgba(255,255,255,0.16)',
-                faceTop:shadeHsl(core.color, 18),
-                faceBot:shadeHsl(core.color, -12),
-                patternStroke:'rgba(255,255,255,0.14)',
-                patternOpacity:0.22,
-                label:'#f8fafc',
-                shadowAlpha:0.28
-              };
+            if (n.meta && n.meta.coreHub) {
+              if (n.meta.system === 'runtime') {
+                var rt = runtimePalette();
+                return {
+                  accent: rt.color,
+                  shellFill:'rgba(16,10,18,0.92)',
+                  innerStroke:'rgba(255,255,255,0.18)',
+                  faceTop:shadeHsl(rt.color, 16),
+                  faceBot:shadeHsl(rt.color, -12),
+                  patternStroke:'rgba(255,255,255,0.18)',
+                  patternOpacity:0.26,
+                  label:'#f8fafc',
+                  shadowAlpha:0.32
+                };
+              }
+              if (n.meta.system === 'ingress' || n.meta.system === 'controller') {
+                var core = rolePalette('controller');
+                return {
+                  accent: core.color,
+                  shellFill:'rgba(12,16,22,0.9)',
+                  innerStroke:'rgba(255,255,255,0.16)',
+                  faceTop:shadeHsl(core.color, 18),
+                  faceBot:shadeHsl(core.color, -12),
+                  patternStroke:'rgba(255,255,255,0.14)',
+                  patternOpacity:0.22,
+                  label:'#f8fafc',
+                  shadowAlpha:0.28
+                };
+              }
             }
             return {
               accent:'rgba(229,231,235,0.25)',
@@ -3650,6 +4075,20 @@ Connection: close
               shadowAlpha:0.4
             };
           }
+          if (n.type === 'namespace') {
+            var nsCol = namespaceColors(n.meta && n.meta.ns ? n.meta.ns : n.label);
+            return {
+              accent: nsCol.color,
+              shellFill:'rgba(12,16,22,0.9)',
+              innerStroke:'rgba(255,255,255,0.18)',
+              faceTop:shadeHsl(nsCol.color, 16),
+              faceBot:shadeHsl(nsCol.color, -16),
+              patternStroke:'rgba(255,255,255,0.18)',
+              patternOpacity:0.4,
+              label:'#f8fafc',
+              shadowAlpha:0.4
+            };
+          }
           var c = namespaceColors(n.meta && n.meta.ns ? n.meta.ns : 'default');
           return {
             accent:c.color,
@@ -3669,14 +4108,31 @@ Connection: close
           g.setAttribute('class','node hex-node ' + n.type);
           g.setAttribute('transform','translate(' + n.x + ' ' + n.y + ')');
           var gInner = document.createElementNS('http://www.w3.org/2000/svg','g');
-          gInner.setAttribute('transform','scale(' + hexScale + ')');
+          var scaleFactor = (n.meta && n.meta.scaleFactor) ? Number(n.meta.scaleFactor) : 1;
+          var localScale = hexScale * scaleFactor;
+          gInner.setAttribute('transform','scale(' + localScale + ')');
           g.appendChild(gInner);
 
           var appName = null;
-          if(n.id.indexOf('app:')===0) appName = n.id.slice(4);
+          if(n.meta && n.meta.app) appName = n.meta.app;
+          if(!appName && n.id.indexOf('app:')===0) appName = n.id.slice(4);
           if(n.id.indexOf('pod:')===0 && n.meta && n.meta.app) appName = n.meta.app;
           if(appName){ g.setAttribute('data-app', appName); g.style.cursor='pointer';
             g.addEventListener('click', function(ev){ ev.preventDefault(); ev.stopPropagation(); try { selectApp(appName); focusAppListItem(appName); } catch(e){} });
+          }
+          if(n.type === 'node' && graphNamespaceCollapse){
+            g.style.cursor = 'pointer';
+            g.addEventListener('click', function(ev){
+              ev.preventDefault(); ev.stopPropagation();
+              var nodeId = (n.meta && n.meta.node_id) ? n.meta.node_id : n.id;
+              if (!nodeId) return;
+              if (graphExpandedNodes[String(nodeId)]) {
+                delete graphExpandedNodes[String(nodeId)];
+              } else {
+                graphExpandedNodes[String(nodeId)] = true;
+              }
+              renderGraphIfReady();
+            });
           }
 
           var t = hexTheme(n);
@@ -3765,6 +4221,7 @@ Connection: close
           if (n.type === 'app' && n.meta && typeof n.meta.row === 'number') {
             rowShift = (n.meta.row % 2 === 0) ? -10 : 10;
           }
+          rowShift = rowShift * scaleFactor;
           text.setAttribute('x','0'); text.setAttribute('y', String(8 + rowShift));
           text.setAttribute('text-anchor','middle');
           text.setAttribute('font-family','ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial');
@@ -3796,9 +4253,21 @@ Connection: close
               gInner.appendChild(sub);
             }
           }
+          if (n.meta && n.meta.subtitle) {
+            var subLabel = document.createElementNS('http://www.w3.org/2000/svg','text');
+            subLabel.setAttribute('x','0');
+            subLabel.setAttribute('y','26');
+            subLabel.setAttribute('text-anchor','middle');
+            subLabel.setAttribute('font-family','ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial');
+            subLabel.setAttribute('font-size','11');
+            subLabel.setAttribute('font-weight','600');
+            subLabel.setAttribute('fill','rgba(226,232,240,0.78)');
+            subLabel.textContent = String(n.meta.subtitle || '');
+            gInner.appendChild(subLabel);
+          }
           gNodes.appendChild(g);
 
-          var labelMax = hexW * 1.2;
+          var labelMax = hexW * 1.2 * scaleFactor;
           var labelInfo = fitTextToWidth(text, n.label, labelMax);
           try {
             var bb = text.getBBox();
@@ -3814,12 +4283,14 @@ Connection: close
             gInner.insertBefore(lab, text);
           } catch(e){}
           var title = document.createElementNS('http://www.w3.org/2000/svg','title');
-          if(n.id.indexOf('app:')===0){
+          if((n.meta && n.meta.app) || n.id.indexOf('app:')===0){
             var ainfo = n.meta || {};
             var info = [];
             info.push('App: ' + (ainfo.app||n.label));
             if (ainfo.ns) info.push('Namespace: ' + ainfo.ns);
-            info.push('Pods: ' + (ainfo.ready||0) + '/' + (ainfo.desired||0));
+            if (ainfo.ready!=null || ainfo.desired!=null){
+              info.push('Pods: ' + (ainfo.ready||0) + '/' + (ainfo.desired||0));
+            }
             if(ainfo.rev!=null) info.push('Revision: ' + ainfo.rev + ' (' + (ainfo.status||'-') + ')');
             title.textContent = info.join(String.fromCharCode(10));
           } else if (n.type === 'node') {
@@ -3913,8 +4384,9 @@ Connection: close
           t.setAttribute('x', String(l.x));
           t.setAttribute('y', String(l.y));
           t.setAttribute('text-anchor', l.anchor || 'middle');
-          t.setAttribute('font-size','15');
-          t.setAttribute('font-weight','700');
+          var labelSize = l.size && Number(l.size) ? Number(l.size) : 15;
+          t.setAttribute('font-size', String(labelSize));
+          t.setAttribute('font-weight', l.weight || '700');
           t.setAttribute('fill', l.textColor || '#e2e8f0');
           t.textContent = String(l.text || '');
           g.appendChild(t);
@@ -4033,10 +4505,21 @@ Connection: close
               var d = p.getAttribute('d')||''; // fallback: we can't easily parse ends; recompute using id map instead
             });
             // More precise: mark links whose endpoints include the selected app
+            function linkMatchesApp(id, target){
+              if (!id) return false;
+              if (id.indexOf('app:' + target) === 0) return true;
+              if (id.indexOf('app-mini:') === 0 && id.endsWith(':' + target)) return true;
+              if (id.indexOf('pod:' + target) === 0) return true;
+              if (id.indexOf('pod:') === 0 && id.indexOf(':' + target + ':') !== -1) return true;
+              return false;
+            }
             links.forEach(function(L, i){
               var p = gLinks.children[i];
               if(!p) return;
-              var involved = (L.a.indexOf('app:'+sel)===0) || (L.b.indexOf('app:'+sel)===0) || (L.b.indexOf('pod:'+sel)===0) || (L.a.indexOf('pod:'+sel)===0);
+              var involved = false;
+              if (L.meta && L.meta.app && String(L.meta.app) === sel) involved = true;
+              if (!involved && L.app && String(L.app) === sel) involved = true;
+              if (!involved && (linkMatchesApp(L.a, sel) || linkMatchesApp(L.b, sel))) involved = true;
               if(involved) p.classList.add('selected'); else p.classList.add('faded');
             });
           }
