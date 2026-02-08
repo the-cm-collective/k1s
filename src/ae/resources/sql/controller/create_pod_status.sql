@@ -10,6 +10,7 @@
                     liveness_message TEXT NOT NULL,
                     exit_code INTEGER,
                     finished_at TEXT,
+                    updated_at TEXT,
                     PRIMARY KEY (app_name, pod_name)
                 )
                 

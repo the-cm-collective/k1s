@@ -412,6 +412,7 @@
                   .hex-inner { stroke-linejoin: round; }
                   .hex-pattern { }
                   .node.pod circle { fill:#e5e7eb; stroke:#94a3b8; stroke-width:1.2; }
+                  .node.pod.stale circle { opacity:0.45; }
                   .node.pod.ready circle { fill:#22c55e; stroke:#bbf7d0; filter: drop-shadow(0 0 6px rgba(34,197,94,0.35)); }
                   .node.pod.pending circle { fill:#f59e0b; stroke:#fde68a; filter: drop-shadow(0 0 6px rgba(245,158,11,0.35)); }
                   .link { stroke:rgba(148,163,184,0.55); stroke-width:1.4; fill:none; marker-end:url(#arrow); }
@@ -603,6 +604,10 @@ Connection: close
       var graphNamespaceCollapse = (localStorage.getItem('graph_namespace_collapse') || '0') === '1';
       var graphNodeScaleMode = (localStorage.getItem('graph_node_scale') || 'compact'); // 'compact' or 'comfortable'
       var graphExpandedNodes = {};
+      var graphPlacementCache = {};
+      var graphPlacementGraceMs = 15000;
+      var graphAppPlacementCache = {};
+      var graphAppPlacementGraceMs = 15000;
       // Keep apps rail aligned under the header
       function syncHeaderHeight(){
         try {
@@ -2224,6 +2229,52 @@ Connection: close
         try { drawSystemGraph(lastSystem, lastStatuses); } catch(e){ console.error('graph', e); }
       }
 
+      function stabilizePlacements(placements, nowMs){
+        var merged = {};
+        var seen = {};
+        try {
+          Object.keys(placements || {}).forEach(function(app){
+            var entries = placements[app] || [];
+            entries.forEach(function(pod){
+              if (!pod) return;
+              var podName = String(pod.pod_name || pod.replica_id || '');
+              if (!podName) return;
+              var key = app + '|' + podName;
+              var cached = graphPlacementCache[key];
+              var nodeId = pod.node_id || (cached && cached.node_id);
+              if (nodeId && !pod.node_id) {
+                pod = Object.assign({}, pod, {node_id: nodeId, stale: true});
+              }
+              graphPlacementCache[key] = {
+                app: app,
+                node_id: nodeId,
+                pod: pod,
+                seen: nowMs
+              };
+              seen[key] = true;
+              if (!merged[app]) merged[app] = [];
+              merged[app].push(pod);
+            });
+          });
+          Object.keys(graphPlacementCache).forEach(function(key){
+            var cached = graphPlacementCache[key];
+            if (!cached) return;
+            if ((nowMs - cached.seen) > graphPlacementGraceMs) {
+              delete graphPlacementCache[key];
+              return;
+            }
+            if (seen[key]) return;
+            var pod = cached.pod || {};
+            var podCopy = Object.assign({}, pod, {stale: true});
+            if (!merged[cached.app]) merged[cached.app] = [];
+            merged[cached.app].push(podCopy);
+          });
+        } catch(e){
+          return placements || {};
+        }
+        return merged;
+      }
+
       // Legend toggle for path mode
       (function(){
         function setLabel(){
@@ -2602,6 +2653,9 @@ Connection: close
         var siteMap = {};
         var coreNodes = [];
         var podsByNode = {};
+        var appsByNode = {};
+        var appStatusByName = {};
+        var appNodesByName = {};
 
         if (sys && sys.nodes && sys.nodes.length) {
           var hasSiteNodes = false;
@@ -2663,10 +2717,14 @@ Connection: close
             }
           }
         }
+        var placementNow = Date.now();
+        var stablePlacements = {};
         if (sys && sys.placements) {
-          Object.keys(sys.placements || {}).forEach(function(appName){
-            var list = sys.placements[appName] || [];
+          stablePlacements = stabilizePlacements(sys.placements, placementNow);
+          Object.keys(stablePlacements || {}).forEach(function(appName){
+            var list = stablePlacements[appName] || [];
             var info = splitAppName(appName);
+            var nodeCounts = {};
             list.forEach(function(pod){
               var nodeId = pod.node_id;
               if (!nodeId) return;
@@ -2676,25 +2734,63 @@ Connection: close
                 pod_name: pod.pod_name || pod.replica_id || '',
                 ready: !!pod.ready,
                 live: !!pod.live,
-                status: pod.status
+                status: pod.status,
+                stale: !!pod.stale
               };
               if (!podsByNode[nodeId]) podsByNode[nodeId] = [];
               podsByNode[nodeId].push(entry);
+              if (!nodeCounts[nodeId]) nodeCounts[nodeId] = {desired: 0, ready: 0, stale: false};
+              nodeCounts[nodeId].desired += 1;
+              if (pod.ready) nodeCounts[nodeId].ready += 1;
+              if (pod.stale) nodeCounts[nodeId].stale = true;
             });
+            if (Object.keys(nodeCounts).length) {
+              graphAppPlacementCache[appName] = {nodes: nodeCounts, seen: placementNow};
+            }
           });
         }
-        var appStatusByName = {};
+        Object.keys(graphAppPlacementCache).forEach(function(appName){
+          var cached = graphAppPlacementCache[appName];
+          if (!cached) return;
+          if ((placementNow - cached.seen) > graphAppPlacementGraceMs) {
+            delete graphAppPlacementCache[appName];
+          }
+        });
         (statuses||[]).forEach(function(s){
           appStatusByName[s.app_name] = s;
         });
-        var appNodesByName = {};
         try {
-          Object.keys(podsByNode).forEach(function(nodeId){
-            (podsByNode[nodeId] || []).forEach(function(pod){
-              if (!pod || !pod.app) return;
-              if (!appNodesByName[pod.app]) appNodesByName[pod.app] = {};
-              appNodesByName[pod.app][nodeId] = true;
+          Object.keys(appStatusByName).forEach(function(appName){
+            var cached = graphAppPlacementCache[appName];
+            if (!cached || !cached.nodes) return;
+            var status = appStatusByName[appName];
+            var nodeIds = Object.keys(cached.nodes || {});
+            if (!nodeIds.length) return;
+            var useStatusTotals = nodeIds.length === 1;
+            nodeIds.forEach(function(nodeId){
+              var counts = cached.nodes[nodeId] || {};
+              var desired = counts.desired || 0;
+              var ready = counts.ready || 0;
+              if (status && useStatusTotals) {
+                desired = Number(status.desired_replicas || desired);
+                ready = Number(status.ready_replicas || ready);
+              }
+              if (desired <= 0 && ready <= 0) return;
+              if (!appsByNode[nodeId]) appsByNode[nodeId] = [];
+              appsByNode[nodeId].push({
+                app: appName,
+                ns: splitAppName(appName).namespace,
+                desired: desired,
+                ready: ready,
+                stale: !!counts.stale || (placementNow - cached.seen) > graphAppPlacementGraceMs
+              });
+              if (!appNodesByName[appName]) appNodesByName[appName] = {};
+              appNodesByName[appName][nodeId] = true;
             });
+          });
+          Object.keys(graphAppPlacementCache).forEach(function(appName){
+            if (appStatusByName[appName]) return;
+            delete graphAppPlacementCache[appName];
           });
         } catch(e){}
 
@@ -2809,17 +2905,33 @@ Connection: close
               });
             }
 
-            var podEntries = podsByNode[nodeId] || [];
-            if (hideEmpty && !podEntries.length) {
+            function synthPods(entry){
+              var desired = Math.max(0, Number(entry.desired || 0));
+              var ready = Math.max(0, Number(entry.ready || 0));
+              var count = Math.max(desired, ready, 0);
+              var pods = [];
+              for (var i=0; i<count; i++){
+                pods.push({
+                  pod_name: entry.app + '-' + nodeId + '-' + i,
+                  ready: i < ready,
+                  live: i < ready,
+                  status: i < ready ? 'running' : 'pending',
+                  stale: !!entry.stale,
+                  synthetic: true
+                });
+              }
+              return pods;
+            }
+            var appEntries = (appsByNode[nodeId] || []).slice();
+            if (hideEmpty && !appEntries.length) {
               return null;
             }
             var appMap = {};
-            podEntries.forEach(function(pod){
-              if (!appMap[pod.app]) {
-                appMap[pod.app] = {app: pod.app, ns: pod.ns, pods: [], ready: 0};
-              }
-              appMap[pod.app].pods.push(pod);
-              if (pod.ready) appMap[pod.app].ready += 1;
+            appEntries.forEach(function(entry){
+              if (!entry || !entry.app) return;
+              var pods = synthPods(entry);
+              if (!pods.length) return;
+              appMap[entry.app] = {app: entry.app, ns: entry.ns, pods: pods, ready: Math.max(0, Number(entry.ready || 0))};
             });
             var apps = Object.keys(appMap).map(function(app){
               return appMap[app];
@@ -2870,7 +2982,13 @@ Connection: close
                 minCY = (minCY == null) ? (ay - appHexH * 0.6) : Math.min(minCY, ay - appHexH * 0.6);
                 maxCY = (maxCY == null) ? (ay + appHexH * 0.6) : Math.max(maxCY, ay + appHexH * 0.6);
 
-                var pods = item.pods || [];
+                var pods = (item.pods || []).slice();
+                pods.sort(function(a, b){
+                  var ak = String((a && (a.pod_name || a.replica_id)) || '');
+                  var bk = String((b && (b.pod_name || b.replica_id)) || '');
+                  if (ak === bk) return 0;
+                  return ak < bk ? -1 : 1;
+                });
                 var perRing = 6;
                 var baseR = appHexH * 0.55;
                 var ringGap = Math.max(6, appHexW * 0.18);
@@ -2883,7 +3001,8 @@ Connection: close
                   var px = ax + Math.cos(angle) * pr;
                   var py = ay + Math.sin(angle) * pr;
                   var state = pod.ready ? 'ready' : 'pending';
-                  var podId = 'pod:' + nodeId + ':' + item.app + ':' + pi;
+                  var podKey = String((pod && (pod.pod_name || pod.replica_id)) || pi).replace(/[^a-zA-Z0-9_.-]/g, '_');
+                  var podId = 'pod:' + nodeId + ':' + item.app + ':' + podKey;
                   clusterEntries.push({
                     kind:'pod',
                     id:podId,
@@ -4544,7 +4663,9 @@ Connection: close
 
         function drawPodNode(n){
           var g = document.createElementNS('http://www.w3.org/2000/svg','g');
-          g.setAttribute('class','node pod ' + (n.meta && n.meta.state ? n.meta.state : ''));
+          var podClass = 'node pod ' + (n.meta && n.meta.state ? n.meta.state : '');
+          if (n.meta && n.meta.stale) podClass += ' stale';
+          g.setAttribute('class', podClass);
           g.setAttribute('transform','translate('+(n.x-6)+','+(n.y-6)+')');
           if(n.meta && n.meta.app){ g.setAttribute('data-app', n.meta.app); }
           var c = document.createElementNS('http://www.w3.org/2000/svg','circle');

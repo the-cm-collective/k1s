@@ -329,6 +329,10 @@ class SQLiteStateStore:
                 self._ensure_column(conn, "pod_status", "endpoint", "TEXT")
             except Exception:
                 pass
+            try:
+                self._ensure_column(conn, "pod_status", "updated_at", "TEXT")
+            except Exception:
+                pass
             needs_reset = not self._schema_matches(
                 conn,
                 "app_status",
@@ -679,13 +683,16 @@ class SQLiteStateStore:
                 ),
             )
 
-            conn.execute(
-                "DELETE FROM pod_status WHERE app_name = ?",
-                (app_name,),
-            )
-
-            # Clean existing placements for this app; will be repopulated below
-            conn.execute("DELETE FROM pod_nodes WHERE app_name = ?", (app_name,))
+            # Preserve existing placements to avoid dashboard flicker; refresh timestamps
+            # for pods that still exist, and prune by TTL instead of per-snapshot deletion.
+            current_pods = [pod.pod_name for pod in health_report.pods if pod.pod_name]
+            ts = datetime.now(timezone.utc).isoformat()
+            if current_pods:
+                placeholders = ",".join("?" for _ in current_pods)
+                conn.execute(
+                    f"UPDATE pod_nodes SET updated_at = ? WHERE app_name = ? AND pod_name IN ({placeholders})",
+                    (ts, app_name, *current_pods),
+                )
 
             rows = []
             for pod in health_report.pods:
@@ -702,6 +709,7 @@ class SQLiteStateStore:
                         pod.liveness_message,
                         state.exit_code if state else None,
                         state.finished_at.isoformat() if state and state.finished_at else None,
+                        ts,
                     )
                 )
             if rows:
@@ -710,6 +718,31 @@ class SQLiteStateStore:
                         "sql", "controller", "insert_pod_status.sql"
                     ),
                     rows,
+                )
+
+            try:
+                ttl_seconds = int(
+                    os.getenv("AE_POD_STATUS_TTL_SECONDS", "30") or "30"
+                )
+            except Exception:
+                ttl_seconds = 30
+            if ttl_seconds > 0:
+                cutoff = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)
+                conn.execute(
+                    "DELETE FROM pod_status WHERE app_name = ? AND (updated_at IS NULL OR updated_at < ?)",
+                    (app_name, cutoff.isoformat()),
+                )
+            try:
+                node_ttl_seconds = int(
+                    os.getenv("AE_POD_NODE_TTL_SECONDS", "300") or "300"
+                )
+            except Exception:
+                node_ttl_seconds = 300
+            if node_ttl_seconds > 0:
+                cutoff = datetime.now(timezone.utc) - timedelta(seconds=node_ttl_seconds)
+                conn.execute(
+                    "DELETE FROM pod_nodes WHERE app_name = ? AND (updated_at IS NULL OR updated_at < ?)",
+                    (app_name, cutoff.isoformat()),
                 )
 
             timestamp = datetime.now(timezone.utc).isoformat()
@@ -857,7 +890,7 @@ class SQLiteStateStore:
                 resource_loader.load_text(
                     "sql", "controller", "select_pod_nodes_with_status.sql"
                 ),
-                (app_name,),
+                (app_name, app_name),
             ).fetchall()
         return [(row[0], row[1], row[2], row[3], row[4], row[5], row[6]) for row in rows]
 
