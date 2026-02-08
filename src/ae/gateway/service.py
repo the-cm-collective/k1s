@@ -71,7 +71,7 @@ class SiteGateway:
         self._nats_client = nats_client
         self._backend = os.getenv("AE_TRANSPORT_BACKEND", "http").lower()
         self._gateway_backend = os.getenv("AE_GATEWAY_BACKEND") or "gateway"
-        self._node_labels = _merge_node_labels(self._site_id)
+        self._node_labels = _merge_node_labels(self._site_id, self._node_id)
         self._js_stream = os.getenv("AE_JS_STREAM_NAME", "K1S_WORK")
         self._spool = GatewaySpool(self._js_config.spool_path)
         self._spool_enabled = True
@@ -802,10 +802,12 @@ def _parse_labels(raw: str | None) -> dict[str, str]:
     return labels
 
 
-def _merge_node_labels(site_id: str | None) -> dict[str, str]:
+def _merge_node_labels(site_id: str | None, node_id: str | None) -> dict[str, str]:
     labels = _parse_labels(os.getenv("AE_NODE_LABELS"))
     role = (os.getenv("AE_NODE_ROLE") or "").strip()
     profile = (os.getenv("AE_NODE_PROFILE") or "").strip()
+    if node_id:
+        labels.setdefault("node_id", str(node_id))
     if role:
         labels.setdefault("role", role)
     if profile:
