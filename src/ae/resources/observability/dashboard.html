@@ -2528,11 +2528,16 @@ Connection: close
 
         var hostName = 'h4cktop';
         var coreNodeLabel = null;
+        var hasCoreProfile = false;
         try {
           if (sys && sys.nodes && sys.nodes.length){
             sys.nodes.forEach(function(n){
               var labels = n.labels || {};
               var role = n.role || labels.role || '';
+              var profile = n.profile || labels.profile || '';
+              if (String(profile || '').toLowerCase() === 'k1s-core') {
+                hasCoreProfile = true;
+              }
               if (String(role || '').toLowerCase() === 'controller' && !coreNodeLabel){
                 coreNodeLabel = String(n.id || n.node_id || n.name || '');
               }
@@ -2595,6 +2600,9 @@ Connection: close
             if (!siteMap[siteId]) siteMap[siteId] = [];
             siteMap[siteId].push(n);
           });
+        }
+        if (!useSiteLayout && hasCoreProfile) {
+          useSiteLayout = true;
         }
         if (sys && sys.placements) {
           Object.keys(sys.placements || {}).forEach(function(appName){
@@ -2667,6 +2675,12 @@ Connection: close
             site_id: 'core-hub',
             nodes: sysIds.length
           });
+          if (nodeById.host) {
+            var hostX = corePanelRect.x + corePanelRect.w * 0.5;
+            var hostY = Math.max(padY + hexH * 0.55, corePanelRect.y - hexH * 0.7);
+            nodeById.host.x = hostX;
+            nodeById.host.y = hostY;
+          }
         }
 
         if (useSiteLayout) {
