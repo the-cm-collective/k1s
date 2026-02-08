@@ -1,0 +1,45 @@
+apiVersion: ae.dev/v1alpha1
+kind: Deployment
+metadata:
+  name: echo-node-sea-edge-02-edge-1-blue
+spec:
+  image: docker.io/mendhak/http-https-echo:37
+  replicas: 1
+  ports:
+    - name: http
+      containerPort: 8080
+  env:
+    - name: ECHO_TEXT
+      value: "blue sea-edge-02 edge-1"
+  nodeSelector:
+    role: gateway
+    site: sea-edge-02
+    node_id: sea-edge-02--edge-1
+  health:
+    readiness:
+      httpGet:
+        path: /
+        port: 8080
+      initialDelaySeconds: 1
+      timeoutSeconds: 1
+      periodSeconds: 5
+      successThreshold: 1
+      failureThreshold: 3
+    liveness:
+      httpGet:
+        path: /
+        port: 8080
+      initialDelaySeconds: 3
+      timeoutSeconds: 1
+      periodSeconds: 10
+      successThreshold: 1
+      failureThreshold: 3
+  resources:
+    requests:
+      cpu: 0.05
+      memory: 128Mi
+  security:
+    runAsUser: 1000
+    readOnlyRootFilesystem: true
+    dropCapabilities: ["NET_RAW"]
+    seccompProfileType: RuntimeDefault
