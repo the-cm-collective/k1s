@@ -2663,6 +2663,16 @@ Connection: close
         (statuses||[]).forEach(function(s){
           appStatusByName[s.app_name] = s;
         });
+        var appNodesByName = {};
+        try {
+          Object.keys(podsByNode).forEach(function(nodeId){
+            (podsByNode[nodeId] || []).forEach(function(pod){
+              if (!pod || !pod.app) return;
+              if (!appNodesByName[pod.app]) appNodesByName[pod.app] = {};
+              appNodesByName[pod.app][nodeId] = true;
+            });
+          });
+        } catch(e){}
 
         if (useSiteLayout) {
           sysIds.forEach(function(id){
@@ -2748,6 +2758,7 @@ Connection: close
             }
             var entries = [];
             var links = [];
+            var appLinks = [];
             var minX = suppressNode ? Infinity : -hexW * 0.58;
             var maxX = suppressNode ? -Infinity : hexW * 0.58;
             var minY = suppressNode ? Infinity : -hexH * 0.58;
@@ -2828,6 +2839,7 @@ Connection: close
                     mini:true
                   }
                 });
+                appLinks.push({id: appId, app: item.app});
                 minCX = (minCX == null) ? (ax - appHexW * 0.6) : Math.min(minCX, ax - appHexW * 0.6);
                 maxCX = (maxCX == null) ? (ax + appHexW * 0.6) : Math.max(maxCX, ax + appHexW * 0.6);
                 minCY = (minCY == null) ? (ay - appHexH * 0.6) : Math.min(minCY, ay - appHexH * 0.6);
@@ -3005,6 +3017,8 @@ Connection: close
               minY: minY,
               width: width,
               height: height,
+              appLinks: appLinks,
+              hasNode: !suppressNode,
               padX: padGX,
               padY: padGY
             };
@@ -3186,6 +3200,11 @@ Connection: close
                 var end = {x: L.end.x + shiftX, y: L.end.y + shiftY};
                 link(L.a, L.b, L.cls, {kind:L.kind, start:start, end:end, app:L.app});
               });
+              if (group.hasNode && group.appLinks && group.appLinks.length) {
+                group.appLinks.forEach(function(appLink){
+                  link('node:' + group.nodeId, appLink.id, 'trace', {kind:'trace', app: appLink.app});
+                });
+              }
             });
             if (nodeById.controller) {
               link('controller', siteNodeId, 'flow', {route:'site'});
@@ -3212,6 +3231,11 @@ Connection: close
                 var end = {x: L.end.x + shiftX, y: L.end.y + shiftY};
                 link(L.a, L.b, L.cls, {kind:L.kind, start:start, end:end, app:L.app});
               });
+              if (group.hasNode && group.appLinks && group.appLinks.length) {
+                group.appLinks.forEach(function(appLink){
+                  link('node:' + group.nodeId, appLink.id, 'trace', {kind:'trace', app: appLink.app});
+                });
+              }
             });
           }
         } else {
@@ -4269,6 +4293,12 @@ Connection: close
           var g = document.createElementNS('http://www.w3.org/2000/svg','g');
           g.setAttribute('class','node hex-node ' + n.type);
           g.setAttribute('transform','translate(' + n.x + ' ' + n.y + ')');
+          if (n.meta && n.meta.node_id) {
+            g.setAttribute('data-node-id', String(n.meta.node_id));
+          }
+          if (n.meta && n.meta.site_id) {
+            g.setAttribute('data-site-id', String(n.meta.site_id));
+          }
           var gInner = document.createElementNS('http://www.w3.org/2000/svg','g');
           var scaleFactor = (n.meta && n.meta.scaleFactor) ? Number(n.meta.scaleFactor) : 1;
           var localScale = hexScale * scaleFactor;
@@ -4644,11 +4674,43 @@ Connection: close
             if (!selNs) {
               try { selNs = splitAppName(sel).namespace; } catch(e){}
             }
+            var selNodeIds = {};
+            var selSiteIds = {};
+            try {
+              var nodeSiteLookup = {};
+              nodes.forEach(function(n){
+                if (n.type === 'node' && n.meta && n.meta.node_id && n.meta.site_id) {
+                  nodeSiteLookup[String(n.meta.node_id)] = String(n.meta.site_id);
+                }
+              });
+              function siteFromNodeId(nodeId){
+                var text = String(nodeId || '');
+                var idx = text.indexOf('--');
+                if (idx > 0) return text.slice(0, idx);
+                return null;
+              }
+              var appNodes = appNodesByName[sel] || {};
+              Object.keys(appNodes).forEach(function(nodeId){
+                selNodeIds[String(nodeId)] = true;
+                var siteId = nodeSiteLookup[String(nodeId)] || siteFromNodeId(nodeId);
+                if (siteId) selSiteIds[String(siteId)] = true;
+              });
+            } catch(e){}
             // nodes
             Array.from(gNodes.children).forEach(function(n){
               var a = n.getAttribute('data-app');
               var isSel = (a===sel);
               if (isSel){
+                n.classList.add('selected');
+                return;
+              }
+              var nodeIdAttr = n.getAttribute('data-node-id');
+              if (nodeIdAttr && selNodeIds[nodeIdAttr]) {
+                n.classList.add('selected');
+                return;
+              }
+              var siteIdAttr = n.getAttribute('data-site-id');
+              if (siteIdAttr && selSiteIds[siteIdAttr]) {
                 n.classList.add('selected');
                 return;
               }
