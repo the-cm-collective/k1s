@@ -181,6 +181,8 @@ Local dev and samples:
 Docs, labs, and playground:
 - `make docs`: combine snapshots (if present), regenerate charts, build docs.
 - `make docs-watch`: rebuild docs when `combined/combined.csv` changes.
+- `make docs-local-ignore`: locally hide `docs/site` changes from git status.
+- `make docs-local-track`: re-enable tracking for `docs/site` updates before committing.
 - `make labs-up` / `make labs-down`: dev labs stack (docs + controller via compose).
 - `make labs-aio-up` / `make labs-aio-down`: all-in-one labs stack.
 - `make labs-k3d-up` / `make labs-k3d-down`: bring up/down local k3d cluster for labs.
