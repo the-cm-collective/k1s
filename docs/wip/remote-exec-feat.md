@@ -245,6 +245,70 @@ Decision: kubectl-aligned flags for `ae exec` with a `ae shell` wrapper.
 
 ---
 
+## Phased rollout for multi-node (Site A + Site B)
+
+Topology assumption: Site A is on the same LAN as `k1s-core` (hub) and Site B is remote
+behind NAT/CGNAT. The Site B gateway leader must egress to the hub to establish NATS and
+WireGuard.
+
+1) Phase 0 — single-host correctness
+Ensure SPDY exec and WS exec/port-forward are stable locally. Keep token gating and audit
+logs on by default. Run the existing smoke matrix scripts to avoid regressions.
+
+2) Phase 1 — overlay plumbing between sites
+Establish a routable WireGuard overlay between all nodes. The controller must be able to
+reach pod CIDRs and Service CIDR across sites. Use `ae.node --ensure-pod-net` with
+`AE_WG_CONFIG` and `AE_POD_CIDR` (or allocator) on each node, and validate L3 routes.
+
+3) Phase 2 — apishim node-aware streaming
+Teach apishim to route exec and port-forward to the correct node agent based on the pod’s
+node placement. This is required for cross-node exec/port-forward once pods are not local
+to the apishim process.
+
+4) Phase 3 — NAT/CGNAT hardening
+Ensure node endpoints advertised to the controller are reachable via the overlay (prefer
+WG IPs). Add keepalive and handshake monitoring for Site B and confirm that exec/port-forward
+survive idle timeouts and long-running sessions.
+
+5) Phase 4 — conformance polish (optional)
+Tighten watch/UID/RV gating and stream timeouts to align with conformance expectations.
+
+---
+
+## API shim node-aware exec/port-forward (sketch)
+
+Goal: When apishim receives an exec or port-forward request, it should select the correct
+node agent for the target pod and stream through it. This is the missing cross-node path.
+
+1) Resolve pod identity
+Use controller state to map `namespace/pod_name` to node id and pod UID. Use the existing
+state store for this lookup to avoid runtime-only scans.
+
+2) Resolve node endpoint
+Fetch the node’s `endpoint` (agent URL). Prefer WG overlay addresses. Reject if missing.
+
+3) Cache per-node RemoteRuntime
+Create or reuse a `RemoteRuntime(endpoint)` in apishim and use it for:
+`exec_attach`, `exec_resize`, `exec_exit_code`, and `port_forward_socket`.
+
+4) Exec flow
+Replace the direct `runtime.exec_attach` call with `runtime_for_node.exec_attach` after
+pod resolution. Preserve SPDY/WS framing logic in apishim.
+
+5) Pod port-forward flow
+If node-aware runtime is available, prefer `port_forward_socket` over direct TCP to pod IP.
+This avoids relying on direct pod IP reachability from apishim.
+
+6) Service port-forward flow
+Keep endpoint selection as-is, but for each chosen endpoint map `pod IP -> node endpoint`
+when available, then use node-aware runtime for the TCP stream.
+
+7) Error handling and audit
+Return 409 on stale pod UID/RV. Emit audit events with node id and endpoint for session
+start/end. Enforce `AE_API_EXEC_SCOPE` and `AE_API_PF_SCOPE` at the pod/service layer.
+
+---
+
 ## Decisions
 
 - `ae` CLI supports WebSocket exec fallback (guarded by flag/env).
