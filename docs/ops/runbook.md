@@ -31,6 +31,9 @@ NATS + etcd dev stack (Mode A)
 - Manual core+edge test pattern: `docs/ops/core-edge-manual-test.md`
 - Gateway env defaults: `ops/dev/site-gateway.env.sample` (Option A ack settings).
 - Default dev creds: hub controller `hub-controller/dev`, site uplink `site-sfo-edge-01-uplink/dev`, local `gateway/dev` and `worker/dev` (do not use in prod).
+- If docker-compose fails to create `state/etcd`, fix ownership once:
+  - `sudo mkdir -p state/etcd`
+  - `sudo chown -R $USER:$USER state/etcd`
 - Local E2E stub (work.pull path):
   - Start gateway: `AE_TRANSPORT_BACKEND=nats-core AE_SITE_ID=sfo-edge-01 AE_NATS_URL=nats://127.0.0.1:4223 ae-gateway`
   - Start stub worker: `ae-worker-stub --node-id node-01 --nats-url nats://127.0.0.1:4223`
@@ -40,7 +43,28 @@ NATS + etcd dev stack (Mode A)
   - Gateway: `AE_TRANSPORT_BACKEND=nats-js AE_SITE_ID=sfo-edge-01 AE_NATS_URL=nats://127.0.0.1:4223 ae-gateway`
   - Enqueue: `ae work enqueue --site-id sfo-edge-01 --mode outbox --op ensure_pod --preferred-node node-01`
   - Rollback: stop the gateway and restart the controller with `AE_TRANSPORT_BACKEND=http` (or unset) to return to HTTP dispatch.
-  - Automated canary + rollback: `scripts/dev/nats_etcd_canary.sh` (uses `.venv` if present; override `METRICS_PORT` if 9108 is in use).
+- Automated canary + rollback: `scripts/dev/nats_etcd_canary.sh` (uses `.venv` if present; override `METRICS_PORT` if 9108 is in use).
+
+Rosenpass WireGuard PSK (Option C)
+- Requires: WireGuard tools (`wg`, `wg-quick`) and Rosenpass installed on each node host.
+- Enable managed Rosenpass: `AE_ROSENPASS_ENABLED=1` on each node.
+- Data directory (keys/config/status): `AE_ROSENPASS_DIR=/var/lib/ae/rosenpass` (default).
+- Config file: `AE_ROSENPASS_CONFIG=/path/to/rosenpass.yaml` for node-local peers or `AE_ROSENPASS_CONFIG=controller` for controller-managed hub-spoke peers.
+- Hub/spoke discovery: hub node labels `role=controller` or `role=hub`; hub site override `AE_OVERLAY_HUB_SITE=<site-id>` (fallback `AE_SITE_ID`); hub WG endpoint label `wg_endpoint=<public-ip:port>` or `AE_OVERLAY_HUB_ENDPOINT`.
+- WireGuard interface override: `AE_WG_INTERFACE=wg0` (default).
+- Optional Rosenpass command override (if default fails): `AE_ROSENPASS_COMMAND="rosenpass exchange-config {config}"`.
+- Peer refresh interval (controller-managed peers): `AE_ROSENPASS_PEER_REFRESH_SEC=30` (set to `0` to disable).
+- Status file: `${AE_ROSENPASS_DIR}/rosenpass-status.json` (or `AE_ROSENPASS_STATUS_PATH`).
+
+Manual bringup (hub + edge, controller-managed peers)
+- Hub controller (agent API enabled): `AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=... python -m ae.controller --loop`
+- Hub node (with labels): `AE_NODE_LABELS="role=hub,site=<hub-site>,wg_endpoint=<public-ip:51820>" AE_ROSENPASS_ENABLED=1 AE_ROSENPASS_CONFIG=controller python -m ae.node --ensure-pod-net`
+- Edge node: `AE_NODE_LABELS="site=<edge-site>" AE_ROSENPASS_ENABLED=1 AE_ROSENPASS_CONFIG=controller AE_CONTROLLER_URL=http://<hub>:9110 AE_AGENT_TOKEN=... python -m ae.node --ensure-pod-net`
+
+Quick checks
+- Overlay config served: `curl -H "X-Agent-Token: $AE_AGENT_TOKEN" http://<hub>:9110/v1/nodes/<node-id>/overlay`
+- Rosenpass running: `cat /var/lib/ae/rosenpass/rosenpass-status.json`
+- WireGuard handshakes: `wg show wg0`
 
 CRI nodes (containerd)
 - Required env:
@@ -168,6 +192,13 @@ Token rotation and cleanup
 - After rotating, remove old `AE_API_*_TOKEN` and `AE_API_*_TOKEN_EXPIRES` values from your environment/secret store.
 - HTTP API exports token expiry metrics so you can alert:
   - `ae_api_token_expiry_seconds{role="admin|scaler|read"}` (negative when expired).
+
+Cleanup (stop all dev containers/services)
+- Preferred: run as the same user who started the containers.
+  - `./scripts/stop_all.sh`
+- If containers were started with sudo, run:
+  - `sudo ./scripts/stop_all.sh`
+- If you’re unsure, the script will attempt to stop both rootless and root containers when invoked with sudo.
 
 
 Prometheus alert example

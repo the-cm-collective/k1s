@@ -279,6 +279,7 @@ class NodeRecord:
     endpoint: str | None
     pod_cidr: str | None
     wg_pubkey: str | None
+    rp_pubkey: str | None
     cordoned: bool
     created_at: datetime
     updated_at: datetime
@@ -331,6 +332,10 @@ class SQLiteStateStore:
                 pass
             try:
                 self._ensure_column(conn, "pod_status", "updated_at", "TEXT")
+            except Exception:
+                pass
+            try:
+                self._ensure_column(conn, "nodes", "rp_pubkey", "TEXT")
             except Exception:
                 pass
             needs_reset = not self._schema_matches(
@@ -437,6 +442,7 @@ class SQLiteStateStore:
                     "cordoned",
                     "created_at",
                     "updated_at",
+                    "rp_pubkey",
                 ],
             ):
                 conn.execute("DROP TABLE IF EXISTS nodes")
@@ -2405,6 +2411,7 @@ class SQLiteStateStore:
         endpoint: str | None = None,
         pod_cidr: str | None = None,
         wg_pubkey: str | None = None,
+        rp_pubkey: str | None = None,
         cordoned: bool | None = None,
     ) -> None:
         if cordoned is None:
@@ -2422,6 +2429,7 @@ class SQLiteStateStore:
                     endpoint,
                     pod_cidr,
                     wg_pubkey,
+                    rp_pubkey,
                     int(bool(cordoned)),
                     now,
                     now,
@@ -2476,11 +2484,11 @@ class SQLiteStateStore:
             except Exception:
                 taints = []
             try:
-                created = datetime.fromisoformat(row[8])
+                created = datetime.fromisoformat(row[9])
             except Exception:
                 created = datetime.fromtimestamp(0, tz=timezone.utc)
             try:
-                updated = datetime.fromisoformat(row[9])
+                updated = datetime.fromisoformat(row[10])
             except Exception:
                 updated = datetime.fromtimestamp(0, tz=timezone.utc)
             node = NodeRecord(
@@ -2492,17 +2500,18 @@ class SQLiteStateStore:
                 endpoint=row[5],
                 pod_cidr=row[6],
                 wg_pubkey=row[7],
-                cordoned=bool(row[10]),
+                rp_pubkey=row[8],
+                cordoned=bool(row[11]),
                 created_at=created,
                 updated_at=updated,
             )
             status = None
-            if row[11] is not None:
+            if row[12] is not None:
                 try:
-                    seen_at = datetime.fromisoformat(row[12])
+                    seen_at = datetime.fromisoformat(row[13])
                 except Exception:
                     seen_at = datetime.fromtimestamp(0, tz=timezone.utc)
-                status = NodeStatus(node_id=row[0], status=row[11], seen_at=seen_at)
+                status = NodeStatus(node_id=row[0], status=row[12], seen_at=seen_at)
             result.append((node, status))
         return result
 
@@ -2525,11 +2534,11 @@ class SQLiteStateStore:
         except Exception:
             taints = []
         try:
-            created = datetime.fromisoformat(row[8])
+            created = datetime.fromisoformat(row[9])
         except Exception:
             created = datetime.fromtimestamp(0, tz=timezone.utc)
         try:
-            updated = datetime.fromisoformat(row[9])
+            updated = datetime.fromisoformat(row[10])
         except Exception:
             updated = datetime.fromtimestamp(0, tz=timezone.utc)
         node = NodeRecord(
@@ -2541,17 +2550,18 @@ class SQLiteStateStore:
             endpoint=row[5],
             pod_cidr=row[6],
             wg_pubkey=row[7],
-            cordoned=bool(row[10]),
+            rp_pubkey=row[8],
+            cordoned=bool(row[11]),
             created_at=created,
             updated_at=updated,
         )
         status = None
-        if row[11] is not None:
+        if row[12] is not None:
             try:
-                seen_at = datetime.fromisoformat(row[12])
+                seen_at = datetime.fromisoformat(row[13])
             except Exception:
                 seen_at = datetime.fromtimestamp(0, tz=timezone.utc)
-            status = NodeStatus(node_id=row[0], status=row[11], seen_at=seen_at)
+            status = NodeStatus(node_id=row[0], status=row[12], seen_at=seen_at)
         return node, status
 
     # --- Volume attachments --------------------------------------------

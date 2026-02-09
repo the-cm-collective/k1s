@@ -17,6 +17,28 @@ fi
 DOCS_PORT=${DOCS_PORT:-9109}
 API_PORT=${API_PORT:-9108}
 
+CONTEXTS=("current")
+SUDO_UID=""
+if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+  CONTEXTS+=("sudo-user")
+  SUDO_UID="$(id -u "${SUDO_USER}" 2>/dev/null || true)"
+fi
+
+run_engine() {
+  local ctx="$1"
+  local bin="$2"
+  shift 2
+  if [[ "$ctx" == "sudo-user" && -n "${SUDO_USER:-}" ]]; then
+    if [[ -n "${SUDO_UID}" ]]; then
+      sudo -u "${SUDO_USER}" -H XDG_RUNTIME_DIR="/run/user/${SUDO_UID}" "$bin" "$@"
+    else
+      sudo -u "${SUDO_USER}" -H "$bin" "$@"
+    fi
+  else
+    "$bin" "$@"
+  fi
+}
+
 log "Stopping docs server"
 if [[ -f state/docs_server.pid ]]; then
   pid=$(cat state/docs_server.pid || true)
@@ -67,41 +89,53 @@ DEV_COMPOSE_FILES=(-f ops/dev/docker-compose.yaml)
 if [[ -f ops/dev/docker-compose.cache.override.yml ]]; then
   DEV_COMPOSE_FILES+=(-f ops/dev/docker-compose.cache.override.yml)
 fi
-for bin in "${ENGINES[@]}"; do
-  "$bin" compose "${DEV_COMPOSE_FILES[@]}" down >/dev/null 2>&1 || true
-  if "$bin" ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^dev-registry-1$'; then
-    "$bin" rm -f dev-registry-1 >/dev/null 2>&1 || true
-  fi
-  if "$bin" ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^dev-caddy-1$'; then
-    "$bin" rm -f dev-caddy-1 >/dev/null 2>&1 || true
-  fi
+for ctx in "${CONTEXTS[@]}"; do
+  for bin in "${ENGINES[@]}"; do
+    run_engine "$ctx" "$bin" compose "${DEV_COMPOSE_FILES[@]}" down >/dev/null 2>&1 || true
+    for name in dev-registry-1 dev-caddy-1 dev-apishim-1 dev-prometheus-1 dev-haproxy; do
+      if run_engine "$ctx" "$bin" ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${name}$"; then
+        run_engine "$ctx" "$bin" rm -f "$name" >/dev/null 2>&1 || true
+      fi
+    done
+  done
 done
 
 log "Stopping dev NATS/etcd stack (nats-hub, nats-edge, etcd)"
-for bin in "${ENGINES[@]}"; do
-  "$bin" compose -f ops/dev/docker-compose.nats-etcd.yaml down >/dev/null 2>&1 || true
-  extra_edges=$("$bin" ps -aq --filter 'name=dev-nats-edge-' 2>/dev/null || true)
-  if [[ -n "$extra_edges" ]]; then
-    "$bin" rm -f $extra_edges >/dev/null 2>&1 || true
-  fi
+for ctx in "${CONTEXTS[@]}"; do
+  for bin in "${ENGINES[@]}"; do
+    run_engine "$ctx" "$bin" compose -f ops/dev/docker-compose.nats-etcd.yaml down >/dev/null 2>&1 || true
+    extra_edges=$(run_engine "$ctx" "$bin" ps -aq --filter 'name=dev-nats-edge-' 2>/dev/null || true)
+    if [[ -n "$extra_edges" ]]; then
+      run_engine "$ctx" "$bin" rm -f $extra_edges >/dev/null 2>&1 || true
+    fi
+    for name in dev-nats-hub-1 dev-etcd-1; do
+      if run_engine "$ctx" "$bin" ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${name}$"; then
+        run_engine "$ctx" "$bin" rm -f "$name" >/dev/null 2>&1 || true
+      fi
+    done
+  done
 done
 
 log "Stopping k1s ingress containers (k1s-*)"
-for bin in "${ENGINES[@]}"; do
-  ids=""
-  ids=$("$bin" ps -aq 2>/dev/null | awk 'NF' || true)
-  if [[ -n "$ids" ]]; then
-    named=$("$bin" ps -a --format '{{.ID}} {{.Names}}' 2>/dev/null | awk '$2 ~ /^k1s-/' | awk '{print $1}' || true)
-    if [[ -n "$named" ]]; then
-      "$bin" rm -f $named >/dev/null 2>&1 || true
+for ctx in "${CONTEXTS[@]}"; do
+  for bin in "${ENGINES[@]}"; do
+    ids=""
+    ids=$(run_engine "$ctx" "$bin" ps -aq 2>/dev/null | awk 'NF' || true)
+    if [[ -n "$ids" ]]; then
+      named=$(run_engine "$ctx" "$bin" ps -a --format '{{.ID}} {{.Names}}' 2>/dev/null | awk '$2 ~ /^k1s-/' | awk '{print $1}' || true)
+      if [[ -n "$named" ]]; then
+        run_engine "$ctx" "$bin" rm -f $named >/dev/null 2>&1 || true
+      fi
     fi
-  fi
+  done
 done
 
 log "Stopping labs compose stacks (labs-aio, labs-compose)"
-for bin in "${ENGINES[@]}"; do
-  "$bin" compose -f ops/dev/labs-aio.yaml down >/dev/null 2>&1 || true
-  "$bin" compose -f ops/dev/labs-compose.yaml down >/dev/null 2>&1 || true
+for ctx in "${CONTEXTS[@]}"; do
+  for bin in "${ENGINES[@]}"; do
+    run_engine "$ctx" "$bin" compose -f ops/dev/labs-aio.yaml down >/dev/null 2>&1 || true
+    run_engine "$ctx" "$bin" compose -f ops/dev/labs-compose.yaml down >/dev/null 2>&1 || true
+  done
 done
 
 if command -v crictl >/dev/null 2>&1; then
@@ -120,21 +154,25 @@ if command -v crictl >/dev/null 2>&1; then
 fi
 
 log "Removing demo app containers (label=ae.app or name=ae-*)"
-for bin in "${ENGINES[@]}"; do
-  ids_label=$("$bin" ps -aq --filter 'label=ae.app' 2>/dev/null || true)
-  ids_name=$("$bin" ps -aq --filter 'name=^ae-' 2>/dev/null || true)
-  ids=$(printf "%s\n%s\n" "$ids_label" "$ids_name" | awk 'NF' | sort -u)
-  if [[ -n "${ids}" ]]; then
-    "$bin" rm -f $ids >/dev/null 2>&1 || true
-  fi
+for ctx in "${CONTEXTS[@]}"; do
+  for bin in "${ENGINES[@]}"; do
+    ids_label=$(run_engine "$ctx" "$bin" ps -aq --filter 'label=ae.app' 2>/dev/null || true)
+    ids_name=$(run_engine "$ctx" "$bin" ps -aq --filter 'name=^ae-' 2>/dev/null || true)
+    ids=$(printf "%s\n%s\n" "$ids_label" "$ids_name" | awk 'NF' | sort -u)
+    if [[ -n "${ids}" ]]; then
+      run_engine "$ctx" "$bin" rm -f $ids >/dev/null 2>&1 || true
+    fi
+  done
 done
 
 log "Removing service proxy containers (name=ae-svc-*)"
-for bin in "${ENGINES[@]}"; do
-  svc_ids=$("$bin" ps -aq --filter 'name=ae-svc-' 2>/dev/null || true)
-  if [[ -n "${svc_ids}" ]]; then
-    "$bin" rm -f $svc_ids >/dev/null 2>&1 || true
-  fi
+for ctx in "${CONTEXTS[@]}"; do
+  for bin in "${ENGINES[@]}"; do
+    svc_ids=$(run_engine "$ctx" "$bin" ps -aq --filter 'name=ae-svc-' 2>/dev/null || true)
+    if [[ -n "${svc_ids}" ]]; then
+      run_engine "$ctx" "$bin" rm -f $svc_ids >/dev/null 2>&1 || true
+    fi
+  done
 done
 
 log "Clearing Labs shim artifacts (state/profiles/labs)"

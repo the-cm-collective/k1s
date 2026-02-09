@@ -1,5 +1,5 @@
 .PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke docs-local-ignore docs-local-track
-.PHONY: dev-min dev-etcd k1s-core k1s-edge k1s-core-edge k1s-edge-core
+.PHONY: dev-min dev-etcd k1s-core k1s-edge k1s-core-edge k1s-edge-core k1s-core-node k1s-edge-node
 .PHONY: edge-site
 .PHONY: k1s-core-caddy dev-min-caddy dev-etcd-caddy dev-local
 .PHONY: shim-helm-demo
@@ -53,6 +53,30 @@ k1s-core-edge:
 
 k1s-edge-core:
 	@EDGE_PROFILE=k1s-core ./scripts/dev/run_profile.sh k1s-edge
+
+k1s-core-node:
+	@AE_NODE_ID=$${AE_NODE_ID:-hub-1} \
+	  AE_NODE_LABELS="$${AE_NODE_LABELS:-role=hub,site=hub}$${AE_WG_ENDPOINT:+,wg_endpoint=$${AE_WG_ENDPOINT}}" \
+	  AE_POD_CIDR=$${AE_POD_CIDR:-10.42.0.0/24} \
+	  AE_ROSENPASS_ENABLED=$${AE_ROSENPASS_ENABLED:-1} \
+	  AE_ROSENPASS_CONFIG=$${AE_ROSENPASS_CONFIG:-controller} \
+	  AE_ROSENPASS_DIR=$${AE_ROSENPASS_DIR:-state/rosenpass} \
+	  AE_CONTROLLER_URL=$${AE_CONTROLLER_URL:-http://127.0.0.1:9110} \
+	  AE_AGENT_TOKEN=$${AE_AGENT_TOKEN:-devtoken} \
+	  AE_NODE_PORT=$${AE_NODE_PORT:-9111} \
+	  PYTHONPATH=src python -m ae.node --ensure-pod-net
+
+k1s-edge-node:
+	@AE_NODE_ID=$${AE_NODE_ID:-edge-1} \
+	  AE_NODE_LABELS="$${AE_NODE_LABELS:-site=edge}" \
+	  AE_POD_CIDR=$${AE_POD_CIDR:-10.42.1.0/24} \
+	  AE_ROSENPASS_ENABLED=$${AE_ROSENPASS_ENABLED:-1} \
+	  AE_ROSENPASS_CONFIG=$${AE_ROSENPASS_CONFIG:-controller} \
+	  AE_ROSENPASS_DIR=$${AE_ROSENPASS_DIR:-state/rosenpass} \
+	  AE_CONTROLLER_URL=$${AE_CONTROLLER_URL:-http://127.0.0.1:9110} \
+	  AE_AGENT_TOKEN=$${AE_AGENT_TOKEN:-devtoken} \
+	  AE_NODE_PORT=$${AE_NODE_PORT:-9112} \
+	  PYTHONPATH=src python -m ae.node --ensure-pod-net
 
 k1s-core-caddy:
 	@CORE_CADDY=1 ./scripts/dev/run_profile.sh k1s-core

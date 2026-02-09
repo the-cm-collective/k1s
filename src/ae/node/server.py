@@ -399,6 +399,7 @@ def _start_heartbeat_loop(
     interval: int,
     pod_cidr: str | None = None,
     wg_pubkey: str | None = None,
+    rp_pubkey: str | None = None,
     ca_file: str | None = None,
     client_cert: str | None = None,
     client_key: str | None = None,
@@ -419,6 +420,7 @@ def _start_heartbeat_loop(
                 "status": "Ready",
                 "pod_cidr": pod_cidr,
                 "wg_pubkey": wg_pubkey,
+                "rp_pubkey": rp_pubkey,
             }
             try:
                 headers = {}
@@ -585,9 +587,11 @@ def serve(
     node_endpoint: str | None = None,
     pod_cidr: str | None = None,
     wg_pubkey: str | None = None,
+    rp_pubkey: str | None = None,
     token: str | None = None,
     ensure_pod_net: bool = False,
     pod_bridge: str = "ae0",
+    wg_iface: str = "wg0",
     wg_config: str | None = None,
     tls_cert: str | None = None,
     tls_key: str | None = None,
@@ -603,7 +607,7 @@ def serve(
 
             ensure_pod_bridge(pod_bridge, pod_cidr)
             if wg_config:
-                apply_wireguard(wg_config)
+                apply_wireguard(wg_config, iface=wg_iface)
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("overlay setup failed: %s", exc)
 
@@ -619,6 +623,7 @@ def serve(
         heartbeat_interval,
         pod_cidr=pod_cidr,
         wg_pubkey=wg_pubkey,
+        rp_pubkey=rp_pubkey,
         ca_file=controller_ca,
         client_cert=controller_client_cert,
         client_key=controller_client_key,
@@ -772,6 +777,66 @@ def main(argv: list[str] | None = None) -> int:
     node_taints = []
     token = os.getenv("AE_AGENT_TOKEN")
     endpoint = args.advertise_endpoint or f"http://{socket.gethostname()}:{args.port}"
+    pod_cidr = os.getenv("AE_POD_CIDR")
+    wg_pubkey = os.getenv("AE_WG_PUBKEY")
+    rp_pubkey = os.getenv("AE_ROSENPASS_PUBKEY") or os.getenv("AE_RP_PUBKEY")
+    wg_config = os.getenv("AE_WG_CONFIG")
+    wg_iface = os.getenv("AE_WG_INTERFACE", "wg0")
+    if os.getenv("AE_ROSENPASS_ENABLED", "0") == "1":
+        try:
+            from pathlib import Path
+
+            from ae.node.rosenpass import prepare_rosenpass
+
+            base_dir = Path(os.getenv("AE_ROSENPASS_DIR", "/var/lib/ae/rosenpass"))
+            cfg_raw = (os.getenv("AE_ROSENPASS_CONFIG") or "").strip()
+            peers_from_controller = cfg_raw.lower() == "controller"
+            cfg_path = None if peers_from_controller or not cfg_raw else Path(cfg_raw)
+            backend = runtime.__class__.__name__.replace("Runtime", "").lower()
+            refresh_raw = os.getenv("AE_ROSENPASS_PEER_REFRESH_SEC", "30")
+            try:
+                refresh_sec = float(refresh_raw)
+            except Exception:
+                refresh_sec = 30.0
+            if refresh_sec < 0:
+                refresh_sec = 0.0
+            bootstrap_payload = {
+                "node_id": node_id,
+                "name": node_name,
+                "backend": backend,
+                "endpoint": endpoint,
+                "labels": node_labels,
+                "taints": node_taints,
+                "status": "Ready",
+                "pod_cidr": pod_cidr,
+            }
+            rp_runtime = prepare_rosenpass(
+                config_path=cfg_path,
+                base_dir=base_dir,
+                controller_url=args.controller_url,
+                token=token,
+                node_id=node_id,
+                pod_cidr=pod_cidr,
+                peers_from_controller=peers_from_controller,
+                bootstrap_payload=bootstrap_payload,
+                peer_refresh_sec=refresh_sec if peers_from_controller else 0.0,
+            )
+            if rp_runtime:
+                wg_iface = rp_runtime.interface or wg_iface
+                if rp_runtime.wg_public_key:
+                    wg_pubkey = rp_runtime.wg_public_key
+                if rp_runtime.rp_public_key:
+                    rp_pubkey = rp_runtime.rp_public_key
+                if rp_runtime.wg_config:
+                    try:
+                        from ae.node.net_helper import apply_wireguard
+
+                        apply_wireguard(rp_runtime.wg_config, iface=rp_runtime.interface)
+                    except Exception as exc:  # noqa: BLE001
+                        LOGGER.warning("wireguard apply failed: %s", exc)
+                    wg_config = rp_runtime.wg_config
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("rosenpass setup failed: %s", exc)
     serve(
         runtime,
         host=args.host,
@@ -784,12 +849,14 @@ def main(argv: list[str] | None = None) -> int:
         heartbeat_interval=args.heartbeat_interval,
         node_endpoint=endpoint,
         token=token,
-        pod_cidr=os.getenv("AE_POD_CIDR"),
-        wg_pubkey=os.getenv("AE_WG_PUBKEY"),
+        pod_cidr=pod_cidr,
+        wg_pubkey=wg_pubkey,
+        rp_pubkey=rp_pubkey,
         ensure_pod_net=args.ensure_pod_net
         or bool(int(os.getenv("AE_AGENT_CONFIGURE_OVERLAY", "0"))),
         pod_bridge=args.pod_bridge,
-        wg_config=os.getenv("AE_WG_CONFIG"),
+        wg_iface=wg_iface,
+        wg_config=wg_config,
         tls_cert=args.tls_cert,
         tls_key=args.tls_key,
         client_ca=args.client_ca,

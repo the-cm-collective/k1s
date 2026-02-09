@@ -3948,6 +3948,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     "taints": node.taints,
                     "pod_cidr": node.pod_cidr,
                     "wg_pubkey": node.wg_pubkey,
+                    "rp_pubkey": getattr(node, "rp_pubkey", None),
                     "cordoned": bool(getattr(node, "cordoned", False)),
                     "status": st,
                     "seen_at": seen_at.isoformat() if seen_at else None,
