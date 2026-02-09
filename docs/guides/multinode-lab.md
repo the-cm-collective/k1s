@@ -169,6 +169,13 @@ ae nodes --json
 curl http://<siteb-wg-ip>:9109/readyz
 ```
 4. Test exec and port-forward against pods pinned to Site B.
+```
+source <(ae auth local)
+ae apply -f docs/site/examples/shell-demo-node-sea-edge-02-edge-1.yaml
+ae status shell-demo-node-sea-edge-02-edge-1 --wide --events
+ae shell shell-demo-node-sea-edge-02-edge-1 -- /bin/sh
+ae port-forward shell-demo-node-sea-edge-02-edge-1 18082:8080
+```
 
 ## Validation
 ```

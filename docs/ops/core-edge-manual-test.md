@@ -150,7 +150,7 @@ Expected:
 - Work ledger transitions to `Succeeded` for the test work items (visible in hub logs via `work_result` entries).
 
 Workload placement smoke tests (manifests)
-Use the controller CLI context above.
+Use the controller CLI context above (for example: `source <(ae auth local)`).
 Node selectors use scoped node ids (`<site_id>--<node_id>`).
 Helper manifests:
 - `specs/examples/echo-gateway.yaml` targets gateway nodes and spreads across sites.
@@ -158,7 +158,7 @@ Helper manifests:
 - `specs/examples/echo-node-sea-edge-02-edge-1.yaml` pins to `sea-edge-02--edge-1`.
 - `specs/examples/echo-node-sea-edge-02-edge-2.yaml` pins to `sea-edge-02--edge-2`.
 - `specs/examples/echo-node-k1s-core.yaml` targets the core controller node (`role=controller`, `profile=k1s-core`).
-- `docs/site/examples/shell-demo-node-k1s-core.yaml` pins the shell demo to the core controller node.
+- `docs/site/examples/shell-demo-node-k1s-core.yaml` pins the shell demo to the core controller node (only works if the controller host runs a workload-capable node with `role=controller`).
 - `docs/site/examples/shell-demo-node-sfo-edge-01-edge-1.yaml` pins the shell demo to `sfo-edge-01--edge-1`.
 - `docs/site/examples/shell-demo-node-sea-edge-02-edge-1.yaml` pins the shell demo to `sea-edge-02--edge-1`.
 - `docs/site/examples/shell-demo-node-sea-edge-02-edge-2.yaml` pins the shell demo to `sea-edge-02--edge-2`.
@@ -190,16 +190,50 @@ python -m ae.cli status echo-node-sea-edge-02-edge-2 --wide --events
 
 Port-forward smoke tests (shell demo, one per node):
 ```
-python -m ae.cli apply -f docs/site/examples/shell-demo-node-sfo-edge-01-edge-1.yaml
-python -m ae.cli apply -f docs/site/examples/shell-demo-node-sea-edge-02-edge-1.yaml
-python -m ae.cli apply -f docs/site/examples/shell-demo-node-sea-edge-02-edge-2.yaml
-python -m ae.cli apply -f docs/site/examples/shell-demo-node-k1s-core.yaml
+source <(ae auth local)
+ae apply -f docs/site/examples/shell-demo-node-sfo-edge-01-edge-1.yaml
+ae apply -f docs/site/examples/shell-demo-node-sea-edge-02-edge-1.yaml
+ae apply -f docs/site/examples/shell-demo-node-sea-edge-02-edge-2.yaml
+cat <<'EOF' | ae apply -f -
+apiVersion: ae.dev/v1alpha1
+kind: Deployment
+metadata:
+  name: shell-demo-node-hub
+spec:
+  image: demo-shell:latest
+  replicas: 1
+  ports:
+    - name: http
+      containerPort: 8080
+  nodeSelector:
+    role: hub
+    site: hub
+  health:
+    readiness:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 1
+      timeoutSeconds: 2
+      periodSeconds: 2
+      successThreshold: 1
+      failureThreshold: 5
+    liveness:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 5
+      timeoutSeconds: 1
+      periodSeconds: 10
+      successThreshold: 1
+      failureThreshold: 3
+EOF
 ```
 ```
-python -m ae.cli port-forward shell-demo-node-sfo-edge-01-edge-1 18081:8080
-python -m ae.cli port-forward shell-demo-node-sea-edge-02-edge-1 18082:8080
-python -m ae.cli port-forward shell-demo-node-sea-edge-02-edge-2 18083:8080
-python -m ae.cli port-forward shell-demo-node-k1s-core 18084:8080
+ae port-forward shell-demo-node-sfo-edge-01-edge-1 18081:8080
+ae port-forward shell-demo-node-sea-edge-02-edge-1 18082:8080
+ae port-forward shell-demo-node-sea-edge-02-edge-2 18083:8080
+ae port-forward shell-demo-node-hub 18084:8080
 ```
 Notes:
 - Port-forward uses the API shim; run `source <(ae auth local)` (or set `AE_APISHIM_SERVER` and `AE_APISHIM_PORTFORWARD_TOKEN`) before invoking `ae port-forward`.
