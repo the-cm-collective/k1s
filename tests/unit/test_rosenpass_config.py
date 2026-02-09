@@ -50,6 +50,7 @@ def test_render_rosenpass_stub(tmp_path: Path) -> None:
         address=None,
         listen_port=None,
         mtu=None,
+        table=None,
         private_key_path=tmp_path / "wg.key",
         public_key_path=tmp_path / "wg.pub",
     )

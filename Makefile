@@ -60,7 +60,7 @@ k1s-core-node:
 	  AE_POD_CIDR=$${AE_POD_CIDR:-10.42.0.0/24} \
 	  AE_ROSENPASS_ENABLED=$${AE_ROSENPASS_ENABLED:-1} \
 	  AE_ROSENPASS_CONFIG=$${AE_ROSENPASS_CONFIG:-controller} \
-	  AE_ROSENPASS_DIR=$${AE_ROSENPASS_DIR:-state/rosenpass} \
+	  AE_ROSENPASS_DIR=$${AE_ROSENPASS_DIR:-$$(if [ "$$(id -u)" -eq 0 ]; then echo /var/lib/ae/rosenpass; else echo state/rosenpass; fi)} \
 	  AE_CONTROLLER_URL=$${AE_CONTROLLER_URL:-http://127.0.0.1:9110} \
 	  AE_AGENT_TOKEN=$${AE_AGENT_TOKEN:-devtoken} \
 	  AE_NODE_PORT=$${AE_NODE_PORT:-9111} \
@@ -72,7 +72,7 @@ k1s-edge-node:
 	  AE_POD_CIDR=$${AE_POD_CIDR:-10.42.1.0/24} \
 	  AE_ROSENPASS_ENABLED=$${AE_ROSENPASS_ENABLED:-1} \
 	  AE_ROSENPASS_CONFIG=$${AE_ROSENPASS_CONFIG:-controller} \
-	  AE_ROSENPASS_DIR=$${AE_ROSENPASS_DIR:-state/rosenpass} \
+	  AE_ROSENPASS_DIR=$${AE_ROSENPASS_DIR:-$$(if [ "$$(id -u)" -eq 0 ]; then echo /var/lib/ae/rosenpass; else echo state/rosenpass; fi)} \
 	  AE_CONTROLLER_URL=$${AE_CONTROLLER_URL:-http://127.0.0.1:9110} \
 	  AE_AGENT_TOKEN=$${AE_AGENT_TOKEN:-devtoken} \
 	  AE_NODE_PORT=$${AE_NODE_PORT:-9112} \

@@ -63,25 +63,43 @@ def apply_wireguard(config_text: str, iface: str = "wg0") -> None:
     if not str(iface).isalnum() and not str(iface).replace("_", "").replace("-", "").isalnum():
         LOGGER.warning("invalid wg iface: %s", iface)
         return
+    def _strip_wg_quick(text: str) -> str:
+        # wg syncconf rejects wg-quick-only keys (Address, MTU, DNS, etc.).
+        drop = {"address", "mtu", "dns", "table", "preup", "postup", "predown", "postdown", "saveconfig"}
+        lines = []
+        for raw in text.splitlines():
+            stripped = raw.strip()
+            if not stripped or stripped.startswith("#"):
+                lines.append(raw)
+                continue
+            key = stripped.split("=", 1)[0].strip().lower()
+            if key in drop:
+                continue
+            lines.append(raw)
+        return "\n".join(lines).strip() + "\n"
     try:
         proc = subprocess.run(
             [WG_BIN, "syncconf", iface, "/dev/fd/0"],  # noqa: S603,S607 - fixed binary; shell disabled
-            input=config_text.encode("utf-8"),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            input=_strip_wg_quick(config_text),
+            capture_output=True,
+            text=True,
             check=False,
         )
         if proc.returncode != 0:
+            if proc.stderr:
+                LOGGER.warning("wireguard syncconf failed: %s", proc.stderr.strip())
             # Try bringup if iface is missing.
             with tempfile.TemporaryDirectory() as tmpdir:
                 conf_path = Path(tmpdir) / f"{iface}.conf"
                 conf_path.write_text(config_text, encoding="utf-8")
-                subprocess.run(
+                proc2 = subprocess.run(
                     [WG_QUICK_BIN, "up", str(conf_path)],  # noqa: S603,S607 - fixed binary; shell disabled
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
                     check=False,
                 )
+                if proc2.returncode != 0 and proc2.stderr:
+                    LOGGER.warning("wireguard wg-quick failed: %s", proc2.stderr.strip())
     except FileNotFoundError:
         LOGGER.warning("wireguard tools not installed; skipping")
     except Exception as exc:  # noqa: BLE001

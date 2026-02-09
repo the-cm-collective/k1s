@@ -2244,22 +2244,30 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 import time as _t
                 import shutil as _sh
                 import subprocess as _sp
+                import shlex
 
                 from ae.controller.agent_api import _node_is_hub, _node_site
+                from ae.controller.agent_api import _wg_role
 
-                def _wg_peer_handshakes(iface: str) -> dict[str, float | None]:
+                def _wg_peer_handshakes(iface: str) -> tuple[dict[str, float | None], str | None]:
                     wg_bin = _sh.which("wg") or "wg"
+                    helper = (_os.getenv("AE_WG_DUMP_CMD") or "").strip()
+                    cmd: list[str]
+                    if helper:
+                        cmd = shlex.split(helper.replace("{iface}", iface))
+                    else:
+                        cmd = [wg_bin, "show", iface, "dump"]
                     try:
                         dump = _sp.check_output(
-                            [wg_bin, "show", iface, "dump"],
+                            cmd,
                             text=True,
                             stderr=_sp.DEVNULL,
                         )
                     except Exception:
-                        return {}
+                        return {}, "wg dump failed"
                     lines = [ln for ln in dump.splitlines() if ln.strip()]
                     if not lines:
-                        return {}
+                        return {}, None
                     now_ts = _t.time()
                     peers: dict[str, float | None] = {}
                     for line in lines[1:]:
@@ -2275,19 +2283,29 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                             peers[pubkey] = None
                         else:
                             peers[pubkey] = max(0.0, now_ts - float(latest))
-                    return peers
+                    return peers, None
 
                 hub_site = (  # matches overlay payload logic
                     _os.getenv("AE_OVERLAY_HUB_SITE") or _os.getenv("AE_SITE_ID") or ""
                 ).strip() or None
-                hubs = [
-                    node
-                    for node in _nodes
-                    if _node_is_hub(node.get("id") or "", node.get("labels") or {}, hub_site)
-                ]
+                wg_role_present = any(_wg_role(node.get("labels") or {}) for node in _nodes)
+
+                def _overlay_node(node: dict) -> bool:
+                    if not wg_role_present:
+                        return True
+                    return _wg_role(node.get("labels") or {}) is not None
+
+                def _overlay_hub(node: dict) -> bool:
+                    if wg_role_present:
+                        return _wg_role(node.get("labels") or {}) == "hub"
+                    return _node_is_hub(node.get("id") or "", node.get("labels") or {}, hub_site)
+
+                hubs = [node for node in _nodes if _overlay_node(node) and _overlay_hub(node)]
                 if hubs:
                     iface = _os.getenv("AE_WG_INTERFACE", "wg0")
-                    handshake_map = _wg_peer_handshakes(iface)
+                    handshake_map, handshake_err = _wg_peer_handshakes(iface)
+                    if handshake_err:
+                        overlay_payload.setdefault("errors", []).append(handshake_err)
                     rp_state = None
                     try:
                         rp_state = (overlay_payload.get("rosenpass") or {}).get("state")
@@ -2305,7 +2323,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                             nid = node.get("id") or ""
                             if not nid or nid == hub_id:
                                 continue
-                            if _node_is_hub(nid, node.get("labels") or {}, hub_site):
+                            if not _overlay_node(node):
+                                continue
+                            if _overlay_hub(node):
                                 continue
                             link_id = f"{hub_id}<->{nid}"
                             if link_id in seen:
@@ -2363,8 +2383,10 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     overlay_payload["topology"] = "hub-spoke"
                     overlay_payload["generated_at"] = now_ts
                     overlay_payload["links"] = links
-            except Exception:
-                overlay_payload = ov if isinstance(ov, dict) else ov
+            except Exception as exc:
+                if not isinstance(overlay_payload, dict):
+                    overlay_payload = {}
+                overlay_payload.setdefault("errors", []).append(f"overlay link build failed: {exc}")
 
             # Create cooldowns (seconds remaining) if available
             cooldowns = {}

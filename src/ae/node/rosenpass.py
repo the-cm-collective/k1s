@@ -38,6 +38,7 @@ class WireGuardConfig:
     address: str | None
     listen_port: int | None
     mtu: int | None
+    table: str | None
     private_key_path: Path
     public_key_path: Path
 
@@ -123,6 +124,22 @@ def _safe_interface(name: Any, default: str = "wg0") -> str:
     return raw
 
 
+def _normalize_verbosity(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text in {"Quiet", "Verbose"}:
+        return text
+    low = text.lower()
+    if low in {"quiet", "q", "0", "false", "off", "error", "err", "warn", "warning"}:
+        return "Quiet"
+    if low in {"verbose", "v", "1", "true", "on", "debug", "info", "trace"}:
+        return "Verbose"
+    return None
+
+
 def _write_private_file(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -175,6 +192,17 @@ def _write_status_file(path: Path, payload: dict[str, Any]) -> None:
         pass
 
 
+def _maybe_dump_wg_config(base_dir: Path, config_text: str) -> None:
+    if os.getenv("AE_WG_DEBUG_DUMP", "0") != "1":
+        return
+    try:
+        out = base_dir / "wg-debug.conf"
+        out.write_text(config_text, encoding="utf-8")
+        os.chmod(out, 0o600)
+    except Exception:
+        pass
+
+
 def _derive_address_from_cidr(cidr: str | None) -> str | None:
     if not cidr:
         return None
@@ -188,6 +216,17 @@ def _derive_address_from_cidr(cidr: str | None) -> str | None:
         return None
 
 
+def _normalize_wg_address(raw: str | None, pod_cidr: str | None) -> str | None:
+    if raw is None:
+        return _derive_address_from_cidr(pod_cidr)
+    text = str(raw).strip()
+    if not text:
+        return _derive_address_from_cidr(pod_cidr)
+    if text.lower() in {"none", "off", "disable", "disabled", "null"}:
+        return None
+    return text
+
+
 def load_config(path: Path, *, base_dir: Path | None = None) -> RosenpassNodeConfig:
     base = base_dir or path.parent
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -197,14 +236,16 @@ def load_config(path: Path, *, base_dir: Path | None = None) -> RosenpassNodeCon
 
 
 def load_env_config(base_dir: Path, *, pod_cidr: str | None = None) -> RosenpassNodeConfig:
+    wg_address = _normalize_wg_address(os.getenv("AE_WG_ADDRESS"), pod_cidr)
     data: dict[str, Any] = {
-        "interface": os.getenv("AE_ROSENPASS_INTERFACE") or "wg0",
+        "interface": os.getenv("AE_ROSENPASS_INTERFACE") or os.getenv("AE_WG_INTERFACE") or "wg0",
         "wireguard": {
-            "address": os.getenv("AE_WG_ADDRESS") or _derive_address_from_cidr(pod_cidr),
+            "address": wg_address,
             "listen_port": os.getenv("AE_WG_LISTEN_PORT"),
             "private_key_path": os.getenv("AE_WG_PRIVATE_KEY"),
             "public_key_path": os.getenv("AE_WG_PUBLIC_KEY"),
             "mtu": os.getenv("AE_WG_MTU"),
+            "table": os.getenv("AE_WG_TABLE"),
         },
         "rosenpass": {
             "private_key_path": os.getenv("AE_ROSENPASS_PRIVATE_KEY"),
@@ -234,6 +275,7 @@ def _parse_config(data: dict[str, Any], base_dir: Path) -> RosenpassNodeConfig:
         address=str(wg_data.get("address") or "").strip() or None,
         listen_port=_coerce_int(wg_data.get("listen_port")),
         mtu=_coerce_int(wg_data.get("mtu")),
+        table=str(wg_data.get("table") or "").strip() or None,
         private_key_path=wg_priv_path,
         public_key_path=wg_pub_path,
     )
@@ -250,7 +292,7 @@ def _parse_config(data: dict[str, Any], base_dir: Path) -> RosenpassNodeConfig:
         public_key_path=rp_pub_path,
         listen=str(rp_data.get("listen") or "").strip() or None,
         command=cmd_list,
-        log_level=str(rp_data.get("log_level") or "").strip() or None,
+        log_level=_normalize_verbosity(rp_data.get("log_level")),
     )
 
     peers: list[PeerConfig] = []
@@ -407,6 +449,8 @@ def render_wireguard_config(config: RosenpassNodeConfig, wg_private_key: str) ->
         lines.append(f"ListenPort = {config.wireguard.listen_port}")
     if config.wireguard.mtu:
         lines.append(f"MTU = {config.wireguard.mtu}")
+    if config.wireguard.table:
+        lines.append(f"Table = {config.wireguard.table}")
     for peer in config.peers:
         lines.append("")
         lines.append("[Peer]")
@@ -603,26 +647,13 @@ class RosenpassPeerRefresher:
                         payload["rp_pubkey"] = self._rp_keys.public_key
                     _bootstrap_heartbeat(self._controller_url, payload, token=self._token)
                 peers = fetch_peers_from_controller(self._controller_url, self._node_id, token=self._token)
+                LOGGER.debug("rosenpass peer refresh fetched %s peers", len(peers or []))
                 if peers:
                     peers = _materialize_peer_keys(peers, self._base_dir)
-                if not peers or not _peer_has_rosenpass_keys(peers):
-                    _write_status_file(
-                        self._base_dir / "rosenpass-status.json",
-                        {
-                            "state": "waiting-for-peers",
-                            "reason": "no_rosenpass_peers",
-                            "peer_count": len(peers or []),
-                            "last_update": time.time(),
-                        },
-                    )
-                    if self._supervisor:
-                        self._supervisor.stop()
-                        self._supervisor = None
-                    time.sleep(self._refresh_interval)
-                    continue
                 sig = _peer_signature(peers)
                 if sig != self._peer_sig:
                     self._peer_sig = sig
+                    LOGGER.debug("rosenpass peer refresh applying wireguard (%s peers)", len(peers or []))
                     config = RosenpassNodeConfig(
                         interface=self._config.interface,
                         wireguard=self._config.wireguard,
@@ -631,23 +662,41 @@ class RosenpassPeerRefresher:
                         peers_source=self._config.peers_source,
                     )
                     wg_config = render_wireguard_config(config, self._wg_keys.private_key)
+                    _maybe_dump_wg_config(self._base_dir, wg_config)
                     try:
                         from ae.node.net_helper import apply_wireguard
 
                         apply_wireguard(wg_config, iface=config.interface)
                     except Exception as exc:  # noqa: BLE001
                         LOGGER.warning("wireguard apply failed: %s", exc)
-                    stub_path = self._base_dir / "rosenpass.conf"
-                    try:
-                        stub_path.write_text(render_rosenpass_stub(config, self._rp_keys), encoding="utf-8")
-                    except Exception:
-                        pass
-                    command = build_command(config, config_path=stub_path)
-                    if command:
-                        env = {}
-                        if config.rosenpass.log_level:
-                            env["ROSENPASS_LOG"] = config.rosenpass.log_level
-                        self._restart_supervisor(command, self._base_dir / "rosenpass-status.json", env)
+                    has_rp_peers = _peer_has_rosenpass_keys(peers)
+                    if self._rp_keys and has_rp_peers:
+                        stub_path = self._base_dir / "rosenpass.conf"
+                        try:
+                            stub_path.write_text(render_rosenpass_stub(config, self._rp_keys), encoding="utf-8")
+                        except Exception:
+                            pass
+                        command = build_command(config, config_path=stub_path)
+                        if command:
+                            env = {}
+                            if config.rosenpass.log_level:
+                                env["ROSENPASS_LOG"] = config.rosenpass.log_level
+                            self._restart_supervisor(
+                                command, self._base_dir / "rosenpass-status.json", env
+                            )
+                    else:
+                        _write_status_file(
+                            self._base_dir / "rosenpass-status.json",
+                            {
+                                "state": "waiting-for-peers",
+                                "reason": "no_rosenpass_peers" if peers else "no_peers",
+                                "peer_count": len(peers or []),
+                                "last_update": time.time(),
+                            },
+                        )
+                        if self._supervisor:
+                            self._supervisor.stop()
+                            self._supervisor = None
                 backoff = 5.0
                 time.sleep(self._refresh_interval)
             except Exception as exc:  # noqa: BLE001
@@ -913,6 +962,7 @@ def prepare_rosenpass(
         )
     refresh_sec = peer_refresh_sec if peer_refresh_sec is not None else 0.0
     wg_config = render_wireguard_config(config, wg_keys.private_key)
+    _maybe_dump_wg_config(base_dir, wg_config)
     status_path = base_dir / "rosenpass-status.json"
     if rp_keys and not _peer_has_rosenpass_keys(config.peers):
         _write_status_file(
