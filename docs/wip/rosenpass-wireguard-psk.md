@@ -66,6 +66,53 @@ Work items:
   (initiator/receiver roles).
 - Implement health checks and expose tunnel PSK age and handshake status.
 
+Current implementation notes:
+- Enable with `AE_ROSENPASS_ENABLED=1`.
+- Provide a config file via `AE_ROSENPASS_CONFIG=/path/to/rosenpass.yaml` or set
+  `AE_ROSENPASS_CONFIG=controller` to fetch peers from the controller endpoint.
+- Keys and status files are stored under `AE_ROSENPASS_DIR` (default:
+  `/var/lib/ae/rosenpass`).
+- Optional override: `AE_ROSENPASS_COMMAND` to run Rosenpass with a custom
+  command line when the default `rosenpass --config` fails.
+
+Config shape (YAML):
+```yaml
+interface: wg0
+wireguard:
+  address: 10.42.1.1/24
+  listen_port: 51820
+  private_key_path: /var/lib/ae/rosenpass/wg.key
+  public_key_path: /var/lib/ae/rosenpass/wg.pub
+  mtu: 1420
+rosenpass:
+  private_key_path: /var/lib/ae/rosenpass/rosenpass.key
+  public_key_path: /var/lib/ae/rosenpass/rosenpass.pub
+  listen: 0.0.0.0:9999
+  command:
+    - rosenpass
+    - exchange-config
+    - "{config}"
+peers_source: controller
+peers:
+  - name: core-1
+    endpoint: 203.0.113.10:51820
+    wg_pubkey: "<wireguard pubkey>"
+    rosenpass_pubkey: "<rosenpass pubkey>"
+    allowed_ips:
+      - 10.42.0.0/24
+    role: initiator
+    persistent_keepalive: 25
+```
+
+Controller-managed peers (hub-spoke):
+- The node agent fetches `GET /v1/nodes/<node_id>/overlay` from the agent API
+  and replaces `peers` when `peers_source: controller` or
+  `AE_ROSENPASS_CONFIG=controller`.
+- Hub nodes are detected via `labels.role=controller|hub` or `labels.site`
+  matching `AE_OVERLAY_HUB_SITE` (fallback `AE_SITE_ID`).
+- Hub endpoints come from `labels.wg_endpoint` (or
+  `AE_OVERLAY_HUB_ENDPOINT` override).
+
 ## Security Considerations
 - PSK files are sensitive; enforce mode `0600` and root ownership.
 - Avoid logging PSK material.

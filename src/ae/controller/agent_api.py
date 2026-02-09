@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -57,6 +58,7 @@ def _serialize_nodes(store: SQLiteStateStore) -> list[dict]:
                 "endpoint": node.endpoint,
                 "pod_cidr": node.pod_cidr,
                 "wg_pubkey": node.wg_pubkey,
+                "rp_pubkey": getattr(node, "rp_pubkey", None),
                 "labels": node.labels,
                 "taints": node.taints,
                 "cordoned": bool(getattr(node, "cordoned", False)),
@@ -118,7 +120,18 @@ def make_handler(
                 _json(self, 200, {"ok": True})
                 return
             if self.path.startswith("/v1/nodes"):
-                _json(self, 200, {"nodes": _serialize_nodes(store)})
+                parts = self.path.split("?", 1)[0].split("/")
+                if len(parts) >= 5 and parts[3] and parts[-1] == "overlay":
+                    if not self._auth_ok():
+                        return self._unauthorized()
+                    node_id = parts[3]
+                    payload = _build_overlay_payload(store, node_id)
+                    if payload is None:
+                        _json(self, 404, {"error": "node not found"})
+                        return
+                    _json(self, 200, payload)
+                else:
+                    _json(self, 200, {"nodes": _serialize_nodes(store)})
                 return
             _json(self, 404, {"error": "not found"})
 
@@ -192,6 +205,7 @@ def make_handler(
             name = payload.get("name")
             pod_cidr = payload.get("pod_cidr")
             wg_pubkey = payload.get("wg_pubkey")
+            rp_pubkey = payload.get("rp_pubkey")
 
             # Optional: assign a Pod CIDR if not provided by the agent
             assigned_cidr = None
@@ -223,6 +237,7 @@ def make_handler(
                     endpoint=endpoint,
                     pod_cidr=pod_cidr,
                     wg_pubkey=wg_pubkey,
+                    rp_pubkey=rp_pubkey,
                 )
                 store.record_heartbeat(node_id, status)
             except Exception as exc:  # noqa: BLE001
@@ -235,6 +250,114 @@ def make_handler(
             _json(self, 200, response)
 
     return AgentAPIHandler
+
+
+def _node_site(node_id: str, labels: dict | None) -> str | None:
+    if labels:
+        site = labels.get("site") or labels.get("site_id")
+        if site:
+            return str(site)
+    if "--" in node_id:
+        return node_id.split("--", 1)[0]
+    return None
+
+
+def _node_is_hub(node_id: str, labels: dict | None, hub_site: str | None) -> bool:
+    if labels:
+        role = str(labels.get("role") or "").strip().lower()
+        if role in {"controller", "hub"}:
+            return True
+    site = _node_site(node_id, labels)
+    if hub_site and site and site == hub_site:
+        return True
+    if hub_site and node_id.startswith(f"{hub_site}--"):
+        return True
+    return False
+
+
+def _peer_endpoint(labels: dict | None, fallback: str | None) -> str | None:
+    if fallback:
+        return fallback
+    if not labels:
+        return None
+    for key in ("wg_endpoint", "wg_endpoint_public", "wg_endpoint_private"):
+        val = labels.get(key)
+        if val:
+            return str(val)
+    return None
+
+
+def _build_overlay_payload(store: SQLiteStateStore, node_id: str) -> dict | None:
+    node_info = store.get_node(node_id)
+    if not node_info:
+        return None
+    node, _status = node_info
+    labels = getattr(node, "labels", {}) or {}
+    site_id = _node_site(node.node_id, labels)
+    hub_site = (os.getenv("AE_OVERLAY_HUB_SITE") or os.getenv("AE_SITE_ID") or "").strip() or None
+    is_hub = _node_is_hub(node.node_id, labels, hub_site)
+    keepalive = None
+    try:
+        keepalive = int(os.getenv("AE_OVERLAY_PERSISTENT_KEEPALIVE", "25") or 25)
+    except Exception:
+        keepalive = 25
+    hub_endpoint_override = os.getenv("AE_OVERLAY_HUB_ENDPOINT")
+
+    nodes = list(store.list_nodes())
+    all_cidrs = [
+        rec.pod_cidr for rec, _ in nodes if getattr(rec, "pod_cidr", None)
+    ]
+    local_cidr = node.pod_cidr
+    peers: list[dict] = []
+    errors: list[str] = []
+    for rec, _ in nodes:
+        if rec.node_id == node.node_id:
+            continue
+        rec_labels = rec.labels or {}
+        rec_site = _node_site(rec.node_id, rec_labels)
+        rec_is_hub = _node_is_hub(rec.node_id, rec_labels, hub_site)
+        if is_hub and rec_is_hub:
+            continue
+        if not is_hub and not rec_is_hub:
+            continue
+        if not rec.wg_pubkey:
+            errors.append(f"peer {rec.node_id} missing wg_pubkey")
+            continue
+        if not getattr(rec, "rp_pubkey", None):
+            errors.append(f"peer {rec.node_id} missing rp_pubkey")
+        endpoint = None
+        role = "responder" if is_hub else "initiator"
+        if not is_hub:
+            endpoint = _peer_endpoint(rec_labels, hub_endpoint_override)
+            if not endpoint:
+                errors.append(f"peer {rec.node_id} missing wg_endpoint")
+        allowed_ips: list[str] = []
+        if is_hub:
+            if rec.pod_cidr:
+                allowed_ips = [rec.pod_cidr]
+        else:
+            allowed_ips = [cidr for cidr in all_cidrs if cidr and cidr != local_cidr]
+        peers.append(
+            {
+                "name": rec.node_id,
+                "node_id": rec.node_id,
+                "site_id": rec_site,
+                "endpoint": endpoint,
+                "wg_pubkey": rec.wg_pubkey,
+                "rosenpass_pubkey": getattr(rec, "rp_pubkey", None),
+                "allowed_ips": allowed_ips,
+                "role": role,
+                "persistent_keepalive": keepalive if role == "initiator" else None,
+            }
+        )
+    return {
+        "node_id": node.node_id,
+        "site_id": site_id,
+        "hub_site": hub_site,
+        "topology": "hub-spoke",
+        "peers": peers,
+        "errors": errors,
+    }
 
 
 def start_agent_api(

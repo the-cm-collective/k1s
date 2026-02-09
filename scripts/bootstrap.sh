@@ -14,4 +14,5 @@ Bootstrap complete.
 - Python tooling installed with extras.
 - Pre-commit hooks configured.
 Remember to install Docker, Caddy, and SQLite via your OS package manager.
+Optional: install Rosenpass (for WireGuard PSK rotation) if using Option C.
 EOM

@@ -1510,6 +1510,7 @@ class EtcdStateStore(SQLiteStateStore):
         endpoint: str | None = None,
         pod_cidr: str | None = None,
         wg_pubkey: str | None = None,
+        rp_pubkey: str | None = None,
         cordoned: bool | None = None,
     ) -> None:
         existing, _ = self._get_json(self._k("nodes", self._site_id, node_id))
@@ -1525,6 +1526,7 @@ class EtcdStateStore(SQLiteStateStore):
             "endpoint": endpoint,
             "pod_cidr": pod_cidr,
             "wg_pubkey": wg_pubkey,
+            "rp_pubkey": rp_pubkey,
             "cordoned": bool(cordoned),
             "created_at": created_at,
             "updated_at": _now_iso(),
@@ -1573,6 +1575,7 @@ class EtcdStateStore(SQLiteStateStore):
                 endpoint=rec.get("endpoint"),
                 pod_cidr=rec.get("pod_cidr"),
                 wg_pubkey=rec.get("wg_pubkey"),
+                rp_pubkey=rec.get("rp_pubkey"),
                 cordoned=bool(rec.get("cordoned", False)),
                 created_at=created or datetime.fromtimestamp(0, tz=timezone.utc),
                 updated_at=updated or datetime.fromtimestamp(0, tz=timezone.utc),
@@ -1600,6 +1603,7 @@ class EtcdStateStore(SQLiteStateStore):
             endpoint=rec.get("endpoint"),
             pod_cidr=rec.get("pod_cidr"),
             wg_pubkey=rec.get("wg_pubkey"),
+            rp_pubkey=rec.get("rp_pubkey"),
             cordoned=bool(rec.get("cordoned", False)),
             created_at=created or datetime.fromtimestamp(0, tz=timezone.utc),
             updated_at=updated or datetime.fromtimestamp(0, tz=timezone.utc),

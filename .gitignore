@@ -38,3 +38,9 @@ docs/wiki/*
 content-prep/
 cip-series/
 libpod
+# Rosenpass/WireGuard PSK artifacts (local-only)
+rosenpass/
+rosenpass*.key
+rosenpass*.pub
+rosenpass*.conf
+rosenpass-status.json

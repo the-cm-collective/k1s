@@ -10,6 +10,7 @@
                     wg_pubkey TEXT,
                     cordoned INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    rp_pubkey TEXT
                 )
                 

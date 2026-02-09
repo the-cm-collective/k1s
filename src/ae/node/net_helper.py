@@ -15,6 +15,8 @@ import contextlib
 import logging
 import shutil
 import subprocess
+import tempfile
+from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
 IP_BIN = shutil.which("ip") or "ip"
@@ -70,14 +72,16 @@ def apply_wireguard(config_text: str, iface: str = "wg0") -> None:
             check=False,
         )
         if proc.returncode != 0:
-            # Try bringup if iface is missing
-            subprocess.run(
-                [WG_QUICK_BIN, "strip", "/dev/fd/0"],  # noqa: S603,S607 - fixed binary; shell disabled
-                input=config_text.encode("utf-8"),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
+            # Try bringup if iface is missing.
+            with tempfile.TemporaryDirectory() as tmpdir:
+                conf_path = Path(tmpdir) / f"{iface}.conf"
+                conf_path.write_text(config_text, encoding="utf-8")
+                subprocess.run(
+                    [WG_QUICK_BIN, "up", str(conf_path)],  # noqa: S603,S607 - fixed binary; shell disabled
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
     except FileNotFoundError:
         LOGGER.warning("wireguard tools not installed; skipping")
     except Exception as exc:  # noqa: BLE001

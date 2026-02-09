@@ -1873,6 +1873,7 @@ def handle_nodes(
         print(f"  endpoint: {node.endpoint or '-'}")
         print(f"  podCIDR:  {node.pod_cidr or '-'}")
         print(f"  wgPubkey: {node.wg_pubkey or '-'}")
+        print(f"  rpPubkey: {getattr(node, 'rp_pubkey', None) or '-'}")
         print(f"  labels:   {_fmt_labels(node.labels)}")
         print(f"  taints:   {_fmt_taints(node.taints)}")
         print(f"  cordoned: {'yes' if getattr(node, 'cordoned', False) else 'no'}")
