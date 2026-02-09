@@ -157,15 +157,21 @@ def record_site_seen(site_id: str) -> None:
 
 
 def record_gateway_metrics(
-    site_id: str, *, work_stale_total: float | int | None, work_nak_total: float | int | None
+    site_id: str,
+    *,
+    work_stale_total: float | int | None,
+    work_nak_total: float | int | None,
+    lease_retry_total: float | int | None,
 ) -> None:
     if not site_id:
         return
     stale_val = float(work_stale_total or 0.0)
     nak_val = float(work_nak_total or 0.0)
+    retry_val = float(lease_retry_total or 0.0)
     _GATEWAY_WORK_METRICS[site_id] = {
         "work_stale_total": stale_val,
         "work_nak_total": nak_val,
+        "lease_retry_total": retry_val,
     }
 
 
@@ -3245,12 +3251,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             lines.append("# TYPE ae_gateway_work_stale_total counter")
             lines.append("# HELP ae_gateway_work_nak_total Gateway work items NAKed for redelivery")
             lines.append("# TYPE ae_gateway_work_nak_total counter")
+            lines.append("# HELP ae_gateway_lease_retry_total Gateway lease acquire retries")
+            lines.append("# TYPE ae_gateway_lease_retry_total counter")
             for site_id, stats in _GATEWAY_WORK_METRICS.items():
                 labels = f'site="{site_id}"'
                 stale = float(stats.get("work_stale_total", 0.0) or 0.0)
                 nacked = float(stats.get("work_nak_total", 0.0) or 0.0)
+                retries = float(stats.get("lease_retry_total", 0.0) or 0.0)
                 lines.append(f"ae_gateway_work_stale_total{{{labels}}} {stale}")
                 lines.append(f"ae_gateway_work_nak_total{{{labels}}} {nacked}")
+                lines.append(f"ae_gateway_lease_retry_total{{{labels}}} {retries}")
         if _JS_STREAM_STATS:
             lines.append("# HELP ae_js_stream_bytes JetStream stream bytes in use")
             lines.append("# TYPE ae_js_stream_bytes gauge")
@@ -3371,6 +3381,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             seen = len(_SITE_LAST_SEEN)
             stale = 0
             last_seen_age = None
+            site_details: dict[str, dict[str, float | bool]] = {}
             for last_ts in list(_SITE_LAST_SEEN.values()):
                 try:
                     age = float(now_ts) - float(last_ts)
@@ -3380,12 +3391,23 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     last_seen_age = age
                 if age > grace:
                     stale += 1
+            for site_id, last_ts in list(_SITE_LAST_SEEN.items()):
+                try:
+                    age = float(now_ts) - float(last_ts)
+                except Exception:
+                    continue
+                site_details[str(site_id)] = {
+                    "last_seen_age_s": age,
+                    "stale": age > grace,
+                }
             transport["sites"] = {
                 "seen": int(seen),
                 "stale": int(stale),
                 "fresh": int(max(0, seen - stale)),
                 "last_seen_age_s": last_seen_age,
             }
+            if site_details:
+                transport["sites_detail"] = site_details
             # JetStream summary (if any stats are present)
             if _JS_STREAM_STATS or _JS_CONSUMER_STATS:
                 js_pending = 0.0
@@ -3409,12 +3431,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             if _GATEWAY_WORK_METRICS:
                 gw_nak = 0.0
                 gw_stale = 0.0
+                gw_retries = 0.0
                 for stats in _GATEWAY_WORK_METRICS.values():
                     gw_nak += float(stats.get("work_nak_total", 0.0) or 0.0)
                     gw_stale += float(stats.get("work_stale_total", 0.0) or 0.0)
+                    gw_retries += float(stats.get("lease_retry_total", 0.0) or 0.0)
                 transport["gateway"] = {
                     "work_nak_total": gw_nak,
                     "work_stale_total": gw_stale,
+                    "lease_retry_total": gw_retries,
                     "sites": int(len(_GATEWAY_WORK_METRICS)),
                 }
             # Route bundle apply summary

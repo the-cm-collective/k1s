@@ -416,7 +416,38 @@
                   .node.pod.ready circle { fill:#22c55e; stroke:#bbf7d0; filter: drop-shadow(0 0 6px rgba(34,197,94,0.35)); }
                   .node.pod.pending circle { fill:#f59e0b; stroke:#fde68a; filter: drop-shadow(0 0 6px rgba(245,158,11,0.35)); }
                   .node.pod.aggregate circle { stroke-width:1.6; }
-                  .node.pod.aggregate text { font-size:10px; font-weight:700; fill:#0f172a; pointer-events:none; }
+                  .node.pod.aggregate text {
+                    font-size:11px;
+                    font-weight:800;
+                    fill:#0b0f14;
+                    paint-order: stroke fill;
+                    stroke: rgba(255,255,255,0.65);
+                    stroke-width: 1.2;
+                    pointer-events:none;
+                  }
+                  .site-panel { }
+                  .site-panel.stale {
+                    stroke:#f59e0b;
+                    stroke-width:2.4;
+                    stroke-dasharray:4 6;
+                    filter: drop-shadow(0 0 8px rgba(245,158,11,0.45));
+                    animation: panelPulse 2.2s ease-in-out infinite;
+                  }
+                  .node.site.stale .hex-outer {
+                    stroke:#f59e0b;
+                    stroke-width:6;
+                    filter: drop-shadow(0 0 10px rgba(245,158,11,0.5));
+                  }
+                  .node.site.stale .hex-inner { stroke: rgba(245,158,11,0.75); }
+                  .node.site.stale .hex-label { fill: #fde68a; }
+                  .node.node.stale .hex-outer {
+                    stroke:#f59e0b;
+                    stroke-width:6;
+                    filter: drop-shadow(0 0 10px rgba(245,158,11,0.5));
+                    animation: panelPulse 2.2s ease-in-out infinite;
+                  }
+                  .node.node.stale .hex-inner { stroke: rgba(245,158,11,0.75); }
+                  .node.node.stale .hex-label { fill: #fde68a; }
                   .link { stroke:rgba(148,163,184,0.55); stroke-width:1.4; fill:none; marker-end:url(#arrow); }
                   .link.flow { stroke-dasharray:6 6; }
                   .link.trace { stroke:rgba(245,197,66,0.9); stroke-width:1.6; stroke-dasharray:4 6; marker-end:none; filter: drop-shadow(0 0 4px rgba(245,197,66,0.35)); }
@@ -428,6 +459,7 @@
                   .ns-peer { opacity:0.75; }
                   .faded { opacity:0.3; }
                   @keyframes flow { to { stroke-dashoffset: -24; } }
+                  @keyframes panelPulse { 0% { opacity: .55; } 50% { opacity: 1; } 100% { opacity: .55; } }
                 </style>
               </defs>
               <g id="panels"></g>
@@ -2143,6 +2175,7 @@ Connection: close
           if (gw) {
             if (gw.work_nak_total != null) { pills.push({k:'GW NAK', v: String(gw.work_nak_total)}); }
             if (gw.work_stale_total != null) { pills.push({k:'GW Stale', v: String(gw.work_stale_total)}); }
+            if (gw.lease_retry_total != null) { pills.push({k:'GW Lease Retry', v: String(gw.lease_retry_total)}); }
           }
           var routes = (t && t.routes) ? t.routes : null;
           if (routes) {
@@ -2414,6 +2447,8 @@ Connection: close
         var sitePanels = [];
         var hexCounter = 0;
         var labelMeasureCtx = null;
+        var transport = (sys && sys.transport) ? sys.transport : {};
+        var siteDetails = (transport && transport.sites_detail) ? transport.sites_detail : {};
 
         function measureLabelText(text){
           if (!labelMeasureCtx) {
@@ -2443,6 +2478,14 @@ Connection: close
           labelNodes.push({id:id, text:text, x:x, y:y, color:color, textColor:textColor, anchor:anchor, size:size});
         }
         function link(a,b, cls, meta){ links.push({a:a,b:b,cls:cls||'',meta:meta||{}}); }
+        function formatAge(age){
+          if (age == null) return null;
+          var val = Number(age);
+          if (!isFinite(val)) return null;
+          if (val < 60) return Math.round(val) + 's';
+          if (val < 3600) return Math.round(val / 60) + 'm';
+          return Math.round(val / 3600) + 'h';
+        }
 
         function clusterOffsets(count){
           var gap = 5;
@@ -2711,6 +2754,22 @@ Connection: close
               siteMap[siteId].push(n);
             });
           }
+        }
+        if (!useSiteLayout) {
+          try {
+            if (siteDetails && Object.keys(siteDetails).length) {
+              useSiteLayout = true;
+            }
+          } catch(e){}
+        }
+        if (useSiteLayout) {
+          try {
+            if (siteDetails) {
+              Object.keys(siteDetails).forEach(function(siteId){
+                if (!siteMap[siteId]) siteMap[siteId] = [];
+              });
+            }
+          } catch(e){}
         }
         if (useSiteLayout && nodeById.host) {
           var hostRect = rectFromNode(nodeById.host, hexH * 0.1);
@@ -3332,6 +3391,8 @@ Connection: close
               maxWidth = Math.max(maxWidth, rowWidth);
             });
             maxHeight = cursorY + rowHeight;
+            maxWidth = Math.max(maxWidth, hexW * 1.4);
+            maxHeight = Math.max(maxHeight, hexH * 1.3);
             var sitePadX = hexW * 0.7;
             var sitePadY = hexH * 0.7;
             siteLayouts.push({
@@ -3378,6 +3439,10 @@ Connection: close
             var baseX = siteLayout.x + siteLayout.padX;
             var baseY = siteLayout.y + siteLayout.padY + siteHeader;
             var siteColor = namespaceColors(siteId).color;
+            var detail = (siteDetails && siteDetails[siteId]) ? siteDetails[siteId] : null;
+            var siteStale = detail && detail.stale;
+            var lastSeen = detail && detail.last_seen_age_s != null ? Number(detail.last_seen_age_s) : null;
+            var lastSeenText = formatAge(lastSeen);
             var panelW = siteLayout.width + siteLayout.padX * 2;
             var panelH = siteLayout.height + siteLayout.padY * 2 + siteHeader;
             sitePanels.push({
@@ -3387,15 +3452,34 @@ Connection: close
               h: panelH,
               color: siteColor,
               site_id: siteId,
-              nodes: siteLayout.nodes.length
+              nodes: siteLayout.nodes.length,
+              stale: !!siteStale,
+              last_seen_age_s: lastSeen
             });
             var siteLabel = siteId + ' (' + String(siteLayout.nodes.length) + ')';
+            if (siteStale) {
+              siteLabel += ' · stale';
+              if (lastSeenText) siteLabel += ' ' + lastSeenText;
+            }
             addLabel('label:site:' + siteId, siteLabel, siteLayout.x + 18, siteLayout.y + 26, siteColor, '#e2e8f0', 'start');
 
             var siteNodeId = 'site:' + siteId;
             var siteHexX = siteLayout.x + siteLayout.padX + (siteLayout.width * 0.5);
             var siteHexY = siteLayout.y + siteLayout.padY + siteHeader * 0.55;
-            addNode(siteNodeId, siteId, 'site', siteHexX, siteHexY, {site_id: siteId, nodes: siteLayout.nodes});
+            addNode(
+              siteNodeId,
+              siteId,
+              'site',
+              siteHexX,
+              siteHexY,
+              {
+                site_id: siteId,
+                nodes: siteLayout.nodes,
+                stale: !!siteStale,
+                last_seen_age_s: lastSeen,
+                subtitle: siteStale ? ('stale' + (lastSeenText ? (' · ' + lastSeenText) : '')) : ''
+              }
+            );
             siteLayout.groups.forEach(function(group){
               var shiftX = baseX + group.offsetX - group.minX + group.padX;
               var shiftY = baseY + group.offsetY - group.minY + group.padY;
@@ -4505,7 +4589,11 @@ Connection: close
 
         function drawHexNode(n){
           var g = document.createElementNS('http://www.w3.org/2000/svg','g');
-          g.setAttribute('class','node hex-node ' + n.type);
+          var extraClass = '';
+          if ((n.type === 'site' || n.type === 'node') && n.meta && n.meta.stale) {
+            extraClass = ' stale';
+          }
+          g.setAttribute('class','node hex-node ' + n.type + extraClass);
           g.setAttribute('transform','translate(' + n.x + ' ' + n.y + ')');
           if (n.meta && n.meta.node_id) {
             g.setAttribute('data-node-id', String(n.meta.node_id));
@@ -4716,6 +4804,14 @@ Connection: close
             if (sinfo.nodes && sinfo.nodes.length != null) {
               sLines.push('Nodes: ' + String(sinfo.nodes.length));
             }
+            if (sinfo.stale) {
+              sLines.push('Status: stale');
+            }
+            if (sinfo.last_seen_age_s != null) {
+              try {
+                sLines.push('Last seen: ' + formatAge(sinfo.last_seen_age_s));
+              } catch(e){}
+            }
             title.textContent = sLines.join(String.fromCharCode(10));
           } else {
             title.textContent = labelInfo.full || String(n.label||'');
@@ -4755,7 +4851,7 @@ Connection: close
             if (countText.length > 3) countText = '999+';
             var t = document.createElementNS('http://www.w3.org/2000/svg','text');
             t.setAttribute('x', String(r));
-            t.setAttribute('y', String(r + 3));
+            t.setAttribute('y', String(r));
             t.setAttribute('text-anchor','middle');
             t.setAttribute('dominant-baseline','middle');
             t.textContent = countText;
@@ -4784,6 +4880,7 @@ Connection: close
 
         function drawPanel(p){
           var rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+          rect.setAttribute('class', 'site-panel' + (p.stale ? ' stale' : ''));
           rect.setAttribute('x', String(p.x));
           rect.setAttribute('y', String(p.y));
           rect.setAttribute('width', String(p.w));

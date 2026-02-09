@@ -48,6 +48,7 @@ class GatewayStats:
     failed: int = 0
     stale: int = 0
     nacked: int = 0
+    lease_retry_total: int = 0
     last_report_at: float = 0.0
 
 
@@ -112,6 +113,24 @@ class SiteGateway:
         self._lease_timeout_s = _parse_duration_seconds(
             os.getenv("AE_GATEWAY_LEASE_TIMEOUT"), default=5.0
         )
+        self._lease_retry_min_s = max(
+            0.5,
+            _parse_duration_seconds(
+                os.getenv("AE_GATEWAY_LEASE_RETRY_MIN", "") or "", default=1.0
+            ),
+        )
+        self._lease_retry_max_s = max(
+            self._lease_retry_min_s,
+            _parse_duration_seconds(
+                os.getenv("AE_GATEWAY_LEASE_RETRY_MAX", "") or "", default=30.0
+            ),
+        )
+        self._lease_retry_jitter_pct = max(
+            0.0,
+            _parse_float(os.getenv("AE_GATEWAY_LEASE_RETRY_JITTER"), 0.2),
+        )
+        self._lease_next_attempt_at = 0.0
+        self._lease_backoff_s = self._lease_retry_min_s
         self._last_result_retry = 0.0
         self._result_retry_interval_s = max(
             2.0,
@@ -167,6 +186,12 @@ class SiteGateway:
             self._heartbeat_timeout_s,
             self._nak_delay_s,
         )
+        LOGGER.info(
+            "lease retry min=%.1fs max=%.1fs jitter_pct=%.2f",
+            self._lease_retry_min_s,
+            self._lease_retry_max_s,
+            self._lease_retry_jitter_pct,
+        )
 
     def _log_connectivity(self) -> None:
         if not self._nats_url:
@@ -212,7 +237,7 @@ class SiteGateway:
                     self._subscribe_local_results()
                     self._subscribe_local_progress()
                     self._subscribe_route_bundles()
-                    self._acquire_lease()
+                    self._maybe_acquire(time.monotonic())
                 except Exception as exc:  # noqa: BLE001
                     LOGGER.warning("failed to subscribe local results: %s", exc)
         self._log_subjects()
@@ -226,6 +251,7 @@ class SiteGateway:
                 time.sleep(1)
                 now = time.monotonic()
                 self._run_progress(now)
+                self._maybe_acquire(now)
                 self._maybe_renew(now)
                 if self._nats_client is not None:
                     if self._js_enabled:
@@ -633,9 +659,11 @@ class SiteGateway:
             if now - ts > ttl:
                 self._running_sent.pop(work_key, None)
 
-    def _acquire_lease(self) -> None:
+    def _acquire_lease(self, now: float | None = None) -> bool:
         if self._nats_client is None:
-            return
+            return False
+        if now is None:
+            now = time.monotonic()
         req = {
             "site_id": self._site_id,
             "node_id": self._node_id,
@@ -652,15 +680,19 @@ class SiteGateway:
             )
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("lease acquire failed: %s", exc)
-            return
+            self._schedule_lease_retry(now, str(exc))
+            return False
         if not resp or not resp.get("accepted"):
             LOGGER.warning("lease acquire rejected: %s", resp.get("reason"))
-            return
+            self._schedule_lease_retry(now, str(resp.get("reason") or "rejected"))
+            return False
         self._lease_id = str(resp.get("lease_id") or "")
         self._lease_ttl_ms = int(resp.get("lease_ttl_ms") or 0)
         self._renew_after_ms = int(resp.get("renew_after_ms") or 0)
         self._next_renew_at = time.monotonic() + max(1.0, self._renew_after_ms / 1000.0)
+        self._reset_lease_retry()
         LOGGER.info("lease acquired id=%s ttl_ms=%s", self._lease_id, self._lease_ttl_ms)
+        return True
 
     def _maybe_renew(self, now: float) -> None:
         if self._nats_client is None:
@@ -690,11 +722,37 @@ class SiteGateway:
             LOGGER.warning("lease renew rejected: %s", resp.get("reason"))
             self._lease_id = None
             self._next_renew_at = now + 1.0
-            self._acquire_lease()
+            self._schedule_lease_retry(now, str(resp.get("reason") or "rejected"))
             return
         self._lease_ttl_ms = int(resp.get("lease_ttl_ms") or self._lease_ttl_ms)
         self._renew_after_ms = int(resp.get("renew_after_ms") or self._renew_after_ms)
         self._next_renew_at = now + max(1.0, self._renew_after_ms / 1000.0)
+
+    def _maybe_acquire(self, now: float) -> None:
+        if self._lease_id:
+            return
+        if now < self._lease_next_attempt_at:
+            return
+        self._acquire_lease(now)
+
+    def _reset_lease_retry(self) -> None:
+        self._lease_backoff_s = self._lease_retry_min_s
+        self._lease_next_attempt_at = 0.0
+
+    def _schedule_lease_retry(self, now: float, reason: str | None = None) -> None:
+        import random
+
+        self._stats.lease_retry_total += 1
+        jitter = self._lease_backoff_s * self._lease_retry_jitter_pct
+        if jitter:
+            jitter = random.uniform(-jitter, jitter)
+        delay = max(0.0, self._lease_backoff_s + jitter)
+        self._lease_next_attempt_at = now + delay
+        self._lease_backoff_s = min(self._lease_backoff_s * 2.0, self._lease_retry_max_s)
+        if reason:
+            LOGGER.warning("lease retry in %.1fs (reason=%s)", delay, reason)
+        else:
+            LOGGER.warning("lease retry in %.1fs", delay)
 
     def _publish_telemetry(self, now: float) -> None:
         if self._nats_client is None:
@@ -712,6 +770,7 @@ class SiteGateway:
                     "metrics": {
                         "work_stale_total": self._stats.stale,
                         "work_nak_total": self._stats.nacked,
+                        "lease_retry_total": self._stats.lease_retry_total,
                     },
                     "timestamp": time.time(),
                 }
