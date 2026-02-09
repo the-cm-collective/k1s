@@ -484,6 +484,96 @@ def _session_pids(session_id: int) -> list[int]:
     return pids
 
 
+def _descendant_pids(root_pid: int) -> list[int]:
+    ppid_map: dict[int, list[int]] = {}
+    proc_root = Path("/proc")
+    if proc_root.exists():
+        for entry in proc_root.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                pid = int(entry.name)
+            except Exception:
+                continue
+            status_path = entry / "status"
+            try:
+                status_text = status_path.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            ppid = None
+            for line in status_text.splitlines():
+                if line.startswith("PPid:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        try:
+                            ppid = int(parts[1])
+                        except Exception:
+                            ppid = None
+                    break
+            if ppid is None:
+                continue
+            ppid_map.setdefault(ppid, []).append(pid)
+    else:
+        try:
+            output = subprocess.check_output(["ps", "-eo", "pid,ppid"], text=True)
+        except Exception:
+            return []
+        for line in output.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            try:
+                pid = int(parts[0])
+                ppid = int(parts[1])
+            except Exception:
+                continue
+            ppid_map.setdefault(ppid, []).append(pid)
+
+    descendants: list[int] = []
+    queue = [root_pid]
+    seen = {root_pid}
+    while queue:
+        current = queue.pop(0)
+        for child in ppid_map.get(current, []):
+            if child in seen:
+                continue
+            seen.add(child)
+            descendants.append(child)
+            queue.append(child)
+    return descendants
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    proc_stat = Path(f"/proc/{pid}/stat")
+    try:
+        data = proc_stat.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return True
+    rparen = data.rfind(")")
+    if rparen == -1:
+        return True
+    tail = data[rparen + 2 :].split()
+    if not tail:
+        return True
+    state = tail[0]
+    return state != "Z"
+
+
+def _wait_pids_exit(pids: list[int], timeout: float = 1.0) -> None:
+    if not pids:
+        return
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        alive = [pid for pid in pids if _pid_exists(pid)]
+        if not alive:
+            return
+        time.sleep(0.05)
+
+
 def _signal_session(session_id: int | None, sig: int, *, exclude: set[int]) -> None:
     if session_id is None:
         return
@@ -522,16 +612,29 @@ def _helm_demo_stop() -> dict[str, object]:
         proc = _HELM_DEMO_STATE.get("proc")
         if proc and getattr(proc, "poll", lambda: None)() is None:
             session_id = None
+            descendants = []
             try:
                 session_id = os.getsid(proc.pid)
             except Exception:
                 session_id = None
+            try:
+                descendants = _descendant_pids(proc.pid)
+            except Exception:
+                descendants = []
+            all_pids = [proc.pid] + descendants
             try:
                 try:
                     os.killpg(proc.pid, signal.SIGTERM)
                 except Exception:
                     proc.terminate()
                 _signal_session(session_id, signal.SIGTERM, exclude={os.getpid()})
+                for pid in descendants:
+                    if pid == os.getpid():
+                        continue
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except Exception:
+                        continue
                 try:
                     proc.wait(timeout=3)
                 except Exception:
@@ -543,12 +646,20 @@ def _helm_demo_stop() -> dict[str, object]:
                         except Exception:
                             pass
                     _signal_session(session_id, signal.SIGKILL, exclude={os.getpid()})
+                    for pid in descendants:
+                        if pid == os.getpid():
+                            continue
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except Exception:
+                            continue
                     try:
                         proc.wait(timeout=2)
                     except Exception:
                         pass
             except Exception:
                 pass
+            _wait_pids_exit(all_pids, timeout=3.0)
             _wait_session_exit(session_id, timeout=1.0)
         _HELM_DEMO_STATE["proc"] = None
         handle = _HELM_DEMO_STATE.get("log_handle")
