@@ -1,4 +1,4 @@
-.PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke
+.PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke docs-local-ignore docs-local-track
 .PHONY: dev-min dev-etcd k1s-core k1s-edge k1s-core-edge k1s-edge-core
 .PHONY: edge-site
 .PHONY: k1s-core-caddy dev-min-caddy dev-etcd-caddy dev-local
@@ -708,6 +708,14 @@ bench-mem-finalize-sudo:
 # Rebuild docs whenever combined/combined.csv changes
 docs-watch:
 	@python scripts/watch_docs.py
+
+# Local-only: hide regenerated docs/site from git status (useful during dev).
+docs-local-ignore:
+	@bash scripts/docs-local-ignore.sh
+
+# Local-only: re-enable tracking for docs/site updates before committing.
+docs-local-track:
+	@bash scripts/docs-local-track.sh
 
 # End-to-end: k3s matrix + rollout + combine + plot (requires k3d cluster up)
 bench-mem-e2e-k3s:
