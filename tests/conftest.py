@@ -1,9 +1,19 @@
+"""Pytest defaults for local developer environments.
+
+Clear state backend env vars unless explicitly preserved, so unit tests
+don't accidentally point at a live etcd instance from shell env state.
+"""
+
+from __future__ import annotations
+
 import os
 
 import pytest
 
 
 @pytest.fixture(autouse=True)
-def _enable_local_node_registration(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep local-dev semantics in tests by registering a local node."""
-    monkeypatch.setenv("AE_REGISTER_LOCAL_NODE", "1")
+def _clear_state_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    if os.getenv("AE_TEST_PRESERVE_ENV") == "1":
+        return
+    for key in ("AE_STATE_BACKEND", "AE_ETCD_ENDPOINTS", "AE_ETCD_PREFIX", "AE_PROFILE"):
+        monkeypatch.delenv(key, raising=False)
