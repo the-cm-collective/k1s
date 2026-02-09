@@ -449,15 +449,89 @@ def _helm_demo_start() -> dict[str, object]:
     return status
 
 
+def _session_pids(session_id: int) -> list[int]:
+    pids: list[int] = []
+    proc_root = Path("/proc")
+    if proc_root.exists():
+        for entry in proc_root.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                pid = int(entry.name)
+            except Exception:
+                continue
+            try:
+                if os.getsid(pid) == session_id:
+                    pids.append(pid)
+            except Exception:
+                continue
+        return pids
+    try:
+        output = subprocess.check_output(["ps", "-eo", "pid,sid"], text=True)
+    except Exception:
+        return pids
+    for line in output.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            pid = int(parts[0])
+            sid = int(parts[1])
+        except Exception:
+            continue
+        if sid == session_id:
+            pids.append(pid)
+    return pids
+
+
+def _signal_session(session_id: int | None, sig: int, *, exclude: set[int]) -> None:
+    if session_id is None:
+        return
+    try:
+        if os.getsid(0) == session_id:
+            return
+    except Exception:
+        return
+    for pid in _session_pids(session_id):
+        if pid in exclude:
+            continue
+        try:
+            os.kill(pid, sig)
+        except Exception:
+            continue
+
+
+def _wait_session_exit(session_id: int | None, timeout: float = 1.0) -> None:
+    if session_id is None:
+        return
+    try:
+        if os.getsid(0) == session_id:
+            return
+    except Exception:
+        return
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        remaining = [pid for pid in _session_pids(session_id) if pid != os.getpid()]
+        if not remaining:
+            return
+        time.sleep(0.05)
+
+
 def _helm_demo_stop() -> dict[str, object]:
     with _HELM_DEMO_LOCK:
         proc = _HELM_DEMO_STATE.get("proc")
         if proc and getattr(proc, "poll", lambda: None)() is None:
+            session_id = None
+            try:
+                session_id = os.getsid(proc.pid)
+            except Exception:
+                session_id = None
             try:
                 try:
                     os.killpg(proc.pid, signal.SIGTERM)
                 except Exception:
                     proc.terminate()
+                _signal_session(session_id, signal.SIGTERM, exclude={os.getpid()})
                 try:
                     proc.wait(timeout=3)
                 except Exception:
@@ -468,12 +542,14 @@ def _helm_demo_stop() -> dict[str, object]:
                             proc.kill()
                         except Exception:
                             pass
+                    _signal_session(session_id, signal.SIGKILL, exclude={os.getpid()})
                     try:
                         proc.wait(timeout=2)
                     except Exception:
                         pass
             except Exception:
                 pass
+            _wait_session_exit(session_id, timeout=1.0)
         _HELM_DEMO_STATE["proc"] = None
         handle = _HELM_DEMO_STATE.get("log_handle")
         if handle:
