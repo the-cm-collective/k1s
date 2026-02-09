@@ -303,6 +303,8 @@ If you see `Unable to access interface: No such device`
 Step 9: Deploy shell demo to the Sea site (SPDY shell + port-forward validation)
 ```bash
 source <(ae auth local)
+# If api.home.arpa does not resolve, bypass local DNS:
+export AE_APISHIM_SERVER=https://127.0.0.1:8445
 ae apply -f docs/site/examples/shell-demo-node-sea-edge-02-edge-1.yaml
 ae status shell-demo-node-sea-edge-02-edge-1 --wide --events
 ```
@@ -332,6 +334,8 @@ curl -fsS http://127.0.0.1:18084/healthz
 Notes
 - This smoke test targets the Sea site gateway node (`role=gateway`, `site=sea-edge-02`). Use a different manifest if you want to pin to an edge worker node instead.
 - The hub node (`k1s-core-node`, `role=hub`) is assignable and can run workloads. The core controller (`role=controller`, `profile=k1s-core`) is not a runtime node in this flow unless you explicitly run a workload-capable node there.
+- If you want to keep `api.home.arpa` instead of overriding `AE_APISHIM_SERVER`, add a hosts entry:
+  - `127.0.0.1 api.home.arpa` (or map to the hub IP for remote use).
 
 Troubleshooting
 - If overlay peers are empty, check `AE_AGENT_API_PORT` and `AE_AGENT_API_TOKEN`.
