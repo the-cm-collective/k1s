@@ -158,6 +158,10 @@ Helper manifests:
 - `specs/examples/echo-node-sea-edge-02-edge-1.yaml` pins to `sea-edge-02--edge-1`.
 - `specs/examples/echo-node-sea-edge-02-edge-2.yaml` pins to `sea-edge-02--edge-2`.
 - `specs/examples/echo-node-k1s-core.yaml` targets the core controller node (`role=controller`, `profile=k1s-core`).
+- `docs/site/examples/shell-demo-node-k1s-core.yaml` pins the shell demo to the core controller node.
+- `docs/site/examples/shell-demo-node-sfo-edge-01-edge-1.yaml` pins the shell demo to `sfo-edge-01--edge-1`.
+- `docs/site/examples/shell-demo-node-sea-edge-02-edge-1.yaml` pins the shell demo to `sea-edge-02--edge-1`.
+- `docs/site/examples/shell-demo-node-sea-edge-02-edge-2.yaml` pins the shell demo to `sea-edge-02--edge-2`.
 Blue/green per-node demo manifests:
 - `specs/examples/echo-node-k1s-core-blue.yaml`
 - `specs/examples/echo-node-k1s-core-green.yaml`
@@ -183,6 +187,22 @@ python -m ae.cli status echo-node-sfo-edge-01-edge-1 --wide --events
 python -m ae.cli status echo-node-sea-edge-02-edge-1 --wide --events
 python -m ae.cli status echo-node-sea-edge-02-edge-2 --wide --events
 ```
+
+Port-forward smoke tests (shell demo, one per node):
+```
+python -m ae.cli apply -f docs/site/examples/shell-demo-node-sfo-edge-01-edge-1.yaml
+python -m ae.cli apply -f docs/site/examples/shell-demo-node-sea-edge-02-edge-1.yaml
+python -m ae.cli apply -f docs/site/examples/shell-demo-node-sea-edge-02-edge-2.yaml
+python -m ae.cli apply -f docs/site/examples/shell-demo-node-k1s-core.yaml
+```
+```
+python -m ae.cli port-forward shell-demo-node-sfo-edge-01-edge-1 18081:8080
+python -m ae.cli port-forward shell-demo-node-sea-edge-02-edge-1 18082:8080
+python -m ae.cli port-forward shell-demo-node-sea-edge-02-edge-2 18083:8080
+python -m ae.cli port-forward shell-demo-node-k1s-core 18084:8080
+```
+Notes:
+- Port-forward uses the API shim; run `source <(ae auth local)` (or set `AE_APISHIM_SERVER` and `AE_APISHIM_PORTFORWARD_TOKEN`) before invoking `ae port-forward`.
 
 Scale replicas (optional):
 ```

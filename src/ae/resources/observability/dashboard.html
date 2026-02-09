@@ -2863,7 +2863,8 @@ Connection: close
                 ns: splitAppName(appName).namespace,
                 desired: desired,
                 ready: ready,
-                stale: !!counts.stale || (placementNow - cached.seen) > graphAppPlacementGraceMs
+                stale: !!counts.stale || (placementNow - cached.seen) > graphAppPlacementGraceMs,
+                status: status ? status.revision_status : null
               });
               if (!appNodesByName[appName]) appNodesByName[appName] = {};
               appNodesByName[appName][nodeId] = true;
@@ -3012,7 +3013,13 @@ Connection: close
               if (!entry || !entry.app) return;
               var pods = synthPods(entry);
               if (!pods.length) return;
-              appMap[entry.app] = {app: entry.app, ns: entry.ns, pods: pods, ready: Math.max(0, Number(entry.ready || 0))};
+              appMap[entry.app] = {
+                app: entry.app,
+                ns: entry.ns,
+                pods: pods,
+                ready: Math.max(0, Number(entry.ready || 0)),
+                status: entry.status
+              };
             });
             var apps = Object.keys(appMap).map(function(app){
               return appMap[app];
@@ -3053,6 +3060,7 @@ Connection: close
                     ns:item.ns,
                     ready:item.ready,
                     desired:item.pods.length,
+                    status:item.status,
                     scaleFactor: appScale,
                     mini:true
                   }
@@ -4504,7 +4512,21 @@ Connection: close
                   shadowAlpha:0.32
                 };
               }
-              if (n.meta.system === 'ingress' || n.meta.system === 'controller') {
+              if (n.meta.system === 'controller') {
+                var gwc = rolePalette('gateway');
+                return {
+                  accent: gwc.color,
+                  shellFill:'rgba(18,14,10,0.92)',
+                  innerStroke:'rgba(255,255,255,0.18)',
+                  faceTop:shadeHsl(gwc.color, 16),
+                  faceBot:shadeHsl(gwc.color, -14),
+                  patternStroke:'rgba(255,255,255,0.16)',
+                  patternOpacity:0.26,
+                  label:'#f8fafc',
+                  shadowAlpha:0.32
+                };
+              }
+              if (n.meta.system === 'ingress') {
                 var core = rolePalette('controller');
                 return {
                   accent: core.color,
@@ -4572,6 +4594,23 @@ Connection: close
               label:'#f8fafc',
               shadowAlpha:0.4
             };
+          }
+          if (n.type === 'app') {
+            var st = '';
+            try { st = String((n.meta && (n.meta.status || n.meta.revision_status)) || '').toLowerCase(); } catch(e){ st=''; }
+            if (st === 'degraded' || st === 'failed' || st === 'error') {
+              return {
+                accent:'#ef4444',
+                shellFill:'rgba(20,10,12,0.92)',
+                innerStroke:'rgba(255,255,255,0.18)',
+                faceTop:'#ef4444',
+                faceBot:'#b91c1c',
+                patternStroke:'rgba(255,255,255,0.2)',
+                patternOpacity:0.35,
+                label:'#fef2f2',
+                shadowAlpha:0.45
+              };
+            }
           }
           var c = namespaceColors(n.meta && n.meta.ns ? n.meta.ns : 'default');
           return {
