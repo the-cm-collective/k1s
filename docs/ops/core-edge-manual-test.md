@@ -206,6 +206,12 @@ ae port-forward shell-demo-node-hub 18084:8080
 Notes:
 - Port-forward uses the API shim; run `source <(ae auth local)` (or set `AE_APISHIM_SERVER` and `AE_APISHIM_PORTFORWARD_TOKEN`) before invoking `ae port-forward`.
 
+Security notes (production hardening)
+- Replace dev NATS credentials (`gateway:dev`, `site-<id>-uplink:dev`) with per-site creds (NKeys/JWT or creds files) and lock down subject permissions.
+- Keep the node agent API (`AE_AGENT_TOKEN`) reachable only over WG/LAN; do not expose it publicly.
+- Keep the API shim (exec/port-forward) behind TLS with scoped tokens; avoid sharing admin tokens across environments.
+- Ensure `AE_ROSENPASS_DIR` permissions are restricted (root-owned, 0700/0600) and avoid writing keys under the repo when running nodes with sudo.
+
 Scale replicas (optional):
 ```
 python -m ae.cli -n default scale echo-node-sea-edge-02-edge-1 --replicas 3
