@@ -19,29 +19,15 @@ jobs:
         include:
           - target: local
             runtime: stub
-            pg_port: 5432
           - target: local
             runtime: docker
-            pg_port: 5433
           - target: external
             runtime: stub
-            pg_port: 5434
-    services:
-      postgres:
-        image: postgres:15
-        ports: ["${{ matrix.pg_port }}:5432"]
-        env:
-          POSTGRES_PASSWORD: shim
-          POSTGRES_USER: shim
-          POSTGRES_DB: shim
-        options: >-
-          --health-cmd "pg_isready -U shim -d shim" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       NO_PROXY: "127.0.0.1,localhost"
       HTTP_PROXY: ""
       HTTPS_PROXY: ""
-      AE_APISHIM_DSN: postgresql://shim:shim@localhost:${{ matrix.pg_port }}/shim
-      AE_STATE_DSN: postgresql://shim:shim@localhost:${{ matrix.pg_port }}/shim
+      APISHIM_LIVE_USE_PG: "0"
       APISHIM_LIVE_ARTIFACT_DIR: /tmp/apishim-live
       APISHIM_LIVE_RUNTIME: ${{ matrix.runtime }}
       APISHIM_LIVE_TOKEN: live-ci
@@ -61,13 +47,6 @@ jobs:
           if [ "${{ matrix.runtime }}" = "docker" ] && [ "${ACT:-}" = "true" ]; then
             echo "SKIP_LIVE_OPENAPI=1" >> "$GITHUB_ENV"
             echo "Skipping docker runtime on act: docker daemon unavailable in act containers."
-          fi
-      - name: Configure DSN for Gitea services
-        run: |
-          if [ "${GITEA_ACTIONS:-}" = "true" ]; then
-            echo "AE_APISHIM_DSN=postgresql://shim:shim@postgres:5432/shim" >> "$GITHUB_ENV"
-            echo "AE_STATE_DSN=postgresql://shim:shim@postgres:5432/shim" >> "$GITHUB_ENV"
-            echo "Using postgres service hostname for DSN on Gitea Actions."
           fi
       - name: Trust Gitea cert (or disable verify)
         id: trust-gitea
