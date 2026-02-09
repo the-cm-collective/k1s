@@ -296,7 +296,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: demo-config
-  namespace: default
+  namespace: {{ .Release.Namespace }}
 data:
   hello: world
 EOF
@@ -307,7 +307,7 @@ EOF
   fi
   helm template demo "$HELM_TMP/chart" -n "$NAMESPACE" --skip-tests \
     | tee "$HELM_TMP/chart.yaml" >"$ARTIFACT_DIR/helm-template.log"
-  if ! grep -q '^kind:' "$HELM_TMP/chart.yaml"; then
+  if ! grep -Eq '^[[:space:]]*kind:' "$HELM_TMP/chart.yaml"; then
     log "helm template produced no objects; falling back to static configmap"
     wc -l "$HELM_TMP/chart.yaml" >&2 || true
     sed -n '1,200p' "$HELM_TMP/chart.yaml" >&2 || true
@@ -318,17 +318,17 @@ EOF
     echo "=== helm debug ===" >&2
     helm template --debug demo "$HELM_TMP/chart" >/tmp/helm-debug.log 2>&1 || true
     sed -n '1,200p' /tmp/helm-debug.log >&2 || true
-    cat >"$HELM_TMP/chart.yaml" <<'EOF'
+    cat >"$HELM_TMP/chart.yaml" <<EOF
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: demo-config
-  namespace: default
+  namespace: ${NAMESPACE}
 data:
   hello: world
 EOF
   fi
-  "${KCTL[@]}" apply --dry-run=server --validate=false -f "$HELM_TMP/chart.yaml" \
+  "${KCTL[@]}" apply --dry-run=server --validate=false -n "$NAMESPACE" -f "$HELM_TMP/chart.yaml" \
     >"$ARTIFACT_DIR/helm-dry-run.log"
 
   if [[ "$KEEP_RESOURCES" != "1" ]]; then
