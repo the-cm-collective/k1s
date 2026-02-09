@@ -105,6 +105,71 @@ DEBUG ae.worker_stub: work received node_id=sea-edge-02--edge-1 work_id=test-edg
 DEBUG ae.worker_stub: work completed node_id=sea-edge-02--edge-1 work_id=test-edge-1 attempt=1 status=succeeded
 ```
 
+## Remote Host Runbook (Site B behind NAT/CGNAT)
+This runbook adds the overlay + node agent steps so apishim can exec/port-forward
+to pods running on remote hosts. NATS remains control-plane only; exec/port-forward
+streams are apishim → node agent.
+
+Prereqs:
+- Hub public hostname/IP reachable from Site B on TCP `7422` (NATS leaf).
+- Hub WireGuard UDP port reachable from Site B for outbound-only NAT traversal.
+- Each host that runs pods must also run `ae.node` with a reachable `AE_AGENT_ENDPOINT`.
+
+### Host A (core/hub)
+1. Start the hub:
+```
+AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy make k1s-core
+```
+2. Ensure the controller agent API is reachable:
+```
+AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=changeme \
+python -m ae.controller --loop --specs specs/ --metrics-port 9108
+```
+3. Configure WireGuard on the hub and bring the interface up.
+4. Add the remote edge site in the hub NATS config:
+```
+make edge-site SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+```
+
+### Host B (remote site)
+1. Configure WireGuard with `PersistentKeepalive=25` and AllowedIPs that include:
+the WG subnet, the pod CIDR pool, and the service CIDR (if used).
+2. Start the edge NATS leader with a leaf connection back to the hub.
+3. Start the gateway leader:
+```
+AE_SITE_ID=sea-edge-02 \
+AE_NODE_ID=edge-1 \
+AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4223 \
+AE_TRANSPORT_BACKEND=nats-js \
+AE_JS_DOMAIN=K1S \
+AE_GATEWAY_SPOOL_PATH=$HOME/.local/share/ae/gateway-sea-edge-02--edge-1.db \
+python -m ae.gateway
+```
+4. Start the node agent on each host that runs pods and advertise the WG endpoint:
+```
+AE_CONTROLLER_URL=http://<core-wg-ip>:9110 AE_AGENT_TOKEN=changeme \
+AE_NODE_ID=sea-edge-02--edge-1 \
+AE_AGENT_ENDPOINT=http://<siteb-wg-ip>:9109 \
+AE_POD_CIDR=10.42.2.0/24 \
+python -m ae.node --port 9109 --ensure-pod-net
+```
+Repeat for additional nodes with unique `AE_NODE_ID` and `AE_POD_CIDR`.
+
+### Validation
+1. On the hub, verify WG is up:
+```
+wg show wg0
+```
+2. Confirm nodes are registered with endpoints and pod CIDRs:
+```
+ae nodes --json
+```
+3. Confirm the hub can reach each node agent:
+```
+curl http://<siteb-wg-ip>:9109/readyz
+```
+4. Test exec and port-forward against pods pinned to Site B.
+
 ## Validation
 ```
 ae nodes
