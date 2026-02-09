@@ -317,40 +317,7 @@ curl -fsS http://127.0.0.1:18082/healthz
 ```
 Deploy to the hub node (role=hub, site=hub):
 ```bash
-cat <<'EOF' | ae apply -f -
-apiVersion: ae.dev/v1alpha1
-kind: Deployment
-metadata:
-  name: shell-demo-node-hub
-spec:
-  image: demo-shell:latest
-  replicas: 1
-  ports:
-    - name: http
-      containerPort: 8080
-  nodeSelector:
-    role: hub
-    site: hub
-  health:
-    readiness:
-      httpGet:
-        path: /healthz
-        port: 8080
-      initialDelaySeconds: 1
-      timeoutSeconds: 2
-      periodSeconds: 2
-      successThreshold: 1
-      failureThreshold: 5
-    liveness:
-      httpGet:
-        path: /healthz
-        port: 8080
-      initialDelaySeconds: 5
-      timeoutSeconds: 1
-      periodSeconds: 10
-      successThreshold: 1
-      failureThreshold: 3
-EOF
+ae apply -f docs/site/examples/shell-demo-node-hub.yaml
 ae status shell-demo-node-hub --wide --events
 ```
 Remote shell (hub):

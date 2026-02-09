@@ -162,6 +162,7 @@ Helper manifests:
 - `docs/site/examples/shell-demo-node-sfo-edge-01-edge-1.yaml` pins the shell demo to `sfo-edge-01--edge-1`.
 - `docs/site/examples/shell-demo-node-sea-edge-02-edge-1.yaml` pins the shell demo to `sea-edge-02--edge-1`.
 - `docs/site/examples/shell-demo-node-sea-edge-02-edge-2.yaml` pins the shell demo to `sea-edge-02--edge-2`.
+- `docs/site/examples/shell-demo-node-hub.yaml` pins the shell demo to the hub node (`role=hub`, `site=hub`).
 Blue/green per-node demo manifests:
 - `specs/examples/echo-node-k1s-core-blue.yaml`
 - `specs/examples/echo-node-k1s-core-green.yaml`
@@ -194,40 +195,7 @@ source <(ae auth local)
 ae apply -f docs/site/examples/shell-demo-node-sfo-edge-01-edge-1.yaml
 ae apply -f docs/site/examples/shell-demo-node-sea-edge-02-edge-1.yaml
 ae apply -f docs/site/examples/shell-demo-node-sea-edge-02-edge-2.yaml
-cat <<'EOF' | ae apply -f -
-apiVersion: ae.dev/v1alpha1
-kind: Deployment
-metadata:
-  name: shell-demo-node-hub
-spec:
-  image: demo-shell:latest
-  replicas: 1
-  ports:
-    - name: http
-      containerPort: 8080
-  nodeSelector:
-    role: hub
-    site: hub
-  health:
-    readiness:
-      httpGet:
-        path: /healthz
-        port: 8080
-      initialDelaySeconds: 1
-      timeoutSeconds: 2
-      periodSeconds: 2
-      successThreshold: 1
-      failureThreshold: 5
-    liveness:
-      httpGet:
-        path: /healthz
-        port: 8080
-      initialDelaySeconds: 5
-      timeoutSeconds: 1
-      periodSeconds: 10
-      successThreshold: 1
-      failureThreshold: 3
-EOF
+ae apply -f docs/site/examples/shell-demo-node-hub.yaml
 ```
 ```
 ae port-forward shell-demo-node-sfo-edge-01-edge-1 18081:8080
