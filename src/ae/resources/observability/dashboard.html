@@ -415,6 +415,8 @@
                   .node.pod.stale circle { opacity:0.45; }
                   .node.pod.ready circle { fill:#22c55e; stroke:#bbf7d0; filter: drop-shadow(0 0 6px rgba(34,197,94,0.35)); }
                   .node.pod.pending circle { fill:#f59e0b; stroke:#fde68a; filter: drop-shadow(0 0 6px rgba(245,158,11,0.35)); }
+                  .node.pod.aggregate circle { stroke-width:1.6; }
+                  .node.pod.aggregate text { font-size:10px; font-weight:700; fill:#0f172a; pointer-events:none; }
                   .link { stroke:rgba(148,163,184,0.55); stroke-width:1.4; fill:none; marker-end:url(#arrow); }
                   .link.flow { stroke-dasharray:6 6; }
                   .link.trace { stroke:rgba(245,197,66,0.9); stroke-width:1.6; stroke-dasharray:4 6; marker-end:none; filter: drop-shadow(0 0 4px rgba(245,197,66,0.35)); }
@@ -608,6 +610,26 @@ Connection: close
       var graphPlacementGraceMs = 15000;
       var graphAppPlacementCache = {};
       var graphAppPlacementGraceMs = 15000;
+      var graphHoverApp = null;
+      var graphHoverAppClear = null;
+
+      function setGraphHoverApp(app){
+        if (!app) return;
+        if (graphHoverAppClear) { clearTimeout(graphHoverAppClear); graphHoverAppClear = null; }
+        if (graphHoverApp === app) return;
+        graphHoverApp = app;
+        renderGraphIfReady();
+      }
+
+      function clearGraphHoverApp(app){
+        if (graphHoverAppClear) { clearTimeout(graphHoverAppClear); graphHoverAppClear = null; }
+        graphHoverAppClear = setTimeout(function(){
+          if (!app || graphHoverApp === app) {
+            graphHoverApp = null;
+            renderGraphIfReady();
+          }
+        }, 140);
+      }
       // Keep apps rail aligned under the header
       function syncHeaderHeight(){
         try {
@@ -2983,6 +3005,51 @@ Connection: close
                 maxCY = (maxCY == null) ? (ay + appHexH * 0.6) : Math.max(maxCY, ay + appHexH * 0.6);
 
                 var pods = (item.pods || []).slice();
+                var showPods = (graphHoverApp && graphHoverApp === item.app);
+                var podCount = pods.length;
+                var countState = (podCount > 0 && item.ready >= podCount) ? 'ready' : 'pending';
+                var countOffsetX = appHexW * 0.62;
+                var countOffsetY = -appHexH * 0.32;
+                if (podCount > 0) {
+                  var countId = 'pod-count:' + nodeId + ':' + item.app;
+                  var countX = ax + countOffsetX;
+                  var countY = ay + countOffsetY;
+                  clusterEntries.push({
+                    kind:'pod',
+                    id:countId,
+                    type:'pod',
+                    label:String(podCount),
+                    x:countX,
+                    y:countY,
+                    meta:{
+                      app:item.app,
+                      ns:item.ns,
+                      state:countState,
+                      node_id: nodeId,
+                      count: podCount,
+                      ready: item.ready,
+                      desired: podCount,
+                      aggregate: true,
+                      hidden: showPods
+                    }
+                  });
+                  var cvx = countX - ax;
+                  var cvy = countY - ay;
+                  var cvlen = Math.sqrt(cvx * cvx + cvy * cvy) || 1;
+                  clusterLinks.push({
+                    a: appId,
+                    b: countId,
+                    cls: 'trace',
+                    kind: 'trace',
+                    start: {x: ax + (cvx / cvlen) * (appHexH * 0.45), y: ay + (cvy / cvlen) * (appHexH * 0.45)},
+                    end: {x: countX, y: countY},
+                    app: item.app
+                  });
+                  minCX = (minCX == null) ? (countX - 10) : Math.min(minCX, countX - 10);
+                  maxCX = (maxCX == null) ? (countX + 10) : Math.max(maxCX, countX + 10);
+                  minCY = (minCY == null) ? (countY - 10) : Math.min(minCY, countY - 10);
+                  maxCY = (maxCY == null) ? (countY + 10) : Math.max(maxCY, countY + 10);
+                }
                 pods.sort(function(a, b){
                   var ak = String((a && (a.pod_name || a.replica_id)) || '');
                   var bk = String((b && (b.pod_name || b.replica_id)) || '');
@@ -3016,7 +3083,8 @@ Connection: close
                       state:state,
                       node_id: nodeId,
                       pod_name: pod.pod_name,
-                      status: pod.status
+                      status: pod.status,
+                      hidden: !showPods
                     }
                   });
                   var vx = px - ax;
@@ -4654,6 +4722,11 @@ Connection: close
           }
           g.appendChild(title);
 
+          if (n.type === 'app' && n.meta && n.meta.app) {
+            g.addEventListener('mouseenter', function(){ setGraphHoverApp(n.meta.app); });
+            g.addEventListener('mouseleave', function(){ clearGraphHoverApp(n.meta.app); });
+          }
+
           if(n.type==='system' && (n.id==='ingress' || n.id==='controller' || n.id==='runtime')){
             g.addEventListener('mouseenter', function(ev){ showHoverCard(n.id, ev); });
             g.addEventListener('mousemove', function(ev){ showHoverCard(n.id, ev); });
@@ -4663,24 +4736,49 @@ Connection: close
 
         function drawPodNode(n){
           var g = document.createElementNS('http://www.w3.org/2000/svg','g');
+          var isAggregate = !!(n.meta && n.meta.count != null);
           var podClass = 'node pod ' + (n.meta && n.meta.state ? n.meta.state : '');
           if (n.meta && n.meta.stale) podClass += ' stale';
+          if (isAggregate) podClass += ' aggregate';
           g.setAttribute('class', podClass);
-          g.setAttribute('transform','translate('+(n.x-6)+','+(n.y-6)+')');
+          var r = isAggregate ? 9 : 6;
+          g.setAttribute('transform','translate('+(n.x - r)+','+(n.y - r)+')');
           if(n.meta && n.meta.app){ g.setAttribute('data-app', n.meta.app); }
+          if(n.meta && n.meta.hidden){ g.setAttribute('display', 'none'); }
           var c = document.createElementNS('http://www.w3.org/2000/svg','circle');
-          c.setAttribute('r','6'); c.setAttribute('cx','6'); c.setAttribute('cy','6');
+          c.setAttribute('r', String(r));
+          c.setAttribute('cx', String(r));
+          c.setAttribute('cy', String(r));
           g.appendChild(c);
+          if (isAggregate) {
+            var countText = String(n.meta.count || 0);
+            if (countText.length > 3) countText = '999+';
+            var t = document.createElementNS('http://www.w3.org/2000/svg','text');
+            t.setAttribute('x', String(r));
+            t.setAttribute('y', String(r + 3));
+            t.setAttribute('text-anchor','middle');
+            t.setAttribute('dominant-baseline','middle');
+            t.textContent = countText;
+            g.appendChild(t);
+          }
           var title = document.createElementNS('http://www.w3.org/2000/svg','title');
           var parts = [];
           if(n.meta && n.meta.app) parts.push('App: '+n.meta.app);
           if(n.meta && n.meta.ns) parts.push('Namespace: '+n.meta.ns);
           if(n.meta && n.meta.node_id) parts.push('Node: '+n.meta.node_id);
-          if(n.meta && n.meta.pod_name) parts.push('Pod: '+n.meta.pod_name);
+          if(isAggregate && n.meta){
+            parts.push('Pods: ' + String(n.meta.ready || 0) + '/' + String(n.meta.desired || n.meta.count || 0));
+          } else if(n.meta && n.meta.pod_name) {
+            parts.push('Pod: '+n.meta.pod_name);
+          }
           parts.push('State: ' + (n.meta && n.meta.state ? n.meta.state : n.label));
           if(n.meta && n.meta.status) parts.push('Status: '+n.meta.status);
           title.textContent = parts.join(String.fromCharCode(10));
           g.appendChild(title);
+          if (n.meta && n.meta.app) {
+            g.addEventListener('mouseenter', function(){ setGraphHoverApp(n.meta.app); });
+            g.addEventListener('mouseleave', function(){ clearGraphHoverApp(n.meta.app); });
+          }
           gNodes.appendChild(g);
         }
 
@@ -4761,7 +4859,8 @@ Connection: close
 
         sitePanels.forEach(function(p){ drawPanel(p); });
         links.forEach(function(L){ drawLink(L); });
-        nodes.forEach(function(n){ if (n.type === 'pod') drawPodNode(n); else drawHexNode(n); });
+        nodes.forEach(function(n){ if (n.type !== 'pod') drawHexNode(n); });
+        nodes.forEach(function(n){ if (n.type === 'pod') drawPodNode(n); });
         labelNodes.forEach(drawLabel);
 
         var sysHelp = {
