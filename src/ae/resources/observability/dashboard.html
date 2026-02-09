@@ -457,6 +457,7 @@
                   .link.overlay-rp { stroke:rgba(34,197,94,0.9); stroke-width:2.3; filter: drop-shadow(0 0 6px rgba(34,197,94,0.35)); }
                   .link.overlay-stale { stroke-dasharray:6 6; opacity:0.65; }
                   .link.overlay-down { stroke-dasharray:2 6; opacity:0.45; }
+                  .link.overlay { pointer-events: stroke; }
                   .flow-fwd { animation: flow 1.8s linear infinite; }
                   .flow-rev { animation: flow 1.8s linear infinite reverse; }
                   .selected .hex-outer, .selected circle { stroke-width:6 !important; filter: drop-shadow(0 0 6px rgba(96,165,250,0.6)); }
@@ -4512,6 +4513,12 @@ Connection: close
           }
           p.setAttribute('stroke-linecap','round');
           p.setAttribute('fill','none');
+          if (L.meta && L.meta.kind === 'overlay') {
+            p.style.cursor = 'help';
+            p.addEventListener('mouseenter', function(evt){ showOverlayHoverCard(L.meta.overlay, evt); });
+            p.addEventListener('mousemove', function(evt){ showOverlayHoverCard(L.meta.overlay, evt); });
+            p.addEventListener('mouseleave', hideHoverCard);
+          }
           gLinks.appendChild(p);
         }
 
@@ -5063,6 +5070,29 @@ Connection: close
           }
         };
 
+        function formatOverlayLink(ol){
+          if (!ol) return null;
+          var from = String(ol.from || '');
+          var to = String(ol.to || '');
+          var transport = String(ol.transport || 'unknown');
+          var psk = String(ol.psk || 'unknown');
+          var pskState = String(ol.psk_state || 'unknown');
+          var status = String(ol.status || 'unknown');
+          var age = (ol.handshake_age_sec != null) ? formatAge(ol.handshake_age_sec) : null;
+          var lines = [];
+          lines.push('<div><strong>' + escapeHtml(from) + ' \u2194 ' + escapeHtml(to) + '</strong></div>');
+          lines.push('<div>transport: <code>' + escapeHtml(transport) + '</code></div>');
+          lines.push('<div>psk: <code>' + escapeHtml(psk) + '</code> (' + escapeHtml(pskState) + ')</div>');
+          lines.push('<div>status: <code>' + escapeHtml(status) + '</code></div>');
+          if (age) {
+            lines.push('<div>handshake: ' + escapeHtml(age) + ' ago</div>');
+          }
+          return {
+            title: 'Overlay Link',
+            body: lines.join('')
+          };
+        }
+
         function showHoverCard(kind, evt){
           if (!graphHover) return;
           var wrap = document.getElementById('graph-wrap');
@@ -5071,6 +5101,20 @@ Connection: close
           var y = (evt.clientY - rect.top) + 10;
           var info = sysHelp[kind];
           if (!info) return;
+          graphHover.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">'+info.title+'</div><div>'+info.body+'</div>';
+          graphHover.style.left = x + 'px';
+          graphHover.style.top = y + 'px';
+          graphHover.style.display = 'block';
+        }
+
+        function showOverlayHoverCard(ol, evt){
+          if (!graphHover) return;
+          var info = formatOverlayLink(ol);
+          if (!info) return;
+          var wrap = document.getElementById('graph-wrap');
+          var rect = wrap.getBoundingClientRect();
+          var x = (evt.clientX - rect.left) + 10;
+          var y = (evt.clientY - rect.top) + 10;
           graphHover.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">'+info.title+'</div><div>'+info.body+'</div>';
           graphHover.style.left = x + 'px';
           graphHover.style.top = y + 'px';

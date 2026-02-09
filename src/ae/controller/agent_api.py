@@ -275,6 +275,15 @@ def _node_is_hub(node_id: str, labels: dict | None, hub_site: str | None) -> boo
     return False
 
 
+def _wg_role(labels: dict | None) -> str | None:
+    if not labels:
+        return None
+    role = str(labels.get("wg_role") or "").strip().lower()
+    if role in {"hub", "spk", "spoke"}:
+        return role
+    return None
+
+
 def _peer_endpoint(labels: dict | None, fallback: str | None) -> str | None:
     if fallback:
         return fallback
@@ -293,9 +302,17 @@ def _build_overlay_payload(store: SQLiteStateStore, node_id: str) -> dict | None
         return None
     node, _status = node_info
     labels = getattr(node, "labels", {}) or {}
+    nodes = list(store.list_nodes())
+    wg_role_present = any(_wg_role(rec.labels) for rec, _ in nodes)
+    use_wg_role = wg_role_present and _wg_role(labels) is not None
+    def _overlay_node(labels_in: dict | None) -> bool:
+        if not use_wg_role:
+            return True
+        return _wg_role(labels_in) is not None
+
     site_id = _node_site(node.node_id, labels)
     hub_site = (os.getenv("AE_OVERLAY_HUB_SITE") or os.getenv("AE_SITE_ID") or "").strip() or None
-    is_hub = _node_is_hub(node.node_id, labels, hub_site)
+    is_hub = _wg_role(labels) == "hub" if use_wg_role else _node_is_hub(node.node_id, labels, hub_site)
     keepalive = None
     try:
         keepalive = int(os.getenv("AE_OVERLAY_PERSISTENT_KEEPALIVE", "25") or 25)
@@ -303,9 +320,17 @@ def _build_overlay_payload(store: SQLiteStateStore, node_id: str) -> dict | None
         keepalive = 25
     hub_endpoint_override = os.getenv("AE_OVERLAY_HUB_ENDPOINT")
 
-    nodes = list(store.list_nodes())
+    if use_wg_role and not _overlay_node(labels):
+        return {
+            "node_id": node.node_id,
+            "site_id": site_id,
+            "hub_site": hub_site,
+            "topology": "hub-spoke",
+            "peers": [],
+            "errors": ["node missing wg_role; overlay peers filtered by wg_role labels"],
+        }
     all_cidrs = [
-        rec.pod_cidr for rec, _ in nodes if getattr(rec, "pod_cidr", None)
+        rec.pod_cidr for rec, _ in nodes if getattr(rec, "pod_cidr", None) and _overlay_node(rec.labels)
     ]
     local_cidr = node.pod_cidr
     peers: list[dict] = []
@@ -313,9 +338,11 @@ def _build_overlay_payload(store: SQLiteStateStore, node_id: str) -> dict | None
     for rec, _ in nodes:
         if rec.node_id == node.node_id:
             continue
+        if not _overlay_node(rec.labels):
+            continue
         rec_labels = rec.labels or {}
         rec_site = _node_site(rec.node_id, rec_labels)
-        rec_is_hub = _node_is_hub(rec.node_id, rec_labels, hub_site)
+        rec_is_hub = _wg_role(rec_labels) == "hub" if use_wg_role else _node_is_hub(rec.node_id, rec_labels, hub_site)
         if is_hub and rec_is_hub:
             continue
         if not is_hub and not rec_is_hub:

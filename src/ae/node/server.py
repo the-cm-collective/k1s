@@ -694,7 +694,15 @@ def serve(
     else:
         scheme = "http"
     LOGGER.info("ae.node agent listening on %s://%s:%s", scheme, host, port)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        LOGGER.info("shutdown requested (keyboard interrupt)")
+    finally:
+        try:
+            server.server_close()
+        except Exception:
+            pass
 
 
 def main(argv: list[str] | None = None) -> int:
