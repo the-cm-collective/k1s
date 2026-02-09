@@ -452,6 +452,11 @@
                   .link.flow { stroke-dasharray:6 6; }
                   .link.trace { stroke:rgba(245,197,66,0.9); stroke-width:1.6; stroke-dasharray:4 6; marker-end:none; filter: drop-shadow(0 0 4px rgba(245,197,66,0.35)); }
                   .link.host-flow { stroke:rgba(203,213,225,0.8); }
+                  .link.overlay { marker-end:none; stroke-width:1.8; }
+                  .link.overlay-wg { stroke:rgba(56,189,248,0.8); }
+                  .link.overlay-rp { stroke:rgba(34,197,94,0.9); stroke-width:2.3; filter: drop-shadow(0 0 6px rgba(34,197,94,0.35)); }
+                  .link.overlay-stale { stroke-dasharray:6 6; opacity:0.65; }
+                  .link.overlay-down { stroke-dasharray:2 6; opacity:0.45; }
                   .flow-fwd { animation: flow 1.8s linear infinite; }
                   .flow-rev { animation: flow 1.8s linear infinite reverse; }
                   .selected .hex-outer, .selected circle { stroke-width:6 !important; filter: drop-shadow(0 0 6px rgba(96,165,250,0.6)); }
@@ -477,6 +482,8 @@
                 <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#dcfce7" stroke="#16a34a"/></svg> Pod ready</span>
                 <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#fef3c7" stroke="#f59e0b"/></svg> Pod pending</span>
                 <span><svg width="30" height="8"><path d="M1 4 L22 4" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="6 6"/><polygon points="22,1 29,4 22,7" fill="#9ca3af"/></svg> Flow</span>
+                <span><svg width="30" height="8"><path d="M1 4 L29 4" stroke="#38bdf8" stroke-width="1.8"/></svg> WG</span>
+                <span><svg width="30" height="8"><path d="M1 4 L29 4" stroke="#22c55e" stroke-width="2.4"/></svg> WG+RP</span>
                 <span><button id="graph-path-toggle" style="font-size:12px; padding:4px 8px; border:1px solid #4b5563; border-radius:6px; background:#111827; color:#e5e7eb; cursor:pointer;">P: Orth</button></span>
                 <span><button id="graph-namespace-toggle" style="font-size:12px; padding:4px 8px; border:1px solid #4b5563; border-radius:6px; background:#111827; color:#e5e7eb; cursor:pointer;">NS: Exp</button></span>
                 <span><button id="graph-scale-toggle" style="font-size:12px; padding:4px 8px; border:1px solid #4b5563; border-radius:6px; background:#111827; color:#e5e7eb; cursor:pointer;">S: Cmp</button></span>
@@ -3860,6 +3867,32 @@ Connection: close
             link(n.id, podId, 'trace', {kind:'trace', start:{x:startX,y:startY}, end:{x:endX,y:endY}});
           }
         });
+
+        // Overlay links (WireGuard / Rosenpass)
+        try {
+          var overlayLinks = (sys && sys.overlay && sys.overlay.links) ? sys.overlay.links : [];
+          var overlaySeen = {};
+          overlayLinks.forEach(function(ol){
+            if (!ol || !ol.from || !ol.to) return;
+            var fromId = 'node:' + String(ol.from);
+            var toId = 'node:' + String(ol.to);
+            if (!nodeById[fromId] || !nodeById[toId]) return;
+            var linkId = fromId + '<->' + toId;
+            if (overlaySeen[linkId]) return;
+            overlaySeen[linkId] = true;
+            var cls = 'overlay';
+            if (String(ol.transport || '').toLowerCase() === 'wireguard') {
+              cls += ' overlay-wg';
+            }
+            if (String(ol.psk || '').toLowerCase() === 'rosenpass' && String(ol.psk_state || '').toLowerCase() === 'active') {
+              cls += ' overlay-rp';
+            }
+            var st = String(ol.status || '').toLowerCase();
+            if (st === 'stale') cls += ' overlay-stale';
+            else if (st === 'down') cls += ' overlay-down';
+            link(fromId, toId, cls, {kind:'overlay', overlay: ol});
+          });
+        } catch(e){}
 
         var hasIngress = !!(sys.ingress && (sys.ingress.sites||[]).length);
         link('host','controller','flow', {special:'host-flow'});
