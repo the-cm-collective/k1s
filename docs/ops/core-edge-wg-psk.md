@@ -31,10 +31,13 @@ Notes
 
 Topology
 - Hub site: `hub`
-- Edge site: `edge`
+- Remote edge site: `sea-edge-02`
 - Hub WG endpoint: `<PUBLIC_IP>:51820`
 - Hub pod CIDR: `10.42.0.0/24`
 - Edge pod CIDR: `10.42.1.0/24`
+Label conventions (for dashboard clarity)
+- Hub: `wg_role=hub`, `wg_psk=rp` (rp = rosenpass).
+- Edge: `wg_role=spk`, `wg_psk=rp`.
 
 Step 1: Start hub controller with Agent API
 ```bash
@@ -51,7 +54,7 @@ make k1s-core
 Step 2: Start hub node (controller-managed peers)
 ```bash
 AE_NODE_ID=hub-1 \
-AE_NODE_LABELS="role=hub,site=hub,wg_endpoint=<PUBLIC_IP>:51820" \
+AE_NODE_LABELS="role=hub,site=hub,wg_endpoint=<PUBLIC_IP>:51820,wg_role=hub,wg_psk=rp" \
 AE_POD_CIDR=10.42.0.0/24 \
 AE_ROSENPASS_ENABLED=1 \
 AE_ROSENPASS_CONFIG=controller \
@@ -79,10 +82,46 @@ Defaults set by `k1s-core-node` (override as needed):
 Note
 - If you prefer not to write root-owned files into the repo, override `AE_ROSENPASS_DIR=/var/lib/ae/rosenpass` when running the node helpers with `sudo`.
 
-Step 3: Start edge node (controller-managed peers)
+Step 3: Register the remote edge site in the hub (creates NATS leaf creds)
+```bash
+make edge-site SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+```
+Note
+- This helper updates the hub NATS config with the `site-sea-edge-02-uplink` user and starts a local edge NATS leader bound to `127.0.0.1:4224`. Use the manual steps in `docs/ops/core-edge-manual-test.md` if the edge NATS leader runs on another host.
+
+Manual remote edge NATS leader (when edge runs on a different host)
+1) On the hub host, ensure the uplink user exists:
+- Add a `site-sea-edge-02-uplink` user to the hub NATS config (see `docs/ops/core-edge-manual-test.md`), then reload NATS.
+
+2) On the remote edge host, copy and edit the edge NATS config:
+```bash
+EDGE_SITE=sea-edge-02
+cp ops/dev/nats-edge.conf /tmp/nats-edge-${EDGE_SITE}.conf
+sed -i "s/sfo-edge-01/${EDGE_SITE}/g" /tmp/nats-edge-${EDGE_SITE}.conf
+sed -i "s/nats-hub:7422/<HUB_PUBLIC>:7422/g" /tmp/nats-edge-${EDGE_SITE}.conf
+```
+Then start NATS:
+```bash
+nats-server -c /tmp/nats-edge-${EDGE_SITE}.conf
+```
+Notes
+- `nats-edge.conf` is Core NATS only (correct for JetStream hub + lightweight edges).
+- Ensure `<HUB_PUBLIC>:7422` is reachable from the remote site.
+
+Step 4: Start the edge gateway (JetStream hub pairing)
+```bash
+AE_SITE_ID=sea-edge-02 \
+AE_NODE_ID=edge-1 \
+AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
+make k1s-edge-core
+```
+Note
+- Replace `127.0.0.1:4224` with the edge NATS leader address when running on a remote host.
+
+Step 5: Start the edge node (controller-managed peers)
 ```bash
 AE_NODE_ID=edge-1 \
-AE_NODE_LABELS="site=edge" \
+AE_NODE_LABELS="site=sea-edge-02,wg_role=spk,wg_psk=rp" \
 AE_POD_CIDR=10.42.1.0/24 \
 AE_ROSENPASS_ENABLED=1 \
 AE_ROSENPASS_CONFIG=controller \
@@ -100,34 +139,7 @@ sudo -E AE_AGENT_TOKEN=devtoken \
 ```
 - The node agent only needs `AE_AGENT_TOKEN` for the controller API; no extra CLI credentials are required for this step.
 
-Alternate: Start edge gateway stack with `make k1s-edge`
-```bash
-AE_SITE_ID=edge \
-AE_NODE_ID=edge-1 \
-make k1s-edge
-```
-Note
-- `make k1s-edge` starts the gateway + worker stub only. You still need to run
-  `ae.node` (Step 3) on the edge host to start Rosenpass/WireGuard.
-- When the hub is running `make k1s-core` (JetStream), pair it with
-  `make k1s-edge-core` (or `EDGE_PROFILE=k1s-core make k1s-edge`) to avoid
-  `lease acquire failed: request failed: nats: timeout` warnings.
-- You can also use `make k1s-edge-node` which sets sensible defaults and runs `python -m ae.node`:
-```bash
-AE_AGENT_TOKEN=devtoken \
-AE_CONTROLLER_URL=http://<HUB_IP>:9110 \
-make k1s-edge-node
-```
-Defaults set by `k1s-edge-node` (override as needed):
-- `AE_NODE_ID=edge-1`
-- `AE_NODE_LABELS=site=edge`
-- `AE_POD_CIDR=10.42.1.0/24`
-- `AE_ROSENPASS_ENABLED=1`
-- `AE_ROSENPASS_CONFIG=controller`
-- `AE_ROSENPASS_DIR=state/rosenpass`
-- `AE_NODE_PORT=9112`
-
-Step 4: Verify overlay config served by controller
+Step 6: Verify overlay config served by controller
 ```bash
 curl -H "X-Agent-Token: devtoken" \
   http://<HUB_IP>:9110/v1/nodes/hub-1/overlay
@@ -139,7 +151,7 @@ Expected
 - `rosenpass_pubkey` is present for each peer once both nodes have generated keys.
 - `errors` is empty or only reports missing `rp_pubkey` if Rosenpass keys were not created.
 
-Step 5: Verify Rosenpass supervisor status
+Step 7: Verify Rosenpass supervisor status
 ```bash
 cat /var/lib/ae/rosenpass/rosenpass-status.json
 ```
@@ -151,7 +163,7 @@ If you see `state=waiting-for-peers`
 If peer updates should be picked up automatically
 - Set `AE_ROSENPASS_PEER_REFRESH_SEC=30` (default) to refresh peers periodically.
 
-Step 6: Verify WireGuard handshake
+Step 8: Verify WireGuard handshake
 ```bash
 sudo wg show wg0
 ```

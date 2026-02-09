@@ -2056,6 +2056,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                             "backend": node.backend,
                             "endpoint": node.endpoint,
                             "pod_cidr": node.pod_cidr,
+                            "wg_pubkey": node.wg_pubkey,
+                            "rp_pubkey": getattr(node, "rp_pubkey", None),
                             "cordoned": bool(getattr(node, "cordoned", False)),
                             "status": st,
                             "stale": stale,
@@ -2235,6 +2237,135 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             except Exception:
                 ov = None
 
+            # Overlay links (hub-spoke, best-effort)
+            overlay_payload = ov if isinstance(ov, dict) else {}
+            try:
+                import os as _os
+                import time as _t
+                import shutil as _sh
+                import subprocess as _sp
+
+                from ae.controller.agent_api import _node_is_hub, _node_site
+
+                def _wg_peer_handshakes(iface: str) -> dict[str, float | None]:
+                    wg_bin = _sh.which("wg") or "wg"
+                    try:
+                        dump = _sp.check_output(
+                            [wg_bin, "show", iface, "dump"],
+                            text=True,
+                            stderr=_sp.DEVNULL,
+                        )
+                    except Exception:
+                        return {}
+                    lines = [ln for ln in dump.splitlines() if ln.strip()]
+                    if not lines:
+                        return {}
+                    now_ts = _t.time()
+                    peers: dict[str, float | None] = {}
+                    for line in lines[1:]:
+                        parts = line.split("\t")
+                        if len(parts) < 6:
+                            continue
+                        pubkey = parts[0]
+                        try:
+                            latest = int(parts[4])
+                        except Exception:
+                            latest = 0
+                        if latest <= 0:
+                            peers[pubkey] = None
+                        else:
+                            peers[pubkey] = max(0.0, now_ts - float(latest))
+                    return peers
+
+                hub_site = (  # matches overlay payload logic
+                    _os.getenv("AE_OVERLAY_HUB_SITE") or _os.getenv("AE_SITE_ID") or ""
+                ).strip() or None
+                hubs = [
+                    node
+                    for node in _nodes
+                    if _node_is_hub(node.get("id") or "", node.get("labels") or {}, hub_site)
+                ]
+                if hubs:
+                    iface = _os.getenv("AE_WG_INTERFACE", "wg0")
+                    handshake_map = _wg_peer_handshakes(iface)
+                    rp_state = None
+                    try:
+                        rp_state = (overlay_payload.get("rosenpass") or {}).get("state")
+                    except Exception:
+                        rp_state = None
+                    now_ts = _t.time()
+                    seen: set[str] = set()
+                    links: list[dict] = []
+                    for hub in hubs:
+                        hub_id = hub.get("id") or ""
+                        hub_site_id = hub.get("site_id") or _node_site(
+                            hub_id, hub.get("labels") or {}
+                        )
+                        for node in _nodes:
+                            nid = node.get("id") or ""
+                            if not nid or nid == hub_id:
+                                continue
+                            if _node_is_hub(nid, node.get("labels") or {}, hub_site):
+                                continue
+                            link_id = f"{hub_id}<->{nid}"
+                            if link_id in seen:
+                                continue
+                            seen.add(link_id)
+                            spoke_site = node.get("site_id") or _node_site(
+                                nid, node.get("labels") or {}
+                            )
+                            wg_ok = bool(hub.get("wg_pubkey") and node.get("wg_pubkey"))
+                            rp_ok = bool(hub.get("rp_pubkey") and node.get("rp_pubkey"))
+                            transport = "wireguard" if wg_ok else "unknown"
+                            psk = "rosenpass" if (wg_ok and rp_ok) else ("none" if wg_ok else "unknown")
+                            handshake_age = None
+                            if wg_ok:
+                                handshake_age = handshake_map.get(str(node.get("wg_pubkey") or ""))
+                            last_handshake_at = (
+                                None if handshake_age is None else max(0.0, now_ts - float(handshake_age))
+                            )
+                            if handshake_age is None:
+                                status = "unknown"
+                            elif handshake_age <= 120:
+                                status = "up"
+                            elif handshake_age <= 600:
+                                status = "stale"
+                            else:
+                                status = "down"
+                            if psk == "rosenpass":
+                                psk_state = (
+                                    "active"
+                                    if (rp_state == "running" and handshake_age is not None)
+                                    else "inactive"
+                                )
+                            elif psk == "none":
+                                psk_state = "inactive"
+                            else:
+                                psk_state = "unknown"
+                            links.append(
+                                {
+                                    "id": link_id,
+                                    "from": hub_id,
+                                    "to": nid,
+                                    "from_site": hub_site_id,
+                                    "to_site": spoke_site,
+                                    "role": "hub-spoke",
+                                    "direction": "bidirectional",
+                                    "transport": transport,
+                                    "psk": psk,
+                                    "psk_state": psk_state,
+                                    "handshake_age_sec": handshake_age,
+                                    "last_handshake_at": last_handshake_at,
+                                    "status": status,
+                                    "reason": None,
+                                }
+                            )
+                    overlay_payload["topology"] = "hub-spoke"
+                    overlay_payload["generated_at"] = now_ts
+                    overlay_payload["links"] = links
+            except Exception:
+                overlay_payload = ov if isinstance(ov, dict) else ov
+
             # Create cooldowns (seconds remaining) if available
             cooldowns = {}
             try:
@@ -2302,7 +2433,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 "placements": placements,
                 "containers": containers,
                 "volumes": volumes,
-                "overlay": ov,
+                "overlay": overlay_payload,
                 "cooldown": cooldowns,
                 "docs": docs,
                 "api": api,
