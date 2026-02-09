@@ -300,6 +300,72 @@ If you see `Unable to access interface: No such device`
 - Ensure the node process is running with sudo and that WireGuard tools are installed.
 - Restart the node process; the WireGuard interface is created on first apply.
 
+Step 9: Deploy shell demo to the Sea site (SPDY shell + port-forward validation)
+```bash
+source <(ae auth local)
+ae apply -f docs/site/examples/shell-demo-node-sea-edge-02-edge-1.yaml
+ae status shell-demo-node-sea-edge-02-edge-1 --wide --events
+```
+Remote shell (SPDY):
+```bash
+ae shell shell-demo-node-sea-edge-02-edge-1 -- /bin/sh
+```
+Port-forward (SPDY/WebSocket via API shim):
+```bash
+ae port-forward shell-demo-node-sea-edge-02-edge-1 18082:8080
+curl -fsS http://127.0.0.1:18082/healthz
+```
+Deploy to the hub node (role=hub, site=hub):
+```bash
+cat <<'EOF' | ae apply -f -
+apiVersion: ae.dev/v1alpha1
+kind: Deployment
+metadata:
+  name: shell-demo-node-hub
+spec:
+  image: demo-shell:latest
+  replicas: 1
+  ports:
+    - name: http
+      containerPort: 8080
+  nodeSelector:
+    role: hub
+    site: hub
+  health:
+    readiness:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 1
+      timeoutSeconds: 2
+      periodSeconds: 2
+      successThreshold: 1
+      failureThreshold: 5
+    liveness:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 5
+      timeoutSeconds: 1
+      periodSeconds: 10
+      successThreshold: 1
+      failureThreshold: 3
+EOF
+ae status shell-demo-node-hub --wide --events
+```
+Remote shell (hub):
+```bash
+ae shell shell-demo-node-hub -- /bin/sh
+```
+Port-forward (hub):
+```bash
+ae port-forward shell-demo-node-hub 18084:8080
+curl -fsS http://127.0.0.1:18084/healthz
+```
+Notes
+- This smoke test targets the Sea site gateway node (`role=gateway`, `site=sea-edge-02`). Use a different manifest if you want to pin to an edge worker node instead.
+- The hub node (`k1s-core-node`, `role=hub`) is assignable and can run workloads. The core controller (`role=controller`, `profile=k1s-core`) is not a runtime node in this flow unless you explicitly run a workload-capable node there.
+
 Troubleshooting
 - If overlay peers are empty, check `AE_AGENT_API_PORT` and `AE_AGENT_API_TOKEN`.
 - If the hub endpoint is missing, ensure `AE_NODE_LABELS` includes `wg_endpoint=<PUBLIC_IP>:51820` or set `AE_OVERLAY_HUB_ENDPOINT`.
