@@ -344,3 +344,9 @@ Troubleshooting
 - If Rosenpass fails to start, set `AE_ROSENPASS_COMMAND` to the correct CLI for your version (default: `rosenpass exchange-config {config}`).
 - If you see `rosenpass key generation failed; provide keys manually` but keys exist under `state/rosenpass`, confirm you are on the latest k1s build (Rosenpass keys are binary and must be base64-encoded in the generated config).
 - If `rosenpass-status.json` shows a long base64 string followed by `does not exist`, the peer public key was treated as a file path. Ensure you are on the latest build; k1s now writes peer public keys to `${AE_ROSENPASS_DIR}/peers/*.rp.pub` and uses those paths in `rosenpass.conf`.
+
+Security notes (production hardening)
+- Replace dev NATS credentials (`gateway:dev`, `site-<id>-uplink:dev`) with per-site creds (NKeys/JWT or creds files) and lock down subject permissions.
+- Keep the node agent API (`AE_AGENT_TOKEN`) reachable only over WG/LAN; do not expose it publicly.
+- Keep the API shim (exec/port-forward) behind TLS with scoped tokens; avoid sharing admin tokens across environments.
+- Ensure `AE_ROSENPASS_DIR` permissions are restricted (root-owned, 0700/0600) and avoid writing keys under the repo when running nodes with sudo.
