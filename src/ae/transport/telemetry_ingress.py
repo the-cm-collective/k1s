@@ -50,6 +50,7 @@ class TelemetryIngress:
                     site_id,
                     work_stale_total=metrics.get("work_stale_total"),
                     work_nak_total=metrics.get("work_nak_total"),
+                    lease_retry_total=metrics.get("lease_retry_total"),
                 )
             LOGGER.debug("site status %s: %s", site_id, payload)
 
