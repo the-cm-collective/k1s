@@ -11,6 +11,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 from ae import __version__ as AE_VERSION
 from ae import build_info as AE_BUILD_INFO
@@ -2902,6 +2903,54 @@ def _profile_etcd_defaults(profile_name: str | None) -> dict[str, str]:
     return {}
 
 
+def _running_in_container() -> bool:
+    if Path("/.dockerenv").exists() or Path("/run/.containerenv").exists():
+        return True
+    try:
+        text = Path("/proc/1/cgroup").read_text(encoding="utf-8")
+    except Exception:
+        return False
+    return any(tok in text for tok in ("docker", "podman", "containerd", "kubepods"))
+
+
+def _normalize_upstream_server_for_host(server: str, port_hint: str | None = None) -> str:
+    if not server:
+        return server
+    if _running_in_container():
+        return server
+    try:
+        if "://" not in server:
+            host = server
+            path = ""
+            if "/" in server:
+                host, rest = server.split("/", 1)
+                path = "/" + rest
+            host_part, sep, port = host.partition(":")
+            if host_part != "apishim":
+                return server
+            final_port = port
+            if not final_port and port_hint and port_hint.isdigit():
+                final_port = port_hint
+            if final_port:
+                return f"https://127.0.0.1:{final_port}{path}"
+            return f"https://127.0.0.1:8445{path}"
+
+        parsed = urlparse(server)
+        if parsed.hostname != "apishim":
+            return server
+        port = parsed.port
+        if port is None and port_hint and port_hint.isdigit():
+            port = int(port_hint)
+        netloc = "127.0.0.1"
+        if port:
+            netloc = f"{netloc}:{port}"
+        return urlunparse(
+            (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+        )
+    except Exception:
+        return server
+
+
 def _latest_profile_apishim_env(root: Path) -> Path | None:
     try:
         envs = [p for p in root.glob("*/apishim.env") if p.is_file()]
@@ -3061,21 +3110,26 @@ def handle_auth(
         server = args.server or os.getenv("AE_APISHIM_SERVER") or proc_env.get("AE_APISHIM_SERVER")
         if not server:
             server = _read_env_file_var(controller_env, "AE_APISHIM_SERVER")
+        server_from_upstream = False
+        port_hint = None
         if not server:
             upstream = pick(
                 os.getenv("APISHIM_UPSTREAM"),
                 _read_env_file_var(dev_env, "APISHIM_UPSTREAM"),
             )
-            port = pick(
+            port_hint = pick(
                 os.getenv("APISHIM_PORT"),
                 _read_env_file_var(dev_env, "APISHIM_PORT"),
             )
             if upstream:
+                server_from_upstream = True
                 server = upstream if "://" in upstream else f"https://{upstream}"
-            elif port:
-                server = f"https://127.0.0.1:{port}"
+            elif port_hint:
+                server = f"https://127.0.0.1:{port_hint}"
             else:
                 server = "https://127.0.0.1:8445"
+        if server and server_from_upstream:
+            server = _normalize_upstream_server_for_host(server, port_hint)
 
         lines: list[str] = []
         if apishim_token:

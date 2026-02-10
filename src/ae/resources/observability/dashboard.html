@@ -1492,6 +1492,7 @@ Connection: close
           : ((nsInfo && nsInfo.name) ? (ns + '/' + nsInfo.name) : (ns + '/' + pod)));
         var storedToken = '';
         var storedScope = '';
+        var tokenFromStorage = false;
         try {
           storedToken = localStorage.getItem('ae_apishim_exec_token') || localStorage.getItem('ae_apishim_token') || '';
         } catch(e){}
@@ -1509,6 +1510,7 @@ Connection: close
         }
         if (tokenInput && !tokenInput.value && storedToken) {
           tokenInput.value = storedToken;
+          tokenFromStorage = true;
         }
         if (tokenInput && tokenInput.value && tokenInput.value.indexOf('sess1.') === 0) {
           if (sessionTokenExpired(tokenInput.value, 15) || !sessionTokenAllowsScope(tokenInput.value, scope)) {
@@ -1529,7 +1531,9 @@ Connection: close
           pod: pod,
           container: (containerInput && containerInput.value) ? containerInput.value : '',
           cmd: (cmdInput && cmdInput.value) ? cmdInput.value : 'sh',
-          base: base
+          base: base,
+          token: (tokenInput && tokenInput.value) ? tokenInput.value : '',
+          token_from_storage: tokenFromStorage
         };
         function doConnect(){
           var params = new URLSearchParams();
@@ -1575,6 +1579,35 @@ Connection: close
           socket.onclose = function(){
             shellSetStatus('disconnected', 'warn');
             var meta = socket.__meta || {};
+            if (!meta.connected && meta.attempt && !meta.retry) {
+              var shouldRetry = meta.attempt.token_from_storage
+                && meta.attempt.token
+                && meta.attempt.token.indexOf('sess1.') === 0;
+              if (shouldRetry) {
+                meta.retry = true;
+                tokenFromStorage = false;
+                try { clearStoredSession('exec'); } catch(e){}
+                if (tokenInput) tokenInput.value = '';
+                shellSetStatus('refreshing token', 'muted');
+                mintShimToken('exec', scope).then(function(info){
+                  var tok = (info && info.token) ? info.token : '';
+                  if (tok && tokenInput) tokenInput.value = tok;
+                  try {
+                    if (tok) {
+                      localStorage.setItem('ae_apishim_exec_token', tok);
+                      localStorage.setItem('ae_apishim_exec_scope', scope);
+                      if (info && info.expires_at) {
+                        localStorage.setItem('ae_apishim_exec_exp', String(info.expires_at));
+                      }
+                    }
+                  } catch(e){}
+                  doConnect();
+                }).catch(function(){
+                  shellSetStatus('error', 'bad');
+                });
+                return;
+              }
+            }
             if (meta.connected && meta.active) {
               shellWriteMarker('disconnect', meta.active, meta.closeReason ? ('reason=' + meta.closeReason) : '');
             } else if (meta.attempt) {
@@ -1813,6 +1846,7 @@ Connection: close
           : ((nsInfo && nsInfo.name) ? (ns + '/' + nsInfo.name) : (ns + '/' + pod)));
         var pfStoredToken = '';
         var pfStoredScope = '';
+        var pfTokenFromStorage = false;
         try {
           pfStoredToken = localStorage.getItem('ae_apishim_pf_token') || localStorage.getItem('ae_apishim_token') || '';
         } catch(e){}
@@ -1830,6 +1864,7 @@ Connection: close
         }
         if (tokenInput && !tokenInput.value && pfStoredToken) {
           tokenInput.value = pfStoredToken;
+          pfTokenFromStorage = true;
         }
         if (tokenInput && tokenInput.value && tokenInput.value.indexOf('sess1.') === 0) {
           if (sessionTokenExpired(tokenInput.value, 15) || !sessionTokenAllowsScope(tokenInput.value, pfScope)) {
@@ -1865,7 +1900,32 @@ Connection: close
               handlePfMessage(data);
             }
           };
-          pfSocket.onclose = function(){ pfSetStatus('disconnected', 'warn'); };
+          pfSocket.onclose = function(){
+            if (pfTokenFromStorage && tokenInput && tokenInput.value && tokenInput.value.indexOf('sess1.') === 0) {
+              pfTokenFromStorage = false;
+              try { clearStoredSession('pf'); } catch(e){}
+              tokenInput.value = '';
+              pfSetStatus('refreshing token', 'muted');
+              mintShimToken('portforward', pfScope).then(function(info){
+                var tok = (info && info.token) ? info.token : '';
+                if (tok && tokenInput) tokenInput.value = tok;
+                try {
+                  if (tok) {
+                    localStorage.setItem('ae_apishim_pf_token', tok);
+                    localStorage.setItem('ae_apishim_pf_scope', pfScope);
+                    if (info && info.expires_at) {
+                      localStorage.setItem('ae_apishim_pf_exp', String(info.expires_at));
+                    }
+                  }
+                } catch(e){}
+                doConnect();
+              }).catch(function(){
+                pfSetStatus('error', 'bad');
+              });
+              return;
+            }
+            pfSetStatus('disconnected', 'warn');
+          };
           pfSocket.onerror = function(){ pfSetStatus('error', 'bad'); };
         }
         if (tokenInput && !tokenInput.value) {
