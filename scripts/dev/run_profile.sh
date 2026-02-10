@@ -642,7 +642,11 @@ case "$PROFILE" in
     ;;
   k1s-core)
     COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/ops/dev/docker-compose.nats-etcd.yaml}"
-    compose "$ENGINE_BIN" -f "$COMPOSE_FILE" up -d etcd nats-hub
+    POSTGRES_BIND_IP="${POSTGRES_BIND_IP:-127.0.0.1}"
+    POSTGRES_PORT="${POSTGRES_PORT:-5432}"
+    export POSTGRES_BIND_IP POSTGRES_PORT
+    export AE_APISHIM_DSN="${AE_APISHIM_DSN:-postgresql://shim:shim@${POSTGRES_BIND_IP}:${POSTGRES_PORT}/shim}"
+    compose "$ENGINE_BIN" -f "$COMPOSE_FILE" up -d etcd nats-hub postgres
     PROFILE_DIR="$(abs_path "${PROFILE_DIR:-state/profiles/k1s-core}")"
     SPECS_DIR="$(abs_path "${SPECS_DIR:-$PROFILE_DIR/specs}")"
     ensure_specs_dir "$SPECS_DIR"
