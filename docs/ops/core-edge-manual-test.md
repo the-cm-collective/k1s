@@ -32,6 +32,11 @@ Step 1: Start the hub (LAN)
 ```
 AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy make k1s-core
 ```
+Postgres (apishim) over WG:
+- Bind Postgres to the hub WG IP so edge nodes can reach the apishim store:
+```
+POSTGRES_BIND_IP=<HUB_WG_IP> POSTGRES_PORT=5432 make k1s-core
+```
 
 Step 2: Start the local site gateway (same LAN)
 ```

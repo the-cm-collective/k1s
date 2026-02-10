@@ -18,6 +18,10 @@ make dev-etcd
 ```
 make k1s-core
 ```
+Notes:
+- `k1s-core` now starts a Postgres container for the apishim store.
+- Bind Postgres to the hub WG IP with `POSTGRES_BIND_IP=<hub-wg-ip>` so edge nodes can reach it.
+- Override the DSN with `AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname` if needed.
 
 `k1s-edge` (edge gateway + stub worker; NATS core by default)
 ```

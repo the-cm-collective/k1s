@@ -163,6 +163,21 @@ AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
 python -m ae.controller --loop
 ```
 
+Postgres for apishim (k1s-core profile)
+- Bind Postgres to the hub WG IP so edge nodes can read apishim storage over the tunnel:
+```bash
+POSTGRES_BIND_IP=<HUB_WG_IP> POSTGRES_PORT=5432 make k1s-core
+```
+- On edge nodes, set:
+```bash
+export AE_APISHIM_DSN=postgresql://shim:shim@<HUB_WG_IP>:5432/shim
+```
+Example (hub WG IP `10.255.0.1`):
+```bash
+POSTGRES_BIND_IP=10.255.0.1 POSTGRES_PORT=5432 make k1s-core
+export AE_APISHIM_DSN=postgresql://shim:shim@10.255.0.1:5432/shim
+```
+
 Alternate: Start hub controller with `make k1s-core`
 ```bash
 AE_LOG_LEVEL=debug \

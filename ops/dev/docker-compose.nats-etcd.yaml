@@ -39,3 +39,14 @@ services:
       - ./nats-edge.conf:/etc/nats/nats-edge.conf:ro
     depends_on:
       - nats-hub
+
+  postgres:
+    image: docker.io/library/postgres:16
+    environment:
+      - POSTGRES_USER=shim
+      - POSTGRES_PASSWORD=shim
+      - POSTGRES_DB=shim
+    ports:
+      - "${POSTGRES_BIND_IP:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ../../state/postgres:/var/lib/postgresql/data

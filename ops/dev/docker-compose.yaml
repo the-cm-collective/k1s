@@ -36,6 +36,7 @@ services:
       - AE_NODE_ADVERTISE_IP=${APISHIM_NODE_ADVERTISE_IP:-}
       - AE_APISHIM_TLS_CERT=/workspace/${APISHIM_PROFILE_DIR}/apishim.crt
       - AE_APISHIM_TLS_KEY=/workspace/${APISHIM_PROFILE_DIR}/apishim.key
+      - AE_APISHIM_DSN=${AE_APISHIM_DSN:-}
       - AE_APISHIM_DB=/workspace/${APISHIM_PROFILE_DIR}/apishim.db
       - CONTAINER_HOST=${APISHIM_CONTAINER_HOST:-unix:///run/podman/podman.sock}
     ports:
