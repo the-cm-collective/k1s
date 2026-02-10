@@ -2,17 +2,19 @@ from types import SimpleNamespace
 
 import pytest
 
+from ae.storage.config import StorageProvisionerRegistry
 from ae.storage.netfs import NetFSManager
 from ae.storage.state import InMemoryStorageState
 from ae.storage.types import PvcRef, PvRef
 
 
 class FakeState(InMemoryStorageState):
-    def __init__(self, pv_obj, attachment, secrets):
+    def __init__(self, pv_obj, attachment, secrets, csi_driver=None):
         super().__init__()
         self._pv_obj = pv_obj
         self._attachment = attachment
         self._secrets = secrets
+        self._csi_driver = csi_driver
         self.secret_calls: list[tuple[str, str]] = []
         self.events: list[tuple[str, str]] = []
 
@@ -36,6 +38,34 @@ class FakeState(InMemoryStorageState):
         _ = pvc
         self.events.append((reason, message))
 
+    def get_csi_driver(self, name: str):
+        _ = name
+        return self._csi_driver
+
+
+class FakeNodeClient:
+    def node_stage(self, **_kwargs):  # noqa: ANN003
+        return None
+
+    def node_publish(self, **_kwargs):  # noqa: ANN003
+        return None
+
+    def node_unpublish(self, **_kwargs):  # noqa: ANN003
+        return None
+
+    def node_unstage(self, **_kwargs):  # noqa: ANN003
+        return None
+
+
+class FakeNetFSManager(NetFSManager):
+    def __init__(self, *args, **kwargs):  # noqa: ANN002,ANN003
+        super().__init__(*args, **kwargs)
+        self._fake_client = FakeNodeClient()
+
+    def _csi_node_client(self, driver: str, sc_name: str | None):  # noqa: ANN001,ANN202
+        _ = (driver, sc_name)
+        return self._fake_client
+
 
 def _attached_va() -> SimpleNamespace:
     return SimpleNamespace(
@@ -44,7 +74,8 @@ def _attached_va() -> SimpleNamespace:
     )
 
 
-def test_netfs_csi_mount_resolves_secret_refs(tmp_path) -> None:
+def test_netfs_csi_mount_resolves_secret_refs(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AE_CSI_STAGE_ROOT", str(tmp_path / "stage"))
     pv_obj = {
         "spec": {
             "accessModes": ["ReadWriteOnce"],
@@ -61,7 +92,7 @@ def test_netfs_csi_mount_resolves_secret_refs(tmp_path) -> None:
         ("demo", "publish"): {"password": "pass"},
     }
     state = FakeState(pv_obj, _attached_va(), secrets)
-    manager = NetFSManager(state, root=tmp_path)
+    manager = FakeNetFSManager(state, root=tmp_path, provisioners=StorageProvisionerRegistry([]))
 
     mount = manager.ensure_mount(PvcRef(name="pvc", namespace="default"), node_id="node1")
     assert mount.host_path
@@ -76,7 +107,8 @@ def test_netfs_csi_mount_resolves_secret_refs(tmp_path) -> None:
     assert "nodePublishSecretRef.keys=password" in content
 
 
-def test_netfs_csi_mount_fails_when_secret_missing(tmp_path) -> None:
+def test_netfs_csi_mount_fails_when_secret_missing(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AE_CSI_STAGE_ROOT", str(tmp_path / "stage"))
     pv_obj = {
         "spec": {
             "accessModes": ["ReadWriteOnce"],
@@ -88,14 +120,15 @@ def test_netfs_csi_mount_fails_when_secret_missing(tmp_path) -> None:
         }
     }
     state = FakeState(pv_obj, _attached_va(), secrets={})
-    manager = NetFSManager(state, root=tmp_path)
+    manager = FakeNetFSManager(state, root=tmp_path, provisioners=StorageProvisionerRegistry([]))
 
     with pytest.raises(KeyError):
         manager.ensure_mount(PvcRef(name="pvc", namespace="default"), node_id="node1")
     assert any(reason == "SecretNotFound" for reason, _msg in state.events)
 
 
-def test_netfs_csi_block_uses_device_path(tmp_path) -> None:
+def test_netfs_csi_block_uses_device_path(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AE_CSI_STAGE_ROOT", str(tmp_path / "stage"))
     device_path = tmp_path / "block-dev"
     device_path.write_text("fake", encoding="utf-8")
     pv_obj = {
@@ -110,7 +143,7 @@ def test_netfs_csi_block_uses_device_path(tmp_path) -> None:
         }
     }
     state = FakeState(pv_obj, _attached_va(), secrets={})
-    manager = NetFSManager(state, root=tmp_path)
+    manager = FakeNetFSManager(state, root=tmp_path, provisioners=StorageProvisionerRegistry([]))
 
     mount = manager.ensure_mount(
         PvcRef(name="pvc", namespace="default"), node_id="node1", for_device=True
@@ -118,7 +151,8 @@ def test_netfs_csi_block_uses_device_path(tmp_path) -> None:
     assert mount.host_path == str(device_path)
 
 
-def test_netfs_csi_block_requires_attachment(tmp_path) -> None:
+def test_netfs_csi_block_requires_attachment(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AE_CSI_STAGE_ROOT", str(tmp_path / "stage"))
     device_path = tmp_path / "block-dev"
     device_path.write_text("fake", encoding="utf-8")
     pv_obj = {
@@ -133,10 +167,26 @@ def test_netfs_csi_block_requires_attachment(tmp_path) -> None:
         }
     }
     state = FakeState(pv_obj, attachment=None, secrets={})
-    manager = NetFSManager(state, root=tmp_path)
+    manager = FakeNetFSManager(state, root=tmp_path, provisioners=StorageProvisionerRegistry([]))
 
     with pytest.raises(RuntimeError):
         manager.ensure_mount(
             PvcRef(name="pvc", namespace="default"), node_id="node1", for_device=True
         )
     assert any(reason == "VolumeNotAttached" for reason, _msg in state.events)
+
+
+def test_netfs_csi_attach_required_false_skips_attachment(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AE_CSI_STAGE_ROOT", str(tmp_path / "stage"))
+    pv_obj = {
+        "spec": {
+            "accessModes": ["ReadWriteOnce"],
+            "csi": {"driver": "csi.example.com", "volumeHandle": "vol-1"},
+        }
+    }
+    csi_driver = {"spec": {"attachRequired": False}}
+    state = FakeState(pv_obj, attachment=None, secrets={}, csi_driver=csi_driver)
+    manager = FakeNetFSManager(state, root=tmp_path, provisioners=StorageProvisionerRegistry([]))
+
+    mount = manager.ensure_mount(PvcRef(name="pvc", namespace="default"), node_id="node1")
+    assert mount.host_path

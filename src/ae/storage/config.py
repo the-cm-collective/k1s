@@ -65,6 +65,57 @@ class StorageClassConfig:
 
 
 @dataclass(slots=True)
+class StorageProvisionerConfig:
+    """Storage provisioner registry entry (built-in or CSI)."""
+
+    name: str
+    provisioner: str
+    type: str
+    controller_endpoint: str | None = None
+    node_endpoint: str | None = None
+    parameters: dict[str, str] = field(default_factory=dict)
+    access_modes: list[str] = field(default_factory=list)
+    volume_binding_mode: str | None = None
+    reclaim_policy: str | None = None
+    allow_volume_expansion: bool | None = None
+    mount_options: list[str] = field(default_factory=list)
+    allowed_topologies: list[dict[str, Any]] = field(default_factory=list)
+    topology_keys: list[str] = field(default_factory=list)
+    is_default: bool = False
+
+
+@dataclass(slots=True)
+class StorageProvisionerRegistry:
+    """Lookup registry for provisioner entries."""
+
+    provisioners: list[StorageProvisionerConfig]
+    _by_name: dict[str, StorageProvisionerConfig] = field(init=False, repr=False)
+    _by_provisioner: dict[str, StorageProvisionerConfig] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._by_name = {}
+        self._by_provisioner = {}
+        for entry in self.provisioners:
+            if entry.name and entry.name not in self._by_name:
+                self._by_name[entry.name] = entry
+            if entry.provisioner and entry.provisioner not in self._by_provisioner:
+                self._by_provisioner[entry.provisioner] = entry
+
+    def for_storage_class(self, name: str | None) -> StorageProvisionerConfig | None:
+        if not name:
+            return None
+        return self._by_name.get(name)
+
+    def for_driver(self, driver: str | None) -> StorageProvisionerConfig | None:
+        if not driver:
+            return None
+        return self._by_provisioner.get(driver)
+
+    def is_csi(self, *, storage_class: str | None = None, driver: str | None = None) -> bool:
+        entry = self.for_storage_class(storage_class) or self.for_driver(driver)
+        return bool(entry and entry.type == "csi")
+
+@dataclass(slots=True)
 class StorageQuotaConfig:
     """Namespace-scoped storage quota."""
 
@@ -124,6 +175,89 @@ def _parse_storage_class(raw: Mapping[str, Any]) -> StorageClassConfig | None:
     )
 
 
+def _parse_bool(raw: Any) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalize_string_list(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        return [str(item) for item in raw if item is not None and str(item).strip()]
+    return [str(raw)]
+
+
+def _parse_provisioner_entry(raw: Mapping[str, Any]) -> StorageProvisionerConfig | None:
+    if not raw:
+        return None
+    name = raw.get("name")
+    provisioner = raw.get("provisioner")
+    if not name or not provisioner:
+        return None
+    params = raw.get("parameters")
+    parameters: dict[str, str] = {}
+    if isinstance(params, dict):
+        for key, value in params.items():
+            if value is None:
+                continue
+            parameters[str(key)] = str(value)
+    allowed_topologies = raw.get("allowedTopologies")
+    if not isinstance(allowed_topologies, list):
+        allowed_topologies = []
+    topology_keys = _normalize_string_list(raw.get("topologyKeys"))
+    mount_options = _normalize_string_list(raw.get("mountOptions"))
+    access_modes = _normalize_string_list(raw.get("accessModes"))
+    entry_type = str(raw.get("type") or "").strip().lower()
+    if not entry_type:
+        entry_type = "builtin" if str(provisioner).startswith("k1s.io/") else "csi"
+    endpoint = raw.get("endpoint")
+    controller_endpoint = raw.get("controllerEndpoint") or endpoint
+    node_endpoint = raw.get("nodeEndpoint") or endpoint
+    is_default = _parse_bool(
+        raw.get("isDefault")
+        or raw.get("default")
+        or raw.get("defaultClass")
+        or raw.get("is_default")
+    )
+    return StorageProvisionerConfig(
+        name=str(name),
+        provisioner=str(provisioner),
+        type=entry_type,
+        controller_endpoint=str(controller_endpoint) if controller_endpoint else None,
+        node_endpoint=str(node_endpoint) if node_endpoint else None,
+        parameters=parameters,
+        access_modes=access_modes,
+        volume_binding_mode=raw.get("volumeBindingMode"),
+        reclaim_policy=raw.get("reclaimPolicy"),
+        allow_volume_expansion=raw.get("allowVolumeExpansion"),
+        mount_options=mount_options,
+        allowed_topologies=allowed_topologies,
+        topology_keys=topology_keys,
+        is_default=is_default,
+    )
+
+
+def _storage_class_from_provisioner(
+    entry: StorageProvisionerConfig,
+) -> StorageClassConfig:
+    return StorageClassConfig(
+        name=entry.name,
+        provisioner=entry.provisioner,
+        parameters=entry.parameters,
+        reclaim_policy=entry.reclaim_policy,
+        volume_binding_mode=entry.volume_binding_mode,
+        allow_volume_expansion=entry.allow_volume_expansion,
+        mount_options=entry.mount_options,
+        allowed_topologies=entry.allowed_topologies,
+        topology_keys=entry.topology_keys,
+        is_default=entry.is_default,
+    )
+
+
 def _parse_storage_quota(raw: Mapping[str, Any]) -> StorageQuotaConfig | None:
     if not raw:
         return None
@@ -156,18 +290,44 @@ def _parse_storage_quota(raw: Mapping[str, Any]) -> StorageQuotaConfig | None:
     return StorageQuotaConfig(namespace=str(namespace), hard_storage=str(hard_storage))
 
 
-def load_storage_classes(path: Path | None) -> list[StorageClassConfig]:
-    """Load StorageClass definitions from YAML."""
+def _dedupe_storage_classes(items: list[StorageClassConfig]) -> list[StorageClassConfig]:
+    seen: set[str] = set()
+    out: list[StorageClassConfig] = []
+    for sc in items:
+        if sc.name in seen:
+            continue
+        seen.add(sc.name)
+        out.append(sc)
+    return out
+
+
+def load_storage_registry(
+    path: Path | None,
+) -> tuple[list[StorageClassConfig], StorageProvisionerRegistry]:
+    """Load StorageClasses and provisioner registry from YAML."""
 
     if path is None or not path.exists():
-        return []
+        return [], StorageProvisionerRegistry([])
     docs = list(yaml.safe_load_all(path.read_text(encoding="utf-8")))
     if not docs:
-        return []
-    out: list[StorageClassConfig] = []
+        return [], StorageProvisionerRegistry([])
+
+    classes: list[StorageClassConfig] = []
+    provisioners: list[StorageProvisionerConfig] = []
     for data in docs:
         if not data:
             continue
+        if isinstance(data, dict) and isinstance(data.get("provisioners"), list):
+            for raw in data.get("provisioners") or []:
+                if not isinstance(raw, dict):
+                    continue
+                entry = _parse_provisioner_entry(raw)
+                if entry is None:
+                    continue
+                provisioners.append(entry)
+                classes.append(_storage_class_from_provisioner(entry))
+            continue
+
         items: list[Mapping[str, Any]] = []
         if isinstance(data, list):
             items = [d for d in data if isinstance(d, dict)]
@@ -181,8 +341,15 @@ def load_storage_classes(path: Path | None) -> list[StorageClassConfig]:
                 continue
             sc = _parse_storage_class(raw)
             if sc is not None:
-                out.append(sc)
-    return out
+                classes.append(sc)
+    return _dedupe_storage_classes(classes), StorageProvisionerRegistry(provisioners)
+
+
+def load_storage_classes(path: Path | None) -> list[StorageClassConfig]:
+    """Load StorageClass definitions from YAML."""
+
+    classes, _registry = load_storage_registry(path)
+    return classes
 
 
 def load_storage_quotas(path: Path | None) -> list[StorageQuotaConfig]:
@@ -225,3 +392,16 @@ def load_provisioners(path: Path | None) -> list[StorageClassConfig]:
     """Backward-compatible alias for storage class loading."""
 
     return load_storage_classes(path)
+
+
+def load_storage_provisioner_registry(path: Path | None) -> StorageProvisionerRegistry:
+    """Load provisioner registry entries (built-in + CSI)."""
+
+    _classes, registry = load_storage_registry(path)
+    return registry
+
+
+def load_storage_provisioners(path: Path | None) -> list[StorageProvisionerConfig]:
+    """Load provisioner entries as a list."""
+
+    return load_storage_provisioner_registry(path).provisioners

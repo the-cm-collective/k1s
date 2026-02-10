@@ -1,85 +1,204 @@
-# Site-to-Site Storage Mounts (NetFS + CSI Options)
+# Site-to-Site Storage (Chosen Path: CSI gRPC Client)
 
-This document summarizes current cross-site storage behavior when a WireGuard-based
-site-to-site overlay is in use, then outlines next CSI options with pros/cons and
-implementation scope.
+This document reframes site-to-site storage around the selected entry point:
+Option 2 (native CSI gRPC client integration). It documents scope, architecture,
+and the phased implementation steps required to land cross-site CSI storage.
+Alternate paths are preserved in the legacy section at the end.
 
-## Current Capabilities
+## Goals
 
-### What works today (NetFS)
-- NFS-backed PVs mount on the node agent and are bind-mounted into pods.
-- Dynamic NFS provisioning works when the controller has `AE_STORAGE_NFS_SERVER` and
-  `AE_STORAGE_NFS_PATH` set and seeds the `k1s-nfs` StorageClass.
-- The node agent resolves PVCs using the apishim store when `AE_ENABLE_NETFS=1`.
-- Mounts land under `AE_NETFS_ROOT` (default `/var/lib/ae/netfs/<ns>/<pvc>`).
-- Mount options are honored from the StorageClass and PV `mountOptions`.
-- RWX is supported for NFS; block volumes are not supported for the NFS provisioner.
+- Provide cross-site RWX storage using a standard CSI driver.
+- Keep k1s aligned with Kubernetes CSI semantics (PVC/PV, VolumeAttachment, events).
+- Enable hub-and-spoke deployment where controller runs on the hub and node agents
+  run on edge sites over the WireGuard overlay.
 
-### Overlay impact
-- The WG overlay is transport only. Storage traffic flows directly between the
-  edge node and the NFS server address (often the hub WG IP).
-- The controller does not proxy storage traffic.
+## Current State (Baseline)
 
-### What is not cross-site
-- Local-path storage (`k1s.io/local-path`) is node-local and not suitable for
-  site-to-site use.
+- NetFS + NFS works today for cross-site RWX.
+- CSI PVs support gRPC staging/publish when endpoints are configured.
+- VolumeAttachment objects are tied to controller publish/unpublish semantics.
+- Remote nodes must use the apishim store (SQLite is not suitable across sites).
 
-## Operational Pattern (Core Hub + SEA Edge)
+## Decisions (Entry Point)
 
-- Hub controller seeds StorageClass and PV/PVC objects.
-- SEA node runs the node agent with `AE_ENABLE_NETFS=1` and access to the apishim
-  store (`AE_APISHIM_DSN` strongly preferred for remote nodes).
-- SEA node mounts `server:path` using NFS and binds it into the container.
-- NFS server address should be the hub WG IP so the SEA node routes over the overlay.
-- The SEA node must have `mount`/`umount` plus an NFS helper (`mount.nfs` or
-  `mount.nfs4`) and sufficient privileges.
+- Entry point: Option 2 (native CSI gRPC client integration).
+- Reference driver: CephFS (RWX filesystem storage).
+- Volume priority: RWX filesystem first.
+- Placement: CSI controller calls from hub, CSI node calls from each edge node.
+- Topology: site-aware placement using `topologyKeys: ["site"]`.
 
-## Current Gaps and Constraints
+## Target Architecture
 
-- CSI is marker-only. PVs with `spec.csi` are validated and recorded, but there is
-  no CSI gRPC staging/publish in the node agent.
-- VolumeAttachment is enforced for CSI PVs, but attach/publish semantics are not
-  executed by k1s.
-- Remote nodes require apishim store access; local sqlite (`state/apishim.db`) is
-  not viable across sites.
-- NFS provisioning with `AE_STORAGE_NFS_HOSTPATH` only works when the controller
-  host is also the NFS server host.
-- Storage conformance is partial and still evolving (PVC/PV/StorageClass parity
-  is a workstream).
+- Controller (hub):
+  - Provisions CSI volumes via CreateVolume/DeleteVolume.
+  - Performs ControllerPublish/ControllerUnpublish when attachRequired=true.
+  - Writes VolumeAttachment objects and attachment status.
+- Node agent (edge):
+  - Performs NodeStage/NodePublish/NodeUnpublish/NodeUnstage.
+  - Writes CSI marker payload for traceability.
+- Configuration:
+  - Storage provisioner registry defines controller and node endpoints.
+  - StorageClass holds CSI parameters, secrets, mount options, topology.
 
-## CSI Options for Initial Implementation
+## Implementation Phases (Step by Step)
 
-### Option 1: Exec-based CSI hooks (Phase 1 in `docs/wip/csi.md`)
-- Scope: Add hook env vars for create/delete/publish/stage and pass PV/PVC/secret
-  context via JSON.
-- Capabilities: Enables real mounts for a chosen CSI driver without full gRPC.
-- Pros: Fast to implement, driver-agnostic, minimal architecture changes.
-- Cons: Non-standard, bespoke wiring per driver, harder to support sidecars.
+### Status Overview
 
-### Option 2: Native CSI gRPC services (Phase 2)
-- Scope: Implement CSI Identity, Controller, and Node services inside k1s.
-- Capabilities: Standard CSI semantics, direct integration with CSI drivers.
-- Pros: Aligns with upstream CSI spec; unlocks broader driver compatibility.
-- Cons: Larger engineering effort; must manage idempotency, retries, and state.
+| Phase | Scope | Status |
+| --- | --- | --- |
+| Phase 0 | CSI semantic fixes | Done |
+| Phase 1 | Controller gRPC client | Done |
+| Phase 2 | Node gRPC client | Done |
+| Phase 3 | Site-to-site operationalization | In progress |
+| Phase 4 | Sidecar parity | Future |
 
-### Option 3: CSI sidecar parity (Phase 3)
-- Scope: Make apishim + controller fully compatible with external provisioner,
-  attacher, snapshotter, and resizer sidecars.
-- Capabilities: End-to-end CSI workflows with standard Kubernetes sidecars.
-- Pros: Best compatibility with vendor drivers and tooling.
-- Cons: Requires solid CSI gRPC foundation and robust storage object semantics.
+### Phase 0 — CSI semantic fixes (completed or near-term)
 
-## Recommended Path (Near-Term)
+1. Respect `CSIDriver.spec.attachRequired`:
+   - If false, do not create VolumeAttachment and do not block mounts.
+   - If true, enforce VolumeAttachment gating.
+2. Align read-only semantics:
+   - Honor `pv.spec.csi.readOnly` for filesystem and block.
+3. Extend CSI marker payload:
+   - Add fsType, readOnly, volumeAttributes, publishContext.
+4. Improve eventing:
+   - Emit explicit events for missing attachments, missing secrets, missing endpoints.
+5. Add tests:
+   - attachRequired=false path.
+   - CSI block PV with devicePath.
 
-- Continue using NFS-backed NetFS for cross-site RWX storage.
-- Add exec-based CSI hooks for a reference driver (one driver, one topology) to
-  validate the mount lifecycle end-to-end.
-- Use the hook-based path to validate secrets, attachments, and publish semantics
-  before committing to full CSI gRPC.
+Exit criteria:
+- CSI PVs with attachRequired=false mount without a VolumeAttachment.
+- Marker payload contains the extended fields.
+- Unit tests cover attachRequired toggles and CSI block PV behavior.
 
-## Open Questions
+### Phase 1 — Controller gRPC client integration
 
-- Which driver should be the reference CSI target (CephFS, RBD, EBS, etc.)?
-- Do we need RWO block volumes first, or is RWX file storage the priority?
-- Where should CSI controller and node components run (hub only, edge only, both)?
-- What topology or failure domains must be enforced for the first release?
+1. Add CSI controller gRPC client wrapper with timeouts and error mapping.
+2. Add provisioner registry file format:
+   - Per-entry controller and node endpoints.
+   - Associate entries with StorageClass/provisioner names.
+3. Implement dynamic provisioning:
+   - CreateVolume using StorageClass parameters and secret refs.
+   - DeleteVolume for reclaimPolicy=Delete paths.
+4. Implement ControllerPublish/ControllerUnpublish:
+   - Use VolumeAttachment as the canonical state object.
+   - Write attached=true/false plus attachError details.
+5. Add reconciliation rules:
+   - Multi-attach guardrails for RWO.
+   - Cleanup attachments on PV delete.
+6. Add events and metrics:
+   - AttachFailed, CsiEndpointMissing, CsiGrpcUnavailable.
+7. Add unit tests:
+   - Provisioned CSI PVs.
+   - VolumeAttachment create/update and attachError behavior.
+
+Exit criteria:
+- Controller can provision and delete CSI volumes for the reference driver.
+- VolumeAttachment status reflects controller publish results.
+- Attach/detach events and metrics are visible and actionable.
+
+### Phase 2 — Node gRPC client integration
+
+1. Add CSI node gRPC client wrapper with timeouts and error mapping.
+2. Implement NodeStage/NodePublish/NodeUnpublish/NodeUnstage:
+   - Use staging paths under `AE_CSI_STAGE_ROOT`.
+   - Honor mount options and readOnly flag.
+3. Read publishContext from VolumeAttachment and include in Node calls.
+4. Write CSI marker payload on successful publish.
+5. Add error handling:
+   - NodeStage unimplemented fallback (skip staging if UNIMPLEMENTED).
+   - Clear events for failures (NodeStageFailed/NodePublishFailed).
+6. Add unit tests:
+   - Stage/publish flow with a fake node client.
+   - attachRequired=false path bypassing attachment gating.
+
+Exit criteria:
+- A CSI volume mounts on edge nodes using NodeStage/NodePublish.
+- Marker payload is written and contains publishContext.
+- Node failures produce clear, K8s-aligned events.
+
+### Phase 3 — Site-to-site operationalization
+
+1. Topology and placement:
+   - Define `topologyKeys: ["site"]` in the StorageClass.
+   - Configure nodes with site labels used by the CSI driver.
+2. Reference deployment:
+   - Document CephFS CSI deployment expectations (controller on hub, nodes on edge).
+3. Overlay validation:
+   - Ensure CSI endpoints are reachable over WG overlay.
+4. Runbook updates:
+   - Add operational checks to `docs/ops/runbook.md`.
+   - Include recovery steps for attachment or publish failures.
+5. End-to-end smoke tests:
+   - PVC -> PV -> VolumeAttachment -> NodePublish -> mounted path.
+
+Exit criteria:
+- Cross-site RWX mount works with CephFS over the overlay.
+- Runbook covers common failure modes.
+- A documented, repeatable smoke test exists.
+
+#### Phase 3 Step 1 — Topology + Labels (Concrete Guidance)
+
+Label key and StorageClass topology:
+- Use the `site` label for placement (example: `site=hub`, `site=sea-edge-02`).
+- Set `topologyKeys: ["site"]` in the StorageClass.
+
+Node labeling examples:
+```
+AE_NODE_LABELS="role=hub,site=hub"
+AE_NODE_LABELS="role=worker,site=sea-edge-02"
+```
+
+StorageClass example:
+```
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: cephfs-rwx
+provisioner: csi.ceph.com
+parameters:
+  csi.storage.k8s.io/fstype: ceph
+topologyKeys:
+  - site
+```
+
+Inputs:
+- StorageClass with `topologyKeys: ["site"]`.
+- Node labels including `site=<site-id>`.
+- Provisioner registry entry with controller and node endpoints.
+
+Outputs:
+- PVC binds to a PV whose selected node matches the `site` label.
+- VolumeAttachment references the selected node (when attachRequired=true).
+- NodePublish is executed on the matching site node.
+
+Validation checklist:
+- `ae nodes` shows `site` labels on all nodes.
+- PVC binds to the expected site.
+- VolumeAttachment exists and `status.attached=true` (when attachRequired=true).
+
+### Phase 4 — Sidecar parity (future)
+
+1. Ensure full compatibility for external provisioner, attacher, snapshotter, resizer.
+2. Implement leader election compatibility and required CRDs.
+3. Expand reconciliation for VolumeSnapshot/VolumeSnapshotContent.
+4. Add conformance and CSI sanity test coverage.
+
+Exit criteria:
+- Standard CSI sidecar deployments run without k1s-specific patches.
+- Core CSI sanity tests pass for the reference driver.
+
+## Legacy / Alternate Paths (Not chosen as entry point)
+
+### Option 1 — Exec-based CSI hooks
+
+- Fast to implement but non-standard and driver-specific.
+- Adds bespoke hook wiring and JSON contracts that drift from CSI sidecars.
+- Not selected as the entry point, but could be used as a short-term bridge.
+
+### Option 3 — Sidecar parity as the entry point
+
+- Full compatibility, but requires the gRPC foundation and robust storage semantics.
+- High effort and risk without first landing controller/node gRPC clients.
+- Deferred until after Option 2 is fully validated.

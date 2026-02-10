@@ -1,17 +1,60 @@
-# Core-Edge Rosenpass WG PSK Smoke Test
+# Core-Edge WireGuard PSK Smoke Test (with/without Rosenpass)
 
 Purpose
-- Verify managed Rosenpass (Option C) starts, peers are discovered from the controller, and WireGuard handshakes succeed.
+- Verify WireGuard overlay setup for core/edge sites with either plain PSK or Rosenpass-managed PSK.
+- Validate peer discovery, node registration, and overlay handshakes across NAT/CGNAT.
 
 Prereqs
 - WireGuard tools installed (`wg`, `wg-quick`) on hub and edge hosts.
-- Rosenpass installed on hub and edge hosts.
+- Rosenpass installed on hub and edge hosts (Flow B only).
 - Hub host reachable from edge on UDP `51820` (or your chosen WG listen port).
 Notes
 - Run `make k1s-core` without `sudo`. The controller stack writes under `state/`; if it becomes root-owned, subsequent non-root runs will fail. If you already ran `make k1s-core` with `sudo`, fix ownership with `sudo chown -R $USER:$USER state`.
 - The node process needs elevated privileges to apply WireGuard configuration. Use `sudo -E make k1s-core-node` / `k1s-edge-node` and keep `AE_ROSENPASS_DIR` in a gitignored path (the defaults use `state/rosenpass`).
 - Rosenpass `verbosity` only accepts `Quiet` or `Verbose`. `AE_ROSENPASS_LOG_LEVEL=verbose` maps to `Verbose` in the generated config.
 - The make helpers default `AE_ROSENPASS_DIR` to `/var/lib/ae/rosenpass` when running as root, so sudo-running nodes do not create root-owned folders under `state/`.
+- Default ingress for remote sites should use `EDGE_INGRESS_MODE=core-proxy` unless you are testing edge-local ingress.
+
+Flow A — Plain WireGuard PSK (no Rosenpass)
+- Use this flow when you want a minimal dependency setup and manage WireGuard configs yourself.
+- Ensure your WG configs include `PersistentKeepalive=25` on edge peers for NAT/CGNAT traversal.
+- Hub must have a reachable public UDP endpoint; edges only need outbound UDP.
+
+Step A1: Start the hub controller with Agent API
+```bash
+AE_LOG_LEVEL=debug \
+AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
+python -m ae.controller --loop
+```
+
+Step A2: Start the hub node with a WG config (PSK)
+```bash
+sudo -E \
+  AE_NODE_ID=hub-1 \
+  AE_NODE_LABELS="role=hub,site=hub,wg_role=hub,wg_psk=psk,wg_endpoint=<PUBLIC_IP>:51820" \
+  AE_WG_CONFIG="$(cat /etc/wireguard/wg-hub.conf)" \
+  AE_WG_INTERFACE=wg-hub \
+  AE_AGENT_TOKEN=devtoken \
+  AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+  python -m ae.node --ensure-pod-net
+```
+
+Step A3: Start the edge node with a WG config (PSK)
+```bash
+sudo -E \
+  AE_NODE_ID=edge-1 \
+  AE_NODE_LABELS="site=sea-edge-02,wg_role=spk,wg_psk=psk" \
+  AE_WG_CONFIG="$(cat /etc/wireguard/wg-edge.conf)" \
+  AE_WG_INTERFACE=wg-edge \
+  AE_AGENT_TOKEN=devtoken \
+  AE_CONTROLLER_URL=http://<HUB_IP>:9110 \
+  python -m ae.node --ensure-pod-net
+```
+Notes
+- On single-host labs, set `AE_WG_TABLE=off` for the edge node.
+- If both sites are behind CGNAT, you will need a relay or public hub endpoint.
+
+Flow B — WireGuard + Rosenpass
 Single-host note
 - If you run hub + edge on the same host, use distinct `AE_ROSENPASS_DIR` and `AE_WG_INTERFACE` values per node to avoid clobbering keys and WG config. Example:
   - Hub: `AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub` `AE_ROSENPASS_INTERFACE=wg-hub` `AE_WG_LISTEN_PORT=51820`
@@ -99,9 +142,17 @@ Topology
 - Hub WG endpoint: `<PUBLIC_IP>:51820`
 - Hub pod CIDR: `10.42.0.0/24`
 - Edge pod CIDR: `10.42.1.0/24`
+NAT/CGNAT guidance
+- Hub must expose a public UDP endpoint for WireGuard.
+- Edges behind NAT/CGNAT should set `PersistentKeepalive=25` in their WG configs.
+- If both sites are behind CGNAT, use a relay or move the hub to a public endpoint.
 Label conventions (for dashboard clarity)
-- Hub: `wg_role=hub`, `wg_psk=rp` (rp = rosenpass).
-- Edge: `wg_role=spk`, `wg_psk=rp`.
+- Flow A (plain PSK)
+  - Hub: `wg_role=hub`, `wg_psk=psk`
+  - Edge: `wg_role=spk`, `wg_psk=psk`
+- Flow B (Rosenpass)
+  - Hub: `wg_role=hub`, `wg_psk=rp` (rp = rosenpass)
+  - Edge: `wg_role=spk`, `wg_psk=rp`
 Note
 - When any node advertises `wg_role`, the overlay endpoints and `/system` graph only include nodes with `wg_role` set. This keeps controller/gateway nodes out of the WireGuard overlay view.
 
@@ -337,7 +388,7 @@ Notes
 - If you want to keep `api.home.arpa` instead of overriding `AE_APISHIM_SERVER`, add a hosts entry:
   - `127.0.0.1 api.home.arpa` (or map to the hub IP for remote use).
 
-Step 10: NetFS storage over the WG overlay (NFS + CSI notes)
+Step 10: NetFS + CSI storage over the WG overlay
 Overview
 - NetFS mounts happen on the node agent. The controller only seeds PVC/PV/StorageClass objects.
 - For remote edge nodes, NetFS requires access to the apishim store. Prefer `AE_APISHIM_DSN` (Postgres). `state/apishim.db` is local-only.
@@ -366,9 +417,20 @@ source <(ae auth local)
 ae apply -f docs/site/examples/netfs-nfs-sea-edge-02-edge-1.yaml
 ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
 ```
-CSI note
-- Current NetFS CSI support is marker-only: static PVs + VolumeAttachment checks, no CSI gRPC staging/publish.
-- To use CSI across the overlay, run the CSI controller + node plugins for your driver on the SEA node and hub, and ensure the PV references that driver.
+CSI over the overlay
+- Configure controller + node endpoints in `AE_STORAGE_PROVISIONERS` (see `configs/storage-provisioners.yaml`).
+- Ensure the CSI controller plugin runs on the hub and the CSI node plugin runs on each edge node.
+- StorageClass should include `topologyKeys: ["site"]` and required CSI secrets.
+- CSI staging paths default to `AE_CSI_STAGE_ROOT=/var/lib/ae/csi`.
+Minimal CSI smoke (CephFS example)
+```bash
+# Hub controller (before start)
+export AE_STORAGE_PROVISIONERS=/path/to/configs/storage-provisioners.yaml
+
+source <(ae auth local)
+ae apply -f specs/examples/echo-stateful.yaml --storage-class-name cephfs-rwx --pvc-access-modes ReadWriteMany
+ae status echo-stateful --wide --events
+```
 
 Troubleshooting
 - If overlay peers are empty, check `AE_AGENT_API_PORT` and `AE_AGENT_API_TOKEN`.
