@@ -15,15 +15,26 @@ from typing import Any
 
 from ae.apishim.store import ObjectStore
 
+import base64
+import binascii
+
+try:  # pragma: no cover - optional dependency
+    import grpc
+except Exception:  # pragma: no cover
+    grpc = None
+
 from .config import (
     DEFAULT_CLASS_ANNOTATIONS,
     StorageClassConfig,
     StorageConfig,
+    StorageProvisionerConfig,
+    StorageProvisionerRegistry,
     StorageQuotaConfig,
-    load_storage_classes,
+    load_storage_registry,
     load_storage_quotas,
     select_default_class,
 )
+from .csi import CsiControllerClient, build_volume_capability
 
 LOGGER = logging.getLogger(__name__)
 
@@ -38,6 +49,8 @@ PV_RESOURCE = "persistentvolumes"
 VA_RESOURCE = "volumeattachments"
 EVENT_RESOURCE = "events"
 CSC_RESOURCE = "csistoragecapacities"
+CSIDRIVER_RESOURCE = "csidrivers"
+SECRETS_RESOURCE = "secrets"  # noqa: S105 - Kubernetes resource plural
 
 SNAP_GROUP = "snapshot.storage.k8s.io"
 SNAP_VERSION = "v1"
@@ -75,7 +88,9 @@ class StorageController:
     def __init__(self, store: ObjectStore, *, config: StorageConfig | None = None) -> None:
         self._store = store
         self._config = config or StorageConfig.from_env()
-        self._storage_classes = load_storage_classes(self._config.provisioners_path)
+        classes, registry = load_storage_registry(self._config.provisioners_path)
+        self._storage_classes = classes
+        self._provisioners: StorageProvisionerRegistry = registry
         if not self._storage_classes and self._seed_defaults_enabled():
             self._storage_classes = self._builtin_storage_classes()
         self._default_class = self._resolve_default(self._storage_classes)
@@ -87,6 +102,8 @@ class StorageController:
         self._pvc_thread: threading.Thread | None = None
         self._pv_thread: threading.Thread | None = None
         self._snapshot_thread: threading.Thread | None = None
+        self._csi_timeout = float(os.getenv("AE_CSI_TIMEOUT_SECONDS", "10") or 10)
+        self._csi_clients: dict[str, CsiControllerClient] = {}
 
     def sync(self) -> int:
         """Sync configured StorageClass objects into the apishim store."""
@@ -599,7 +616,7 @@ class StorageController:
         pv = self._store.get(CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, pv_name)
         if pv is None:
             return
-        self._delete_volume_attachments(pv.name)
+        self._delete_volume_attachments(pv)
         policy = self._pv_reclaim_policy(pv)
         if policy == "Delete":
             self._delete_pv_and_backing(pv)
@@ -620,9 +637,10 @@ class StorageController:
         )
 
     def _handle_pv_deleted(self, pv) -> None:
-        self._delete_volume_attachments(pv.name)
+        self._delete_volume_attachments(pv)
         policy = self._pv_reclaim_policy(pv)
         if policy == "Delete":
+            self._csi_delete_volume(pv)
             self._cleanup_backing_path(pv)
         claim = (pv.spec or {}).get("claimRef") or {}
         pvc_name = claim.get("name")
@@ -737,6 +755,17 @@ class StorageController:
         if provisioner == LOCAL_PATH_PROVISIONER:
             return self._provision_local_path(
                 pvc, sc, selected_node=selected_node, source_info=source_info
+            )
+        entry = self._provisioners.for_storage_class(sc.name) or self._provisioners.for_driver(
+            provisioner
+        )
+        if entry is not None and entry.type == "csi":
+            return self._provision_csi(pvc, sc, entry, source_info=source_info)
+        if provisioner:
+            self._record_pvc_event(
+                pvc,
+                "ProvisionerUnsupported",
+                f"provisioner {provisioner} not supported",
             )
         return None
 
@@ -941,7 +970,13 @@ class StorageController:
         if not driver or not handle:
             self._record_pvc_event(pvc, "InvalidVolume", "CSI PV missing driver/volumeHandle")
             return
+        attach_required = self._csi_driver_attach_required(driver)
         attachments = self._volume_attachments_for_pv(pv.name)
+        if not attach_required:
+            for att in attachments:
+                with suppress(Exception):
+                    self._store.delete(SC_GROUP, SC_VERSION, VA_RESOURCE, None, att.name)
+            return
         single_writer = self._is_single_writer(pv_spec)
         conflict_nodes = sorted(
             {
@@ -969,10 +1004,81 @@ class StorageController:
             "nodeName": node,
             "source": {"persistentVolumeName": pv.name},
         }
+        publish_context: dict[str, str] | None = None
+        attach_error: str | None = None
+        existing = self._store.get(SC_GROUP, SC_VERSION, VA_RESOURCE, None, name)
+        if existing is not None and self._attachment_attached(existing):
+            publish_context = self._attachment_publish_context(existing)
+        if publish_context is None:
+            sc_name = pv_spec.get("storageClassName") if isinstance(pv_spec, dict) else None
+            sc = (
+                self._store.get(SC_GROUP, SC_VERSION, SC_RESOURCE, None, sc_name)
+                if sc_name
+                else None
+            )
+            sc_spec = sc.spec if sc is not None else {}
+            if not isinstance(sc_spec, dict):
+                sc_spec = {}
+            entry = self._provisioners.for_storage_class(sc_name) or self._provisioners.for_driver(
+                driver
+            )
+            # If no registry entry exists, fall back to legacy marker-only behavior.
+            if entry is None or entry.type != "csi":
+                publish_context = {}
+            else:
+                controller_secret, controller_ref = self._csi_secret_data_from_params(
+                    sc_spec, "controller-publish"
+                )
+                if controller_ref and controller_secret is None:
+                    attach_error = "controller-publish secret not found"
+                else:
+                    volume_mode = str(pv_spec.get("volumeMode") or "Filesystem")
+                    fs_type = csi.get("fsType")
+                    mount_flags = list(
+                        (pv_spec.get("mountOptions") if isinstance(pv_spec, dict) else None)
+                        or sc_spec.get("mountOptions")
+                        or []
+                    )
+                    volume_capability = build_volume_capability(
+                        access_modes=pv_spec.get("accessModes") or [],
+                        volume_mode=volume_mode,
+                        fs_type=str(fs_type) if fs_type else None,
+                        mount_flags=mount_flags,
+                    )
+                    if grpc is None:
+                        publish_context = {}
+                    else:
+                        client = self._csi_controller_client(
+                            driver, str(sc_name) if sc_name else None
+                        )
+                        if client is None:
+                            attach_error = "CSI controller endpoint missing"
+                        else:
+                            try:
+                                resp = client.controller_publish(
+                                    volume_id=handle,
+                                    node_id=node,
+                                    volume_capability=volume_capability,
+                                    read_only=bool(csi.get("readOnly", False)),
+                                    secrets=controller_secret,
+                                    volume_context=csi.get("volumeAttributes"),
+                                )
+                                publish_context = {
+                                    str(k): str(v)
+                                    for k, v in (resp.publish_context or {}).items()
+                                    if v is not None
+                                }
+                            except grpc.RpcError as exc:
+                                attach_error = f"CSI ControllerPublish failed: {exc.code().name}"
         status = {
-            "attached": True,
+            "attached": attach_error is None,
             "attachmentMetadata": {"volumeHandle": handle},
         }
+        if publish_context:
+            status["attachmentMetadata"]["publishContext"] = publish_context
+        if attach_error:
+            status["attachError"] = {"message": attach_error, "time": datetime.now(UTC).isoformat()}
+            self._record_pvc_event(pvc, "AttachFailed", attach_error)
         self._store.upsert(
             SC_GROUP,
             SC_VERSION,
@@ -2084,6 +2190,188 @@ class StorageController:
             status=status,
         )
 
+    def _provision_csi(
+        self,
+        pvc,
+        sc,
+        entry: StorageProvisionerConfig,
+        *,
+        source_info: dict[str, Any] | None = None,
+    ):
+        if source_info:
+            source_kind = source_info.get("source_kind")
+            if source_kind == "snapshot":
+                self._record_pvc_event(
+                    pvc,
+                    "SnapshotRestoreSkipped",
+                    "snapshot restore requires external CSI snapshotter",
+                )
+            else:
+                self._record_pvc_event(
+                    pvc,
+                    "CloneRestoreSkipped",
+                    "clone restore requires external CSI snapshotter",
+                )
+            return None
+        uid = self._pvc_uid(pvc)
+        if not uid:
+            self._record_pvc_event(pvc, "ProvisioningFailed", "PVC uid missing")
+            return None
+        pv_name = f"pvc-{uid}"
+        existing = self._store.get(CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, pv_name)
+        if existing is not None:
+            if self._pv_claim_ref_conflicts(existing, pvc):
+                self._record_pvc_event(
+                    pvc,
+                    "ProvisioningConflict",
+                    f"existing PV {pv_name} is claimed by another PVC",
+                )
+                return None
+            return existing
+
+        sc_spec = sc.spec or {}
+        params = sc_spec.get("parameters") if isinstance(sc_spec, dict) else {}
+        params = params if isinstance(params, dict) else {}
+        fs_type = params.get("csi.storage.k8s.io/fstype") or params.get("fsType") or params.get(
+            "fstype"
+        )
+        access_modes = list((pvc.spec or {}).get("accessModes") or [])
+        if not access_modes:
+            access_modes = list(entry.access_modes or [])
+        if not access_modes:
+            access_modes = ["ReadWriteOnce"]
+        volume_mode = str((pvc.spec or {}).get("volumeMode") or "Filesystem")
+        mount_flags = list(sc_spec.get("mountOptions") or [])
+        volume_capability = build_volume_capability(
+            access_modes=access_modes,
+            volume_mode=volume_mode,
+            fs_type=str(fs_type) if fs_type else None,
+            mount_flags=mount_flags,
+        )
+        if grpc is None:
+            self._record_pvc_event(
+                pvc, "ProvisioningFailed", "grpc is required for CSI provisioning"
+            )
+            return None
+
+        client = self._csi_controller_client(entry.provisioner, sc.name)
+        if client is None:
+            self._record_pvc_event(
+                pvc,
+                "ProvisioningFailed",
+                f"CSI controller endpoint missing for {entry.provisioner}",
+            )
+            return None
+
+        provisioner_secret, _provisioner_ref = self._csi_secret_data_from_params(
+            sc_spec, "provisioner"
+        )
+        if _provisioner_ref and provisioner_secret is None:
+            self._record_pvc_event(
+                pvc,
+                "SecretNotFound",
+                "provisioner secret not found for CSI CreateVolume",
+            )
+            return None
+
+        try:
+            resp = client.create_volume(
+                name=pv_name,
+                capacity_bytes=self._quantity_bytes(self._pvc_requested_storage(pvc) or ""),
+                volume_capabilities=[volume_capability],
+                parameters=params,
+                secrets=provisioner_secret,
+            )
+        except grpc.RpcError as exc:
+            code = exc.code()
+            if code == grpc.StatusCode.ALREADY_EXISTS:
+                reason = "ProvisioningConflict"
+                msg = f"volume {pv_name} already exists in CSI driver"
+            else:
+                reason = "ProvisioningFailed"
+                msg = f"CSI CreateVolume failed: {code.name}"
+            self._record_pvc_event(pvc, reason, msg)
+            return None
+
+        volume = resp.volume
+        if volume is None or not volume.volume_id:
+            self._record_pvc_event(pvc, "ProvisioningFailed", "CSI CreateVolume missing volume_id")
+            return None
+
+        csi_spec: dict[str, Any] = {
+            "driver": entry.provisioner,
+            "volumeHandle": str(volume.volume_id),
+            "readOnly": False,
+        }
+        if fs_type:
+            csi_spec["fsType"] = str(fs_type)
+        if volume.volume_context:
+            csi_spec["volumeAttributes"] = {str(k): str(v) for k, v in volume.volume_context.items()}
+
+        node_stage_secret, node_stage_ref = self._csi_secret_data_from_params(
+            sc_spec, "node-stage"
+        )
+        node_publish_secret, node_publish_ref = self._csi_secret_data_from_params(
+            sc_spec, "node-publish"
+        )
+        controller_publish_secret, controller_publish_ref = self._csi_secret_data_from_params(
+            sc_spec, "controller-publish"
+        )
+        if node_stage_ref:
+            if node_stage_secret is None:
+                self._record_pvc_event(
+                    pvc,
+                    "SecretNotFound",
+                    "node-stage secret not found for CSI volume",
+                )
+                return None
+            csi_spec["nodeStageSecretRef"] = node_stage_ref
+        if node_publish_ref:
+            if node_publish_secret is None:
+                self._record_pvc_event(
+                    pvc,
+                    "SecretNotFound",
+                    "node-publish secret not found for CSI volume",
+                )
+                return None
+            csi_spec["nodePublishSecretRef"] = node_publish_ref
+        if controller_publish_ref:
+            if controller_publish_secret is None:
+                self._record_pvc_event(
+                    pvc,
+                    "SecretNotFound",
+                    "controller-publish secret not found for CSI volume",
+                )
+                return None
+            csi_spec["controllerPublishSecretRef"] = controller_publish_ref
+
+        annotations = {
+            PROVISIONED_BY_ANNOTATION: entry.provisioner,
+            STORAGE_PROVISIONER_ANNOTATION: entry.provisioner,
+        }
+        pv_spec = {
+            "capacity": self._pvc_requested_capacity(pvc),
+            "accessModes": access_modes,
+            "volumeMode": volume_mode,
+            "storageClassName": sc.name,
+            "persistentVolumeReclaimPolicy": sc_spec.get("reclaimPolicy") or "Delete",
+            "mountOptions": list(sc_spec.get("mountOptions") or []),
+            "claimRef": self._claim_ref_for(pvc),
+            "csi": csi_spec,
+        }
+        pv_meta = {"name": pv_name, "annotations": annotations}
+        status = {"phase": "Available"}
+        return self._store.upsert(
+            CORE_GROUP,
+            CORE_VERSION,
+            PV_RESOURCE,
+            None,
+            pv_name,
+            pv_meta,
+            pv_spec,
+            status=status,
+        )
+
     def _provision_local_path(
         self,
         pvc,
@@ -2323,10 +2611,82 @@ class StorageController:
                 out.append(att)
         return out
 
-    def _delete_volume_attachments(self, pv_name: str) -> None:
-        for att in self._volume_attachments_for_pv(pv_name):
+    def _delete_volume_attachments(self, pv) -> None:  # noqa: ANN001
+        pv_name = getattr(pv, "name", None) or ""
+        attachments = self._volume_attachments_for_pv(pv_name)
+        pv_spec = pv.spec or {}
+        csi = pv_spec.get("csi") if isinstance(pv_spec, dict) else None
+        if isinstance(csi, dict):
+            driver = str(csi.get("driver") or "")
+            handle = str(csi.get("volumeHandle") or "")
+            if driver and handle and self._csi_driver_attach_required(driver):
+                if grpc is not None:
+                    sc_name = pv_spec.get("storageClassName") if isinstance(pv_spec, dict) else None
+                    sc = (
+                        self._store.get(SC_GROUP, SC_VERSION, SC_RESOURCE, None, sc_name)
+                        if sc_name
+                        else None
+                    )
+                    sc_spec = sc.spec if sc is not None else {}
+                    if not isinstance(sc_spec, dict):
+                        sc_spec = {}
+                    controller_secret, controller_ref = self._csi_secret_data_from_params(
+                        sc_spec, "controller-publish"
+                    )
+                    if controller_ref and controller_secret is None:
+                        controller_secret = None
+                    client = self._csi_controller_client(driver, str(sc_name) if sc_name else None)
+                    if client is not None:
+                        for att in attachments:
+                            node = self._attachment_node(att)
+                            if not node:
+                                continue
+                            try:
+                                client.controller_unpublish(
+                                    volume_id=handle,
+                                    node_id=node,
+                                    secrets=controller_secret,
+                                )
+                            except grpc.RpcError:
+                                continue
+        for att in attachments:
             with suppress(Exception):
                 self._store.delete(SC_GROUP, SC_VERSION, VA_RESOURCE, None, att.name)
+
+    def _csi_delete_volume(self, pv) -> None:  # noqa: ANN001
+        pv_spec = pv.spec or {}
+        csi = pv_spec.get("csi") if isinstance(pv_spec, dict) else None
+        if not isinstance(csi, dict):
+            return
+        if grpc is None:
+            return
+        driver = str(csi.get("driver") or "")
+        handle = str(csi.get("volumeHandle") or "")
+        if not driver or not handle:
+            return
+        sc_name = pv_spec.get("storageClassName") if isinstance(pv_spec, dict) else None
+        sc = (
+            self._store.get(SC_GROUP, SC_VERSION, SC_RESOURCE, None, sc_name)
+            if sc_name
+            else None
+        )
+        sc_spec = sc.spec if sc is not None else {}
+        if not isinstance(sc_spec, dict):
+            sc_spec = {}
+        provisioner_secret, provisioner_ref = self._csi_secret_data_from_params(
+            sc_spec, "provisioner"
+        )
+        if provisioner_ref and provisioner_secret is None:
+            provisioner_secret = None
+        client = self._csi_controller_client(driver, str(sc_name) if sc_name else None)
+        if client is None:
+            return
+        try:
+            client.delete_volume(volume_id=handle, secrets=provisioner_secret)
+        except grpc.RpcError as exc:
+            if exc.code() == grpc.StatusCode.NOT_FOUND:
+                return
+            LOGGER.debug("CSI DeleteVolume failed for %s: %s", pv.name, exc.code().name)
 
     @staticmethod
     def _is_single_writer(pv_spec: dict[str, Any]) -> bool:
@@ -2350,6 +2710,109 @@ class StorageController:
             return False
         return bool(status.get("attached"))
 
+    @staticmethod
+    def _attachment_publish_context(att) -> dict[str, str]:
+        status = att.status or {}
+        if not isinstance(status, dict):
+            return {}
+        meta = status.get("attachmentMetadata") or status.get("attachment_metadata")
+        if not isinstance(meta, dict):
+            return {}
+        raw = meta.get("publishContext") or meta.get("publish_context")
+        if not isinstance(raw, dict):
+            return {}
+        return {str(k): str(v) for k, v in raw.items() if v is not None}
+
+    def _csi_driver_attach_required(self, driver: str) -> bool:
+        if not driver:
+            return True
+        try:
+            obj = self._store.get(SC_GROUP, SC_VERSION, CSIDRIVER_RESOURCE, None, driver)
+        except Exception:
+            obj = None
+        if obj is None:
+            return True
+        spec = obj.spec or {}
+        if not isinstance(spec, dict):
+            return True
+        raw = spec.get("attachRequired")
+        if raw is None:
+            return True
+        return bool(raw)
+
+    def _csi_controller_client(
+        self, driver: str, sc_name: str | None
+    ) -> CsiControllerClient | None:
+        entry = self._provisioners.for_storage_class(sc_name) or self._provisioners.for_driver(
+            driver
+        )
+        endpoint = entry.controller_endpoint if entry else None
+        if not endpoint:
+            return None
+        client = self._csi_clients.get(driver)
+        if client is not None and client.endpoint == endpoint:
+            return client
+        client = CsiControllerClient(endpoint, timeout=self._csi_timeout)
+        self._csi_clients[driver] = client
+        return client
+
+    @staticmethod
+    def _decode_secret_value(value: Any) -> str:
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            return str(value)
+        raw = value.strip()
+        if not raw:
+            return ""
+        try:
+            payload = base64.b64decode(raw, validate=True)
+            text = payload.decode("utf-8")
+            check = base64.b64encode(payload).decode("ascii").rstrip("=")
+            if check == raw.rstrip("="):
+                return text
+        except (binascii.Error, UnicodeDecodeError, ValueError):
+            return raw
+        return raw
+
+    def _load_secret_data(self, namespace: str, name: str) -> dict[str, str] | None:
+        if not namespace or not name:
+            return None
+        try:
+            secret = self._store.get(CORE_GROUP, CORE_VERSION, SECRETS_RESOURCE, namespace, name)
+        except Exception:
+            return None
+        if secret is None:
+            return None
+        spec = secret.spec or {}
+        if not isinstance(spec, dict):
+            return None
+        data = spec.get("data") if isinstance(spec.get("data"), dict) else spec
+        if not isinstance(data, dict):
+            return None
+        decoded: dict[str, str] = {}
+        for key, value in data.items():
+            decoded[str(key)] = self._decode_secret_value(value)
+        return decoded
+
+    @staticmethod
+    def _csi_secret_ref_from_params(sc_spec: dict[str, Any], key: str) -> tuple[str | None, str | None]:
+        params = sc_spec.get("parameters") if isinstance(sc_spec, dict) else {}
+        if not isinstance(params, dict):
+            return None, None
+        name = params.get(f"csi.storage.k8s.io/{key}-secret-name")
+        namespace = params.get(f"csi.storage.k8s.io/{key}-secret-namespace")
+        return (str(name) if name else None, str(namespace) if namespace else None)
+
+    def _csi_secret_data_from_params(
+        self, sc_spec: dict[str, Any], key: str
+    ) -> tuple[dict[str, str] | None, dict[str, str] | None]:
+        name, namespace = self._csi_secret_ref_from_params(sc_spec, key)
+        if not name or not namespace:
+            return None, None
+        data = self._load_secret_data(namespace, name)
+        return data, {"name": name, "namespace": namespace}
+
     def _volume_attachment_name(self, pv_name: str, node: str) -> str:
         token = uuid.uuid5(uuid.NAMESPACE_DNS, f"{pv_name}:{node}").hex[:8]
         raw = f"va-{pv_name}-{node}-{token}"
@@ -2364,7 +2827,8 @@ class StorageController:
         return safe[:253]
 
     def _delete_pv_and_backing(self, pv) -> None:
-        self._delete_volume_attachments(pv.name)
+        self._delete_volume_attachments(pv)
+        self._csi_delete_volume(pv)
         self._cleanup_backing_path(pv)
         try:
             self._store.delete(CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, pv.name)

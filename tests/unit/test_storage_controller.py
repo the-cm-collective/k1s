@@ -660,6 +660,106 @@ def test_storage_controller_creates_volume_attachment_for_csi(tmp_path):
     assert (va.status or {}).get("attached") is True
 
 
+def test_storage_controller_skips_attachment_when_attach_not_required(tmp_path):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    pvc_uid = "uid-csi"
+    pv_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "persistentVolumeReclaimPolicy": "Retain",
+        "claimRef": {"namespace": "default", "name": "data", "uid": pvc_uid},
+        "csi": {"driver": "csi.example.com", "volumeHandle": "vol-1"},
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "volumeName": "pv-csi",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    pvc_meta = {
+        "name": "data",
+        "namespace": "default",
+        "uid": pvc_uid,
+        "annotations": {"volume.kubernetes.io/selected-node": "node-a"},
+    }
+    driver_spec = {"attachRequired": False}
+
+    store.upsert("", "v1", "persistentvolumes", None, "pv-csi", {"name": "pv-csi"}, pv_spec)
+    store.upsert("", "v1", "persistentvolumeclaims", "default", "data", pvc_meta, pvc_spec)
+    store.upsert(
+        "storage.k8s.io",
+        "v1",
+        "csidrivers",
+        None,
+        "csi.example.com",
+        {"name": "csi.example.com"},
+        driver_spec,
+    )
+
+    controller.reconcile_once()
+
+    va_name = controller._volume_attachment_name("pv-csi", "node-a")
+    assert store.get("storage.k8s.io", "v1", "volumeattachments", None, va_name) is None
+
+
+def test_storage_controller_provisions_csi_volume(tmp_path, monkeypatch):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    provisioners_path = tmp_path / "provisioners.yaml"
+    provisioners_path.write_text(
+        """
+provisioners:
+  - name: csi-fast
+    provisioner: csi.example.com
+    type: csi
+    controllerEndpoint: unix:///tmp/csi.sock
+    nodeEndpoint: unix:///tmp/csi.sock
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AE_STORAGE_PROVISIONERS", str(provisioners_path))
+    import ae.storage.controller as storage_controller
+
+    monkeypatch.setattr(storage_controller, "grpc", object())
+    controller = StorageController(store)
+    controller.sync()
+
+    pvc_uid = "uid-csi"
+    pvc_spec = {
+        "accessModes": ["ReadWriteMany"],
+        "storageClassName": "csi-fast",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    pvc_meta = {
+        "name": "data",
+        "namespace": "default",
+        "uid": pvc_uid,
+        "annotations": {"volume.kubernetes.io/selected-node": "node-a"},
+    }
+    store.upsert("", "v1", "persistentvolumeclaims", "default", "data", pvc_meta, pvc_spec)
+
+    class FakeResp:
+        def __init__(self):
+            self.volume = type(
+                "V", (), {"volume_id": "vol-1", "volume_context": {"foo": "bar"}}
+            )()
+
+    class FakeClient:
+        def create_volume(self, **_kwargs):  # noqa: ANN003
+            return FakeResp()
+
+    monkeypatch.setattr(
+        StorageController,
+        "_csi_controller_client",
+        lambda self, driver, sc_name: FakeClient(),
+    )
+
+    controller.reconcile_once()
+
+    pv = store.get("", "v1", "persistentvolumes", None, f"pvc-{pvc_uid}")
+    assert pv is not None
+    csi_spec = (pv.spec or {}).get("csi") or {}
+    assert csi_spec.get("volumeHandle") == "vol-1"
+
+
 def test_storage_controller_blocks_multi_attach_for_csi(tmp_path):
     store = ObjectStore(db_path=tmp_path / "apishim.db")
     controller = StorageController(store)

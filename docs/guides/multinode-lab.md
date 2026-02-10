@@ -2,29 +2,73 @@
 
 This walkthrough is a manual test pattern for the core hub plus edge gateways. It focuses on a JetStream hub with lightweight edge sites and multiple gateways per site. For the ops-focused runbook, see `docs/ops/core-edge-manual-test.md`.
 
-## Topology
+## Option A — LAN-only multi-node (no WireGuard)
+
+Use this path when all nodes are on the same LAN and you want typical k8s-style
+cluster semantics without a WireGuard overlay.
+
+Prereqs:
+- All nodes can reach the controller host on `AE_AGENT_API_PORT` (default `9110`).
+- Each worker exposes an `AE_AGENT_ENDPOINT` reachable by the controller.
+
+Step 1: Start the controller (core host)
+```
+AE_ENABLE_SERVICE_PROXY=1 \
+AE_SERVICE_PROVIDER=overlay \
+AE_AGENT_API_PORT=9110 \
+AE_AGENT_API_TOKEN=devtoken \
+python -m ae.controller --loop --specs specs/ --metrics-port 9108
+```
+Notes:
+- Optional CIDR knobs: `AE_SERVICE_IP_POOL`, `AE_POD_CIDR_POOL`, `AE_POD_CIDR_MASK`.
+- Keep `AE_AGENT_API_TOKEN` private; nodes need it for registration.
+
+Step 2: Start each worker node (same LAN)
+```
+AE_CONTROLLER_URL=http://<core-host>:9110 \
+AE_AGENT_TOKEN=devtoken \
+AE_NODE_ID=lan-worker-1 \
+AE_NODE_LABELS="role=worker,site=lan" \
+AE_AGENT_ENDPOINT=http://<worker-host>:9109 \
+AE_POD_CIDR= \
+python -m ae.node --port 9109 --ensure-pod-net
+```
+Notes:
+- Leave `AE_POD_CIDR` empty for auto-assignment on first heartbeat.
+- Repeat for each node with a unique `AE_NODE_ID` and `AE_AGENT_ENDPOINT`.
+
+Step 3: Validate scheduling
+```
+ae nodes
+ae plan -f specs/examples/echo-multinode.yaml --verbose
+python -m ae.cli apply -f specs/examples/echo-multinode.yaml
+```
+
+## Option B — Core + edge gateways (WireGuard + NATS)
+
+### Topology
 - Site A (LAN): `k1s-core` + one gateway on `sfo-edge-01`.
 - Site B (remote): one edge NATS leader with outbound leaf to the hub, two gateways on `sea-edge-02`.
 - Transport: JetStream on hub only; gateways use a local SQLite spool for durability.
 
-## Prereqs
+### Prereqs
 - Hub host reachable on TCP `4222` (NATS) and TCP `7422` (leaf node port).
 - Remote edge NATS can open outbound TCP to `HUB_PUBLIC:7422`.
 - Unique node ids (recommended format: `<site_id>--<node_id>`).
 
-## Start with clear state (recommended)
+### Start with clear state (recommended)
 ```
 make dev-state-clean CONFIRM=1
 ```
 This wipes `state/` (keeps TLS artifacts) and clears any work queues so you can reuse work ids.
 Gateway spools are cleared on exit by default; set `AE_GATEWAY_KEEP_SPOOL=1` to preserve spools for diagnostics.
 
-## Step 1: Start the hub (LAN)
+### Step 1: Start the hub (LAN)
 ```
 AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy make k1s-core
 ```
 
-## Step 2: Start the local site gateway (same LAN)
+### Step 2: Start the local site gateway (same LAN)
 ```
 AE_SITE_ID=sfo-edge-01 \
 AE_NODE_ID=edge-1 \
@@ -33,7 +77,7 @@ make k1s-edge-core
 ```
 Note: `AE_NODE_ID` is auto-scoped to `sfo-edge-01--edge-1` by the gateway.
 
-## Step 3: Register the remote site in hub NATS config
+### Step 3: Register the remote site in hub NATS config
 Dev helper (auto-updates hub config and starts a local edge NATS):
 ```
 make edge-site SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
@@ -42,7 +86,7 @@ Production equivalent:
 - Add a `site-<site_id>-uplink` user in `ops/dev/nats-hub.conf`.
 - Reload the hub NATS (`nats-server --signal reload`).
 
-## Step 4: Edge NATS leader (same-host vs remote)
+### Step 4: Edge NATS leader (same-host vs remote)
 Same host (dev helper):
 - `make edge-site` already starts an edge NATS leader bound to `127.0.0.1:<EDGE_PORT>`.
 - Use `AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224` for the gateways.
@@ -54,7 +98,7 @@ Remote host (behind NAT):
   - Set leaf url to `nats://site-sea-edge-02-uplink:dev@HUB_PUBLIC:7422`.
 - Ensure `HUB_PUBLIC` resolves and is reachable on TCP `7422`.
 
-## Step 5: Start two gateways on the remote site
+### Step 5: Start two gateways on the remote site
 Gateway 1:
 ```
 AE_SITE_ID=sea-edge-02 \
@@ -107,7 +151,7 @@ DEBUG ae.worker_stub: work received node_id=sea-edge-02--edge-1 work_id=test-edg
 DEBUG ae.worker_stub: work completed node_id=sea-edge-02--edge-1 work_id=test-edge-1 attempt=1 status=succeeded
 ```
 
-## Remote Host Runbook (Site B behind NAT/CGNAT)
+### Remote Host Runbook (Site B behind NAT/CGNAT)
 This runbook adds the overlay + node agent steps so apishim can exec/port-forward
 to pods running on remote hosts. NATS remains control-plane only; exec/port-forward
 streams are apishim → node agent.
@@ -157,7 +201,7 @@ python -m ae.node --port 9109 --ensure-pod-net
 ```
 Repeat for additional nodes with unique `AE_NODE_ID` and `AE_POD_CIDR`.
 
-### Validation
+#### Validation
 1. On the hub, verify WG is up:
 ```
 wg show wg0
@@ -179,7 +223,7 @@ ae shell shell-demo-node-sea-edge-02-edge-1 -- /bin/sh
 ae port-forward shell-demo-node-sea-edge-02-edge-1 18082:8080
 ```
 
-## Validation
+### Validation
 ```
 ae nodes
 python -m ae.cli work enqueue --site-id sfo-edge-01 --mode outbox --preferred-node sfo-edge-01--edge-1 --op noop
@@ -192,7 +236,7 @@ Expected:
 - `leafz` shows one or more active leaf connections.
 - Work ledger transitions to `Succeeded` for the test work items.
 
-## Cleanup
+### Cleanup
 - Stop gateways and edge NATS.
 - Stop hub services: `make down`
 

@@ -434,6 +434,21 @@ CSIStorageCapacity overrides:
   `parameters.capacity` (e.g., `5Gi`) or `parameters.capacityBytes` (integer bytes).
 - This bypasses hostPath disk probes and only affects the advertised capacity object.
 
+CSI topology + labels (site placement):
+- StorageClass must define `topologyKeys: ["site"]` (or your chosen key).
+- Nodes must advertise a matching `site=<site-id>` label.
+- Confirm the selected node aligns with the intended site before attaching/mounting.
+
+Recovery checklist:
+- If PVC binds to the wrong site, update node labels and re-apply the PVC.
+- If VolumeAttachment is missing, verify `CSIDriver.attachRequired` and storage class name.
+- If NodePublish fails, confirm CSI node endpoint reachability from the edge site.
+
+Smoke checklist:
+- `ae nodes` shows `site` labels for all nodes.
+- PVC binds on the expected site and VolumeAttachment is present (attachRequired=true).
+- Pod mounts successfully on the matching node.
+
 Common failure reasons (PVC events):
 - `CloneNotReady` / `CloneNotFound`: source PVC missing or not bound.
 - `CloneUnsupported`: block volume or non-hostPath-backed source.

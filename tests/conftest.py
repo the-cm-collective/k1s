@@ -15,5 +15,11 @@ import pytest
 def _clear_state_env(monkeypatch: pytest.MonkeyPatch) -> None:
     if os.getenv("AE_TEST_PRESERVE_ENV") == "1":
         return
-    for key in ("AE_STATE_BACKEND", "AE_ETCD_ENDPOINTS", "AE_ETCD_PREFIX", "AE_PROFILE"):
+    for key in (
+        "AE_STATE_BACKEND",
+        "AE_ETCD_ENDPOINTS",
+        "AE_ETCD_PREFIX",
+        "AE_PROFILE",
+        "AE_STORAGE_PROVISIONERS",
+    ):
         monkeypatch.delenv(key, raising=False)

@@ -723,30 +723,66 @@
     <div class="container">
     <h1>Multi-node Edge Gateway Manual Test</h1>
 <p>This walkthrough is a manual test pattern for the core hub plus edge gateways. It focuses on a JetStream hub with lightweight edge sites and multiple gateways per site. For the ops-focused runbook, see <code>docs/ops/core-edge-manual-test.md</code>.</p>
-<h2>Topology</h2>
+<h2>Option A — LAN-only multi-node (no WireGuard)</h2>
+<p>Use this path when all nodes are on the same LAN and you want typical k8s-style cluster semantics without a WireGuard overlay.</p>
+<p>Prereqs:</p>
+<ul>
+<li>All nodes can reach the controller host on <code>AE_AGENT_API_PORT</code> (default <code>9110</code>).</li>
+<li>Each worker exposes an <code>AE_AGENT_ENDPOINT</code> reachable by the controller.</li>
+</ul>
+<p>Step 1: Start the controller (core host)</p>
+<pre><code>AE_ENABLE_SERVICE_PROXY=1 \
+AE_SERVICE_PROVIDER=overlay \
+AE_AGENT_API_PORT=9110 \
+AE_AGENT_API_TOKEN=devtoken \
+python -m ae.controller --loop --specs specs/ --metrics-port 9108</code></pre>
+<p>Notes:</p>
+<ul>
+<li>Optional CIDR knobs: <code>AE_SERVICE_IP_POOL</code>, <code>AE_POD_CIDR_POOL</code>, <code>AE_POD_CIDR_MASK</code>.</li>
+<li>Keep <code>AE_AGENT_API_TOKEN</code> private; nodes need it for registration.</li>
+</ul>
+<p>Step 2: Start each worker node (same LAN)</p>
+<pre><code>AE_CONTROLLER_URL=http://&lt;core-host&gt;:9110 \
+AE_AGENT_TOKEN=devtoken \
+AE_NODE_ID=lan-worker-1 \
+AE_NODE_LABELS=&quot;role=worker,site=lan&quot; \
+AE_AGENT_ENDPOINT=http://&lt;worker-host&gt;:9109 \
+AE_POD_CIDR= \
+python -m ae.node --port 9109 --ensure-pod-net</code></pre>
+<p>Notes:</p>
+<ul>
+<li>Leave <code>AE_POD_CIDR</code> empty for auto-assignment on first heartbeat.</li>
+<li>Repeat for each node with a unique <code>AE_NODE_ID</code> and <code>AE_AGENT_ENDPOINT</code>.</li>
+</ul>
+<p>Step 3: Validate scheduling</p>
+<pre><code>ae nodes
+ae plan -f specs/examples/echo-multinode.yaml --verbose
+python -m ae.cli apply -f specs/examples/echo-multinode.yaml</code></pre>
+<h2>Option B — Core + edge gateways (WireGuard + NATS)</h2>
+<h3>Topology</h3>
 <ul>
 <li>Site A (LAN): <code>k1s-core</code> + one gateway on <code>sfo-edge-01</code>.</li>
 <li>Site B (remote): one edge NATS leader with outbound leaf to the hub, two gateways on <code>sea-edge-02</code>.</li>
 <li>Transport: JetStream on hub only; gateways use a local SQLite spool for durability.</li>
 </ul>
-<h2>Prereqs</h2>
+<h3>Prereqs</h3>
 <ul>
 <li>Hub host reachable on TCP <code>4222</code> (NATS) and TCP <code>7422</code> (leaf node port).</li>
 <li>Remote edge NATS can open outbound TCP to <code>HUB_PUBLIC:7422</code>.</li>
 <li>Unique node ids (recommended format: <code>&lt;site_id&gt;--&lt;node_id&gt;</code>).</li>
 </ul>
-<h2>Start with clear state (recommended)</h2>
+<h3>Start with clear state (recommended)</h3>
 <pre><code>make dev-state-clean CONFIRM=1</code></pre>
 <p>This wipes <code>state/</code> (keeps TLS artifacts) and clears any work queues so you can reuse work ids. Gateway spools are cleared on exit by default; set <code>AE_GATEWAY_KEEP_SPOOL=1</code> to preserve spools for diagnostics.</p>
-<h2>Step 1: Start the hub (LAN)</h2>
+<h3>Step 1: Start the hub (LAN)</h3>
 <pre><code>AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy make k1s-core</code></pre>
-<h2>Step 2: Start the local site gateway (same LAN)</h2>
+<h3>Step 2: Start the local site gateway (same LAN)</h3>
 <pre><code>AE_SITE_ID=sfo-edge-01 \
 AE_NODE_ID=edge-1 \
 AE_GATEWAY_SPOOL_PATH=state/gw-sfo-edge-01--edge-1.db \
 make k1s-edge-core</code></pre>
 <p>Note: <code>AE_NODE_ID</code> is auto-scoped to <code>sfo-edge-01--edge-1</code> by the gateway.</p>
-<h2>Step 3: Register the remote site in hub NATS config</h2>
+<h3>Step 3: Register the remote site in hub NATS config</h3>
 <p>Dev helper (auto-updates hub config and starts a local edge NATS):</p>
 <pre><code>make edge-site SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code></pre>
 <p>Production equivalent:</p>
@@ -754,7 +790,7 @@ make k1s-edge-core</code></pre>
 <li>Add a <code>site-&lt;site_id&gt;-uplink</code> user in <code>ops/dev/nats-hub.conf</code>.</li>
 <li>Reload the hub NATS (<code>nats-server --signal reload</code>).</li>
 </ul>
-<h2>Step 4: Edge NATS leader (same-host vs remote)</h2>
+<h3>Step 4: Edge NATS leader (same-host vs remote)</h3>
 <p>Same host (dev helper):</p>
 <ul>
 <li><code>make edge-site</code> already starts an edge NATS leader bound to <code>127.0.0.1:&lt;EDGE_PORT&gt;</code>.</li>
@@ -771,7 +807,7 @@ make k1s-edge-core</code></pre>
 </li>
 <li>Ensure <code>HUB_PUBLIC</code> resolves and is reachable on TCP <code>7422</code>.</li>
 </ul>
-<h2>Step 5: Start two gateways on the remote site</h2>
+<h3>Step 5: Start two gateways on the remote site</h3>
 <p>Gateway 1:</p>
 <pre><code>AE_SITE_ID=sea-edge-02 \
 AE_NODE_ID=edge-1 \
@@ -813,7 +849,7 @@ make k1s-edge-core</code></pre>
 <pre><code>INFO ae.worker_stub: stub worker connected node_id=sea-edge-02--edge-1 nats=nats://worker:dev@127.0.0.1:4224
 DEBUG ae.worker_stub: work received node_id=sea-edge-02--edge-1 work_id=test-edge-1 attempt=1 op=noop site_id=sea-edge-02
 DEBUG ae.worker_stub: work completed node_id=sea-edge-02--edge-1 work_id=test-edge-1 attempt=1 status=succeeded</code></pre>
-<h2>Validation</h2>
+<h3>Validation</h3>
 <pre><code>ae nodes
 python -m ae.cli work enqueue --site-id sfo-edge-01 --mode outbox --preferred-node sfo-edge-01--edge-1 --op noop
 python -m ae.cli work enqueue --site-id sea-edge-02 --mode outbox --op noop
@@ -825,7 +861,7 @@ curl http://HUB_HOST:8222/leafz</code></pre>
 <li><code>leafz</code> shows one or more active leaf connections.</li>
 <li>Work ledger transitions to <code>Succeeded</code> for the test work items.</li>
 </ul>
-<h2>Cleanup</h2>
+<h3>Cleanup</h3>
 <ul>
 <li>Stop gateways and edge NATS.</li>
 <li>Stop hub services: <code>make down</code></li>

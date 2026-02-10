@@ -11,6 +11,13 @@ from logging import getLogger
 from pathlib import Path
 from typing import Any, Protocol
 
+try:  # pragma: no cover - optional dependency
+    import grpc
+except Exception:  # pragma: no cover
+    grpc = None
+
+from .config import StorageConfig, StorageProvisionerRegistry, load_storage_registry
+from .csi import CsiNodeClient, build_volume_capability
 from .state import StorageState
 from .types import NetFSMount, PvcRef, PvRef
 
@@ -54,12 +61,27 @@ class StorageDriver(Protocol):
 class NetFSManager:
     """Tracks node mounts for network-backed PVCs."""
 
-    def __init__(self, state: StorageState, *, root: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        state: StorageState,
+        *,
+        root: str | Path | None = None,
+        provisioners: StorageProvisionerRegistry | None = None,
+    ) -> None:
         self._state = state
         if root is None:
             root = os.getenv("AE_NETFS_ROOT") or "/var/lib/ae/netfs"
         self._root = Path(root)
         self._nfs_tools_ok: bool | None = None
+        config = StorageConfig.from_env()
+        if provisioners is None:
+            _classes, registry = load_storage_registry(config.provisioners_path)
+            provisioners = registry
+        self._provisioners = provisioners
+        stage_root = os.getenv("AE_CSI_STAGE_ROOT") or "/var/lib/ae/csi"
+        self._csi_stage_root = Path(stage_root)
+        self._csi_timeout = float(os.getenv("AE_CSI_TIMEOUT_SECONDS", "10") or 10)
+        self._csi_clients: dict[str, CsiNodeClient] = {}
 
     def ensure_mount(
         self,
@@ -106,11 +128,14 @@ class NetFSManager:
             self._enforce_rwop(pvc, pv_spec, node_id)
             csi = pv_spec.get("csi") if isinstance(pv_spec, dict) else None
             if isinstance(csi, dict):
-                attachment = self._state.get_volume_attachment(pv, node_id)
-                if attachment is None or not self._attachment_attached(attachment):
-                    msg = f"PV {pv.name} is not attached to node {node_id}"
-                    self._record_pvc_event(pvc, "VolumeNotAttached", msg)
-                    raise RuntimeError(msg)
+                driver = str(csi.get("driver") or "")
+                attach_required = self._csi_attach_required(driver)
+                if attach_required:
+                    attachment = self._state.get_volume_attachment(pv, node_id)
+                    if attachment is None or not self._attachment_attached(attachment):
+                        msg = f"PV {pv.name} is not attached to node {node_id}"
+                        self._record_pvc_event(pvc, "VolumeNotAttached", msg)
+                        raise RuntimeError(msg)
                 self._resolve_csi_secret_ref(pvc, csi.get("nodeStageSecretRef"), "nodeStage")
                 self._resolve_csi_secret_ref(
                     pvc, csi.get("nodePublishSecretRef"), "nodePublish"
@@ -132,12 +157,13 @@ class NetFSManager:
                 self._apply_fs_group(pvc, block_path, fs_group)
             if selinux:
                 self._apply_selinux(pvc, block_path, selinux, recursive=False)
+            read_only = bool(csi.get("readOnly", False)) if isinstance(csi, dict) else False
             mount = NetFSMount(
                 pvc=pvc,
                 pv=pv,
                 node_id=node_id,
                 host_path=str(block_path),
-                read_only=bool(pv_spec.get("readOnly", False)),
+                read_only=read_only,
             )
             self._state.upsert_mount(mount)
             return mount
@@ -370,19 +396,23 @@ class NetFSManager:
         fs_group: int | None = None,
         selinux: dict[str, str] | None = None,
     ) -> NetFSMount:
-        _ = pv_spec
-        driver = csi.get("driver")
-        handle = csi.get("volumeHandle")
+        driver = str(csi.get("driver") or "")
+        handle = str(csi.get("volumeHandle") or "")
         if not driver or not handle:
             msg = f"PV {pv.name} missing CSI driver/volumeHandle"
             self._record_pvc_event(pvc, "InvalidVolume", msg)
             raise ValueError(msg)
 
-        attachment = self._state.get_volume_attachment(pv, node_id)
-        if attachment is None or not self._attachment_attached(attachment):
-            msg = f"PV {pv.name} is not attached to node {node_id}"
-            self._record_pvc_event(pvc, "VolumeNotAttached", msg)
-            raise RuntimeError(msg)
+        attach_required = self._csi_attach_required(driver)
+        attachment = None
+        publish_context: dict[str, str] = {}
+        if attach_required:
+            attachment = self._state.get_volume_attachment(pv, node_id)
+            if attachment is None or not self._attachment_attached(attachment):
+                msg = f"PV {pv.name} is not attached to node {node_id}"
+                self._record_pvc_event(pvc, "VolumeNotAttached", msg)
+                raise RuntimeError(msg)
+            publish_context = self._attachment_publish_context(attachment)
 
         stage_secret = self._resolve_csi_secret_ref(pvc, csi.get("nodeStageSecretRef"), "nodeStage")
         publish_secret = self._resolve_csi_secret_ref(
@@ -391,9 +421,74 @@ class NetFSManager:
 
         target = self._mount_path(pvc)
         target.mkdir(parents=True, exist_ok=True)
+        stage_path = self._csi_stage_path(driver, handle)
+        stage_path.mkdir(parents=True, exist_ok=True)
+
+        volume_context = self._csi_volume_context(csi)
+        volume_mode = str(pv_spec.get("volumeMode") or "Filesystem")
+        fs_type = str(csi.get("fsType") or "")
+        mount_flags = self._csi_mount_flags(pv_spec)
+        volume_capability = build_volume_capability(
+            access_modes=pv_spec.get("accessModes") or [],
+            volume_mode=volume_mode,
+            fs_type=fs_type if fs_type else None,
+            mount_flags=mount_flags,
+        )
+
+        try:
+            client = self._csi_node_client(driver, pv_spec.get("storageClassName"))
+        except RuntimeError as exc:
+            reason = (
+                "CsiGrpcUnavailable"
+                if "grpc" in str(exc).lower()
+                else "CsiEndpointMissing"
+            )
+            self._record_pvc_event(pvc, reason, str(exc))
+            raise
+        staged = True
+        try:
+            client.node_stage(
+                volume_id=handle,
+                staging_target_path=str(stage_path),
+                volume_capability=volume_capability,
+                secrets=stage_secret[2] if stage_secret else None,
+                volume_context=volume_context,
+                publish_context=publish_context,
+            )
+        except grpc.RpcError as exc:
+            if exc.code() == grpc.StatusCode.UNIMPLEMENTED:
+                staged = False
+            else:
+                msg = f"CSI NodeStage failed: {exc.code().name}"
+                self._record_pvc_event(pvc, "NodeStageFailed", msg)
+                raise RuntimeError(msg) from exc
+
+        try:
+            client.node_publish(
+                volume_id=handle,
+                target_path=str(target),
+                staging_target_path=str(stage_path) if staged else None,
+                volume_capability=volume_capability,
+                read_only=bool(csi.get("readOnly", False)),
+                secrets=publish_secret[2] if publish_secret else None,
+                volume_context=volume_context,
+                publish_context=publish_context,
+            )
+        except grpc.RpcError as exc:
+            msg = f"CSI NodePublish failed: {exc.code().name}"
+            self._record_pvc_event(pvc, "NodePublishFailed", msg)
+            raise RuntimeError(msg) from exc
+
         marker = target / ".csi-volume"
         try:
             lines = [f"driver={driver}", f"volumeHandle={handle}"]
+            if fs_type:
+                lines.append(f"fsType={fs_type}")
+            lines.append(f"readOnly={str(bool(csi.get('readOnly', False))).lower()}")
+            for key, value in volume_context.items():
+                lines.append(f"volumeAttributes.{key}={value}")
+            for key, value in publish_context.items():
+                lines.append(f"publishContext.{key}={value}")
             secret_refs = (
                 ("nodeStageSecretRef", stage_secret),
                 ("nodePublishSecretRef", publish_secret),
@@ -435,6 +530,34 @@ class NetFSManager:
         if mount is None:
             return
         target = Path(mount.host_path)
+        pv_obj = self._state.get_pv(mount.pv)
+        pv_spec = self._obj_spec(pv_obj)
+        csi = pv_spec.get("csi") if isinstance(pv_spec, dict) else None
+        if isinstance(csi, dict):
+            driver = str(csi.get("driver") or "")
+            handle = str(csi.get("volumeHandle") or "")
+            if driver and handle:
+                if grpc is None:
+                    self._record_pvc_event(
+                        pvc, "CsiGrpcUnavailable", "grpc is required for CSI node operations"
+                    )
+                else:
+                    stage_path = self._csi_stage_path(driver, handle)
+                    try:
+                        client = self._csi_node_client(driver, pv_spec.get("storageClassName"))
+                        try:
+                            client.node_unpublish(volume_id=handle, target_path=str(target))
+                        except grpc.RpcError as exc:
+                            msg = f"CSI NodeUnpublish failed: {exc.code().name}"
+                            self._record_pvc_event(pvc, "NodeUnpublishFailed", msg)
+                        try:
+                            client.node_unstage(volume_id=handle, staging_target_path=str(stage_path))
+                        except grpc.RpcError as exc:
+                            if exc.code() != grpc.StatusCode.UNIMPLEMENTED:
+                                msg = f"CSI NodeUnstage failed: {exc.code().name}"
+                                self._record_pvc_event(pvc, "NodeUnstageFailed", msg)
+                    except RuntimeError as exc:
+                        self._record_pvc_event(pvc, "CsiEndpointMissing", str(exc))
         if self._mount_info(target) is not None:
             try:
                 self._unmount(target)
@@ -442,7 +565,6 @@ class NetFSManager:
                 msg = str(exc)
                 self._record_pvc_event(pvc, "UnmountFailed", msg)
                 raise
-        # TODO: Call node_unpublish/node_unstage and controller_unpublish as needed.
         self._state.delete_mount(pvc, node_id)
 
     def list_mounts(self, *, node_id: str | None = None) -> list[NetFSMount]:
@@ -643,6 +765,66 @@ class NetFSManager:
         if not isinstance(status, dict):
             return False
         return bool(status.get("attached"))
+
+    def _attachment_publish_context(self, attachment: Any) -> dict[str, str]:
+        status = getattr(attachment, "status", None)
+        if not isinstance(status, dict):
+            return {}
+        meta = status.get("attachmentMetadata") or status.get("attachment_metadata")
+        if not isinstance(meta, dict):
+            return {}
+        raw = meta.get("publishContext") or meta.get("publish_context")
+        if not isinstance(raw, dict):
+            return {}
+        return {str(k): str(v) for k, v in raw.items() if v is not None}
+
+    def _csi_attach_required(self, driver: str) -> bool:
+        if not driver:
+            return True
+        obj = None
+        try:
+            obj = self._state.get_csi_driver(driver)
+        except Exception:
+            obj = None
+        if obj is None:
+            return True
+        spec = self._obj_spec(obj)
+        raw = spec.get("attachRequired") if isinstance(spec, dict) else None
+        if raw is None:
+            return True
+        return bool(raw)
+
+    @staticmethod
+    def _csi_volume_context(csi: dict[str, Any]) -> dict[str, str]:
+        raw = csi.get("volumeAttributes")
+        if not isinstance(raw, dict):
+            return {}
+        return {str(k): str(v) for k, v in raw.items() if v is not None}
+
+    def _csi_mount_flags(self, pv_spec: dict[str, Any]) -> list[str]:
+        opts = self._collect_mount_options(pv_spec)
+        return [opt for opt in opts if opt not in {"ro", "rw"}]
+
+    def _csi_stage_path(self, driver: str, handle: str) -> Path:
+        driver_token = self._sanitize(driver)
+        handle_token = self._sanitize(handle)
+        return self._csi_stage_root / driver_token / handle_token
+
+    def _csi_node_client(self, driver: str, sc_name: str | None) -> CsiNodeClient:
+        if grpc is None:
+            raise RuntimeError("grpc is required for CSI node operations")
+        entry = self._provisioners.for_storage_class(sc_name) or self._provisioners.for_driver(
+            driver
+        )
+        endpoint = entry.node_endpoint if entry else None
+        if not endpoint:
+            raise RuntimeError(f"CSI node endpoint missing for driver {driver}")
+        client = self._csi_clients.get(driver)
+        if client is not None and client.endpoint == endpoint:
+            return client
+        client = CsiNodeClient(endpoint, timeout=self._csi_timeout)
+        self._csi_clients[driver] = client
+        return client
 
     @staticmethod
     def _obj_spec(obj: Any) -> dict[str, Any]:
