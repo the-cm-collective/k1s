@@ -81,7 +81,7 @@ Mutations (opt-in; dev only)
   - Deletes runtime containers and ingress; `purge=1` also deletes events and revisions for the app.
 
 - POST `/rollout/pause/<app>` and `/rollout/resume/<app>` (admin)
-- POST `/apply` (admin; JSON App manifest)
+- POST `/apply` (admin; JSON Deployment manifest)
 - POST `/exec/<app>` (admin; remote exec payload)
 
 

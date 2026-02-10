@@ -155,7 +155,7 @@ def test_portforward_scope_denies(monkeypatch, store):
 
 def test_exec_pod_state_check_denies(monkeypatch, store):
     class DummyState:
-        def list_replica_nodes(self, _app):  # noqa: ANN001
+        def list_pod_nodes(self, _app):  # noqa: ANN001
             return []
 
     monkeypatch.setenv("AE_APISHIM_POD_STATE_CHECK", "1")

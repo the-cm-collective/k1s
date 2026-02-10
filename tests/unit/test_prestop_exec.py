@@ -81,7 +81,7 @@ def test_prestop_exec_runs_before_removal(tmp_path: Path) -> None:
     rec = Reconciler(rt, store)
     man = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="echo"),
         spec=AppSpec(
             image="alpine:3.20",
@@ -133,7 +133,7 @@ def test_prestop_http_and_tcp_emit_events(tmp_path: Path, monkeypatch) -> None:
     # HTTP preStop
     man_http = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="echo"),
         spec=AppSpec(
             image="alpine:3.20",
@@ -146,7 +146,7 @@ def test_prestop_http_and_tcp_emit_events(tmp_path: Path, monkeypatch) -> None:
     # TCP preStop
     man_tcp = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="echo"),
         spec=AppSpec(
             image="alpine:3.20",

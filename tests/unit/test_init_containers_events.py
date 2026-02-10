@@ -53,7 +53,7 @@ def test_init_containers_emit_events(tmp_path: Path) -> None:
     rec = Reconciler(rt, store)
     man = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="echo"),
         spec=AppSpec(
             image="alpine:3.20",

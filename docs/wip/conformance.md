@@ -97,7 +97,7 @@ Phase 5 action items:
 #### Phase 7.3 — Release gate + site wiring (in progress)
 - Promotion: `apishim-live-openapi` now runs on `main`/PRs and release tags; release workflow fails if the live gate fails. Skips are a manual exception reserved for sealed-secret fixtures with explicit justification.
 - Coverage: nightly live gate runs both local (Postgres-backed shim) and external kubeconfig targets when configured; artifacts are uploaded per run.
-- Samples: live gate now validates the multi-replica/PDB+HPA manifest set; fixtures already include the App/HPA exporter output and PDB-emitting App manifests in `specs/examples/`.
+- Samples: live gate now validates the multi-replica/PDB+HPA manifest set; fixtures already include the Deployment/HPA exporter output and PDB-emitting Deployment manifests in `specs/examples/`.
 - Docs/release notes: docs nav now links `/openapi/v3`, and release notes call out v3 as primary with v2 as the compatibility mirror.
 - Fidelity: live gate includes a non-stub runtime lane (docker) and exercises logs/exec; service status is captured in live artifacts. Postgres storage remains enabled for resourceVersion stability.
 

@@ -101,7 +101,7 @@ Ingress and TLS
 - TLS sync helper:
   - Render PEMs from a Kubernetes Secret file: `python -m ae.cli tls sync --name mycert --input path/to/mycert.yaml --root state/tls`
   - Or place direct PEMs `state/tls/mycert.crt` and `state/tls/mycert.key`.
-  - Set only `spec.ingress.tlsSecretName: mycert` in your App manifest; the controller will resolve and wire cert/key for Caddy.
+  - Set only `spec.ingress.tlsSecretName: mycert` in your Deployment manifest; the controller will resolve and wire cert/key for Caddy.
 - Environment:
   - AE_TLS_DIR (default: state/tls)
   - AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER, AE_CONTAINER_CLI, AE_CADDY_RELOAD_TIMEOUT

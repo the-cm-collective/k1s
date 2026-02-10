@@ -23,7 +23,7 @@ flowchart TB
   Load --> Namespace["Apply namespace override"]
   Namespace --> Detect{"k8s kinds"}
   Detect -- yes --> Convert["k8s to AppManifest"]
-  Detect -- no --> Native["Native App manifest"]
+  Detect -- no --> Native["Native Deployment manifest"]
   Convert --> Store["Store revision"]
   Native --> Store
   Store --> Reconcile["Reconcile"]
@@ -104,7 +104,7 @@ class AppSpec(BaseModel):
 - Manifest load + validation: `src/ae/controller/spec.py:520`
 ```py
 def load_manifest(path: Path) -> AppManifest:
-    """Load a Deployment/App manifest from YAML."""
+    """Load a Deployment manifest from YAML."""
 
     try:
         data = yaml.safe_load(path.read_text())
@@ -131,7 +131,7 @@ def handle_apply(...):
 - Example manifest to highlight on screen: `specs/examples/echo.yaml:1`
 ```yaml
 apiVersion: ae.dev/v1alpha1
-kind: App
+kind: Deployment
 metadata:
   name: echo
 spec:

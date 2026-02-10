@@ -1002,7 +1002,7 @@ def _swagger_doc() -> dict[str, Any]:
             },
             "additionalProperties": True,
         },
-        "io.k8s.api.ae.dev.v1alpha1.AppSpec": {
+        "io.k8s.api.ae.dev.v1alpha1.DeploymentSpec": {
             "type": "object",
             "properties": {
                 "image": {"type": "string"},
@@ -1047,13 +1047,15 @@ def _swagger_doc() -> dict[str, Any]:
             },
             "additionalProperties": True,
         },
-        "io.k8s.api.ae.dev.v1alpha1.App": {
+        "io.k8s.api.ae.dev.v1alpha1.Deployment": {
             "type": "object",
             "properties": {
                 "apiVersion": {"type": "string"},
                 "kind": {"type": "string"},
                 "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
-                "spec": {"$ref": "#/definitions/io.k8s.api.ae.dev.v1alpha1.AppSpec"},
+                "spec": {
+                    "$ref": "#/definitions/io.k8s.api.ae.dev.v1alpha1.DeploymentSpec"
+                },
             },
             "additionalProperties": True,
         },
@@ -1512,10 +1514,10 @@ def _swagger_doc() -> dict[str, Any]:
             },
         },
         "apps": {
-            "definition": "io.k8s.api.ae.dev.v1alpha1.App",
+            "definition": "io.k8s.api.ae.dev.v1alpha1.Deployment",
             "example": {
                 "apiVersion": "ae.dev/v1alpha1",
-                "kind": "App",
+                "kind": "Deployment",
                 "metadata": {"name": "demo", "namespace": "default"},
                 "spec": {"image": "nginx:latest", "ports": [{"containerPort": 8080}]},
             },
@@ -2896,8 +2898,6 @@ class ShimHandler(BaseHTTPRequestHandler):
         if self.pod_state_check and hasattr(self.server, "state"):
             try:
                 fn = getattr(self.server.state, "list_pod_nodes", None)  # type: ignore[attr-defined]
-                if fn is None:
-                    fn = getattr(self.server.state, "list_replica_nodes", None)  # type: ignore[attr-defined]
                 if callable(fn):
                     found = False
                     for rid, _node, _ready, _live, _status, _rmsg, _lmsg in fn(app):
@@ -6305,7 +6305,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     try:
                         rows = self.server.state.list_pod_nodes(app)  # type: ignore[attr-defined]
                     except Exception:
-                        rows = self.server.state.list_replica_nodes(app)  # type: ignore[attr-defined]
+                        rows = []
                     for rid, node_id, ready, live, status, rmsg, lmsg in rows:
                         replica_info[rid] = (node_id, ready, live, status, rmsg, lmsg)
             except Exception:
@@ -10253,19 +10253,19 @@ class ShimHandler(BaseHTTPRequestHandler):
         return True
 
     def _validate_app_custom_resource(self, doc: dict[str, Any]) -> str | None:
-        # Validate App CRD payload against native schema to prevent incompatible objects.
+        # Validate ae.dev Deployment CRD payload against native schema.
         if (doc.get("apiVersion") or "").lower() not in {"ae.dev/v1alpha1"}:
-            return "unsupported apiVersion for App (expected ae.dev/v1alpha1)"
-        if (doc.get("kind") or "").lower() != "app":
-            return "unsupported kind for ae.dev/v1alpha1 (expected App)"
+            return "unsupported apiVersion for Deployment (expected ae.dev/v1alpha1)"
+        if (doc.get("kind") or "").lower() != "deployment":
+            return "unsupported kind for ae.dev/v1alpha1 (expected Deployment)"
         try:
             from ae.controller.spec import AppManifest  # imported lazily to avoid startup cost
         except Exception as exc:  # pragma: no cover - defensive import guard
-            return f"unable to load App schema: {exc}"
+            return f"unable to load Deployment schema: {exc}"
         try:
             AppManifest.model_validate(doc)
         except Exception as exc:
-            return f"App validation failed: {exc}"
+            return f"Deployment validation failed: {exc}"
         return None
 
     def _apply_app_admission(self, doc: dict[str, Any]) -> bool:

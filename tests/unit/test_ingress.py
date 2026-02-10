@@ -10,7 +10,7 @@ from ae.ingress.service import IngressService
 def build_manifest() -> AppManifest:
     return AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
             image="alpine:3.20",

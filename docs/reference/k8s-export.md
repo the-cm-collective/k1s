@@ -1,6 +1,6 @@
 Kubernetes Export Guide
 
-This project can export your `ae.dev/v1alpha1` App manifests to upstream Kubernetes YAML using a conservative, portable subset of the API. Use `ae export-k8s` or `python -m ae.cli export-k8s` to render manifests, and `ae k8s-check` to self-audit portability.
+This project can export your `ae.dev/v1alpha1` Deployment manifests to upstream Kubernetes YAML using a conservative, portable subset of the API. Use `ae export-k8s` or `python -m ae.cli export-k8s` to render manifests, and `ae k8s-check` to self-audit portability.
 
 Basics
 - Workloads: `Deployment` (default), `StatefulSet`, `Job`, or `CronJob` via `--workload {deployment|statefulset|job|cronjob}`.

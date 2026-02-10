@@ -53,7 +53,7 @@ class DummyRuntime:
 def _manifest(strategy: str, replicas: int = 1) -> AppManifest:
     return AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="roll"),
         spec=AppSpec(
             image="alpine:3.20",

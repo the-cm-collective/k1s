@@ -16,7 +16,7 @@ from ae.runtime.docker_stub import StubRuntime
 def _manifest(name: str = "echo") -> AppManifest:
     return AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name=name),
         spec=AppSpec(
             image="busybox",

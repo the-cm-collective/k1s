@@ -48,7 +48,7 @@ from ae.secrets import SecretManager
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="ae", description="Minimal workload engine CLI (Deployment/App manifests)"
+        prog="ae", description="Minimal workload engine CLI (Deployment manifests)"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     parser.add_argument("--verbose", action="store_true", help="Enable DEBUG logging")
@@ -97,7 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     work_enqueue.add_argument("--preferred-node", default=None, help="Preferred node id")
     work_enqueue.add_argument("--target", default=None, help="Target JSON string")
 
-    apply_parser = subparsers.add_parser("apply", help="Apply a workload manifest (App)")
+    apply_parser = subparsers.add_parser("apply", help="Apply a workload manifest (Deployment)")
     _add_namespace_arg(apply_parser)
     apply_parser.add_argument("-f", "--file", type=Path, required=True, help="Path to manifest")
     apply_parser.add_argument(
@@ -111,9 +111,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override metadata.namespace in the manifest(s) with --namespace",
     )
 
-    status_parser = subparsers.add_parser("status", help="Show workload (App) status")
+    status_parser = subparsers.add_parser("status", help="Show workload (Deployment) status")
     _add_namespace_arg(status_parser)
-    status_parser.add_argument("name", nargs="?", help="Workload (App) name (omit to list all)")
+    status_parser.add_argument("name", nargs="?", help="Workload name (omit to list all)")
     status_parser.add_argument(
         "--history", type=int, default=0, help="Show the most recent N probe evaluations"
     )
@@ -139,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     logs_parser = subparsers.add_parser("logs", help="Tail workload logs")
     _add_namespace_arg(logs_parser)
-    logs_parser.add_argument("name", help="Workload (App) name")
+    logs_parser.add_argument("name", help="Workload name")
     logs_parser.add_argument("--follow", action="store_true", help="Stream logs continuously")
     logs_parser.add_argument(
         "--container", help="Pod selector: index (e.g. 0) or pod name", default=None
@@ -163,7 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
     # exec: run a command inside a container
     exec_parser = subparsers.add_parser("exec", help="Run a command in a container")
     _add_namespace_arg(exec_parser)
-    exec_parser.add_argument("name", help="Workload (App) name")
+    exec_parser.add_argument("name", help="Workload name")
     exec_parser.add_argument(
         "--container", required=False, help="Target container name or pod name"
     )
@@ -186,7 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     shell_parser = subparsers.add_parser("shell", help="Open an interactive shell in a container")
     _add_namespace_arg(shell_parser)
-    shell_parser.add_argument("name", help="Workload (App) name")
+    shell_parser.add_argument("name", help="Workload name")
     shell_parser.add_argument(
         "--container", required=False, help="Target container name or pod name"
     )
@@ -210,7 +210,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Forward a local TCP port to a pod via the API shim (WebSocket)",
     )
     _add_namespace_arg(pf_parser)
-    pf_parser.add_argument("name", help="Workload (App) name")
+    pf_parser.add_argument("name", help="Workload name")
     pf_parser.add_argument(
         "mapping",
         help="Port mapping in the form local:remote (e.g., 18080:8080).",
@@ -250,7 +250,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rollback_parser = subparsers.add_parser("rollback", help="Rollback a workload revision")
     _add_namespace_arg(rollback_parser)
-    rollback_parser.add_argument("name", help="Workload (App) name")
+    rollback_parser.add_argument("name", help="Workload name")
     rollback_parser.add_argument(
         "--to",
         type=int,
@@ -260,7 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     revisions_parser = subparsers.add_parser("revisions", help="List stored revisions")
     _add_namespace_arg(revisions_parser)
-    revisions_parser.add_argument("name", help="Workload (App) name")
+    revisions_parser.add_argument("name", help="Workload name")
     revisions_parser.add_argument("--limit", type=int, default=10)
 
     # registry helpers
@@ -320,7 +320,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     events_parser = subparsers.add_parser("events", help="Show recent events")
     _add_namespace_arg(events_parser)
-    events_parser.add_argument("name", help="Workload (App) name")
+    events_parser.add_argument("name", help="Workload name")
     events_parser.add_argument("--limit", type=int, default=20)
 
     services_parser = subparsers.add_parser(
@@ -331,7 +331,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     history_parser = subparsers.add_parser("history", help="Show recent probe evaluations")
     _add_namespace_arg(history_parser)
-    history_parser.add_argument("name", help="Workload (App) name")
+    history_parser.add_argument("name", help="Workload name")
     history_parser.add_argument("--limit", type=int, default=20)
     history_parser.add_argument("--pod", dest="pod", default=None, help="Filter by pod name")
     history_parser.add_argument(
@@ -378,7 +378,7 @@ def build_parser() -> argparse.ArgumentParser:
         "delete", help="Delete a workload/app (containers + status)"
     )
     _add_namespace_arg(delete_parser)
-    delete_parser.add_argument("name", help="Workload (App) name")
+    delete_parser.add_argument("name", help="Workload name")
     delete_parser.add_argument(
         "--purge", action="store_true", help="Also purge events and revisions history"
     )
@@ -388,7 +388,7 @@ def build_parser() -> argparse.ArgumentParser:
         "scale", help="Scale a workload/app by reconciling replicas"
     )
     _add_namespace_arg(scale_parser)
-    scale_parser.add_argument("name", help="Workload (App) name")
+    scale_parser.add_argument("name", help="Workload name")
     scale_parser.add_argument("--replicas", type=int, required=True)
 
     # backup/restore
@@ -699,7 +699,7 @@ def build_parser() -> argparse.ArgumentParser:
             Path("specs/examples/multi-replica-echo.yaml"),
             Path("specs/examples/echo-hpa.yaml"),
         ],
-        help="List of Deployment/App manifests to score (files)",
+        help="List of Deployment manifests to score (files)",
     )
     kr.add_argument("--namespace", default="demo")
     kr.add_argument(
@@ -732,10 +732,10 @@ def build_parser() -> argparse.ArgumentParser:
     rollout_sub = rollout_cmd.add_subparsers(dest="rollout_cmd", required=True)
     r_pause = rollout_sub.add_parser("pause", help="Pause rollout for a workload/app")
     _add_namespace_arg(r_pause)
-    r_pause.add_argument("name", help="Workload (App) name")
+    r_pause.add_argument("name", help="Workload name")
     r_resume = rollout_sub.add_parser("resume", help="Resume rollout for a workload/app")
     _add_namespace_arg(r_resume)
-    r_resume.add_argument("name", help="Workload (App) name")
+    r_resume.add_argument("name", help="Workload name")
 
     # api tokens helper
     api_cmd = subparsers.add_parser("api", help="HTTP API helpers")
@@ -1483,14 +1483,14 @@ def handle_apply(
             return True
 
         def _is_native(doc: dict) -> bool:
-            return _k8s_api(doc) == "ae.dev/v1alpha1" and _k8s_kind(doc) in {"App", "Deployment"}
+            return _k8s_api(doc) == "ae.dev/v1alpha1"
 
         if len(docs) == 1 and _is_native(docs[0]):
             return False
         for doc in docs:
             kind = _k8s_kind(doc)
             api = _k8s_api(doc)
-            if api == "ae.dev/v1alpha1" and kind in {"App", "Deployment"}:
+            if api == "ae.dev/v1alpha1":
                 continue
             if kind:
                 return True
@@ -1591,12 +1591,6 @@ def handle_apply(
 
         return manifest, warnings
 
-    def _warn_deprecated_kind(kind: str | None) -> None:
-        if str(kind or "") == "App":
-            print(
-                "warning: kind 'App' is deprecated; use kind 'Deployment' (apiVersion: ae.dev/v1alpha1)"
-            )
-
     def _doc_has_namespace(doc: dict) -> bool:
         meta = doc.get("metadata")
         if not isinstance(meta, dict):
@@ -1641,9 +1635,8 @@ def handle_apply(
                 payload = manifest.model_dump(by_alias=True)
             else:
                 if len(docs) != 1:
-                    raise ValueError("expected a single Deployment/App manifest document")
+                    raise ValueError("expected a single Deployment manifest document")
                 payload = docs[0]
-                _warn_deprecated_kind(payload.get("kind") if isinstance(payload, dict) else None)
             resp = _http_post_json(base, "/apply", payload, tok)
             print(
                 f"applied {resp.get('app')} rev={resp.get('revision')}({resp.get('status')}) "
@@ -1668,9 +1661,8 @@ def handle_apply(
                 print(f"warning: {w}")
         else:
             if len(docs) != 1:
-                raise ManifestError("expected a single Deployment/App manifest document")
+                raise ManifestError("expected a single Deployment manifest document")
             manifest = load_manifest(args.file)
-            _warn_deprecated_kind(getattr(manifest, "kind", None))
             if ns_override and (force_namespace or not raw_has_namespace):
                 manifest = manifest.model_copy(
                     update={

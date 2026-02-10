@@ -126,7 +126,7 @@ Conventions
 12) TLS Options (Ingress)
 - BYO TLS via Secret material:
   - `python -m ae.cli tls sync --name mycert --input path/to/mycert.yaml --root state/tls`
-  - Set only `spec.ingress.tlsSecretName: mycert` in your App manifest; controller resolves PEMs.
+  - Set only `spec.ingress.tlsSecretName: mycert` in your Deployment manifest; controller resolves PEMs.
 
 13) Cleanup
 - Delete apps (keep history): `python -m ae.cli delete <app>`

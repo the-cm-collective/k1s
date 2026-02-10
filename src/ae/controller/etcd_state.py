@@ -29,7 +29,6 @@ from ae.controller.state import (
     ServiceRecord,
     SiteIngressEndpoint,
     SiteIngressListItem,
-    StorageBinding,
     VolumeAttachment,
     WorkLedgerEntry,
     WorkOutboxEntry,
@@ -558,9 +557,6 @@ class EtcdStateStore(SQLiteStateStore):
         items.sort(key=lambda p: p.pod_name)
         return items
 
-    def list_replicas(self, app_name: str) -> list[PodStatus]:
-        return self.list_pods(app_name)
-
     def list_pod_nodes(self, app_name: str) -> list[tuple[str, str | None, bool, bool, str, str, str]]:
         pods = {p.pod_name: p for p in self.list_pods(app_name)}
         nodes = {
@@ -584,9 +580,6 @@ class EtcdStateStore(SQLiteStateStore):
             )
         return rows
 
-    def list_replica_nodes(self, app_name: str) -> list[tuple[str, str | None, bool, bool, str, str, str]]:
-        return self.list_pod_nodes(app_name)
-
     def set_pod_nodes(self, app_name: str, placements: list[tuple[str, str]]) -> None:
         prefix = self._k("pod_nodes", app_name)
         self._delete_prefix(prefix)
@@ -594,9 +587,6 @@ class EtcdStateStore(SQLiteStateStore):
         for pod_name, node_id in placements:
             payload = {"pod_name": pod_name, "node_id": node_id, "updated_at": ts}
             self._put_json(self._k("pod_nodes", app_name, pod_name), payload)
-
-    def set_replica_nodes(self, app_name: str, placements: list[tuple[str, str]]) -> None:
-        self.set_pod_nodes(app_name, placements)
 
     def get_probe_history(self, app_name: str, limit: int) -> list[ProbeHistoryEntry]:
         rows = self._list_prefix(self._k("probes", app_name))
@@ -1651,35 +1641,11 @@ class EtcdStateStore(SQLiteStateStore):
     def delete_volume_attachments(self, app_name: str) -> None:
         self._delete_prefix(self._k("storage", "attachments", app_name))
 
-    # --- Storage bindings ---------------------------------------------
-    def upsert_storage_binding(
-        self, app_name: str, volume_name: str, node_id: str, retention: str | None = None
-    ) -> None:
-        self.upsert_volume_attachment(app_name, volume_name, node_id, retention)
-
-    def list_storage_bindings(self, app_name: str) -> list[StorageBinding]:
-        out: list[StorageBinding] = []
-        for att in self.list_volume_attachments(app_name):
-            out.append(
-                StorageBinding(
-                    app_name=att.app_name,
-                    volume_name=att.volume_name,
-                    node_id=att.node_id,
-                    retention=att.retention,
-                    created_at=att.created_at,
-                )
-            )
-        return out
-
-    def delete_storage_bindings(self, app_name: str) -> None:
-        self.delete_volume_attachments(app_name)
-
     # --- Admin / maintenance ------------------------------------------
     def delete_app_state(self, app_name: str, *, purge_history: bool = False) -> None:
         self._delete_prefix(self._k("pods", app_name))
         self._delete_prefix(self._k("pod_nodes", app_name))
         self._delete(self._k("status", app_name))
-        self._delete_prefix(self._k("storage", "bindings", app_name))
         self._delete_prefix(self._k("storage", "attachments", app_name))
         if purge_history:
             self._delete_prefix(self._k("events", app_name))

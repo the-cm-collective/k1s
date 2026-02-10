@@ -174,7 +174,7 @@ def test_reconcile_targets_per_node_agents(tmp_path):
         reconciler = Reconciler(runtime=runtime, state_store=store, health_manager=HealthManager())
         manifest = AppManifest(
             apiVersion="ae.dev/v1alpha1",
-            kind="App",
+            kind="Deployment",
             metadata=Metadata(name="echo-mn"),
             spec=AppSpec(image="busybox", replicas=2),
         )

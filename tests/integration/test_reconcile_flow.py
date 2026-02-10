@@ -91,7 +91,7 @@ class StubSecretManager(SecretManager):
 def build_manifest(image: str) -> AppManifest:
     return AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
             image=image,

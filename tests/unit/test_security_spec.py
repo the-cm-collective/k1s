@@ -15,7 +15,7 @@ def test_podman_security_flags_mapping(tmp_path, monkeypatch):
         ),
     )
     manifest = AppManifest(
-        apiVersion="ae.dev/v1alpha1", kind="App", metadata=Metadata(name="demo-sec"), spec=spec
+        apiVersion="ae.dev/v1alpha1", kind="Deployment", metadata=Metadata(name="demo-sec"), spec=spec
     )
 
     runtime = PodmanRuntime()

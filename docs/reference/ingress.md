@@ -1,7 +1,7 @@
 # Ingress Guide (Caddy)
 
 Overview
-- The controller writes one Caddy site per App manifest with spec.ingress.
+- The controller writes one Caddy site per Deployment manifest with spec.ingress.
 - Multi-path routing is supported; Caddy uses handle_path for subpaths.
 - TLS defaults to Caddy's internal CA for dev; you can supply real certs.
 
@@ -43,7 +43,7 @@ CLI helper: tls kubesecret
 - Apply it to your cluster and reference it from the exporter/manifest via `ingress.tlsSecretName: mycert`.
 
 Multi-path routing
-- In your App manifest, set `spec.ingress.paths: ["/", "/api"]` to render multiple routes.
+- In your Deployment manifest, set `spec.ingress.paths: ["/", "/api"]` to render multiple routes.
 
 Notes
 - For containers, the ingress manager will adapt loopback upstreams to the correct host alias: `host.docker.internal` (Docker) or `host.containers.internal` (Podman).

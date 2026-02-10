@@ -15,7 +15,7 @@ Layered networking separates concerns: service discovery and stable endpoints at
 
 ```mermaid
 flowchart TB
-  Manifest[App spec] --> ServiceCtl[ServiceController]
+  Manifest[Deployment spec] --> ServiceCtl[ServiceController]
   ServiceCtl --> Network[NetworkProvider]
   Network --> VIP[Cluster IP / VIP]
   ServiceCtl --> Endpoints[Service endpoints]
