@@ -112,7 +112,7 @@ Gateway 1:
 ```
 AE_SITE_ID=sea-edge-02 \
 AE_NODE_ID=edge-1 \
-AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4223 \
+AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4224 \
 AE_TRANSPORT_BACKEND=nats-js \
 AE_JS_DOMAIN=K1S \
 AE_GATEWAY_SPOOL_PATH=$HOME/.local/share/ae/gateway-sea-edge-02--edge-1.db \
@@ -123,7 +123,7 @@ Gateway 2:
 ```
 AE_SITE_ID=sea-edge-02 \
 AE_NODE_ID=edge-2 \
-AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4223 \
+AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4224 \
 AE_TRANSPORT_BACKEND=nats-js \
 AE_JS_DOMAIN=K1S \
 AE_GATEWAY_SPOOL_PATH=$HOME/.local/share/ae/gateway-sea-edge-02--edge-2.db \
@@ -175,10 +175,18 @@ Prereqs:
 ```
 AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy make k1s-core
 ```
-2. Ensure the controller agent API is reachable:
+2. Start the hub node (WireGuard + Rosenpass):
 ```
-AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=changeme \
-python -m ae.controller --loop --interval 10 --specs .local/spec/ --metrics-port 9108
+AE_WG_ENDPOINT=<PUBLIC_IP>:51820 \
+AE_NODE_LABELS="role=hub,site=hub,wg_role=hub,wg_psk=rp" \
+AE_ROSENPASS_INTERFACE=wg-hub \
+AE_WG_LISTEN_PORT=51820 \
+AE_WG_ADDRESS=10.255.0.1/32 \
+AE_LOG_LEVEL=debug \
+AE_ROSENPASS_LOG_LEVEL=verbose \
+AE_AGENT_TOKEN=devtoken \
+AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+make k1s-core-node
 ```
 3. Configure WireGuard on the hub and bring the interface up.
 4. Add the remote edge site in the hub NATS config:
@@ -189,26 +197,31 @@ make edge-site SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
 ### Host B (remote site)
 1. Configure WireGuard with `PersistentKeepalive=25` and AllowedIPs that include:
 the WG subnet, the pod CIDR pool, and the service CIDR (if used).
-2. Start the edge NATS leader with a leaf connection back to the hub.
+2. Start the edge NATS leader with a leaf connection back to the hub (see `docs/ops/core-edge-wg-psk.md` for the full config steps).
 3. Start the gateway leader:
 ```
 AE_SITE_ID=sea-edge-02 \
 AE_NODE_ID=edge-1 \
 AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4223 \
-AE_TRANSPORT_BACKEND=nats-js \
-AE_JS_DOMAIN=K1S \
-AE_GATEWAY_SPOOL_PATH=$HOME/.local/share/ae/gateway-sea-edge-02--edge-1.db \
-python -m ae.gateway
+AE_LOG_LEVEL=debug \
+make k1s-edge-core
 ```
-4. Start the node agent on each host that runs pods and advertise the WG endpoint:
+4. Start the edge node (WG + Rosenpass) on each host that runs pods:
 ```
-AE_CONTROLLER_URL=http://<core-wg-ip>:9110 AE_AGENT_TOKEN=changeme \
-AE_NODE_ID=sea-edge-02--edge-1 \
-AE_AGENT_ENDPOINT=http://<siteb-wg-ip>:9109 \
-AE_POD_CIDR=10.42.2.0/24 \
-python -m ae.node --port 9109 --ensure-pod-net
+sudo -E AE_NODE_ID=edge-1 \
+AE_NODE_LABELS="site=sea-edge-02,wg_role=spk,wg_psk=rp" \
+AE_ROSENPASS_INTERFACE=wg-edge \
+AE_WG_LISTEN_PORT=51821 \
+AE_WG_ADDRESS=10.255.0.2/32 \
+AE_WG_TABLE=off \
+AE_LOG_LEVEL=debug \
+AE_ROSENPASS_LOG_LEVEL=verbose \
+AE_AGENT_TOKEN=devtoken \
+AE_CONTROLLER_URL=http://<HUB_IP>:9110 \
+AE_ROSENPASS_DIR=/var/lib/ae/rosenpass \
+make k1s-edge-node
 ```
-Repeat for additional nodes with unique `AE_NODE_ID` and `AE_POD_CIDR`.
+Repeat for additional nodes with unique `AE_NODE_ID` (and override `AE_POD_CIDR` if needed).
 
 #### Validation
 1. On the hub, verify WG is up:
