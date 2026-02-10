@@ -7,7 +7,9 @@ Setup
 - Install Python deps: `python -m pip install -e .[dev]`
 - Dev services (optional): `docker compose -f ops/dev/docker-compose.yaml up -d`
 - Controller loop (dev):
-  - Default specs dir: `python -m ae.controller --loop --interval 5 --specs specs/ --metrics-port 9108`
+  - Default specs dir: `python -m ae.controller --loop --interval 10 --specs specs/ --metrics-port 9108`
+    - `--interval` defaults to 2s; increase it for ops (for example 10–30s) to reduce log noise.
+    - The specs dir is imported into the registry; the reconciler always runs against the registry. An empty specs dir does not clear existing workloads.
   - Curated demo/specs: set `AE_SPECS_DIR` and use Make targets that respect it:
     - `AE_SPECS_DIR=state/profiles/demo/specs make loop` (watches only the curated set)
     - `AE_SPECS_DIR=state/profiles/demo/specs make run` (single reconcile pass)
