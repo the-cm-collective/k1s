@@ -76,4 +76,6 @@ echo
 echo "Notes:"
 echo "- Pod CIDRs are auto-assigned on first heartbeat if AE_POD_CIDR is empty."
 echo "- WireGuard config is not generated here; supply one per node via AE_WG_CONFIG."
+echo "- Prefer a dedicated specs directory (for example .local/spec/) to avoid reconciling all examples."
+echo "- For multi-replica ingress via container DNS, set AE_PODMAN_NETWORK or AE_DOCKER_NETWORK."
 echo "- This script is a helper; adapt for real labs/CI."
