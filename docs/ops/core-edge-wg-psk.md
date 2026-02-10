@@ -435,6 +435,8 @@ ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
 Stage 2: Shared RWX validation (core + edge)
 - Ensure node labels include `role=hub,site=hub` on the hub node and `role=worker,site=sea-edge-02` on the edge node (or adjust nodeSelectors in the manifests below).
 - These manifests pin workloads to each site and use the same NFS-backed StorageClass.
+- Example hub Postgres binding (WG IP `10.255.0.1`):
+  - `POSTGRES_BIND_IP=10.255.0.1 POSTGRES_PORT=5432 make k1s-core`
 ```bash
 source <(ae auth local)
 ae apply -f specs/examples/echo-storage-node-hub.yaml --storage-class-name k1s-nfs --pvc-access-modes ReadWriteMany
