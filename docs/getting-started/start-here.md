@@ -40,7 +40,7 @@ This single page gets a new contributor or user from a fresh clone to a running 
 
 Note: k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.
 
-Terminology: k1s "Apps" are Deployment-like workloads; replicas map to Pods; Service VIPs map to Services/ClusterIP.
+Terminology: k1s "Apps" are Deployment-like workloads; pods are the execution unit, and replicas are the desired pod count (same as Kubernetes); Service VIPs map to Services/ClusterIP.
 
 ## Prerequisites
 - Python 3.11+
