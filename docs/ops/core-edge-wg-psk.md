@@ -78,7 +78,7 @@ sudo -E \
 Install Rosenpass on Debian/Ubuntu (recommended: prebuilt binaries)
 ```bash
 sudo apt --yes install wireguard
-VERSION=0.2.2
+VERSION="<release-tag>"
 cd /tmp
 wget https://github.com/rosenpass/rosenpass/releases/download/v${VERSION}/rosenpass-x86_64-linux-${VERSION}.tar
 tar xf rosenpass-x86_64-linux-${VERSION}.tar
@@ -88,8 +88,8 @@ rosenpass help
 rp help
 ```
 Notes
-- Rosenpass docs recommend the binary release path for Debian/Ubuntu; package manager support is not ready yet. citeturn1search1turn1search0
-- If you need a different version, replace `VERSION` with a tag from the Rosenpass releases page. citeturn1search1
+- Rosenpass docs recommend the binary release path for Debian/Ubuntu; package manager support is still limited.
+- Replace `VERSION` with a tag from the Rosenpass releases page.
 - You can run the install steps from any directory. If you run them from the repo root, the release tarball will unpack into the repo; prefer `/tmp` (or clean up after).
 - By default, Rosenpass data lives in `/var/lib/ae/rosenpass`. If you override `AE_ROSENPASS_DIR` to a local path, keep it under `state/` or another gitignored directory. The repo `.gitignore` includes common Rosenpass artifacts.
 
