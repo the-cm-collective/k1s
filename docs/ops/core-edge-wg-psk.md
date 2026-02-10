@@ -417,6 +417,21 @@ source <(ae auth local)
 ae apply -f docs/site/examples/netfs-nfs-sea-edge-02-edge-1.yaml
 ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
 ```
+Stage 2: Shared RWX validation (core + edge)
+- Ensure node labels include `role=hub,site=hub` on the hub node and `role=worker,site=sea-edge-02` on the edge node (or adjust nodeSelectors in the manifests below).
+- These manifests pin workloads to each site and use the same NFS-backed StorageClass.
+```bash
+source <(ae auth local)
+ae apply -f specs/examples/echo-storage-node-hub.yaml --storage-class-name k1s-nfs --pvc-access-modes ReadWriteMany
+ae apply -f specs/examples/echo-storage-node-sea-edge-02-edge-1.yaml --storage-class-name k1s-nfs --pvc-access-modes ReadWriteMany
+ae status echo-storage-node-hub --wide --events
+ae status echo-storage-node-sea-edge-02-edge-1 --wide --events
+```
+Verify shared data via `ae shell`:
+```bash
+ae shell echo-storage-node-hub -- sh -c 'echo core-flag > /var/lib/echo/flag.txt'
+ae shell echo-storage-node-sea-edge-02-edge-1 -- cat /var/lib/echo/flag.txt
+```
 CSI over the overlay
 - Configure controller + node endpoints in `AE_STORAGE_PROVISIONERS` (see `configs/storage-provisioners.yaml`).
 - Ensure the CSI controller plugin runs on the hub and the CSI node plugin runs on each edge node.
