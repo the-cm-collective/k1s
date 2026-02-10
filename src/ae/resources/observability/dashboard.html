@@ -2665,25 +2665,40 @@ Connection: close
         var hostName = 'h4cktop';
         var coreNodeLabel = null;
         var hasCoreProfile = false;
+        var hostNode = null;
+        var hostPriority = 0;
         try {
           if (sys && sys.nodes && sys.nodes.length){
             sys.nodes.forEach(function(n){
               var labels = n.labels || {};
               var role = n.role || labels.role || '';
               var profile = n.profile || labels.profile || '';
-              if (String(profile || '').toLowerCase() === 'k1s-core') {
+              var roleLower = String(role || '').toLowerCase();
+              var profileLower = String(profile || '').toLowerCase();
+              var wgRoleLower = String(labels.wg_role || '').toLowerCase();
+              if (profileLower === 'k1s-core') {
                 hasCoreProfile = true;
               }
-              if (String(role || '').toLowerCase() === 'controller' && !coreNodeLabel){
+              if (roleLower === 'controller' && !coreNodeLabel){
                 coreNodeLabel = String(n.id || n.node_id || n.name || '');
+              }
+              var candPriority = 0;
+              if (roleLower === 'controller' || profileLower === 'k1s-core') {
+                candPriority = 3;
+              } else if (roleLower === 'hub' || wgRoleLower === 'hub') {
+                candPriority = 2;
+              }
+              if (candPriority > hostPriority) {
+                hostPriority = candPriority;
+                hostNode = n;
               }
             });
           }
         } catch(e){}
         try {
           if (sys && sys.nodes && sys.nodes.length){
-            var h = sys.nodes[0];
-            hostName = h.name || h.id || hostName;
+            if (!hostNode) hostNode = sys.nodes[0];
+            hostName = (hostNode && (hostNode.name || hostNode.id || hostNode.node_id)) || hostName;
           }
         } catch(e){}
 
