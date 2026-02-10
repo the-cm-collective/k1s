@@ -337,6 +337,39 @@ Notes
 - If you want to keep `api.home.arpa` instead of overriding `AE_APISHIM_SERVER`, add a hosts entry:
   - `127.0.0.1 api.home.arpa` (or map to the hub IP for remote use).
 
+Step 10: NetFS storage over the WG overlay (NFS + CSI notes)
+Overview
+- NetFS mounts happen on the node agent. The controller only seeds PVC/PV/StorageClass objects.
+- For remote edge nodes, NetFS requires access to the apishim store. Prefer `AE_APISHIM_DSN` (Postgres). `state/apishim.db` is local-only.
+- The SEA node mounts NFS under `AE_NETFS_ROOT` (default `/var/lib/ae/netfs`) and bind-mounts that path into the pod.
+Enable NetFS on the edge node
+- Add `AE_ENABLE_NETFS=1` when starting the SEA node.
+- Set `AE_APISHIM_DSN` (or `AE_APISHIM_DB` if the node runs on the same host as the controller).
+NFS over the overlay
+- Start the hub controller with `AE_STORAGE_NFS_SERVER=<HUB_WG_IP>` and `AE_STORAGE_NFS_PATH=<EXPORT_PATH>` so it seeds the `k1s-nfs` StorageClass.
+- Use the hub WG IP (example: `10.255.0.1`) so the SEA node routes over the overlay.
+- Ensure the NFS server is reachable from the SEA node and that NFS ports are allowed.
+- Ensure the SEA node has `mount`/`umount` plus an NFS helper (`mount.nfs` or `mount.nfs4`).
+- If you set `AE_STORAGE_NFS_HOSTPATH`, the controller host must also be the NFS server host (it creates per-PVC directories). Otherwise pre-create exports and omit `hostPath`.
+Minimal cross-site NetFS smoke (SEA site)
+```bash
+# Hub controller (before start)
+export AE_STORAGE_NFS_SERVER=10.255.0.1
+export AE_STORAGE_NFS_PATH=/exports/k1s
+# Optional: only when the controller runs on the NFS server host
+# export AE_STORAGE_NFS_HOSTPATH=/srv/nfs/k1s
+
+# SEA edge node (add to Step 5 env)
+sudo -E AE_ENABLE_NETFS=1 AE_APISHIM_DSN=postgres://... make k1s-edge-node
+
+source <(ae auth local)
+ae apply -f docs/site/examples/netfs-nfs-sea-edge-02-edge-1.yaml
+ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
+```
+CSI note
+- Current NetFS CSI support is marker-only: static PVs + VolumeAttachment checks, no CSI gRPC staging/publish.
+- To use CSI across the overlay, run the CSI controller + node plugins for your driver on the SEA node and hub, and ensure the PV references that driver.
+
 Troubleshooting
 - If overlay peers are empty, check `AE_AGENT_API_PORT` and `AE_AGENT_API_TOKEN`.
 - If the hub endpoint is missing, ensure `AE_NODE_LABELS` includes `wg_endpoint=<PUBLIC_IP>:51820` or set `AE_OVERLAY_HUB_ENDPOINT`.
