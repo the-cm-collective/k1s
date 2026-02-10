@@ -449,6 +449,25 @@ Verify shared data via `ae shell`:
 ae shell echo-storage-node-hub -- sh -c 'echo core-flag > /var/lib/echo/flag.txt'
 ae shell echo-storage-node-sea-edge-02-edge-1 -- cat /var/lib/echo/flag.txt
 ```
+
+Demo Script (copy/paste)
+```bash
+# Core hub
+POSTGRES_BIND_IP=10.255.0.1 POSTGRES_PORT=5432 make k1s-core
+export AE_STORAGE_NFS_SERVER=10.255.0.1
+export AE_STORAGE_NFS_PATH=/exports/k1s
+
+# Edge node (set in node env before start)
+export AE_APISHIM_DSN=postgresql://shim:shim@10.255.0.1:5432/shim
+export AE_ENABLE_NETFS=1
+
+# Deploy and verify shared RWX
+source <(ae auth local)
+ae apply -f specs/examples/echo-storage-node-hub.yaml --storage-class-name k1s-nfs --pvc-access-modes ReadWriteMany
+ae apply -f specs/examples/echo-storage-node-sea-edge-02-edge-1.yaml --storage-class-name k1s-nfs --pvc-access-modes ReadWriteMany
+ae shell echo-storage-node-hub -- sh -c 'echo core-flag > /var/lib/echo/flag.txt'
+ae shell echo-storage-node-sea-edge-02-edge-1 -- cat /var/lib/echo/flag.txt
+```
 CSI over the overlay
 - Configure controller + node endpoints in `AE_STORAGE_PROVISIONERS` (see `configs/storage-provisioners.yaml`).
 - Ensure the CSI controller plugin runs on the hub and the CSI node plugin runs on each edge node.
