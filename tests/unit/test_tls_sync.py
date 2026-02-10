@@ -49,7 +49,7 @@ def test_ingress_service_uses_resolved_tls(tmp_path, monkeypatch):
     # Manifest with tlsSecretName only
     m = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
             image="alpine:3.20",
@@ -73,7 +73,7 @@ def test_ingress_service_emits_event_when_tls_secret_missing(tmp_path, monkeypat
     svc = IngressService(manager, store=store)
     m = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
             image="alpine:3.20",

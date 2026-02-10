@@ -26,7 +26,7 @@ def make_manifest(tmp_path: Path) -> AppManifest:
     sec.write_text('{"token": "abc123"}')
     return AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="tproj"),
         spec=AppSpec(
             image="alpine:3.20",

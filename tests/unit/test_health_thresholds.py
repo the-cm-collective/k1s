@@ -24,7 +24,7 @@ def test_readiness_success_threshold(monkeypatch):
         ),  # type: ignore[arg-type]
     )
     m = AppManifest(
-        apiVersion="ae.dev/v1alpha1", kind="App", metadata=Metadata(name="t"), spec=spec
+        apiVersion="ae.dev/v1alpha1", kind="Deployment", metadata=Metadata(name="t"), spec=spec
     )
 
     # Replica with endpoint
@@ -75,7 +75,7 @@ def test_readiness_failure_threshold(monkeypatch):
         ),  # type: ignore[arg-type]
     )
     m = AppManifest(
-        apiVersion="ae.dev/v1alpha1", kind="App", metadata=Metadata(name="t"), spec=spec
+        apiVersion="ae.dev/v1alpha1", kind="Deployment", metadata=Metadata(name="t"), spec=spec
     )
     r = RuntimeResult(
         revision=1,

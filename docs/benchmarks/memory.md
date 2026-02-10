@@ -110,7 +110,7 @@ End-to-end (all suites, automated prep)
 ```
 make bench-mem-e2e-all DURATION=30 REPLICAS=1,5,10 ROLL_REPLICAS=5
 ```
-- Stops the dev/labs compose stacks, clones `specs/` into `state/bench-env/`, prunes every App manifest except the requested one (defaults to `specs/examples/echo.yaml`), and launches a dedicated controller against that sandbox.
+- Stops the dev/labs compose stacks, clones `specs/` into `state/bench-env/`, prunes every Deployment manifest except the requested one (defaults to `specs/examples/echo.yaml`), and launches a dedicated controller against that sandbox.
 - Runs k1s rootful (snapshots elevated), k1s rootless, and k1nd in one shot, then backfills OCI labels, recombines, regenerates charts, and rebuilds docs. Only the snapshot helpers call `sudo`; the top-level `make` runs as your user.
 - Defaults: `OCI_RUNTIME=crun`, `AE_ENGINE_STRICT=1`, `AE_ALLOW_PLAINTEXT_SECRETS=1`, `PRUNE_OLD=1`. Override `LABEL_ROOTFUL`, `LABEL_ROOTLESS`, or `LABEL_K1ND` to tag the suites differently.
 
@@ -203,7 +203,7 @@ make bench-mem-e2e-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yam
 
 The helper scripts `scripts/bench/bench_env_prep.sh` and `scripts/bench/bench_env_teardown.sh` power both `make bench-mem-e2e-all` and `make bench-mem-e2e-minimal`:
 
-- Prep copies `specs/` into `state/bench-env/specs/`, removes every App manifest except the allowlist, and leaves shared configs/secrets intact so relative `configRefs` still work.
+- Prep copies `specs/` into `state/bench-env/specs/`, removes every Deployment manifest except the allowlist, and leaves shared configs/secrets intact so relative `configRefs` still work.
 - A dedicated controller (log + pid under `state/bench-env/`) watches only that sandbox, so background demos or labs can’t steal ports or replicas.
 - The scripts set `AE_SPECS_DIR`, `AE_STATE_DB`, `AE_CADDY_DIR`, and the primary manifest/app name in an env file; each benchmark stage sources it before calling `run_matrix.sh`/`run_rollout_k1s.sh`.
 - Teardown stops the sandbox controller and deletes `state/bench-env/` unless you set `BENCH_KEEP_ENV=1` to inspect artifacts.

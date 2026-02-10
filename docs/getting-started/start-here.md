@@ -40,7 +40,7 @@ This single page gets a new contributor or user from a fresh clone to a running 
 
 Note: k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.
 
-Terminology: k1s "Apps" are Deployment-like workloads; pods are the execution unit, and replicas are the desired pod count (same as Kubernetes); Service VIPs map to Services/ClusterIP.
+Terminology: k1s Deployments are Deployment-like workloads; pods are the execution unit, and replicas are the desired pod count (same as Kubernetes); Service VIPs map to Services/ClusterIP.
 
 ## Prerequisites
 - Python 3.11+
@@ -50,7 +50,7 @@ Terminology: k1s "Apps" are Deployment-like workloads; pods are the execution un
 - Optional (for multi-node lab): two Linux hosts/VMs with WireGuard tools and rootful networking
 
 ## Option A — Zero‑to‑Labs (automated)
-This script provisions a local demo stack, serves docs, starts the controller API, and applies sample workloads (Apps).
+This script provisions a local demo stack, serves docs, starts the controller API, and applies sample workloads (Deployments).
 
 1) Run the demo initializer (adds hosts; Ctrl‑C safe):
 ```
@@ -121,7 +121,7 @@ python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch
 ```
    - For CRI/containerd: `AE_RUNTIME_BACKEND=cri` and follow the CRI section in `docs/ops/runbook.md` for CNI init + smoke checks.
 
-4) Apply and inspect a sample workload (App):
+4) Apply and inspect a sample workload (Deployment):
 ```
 python -m ae.cli apply -f specs/examples/echo.yaml
 python -m ae.cli status echo --wide --events

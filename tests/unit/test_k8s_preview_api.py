@@ -60,7 +60,7 @@ def test_k8s_preview_dev_gate_and_success(monkeypatch, tmp_path: Path):
     man = load_manifest(Path("specs/examples/echo.yaml"))
     payload = {
         "apiVersion": "ae.dev/v1alpha1",
-        "kind": "App",
+        "kind": "Deployment",
         "metadata": {"name": man.metadata.name},
         "spec": man.spec.model_dump(by_alias=True),
     }

@@ -8,7 +8,7 @@ def _manifest_with_sidecar() -> AppManifest:
     return AppManifest.model_validate(
         {
             "apiVersion": "ae.dev/v1alpha1",
-            "kind": "App",
+            "kind": "Deployment",
             "metadata": {"name": "demo", "namespace": "default"},
             "spec": {
                 "image": "alpine:3.20",

@@ -19,7 +19,7 @@ Status: k1s is under very active development and has not reached a fully stable 
 
 ## Features (High‑Level)
 
-- Declarative specs: `apiVersion: ae.dev/v1alpha1`, `kind: App` (Deployment-like workload).
+- Declarative specs: `apiVersion: ae.dev/v1alpha1`, `kind: Deployment` (k1s workload).
 - Multi‑node scheduler: Ready node filtering, cordon/drain, nodeSelector + tolerations + topology spread, storage pinning, and overlay Service VIPs.
 - Rolling deploys and rollback with health gates; pause/resume via `ae rollout`.
 - Probes: HTTP/TCP/Exec plus startup probes and lifecycle hooks.

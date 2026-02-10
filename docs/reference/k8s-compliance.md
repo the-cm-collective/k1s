@@ -3,7 +3,7 @@
 This page summarizes our current Kubernetes spec compliance for exported manifests.
 
 How it works
-- We export K8s YAML from representative App manifests using `ae cli export-k8s` (preset: web-hardened).
+- We export K8s YAML from representative Deployment manifests using `ae cli export-k8s` (preset: web-hardened).
 - We run offline structural validation, optional `kubeconform -strict` schema checks, optional `kubectl apply --dry-run=server`, and our `k8s-check --policy strict`.
 - A weighted score is computed per sample; the overall score is the average across samples.
 

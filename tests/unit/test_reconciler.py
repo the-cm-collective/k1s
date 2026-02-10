@@ -84,7 +84,7 @@ def test_status_progressing_when_replica_present_but_liveness_failing(tmp_path: 
 
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
             image="alpine:3.20",
@@ -137,7 +137,7 @@ def test_status_progressing_when_created_but_states_empty(tmp_path: Path) -> Non
 
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(image="alpine:3.20"),
     )
@@ -176,7 +176,7 @@ def test_reconciler_updates_state(tmp_path: Path) -> None:
 
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(image="alpine:3.20"),
     )
@@ -208,7 +208,7 @@ def test_reconciler_with_ingress(tmp_path: Path) -> None:
 
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
             image="alpine:3.20",
@@ -236,7 +236,7 @@ def test_select_upstreams_prefers_service_vip(tmp_path: Path) -> None:
     app = "demo"
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name=app),
         spec=AppSpec(
             image="alpine:3.20",
@@ -312,7 +312,7 @@ def test_reconciler_applies_secrets(tmp_path: Path, monkeypatch) -> None:
 
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
             image="alpine:3.20",

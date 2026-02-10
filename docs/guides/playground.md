@@ -157,7 +157,7 @@ Back in the playground:
 
 ## B. Apply Example
 
-Pick a sample and apply it. In read-only mode the UI shows the exact CLI you can run locally. Each example is a `Deployment` spec YAML (k1s native; `kind: App` still works but is deprecated): `apiVersion` and `kind` identify the schema, `metadata.name` becomes the app's ID, and `spec` is where you describe what to run and how it should behave. Typical `spec` fields include `image` (container), `replicas` (how many), `ports`/`service` (how traffic reaches it), `health` checks, plus optional sections like `ingress`, `resources`, `security`, `storage`, and `configRefs`/`secretRefs` for configuration.
+Pick a sample and apply it. In read-only mode the UI shows the exact CLI you can run locally. Each example is a `Deployment` spec YAML (k1s native): `apiVersion` and `kind` identify the schema, `metadata.name` becomes the app's ID, and `spec` is where you describe what to run and how it should behave. Typical `spec` fields include `image` (container), `replicas` (how many), `ports`/`service` (how traffic reaches it), `health` checks, plus optional sections like `ingress`, `resources`, `security`, `storage`, and `configRefs`/`secretRefs` for configuration.
 
 - Example:
   - <select id="example-select">

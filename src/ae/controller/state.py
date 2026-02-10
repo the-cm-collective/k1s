@@ -246,17 +246,6 @@ class ServiceListItem:
 
 
 @dataclass(slots=True)
-class StorageBinding:
-    """Mapping of a persistent volume to the node that owns it."""
-
-    app_name: str
-    volume_name: str
-    node_id: str
-    retention: str | None
-    created_at: datetime
-
-
-@dataclass(slots=True)
 class VolumeAttachment:
     """Attachment record for a volume bound to a node."""
 
@@ -458,18 +447,6 @@ class SQLiteStateStore:
                 conn.execute("DROP TABLE IF EXISTS node_heartbeats")
             if not self._schema_matches(
                 conn,
-                "storage_bindings",
-                [
-                    "app_name",
-                    "volume_name",
-                    "node_id",
-                    "retention",
-                    "created_at",
-                ],
-            ):
-                conn.execute("DROP TABLE IF EXISTS storage_bindings")
-            if not self._schema_matches(
-                conn,
                 "volume_attachments",
                 [
                     "app_name",
@@ -541,11 +518,6 @@ class SQLiteStateStore:
             )
             conn.execute(
                 resource_loader.load_text(
-                    "sql", "controller", "create_storage_bindings.sql"
-                )
-            )
-            conn.execute(
-                resource_loader.load_text(
                     "sql", "controller", "create_volume_attachments.sql"
                 )
             )
@@ -582,7 +554,6 @@ class SQLiteStateStore:
             self._ensure_column(conn, "edge_ingress_routes", "status_json", "TEXT")
             self._ensure_column(conn, "edge_ingress_policies", "status_json", "TEXT")
             self._ensure_column(conn, "pod_status", "endpoint", "TEXT")
-            self._migrate_storage_bindings(conn)
             conn.commit()
 
     def _execute_script(self, conn, sql: str) -> None:
@@ -629,36 +600,6 @@ class SQLiteStateStore:
         # For Postgres we skip strict schema match; rely on CREATE IF NOT EXISTS.
         return True
 
-    def _migrate_storage_bindings(self, conn) -> None:
-        """Best-effort migration from legacy storage_bindings to volume_attachments."""
-        try:
-            rows = conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "select_storage_bindings_all.sql"
-                )
-            ).fetchall()
-        except Exception:
-            return
-        if not rows:
-            return
-        try:
-            existing = conn.execute(
-                resource_loader.load_text("sql", "controller", "count_volume_attachments.sql")
-            ).fetchone()
-            if existing and int(existing[0]) > 0:
-                return
-        except Exception:
-            return
-        for row in rows:
-            try:
-                conn.execute(
-                    resource_loader.load_text(
-                        "sql", "controller", "insert_volume_attachments_ignore.sql"
-                    ),
-                    (row[0], row[1], row[2], row[3], row[4]),
-                )
-            except Exception:
-                continue
 
     def record_snapshot(
         self,
@@ -887,10 +828,6 @@ class SQLiteStateStore:
             )
         return items
 
-    def list_replicas(self, app_name: str) -> list[PodStatus]:
-        """Alias for list_pods (deprecated)."""
-        return self.list_pods(app_name)
-
     def list_pod_nodes(self, app_name: str) -> list[tuple[str, str]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -900,10 +837,6 @@ class SQLiteStateStore:
                 (app_name, app_name),
             ).fetchall()
         return [(row[0], row[1], row[2], row[3], row[4], row[5], row[6]) for row in rows]
-
-    def list_replica_nodes(self, app_name: str) -> list[tuple[str, str]]:
-        """Alias for list_pod_nodes (deprecated)."""
-        return self.list_pod_nodes(app_name)
 
     def set_pod_nodes(self, app_name: str, placements: list[tuple[str, str]]) -> None:
         """Replace placement mapping for an app."""
@@ -918,10 +851,6 @@ class SQLiteStateStore:
                     [(app_name, rid, nid, ts) for rid, nid in placements],
                 )
             conn.commit()
-
-    def set_replica_nodes(self, app_name: str, placements: list[tuple[str, str]]) -> None:
-        """Alias for set_pod_nodes (deprecated)."""
-        self.set_pod_nodes(app_name, placements)
 
     def get_probe_history(self, app_name: str, limit: int) -> list[ProbeHistoryEntry]:
         with self._connect() as conn:
@@ -2589,14 +2518,6 @@ class SQLiteStateStore:
                 ),
                 (app_name,),
             ).fetchall()
-            # Back-compat: if no attachments are present, consult storage_bindings.
-            if not rows:
-                rows = conn.execute(
-                    resource_loader.load_text(
-                        "sql", "controller", "select_storage_bindings_by_app.sql"
-                    ),
-                    (app_name,),
-                ).fetchall()
         out: list[VolumeAttachment] = []
         for row in rows:
             try:
@@ -2620,33 +2541,6 @@ class SQLiteStateStore:
             conn.execute("DELETE FROM volume_attachments WHERE app_name = ?", (app_name,))
             conn.commit()
 
-    # --- Storage bindings (legacy) ------------------------------------
-
-    def upsert_storage_binding(
-        self, app_name: str, volume_name: str, node_id: str, retention: str | None = None
-    ) -> None:
-        """Record that a persistent volume resides on a specific node."""
-        self.upsert_volume_attachment(app_name, volume_name, node_id, retention)
-
-    def list_storage_bindings(self, app_name: str) -> list[StorageBinding]:
-        """Return recorded bindings for an app's persistent volumes."""
-        out: list[StorageBinding] = []
-        for att in self.list_volume_attachments(app_name):
-            out.append(
-                StorageBinding(
-                    app_name=att.app_name,
-                    volume_name=att.volume_name,
-                    node_id=att.node_id,
-                    retention=att.retention,
-                    created_at=att.created_at,
-                )
-            )
-        return out
-
-    def delete_storage_bindings(self, app_name: str) -> None:
-        """Remove all bindings for an app (e.g., on delete)."""
-        self.delete_volume_attachments(app_name)
-
     # --- Admin / maintenance helpers ---
     def delete_app_state(self, app_name: str, *, purge_history: bool = False) -> None:
         """Remove status and pod rows for an app. Optionally purge events and revisions.
@@ -2657,7 +2551,6 @@ class SQLiteStateStore:
             conn.execute("DELETE FROM pod_status WHERE app_name = ?", (app_name,))
             conn.execute("DELETE FROM pod_nodes WHERE app_name = ?", (app_name,))
             conn.execute("DELETE FROM app_status WHERE app_name = ?", (app_name,))
-            conn.execute("DELETE FROM storage_bindings WHERE app_name = ?", (app_name,))
             conn.execute("DELETE FROM volume_attachments WHERE app_name = ?", (app_name,))
             if purge_history:
                 conn.execute("DELETE FROM app_events WHERE app_name = ?", (app_name,))

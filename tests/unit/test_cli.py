@@ -9,7 +9,7 @@ def write_manifest(path: Path) -> None:
     path.write_text(
         """
 apiVersion: ae.dev/v1alpha1
-kind: App
+kind: Deployment
 metadata:
   name: echo
 spec:
@@ -138,7 +138,7 @@ def test_rollback_command(tmp_path, monkeypatch, capsys):
     manifest_v2.write_text(
         """
 apiVersion: ae.dev/v1alpha1
-kind: App
+kind: Deployment
 metadata:
   name: echo
 spec:
@@ -184,4 +184,4 @@ def test_examples_write_multiport(tmp_path):
     assert exit_code == 0
     text = out_path.read_text()
     assert "echo-multi" in text
-    assert ("kind: Deployment" in text) or ("kind: App" in text)
+    assert "kind: Deployment" in text

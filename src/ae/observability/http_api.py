@@ -1535,7 +1535,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 body = self.rfile.read(length) if length > 0 else b"{}"
                 payload = json.loads(body.decode("utf-8"))
             except Exception:
-                self._json_error(400, "invalid JSON body: expected Deployment/App manifest")
+                self._json_error(400, "invalid JSON body: expected Deployment manifest")
                 return
             try:
                 # Scope enforcement: admin token must be allowed for target app
@@ -2463,7 +2463,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     self._json_error(500, str(exc))
                 return
             if action == "canary":
-                # Set canary weight on existing app manifest when possible; fallback to curated example
+                # Set canary weight on existing deployment manifest when possible; fallback to curated example
                 if self.apply_fn is None:
                     self._json_error(404, "apply not available")
                     return

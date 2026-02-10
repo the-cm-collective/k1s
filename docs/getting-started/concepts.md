@@ -6,15 +6,15 @@ This guide explains core concepts used throughout k1s.
 
 | k1s term | Kubernetes term | Notes |
 | --- | --- | --- |
-| App | Deployment (workload) | k1s native workload manifest (`kind: App`). |
-| Pod | Pod | One container instance for a Deployment/App revision. |
+| Deployment | Deployment (workload) | k1s native workload manifest (`kind: Deployment`). |
+| Pod | Pod | One container instance for a Deployment revision. |
 | Revision | ReplicaSet / Deployment revision | Immutable snapshot of desired state. |
 | Service VIP | Service / ClusterIP | Stable virtual IP for service routing. |
 | Spec / manifest | Manifest | YAML resource definition. |
 
-## App (Deployment-like workload)
+## Deployment (k1s workload)
 
-The primary unit of deployment. Defined by an `App` manifest with a desired image, replicas, ports, health checks, and optional ingress/secrets/resources.
+The primary unit of deployment. Defined by a `Deployment` manifest with a desired image, replicas, ports, health checks, and optional ingress/secrets/resources.
 
 ## Pod
 

@@ -1832,7 +1832,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             return {"app": app, "removed": removed, "purged": bool(purge)}
 
         def _apply(payload: dict, source: str | None = None, labels: dict | None = None):  # noqa: ANN001
-            # Accept a Deployment/App manifest JSON and reconcile
+            # Accept a Deployment manifest JSON and reconcile
             from ae.controller.spec import AppManifest
 
             try:
@@ -1840,10 +1840,6 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(f"invalid manifest: {exc}")
             warnings: list[str] = []
-            if str(getattr(manifest, "kind", "")) == "App":
-                warnings.append(
-                    "kind 'App' is deprecated; use kind 'Deployment' (apiVersion: ae.dev/v1alpha1)"
-                )
             try:
                 app_name = app_key_for_manifest(manifest)
                 existing = store.get_registered_entry(app_name)

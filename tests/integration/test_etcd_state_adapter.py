@@ -38,7 +38,7 @@ def test_etcd_state_store_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
 
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="etcd-demo"),
         spec=AppSpec(image="example.io/demo:latest", replicas=1),
     )

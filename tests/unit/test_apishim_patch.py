@@ -288,7 +288,7 @@ def _register_app_crd(store):
         "group": "ae.dev",
         "scope": "Namespaced",
         "versions": [{"name": "v1alpha1", "served": True, "storage": True}],
-        "names": {"plural": "apps", "singular": "app", "kind": "App"},
+        "names": {"plural": "apps", "singular": "app", "kind": "Deployment"},
     }
     obj = store.upsert(
         "apiextensions.k8s.io",
@@ -312,7 +312,7 @@ def test_app_crd_validation_rejects_invalid(tmp_path, monkeypatch):
     _register_app_crd(store)
     doc = {
         "apiVersion": "ae.dev/v1alpha1",
-        "kind": "App",
+        "kind": "Deployment",
         "metadata": {"name": "bad"},
         "spec": {},  # missing required image
     }
@@ -349,7 +349,7 @@ def test_app_crd_validation_accepts_valid(tmp_path, monkeypatch):
     _register_app_crd(store)
     doc = {
         "apiVersion": "ae.dev/v1alpha1",
-        "kind": "App",
+        "kind": "Deployment",
         "metadata": {"name": "ok"},
         "spec": {"image": "nginx:latest", "replicas": 1},
     }
@@ -386,7 +386,7 @@ def test_app_crd_validation_warns_allows_invalid(tmp_path, monkeypatch):
     _register_app_crd(store)
     doc = {
         "apiVersion": "ae.dev/v1alpha1",
-        "kind": "App",
+        "kind": "Deployment",
         "metadata": {"name": "warn-bad"},
         "spec": {},  # missing required image
     }

@@ -108,7 +108,7 @@ sequenceDiagram
 
 Top‑level
 - `apiVersion: ae.dev/v1alpha1`
-- `kind: App`
+- `kind: Deployment`
 - `metadata: { name }`
 - `spec`: see below
 
@@ -137,7 +137,7 @@ Notes
 Example
 ```yaml
 apiVersion: ae.dev/v1alpha1
-kind: App
+kind: Deployment
 metadata: { name: echo }
 spec:
   image: alpine:3.20
@@ -165,12 +165,11 @@ Tables (created in src/ae/controller/state.py)
 - node_heartbeats(node_id PK, status, seen_at)
 - services(app_name PK, cluster_ip, ports json, created_at)
 - service_endpoints(app_name, port, ip, target_port, ready) [PK (app_name, port, ip)]
-- storage_bindings(app_name, volume_name, node_id, retention, created_at) [PK (app_name, volume_name)]
 - volume_attachments(app_name, volume_name, node_id, retention, created_at) [PK (app_name, volume_name)]
 
 Query surfaces
 - `list_status()`, `get_status(app)`
-- `list_pods(app)` (alias: `list_replicas`), `get_probe_history(app, N)`
+- `list_pods(app)`, `get_probe_history(app, N)`
 - `list_revisions(app)`, `get_revision_manifest(app, rev)`
 - `list_events(app, limit)`
 
