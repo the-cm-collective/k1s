@@ -94,7 +94,9 @@ Notes:
 
 Optional stub workers (one per gateway node id):
 ```
+AE_SITE_ID=sea-edge-02 \
 python -m ae.worker_stub --log-level debug --node-id edge-1 --nats-url nats://worker:dev@REMOTE_EDGE_NATS:4223
+AE_SITE_ID=sea-edge-02 \
 python -m ae.worker_stub --log-level debug --node-id edge-2 --nats-url nats://worker:dev@REMOTE_EDGE_NATS:4223
 ```
 One-shell helpers (gateway + stub worker together):
