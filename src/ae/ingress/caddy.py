@@ -53,7 +53,7 @@ class CaddyIngressManager:
         readiness_path: str | None = None,
         prefer_first: bool = True,
         first_weight: int = 1,
-    ) -> Path:
+    ) -> tuple[Path, bool]:
         ingress = manifest.spec.ingress
         if ingress is None:
             raise ValueError("Manifest lacks ingress configuration")
@@ -62,15 +62,28 @@ class CaddyIngressManager:
             ingress, upstream, readiness_path, prefer_first, first_weight
         )
         site_path = self._site_path(app_key_for_manifest(manifest))
-        site_path.write_text(site_config)
-        LOGGER.debug("Wrote Caddy site config to %s", site_path)
-        return site_path
+        changed = True
+        try:
+            if site_path.exists():
+                existing = site_path.read_text()
+                if existing == site_config:
+                    changed = False
+        except Exception:
+            changed = True
+        if changed:
+            site_path.write_text(site_config)
+            LOGGER.debug("Wrote Caddy site config to %s", site_path)
+        else:
+            LOGGER.debug("Caddy site config unchanged for %s", site_path)
+        return site_path, changed
 
-    def remove(self, app_name: str) -> None:
+    def remove(self, app_name: str) -> bool:
         site_path = self._site_path(app_name)
         if site_path.exists():
             site_path.unlink()
             LOGGER.debug("Removed Caddy site config %s", site_path)
+            return True
+        return False
 
     def reload(self) -> None:
         config_path = str(self._config_file or self._config_root)

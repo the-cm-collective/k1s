@@ -884,6 +884,21 @@ Connection: close
         });
       }
 
+      function isNetworkError(err){
+        try {
+          var msg = String((err && err.message) ? err.message : (err || ''));
+          return msg.indexOf('Failed to fetch') !== -1 ||
+            msg.indexOf('NetworkError') !== -1 ||
+            msg.indexOf('ERR_NETWORK_CHANGED') !== -1 ||
+            msg.indexOf('ERR_INTERNET_DISCONNECTED') !== -1;
+        } catch(e) { return false; }
+      }
+
+      function logIfNotNetwork(err){
+        if (isNetworkError(err)) return;
+        console.error(err);
+      }
+
       function fetchFragment(path, el, opts){
         if (!el) return Promise.resolve();
         return fetch(path, {headers: authHeaders()}).then(function(r){
@@ -1203,7 +1218,7 @@ Connection: close
       function schedulePoll(){
         if(pollTimer) { clearInterval(pollTimer); pollTimer = null; }
         var ms = parseInt(pollSel.value, 10) || 0;
-        if(ms > 0){ pollTimer = setInterval(function(){ Promise.all([refreshApps(), refreshDetail(), refreshSystem()]).catch(console.error); }, ms); }
+        if(ms > 0){ pollTimer = setInterval(function(){ Promise.all([refreshApps(), refreshDetail(), refreshSystem()]).catch(logIfNotNetwork); }, ms); }
       }
 
       var backoffTimer = null;
@@ -5313,7 +5328,7 @@ Connection: close
         } catch(e){}
       }
 
-      refreshApps().then(function(){ updateLogsHTMX(); updateProbeHistoryHTMX(); updateLogStreaming(); return Promise.all([refreshDetail(), refreshSystem()]); }).catch(console.error);
+      refreshApps().then(function(){ updateLogsHTMX(); updateProbeHistoryHTMX(); updateLogStreaming(); return Promise.all([refreshDetail(), refreshSystem()]); }).catch(logIfNotNetwork);
       schedulePoll();
     </script>
   </body>

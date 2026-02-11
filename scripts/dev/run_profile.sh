@@ -233,7 +233,25 @@ https://dash.home.arpa {
     }
     header -Strict-Transport-Security
     tls internal
-    reverse_proxy ${host_alias}:${METRICS_PORT:-9108}
+    @no_sse {
+        not path /dashboard/sse/* /logs/*/stream
+    }
+    encode @no_sse gzip zstd
+
+    @sse {
+        path /dashboard/sse/* /logs/*/stream
+    }
+    handle @sse {
+        reverse_proxy ${host_alias}:${METRICS_PORT:-9108} {
+            flush_interval -1
+            header_down X-Accel-Buffering no
+            header_down Cache-Control no-cache
+        }
+    }
+
+    handle {
+        reverse_proxy ${host_alias}:${METRICS_PORT:-9108}
+    }
 }
 EOF
 

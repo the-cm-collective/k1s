@@ -183,8 +183,14 @@ class IngressService:
                 except Exception:
                     pass
             prefer_first = True
+            changed = False
+            def _normalize_apply(res):
+                if isinstance(res, tuple) and len(res) == 2:
+                    return res[0], bool(res[1])
+                return res, True
+
             try:
-                site_path = self._manager.apply(
+                site_path, changed = self._manager.apply(
                     manifest,
                     upstream,
                     readiness_path,
@@ -193,9 +199,11 @@ class IngressService:
                 )  # type: ignore[arg-type]
             except TypeError:
                 try:
-                    site_path = self._manager.apply(manifest, upstream, readiness_path)  # type: ignore[arg-type]
+                    site_path, changed = _normalize_apply(
+                        self._manager.apply(manifest, upstream, readiness_path)  # type: ignore[arg-type]
+                    )
                 except TypeError:
-                    site_path = self._manager.apply(manifest, upstream)
+                    site_path, changed = _normalize_apply(self._manager.apply(manifest, upstream))
             except Exception as exc:  # pragma: no cover - defensive
                 # Do not fail the reconcile when ingress writes are unavailable
                 # (e.g., dev stack down or dynsites dir not writable). Log and continue.
@@ -207,8 +215,9 @@ class IngressService:
                     pass
                 site_path = None
             self._last_sig[app] = sig
-            with self._reload_lock:
-                self._dirty = True
+            if changed:
+                with self._reload_lock:
+                    self._dirty = True
         else:
             # No change; use existing path if available
             try:
@@ -222,9 +231,14 @@ class IngressService:
         )
 
     def remove(self, app_name: str) -> None:
-        self._manager.remove(app_name)
-        with self._reload_lock:
-            self._dirty = True
+        removed = False
+        try:
+            removed = self._manager.remove(app_name)
+        except Exception:
+            removed = False
+        if removed:
+            with self._reload_lock:
+                self._dirty = True
 
     def reload(self) -> None:
         with self._reload_lock:
