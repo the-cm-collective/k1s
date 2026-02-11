@@ -20,8 +20,11 @@
   let ingressCheckOk = null;
   const sseState = { disabled: false, errors: 0, lastErrorAt: 0 };
   const apiFailState = { errors: 0, lastErrorAt: 0 };
+  const netErrorState = { errors: 0, lastErrorAt: 0 };
   const API_FAIL_WINDOW_MS = 8000;
   const API_FAIL_THRESHOLD = 2;
+  const NET_ERROR_WINDOW_MS = 8000;
+  const NET_ERROR_THRESHOLD = 2;
   const SSE_ERROR_WINDOW_MS = 8000;
   const SSE_ERROR_THRESHOLD = 2;
   const SSE_COOLDOWN_MS = 30000;
@@ -200,6 +203,8 @@
   function resetApiFailures() {
     apiFailState.errors = 0;
     apiFailState.lastErrorAt = 0;
+    netErrorState.errors = 0;
+    netErrorState.lastErrorAt = 0;
   }
 
   async function maybeSwitchToDirect(reason) {
@@ -224,6 +229,21 @@
       || msg.includes('NetworkError')
       || msg.includes('ERR_NETWORK_CHANGED')
       || msg.includes('ERR_INTERNET_DISCONNECTED');
+  }
+
+  function shouldNotifyNetworkError() {
+    const now = Date.now();
+    if (now - netErrorState.lastErrorAt > NET_ERROR_WINDOW_MS) netErrorState.errors = 0;
+    netErrorState.errors += 1;
+    netErrorState.lastErrorAt = now;
+    return netErrorState.errors >= NET_ERROR_THRESHOLD;
+  }
+
+  function noteNetworkError(label, err) {
+    if (!shouldNotifyNetworkError()) return;
+    netErrorState.errors = 0;
+    const msg = label ? `${label} temporarily unreachable; retrying...` : 'Network hiccup; retrying...';
+    try { banner(msg, 'warn', 4000); } catch(_){}
   }
 
   async function jsonGet(url) {
@@ -288,11 +308,17 @@
         try {
           return await apiFetch(path, opts);
         } catch (e2) {
-          if (label) banner(`${label} error: ${e2}`, 'fail');
+          if (label) {
+            if (isNetworkError(e2)) noteNetworkError(label, e2);
+            else banner(`${label} error: ${e2}`, 'fail');
+          }
           throw e2;
         }
       }
-      if (label) banner(`${label} error: ${e}`, 'fail');
+      if (label) {
+        if (isNetworkError(e)) noteNetworkError(label, e);
+        else banner(`${label} error: ${e}`, 'fail');
+      }
       throw e;
     }
   }
@@ -325,6 +351,8 @@
     API = window.DOCS_API_BASE;
     try { setText('#env-api-base', API); } catch(_){}
     try { banner(`Switching to direct API (${reason})`, 'warn'); } catch(_){}
+    try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
+    try { if (window.k1sStopLogsStream) window.k1sStopLogsStream(); } catch(_){}
     try { if (state.sessionId) armSSE(); } catch(_){}
     try { refreshStatusNow(); } catch(_){}
   }
@@ -844,6 +872,7 @@
         if (poly) poly.classList.remove('hidden');
         if (polyEv) polyEv.classList.remove('hidden');
         try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
+        try { if (window.k1sStopLogsStream) window.k1sStopLogsStream(); } catch(_){}
       } catch(_){}
       // Show neutral status
       setText('#status-summary', 'n/a', 'pending');
@@ -877,6 +906,7 @@
       sseState.lastErrorAt = 0;
       try { if (state._eventsTimer) { clearInterval(state._eventsTimer); state._eventsTimer = null; } } catch(_){}
       try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
+      try { if (window.k1sStopLogsStream) window.k1sStopLogsStream(); } catch(_){}
       wireControls();
       armSSE();
       try { toast('Session started — next: click "Apply Selected Example"', 'ok'); } catch(_){}
@@ -909,6 +939,7 @@
       if (sseLogs) sseLogs.classList.add('hidden');
       if (sseEv) sseEv.classList.add('hidden');
       try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
+      try { if (window.k1sStopLogsStream) window.k1sStopLogsStream(); } catch(_){}
     } catch(_){}
     // Clear panels and indicators
     try { const ev = document.getElementById('observe-events'); if (ev) ev.textContent = ''; } catch(_){}

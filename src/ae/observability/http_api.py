@@ -757,6 +757,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    def handle_one_request(self) -> None:  # type: ignore[override]
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # Clients can disconnect mid-response (dashboard/labs polls); ignore noisy socket errors.
+            return
+
     # --- Dev CORS helpers (used by the labs playground) ----------------
     def _labs_enabled(self) -> bool:
         try:
@@ -2601,6 +2608,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         last_serialized = ""
+        heartbeat = 10.0
+        last_ping = _t.monotonic()
         try:
             self.wfile.write(b"retry: 1500\n\n")
             self.wfile.flush()
@@ -2617,10 +2626,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     for e in events
                 ]
                 s = _json.dumps(data)
+                now = _t.monotonic()
                 if s != last_serialized:
                     last_serialized = s
                     self.wfile.write(("data: " + s + "\n\n").encode("utf-8"))
                     self.wfile.flush()
+                    last_ping = now
+                elif now - last_ping >= heartbeat:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    last_ping = now
                 _t.sleep(1.0)
         except (BrokenPipeError, ConnectionResetError):
             return
@@ -2648,6 +2663,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         last_serialized = ""
+        heartbeat = 10.0
+        last_ping = _t.monotonic()
         try:
             self.wfile.write(b"retry: 1500\n\n")
             self.wfile.flush()
@@ -2666,10 +2683,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         "ingress_path": s.ingress_path,
                     }
                 sval = _json.dumps(obj)
+                now = _t.monotonic()
                 if sval != last_serialized:
                     last_serialized = sval
                     self.wfile.write(("data: " + sval + "\n\n").encode("utf-8"))
                     self.wfile.flush()
+                    last_ping = now
+                elif now - last_ping >= heartbeat:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    last_ping = now
                 _t.sleep(1.0)
         except (BrokenPipeError, ConnectionResetError):
             return
@@ -2701,6 +2724,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         last_serialized = ""
+        heartbeat = 10.0
+        last_ping = _t.monotonic()
         try:
             self.wfile.write(b"retry: 1500\n\n")
             self.wfile.flush()
@@ -2717,6 +2742,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     for e in events
                 ]
                 s = _json.dumps(data)
+                now = _t.monotonic()
                 if s != last_serialized:
                     last_serialized = s
                     # Emit full HTML snapshot oldest-first so new events appear at the bottom
@@ -2726,6 +2752,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     )
                     self.wfile.write(("data: " + html + "\n\n").encode("utf-8"))
                     self.wfile.flush()
+                    last_ping = now
+                elif now - last_ping >= heartbeat:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    last_ping = now
                 _t.sleep(1.0)
         except (BrokenPipeError, ConnectionResetError):
             return
@@ -2752,6 +2783,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         last_html = ""
+        heartbeat = 10.0
+        last_ping = _t.monotonic()
         try:
             self.wfile.write(b"retry: 1500\n\n")
             self.wfile.flush()
@@ -2763,10 +2796,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     ok = int(s.ready_replicas) == int(s.desired_replicas)
                     klass = "ok" if ok else "fail"
                     html = f"<span class='{klass}'>{int(s.ready_replicas)}/{int(s.desired_replicas)} ready</span>"
+                now = _t.monotonic()
                 if html != last_html:
                     last_html = html
                     self.wfile.write(("data: " + html + "\n\n").encode("utf-8"))
                     self.wfile.flush()
+                    last_ping = now
+                elif now - last_ping >= heartbeat:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    last_ping = now
                 _t.sleep(1.0)
         except (BrokenPipeError, ConnectionResetError):
             return
@@ -4229,6 +4268,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
     def _handle_logs_stream(self, app: str) -> None:
         """Stream logs as Server-Sent Events (SSE): one log entry per event."""
+        import queue as _queue
+        import threading as _threading
+        import time as _t
         import urllib.parse as _up
 
         _path, _, query = self.path.partition("?")
@@ -4254,15 +4296,47 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
+        stop = _threading.Event()
+        q: _queue.Queue[object] = _queue.Queue(maxsize=1000)
+        sentinel = object()
+
+        def _pump() -> None:
+            try:
+                for line in fn(app, container, tail, since, True):  # type: ignore[misc]
+                    if stop.is_set():
+                        break
+                    try:
+                        q.put(line, timeout=0.5)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            finally:
+                try:
+                    q.put(sentinel, timeout=0.5)
+                except Exception:
+                    pass
+
+        worker = _threading.Thread(target=_pump, name="ae-logs-sse", daemon=True)
+        worker.start()
+        heartbeat = 10.0
         try:
             # Hint client retry interval
             self.wfile.write(b"retry: 1000\n\n")
             self.wfile.flush()
-            for line in fn(app, container, tail, since, True):  # type: ignore[misc]
-                if isinstance(line, (bytes, bytearray)):
-                    s = line.decode("utf-8", "replace").rstrip("\n")
+            while True:
+                try:
+                    item = q.get(timeout=heartbeat)
+                except _queue.Empty:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    continue
+                if item is sentinel:
+                    break
+                if isinstance(item, (bytes, bytearray)):
+                    s = item.decode("utf-8", "replace").rstrip("\n")
                 else:
-                    s = str(line).rstrip("\n")
+                    s = str(item).rstrip("\n")
                 lowered = s.lower()
                 if "no container with name or id" in lowered or "no such container" in lowered:
                     continue
@@ -4270,8 +4344,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(out)
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
+            stop.set()
             return
         except Exception:
+            stop.set()
             try:
                 self.wfile.write(b"event: error\ndata: stream closed\n\n")
                 self.wfile.flush()
