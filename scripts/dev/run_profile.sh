@@ -439,6 +439,14 @@ start_apishim() {
       APISHIM_PORT="$port" APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$port}" \
         AE_CONTAINER_CLI="$ENGINE_BIN" APISHIM_CONTAINER=1 \
         "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
+      # Keep apishim env in sync with the active profile. This is required for
+      # storage seeding and state backend changes (for example AE_STORAGE_NFS_*
+      # and AE_STATE_BACKEND=etcd) to take effect between profile restarts.
+      if is_truthy "${AE_APISHIM_RECREATE_ON_START:-1}"; then
+        APISHIM_PORT="$port" APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$port}" \
+          "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" \
+          up -d --force-recreate apishim >/dev/null 2>&1 || true
+      fi
     fi
     return 0
   fi

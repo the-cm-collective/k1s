@@ -1,13 +1,13 @@
 apiVersion: ae.dev/v1alpha1
 kind: Deployment
 metadata:
-  name: netfs-nfs-sea-edge-02-edge-1
+  name: netfs-csi-sea-edge-02-edge-1
 spec:
   image: busybox:1.36
   replicas: 1
-  command: ["sh", "-c", "echo netfs-from-sea > /data/hello.txt; sleep 3600"]
+  command: ["sh", "-c", "echo csi-netfs-from-sea > /data/hello.txt; sleep 3600"]
   pvcMounts:
-    - claimName: sea-netfs-pvc
+    - claimName: sea-netfs-csi-pvc
       mountPath: /data
   nodeSelector:
     role: worker
