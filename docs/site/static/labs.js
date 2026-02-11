@@ -18,6 +18,12 @@
   let ingressCheckAttempts = 0;
   let ingressCheckUrl = '';
   let ingressCheckOk = null;
+  const sseState = { disabled: false, errors: 0, lastErrorAt: 0 };
+  const apiFailState = { errors: 0, lastErrorAt: 0 };
+  const API_FAIL_WINDOW_MS = 8000;
+  const API_FAIL_THRESHOLD = 2;
+  const SSE_ERROR_WINDOW_MS = 8000;
+  const SSE_ERROR_THRESHOLD = 2;
 
   const xtermFallback = {
     css: '/static/vendor/xterm.css',
@@ -186,25 +192,59 @@
     setCanaryInfo(null, null, null);
   }
 
+  function resetApiFailures() {
+    apiFailState.errors = 0;
+    apiFailState.lastErrorAt = 0;
+  }
+
+  async function maybeSwitchToDirect(reason) {
+    if (!window.DOCS_API_BASE) return false;
+    if (API && API !== '') return false;
+    const now = Date.now();
+    if (now - apiFailState.lastErrorAt > API_FAIL_WINDOW_MS) apiFailState.errors = 0;
+    apiFailState.errors += 1;
+    apiFailState.lastErrorAt = now;
+    if (apiFailState.errors >= API_FAIL_THRESHOLD) {
+      apiFailState.errors = 0;
+      try { await switchToDirectApi(reason || 'proxy error'); } catch(_){}
+      return true;
+    }
+    return false;
+  }
+
+  function isNetworkError(err) {
+    if (err instanceof TypeError) return true;
+    const msg = String(err || '');
+    return msg.includes('Failed to fetch')
+      || msg.includes('NetworkError')
+      || msg.includes('ERR_NETWORK_CHANGED')
+      || msg.includes('ERR_INTERNET_DISCONNECTED');
+  }
+
   async function jsonGet(url) {
     try {
       const r = await fetch(url, { headers: labsHeaders({ 'Accept': 'application/json' }) });
+      if (r.status < 500) resetApiFailures();
       if (!r.ok) {
         if (r.status >= 500 && (!API || API==='') && window.DOCS_API_BASE && typeof url === 'string' && url.startsWith('/')) {
-          try { await switchToDirectApi('proxy 5xx'); } catch(_){}
-          const r2 = await fetch(`${window.DOCS_API_BASE}${url}`, { headers: labsHeaders({ 'Accept': 'application/json' }) });
-          if (!r2.ok) throw new Error(`${r2.status}`);
-          return await r2.json();
+          const switched = await maybeSwitchToDirect('proxy 5xx');
+          if (switched) {
+            const r2 = await fetch(`${window.DOCS_API_BASE}${url}`, { headers: labsHeaders({ 'Accept': 'application/json' }) });
+            if (!r2.ok) throw new Error(`${r2.status}`);
+            return await r2.json();
+          }
         }
         throw new Error(`${r.status}`);
       }
       return await r.json();
     } catch (e) {
       if ((!API || API==='') && window.DOCS_API_BASE && typeof url === 'string' && url.startsWith('/')) {
-        try { await switchToDirectApi('proxy network error'); } catch(_){}
-        const r3 = await fetch(`${window.DOCS_API_BASE}${url}`, { headers: labsHeaders({ 'Accept': 'application/json' }) });
-        if (!r3.ok) throw new Error(`${r3.status}`);
-        return await r3.json();
+        const switched = await maybeSwitchToDirect('proxy network error');
+        if (switched) {
+          const r3 = await fetch(`${window.DOCS_API_BASE}${url}`, { headers: labsHeaders({ 'Accept': 'application/json' }) });
+          if (!r3.ok) throw new Error(`${r3.status}`);
+          return await r3.json();
+        }
       }
       throw e;
     }
@@ -215,15 +255,20 @@
     const url = `${API||''}${rel.startsWith('/')? rel : ('/' + rel)}`;
     try {
       const r = await fetch(url, opts||{});
+      if (r.status < 500) resetApiFailures();
       if (r.status >= 500 && (!API || API==='') && window.DOCS_API_BASE) {
-        try { await switchToDirectApi('proxy 5xx'); } catch(_){}
-        return await fetch(`${window.DOCS_API_BASE}${rel.startsWith('/')? rel : ('/' + rel)}`, opts||{});
+        const switched = await maybeSwitchToDirect('proxy 5xx');
+        if (switched) {
+          return await fetch(`${window.DOCS_API_BASE}${rel.startsWith('/')? rel : ('/' + rel)}`, opts||{});
+        }
       }
       return r;
     } catch (e) {
       if ((!API || API==='') && window.DOCS_API_BASE) {
-        try { await switchToDirectApi('proxy network error'); } catch(_){}
-        return await fetch(`${window.DOCS_API_BASE}${rel.startsWith('/')? rel : ('/' + rel)}`, opts||{});
+        const switched = await maybeSwitchToDirect('proxy network error');
+        if (switched) {
+          return await fetch(`${window.DOCS_API_BASE}${rel.startsWith('/')? rel : ('/' + rel)}`, opts||{});
+        }
       }
       throw e;
     }
@@ -755,7 +800,7 @@
       wireControls();
       // Ensure any SSE placeholders are disabled in read-only mode
       try {
-        const ids = ['logs-sse','events-sse','status-summary'];
+        const ids = ['logs-sse','events-sse'];
         ids.forEach(id => {
           const el = document.getElementById(id);
           if (el) el.removeAttribute('sse-connect');
@@ -793,6 +838,10 @@
       state.appName = `shell-demo-${state.sessionId}`;
       state.orch.token = data.token || null;
       state.appApplied = false;
+      sseState.disabled = false;
+      sseState.errors = 0;
+      sseState.lastErrorAt = 0;
+      try { if (state._eventsTimer) { clearInterval(state._eventsTimer); state._eventsTimer = null; } } catch(_){}
       wireControls();
       armSSE();
       try { toast('Session started — next: click "Apply Selected Example"', 'ok'); } catch(_){}
@@ -811,7 +860,7 @@
     state.appName = 'shell-demo';
     // Stop/disable SSE and prefer non-HTMX panels
     try {
-      const ids = ['logs-sse','events-sse','status-summary'];
+      const ids = ['logs-sse','events-sse'];
       ids.forEach(id => {
         const el = document.getElementById(id);
         if (el) el.removeAttribute('sse-connect');
@@ -872,6 +921,50 @@
     refreshStatusNow();
   }
 
+  function handleSseError() {
+    if (sseState.disabled) return;
+    const now = Date.now();
+    if (now - sseState.lastErrorAt > SSE_ERROR_WINDOW_MS) sseState.errors = 0;
+    sseState.errors += 1;
+    sseState.lastErrorAt = now;
+    if (sseState.errors >= SSE_ERROR_THRESHOLD) {
+      disableHtmxSse('stream error');
+    }
+  }
+
+  function hookSseError(el) {
+    if (!el || el.dataset.sseErrorHooked) return;
+    el.dataset.sseErrorHooked = '1';
+    try { el.addEventListener('htmx:sseError', handleSseError); } catch(_){}
+  }
+
+  function closeHtmxSse(el) {
+    if (!el || !window.htmx || typeof window.htmx.getInternalData !== 'function') return;
+    try {
+      const data = window.htmx.getInternalData(el);
+      const src = data ? data.sseEventSource : null;
+      if (src) {
+        try { src.close(); } catch(_){}
+        data.sseEventSource = null;
+      }
+    } catch(_){}
+  }
+
+  function disableHtmxSse(reason) {
+    if (sseState.disabled) return;
+    sseState.disabled = true;
+    const sseEv = document.getElementById('events-sse');
+    if (sseEv) {
+      closeHtmxSse(sseEv);
+      sseEv.removeAttribute('sse-connect');
+      sseEv.classList.add('hidden');
+    }
+    const polyEv = document.getElementById('observe-events');
+    if (polyEv) polyEv.classList.remove('hidden');
+    if (reason) { try { banner(`Live stream paused (${reason}); using polling.`, 'warn', 4000); } catch(_){ } }
+    try { if (window.k1sStartEventPoll) window.k1sStartEventPoll(); } catch(_){}
+  }
+
   function armSSE(){
     const app = state.appName;
     if (!app) return;
@@ -881,6 +974,11 @@
     if (sseLogs) { try { sseLogs.classList.add('hidden'); } catch(_){} }
     const poly = document.getElementById('observe-logs');
     if (poly) { try { poly.classList.remove('hidden'); } catch(_){} }
+    if (sseState.disabled) {
+      const polyEv = document.getElementById('observe-events');
+      if (polyEv) polyEv.classList.remove('hidden');
+      return;
+    }
     // HTMX SSE for events
     const sseEv = document.getElementById('events-sse');
     if (window.htmx && sseEv) {
@@ -888,18 +986,12 @@
       try { if (state.orch && state.orch.token) params['token'] = state.orch.token; } catch(_){}
       sseEv.setAttribute('sse-connect', `${API}/labs/sse/events_html?` + new URLSearchParams(params).toString());
       try { window.htmx.process(sseEv); } catch(_){}
+      hookSseError(sseEv);
       sseEv.classList.remove('hidden');
       const polyEv = document.getElementById('observe-events');
       if (polyEv) polyEv.classList.add('hidden');
     }
     // HTMX SSE for status badge
-    const sseStatus = document.getElementById('status-summary');
-    if (window.htmx && sseStatus) {
-      const qs = new URLSearchParams({ app });
-      try { if (state.orch && state.orch.token) qs.set('token', state.orch.token); } catch(_){}
-      sseStatus.setAttribute('sse-connect', `${API}/labs/sse/status_badge?` + qs.toString());
-      try { window.htmx.process(sseStatus); } catch(_){}
-    }
   }
 
   function makeIngressUrl(host, path) {
@@ -1512,12 +1604,54 @@
       const ready = Number(st.readyReplicas||0);
       const ok = desired > 0 ? (ready === desired) : false;
       setText('#status-summary', `${ready}/${desired} ready`, ok? 'ok':'fail');
+      const link = $('#ingress-link');
+      if (link && st.ingress_host) {
+        link.textContent = st.ingress_host;
+        const href = st.ingress_host.startsWith('http')
+          ? st.ingress_host + (st.ingress_path||'/')
+          : makeIngressUrl(st.ingress_host, st.ingress_path);
+        link.href = href;
+        try { setCurlHint(href); } catch(_){}
+        try {
+          if (state.sessionId && state.orch.available) {
+            if (href !== ingressCheckUrl) resetIngressCheck(href);
+            if (ingressCheckOk !== true && !ingressCheckTimer) verifyIngress();
+          }
+        } catch(_){}
+      } else if (link) {
+        clearIngressUI('not configured');
+      }
     } catch { setText('#status-summary','pending','pending'); }
+  }
+
+  async function refreshAppIngress(){
+    if (!state.appApplied) return;
+    try {
+      const st = await jsonGet(`${API}/status/${encodeURIComponent(state.appName)}`);
+      const link = $('#ingress-link');
+      if (link && st.ingress_host) {
+        link.textContent = st.ingress_host;
+        const href = st.ingress_host.startsWith('http')
+          ? st.ingress_host + (st.ingress_path||'/')
+          : makeIngressUrl(st.ingress_host, st.ingress_path);
+        link.href = href;
+        try { setCurlHint(href); } catch(_){}
+        try {
+          if (state.sessionId && state.orch.available) {
+            if (href !== ingressCheckUrl) resetIngressCheck(href);
+            if (ingressCheckOk !== true && !ingressCheckTimer) verifyIngress();
+          }
+        } catch(_){}
+      }
+    } catch {}
   }
 
   function refreshStatusNow(){
     if (state.statusMode === 'app') { refreshAppSummary(); }
-    else { refreshClusterSummary(); }
+    else {
+      refreshClusterSummary();
+      if (state.appApplied) refreshAppIngress();
+    }
   }
 
   function setStatusMode(mode){
@@ -1735,7 +1869,7 @@
       state.appName = 'shell-demo';
       // Stop/disable SSE and prefer non-HTMX panels
       try {
-        const ids = ['logs-sse','events-sse','status-summary'];
+        const ids = ['logs-sse','events-sse'];
         ids.forEach(id => {
           const el = document.getElementById(id);
           if (el) el.removeAttribute('sse-connect');
@@ -1833,36 +1967,51 @@
       state.appName = expectedName;
       await withButtonFeedback(btn, `Submitting apply for “${expectedName}”…`, async () => {
         // use computed `example`
+        const applyOnce = () => apiFetch(`/labs/apply`, {
+          method: 'POST',
+          headers: {
+            'Content-Type':'application/json',
+            ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {}),
+          },
+          body: JSON.stringify({ session_id: state.sessionId, backend: state.backend, example })
+        });
+        let resp = null;
         try {
-          const resp = await apiFetch(`/labs/apply`, {
-            method: 'POST',
-            headers: {
-              'Content-Type':'application/json',
-              ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {}),
-            },
-            body: JSON.stringify({ session_id: state.sessionId, backend: state.backend, example })
-          });
-          if (!resp.ok) { banner(`Apply failed: ${await resp.text()}`, 'fail'); return; }
-          // Prefer server-declared app name (e.g., echo-<session>)
-          try {
-            const out = await resp.json();
-            if (out && out.app) { state.appName = out.app; }
-            state.appApplied = true;
-            clearCanaryInfo();
-          } catch(_) { state.appApplied = true; }
-          try { armSSE(); } catch(_){}
-          // Immediate, visible feedback like dashboard header
-          try { banner(`Apply accepted for “${state.appName}” — reconciling…`, 'ok', 6000); } catch(_){}
-          setTimeout(verifyApply, 800);
-          setTimeout(()=>verifyScale(), 1200);
-          setTimeout(verifyIngress, 1500);
-          try { refreshStatusNow(); } catch(_){}
-          // Auto-start the log tail for the newly applied example
-          try {
-            const observeBtn = document.getElementById('btn-observe-toggle');
-            if (observeBtn && /Start/i.test(observeBtn.textContent||'')) { observeBtn.click(); }
-          } catch(_){}
-        } catch(e){ banner(`Apply error: ${e}`, 'fail'); return; }
+          resp = await applyOnce();
+        } catch (e) {
+          if (isNetworkError(e)) {
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            try {
+              resp = await applyOnce();
+            } catch (e2) {
+              banner(`Apply error: ${e2}`, 'fail');
+              return;
+            }
+          } else {
+            banner(`Apply error: ${e}`, 'fail');
+            return;
+          }
+        }
+        if (!resp.ok) { banner(`Apply failed: ${await resp.text()}`, 'fail'); return; }
+        // Prefer server-declared app name (e.g., echo-<session>)
+        try {
+          const out = await resp.json();
+          if (out && out.app) { state.appName = out.app; }
+          state.appApplied = true;
+          clearCanaryInfo();
+        } catch(_) { state.appApplied = true; }
+        try { armSSE(); } catch(_){}
+        // Immediate, visible feedback like dashboard header
+        try { banner(`Apply accepted for “${state.appName}” — reconciling…`, 'ok', 6000); } catch(_){}
+        setTimeout(verifyApply, 800);
+        setTimeout(()=>verifyScale(), 1200);
+        setTimeout(verifyIngress, 1500);
+        try { refreshStatusNow(); } catch(_){}
+        // Auto-start the log tail for the newly applied example
+        try {
+          const observeBtn = document.getElementById('btn-observe-toggle');
+          if (observeBtn && /Start/i.test(observeBtn.textContent||'')) { observeBtn.click(); }
+        } catch(_){}
       });
     });
     $('#btn-scale-2')?.addEventListener('click', async (e)=>{
@@ -2091,6 +2240,11 @@
         }
       } catch {}
     }
+    window.k1sStartEventPoll = () => {
+      if (state._eventsTimer) return;
+      pollEventsOnce();
+      state._eventsTimer = setInterval(pollEventsOnce, 2000);
+    };
     async function pollLogsOnce(){
       try {
         const qs = new URLSearchParams({ tail: '200' });
@@ -2168,7 +2322,14 @@
                 follow(box);
               }
             };
-            esEvents.onerror = () => { try { if ((!API || API==='') && window.DOCS_API_BASE) { switchToDirectApi('events SSE error'); } } catch(_){} };
+            esEvents.onerror = () => {
+              try { esEvents?.close(); } catch(_){}
+              esEvents = null;
+              if (!state._eventsTimer) {
+                pollEventsOnce();
+                state._eventsTimer = setInterval(pollEventsOnce, 2000);
+              }
+            };
           } catch {
             pollEventsOnce();
             state._eventsTimer = setInterval(pollEventsOnce, 2000);
@@ -2204,7 +2365,10 @@
                 }
               } catch {}
             };
-            esStatus.onerror = () => { try { if ((!API || API==='') && window.DOCS_API_BASE) { switchToDirectApi('status SSE error'); } } catch(_){} };
+            esStatus.onerror = () => {
+              try { esStatus?.close(); } catch(_){}
+              esStatus = null;
+            };
           } catch {}
         } else {
           observeBtn.textContent = 'Start Tail';
@@ -2243,8 +2407,8 @@
     } catch(_){}
   });
   // Ensure HTMX-driven events panel auto-scrolls to bottom after swaps (when follow is enabled)
-  try {
-    document.body.addEventListener('htmx:afterSwap', (evt) => {
+    try {
+      document.body.addEventListener('htmx:afterSwap', (evt) => {
       try {
         const tgt = evt.target;
         if (tgt && tgt.id === 'events-sse') {
@@ -2254,6 +2418,9 @@
           }
         }
       } catch(_){}
+    });
+    document.body.addEventListener('htmx:sseError', () => {
+      handleSseError();
     });
   } catch(_){}
 })();
