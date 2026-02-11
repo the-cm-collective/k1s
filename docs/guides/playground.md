@@ -199,7 +199,7 @@ Live feed of events and logs for your sample app. When sessions are enabled, thi
   <!-- HTMX SSE variant for logs; labs.js will arm sse-connect once a session exists -->
   <div id="logs-sse" class="panel hidden scrollbar-hide" hx-ext="sse" sse-connect="" sse-swap="message" hx-swap="beforeend" style="height:220px;max-height:220px;overflow:auto;"></div>
   <!-- HTMX SSE variant for events; labs.js will arm sse-connect once a session exists -->
-  <div id="events-sse" class="panel hidden scrollbar-hide" hx-ext="sse" sse-connect="" sse-swap="message" style="height:220px;max-height:220px;overflow:auto;"></div>
+  <div id="events-sse" class="panel hidden scrollbar-hide" style="height:220px;max-height:220px;overflow:auto;"></div>
 </div>
 
 ## D. Debug Tools (Shell + Port-Forward)

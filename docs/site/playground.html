@@ -688,12 +688,12 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="static/labs.css?v=0e6970e009"/>
+    <link rel="stylesheet" href="static/labs.css?v=286baabacd"/>
 <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-<script>window.DOCS_LABS_TOKEN='QMFXB-FKefGI7SayPlFI3SocAjwAmHzeh9rBzUH3VyE';</script>
+<script>window.DOCS_LABS_TOKEN='8gsV_qL9IKTYI0JOUZFlEf0UOIbd3dz8HgNlnbG_JzE';</script>
 <script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>
-<script defer src="static/labs.js?v=0e6970e009"></script>
+<script defer src="static/labs.js?v=286baabacd"></script>
   </head>
   <body>
     <nav>
@@ -821,7 +821,7 @@ helm uninstall demochart -n demo-helm &amp;&amp; kubectl delete namespace demo-h
 </ul>
 <h2>C. Logs & Events</h2>
 <p>Live feed of events and logs for your sample app. When sessions are enabled, this switches to streaming mode automatically.</p>
-<div id="observe">   <button id="btn-observe-toggle" disabled>Start Tail</button>   <label style="margin-left:10px"><input type="checkbox" id="follow-tail" checked/> Follow tail</label>   <div id="observe-events" class="panel scrollbar-hide" aria-live="polite" aria-busy="true" data-source="events" style="height:220px;max-height:220px;overflow:auto;"></div>   <div id="observe-logs" class="panel scrollbar-hide" aria-live="polite" aria-busy="true" data-source="logs" style="height:220px;max-height:220px;overflow:auto;"></div>   <!-- HTMX SSE variant for logs; labs.js will arm sse-connect once a session exists -->   <div id="logs-sse" class="panel hidden scrollbar-hide" hx-ext="sse" sse-connect="" sse-swap="message" hx-swap="beforeend" style="height:220px;max-height:220px;overflow:auto;"></div>   <!-- HTMX SSE variant for events; labs.js will arm sse-connect once a session exists -->   <div id="events-sse" class="panel hidden scrollbar-hide" hx-ext="sse" sse-connect="" sse-swap="message" style="height:220px;max-height:220px;overflow:auto;"></div> </div>
+<div id="observe">   <button id="btn-observe-toggle" disabled>Start Tail</button>   <label style="margin-left:10px"><input type="checkbox" id="follow-tail" checked/> Follow tail</label>   <div id="observe-events" class="panel scrollbar-hide" aria-live="polite" aria-busy="true" data-source="events" style="height:220px;max-height:220px;overflow:auto;"></div>   <div id="observe-logs" class="panel scrollbar-hide" aria-live="polite" aria-busy="true" data-source="logs" style="height:220px;max-height:220px;overflow:auto;"></div>   <!-- HTMX SSE variant for logs; labs.js will arm sse-connect once a session exists -->   <div id="logs-sse" class="panel hidden scrollbar-hide" hx-ext="sse" sse-connect="" sse-swap="message" hx-swap="beforeend" style="height:220px;max-height:220px;overflow:auto;"></div>   <!-- Events stream is managed by labs.js (manual EventSource + poll fallback) -->   <div id="events-sse" class="panel hidden scrollbar-hide" style="height:220px;max-height:220px;overflow:auto;"></div> </div>
 <h2>D. Debug Tools (Shell + Port-Forward)</h2>
 <p>Open an interactive shell or run a lightweight port-forward check. These are Labs‑only features: they require an active session and Controlled Actions enabled.</p>
 <div class="panel" id="labs-debug">   <div class="row" style="flex-wrap:wrap; gap:10px;">     <button id="btn-labs-shell" disabled>Open Remote Shell</button>     <button id="btn-labs-pf" disabled>Open Port-Forward</button>     <span class="muted">Uses apishim WebSocket exec + port-forward.</span>   </div>   <div class="muted" style="margin-top:6px;">If disabled, run locally: <code>ae shell &lt;app&gt;</code> (defaults to sh; use <code>-- bash</code> when available), add <code>-n &lt;ns&gt;</code> if needed, or use <code>kubectl exec</code> / <code>kubectl port-forward</code>.</div> </div>
@@ -904,7 +904,7 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-11 09:15:08</span>
+        <span>Built 2026-02-11 09:39:51</span>
       </div>
     </footer>
     <script>
