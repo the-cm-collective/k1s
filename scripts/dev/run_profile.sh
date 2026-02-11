@@ -154,8 +154,15 @@ start_docs_server() {
   local docs_bind="${DOCS_BIND:-127.0.0.1}"
   local pid_file="$ROOT_DIR/state/docs_server.pid"
   local docs_dir="$ROOT_DIR/docs/site"
-  local api_base="${DOCS_API_BASE:-http://127.0.0.1:${METRICS_PORT:-9108}}"
-  local dash_url="${DOCS_DASHBOARD_URL:-http://127.0.0.1:${METRICS_PORT:-9108}/dashboard}"
+  local default_api_base="http://127.0.0.1:${METRICS_PORT:-9108}"
+  local default_dash_url="${default_api_base}/dashboard"
+  if [[ "${CORE_CADDY:-0}" == "1" ]]; then
+    local https_port="${CADDY_HTTPS_PORT:-8443}"
+    default_api_base="https://api.home.arpa:${https_port}"
+    default_dash_url="https://dash.home.arpa:${https_port}/dashboard"
+  fi
+  local api_base="${DOCS_API_BASE:-$default_api_base}"
+  local dash_url="${DOCS_DASHBOARD_URL:-$default_dash_url}"
 
   mkdir -p "$ROOT_DIR/state"
   if [[ -f "$pid_file" ]]; then
@@ -185,6 +192,7 @@ start_caddy() {
   local docs_dir="$ROOT_DIR/docs/site"
   local caddy_container="${AE_CADDY_CONTAINER:-dev-caddy-1}"
   local apishim_upstream=""
+  local apishim_port="${APISHIM_PORT:-8445}"
   local caddy_network=""
 
   mkdir -p "$caddy_sites"
@@ -198,14 +206,19 @@ start_caddy() {
   if [[ -x "$ROOT_DIR/scripts/ensure_dev_env.sh" ]]; then
     AE_CONTAINER_CLI="$ENGINE_BIN" "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
   fi
+  if [[ "$apishim_port" == "5432" ]]; then
+    apishim_port="8445"
+  elif [[ -n "${POSTGRES_PORT:-}" && "$apishim_port" == "${POSTGRES_PORT}" ]]; then
+    apishim_port="8445"
+  fi
   if [[ "${AE_APISHIM_MODE:-}" == "container" && "$ENGINE_BIN" == "podman" ]]; then
     if "$ENGINE_BIN" network inspect dev_default >/dev/null 2>&1; then
-      apishim_upstream="apishim:${APISHIM_PORT:-8445}"
+      apishim_upstream="apishim:${apishim_port}"
       caddy_network="dev_default"
     fi
   fi
   if [[ -z "$apishim_upstream" ]]; then
-    apishim_upstream="${host_alias}:${APISHIM_PORT:-8445}"
+    apishim_upstream="${host_alias}:${apishim_port}"
   fi
   export APISHIM_ENV_FILE="${APISHIM_ENV_FILE:-$docs_env}"
   if [[ -f "$docs_env" ]]; then
@@ -290,6 +303,54 @@ finally:
 PY
 }
 
+warn_apishim_dsn() {
+  local dsn="${AE_APISHIM_DSN:-}"
+  if [[ -z "$dsn" ]]; then
+    return 0
+  fi
+  local parsed=""
+  parsed="$("$PYTHON_BIN" - <<'PY' "$dsn" 2>/dev/null || true
+import sys
+from urllib.parse import urlparse
+
+dsn = sys.argv[1]
+try:
+    parsed = urlparse(dsn)
+except Exception:
+    sys.exit(0)
+
+scheme = parsed.scheme or ""
+host = parsed.hostname or ""
+port = parsed.port or ""
+if not scheme:
+    sys.exit(0)
+print(f"{scheme}|{host}|{port}")
+PY
+)"
+  if [[ -z "$parsed" ]]; then
+    return 0
+  fi
+  IFS='|' read -r scheme host port <<<"$parsed"
+  if [[ "$scheme" != "postgres" && "$scheme" != "postgresql" ]]; then
+    return 0
+  fi
+  if [[ -z "$host" ]]; then
+    return 0
+  fi
+  if [[ -z "${port:-}" ]]; then
+    port=5432
+  fi
+  if [[ "$host" == "postgres" ]]; then
+    if ! "$ENGINE_BIN" ps --format '{{.Names}}' 2>/dev/null | grep -q 'postgres'; then
+      echo "warning: AE_APISHIM_DSN points to postgres service but no postgres container is running; apishim may exit." >&2
+    fi
+    return 0
+  fi
+  if ! port_open "$host" "$port"; then
+    echo "warning: AE_APISHIM_DSN points to ${host}:${port}, but it is not reachable from the host; apishim may exit." >&2
+  fi
+}
+
 start_apishim() {
   local profile_dir="$1"
   local host="${APISHIM_HOST:-127.0.0.1}"
@@ -304,6 +365,10 @@ start_apishim() {
 
   if ! is_truthy "${AE_APISHIM_AUTOSTART:-1}"; then
     return 0
+  fi
+  if [[ "$mode" == "container" && "$port" == "5432" ]]; then
+    echo "warning: APISHIM_PORT=5432 conflicts with Postgres; forcing APISHIM_PORT=8445 for apishim." >&2
+    port="8445"
   fi
   if port_open "$host" "$port"; then
     already_running=1
@@ -328,6 +393,7 @@ start_apishim() {
   export AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-$cert_file}"
   export AE_APISHIM_TLS_KEY="${AE_APISHIM_TLS_KEY:-$key_file}"
   export AE_APISHIM_SERVER="${AE_APISHIM_SERVER:-https://127.0.0.1:${port}}"
+  warn_apishim_dsn
   # Ensure controller can mint shim session tokens (dashboard exec/port-forward).
   if [[ -n "${AE_APISHIM_SESSION_SECRET:-}" ]]; then
     export AE_APISHIM_SESSION_SECRET
@@ -349,7 +415,9 @@ start_apishim() {
       export APISHIM_PROFILE_DIR="${APISHIM_PROFILE_DIR:-$profile_rel}"
       export APISHIM_PORT="$port"
       export APISHIM_CONTAINER=1
-      AE_CONTAINER_CLI="$ENGINE_BIN" APISHIM_CONTAINER=1 "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
+      APISHIM_PORT="$port" APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$port}" \
+        AE_CONTAINER_CLI="$ENGINE_BIN" APISHIM_CONTAINER=1 \
+        "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
     fi
     return 0
   fi
@@ -405,8 +473,12 @@ start_apishim() {
   export APISHIM_PROFILE_DIR="${APISHIM_PROFILE_DIR:-$profile_rel}"
   export APISHIM_PORT="$port"
   export APISHIM_CONTAINER=1
-  AE_CONTAINER_CLI="$ENGINE_BIN" APISHIM_CONTAINER=1 "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
-  "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" up -d apishim >/dev/null 2>&1 || true
+  APISHIM_PORT="$port" APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$port}" \
+    AE_CONTAINER_CLI="$ENGINE_BIN" APISHIM_CONTAINER=1 \
+    "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
+  APISHIM_PORT="$port" APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$port}" \
+    "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" \
+    up -d apishim >/dev/null 2>&1 || true
   connect_apishim_network
 }
 
@@ -645,7 +717,18 @@ case "$PROFILE" in
     POSTGRES_BIND_IP="${POSTGRES_BIND_IP:-127.0.0.1}"
     POSTGRES_PORT="${POSTGRES_PORT:-5432}"
     export POSTGRES_BIND_IP POSTGRES_PORT
-    export AE_APISHIM_DSN="${AE_APISHIM_DSN:-postgresql://shim:shim@${POSTGRES_BIND_IP}:${POSTGRES_PORT}/shim}"
+    if [[ "${APISHIM_PORT:-}" == "${POSTGRES_PORT}" ]]; then
+      echo "warning: APISHIM_PORT (${APISHIM_PORT}) conflicts with POSTGRES_PORT; resetting APISHIM_PORT to 8445." >&2
+      unset APISHIM_PORT
+    fi
+    if [[ -z "${AE_APISHIM_DSN:-}" ]]; then
+      if [[ "${AE_APISHIM_MODE:-container}" == "host" ]]; then
+        AE_APISHIM_DSN="postgresql://shim:shim@${POSTGRES_BIND_IP}:${POSTGRES_PORT}/shim"
+      else
+        AE_APISHIM_DSN="postgresql://shim:shim@postgres:5432/shim"
+      fi
+    fi
+    export AE_APISHIM_DSN
     compose "$ENGINE_BIN" -f "$COMPOSE_FILE" up -d etcd nats-hub postgres
     PROFILE_DIR="$(abs_path "${PROFILE_DIR:-state/profiles/k1s-core}")"
     SPECS_DIR="$(abs_path "${SPECS_DIR:-$PROFILE_DIR/specs}")"
@@ -702,6 +785,16 @@ case "$PROFILE" in
     fi
     METRICS_PORT="${METRICS_PORT:-9108}"
     export APISHIM_PORT="${APISHIM_PORT:-8445}"
+    if [[ "${APISHIM_PORT}" == "${POSTGRES_PORT}" ]]; then
+      echo "warning: APISHIM_PORT (${APISHIM_PORT}) conflicts with POSTGRES_PORT; forcing APISHIM_PORT=8445." >&2
+      APISHIM_PORT="8445"
+      export APISHIM_PORT
+    fi
+    export APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$APISHIM_PORT}"
+    if [[ "${APISHIM_HOST_PORT}" == "${POSTGRES_PORT}" || "${APISHIM_HOST_PORT}" == "5432" ]]; then
+      APISHIM_HOST_PORT="8445"
+      export APISHIM_HOST_PORT
+    fi
     if [[ "${AE_LABS:-0}" == "1" ]]; then
       start_apishim "$PROFILE_DIR"
       build_docs_with_labs_token
@@ -724,6 +817,13 @@ case "$PROFILE" in
     EDGE_START_NATS="${EDGE_START_NATS:-1}"
     if [[ "$EDGE_START_NATS" == "1" ]]; then
       compose "$ENGINE_BIN" -f "$COMPOSE_FILE" up -d nats-edge
+    fi
+    EDGE_START_POSTGRES="${EDGE_START_POSTGRES:-0}"
+    if [[ "$EDGE_START_POSTGRES" == "1" ]]; then
+      POSTGRES_BIND_IP="${POSTGRES_BIND_IP:-127.0.0.1}"
+      POSTGRES_PORT="${POSTGRES_PORT:-5432}"
+      export POSTGRES_BIND_IP POSTGRES_PORT
+      compose "$ENGINE_BIN" -f "$COMPOSE_FILE" up -d postgres
     fi
     EDGE_PROFILE="${EDGE_PROFILE:-k1s-edge}"
     PROFILE_DIR="$(abs_path "${PROFILE_DIR:-state/profiles/$EDGE_PROFILE}")"

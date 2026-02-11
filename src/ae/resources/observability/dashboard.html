@@ -1332,6 +1332,34 @@ Connection: close
         if (!base && apishimBase) base = String(apishimBase || '').trim();
         if (!base) base = location.origin;
         base = base.replace(/\/$/, '');
+        function isLoopbackHost(h){
+          var host = String(h || '').toLowerCase();
+          return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
+        }
+        function caddyPortFallback(proto){
+          // Typical local Caddy ports used by dev profile.
+          if (proto === 'https:') return '8443';
+          return '8888';
+        }
+        // Browser WS to loopback apishim certs can fail trust checks; prefer Caddy API host in dev flows.
+        try {
+          var locHost = String(location.hostname || '').toLowerCase();
+          var locHomeArpa = /\.home\.arpa$/.test(locHost);
+          var locLoopback = isLoopbackHost(locHost);
+          if ((locHomeArpa || locLoopback) && /^https?:\/\//i.test(base)) {
+            var u = new URL(base);
+            if (isLoopbackHost(u.hostname || '')) {
+              var scheme = (location.protocol === 'https:') ? 'https:' : (u.protocol || location.protocol || 'https:');
+              var locPort = String(location.port || '').trim();
+              var port = '';
+              if (locPort) {
+                if (locPort !== '9108' && locPort !== '8445') port = ':' + locPort;
+              }
+              if (!port) port = ':' + caddyPortFallback(scheme);
+              base = scheme + '//api.home.arpa' + port;
+            }
+          }
+        } catch(e){}
         return base;
       }
 

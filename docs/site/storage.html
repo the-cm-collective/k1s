@@ -746,9 +746,15 @@
 <li>Future: <code>size</code> is reserved for advisory/validation.</li>
 </ul>
 <h3>NetFS StorageClass config</h3>
-<p>Provide StorageClass definitions via <code>AE_STORAGE_PROVISIONERS</code> (YAML file). The shim will seed these into its object store on startup.</p>
-<p>Example (see <code>docs/reference/storage-classes.yaml</code>):</p>
+<p>Provide StorageClass definitions via <code>AE_STORAGE_PROVISIONERS</code> (YAML file). The shim will seed these into its object store on startup. The file can be either:</p>
+<ul>
+<li>Kubernetes <code>StorageClass</code> manifests (backward-compatible), or</li>
+<li>a <code>provisioners:</code> registry that also includes CSI endpoints.</li>
+</ul>
+<p>Example (StorageClass manifests, see <code>docs/reference/storage-classes.yaml</code>):</p>
 <pre><code>export AE_STORAGE_PROVISIONERS=docs/reference/storage-classes.yaml</code></pre>
+<p>Example (provisioner registry, see <code>configs/storage-provisioners.yaml</code>):</p>
+<pre><code>export AE_STORAGE_PROVISIONERS=configs/storage-provisioners.yaml</code></pre>
 <h3>Default StorageClass (built-in)</h3>
 <p>When <code>AE_STORAGE_PROVISIONERS</code> is not set, k1s seeds a default local-path StorageClass named <code>k1s-local</code> (provisioner <code>k1s.io/local-path</code>) with <code>volumeBindingMode: WaitForFirstConsumer</code>, <code>reclaimPolicy: Delete</code>, and the default-class annotation. Disable this behavior with:</p>
 <pre><code>export AE_STORAGE_SEED_DEFAULTS=0</code></pre>
@@ -764,9 +770,21 @@
 <p>When running the node agent with <code>AE_ENABLE_NETFS=1</code>, PVC mounts from apishim workloads are resolved into hostPath mounts under <code>AE_NETFS_ROOT</code>. The agent currently reads PVC/PV bindings from the apishim store (sqlite/postgres) to locate the bound PV.</p>
 <pre><code>export AE_ENABLE_NETFS=1
 export AE_APISHIM_DB=state/apishim.db</code></pre>
-<p>NetFS currently supports NFS PVs. The node must have <code>mount</code>/<code>umount</code> plus an NFS helper (<code>mount.nfs</code> or <code>mount.nfs4</code>). If these tools or the NFS mount fail, the agent records a PVC warning event; use <code>kubectl get events -n &lt;ns&gt;</code> to inspect <code>NfsPrereqFailed</code>, <code>MountFailed</code>, or <code>MountConflict</code> reasons.</p>
+<p>NetFS supports NFS PVs and CSI PVs (when CSI endpoints are configured). The node must have <code>mount</code>/<code>umount</code> plus an NFS helper (<code>mount.nfs</code> or <code>mount.nfs4</code>). If these tools or the NFS mount fail, the agent records a PVC warning event; use <code>kubectl get events -n &lt;ns&gt;</code> to inspect <code>NfsPrereqFailed</code>, <code>MountFailed</code>, or <code>MountConflict</code> reasons.</p>
+<h3>CSI gRPC (CephFS)</h3>
+<p>To use CSI drivers (for example, CephFS), provide controller + node endpoints in the provisioner registry and ensure the CSI driver pods are running on the hub (controller plugin) and edge nodes (node plugin).</p>
+<p>Key StorageClass parameters (standard Kubernetes keys):</p>
+<ul>
+<li><code>csi.storage.k8s.io/fstype</code></li>
+<li><code>csi.storage.k8s.io/provisioner-secret-name</code> / <code>-namespace</code></li>
+<li><code>csi.storage.k8s.io/controller-publish-secret-name</code> / <code>-namespace</code></li>
+<li><code>csi.storage.k8s.io/node-stage-secret-name</code> / <code>-namespace</code></li>
+<li><code>csi.storage.k8s.io/node-publish-secret-name</code> / <code>-namespace</code></li>
+</ul>
+<p>Example registry entry: <code>configs/storage-provisioners.yaml</code>.</p>
+<p>Node staging paths live under <code>AE_CSI_STAGE_ROOT</code> (default <code>/var/lib/ae/csi</code>).</p>
 <h3>NetFS capability matrix (current)</h3>
-<table><thead><tr><th>Backend</th><th>Dynamic provisioning</th><th>Attach/Detach</th><th>Mounts</th><th>Notes</th></tr></thead><tbody><tr><td>NFS (<code>k1s.io/nfs</code>)</td><td>Yes</td><td>No</td><td>Yes</td><td>RWX supported, mountOptions honored.</td></tr><tr><td>CSI (static PVs)</td><td>No</td><td>Controller creates VolumeAttachment</td><td>Marker only</td><td>Requires PV.spec.csi.driver + volumeHandle; no CSI gRPC.</td></tr><tr><td>local-path (<code>k1s.io/local-path</code>)</td><td>Yes</td><td>No</td><td>Yes</td><td>HostPath-backed (not network).</td></tr></tbody></table>
+<table><thead><tr><th>Backend</th><th>Dynamic provisioning</th><th>Attach/Detach</th><th>Mounts</th><th>Notes</th></tr></thead><tbody><tr><td>NFS (<code>k1s.io/nfs</code>)</td><td>Yes</td><td>No</td><td>Yes</td><td>RWX supported, mountOptions honored.</td></tr><tr><td>CSI (gRPC)</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Requires CSI endpoints in <code>AE_STORAGE_PROVISIONERS</code>.</td></tr><tr><td>local-path (<code>k1s.io/local-path</code>)</td><td>Yes</td><td>No</td><td>Yes</td><td>HostPath-backed (not network).</td></tr></tbody></table>
 <h3>NetFS cloning (PVC dataSourceRef)</h3>
 <p>For hostPath-backed provisioners (NFS/local-path), the controller can restore a new PVC from a source PVC:</p>
 <ul>
@@ -826,7 +844,7 @@ export AE_APISHIM_DB=state/apishim.db</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-31 16:07:03</span>
+        <span>Built 2026-02-10 19:25:45</span>
       </div>
     </footer>
     <script>

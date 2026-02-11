@@ -21,7 +21,7 @@ services:
       context: ../..
       dockerfile: ops/dev/apishim.Dockerfile
     working_dir: /workspace
-    command: bash -lc "python -m pip install -e . && AE_APISHIM_ENABLE=1 python -m ae.apishim serve --host 0.0.0.0 --port ${APISHIM_PORT:-8445} --tls"
+    command: bash -lc "python -m pip install -e . && AE_APISHIM_ENABLE=1 python -m ae.apishim serve --host 0.0.0.0 --port 8445 --tls"
     volumes:
       - ../..:/workspace
       - ${APISHIM_CONTAINER_SOCKET:-/run/user/1000/podman/podman.sock}:/run/podman/podman.sock
@@ -40,7 +40,7 @@ services:
       - AE_APISHIM_DB=/workspace/${APISHIM_PROFILE_DIR}/apishim.db
       - CONTAINER_HOST=${APISHIM_CONTAINER_HOST:-unix:///run/podman/podman.sock}
     ports:
-      - "127.0.0.1:${APISHIM_PORT:-8445}:8445"
+      - "127.0.0.1:${APISHIM_HOST_PORT:-${APISHIM_PORT:-8445}}:8445"
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "host.containers.internal:host-gateway"

@@ -824,7 +824,7 @@
 <p>Top‑level</p>
 <ul>
 <li><code>apiVersion: ae.dev/v1alpha1</code></li>
-<li><code>kind: App</code></li>
+<li><code>kind: Deployment</code></li>
 <li><code>metadata: { name }</code></li>
 <li><code>spec</code>: see below</li>
 </ul>
@@ -854,7 +854,7 @@
 </ul>
 <p>Example</p>
 <pre><code>apiVersion: ae.dev/v1alpha1
-kind: App
+kind: Deployment
 metadata: { name: echo }
 spec:
   image: alpine:3.20
@@ -880,13 +880,12 @@ spec:
 <li>node_heartbeats(node_id PK, status, seen_at)</li>
 <li>services(app_name PK, cluster_ip, ports json, created_at)</li>
 <li>service_endpoints(app_name, port, ip, target_port, ready) [PK (app_name, port, ip)]</li>
-<li>storage_bindings(app_name, volume_name, node_id, retention, created_at) [PK (app_name, volume_name)]</li>
 <li>volume_attachments(app_name, volume_name, node_id, retention, created_at) [PK (app_name, volume_name)]</li>
 </ul>
 <p>Query surfaces</p>
 <ul>
 <li><code>list_status()</code>, <code>get_status(app)</code></li>
-<li><code>list_pods(app)</code> (alias: <code>list_replicas</code>), <code>get_probe_history(app, N)</code></li>
+<li><code>list_pods(app)</code>, <code>get_probe_history(app, N)</code></li>
 <li><code>list_revisions(app)</code>, <code>get_revision_manifest(app, rev)</code></li>
 <li><code>list_events(app, limit)</code></li>
 </ul>
@@ -1056,7 +1055,7 @@ spec:
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-31 16:07:03</span>
+        <span>Built 2026-02-10 19:25:45</span>
       </div>
     </footer>
     <script>

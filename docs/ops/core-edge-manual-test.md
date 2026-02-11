@@ -156,6 +156,66 @@ Expected:
 - Gateway logs show a lease acquisition and completed work counts increasing.
 - Work ledger transitions to `Succeeded` for the test work items (visible in hub logs via `work_result` entries).
 
+Node agents for exec/port-forward (required for shell demo)
+Single-host (validated command sequence):
+1. Allow the controller to read WireGuard handshakes without sudo prompts:
+```bash
+WG_BIN=$(command -v wg)
+echo "$USER ALL=(root) NOPASSWD: ${WG_BIN} show wg-hub dump" | sudo tee /etc/sudoers.d/k1s-wg-dump
+sudo chmod 440 /etc/sudoers.d/k1s-wg-dump
+```
+2. Start the hub controller with overlay dump support:
+```bash
+WG_BIN=$(command -v wg) \
+  AE_DEV_LOCAL=1 \
+  AE_WG_INTERFACE=wg-hub \
+  AE_WG_DUMP_CMD="sudo -n ${WG_BIN} show {iface} dump" \
+  AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
+  make k1s-core
+```
+3. Start the hub node:
+```bash
+sudo -E \
+  AE_NODE_ID=hub-1 \
+  AE_NODE_LABELS="role=hub,site=hub,wg_role=hub,wg_psk=rp,wg_endpoint=192.168.29.143:51820" \
+  AE_POD_CIDR=10.42.0.0/24 \
+  AE_ROSENPASS_ENABLED=1 \
+  AE_ROSENPASS_CONFIG=controller \
+  AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub \
+  AE_ROSENPASS_INTERFACE=wg-hub \
+  AE_WG_LISTEN_PORT=51820 \
+  AE_WG_ADDRESS=10.255.0.1/32 \
+  AE_AGENT_TOKEN=devtoken \
+  AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+  make k1s-core-node
+```
+4. Register the edge site and start the edge gateway:
+```bash
+make edge-site SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+AE_SITE_ID=sea-edge-02 \
+AE_NODE_ID=edge-1 \
+AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
+AE_LOG_LEVEL=debug \
+make k1s-edge-core
+```
+5. Start the edge node (single-host routing adjustments):
+```bash
+sudo -E \
+  AE_WG_INTERFACE=wg-edge \
+  AE_ROSENPASS_INTERFACE=wg-edge \
+  AE_WG_ADDRESS=10.255.0.3/32 \
+  AE_WG_TABLE=off \
+  AE_WG_LISTEN_PORT=51821 \
+  AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-edge \
+  AE_NODE_LABELS="site=sea-edge-02,wg_role=spk,wg_psk=rp" \
+  AE_AGENT_TOKEN=devtoken \
+  AE_CONTROLLER_URL=http://192.168.29.143:9110 \
+  make k1s-edge-node
+```
+Note
+- Replace `192.168.29.143` with your hub host LAN IP.
+- For split-host setups that require explicit `AE_AGENT_ENDPOINT`, follow `docs/ops/core-edge-wg-psk.md`.
+
 Workload placement smoke tests (manifests)
 Use the controller CLI context above (for example: `source <(ae auth local)`).
 Node selectors use scoped node ids (`<site_id>--<node_id>`).

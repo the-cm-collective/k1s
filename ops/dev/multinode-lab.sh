@@ -86,7 +86,9 @@ cat <<'EOF'
 # Full workflow lives in docs/ops/core-edge-wg-psk.md. Core steps:
 
 # Hub (core) host
-AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy make k1s-core
+AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy \
+AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
+make k1s-core
 
 AE_WG_ENDPOINT=<PUBLIC_IP>:51820 \
 AE_NODE_LABELS="role=hub,site=hub,wg_role=hub,wg_psk=rp" \

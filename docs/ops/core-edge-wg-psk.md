@@ -36,6 +36,7 @@ sudo -E \
   AE_WG_INTERFACE=wg-hub \
   AE_AGENT_TOKEN=devtoken \
   AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+  AE_AGENT_ENDPOINT=http://<HUB_WG_IP>:9111 \
   python -m ae.node --ensure-pod-net
 ```
 
@@ -48,11 +49,13 @@ sudo -E \
   AE_WG_INTERFACE=wg-edge \
   AE_AGENT_TOKEN=devtoken \
   AE_CONTROLLER_URL=http://<HUB_IP>:9110 \
+  AE_AGENT_ENDPOINT=http://<EDGE_WG_IP>:9112 \
   python -m ae.node --ensure-pod-net
 ```
 Notes
 - On single-host labs, set `AE_WG_TABLE=off` for the edge node.
 - If both sites are behind CGNAT, you will need a relay or public hub endpoint.
+- For exec/port-forward over WG, the node agent endpoint must be reachable from apishim. Use the WG IPs for `AE_AGENT_ENDPOINT`.
 
 Flow B — WireGuard + Rosenpass
 Single-host note
@@ -78,6 +81,8 @@ WG_BIN=$(command -v wg) \
   AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
   make k1s-core
 ```
+Note
+- The validated single-host flow uses the default apishim mode from `make k1s-core` (no `AE_APISHIM_MODE` override required).
 3. Start the hub node:
 ```bash
 sudo -E \
@@ -94,6 +99,14 @@ sudo -E \
   AE_CONTROLLER_URL=http://127.0.0.1:9110 \
   make k1s-core-node
 ```
+3a. Verify the WG interfaces have the expected IPs:
+```bash
+ip -brief addr show wg-hub wg-edge
+```
+Expected (example):
+- `wg-hub` has `10.255.0.1/32`
+- `wg-edge` has `10.255.0.3/32`
+
 4. Register the edge site and start the edge gateway:
 ```bash
 make edge-site SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
@@ -168,6 +181,7 @@ Postgres for apishim (k1s-core profile)
 ```bash
 POSTGRES_BIND_IP=<HUB_WG_IP> POSTGRES_PORT=5432 make k1s-core
 ```
+- `k1s-core` sets `AE_APISHIM_DSN` automatically. When apishim runs in a container, the default DSN uses the compose service name (`postgres:5432`). For WG access, override the DSN to point at the hub WG IP.
 - On edge nodes, set:
 ```bash
 export AE_APISHIM_DSN=postgresql://shim:shim@<HUB_WG_IP>:5432/shim
@@ -201,6 +215,7 @@ AE_LOG_LEVEL=debug \
 AE_ROSENPASS_LOG_LEVEL=verbose \
 AE_CONTROLLER_URL=http://127.0.0.1:9110 \
 AE_AGENT_TOKEN=devtoken \
+AE_AGENT_ENDPOINT=http://<HUB_WG_IP>:9111 \
 python -m ae.node --ensure-pod-net
 ```
 Note
@@ -215,6 +230,7 @@ AE_LOG_LEVEL=debug \
 AE_ROSENPASS_LOG_LEVEL=verbose \
 AE_AGENT_TOKEN=devtoken \
 AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+AE_AGENT_ENDPOINT=http://<HUB_WG_IP>:9111 \
 make k1s-core-node
 ```
 Defaults set by `k1s-core-node` (override as needed):
@@ -228,6 +244,7 @@ Defaults set by `k1s-core-node` (override as needed):
 - `sudo -E` must be followed by a command (it prints a usage error otherwise). Optional: pre-auth with `sudo -v`, then run `sudo -E` with the `make` command.
 Note
 - If you prefer not to write root-owned files into the repo, override `AE_ROSENPASS_DIR=/var/lib/ae/rosenpass` when running the node helpers with `sudo`.
+- For exec/port-forward over WG, set `AE_AGENT_ENDPOINT` to the hub WG IP so apishim can reach the node.
 
 Step 3: Register the remote edge site in the hub (creates NATS leaf creds)
 ```bash
@@ -281,6 +298,7 @@ AE_LOG_LEVEL=debug \
 AE_ROSENPASS_LOG_LEVEL=verbose \
 AE_CONTROLLER_URL=http://<HUB_IP>:9110 \
 AE_AGENT_TOKEN=devtoken \
+AE_AGENT_ENDPOINT=http://<EDGE_WG_IP>:9112 \
 python -m ae.node --ensure-pod-net
 ```
 Note
@@ -295,6 +313,7 @@ sudo -E AE_LOG_LEVEL=debug \
   AE_WG_TABLE=off \
   AE_AGENT_TOKEN=devtoken \
   AE_CONTROLLER_URL=http://<HUB_IP>:9110 \
+  AE_AGENT_ENDPOINT=http://<EDGE_WG_IP>:9112 \
   AE_ROSENPASS_DIR=/var/lib/ae/rosenpass \
   make k1s-edge-node
 ```

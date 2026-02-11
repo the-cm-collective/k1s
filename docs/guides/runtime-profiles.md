@@ -13,13 +13,18 @@ make dev-min
 ```
 make dev-etcd
 ```
+Notes:
+- `dev-min`/`dev-etcd` default to SQLite for apishim (no `AE_APISHIM_DSN` set unless you provide it).
 
 `k1s-core` (etcd + NATS + JetStream; auto-starts etcd + hub NATS)
 ```
 make k1s-core
 ```
 Notes:
-- `k1s-core` now starts a Postgres container for the apishim store.
+- `k1s-core` starts a Postgres container and sets `AE_APISHIM_DSN` by default.
+- DSN selection is mode-aware:
+  - `AE_APISHIM_MODE=host`: `postgresql://shim:shim@127.0.0.1:<port>/shim`
+  - container mode: uses the compose service name: `postgresql://shim:shim@postgres:5432/shim`
 - Bind Postgres to the hub WG IP with `POSTGRES_BIND_IP=<hub-wg-ip>` so edge nodes can reach it.
 - Override the DSN with `AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname` if needed.
 
@@ -27,6 +32,9 @@ Notes:
 ```
 make k1s-edge
 ```
+Notes:
+- `k1s-edge` does not start Postgres by default; edge nodes typically point at the core Postgres over WG/LAN.
+- Start a local Postgres on the edge only if needed with `EDGE_START_POSTGRES=1` (also set `POSTGRES_PORT` to avoid conflicts when core and edge share a host).
 
 ## Ingress modes (k1s-core / k1s-edge)
 

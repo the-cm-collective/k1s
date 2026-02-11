@@ -630,8 +630,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
-    <script>window.DOCS_DASHBOARD_URL='http://127.0.0.1:9108/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -708,7 +708,7 @@
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="http://127.0.0.1:9108/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -733,12 +733,20 @@
 <p>Step 1: Start the controller (core host)</p>
 <pre><code>AE_ENABLE_SERVICE_PROXY=1 \
 AE_SERVICE_PROVIDER=overlay \
+AE_OVERLAY_NET=ae-overlay \
+AE_SERVICE_IP_POOL=10.241.0.0/16 \
+AE_POD_CIDR_POOL=10.42.0.0/16 \
+AE_POD_CIDR_MASK=24 \
 AE_AGENT_API_PORT=9110 \
 AE_AGENT_API_TOKEN=devtoken \
-python -m ae.controller --loop --specs specs/ --metrics-port 9108</code></pre>
+python -m ae.controller --loop --interval 10 --specs .local/spec/ --metrics-port 9108</code></pre>
 <p>Notes:</p>
 <ul>
-<li>Optional CIDR knobs: <code>AE_SERVICE_IP_POOL</code>, <code>AE_POD_CIDR_POOL</code>, <code>AE_POD_CIDR_MASK</code>.</li>
+<li>Ensure the overlay network exists (<code>AE_OVERLAY_NET</code>) before starting the controller.</li>
+<li>Optional ingress DNS reachability: set <code>AE_PODMAN_NETWORK=&lt;net&gt;</code> (Podman) or <code>AE_DOCKER_NETWORK=&lt;net&gt;</code> (Docker) so multi-replica ingress can target container DNS.</li>
+<li>Prefer a dedicated specs directory (for example <code>.local/spec/</code>) to avoid reconciling every manifest under <code>specs/examples/</code>.</li>
+<li><code>--interval</code> controls the reconcile loop cadence (default is 2s). For ops, set a higher value (for example 10–30s) to reduce noisy logs and churn.</li>
+<li>The controller imports manifests from <code>--specs</code> into the registry but always reconciles from the registry. An empty specs dir does not clear existing workloads; use <code>ae delete &lt;app&gt;</code> or clean the state DB to start fresh.</li>
 <li>Keep <code>AE_AGENT_API_TOKEN</code> private; nodes need it for registration.</li>
 </ul>
 <p>Step 2: Start each worker node (same LAN)</p>
@@ -747,6 +755,7 @@ AE_AGENT_TOKEN=devtoken \
 AE_NODE_ID=lan-worker-1 \
 AE_NODE_LABELS=&quot;role=worker,site=lan&quot; \
 AE_AGENT_ENDPOINT=http://&lt;worker-host&gt;:9109 \
+AE_AGENT_HEARTBEAT_SECONDS=10 \
 AE_POD_CIDR= \
 python -m ae.node --port 9109 --ensure-pod-net</code></pre>
 <p>Notes:</p>
@@ -811,7 +820,7 @@ make k1s-edge-core</code></pre>
 <p>Gateway 1:</p>
 <pre><code>AE_SITE_ID=sea-edge-02 \
 AE_NODE_ID=edge-1 \
-AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4223 \
+AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4224 \
 AE_TRANSPORT_BACKEND=nats-js \
 AE_JS_DOMAIN=K1S \
 AE_GATEWAY_SPOOL_PATH=$HOME/.local/share/ae/gateway-sea-edge-02--edge-1.db \
@@ -819,7 +828,7 @@ python -m ae.gateway</code></pre>
 <p>Gateway 2:</p>
 <pre><code>AE_SITE_ID=sea-edge-02 \
 AE_NODE_ID=edge-2 \
-AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4223 \
+AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4224 \
 AE_TRANSPORT_BACKEND=nats-js \
 AE_JS_DOMAIN=K1S \
 AE_GATEWAY_SPOOL_PATH=$HOME/.local/share/ae/gateway-sea-edge-02--edge-2.db \
@@ -831,7 +840,9 @@ python -m ae.gateway</code></pre>
 <li>Gateways clear their spool DB on exit unless <code>AE_GATEWAY_KEEP_SPOOL=1</code> is set.</li>
 </ul>
 <p>Optional stub workers (one per gateway node id):</p>
-<pre><code>python -m ae.worker_stub --log-level debug --node-id edge-1 --nats-url nats://worker:dev@REMOTE_EDGE_NATS:4223
+<pre><code>AE_SITE_ID=sea-edge-02 \
+python -m ae.worker_stub --log-level debug --node-id edge-1 --nats-url nats://worker:dev@REMOTE_EDGE_NATS:4223
+AE_SITE_ID=sea-edge-02 \
 python -m ae.worker_stub --log-level debug --node-id edge-2 --nats-url nats://worker:dev@REMOTE_EDGE_NATS:4223</code></pre>
 <p>One-shell helper (gateway + stub worker together):</p>
 <pre><code>AE_SITE_ID=sea-edge-02 \
@@ -849,6 +860,181 @@ make k1s-edge-core</code></pre>
 <pre><code>INFO ae.worker_stub: stub worker connected node_id=sea-edge-02--edge-1 nats=nats://worker:dev@127.0.0.1:4224
 DEBUG ae.worker_stub: work received node_id=sea-edge-02--edge-1 work_id=test-edge-1 attempt=1 op=noop site_id=sea-edge-02
 DEBUG ae.worker_stub: work completed node_id=sea-edge-02--edge-1 work_id=test-edge-1 attempt=1 status=succeeded</code></pre>
+<h3>Remote Host Runbook (Site B behind NAT/CGNAT)</h3>
+<p>This runbook adds the overlay + node agent steps so apishim can exec/port-forward to pods running on remote hosts. NATS remains control-plane only; exec/port-forward streams are apishim → node agent.</p>
+<p>Prereqs:</p>
+<ul>
+<li>Hub public hostname/IP reachable from Site B on TCP <code>7422</code> (NATS leaf).</li>
+<li>Hub WireGuard UDP port reachable from Site B for outbound-only NAT traversal.</li>
+<li>Each host that runs pods must also run <code>ae.node</code> with a reachable <code>AE_AGENT_ENDPOINT</code>. For WG exec/port-forward, use the node WG IP (for example <code>10.255.0.1:9111</code> and <code>10.255.0.2:9112</code>) so apishim can reach it.</li>
+</ul>
+<h3>Host A (core/hub)</h3>
+<p>1. Start the hub:</p>
+<pre><code>AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy \
+AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
+make k1s-core</code></pre>
+<p>2. Start the hub node (WireGuard + Rosenpass):</p>
+<pre><code>AE_WG_ENDPOINT=&lt;PUBLIC_IP&gt;:51820 \
+AE_NODE_LABELS=&quot;role=hub,site=hub,wg_role=hub,wg_psk=rp&quot; \
+AE_ROSENPASS_INTERFACE=wg-hub \
+AE_WG_LISTEN_PORT=51820 \
+AE_WG_ADDRESS=10.255.0.1/32 \
+AE_LOG_LEVEL=debug \
+AE_ROSENPASS_LOG_LEVEL=verbose \
+AE_AGENT_TOKEN=devtoken \
+AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+AE_AGENT_ENDPOINT=http://10.255.0.1:9111 \
+AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub \
+make k1s-core-node</code></pre>
+<p>3. Configure WireGuard on the hub and bring the interface up. 4. Allow the rootless controller to read WireGuard handshakes (for <code>/system</code> + UI overlay status):</p>
+<pre><code>WG_BIN=$(command -v wg)
+echo &quot;$USER ALL=(root) NOPASSWD: ${WG_BIN} show wg-hub dump&quot; | sudo tee /etc/sudoers.d/k1s-wg-dump
+sudo chmod 440 /etc/sudoers.d/k1s-wg-dump</code></pre>
+<p>Ensure the controller can read Rosenpass status by setting: <code>AE_ROSENPASS_DIR=/var/lib/ae/rosenpass</code> (or wherever <code>rosenpass-status.json</code> is written). 5. Add the remote edge site in the hub NATS config:</p>
+<pre><code>make edge-site SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code></pre>
+<p>Note</p>
+<ul>
+<li>The agent API must be reachable on <code>AE_AGENT_API_PORT</code> (default <code>9110</code>). If nodes report “connection refused”, the controller is not listening or the port is blocked.</li>
+<li>If the UI does not show handshakes or Rosenpass state, verify the <code>wg dump</code> sudoers rule and <code>AE_ROSENPASS_DIR</code> permissions.</li>
+<li>For SPDY exec/port-forward over WG, keep <code>AE_AGENT_ENDPOINT</code> on the WG IP, not <code>127.0.0.1</code> or a host-only name.</li>
+</ul>
+<h3>Host B (remote site)</h3>
+<p>1. Configure WireGuard with <code>PersistentKeepalive=25</code> and AllowedIPs that include: the WG subnet, the pod CIDR pool, and the service CIDR (if used). 2. Start the edge NATS leader with a leaf connection back to the hub (see <code>docs/ops/core-edge-wg-psk.md</code> for the full config steps). 3. Start the gateway leader:</p>
+<pre><code>AE_SITE_ID=sea-edge-02 \
+AE_NODE_ID=edge-1 \
+AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4224 \
+AE_LOG_LEVEL=debug \
+make k1s-edge-core</code></pre>
+<p>4. Start the edge node (WG + Rosenpass) on each host that runs pods:</p>
+<pre><code>sudo -E AE_NODE_ID=edge-1 \
+AE_NODE_LABELS=&quot;site=sea-edge-02,wg_role=spk,wg_psk=rp&quot; \
+AE_ROSENPASS_INTERFACE=wg-edge \
+AE_WG_LISTEN_PORT=51821 \
+AE_WG_ADDRESS=10.255.0.2/32 \
+AE_WG_TABLE=off \
+AE_LOG_LEVEL=debug \
+AE_ROSENPASS_LOG_LEVEL=verbose \
+AE_AGENT_TOKEN=devtoken \
+AE_CONTROLLER_URL=http://&lt;HUB_IP&gt;:9110 \
+AE_AGENT_ENDPOINT=http://10.255.0.2:9112 \
+AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-edge \
+make k1s-edge-node</code></pre>
+<p>Repeat for additional nodes with unique <code>AE_NODE_ID</code> (and override <code>AE_POD_CIDR</code> if needed). If <code>ae shell</code> / <code>ae port-forward</code> fails with <code>Connection refused</code>, ensure:</p>
+<ul>
+<li><code>AE_APISHIM_SERVER</code> points at the hub apishim (not localhost on the edge host).</li>
+<li>The node advertises a reachable agent endpoint (<code>AE_AGENT_ENDPOINT</code> or <code>--advertise-endpoint</code>) from the apishim container/host.</li>
+</ul>
+<p>Note</p>
+<ul>
+<li><code>host.containers.internal</code> works when apishim runs in a container (podman default). If apishim runs on the host (<code>AE_APISHIM_MODE=host</code>), you can use <code>127.0.0.1</code> instead.</li>
+<li><code>ae auth local</code> sets <code>AE_APISHIM_SERVER</code> to <code>https://127.0.0.1:8445</code>. On a remote host, override it to the hub, e.g. <code>export AE_APISHIM_SERVER=https://&lt;HUB_IP&gt;:8445</code> (keep the same <code>AE_APISHIM_TOKEN</code> from <code>ae auth local</code>).</li>
+</ul>
+<h3>Same-Host Variant (hub + edge on one box)</h3>
+<p>Use this when you want to simulate the remote site on the same host as the hub (like the workflows in <code>docs/ops/core-edge-manual-test.md</code> and <code>docs/ops/core-edge-wg-psk.md</code>). The key differences are:</p>
+<ul>
+<li>Use <code>127.0.0.1</code> for controller and apishim URLs.</li>
+<li>Keep separate Rosenpass dirs for hub vs edge so WireGuard keys do not collide.</li>
+</ul>
+<p>Hub controller + apishim:</p>
+<pre><code>AE_APISHIM_MODE=host \
+AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy \
+AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
+AE_WG_INTERFACE=wg-hub \
+AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub \
+AE_APISHIM_SERVER=https://127.0.0.1:8445 \
+make k1s-core</code></pre>
+<p>Note</p>
+<ul>
+<li>For single-host labs that must exercise exec/port-forward over WG IPs, run apishim on the host (<code>AE_APISHIM_MODE=host</code>). Rootless container apishim cannot reliably reach <code>10.255.0.x</code> on the host.</li>
+<li>If you keep apishim in a container, use <code>AE_AGENT_ENDPOINT=http://host.containers.internal:9111/9112</code> and expect exec/port-forward to bypass WG.</li>
+</ul>
+<p>Allow the rootless controller to read WireGuard handshakes (for <code>/system</code> + UI overlay status):</p>
+<pre><code>WG_BIN=$(command -v wg)
+echo &quot;$USER ALL=(root) NOPASSWD: ${WG_BIN} show wg-hub dump&quot; | sudo tee /etc/sudoers.d/k1s-wg-dump
+sudo chmod 440 /etc/sudoers.d/k1s-wg-dump</code></pre>
+<p>Then run the controller with:</p>
+<pre><code>AE_WG_DUMP_CMD=&quot;sudo -n ${WG_BIN} show {iface} dump&quot; \
+AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy \
+AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
+AE_WG_INTERFACE=wg-hub \
+AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub \
+AE_APISHIM_SERVER=https://127.0.0.1:8445 \
+make k1s-core</code></pre>
+<p>Note</p>
+<ul>
+<li>Keep Rosenpass dirs under <code>/var/lib/ae/</code> (or another non-repo path) when running nodes with <code>sudo</code> to avoid root-owned files under <code>state/</code>.</li>
+</ul>
+<p>Hub node:</p>
+<pre><code>sudo -E AE_WG_ENDPOINT=&lt;HOST_IP&gt;:51820 \
+AE_NODE_LABELS=&quot;role=hub,site=hub,wg_role=hub,wg_psk=rp&quot; \
+AE_ROSENPASS_INTERFACE=wg-hub \
+AE_WG_LISTEN_PORT=51820 \
+AE_WG_ADDRESS=10.255.0.1/32 \
+AE_LOG_LEVEL=debug \
+AE_ROSENPASS_LOG_LEVEL=verbose \
+AE_AGENT_TOKEN=devtoken \
+AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+AE_AGENT_ENDPOINT=http://10.255.0.1:9111 \
+AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub \
+make k1s-core-node</code></pre>
+<p>Verify the WG interfaces have the expected IPs (required if you advertise <code>AE_AGENT_ENDPOINT</code> on <code>10.255.0.x</code>):</p>
+<pre><code>ip -brief addr show wg-hub wg-edge</code></pre>
+<p>Edge site + gateway:</p>
+<pre><code>make edge-site SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+
+AE_SITE_ID=sea-edge-02 \
+AE_NODE_ID=edge-1 \
+AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
+AE_LOG_LEVEL=debug \
+make k1s-edge-core</code></pre>
+<p>Edge node:</p>
+<pre><code>sudo -E AE_NODE_ID=edge-1 \
+AE_NODE_LABELS=&quot;site=sea-edge-02,wg_role=spk,wg_psk=rp&quot; \
+AE_ROSENPASS_INTERFACE=wg-edge \
+AE_WG_LISTEN_PORT=51821 \
+AE_WG_ADDRESS=10.255.0.2/32 \
+AE_WG_TABLE=off \
+AE_LOG_LEVEL=debug \
+AE_ROSENPASS_LOG_LEVEL=verbose \
+AE_AGENT_TOKEN=devtoken \
+AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+AE_AGENT_ENDPOINT=http://10.255.0.2:9112 \
+AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-edge \
+make k1s-edge-node</code></pre>
+<p>Note</p>
+<ul>
+<li>For WG-backed exec/port-forward, keep <code>AE_AGENT_ENDPOINT</code> on the WG IPs.</li>
+<li>If apishim runs on the host (<code>AE_APISHIM_MODE=host</code>) and you are not using WG for exec/port-forward, you can use <code>127.0.0.1</code> instead.</li>
+<li><code>ae auth local</code> points to <code>https://127.0.0.1:8445</code>. If you run <code>ae shell</code> from a different host, set <code>AE_APISHIM_SERVER=https://&lt;HUB_IP&gt;:8445</code> and keep the <code>AE_APISHIM_TOKEN</code>/<code>AE_APISHIM_READ_TOKEN</code> from <code>ae auth local</code>.</li>
+</ul>
+<h4>Validation</h4>
+<p>1. On the hub, verify WG is up:</p>
+<pre><code>sudo wg show wg-hub
+sudo wg show wg-edge</code></pre>
+<p>2. Confirm nodes are registered with endpoints and pod CIDRs:</p>
+<pre><code>ae nodes</code></pre>
+<p>3. Confirm the hub can reach each node agent:</p>
+<pre><code>curl http://&lt;siteb-wg-ip&gt;:9109/readyz</code></pre>
+<p>4. Test exec and port-forward against pods pinned to Site B.</p>
+<pre><code>source &lt;(ae auth local)
+ae apply -f docs/site/examples/shell-demo-node-sea-edge-02-edge-1.yaml
+ae status shell-demo-node-sea-edge-02-edge-1 --wide --events
+ae shell shell-demo-node-sea-edge-02-edge-1 -- /bin/sh
+ae port-forward shell-demo-node-sea-edge-02-edge-1 18082:8080</code></pre>
+<p>Note</p>
+<ul>
+<li><code>/system</code> overlay and Rosenpass indicators are best-effort; missing status usually means the controller cannot read <code>wg dump</code> or <code>rosenpass-status.json</code>.</li>
+</ul>
+<h4>Troubleshooting exec/port-forward</h4>
+<p>If <code>spdy exec failed: [Errno 111] Connection refused</code> persists: 1. Confirm the node endpoints are reachable from apishim.</p>
+<pre><code>ae nodes</code></pre>
+<p>If endpoints show <code>http://127.0.0.1:9111</code>/<code>9112</code> while apishim is in a container, restart the nodes with <code>AE_AGENT_ENDPOINT=http://10.255.0.1:9111</code> and <code>AE_AGENT_ENDPOINT=http://10.255.0.2:9112</code> (or <code>http://host.containers.internal:9111</code>/<code>9112</code> for same-host labs). 2. From the apishim container, probe the node agent:</p>
+<pre><code>podman exec -it dev-apishim-1 curl -sSf http://host.containers.internal:9112/readyz</code></pre>
+<p>If apishim runs on the host, use:</p>
+<pre><code>curl -sSf http://127.0.0.1:9112/readyz</code></pre>
+<p>3. Verify your CLI points to the correct apishim server:</p>
+<pre><code>echo &quot;$AE_APISHIM_SERVER&quot;</code></pre>
+<p>On a remote host, override with <code>export AE_APISHIM_SERVER=https://&lt;HUB_IP&gt;:8445</code> and keep the token from <code>ae auth local</code>.</p>
 <h3>Validation</h3>
 <pre><code>ae nodes
 python -m ae.cli work enqueue --site-id sfo-edge-01 --mode outbox --preferred-node sfo-edge-01--edge-1 --op noop
@@ -893,7 +1079,7 @@ curl http://HUB_HOST:8222/leafz</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-07 14:21:15</span>
+        <span>Built 2026-02-10 19:25:45</span>
       </div>
     </footer>
     <script>

@@ -731,7 +731,7 @@
 <h3>Theory</h3>
 <p>Layered networking separates concerns: service discovery and stable endpoints at L4, routing and policy at L7. Health checks gate traffic so that only ready backends are exposed. Ingress controllers react to declarative config and converge proxy state to match.</p>
 <pre class="mermaid">flowchart TB
-  Manifest[App spec] --&gt; ServiceCtl[ServiceController]
+  Manifest[Deployment spec] --&gt; ServiceCtl[ServiceController]
   ServiceCtl --&gt; Network[NetworkProvider]
   Network --&gt; VIP[Cluster IP / VIP]
   ServiceCtl --&gt; Endpoints[Service endpoints]
@@ -857,7 +857,7 @@ docker compose -f ops/dev/docker-compose.yaml down</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-31 16:07:03</span>
+        <span>Built 2026-02-10 19:25:45</span>
       </div>
     </footer>
     <script>

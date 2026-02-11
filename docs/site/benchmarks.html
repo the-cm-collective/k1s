@@ -825,7 +825,7 @@ make bench-mem-agg LABEL=pods-5</code></pre>
 <p>End-to-end (all suites, automated prep)</p>
 <pre><code>make bench-mem-e2e-all DURATION=30 REPLICAS=1,5,10 ROLL_REPLICAS=5</code></pre>
 <ul>
-<li>Stops the dev/labs compose stacks, clones <code>specs/</code> into <code>state/bench-env/</code>, prunes every App manifest except the requested one (defaults to <code>specs/examples/echo.yaml</code>), and launches a dedicated controller against that sandbox.</li>
+<li>Stops the dev/labs compose stacks, clones <code>specs/</code> into <code>state/bench-env/</code>, prunes every Deployment manifest except the requested one (defaults to <code>specs/examples/echo.yaml</code>), and launches a dedicated controller against that sandbox.</li>
 <li>Runs k1s rootful (snapshots elevated), k1s rootless, and k1nd in one shot, then backfills OCI labels, recombines, regenerates charts, and rebuilds docs. Only the snapshot helpers call <code>sudo</code>; the top-level <code>make</code> runs as your user.</li>
 <li>Defaults: <code>OCI_RUNTIME=crun</code>, <code>AE_ENGINE_STRICT=1</code>, <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code>, <code>PRUNE_OLD=1</code>. Override <code>LABEL_ROOTFUL</code>, <code>LABEL_ROOTLESS</code>, or <code>LABEL_K1ND</code> to tag the suites differently.</li>
 </ul>
@@ -946,7 +946,7 @@ make bench-mem-agg LABEL=pods-5</code></pre>
 <h2>Automated Prep/Teardown</h2>
 <p>The helper scripts <code>scripts/bench/bench_env_prep.sh</code> and <code>scripts/bench/bench_env_teardown.sh</code> power both <code>make bench-mem-e2e-all</code> and <code>make bench-mem-e2e-minimal</code>:</p>
 <ul>
-<li>Prep copies <code>specs/</code> into <code>state/bench-env/specs/</code>, removes every App manifest except the allowlist, and leaves shared configs/secrets intact so relative <code>configRefs</code> still work.</li>
+<li>Prep copies <code>specs/</code> into <code>state/bench-env/specs/</code>, removes every Deployment manifest except the allowlist, and leaves shared configs/secrets intact so relative <code>configRefs</code> still work.</li>
 <li>A dedicated controller (log + pid under <code>state/bench-env/</code>) watches only that sandbox, so background demos or labs can’t steal ports or replicas.</li>
 <li>The scripts set <code>AE_SPECS_DIR</code>, <code>AE_STATE_DB</code>, <code>AE_CADDY_DIR</code>, and the primary manifest/app name in an env file; each benchmark stage sources it before calling <code>run_matrix.sh</code>/<code>run_rollout_k1s.sh</code>.</li>
 <li>Teardown stops the sandbox controller and deletes <code>state/bench-env/</code> unless you set <code>BENCH_KEEP_ENV=1</code> to inspect artifacts.</li>
@@ -1095,7 +1095,7 @@ sudo sysctl --system</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-07 00:57:43</span>
+        <span>Built 2026-02-10 19:25:45</span>
       </div>
     </footer>
     <script>
