@@ -381,6 +381,188 @@ Expected:
 - `leafz` shows one or more active leaf connections.
 - Work ledger transitions to `Succeeded` for the test work items.
 
+## Option C — Site-to-site NetFS storage over WireGuard/Rosenpass
+
+Use this option when you want persistent PVC-backed storage to work across sites
+over the WG/Rosenpass overlay from Option B.
+
+Production default in this guide:
+- Primary lane: CSI (`cephfs-rwx`) for Kubernetes-aligned controller/node flows.
+- Fallback lane: NFS (`k1s-nfs`) for simpler bring-up and recovery drills.
+
+Related references:
+- `docs/reference/storage.md` (NetFS behavior and event reasons)
+- `docs/wip/site-to-site-storage.md` (CSI-oriented architecture and phases)
+- `docs/ops/core-edge-wg-psk.md` (overlay and Rosenpass runbook)
+
+### Production Pattern (split hosts, hybrid storage lanes)
+
+Prereqs:
+- Complete Option B host setup first (hub + remote site + node agents).
+- Run node agents with explicit `site` labels (for example `site=hub`, `site=sea-edge-02`).
+- Make the same storage registry file available on hub and edge hosts.
+  Example path used below: `/etc/ae/storage-provisioners.yaml`.
+- Enable NetFS on any node that may mount PVCs: `AE_ENABLE_NETFS=1`.
+- Use a shared apishim store reachable from remote sites (Postgres over WG/LAN).
+
+Step 1: Start hub services with shared apishim state and storage registry
+```bash
+AE_DEV_LOCAL=1 \
+EDGE_INGRESS_MODE=core-proxy \
+POSTGRES_BIND_IP=<HUB_DB_BIND_IP> \
+POSTGRES_PORT=5432 \
+AE_STORAGE_PROVISIONERS=/etc/ae/storage-provisioners.yaml \
+make k1s-core
+```
+Notes:
+- `POSTGRES_BIND_IP` can be the hub WG IP or another reachable hub IP.
+- If binding to a WG IP, ensure the interface/address exists before (re)starting Postgres.
+
+Step 2: Start hub node with WG/Rosenpass + NetFS
+```bash
+sudo -E \
+AE_NODE_ID=hub-1 \
+AE_NODE_LABELS="role=hub,site=hub,wg_role=hub,wg_psk=rp,wg_endpoint=<HUB_PUBLIC_IP>:51820" \
+AE_ROSENPASS_ENABLED=1 \
+AE_ROSENPASS_CONFIG=controller \
+AE_ROSENPASS_INTERFACE=wg-hub \
+AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub \
+AE_WG_LISTEN_PORT=51820 \
+AE_WG_ADDRESS=10.255.0.1/32 \
+AE_ENABLE_NETFS=1 \
+AE_APISHIM_DSN=postgresql://shim:shim@<HUB_DB_BIND_IP>:5432/shim \
+AE_STORAGE_PROVISIONERS=/etc/ae/storage-provisioners.yaml \
+AE_AGENT_TOKEN=devtoken \
+AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+AE_AGENT_ENDPOINT=http://10.255.0.1:9111 \
+make k1s-core-node
+```
+
+Step 3: Start remote edge node with WG/Rosenpass + NetFS
+```bash
+sudo -E \
+AE_NODE_ID=edge-1 \
+AE_NODE_LABELS="role=worker,site=sea-edge-02,wg_role=spk,wg_psk=rp" \
+AE_ROSENPASS_ENABLED=1 \
+AE_ROSENPASS_CONFIG=controller \
+AE_ROSENPASS_INTERFACE=wg-edge \
+AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-edge \
+AE_WG_LISTEN_PORT=51821 \
+AE_WG_ADDRESS=10.255.0.2/32 \
+AE_WG_TABLE=off \
+AE_ENABLE_NETFS=1 \
+AE_APISHIM_DSN=postgresql://shim:shim@<HUB_DB_BIND_IP>:5432/shim \
+AE_STORAGE_PROVISIONERS=/etc/ae/storage-provisioners.yaml \
+AE_AGENT_TOKEN=devtoken \
+AE_CONTROLLER_URL=http://<HUB_IP>:9110 \
+AE_AGENT_ENDPOINT=http://10.255.0.2:9112 \
+make k1s-edge-node
+```
+
+Step 3a: Prepare kubectl against apishim (for PVC objects)
+```bash
+source <(ae auth local)
+KCTL="kubectl --server=${AE_APISHIM_SERVER} --token=${AE_APISHIM_TOKEN} --insecure-skip-tls-verify"
+```
+
+Step 4A: Primary lane (CSI CephFS)
+- Ensure `cephfs-rwx` exists in `/etc/ae/storage-provisioners.yaml` with:
+  - `type: csi`
+  - valid `controllerEndpoint` and `nodeEndpoint`
+  - `topologyKeys: ["site"]`
+- Apply CSI workload:
+```bash
+$KCTL apply -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml
+python -m ae.cli apply -f specs/examples/netfs-csi-sea-edge-02-edge-1.yaml
+```
+
+Step 4B: Fallback lane (NFS)
+- Ensure `k1s-nfs` exists in `/etc/ae/storage-provisioners.yaml` or seed it via
+  `AE_STORAGE_NFS_SERVER` + `AE_STORAGE_NFS_PATH`.
+- Apply NFS workload:
+```bash
+$KCTL apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml
+python -m ae.cli apply -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml
+python -m ae.cli apply -f specs/examples/netfs-nfs-hub-reader.yaml
+```
+If `kubectl` is not configured against apishim, use the REST pattern in
+`scripts/netfs_smoke.sh` (`PUT /api/v1/namespaces/<ns>/persistentvolumeclaims/<name>`).
+
+Step 5: Validate PVC, attachments, and workload health
+```bash
+source <(ae auth local)
+ae nodes
+ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
+ae status netfs-nfs-hub-reader --wide --events
+ae shell netfs-nfs-sea-edge-02-edge-1 -- cat /data/hello.txt
+ae shell netfs-nfs-hub-reader -- cat /data/hello.txt
+```
+
+Optional API checks for PVC/PV/VolumeAttachment:
+```bash
+curl -sk -H "Authorization: Bearer ${AE_APISHIM_TOKEN}" \
+  "${AE_APISHIM_SERVER}/api/v1/namespaces/default/persistentvolumeclaims/sea-netfs-pvc"
+curl -sk -H "Authorization: Bearer ${AE_APISHIM_TOKEN}" \
+  "${AE_APISHIM_SERVER}/apis/storage.k8s.io/v1/volumeattachments"
+```
+Expected:
+- PVC reaches `Bound`.
+- NFS lane: remote writer and hub reader see the same file contents.
+- CSI lane: `VolumeAttachment.status.attached=true` when `attachRequired=true`.
+
+### Single-Host Lab Pattern (full feature exercise)
+
+Use this when hub + edge run on one host and you want a repeatable feature lab.
+
+Step 1: Bring up the same-host overlay from Option B
+- Follow Option B "Same-Host Variant" exactly (hub + edge + WG/Rosenpass).
+
+Step 2: Restart nodes with NetFS + shared DSN enabled
+- Hub node: set `AE_ENABLE_NETFS=1` and `AE_APISHIM_DSN`.
+- Edge node: set `AE_ENABLE_NETFS=1` and `AE_APISHIM_DSN`.
+- Keep distinct `AE_ROSENPASS_DIR`, `AE_WG_INTERFACE`, and `AE_WG_LISTEN_PORT`.
+
+Step 3: Run storage validation workload set
+```bash
+source <(ae auth local)
+KCTL="kubectl --server=${AE_APISHIM_SERVER} --token=${AE_APISHIM_TOKEN} --insecure-skip-tls-verify"
+$KCTL apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml
+python -m ae.cli apply -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml
+python -m ae.cli apply -f specs/examples/netfs-nfs-hub-reader.yaml
+ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
+ae status netfs-nfs-hub-reader --wide --events
+ae shell netfs-nfs-sea-edge-02-edge-1 -- sh -lc "echo lab-$(date +%s) > /data/hello.txt && cat /data/hello.txt"
+ae shell netfs-nfs-hub-reader -- cat /data/hello.txt
+```
+
+Step 4: Failure and recovery drill
+1. Stop the edge `ae.node` process (Ctrl+C in the node shell).
+2. Re-check status/events:
+```bash
+ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
+ae events netfs-nfs-sea-edge-02-edge-1
+```
+3. Restart the edge node with the same NetFS/WG env.
+4. Re-run read/write checks:
+```bash
+ae shell netfs-nfs-sea-edge-02-edge-1 -- cat /data/hello.txt
+ae shell netfs-nfs-hub-reader -- cat /data/hello.txt
+```
+Expected event patterns:
+- NFS path: `NfsPrereqFailed`, `MountFailed`, or `MountConflict` while degraded.
+- CSI path: `AttachFailed` or publish-stage failures until the node recovers.
+- Workload returns to Ready after node restart and successful remount.
+
+### Option C Cleanup
+Assumes `KCTL` from Step 3a (or re-run the same `source <(ae auth local)` snippet).
+```bash
+python -m ae.cli delete netfs-nfs-hub-reader --purge
+python -m ae.cli delete netfs-nfs-sea-edge-02-edge-1 --purge
+python -m ae.cli delete netfs-csi-sea-edge-02-edge-1 --purge
+$KCTL delete -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --ignore-not-found
+$KCTL delete -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml --ignore-not-found
+```
+
 ### Cleanup
 - Stop gateways and edge NATS.
 - Stop hub services: `make down`

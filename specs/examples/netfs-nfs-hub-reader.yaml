@@ -1,0 +1,15 @@
+apiVersion: ae.dev/v1alpha1
+kind: Deployment
+metadata:
+  name: netfs-nfs-hub-reader
+spec:
+  image: busybox:1.36
+  replicas: 1
+  command: ["sh", "-c", "while true; do cat /data/hello.txt || true; sleep 5; done"]
+  pvcMounts:
+    - claimName: sea-netfs-pvc
+      mountPath: /data
+      readOnly: true
+  nodeSelector:
+    role: hub
+    site: hub
