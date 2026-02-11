@@ -142,8 +142,11 @@ API tokens
      - `AE_API_SCALER_SCOPE="echo,web-*"` (scaler token can scale only echo and web-* apps)
 
 API shim (kubectl/helm)
-- Start shim locally: `AE_APISHIM_ENABLE=1 AE_APISHIM_TOKEN=changeme python -m ae.apishim serve --host 127.0.0.1 --port 8445` (add `--allow-anonymous` only for dev). Postgres backend: set `AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname`; default is SQLite at `AE_APISHIM_DB` (`state/apishim.db`).
-- `k1s-core` profile starts Postgres for apishim by default; set `POSTGRES_BIND_IP=<hub-wg-ip>` and point edge nodes at `AE_APISHIM_DSN=postgresql://shim:shim@<hub-wg-ip>:5432/shim`.
+- Start shim locally: `AE_APISHIM_ENABLE=1 AE_APISHIM_TOKEN=changeme python -m ae.apishim serve --host 127.0.0.1 --port 8445` (add `--allow-anonymous` only for dev). Postgres backend: set `AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname`; default is SQLite at `AE_APISHIM_DB` (`state/apishim.db`) unless a DSN is provided.
+- `k1s-core` profile starts Postgres for apishim by default and sets `AE_APISHIM_DSN`:
+  - `AE_APISHIM_MODE=host`: uses `127.0.0.1:<port>`.
+  - container mode: uses the compose service name `postgres:5432`.
+- For multi-site: bind Postgres to the hub WG IP with `POSTGRES_BIND_IP=<hub-wg-ip>` and point edge nodes at `AE_APISHIM_DSN=postgresql://shim:shim@<hub-wg-ip>:5432/shim`.
   - Example: `POSTGRES_BIND_IP=10.255.0.1 make k1s-core` and `AE_APISHIM_DSN=postgresql://shim:shim@10.255.0.1:5432/shim`.
 - WS exec/port-forward smoke: `AE_APISHIM_EXEC_TOKEN=exec AE_APISHIM_PORTFORWARD_TOKEN=pf AE_RUNTIME_BACKEND=docker ./scripts/dev/apishim_ws_smoke.sh` (optional: `PF_JS=1` for JS client, `PF_RAW_DUMP=1` to capture raw frames).
 - Kubeconfig helper: `python -m ae.apishim kubeconfig --server http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN --insecure-skip-tls-verify > ~/.kube/k1s-apishim.yaml`.

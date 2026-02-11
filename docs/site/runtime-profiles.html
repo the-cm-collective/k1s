@@ -728,10 +728,31 @@
 <pre><code>make dev-min</code></pre>
 <p><code>dev-etcd</code> (etcd + HTTP; auto-starts etcd)</p>
 <pre><code>make dev-etcd</code></pre>
+<p>Notes:</p>
+<ul>
+<li><code>dev-min</code>/<code>dev-etcd</code> default to SQLite for apishim (no <code>AE_APISHIM_DSN</code> set unless you provide it).</li>
+</ul>
 <p><code>k1s-core</code> (etcd + NATS + JetStream; auto-starts etcd + hub NATS)</p>
 <pre><code>make k1s-core</code></pre>
+<p>Notes:</p>
+<ul>
+<li><code>k1s-core</code> starts a Postgres container and sets <code>AE_APISHIM_DSN</code> by default.</li>
+<li>DSN selection is mode-aware:
+<ul>
+<li><code>AE_APISHIM_MODE=host</code>: <code>postgresql://shim:shim@127.0.0.1:&lt;port&gt;/shim</code></li>
+<li>container mode: uses the compose service name: <code>postgresql://shim:shim@postgres:5432/shim</code></li>
+</ul>
+</li>
+<li>Bind Postgres to the hub WG IP with <code>POSTGRES_BIND_IP=&lt;hub-wg-ip&gt;</code> so edge nodes can reach it.</li>
+<li>Override the DSN with <code>AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname</code> if needed.</li>
+</ul>
 <p><code>k1s-edge</code> (edge gateway + stub worker; NATS core by default)</p>
 <pre><code>make k1s-edge</code></pre>
+<p>Notes:</p>
+<ul>
+<li><code>k1s-edge</code> does not start Postgres by default; edge nodes typically point at the core Postgres over WG/LAN.</li>
+<li>Start a local Postgres on the edge only if needed with <code>EDGE_START_POSTGRES=1</code> (also set <code>POSTGRES_PORT</code> to avoid conflicts when core and edge share a host).</li>
+</ul>
 <h2>Ingress modes (k1s-core / k1s-edge)</h2>
 <p>Set the ingress mode with <code>EDGE_INGRESS_MODE</code>:</p>
 <ul>
@@ -840,7 +861,7 @@ CORE_CADDY=1 make dev-etcd</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-07 02:53:26</span>
+        <span>Built 2026-02-10 19:25:45</span>
       </div>
     </footer>
     <script>

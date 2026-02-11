@@ -2581,10 +2581,66 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return str(val)
         return None
 
+    @staticmethod
+    def _normalize_runtime_endpoint(endpoint: str | None) -> str | None:
+        """Rewrite node endpoints for containerized apishim reachability.
+
+        In single-host dev flows, node agents may advertise hostnames that are not
+        resolvable from the apishim container (or loopback addresses that resolve
+        to the container itself). When AE_NODE_ADVERTISE_IP is set for apishim,
+        use it as a fallback host in those cases.
+        """
+        if not endpoint:
+            return endpoint
+        fallback_host = (os.getenv("AE_NODE_ADVERTISE_IP") or "").strip()
+        if not fallback_host:
+            try:
+                if Path("/.dockerenv").exists():
+                    fallback_host = "host.containers.internal"
+            except Exception:
+                fallback_host = ""
+        if not fallback_host:
+            return endpoint
+        try:
+            parsed = urlparse(endpoint)
+        except Exception:
+            return endpoint
+        host = str(parsed.hostname or "").strip()
+        if not host:
+            return endpoint
+        host_l = host.lower()
+        replace = host_l in {"127.0.0.1", "localhost", "::1"}
+        if not replace:
+            try:
+                probe_port = parsed.port or (443 if (parsed.scheme or "http") == "https" else 80)
+                socket.getaddrinfo(host, probe_port)
+            except OSError:
+                replace = True
+        if not replace:
+            return endpoint
+        net_host = (
+            f"[{fallback_host}]"
+            if (":" in fallback_host and not fallback_host.startswith("["))
+            else fallback_host
+        )
+        netloc = f"{net_host}:{parsed.port}" if parsed.port is not None else net_host
+        try:
+            normalized = parsed._replace(netloc=netloc).geturl()
+        except Exception:
+            return endpoint
+        if normalized != endpoint:
+            LOGGER.debug(
+                "rewrote node endpoint for apishim runtime: %s -> %s", endpoint, normalized
+            )
+        return normalized
+
     def _runtime_for_endpoint(self, endpoint: str | None) -> RuntimeAdapter:
+        endpoint = self._normalize_runtime_endpoint(endpoint)
         if not endpoint:
             return self.server.runtime  # type: ignore[attr-defined]
-        agent_url = getattr(self.server, "_agent_url", None)  # type: ignore[attr-defined]
+        agent_url = self._normalize_runtime_endpoint(  # type: ignore[attr-defined]
+            getattr(self.server, "_agent_url", None)  # type: ignore[attr-defined]
+        )
         if agent_url and endpoint == agent_url:
             return self.server.runtime  # type: ignore[attr-defined]
         cache = getattr(self.server, "_runtime_cache", None)  # type: ignore[attr-defined]
@@ -12021,6 +12077,7 @@ def _pod_obj(container: dict, rv: int, node_name: str | None) -> dict[str, Any]:
 
 class ShimServer(ThreadingHTTPServer):
     daemon_threads = True
+    allow_reuse_address = True
 
     def __init__(
         self, server_address: tuple[str, int], token: str | None, allow_anonymous: bool = False

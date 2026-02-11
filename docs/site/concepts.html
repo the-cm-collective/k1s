@@ -724,9 +724,9 @@
     <h1>k1s Concepts</h1>
 <p>This guide explains core concepts used throughout k1s.</p>
 <h2>Terminology map (k1s -&gt; Kubernetes)</h2>
-<table><thead><tr><th>k1s term</th><th>Kubernetes term</th><th>Notes</th></tr></thead><tbody><tr><td>App</td><td>Deployment (workload)</td><td>k1s native workload manifest (<code>kind: App</code>).</td></tr><tr><td>Pod</td><td>Pod</td><td>One container instance for a Deployment/App revision.</td></tr><tr><td>Revision</td><td>ReplicaSet / Deployment revision</td><td>Immutable snapshot of desired state.</td></tr><tr><td>Service VIP</td><td>Service / ClusterIP</td><td>Stable virtual IP for service routing.</td></tr><tr><td>Spec / manifest</td><td>Manifest</td><td>YAML resource definition.</td></tr></tbody></table>
-<h2>App (Deployment-like workload)</h2>
-<p>The primary unit of deployment. Defined by an <code>App</code> manifest with a desired image, replicas, ports, health checks, and optional ingress/secrets/resources.</p>
+<table><thead><tr><th>k1s term</th><th>Kubernetes term</th><th>Notes</th></tr></thead><tbody><tr><td>Deployment</td><td>Deployment (workload)</td><td>k1s native workload manifest (<code>kind: Deployment</code>).</td></tr><tr><td>Pod</td><td>Pod</td><td>One container instance for a Deployment revision.</td></tr><tr><td>Revision</td><td>ReplicaSet / Deployment revision</td><td>Immutable snapshot of desired state.</td></tr><tr><td>Service VIP</td><td>Service / ClusterIP</td><td>Stable virtual IP for service routing.</td></tr><tr><td>Spec / manifest</td><td>Manifest</td><td>YAML resource definition.</td></tr></tbody></table>
+<h2>Deployment (k1s workload)</h2>
+<p>The primary unit of deployment. Defined by a <code>Deployment</code> manifest with a desired image, replicas, ports, health checks, and optional ingress/secrets/resources.</p>
 <h2>Pod</h2>
 <p>An individual container instance belonging to an app revision. Pod names follow the pattern <code>&lt;app&gt;-rev&lt;revision&gt;-&lt;index&gt;</code> (e.g., <code>echo-rev3-0</code>).</p>
 <h2>Node</h2>
@@ -815,7 +815,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-31 16:07:03</span>
+        <span>Built 2026-02-10 19:25:45</span>
       </div>
     </footer>
     <script>

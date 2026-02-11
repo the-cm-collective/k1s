@@ -93,8 +93,17 @@ fi
 if rm -rf "$state_dir" 2>/dev/null; then
   echo "[clean-state] removed $state_dir" >&2
 else
-  echo "[clean-state] failed to remove $state_dir (permissions?). Try: sudo rm -rf $state_dir" >&2
-  exit 1
+  if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    if sudo rm -rf "$state_dir" 2>/dev/null; then
+      echo "[clean-state] removed $state_dir with sudo" >&2
+    else
+      echo "[clean-state] failed to remove $state_dir (permissions?). Try: sudo rm -rf $state_dir" >&2
+      exit 1
+    fi
+  else
+    echo "[clean-state] failed to remove $state_dir (permissions?). Try: sudo rm -rf $state_dir" >&2
+    exit 1
+  fi
 fi
 
 if [[ "$keep_tls" == "1" ]]; then

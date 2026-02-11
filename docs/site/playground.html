@@ -690,7 +690,7 @@
     </script>
     <link rel="stylesheet" href="static/labs.css?v=e931aa7576"/>
 <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-<script>window.DOCS_LABS_TOKEN='';</script>
+<script>window.DOCS_LABS_TOKEN='XA_YKn72mpXZsE9EbUPU-MHVh-K5D5ULMNqV4XoZvc0';</script>
 <script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>
 <script defer src="static/labs.js?v=e931aa7576"></script>
@@ -802,7 +802,7 @@ helm uninstall demochart -n demo-helm &amp;&amp; kubectl delete namespace demo-h
 <p>Back in the playground:</p>
 <p>1. Set Backend to <code>k1s-Host</code>, click <code>Start Session</code>, and use **Quick Links → Open Dashboard**. 2. The release appears as <code>demo-helm--demochart</code> (namespace <code>demo-helm</code>); sections **B–E** stream logs, events, ingress health, and nodePort hints while Helm reconciles. 3. When you run <code>helm uninstall</code>, the dashboard reflects the teardown in real time.</p>
 <h2>B. Apply Example</h2>
-<p>Pick a sample and apply it. In read-only mode the UI shows the exact CLI you can run locally. Each example is a <code>Deployment</code> spec YAML (k1s native; <code>kind: App</code> still works but is deprecated): <code>apiVersion</code> and <code>kind</code> identify the schema, <code>metadata.name</code> becomes the app's ID, and <code>spec</code> is where you describe what to run and how it should behave. Typical <code>spec</code> fields include <code>image</code> (container), <code>replicas</code> (how many), <code>ports</code>/<code>service</code> (how traffic reaches it), <code>health</code> checks, plus optional sections like <code>ingress</code>, <code>resources</code>, <code>security</code>, <code>storage</code>, and <code>configRefs</code>/<code>secretRefs</code> for configuration.</p>
+<p>Pick a sample and apply it. In read-only mode the UI shows the exact CLI you can run locally. Each example is a <code>Deployment</code> spec YAML (k1s native): <code>apiVersion</code> and <code>kind</code> identify the schema, <code>metadata.name</code> becomes the app's ID, and <code>spec</code> is where you describe what to run and how it should behave. Typical <code>spec</code> fields include <code>image</code> (container), <code>replicas</code> (how many), <code>ports</code>/<code>service</code> (how traffic reaches it), <code>health</code> checks, plus optional sections like <code>ingress</code>, <code>resources</code>, <code>security</code>, <code>storage</code>, and <code>configRefs</code>/<code>secretRefs</code> for configuration.</p>
 <ul>
 <li>Example:
 <ul>
@@ -904,7 +904,7 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-06 20:14:12</span>
+        <span>Built 2026-02-10 20:07:29</span>
       </div>
     </footer>
     <script>

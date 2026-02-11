@@ -168,12 +168,14 @@ streams are apishim → node agent.
 Prereqs:
 - Hub public hostname/IP reachable from Site B on TCP `7422` (NATS leaf).
 - Hub WireGuard UDP port reachable from Site B for outbound-only NAT traversal.
-- Each host that runs pods must also run `ae.node` with a reachable `AE_AGENT_ENDPOINT`.
+- Each host that runs pods must also run `ae.node` with a reachable `AE_AGENT_ENDPOINT`. For WG exec/port-forward, use the node WG IP (for example `10.255.0.1:9111` and `10.255.0.2:9112`) so apishim can reach it.
 
 ### Host A (core/hub)
 1. Start the hub:
 ```
-AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy make k1s-core
+AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy \
+AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
+make k1s-core
 ```
 2. Start the hub node (WireGuard + Rosenpass):
 ```
@@ -186,13 +188,27 @@ AE_LOG_LEVEL=debug \
 AE_ROSENPASS_LOG_LEVEL=verbose \
 AE_AGENT_TOKEN=devtoken \
 AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+AE_AGENT_ENDPOINT=http://10.255.0.1:9111 \
+AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub \
 make k1s-core-node
 ```
 3. Configure WireGuard on the hub and bring the interface up.
-4. Add the remote edge site in the hub NATS config:
+4. Allow the rootless controller to read WireGuard handshakes (for `/system` + UI overlay status):
+```
+WG_BIN=$(command -v wg)
+echo "$USER ALL=(root) NOPASSWD: ${WG_BIN} show wg-hub dump" | sudo tee /etc/sudoers.d/k1s-wg-dump
+sudo chmod 440 /etc/sudoers.d/k1s-wg-dump
+```
+Ensure the controller can read Rosenpass status by setting:
+`AE_ROSENPASS_DIR=/var/lib/ae/rosenpass` (or wherever `rosenpass-status.json` is written).
+5. Add the remote edge site in the hub NATS config:
 ```
 make edge-site SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
 ```
+Note
+- The agent API must be reachable on `AE_AGENT_API_PORT` (default `9110`). If nodes report “connection refused”, the controller is not listening or the port is blocked.
+- If the UI does not show handshakes or Rosenpass state, verify the `wg dump` sudoers rule and `AE_ROSENPASS_DIR` permissions.
+- For SPDY exec/port-forward over WG, keep `AE_AGENT_ENDPOINT` on the WG IP, not `127.0.0.1` or a host-only name.
 
 ### Host B (remote site)
 1. Configure WireGuard with `PersistentKeepalive=25` and AllowedIPs that include:
@@ -202,7 +218,7 @@ the WG subnet, the pod CIDR pool, and the service CIDR (if used).
 ```
 AE_SITE_ID=sea-edge-02 \
 AE_NODE_ID=edge-1 \
-AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4223 \
+AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4224 \
 AE_LOG_LEVEL=debug \
 make k1s-edge-core
 ```
@@ -218,19 +234,103 @@ AE_LOG_LEVEL=debug \
 AE_ROSENPASS_LOG_LEVEL=verbose \
 AE_AGENT_TOKEN=devtoken \
 AE_CONTROLLER_URL=http://<HUB_IP>:9110 \
-AE_ROSENPASS_DIR=/var/lib/ae/rosenpass \
+AE_AGENT_ENDPOINT=http://10.255.0.2:9112 \
+AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-edge \
 make k1s-edge-node
 ```
 Repeat for additional nodes with unique `AE_NODE_ID` (and override `AE_POD_CIDR` if needed).
+If `ae shell` / `ae port-forward` fails with `Connection refused`, ensure:
+- `AE_APISHIM_SERVER` points at the hub apishim (not localhost on the edge host).
+- The node advertises a reachable agent endpoint (`AE_AGENT_ENDPOINT` or `--advertise-endpoint`) from the apishim container/host.
+Note
+- `host.containers.internal` works when apishim runs in a container (podman default). If apishim runs on the host (`AE_APISHIM_MODE=host`), you can use `127.0.0.1` instead.
+- `ae auth local` sets `AE_APISHIM_SERVER` to `https://127.0.0.1:8445`. On a remote host, override it to the hub, e.g. `export AE_APISHIM_SERVER=https://<HUB_IP>:8445` (keep the same `AE_APISHIM_TOKEN` from `ae auth local`).
+
+### Same-Host Variant (hub + edge on one box)
+Use this when you want to simulate the remote site on the same host as the hub
+(like the workflows in `docs/ops/core-edge-manual-test.md` and
+`docs/ops/core-edge-wg-psk.md`). The key differences are:
+- Keep separate Rosenpass dirs for hub vs edge so WireGuard keys do not collide.
+
+1. Allow the rootless controller to read WireGuard handshakes (for `/system` + UI overlay status):
+```
+WG_BIN=$(command -v wg)
+echo "$USER ALL=(root) NOPASSWD: ${WG_BIN} show wg-hub dump" | sudo tee /etc/sudoers.d/k1s-wg-dump
+sudo chmod 440 /etc/sudoers.d/k1s-wg-dump
+```
+
+2. Start the hub controller with overlay dump support:
+```bash
+WG_BIN=$(command -v wg) \
+AE_DEV_LOCAL=1 \
+AE_WG_INTERFACE=wg-hub \
+AE_WG_DUMP_CMD="sudo -n ${WG_BIN} show {iface} dump" \
+AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
+make k1s-core
+```
+
+Note
+- Keep Rosenpass dirs under `/var/lib/ae/` (or another non-repo path) when running nodes with `sudo` to avoid root-owned files under `state/`.
+
+3. Start the hub node:
+```
+sudo -E \
+AE_NODE_ID=hub-1 \
+AE_NODE_LABELS="role=hub,site=hub,wg_role=hub,wg_psk=rp,wg_endpoint=192.168.29.143:51820" \
+AE_POD_CIDR=10.42.0.0/24 \
+AE_ROSENPASS_ENABLED=1 \
+AE_ROSENPASS_CONFIG=controller \
+AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub \
+AE_ROSENPASS_INTERFACE=wg-hub \
+AE_WG_LISTEN_PORT=51820 \
+AE_WG_ADDRESS=10.255.0.1/32 \
+AE_AGENT_TOKEN=devtoken \
+AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+make k1s-core-node
+```
+3a. Verify the WG interfaces have the expected IPs:
+```bash
+ip -brief addr show wg-hub wg-edge
+```
+Expected (example):
+- `wg-hub` has `10.255.0.1/32`
+- `wg-edge` has `10.255.0.3/32`
+
+4. Register the edge site and start the edge gateway:
+```
+make edge-site SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+
+AE_SITE_ID=sea-edge-02 \
+AE_NODE_ID=edge-1 \
+AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
+AE_LOG_LEVEL=debug \
+make k1s-edge-core
+```
+
+5. Start the edge node (single-host routing adjustments):
+```
+sudo -E \
+AE_WG_INTERFACE=wg-edge \
+AE_ROSENPASS_INTERFACE=wg-edge \
+AE_WG_ADDRESS=10.255.0.3/32 \
+AE_WG_TABLE=off \
+AE_WG_LISTEN_PORT=51821 \
+AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-edge \
+AE_NODE_LABELS="site=sea-edge-02,wg_role=spk,wg_psk=rp" \
+AE_AGENT_TOKEN=devtoken \
+AE_CONTROLLER_URL=http://192.168.29.143:9110 \
+make k1s-edge-node
+```
 
 #### Validation
 1. On the hub, verify WG is up:
 ```
-wg show wg0
+sudo wg show wg-hub
+sudo wg show wg-edge
 ```
 2. Confirm nodes are registered with endpoints and pod CIDRs:
 ```
-ae nodes --json
+ae nodes
 ```
 3. Confirm the hub can reach each node agent:
 ```
@@ -244,6 +344,29 @@ ae status shell-demo-node-sea-edge-02-edge-1 --wide --events
 ae shell shell-demo-node-sea-edge-02-edge-1 -- /bin/sh
 ae port-forward shell-demo-node-sea-edge-02-edge-1 18082:8080
 ```
+Note
+- `/system` overlay and Rosenpass indicators are best-effort; missing status usually means the controller cannot read `wg dump` or `rosenpass-status.json`.
+
+#### Troubleshooting exec/port-forward
+If `spdy exec failed: [Errno 111] Connection refused` persists:
+1. Confirm the node endpoints are reachable from apishim.
+```
+ae nodes
+```
+If endpoints show `http://127.0.0.1:9111`/`9112` while apishim is in a container, restart the nodes with `AE_AGENT_ENDPOINT=http://10.255.0.1:9111` and `AE_AGENT_ENDPOINT=http://10.255.0.2:9112` (or `http://host.containers.internal:9111`/`9112` for same-host labs).
+2. From the apishim container, probe the node agent:
+```
+podman exec -it dev-apishim-1 curl -sSf http://host.containers.internal:9112/readyz
+```
+If apishim runs on the host, use:
+```
+curl -sSf http://127.0.0.1:9112/readyz
+```
+3. Verify your CLI points to the correct apishim server:
+```
+echo "$AE_APISHIM_SERVER"
+```
+On a remote host, override with `export AE_APISHIM_SERVER=https://<HUB_IP>:8445` and keep the token from `ae auth local`.
 
 ### Validation
 ```

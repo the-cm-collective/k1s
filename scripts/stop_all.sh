@@ -100,7 +100,7 @@ for ctx in "${CONTEXTS[@]}"; do
   done
 done
 
-log "Stopping dev NATS/etcd stack (nats-hub, nats-edge, etcd)"
+log "Stopping dev NATS/etcd stack (nats-hub, nats-edge, etcd, postgres)"
 for ctx in "${CONTEXTS[@]}"; do
   for bin in "${ENGINES[@]}"; do
     run_engine "$ctx" "$bin" compose -f ops/dev/docker-compose.nats-etcd.yaml down >/dev/null 2>&1 || true
@@ -108,7 +108,7 @@ for ctx in "${CONTEXTS[@]}"; do
     if [[ -n "$extra_edges" ]]; then
       run_engine "$ctx" "$bin" rm -f $extra_edges >/dev/null 2>&1 || true
     fi
-    for name in dev-nats-hub-1 dev-etcd-1; do
+    for name in dev-nats-hub-1 dev-etcd-1 dev-postgres-1; do
       if run_engine "$ctx" "$bin" ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${name}$"; then
         run_engine "$ctx" "$bin" rm -f "$name" >/dev/null 2>&1 || true
       fi
