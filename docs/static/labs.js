@@ -24,6 +24,7 @@
   const API_FAIL_THRESHOLD = 2;
   const SSE_ERROR_WINDOW_MS = 8000;
   const SSE_ERROR_THRESHOLD = 2;
+  const SSE_COOLDOWN_MS = 30000;
 
   const xtermFallback = {
     css: '/static/vendor/xterm.css',
@@ -50,6 +51,10 @@
     l.rel = 'stylesheet';
     l.href = href;
     document.head.appendChild(l);
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   function ensureXtermLoaded() {
@@ -270,6 +275,24 @@
           return await fetch(`${window.DOCS_API_BASE}${rel.startsWith('/')? rel : ('/' + rel)}`, opts||{});
         }
       }
+      throw e;
+    }
+  }
+
+  async function apiFetchRetry(label, path, opts) {
+    try {
+      return await apiFetch(path, opts);
+    } catch (e) {
+      if (isNetworkError(e)) {
+        await sleep(400);
+        try {
+          return await apiFetch(path, opts);
+        } catch (e2) {
+          if (label) banner(`${label} error: ${e2}`, 'fail');
+          throw e2;
+        }
+      }
+      if (label) banner(`${label} error: ${e}`, 'fail');
       throw e;
     }
   }
@@ -821,6 +844,7 @@
         if (poly) poly.classList.remove('hidden');
         if (polyEv) polyEv.classList.remove('hidden');
         try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
+        try { if (window.k1sStopLogsStream) window.k1sStopLogsStream(); } catch(_){}
       } catch(_){}
       // Show neutral status
       setText('#status-summary', 'n/a', 'pending');
@@ -854,6 +878,7 @@
       sseState.lastErrorAt = 0;
       try { if (state._eventsTimer) { clearInterval(state._eventsTimer); state._eventsTimer = null; } } catch(_){}
       try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
+      try { if (window.k1sStopLogsStream) window.k1sStopLogsStream(); } catch(_){}
       wireControls();
       armSSE();
       try { toast('Session started — next: click "Apply Selected Example"', 'ok'); } catch(_){}
@@ -886,6 +911,7 @@
       if (sseLogs) sseLogs.classList.add('hidden');
       if (sseEv) sseEv.classList.add('hidden');
       try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
+      try { if (window.k1sStopLogsStream) window.k1sStopLogsStream(); } catch(_){}
     } catch(_){}
     // Clear panels and indicators
     try { const ev = document.getElementById('observe-events'); if (ev) ev.textContent = ''; } catch(_){}
@@ -998,6 +1024,7 @@
     const sseEv = document.getElementById('events-sse');
     if (sseEv) sseEv.classList.add('hidden');
     try { if (window.k1sStartEventsStream) window.k1sStartEventsStream(); } catch(_){}
+    try { if (window.k1sMaybeRestartLogs) window.k1sMaybeRestartLogs(); } catch(_){}
   }
 
   function makeIngressUrl(host, path) {
@@ -1848,14 +1875,16 @@
       // Attempt server cleanup when orchestrator is available (session optional)
       if (state.orch.available) {
         try {
-          const r = await apiFetch(`/labs/reset`, {
+          const r = await apiFetchRetry('Reset', `/labs/reset`, {
             method: 'POST',
             headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
             body: JSON.stringify({ session_id: prev })
           });
           if (await handleLabsAuth(r, 'Reset')) { return; }
           if (!r.ok && r.status !== 404) { banner(`Reset failed: ${await r.text()}`, 'fail'); return; }
-        } catch(e){ bannerFetchFailure('Reset', e); return; }
+        } catch {
+          return;
+        }
         // Best-effort: stop helm demo runner so the lab demo resets too.
         try {
           const demoResp = await apiFetch(`/labs/helm-demo`, {
@@ -1973,30 +2002,18 @@
       state.appName = expectedName;
       await withButtonFeedback(btn, `Submitting apply for “${expectedName}”…`, async () => {
         // use computed `example`
-        const applyOnce = () => apiFetch(`/labs/apply`, {
-          method: 'POST',
-          headers: {
-            'Content-Type':'application/json',
-            ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {}),
-          },
-          body: JSON.stringify({ session_id: state.sessionId, backend: state.backend, example })
-        });
         let resp = null;
         try {
-          resp = await applyOnce();
-        } catch (e) {
-          if (isNetworkError(e)) {
-            await new Promise((resolve) => setTimeout(resolve, 400));
-            try {
-              resp = await applyOnce();
-            } catch (e2) {
-              banner(`Apply error: ${e2}`, 'fail');
-              return;
-            }
-          } else {
-            banner(`Apply error: ${e}`, 'fail');
-            return;
-          }
+          resp = await apiFetchRetry('Apply', `/labs/apply`, {
+            method: 'POST',
+            headers: {
+              'Content-Type':'application/json',
+              ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {}),
+            },
+            body: JSON.stringify({ session_id: state.sessionId, backend: state.backend, example })
+          });
+        } catch {
+          return;
         }
         if (!resp.ok) { banner(`Apply failed: ${await resp.text()}`, 'fail'); return; }
         // Prefer server-declared app name (e.g., echo-<session>)
@@ -2135,26 +2152,32 @@
       if (!state.orch.available) return;
       const btn = e.currentTarget || document.getElementById('btn-rollout-pause');
       await withButtonFeedback(btn, 'Pausing rollout…', async ()=>{
+        let r = null;
         try {
-          const r = await fetch(`${API}/labs/rollout`, {
+          r = await apiFetchRetry('Pause', `/labs/rollout`, {
             method: 'POST', headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
             body: JSON.stringify({ session_id: state.sessionId, action: 'pause', app: state.appName })
           });
-          if (!r.ok) { banner(`Pause failed: ${await r.text()}`, 'fail'); return; }
-        } catch(e){ banner(`Pause error: ${e}`, 'fail'); return; }
+        } catch {
+          return;
+        }
+        if (!r.ok) { banner(`Pause failed: ${await r.text()}`, 'fail'); return; }
       });
     });
     $('#btn-rollout-resume')?.addEventListener('click', async(e)=>{
       if (!state.orch.available) return;
       const btn = e.currentTarget || document.getElementById('btn-rollout-resume');
       await withButtonFeedback(btn, 'Resuming rollout…', async ()=>{
+        let r = null;
         try {
-          const r = await fetch(`${API}/labs/rollout`, {
+          r = await apiFetchRetry('Resume', `/labs/rollout`, {
             method: 'POST', headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
             body: JSON.stringify({ session_id: state.sessionId, action: 'resume', app: state.appName })
           });
-          if (!r.ok) { banner(`Resume failed: ${await r.text()}`, 'fail'); return; }
-        } catch(e){ banner(`Resume error: ${e}`, 'fail'); return; }
+        } catch {
+          return;
+        }
+        if (!r.ok) { banner(`Resume failed: ${await r.text()}`, 'fail'); return; }
       });
     });
     document.getElementById('btn-helm-demo')?.addEventListener('click', () => startHelmDemo());
@@ -2164,27 +2187,15 @@
   async function doScale(n){
     if (!state.orch.available) return;
     try { banner(`Scaling “${state.appName}” to ${n}…`, 'pending', 5000); } catch(_){}
-    const scaleOnce = () => apiFetch(`/labs/scale`, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
-      body: JSON.stringify({ session_id: state.sessionId, app: state.appName, replicas: n })
-    });
     let resp = null;
     try {
-      resp = await scaleOnce();
-    } catch (e) {
-      if (isNetworkError(e)) {
-        await new Promise((resolve) => setTimeout(resolve, 400));
-        try {
-          resp = await scaleOnce();
-        } catch (e2) {
-          banner(`Scale error: ${e2}`, 'fail');
-          return;
-        }
-      } else {
-        banner(`Scale error: ${e}`, 'fail');
-        return;
-      }
+      resp = await apiFetchRetry('Scale', `/labs/scale`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
+        body: JSON.stringify({ session_id: state.sessionId, app: state.appName, replicas: n })
+      });
+    } catch {
+      return;
     }
     if (!resp.ok) { banner(`Scale failed: ${await resp.text()}`, 'fail'); return; }
     setTimeout(verifyApply, 800);
@@ -2241,13 +2252,24 @@
     bind();
     // Observe tail toggle
     const observeBtn = document.getElementById('btn-observe-toggle');
+    let observeActive = false;
     let esLogs = null, esEvents = null, esStatus = null;
+    let esLogsApp = null;
+    let esEventsApp = null;
+    let logsRetryTimer = null;
+    let eventsRetryTimer = null;
+    let logsCooldownUntil = 0;
+    let eventsCooldownUntil = 0;
     function stopStreams(){
       try { if (esLogs) { esLogs.close(); esLogs=null; } } catch(_){}
       try { if (esEvents) { esEvents.close(); esEvents=null; } } catch(_){}
       try { if (esStatus) { esStatus.close(); esStatus=null; } } catch(_){}
       if (state._logsTimer) { clearInterval(state._logsTimer); state._logsTimer=null; }
       if (state._eventsTimer) { clearInterval(state._eventsTimer); state._eventsTimer=null; }
+      if (logsRetryTimer) { clearTimeout(logsRetryTimer); logsRetryTimer = null; }
+      if (eventsRetryTimer) { clearTimeout(eventsRetryTimer); eventsRetryTimer = null; }
+      esLogsApp = null;
+      esEventsApp = null;
       try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
     }
     const renderEvents = (items) => {
@@ -2275,26 +2297,38 @@
       pollEventsOnce();
       state._eventsTimer = setInterval(pollEventsOnce, 2000);
     };
-    let eventsRetryTimer = null;
-    const scheduleEventsRetry = () => {
+    const scheduleEventsRetry = (delayMs) => {
       if (eventsRetryTimer) return;
+      const now = Date.now();
+      const delay = Math.max(0, delayMs || (eventsCooldownUntil > now ? (eventsCooldownUntil - now) : SSE_COOLDOWN_MS));
       eventsRetryTimer = setTimeout(() => {
         eventsRetryTimer = null;
         if (!esEvents && state.sessionId && state.orch.available && !sseState.disabled) {
           startEventsStream('retry');
         }
-      }, 8000);
+      }, delay);
     };
     const startEventsStream = () => {
       if (sseState.disabled) { startEventsPoll(); return; }
       if (!state.sessionId || !state.orch.available) return;
-      if (esEvents) return;
+      const now = Date.now();
+      if (eventsCooldownUntil && now < eventsCooldownUntil) {
+        startEventsPoll();
+        scheduleEventsRetry();
+        return;
+      }
+      if (esEvents && esEventsApp === state.appName) return;
+      if (esEvents && esEventsApp !== state.appName) {
+        try { esEvents.close(); } catch(_){}
+        esEvents = null;
+      }
       stopEventsPoll();
       try {
         const q1 = { app: state.appName, limit: '20' };
         try { if (state.orch && state.orch.token) q1['token'] = state.orch.token; } catch(_){}
         const evUrl = `${API}/labs/sse/events?` + new URLSearchParams(q1).toString();
         esEvents = new EventSource(evUrl);
+        esEventsApp = state.appName;
         esEvents.onmessage = (ev) => {
           try {
             const arr = JSON.parse(ev.data || '[]');
@@ -2304,17 +2338,21 @@
         esEvents.onerror = () => {
           try { esEvents?.close(); } catch(_){}
           esEvents = null;
+          esEventsApp = null;
+          eventsCooldownUntil = Date.now() + SSE_COOLDOWN_MS;
           startEventsPoll();
-          scheduleEventsRetry();
+          scheduleEventsRetry(SSE_COOLDOWN_MS);
         };
       } catch {
         startEventsPoll();
-        scheduleEventsRetry();
+        eventsCooldownUntil = Date.now() + SSE_COOLDOWN_MS;
+        scheduleEventsRetry(SSE_COOLDOWN_MS);
       }
     };
     const stopEventsStream = () => {
       try { if (esEvents) { esEvents.close(); esEvents=null; } } catch(_){}
       if (eventsRetryTimer) { clearTimeout(eventsRetryTimer); eventsRetryTimer = null; }
+      eventsCooldownUntil = 0;
       stopEventsPoll();
     };
     window.k1sStartEventPoll = startEventsPoll;
@@ -2345,41 +2383,90 @@
         }
       } catch {}
     }
+    const stopLogsPoll = () => {
+      if (state._logsTimer) { clearInterval(state._logsTimer); state._logsTimer = null; }
+    };
+    const startLogsPoll = () => {
+      if (state._logsTimer) return;
+      pollLogsOnce();
+      state._logsTimer = setInterval(pollLogsOnce, 2000);
+    };
+    const scheduleLogsRetry = (delayMs) => {
+      if (logsRetryTimer) return;
+      const now = Date.now();
+      const delay = Math.max(0, delayMs || (logsCooldownUntil > now ? (logsCooldownUntil - now) : SSE_COOLDOWN_MS));
+      logsRetryTimer = setTimeout(() => {
+        logsRetryTimer = null;
+        if (observeActive) startLogsStream('retry');
+      }, delay);
+    };
+    const startLogsStream = () => {
+      if (!observeActive) return;
+      const now = Date.now();
+      if (logsCooldownUntil && now < logsCooldownUntil) {
+        startLogsPoll();
+        scheduleLogsRetry();
+        return;
+      }
+      if (esLogs && esLogsApp === state.appName) return;
+      if (esLogs && esLogsApp !== state.appName) {
+        try { esLogs.close(); } catch(_){}
+        esLogs = null;
+      }
+      stopLogsPoll();
+      try {
+        const qs = new URLSearchParams({ tail: '200' });
+        try { if (state.orch && state.orch.token) qs.set('token', state.orch.token); } catch(_){}
+        const url = `${API}/logs/${encodeURIComponent(state.appName)}/stream?` + qs.toString();
+        esLogs = new EventSource(url);
+        esLogsApp = state.appName;
+        const box = document.getElementById('observe-logs');
+        if (box) { box.innerHTML=''; box.classList.remove('hidden'); }
+        const sseHide = document.getElementById('logs-sse'); if (sseHide) sseHide.classList.add('hidden');
+        requestAnimationFrame(forceFollowAll);
+        esLogs.onmessage = (ev) => {
+          if (!box) return;
+          const div = document.createElement('div');
+          div.className = 'log-entry';
+          div.textContent = ev.data || '';
+          box.appendChild(div);
+          follow(box);
+        };
+        esLogs.onerror = () => {
+          try { esLogs?.close(); } catch(_){}
+          esLogs = null;
+          esLogsApp = null;
+          logsCooldownUntil = Date.now() + SSE_COOLDOWN_MS;
+          startLogsPoll();
+          scheduleLogsRetry(SSE_COOLDOWN_MS);
+        };
+      } catch(e){
+        logsCooldownUntil = Date.now() + SSE_COOLDOWN_MS;
+        startLogsPoll();
+        scheduleLogsRetry(SSE_COOLDOWN_MS);
+      }
+    };
+    const stopLogsStream = () => {
+      try { if (esLogs) { esLogs.close(); esLogs=null; } } catch(_){}
+      esLogsApp = null;
+      logsCooldownUntil = 0;
+      if (logsRetryTimer) { clearTimeout(logsRetryTimer); logsRetryTimer = null; }
+      stopLogsPoll();
+    };
+    window.k1sStartLogsStream = startLogsStream;
+    window.k1sStopLogsStream = stopLogsStream;
+    window.k1sMaybeRestartLogs = () => { if (observeActive) startLogsStream('restart'); };
     if (observeBtn) {
       observeBtn.addEventListener('click', () => {
         if (!state.sessionId) return;
         if (observeBtn.textContent.includes('Start')) {
           observeBtn.textContent = 'Stop Tail';
-          // Always use EventSource to populate the polyfill logs panel
-          try {
-            const qs = new URLSearchParams({ tail: '200' });
-            try { if (state.orch && state.orch.token) qs.set('token', state.orch.token); } catch(_){}
-            const url = `${API}/logs/${encodeURIComponent(state.appName)}/stream?` + qs.toString();
-            esLogs = new EventSource(url);
-            const box = document.getElementById('observe-logs');
-            if (box) { box.innerHTML=''; box.classList.remove('hidden'); }
-            const sseHide = document.getElementById('logs-sse'); if (sseHide) sseHide.classList.add('hidden');
-            requestAnimationFrame(forceFollowAll);
-            esLogs.onmessage = (ev) => {
-              if (!box) return;
-              const div = document.createElement('div');
-              div.className = 'log-entry';
-              div.textContent = ev.data || '';
-              box.appendChild(div);
-              follow(box);
-            };
-            esLogs.onerror = () => {
-              try { esLogs?.close(); } catch(_){}
-              esLogs = null;
-              if (!state._logsTimer) {
-                pollLogsOnce();
-                state._logsTimer = setInterval(pollLogsOnce, 2000);
-              }
-            };
-          } catch(e){ console.error('EventSource logs error', e); }
+          observeActive = true;
+          try { startLogsStream(); } catch(_){}
           try { startEventsStream(); } catch(_){}
         } else {
           observeBtn.textContent = 'Start Tail';
+          observeActive = false;
           stopStreams();
           const ssePanel = document.getElementById('logs-sse');
           if (ssePanel) { try { ssePanel.classList.add('hidden'); } catch(_){} }

@@ -12,6 +12,21 @@ docs.home.arpa:443, docs.home.arpa
         file_server browse
     }
 
+    # SSE paths: disable compression + flush immediately for streaming responses
+    @sse {
+        path /labs/sse/* /logs/*/stream
+    }
+    handle @sse {
+        encode off
+        reverse_proxy {
+            to {$CADDY_HOST_ALIAS:host.docker.internal}:9108
+            header_up Host {http.reverse_proxy.upstream.hostport}
+            flush_interval -1
+            header_down X-Accel-Buffering no
+            header_down Cache-Control no-cache
+        }
+    }
+
     # Proxy API endpoints to the controller on the host
     @api {
         path /swagger* /redoc* /openapi* /health* /status* /events* /logs* /metrics* /labs* /system* /ui/features /api/apishim/*
