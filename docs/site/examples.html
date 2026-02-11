@@ -855,6 +855,7 @@
 </ul>
 <h3>Notes</h3>
 <ul>
+<li>Demo apps are copied into <code>state/profiles/demo/specs</code> and reconciled from that directory. Changes made via CLI/API (like scaling) are temporary unless you edit those files or rerun the demo after updating <code>specs/examples/</code>.</li>
 <li>Caddy HTTP: <code>:8888</code>, HTTPS: <code>:8443</code> (the demo auto-picks free ports if these are busy).</li>
 <li>Hosts entries (added with <code>-y</code>) include: <code>docs.home.arpa</code>, <code>api.home.arpa</code>, <code>dash.home.arpa</code>, <code>blue.home.arpa</code>, <code>green.home.arpa</code>, plus the selected <code>echo-*</code> demo hosts (e.g., <code>echo-mr</code>, <code>echo-multi</code>, <code>echo-hardened</code>, <code>echo-sec</code>, <code>echo-exec</code>, <code>echo-tcp</code>, <code>echo-storage</code>).
 <ul>
@@ -893,7 +894,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-10 19:25:45</span>
+        <span>Built 2026-02-11 08:31:27</span>
       </div>
     </footer>
     <script>

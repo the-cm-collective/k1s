@@ -932,54 +932,45 @@ make k1s-edge-node</code></pre>
 <h3>Same-Host Variant (hub + edge on one box)</h3>
 <p>Use this when you want to simulate the remote site on the same host as the hub (like the workflows in <code>docs/ops/core-edge-manual-test.md</code> and <code>docs/ops/core-edge-wg-psk.md</code>). The key differences are:</p>
 <ul>
-<li>Use <code>127.0.0.1</code> for controller and apishim URLs.</li>
 <li>Keep separate Rosenpass dirs for hub vs edge so WireGuard keys do not collide.</li>
 </ul>
-<p>Hub controller + apishim:</p>
-<pre><code>AE_APISHIM_MODE=host \
-AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy \
-AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
-AE_WG_INTERFACE=wg-hub \
-AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub \
-AE_APISHIM_SERVER=https://127.0.0.1:8445 \
-make k1s-core</code></pre>
-<p>Note</p>
-<ul>
-<li>For single-host labs that must exercise exec/port-forward over WG IPs, run apishim on the host (<code>AE_APISHIM_MODE=host</code>). Rootless container apishim cannot reliably reach <code>10.255.0.x</code> on the host.</li>
-<li>If you keep apishim in a container, use <code>AE_AGENT_ENDPOINT=http://host.containers.internal:9111/9112</code> and expect exec/port-forward to bypass WG.</li>
-</ul>
-<p>Allow the rootless controller to read WireGuard handshakes (for <code>/system</code> + UI overlay status):</p>
+<p>1. Allow the rootless controller to read WireGuard handshakes (for <code>/system</code> + UI overlay status):</p>
 <pre><code>WG_BIN=$(command -v wg)
 echo &quot;$USER ALL=(root) NOPASSWD: ${WG_BIN} show wg-hub dump&quot; | sudo tee /etc/sudoers.d/k1s-wg-dump
 sudo chmod 440 /etc/sudoers.d/k1s-wg-dump</code></pre>
-<p>Then run the controller with:</p>
-<pre><code>AE_WG_DUMP_CMD=&quot;sudo -n ${WG_BIN} show {iface} dump&quot; \
-AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy \
-AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
+<p>2. Start the hub controller with overlay dump support:</p>
+<pre><code>WG_BIN=$(command -v wg) \
+AE_DEV_LOCAL=1 \
 AE_WG_INTERFACE=wg-hub \
-AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub \
-AE_APISHIM_SERVER=https://127.0.0.1:8445 \
+AE_WG_DUMP_CMD=&quot;sudo -n ${WG_BIN} show {iface} dump&quot; \
+AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
 make k1s-core</code></pre>
 <p>Note</p>
 <ul>
 <li>Keep Rosenpass dirs under <code>/var/lib/ae/</code> (or another non-repo path) when running nodes with <code>sudo</code> to avoid root-owned files under <code>state/</code>.</li>
 </ul>
-<p>Hub node:</p>
-<pre><code>sudo -E AE_WG_ENDPOINT=&lt;HOST_IP&gt;:51820 \
-AE_NODE_LABELS=&quot;role=hub,site=hub,wg_role=hub,wg_psk=rp&quot; \
+<p>3. Start the hub node:</p>
+<pre><code>sudo -E \
+AE_NODE_ID=hub-1 \
+AE_NODE_LABELS=&quot;role=hub,site=hub,wg_role=hub,wg_psk=rp,wg_endpoint=192.168.29.143:51820&quot; \
+AE_POD_CIDR=10.42.0.0/24 \
+AE_ROSENPASS_ENABLED=1 \
+AE_ROSENPASS_CONFIG=controller \
+AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub \
 AE_ROSENPASS_INTERFACE=wg-hub \
 AE_WG_LISTEN_PORT=51820 \
 AE_WG_ADDRESS=10.255.0.1/32 \
-AE_LOG_LEVEL=debug \
-AE_ROSENPASS_LOG_LEVEL=verbose \
 AE_AGENT_TOKEN=devtoken \
 AE_CONTROLLER_URL=http://127.0.0.1:9110 \
-AE_AGENT_ENDPOINT=http://10.255.0.1:9111 \
-AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub \
 make k1s-core-node</code></pre>
-<p>Verify the WG interfaces have the expected IPs (required if you advertise <code>AE_AGENT_ENDPOINT</code> on <code>10.255.0.x</code>):</p>
+<p>3a. Verify the WG interfaces have the expected IPs:</p>
 <pre><code>ip -brief addr show wg-hub wg-edge</code></pre>
-<p>Edge site + gateway:</p>
+<p>Expected (example):</p>
+<ul>
+<li><code>wg-hub</code> has <code>10.255.0.1/32</code></li>
+<li><code>wg-edge</code> has <code>10.255.0.3/32</code></li>
+</ul>
+<p>4. Register the edge site and start the edge gateway:</p>
 <pre><code>make edge-site SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
 
 AE_SITE_ID=sea-edge-02 \
@@ -987,26 +978,18 @@ AE_NODE_ID=edge-1 \
 AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
 AE_LOG_LEVEL=debug \
 make k1s-edge-core</code></pre>
-<p>Edge node:</p>
-<pre><code>sudo -E AE_NODE_ID=edge-1 \
-AE_NODE_LABELS=&quot;site=sea-edge-02,wg_role=spk,wg_psk=rp&quot; \
+<p>5. Start the edge node (single-host routing adjustments):</p>
+<pre><code>sudo -E \
+AE_WG_INTERFACE=wg-edge \
 AE_ROSENPASS_INTERFACE=wg-edge \
-AE_WG_LISTEN_PORT=51821 \
-AE_WG_ADDRESS=10.255.0.2/32 \
+AE_WG_ADDRESS=10.255.0.3/32 \
 AE_WG_TABLE=off \
-AE_LOG_LEVEL=debug \
-AE_ROSENPASS_LOG_LEVEL=verbose \
-AE_AGENT_TOKEN=devtoken \
-AE_CONTROLLER_URL=http://127.0.0.1:9110 \
-AE_AGENT_ENDPOINT=http://10.255.0.2:9112 \
+AE_WG_LISTEN_PORT=51821 \
 AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-edge \
+AE_NODE_LABELS=&quot;site=sea-edge-02,wg_role=spk,wg_psk=rp&quot; \
+AE_AGENT_TOKEN=devtoken \
+AE_CONTROLLER_URL=http://192.168.29.143:9110 \
 make k1s-edge-node</code></pre>
-<p>Note</p>
-<ul>
-<li>For WG-backed exec/port-forward, keep <code>AE_AGENT_ENDPOINT</code> on the WG IPs.</li>
-<li>If apishim runs on the host (<code>AE_APISHIM_MODE=host</code>) and you are not using WG for exec/port-forward, you can use <code>127.0.0.1</code> instead.</li>
-<li><code>ae auth local</code> points to <code>https://127.0.0.1:8445</code>. If you run <code>ae shell</code> from a different host, set <code>AE_APISHIM_SERVER=https://&lt;HUB_IP&gt;:8445</code> and keep the <code>AE_APISHIM_TOKEN</code>/<code>AE_APISHIM_READ_TOKEN</code> from <code>ae auth local</code>.</li>
-</ul>
 <h4>Validation</h4>
 <p>1. On the hub, verify WG is up:</p>
 <pre><code>sudo wg show wg-hub
@@ -1079,7 +1062,7 @@ curl http://HUB_HOST:8222/leafz</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-10 19:25:45</span>
+        <span>Built 2026-02-11 08:31:27</span>
       </div>
     </footer>
     <script>

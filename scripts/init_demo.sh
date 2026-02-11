@@ -1374,6 +1374,24 @@ https://docs.home.arpa {
     }
     header -Strict-Transport-Security
     tls internal
+    @no_sse {
+        not path /labs/sse/* /logs/*/stream
+    }
+    encode @no_sse gzip zstd
+
+    @sse {
+        path /labs/sse/* /logs/*/stream
+    }
+    handle @sse {
+        reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT} {
+            flush_interval -1
+            # Keep SSE streams alive across config reloads to reduce reconnect churn.
+            stream_close_delay 5m
+            stream_timeout 24h
+            header_down X-Accel-Buffering no
+            header_down Cache-Control no-cache
+        }
+    }
 
     # Proxy controller API paths for single-origin labs (no CORS required)
     @apibase path /health /openapi.json
@@ -1409,6 +1427,24 @@ https://api.home.arpa {
     }
     header -Strict-Transport-Security
     tls internal
+    @no_sse {
+        not path /labs/sse/* /dashboard/sse/* /logs/*/stream
+    }
+    encode @no_sse gzip zstd
+
+    @sse {
+        path /labs/sse/* /dashboard/sse/* /logs/*/stream
+    }
+    handle @sse {
+        reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT} {
+            flush_interval -1
+            # Keep SSE streams alive across config reloads to reduce reconnect churn.
+            stream_close_delay 5m
+            stream_timeout 24h
+            header_down X-Accel-Buffering no
+            header_down Cache-Control no-cache
+        }
+    }
 
     @ui path /dashboard* /playground*
     handle @ui {
@@ -1454,6 +1490,9 @@ https://dash.home.arpa {
     handle @sse {
         reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT} {
             flush_interval -1
+            # Keep SSE streams alive across config reloads to reduce reconnect churn.
+            stream_close_delay 5m
+            stream_timeout 24h
             header_down X-Accel-Buffering no
             header_down Cache-Control no-cache
         }

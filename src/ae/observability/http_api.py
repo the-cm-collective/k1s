@@ -2611,7 +2611,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         heartbeat = 10.0
         last_ping = _t.monotonic()
         try:
-            self.wfile.write(b"retry: 1500\n\n")
+            # Back off reconnects to reduce proxy churn/noise on transient disconnects.
+            self.wfile.write(b"retry: 5000\n\n")
             self.wfile.flush()
             while True:
                 events = self.store.list_events(app, limit=limit)
@@ -2666,7 +2667,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         heartbeat = 10.0
         last_ping = _t.monotonic()
         try:
-            self.wfile.write(b"retry: 1500\n\n")
+            self.wfile.write(b"retry: 5000\n\n")
             self.wfile.flush()
             while True:
                 s = self.store.get_status(app)
@@ -2727,7 +2728,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         heartbeat = 10.0
         last_ping = _t.monotonic()
         try:
-            self.wfile.write(b"retry: 1500\n\n")
+            self.wfile.write(b"retry: 5000\n\n")
             self.wfile.flush()
             while True:
                 events = self.store.list_events(app, limit=limit)
@@ -2786,7 +2787,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         heartbeat = 10.0
         last_ping = _t.monotonic()
         try:
-            self.wfile.write(b"retry: 1500\n\n")
+            self.wfile.write(b"retry: 5000\n\n")
             self.wfile.flush()
             while True:
                 s = self.store.get_status(app)
@@ -4322,7 +4323,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         heartbeat = 10.0
         try:
             # Hint client retry interval
-            self.wfile.write(b"retry: 1000\n\n")
+            self.wfile.write(b"retry: 5000\n\n")
             self.wfile.flush()
             while True:
                 try:
