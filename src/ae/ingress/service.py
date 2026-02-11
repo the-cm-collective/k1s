@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -29,8 +31,22 @@ class IngressService:
         self._store = store
         self._last_sig: dict[str, str] = {}
         self._dirty: bool = False
+        self._reload_lock = threading.Lock()
+        self._reload_timer: threading.Timer | None = None
+        self._reload_delay = self._resolve_reload_delay()
         # Back-compat in-memory state when no store is available
         self._canary_state: dict[str, dict[str, float]] = {}
+
+    def _resolve_reload_delay(self) -> float:
+        raw = os.getenv("AE_INGRESS_RELOAD_DELAY_MS")
+        if raw is not None:
+            try:
+                return max(0.0, float(raw) / 1000.0)
+            except Exception:
+                return 0.0
+        if os.getenv("AE_DEV_LOCAL", "0") == "1" or os.getenv("AE_LABS", "0") == "1":
+            return 0.3
+        return 0.0
 
     def apply(self, manifest: AppManifest, upstream) -> IngressResult:
         if manifest.spec.ingress is None:
@@ -54,8 +70,6 @@ class IngressService:
             and not getattr(ingress_spec, "tls_cert_path", None)
             and not getattr(ingress_spec, "tls_key_path", None)
         ):
-            import os
-
             root = os.getenv("AE_TLS_DIR", "state/tls")
             resolver = TlsSecretResolver(Path(root))
             resolved = resolver.resolve(str(ingress_spec.tls_secret_name))
@@ -193,7 +207,8 @@ class IngressService:
                     pass
                 site_path = None
             self._last_sig[app] = sig
-            self._dirty = True
+            with self._reload_lock:
+                self._dirty = True
         else:
             # No change; use existing path if available
             try:
@@ -208,19 +223,38 @@ class IngressService:
 
     def remove(self, app_name: str) -> None:
         self._manager.remove(app_name)
+        with self._reload_lock:
+            self._dirty = True
 
     def reload(self) -> None:
-        if not self._dirty:
-            return
-        try:
-            self._manager.reload()
-        except Exception as exc:  # pragma: no cover - defensive path
-            # Do not crash the controller if Caddy reload is unavailable in dev.
-            import logging
+        with self._reload_lock:
+            if not self._dirty:
+                return
+            delay = self._reload_delay
+            if delay > 0:
+                if self._reload_timer is not None and self._reload_timer.is_alive():
+                    return
+                timer = threading.Timer(delay, self._do_reload)
+                timer.daemon = True
+                self._reload_timer = timer
+                timer.start()
+                return
+        self._do_reload()
 
-            logging.getLogger(__name__).warning("ingress reload skipped: %s", exc)
-        finally:
-            self._dirty = False
+    def _do_reload(self) -> None:
+        with self._reload_lock:
+            if not self._dirty:
+                return
+            try:
+                self._manager.reload()
+            except Exception as exc:  # pragma: no cover - defensive path
+                # Do not crash the controller if Caddy reload is unavailable in dev.
+                import logging
+
+                logging.getLogger(__name__).warning("ingress reload skipped: %s", exc)
+            finally:
+                self._dirty = False
+                self._reload_timer = None
 
 
 # ruff: noqa
