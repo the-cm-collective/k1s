@@ -387,11 +387,21 @@
     return true;
   }
 
+  function isMixedContentConfig() {
+    if ((location.protocol || '') !== 'https:') return false;
+    const base = String(API || window.DOCS_API_BASE || '').trim().toLowerCase();
+    return base.startsWith('http://');
+  }
+
   function bannerFetchFailure(actionLabel, err) {
     const label = actionLabel || 'Action';
     const msg = String(err || '');
     if (msg.toLowerCase().includes('failed to fetch')) {
-      banner(`${label} failed: API unreachable or blocked by the browser (TLS/mixed content). Confirm docs proxy is up at https://docs.home.arpa:8443 and API mode is Proxy.`, 'fail', 8000);
+      if (isMixedContentConfig()) {
+        banner(`${label} failed: browser blocked mixed content. Use HTTPS for the API base or switch to Proxy mode.`, 'fail', 8000);
+      } else {
+        banner(`${label} failed: API unreachable or proxy error. Confirm docs proxy is up at https://docs.home.arpa:8443 and API mode is Proxy.`, 'fail', 8000);
+      }
       return;
     }
     banner(`${label} error: ${err}`, 'fail');
@@ -810,6 +820,7 @@
         const polyEv = document.getElementById('observe-events');
         if (poly) poly.classList.remove('hidden');
         if (polyEv) polyEv.classList.remove('hidden');
+        try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
       } catch(_){}
       // Show neutral status
       setText('#status-summary', 'n/a', 'pending');
@@ -842,6 +853,7 @@
       sseState.errors = 0;
       sseState.lastErrorAt = 0;
       try { if (state._eventsTimer) { clearInterval(state._eventsTimer); state._eventsTimer = null; } } catch(_){}
+      try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
       wireControls();
       armSSE();
       try { toast('Session started — next: click "Apply Selected Example"', 'ok'); } catch(_){}
@@ -873,6 +885,7 @@
       const sseEv = document.getElementById('events-sse');
       if (sseLogs) sseLogs.classList.add('hidden');
       if (sseEv) sseEv.classList.add('hidden');
+      try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
     } catch(_){}
     // Clear panels and indicators
     try { const ev = document.getElementById('observe-events'); if (ev) ev.textContent = ''; } catch(_){}
@@ -962,6 +975,7 @@
     const polyEv = document.getElementById('observe-events');
     if (polyEv) polyEv.classList.remove('hidden');
     if (reason) { try { banner(`Live stream paused (${reason}); using polling.`, 'warn', 4000); } catch(_){ } }
+    try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
     try { if (window.k1sStartEventPoll) window.k1sStartEventPoll(); } catch(_){}
   }
 
@@ -979,19 +993,11 @@
       if (polyEv) polyEv.classList.remove('hidden');
       return;
     }
-    // HTMX SSE for events
+    const polyEv = document.getElementById('observe-events');
+    if (polyEv) polyEv.classList.remove('hidden');
     const sseEv = document.getElementById('events-sse');
-    if (window.htmx && sseEv) {
-      const params = { app, limit: '20' };
-      try { if (state.orch && state.orch.token) params['token'] = state.orch.token; } catch(_){}
-      sseEv.setAttribute('sse-connect', `${API}/labs/sse/events_html?` + new URLSearchParams(params).toString());
-      try { window.htmx.process(sseEv); } catch(_){}
-      hookSseError(sseEv);
-      sseEv.classList.remove('hidden');
-      const polyEv = document.getElementById('observe-events');
-      if (polyEv) polyEv.classList.add('hidden');
-    }
-    // HTMX SSE for status badge
+    if (sseEv) sseEv.classList.add('hidden');
+    try { if (window.k1sStartEventsStream) window.k1sStartEventsStream(); } catch(_){}
   }
 
   function makeIngressUrl(host, path) {
@@ -2158,11 +2164,29 @@
   async function doScale(n){
     if (!state.orch.available) return;
     try { banner(`Scaling “${state.appName}” to ${n}…`, 'pending', 5000); } catch(_){}
-    await apiFetch(`/labs/scale`, {
+    const scaleOnce = () => apiFetch(`/labs/scale`, {
       method: 'POST',
       headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
       body: JSON.stringify({ session_id: state.sessionId, app: state.appName, replicas: n })
     });
+    let resp = null;
+    try {
+      resp = await scaleOnce();
+    } catch (e) {
+      if (isNetworkError(e)) {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        try {
+          resp = await scaleOnce();
+        } catch (e2) {
+          banner(`Scale error: ${e2}`, 'fail');
+          return;
+        }
+      } else {
+        banner(`Scale error: ${e}`, 'fail');
+        return;
+      }
+    }
+    if (!resp.ok) { banner(`Scale failed: ${await resp.text()}`, 'fail'); return; }
     setTimeout(verifyApply, 800);
     setTimeout(()=>verifyScale(n), 1200);
     setTimeout(verifyIngress, 1500);
@@ -2223,28 +2247,79 @@
       try { if (esEvents) { esEvents.close(); esEvents=null; } } catch(_){}
       try { if (esStatus) { esStatus.close(); esStatus=null; } } catch(_){}
       if (state._logsTimer) { clearInterval(state._logsTimer); state._logsTimer=null; }
+      if (state._eventsTimer) { clearInterval(state._eventsTimer); state._eventsTimer=null; }
+      try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
     }
+    const renderEvents = (items) => {
+      const box = document.getElementById('observe-events');
+      if (!box) return;
+      const list = Array.isArray(items) ? items.slice().reverse() : [];
+      box.innerHTML = (list||[]).map(e=>{
+        const ts = e.created_at || '-';
+        const msg = (e.message||'');
+        return `<div class="log-entry"><code>${ts}</code> ${msg}</div>`;
+      }).join('') || '<div class="log-entry">No recent events</div>';
+      follow(box);
+    };
     async function pollEventsOnce(){
       try {
         const ev = await jsonGet(`${API}/events/${encodeURIComponent(state.appName)}?limit=20`);
-        const box = document.getElementById('observe-events');
-        if (box) {
-          // Oldest-first so newest ends at the bottom and we can follow
-          const items = Array.isArray(ev) ? ev.slice().reverse() : [];
-          box.innerHTML = (items||[]).map(e=>{
-            const ts = e.created_at || '-';
-            const msg = (e.message||'');
-            return `<div class="log-entry"><code>${ts}</code> ${msg}</div>`;
-          }).join('') || '<div class="log-entry">No recent events</div>';
-          follow(box);
-        }
+        renderEvents(ev);
       } catch {}
     }
-    window.k1sStartEventPoll = () => {
+    const stopEventsPoll = () => {
+      if (state._eventsTimer) { clearInterval(state._eventsTimer); state._eventsTimer = null; }
+    };
+    const startEventsPoll = () => {
       if (state._eventsTimer) return;
       pollEventsOnce();
       state._eventsTimer = setInterval(pollEventsOnce, 2000);
     };
+    let eventsRetryTimer = null;
+    const scheduleEventsRetry = () => {
+      if (eventsRetryTimer) return;
+      eventsRetryTimer = setTimeout(() => {
+        eventsRetryTimer = null;
+        if (!esEvents && state.sessionId && state.orch.available && !sseState.disabled) {
+          startEventsStream('retry');
+        }
+      }, 8000);
+    };
+    const startEventsStream = () => {
+      if (sseState.disabled) { startEventsPoll(); return; }
+      if (!state.sessionId || !state.orch.available) return;
+      if (esEvents) return;
+      stopEventsPoll();
+      try {
+        const q1 = { app: state.appName, limit: '20' };
+        try { if (state.orch && state.orch.token) q1['token'] = state.orch.token; } catch(_){}
+        const evUrl = `${API}/labs/sse/events?` + new URLSearchParams(q1).toString();
+        esEvents = new EventSource(evUrl);
+        esEvents.onmessage = (ev) => {
+          try {
+            const arr = JSON.parse(ev.data || '[]');
+            renderEvents(arr);
+          } catch {}
+        };
+        esEvents.onerror = () => {
+          try { esEvents?.close(); } catch(_){}
+          esEvents = null;
+          startEventsPoll();
+          scheduleEventsRetry();
+        };
+      } catch {
+        startEventsPoll();
+        scheduleEventsRetry();
+      }
+    };
+    const stopEventsStream = () => {
+      try { if (esEvents) { esEvents.close(); esEvents=null; } } catch(_){}
+      if (eventsRetryTimer) { clearTimeout(eventsRetryTimer); eventsRetryTimer = null; }
+      stopEventsPoll();
+    };
+    window.k1sStartEventPoll = startEventsPoll;
+    window.k1sStartEventsStream = startEventsStream;
+    window.k1sStopEventsStream = stopEventsStream;
     async function pollLogsOnce(){
       try {
         const qs = new URLSearchParams({ tail: '200' });
@@ -2302,74 +2377,7 @@
               }
             };
           } catch(e){ console.error('EventSource logs error', e); }
-          // Events SSE (labs) with fallback to polling
-          try {
-            const q1 = { app: state.appName, limit: '20' };
-            try { if (state.orch && state.orch.token) q1['token'] = state.orch.token; } catch(_){}
-            const evUrl = `${API}/labs/sse/events?` + new URLSearchParams(q1).toString();
-            esEvents = new EventSource(evUrl);
-            esEvents.onmessage = (ev) => {
-              const arr = JSON.parse(ev.data || '[]');
-              const box = document.getElementById('observe-events');
-              if (box) {
-                // Oldest-first so new events appear at the bottom (match logs)
-                const items = (Array.isArray(arr) ? arr.slice().reverse() : []);
-                box.innerHTML = items.map(e=>{
-                  const ts = e.created_at || '-';
-                  const msg = (e.message||'');
-                  return `<div class="log-entry"><code>${ts}</code> ${msg}</div>`;
-                }).join('') || '<div class="log-entry">No recent events</div>';
-                follow(box);
-              }
-            };
-            esEvents.onerror = () => {
-              try { esEvents?.close(); } catch(_){}
-              esEvents = null;
-              if (!state._eventsTimer) {
-                pollEventsOnce();
-                state._eventsTimer = setInterval(pollEventsOnce, 2000);
-              }
-            };
-          } catch {
-            pollEventsOnce();
-            state._eventsTimer = setInterval(pollEventsOnce, 2000);
-          }
-          // Status SSE to keep verifiers fresh
-          try {
-            const q2 = { app: state.appName };
-            try { if (state.orch && state.orch.token) q2['token'] = state.orch.token; } catch(_){}
-            const stUrl = `${API}/labs/sse/status?` + new URLSearchParams(q2).toString();
-            esStatus = new EventSource(stUrl);
-            esStatus.onmessage = (ev) => {
-              try {
-                const s = JSON.parse(ev.data || 'null');
-                if (!s) return;
-                const ok = Number(s.ready||0) === Number(s.desired||0);
-                setText('#v-apply-ready', ok?'ok':'fail', ok?'ok':'fail');
-                setText('#status-summary', `${s.ready||0}/${s.desired||0} ready`, ok?'ok':'fail');
-                const link = document.getElementById('ingress-link');
-                if (link && s.ingress_host) {
-                  link.textContent = s.ingress_host;
-                  const href = s.ingress_host.startsWith('http')
-                    ? s.ingress_host + (s.ingress_path||'/')
-                    : makeIngressUrl(s.ingress_host, s.ingress_path);
-                  link.href = href;
-                  try {
-                    if (state.sessionId && state.orch.available) {
-                      if (href !== ingressCheckUrl) resetIngressCheck(href);
-                      if (ingressCheckOk !== true && !ingressCheckTimer) verifyIngress();
-                    }
-                  } catch(_){}
-                } else if (link) {
-                  clearIngressUI('not configured');
-                }
-              } catch {}
-            };
-            esStatus.onerror = () => {
-              try { esStatus?.close(); } catch(_){}
-              esStatus = null;
-            };
-          } catch {}
+          try { startEventsStream(); } catch(_){}
         } else {
           observeBtn.textContent = 'Start Tail';
           stopStreams();
