@@ -101,6 +101,7 @@ Note
 
 ### Notes
 
+- Demo apps are copied into `state/profiles/demo/specs` and reconciled from that directory. Changes made via CLI/API (like scaling) are temporary unless you edit those files or rerun the demo after updating `specs/examples/`.
 - Caddy HTTP: `:8888`, HTTPS: `:8443` (the demo auto-picks free ports if these are busy).
 - Hosts entries (added with `-y`) include: `docs.home.arpa`, `api.home.arpa`, `dash.home.arpa`, `blue.home.arpa`, `green.home.arpa`, plus the selected `echo-*` demo hosts (e.g., `echo-mr`, `echo-multi`, `echo-hardened`, `echo-sec`, `echo-exec`, `echo-tcp`, `echo-storage`).
   - Dashboard: `https://dash.home.arpa:8443/dashboard` (or `http://127.0.0.1:9108/dashboard` directly).
