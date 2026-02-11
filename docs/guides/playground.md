@@ -78,7 +78,7 @@ To start a session: enable <strong>Controlled Actions</strong>, click <strong>Us
   </div>
   <span class="status-label">Status:</span>
   <div class="status-stack">
-    <span id="status-summary" class="pending" hx-ext="sse" sse-connect="" sse-swap="message">n/a</span>
+    <span id="status-summary" class="pending">n/a</span>
     <div class="status-toggle" role="group" aria-label="Status scope">
       <button id="status-mode-app" type="button" aria-pressed="false" title="Focus on the app from this session">App</button>
       <button id="status-mode-cluster" type="button" class="is-active" aria-pressed="true" title="Show totals across all apps">Cluster</button>
