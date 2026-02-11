@@ -1498,6 +1498,8 @@ if [[ $DOCS_ONLY -ne 1 ]]; then
   if [[ $DEMO_STORAGE -eq 1 ]]; then
     add_spec specs/examples/echo-storage.yaml
   fi
+  log "Demo apps are sourced from ${DEMO_SPECS_DIR}."
+  log "Edit specs there (or rerun after updating specs/examples) to keep changes; runtime tweaks are reconciled back."
 fi
 
 if [[ $NO_CONTROLLER -eq 0 ]]; then
