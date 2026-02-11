@@ -1,0 +1,21 @@
+apiVersion: k1s.io/v1
+kind: EdgeIngressRoute
+metadata:
+  name: app-edge-local
+  namespace: default
+spec:
+  host: app-edge-local.home.arpa
+  paths:
+    - path: /
+      serviceRef:
+        namespace: default
+        name: app-svc
+        port: 8080
+  exposure:
+    mode: edge-local
+    placement:
+      site: sea-edge-02
+    tls:
+      mode: terminate-core
+      terminateCore:
+        redirectHttpToHttps: true
