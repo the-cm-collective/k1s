@@ -22,6 +22,9 @@ api.home.arpa:443, api.home.arpa
             to {$CADDY_HOST_ALIAS:host.docker.internal}:9108
             header_up Host {http.reverse_proxy.upstream.hostport}
             flush_interval -1
+            # Keep SSE streams alive across config reloads to reduce reconnect churn.
+            stream_close_delay 5m
+            stream_timeout 24h
             header_down X-Accel-Buffering no
             header_down Cache-Control no-cache
         }

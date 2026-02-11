@@ -244,6 +244,9 @@ https://dash.home.arpa {
     handle @sse {
         reverse_proxy ${host_alias}:${METRICS_PORT:-9108} {
             flush_interval -1
+            # Keep SSE streams alive across config reloads to reduce reconnect churn.
+            stream_close_delay 5m
+            stream_timeout 24h
             header_down X-Accel-Buffering no
             header_down Cache-Control no-cache
         }
