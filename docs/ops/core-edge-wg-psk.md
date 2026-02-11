@@ -44,7 +44,7 @@ Step A3: Start the edge node with a WG config (PSK)
 ```bash
 sudo -E \
   AE_NODE_ID=edge-1 \
-  AE_NODE_LABELS="site=sea-edge-02,wg_role=spk,wg_psk=psk" \
+  AE_NODE_LABELS="role=worker,site=sea-edge-02,wg_role=spk,wg_psk=psk" \
   AE_WG_CONFIG="$(cat /etc/wireguard/wg-edge.conf)" \
   AE_WG_INTERFACE=wg-edge \
   AE_AGENT_TOKEN=devtoken \
@@ -78,9 +78,12 @@ WG_BIN=$(command -v wg) \
   AE_DEV_LOCAL=1 \
   AE_WG_INTERFACE=wg-hub \
   AE_WG_DUMP_CMD="sudo -n ${WG_BIN} show {iface} dump" \
+  AE_STORAGE_NFS_SERVER=10.255.0.1 \
+  AE_STORAGE_NFS_PATH=/exports/k1s \
   AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
   make k1s-core
 ```
+This seeds `k1s-nfs` in apishim for NetFS validation.
 Note
 - The validated single-host flow uses the default apishim mode from `make k1s-core` (no `AE_APISHIM_MODE` override required).
 3. Start the hub node:
@@ -95,6 +98,8 @@ sudo -E \
   AE_ROSENPASS_INTERFACE=wg-hub \
   AE_WG_LISTEN_PORT=51820 \
   AE_WG_ADDRESS=10.255.0.1/32 \
+  AE_ENABLE_NETFS=1 \
+  AE_APISHIM_DSN=postgresql://shim:shim@127.0.0.1:5432/shim \
   AE_AGENT_TOKEN=devtoken \
   AE_CONTROLLER_URL=http://127.0.0.1:9110 \
   make k1s-core-node
@@ -125,7 +130,9 @@ sudo -E \
   AE_WG_TABLE=off \
   AE_WG_LISTEN_PORT=51821 \
   AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-edge \
-  AE_NODE_LABELS="site=sea-edge-02,wg_role=spk,wg_psk=rp" \
+  AE_NODE_LABELS="role=worker,site=sea-edge-02,wg_role=spk,wg_psk=rp" \
+  AE_ENABLE_NETFS=1 \
+  AE_APISHIM_DSN=postgresql://shim:shim@127.0.0.1:5432/shim \
   AE_AGENT_TOKEN=devtoken \
   AE_CONTROLLER_URL=http://192.168.29.143:9110 \
   make k1s-edge-node
@@ -286,7 +293,7 @@ Note
 Step 5: Start the edge node (controller-managed peers)
 ```bash
 AE_NODE_ID=edge-1 \
-AE_NODE_LABELS="site=sea-edge-02,wg_role=spk,wg_psk=rp" \
+AE_NODE_LABELS="role=worker,site=sea-edge-02,wg_role=spk,wg_psk=rp" \
 AE_POD_CIDR=10.42.1.0/24 \
 AE_ROSENPASS_ENABLED=1 \
 AE_ROSENPASS_CONFIG=controller \
@@ -294,6 +301,8 @@ AE_ROSENPASS_INTERFACE=wg-edge \
 AE_WG_LISTEN_PORT=51821 \
 AE_WG_ADDRESS=10.255.0.2/32 \
 AE_WG_TABLE=off \
+AE_ENABLE_NETFS=1 \
+AE_APISHIM_DSN=postgresql://shim:shim@<HUB_DB_BIND_IP>:5432/shim \
 AE_LOG_LEVEL=debug \
 AE_ROSENPASS_LOG_LEVEL=verbose \
 AE_CONTROLLER_URL=http://<HUB_IP>:9110 \
@@ -306,11 +315,13 @@ Note
 ```bash
 sudo -E AE_LOG_LEVEL=debug \
   AE_ROSENPASS_LOG_LEVEL=verbose \
-  AE_NODE_LABELS="site=sea-edge-02,wg_role=spk,wg_psk=rp" \
+  AE_NODE_LABELS="role=worker,site=sea-edge-02,wg_role=spk,wg_psk=rp" \
   AE_ROSENPASS_INTERFACE=wg-edge \
   AE_WG_LISTEN_PORT=51821 \
   AE_WG_ADDRESS=10.255.0.2/32 \
   AE_WG_TABLE=off \
+  AE_ENABLE_NETFS=1 \
+  AE_APISHIM_DSN=postgresql://shim:shim@<HUB_DB_BIND_IP>:5432/shim \
   AE_AGENT_TOKEN=devtoken \
   AE_CONTROLLER_URL=http://<HUB_IP>:9110 \
   AE_AGENT_ENDPOINT=http://<EDGE_WG_IP>:9112 \

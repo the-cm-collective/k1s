@@ -769,6 +769,7 @@ EDGE_INGRESS_MODE=edge-local make k1s-edge</code></pre>
 <li><code>core-proxy</code>: Envoy + rathole server/client.</li>
 <li><code>core-to-edge-public</code>: Envoy only (no rathole).</li>
 <li><code>edge-local</code>: no core ingress; the gateway renders an edge-local Caddyfile if enabled.</li>
+<li>For canonical WG/Rosenpass multi-site patterns (production + single-host), see Option D in <code>docs/guides/multinode-lab.md</code>.</li>
 </ul>
 <h2>Core + Edge pairings</h2>
 <p>JetStream path (k1s-core + edge running JetStream work queue):</p>
@@ -861,7 +862,7 @@ CORE_CADDY=1 make dev-etcd</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-10 19:25:45</span>
+        <span>Built 2026-02-11 13:49:09</span>
       </div>
     </footer>
     <script>

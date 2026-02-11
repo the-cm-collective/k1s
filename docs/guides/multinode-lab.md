@@ -225,11 +225,13 @@ make k1s-edge-core
 4. Start the edge node (WG + Rosenpass) on each host that runs pods:
 ```
 sudo -E AE_NODE_ID=edge-1 \
-AE_NODE_LABELS="site=sea-edge-02,wg_role=spk,wg_psk=rp" \
+AE_NODE_LABELS="role=worker,site=sea-edge-02,wg_role=spk,wg_psk=rp" \
 AE_ROSENPASS_INTERFACE=wg-edge \
 AE_WG_LISTEN_PORT=51821 \
 AE_WG_ADDRESS=10.255.0.2/32 \
 AE_WG_TABLE=off \
+AE_ENABLE_NETFS=1 \
+AE_APISHIM_DSN=postgresql://shim:shim@<HUB_DB_BIND_IP>:5432/shim \
 AE_LOG_LEVEL=debug \
 AE_ROSENPASS_LOG_LEVEL=verbose \
 AE_AGENT_TOKEN=devtoken \
@@ -265,9 +267,12 @@ WG_BIN=$(command -v wg) \
 AE_DEV_LOCAL=1 \
 AE_WG_INTERFACE=wg-hub \
 AE_WG_DUMP_CMD="sudo -n ${WG_BIN} show {iface} dump" \
+AE_STORAGE_NFS_SERVER=10.255.0.1 \
+AE_STORAGE_NFS_PATH=/exports/k1s \
 AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
 make k1s-core
 ```
+This seeds `k1s-nfs` in apishim for the NetFS single-host flow.
 
 Note
 - Keep Rosenpass dirs under `/var/lib/ae/` (or another non-repo path) when running nodes with `sudo` to avoid root-owned files under `state/`.
@@ -284,6 +289,8 @@ AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub \
 AE_ROSENPASS_INTERFACE=wg-hub \
 AE_WG_LISTEN_PORT=51820 \
 AE_WG_ADDRESS=10.255.0.1/32 \
+AE_ENABLE_NETFS=1 \
+AE_APISHIM_DSN=postgresql://shim:shim@127.0.0.1:5432/shim \
 AE_AGENT_TOKEN=devtoken \
 AE_CONTROLLER_URL=http://127.0.0.1:9110 \
 make k1s-core-node
@@ -316,11 +323,16 @@ AE_WG_ADDRESS=10.255.0.3/32 \
 AE_WG_TABLE=off \
 AE_WG_LISTEN_PORT=51821 \
 AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-edge \
-AE_NODE_LABELS="site=sea-edge-02,wg_role=spk,wg_psk=rp" \
+AE_NODE_LABELS="role=worker,site=sea-edge-02,wg_role=spk,wg_psk=rp" \
+AE_ENABLE_NETFS=1 \
+AE_APISHIM_DSN=postgresql://shim:shim@127.0.0.1:5432/shim \
 AE_AGENT_TOKEN=devtoken \
 AE_CONTROLLER_URL=http://192.168.29.143:9110 \
 make k1s-edge-node
 ```
+Note:
+- `role=worker` is required for `specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml`.
+- `AE_ENABLE_NETFS=1` + `AE_APISHIM_DSN` are required for Option C PVC mounts.
 
 #### Validation
 1. On the hub, verify WG is up:
@@ -462,7 +474,50 @@ make k1s-edge-node
 Step 3a: Prepare kubectl against apishim (for PVC objects)
 ```bash
 source <(ae auth local)
-KCTL="kubectl --server=${AE_APISHIM_SERVER} --token=${AE_APISHIM_TOKEN} --insecure-skip-tls-verify"
+kctl() {
+  kubectl --server="${AE_APISHIM_SERVER}" \
+    --token="${AE_APISHIM_TOKEN}" \
+    --insecure-skip-tls-verify "$@"
+}
+```
+Note:
+- In `zsh`, avoid `KCTL="kubectl ..."` followed by `$KCTL ...` because it can be
+  parsed as a single command path. Use the `kctl()` helper above.
+
+Step 3b: Preflight checks (required before applying NetFS workloads)
+```bash
+ae nodes
+kctl get storageclass k1s-nfs
+python -m ae.cli plan -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml --verbose
+```
+Required state:
+- Hub node labels include `role=hub,site=hub`.
+- Edge node labels include `role=worker,site=sea-edge-02`.
+- Nodes that mount PVCs were started with `AE_ENABLE_NETFS=1`.
+- Storage class `k1s-nfs` exists in apishim.
+- Plan output shows at least one eligible edge node for
+  `netfs-nfs-sea-edge-02-edge-1`.
+If `kctl get storageclass k1s-nfs` returns `NotFound`, restart core with NFS
+seeding env and re-check:
+```bash
+AE_DEV_LOCAL=1 \
+EDGE_INGRESS_MODE=core-proxy \
+POSTGRES_BIND_IP=<HUB_DB_BIND_IP> \
+POSTGRES_PORT=5432 \
+AE_STORAGE_NFS_SERVER=<HUB_WG_OR_LAN_IP> \
+AE_STORAGE_NFS_PATH=/exports/k1s \
+AE_STORAGE_PROVISIONERS=/etc/ae/storage-provisioners.yaml \
+make k1s-core
+kctl get storageclass k1s-nfs
+```
+If the edge node is missing `role=worker`, restart it with:
+```bash
+sudo -E \
+AE_NODE_ID=edge-1 \
+AE_NODE_LABELS="role=worker,site=sea-edge-02,wg_role=spk,wg_psk=rp" \
+AE_ENABLE_NETFS=1 \
+AE_APISHIM_DSN=postgresql://shim:shim@<HUB_DB_BIND_IP>:5432/shim \
+make k1s-edge-node
 ```
 
 Step 4A: Primary lane (CSI CephFS)
@@ -472,7 +527,7 @@ Step 4A: Primary lane (CSI CephFS)
   - `topologyKeys: ["site"]`
 - Apply CSI workload:
 ```bash
-$KCTL apply -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml
+kctl apply -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml
 python -m ae.cli apply -f specs/examples/netfs-csi-sea-edge-02-edge-1.yaml
 ```
 
@@ -481,20 +536,28 @@ Step 4B: Fallback lane (NFS)
   `AE_STORAGE_NFS_SERVER` + `AE_STORAGE_NFS_PATH`.
 - Apply NFS workload:
 ```bash
-$KCTL apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml
+kctl apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false
 python -m ae.cli apply -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml
 python -m ae.cli apply -f specs/examples/netfs-nfs-hub-reader.yaml
 ```
 If `kubectl` is not configured against apishim, use the REST pattern in
 `scripts/netfs_smoke.sh` (`PUT /api/v1/namespaces/<ns>/persistentvolumeclaims/<name>`).
+If apishim returns `proto: cannot parse invalid wire-format data`, keep
+`--validate=false` on PVC apply or use the REST `PUT` fallback.
 
 Step 5: Validate PVC, attachments, and workload health
 ```bash
 source <(ae auth local)
+kctl() {
+  kubectl --server="${AE_APISHIM_SERVER}" \
+    --token="${AE_APISHIM_TOKEN}" \
+    --insecure-skip-tls-verify "$@"
+}
 ae nodes
+kctl get pvc sea-netfs-pvc -n default -o wide
 ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
 ae status netfs-nfs-hub-reader --wide --events
-ae shell netfs-nfs-sea-edge-02-edge-1 -- cat /data/hello.txt
+ae shell netfs-nfs-sea-edge-02-edge-1 -- sh -lc "echo prod-$(date +%s) > /data/hello.txt && cat /data/hello.txt"
 ae shell netfs-nfs-hub-reader -- cat /data/hello.txt
 ```
 
@@ -525,10 +588,18 @@ Step 2: Restart nodes with NetFS + shared DSN enabled
 Step 3: Run storage validation workload set
 ```bash
 source <(ae auth local)
-KCTL="kubectl --server=${AE_APISHIM_SERVER} --token=${AE_APISHIM_TOKEN} --insecure-skip-tls-verify"
-$KCTL apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml
+kctl() {
+  kubectl --server="${AE_APISHIM_SERVER}" \
+    --token="${AE_APISHIM_TOKEN}" \
+    --insecure-skip-tls-verify "$@"
+}
+ae nodes
+kctl get storageclass k1s-nfs
+python -m ae.cli plan -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml --verbose
+kctl apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false
 python -m ae.cli apply -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml
 python -m ae.cli apply -f specs/examples/netfs-nfs-hub-reader.yaml
+kctl get pvc sea-netfs-pvc -n default -o wide
 ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
 ae status netfs-nfs-hub-reader --wide --events
 ae shell netfs-nfs-sea-edge-02-edge-1 -- sh -lc "echo lab-$(date +%s) > /data/hello.txt && cat /data/hello.txt"
@@ -553,14 +624,101 @@ Expected event patterns:
 - CSI path: `AttachFailed` or publish-stage failures until the node recovers.
 - Workload returns to Ready after node restart and successful remount.
 
+### Troubleshooting: edge writer degraded (`ScheduleWarning`)
+
+Symptom:
+- `netfs-nfs-sea-edge-02-edge-1` is `degraded`.
+- Events include `ScheduleWarning: no eligible nodes after storage constraints; skipping placement`.
+- `netfs-nfs-hub-reader` may still be `ready`.
+
+Decision path:
+1. Confirm selector labels first (most common root cause):
+```bash
+ae nodes
+python -m ae.cli plan -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml --verbose
+```
+`netfs-nfs-sea-edge-02-edge-1` requires `role=worker,site=sea-edge-02`.
+If missing, restart edge node with:
+```bash
+sudo -E \
+AE_NODE_ID=edge-1 \
+AE_NODE_LABELS="role=worker,site=sea-edge-02,wg_role=spk,wg_psk=rp" \
+AE_ENABLE_NETFS=1 \
+AE_APISHIM_DSN=postgresql://shim:shim@<HUB_DB_BIND_IP>:5432/shim \
+make k1s-edge-node
+```
+2. Confirm `k1s-nfs` exists:
+```bash
+source <(ae auth local)
+kctl() {
+  kubectl --server="${AE_APISHIM_SERVER}" \
+    --token="${AE_APISHIM_TOKEN}" \
+    --insecure-skip-tls-verify "$@"
+}
+kctl get storageclass k1s-nfs
+```
+If it returns `NotFound`, restart core with `AE_STORAGE_NFS_SERVER` and
+`AE_STORAGE_NFS_PATH`, then re-check.
+3. Apply PVC with apishim-safe validation settings:
+```bash
+kctl apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false
+```
+If this still fails with wire-format validation issues, use REST `PUT` as shown
+in `scripts/netfs_smoke.sh`.
+4. Confirm PVC exists and is bound:
+```bash
+kctl get pvc sea-netfs-pvc -n default -o wide
+```
+5. Confirm storage class topology is compatible with edge labels:
+```bash
+kctl get storageclass k1s-nfs -o yaml
+```
+If `topologyKeys` or `allowedTopologies` exclude the edge labels, adjust the
+storage class or node labels and re-apply workloads.
+
+### Recovery sequence (single-host, copy/paste)
+
+Use this when the writer is degraded and events show both `ScheduleWarning` and
+PVC/storageclass failures.
+```bash
+source <(ae auth local)
+kctl() {
+  kubectl --server="${AE_APISHIM_SERVER}" \
+    --token="${AE_APISHIM_TOKEN}" \
+    --insecure-skip-tls-verify "$@"
+}
+
+# 1) reset failed workloads and stale PVC
+python -m ae.cli delete netfs-nfs-sea-edge-02-edge-1 --purge
+python -m ae.cli delete netfs-nfs-hub-reader --purge
+kctl delete -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --ignore-not-found --validate=false
+
+# 2) verify scheduler prerequisites
+ae nodes
+python -m ae.cli plan -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml --verbose
+kctl get storageclass k1s-nfs
+
+# 3) re-apply PVC and workloads
+kctl apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false
+python -m ae.cli apply -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml
+python -m ae.cli apply -f specs/examples/netfs-nfs-hub-reader.yaml
+
+# 4) verify ready + RWX behavior
+kctl get pvc sea-netfs-pvc -n default -o wide
+ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
+ae status netfs-nfs-hub-reader --wide --events
+ae shell netfs-nfs-sea-edge-02-edge-1 -- sh -lc "echo recover-$(date +%s) > /data/hello.txt && cat /data/hello.txt"
+ae shell netfs-nfs-hub-reader -- cat /data/hello.txt
+```
+
 ### Option C Cleanup
-Assumes `KCTL` from Step 3a (or re-run the same `source <(ae auth local)` snippet).
+Assumes `kctl` from Step 3a (or re-run the same `source <(ae auth local)` snippet).
 ```bash
 python -m ae.cli delete netfs-nfs-hub-reader --purge
 python -m ae.cli delete netfs-nfs-sea-edge-02-edge-1 --purge
 python -m ae.cli delete netfs-csi-sea-edge-02-edge-1 --purge
-$KCTL delete -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --ignore-not-found
-$KCTL delete -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml --ignore-not-found
+kctl delete -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --ignore-not-found --validate=false
+kctl delete -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml --ignore-not-found --validate=false
 ```
 
 ## Option D — Canonical ingress modes over WireGuard/Rosenpass
@@ -735,6 +893,25 @@ Expected:
 ```bash
 rm -f "$CORE_SPECS/edge-ingress-route-edge-local.yaml"
 ```
+
+### Post-storage ingress regression check (all canonical modes)
+
+Run this after Option C storage validation to confirm ingress behavior did not regress:
+1. Confirm storage workloads are healthy:
+```bash
+ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
+ae status netfs-nfs-hub-reader --wide --events
+```
+2. Validate each ingress mode endpoint behavior:
+```bash
+curl -sS -H 'Host: app-core-proxy.home.arpa' http://127.0.0.1:10080/ -i | head -n 20
+curl -sS -H 'Host: app-public.home.arpa' http://127.0.0.1:10080/ -i | head -n 20
+rg -n "app-edge-local.home.arpa" state/profiles/k1s-core/edge-local/edge-local.caddy
+```
+Expected:
+- `core-proxy`: request path is core ingress -> tunnel/proxy -> edge local backend.
+- `core-to-edge-public`: core ingress forwards to edge POP endpoint from `SiteIngressEndpoint`.
+- `edge-local`: route is present in edge-local config; core ingress is not required in data path.
 
 ### Cleanup
 - Stop gateways and edge NATS.

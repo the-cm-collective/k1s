@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from ae.controller.state import AppEvent, ServiceEndpoint, SQLiteStateStore
+from ae.controller.state import AppEvent, ServiceEndpoint, SQLiteStateStore, state_store_from_env
 from ae.runtime import (
     CRIRuntime,
     DockerRuntime,
@@ -12114,9 +12114,7 @@ class ShimServer(ThreadingHTTPServer):
             ShimHandler.pod_watch_ttl = 30.0
         ShimHandler.pod_watch_cache = {}
         ShimHandler.allow_anonymous = allow_anonymous
-        state_dsn = os.getenv("AE_STATE_DSN")
-        db_path = Path(os.getenv("AE_STATE_DB", "state/controller.db"))
-        self.state = SQLiteStateStore(db_path if not state_dsn else None, dsn=state_dsn)
+        self.state = state_store_from_env()
         ShimHandler.state = self.state  # type: ignore[assignment]
         self.runtime = _runtime_from_env()
         self._runtime_base = getattr(self.runtime, "_local", self.runtime)
