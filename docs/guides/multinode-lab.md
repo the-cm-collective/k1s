@@ -563,6 +563,179 @@ $KCTL delete -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --ignore-not-found
 $KCTL delete -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml --ignore-not-found
 ```
 
+## Option D — Canonical ingress modes over WireGuard/Rosenpass
+
+Treat these three ingress modes as canonical for core/edge deployments:
+- `core-proxy`
+- `core-to-edge-public`
+- `edge-local`
+
+This option layers ingress validation on top of Option B (WG/Rosenpass + hub/edge
+transport). Use `core-to-edge-public` as the canonical name in docs/config.
+
+Shared setup:
+- Complete Option B first (hub + edge gateways + node agents).
+- Use the active core specs directory so the controller can import
+  `EdgeIngressRoute`/`SiteIngressEndpoint` resources.
+
+```bash
+CORE_SPECS=${CORE_SPECS:-state/profiles/k1s-core/specs}
+mkdir -p "$CORE_SPECS"
+```
+
+### Mode 1 — `core-proxy` (default, NAT-friendly)
+
+#### Production pattern (split hosts)
+1. Start core with core-proxy mode:
+```bash
+AE_DEV_LOCAL=1 \
+EDGE_INGRESS_MODE=core-proxy \
+make k1s-core
+```
+2. Start edge gateway/node per Option B.
+3. Add the route resource into the core specs dir:
+```bash
+cp specs/examples/edge-ingress-route-core-proxy.yaml "$CORE_SPECS"/
+```
+
+#### Single-host lab pattern
+Use hostnames that target core ingress and per-site fallback host:
+```hosts
+127.0.0.1 app-core-proxy.home.arpa
+127.0.0.1 sea-edge-02.edge.local
+```
+Optional local responder for the edge side tunnel target:
+```bash
+python -m http.server 18081
+```
+
+#### Routing and behavior
+- Client request hits core Envoy for `app-core-proxy.home.arpa`.
+- Core route forwards to the assigned per-site `core_proxy_port`.
+- Rathole forwards that traffic to `AE_EDGE_INGRESS_LOCAL_ADDR` on the edge side.
+- Edge does not need a public endpoint; this mode is NAT/CGNAT-friendly.
+
+#### Validation
+```bash
+rg -n "app-core-proxy.home.arpa|sea-edge-02.edge.local" state/profiles/k1s-core/edge-ingress/envoy.yaml
+curl -sS -H 'Host: app-core-proxy.home.arpa' http://127.0.0.1:10080/ -i | head -n 20
+```
+Expected:
+- Envoy config includes `app-core-proxy.home.arpa`.
+- If an edge listener is reachable via the tunnel path, request returns `200`.
+- If tunnel/upstream is down, core returns `5xx` (route exists but upstream failed).
+
+#### Cleanup
+```bash
+rm -f "$CORE_SPECS/edge-ingress-route-core-proxy.yaml"
+```
+
+### Mode 2 — `core-to-edge-public` (core forwards to edge POP)
+
+#### Production pattern (split hosts)
+1. Start core with public-edge mode:
+```bash
+AE_DEV_LOCAL=1 \
+EDGE_INGRESS_MODE=core-to-edge-public \
+make k1s-core
+```
+2. Start edge gateway/node per Option B.
+3. Add the site public endpoint and route resources:
+```bash
+cp specs/examples/site-ingress-endpoint-sea-edge-02-public.yaml "$CORE_SPECS"/
+cp specs/examples/edge-ingress-route-core-to-edge-public.yaml "$CORE_SPECS"/
+```
+
+#### Single-host lab pattern
+Use hostnames for core ingress host + simulated edge POP host:
+```hosts
+127.0.0.1 app-public.home.arpa
+127.0.0.1 pop-sea-edge-02.home.arpa
+```
+Simple non-TLS lab endpoint (replace HTTPS URL with HTTP for local smoke):
+```bash
+python -m http.server 11080
+sed 's#https://pop-sea-edge-02.home.arpa:11443#http://pop-sea-edge-02.home.arpa:11080#' \
+  specs/examples/site-ingress-endpoint-sea-edge-02-public.yaml \
+  > "$CORE_SPECS/site-ingress-endpoint-sea-edge-02-public.yaml"
+```
+
+#### Routing and behavior
+- Client request hits core Envoy for `app-public.home.arpa`.
+- Core resolves `SiteIngressEndpoint.public.urls` and forwards directly to the
+  configured public POP endpoint.
+- Rathole is not required for this mode.
+- If `public.urls` is missing/unreachable, traffic fails from the core side.
+
+#### Validation
+```bash
+rg -n "app-public.home.arpa|pop-sea-edge-02.home.arpa" state/profiles/k1s-core/edge-ingress/envoy.yaml
+curl -sS -H 'Host: app-public.home.arpa' http://127.0.0.1:10080/ -i | head -n 20
+```
+Expected:
+- Envoy config includes `app-public.home.arpa` and a DNS cluster for the POP.
+- Reachable POP returns app response.
+- Unreachable POP returns `5xx`.
+
+#### Cleanup
+```bash
+rm -f "$CORE_SPECS/site-ingress-endpoint-sea-edge-02-public.yaml"
+rm -f "$CORE_SPECS/edge-ingress-route-core-to-edge-public.yaml"
+```
+
+### Mode 3 — `edge-local` (edge-only ingress path)
+
+#### Production pattern (split hosts)
+1. Start core with edge-local mode and route bundle publishing enabled:
+```bash
+AE_DEV_LOCAL=1 \
+EDGE_INGRESS_MODE=edge-local \
+AE_ROUTE_BUNDLE_ENABLED=1 \
+make k1s-core
+```
+2. Start edge gateway in edge-local mode:
+```bash
+AE_SITE_ID=sea-edge-02 \
+AE_NODE_ID=edge-1 \
+EDGE_INGRESS_MODE=edge-local \
+AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=state/profiles/k1s-core/edge-local \
+make k1s-edge-core
+```
+3. Add the edge-local route resource:
+```bash
+cp specs/examples/edge-ingress-route-edge-local.yaml "$CORE_SPECS"/
+```
+
+#### Single-host lab pattern
+Use a local-only edge hostname:
+```hosts
+127.0.0.1 app-edge-local.home.arpa
+```
+Keep this hostname unadvertised publicly; test from the edge network/host only.
+
+#### Routing and behavior
+- Core publishes route bundles (control plane only).
+- Edge gateway applies bundles and renders edge-local ingress config.
+- Data path is local to the edge site; core ingress is not in request path.
+- If core is unavailable after bundles are applied, edge can continue serving
+  existing routes until a config change is needed.
+
+#### Validation
+```bash
+ls state/profiles/k1s-core/edge-local/edge-local.caddy
+rg -n "app-edge-local.home.arpa" state/profiles/k1s-core/edge-local/edge-local.caddy
+rg -n "app-edge-local.home.arpa" state/profiles/k1s-core/edge-ingress/envoy.yaml || true
+```
+Expected:
+- Edge-local Caddyfile is rendered with `app-edge-local.home.arpa`.
+- Core Envoy config does not need a route for this host.
+- If `AE_ROUTE_BUNDLE_ENABLED` is unset/0, edge-local config will not update.
+
+#### Cleanup
+```bash
+rm -f "$CORE_SPECS/edge-ingress-route-edge-local.yaml"
+```
+
 ### Cleanup
 - Stop gateways and edge NATS.
 - Stop hub services: `make down`

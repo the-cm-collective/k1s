@@ -58,6 +58,7 @@ Mode behavior:
 - `core-proxy`: Envoy + rathole server/client.
 - `core-to-edge-public`: Envoy only (no rathole).
 - `edge-local`: no core ingress; the gateway renders an edge-local Caddyfile if enabled.
+- For canonical WG/Rosenpass multi-site patterns (production + single-host), see Option D in `docs/guides/multinode-lab.md`.
 
 ## Core + Edge pairings
 
