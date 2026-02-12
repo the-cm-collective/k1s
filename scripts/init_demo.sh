@@ -186,26 +186,42 @@ cleanup_demo_containers() {
 }
 
 cleanup_demo_state() {
-  local dbs=()
-  dbs+=("${DEMO_STATE_DB:-state/profiles/demo/controller.db}")
-  dbs+=("state/controller.db")
+  local controller_dbs=()
+  local shim_dbs=()
+  controller_dbs+=("${DEMO_STATE_DB:-state/profiles/demo/controller.db}")
+  controller_dbs+=("state/controller.db")
+  shim_dbs+=("${DEMO_APISHIM_DB:-${DEMO_PROFILE_DIR:-state/profiles/demo}/apishim.db}")
+  shim_dbs+=("state/apishim.db")
   if [[ -n "${AE_STATE_DB:-}" ]]; then
-    dbs+=("${AE_STATE_DB}")
+    controller_dbs+=("${AE_STATE_DB}")
+  fi
+  if [[ -n "${AE_APISHIM_DB:-}" ]]; then
+    shim_dbs+=("${AE_APISHIM_DB}")
   fi
   if [[ -f state/env.sh ]]; then
     # shellcheck disable=SC1090
     source state/env.sh >/dev/null 2>&1 || true
     if [[ -n "${AE_STATE_DB:-}" ]]; then
-      dbs+=("${AE_STATE_DB}")
+      controller_dbs+=("${AE_STATE_DB}")
+    fi
+    if [[ -n "${AE_APISHIM_DB:-}" ]]; then
+      shim_dbs+=("${AE_APISHIM_DB}")
     fi
   fi
   if [[ -d state/bench-env ]]; then
-    dbs+=("state/bench-env/controller.db")
+    controller_dbs+=("state/bench-env/controller.db")
   fi
   declare -A seen=()
-  for db in "${dbs[@]}"; do
+  for db in "${controller_dbs[@]}"; do
     if [[ -n "${db}" && -f "${db}" && -z "${seen[$db]:-}" ]]; then
       log "Removing controller state DB (${db})"
+      rm -f "${db}" 2>/dev/null || true
+      seen["$db"]=1
+    fi
+  done
+  for db in "${shim_dbs[@]}"; do
+    if [[ -n "${db}" && -f "${db}" && -z "${seen[$db]:-}" ]]; then
+      log "Removing apishim state DB (${db})"
       rm -f "${db}" 2>/dev/null || true
       seen["$db"]=1
     fi
