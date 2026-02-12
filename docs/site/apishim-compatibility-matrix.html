@@ -721,34 +721,34 @@
       </svg>
     </button>
     <div class="container">
-    <h1>API Shim Compatibility Matrix (2026-01-16)</h1>
+    <h1 id="api-shim-compatibility-matrix-2026-01-16">API Shim Compatibility Matrix (2026-01-16)</h1>
 <p>Legend: ✅ supported; ⚠️ partial/limited; 🚧 planned.</p>
-<h2>Core resources</h2>
+<h2 id="core-resources">Core resources</h2>
 <ul>
 <li>Namespaces, ConfigMaps, Secrets, ServiceAccounts: ✅ CRUD, watch, managedFields apply/patch.</li>
 <li>Services: ✅ ClusterIP/NodePort allocation; LB status projection; EndpointSlice + topology hints; svc port-forward.</li>
 <li>Endpoints/EndpointSlice: ✅ virtualized from controller state.</li>
 <li>Ingress (v1): ✅ status.loadBalancer from VIP/clusterIP; annotations passthrough; no canary/regex.</li>
 </ul>
-<h2>Workloads</h2>
+<h2 id="workloads">Workloads</h2>
 <ul>
 <li>Deployments, ReplicaSets (virtual), Pods (projected): ✅ status/conditions, logs/exec/port-forward.</li>
 <li>StatefulSet, DaemonSet, Job, CronJob: ⚠️ stored + best-effort status; treated as Deployment-like apps (no PVC templates, no strict one-per-node scheduling; Job completion and CronJob scheduling are best-effort).</li>
 <li>HorizontalPodAutoscaler v2: ✅ currentMetrics/status; backs k1s autoscaling.</li>
 </ul>
-<h2>AuthN/AuthZ</h2>
+<h2 id="authn-authz">AuthN/AuthZ</h2>
 <ul>
 <li>Tokens: ✅ bearer tokens required by default; optional AE_APISHIM_ALLOW_ANON=1 for local dev.</li>
 <li>RBAC: ✅ Role/ClusterRole + (Cluster)RoleBinding evaluation; SubjectAccessReview endpoint; static fallback.</li>
 <li>ServiceAccount tokens: ✅ issued and injected into projected pods.</li>
 </ul>
-<h2>Mutations &amp; patching</h2>
+<h2 id="mutations-patching">Mutations &amp; patching</h2>
 <ul>
 <li>apply (SSA): ✅ with managedFields tracking and conflict detection.</li>
 <li>mergePatch/jsonPatch: ✅ content-type negotiation enforced.</li>
 <li>Validation: ⚠️ basic DNS-1123 and service port/nodePort checks; no schema admission for custom fields.</li>
 </ul>
-<h2>Discovery &amp; tooling</h2>
+<h2 id="discovery-tooling">Discovery &amp; tooling</h2>
 <ul>
 <li>Discovery endpoints (/api, /apis, preferred versions): ✅</li>
 <li>OpenAPI: ✅ <code>/openapi/v3</code> is the primary endpoint; <code>/openapi/v2</code> mirrors it for compatibility. Helm/kubectl dry-run validated in CI; drift guard compares committed specs.</li>
@@ -759,7 +759,7 @@
 <li>CRI/containerd nodes: exec/attach/logs use <code>crictl</code> on the node; install it and set <code>CRICTL_BIN</code> if needed.</li>
 <li>CRI port-forward proxy is optional: set <code>AE_APISHIM_CRI_PORTFORWARD=1</code> (or <code>..._FORCE=1</code>) to enable the CRI-native proxy path.</li>
 </ul>
-<h2>Not covered</h2>
+<h2 id="not-covered">Not covered</h2>
 <ul>
 <li>Aggregated API servers, metrics.k8s.io, PodSecurity admission, CSI/CNI plugins, cloud LoadBalancers.</li>
 <li>Full conformance test suite (targeting “lite” subset only).</li>
@@ -771,7 +771,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-10 19:25:45</span>
+        <span>Built 2026-02-12 14:20:07</span>
       </div>
     </footer>
     <script>

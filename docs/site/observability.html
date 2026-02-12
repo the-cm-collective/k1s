@@ -721,8 +721,8 @@
       </svg>
     </button>
     <div class="container">
-    <h2>Observability</h2>
-<h3>Metrics</h3>
+    <h2 id="observability">Observability</h2>
+<h3 id="metrics">Metrics</h3>
 <p>Prometheus-style text at <code>/metrics</code> includes aggregated gauges and labeled series:</p>
 <ul>
 <li>Aggregated:
@@ -765,7 +765,7 @@
 <li><code>apishim_store_backend_info{backend=&quot;sqlite|postgres&quot;}</code> — storage backend in use</li>
 <li>For HA shims on Postgres, the same metrics surface on each instance (shared store, per-process queues).</li>
 </ul>
-<h3>Logs Endpoint</h3>
+<h3 id="logs-endpoint">Logs Endpoint</h3>
 <p>Tail logs over HTTP (READ role if tokens configured):</p>
 <pre><code>GET /logs/&lt;app&gt;?container=&lt;id|idx&gt;&amp;tail=N&amp;since=&lt;seconds&gt;&amp;follow=1</code></pre>
 <ul>
@@ -775,7 +775,7 @@
 <p>Remote CLI example:</p>
 <pre><code>ae --server http://&lt;ip&gt;:9108 --token readtoken logs echo --tail 100</code></pre>
 <p>See <code>docs/ops/runbook.md</code> for the “Remote CLI over LAN” section and auth token setup.</p>
-<h3>Grafana Examples</h3>
+<h3 id="grafana-examples">Grafana Examples</h3>
 <ul>
 <li>Import the example dashboards/panels using a Prometheus data source (uid <code>PROM</code> in examples):
 <ul>
@@ -797,7 +797,7 @@
   },
   &quot;gridPos&quot;: { &quot;h&quot;: 4, &quot;w&quot;: 6, &quot;x&quot;: 0, &quot;y&quot;: 0 }
 }</code></pre>
-<h3>Hive Dashboard (/dashboard)</h3>
+<h3 id="hive-dashboard-dashboard">Hive Dashboard (/dashboard)</h3>
 <ul>
 <li>Adds a System snapshot sourced from <code>GET /system</code>:
 <ul>
@@ -817,7 +817,7 @@
 </ul>
 </li>
 </ul>
-<h3>System API</h3>
+<h3 id="system-api">System API</h3>
 <p><code>GET /system</code> returns a JSON object combining controller stats and optional runtime/ingress snapshots, for example:</p>
 <pre><code>{
   &quot;controller&quot;: { &quot;last_reconcile_timestamp&quot;: 1698000000.0, &quot;last_reconcile_duration&quot;: 0.245, &quot;apps&quot;: { &quot;echo&quot;: {&quot;reconciles&quot;: 12, &quot;duration_sum&quot;: 2.3, &quot;ops&quot;: {&quot;created&quot;: 1}}}},
@@ -833,7 +833,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-10 19:25:45</span>
+        <span>Built 2026-02-12 14:20:07</span>
       </div>
     </footer>
     <script>

@@ -21,7 +21,9 @@ Expected
 - Core startup syncs `state/profiles/<profile>/apishim.cli.env` as `640 root:aecli` with `AE_APISHIM_SERVER`, `AE_APISHIM_MINT_TOKEN`, and `AE_APISHIM_CA_BUNDLE`.
 - `ae auth local --strict` infers the active profile and uses the shared CLI env by default (no `--apishim-env` needed).
 Notes
-- Run `make k1s-core` without `sudo`. The controller stack writes under `state/`; if it becomes root-owned, subsequent non-root runs will fail. If you already ran `make k1s-core` with `sudo`, fix ownership with `sudo chown -R $USER:$USER state`.
+- Compose lane: run `make k1s-core` without `sudo` to avoid root-owned files under `state/`.
+- Strict CRI infra lane (`AE_RUNTIME_BACKEND=cri` / `AE_INFRA_BACKEND=cri`) typically runs rootful so containerd + privileged network operations can start cleanly.
+- If `state/` ownership drifts from prior sudo runs, fix with `sudo chown -R $USER:$USER state`.
 - The node process needs elevated privileges to apply WireGuard configuration. Use `sudo -E make k1s-core-node` / `k1s-edge-node` and keep `AE_ROSENPASS_DIR` in a gitignored path (the defaults use `state/rosenpass`).
 - Rosenpass `verbosity` only accepts `Quiet` or `Verbose`. `AE_ROSENPASS_LOG_LEVEL=verbose` maps to `Verbose` in the generated config.
 - The make helpers default `AE_ROSENPASS_DIR` to `/var/lib/ae/rosenpass` when running as root, so sudo-running nodes do not create root-owned folders under `state/`.
@@ -453,6 +455,11 @@ Notes
 - The hub node (`k1s-core-node`, `role=hub`) is assignable and can run workloads. The core controller (`role=controller`, `profile=k1s-core`) is not a runtime node in this flow unless you explicitly run a workload-capable node there.
 - If you want to keep `api.home.arpa` instead of overriding `AE_APISHIM_SERVER`, add a hosts entry:
   - `127.0.0.1 api.home.arpa` (or map to the hub IP for remote use).
+- If CLI shell fails with `spdy exec failed: [Errno 111] Connection refused`, verify host-mode apishim before retrying:
+  - `ss -ltn | rg ':8445'`
+  - `test -f state/apishim.pid && ps -p "$(cat state/apishim.pid)" -o pid,cmd`
+  - `tail -n 80 state/profiles/k1s-core/apishim.log`
+  - if pid is stale or listener missing, restart core (`make k1s-core`) to recreate apishim.
 - If dashboard modal shell works but CLI returns `spdy upgrade failed: 401`, verify:
   - your shell is in group `aecli` (`id -nG | tr ' ' '\n' | grep -x aecli`);
   - shared files are readable (`ls -l state/profiles/k1s-core/apishim.cli.env state/profiles/k1s-core/apishim.ca.crt`);
@@ -500,11 +507,14 @@ ae apply -f specs/examples/echo-storage-node-sea-edge-02-edge-1.yaml --storage-c
 ae status echo-storage-node-hub --wide --events
 ae status echo-storage-node-sea-edge-02-edge-1 --wide --events
 ```
-Verify shared data via `ae shell`:
+Verify shared data via runtime-aware validation (`ae exec` first, runtime fallback second):
 ```bash
-ae shell echo-storage-node-hub -- sh -c 'echo core-flag > /var/lib/echo/flag.txt'
-ae shell echo-storage-node-sea-edge-02-edge-1 -- cat /var/lib/echo/flag.txt
+bash scripts/dev/netfs_validate.sh --runtime auto
+
+# For CRI lanes, force CRI fallback explicitly
+bash scripts/dev/netfs_validate.sh --runtime cri
 ```
+- On CRI lanes, do not use Podman fallback commands even if `podman` is installed.
 
 Demo Script (copy/paste)
 ```bash

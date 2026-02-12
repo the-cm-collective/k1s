@@ -721,8 +721,8 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Chapter 02 - Declarative Specs &amp; Apply</h1>
-<h2>Concept</h2>
+    <h1 id="chapter-02-declarative-specs-apply">Chapter 02 - Declarative Specs &amp; Apply</h1>
+<h2 id="concept">Concept</h2>
 <p>Declarative specs describe the desired outcome, not the step-by-step procedure. Applying a spec should be safe, repeatable, and converge the system to the same state regardless of prior actions. That is why apply is the primary interface: it merges intent into the system&#x27;s source of truth.</p>
 <pre class="mermaid">flowchart LR
   YAML[&quot;YAML spec&quot;] --&gt; Validate[&quot;Schema validation&quot;]
@@ -732,7 +732,7 @@
   Changed -- yes --&gt; Revision[&quot;Create revision&quot;]
   Revision --&gt; Reconcile[&quot;Reconcile to runtime&quot;]
   Changed -- no --&gt; Noop[&quot;No-op apply&quot;]</pre>
-<h3>Theory</h3>
+<h3 id="theory">Theory</h3>
 <p>Declarative systems treat configuration as data. The &quot;apply&quot; operation is a reconciliation trigger: the controller compares the submitted desired state to the current desired state (stored in revisions) and decides whether a new revision is needed. This reduces hidden coupling and makes changes auditable.</p>
 <pre class="mermaid">flowchart TB
   Apply[&quot;ae apply&quot;] --&gt; Load[&quot;Load YAML documents&quot;]
@@ -743,7 +743,7 @@
   Convert --&gt; Store[&quot;Store revision&quot;]
   Native --&gt; Store
   Store --&gt; Reconcile[&quot;Reconcile&quot;]</pre>
-<h3>Design</h3>
+<h3 id="design">Design</h3>
 <p>k1s validates YAML into a strict schema, normalizes it, and computes a hash to detect change. If the hash differs, a new revision is created and reconciled. If not, the controller does nothing--repeat applies are effectively no-ops. This design produces deterministic behavior and makes rollback trivial by reusing stored revisions.</p>
 <pre class="mermaid">flowchart LR
   SpecV1[&quot;Spec v1&quot;] --&gt; Hash1[&quot;Hash A&quot;]
@@ -752,7 +752,7 @@
   SpecV1 --&gt; Apply2[&quot;Apply again&quot;]
   Apply2 --&gt; Hash1
   Hash1 --&gt; NoNewRev[&quot;No new revision&quot;]</pre>
-<h3>Application</h3>
+<h3 id="application">Application</h3>
 <p>For developers, the spec is the API. Keep specs in version control, edit them for all changes, and apply them repeatedly without fear. When debugging, compare spec changes to revision events to see exactly what changed and why.</p>
 <pre class="mermaid">flowchart LR
   Edit[&quot;Edit spec&quot;] --&gt; Apply[&quot;ae apply&quot;]
@@ -761,7 +761,7 @@
   Changed -- yes --&gt; NewRev[&quot;New revision&quot;]
   NewRev --&gt; Reconcile[&quot;Reconcile&quot;]
   Changed -- no --&gt; Noop[&quot;No-op apply&quot;]</pre>
-<h2>Key Terms and Acronyms</h2>
+<h2 id="key-terms-and-acronyms">Key Terms and Acronyms</h2>
 <ul>
 <li>Declarative config - Describe the outcome, not the steps.</li>
 <li>Imperative command - Direct action without a desired-state model.</li>
@@ -774,12 +774,12 @@
 <li>GitOps - Version control as the source of truth for deployment.</li>
 <li>YAML - Human-readable configuration format.</li>
 </ul>
-<h2>Commands (copy/paste)</h2>
+<h2 id="commands-copy-paste">Commands (copy/paste)</h2>
 <pre><code>python -m ae.cli apply -f specs/examples/echo.yaml
 python -m ae.cli apply -n demo --force-namespace -f specs/examples/echo.yaml
 python -m ae.cli status -n demo echo --wide
 python -m ae.cli events echo --limit 20</code></pre>
-<h2>Docs references (source + site)</h2>
+<h2 id="docs-references-source-site">Docs references (source + site)</h2>
 <ul>
 <li>Source: <code>docs/getting-started/concepts.md</code> (specs, revisions)</li>
 <li>Source: <code>docs/guides/demos-examples.md</code></li>
@@ -787,7 +787,7 @@ python -m ae.cli events echo --limit 20</code></pre>
 <li>Site: <code>docs/site/examples.html</code></li>
 <li>Site: <code>docs/site/concepts.html</code></li>
 </ul>
-<h2>Code references (walkthrough anchors)</h2>
+<h2 id="code-references-walkthrough-anchors">Code references (walkthrough anchors)</h2>
 <ul>
 <li>AppSpec schema (declarative fields): <code>src/ae/controller/spec.py:384</code></li>
 </ul>
@@ -849,7 +849,7 @@ spec:
   ports:
     - name: http
       containerPort: 8080</code></pre>
-<h2>Chapter navigation</h2>
+<h2 id="chapter-navigation">Chapter navigation</h2>
 <ul>
 <li>Prev: <a href="concepts-in-practice-01-desired-state-reconciliation.html">Chapter 01 - Desired State &amp; Reconciliation</a></li>
 <li>Next: <a href="concepts-in-practice-03-runtime-adapters.html">Chapter 03 - Runtime Adapters &amp; Container Execution</a></li>
@@ -861,7 +861,7 @@ spec:
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-10 19:25:45</span>
+        <span>Built 2026-02-12 14:20:07</span>
       </div>
     </footer>
     <script>

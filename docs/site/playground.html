@@ -690,7 +690,7 @@
     </script>
     <link rel="stylesheet" href="static/labs.css?v=255db9c284"/>
 <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-<script>window.DOCS_LABS_TOKEN='5C9p4d8SGLOtwPsLos4n_MhddKyzYQN_PVIEiVbc90A';</script>
+<script>window.DOCS_LABS_TOKEN='8maLT9bxhz-SRqs6wf0GXkKesoh1lmXIB6EZp9lzpBI';</script>
 <script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>
 <script defer src="static/labs.js?v=255db9c284"></script>
@@ -737,7 +737,7 @@
 </ul>
 <div class="callout" role="note">Tip: If the page says “Labs: unavailable”, you’re in read‑only mode — verifiers still run and CLI commands are shown to try locally.</div>
 <p>This page prefers HTMX + SSE for live updates and uses a small <code>labs.js</code> helper for sessions. If the dev‑only lab orchestrator is not running, the page falls back to read‑only checks with copyable CLI commands.</p>
-<h2>A. Environment & Backend</h2>
+<h2 id="a-environment-backend">A. Environment & Backend</h2>
 <p>To start a session: enable <strong>Controlled Actions</strong>, click <strong>Use Token</strong> to load <code>AE_LABS_TOKEN</code>, then click <code>Start Session</code>.</p>
 <ul>
 <li>API Base: <span id="env-api-base">(detecting)</span></li>
@@ -755,16 +755,16 @@
 <div id="env-notes"></div> <div id="backend-status" class="ribbon muted"></div> <div class="status-bar">   <span class="status-label">Direct API curl:</span>   <div class="api-curl">     <code id="api-curl"></code>     <button id="api-curl-copy" disabled>Copy</button>   </div>   <span class="status-label">Status:</span>   <div class="status-stack">     <span id="status-summary" class="pending">n/a</span>     <div class="status-toggle" role="group" aria-label="Status scope">       <button id="status-mode-app" type="button" aria-pressed="false" title="Focus on the app from this session">App</button>       <button id="status-mode-cluster" type="button" class="is-active" aria-pressed="true" title="Show totals across all apps">Cluster</button>     </div>   </div>   <span id="status-mode-note" class="status-note nudge">Cluster shows totals across all apps. Switch to App after applying an example.</span> </div>
 <!-- Global banner for errors and important notices --> <div id="banner" class="ribbon hidden"></div>
 <!-- Labs token controls are now part of the Backend row, above Start Session -->
-<h3>k3d Controls (k3s backend)</h3>
+<h3 id="k3d-controls-k3s-backend">k3d Controls (k3s backend)</h3>
 <ul>
 <li><button id="btn-k3d-ensure" class="hidden">Create k3d Cluster</button></li>
 <li><a id="k3d-open-ingress" href="#" target="_blank" rel="noopener" class="hidden">Open k3s Ingress (LB)</a></li>
 </ul>
-<h3>Quick Links</h3>
+<h3 id="quick-links">Quick Links</h3>
 <ul>
 <li><a id="open-dashboard" href="#" target="_blank" rel="noopener" class="hidden">Open Dashboard</a></li>
 </ul>
-<h3>Helm Shim Demo (Watch Mode)</h3>
+<h3 id="helm-shim-demo-watch-mode">Helm Shim Demo (Watch Mode)</h3>
 <div class="helm-demo-box">   <div class="helm-demo-controls">     <button id="btn-helm-demo" class="btn-secondary" disabled>Run Helm Shim Demo</button>     <button id="btn-helm-demo-stop" class="btn-secondary" disabled>Stop</button>   </div>   <div id="helm-demo-status" class="helm-demo-status">Labs backend unavailable.</div>   <pre id="helm-demo-log" class="helm-demo-log hidden scrollbar-hide" aria-live="polite"></pre> </div>
 <p>Want to watch a Helm deployment materialize inside the dashboard? Click “Run Helm Shim Demo” above (requires Labs token). Behind the scenes, the server runs the commands below; you can still run them manually if you prefer. The demo creates a few core Kubernetes objects so you can see how they show up in the UI:</p>
 <ul>
@@ -801,7 +801,7 @@ PYTHONPATH=src python -m ae.cli status demo-helm--demochart --wide --events
 helm uninstall demochart -n demo-helm &amp;&amp; kubectl delete namespace demo-helm</code></pre>
 <p>Back in the playground:</p>
 <p>1. Set Backend to <code>k1s-Host</code>, click <code>Start Session</code>, and use **Quick Links → Open Dashboard**. 2. The release appears as <code>demo-helm--demochart</code> (namespace <code>demo-helm</code>); sections **B–E** stream logs, events, ingress health, and nodePort hints while Helm reconciles. 3. When you run <code>helm uninstall</code>, the dashboard reflects the teardown in real time.</p>
-<h2>B. Apply Example</h2>
+<h2 id="b-apply-example">B. Apply Example</h2>
 <p>Pick a sample and apply it. In read-only mode the UI shows the exact CLI you can run locally. Each example is a <code>Deployment</code> spec YAML (k1s native): <code>apiVersion</code> and <code>kind</code> identify the schema, <code>metadata.name</code> becomes the app's ID, and <code>spec</code> is where you describe what to run and how it should behave. Typical <code>spec</code> fields include <code>image</code> (container), <code>replicas</code> (how many), <code>ports</code>/<code>service</code> (how traffic reaches it), <code>health</code> checks, plus optional sections like <code>ingress</code>, <code>resources</code>, <code>security</code>, <code>storage</code>, and <code>configRefs</code>/<code>secretRefs</code> for configuration.</p>
 <ul>
 <li>Example:
@@ -814,20 +814,20 @@ helm uninstall demochart -n demo-helm &amp;&amp; kubectl delete namespace demo-h
 </ul>
 <pre><code id="example-yaml" class="lang-yaml">(select an example to preview its YAML)</code></pre>
 <!-- CLI fallback removed to avoid hardcoding echo.yaml -->
-<h3>Verifiers</h3>
+<h3 id="verifiers">Verifiers</h3>
 <ul>
 <li>Events include “ApplyCompleted” for a revision: <span id="v-apply-events" data-v="pending">pending</span></li>
 <li>Status readyReplicas == spec.replicas: <span id="v-apply-ready" data-v="pending">pending</span></li>
 </ul>
-<h2>C. Logs & Events</h2>
+<h2 id="c-logs-events">C. Logs & Events</h2>
 <p>Live feed of events and logs for your sample app. When sessions are enabled, this switches to streaming mode automatically.</p>
 <div id="observe">   <button id="btn-observe-toggle" disabled>Start Tail</button>   <label style="margin-left:10px"><input type="checkbox" id="follow-tail" checked/> Follow tail</label>   <div id="observe-events" class="panel scrollbar-hide" aria-live="polite" aria-busy="true" data-source="events" style="height:220px;max-height:220px;overflow:auto;"></div>   <div id="observe-logs" class="panel scrollbar-hide" aria-live="polite" aria-busy="true" data-source="logs" style="height:220px;max-height:220px;overflow:auto;"></div>   <!-- HTMX SSE variant for logs; labs.js will arm sse-connect once a session exists -->   <div id="logs-sse" class="panel hidden scrollbar-hide" hx-ext="sse" sse-connect="" sse-swap="message" hx-swap="beforeend" style="height:220px;max-height:220px;overflow:auto;"></div>   <!-- HTMX SSE variant for events; labs.js will arm sse-connect once a session exists -->   <div id="events-sse" class="panel hidden scrollbar-hide" style="height:220px;max-height:220px;overflow:auto;"></div> </div>
-<h2>D. Debug Tools (Shell + Port-Forward)</h2>
+<h2 id="d-debug-tools-shell-port-forward">D. Debug Tools (Shell + Port-Forward)</h2>
 <p>Open an interactive shell or run a lightweight port-forward check. These are Labs‑only features: they require an active session and Controlled Actions enabled.</p>
 <div class="panel" id="labs-debug">   <div class="row" style="flex-wrap:wrap; gap:10px;">     <button id="btn-labs-shell" disabled>Open Remote Shell</button>     <button id="btn-labs-pf" disabled>Open Port-Forward</button>     <span class="muted">Uses apishim WebSocket exec + port-forward.</span>   </div>   <div class="muted" style="margin-top:6px;">If disabled, run locally: <code>ae shell &lt;app&gt;</code> (defaults to sh; use <code>-- bash</code> when available), add <code>-n &lt;ns&gt;</code> if needed, or use <code>kubectl exec</code> / <code>kubectl port-forward</code>.</div> </div>
 <div id="labs-shell-modal" class="labs-modal hidden" role="dialog" aria-modal="true" aria-labelledby="labs-shell-title">   <div class="modal">     <div class="modal-header">       <strong id="labs-shell-title">Remote Shell</strong>       <button id="labs-shell-close" type="button">Close</button>     </div>     <div class="modal-body">       <div class="row" style="flex-wrap:wrap; gap:10px; margin-bottom:10px;">         <label>Pod <select id="labs-shell-pod"></select></label>         <label>Container <input id="labs-shell-container" type="text" placeholder="optional" /></label>         <label>Command <input id="labs-shell-cmd" type="text" value="sh" /></label>         <label>Shim API <input id="labs-shell-base" type="text" placeholder="http://127.0.0.1:8443" /></label>         <label>Token <input id="labs-shell-token" type="password" placeholder="apishim token" /></label>       </div>       <div id="labs-shell-terminal" class="terminal-wrap"></div>       <div class="row" style="margin-top:10px; gap:8px; align-items:center;">         <button id="labs-shell-connect" type="button">Connect</button>         <button id="labs-shell-disconnect" type="button">Disconnect</button>         <span id="labs-shell-status" class="pill"></span>         <span class="hint">WebSocket exec (v5.channel.k8s.io).</span>       </div>     </div>   </div> </div>
 <div id="labs-pf-modal" class="labs-modal hidden" role="dialog" aria-modal="true" aria-labelledby="labs-pf-title">   <div class="modal">     <div class="modal-header">       <strong id="labs-pf-title">Port-Forward (WS)</strong>       <button id="labs-pf-close" type="button">Close</button>     </div>     <div class="modal-body">       <div class="pf-fields">         <label>Pod <select id="labs-pf-pod"></select></label>         <label>Port <input id="labs-pf-port" type="text" placeholder="8080" /></label>         <label class="pf-span-2">Shim API <input id="labs-pf-base" type="text" placeholder="http://127.0.0.1:8443" /></label>         <label class="pf-span-4">Token <input id="labs-pf-token" type="password" placeholder="apishim token" /></label>       </div>       <div class="pf-io">         <label>Request           <textarea id="labs-pf-request" rows="4" class="scrollbar-hide" style="width:100%;">GET / HTTP/1.1&#10;Host: localhost&#10;Connection: close&#10;&#10;</textarea>         </label>         <div class="pf-response">           <div class="pf-response-head">             <label for="labs-pf-response">Response</label>             <div class="pf-response-toggle" role="group" aria-label="Response view">               <button id="labs-pf-view-source" type="button" class="pf-view-btn active" data-pf-view="source" aria-pressed="true">Source</button>               <button id="labs-pf-view-preview" type="button" class="pf-view-btn" data-pf-view="preview" aria-pressed="false">Preview</button>             </div>           </div>           <div id="labs-pf-response-source" class="pf-response-view pf-source">             <textarea id="labs-pf-response" rows="4" class="scrollbar-hide" style="width:100%;" readonly></textarea>           </div>           <div id="labs-pf-preview" class="pf-response-view pf-preview hidden">             <iframe id="labs-pf-preview-frame" title="Port-forward response preview" sandbox></iframe>           </div>         </div>       </div>       <div class="pf-controls">         <button id="labs-pf-connect" type="button">Connect</button>         <button id="labs-pf-send" type="button">Send Request</button>         <button id="labs-pf-disconnect" type="button">Disconnect</button>         <span id="labs-pf-status" class="pill"></span>         <span class="hint">WebSocket port-forward (portforward.k8s.io).</span>       </div>     </div>   </div> </div>
-<h2>E. Scale & Rollout</h2>
+<h2 id="e-scale-rollout">E. Scale & Rollout</h2>
 <p>Try increasing replicas or enabling a tiny canary rollout. These buttons become active after a session starts and actions are enabled.</p>
 <ul>
 <li>Scale to 2/3: updates the app's desired replica count. The controller reconciles containers until readyReplicas matches the new spec. Watch the status badge and events to see the change propagate.</li>
@@ -854,27 +854,27 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
   rollout:
     strategy: canary
     weight: 10   # send ~10% of traffic to the canary</code></pre>
-<h4>Notes</h4>
+<h4 id="notes">Notes</h4>
 <ul>
 <li>Scaling edits only <code>spec.replicas</code>; the current image revision stays the same.</li>
 <li>Canary weights bias routing between the old and new revision; readiness gates still apply before traffic shifts.</li>
 <li>Canary actions bump replicas to at least 2 so the dashboard shows a distinct canary revision.</li>
 <li>To fully roll forward, increase weight gradually (see section "G. Rollout Controls"). To roll back, set weight to 0 or re‑apply the previous image.</li>
 </ul>
-<h3>Verifiers</h3>
+<h3 id="verifiers-1">Verifiers</h3>
 <ul>
 <li>Events show scaling: <span id="v-scale-events" data-v="pending">pending</span></li>
 <li>Metrics present for app: <span id="v-scale-metrics" data-v="pending">pending</span></li>
 <li>Canary routes to revision: <span id="canary-revision">n/a</span> (base: <span id="canary-base">n/a</span>)</li>
 </ul>
-<h2>F. Ingress Test</h2>
+<h2 id="f-ingress-test">F. Ingress Test</h2>
 <ul>
 <li>Open App: <a id="ingress-link" href="#" target="_blank" rel="noopener">(disabled)</a></li>
 <li>Last check: <span id="ingress-check">n/a</span></li>
 <li>DNS hint: <code id="ingress-hosts-hint"></code> <button id="ingress-hosts-copy" disabled>Copy</button></li>
 <li>Direct curl (no hosts):<br/><code id="ingress-curl"></code> <button id="ingress-curl-copy" disabled>Copy</button></li>
 </ul>
-<h2>G. Rollout Controls</h2>
+<h2 id="g-rollout-controls">G. Rollout Controls</h2>
 <p>Advanced controls you can ignore on your first run. Use the slider to choose a small weight, then "Apply" to shift a portion of traffic to the canary image.</p>
 <ul>
 <li><button id="btn-rollout-pause" disabled>Pause Rollout</button></li>
@@ -882,7 +882,7 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
 <li>Canary weight: <input type="range" id="canary-weight" min="0" max="10" step="1" value="3"/> <span id="canary-weight-val">3</span></li>
 <li><button id="btn-canary-apply" disabled>Apply Canary Weight</button></li>
 </ul>
-<h2>H. Reset</h2>
+<h2 id="h-reset">H. Reset</h2>
 <ul>
 <li><button id="btn-reset" type="button">Reset Session</button></li>
 </ul>
@@ -904,7 +904,7 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-11 18:39:58</span>
+        <span>Built 2026-02-12 14:25:54</span>
       </div>
     </footer>
     <script>

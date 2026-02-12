@@ -21,10 +21,40 @@ Notes:
 make k1s-core
 ```
 Notes:
-- `k1s-core` starts a Postgres container and sets `AE_APISHIM_DSN` by default.
+- `k1s-core` starts etcd + hub NATS + Postgres infra and sets `AE_APISHIM_DSN` by default.
+- Infra backend auto-selection:
+  - `AE_RUNTIME_BACKEND=cri|containerd` -> strict CRI infra (`AE_INFRA_BACKEND=cri`)
+  - otherwise -> compose infra (`AE_INFRA_BACKEND=compose`)
+  - force legacy compose with `AE_INFRA_BACKEND=compose`
+- Strict CRI runtime handler defaults to `runc` (`AE_CRI_RUNTIME_HANDLER=runc`).
+  Override only if your containerd CRI runtime handler differs.
 - DSN selection is mode-aware:
   - `AE_APISHIM_MODE=host`: `postgresql://shim:shim@127.0.0.1:<port>/shim`
+  - `AE_APISHIM_MODE=cri`: `postgresql://shim:shim@127.0.0.1:<port>/shim`
   - container mode: uses the compose service name: `postgresql://shim:shim@postgres:5432/shim`
+- In strict CRI `k1s-core`, default `AE_APISHIM_MODE=cri` starts apishim as CRI pod
+  `k1s-core-apishim` (controller remains host-process).
+- Missing-image behavior in strict CRI:
+  - default interactive policy: `AE_CRI_IMAGE_POLICY=prompt`
+  - non-interactive/CI default: `AE_CRI_IMAGE_POLICY=fail`
+  - explicit pull-only mode: `AE_CRI_IMAGE_POLICY=pull`
+  - strict fallback action `b`:
+    - apishim image (`k1s-core-apishim`): local build + registry push + CRI pull verify
+    - other strict-CRI managed images (etcd/nats/postgres/envoy/rathole/caddy): mirror source image into `AE_CRI_REGISTRY` + CRI pull verify
+  - local build backend order: `nerdctl`, then `podman`, then `docker`
+  - optional override: `AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker`
+- Registry mapping in strict CRI:
+  - `AE_CRI_REGISTRY=<host:port>` rewrites CRI-managed image refs to that registry
+  - optional path prefix: `AE_CRI_REGISTRY_NAMESPACE=<prefix>`
+  - if unset, `AE_REGISTRY_HOST` is used when provided
+- Strict CRI registry mode:
+  - `AE_CRI_REGISTRY_MODE=managed|external|off` (default: `managed` when no registry is set; `external` when `AE_CRI_REGISTRY` is set)
+  - `managed` default endpoint: `localhost:5001` (k1s-managed local registry)
+  - `external` common microk8s endpoint: `localhost:32000`
+  - optional preset: `AE_CRI_REGISTRY_PRESET=microk8s|local`
+- Optional containerd trust hook for strict CRI startup:
+  - set `AE_CRI_REGISTRY_TRUST=1` (or `AE_CRI_REGISTRY_INSECURE=1`) to call
+    `scripts/containerd_registry_trust.sh` before CRI preflight.
 - Bind Postgres to the hub WG IP with `POSTGRES_BIND_IP=<hub-wg-ip>` so edge nodes can reach it.
 - Override the DSN with `AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname` if needed.
 
@@ -35,6 +65,7 @@ make k1s-edge
 Notes:
 - `k1s-edge` does not start Postgres by default; edge nodes typically point at the core Postgres over WG/LAN.
 - Start a local Postgres on the edge only if needed with `EDGE_START_POSTGRES=1` (also set `POSTGRES_PORT` to avoid conflicts when core and edge share a host).
+- With strict CRI infra (`AE_INFRA_BACKEND=cri`), edge NATS and rathole components run as CRI pods.
 
 ## Ingress modes (k1s-core / k1s-edge)
 
@@ -142,6 +173,22 @@ Profiles default to Podman; override with:
 ```
 AE_RUNTIME_BACKEND=docker make k1s-core
 ```
+
+Strict CRI aliases:
+```
+make k1s-core-cri
+make k1s-core-edge-cri
+make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+make k1s-edge-cri
+make k1s-edge-core-cri
+```
+Equivalent explicit override:
+`AE_CRI_RUNTIME_HANDLER=runc make k1s-core-cri`
+
+Notes:
+- `run_profile.sh` now auto-selects CRI infra when a running `k1s-core` CRI stack is detected, and fails fast if a compose edge/core profile is invoked against that CRI core.
+- `edge-site-cri` defaults the CRI edge NATS profile to `k1s-core` (JetStream path). Set `EDGE_PROFILE=k1s-edge` when pairing with `make k1s-edge-cri`.
+- Strict CRI edge startup port precedence is: `EDGE_PORT`, then explicit port from `AE_NATS_URL`, then fallback `4223`.
 
 ## Apply a sample (any profile)
 

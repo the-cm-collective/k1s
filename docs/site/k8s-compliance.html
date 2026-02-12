@@ -721,7 +721,7 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Kubernetes Compliance</h1>
+    <h1 id="kubernetes-compliance">Kubernetes Compliance</h1>
 <p>This page summarizes our current Kubernetes spec compliance for exported manifests.</p>
 <p>How it works</p>
 <ul>
@@ -752,7 +752,7 @@
 <li>This adds server-side dry-run and applies the exported YAML to the cluster, waiting for the Deployment rollout; results are included in the score.</li>
 </ul>
 <p>The compliance status and per-sample details render below when a report is present.</p>
-<h2>Current Coverage Summary (2026-01-16)</h2>
+<h2 id="current-coverage-summary-2026-01-16">Current Coverage Summary (2026-01-16)</h2>
 <ul>
 <li>Workloads: Deployment full support; StatefulSet/DaemonSet/Job/CronJob are stored with best-effort status but emulated as Deployment-like apps (no real completion, scheduling, or per-node placement).</li>
 <li>Pod/Container: env/envFrom; readiness/liveness/startup probes; lifecycle hooks; resources requests/limits; securityContext (runAs*/fsGroup/readOnlyRootFilesystem/cap drop/seccomp/AppArmor); terminationGracePeriodSeconds; priorityClassName.</li>
@@ -763,7 +763,7 @@
 <li>Runtime/Networking: Service CIDR + overlay provider with ClusterIP allocation, EndpointSlice projection, port-forward for pods/services, exec/logs via agents.</li>
 <li>Discovery/Tooling: OpenAPI v2/v3 drift guard + fixtures, kubectl/helm apply/watch/port-forward gates in CI, compatibility matrix (<code>apishim-compatibility-matrix.html</code>).</li>
 </ul>
-<h2>Parity Checklist</h2>
+<h2 id="parity-checklist">Parity Checklist</h2>
 <ul>
 <li>Use readiness/liveness/startup probes.</li>
 <li>Provide <code>resources.requests/limits</code>; enable <code>--policy strict</code> in <code>ae k8s-check</code>.</li>
@@ -771,13 +771,13 @@
 <li>Keep retained volumes single-node or use PVCs when exporting to Kubernetes.</li>
 <li>Prefer Service VIP + ingress over hostPorts for HA; reserve hostPorts for single-node edges.</li>
 </ul>
-<h2>Verification Notes</h2>
+<h2 id="verification-notes">Verification Notes</h2>
 <ul>
 <li>Exporter validated with <code>ae export-k8s --validate</code> + <code>ae k8s-check --policy strict</code>.</li>
 <li>Shim gates: kubectl/helm apply/get/watch/port-forward exercised in CI with OpenAPI drift guard.</li>
 <li>Multi-node overlay path covered by integration tests and the multi-node lab guide.</li>
 </ul>
-<h3>Notable Gaps vs. Kubernetes</h3>
+<h3 id="notable-gaps-vs-kubernetes">Notable Gaps vs. Kubernetes</h3>
 <ul>
 <li>NetworkPolicy enforcement depends on your CNI when exporting; k1s runtime does not enforce policies.</li>
 <li>PodSecurityAdmission/admission webhooks are not implemented; exporter can emit PSA labels only.</li>
@@ -785,7 +785,7 @@
 <li>metrics.k8s.io/metrics-server and aggregated APIs are out of scope.</li>
 <li>Advanced Ingress features (regex, weighted/canary annotations, multiple backends per rule) remain out of scope for now.</li>
 </ul>
-<h2>Demo Manifests</h2>
+<h2 id="demo-manifests">Demo Manifests</h2>
 <ul>
 <li><code>specs/examples/echo-sec.yaml</code>: non-root + read-only root filesystem + HTTP readiness + ingress.
 <ul>
@@ -803,7 +803,7 @@
 </ul>
 </li>
 </ul>
-<h2>Remote Apply</h2>
+<h2 id="remote-apply">Remote Apply</h2>
 <ul>
 <li>Enable mutations and token, then:
 <ul>
@@ -811,7 +811,7 @@
 </ul>
 </li>
 </ul>
-<h2>NetworkPolicy Provider Notes (k3s)</h2>
+<h2 id="networkpolicy-provider-notes-k3s">NetworkPolicy Provider Notes (k3s)</h2>
 <ul>
 <li>Enforcement depends on your CNI plugin. The default k3s installation uses flannel, which does not enforce NetworkPolicy. In that setup, policies are created but not applied by the dataplane.</li>
 <li>To enforce policies on k3s, choose a CNI that implements NetworkPolicy (for example, Calico or Cilium). Install it per vendor instructions and disable flannel when required by that CNI.</li>
@@ -822,7 +822,7 @@
 </ul>
 </li>
 </ul>
-<h3>Gap Tracker (create issues and check off when done)</h3>
+<h3 id="gap-tracker-create-issues-and-check-off-when-done">Gap Tracker (create issues and check off when done)</h3>
 <ul>
 <li>[x] Add <code>startupProbe</code> to spec and exporter; update <code>k8s-check</code> guidance.</li>
 <li>[x] Support <code>envFrom</code> for ConfigMap/Secret; exporter maps to envFrom.</li>
@@ -846,7 +846,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-10 19:25:45</span>
+        <span>Built 2026-02-12 14:20:07</span>
       </div>
     </footer>
     <script>

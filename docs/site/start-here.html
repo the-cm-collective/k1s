@@ -725,7 +725,7 @@
 <p>This single page gets a new contributor or user from a fresh clone to a running demo, with pointers to the most useful docs and commands.</p>
 <p>Note: k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.</p>
 <p>Terminology: k1s Deployments are Deployment-like workloads; pods are the execution unit, and replicas are the desired pod count (same as Kubernetes); Service VIPs map to Services/ClusterIP.</p>
-<h2>Prerequisites</h2>
+<h2 id="prerequisites">Prerequisites</h2>
 <ul>
 <li>Python 3.11+</li>
 <li>Podman (preferred) or Docker installed and running</li>
@@ -733,7 +733,7 @@
 <li>Optional (for ingress/docs via Caddy and Prometheus): <code>docker compose</code> or <code>podman compose</code></li>
 <li>Optional (for multi-node lab): two Linux hosts/VMs with WireGuard tools and rootful networking</li>
 </ul>
-<h2>Option A — Zero‑to‑Labs (automated)</h2>
+<h2 id="option-a-zero-to-labs-automated">Option A — Zero‑to‑Labs (automated)</h2>
 <p>This script provisions a local demo stack, serves docs, starts the controller API, and applies sample workloads (Deployments).</p>
 <p>1) Run the demo initializer (adds hosts; Ctrl‑C safe):</p>
 <pre><code>./scripts/init_demo.sh --demo-standard -y -d
@@ -775,7 +775,7 @@ make demo-down</code></pre>
   insecure = true
   EOF</code></pre>
 <p>  Or run with <code>AE_USE_REGISTRY_CACHE=0</code>.</p>
-<h2>Option B — Manual Quickstart (hands‑on)</h2>
+<h2 id="option-b-manual-quickstart-hands-on">Option B — Manual Quickstart (hands‑on)</h2>
 <p>Follow this if you want to see each moving part.</p>
 <p>1) Install the package (editable dev mode):</p>
 <pre><code>python -m pip install -e .[dev]
@@ -810,7 +810,7 @@ k1s logs app/echo --follow --tail 100</code></pre>
   python -m ae.apishim serve --host 127.0.0.1 --port 8445
 kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code></pre>
 <p>Shim capabilities and gaps live in <code>docs/reference/apishim-compatibility-matrix.md</code>. Note: for TLS, add <code>--tls</code>, set <code>AE_APISHIM_TLS_CERT/KEY</code>, and use <code>https://</code> with <code>--insecure-skip-tls-verify</code> or a trusted CA. Note: dev-only bypass is <code>AE_APISHIM_ALLOW_ANON=1</code> (avoid for shared hosts).</p>
-<h2>Makefile Helper Commands</h2>
+<h2 id="makefile-helper-commands">Makefile Helper Commands</h2>
 <p>Run with <code>make &lt;target&gt;</code>. You can override defaults via <code>VAR=value make &lt;target&gt;</code>.</p>
 <p>Setup and quality</p>
 <ul>
@@ -917,7 +917,7 @@ kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code>
 <li><code>make docker-build-controller</code>: build controller image (ops/images/controller.Dockerfile).</li>
 <li><code>make docker-run-controller</code>: run controller container with specs/state mounts.</li>
 </ul>
-<h2>Option C — Multi-node Lab (controller + worker)</h2>
+<h2 id="option-c-multi-node-lab-controller-worker">Option C — Multi-node Lab (controller + worker)</h2>
 <p>Use this when you want to validate the overlay Service VIP path and scheduler on two hosts.</p>
 <p>1) Controller (host A):</p>
 <pre><code>AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay \
@@ -931,7 +931,7 @@ AE_NODE_ID=worker-1 python -m ae.node --runtime-backend podman --port 9109 --ens
 ae nodes list
 ae status echo-mn --watch</code></pre>
 <p>Full walkthrough and WireGuard tips: <code>docs/guides/multinode-lab.md</code> or <code>ops/dev/multinode-lab.sh -h</code>.</p>
-<h2>Using the <code>ae</code> CLI (greatest hits)</h2>
+<h2 id="using-the-ae-cli-greatest-hits">Using the <code>ae</code> CLI (greatest hits)</h2>
 <ul>
 <li>Apply/inspect lifecycle:</li>
 </ul>
@@ -976,13 +976,13 @@ ae registry refresh
 ae tls sync --name mycert --input path/to/k8s-secret.yaml
 ae tls verify --name mycert --json
 ae tls kubesecret --name mycert --namespace demo -o mycert-secret.yaml</code></pre>
-<h2>Remote CLI & Tokens (optional)</h2>
+<h2 id="remote-cli-tokens-optional">Remote CLI & Tokens (optional)</h2>
 <p>Generate API tokens and point the CLI at a remote controller.</p>
 <pre><code>python -m ae.cli api tokens --generate --ttl-hours 24 -o .env.api
 source .env.api
 ae --server http://&lt;controller-ip&gt;:9108 --token $AE_API_READ_TOKEN status</code></pre>
 <p>Tip: <code>ae auth remote -o .env.api</code> also emits shim tokens + <code>AE_API_MUTATIONS=1</code>, and <code>ae auth local -o .env.local</code> reuses tokens from <code>state/*.env</code> when running demos/labs. Details: <code>README.md:67</code> and token management in <code>docs/ops/runbook.md:1</code>.</p>
-<h2>Documentation Map (most useful first)</h2>
+<h2 id="documentation-map-most-useful-first">Documentation Map (most useful first)</h2>
 <ul>
 <li>High‑level overview: <code>docs/getting-started/overview.md:1</code></li>
 <li>Operations runbook: <code>docs/ops/runbook.md:1</code></li>
@@ -992,7 +992,7 @@ ae --server http://&lt;controller-ip&gt;:9108 --token $AE_API_READ_TOKEN status<
 <li>Demos & examples: <code>docs/guides/demos-examples.md:1</code></li>
 <li>Architecture deep dive: <code>docs/reference/architecture.md:1</code></li>
 </ul>
-<h2>Where things live in the repo</h2>
+<h2 id="where-things-live-in-the-repo">Where things live in the repo</h2>
 <ul>
 <li>Controller daemon entry: <code>src/ae/controller/__main__.py:1</code></li>
 <li>CLIs: <code>src/ae/cli/__main__.py:1</code>, <code>src/ae/kctl/__main__.py:1</code></li>
@@ -1002,7 +1002,7 @@ ae --server http://&lt;controller-ip&gt;:9108 --token $AE_API_READ_TOKEN status<
 <li>Specs & samples: <code>specs/</code>, <code>specs/examples/</code></li>
 <li>Dev stack compose: <code>ops/dev/docker-compose.yaml:1</code></li>
 </ul>
-<h2>Troubleshooting</h2>
+<h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
 <li>If Caddy HTTPS ports 8443/8888 are busy, the demo auto‑picks free ports and prints them.</li>
 <li>Dashboard via Caddy is <code>https://dash.home.arpa:8443/dashboard</code>; use <code>http://127.0.0.1:9108/dashboard</code> if you’re skipping Caddy.</li>
@@ -1021,7 +1021,7 @@ make demo-hardened</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-10 19:25:45</span>
+        <span>Built 2026-02-12 14:20:07</span>
       </div>
     </footer>
     <script>

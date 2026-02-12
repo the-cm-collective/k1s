@@ -721,9 +721,143 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Multi-node Edge Gateway Manual Test</h1>
+    <h1 id="multi-node-edge-gateway-manual-test">Multi-node Edge Gateway Manual Test</h1>
 <p>This walkthrough is a manual test pattern for the core hub plus edge gateways. It focuses on a JetStream hub with lightweight edge sites and multiple gateways per site. For the ops-focused runbook, see <code>docs/ops/core-edge-manual-test.md</code>.</p>
-<h2>Option A — LAN-only multi-node (no WireGuard)</h2>
+<h2 id="quick-navigation">Quick Navigation</h2>
+<p>Podman / mixed-runtime patterns:</p>
+<ul>
+<li><a href="#option-a-lan-only">Option A - LAN-only multi-node</a></li>
+<li><a href="#option-b-core-edge-gateways">Option B - Core + edge gateways (WireGuard + NATS)</a></li>
+<li><a href="#option-c-netfs">Option C - Site-to-site NetFS storage</a></li>
+<li><a href="#option-d-ingress">Option D - Canonical ingress modes</a></li>
+</ul>
+<p>CRI patterns:</p>
+<ul>
+<li><a href="#cri-deployment">CRI Deployment (strict CRI)</a></li>
+<li><a href="#cri-single-host">Single-Host Dev Ops Patterns (CRI)</a></li>
+<li><a href="#cri-same-host-variant">Same-Host Variant (hub + edge on one box)</a></li>
+<li><a href="#cri-troubleshooting">CRI troubleshooting notes</a></li>
+</ul>
+<h2 id="cri-deployment">CRI Deployment (strict CRI)</h2>
+<p>Use this section when running core + edge in strict CRI mode with containerd. Existing Podman sections remain valid for homelab/dev; this section is additive.</p>
+<h3 id="prereqs-cri">Prereqs (CRI)</h3>
+<ul>
+<li>containerd is running and reachable at <code>unix:///run/containerd/containerd.sock</code>.</li>
+<li>BuildKit is installed and active (<code>buildkitd</code> + <code>buildctl</code>) for on-demand apishim image builds.</li>
+<li>CRI registry mode is available (<code>localhost:5001</code> managed registry or equivalent external registry).</li>
+<li>Use a venv-first sudo path for node commands:</li>
+</ul>
+<pre><code>VENV_BIN=&quot;/home/$USER/git/k1s/.venv/bin&quot;
+SUDO_PATH=&quot;${VENV_BIN}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin&quot;</code></pre>
+<h3 id="core-stack-controller-infra-apishim">Core stack (controller + infra + apishim)</h3>
+<pre><code>WG_BIN=$(command -v wg)
+APISHIM_TAG=&quot;localhost:5001/k1s-apishim:dev-$(date +%s)&quot;
+sudo -E \
+  AE_DEV_LOCAL=1 \
+  AE_RUNTIME_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed \
+  AE_CRI_REGISTRY_INSECURE=1 \
+  AE_LABS=1 \
+  AE_APISHIM_AUTOSTART=1 \
+  AE_APISHIM_MODE=cri \
+  AE_APISHIM_IMAGE=&quot;${APISHIM_TAG}&quot; \
+  AE_APISHIM_STARTUP_TIMEOUT=60 \
+  BENCH_MODE=0 \
+  AE_WG_INTERFACE=wg-hub \
+  AE_WG_DUMP_CMD=&quot;sudo -n ${WG_BIN} show {iface} dump&quot; \
+  AE_AGENT_API_PORT=9110 \
+  AE_AGENT_API_TOKEN=devtoken \
+  AE_ENABLE_NETFS=1 \
+  AE_STORAGE_SEED_DEFAULTS=1 \
+  AE_STORAGE_NFS_SERVER=10.255.0.1 \
+  AE_STORAGE_NFS_PATH=/exports/k1s \
+  AE_STORAGE_NFS_CLASS=k1s-nfs \
+  AE_APISHIM_ETCD_ENDPOINTS=http://127.0.0.1:2379 \
+  make k1s-core</code></pre>
+<p>Notes:</p>
+<ul>
+<li>Keep <code>AE_DEV_LOCAL=1</code> enabled for local docs/playground/dashboard behavior in this lane.</li>
+<li>Use a unique <code>AE_APISHIM_IMAGE</code> tag per run when iterating apishim changes to avoid stale image reuse.</li>
+</ul>
+<h3 id="core-node-hub">Core node (hub)</h3>
+<pre><code>sudo -E env PATH=&quot;$SUDO_PATH&quot; \
+  AE_RUNTIME_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_NODE_ID=hub-1 \
+  AE_NODE_LABELS=&quot;role=hub,site=hub,wg_role=hub,wg_psk=rp,wg_endpoint=&lt;HUB_PUBLIC_IP&gt;:51820&quot; \
+  AE_POD_CIDR=10.42.0.0/24 \
+  AE_ROSENPASS_ENABLED=1 \
+  AE_ROSENPASS_CONFIG=controller \
+  AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub \
+  AE_ROSENPASS_INTERFACE=wg-hub \
+  AE_WG_LISTEN_PORT=51820 \
+  AE_WG_ADDRESS=10.255.0.1/32 \
+  AE_ENABLE_NETFS=1 \
+  AE_APISHIM_DSN=postgresql://shim:shim@127.0.0.1:5432/shim \
+  AE_AGENT_TOKEN=devtoken \
+  AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+  AE_AGENT_ENDPOINT=http://10.255.0.1:9111 \
+  make k1s-core-node</code></pre>
+<h3 id="edge-site-and-edge-core">Edge site and edge core</h3>
+<pre><code>sudo -E make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+
+sudo -E env PATH=&quot;$SUDO_PATH&quot; \
+  AE_SITE_ID=sea-edge-02 \
+  AE_NODE_ID=edge-1 \
+  AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
+  AE_LOG_LEVEL=debug \
+  make k1s-edge-core-cri</code></pre>
+<h3 id="edge-node">Edge node</h3>
+<p>Verified command set:</p>
+<pre><code>sudo -E env PATH=&quot;$SUDO_PATH&quot; \
+  AE_RUNTIME_BACKEND=cri \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_NODE_ID=edge-1 \
+  AE_POD_CIDR=10.42.1.0/24 \
+  AE_NODE_LABELS=&quot;role=worker,site=sea-edge-02,wg_role=spk,wg_psk=rp&quot; \
+  AE_WG_INTERFACE=wg-edge \
+  AE_ROSENPASS_INTERFACE=wg-edge \
+  AE_WG_ADDRESS=10.255.0.3/32 \
+  AE_WG_TABLE=off \
+  AE_WG_LISTEN_PORT=51821 \
+  AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-edge \
+  AE_ENABLE_NETFS=1 \
+  AE_APISHIM_DSN=postgresql://shim:shim@127.0.0.1:5432/shim \
+  AE_AGENT_TOKEN=devtoken \
+  AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+  AE_AGENT_ENDPOINT=http://10.255.0.3:9112 \
+  make k1s-edge-node</code></pre>
+<h3 id="cri-validation-checklist">CRI Validation Checklist</h3>
+<pre><code>sudo crictl pods
+ae nodes
+ae status
+bash scripts/dev/netfs_validate.sh \
+  --runtime auto \
+  --namespace default \
+  --writer-app netfs-nfs-sea-edge-02-edge-1 \
+  --reader-app netfs-nfs-hub-reader \
+  --mount-path /data</code></pre>
+<h3 id="cri-troubleshooting">CRI Troubleshooting Notes</h3>
+<ul>
+<li><code>spdy upgrade failed: 404</code> with repeated apishim warnings about CRI unavailable usually means apishim cannot reach the containerd socket; confirm <code>AE_CRI_ENDPOINT</code> and apishim runtime env/socket mount.</li>
+<li><code>error: registry endpoint responded unexpectedly at https://localhost:5001/v2/</code> means core registry is not healthy/reachable before edge CRI startup.</li>
+<li>If <code>crictl</code> commands differ from examples, check your local <code>crictl</code> version/flags (<code>crictl pods</code> on some builds does not support <code>-a</code>).</li>
+<li>In CRI, workload pod names typically include revision suffixes (for example <code>...-rev1-0</code>); avoid assuming Podman container naming patterns.</li>
+</ul>
+<h2 id="cri-single-host">Single-Host Dev Ops Patterns (CRI)</h2>
+<p>This is the fastest strict-CRI dev loop on one workstation: 1. Start <code>k1s-core</code> with <code>AE_DEV_LOCAL=1</code>, CRI env, and apishim autostart. 2. Start <code>k1s-core-node</code> (hub node) with WG/Rosenpass and <code>AE_ENABLE_NETFS=1</code>. 3. Start edge site + edge core with <code>make edge-site-cri</code> then <code>make k1s-edge-core-cri</code>. 4. Start <code>k1s-edge-node</code> with the verified command block above. 5. Run <code>ae auth local --strict</code>, <code>ae nodes</code>, <code>ae status</code>, and <code>scripts/dev/netfs_validate.sh</code>.</p>
+<p>Expected:</p>
+<ul>
+<li><code>ae nodes</code> shows controller, hub CRI node, edge CRI node, and edge gateway node as <code>Ready</code>.</li>
+<li><code>ae status</code> workloads reach <code>ready</code>.</li>
+<li>CRI pods are visible in <code>sudo crictl pods</code> for core/edge components.</li>
+</ul>
+<h2 id="option-a-lan-only">Option A — LAN-only multi-node (no WireGuard)</h2>
 <p>Use this path when all nodes are on the same LAN and you want typical k8s-style cluster semantics without a WireGuard overlay.</p>
 <p>Prereqs:</p>
 <ul>
@@ -767,31 +901,43 @@ python -m ae.node --port 9109 --ensure-pod-net</code></pre>
 <pre><code>ae nodes
 ae plan -f specs/examples/echo-multinode.yaml --verbose
 python -m ae.cli apply -f specs/examples/echo-multinode.yaml</code></pre>
-<h2>Option B — Core + edge gateways (WireGuard + NATS)</h2>
-<h3>Topology</h3>
+<h2 id="option-b-core-edge-gateways">Option B — Core + edge gateways (WireGuard + NATS)</h2>
+<h3 id="topology">Topology</h3>
 <ul>
 <li>Site A (LAN): <code>k1s-core</code> + one gateway on <code>sfo-edge-01</code>.</li>
 <li>Site B (remote): one edge NATS leader with outbound leaf to the hub, two gateways on <code>sea-edge-02</code>.</li>
 <li>Transport: JetStream on hub only; gateways use a local SQLite spool for durability.</li>
 </ul>
-<h3>Prereqs</h3>
+<h3 id="prereqs">Prereqs</h3>
 <ul>
 <li>Hub host reachable on TCP <code>4222</code> (NATS) and TCP <code>7422</code> (leaf node port).</li>
 <li>Remote edge NATS can open outbound TCP to <code>HUB_PUBLIC:7422</code>.</li>
 <li>Unique node ids (recommended format: <code>&lt;site_id&gt;--&lt;node_id&gt;</code>).</li>
 </ul>
-<h3>Start with clear state (recommended)</h3>
+<h3 id="one-time-non-root-cli-setup-shell-port-forward">One-time non-root CLI setup (shell/port-forward)</h3>
+<p>Run this once per workstation user:</p>
+<pre><code>sudo groupadd -f aecli
+sudo usermod -aG aecli &quot;$USER&quot;
+newgrp aecli
+id -nG | tr &#x27; &#x27; &#x27;\n&#x27; | grep -x aecli</code></pre>
+<p>Expected:</p>
+<ul>
+<li><code>aecli</code> appears in the current shell groups.</li>
+<li>Core startup syncs <code>state/profiles/&lt;profile&gt;/apishim.cli.env</code> as <code>640 root:aecli</code>.</li>
+<li><code>ae auth local --strict</code> infers the active profile and prefers <code>apishim.cli.env</code> automatically (no <code>--apishim-env</code> argument needed).</li>
+</ul>
+<h3 id="start-with-clear-state-recommended">Start with clear state (recommended)</h3>
 <pre><code>make dev-state-clean CONFIRM=1</code></pre>
 <p>This wipes <code>state/</code> (keeps TLS artifacts) and clears any work queues so you can reuse work ids. Gateway spools are cleared on exit by default; set <code>AE_GATEWAY_KEEP_SPOOL=1</code> to preserve spools for diagnostics.</p>
-<h3>Step 1: Start the hub (LAN)</h3>
+<h3 id="step-1-start-the-hub-lan">Step 1: Start the hub (LAN)</h3>
 <pre><code>AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy make k1s-core</code></pre>
-<h3>Step 2: Start the local site gateway (same LAN)</h3>
+<h3 id="step-2-start-the-local-site-gateway-same-lan">Step 2: Start the local site gateway (same LAN)</h3>
 <pre><code>AE_SITE_ID=sfo-edge-01 \
 AE_NODE_ID=edge-1 \
 AE_GATEWAY_SPOOL_PATH=state/gw-sfo-edge-01--edge-1.db \
 make k1s-edge-core</code></pre>
 <p>Note: <code>AE_NODE_ID</code> is auto-scoped to <code>sfo-edge-01--edge-1</code> by the gateway.</p>
-<h3>Step 3: Register the remote site in hub NATS config</h3>
+<h3 id="step-3-register-the-remote-site-in-hub-nats-config">Step 3: Register the remote site in hub NATS config</h3>
 <p>Dev helper (auto-updates hub config and starts a local edge NATS):</p>
 <pre><code>make edge-site SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code></pre>
 <p>Production equivalent:</p>
@@ -799,7 +945,7 @@ make k1s-edge-core</code></pre>
 <li>Add a <code>site-&lt;site_id&gt;-uplink</code> user in <code>ops/dev/nats-hub.conf</code>.</li>
 <li>Reload the hub NATS (<code>nats-server --signal reload</code>).</li>
 </ul>
-<h3>Step 4: Edge NATS leader (same-host vs remote)</h3>
+<h3 id="step-4-edge-nats-leader-same-host-vs-remote">Step 4: Edge NATS leader (same-host vs remote)</h3>
 <p>Same host (dev helper):</p>
 <ul>
 <li><code>make edge-site</code> already starts an edge NATS leader bound to <code>127.0.0.1:&lt;EDGE_PORT&gt;</code>.</li>
@@ -816,7 +962,7 @@ make k1s-edge-core</code></pre>
 </li>
 <li>Ensure <code>HUB_PUBLIC</code> resolves and is reachable on TCP <code>7422</code>.</li>
 </ul>
-<h3>Step 5: Start two gateways on the remote site</h3>
+<h3 id="step-5-start-two-gateways-on-the-remote-site">Step 5: Start two gateways on the remote site</h3>
 <p>Gateway 1:</p>
 <pre><code>AE_SITE_ID=sea-edge-02 \
 AE_NODE_ID=edge-1 \
@@ -860,7 +1006,7 @@ make k1s-edge-core</code></pre>
 <pre><code>INFO ae.worker_stub: stub worker connected node_id=sea-edge-02--edge-1 nats=nats://worker:dev@127.0.0.1:4224
 DEBUG ae.worker_stub: work received node_id=sea-edge-02--edge-1 work_id=test-edge-1 attempt=1 op=noop site_id=sea-edge-02
 DEBUG ae.worker_stub: work completed node_id=sea-edge-02--edge-1 work_id=test-edge-1 attempt=1 status=succeeded</code></pre>
-<h3>Remote Host Runbook (Site B behind NAT/CGNAT)</h3>
+<h3 id="remote-host-runbook-site-b-behind-nat-cgnat">Remote Host Runbook (Site B behind NAT/CGNAT)</h3>
 <p>This runbook adds the overlay + node agent steps so apishim can exec/port-forward to pods running on remote hosts. NATS remains control-plane only; exec/port-forward streams are apishim → node agent.</p>
 <p>Prereqs:</p>
 <ul>
@@ -868,7 +1014,7 @@ DEBUG ae.worker_stub: work completed node_id=sea-edge-02--edge-1 work_id=test-ed
 <li>Hub WireGuard UDP port reachable from Site B for outbound-only NAT traversal.</li>
 <li>Each host that runs pods must also run <code>ae.node</code> with a reachable <code>AE_AGENT_ENDPOINT</code>. For WG exec/port-forward, use the node WG IP (for example <code>10.255.0.1:9111</code> and <code>10.255.0.2:9112</code>) so apishim can reach it.</li>
 </ul>
-<h3>Host A (core/hub)</h3>
+<h3 id="host-a-core-hub">Host A (core/hub)</h3>
 <p>1. Start the hub:</p>
 <pre><code>AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy \
 AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
@@ -898,7 +1044,7 @@ sudo chmod 440 /etc/sudoers.d/k1s-wg-dump</code></pre>
 <li>If the UI does not show handshakes or Rosenpass state, verify the <code>wg dump</code> sudoers rule and <code>AE_ROSENPASS_DIR</code> permissions.</li>
 <li>For SPDY exec/port-forward over WG, keep <code>AE_AGENT_ENDPOINT</code> on the WG IP, not <code>127.0.0.1</code> or a host-only name.</li>
 </ul>
-<h3>Host B (remote site)</h3>
+<h3 id="host-b-remote-site">Host B (remote site)</h3>
 <p>1. Configure WireGuard with <code>PersistentKeepalive=25</code> and AllowedIPs that include: the WG subnet, the pod CIDR pool, and the service CIDR (if used). 2. Start the edge NATS leader with a leaf connection back to the hub (see <code>docs/ops/core-edge-wg-psk.md</code> for the full config steps). 3. Start the gateway leader:</p>
 <pre><code>AE_SITE_ID=sea-edge-02 \
 AE_NODE_ID=edge-1 \
@@ -926,12 +1072,21 @@ make k1s-edge-node</code></pre>
 <li><code>AE_APISHIM_SERVER</code> points at the hub apishim (not localhost on the edge host).</li>
 <li>The node advertises a reachable agent endpoint (<code>AE_AGENT_ENDPOINT</code> or <code>--advertise-endpoint</code>) from the apishim container/host.</li>
 </ul>
+<p>If <code>ae shell</code> fails with <code>spdy upgrade failed: 401</code> while dashboard shell still works:</p>
+<ul>
+<li>Ensure non-root CLI group setup is complete once: <code>sudo groupadd -f aecli &amp;&amp; sudo usermod -aG aecli $USER</code>, then refresh shell groups (<code>newgrp aecli</code> or re-login).</li>
+<li>Ensure core startup syncs <code>state/profiles/&lt;profile&gt;/apishim.cli.env</code> as <code>640 root:aecli</code> with <code>AE_APISHIM_SERVER</code>, <code>AE_APISHIM_MINT_TOKEN</code>, and <code>AE_APISHIM_CA_BUNDLE</code>.</li>
+<li>Ensure <code>state/profiles/&lt;profile&gt;/apishim.ca.crt</code> is present/readable for group <code>aecli</code>.</li>
+<li>Re-run <code>source &lt;(ae auth local --strict)</code> to refresh exports.</li>
+<li>If <code>AE_LABS_TOKEN</code> is also available, CLI can mint a short-lived fallback session token through controller <code>/api/apishim/session</code>.</li>
+<li>Set <code>AE_CLI_LABS_MINT_FALLBACK=0</code> only if you want to force shim-only token behavior for debugging.</li>
+</ul>
 <p>Note</p>
 <ul>
-<li><code>host.containers.internal</code> works when apishim runs in a container (podman default). If apishim runs on the host (<code>AE_APISHIM_MODE=host</code>), you can use <code>127.0.0.1</code> instead.</li>
-<li><code>ae auth local</code> sets <code>AE_APISHIM_SERVER</code> to <code>https://127.0.0.1:8445</code>. On a remote host, override it to the hub, e.g. <code>export AE_APISHIM_SERVER=https://&lt;HUB_IP&gt;:8445</code> (keep the same <code>AE_APISHIM_TOKEN</code> from <code>ae auth local</code>).</li>
+<li>For strict site-to-site SPDY simulation, keep node-advertised endpoints on WG IPs (<code>AE_AGENT_ENDPOINT=http://&lt;WG_IP&gt;:&lt;port&gt;</code>). Do not switch to <code>host.containers.internal</code> in this test lane.</li>
+<li><code>ae auth local --strict</code> sets <code>AE_APISHIM_SERVER</code> to <code>https://127.0.0.1:8445</code>. On a remote host, override it to the hub, e.g. <code>export AE_APISHIM_SERVER=https://&lt;HUB_IP&gt;:8445</code>, then re-run strict auth in that shell.</li>
 </ul>
-<h3>Same-Host Variant (hub + edge on one box)</h3>
+<h3 id="cri-same-host-variant">Same-Host Variant (hub + edge on one box)</h3>
 <p>Use this when you want to simulate the remote site on the same host as the hub (like the workflows in <code>docs/ops/core-edge-manual-test.md</code> and <code>docs/ops/core-edge-wg-psk.md</code>). The key differences are:</p>
 <ul>
 <li>Keep separate Rosenpass dirs for hub vs edge so WireGuard keys do not collide.</li>
@@ -940,22 +1095,43 @@ make k1s-edge-node</code></pre>
 <pre><code>WG_BIN=$(command -v wg)
 echo &quot;$USER ALL=(root) NOPASSWD: ${WG_BIN} show wg-hub dump&quot; | sudo tee /etc/sudoers.d/k1s-wg-dump
 sudo chmod 440 /etc/sudoers.d/k1s-wg-dump</code></pre>
-<p>2. Start the hub controller with overlay dump support:</p>
-<pre><code>WG_BIN=$(command -v wg) \
-AE_DEV_LOCAL=1 \
-AE_WG_INTERFACE=wg-hub \
-AE_WG_DUMP_CMD=&quot;sudo -n ${WG_BIN} show {iface} dump&quot; \
-AE_STORAGE_NFS_SERVER=10.255.0.1 \
-AE_STORAGE_NFS_PATH=/exports/k1s \
-AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
-make k1s-core</code></pre>
-<p>This seeds <code>k1s-nfs</code> in apishim for the NetFS single-host flow.</p>
+<p>2. Start the hub controller with overlay dump support (rootful validated sequence):</p>
+<pre><code>WG_BIN=$(command -v wg)
+sudo -E \
+  AE_RUNTIME_BACKEND=cri \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_DEV_LOCAL=1 \
+  AE_LABS=1 \
+  AE_APISHIM_AUTOSTART=1 \
+  AE_APISHIM_MODE=cri \
+  AE_WG_INTERFACE=wg-hub \
+  AE_WG_DUMP_CMD=&quot;sudo -n ${WG_BIN} show {iface} dump&quot; \
+  AE_AGENT_API_PORT=9110 \
+  AE_AGENT_API_TOKEN=devtoken \
+  AE_ENABLE_NETFS=1 \
+  AE_STORAGE_SEED_DEFAULTS=1 \
+  AE_STORAGE_NFS_SERVER=10.255.0.1 \
+  AE_STORAGE_NFS_PATH=/exports/k1s \
+  AE_STORAGE_NFS_CLASS=k1s-nfs \
+  AE_APISHIM_ETCD_ENDPOINTS=http://127.0.0.1:2379 \
+  make k1s-core</code></pre>
+<p>This seeds <code>k1s-nfs</code> in apishim for the NetFS single-host flow. Strict CRI expectation for this lane:</p>
+<ul>
+<li>core infra components appear in <code>sudo crictl pods</code></li>
+<li>root Podman does not run <code>dev-etcd-1</code>/<code>dev-nats-hub-1</code>/<code>dev-postgres-1</code> for this profile.</li>
+<li>stack sandboxes use host-network CRI config without explicit hostname (avoids runc UTS namespace errors).</li>
+</ul>
 <p>Note</p>
 <ul>
 <li>Keep Rosenpass dirs under <code>/var/lib/ae/</code> (or another non-repo path) when running nodes with <code>sudo</code> to avoid root-owned files under <code>state/</code>.</li>
 </ul>
 <p>3. Start the hub node:</p>
 <pre><code>sudo -E \
+AE_RUNTIME_BACKEND=cri \
+AE_CRI_RUNTIME_HANDLER=runc \
+AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
 AE_NODE_ID=hub-1 \
 AE_NODE_LABELS=&quot;role=hub,site=hub,wg_role=hub,wg_psk=rp,wg_endpoint=192.168.29.143:51820&quot; \
 AE_POD_CIDR=10.42.0.0/24 \
@@ -969,6 +1145,7 @@ AE_ENABLE_NETFS=1 \
 AE_APISHIM_DSN=postgresql://shim:shim@127.0.0.1:5432/shim \
 AE_AGENT_TOKEN=devtoken \
 AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+AE_AGENT_ENDPOINT=http://10.255.0.1:9111 \
 make k1s-core-node</code></pre>
 <p>3a. Verify the WG interfaces have the expected IPs:</p>
 <pre><code>ip -brief addr show wg-hub wg-edge</code></pre>
@@ -978,15 +1155,23 @@ make k1s-core-node</code></pre>
 <li><code>wg-edge</code> has <code>10.255.0.3/32</code></li>
 </ul>
 <p>4. Register the edge site and start the edge gateway:</p>
-<pre><code>make edge-site SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+<pre><code>make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
 
 AE_SITE_ID=sea-edge-02 \
 AE_NODE_ID=edge-1 \
 AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
 AE_LOG_LEVEL=debug \
-make k1s-edge-core</code></pre>
+make k1s-edge-core-cri</code></pre>
+<p>Note:</p>
+<ul>
+<li>Keep <code>AE_NATS_URL</code> aligned with the <code>EDGE_PORT</code> passed to <code>make edge-site-cri</code>. In strict CRI mode, <code>k1s-edge-core-cri</code> will derive the edge NATS listen port from <code>EDGE_PORT</code> or the explicit port in <code>AE_NATS_URL</code>.</li>
+</ul>
 <p>5. Start the edge node (single-host routing adjustments):</p>
 <pre><code>sudo -E \
+AE_RUNTIME_BACKEND=cri \
+AE_CRI_RUNTIME_HANDLER=runc \
+AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+AE_NODE_ID=edge-1 \
 AE_WG_INTERFACE=wg-edge \
 AE_ROSENPASS_INTERFACE=wg-edge \
 AE_WG_ADDRESS=10.255.0.3/32 \
@@ -997,23 +1182,32 @@ AE_NODE_LABELS=&quot;role=worker,site=sea-edge-02,wg_role=spk,wg_psk=rp&quot; \
 AE_ENABLE_NETFS=1 \
 AE_APISHIM_DSN=postgresql://shim:shim@127.0.0.1:5432/shim \
 AE_AGENT_TOKEN=devtoken \
-AE_CONTROLLER_URL=http://192.168.29.143:9110 \
+AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+AE_AGENT_ENDPOINT=http://10.255.0.3:9112 \
 make k1s-edge-node</code></pre>
 <p>Note:</p>
 <ul>
+<li><code>AE_NODE_ID=edge-1</code> keeps scheduler targeting aligned with <code>specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml</code>.</li>
 <li><code>role=worker</code> is required for <code>specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml</code>.</li>
 <li><code>AE_ENABLE_NETFS=1</code> + <code>AE_APISHIM_DSN</code> are required for Option C PVC mounts.</li>
 </ul>
-<h4>Validation</h4>
+<h4 id="validation">Validation</h4>
 <p>1. On the hub, verify WG is up:</p>
 <pre><code>sudo wg show wg-hub
 sudo wg show wg-edge</code></pre>
 <p>2. Confirm nodes are registered with endpoints and pod CIDRs:</p>
 <pre><code>ae nodes</code></pre>
-<p>3. Confirm the hub can reach each node agent:</p>
-<pre><code>curl http://&lt;siteb-wg-ip&gt;:9109/readyz</code></pre>
-<p>4. Test exec and port-forward against pods pinned to Site B.</p>
-<pre><code>source &lt;(ae auth local)
+<p>3. Confirm node agents are reachable over WG endpoints from the hub host    (strict-CRI apishim uses host networking).</p>
+<pre><code>curl -sSf http://10.255.0.1:9111/readyz
+curl -sSf http://10.255.0.3:9112/readyz</code></pre>
+<p>If either endpoint fails, stop and fix node endpoint advertisement/WG routing before continuing shell tests. 4a. Validate non-root auth exports (once per new shell).</p>
+<pre><code>test -r state/profiles/k1s-core/apishim.cli.env &amp;&amp; echo &quot;shared CLI env readable&quot;
+test -r state/profiles/k1s-core/apishim.ca.crt &amp;&amp; echo &quot;shared CA bundle readable&quot;
+grep -E &#x27;^AE_APISHIM_(SERVER|MINT_TOKEN|CA_BUNDLE)=&#x27; state/profiles/k1s-core/apishim.cli.env
+source &lt;(ae auth local --strict)
+env | grep -E &#x27;^AE_APISHIM_(SERVER|MINT_TOKEN|CA_BUNDLE)=&#x27;</code></pre>
+<p>4b. Test exec and port-forward against pods pinned to Site B.</p>
+<pre><code>source &lt;(ae auth local --strict)
 ae apply -f docs/site/examples/shell-demo-node-sea-edge-02-edge-1.yaml
 ae status shell-demo-node-sea-edge-02-edge-1 --wide --events
 ae shell shell-demo-node-sea-edge-02-edge-1 -- /bin/sh
@@ -1022,22 +1216,23 @@ ae port-forward shell-demo-node-sea-edge-02-edge-1 18082:8080</code></pre>
 <ul>
 <li><code>/system</code> overlay and Rosenpass indicators are best-effort; missing status usually means the controller cannot read <code>wg dump</code> or <code>rosenpass-status.json</code>.</li>
 </ul>
-<h4>Troubleshooting exec/port-forward</h4>
-<p>If <code>spdy exec failed: [Errno 111] Connection refused</code> persists: 1. Confirm apishim is healthy and not crash-looping.</p>
-<pre><code>podman compose -f ops/dev/docker-compose.yaml ps --all | rg apishim
-podman logs dev-apishim-1 --tail 80</code></pre>
-<p>If logs show <code>etcd unreachable</code> with <code>127.0.0.1:2379</code> while apishim is containerized, restart core and set an apishim-specific etcd endpoint:</p>
-<pre><code>AE_APISHIM_ETCD_ENDPOINTS=http://etcd:2379 make k1s-core</code></pre>
+<h4 id="troubleshooting-exec-port-forward">Troubleshooting exec/port-forward</h4>
+<p>If <code>spdy exec failed: [Errno 111] Connection refused</code> persists: 1. Confirm apishim endpoint is listening and healthy (host-mode or CRI apishim).</p>
+<pre><code>ss -ltn | rg &#x27;:8445&#x27;
+sudo crictl pods | rg &#x27;k1s-core-apishim|k1s-core-caddy&#x27; || true
+curl -sk -o /dev/null -w &#x27;%{http_code}\n&#x27; https://127.0.0.1:8445/healthz
+tail -n 80 state/profiles/k1s-core/apishim.log</code></pre>
+<p>If <code>:8445</code> is not listening or health is not <code>200</code>, restart core to recreate the apishim component:</p>
+<pre><code>make k1s-core</code></pre>
 <p>2. Confirm the node endpoints are reachable from apishim.</p>
 <pre><code>ae nodes</code></pre>
-<p>If endpoints show <code>http://127.0.0.1:9111</code>/<code>9112</code> while apishim is in a container, restart the nodes with <code>AE_AGENT_ENDPOINT=http://10.255.0.1:9111</code> and <code>AE_AGENT_ENDPOINT=http://10.255.0.2:9112</code> (or <code>http://host.containers.internal:9111</code>/<code>9112</code> for same-host labs). 3. From the apishim container, probe the node agent:</p>
-<pre><code>podman exec -it dev-apishim-1 curl -sSf http://host.containers.internal:9112/readyz</code></pre>
-<p>If apishim runs on the host, use:</p>
-<pre><code>curl -sSf http://127.0.0.1:9112/readyz</code></pre>
+<p>If endpoints show hostnames/loopback (for example <code>http://127.0.0.1:9111</code>, <code>http://127.0.0.1:9112</code>, or <code>http://h4ckt0p:9111</code>) in this strict WG lane, restart the nodes with explicit WG endpoints (single-host example: <code>AE_AGENT_ENDPOINT=http://10.255.0.1:9111</code> and <code>AE_AGENT_ENDPOINT=http://10.255.0.3:9112</code>). 3. From the host, probe node agents over WG:</p>
+<pre><code>curl -sSf http://10.255.0.1:9111/readyz
+curl -sSf http://10.255.0.3:9112/readyz</code></pre>
 <p>4. Verify your CLI points to the correct apishim server:</p>
 <pre><code>echo &quot;$AE_APISHIM_SERVER&quot;</code></pre>
-<p>On a remote host, override with <code>export AE_APISHIM_SERVER=https://&lt;HUB_IP&gt;:8445</code> and keep the token from <code>ae auth local</code>.</p>
-<h3>Validation</h3>
+<p>On a remote host, override with <code>export AE_APISHIM_SERVER=https://&lt;HUB_IP&gt;:8445</code>, then run <code>source &lt;(ae auth local --strict)</code> again.</p>
+<h3 id="validation-1">Validation</h3>
 <pre><code>ae nodes
 python -m ae.cli work enqueue --site-id sfo-edge-01 --mode outbox --preferred-node sfo-edge-01--edge-1 --op noop
 python -m ae.cli work enqueue --site-id sea-edge-02 --mode outbox --op noop
@@ -1049,7 +1244,7 @@ curl http://HUB_HOST:8222/leafz</code></pre>
 <li><code>leafz</code> shows one or more active leaf connections.</li>
 <li>Work ledger transitions to <code>Succeeded</code> for the test work items.</li>
 </ul>
-<h2>Option C — Site-to-site NetFS storage over WireGuard/Rosenpass</h2>
+<h2 id="option-c-netfs">Option C — Site-to-site NetFS storage over WireGuard/Rosenpass</h2>
 <p>Use this option when you want persistent PVC-backed storage to work across sites over the WG/Rosenpass overlay from Option B.</p>
 <p>Production default in this guide:</p>
 <ul>
@@ -1062,7 +1257,7 @@ curl http://HUB_HOST:8222/leafz</code></pre>
 <li><code>docs/wip/site-to-site-storage.md</code> (CSI-oriented architecture and phases)</li>
 <li><code>docs/ops/core-edge-wg-psk.md</code> (overlay and Rosenpass runbook)</li>
 </ul>
-<h3>Production Pattern (split hosts, hybrid storage lanes)</h3>
+<h3 id="production-pattern-split-hosts-hybrid-storage-lanes">Production Pattern (split hosts, hybrid storage lanes)</h3>
 <p>Prereqs:</p>
 <ul>
 <li>Complete Option B host setup first (hub + remote site + node agents).</li>
@@ -1119,19 +1314,20 @@ AE_CONTROLLER_URL=http://&lt;HUB_IP&gt;:9110 \
 AE_AGENT_ENDPOINT=http://10.255.0.2:9112 \
 make k1s-edge-node</code></pre>
 <p>Step 3a: Prepare kubectl against apishim (for PVC objects)</p>
-<pre><code>source &lt;(ae auth local)
-kctl() {
-  kubectl --server=&quot;${AE_APISHIM_SERVER}&quot; \
-    --token=&quot;${AE_APISHIM_TOKEN}&quot; \
-    --insecure-skip-tls-verify &quot;$@&quot;
-}</code></pre>
+<pre><code>source &lt;(ae auth local --strict)
+export AE_APISHIM_TOKEN=$(sudo awk -F= &#x27;/^AE_APISHIM_TOKEN=/{print $2}&#x27; state/profiles/k1s-core/apishim.env)
+export AE_APISHIM_READ_TOKEN=$(sudo awk -F= &#x27;/^AE_APISHIM_READ_TOKEN=/{print $2}&#x27; state/profiles/k1s-core/apishim.env)
+kctl_ro() { kubectl --kubeconfig=/dev/null --server=&quot;${AE_APISHIM_SERVER}&quot; --token=&quot;${AE_APISHIM_READ_TOKEN}&quot; --insecure-skip-tls-verify &quot;$@&quot;; }
+kctl_rw() { kubectl --kubeconfig=/dev/null --server=&quot;${AE_APISHIM_SERVER}&quot; --token=&quot;${AE_APISHIM_TOKEN}&quot; --insecure-skip-tls-verify &quot;$@&quot;; }</code></pre>
 <p>Note:</p>
 <ul>
-<li>In <code>zsh</code>, avoid <code>KCTL=&quot;kubectl ...&quot;</code> followed by <code>$KCTL ...</code> because it can be parsed as a single command path. Use the <code>kctl()</code> helper above.</li>
+<li>In <code>zsh</code>, avoid <code>KCTL=&quot;kubectl ...&quot;</code> followed by <code>$KCTL ...</code> because it can be parsed as a single command path. Use shell helpers (<code>kctl_ro</code> / <code>kctl_rw</code>).</li>
+<li><code>ae auth local --strict</code> is enough for <code>ae shell</code>/<code>ae port-forward</code>, but this kubectl path still needs direct read/write apishim bearer tokens.</li>
+<li>When <code>k1s-core</code> is started with <code>sudo</code>, <code>ae auth local --strict</code> can hold stale direct bearer tokens from a prior run. Refreshing from <code>state/profiles/k1s-core/apishim.env</code> avoids <code>missing/invalid bearer token</code>.</li>
 </ul>
 <p>Step 3b: Preflight checks (required before applying NetFS workloads)</p>
 <pre><code>ae nodes
-kctl get storageclass k1s-nfs
+kctl_ro get storageclass k1s-nfs
 python -m ae.cli plan -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml --verbose</code></pre>
 <p>Required state:</p>
 <ul>
@@ -1141,7 +1337,7 @@ python -m ae.cli plan -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml --verb
 <li>Storage class <code>k1s-nfs</code> exists in apishim.</li>
 <li>Plan output shows at least one eligible edge node for <code>netfs-nfs-sea-edge-02-edge-1</code>.</li>
 </ul>
-<p>If <code>kctl get storageclass k1s-nfs</code> returns <code>NotFound</code>, restart core with NFS seeding env and re-check:</p>
+<p>If <code>kctl_ro get storageclass k1s-nfs</code> returns <code>NotFound</code>, restart core with NFS seeding env and re-check:</p>
 <pre><code>AE_DEV_LOCAL=1 \
 EDGE_INGRESS_MODE=core-proxy \
 POSTGRES_BIND_IP=&lt;HUB_DB_BIND_IP&gt; \
@@ -1150,7 +1346,7 @@ AE_STORAGE_NFS_SERVER=&lt;HUB_WG_OR_LAN_IP&gt; \
 AE_STORAGE_NFS_PATH=/exports/k1s \
 AE_STORAGE_PROVISIONERS=/etc/ae/storage-provisioners.yaml \
 make k1s-core
-kctl get storageclass k1s-nfs</code></pre>
+kctl_ro get storageclass k1s-nfs</code></pre>
 <p>If the edge node is missing <code>role=worker</code>, restart it with:</p>
 <pre><code>sudo -E \
 AE_NODE_ID=edge-1 \
@@ -1169,30 +1365,36 @@ make k1s-edge-node</code></pre>
 </li>
 <li>Apply CSI workload:</li>
 </ul>
-<pre><code>kctl apply -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml
+<pre><code>kctl_rw apply -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml
 python -m ae.cli apply -f specs/examples/netfs-csi-sea-edge-02-edge-1.yaml</code></pre>
 <p>Step 4B: Fallback lane (NFS)</p>
 <ul>
 <li>Ensure <code>k1s-nfs</code> exists in <code>/etc/ae/storage-provisioners.yaml</code> or seed it via <code>AE_STORAGE_NFS_SERVER</code> + <code>AE_STORAGE_NFS_PATH</code>.</li>
 <li>Apply NFS workload:</li>
 </ul>
-<pre><code>kctl apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false
+<pre><code>kctl_rw apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false
 python -m ae.cli apply -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml
 python -m ae.cli apply -f specs/examples/netfs-nfs-hub-reader.yaml</code></pre>
 <p>If <code>kubectl</code> is not configured against apishim, use the REST pattern in <code>scripts/netfs_smoke.sh</code> (<code>PUT /api/v1/namespaces/&lt;ns&gt;/persistentvolumeclaims/&lt;name&gt;</code>). If apishim returns <code>proto: cannot parse invalid wire-format data</code>, keep <code>--validate=false</code> on PVC apply or use the REST <code>PUT</code> fallback.</p>
 <p>Step 5: Validate PVC, attachments, and workload health</p>
-<pre><code>source &lt;(ae auth local)
-kctl() {
-  kubectl --server=&quot;${AE_APISHIM_SERVER}&quot; \
-    --token=&quot;${AE_APISHIM_TOKEN}&quot; \
-    --insecure-skip-tls-verify &quot;$@&quot;
-}
+<pre><code>source &lt;(ae auth local --strict)
+export AE_APISHIM_TOKEN=$(sudo awk -F= &#x27;/^AE_APISHIM_TOKEN=/{print $2}&#x27; state/profiles/k1s-core/apishim.env)
+export AE_APISHIM_READ_TOKEN=$(sudo awk -F= &#x27;/^AE_APISHIM_READ_TOKEN=/{print $2}&#x27; state/profiles/k1s-core/apishim.env)
+kctl_ro() { kubectl --kubeconfig=/dev/null --server=&quot;${AE_APISHIM_SERVER}&quot; --token=&quot;${AE_APISHIM_READ_TOKEN}&quot; --insecure-skip-tls-verify &quot;$@&quot;; }
+kctl_rw() { kubectl --kubeconfig=/dev/null --server=&quot;${AE_APISHIM_SERVER}&quot; --token=&quot;${AE_APISHIM_TOKEN}&quot; --insecure-skip-tls-verify &quot;$@&quot;; }
 ae nodes
-kctl get pvc sea-netfs-pvc -n default -o wide
+kctl_ro get pvc sea-netfs-pvc -n default -o wide
 ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
 ae status netfs-nfs-hub-reader --wide --events
-ae shell netfs-nfs-sea-edge-02-edge-1 -- sh -lc &quot;echo prod-$(date +%s) &gt; /data/hello.txt &amp;&amp; cat /data/hello.txt&quot;
-ae shell netfs-nfs-hub-reader -- cat /data/hello.txt</code></pre>
+bash scripts/dev/netfs_validate.sh \
+  --runtime auto \
+  --namespace default \
+  --writer-app netfs-nfs-sea-edge-02-edge-1 \
+  --reader-app netfs-nfs-hub-reader \
+  --mount-path /data
+
+# Optional: force CRI runtime fallback on CRI lanes
+bash scripts/dev/netfs_validate.sh --runtime cri</code></pre>
 <p>Optional API checks for PVC/PV/VolumeAttachment:</p>
 <pre><code>curl -sk -H &quot;Authorization: Bearer ${AE_APISHIM_TOKEN}&quot; \
   &quot;${AE_APISHIM_SERVER}/api/v1/namespaces/default/persistentvolumeclaims/sea-netfs-pvc&quot;
@@ -1204,7 +1406,7 @@ curl -sk -H &quot;Authorization: Bearer ${AE_APISHIM_TOKEN}&quot; \
 <li>NFS lane: remote writer and hub reader see the same file contents.</li>
 <li>CSI lane: <code>VolumeAttachment.status.attached=true</code> when <code>attachRequired=true</code>.</li>
 </ul>
-<h3>Single-Host Lab Pattern (full feature exercise)</h3>
+<h3 id="single-host-lab-pattern-full-feature-exercise">Single-Host Lab Pattern (full feature exercise)</h3>
 <p>Use this when hub + edge run on one host and you want a repeatable feature lab.</p>
 <p>Step 1: Bring up the same-host overlay from Option B</p>
 <ul>
@@ -1217,23 +1419,43 @@ curl -sk -H &quot;Authorization: Bearer ${AE_APISHIM_TOKEN}&quot; \
 <li>Keep distinct <code>AE_ROSENPASS_DIR</code>, <code>AE_WG_INTERFACE</code>, and <code>AE_WG_LISTEN_PORT</code>.</li>
 </ul>
 <p>Step 3: Run storage validation workload set</p>
-<pre><code>source &lt;(ae auth local)
-kctl() {
-  kubectl --server=&quot;${AE_APISHIM_SERVER}&quot; \
-    --token=&quot;${AE_APISHIM_TOKEN}&quot; \
-    --insecure-skip-tls-verify &quot;$@&quot;
-}
+<pre><code>source &lt;(ae auth local --strict)
+export AE_APISHIM_TOKEN=$(sudo awk -F= &#x27;/^AE_APISHIM_TOKEN=/{print $2}&#x27; state/profiles/k1s-core/apishim.env)
+export AE_APISHIM_READ_TOKEN=$(sudo awk -F= &#x27;/^AE_APISHIM_READ_TOKEN=/{print $2}&#x27; state/profiles/k1s-core/apishim.env)
+kctl_ro() { kubectl --kubeconfig=/dev/null --server=&quot;${AE_APISHIM_SERVER}&quot; --token=&quot;${AE_APISHIM_READ_TOKEN}&quot; --insecure-skip-tls-verify &quot;$@&quot;; }
+kctl_rw() { kubectl --kubeconfig=/dev/null --server=&quot;${AE_APISHIM_SERVER}&quot; --token=&quot;${AE_APISHIM_TOKEN}&quot; --insecure-skip-tls-verify &quot;$@&quot;; }
 ae nodes
-kctl get storageclass k1s-nfs
+kctl_ro get storageclass k1s-nfs
 python -m ae.cli plan -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml --verbose
-kctl apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false
+kctl_rw apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false
 python -m ae.cli apply -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml
 python -m ae.cli apply -f specs/examples/netfs-nfs-hub-reader.yaml
-kctl get pvc sea-netfs-pvc -n default -o wide
+kctl_ro get pvc sea-netfs-pvc -n default -o wide
 ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
 ae status netfs-nfs-hub-reader --wide --events
-ae shell netfs-nfs-sea-edge-02-edge-1 -- sh -lc &quot;echo lab-$(date +%s) &gt; /data/hello.txt &amp;&amp; cat /data/hello.txt&quot;
-ae shell netfs-nfs-hub-reader -- cat /data/hello.txt</code></pre>
+bash scripts/dev/netfs_validate.sh \
+  --runtime auto \
+  --namespace default \
+  --writer-app netfs-nfs-sea-edge-02-edge-1 \
+  --reader-app netfs-nfs-hub-reader \
+  --mount-path /data
+
+# Optional: force CRI runtime fallback on CRI lanes
+bash scripts/dev/netfs_validate.sh --runtime cri</code></pre>
+<p>If storage validation output is noisy but workloads are <code>ready</code>:</p>
+<ul>
+<li>Prefer the runtime-aware validator script (uses <code>ae exec</code> first, then runtime fallback):</li>
+</ul>
+<pre><code>bash scripts/dev/netfs_validate.sh --runtime auto
+
+# For CRI lanes, force CRI fallback explicitly
+bash scripts/dev/netfs_validate.sh --runtime cri</code></pre>
+<ul>
+<li>This indicates NetFS data path is healthy and the remaining issue is shell/stream plumbing.</li>
+<li>On CRI lanes, do not run Podman fallback commands just because <code>podman</code> is installed.</li>
+<li>Confirm by checking apishim logs for exec status lines:</li>
+</ul>
+<pre><code>tail -n 120 state/profiles/k1s-core/apishim.log | rg -n &#x27;exec.start|exec.end|SPDY exec|WS exec&#x27;</code></pre>
 <p>Step 4: Failure and recovery drill 1. Stop the edge <code>ae.node</code> process (Ctrl+C in the node shell). 2. Re-check status/events:</p>
 <pre><code>ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
 ae events netfs-nfs-sea-edge-02-edge-1</code></pre>
@@ -1246,7 +1468,7 @@ ae shell netfs-nfs-hub-reader -- cat /data/hello.txt</code></pre>
 <li>CSI path: <code>AttachFailed</code> or publish-stage failures until the node recovers.</li>
 <li>Workload returns to Ready after node restart and successful remount.</li>
 </ul>
-<h3>Troubleshooting: edge writer degraded (<code>ScheduleWarning</code>)</h3>
+<h3 id="troubleshooting-edge-writer-degraded-schedulewarning">Troubleshooting: edge writer degraded (<code>ScheduleWarning</code>)</h3>
 <p>Symptom:</p>
 <ul>
 <li><code>netfs-nfs-sea-edge-02-edge-1</code> is <code>degraded</code>.</li>
@@ -1264,58 +1486,56 @@ AE_ENABLE_NETFS=1 \
 AE_APISHIM_DSN=postgresql://shim:shim@&lt;HUB_DB_BIND_IP&gt;:5432/shim \
 make k1s-edge-node</code></pre>
 <p>2. Confirm <code>k1s-nfs</code> exists:</p>
-<pre><code>source &lt;(ae auth local)
-kctl() {
-  kubectl --server=&quot;${AE_APISHIM_SERVER}&quot; \
-    --token=&quot;${AE_APISHIM_TOKEN}&quot; \
-    --insecure-skip-tls-verify &quot;$@&quot;
-}
-kctl get storageclass k1s-nfs</code></pre>
+<pre><code>source &lt;(ae auth local --strict)
+export AE_APISHIM_TOKEN=$(sudo awk -F= &#x27;/^AE_APISHIM_TOKEN=/{print $2}&#x27; state/profiles/k1s-core/apishim.env)
+export AE_APISHIM_READ_TOKEN=$(sudo awk -F= &#x27;/^AE_APISHIM_READ_TOKEN=/{print $2}&#x27; state/profiles/k1s-core/apishim.env)
+kctl_ro() { kubectl --kubeconfig=/dev/null --server=&quot;${AE_APISHIM_SERVER}&quot; --token=&quot;${AE_APISHIM_READ_TOKEN}&quot; --insecure-skip-tls-verify &quot;$@&quot;; }
+kctl_rw() { kubectl --kubeconfig=/dev/null --server=&quot;${AE_APISHIM_SERVER}&quot; --token=&quot;${AE_APISHIM_TOKEN}&quot; --insecure-skip-tls-verify &quot;$@&quot;; }
+kctl_ro get storageclass k1s-nfs</code></pre>
 <p>If it returns <code>NotFound</code>, restart core with <code>AE_STORAGE_NFS_SERVER</code> and <code>AE_STORAGE_NFS_PATH</code>, then re-check. 3. Apply PVC with apishim-safe validation settings:</p>
-<pre><code>kctl apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false</code></pre>
+<pre><code>kctl_rw apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false</code></pre>
 <p>If this still fails with wire-format validation issues, use REST <code>PUT</code> as shown in <code>scripts/netfs_smoke.sh</code>. 4. Confirm PVC exists and is bound:</p>
-<pre><code>kctl get pvc sea-netfs-pvc -n default -o wide</code></pre>
+<pre><code>kctl_ro get pvc sea-netfs-pvc -n default -o wide</code></pre>
 <p>5. Confirm storage class topology is compatible with edge labels:</p>
-<pre><code>kctl get storageclass k1s-nfs -o yaml</code></pre>
+<pre><code>kctl_ro get storageclass k1s-nfs -o yaml</code></pre>
 <p>If <code>topologyKeys</code> or <code>allowedTopologies</code> exclude the edge labels, adjust the storage class or node labels and re-apply workloads.</p>
-<h3>Recovery sequence (single-host, copy/paste)</h3>
+<h3 id="recovery-sequence-single-host-copy-paste">Recovery sequence (single-host, copy/paste)</h3>
 <p>Use this when the writer is degraded and events show both <code>ScheduleWarning</code> and PVC/storageclass failures.</p>
-<pre><code>source &lt;(ae auth local)
-kctl() {
-  kubectl --server=&quot;${AE_APISHIM_SERVER}&quot; \
-    --token=&quot;${AE_APISHIM_TOKEN}&quot; \
-    --insecure-skip-tls-verify &quot;$@&quot;
-}
+<pre><code>source &lt;(ae auth local --strict)
+export AE_APISHIM_TOKEN=$(sudo awk -F= &#x27;/^AE_APISHIM_TOKEN=/{print $2}&#x27; state/profiles/k1s-core/apishim.env)
+export AE_APISHIM_READ_TOKEN=$(sudo awk -F= &#x27;/^AE_APISHIM_READ_TOKEN=/{print $2}&#x27; state/profiles/k1s-core/apishim.env)
+kctl_ro() { kubectl --kubeconfig=/dev/null --server=&quot;${AE_APISHIM_SERVER}&quot; --token=&quot;${AE_APISHIM_READ_TOKEN}&quot; --insecure-skip-tls-verify &quot;$@&quot;; }
+kctl_rw() { kubectl --kubeconfig=/dev/null --server=&quot;${AE_APISHIM_SERVER}&quot; --token=&quot;${AE_APISHIM_TOKEN}&quot; --insecure-skip-tls-verify &quot;$@&quot;; }
 
 # 1) reset failed workloads and stale PVC
 python -m ae.cli delete netfs-nfs-sea-edge-02-edge-1 --purge
 python -m ae.cli delete netfs-nfs-hub-reader --purge
-kctl delete -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --ignore-not-found --validate=false
+kctl_rw delete -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --ignore-not-found --validate=false
 
 # 2) verify scheduler prerequisites
 ae nodes
 python -m ae.cli plan -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml --verbose
-kctl get storageclass k1s-nfs
+kctl_ro get storageclass k1s-nfs
 
 # 3) re-apply PVC and workloads
-kctl apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false
+kctl_rw apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false
 python -m ae.cli apply -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml
 python -m ae.cli apply -f specs/examples/netfs-nfs-hub-reader.yaml
 
 # 4) verify ready + RWX behavior
-kctl get pvc sea-netfs-pvc -n default -o wide
+kctl_ro get pvc sea-netfs-pvc -n default -o wide
 ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
 ae status netfs-nfs-hub-reader --wide --events
 ae shell netfs-nfs-sea-edge-02-edge-1 -- sh -lc &quot;echo recover-$(date +%s) &gt; /data/hello.txt &amp;&amp; cat /data/hello.txt&quot;
 ae shell netfs-nfs-hub-reader -- cat /data/hello.txt</code></pre>
-<h3>Option C Cleanup</h3>
-<p>Assumes <code>kctl</code> from Step 3a (or re-run the same <code>source &lt;(ae auth local)</code> snippet).</p>
+<h3 id="option-c-cleanup">Option C Cleanup</h3>
+<p>Assumes <code>kctl_ro</code>/<code>kctl_rw</code> from Step 3a (or re-run the same auth/token snippet).</p>
 <pre><code>python -m ae.cli delete netfs-nfs-hub-reader --purge
 python -m ae.cli delete netfs-nfs-sea-edge-02-edge-1 --purge
 python -m ae.cli delete netfs-csi-sea-edge-02-edge-1 --purge
-kctl delete -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --ignore-not-found --validate=false
-kctl delete -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml --ignore-not-found --validate=false</code></pre>
-<h2>Option D — Canonical ingress modes over WireGuard/Rosenpass</h2>
+kctl_rw delete -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --ignore-not-found --validate=false
+kctl_rw delete -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml --ignore-not-found --validate=false</code></pre>
+<h2 id="option-d-ingress">Option D — Canonical ingress modes over WireGuard/Rosenpass</h2>
 <p>Treat these three ingress modes as canonical for core/edge deployments:</p>
 <ul>
 <li><code>core-proxy</code></li>
@@ -1330,28 +1550,28 @@ kctl delete -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml --ignore-not-found 
 </ul>
 <pre><code>CORE_SPECS=${CORE_SPECS:-state/profiles/k1s-core/specs}
 mkdir -p &quot;$CORE_SPECS&quot;</code></pre>
-<h3>Mode 1 — <code>core-proxy</code> (default, NAT-friendly)</h3>
-<h4>Production pattern (split hosts)</h4>
+<h3 id="mode-1-core-proxy-default-nat-friendly">Mode 1 — <code>core-proxy</code> (default, NAT-friendly)</h3>
+<h4 id="production-pattern-split-hosts">Production pattern (split hosts)</h4>
 <p>1. Start core with core-proxy mode:</p>
 <pre><code>AE_DEV_LOCAL=1 \
 EDGE_INGRESS_MODE=core-proxy \
 make k1s-core</code></pre>
 <p>2. Start edge gateway/node per Option B. 3. Add the route resource into the core specs dir:</p>
 <pre><code>cp specs/examples/edge-ingress-route-core-proxy.yaml &quot;$CORE_SPECS&quot;/</code></pre>
-<h4>Single-host lab pattern</h4>
+<h4 id="single-host-lab-pattern">Single-host lab pattern</h4>
 <p>Use hostnames that target core ingress and per-site fallback host:</p>
 <pre><code>127.0.0.1 app-core-proxy.home.arpa
 127.0.0.1 sea-edge-02.edge.local</code></pre>
 <p>Optional local responder for the edge side tunnel target:</p>
 <pre><code>python -m http.server 18081</code></pre>
-<h4>Routing and behavior</h4>
+<h4 id="routing-and-behavior">Routing and behavior</h4>
 <ul>
 <li>Client request hits core Envoy for <code>app-core-proxy.home.arpa</code>.</li>
 <li>Core route forwards to the assigned per-site <code>core_proxy_port</code>.</li>
 <li>Rathole forwards that traffic to <code>AE_EDGE_INGRESS_LOCAL_ADDR</code> on the edge side.</li>
 <li>Edge does not need a public endpoint; this mode is NAT/CGNAT-friendly.</li>
 </ul>
-<h4>Validation</h4>
+<h4 id="validation-2">Validation</h4>
 <pre><code>rg -n &quot;app-core-proxy.home.arpa|sea-edge-02.edge.local&quot; state/profiles/k1s-core/edge-ingress/envoy.yaml
 curl -sS -H &#x27;Host: app-core-proxy.home.arpa&#x27; http://127.0.0.1:10080/ -i | head -n 20</code></pre>
 <p>Expected:</p>
@@ -1360,10 +1580,10 @@ curl -sS -H &#x27;Host: app-core-proxy.home.arpa&#x27; http://127.0.0.1:10080/ -
 <li>If an edge listener is reachable via the tunnel path, request returns <code>200</code>.</li>
 <li>If tunnel/upstream is down, core returns <code>5xx</code> (route exists but upstream failed).</li>
 </ul>
-<h4>Cleanup</h4>
+<h4 id="cleanup">Cleanup</h4>
 <pre><code>rm -f &quot;$CORE_SPECS/edge-ingress-route-core-proxy.yaml&quot;</code></pre>
-<h3>Mode 2 — <code>core-to-edge-public</code> (core forwards to edge POP)</h3>
-<h4>Production pattern (split hosts)</h4>
+<h3 id="mode-2-core-to-edge-public-core-forwards-to-edge-pop">Mode 2 — <code>core-to-edge-public</code> (core forwards to edge POP)</h3>
+<h4 id="production-pattern-split-hosts-1">Production pattern (split hosts)</h4>
 <p>1. Start core with public-edge mode:</p>
 <pre><code>AE_DEV_LOCAL=1 \
 EDGE_INGRESS_MODE=core-to-edge-public \
@@ -1371,7 +1591,7 @@ make k1s-core</code></pre>
 <p>2. Start edge gateway/node per Option B. 3. Add the site public endpoint and route resources:</p>
 <pre><code>cp specs/examples/site-ingress-endpoint-sea-edge-02-public.yaml &quot;$CORE_SPECS&quot;/
 cp specs/examples/edge-ingress-route-core-to-edge-public.yaml &quot;$CORE_SPECS&quot;/</code></pre>
-<h4>Single-host lab pattern</h4>
+<h4 id="single-host-lab-pattern-1">Single-host lab pattern</h4>
 <p>Use hostnames for core ingress host + simulated edge POP host:</p>
 <pre><code>127.0.0.1 app-public.home.arpa
 127.0.0.1 pop-sea-edge-02.home.arpa</code></pre>
@@ -1380,14 +1600,14 @@ cp specs/examples/edge-ingress-route-core-to-edge-public.yaml &quot;$CORE_SPECS&
 sed &#x27;s#https://pop-sea-edge-02.home.arpa:11443#http://pop-sea-edge-02.home.arpa:11080#&#x27; \
   specs/examples/site-ingress-endpoint-sea-edge-02-public.yaml \
   &gt; &quot;$CORE_SPECS/site-ingress-endpoint-sea-edge-02-public.yaml&quot;</code></pre>
-<h4>Routing and behavior</h4>
+<h4 id="routing-and-behavior-1">Routing and behavior</h4>
 <ul>
 <li>Client request hits core Envoy for <code>app-public.home.arpa</code>.</li>
 <li>Core resolves <code>SiteIngressEndpoint.public.urls</code> and forwards directly to the configured public POP endpoint.</li>
 <li>Rathole is not required for this mode.</li>
 <li>If <code>public.urls</code> is missing/unreachable, traffic fails from the core side.</li>
 </ul>
-<h4>Validation</h4>
+<h4 id="validation-3">Validation</h4>
 <pre><code>rg -n &quot;app-public.home.arpa|pop-sea-edge-02.home.arpa&quot; state/profiles/k1s-core/edge-ingress/envoy.yaml
 curl -sS -H &#x27;Host: app-public.home.arpa&#x27; http://127.0.0.1:10080/ -i | head -n 20</code></pre>
 <p>Expected:</p>
@@ -1396,11 +1616,11 @@ curl -sS -H &#x27;Host: app-public.home.arpa&#x27; http://127.0.0.1:10080/ -i | 
 <li>Reachable POP returns app response.</li>
 <li>Unreachable POP returns <code>5xx</code>.</li>
 </ul>
-<h4>Cleanup</h4>
+<h4 id="cleanup-1">Cleanup</h4>
 <pre><code>rm -f &quot;$CORE_SPECS/site-ingress-endpoint-sea-edge-02-public.yaml&quot;
 rm -f &quot;$CORE_SPECS/edge-ingress-route-core-to-edge-public.yaml&quot;</code></pre>
-<h3>Mode 3 — <code>edge-local</code> (edge-only ingress path)</h3>
-<h4>Production pattern (split hosts)</h4>
+<h3 id="mode-3-edge-local-edge-only-ingress-path">Mode 3 — <code>edge-local</code> (edge-only ingress path)</h3>
+<h4 id="production-pattern-split-hosts-2">Production pattern (split hosts)</h4>
 <p>1. Start core with edge-local mode and route bundle publishing enabled:</p>
 <pre><code>AE_DEV_LOCAL=1 \
 EDGE_INGRESS_MODE=edge-local \
@@ -1414,18 +1634,18 @@ AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=state/profiles/k1s-core/edge-local \
 make k1s-edge-core</code></pre>
 <p>3. Add the edge-local route resource:</p>
 <pre><code>cp specs/examples/edge-ingress-route-edge-local.yaml &quot;$CORE_SPECS&quot;/</code></pre>
-<h4>Single-host lab pattern</h4>
+<h4 id="single-host-lab-pattern-2">Single-host lab pattern</h4>
 <p>Use a local-only edge hostname:</p>
 <pre><code>127.0.0.1 app-edge-local.home.arpa</code></pre>
 <p>Keep this hostname unadvertised publicly; test from the edge network/host only.</p>
-<h4>Routing and behavior</h4>
+<h4 id="routing-and-behavior-2">Routing and behavior</h4>
 <ul>
 <li>Core publishes route bundles (control plane only).</li>
 <li>Edge gateway applies bundles and renders edge-local ingress config.</li>
 <li>Data path is local to the edge site; core ingress is not in request path.</li>
 <li>If core is unavailable after bundles are applied, edge can continue serving existing routes until a config change is needed.</li>
 </ul>
-<h4>Validation</h4>
+<h4 id="validation-4">Validation</h4>
 <pre><code>ls state/profiles/k1s-core/edge-local/edge-local.caddy
 rg -n &quot;app-edge-local.home.arpa&quot; state/profiles/k1s-core/edge-local/edge-local.caddy
 rg -n &quot;app-edge-local.home.arpa&quot; state/profiles/k1s-core/edge-ingress/envoy.yaml || true</code></pre>
@@ -1435,9 +1655,9 @@ rg -n &quot;app-edge-local.home.arpa&quot; state/profiles/k1s-core/edge-ingress/
 <li>Core Envoy config does not need a route for this host.</li>
 <li>If <code>AE_ROUTE_BUNDLE_ENABLED</code> is unset/0, edge-local config will not update.</li>
 </ul>
-<h4>Cleanup</h4>
+<h4 id="cleanup-2">Cleanup</h4>
 <pre><code>rm -f &quot;$CORE_SPECS/edge-ingress-route-edge-local.yaml&quot;</code></pre>
-<h3>Post-storage ingress regression check (all canonical modes)</h3>
+<h3 id="post-storage-ingress-regression-check-all-canonical-modes">Post-storage ingress regression check (all canonical modes)</h3>
 <p>Run this after Option C storage validation to confirm ingress behavior did not regress: 1. Confirm storage workloads are healthy:</p>
 <pre><code>ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
 ae status netfs-nfs-hub-reader --wide --events</code></pre>
@@ -1451,7 +1671,7 @@ rg -n &quot;app-edge-local.home.arpa&quot; state/profiles/k1s-core/edge-local/ed
 <li><code>core-to-edge-public</code>: core ingress forwards to edge POP endpoint from <code>SiteIngressEndpoint</code>.</li>
 <li><code>edge-local</code>: route is present in edge-local config; core ingress is not required in data path.</li>
 </ul>
-<h3>Cleanup</h3>
+<h3 id="cleanup-3">Cleanup</h3>
 <ul>
 <li>Stop gateways and edge NATS.</li>
 <li>Stop hub services: <code>make down</code></li>
@@ -1483,7 +1703,7 @@ rg -n &quot;app-edge-local.home.arpa&quot; state/profiles/k1s-core/edge-local/ed
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-11 15:50:59</span>
+        <span>Built 2026-02-12 14:20:07</span>
       </div>
     </footer>
     <script>
