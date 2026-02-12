@@ -1053,9 +1053,7 @@ def _swagger_doc() -> dict[str, Any]:
                 "apiVersion": {"type": "string"},
                 "kind": {"type": "string"},
                 "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
-                "spec": {
-                    "$ref": "#/definitions/io.k8s.api.ae.dev.v1alpha1.DeploymentSpec"
-                },
+                "spec": {"$ref": "#/definitions/io.k8s.api.ae.dev.v1alpha1.DeploymentSpec"},
             },
             "additionalProperties": True,
         },
@@ -1550,9 +1548,17 @@ def _swagger_doc() -> dict[str, Any]:
             entry.setdefault(method, op)
 
     def _path_param(name: str, description: str) -> dict[str, Any]:
-        return {"name": name, "in": "path", "required": True, "type": "string", "description": description}
+        return {
+            "name": name,
+            "in": "path",
+            "required": True,
+            "type": "string",
+            "description": description,
+        }
 
-    def _query_param(name: str, description: str, param_type: str, default: Any | None = None) -> dict[str, Any]:
+    def _query_param(
+        name: str, description: str, param_type: str, default: Any | None = None
+    ) -> dict[str, Any]:
         param: dict[str, Any] = {
             "name": name,
             "in": "query",
@@ -1668,11 +1674,7 @@ def _swagger_doc() -> dict[str, Any]:
 
     def _describe_list(plural: str, namespaced: bool) -> str:
         scope = "namespace" if namespaced else "cluster"
-        example = (
-            f"kubectl get {plural} -n <namespace>"
-            if namespaced
-            else f"kubectl get {plural}"
-        )
+        example = f"kubectl get {plural} -n <namespace>" if namespaced else f"kubectl get {plural}"
         return (
             f"List {plural} in the {scope} scope. Use `watch=1` to stream changes."
             f"\n\nExample:\n\n`{example}`"
@@ -2231,6 +2233,7 @@ class ShimHandler(BaseHTTPRequestHandler):
     read_token: str | None = os.getenv("AE_APISHIM_READ_TOKEN")
     exec_token: str | None = os.getenv("AE_APISHIM_EXEC_TOKEN")
     portforward_token: str | None = os.getenv("AE_APISHIM_PORTFORWARD_TOKEN")
+    mint_token: str | None = os.getenv("AE_APISHIM_MINT_TOKEN")
     session_secret: str | None = os.getenv("AE_APISHIM_SESSION_SECRET")
     pod_state_check: bool = os.getenv("AE_APISHIM_POD_STATE_CHECK", "0") == "1"
     pod_watch_check: bool = False
@@ -2389,6 +2392,56 @@ class ShimHandler(BaseHTTPRequestHandler):
             scopes = [str(s) for s in scopes_val if s]
         return role, scopes
 
+    def _mint_session_token(
+        self,
+        *,
+        role: str,
+        scopes: list[str] | None = None,
+        ttl_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        secret = self.session_secret or os.getenv("AE_APISHIM_SESSION_SECRET", "")
+        secret = str(secret).strip()
+        if not secret:
+            raise RuntimeError("session tokens disabled")
+        role_name = str(role or "").strip().lower()
+        if role_name not in {"exec", "portforward", "read"}:
+            raise ValueError("invalid role for session token")
+        clean_scopes = [str(s).strip() for s in (scopes or []) if str(s).strip()]
+        try:
+            default_ttl = int(os.getenv("AE_APISHIM_SESSION_TTL", "600") or "600")
+        except Exception:
+            default_ttl = 600
+        try:
+            max_ttl = int(os.getenv("AE_APISHIM_SESSION_TTL_MAX", str(default_ttl)) or default_ttl)
+        except Exception:
+            max_ttl = default_ttl
+        if default_ttl <= 0:
+            default_ttl = 600
+        if max_ttl <= 0:
+            max_ttl = default_ttl
+        ttl = int(ttl_seconds) if ttl_seconds and int(ttl_seconds) > 0 else int(default_ttl)
+        ttl = max(60, min(int(ttl), int(max_ttl)))
+        exp = int(time.time()) + int(ttl)
+        token_payload: dict[str, Any] = {"role": role_name, "exp": exp}
+        if clean_scopes:
+            token_payload["scopes"] = clean_scopes
+        payload_raw = json.dumps(token_payload, separators=(",", ":")).encode("utf-8")
+
+        def _b64url(data: bytes) -> str:
+            return base64.urlsafe_b64encode(data).rstrip(b"=").decode("utf-8")
+
+        payload_b64 = _b64url(payload_raw)
+        sig = hmac.new(secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
+        sig_b64 = _b64url(sig)
+        token = f"sess1.{payload_b64}.{sig_b64}"
+        return {
+            "token": token,
+            "expires_in": ttl,
+            "expires_at": exp,
+            "role": role_name,
+            "scopes": clean_scopes,
+        }
+
     def _parse_principal(self) -> Principal:
         cached = getattr(self, "_principal_cache", None)
         if cached is not None:
@@ -2420,6 +2473,10 @@ class ShimHandler(BaseHTTPRequestHandler):
             username = "portforward"
             groups = {"system:authenticated", "portforward"}
             token_role = "portforward"  # noqa: S105 - role label, not a secret
+        elif tok and tok == self.mint_token:
+            username = "mint"
+            groups = {"system:authenticated", "mint"}
+            token_role = "mint"  # noqa: S105 - role label, not a secret
         else:
             session = self._parse_session_token(tok)
             if session:
@@ -2928,7 +2985,9 @@ class ShimHandler(BaseHTTPRequestHandler):
         container = self._resolve_pod_container(namespace, pod_name, runtime=runtime)
         if container is None and runtime is not self.server.runtime:  # type: ignore[attr-defined]
             container = self._resolve_pod_container(
-                namespace, pod_name, runtime=self.server.runtime  # type: ignore[arg-type]
+                namespace,
+                pod_name,
+                runtime=self.server.runtime,  # type: ignore[arg-type]
             )
         if not container:
             self._not_found()
@@ -3041,11 +3100,13 @@ class ShimHandler(BaseHTTPRequestHandler):
             ok = role_name in {"admin", "exec"}
         elif role == "portforward":
             ok = role_name in {"admin", "portforward"}
+        elif role == "mint":
+            ok = role_name in {"admin", "mint"}
         elif role in {"rbac-read", "rbac-write"}:
             ok = role_name in {"admin", "read"}
         if ok or (
             rbac_relaxed
-            and role in {"read", "write", "exec", "portforward", "rbac-read", "rbac-write"}
+            and role in {"read", "write", "exec", "portforward", "mint", "rbac-read", "rbac-write"}
         ):
             return True
         if self.allow_anonymous:
@@ -4358,11 +4419,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                                     if doc.get("Height") is not None
                                     else None
                                 )
-                                w = (
-                                    int(doc.get("Width"))
-                                    if doc.get("Width") is not None
-                                    else None
-                                )
+                                w = int(doc.get("Width")) if doc.get("Width") is not None else None
                                 if hasattr(rt, "exec_resize"):
                                     try:
                                         rt.exec_resize(  # type: ignore[attr-defined]
@@ -7642,13 +7699,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 plural,
                                 s_ns,
                                 q,
-                                transform=_to_generic("snapshot.storage.k8s.io", "v1", kind, plural),
+                                transform=_to_generic(
+                                    "snapshot.storage.k8s.io", "v1", kind, plural
+                                ),
                             )
                             return
                         items = (
                             self.server.store.list_all("snapshot.storage.k8s.io", "v1", plural)
                             if s_ns is None
-                            else self.server.store.list("snapshot.storage.k8s.io", "v1", plural, s_ns)
+                            else self.server.store.list(
+                                "snapshot.storage.k8s.io", "v1", plural, s_ns
+                            )
                         )  # type: ignore[attr-defined]
                         self._ok(
                             {
@@ -8080,6 +8141,50 @@ class ShimHandler(BaseHTTPRequestHandler):
         path = parsed.path
         self.path = path
         upgrade = (self.headers.get("Upgrade") or "").lower()
+        if path == "/api/v1/sessiontokens":
+            if not self._authz(role="mint"):
+                return
+            doc = _read_json(self._read_body())
+            role = str(doc.get("role") or "exec").strip().lower()
+            scopes_val = doc.get("scopes")
+            if scopes_val is None:
+                scopes_val = doc.get("scope")
+            scopes: list[str]
+            if isinstance(scopes_val, str):
+                scopes = [scopes_val]
+            elif isinstance(scopes_val, list | tuple):
+                scopes = [str(s) for s in scopes_val if s]
+            else:
+                scopes = []
+            try:
+                ttl_req = int(doc.get("ttlSeconds") or doc.get("ttl") or 0)
+            except Exception:
+                ttl_req = 0
+            try:
+                minted = self._mint_session_token(role=role, scopes=scopes, ttl_seconds=ttl_req)
+            except ValueError as exc:
+                self._json_status(
+                    HTTPStatus.BAD_REQUEST,
+                    reason="BadRequest",
+                    message=str(exc),
+                )
+                return
+            except RuntimeError as exc:
+                self._json_status(
+                    HTTPStatus.NOT_FOUND,
+                    reason="NotFound",
+                    message=str(exc),
+                )
+                return
+            except Exception as exc:  # pragma: no cover - defensive
+                self._json_status(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    reason="InternalError",
+                    message=str(exc),
+                )
+                return
+            self._ok(minted)
+            return
         is_exec_path = re.match(r"^/api/v1/namespaces/[^/]+/pods/[^/]+/exec$", path)
         is_pf_path = re.match(r"^/api/v1/namespaces/[^/]+/(pods|services)/[^/]+/portforward$", path)
         # SubjectAccessReview should be callable by read tokens; other POSTs require write/admin.
@@ -9832,7 +9937,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                 merged.get("data") if plural in {"configmaps", "secrets"} else merged.get("spec")
             )
             name_eff = md.get("name") or name
-            ns_eff = None if plural in {"namespaces", "persistentvolumes"} else (md.get("namespace") or ns)
+            ns_eff = (
+                None
+                if plural in {"namespaces", "persistentvolumes"}
+                else (md.get("namespace") or ns)
+            )
             if not _valid_name(name_eff):
                 self._json_status(
                     HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -10523,7 +10632,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                 self._deny(403)
                 return
             ok = self.server.store.delete(
-                "", "v1", plural, None if plural in {"namespaces", "persistentvolumes"} else ns, name
+                "",
+                "v1",
+                plural,
+                None if plural in {"namespaces", "persistentvolumes"} else ns,
+                name,
             )  # type: ignore[attr-defined]
             if not ok:
                 self._not_found()
@@ -10637,11 +10750,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                         items = (
                             self.server.store.list_all("snapshot.storage.k8s.io", "v1", plural)
                             if s_ns is None
-                            else self.server.store.list("snapshot.storage.k8s.io", "v1", plural, s_ns)
+                            else self.server.store.list(
+                                "snapshot.storage.k8s.io", "v1", plural, s_ns
+                            )
                         )  # type: ignore[attr-defined]
                         for obj in items:
                             self.server.store.delete(  # type: ignore[attr-defined]
-                                "snapshot.storage.k8s.io", "v1", plural, obj.namespace or None, obj.name
+                                "snapshot.storage.k8s.io",
+                                "v1",
+                                plural,
+                                obj.namespace or None,
+                                obj.name,
                             )
                     self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
                     return
@@ -12103,6 +12222,7 @@ class ShimServer(ThreadingHTTPServer):
         ShimHandler.read_token = os.getenv("AE_APISHIM_READ_TOKEN")
         ShimHandler.exec_token = os.getenv("AE_APISHIM_EXEC_TOKEN")
         ShimHandler.portforward_token = os.getenv("AE_APISHIM_PORTFORWARD_TOKEN")
+        ShimHandler.mint_token = os.getenv("AE_APISHIM_MINT_TOKEN")
         ShimHandler.session_secret = os.getenv("AE_APISHIM_SESSION_SECRET")
         ShimHandler.pod_state_check = os.getenv("AE_APISHIM_POD_STATE_CHECK", "0") == "1"
         ShimHandler.pod_watch_check = os.getenv("AE_APISHIM_POD_WATCH_CHECK", "0") == "1"

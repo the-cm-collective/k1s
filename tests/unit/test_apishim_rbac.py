@@ -264,6 +264,82 @@ def test_apishim_rbac_exec_requires_exec_or_admin(monkeypatch, store):
     assert 403 in handler2._response_codes or 401 in handler2._response_codes
 
 
+def test_apishim_sessiontokens_allows_mint_token(monkeypatch, store):
+    monkeypatch.setenv("AE_APISHIM_TOKEN", "a")
+    monkeypatch.setenv("AE_APISHIM_MINT_TOKEN", "m")
+    monkeypatch.setenv("AE_APISHIM_SESSION_SECRET", "secret")
+    shim_server.ShimHandler.rbac_enabled = False
+    shim_server.ShimHandler.rbac_eval_roles = False
+    shim_server.ShimHandler.admin_token = "a"
+    shim_server.ShimHandler.read_token = None
+    shim_server.ShimHandler.exec_token = None
+    shim_server.ShimHandler.portforward_token = None
+    shim_server.ShimHandler.mint_token = "m"
+    shim_server.ShimHandler.session_secret = "secret"
+    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda _self: None)
+    body = json.dumps({"role": "exec", "scope": "default/pod-1"}).encode("utf-8")
+    req = make_handler(
+        "/api/v1/sessiontokens",
+        method="POST",
+        headers={"Authorization": "Bearer m"},
+        body=body,
+    )
+    handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
+    handler.path = req.path
+    handler.command = req.command
+    handler.headers = req.headers
+    handler.server = SimpleNamespace(store=store, state=store, runtime=None)
+    handler.store = store
+    handler.state = None
+    handler.request_version = "HTTP/1.1"
+    handler.requestline = f"{handler.command} {handler.path} HTTP/1.1"
+    handler.rfile = BytesIO(body)
+    handler.wfile = BytesIO()
+    handler.do_POST()
+    assert 200 in handler._response_codes
+    raw = handler.wfile.getvalue().decode("utf-8")
+    payload_txt = raw.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in raw else raw
+    payload = json.loads(payload_txt)
+    assert str(payload.get("token") or "").startswith("sess1.")
+    assert payload.get("role") == "exec"
+
+
+def test_apishim_sessiontokens_denies_read_token(monkeypatch, store):
+    monkeypatch.setenv("AE_APISHIM_TOKEN", "a")
+    monkeypatch.setenv("AE_APISHIM_READ_TOKEN", "r")
+    monkeypatch.setenv("AE_APISHIM_MINT_TOKEN", "m")
+    monkeypatch.setenv("AE_APISHIM_SESSION_SECRET", "secret")
+    shim_server.ShimHandler.rbac_enabled = False
+    shim_server.ShimHandler.rbac_eval_roles = False
+    shim_server.ShimHandler.admin_token = "a"
+    shim_server.ShimHandler.read_token = "r"
+    shim_server.ShimHandler.exec_token = None
+    shim_server.ShimHandler.portforward_token = None
+    shim_server.ShimHandler.mint_token = "m"
+    shim_server.ShimHandler.session_secret = "secret"
+    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda _self: None)
+    body = json.dumps({"role": "exec", "scope": "default/pod-1"}).encode("utf-8")
+    req = make_handler(
+        "/api/v1/sessiontokens",
+        method="POST",
+        headers={"Authorization": "Bearer r"},
+        body=body,
+    )
+    handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
+    handler.path = req.path
+    handler.command = req.command
+    handler.headers = req.headers
+    handler.server = SimpleNamespace(store=store, state=store, runtime=None)
+    handler.store = store
+    handler.state = None
+    handler.request_version = "HTTP/1.1"
+    handler.requestline = f"{handler.command} {handler.path} HTTP/1.1"
+    handler.rfile = BytesIO(body)
+    handler.wfile = BytesIO()
+    handler.do_POST()
+    assert 401 in handler._response_codes or 403 in handler._response_codes
+
+
 def test_subject_access_review_allows(monkeypatch, store):
     monkeypatch.setenv("AE_APISHIM_RBAC", "1")
     monkeypatch.setenv("AE_APISHIM_RBAC_EVAL", "1")

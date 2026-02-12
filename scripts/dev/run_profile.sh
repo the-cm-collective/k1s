@@ -378,6 +378,7 @@ start_apishim() {
   local port="${APISHIM_PORT:-8445}"
   local pid_file="${APISHIM_PID_FILE:-$ROOT_DIR/state/apishim.pid}"
   local env_file="${APISHIM_ENV_FILE:-$profile_dir/apishim.env}"
+  local cli_env_file="${APISHIM_CLI_ENV_FILE:-$profile_dir/apishim.cli.env}"
   local cert_file="${APISHIM_CERT_FILE:-$profile_dir/apishim.crt}"
   local key_file="${APISHIM_KEY_FILE:-$profile_dir/apishim.key}"
   local mode="${AE_APISHIM_MODE:-container}"
@@ -414,6 +415,10 @@ start_apishim() {
   export AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-$cert_file}"
   export AE_APISHIM_TLS_KEY="${AE_APISHIM_TLS_KEY:-$key_file}"
   export AE_APISHIM_SERVER="${AE_APISHIM_SERVER:-https://127.0.0.1:${port}}"
+  APISHIM_ENV_FILE="$env_file" APISHIM_CLI_ENV_FILE="$cli_env_file" APISHIM_CERT_FILE="$cert_file" \
+    AE_APISHIM_SERVER="${AE_APISHIM_SERVER}" AE_CLI_SHARED_GROUP="${AE_CLI_SHARED_GROUP:-aecli}" \
+    "$ROOT_DIR/scripts/ensure_apishim_cli_env.sh" >/dev/null 2>&1 || \
+    echo "warning: failed to sync shared apishim CLI env" >&2
   # In container mode, loopback etcd endpoints resolve inside the apishim
   # container, not on the host. Default to the compose service endpoint.
   if [[ "$mode" == "container" && "${AE_STATE_BACKEND:-}" == "etcd" && -z "${AE_APISHIM_ETCD_ENDPOINTS:-}" ]]; then

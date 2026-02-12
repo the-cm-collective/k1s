@@ -143,6 +143,17 @@ API tokens
 
 API shim (kubectl/helm)
 - Start shim locally: `AE_APISHIM_ENABLE=1 AE_APISHIM_TOKEN=changeme python -m ae.apishim serve --host 127.0.0.1 --port 8445` (add `--allow-anonymous` only for dev). Postgres backend: set `AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname`; default is SQLite at `AE_APISHIM_DB` (`state/apishim.db`) unless a DSN is provided.
+- Non-root CLI auth (recommended):
+  - One-time group setup: `sudo groupadd -f aecli && sudo usermod -aG aecli $USER` (re-login/newgrp required).
+  - Start `k1s-core` with sudo if needed; keep root `state/profiles/<profile>/apishim.env` private (`600`).
+  - Configure a mint-only credential: `AE_APISHIM_MINT_TOKEN=<long-random-token>` on the shim.
+  - Startup now syncs `state/profiles/<profile>/apishim.cli.env` (`640 root:aecli`) with `AE_APISHIM_SERVER`, `AE_APISHIM_MINT_TOKEN`, and `AE_APISHIM_CA_BUNDLE`.
+  - Startup also syncs `state/profiles/<profile>/apishim.ca.crt` (`640 root:aecli`) for CA verification.
+  - In operator shells run `source <(ae auth local --strict)` (no `--apishim-env` arg required); auth infers the active profile and prefers `apishim.cli.env`.
+  - `ae shell` / `ae port-forward` will mint short-lived scoped `sess1.*` tokens through `POST /api/v1/sessiontokens` and automatically refresh once on `401`.
+  - If shim token auth returns `401` but `AE_LABS_TOKEN` is present, CLI can fallback to controller-minted session tokens via `POST /api/apishim/session` (dashboard-compatible path).
+  - Disable controller fallback by setting `AE_CLI_LABS_MINT_FALLBACK=0` when you want shim-only auth behavior.
+  - Keep `AE_APISHIM_TOKEN` (admin) service-only; avoid routine `sudo ae ...`.
 - `k1s-core` profile starts Postgres for apishim by default and sets `AE_APISHIM_DSN`:
   - `AE_APISHIM_MODE=host`: uses `127.0.0.1:<port>`.
   - container mode: uses the compose service name `postgres:5432`.

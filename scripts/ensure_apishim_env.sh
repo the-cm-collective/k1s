@@ -65,6 +65,7 @@ require_strong() {
 token="${AE_APISHIM_TOKEN:-}"
 read_token="${AE_APISHIM_READ_TOKEN:-}"
 session_secret="${AE_APISHIM_SESSION_SECRET:-}"
+mint_token="${AE_APISHIM_MINT_TOKEN:-}"
 admin_token="${AE_API_ADMIN_TOKEN:-}"
 labs_token="${AE_LABS_TOKEN:-}"
 
@@ -76,6 +77,9 @@ if [[ -z "$read_token" ]]; then
 fi
 if [[ -z "$session_secret" ]]; then
   session_secret="$(read_env_var "AE_APISHIM_SESSION_SECRET" "$ENV_OVERRIDE_FILE" || true)"
+fi
+if [[ -z "$mint_token" ]]; then
+  mint_token="$(read_env_var "AE_APISHIM_MINT_TOKEN" "$ENV_OVERRIDE_FILE" || true)"
 fi
 if [[ -z "$admin_token" ]]; then
   admin_token="$(read_env_var "AE_API_ADMIN_TOKEN" "$ENV_OVERRIDE_FILE" || true)"
@@ -91,6 +95,9 @@ if [[ -z "$read_token" ]]; then
 fi
 if [[ -z "$session_secret" ]]; then
   session_secret="$(read_env_var "AE_APISHIM_SESSION_SECRET" "$ENV_FILE" || true)"
+fi
+if [[ -z "$mint_token" ]]; then
+  mint_token="$(read_env_var "AE_APISHIM_MINT_TOKEN" "$ENV_FILE" || true)"
 fi
 if [[ -z "$admin_token" ]]; then
   admin_token="$(read_env_var "AE_API_ADMIN_TOKEN" "$ENV_FILE" || true)"
@@ -108,6 +115,9 @@ fi
 if ! require_strong "AE_APISHIM_SESSION_SECRET" "$session_secret" 32; then
   session_secret="$(gen_token)"
 fi
+if ! require_strong "AE_APISHIM_MINT_TOKEN" "$mint_token"; then
+  mint_token="$(gen_token)"
+fi
 if ! require_strong "AE_API_ADMIN_TOKEN" "$admin_token"; then
   admin_token="$(gen_token)"
 fi
@@ -121,6 +131,7 @@ cat > "$ENV_FILE" <<EOF
 AE_APISHIM_TOKEN=${token}
 AE_APISHIM_READ_TOKEN=${read_token}
 AE_APISHIM_SESSION_SECRET=${session_secret}
+AE_APISHIM_MINT_TOKEN=${mint_token}
 AE_API_ADMIN_TOKEN=${admin_token}
 AE_LABS_TOKEN=${labs_token}
 AE_LABS_HELM_TOKEN=${token}

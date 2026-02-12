@@ -244,6 +244,13 @@ Repeat for additional nodes with unique `AE_NODE_ID` (and override `AE_POD_CIDR`
 If `ae shell` / `ae port-forward` fails with `Connection refused`, ensure:
 - `AE_APISHIM_SERVER` points at the hub apishim (not localhost on the edge host).
 - The node advertises a reachable agent endpoint (`AE_AGENT_ENDPOINT` or `--advertise-endpoint`) from the apishim container/host.
+If `ae shell` fails with `spdy upgrade failed: 401` while dashboard shell still works:
+- Ensure non-root CLI group setup is complete once: `sudo groupadd -f aecli && sudo usermod -aG aecli $USER` (re-login/newgrp).
+- Ensure core startup syncs `state/profiles/<profile>/apishim.cli.env` as `640 root:aecli` with `AE_APISHIM_SERVER`, `AE_APISHIM_MINT_TOKEN`, and `AE_APISHIM_CA_BUNDLE`.
+- Ensure `state/profiles/<profile>/apishim.ca.crt` is present/readable for group `aecli`.
+- Re-run `source <(ae auth local --strict)` to refresh exports.
+- Keep `AE_LABS_TOKEN` in the shell; CLI can mint a short-lived fallback session token through controller `/api/apishim/session`.
+- Set `AE_CLI_LABS_MINT_FALLBACK=0` only if you want to force shim-only token behavior for debugging.
 Note
 - `host.containers.internal` works when apishim runs in a container (podman default). If apishim runs on the host (`AE_APISHIM_MODE=host`), you can use `127.0.0.1` instead.
 - `ae auth local` sets `AE_APISHIM_SERVER` to `https://127.0.0.1:8445`. On a remote host, override it to the hub, e.g. `export AE_APISHIM_SERVER=https://<HUB_IP>:8445` (keep the same `AE_APISHIM_TOKEN` from `ae auth local`).
